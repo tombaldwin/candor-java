@@ -11,6 +11,21 @@ implementation, [candor](https://github.com/tombaldwin/candor).
 boundary, not the package), and propagates transitively to a fixpoint over the call graph. Emits the
 candor JSON report.
 
+**Spring-aware.** Spring hides effects in framework-woven/generated code (`@Transactional`'s
+transaction lives in a runtime proxy; Spring Data repository impls are synthesized at runtime) and
+breaks the call graph (controllers/listeners are invoked reflectively). Pure bytecode tracing misses
+all of it — so candor-java reads Spring's **declarations** instead:
+
+- `@Transactional` (method or class) → `Db`
+- Spring Data repositories (`extends CrudRepository`/`JpaRepository`) → calls to them are `Db`
+- `RestTemplate` / `WebClient` / `@FeignClient` → `Net`; `JdbcTemplate` / `EntityManager` → `Db`;
+  `JmsTemplate` / `KafkaTemplate` → `Net`; `Environment.getProperty` → `Env`
+- `@GetMapping`/`@*Mapping`, `@Scheduled`, `@KafkaListener`/`@*Listener` → marked as **entry points**
+
+On `spring-sample/`, `register()` (a `@Transactional` method calling a Spring Data repo + a
+`RestTemplate`) correctly infers `{ Db, Net }`, and the `@GetMapping` controller inherits
+`{ Db*, Net* }` and is flagged `[entry]` — effects that live in no method body candor could see.
+
 **Not yet (deferred honestly — candor-spec PRINCIPLES #7):**
 - the **trust contract's `Unknown`** for unresolvable dispatch (interface/virtual dispatch to unknown
   impls, lambdas/`invokedynamic`, reflection) — v0 reports *resolved* effects only;
@@ -18,8 +33,11 @@ candor JSON report.
 - **conformance / no-ambient / baseline** modes and the `declared`/`undeclared` fields;
 - constructors (`<init>`/`<clinit>`) are skipped for now.
 
-The honesty ceiling on the JVM is reflection / AOP / proxies (Spring) — exactly what defeats static
-call graphs. Those will surface as `Unknown` once the trust contract lands.
+The honesty ceiling on the JVM is what even declarations don't capture: **custom** AOP aspects
+(`@Aspect`/`@Around`), reflection / `getBean`, and multi-impl DI where the wired implementation is
+unknown statically. Those should surface as `Unknown` once the trust contract lands; the
+heavyweight route to resolving them is Spring Boot 3 **AOT metadata** (Spring's own ahead-of-time
+processing resolves bean wiring, proxies, and reflection at build time). See candor-spec CLASSIFIER.md.
 
 ## Build & run
 
@@ -32,11 +50,15 @@ gradle run --args="/path/to/classes --json /tmp/report.json"
 
 It prints a per-method effect audit and writes a candor JSON report.
 
-### Try the sample
+### Try the samples
 
 ```sh
-javac -d /tmp/s sample/Sample.java
-gradle run --args="/tmp/s"
+# plain Java
+javac -d /tmp/s sample/Sample.java && gradle run --args="/tmp/s"
+
+# Spring (dependency-free: minimal stubs with Spring's real FQNs; candor matches by name)
+javac -d /tmp/spring $(find spring-sample -name '*.java')
+gradle run --args="/tmp/spring/com/example"
 ```
 
 ## How it works

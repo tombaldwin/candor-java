@@ -72,10 +72,12 @@ public class Candor {
         // JSON output is orthogonal — write first so `--json` can snapshot a baseline.
         if (jsonOut != null) writeJson(inferred, jsonOut);
 
-        // Modes: CANDOR_BASELINE (regression guard) and CANDOR_NO_AMBIENT (enforcement).
+        // Modes: CANDOR_STRICT (conformance via DI), CANDOR_BASELINE (regression guard),
+        // CANDOR_NO_AMBIENT (enforcement).
+        String strict = System.getenv("CANDOR_STRICT");
         String baseline = System.getenv("CANDOR_BASELINE");
         String noAmbient = System.getenv("CANDOR_NO_AMBIENT");
-        boolean enforce = baseline != null || noAmbient != null;
+        boolean enforce = baseline != null || noAmbient != null || strict != null;
 
         if (!enforce) {
             System.out.println("candor-java — effect audit (Spring-aware; Unknown for reflection/dispatch)\n");
@@ -95,10 +97,102 @@ public class Candor {
         }
 
         int violations = 0;
+        if (strict != null) violations += checkConformance(inferred, strict);
         if (noAmbient != null) violations += checkNoAmbient(inferred, noAmbient);
         if (baseline != null) violations += checkBaseline(inferred, baseline);
         if (violations == 0) System.out.println("candor-java: no violations");
         if (violations > 0) System.exit(1); // fail CI
+    }
+
+    /**
+     * Conformance via dependency injection: a class's fields are the capabilities it holds, so its
+     * effects must be covered by what those collaborators provide. An effect performed beyond them
+     * means reaching for ambient authority instead of receiving it (AS-EFF-001). This is candor's
+     * capability-token model in Java's idiom — "a bean's signature (its dependencies) tells you its
+     * effect surface."
+     */
+    static int checkConformance(Map<String, TreeSet<String>> inferred, String scope) {
+        // performed(class) = union of inferred over the class's own methods.
+        Map<String, TreeSet<String>> performed = new HashMap<>();
+        for (ClassNode cn : ALL) {
+            String dc = cn.name.replace('/', '.');
+            TreeSet<String> p = performed.computeIfAbsent(dc, k -> new TreeSet<>());
+            for (MethodNode mn : cn.methods) {
+                if (mn.name.startsWith("<")) continue;
+                var inf = inferred.get(dc + "." + mn.name);
+                if (inf != null) p.addAll(inf);
+            }
+        }
+        int v = 0;
+        for (ClassNode cn : ALL) {
+            String dc = cn.name.replace('/', '.');
+            if (!inScope(scope, dc)) continue;
+            TreeSet<String> declared = new TreeSet<>();
+            if (cn.fields != null)
+                for (FieldNode f : cn.fields) {
+                    String t = fieldTypeInternal(f.desc);
+                    if (t != null) declared.addAll(typeEffects(t, performed));
+                }
+            TreeSet<String> perf = performed.getOrDefault(dc, new TreeSet<>());
+            boolean hasUnknown = perf.contains("Unknown");
+            List<String> undeclared = perf.stream()
+                    .filter(x -> !x.equals("Unknown") && !declared.contains(x)).sorted().collect(Collectors.toList());
+            List<String> unused = declared.stream()
+                    .filter(x -> !perf.contains(x)).sorted().collect(Collectors.toList());
+            if (!undeclared.isEmpty()) {
+                String have = declared.isEmpty() ? "no injected capability"
+                        : "only { " + String.join(", ", declared) + " }";
+                System.out.printf("[AS-EFF-001] class `%s` performs { %s } but holds %s; "
+                        + "inject a collaborator that provides it (don't reach for ambient authority)%n",
+                        dc, String.join(", ", undeclared), have);
+                v++;
+            }
+            if (hasUnknown) {
+                System.out.printf("[AS-EFF-003] class `%s` makes calls candor cannot resolve "
+                        + "(reflection / unresolved dispatch); effect set not provably complete%n", dc);
+                v++;
+            }
+            if (!unused.isEmpty()) {
+                System.out.printf("[AS-EFF-002] class `%s` injects { %s } but never uses it%n",
+                        dc, String.join(", ", unused));
+                v++;
+            }
+        }
+        return v;
+    }
+
+    /** Effects a field of type `internal` can supply (Spring repo/template, or a project collaborator). */
+    static Set<String> typeEffects(String internal, Map<String, TreeSet<String>> performed) {
+        if (repoTypes.contains(internal)) return Set.of("Db");
+        if (feignTypes.contains(internal)) return Set.of("Net");
+        String dotted = internal.replace('/', '.');
+        Set<String> lib = classifyType(dotted);
+        if (!lib.isEmpty()) return lib;
+        if (byName.containsKey(internal)) return performed.getOrDefault(dotted, new TreeSet<>());
+        return Set.of();
+    }
+
+    /** Type-level classification of a collaborator (mirrors the call-level classify, by owner type). */
+    static Set<String> classifyType(String dotted) {
+        if (dotted.equals("org.springframework.web.client.RestTemplate")
+                || dotted.equals("org.springframework.web.client.RestClient")
+                || dotted.startsWith("org.springframework.web.reactive.function.client.")
+                || dotted.equals("org.springframework.jms.core.JmsTemplate")
+                || dotted.equals("org.springframework.kafka.core.KafkaTemplate"))
+            return Set.of("Net");
+        if (dotted.equals("org.springframework.jdbc.core.JdbcTemplate")
+                || dotted.equals("org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate")
+                || dotted.equals("jakarta.persistence.EntityManager")
+                || dotted.equals("javax.persistence.EntityManager"))
+            return Set.of("Db");
+        return Set.of();
+    }
+
+    /** Object type internal name from a field descriptor (`Lcom/x/Foo;` -> `com/x/Foo`); null if primitive. */
+    static String fieldTypeInternal(String desc) {
+        int l = desc.indexOf('L');
+        if (l >= 0 && desc.endsWith(";")) return desc.substring(l + 1, desc.length() - 1);
+        return null;
     }
 
     /** AS-EFF-004: flag direct use of ambient authority (route it through an injected collaborator). */

@@ -42,7 +42,8 @@ CHA is done with the class hierarchy ASM already gives us — no WALA/SootUp nee
   pure rather than `Unknown` — otherwise every `list.add()` floods the report (the calibration the
   Rust impl learned). Known-effectful libraries are caught by the classifier; the rest is a
   documented residual gap.
-- **conformance / no-ambient / baseline** modes and the `declared`/`undeclared` fields;
+- **conformance** mode (the `declared`/`undeclared` fields + AS-EFF-001/002) — needs a Java "declared
+  capability" model, likely mapping to dependency injection; a design pass of its own.
 - lambdas/callbacks via functional interfaces, and constructors (`<init>`/`<clinit>`).
 
 The deepest JVM ceiling is what even declarations + CHA don't capture: **custom** AOP aspects
@@ -60,6 +61,29 @@ gradle run --args="/path/to/classes --json /tmp/report.json"
 ```
 
 It prints a per-method effect audit and writes a candor JSON report.
+
+## Modes
+
+| Mode | How | Output |
+|---|---|---|
+| **audit** (default) | `gradle run --args="<classes>"` | per-method effect map |
+| **JSON** | add `--json <file>` | the candor JSON report |
+| **regression guard** | `CANDOR_BASELINE=<saved.json> gradle run --args="<classes>"` | `AS-EFF-005` + **exit 1** if any function gained an effect vs the snapshot |
+| **no-ambient** | `CANDOR_NO_AMBIENT=1` (or a name prefix) | `AS-EFF-004` for direct ambient-authority use (route it through an injected collaborator) |
+
+### CI regression guard (the lowest-friction adoption)
+
+No declarations, no rewrite — snapshot the effect surface, commit it, fail PRs that grow it:
+
+```sh
+# once, on a known-good build — commit the snapshot:
+gradle run --args="build/classes/java/main --json .candor/baseline.json"
+
+# in CI:
+CANDOR_BASELINE=.candor/baseline.json gradle run --args="build/classes/java/main"
+# exits non-zero (AS-EFF-005) if a function gained an effect; a missing/garbled baseline
+# fails LOUD ("guard is NOT active") rather than passing silently.
+```
 
 ### Try the samples
 

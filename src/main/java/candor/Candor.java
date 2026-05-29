@@ -1,6 +1,8 @@
 package candor;
 
+import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.reflect.TypeToken;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.*;
@@ -48,6 +50,8 @@ public class Candor {
     static final String TX = "springframework/transaction/annotation/Transactional";
     static final String SCHEDULED = "springframework/scheduling/annotation/Scheduled";
     static final String FEIGN = "openfeign/FeignClient";
+    // Ambient authorities (for CANDOR_NO_AMBIENT). Log/Unknown are not authorities.
+    static final Set<String> AMBIENT = Set.of("Net", "Fs", "Db", "Exec", "Env", "Clock", "Rand");
 
     public static void main(String[] args) throws IOException {
         if (args.length < 1) {
@@ -65,21 +69,94 @@ public class Candor {
 
         Map<String, TreeSet<String>> inferred = fixpoint();
 
-        System.out.println("candor-java — effect audit (Spring-aware; Unknown for reflection)\n");
-        inferred.entrySet().stream()
-                .filter(e -> !e.getValue().isEmpty())
-                .sorted(Map.Entry.comparingByKey())
-                .forEach(e -> {
-                    var d = direct.getOrDefault(e.getKey(), new TreeSet<>());
-                    String set = e.getValue().stream()
-                            .map(x -> d.contains(x) ? x : x + "*")
-                            .collect(Collectors.joining(", "));
-                    String tag = entryPoints.contains(e.getKey()) ? "  [entry]" : "";
-                    System.out.printf("  %-52s { %s }%s%n", e.getKey(), set, tag);
-                });
-        System.out.println("\n(* = via callee, [entry] = framework-invoked entry point)");
-
+        // JSON output is orthogonal — write first so `--json` can snapshot a baseline.
         if (jsonOut != null) writeJson(inferred, jsonOut);
+
+        // Modes: CANDOR_BASELINE (regression guard) and CANDOR_NO_AMBIENT (enforcement).
+        String baseline = System.getenv("CANDOR_BASELINE");
+        String noAmbient = System.getenv("CANDOR_NO_AMBIENT");
+        boolean enforce = baseline != null || noAmbient != null;
+
+        if (!enforce) {
+            System.out.println("candor-java — effect audit (Spring-aware; Unknown for reflection/dispatch)\n");
+            inferred.entrySet().stream()
+                    .filter(e -> !e.getValue().isEmpty())
+                    .sorted(Map.Entry.comparingByKey())
+                    .forEach(e -> {
+                        var d = direct.getOrDefault(e.getKey(), new TreeSet<>());
+                        String set = e.getValue().stream()
+                                .map(x -> d.contains(x) ? x : x + "*")
+                                .collect(Collectors.joining(", "));
+                        String tag = entryPoints.contains(e.getKey()) ? "  [entry]" : "";
+                        System.out.printf("  %-52s { %s }%s%n", e.getKey(), set, tag);
+                    });
+            System.out.println("\n(* = via callee, [entry] = framework-invoked entry point)");
+            return;
+        }
+
+        int violations = 0;
+        if (noAmbient != null) violations += checkNoAmbient(inferred, noAmbient);
+        if (baseline != null) violations += checkBaseline(inferred, baseline);
+        if (violations == 0) System.out.println("candor-java: no violations");
+        if (violations > 0) System.exit(1); // fail CI
+    }
+
+    /** AS-EFF-004: flag direct use of ambient authority (route it through an injected collaborator). */
+    static int checkNoAmbient(Map<String, TreeSet<String>> inferred, String scope) {
+        int v = 0;
+        for (var e : new TreeMap<>(inferred).entrySet()) {
+            if (!inScope(scope, e.getKey())) continue;
+            List<String> ambient = direct.getOrDefault(e.getKey(), new TreeSet<>()).stream()
+                    .filter(AMBIENT::contains).sorted().collect(Collectors.toList());
+            if (!ambient.isEmpty()) {
+                System.out.printf("[AS-EFF-004] `%s` uses ambient authority { %s } directly; "
+                        + "route it through an injected collaborator / capability%n",
+                        e.getKey(), String.join(", ", ambient));
+                v++;
+            }
+        }
+        return v;
+    }
+
+    /** AS-EFF-005: flag a function that gained an effect versus a saved baseline report. */
+    static int checkBaseline(Map<String, TreeSet<String>> inferred, String path) {
+        Map<String, Set<String>> base = loadBaseline(path);
+        if (base == null) {
+            System.err.println("candor-java: CANDOR_BASELINE set but " + path
+                    + " could not be loaded — the regression guard is NOT active");
+            return 0;
+        }
+        int v = 0;
+        for (var e : new TreeMap<>(inferred).entrySet()) {
+            Set<String> prior = base.get(e.getKey());
+            if (prior == null) continue; // new function — reviewed as new code, not a regression
+            List<String> gained = e.getValue().stream()
+                    .filter(x -> !prior.contains(x)).sorted().collect(Collectors.toList());
+            if (!gained.isEmpty()) {
+                System.out.printf("[AS-EFF-005] `%s` gained effect { %s } not present in the baseline%n",
+                        e.getKey(), String.join(", ", gained));
+                v++;
+            }
+        }
+        return v;
+    }
+
+    static class BaseEntry { String fn; List<String> inferred; }
+
+    static Map<String, Set<String>> loadBaseline(String path) {
+        try {
+            String text = Files.readString(Path.of(path));
+            List<BaseEntry> entries = new Gson().fromJson(text, new TypeToken<List<BaseEntry>>() {}.getType());
+            Map<String, Set<String>> m = new HashMap<>();
+            for (BaseEntry e : entries) if (e.fn != null) m.put(e.fn, new HashSet<>(e.inferred == null ? List.of() : e.inferred));
+            return m;
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    static boolean inScope(String var, String name) {
+        return var.equals("1") || var.isEmpty() || name.startsWith(var);
     }
 
     static List<ClassNode> load(Path root) throws IOException {

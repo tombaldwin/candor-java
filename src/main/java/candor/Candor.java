@@ -20,8 +20,10 @@ import java.util.stream.*;
  * tracing misses all of it. So we read Spring's DECLARATIONS — annotations and template/repository
  * types — as effect sources. The framework's magic becomes the signal.
  *
- * NOT YET (deferred honestly — PRINCIPLES #7): the trust contract's `Unknown` for unresolvable
- * dispatch (custom AOP aspects, reflection, lambdas/invokedynamic, multi-impl DI); CHA; conformance.
+ * TRUST CONTRACT (SPEC §4): reflection / dynamic invocation is reported as `Unknown`, never assumed
+ * pure. NOT YET (deferred honestly — PRINCIPLES #7): `Unknown` for the broader unresolvable-dispatch
+ * cases (interface dispatch to an unknown impl, lambdas/callbacks, custom AOP) needs CHA to first
+ * resolve what it *can* — otherwise it floods; that's the next rung. Also: conformance mode.
  */
 public class Candor {
     static final Map<String, TreeSet<String>> direct = new HashMap<>();
@@ -58,7 +60,7 @@ public class Candor {
 
         Map<String, TreeSet<String>> inferred = fixpoint();
 
-        System.out.println("candor-java — effect audit (Spring-aware; v0, no Unknown yet)\n");
+        System.out.println("candor-java — effect audit (Spring-aware; Unknown for reflection)\n");
         inferred.entrySet().stream()
                 .filter(e -> !e.getValue().isEmpty())
                 .sorted(Map.Entry.comparingByKey())
@@ -182,6 +184,15 @@ public class Candor {
 
     /** Classify a resolved call by target class + method — match the I/O boundary, not the package. */
     static String classify(String owner, String method) {
+        // Reflection / dynamic invocation — could call ANYTHING; honestly `Unknown`, never assumed
+        // pure (SPEC §4 trust contract). This is the JVM's defining opacity, and the foundation of
+        // the framework magic (Spring proxies, DI) candor can't otherwise see through.
+        if (owner.equals("java.lang.reflect.Method") && method.equals("invoke")) return "Unknown";
+        if (owner.equals("java.lang.reflect.Constructor") && method.equals("newInstance")) return "Unknown";
+        if (owner.equals("java.lang.Class") && (method.equals("newInstance") || method.equals("forName")))
+            return "Unknown";
+        if (owner.equals("java.lang.reflect.Proxy") && method.equals("newProxyInstance")) return "Unknown";
+        if (owner.equals("java.lang.invoke.MethodHandle") && method.startsWith("invoke")) return "Unknown";
         // Filesystem
         if (owner.equals("java.nio.file.Files")
                 || owner.equals("java.io.FileInputStream") || owner.equals("java.io.FileOutputStream")
@@ -251,7 +262,7 @@ public class Candor {
                     m.put("inferred", new ArrayList<>(e.getValue()));
                     m.put("direct", new ArrayList<>(direct.getOrDefault(e.getKey(), new TreeSet<>())));
                     m.put("entryPoint", entryPoints.contains(e.getKey()));
-                    m.put("unresolved", false); // v0: no Unknown yet
+                    m.put("unresolved", e.getValue().contains("Unknown")); // trust contract (SPEC §4)
                     entries.add(m);
                 });
         String json = new GsonBuilder().setPrettyPrinting().create().toJson(entries);

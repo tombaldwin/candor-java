@@ -26,10 +26,15 @@ On `spring-sample/`, `register()` (a `@Transactional` method calling a Spring Da
 `RestTemplate`) correctly infers `{ Db, Net }`, and the `@GetMapping` controller inherits
 `{ Db*, Net* }` and is flagged `[entry]` — effects that live in no method body candor could see.
 
-**Not yet (deferred honestly — candor-spec PRINCIPLES #7):**
-- the **trust contract's `Unknown`** for unresolvable dispatch (interface/virtual dispatch to unknown
-  impls, lambdas/`invokedynamic`, reflection) — v0 reports *resolved* effects only;
-- **dispatch resolution** (CHA/RTA over the class hierarchy) — the substrate for that is WALA/SootUp;
+**Trust contract (candor-spec §4) — partial.** Reflection / dynamic invocation
+(`Method.invoke`, `Constructor.newInstance`, `Class.forName`/`newInstance`, `MethodHandle.invoke`,
+`Proxy.newProxyInstance`) is reported as **`Unknown`** with `unresolved: true`, never silently
+assumed pure — it could call anything. So a consumer knows exactly where to stop trusting the report.
+
+**Not yet (deferred honestly — PRINCIPLES #7):**
+- `Unknown` for the **broader unresolvable dispatch** (interface/virtual dispatch to an unknown impl,
+  lambdas/callbacks) — this needs **CHA** to first resolve what it *can*, else it floods (the same
+  calibration the Rust impl learned); CHA is the next rung, on a WALA/SootUp substrate;
 - **conformance / no-ambient / baseline** modes and the `declared`/`undeclared` fields;
 - constructors (`<init>`/`<clinit>`) are skipped for now.
 

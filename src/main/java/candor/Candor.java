@@ -2,6 +2,7 @@ package candor;
 
 import com.google.gson.GsonBuilder;
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.*;
 
 import java.io.IOException;
@@ -33,6 +34,9 @@ public class Candor {
     static final Set<String> projectClasses = new HashSet<>();
     static final Set<String> repoTypes = new HashSet<>();    // Spring Data repository interfaces (internal names)
     static final Set<String> feignTypes = new HashSet<>();   // @FeignClient interfaces (internal names)
+    static List<ClassNode> ALL = List.of();                  // all loaded classes (for CHA)
+    static final Map<String, ClassNode> byName = new HashMap<>();      // internal name -> node
+    static final Map<String, Set<String>> transSupersCache = new HashMap<>();
 
     // --- Spring markers (internal names / annotation-desc substrings) ---
     static final Set<String> REPO_MARKERS = Set.of(
@@ -54,7 +58,8 @@ public class Candor {
         for (int i = 1; i + 1 < args.length; i++) if (args[i].equals("--json")) jsonOut = args[i + 1];
 
         List<ClassNode> classes = load(Path.of(args[0]));
-        for (ClassNode cn : classes) projectClasses.add(cn.name);
+        ALL = classes;
+        for (ClassNode cn : classes) { projectClasses.add(cn.name); byName.put(cn.name, cn); }
         computeSpringTypes(classes);
         for (ClassNode cn : classes) analyze(cn);
 
@@ -131,9 +136,25 @@ public class Candor {
                     if (effect != null) dir.add(effect);
                     // Calls to a Spring Data repository / Feign client are I/O even though the
                     // callee has no body candor can see (Spring synthesizes the impl at runtime).
+                    boolean springTyped = repoTypes.contains(min.owner) || feignTypes.contains(min.owner);
                     if (repoTypes.contains(min.owner)) dir.add("Db");
                     if (feignTypes.contains(min.owner)) dir.add("Net");
-                    if (projectClasses.contains(min.owner)) edges.get(id).add(owner + "." + min.name);
+
+                    int op = min.getOpcode();
+                    if (op == Opcodes.INVOKEVIRTUAL || op == Opcodes.INVOKEINTERFACE) {
+                        // Class Hierarchy Analysis: dispatch could reach any project subtype's
+                        // override — add edges to all of them so their effects propagate.
+                        List<String> targets = chaTargets(min.owner, min.name, min.desc);
+                        edges.get(id).addAll(targets);
+                        // Genuine unresolved dispatch: a PROJECT interface/abstract type with no
+                        // visible impl (DI-wired, external, or strategy) → honest Unknown (SPEC §4).
+                        if (targets.isEmpty() && effect == null && !springTyped
+                                && isProjectIfaceOrAbstract(min.owner))
+                            dir.add("Unknown");
+                    } else if (projectClasses.contains(min.owner)) {
+                        // static / special (super, private, ctor) — the exact target.
+                        edges.get(id).add(owner + "." + min.name);
+                    }
                 }
             }
         }
@@ -161,6 +182,45 @@ public class Candor {
     static int firstLine(MethodNode mn) {
         for (AbstractInsnNode insn : mn.instructions) if (insn instanceof LineNumberNode ln) return ln.line;
         return 0;
+    }
+
+    /** Transitive supertypes (internal names) of a project type; stops at non-project ancestors. */
+    static Set<String> transSupers(String internal) {
+        Set<String> cached = transSupersCache.get(internal);
+        if (cached != null) return cached;
+        Set<String> r = new HashSet<>();
+        transSupersCache.put(internal, r); // seed first to break cycles
+        ClassNode cn = byName.get(internal);
+        if (cn != null) {
+            List<String> sup = new ArrayList<>();
+            if (cn.superName != null) sup.add(cn.superName);
+            if (cn.interfaces != null) sup.addAll(cn.interfaces);
+            for (String s : sup) { r.add(s); r.addAll(transSupers(s)); }
+        }
+        return r;
+    }
+
+    /** CHA: project subtypes-or-self of `owner` that provide a concrete (name,desc) impl. */
+    static List<String> chaTargets(String owner, String name, String desc) {
+        List<String> out = new ArrayList<>();
+        for (ClassNode c : ALL) {
+            if (c.name.equals(owner) || transSupers(c.name).contains(owner)) {
+                if (declaresConcrete(c, name, desc)) out.add(c.name.replace('/', '.') + "." + name);
+            }
+        }
+        return out;
+    }
+
+    static boolean declaresConcrete(ClassNode c, String name, String desc) {
+        for (MethodNode mn : c.methods)
+            if (mn.name.equals(name) && mn.desc.equals(desc) && (mn.access & Opcodes.ACC_ABSTRACT) == 0)
+                return true;
+        return false;
+    }
+
+    static boolean isProjectIfaceOrAbstract(String internal) {
+        ClassNode cn = byName.get(internal);
+        return cn != null && (cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT)) != 0;
     }
 
     static Map<String, TreeSet<String>> fixpoint() {

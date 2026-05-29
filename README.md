@@ -26,23 +26,29 @@ On `spring-sample/`, `register()` (a `@Transactional` method calling a Spring Da
 `RestTemplate`) correctly infers `{ Db, Net }`, and the `@GetMapping` controller inherits
 `{ Db*, Net* }` and is flagged `[entry]` — effects that live in no method body candor could see.
 
-**Trust contract (candor-spec §4) — partial.** Reflection / dynamic invocation
-(`Method.invoke`, `Constructor.newInstance`, `Class.forName`/`newInstance`, `MethodHandle.invoke`,
-`Proxy.newProxyInstance`) is reported as **`Unknown`** with `unresolved: true`, never silently
-assumed pure — it could call anything. So a consumer knows exactly where to stop trusting the report.
+**Trust contract (candor-spec §4).** candor-java surfaces what it can't see as `Unknown`
+(`unresolved: true`), never silent-pure:
+- **Reflection / dynamic invocation** (`Method.invoke`, `Constructor.newInstance`,
+  `Class.forName`/`newInstance`, `MethodHandle.invoke`, `Proxy.newProxyInstance`) → `Unknown`.
+- **Class Hierarchy Analysis** resolves interface/virtual dispatch over project types to their
+  implementations, so effects propagate *through* dispatch (a call on a `Greeter` interface inherits
+  the union of its impls' effects). Dispatch over a **project interface/abstract with no visible
+  impl** (DI-wired, external, strategy) → `Unknown`.
+
+CHA is done with the class hierarchy ASM already gives us — no WALA/SootUp needed.
 
 **Not yet (deferred honestly — PRINCIPLES #7):**
-- `Unknown` for the **broader unresolvable dispatch** (interface/virtual dispatch to an unknown impl,
-  lambdas/callbacks) — this needs **CHA** to first resolve what it *can*, else it floods (the same
-  calibration the Rust impl learned); CHA is the next rung, on a WALA/SootUp substrate;
+- dispatch over **non-project (JDK/library) types** that the classifier doesn't recognise is assumed
+  pure rather than `Unknown` — otherwise every `list.add()` floods the report (the calibration the
+  Rust impl learned). Known-effectful libraries are caught by the classifier; the rest is a
+  documented residual gap.
 - **conformance / no-ambient / baseline** modes and the `declared`/`undeclared` fields;
-- constructors (`<init>`/`<clinit>`) are skipped for now.
+- lambdas/callbacks via functional interfaces, and constructors (`<init>`/`<clinit>`).
 
-The honesty ceiling on the JVM is what even declarations don't capture: **custom** AOP aspects
-(`@Aspect`/`@Around`), reflection / `getBean`, and multi-impl DI where the wired implementation is
-unknown statically. Those should surface as `Unknown` once the trust contract lands; the
-heavyweight route to resolving them is Spring Boot 3 **AOT metadata** (Spring's own ahead-of-time
-processing resolves bean wiring, proxies, and reflection at build time). See candor-spec CLASSIFIER.md.
+The deepest JVM ceiling is what even declarations + CHA don't capture: **custom** AOP aspects
+(`@Aspect`/`@Around`) and beans wired by reflection (`getBean`). The heavyweight route to those is
+Spring Boot 3 **AOT metadata** (Spring's own ahead-of-time processing resolves bean wiring, proxies,
+and reflection at build time). See candor-spec CLASSIFIER.md.
 
 ## Build & run
 

@@ -482,18 +482,72 @@ public class Candor {
     }
 
     static void writeJson(Map<String, TreeSet<String>> inferred, String out) throws IOException {
+        // Per-class conformance (same model as checkConformance, SPEC §5): declared = effects
+        // the class's injected dependency types can supply; performed = union over its methods.
+        // We attach declared/undeclared/overdeclared to each method entry so an agent can
+        // consume conformance from the JSON, not just the AS-EFF diagnostics. The unit of
+        // declaration in the DI idiom is the class, projected onto each of its methods.
+        Map<String, TreeSet<String>> performed = new HashMap<>();
+        Map<String, String> fnToClass = new HashMap<>();
+        for (ClassNode cn : ALL) {
+            String dc = cn.name.replace('/', '.');
+            TreeSet<String> p = performed.computeIfAbsent(dc, k -> new TreeSet<>());
+            for (MethodNode mn : cn.methods) {
+                if (mn.name.startsWith("<")) continue;
+                String fn = dc + "." + mn.name;
+                fnToClass.put(fn, dc);
+                var inf = inferred.get(fn);
+                if (inf != null) p.addAll(inf);
+            }
+        }
+        Map<String, TreeSet<String>> declaredByClass = new HashMap<>();
+        for (ClassNode cn : ALL) {
+            String dc = cn.name.replace('/', '.');
+            TreeSet<String> declared = new TreeSet<>();
+            if (cn.fields != null)
+                for (FieldNode f : cn.fields) {
+                    String t = fieldTypeInternal(f.desc);
+                    if (t != null) declared.addAll(typeEffects(t, performed));
+                }
+            declaredByClass.put(dc, declared);
+        }
+
         List<Map<String, Object>> entries = new ArrayList<>();
         inferred.entrySet().stream()
-                .filter(e -> !e.getValue().isEmpty() || entryPoints.contains(e.getKey()))
+                // Keep a method if it has effects, is an entry point, OR its class declares a
+                // capability — so a class that injects-but-never-uses one (overdeclared /
+                // AS-EFF-002) is still visible in the JSON even when all its methods are pure.
+                .filter(e -> {
+                    if (!e.getValue().isEmpty() || entryPoints.contains(e.getKey())) return true;
+                    String dc = fnToClass.get(e.getKey());
+                    return dc != null && !declaredByClass.getOrDefault(dc, new TreeSet<>()).isEmpty();
+                })
                 .sorted(Map.Entry.comparingByKey())
                 .forEach(e -> {
+                    String fn = e.getKey();
+                    TreeSet<String> inf = e.getValue();
+                    String dc = fnToClass.get(fn);
+                    TreeSet<String> declared = dc == null ? new TreeSet<>()
+                            : declaredByClass.getOrDefault(dc, new TreeSet<>());
+                    TreeSet<String> perf = dc == null ? new TreeSet<>()
+                            : performed.getOrDefault(dc, new TreeSet<>());
+                    // undeclared = inferred − declared (the AS-EFF-001 surface; Unknown excluded,
+                    // it's handled by AS-EFF-003). overdeclared = class declares but never performs.
+                    List<String> undeclared = inf.stream()
+                            .filter(x -> !x.equals("Unknown") && !declared.contains(x))
+                            .sorted().collect(Collectors.toList());
+                    List<String> overdeclared = declared.stream()
+                            .filter(x -> !perf.contains(x)).sorted().collect(Collectors.toList());
                     Map<String, Object> m = new LinkedHashMap<>();
-                    m.put("fn", e.getKey());
-                    m.put("loc", loc.getOrDefault(e.getKey(), "?"));
-                    m.put("inferred", new ArrayList<>(e.getValue()));
-                    m.put("direct", new ArrayList<>(direct.getOrDefault(e.getKey(), new TreeSet<>())));
-                    m.put("entryPoint", entryPoints.contains(e.getKey()));
-                    m.put("unresolved", e.getValue().contains("Unknown")); // trust contract (SPEC §4)
+                    m.put("fn", fn);
+                    m.put("loc", loc.getOrDefault(fn, "?"));
+                    m.put("inferred", new ArrayList<>(inf));
+                    m.put("direct", new ArrayList<>(direct.getOrDefault(fn, new TreeSet<>())));
+                    m.put("declared", new ArrayList<>(declared));
+                    m.put("undeclared", undeclared);
+                    m.put("overdeclared", overdeclared);
+                    m.put("entryPoint", entryPoints.contains(fn));
+                    m.put("unresolved", inf.contains("Unknown")); // trust contract (SPEC §4)
                     entries.add(m);
                 });
         String json = new GsonBuilder().setPrettyPrinting().create().toJson(entries);

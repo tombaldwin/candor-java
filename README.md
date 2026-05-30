@@ -42,8 +42,6 @@ CHA is done with the class hierarchy ASM already gives us — no WALA/SootUp nee
   pure rather than `Unknown` — otherwise every `list.add()` floods the report (the calibration the
   Rust impl learned). Known-effectful libraries are caught by the classifier; the rest is a
   documented residual gap.
-- emitting `declared`/`undeclared` into the JSON report (conformance currently reports via
-  diagnostics; the fields would let an agent consume conformance too);
 - lambdas/callbacks via functional interfaces, and constructors (`<init>`/`<clinit>`).
 
 The deepest JVM ceiling is what even declarations + CHA don't capture: **custom** AOP aspects
@@ -67,7 +65,7 @@ It prints a per-method effect audit and writes a candor JSON report.
 | Mode | How | Output |
 |---|---|---|
 | **audit** (default) | `gradle run --args="<classes>"` | per-method effect map |
-| **JSON** | add `--json <file>` | the candor JSON report |
+| **JSON** | add `--json <file>` | the candor JSON report — per method: `inferred`, `direct`, and **conformance** (`declared`/`undeclared`/`overdeclared`, projected from the class's injected deps) so an agent can consume conformance, not just the diagnostics |
 | **regression guard** | `CANDOR_BASELINE=<saved.json> gradle run --args="<classes>"` | `AS-EFF-005` + **exit 1** if any function gained an effect vs the snapshot |
 | **no-ambient** | `CANDOR_NO_AMBIENT=1` (or a name prefix) | `AS-EFF-004` for direct ambient-authority use (route it through an injected collaborator) |
 | **conformance** | `CANDOR_STRICT=1` (or a class-name prefix) | `AS-EFF-001/002/003` — a class performs an effect no injected dependency provides (or injects one it never uses) |

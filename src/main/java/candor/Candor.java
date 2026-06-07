@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.reflect.TypeToken;
 import org.objectweb.asm.ClassReader;
@@ -35,6 +36,9 @@ public class Candor {
     static final Map<String, TreeSet<String>> direct = new HashMap<>();
     static final Map<String, Set<String>> edges = new HashMap<>();
     static final Map<String, String> loc = new HashMap<>();
+    static final Map<String, String> hashOf = new HashMap<>();           // fn -> stable method-ref hash (owner.name+desc)
+    static final Map<String, TreeSet<String>> viaCross = new HashMap<>();// fn -> effects inherited from a dependency report
+    static final Map<String, List<String>> crossDeps = new HashMap<>();  // method-ref hash -> effects (from CANDOR_DEPS)
     static final Set<String> entryPoints = new HashSet<>(); // framework-invoked methods
     static final Set<String> projectClasses = new HashSet<>();
     static final Set<String> repoTypes = new HashSet<>();    // Spring Data repository interfaces (internal names)
@@ -68,6 +72,9 @@ public class Candor {
         ALL = classes;
         for (ClassNode cn : classes) { projectClasses.add(cn.name); byName.put(cn.name, cn); }
         computeSpringTypes(classes);
+        // Cross-jar inheritance (candor-spec §2): load dependency reports named by CANDOR_DEPS BEFORE
+        // analyze, so a call into an already-analyzed dependency inherits its effects (vs assumed-pure).
+        loadCrossDeps(System.getenv("CANDOR_DEPS"), provenance()[0]);
         for (ClassNode cn : classes) analyze(cn);
 
         Map<String, TreeSet<String>> inferred = fixpoint();
@@ -238,6 +245,58 @@ public class Candor {
         return v;
     }
 
+    /** Load dependency reports named by CANDOR_DEPS (a path list — space/colon/comma-separated; a
+     *  directory is scanned for *.json) into a `method-ref hash -> inferred effects` map, so a call
+     *  into an already-analyzed dependency inherits its effects (candor-spec §2). Version-aware trust
+     *  (§2.1): effects from a report produced by a DIFFERENT engine version are downgraded to Unknown
+     *  rather than silently trusted. Unreadable/legacy-v0.1 (no hash) entries are skipped. */
+    static void loadCrossDeps(String spec, String ownVersion) {
+        if (spec == null || spec.isBlank()) return;
+        for (String tok : spec.split("[\\s:,]+")) {
+            if (tok.isBlank()) continue;
+            Path p = Path.of(tok);
+            List<Path> files = new ArrayList<>();
+            try {
+                if (Files.isDirectory(p)) {
+                    try (var s = Files.walk(p)) {
+                        s.filter(f -> f.toString().endsWith(".json")).forEach(files::add);
+                    }
+                } else if (Files.isRegularFile(p)) {
+                    files.add(p);
+                }
+            } catch (IOException e) {
+                continue;
+            }
+            for (Path f : files) {
+                try {
+                    JsonElement root = JsonParser.parseString(Files.readString(f));
+                    JsonObject obj = root.isJsonObject() ? root.getAsJsonObject() : null;
+                    JsonArray fns = obj != null ? obj.getAsJsonArray("functions")
+                            : (root.isJsonArray() ? root.getAsJsonArray() : null);
+                    if (fns == null) continue;
+                    String depVer = obj != null && obj.has("candor") && obj.getAsJsonObject("candor").has("version")
+                            ? obj.getAsJsonObject("candor").get("version").getAsString() : null;
+                    boolean stale = depVer != null && ownVersion != null && !depVer.equals(ownVersion);
+                    for (JsonElement el : fns) {
+                        JsonObject m = el.getAsJsonObject();
+                        if (!m.has("hash") || m.get("hash").isJsonNull()) continue; // v0.1 / no cross-jar id
+                        String h = m.get("hash").getAsString();
+                        if (h.isBlank()) continue;
+                        List<String> effs = new ArrayList<>();
+                        if (stale) {
+                            effs.add("Unknown");
+                        } else if (m.has("inferred")) {
+                            for (JsonElement x : m.getAsJsonArray("inferred")) effs.add(x.getAsString());
+                        }
+                        if (!effs.isEmpty()) crossDeps.put(h, effs);
+                    }
+                } catch (Exception ex) {
+                    // skip unreadable / unparseable dependency reports (like the Rust impl)
+                }
+            }
+        }
+    }
+
     static class BaseEntry { String fn; List<String> inferred; }
 
     static Map<String, Set<String>> loadBaseline(String path) {
@@ -303,6 +362,9 @@ public class Candor {
             var dir = direct.computeIfAbsent(id, k -> new TreeSet<>());
             edges.computeIfAbsent(id, k -> new HashSet<>());
             loc.putIfAbsent(id, cn.sourceFile + ":" + firstLine(mn));
+            // Stable, descriptor-bearing cross-jar identity (candor-spec §2 `hash`): the exact ref a
+            // call site in a dependent jar uses, so that jar can inherit this method's effects.
+            hashOf.putIfAbsent(id, cn.name + "." + mn.name + mn.desc);
 
             // Spring annotations on this method (the effect Spring's proxy/generated code performs).
             if (classTx || annoPresent(mn.visibleAnnotations, TX)) dir.add("Db");
@@ -335,6 +397,14 @@ public class Candor {
                     } else if (projectClasses.contains(min.owner)) {
                         // static / special (super, private, ctor) — the exact target.
                         edges.get(id).add(owner + "." + min.name);
+                    }
+                    // Cross-jar inheritance (candor-spec §2): a call into a DEPENDENCY analyzed
+                    // separately — inherit its recorded effects via the stable method-ref hash. Only
+                    // for external, non-built-in, non-Spring calls (project calls trace locally;
+                    // reflection is already Unknown via classify).
+                    if (effect == null && !springTyped && !projectClasses.contains(min.owner)) {
+                        List<String> inh = crossDeps.get(min.owner + "." + min.name + min.desc);
+                        if (inh != null) viaCross.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh);
                     }
                 }
             }
@@ -407,6 +477,9 @@ public class Candor {
     static Map<String, TreeSet<String>> fixpoint() {
         Map<String, TreeSet<String>> eff = new HashMap<>();
         for (var k : direct.keySet()) eff.put(k, new TreeSet<>(direct.get(k)));
+        // Seed in effects inherited via cross-jar calls (kept out of `direct` — they're not in this
+        // method's own body; they appear in `inferred` and propagate transitively, like the Rust impl).
+        for (var e : viaCross.entrySet()) eff.computeIfAbsent(e.getKey(), k -> new TreeSet<>()).addAll(e.getValue());
         boolean changed = true;
         while (changed) {
             changed = false;
@@ -558,6 +631,7 @@ public class Candor {
                     m.put("overdeclared", overdeclared);
                     m.put("entryPoint", entryPoints.contains(fn));
                     m.put("unresolved", inf.contains("Unknown")); // trust contract (SPEC §4)
+                    m.put("hash", hashOf.getOrDefault(fn, "")); // cross-jar join key (SPEC §2)
                     entries.add(m);
                 });
         // v0.2 self-describing envelope (candor-spec §2): a provenance header + the function entries.

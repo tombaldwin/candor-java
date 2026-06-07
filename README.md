@@ -40,6 +40,19 @@ On `spring-sample/`, `register()` (a `@Transactional` method calling a Spring Da
 
 CHA is done with the class hierarchy ASM already gives us — no WALA/SootUp needed.
 
+**Cross-jar (multi-module).** Each entry carries a stable, descriptor-bearing `hash`
+(`owner/Class.method(desc)ret` — the exact ref a call site uses), so a dependent module can inherit a
+dependency's effects across the jar boundary (candor-spec §2). Point `CANDOR_DEPS` at the
+dependencies' reports (a path list, or a directory of `*.json`); a call into a separately-analyzed
+dependency then inherits its recorded effects instead of being assumed pure. **Version-aware trust
+(§2.1):** effects from a report produced by a *different* engine version are downgraded to `Unknown`
+rather than silently trusted.
+
+```sh
+CANDOR_DEPS="/path/to/dep-report.json:/path/to/more" \
+  gradle run --args="/path/to/app-classes --json /tmp/app.json"
+```
+
 **Not yet (deferred honestly — PRINCIPLES #7):**
 - dispatch over **non-project (JDK/library) types** that the classifier doesn't recognise is assumed
   pure rather than `Unknown` — otherwise every `list.add()` floods the report (the calibration the

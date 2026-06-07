@@ -27,6 +27,7 @@ public final class Query {
         List<String> inferred = List.of();
         List<String> direct = List.of();
         List<String> calls = List.of();
+        List<String> fs = List.of();
         boolean unresolved;
     }
 
@@ -42,6 +43,7 @@ public final class Query {
             if (f.inferred == null) f.inferred = List.of();
             if (f.direct == null) f.direct = List.of();
             if (f.calls == null) f.calls = List.of();
+            if (f.fs == null) f.fs = List.of();
         }
         fns.sort(Comparator.comparing(f -> f.fn));
         return fns;
@@ -88,7 +90,12 @@ public final class Query {
         for (Fn f : hits) {
             Set<String> direct = new HashSet<>(f.direct);
             String parts = f.inferred.stream().sorted()
-                    .map(x -> direct.contains(x) ? x + "*" : x)
+                    .map(x -> {
+                        String star = direct.contains(x) ? "*" : "";
+                        // Refine Fs with its read/write detail when known: `Fs*(write)`.
+                        if (x.equals("Fs") && !f.fs.isEmpty()) return "Fs" + star + "(" + String.join(",", f.fs) + ")";
+                        return x + star;
+                    })
                     .collect(Collectors.joining(" "));
             String unk = f.unresolved ? "  ⚠ unresolved (set may be incomplete)" : "";
             System.out.printf("  %-" + w + "s  { %s }%s%n", f.fn, parts, unk);

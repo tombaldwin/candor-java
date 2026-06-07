@@ -84,7 +84,7 @@ re-analyzing** — the sibling of the Rust impl's `candor-query`. They read the 
 (`inferred`/`direct`, and the `calls` effect graph for `callers`):
 
 ```sh
-gradle run --args="show    report.json <fn-substring>"  # a function's effects (* = in its own body)
+gradle run --args="show    report.json <fn-substring>"  # a function's effects (* = own body; Fs(read,write) detail)
 gradle run --args="where   report.json <Effect>"        # who performs an effect (direct vs inherited)
 gradle run --args="callers report.json <fn-substring>"  # who calls a function (inverts the `calls` graph)
 gradle run --args="map     report.json"                 # class → effects overview, most-effectful first

@@ -39,6 +39,8 @@ public class Candor {
     static final Map<String, String> hashOf = new HashMap<>();           // fn -> stable method-ref hash (owner.name+desc)
     static final Map<String, TreeSet<String>> viaCross = new HashMap<>();// fn -> effects inherited from a dependency report
     static final Map<String, List<String>> crossDeps = new HashMap<>();  // method-ref hash -> effects (from CANDOR_DEPS)
+    static final Map<String, TreeSet<String>> fsDirect = new HashMap<>();// fn -> Fs read/write kind performed directly
+    static final String FS_UNKNOWN = "?";   // Fs reached with no recorded kind (cross-jar) -> make no read/write claim
     static final Set<String> entryPoints = new HashSet<>(); // framework-invoked methods
     static final Set<String> projectClasses = new HashSet<>();
     static final Set<String> repoTypes = new HashSet<>();    // Spring Data repository interfaces (internal names)
@@ -382,6 +384,10 @@ public class Candor {
                     String owner = min.owner.replace('/', '.');
                     String effect = classify(owner, min.name);
                     if (effect != null) dir.add(effect);
+                    if ("Fs".equals(effect)) { // non-breaking read/write refinement of Fs
+                        List<String> k = fsKind(owner, min.name);
+                        if (!k.isEmpty()) fsDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(k);
+                    }
                     // Calls to a Spring Data repository / Feign client are I/O even though the
                     // callee has no body candor can see (Spring synthesizes the impl at runtime).
                     boolean springTyped = repoTypes.contains(min.owner) || feignTypes.contains(min.owner);
@@ -479,6 +485,33 @@ public class Candor {
         return cn != null && (cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT)) != 0;
     }
 
+    /** Propagate the Fs read/write detail along the SAME call graph as effects, in a separate set. A
+     *  function reaching the filesystem only across a jar boundary inherits `Fs` with NO recorded kind
+     *  (FS_UNKNOWN), so the report presents an empty `fs` (no claim) rather than a misleading partial. */
+    static Map<String, TreeSet<String>> fsFixpoint() {
+        Map<String, TreeSet<String>> fs = new HashMap<>();
+        for (var e : fsDirect.entrySet()) fs.put(e.getKey(), new TreeSet<>(e.getValue()));
+        for (var e : viaCross.entrySet())
+            if (e.getValue().contains("Fs")) fs.computeIfAbsent(e.getKey(), k -> new TreeSet<>()).add(FS_UNKNOWN);
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            for (var caller : edges.keySet()) {
+                TreeSet<String> add = new TreeSet<>();
+                for (String c : edges.get(caller)) {
+                    var ce = fs.get(c);
+                    if (ce != null) add.addAll(ce);
+                }
+                if (add.isEmpty()) continue;
+                var set = fs.computeIfAbsent(caller, k -> new TreeSet<>());
+                int before = set.size();
+                set.addAll(add);
+                if (set.size() != before) changed = true;
+            }
+        }
+        return fs;
+    }
+
     static Map<String, TreeSet<String>> fixpoint() {
         Map<String, TreeSet<String>> eff = new HashMap<>();
         for (var k : direct.keySet()) eff.put(k, new TreeSet<>(direct.get(k)));
@@ -502,6 +535,43 @@ public class Candor {
     }
 
     /** Classify a resolved call by target class + method — match the I/O boundary, not the package. */
+    /** For a call ALREADY classified `Fs`, the read/write direction its verb implies: ["read"],
+     *  ["write"], ["read","write"] (e.g. Files.copy), or [] when the verb doesn't say (so we make no
+     *  claim). Keyed off the java.io / java.nio.file vocabulary — a syntactic refinement of an effect
+     *  candor already proved, NOT a soundness claim. */
+    static List<String> fsKind(String owner, String method) {
+        if (method.equals("<init>")) { // a stream constructor reveals direction by its type
+            if (owner.equals("java.io.FileInputStream") || owner.equals("java.io.FileReader")) return List.of("read");
+            if (owner.equals("java.io.FileOutputStream") || owner.equals("java.io.FileWriter")) return List.of("write");
+            return List.of(); // RandomAccessFile (mode-dependent), File (no I/O) — no claim
+        }
+        if (method.equals("copy")) return List.of("read", "write");
+        switch (method) {
+            case "write": case "writeString": case "newOutputStream": case "newBufferedWriter":
+            case "createFile": case "createDirectory": case "createDirectories": case "createTempFile":
+            case "createTempDirectory": case "delete": case "deleteIfExists": case "move":
+            case "setAttribute": case "setLastModifiedTime": case "setPosixFilePermissions":
+            case "setOwner": case "createLink": case "createSymbolicLink": case "mkdir": case "mkdirs":
+            case "renameTo": case "createNewFile": case "setReadable": case "setWritable":
+            case "setExecutable": case "setLastModified": case "deleteOnExit": case "truncate":
+                return List.of("write");
+            case "readAllBytes": case "readString": case "readAllLines": case "lines":
+            case "newInputStream": case "newBufferedReader": case "exists": case "notExists":
+            case "isDirectory": case "isRegularFile": case "isReadable": case "isWritable":
+            case "isExecutable": case "size": case "length": case "getLastModifiedTime":
+            case "readAttributes": case "getAttribute": case "list": case "listFiles": case "walk":
+            case "find": case "newDirectoryStream": case "isSameFile": case "mismatch":
+            case "probeContentType": case "canRead": case "canWrite": case "canExecute":
+            case "lastModified": case "toRealPath": case "readSymbolicLink": case "isHidden":
+            case "getFreeSpace": case "getTotalSpace": case "getUsableSpace":
+                return List.of("read");
+            default: break;
+        }
+        if (method.startsWith("write") || method.equals("append")) return List.of("write");
+        if (method.startsWith("read")) return List.of("read");
+        return List.of();
+    }
+
     static String classify(String owner, String method) {
         // Reflection / dynamic invocation — could call ANYTHING; honestly `Unknown`, never assumed
         // pure (SPEC §4 trust contract). This is the JVM's defining opacity, and the foundation of
@@ -600,6 +670,7 @@ public class Candor {
             declaredByClass.put(dc, declared);
         }
 
+        Map<String, TreeSet<String>> fsAcc = fsFixpoint();
         List<Map<String, Object>> entries = new ArrayList<>();
         inferred.entrySet().stream()
                 // Keep a method if it has effects, is an entry point, OR its class declares a
@@ -647,6 +718,15 @@ public class Candor {
                             })
                             .sorted().collect(Collectors.toList());
                     if (!calls.isEmpty()) m.put("calls", calls);
+                    // Fs read/write detail (SPEC §2 `fs`): the access kind, when known AND complete.
+                    // Empty when unknown, when the fn performs no Fs, or when reached cross-jar
+                    // (FS_UNKNOWN) — never a misleading partial. Omitted when empty.
+                    TreeSet<String> fk = fsAcc.get(fn);
+                    if (inf.contains("Fs") && fk != null && !fk.contains(FS_UNKNOWN)) {
+                        List<String> kinds = fk.stream().filter(x -> !x.equals(FS_UNKNOWN)).sorted()
+                                .collect(Collectors.toList());
+                        if (!kinds.isEmpty()) m.put("fs", kinds);
+                    }
                     entries.add(m);
                 });
         // v0.2 self-describing envelope (candor-spec §2): a provenance header + the function entries.

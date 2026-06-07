@@ -54,16 +54,24 @@ CANDOR_DEPS="/path/to/dep-report.json:/path/to/more" \
   gradle run --args="/path/to/app-classes --json /tmp/app.json"
 ```
 
+*Resolution depth:* a concrete-typed cross-jar call resolves by `hash` directly; an **interface**-typed
+call whose impl lives in the dependency can't be devirtualized from the report alone (a report carries
+no class hierarchy). For full resolution across a boundary, analyze the app **and** its deps *together*
+(one classpath) — then local CHA sees through the dispatch. `CANDOR_DEPS` is the mode for when you only
+have a dependency's *report*, not its bytecode.
+
 **Not yet (deferred honestly — PRINCIPLES #7):**
 - dispatch over **non-project (JDK/library) types** that the classifier doesn't recognise is assumed
   pure rather than `Unknown` — otherwise every `list.add()` floods the report (the calibration the
   Rust impl learned). Known-effectful libraries are caught by the classifier; the rest is a
   documented residual gap.
-- user-defined **constructors** (`<init>`) and **static initializers** (`<clinit>`): a *call* into an
-  effectful JDK type (`new FileInputStream`) is caught (owner-based), but a user class whose own
-  constructor/`<clinit>` body performs I/O isn't yet attributed to `new X()` / class-init sites.
+- **static initializers** (`<clinit>`): a class whose `<clinit>` body performs I/O isn't yet attributed
+  to its first-use sites. (Constructors `<init>` *are* analyzed — an effectful constructor propagates
+  to every `new X()`.)
 
-**Lambdas & method references** *are* handled: the functional-interface factory's impl method (a
+**Constructors & lambdas/method references** *are* handled: an effectful constructor body propagates to
+its `new X()` sites, and a lambda/method-ref's impl method (a project `lambda$…` synthetic or referenced
+method) is edged from the enclosing method, so the functional-interface factory's impl method (a
 project `lambda$…` synthetic or a referenced method) is edged from the enclosing method, so an
 effectful lambda or `Foo::bar` propagates its effects rather than looking pure.
 
@@ -79,9 +87,14 @@ Requires JDK 21 + Gradle.
 ```sh
 # compile the code you want to analyze to a directory of .class files (or point at a jar), then:
 gradle run --args="/path/to/classes --json /tmp/report.json"
+
+# …or the ./candor convenience wrapper (builds once, self-heals when the source changes):
+./candor /path/to/classes --json /tmp/report.json   # analyze
+./candor show /tmp/report.json myMethod             # query a report
 ```
 
-It prints a per-method effect audit and writes a candor JSON report.
+It prints a per-method effect audit and writes a candor JSON report. `bash test/smoke.sh` runs the
+behavioural suite (also in CI).
 
 ## Queries (read-only, over a written report)
 

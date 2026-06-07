@@ -113,6 +113,10 @@ javac -d "$W/ctcls" "$W/src/Ct.java"
 want   "effectful constructor reaches its new X() site" "$("$CJ" show "$W/ct.json" Ct.build)" 'Fs'
 absent "a pure constructor stays pure"                  "$(cat "$W/ct.json")"                 '"Ct.pure"'
 
+echo "== candor wrapper =="
+want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
+want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

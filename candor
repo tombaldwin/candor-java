@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# candor — convenience launcher for candor-java. Builds the tool once (installDist), rebuilds when the
+# source is newer, then runs it. Analyze a classpath, or query/guard a report. Examples:
+#   ./candor <dir-or-jar> --json report.json        # analyze -> human audit + JSON report
+#   ./candor show report.json <fn>                  # query a report (also: where|callers|map|diff)
+#   ./candor where report.json Net --json           # machine-readable, for an agent
+#   CANDOR_BASELINE=base.json ./candor <classes>    # regression guard (AS-EFF-005)
+#   CANDOR_DEPS=dep.json     ./candor <classes>     # cross-jar inheritance
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LAUNCHER="$ROOT/build/install/candor-java/bin/candor-java"
+GRADLE="$ROOT/gradlew"; [ -x "$GRADLE" ] || GRADLE="gradle"
+# Build on first use, or whenever the engine source is newer than the installed launcher (self-healing).
+if [ ! -x "$LAUNCHER" ] || [ "$ROOT/src/main/java/candor/Candor.java" -nt "$LAUNCHER" ] \
+   || [ "$ROOT/src/main/java/candor/Query.java" -nt "$LAUNCHER" ]; then
+  echo "candor: building…" >&2
+  ( cd "$ROOT" && "$GRADLE" -q installDist ) >&2
+fi
+exec "$LAUNCHER" "$@"

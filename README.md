@@ -97,6 +97,10 @@ gradle run --args="map     report.json"                 # class → effects over
 gradle run --args="diff    report.json <baseline.json>" # per-function effect delta (+gained / -lost)
 ```
 
+Add `--json` to any query for machine-readable output — the form an AI agent / MCP server consumes
+(`show`→`[{fn,inferred,direct,fs,unresolved}]`, `where`→`{effect,directly,inherited}`,
+`callers`→`{callee:[callers]}`, `map`→`{class:{effects,functions}}`, `diff`→`[{fn,gained,lost,status}]`).
+
 ## Modes
 
 | Mode | How | Output |

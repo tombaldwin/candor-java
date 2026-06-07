@@ -54,6 +54,8 @@ want "show: Fs(read,write) on both"           "$("$CJ" show "$W/r.json" both)"  
 want "where Fs: direct source reads"          "$("$CJ" where "$W/r.json" Fs)"      'Fx.reads'
 want "callers: who calls reads (from calls)"  "$("$CJ" callers "$W/r.json" reads)" 'Fx.both'
 want "map: class overview"                     "$("$CJ" map "$W/r.json")"           'candor map'
+want "queries emit --json (agent/MCP form)"    "$("$CJ" show "$W/r.json" both --json)" '"inferred"'
+want "where --json: structured result"         "$("$CJ" where "$W/r.json" Fs --json)"  '"directly"'
 
 echo "== baseline guard (AS-EFF-005) =="
 # a baseline where reads had no Fs → guard must flag the gain

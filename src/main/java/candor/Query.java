@@ -1,6 +1,7 @@
 package candor;
 
 import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonParser;
@@ -14,12 +15,14 @@ import java.util.stream.Collectors;
 /**
  * Read-only queries over a candor report (candor-spec §2): show / where / callers / map / diff.
  * The analyzer ({@link Candor}) writes the report; these answer questions about it WITHOUT
- * re-analysis — the sibling of the Rust impl's {@code candor-query}. They read the report's own
- * fields: {@code inferred}/{@code direct} for show/where/map/diff, and the {@code calls} effect graph
- * for callers. Accepts the v0.2 {@code { candor, functions }} envelope and the legacy v0.1 array.
+ * re-analysis — the sibling of the Rust impl's {@code candor-query}. Each takes an optional
+ * {@code --json} flag for machine-readable output (the form an agent / MCP server consumes); the
+ * default is the human view. Accepts the v0.2 {@code { candor, functions }} envelope and the legacy
+ * v0.1 bare array.
  */
 public final class Query {
     static final Set<String> COMMANDS = Set.of("show", "where", "callers", "map", "diff");
+    static final Gson JSON = new GsonBuilder().setPrettyPrinting().create();
 
     /** One report entry (only the fields the queries read; gson ignores the rest). */
     static final class Fn {
@@ -51,24 +54,30 @@ public final class Query {
 
     static int run(String[] args) {
         String cmd = args[0];
-        if (args.length < 2) {
-            System.err.println("usage: candor " + cmd + " <report.json> [arg]");
+        boolean json = false;
+        List<String> pos = new ArrayList<>();
+        for (int i = 1; i < args.length; i++) {
+            if (args[i].equals("--json")) json = true;
+            else pos.add(args[i]);
+        }
+        if (pos.isEmpty()) {
+            System.err.println("usage: candor " + cmd + " <report.json> [arg] [--json]");
             return 2;
         }
         List<Fn> fns;
         try {
-            fns = load(args[1]);
+            fns = load(pos.get(0));
         } catch (Exception e) {
-            System.err.println("candor: cannot read report " + args[1]);
+            System.err.println("candor: cannot read report " + pos.get(0));
             return 2;
         }
-        String arg = args.length > 2 ? args[2] : null;
+        String arg = pos.size() > 1 ? pos.get(1) : null;
         return switch (cmd) {
-            case "show" -> show(fns, arg);
-            case "where" -> where(fns, arg);
-            case "callers" -> callers(fns, arg);
-            case "map" -> map(fns);
-            case "diff" -> diff(fns, arg);
+            case "show" -> show(fns, arg, json);
+            case "where" -> where(fns, arg, json);
+            case "callers" -> callers(fns, arg, json);
+            case "map" -> map(fns, json);
+            case "diff" -> diff(fns, arg, json);
             default -> 2;
         };
     }
@@ -78,10 +87,34 @@ public final class Query {
         return 2;
     }
 
+    static List<String> sorted(List<String> l) {
+        List<String> x = new ArrayList<>(l);
+        Collections.sort(x);
+        return x;
+    }
+
+    static void emit(Object o) {
+        System.out.println(JSON.toJson(o));
+    }
+
     /** A function's effects, instant — `*` marks an effect performed in its own body. */
-    static int show(List<Fn> fns, String q) {
-        if (q == null) return usage("show <report.json> <function-substring>");
+    static int show(List<Fn> fns, String q, boolean json) {
+        if (q == null) return usage("show <report.json> <function-substring> [--json]");
         List<Fn> hits = fns.stream().filter(f -> f.fn.contains(q)).collect(Collectors.toList());
+        if (json) {
+            List<Map<String, Object>> out = new ArrayList<>();
+            for (Fn f : hits) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("fn", f.fn);
+                m.put("inferred", sorted(f.inferred));
+                m.put("direct", sorted(f.direct));
+                if (!f.fs.isEmpty()) m.put("fs", f.fs);
+                m.put("unresolved", f.unresolved);
+                out.add(m);
+            }
+            emit(out);
+            return 0;
+        }
         if (hits.isEmpty()) {
             System.out.println("candor: no effectful function matching `" + q + "` (pure functions are omitted).");
             return 0;
@@ -89,10 +122,9 @@ public final class Query {
         int w = hits.stream().mapToInt(f -> f.fn.length()).max().orElse(0);
         for (Fn f : hits) {
             Set<String> direct = new HashSet<>(f.direct);
-            String parts = f.inferred.stream().sorted()
+            String parts = sorted(f.inferred).stream()
                     .map(x -> {
                         String star = direct.contains(x) ? "*" : "";
-                        // Refine Fs with its read/write detail when known: `Fs*(write)`.
                         if (x.equals("Fs") && !f.fs.isEmpty()) return "Fs" + star + "(" + String.join(",", f.fs) + ")";
                         return x + star;
                     })
@@ -105,11 +137,19 @@ public final class Query {
     }
 
     /** Which functions perform an effect — direct sources split from inheritors. */
-    static int where(List<Fn> fns, String eff) {
-        if (eff == null) return usage("where <report.json> <Effect>");
+    static int where(List<Fn> fns, String eff, boolean json) {
+        if (eff == null) return usage("where <report.json> <Effect> [--json]");
         List<String> direct = fns.stream().filter(f -> f.direct.contains(eff)).map(f -> f.fn).sorted().toList();
         List<String> inherit = fns.stream()
                 .filter(f -> f.inferred.contains(eff) && !f.direct.contains(eff)).map(f -> f.fn).sorted().toList();
+        if (json) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("effect", eff);
+            m.put("directly", direct);
+            m.put("inherited", inherit);
+            emit(m);
+            return 0;
+        }
         if (direct.isEmpty() && inherit.isEmpty()) {
             System.out.println("candor: no function performs " + eff + " in the report.");
             return 0;
@@ -127,13 +167,19 @@ public final class Query {
     }
 
     /** Who calls a function — inverts the report's `calls` effect graph (no re-analysis). */
-    static int callers(List<Fn> fns, String q) {
-        if (q == null) return usage("callers <report.json> <function-substring>");
+    static int callers(List<Fn> fns, String q, boolean json) {
+        if (q == null) return usage("callers <report.json> <function-substring> [--json]");
         TreeMap<String, TreeSet<String>> hits = new TreeMap<>(); // callee -> its callers
         for (Fn f : fns) {
             for (String callee : f.calls) {
                 if (callee.contains(q)) hits.computeIfAbsent(callee, k -> new TreeSet<>()).add(f.fn);
             }
+        }
+        if (json) {
+            Map<String, List<String>> out = new LinkedHashMap<>();
+            hits.forEach((k, v) -> out.put(k, new ArrayList<>(v)));
+            emit(out);
+            return 0;
         }
         if (hits.isEmpty()) {
             System.out.println("candor: nothing matching `" + q
@@ -148,7 +194,7 @@ public final class Query {
     }
 
     /** A class -> effects overview of the whole report, most-effectful first. */
-    static int map(List<Fn> fns) {
+    static int map(List<Fn> fns, boolean json) {
         Map<String, TreeSet<String>> mods = new HashMap<>();
         Map<String, Integer> counts = new HashMap<>();
         for (Fn f : fns) {
@@ -157,6 +203,17 @@ public final class Query {
             mods.computeIfAbsent(mod, k -> new TreeSet<>())
                     .addAll(f.inferred.stream().filter(x -> !x.equals("Unknown")).toList());
             counts.merge(mod, 1, Integer::sum);
+        }
+        if (json) {
+            Map<String, Object> out = new TreeMap<>();
+            for (var m : mods.keySet()) {
+                Map<String, Object> v = new LinkedHashMap<>();
+                v.put("effects", new ArrayList<>(mods.get(m)));
+                v.put("functions", counts.get(m));
+                out.put(m, v);
+            }
+            emit(out);
+            return 0;
         }
         if (mods.isEmpty()) {
             System.out.println("candor: no effectful functions in the report.");
@@ -176,8 +233,8 @@ public final class Query {
     }
 
     /** Per-function effect delta vs a baseline report (+gained / -lost). */
-    static int diff(List<Fn> cur, String basePath) {
-        if (basePath == null) return usage("diff <report.json> <baseline.json>");
+    static int diff(List<Fn> cur, String basePath, boolean json) {
+        if (basePath == null) return usage("diff <report.json> <baseline.json> [--json]");
         List<Fn> base;
         try {
             base = load(basePath);
@@ -190,21 +247,40 @@ public final class Query {
         TreeSet<String> all = new TreeSet<>();
         all.addAll(b.keySet());
         all.addAll(c.keySet());
-        boolean any = false;
+        List<Map<String, Object>> changes = new ArrayList<>();
         for (String fn : all) {
             Set<String> bi = b.getOrDefault(fn, Set.of());
             Set<String> ci = c.getOrDefault(fn, Set.of());
             List<String> gained = ci.stream().filter(x -> !bi.contains(x)).sorted().toList();
             List<String> lost = bi.stream().filter(x -> !ci.contains(x)).sorted().toList();
             if (gained.isEmpty() && lost.isEmpty()) continue;
-            any = true;
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("fn", fn);
+            m.put("gained", gained);
+            m.put("lost", lost);
+            m.put("status", !c.containsKey(fn) ? "removed" : (!b.containsKey(fn) ? "new" : "changed"));
+            changes.add(m);
+        }
+        if (json) {
+            emit(changes);
+            return 0;
+        }
+        if (changes.isEmpty()) {
+            System.out.println("candor: no effect changes vs " + basePath + ".");
+            return 0;
+        }
+        for (Map<String, Object> m : changes) {
+            @SuppressWarnings("unchecked")
+            List<String> gained = (List<String>) m.get("gained");
+            @SuppressWarnings("unchecked")
+            List<String> lost = (List<String>) m.get("lost");
             List<String> parts = new ArrayList<>();
             gained.forEach(x -> parts.add("+" + x));
             lost.forEach(x -> parts.add("-" + x));
-            String tag = !c.containsKey(fn) ? "  (removed fn)" : (!b.containsKey(fn) ? "  (new fn)" : "");
-            System.out.println("  " + fn + tag + "   { " + String.join(" ", parts) + " }");
+            String st = (String) m.get("status");
+            String tag = st.equals("removed") ? "  (removed fn)" : (st.equals("new") ? "  (new fn)" : "");
+            System.out.println("  " + m.get("fn") + tag + "   { " + String.join(" ", parts) + " }");
         }
-        if (!any) System.out.println("candor: no effect changes vs " + basePath + ".");
         return 0;
     }
 

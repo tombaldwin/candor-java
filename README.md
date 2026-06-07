@@ -59,7 +59,13 @@ CANDOR_DEPS="/path/to/dep-report.json:/path/to/more" \
   pure rather than `Unknown` — otherwise every `list.add()` floods the report (the calibration the
   Rust impl learned). Known-effectful libraries are caught by the classifier; the rest is a
   documented residual gap.
-- lambdas/callbacks via functional interfaces, and constructors (`<init>`/`<clinit>`).
+- user-defined **constructors** (`<init>`) and **static initializers** (`<clinit>`): a *call* into an
+  effectful JDK type (`new FileInputStream`) is caught (owner-based), but a user class whose own
+  constructor/`<clinit>` body performs I/O isn't yet attributed to `new X()` / class-init sites.
+
+**Lambdas & method references** *are* handled: the functional-interface factory's impl method (a
+project `lambda$…` synthetic or a referenced method) is edged from the enclosing method, so an
+effectful lambda or `Foo::bar` propagates its effects rather than looking pure.
 
 The deepest JVM ceiling is what even declarations + CHA don't capture: **custom** AOP aspects
 (`@Aspect`/`@Around`) and beans wired by reflection (`getBean`). The heavyweight route to those is

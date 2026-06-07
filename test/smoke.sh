@@ -84,6 +84,18 @@ PY
 stale="$(CANDOR_DEPS="$W/stale.json" "$CJ" "$W/acls" --json "$W/a2.json" 2>/dev/null; cat "$W/a2.json")"
 want "stale-engine dep -> inherited Unknown"  "$(python3 -c "import json;print(next(e['inferred'] for e in json.load(open('$W/a2.json'))['functions'] if e['fn']=='App.run'))")" 'Unknown'
 
+echo "== lambdas / method refs =="
+cat > "$W/src/Lam.java" <<'J'
+import java.nio.file.*;
+public class Lam {
+  static void run() { Runnable r = () -> { try { Files.writeString(Path.of("/tmp/x"),"y"); } catch (Exception e) {} }; r.run(); }
+}
+J
+javac -d "$W/lcls" "$W/src/Lam.java"
+"$CJ" "$W/lcls" --json "$W/l.json" >/dev/null 2>&1
+want "lambda body effect reaches the enclosing fn" "$(cat "$W/l.json")"            '"Lam.run"'
+want "enclosing inherits the lambda's Fs(write)"   "$("$CJ" show "$W/l.json" Lam.run)" 'Fs(write)'
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -8,6 +8,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.reflect.TypeToken;
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.Handle;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.*;
 
@@ -416,6 +417,14 @@ public class Candor {
                     if (effect == null && !springTyped && !projectClasses.contains(min.owner)) {
                         List<String> inh = crossDeps.get(min.owner + "." + min.name + min.desc);
                         if (inh != null) viaCross.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh);
+                    }
+                } else if (insn instanceof InvokeDynamicInsnNode idin) {
+                    // Lambdas & method refs: the functional-interface factory's impl method (a project
+                    // `lambda$…` synthetic, or a referenced method) carries the body's effects. Edge to
+                    // it so they propagate here — else passing an effectful lambda looks pure.
+                    for (Object a : idin.bsmArgs) {
+                        if (a instanceof Handle h && projectClasses.contains(h.getOwner()))
+                            edges.get(id).add(h.getOwner().replace('/', '.') + "." + h.getName());
                     }
                 }
             }

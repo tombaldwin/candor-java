@@ -9,7 +9,10 @@ implementation, [candor](https://github.com/tombaldwin/candor).
 
 **Works:** audit mode — resolves each call, classifies it against the effect table (matching the I/O
 boundary, not the package), and propagates transitively to a fixpoint over the call graph. Emits the
-candor JSON report.
+**v0.2 self-describing report** — a `{ candor, functions }` envelope whose header carries the engine
+build id (the git short hash, baked into the jar at build time so it reflects the *binary that ran*)
+and toolchain (candor-spec §2/§2.1). Readers still accept the legacy v0.1 bare array (the baseline
+guard loads both).
 
 **Spring-aware.** Spring hides effects in framework-woven/generated code (`@Transactional`'s
 transaction lives in a runtime proxy; Spring Data repository impls are synthesized at runtime) and

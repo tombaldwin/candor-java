@@ -2,6 +2,9 @@ package candor;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
 import com.google.gson.reflect.TypeToken;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Opcodes;
@@ -240,7 +243,14 @@ public class Candor {
     static Map<String, Set<String>> loadBaseline(String path) {
         try {
             String text = Files.readString(Path.of(path));
-            List<BaseEntry> entries = new Gson().fromJson(text, new TypeToken<List<BaseEntry>>() {}.getType());
+            // Accept BOTH the v0.2 self-describing envelope `{ candor, functions:[...] }` and the legacy
+            // v0.1 bare array `[...]` — the migration contract (candor-spec §2: readers MUST accept both).
+            JsonElement root = JsonParser.parseString(text);
+            JsonArray arr = root.isJsonObject()
+                    ? root.getAsJsonObject().getAsJsonArray("functions")
+                    : (root.isJsonArray() ? root.getAsJsonArray() : null);
+            if (arr == null) return null;
+            List<BaseEntry> entries = new Gson().fromJson(arr, new TypeToken<List<BaseEntry>>() {}.getType());
             Map<String, Set<String>> m = new HashMap<>();
             for (BaseEntry e : entries) if (e.fn != null) m.put(e.fn, new HashSet<>(e.inferred == null ? List.of() : e.inferred));
             return m;
@@ -550,8 +560,35 @@ public class Candor {
                     m.put("unresolved", inf.contains("Unknown")); // trust contract (SPEC §4)
                     entries.add(m);
                 });
-        String json = new GsonBuilder().setPrettyPrinting().create().toJson(entries);
+        // v0.2 self-describing envelope (candor-spec §2): a provenance header + the function entries.
+        // Readers still accept the legacy v0.1 bare array (see loadBaseline) during migration.
+        String[] prov = provenance();
+        Map<String, Object> header = new LinkedHashMap<>();
+        header.put("version", prov[0]);
+        header.put("toolchain", prov[1]);
+        Map<String, Object> envelope = new LinkedHashMap<>();
+        envelope.put("candor", header);
+        envelope.put("functions", entries);
+        String json = new GsonBuilder().setPrettyPrinting().create().toJson(envelope);
         Files.writeString(Path.of(out), json);
-        System.err.println("candor-java: wrote " + entries.size() + " entries to " + out);
+        System.err.println("candor-java: wrote " + entries.size() + " entries (@" + prov[0] + ") to " + out);
+    }
+
+    /** Engine provenance for the v0.2 envelope (candor-spec §2.1): the build id + toolchain baked into
+     *  a resource at build time, so the report reflects the BINARY that ran rather than the source
+     *  tree. Falls back to "unknown" / the running JDK when the resource is absent. */
+    static String[] provenance() {
+        String version = "unknown";
+        String toolchain = "jvm-" + System.getProperty("java.version", "?");
+        try (var in = Candor.class.getResourceAsStream("/candor/build-info.properties")) {
+            if (in != null) {
+                Properties p = new Properties();
+                p.load(in);
+                version = p.getProperty("version", version);
+                toolchain = p.getProperty("toolchain", toolchain);
+            }
+        } catch (IOException ignored) {
+        }
+        return new String[] {version, toolchain};
     }
 }

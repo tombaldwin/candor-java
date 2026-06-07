@@ -63,7 +63,12 @@ public class Candor {
     public static void main(String[] args) throws IOException {
         if (args.length < 1) {
             System.err.println("usage: candor <dir-or-jar-of-classes> [--json <file>]");
+            System.err.println("       candor <show|where|callers|map|diff> <report.json> [arg]");
             System.exit(2);
+        }
+        // Read-only queries over a written report (no re-analysis) — the sibling of candor-query.
+        if (Query.COMMANDS.contains(args[0])) {
+            System.exit(Query.run(args));
         }
         String jsonOut = null;
         for (int i = 1; i + 1 < args.length; i++) if (args[i].equals("--json")) jsonOut = args[i + 1];

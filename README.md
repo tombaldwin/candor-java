@@ -77,6 +77,20 @@ gradle run --args="/path/to/classes --json /tmp/report.json"
 
 It prints a per-method effect audit and writes a candor JSON report.
 
+## Queries (read-only, over a written report)
+
+Once you've written a report (`--json report.json`), answer questions about it **without
+re-analyzing** — the sibling of the Rust impl's `candor-query`. They read the report's own fields
+(`inferred`/`direct`, and the `calls` effect graph for `callers`):
+
+```sh
+gradle run --args="show    report.json <fn-substring>"  # a function's effects (* = in its own body)
+gradle run --args="where   report.json <Effect>"        # who performs an effect (direct vs inherited)
+gradle run --args="callers report.json <fn-substring>"  # who calls a function (inverts the `calls` graph)
+gradle run --args="map     report.json"                 # class → effects overview, most-effectful first
+gradle run --args="diff    report.json <baseline.json>" # per-function effect delta (+gained / -lost)
+```
+
 ## Modes
 
 | Mode | How | Output |

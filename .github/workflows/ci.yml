@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: Compile
+        run: ./gradlew --no-daemon compileJava
+
+      # Behavioural end-to-end tests: the v0.2 report, the entry schema (hash/calls/fs), the queries,
+      # the baseline guard, and cross-jar inheritance + version-trust. (build, run, assert.)
+      - name: Smoke tests
+        run: bash test/smoke.sh

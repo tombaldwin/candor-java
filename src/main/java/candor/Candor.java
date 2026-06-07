@@ -365,7 +365,10 @@ public class Candor {
         String dottedClass = cn.name.replace('/', '.');
         boolean classTx = annoPresent(cn.visibleAnnotations, TX);
         for (MethodNode mn : cn.methods) {
-            if (mn.name.startsWith("<")) continue;
+            // Analyze constructors (`<init>`) — a `new X()` already edges to `X.<init>`, so the
+            // constructor body's effects now propagate to the `new` site. Static initializers
+            // (`<clinit>`) are still skipped: they run at class-load with no caller to attribute to.
+            if (mn.name.equals("<clinit>")) continue;
             String id = dottedClass + "." + mn.name;
             var dir = direct.computeIfAbsent(id, k -> new TreeSet<>());
             edges.computeIfAbsent(id, k -> new HashSet<>());

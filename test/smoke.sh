@@ -96,6 +96,21 @@ javac -d "$W/lcls" "$W/src/Lam.java"
 want "lambda body effect reaches the enclosing fn" "$(cat "$W/l.json")"            '"Lam.run"'
 want "enclosing inherits the lambda's Fs(write)"   "$("$CJ" show "$W/l.json" Lam.run)" 'Fs(write)'
 
+echo "== constructors =="
+cat > "$W/src/Ct.java" <<'J'
+import java.nio.file.*;
+public class Ct {
+  static class L { L() { try { Files.readAllBytes(Path.of("/tmp/x")); } catch (Exception e) {} } }
+  static void build() { new L(); }
+  static class P { P() {} }
+  static void pure() { new P(); }
+}
+J
+javac -d "$W/ctcls" "$W/src/Ct.java"
+"$CJ" "$W/ctcls" --json "$W/ct.json" >/dev/null 2>&1
+want   "effectful constructor reaches its new X() site" "$("$CJ" show "$W/ct.json" Ct.build)" 'Fs'
+absent "a pure constructor stays pure"                  "$(cat "$W/ct.json")"                 '"Ct.pure"'
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

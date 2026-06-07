@@ -632,6 +632,16 @@ public class Candor {
                     m.put("entryPoint", entryPoints.contains(fn));
                     m.put("unresolved", inf.contains("Unknown")); // trust contract (SPEC §4)
                     m.put("hash", hashOf.getOrDefault(fn, "")); // cross-jar join key (SPEC §2)
+                    // Effect-relevant local call graph (SPEC §2 `calls`): the EFFECTFUL local callees,
+                    // so a consumer can answer "who calls X?" from the report without re-analysis.
+                    // Omitted when empty.
+                    List<String> calls = edges.getOrDefault(fn, Set.of()).stream()
+                            .filter(c -> {
+                                TreeSet<String> ce = inferred.get(c);
+                                return ce != null && !ce.isEmpty();
+                            })
+                            .sorted().collect(Collectors.toList());
+                    if (!calls.isEmpty()) m.put("calls", calls);
                     entries.add(m);
                 });
         // v0.2 self-describing envelope (candor-spec §2): a provenance header + the function entries.

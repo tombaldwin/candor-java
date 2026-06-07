@@ -12,7 +12,8 @@ boundary, not the package), and propagates transitively to a fixpoint over the c
 **v0.2 self-describing report** — a `{ candor, functions }` envelope whose header carries the engine
 build id (the git short hash, baked into the jar at build time so it reflects the *binary that ran*)
 and toolchain (candor-spec §2/§2.1). Readers still accept the legacy v0.1 bare array (the baseline
-guard loads both).
+guard loads both). Each entry also carries the effect-relevant **`calls`** graph — its effectful
+local callees — so a consumer can answer "who calls X?" from the report without re-analysis.
 
 **Spring-aware.** Spring hides effects in framework-woven/generated code (`@Transactional`'s
 transaction lives in a runtime proxy; Spring Data repository impls are synthesized at runtime) and

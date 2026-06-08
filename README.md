@@ -172,8 +172,9 @@ forbid domain -> infra          # the domain layer must not depend on the infras
 - **`allow <Effect> in <scope> <value…>`** (`AS-EFF-008`) — *which endpoints* an effect may reach. Today
   `Net` hosts: "billing may only talk to Stripe", checked against the **transitive** host surface (the
   literal endpoint is often in a deep callee). The supply-chain boundary a model can't self-check.
-  Certifies the *visible* host surface — a runtime-computed host is honestly invisible, not silently
-  passed; matched port-insensitively by hostname.
+  Certifies the *visible* host surface — endpoints are extracted from scheme URLs (`https://…`),
+  `host:port` literals, and IPs; a runtime-computed host (or a bare hostname indistinguishable from a
+  property/message key) is honestly invisible, not silently passed; matched port-insensitively by host.
 - **`forbid <A> -> <B>`** (`AS-EFF-009`) — *who* a layer may depend on. A method in scope A must not
   *transitively* reach a method in scope B (reverse-reachability over the call graph).
 

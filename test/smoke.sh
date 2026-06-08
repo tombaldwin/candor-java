@@ -297,6 +297,35 @@ json.dump(d,open('$W/cimp.json','w'))
 imp="$("$CJ" containment "$W/c.json" "$W/cimp.json" 2>&1)"
 want   "ratchet NOTES an improvement (Db left legacy)" "$imp" 'improved'
 
+echo "== dispatch resolution: inherited-concrete vs genuine abstraction =="
+# A concrete effectful method in a project SUPERclass, called on a SUBclass-typed receiver (so the
+# bytecode owner is the subclass, which does not itself declare the method). candor must resolve it
+# UP the hierarchy — propagating the real effect — instead of mislabelling it Unknown. A genuine
+# project interface with no impl must STILL be Unknown (honest opacity, SPEC §4).
+mkdir -p "$W/isrc"
+cat > "$W/isrc/Inh.java" <<'J'
+public class Inh {
+  interface Strategy { void apply(); }                  // project iface, no impl anywhere
+  static abstract class Base {
+    void touch() { try { java.nio.file.Files.readAllBytes(java.nio.file.Path.of("/tmp/x")); } catch (Exception e) {} }
+  }
+  static class Sub extends Base {}                       // inherits touch, does NOT override
+  static void caller(Sub s) { s.touch(); }               // owner=Sub, touch inherited from Base -> Fs
+  static void strat(Strategy s) { s.apply(); }           // unresolved project iface -> Unknown
+  public static void main(String[] a) { caller(new Sub()); strat(null); }
+}
+J
+javac -d "$W/icls" "$W/isrc/Inh.java"
+"$CJ" "$W/icls" --json "$W/r2.json" >/dev/null 2>&1
+rep2="$(cat "$W/r2.json")"
+want   "inherited-concrete dispatch resolves to the superclass effect" \
+       "$("$CJ" show "$W/r2.json" caller 2>/dev/null)" 'Fs'
+absent "inherited-concrete call is NOT mislabelled Unknown" \
+       "$("$CJ" show "$W/r2.json" caller 2>/dev/null)" 'Unknown'
+want   "genuine project-iface dispatch stays Unknown"  "$("$CJ" show "$W/r2.json" strat 2>/dev/null)" 'Unknown'
+want   "Unknown carries a why-tag"                     "$rep2" '"unknownWhy"'
+want   "why-tag names the unresolved iface method"     "$rep2" 'dispatch:Inh$Strategy.apply'
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

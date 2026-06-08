@@ -21,8 +21,15 @@ import java.util.stream.Collectors;
  * v0.1 bare array.
  */
 public final class Query {
-    static final Set<String> COMMANDS = Set.of("show", "where", "callers", "map", "diff");
+    static final Set<String> COMMANDS = Set.of("show", "where", "callers", "map", "diff", "containment");
     static final Gson JSON = new GsonBuilder().setPrettyPrinting().create();
+
+    // Boundary effects SHOULD live in a dedicated layer — their dispersion is the architecture signal
+    // (NOT raw counts, which are domain-dependent). Ambient effects are expected to be cross-cutting
+    // (logging/timestamps everywhere is fine), so they're reported but not scored. Unknown is excluded
+    // (it's a visibility metric, not an effect).
+    static final List<String> CONTAINED = List.of("Db", "Net", "Exec", "Fs", "Ipc");
+    static final List<String> AMBIENT = List.of("Log", "Clock", "Rand", "Env");
 
     /** One report entry (only the fields the queries read; gson ignores the rest). */
     static final class Fn {
@@ -78,6 +85,7 @@ public final class Query {
             case "callers" -> callers(fns, arg, json);
             case "map" -> map(fns, json);
             case "diff" -> diff(fns, arg, json);
+            case "containment" -> containment(fns, arg, json);
             default -> 2;
         };
     }
@@ -281,6 +289,143 @@ public final class Query {
             String tag = st.equals("removed") ? "  (removed fn)" : (st.equals("new") ? "  (new fn)" : "");
             System.out.println("  " + m.get("fn") + tag + "   { " + String.join(" ", parts) + " }");
         }
+        return 0;
+    }
+
+    /** The longest dotted-segment prefix shared by EVERY function name — the codebase root, so the next
+     *  segment is the architectural "layer" (`com.uflexi.nems` → `model`/`dao`/`actions`). Adapts to any
+     *  package root without configuration. */
+    static String[] commonPrefix(List<Fn> fns) {
+        String[] best = null;
+        for (Fn f : fns) {
+            String[] segs = f.fn.split("\\.");
+            if (best == null) { best = segs; continue; }
+            int n = Math.min(best.length, segs.length), i = 0;
+            while (i < n && best[i].equals(segs[i])) i++;
+            best = Arrays.copyOf(best, i);
+        }
+        return best == null ? new String[0] : best;
+    }
+
+    /** The layer a function belongs to: the PACKAGE segment after the common root prefix — not a
+     *  Class/method leaf. A Java name ends `…Package.Class.method`, so the segment is a package layer
+     *  only when a `Class.method` pair (2 segments) follows it; a class in the root package buckets into
+     *  `(root)` rather than becoming its own pseudo-layer. */
+    static String layerOf(String fn, int prefixLen) {
+        String[] segs = fn.split("\\.");
+        return prefixLen + 2 < segs.length ? segs[prefixLen] : "(root)";
+    }
+
+    /** containment — how well each BOUNDARY effect (Db/Net/Exec/Fs/Ipc) stays in one layer, the
+     *  domain-INDEPENDENT architecture signal the "leaky cross-cutting" intuition points at (a ratio /
+     *  structure, not a count). With a baseline argument it's a RATCHET: fail (exit 1) if a contained
+     *  effect appears in a layer it wasn't in before — "DB must not leak into a new module". Ambient
+     *  effects (Log/Clock/…) are reported but not scored (cross-cutting is expected). This is a
+     *  diagnostic + ratchet, deliberately NOT a single gameable "score". */
+    static int containment(List<Fn> fns, String basePath, boolean json) {
+        String[] prefix = commonPrefix(fns);
+        int pl = prefix.length;
+        // effect -> (layer -> count of methods performing it DIRECTLY)
+        Map<String, TreeMap<String, Integer>> byEff = new LinkedHashMap<>();
+        for (Fn f : fns)
+            for (String eff : f.direct)
+                byEff.computeIfAbsent(eff, k -> new TreeMap<>()).merge(layerOf(f.fn, pl), 1, Integer::sum);
+
+        // RATCHET mode: a baseline report was given — flag any NEW (contained-effect, layer) pair.
+        if (basePath != null) {
+            List<Fn> base;
+            try { base = load(basePath); } catch (Exception e) {
+                System.out.println("candor: cannot read baseline " + basePath); return 2;
+            }
+            int bpl = commonPrefix(base).length;
+            Map<String, Set<String>> baseLayers = new HashMap<>();
+            for (Fn f : base)
+                for (String eff : f.direct)
+                    baseLayers.computeIfAbsent(eff, k -> new HashSet<>()).add(layerOf(f.fn, bpl));
+            List<String> leaks = new ArrayList<>();    // regression: a contained effect entered a NEW layer
+            List<String> cleanups = new ArrayList<>(); // improvement: a contained effect LEFT a layer
+            for (String eff : CONTAINED) {
+                Set<String> now = byEff.containsKey(eff) ? byEff.get(eff).keySet() : Set.of();
+                Set<String> was = baseLayers.getOrDefault(eff, Set.of());
+                for (String layer : now) if (!was.contains(layer)) leaks.add(eff + " → " + layer);
+                for (String layer : was) if (!now.contains(layer)) cleanups.add(eff + " ⊘ " + layer);
+            }
+            Collections.sort(leaks);
+            Collections.sort(cleanups);
+            if (json) {
+                emit(Map.of("leaks", leaks, "cleanups", cleanups));
+                return leaks.isEmpty() ? 0 : 1;
+            }
+            if (!leaks.isEmpty()) {
+                System.out.println("[containment] a boundary effect leaked into a layer it wasn't in:");
+                for (String l : leaks) System.out.println("  " + l);
+            }
+            // A positive note when things got better — improvement is worth surfacing, not just failure.
+            if (!cleanups.isEmpty()) {
+                System.out.println((leaks.isEmpty() ? "" : "\n") + "✓ improved — a boundary effect left a layer:");
+                for (String c : cleanups) System.out.println("  " + c);
+            }
+            if (leaks.isEmpty() && cleanups.isEmpty())
+                System.out.println("candor containment: unchanged vs " + basePath + " (no leaks, no cleanups).");
+            else if (leaks.isEmpty())
+                System.out.println("\ncandor containment: no regressions ✓");
+            if (!leaks.isEmpty())
+                System.out.println("\nfix: keep the call in its boundary layer, or refresh the baseline if intended.");
+            return leaks.isEmpty() ? 0 : 1;
+        }
+
+        // REPORT mode: the containment diagnostic.
+        if (json) {
+            List<Map<String, Object>> contained = new ArrayList<>();
+            for (String eff : CONTAINED) {
+                TreeMap<String, Integer> layers = byEff.get(eff);
+                if (layers == null) continue;
+                int tot = layers.values().stream().mapToInt(i -> i).sum();
+                var owner = Collections.max(layers.entrySet(), Map.Entry.comparingByValue());
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("effect", eff);
+                m.put("containmentPct", 100 * owner.getValue() / tot);
+                m.put("layers", layers.size());
+                m.put("owner", owner.getKey());
+                m.put("placement", new TreeMap<>(layers));
+                contained.add(m);
+            }
+            Map<String, Object> ambient = new LinkedHashMap<>();
+            for (String eff : AMBIENT) if (byEff.containsKey(eff)) ambient.put(eff, byEff.get(eff).size());
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("layerPrefix", String.join(".", prefix));
+            out.put("contained", contained);
+            out.put("ambient", ambient);
+            emit(out);
+            return 0;
+        }
+        System.out.println("candor containment — how well each boundary effect stays in one layer");
+        System.out.println("(layers = the segment after the common root `" + String.join(".", prefix) + "`;"
+                + " the signal is dispersion, NOT effect count)\n");
+        System.out.printf("  %-7s %9s %7s   %s%n", "effect", "contained", "layers", "owner  ← leaked into");
+        boolean any = false;
+        for (String eff : CONTAINED) {
+            TreeMap<String, Integer> layers = byEff.get(eff);
+            if (layers == null) continue;
+            any = true;
+            int tot = layers.values().stream().mapToInt(i -> i).sum();
+            var owner = Collections.max(layers.entrySet(), Map.Entry.comparingByValue());
+            String leaks = layers.entrySet().stream()
+                    .filter(e2 -> !e2.getKey().equals(owner.getKey()))
+                    .sorted((a, b) -> b.getValue() - a.getValue())
+                    .map(e2 -> e2.getKey() + ":" + e2.getValue())
+                    .collect(Collectors.joining(", "));
+            System.out.printf("  %-7s %8d%% %7d   %s%n", eff, 100 * owner.getValue() / tot, layers.size(),
+                    owner.getKey() + " (" + owner.getValue() + ")" + (leaks.isEmpty() ? "" : "  ← " + leaks));
+        }
+        if (!any) System.out.println("  (no boundary effects in the report)");
+        String amb = AMBIENT.stream().filter(byEff::containsKey)
+                .map(e -> e + " " + byEff.get(e).size() + "L").collect(Collectors.joining(", "));
+        if (!amb.isEmpty())
+            System.out.println("\n  ambient (cross-cutting expected, not scored): " + amb);
+        System.out.println("\n  containment% = share of an effect's direct uses in its dominant layer; "
+                + "100% = fully contained.\n  ratchet a baseline: candor containment <report> <baseline.json> "
+                + "(exit 1 if an effect leaks into a new layer).");
         return 0;
     }
 

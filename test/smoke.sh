@@ -229,6 +229,45 @@ want   "the real URL host is extracted"                     "$mix" 'real.example
 absent "a dotted property key is NOT a host"                "$mix" 'os.name'
 absent "a message key is NOT a host"                         "$mix" 'terms.agency'
 
+echo "== containment (effect-leakage diagnostic + ratchet) =="
+mkdir -p "$W/csrc/dao" "$W/csrc/model"
+cat > "$W/csrc/dao/Repo.java" <<'J'
+package dao;
+public class Repo { public void load() throws Exception { java.sql.DriverManager.getConnection("x"); } }
+J
+cat > "$W/csrc/model/Order.java" <<'J'
+package model;
+public class Order { public void save() throws Exception { java.sql.DriverManager.getConnection("y"); } }
+J
+javac -d "$W/ccls" $(find "$W/csrc" -name '*.java') 2>/dev/null
+"$CJ" "$W/ccls" --json "$W/c.json" >/dev/null 2>&1
+cont="$("$CJ" containment "$W/c.json" 2>&1)"
+want   "containment reports Db across 2 layers"   "$cont" 'Db'
+want   "containment names the leaked-into layer"  "$cont" 'model:1'
+# ratchet: a baseline where Db lived only in dao → current (dao+model) is a regression
+python3 -c "
+import json
+d=json.load(open('$W/c.json'))
+d['functions']=[e for e in d['functions'] if e['fn'].split('.')[0]!='model']
+json.dump(d,open('$W/cbase.json','w'))
+"
+reg="$("$CJ" containment "$W/c.json" "$W/cbase.json" 2>&1)"; rc=$?
+want   "ratchet FLAGS a new leak (Db -> model)"   "$reg" 'Db → model'
+[ "$rc" = "1" ] && echo "  ok   ratchet exits 1 on regression" && pass=$((pass+1)) || { echo "  FAIL ratchet exit on regression ($rc)"; fail=$((fail+1)); }
+# ratchet vs itself → no regression, exit 0
+unchg="$("$CJ" containment "$W/c.json" "$W/c.json" 2>&1)"; rc=$?
+want   "ratchet vs itself: unchanged"             "$unchg" 'unchanged'
+[ "$rc" = "0" ] && echo "  ok   ratchet exits 0 when clean" && pass=$((pass+1)) || { echo "  FAIL ratchet clean exit ($rc)"; fail=$((fail+1)); }
+# improvement: a baseline with an extra Db layer that's since gone → positive note
+python3 -c "
+import json
+d=json.load(open('$W/c.json'))
+d['functions'].append({'fn':'legacy.Old.q','direct':['Db'],'inferred':['Db']})
+json.dump(d,open('$W/cimp.json','w'))
+"
+imp="$("$CJ" containment "$W/c.json" "$W/cimp.json" 2>&1)"
+want   "ratchet NOTES an improvement (Db left legacy)" "$imp" 'improved'
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

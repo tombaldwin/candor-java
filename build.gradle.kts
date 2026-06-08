@@ -7,7 +7,7 @@ plugins {
 // see candor-spec §2.1) and the git-hash engine build id baked below. Bumped on each
 // published artifact; the spec field tracks interface compatibility independently.
 version = "0.3.0"
-group = "uk.co.polymorphism.candor"
+group = "io.poly.candor"
 
 repositories { mavenCentral() }
 dependencies {

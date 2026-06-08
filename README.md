@@ -34,6 +34,8 @@ On `spring-sample/`, `register()` (a `@Transactional` method calling a Spring Da
 (`unresolved: true`), never silent-pure:
 - **Reflection / dynamic invocation** (`Method.invoke`, `Constructor.newInstance`,
   `Class.forName`/`newInstance`, `MethodHandle.invoke`, `Proxy.newProxyInstance`) → `Unknown`.
+- **`native` methods** — a JNI body candor can't see could perform any effect, so it's `Unknown`
+  (and its callers inherit it), never the no-op an empty bytecode body would otherwise look like.
 - **Class Hierarchy Analysis** resolves interface/virtual dispatch over project types to their
   implementations, so effects propagate *through* dispatch (a call on a `Greeter` interface inherits
   the union of its impls' effects). Dispatch over a **project interface/abstract with no visible
@@ -65,15 +67,17 @@ have a dependency's *report*, not its bytecode.
   pure rather than `Unknown` — otherwise every `list.add()` floods the report (the calibration the
   Rust impl learned). Known-effectful libraries are caught by the classifier; the rest is a
   documented residual gap.
-- **static initializers** (`<clinit>`): a class whose `<clinit>` body performs I/O isn't yet attributed
-  to its first-use sites. (Constructors `<init>` *are* analyzed — an effectful constructor propagates
-  to every `new X()`.)
+- a **cross-jar** `<clinit>` (a static initializer in a *dependency*, reached only through the report)
+  isn't attributed — the local trigger-edges below need the dependency's bytecode on the classpath.
 
-**Constructors & lambdas/method references** *are* handled: an effectful constructor body propagates to
-its `new X()` sites, and a lambda/method-ref's impl method (a project `lambda$…` synthetic or referenced
-method) is edged from the enclosing method, so the functional-interface factory's impl method (a
-project `lambda$…` synthetic or a referenced method) is edged from the enclosing method, so an
-effectful lambda or `Foo::bar` propagates its effects rather than looking pure.
+**Constructors, static initializers & lambdas/method references** *are* handled — an effectful one
+propagates to its use site instead of looking pure:
+- a **constructor** (`<init>`) body's effects reach every `new X()` site;
+- a **static initializer** (`<clinit>`) body's effects reach every site that triggers the class-load —
+  a `new C`, a static method call, or a static field access on `C` (the JVM runs `<clinit>` once, on
+  first use; candor edges to it from each trigger, over-approximating soundly);
+- a **lambda / method reference**'s impl method (a project `lambda$…` synthetic or a referenced method)
+  is edged from the enclosing method, so an effectful `() -> …` or `Foo::bar` propagates its effects.
 
 The deepest JVM ceiling is what even declarations + CHA don't capture: **custom** AOP aspects
 (`@Aspect`/`@Around`) and beans wired by reflection (`getBean`). The heavyweight route to those is

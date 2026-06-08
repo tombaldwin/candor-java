@@ -28,10 +28,13 @@ import java.util.stream.*;
  * tracing misses all of it. So we read Spring's DECLARATIONS — annotations and template/repository
  * types — as effect sources. The framework's magic becomes the signal.
  *
- * TRUST CONTRACT (SPEC §4): reflection / dynamic invocation is reported as `Unknown`, never assumed
- * pure. NOT YET (deferred honestly — PRINCIPLES #7): `Unknown` for the broader unresolvable-dispatch
- * cases (interface dispatch to an unknown impl, lambdas/callbacks, custom AOP) needs CHA to first
- * resolve what it *can* — otherwise it floods; that's the next rung. Also: conformance mode.
+ * TRUST CONTRACT (SPEC §4): what candor can't see is reported as `Unknown`, never assumed pure —
+ * reflection / dynamic invocation, a `native` (JNI) body, and dispatch over a project interface/abstract
+ * with no visible impl. CHA resolves interface/virtual dispatch over project types; constructors,
+ * static initializers (`<clinit>`, via class-load trigger edges), and lambdas/method-refs all propagate
+ * their effects. Conformance (CANDOR_STRICT) treats a bean's injected dependencies as its capabilities.
+ * Residual gap (PRINCIPLES #7): dispatch over unrecognised non-project types is assumed pure (else
+ * every `list.add()` floods) — known-effectful libraries are caught by the classifier.
  */
 public class Candor {
     static final Map<String, TreeSet<String>> direct = new HashMap<>();
@@ -49,6 +52,7 @@ public class Candor {
     static List<ClassNode> ALL = List.of();                  // all loaded classes (for CHA)
     static final Map<String, ClassNode> byName = new HashMap<>();      // internal name -> node
     static final Map<String, Set<String>> transSupersCache = new HashMap<>();
+    static final Set<String> classesWithClinit = new HashSet<>(); // project classes with a `<clinit>`
 
     // --- Spring markers (internal names / annotation-desc substrings) ---
     static final Set<String> REPO_MARKERS = Set.of(
@@ -78,7 +82,11 @@ public class Candor {
 
         List<ClassNode> classes = load(Path.of(args[0]));
         ALL = classes;
-        for (ClassNode cn : classes) { projectClasses.add(cn.name); byName.put(cn.name, cn); }
+        for (ClassNode cn : classes) {
+            projectClasses.add(cn.name);
+            byName.put(cn.name, cn);
+            for (MethodNode mn : cn.methods) if (mn.name.equals("<clinit>")) classesWithClinit.add(cn.name);
+        }
         computeSpringTypes(classes);
         // Cross-jar inheritance (candor-spec §2): load dependency reports named by CANDOR_DEPS BEFORE
         // analyze, so a call into an already-analyzed dependency inherits its effects (vs assumed-pure).
@@ -365,10 +373,10 @@ public class Candor {
         String dottedClass = cn.name.replace('/', '.');
         boolean classTx = annoPresent(cn.visibleAnnotations, TX);
         for (MethodNode mn : cn.methods) {
-            // Analyze constructors (`<init>`) — a `new X()` already edges to `X.<init>`, so the
-            // constructor body's effects now propagate to the `new` site. Static initializers
-            // (`<clinit>`) are still skipped: they run at class-load with no caller to attribute to.
-            if (mn.name.equals("<clinit>")) continue;
+            // Constructors (`<init>`) AND static initializers (`<clinit>`) are both analyzed: a `new X()`
+            // edges to `X.<init>`, and a class-load trigger (`new`, a static call, a static field access)
+            // edges to `X.<clinit>` (see below), so an effectful constructor OR static initializer
+            // propagates to its use site instead of being silently pure.
             String id = dottedClass + "." + mn.name;
             var dir = direct.computeIfAbsent(id, k -> new TreeSet<>());
             edges.computeIfAbsent(id, k -> new HashSet<>());
@@ -376,6 +384,11 @@ public class Candor {
             // Stable, descriptor-bearing cross-jar identity (candor-spec §2 `hash`): the exact ref a
             // call site in a dependent jar uses, so that jar can inherit this method's effects.
             hashOf.putIfAbsent(id, cn.name + "." + mn.name + mn.desc);
+
+            // A `native` method has no bytecode body — its JNI implementation could perform ANY effect,
+            // exactly the opacity reflection has. Honest `Unknown`, never silent-pure (SPEC §4); else a
+            // call into a project-declared native binding would look like a no-op.
+            if ((mn.access & Opcodes.ACC_NATIVE) != 0) dir.add("Unknown");
 
             // Spring annotations on this method (the effect Spring's proxy/generated code performs).
             if (classTx || annoPresent(mn.visibleAnnotations, TX)) dir.add("Db");
@@ -399,6 +412,8 @@ public class Candor {
                     if (feignTypes.contains(min.owner)) dir.add("Net");
 
                     int op = min.getOpcode();
+                    // A static call triggers the owner's class-load → its `<clinit>` runs.
+                    if (op == Opcodes.INVOKESTATIC) clinitEdge(id, min.owner);
                     if (op == Opcodes.INVOKEVIRTUAL || op == Opcodes.INVOKEINTERFACE) {
                         // Class Hierarchy Analysis: dispatch could reach any project subtype's
                         // override — add edges to all of them so their effects propagate.
@@ -421,6 +436,14 @@ public class Candor {
                         List<String> inh = crossDeps.get(min.owner + "." + min.name + min.desc);
                         if (inh != null) viaCross.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh);
                     }
+                } else if (insn instanceof TypeInsnNode tin && tin.getOpcode() == Opcodes.NEW) {
+                    // `new C` triggers C's class-load → its `<clinit>` runs (the `<init>` edge is added
+                    // separately by the INVOKESPECIAL above).
+                    clinitEdge(id, tin.desc);
+                } else if (insn instanceof FieldInsnNode fin
+                        && (fin.getOpcode() == Opcodes.GETSTATIC || fin.getOpcode() == Opcodes.PUTSTATIC)) {
+                    // A static field access triggers the owner's class-load → its `<clinit>` runs.
+                    clinitEdge(id, fin.owner);
                 } else if (insn instanceof InvokeDynamicInsnNode idin) {
                     // Lambdas & method refs: the functional-interface factory's impl method (a project
                     // `lambda$…` synthetic, or a referenced method) carries the body's effects. Edge to
@@ -432,6 +455,17 @@ public class Candor {
                 }
             }
         }
+    }
+
+    /** A class's `<clinit>` runs once, at first class-load — triggered by a `new C`, a static method
+     *  call on C, or a static field access on C. Edge to `C.<clinit>` from each such trigger so an
+     *  effectful static initializer (`static { … }` / `static final X = readFile()`) propagates to the
+     *  use site instead of looking pure. Over-approximates — the class may already be loaded by the
+     *  time we reach this site — which is the SOUND direction (the I/O genuinely runs on first trigger).
+     *  Only project classes that actually have a `<clinit>` (so the edge isn't dangling). */
+    static void clinitEdge(String callerId, String internalOwner) {
+        if (classesWithClinit.contains(internalOwner))
+            edges.get(callerId).add(internalOwner.replace('/', '.') + ".<clinit>");
     }
 
     // entry-point annotation substrings (HTTP mappings + message listeners)

@@ -113,6 +113,44 @@ javac -d "$W/ctcls" "$W/src/Ct.java"
 want   "effectful constructor reaches its new X() site" "$("$CJ" show "$W/ct.json" Ct.build)" 'Fs'
 absent "a pure constructor stays pure"                  "$(cat "$W/ct.json")"                 '"Ct.pure"'
 
+echo "== static initializers (<clinit>) =="
+cat > "$W/src/Ci.java" <<'J'
+import java.nio.file.*;
+public class Ci {
+  static class Cfg {
+    static final byte[] DATA;
+    static { byte[] d = new byte[0]; try { d = Files.readAllBytes(Path.of("/etc/cfg")); } catch (Exception e) {} DATA = d; }
+    static int size() { return DATA.length; }
+  }
+  static void viaStaticCall()  { int n = Cfg.size(); }   // INVOKESTATIC triggers <clinit>
+  static void viaStaticField() { byte[] b = Cfg.DATA; }  // GETSTATIC triggers <clinit>
+  static class Pure { static { int x = 1; } static int f() { return 2; } }
+  static void pure() { int n = Pure.f(); }               // pure <clinit> → caller stays pure
+}
+J
+javac -d "$W/cics" "$W/src/Ci.java"
+"$CJ" "$W/cics" --json "$W/ci.json" >/dev/null 2>&1
+ci="$(cat "$W/ci.json")"
+# the audit output prints the fn name unescaped (the JSON escapes `<clinit>` as <…)
+want   "static initializer's Fs is captured"               "$("$CJ" "$W/cics" 2>/dev/null)" 'Ci$Cfg.<clinit> '
+want   "static CALL triggers <clinit> (Fs propagates)"     "$("$CJ" show "$W/ci.json" Ci.viaStaticCall)"  'Fs'
+want   "static FIELD access triggers <clinit>"             "$("$CJ" show "$W/ci.json" Ci.viaStaticField)" 'Fs'
+absent "a pure static initializer doesn't flood callers"   "$ci" '"Ci.pure"'
+
+echo "== native methods (invisible JNI body → Unknown) =="
+cat > "$W/src/Nat.java" <<'J'
+public class Nat {
+  static native void doNative();
+  static void caller() { doNative(); }
+  static int purePlain() { return 1; }
+}
+J
+javac -d "$W/ncls" "$W/src/Nat.java"
+"$CJ" "$W/ncls" --json "$W/n.json" >/dev/null 2>&1
+want   "a native method is Unknown, not silent-pure"  "$("$CJ" show "$W/n.json" Nat.doNative)" 'Unknown'
+want   "a caller of native inherits Unknown"          "$("$CJ" show "$W/n.json" Nat.caller)"   'Unknown'
+absent "a plain pure method stays pure"               "$(cat "$W/n.json")"                     '"Nat.purePlain"'
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

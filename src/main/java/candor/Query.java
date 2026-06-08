@@ -357,7 +357,7 @@ public final class Query {
                 return leaks.isEmpty() ? 0 : 1;
             }
             if (!leaks.isEmpty()) {
-                System.out.println("[containment] a boundary effect leaked into a layer it wasn't in:");
+                System.out.println("[AS-EFF-010] a boundary effect leaked into a layer it wasn't in:");
                 for (String l : leaks) System.out.println("  " + l);
             }
             // A positive note when things got better — improvement is worth surfacing, not just failure.

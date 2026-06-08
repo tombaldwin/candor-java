@@ -50,6 +50,7 @@ public class Candor {
     static final Map<String, TreeSet<String>> viaCross = new HashMap<>();// fn -> effects inherited from a dependency report
     static final Map<String, List<String>> crossDeps = new HashMap<>();  // method-ref hash -> effects (from CANDOR_DEPS)
     static final Map<String, TreeSet<String>> fsDirect = new HashMap<>();// fn -> Fs read/write kind performed directly
+    static final Map<String, TreeSet<String>> unknownWhy = new HashMap<>();// fn -> why Unknown was emitted directly (native:/reflect:/dispatch:)
     static final String FS_UNKNOWN = "?";   // Fs reached with no recorded kind (cross-jar) -> make no read/write claim
     static final Set<String> entryPoints = new HashSet<>(); // framework-invoked methods
     static final Set<String> projectClasses = new HashSet<>();
@@ -736,7 +737,10 @@ public class Candor {
             // A `native` method has no bytecode body — its JNI implementation could perform ANY effect,
             // exactly the opacity reflection has. Honest `Unknown`, never silent-pure (SPEC §4); else a
             // call into a project-declared native binding would look like a no-op.
-            if ((mn.access & Opcodes.ACC_NATIVE) != 0) dir.add("Unknown");
+            if ((mn.access & Opcodes.ACC_NATIVE) != 0) {
+                dir.add("Unknown");
+                unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add("native:" + mn.name);
+            }
 
             // Spring annotations on this method (the effect Spring's proxy/generated code performs).
             if (classTx || annoPresent(mn.visibleAnnotations, TX)) dir.add("Db");
@@ -749,6 +753,9 @@ public class Candor {
                     String owner = min.owner.replace('/', '.');
                     String effect = classify(owner, min.name);
                     if (effect != null) dir.add(effect);
+                    if ("Unknown".equals(effect)) // reflection / dynamic invoke (classify §)
+                        unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                                .add("reflect:" + owner + "." + min.name);
                     if ("Fs".equals(effect)) { // non-breaking read/write refinement of Fs
                         List<String> k = fsKind(owner, min.name);
                         if (!k.isEmpty()) fsDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(k);
@@ -787,11 +794,22 @@ public class Candor {
                         // override — add edges to all of them so their effects propagate.
                         List<String> targets = chaTargets(min.owner, min.name, min.desc);
                         edges.get(id).addAll(targets);
-                        // Genuine unresolved dispatch: a PROJECT interface/abstract type with no
-                        // visible impl (DI-wired, external, or strategy) → honest Unknown (SPEC §4).
+                        // Genuine unresolved dispatch: a PROJECT interface/abstract type that DECLARES
+                        // this method, with no visible concrete impl (DI-wired, external, or strategy)
+                        // → honest Unknown (SPEC §4). The `projectDeclaresMethod` gate is essential:
+                        // without it, a FRAMEWORK method merely INHERITED by a project abstract class
+                        // (Struts `Action.getServletContext`/`saveMessages`/`isTokenValid`, called on a
+                        // NEMsAction receiver) has no project override either, and would be mislabelled
+                        // Unknown — when it actually resolves to a superclass candor never loaded, i.e.
+                        // an ordinary external call (effect-free unless modelled, like every other lib
+                        // call). Only a method the project ITSELF declares is a real missing-impl.
                         if (targets.isEmpty() && effect == null && !springTyped
-                                && isProjectIfaceOrAbstract(min.owner))
+                                && isProjectIfaceOrAbstract(min.owner)
+                                && projectDeclaresMethod(min.owner, min.name, min.desc)) {
                             dir.add("Unknown");
+                            unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                                    .add("dispatch:" + owner + "." + min.name);
+                        }
                     } else if (projectClasses.contains(min.owner)) {
                         // static / special (super, private, ctor) — the exact target.
                         edges.get(id).add(owner + "." + min.name);
@@ -892,6 +910,17 @@ public class Candor {
                 if (declaresConcrete(c, name, desc)) out.add(c.name.replace('/', '.') + "." + name);
             }
         }
+        // Inherited concrete impl: when neither `owner` nor any subtype overrides `(name, desc)`, the
+        // dispatch resolves to a concrete method inherited from a project SUPERclass (e.g. a call to
+        // `getBean`/`fetchSystemProperties` on a NEMsAction subclass, defined once in the base). The
+        // loop above only scans owner-and-subtypes, so it misses this — losing both the resolution
+        // (→ a false Unknown) and the edge that propagates the inherited method's real effects.
+        if (out.isEmpty())
+            for (String sup : transSupers(owner)) {
+                ClassNode c = byName.get(sup);
+                if (c != null && declaresConcrete(c, name, desc))
+                    out.add(sup.replace('/', '.') + "." + name);
+            }
         return out;
     }
 
@@ -905,6 +934,23 @@ public class Candor {
     static boolean isProjectIfaceOrAbstract(String internal) {
         ClassNode cn = byName.get(internal);
         return cn != null && (cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT)) != 0;
+    }
+
+    /** Does the PROJECT itself declare `(name, desc)` somewhere in `owner`'s own hierarchy (owner or a
+     *  project supertype)? Distinguishes a genuine project abstraction whose impl is missing (→ honest
+     *  Unknown) from a framework method merely INHERITED by a project type, which resolves to a
+     *  superclass candor never loaded and is just an ordinary external call. byName holds only project
+     *  classes, so a framework-only method (declared solely in an unloaded superclass) returns false. */
+    static boolean projectDeclaresMethod(String owner, String name, String desc) {
+        Set<String> types = new HashSet<>(transSupers(owner));
+        types.add(owner);
+        for (String t : types) {
+            ClassNode c = byName.get(t);
+            if (c == null) continue; // framework supertype — not a project declaration
+            for (MethodNode mn : c.methods)
+                if (mn.name.equals(name) && mn.desc.equals(desc)) return true;
+        }
+        return false;
     }
 
     /** Propagate the Fs read/write detail along the SAME call graph as effects, in a separate set. A
@@ -1132,6 +1178,11 @@ public class Candor {
                     m.put("overdeclared", overdeclared);
                     m.put("entryPoint", entryPoints.contains(fn));
                     m.put("unresolved", inf.contains("Unknown")); // trust contract (SPEC §4)
+                    // Why Unknown was emitted HERE (not inherited): native:/reflect:/dispatch: tags,
+                    // so a reader can see which opacity is improvable (a missing-impl dispatch) vs
+                    // irreducible (reflection, native). Omitted when this fn introduces no Unknown.
+                    TreeSet<String> uw = unknownWhy.get(fn);
+                    if (uw != null && !uw.isEmpty()) m.put("unknownWhy", new ArrayList<>(uw));
                     m.put("hash", hashOf.getOrDefault(fn, "")); // cross-jar join key (SPEC §2)
                     // Effect-relevant local call graph (SPEC §2 `calls`): the EFFECTFUL local callees,
                     // so a consumer can answer "who calls X?" from the report without re-analysis.
@@ -1180,6 +1231,30 @@ public class Candor {
         String json = new GsonBuilder().setPrettyPrinting().create().toJson(envelope);
         Files.writeString(Path.of(out), json);
         System.err.println("candor-java: wrote " + entries.size() + " entries (@" + prov[0] + ") to " + out);
+        reportUnknownSources();
+    }
+
+    /** Human-readable breakdown of WHERE direct Unknowns come from, bucketed into the irreducible
+     *  (reflection, native) vs the improvable (unresolved dispatch — a project iface/abstract whose
+     *  impl wasn't on the analyzed classpath). Printed to stderr so a maintainer can see which
+     *  opacity is worth chasing (widen the classpath) vs accept (honest Unknown, SPEC §4). */
+    static void reportUnknownSources() {
+        if (unknownWhy.isEmpty()) return;
+        var byCategory = new java.util.TreeMap<String, Integer>();   // native|reflect|dispatch -> count
+        var byTarget = new java.util.TreeMap<String, Integer>();     // specific owner/method -> count
+        for (TreeSet<String> reasons : unknownWhy.values())
+            for (String r : reasons) {
+                String cat = r.substring(0, r.indexOf(':'));
+                byCategory.merge(cat, 1, Integer::sum);
+                byTarget.merge(r, 1, Integer::sum);
+            }
+        System.err.println("\ncandor-java: Unknown sources (direct) — " + unknownWhy.size() + " methods");
+        byCategory.forEach((c, n) -> System.err.println(String.format("  %-9s %4d", c, n)));
+        System.err.println("  top targets (dispatch: = improvable by widening the analyzed classpath):");
+        byTarget.entrySet().stream()
+                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
+                .limit(12)
+                .forEach(e -> System.err.println(String.format("    %4d  %s", e.getValue(), e.getKey())));
     }
 
     /** Engine provenance for the v0.2 envelope (candor-spec §2.1): the build id + toolchain baked into

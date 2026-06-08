@@ -37,6 +37,12 @@ import java.util.stream.*;
  * every `list.add()` floods) — known-effectful libraries are caught by the classifier.
  */
 public class Candor {
+    /** The candor-spec contract version this build implements (the report SCHEMA + AS-EFF codes),
+     *  distinct from the engine build id (the report's `version`). Emitted as the envelope's `spec` so a
+     *  consumer can see which contract a report conforms to; MUST match the Rust impl's
+     *  `candor_report::SPEC_VERSION` and candor-spec's stated version (§2.1). */
+    static final String SPEC_VERSION = "0.3";
+
     static final Map<String, TreeSet<String>> direct = new HashMap<>();
     static final Map<String, Set<String>> edges = new HashMap<>();
     static final Map<String, String> loc = new HashMap<>();
@@ -1167,6 +1173,7 @@ public class Candor {
         Map<String, Object> header = new LinkedHashMap<>();
         header.put("version", prov[0]);
         header.put("toolchain", prov[1]);
+        header.put("spec", SPEC_VERSION); // candor-spec contract version (§2.1), distinct from the build id
         Map<String, Object> envelope = new LinkedHashMap<>();
         envelope.put("candor", header);
         envelope.put("functions", entries);

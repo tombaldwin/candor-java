@@ -151,6 +151,45 @@ want   "a native method is Unknown, not silent-pure"  "$("$CJ" show "$W/n.json" 
 want   "a caller of native inherits Unknown"          "$("$CJ" show "$W/n.json" Nat.caller)"   'Unknown'
 absent "a plain pure method stays pure"               "$(cat "$W/n.json")"                     '"Nat.purePlain"'
 
+echo "== policy: deny / pure (AS-EFF-006) =="
+# $W/cls holds Fx (reads/writes/both → Fs; spawn → Exec; dyn → Unknown).
+printf 'deny Fs Fx\n' > "$W/pol-deny"
+pdeny="$(CANDOR_POLICY="$W/pol-deny" "$CJ" "$W/cls" 2>&1)"
+want   "AS-EFF-006 flags a denied (transitive) Fs in scope"      "$pdeny" '[AS-EFF-006] `Fx.both`'
+absent "deny Fs does not flag a non-Fs (Exec) method"           "$pdeny" 'Fx.spawn'
+printf 'pure Fx\n' > "$W/pol-pure"
+ppure="$(CANDOR_POLICY="$W/pol-pure" "$CJ" "$W/cls" 2>&1)"
+want   "pure forbids ANY effect (Exec flagged too)"             "$ppure" '`Fx.spawn`'
+printf 'deny Fs Other\n' > "$W/pol-oos"
+poos="$(CANDOR_POLICY="$W/pol-oos" "$CJ" "$W/cls" 2>&1)"
+absent "an out-of-scope deny does not fire (segment match)"      "$poos" 'AS-EFF-006'
+want   "a clean policy reports no violations"                    "$poos" 'no violations'
+u="$(CANDOR_POLICY="$W/no-such.policy" "$CJ" "$W/cls" 2>&1)"
+want   "an unreadable policy fails LOUD, not silent"             "$u" 'could not be read'
+
+echo "== policy: layering forbid A -> B (AS-EFF-009) =="
+mkdir -p "$W/lsrc/app/domain" "$W/lsrc/app/infra"
+cat > "$W/lsrc/app/infra/Repo.java" <<'J'
+package app.infra;
+import java.nio.file.*;
+public class Repo { public void save() { try { Files.writeString(Path.of("/tmp/x"),"y"); } catch (Exception e) {} } }
+J
+cat > "$W/lsrc/app/domain/Order.java" <<'J'
+package app.domain;
+public class Order {
+  public void place(app.infra.Repo r) { r.save(); }  // domain → infra (forbidden)
+  public int total() { return 1 + 2; }               // pure, no dependency
+}
+J
+javac -d "$W/lcls2" $(find "$W/lsrc" -name '*.java')
+printf 'forbid domain -> infra\n' > "$W/pol-layer"
+lay="$(CANDOR_POLICY="$W/pol-layer" "$CJ" "$W/lcls2" 2>&1)"
+want   "AS-EFF-009 flags domain reaching into infra"   "$lay" '[AS-EFF-009] `app.domain.Order.place`'
+want   "the violation names the laundering callee"     "$lay" 'app.infra.Repo.save'
+printf 'forbid infra -> domain\n' > "$W/pol-rev"
+rev="$(CANDOR_POLICY="$W/pol-rev" "$CJ" "$W/lcls2" 2>&1)"
+absent "the reverse direction is clean (no false fire)" "$rev" 'AS-EFF-009'
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

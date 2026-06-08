@@ -131,6 +131,36 @@ Add `--json` to any query for machine-readable output — the form an AI agent /
 | **regression guard** | `CANDOR_BASELINE=<saved.json> gradle run --args="<classes>"` | `AS-EFF-005` + **exit 1** if any function gained an effect vs the snapshot |
 | **no-ambient** | `CANDOR_NO_AMBIENT=1` (or a name prefix) | `AS-EFF-004` for direct ambient-authority use (route it through an injected collaborator) |
 | **conformance** | `CANDOR_STRICT=1` (or a class-name prefix) | `AS-EFF-001/002/003` — a class performs an effect no injected dependency provides (or injects one it never uses) |
+| **policy** | `CANDOR_POLICY=<file> gradle run --args="<classes>"` | `AS-EFF-006/009` + **exit 1** — architecture-as-code: a method violates a `deny`/`pure`/`forbid` boundary (transitively) |
+
+### Policy: architecture-as-code (`CANDOR_POLICY`)
+
+The enforcement that earns its keep as models get better at local reasoning: a model advises, but only
+a tool holding the whole effect graph *blocks the PR*. A policy file declares invariants; candor-java
+flags any **transitive** violation (the cause may live in another method or layer a local diff hides):
+
+```text
+# .candor/policy
+deny Net Db Fs  domain     # the domain layer must reach no I/O — even through a helper
+pure            parse      # parsing must be side-effect-free
+deny Exec                  # nothing may spawn a subprocess (no scope = whole project)
+forbid domain -> infra     # the domain layer must not depend on the infrastructure layer
+```
+
+```text
+[AS-EFF-006] `app.domain.Checkout.run` performs { Fs }, forbidden by policy (scope `domain`): `deny Net Db Fs domain`
+[AS-EFF-009] `app.domain.Order.place` reaches into a forbidden layer (via `app.infra.Repo.save`), violating policy: `forbid domain -> infra`
+```
+
+- **`deny` / `pure`** (`AS-EFF-006`) — *what* a layer may do. A method need not perform the effect
+  directly; candor flags it reaching the effect through any callee. `pure` forbids every effect.
+- **`forbid <A> -> <B>`** (`AS-EFF-009`) — *who* a layer may depend on. A method in scope A must not
+  *transitively* reach a method in scope B (reverse-reachability over the call graph).
+
+Scopes match by dotted **segment** (so `domain` matches `app.domain.Svc.handle` and the `domain_logic`
+package, but not `subdomain`) — the same rule as the Rust impl's `scope_matches`. A set-but-unreadable
+policy fails **loud** ("policy NOT enforced"), never silently green. (AS-EFF-008 literal allowlists —
+`allow Net in <scope> <host>` — are the next rung; they need per-call literal extraction.)
 
 ### Conformance: dependency injection *is* a capability system
 

@@ -66,6 +66,20 @@ public class Candor {
     static final String FEIGN = "openfeign/FeignClient";
     // Ambient authorities (for CANDOR_NO_AMBIENT). Log/Unknown are not authorities.
     static final Set<String> AMBIENT = Set.of("Net", "Fs", "Db", "Exec", "Env", "Clock", "Rand");
+    // The effect vocabulary candor-java emits (used to split a `deny <Effect…> [scope]` rule's effects
+    // from its trailing scope token).
+    static final Set<String> KNOWN_EFFECTS = Set.of("Net", "Fs", "Db", "Exec", "Env", "Clock", "Rand", "Log", "Ipc");
+
+    // CANDOR_POLICY rules (architecture-as-code, candor-spec §5). `deny`/`pure` = AS-EFF-006 (what a
+    // layer may do); `forbid A -> B` = AS-EFF-009 (who a layer may depend on).
+    static final List<DenyRule> denyRules = new ArrayList<>();
+    static final List<ForbidRule> forbidRules = new ArrayList<>();
+
+    /** A `deny <Effect…> [scope]` or `pure <scope>` rule. `effects` empty ⇒ a `pure` rule (ANY effect is
+     *  forbidden). `scope` empty ⇒ the whole project. */
+    static class DenyRule { TreeSet<String> effects = new TreeSet<>(); String scope = ""; String src; }
+    /** A `forbid <A> -> <B>` rule: a method in scope A must not transitively reach into scope B. */
+    static class ForbidRule { String from, to; }
 
     public static void main(String[] args) throws IOException {
         if (args.length < 1) {
@@ -103,7 +117,8 @@ public class Candor {
         String strict = System.getenv("CANDOR_STRICT");
         String baseline = System.getenv("CANDOR_BASELINE");
         String noAmbient = System.getenv("CANDOR_NO_AMBIENT");
-        boolean enforce = baseline != null || noAmbient != null || strict != null;
+        String policy = System.getenv("CANDOR_POLICY");
+        boolean enforce = baseline != null || noAmbient != null || strict != null || policy != null;
 
         if (!enforce) {
             System.out.println("candor-java — effect audit (Spring-aware; Unknown for reflection/dispatch)\n");
@@ -126,6 +141,7 @@ public class Candor {
         if (strict != null) violations += checkConformance(inferred, strict);
         if (noAmbient != null) violations += checkNoAmbient(inferred, noAmbient);
         if (baseline != null) violations += checkBaseline(inferred, baseline);
+        if (policy != null) violations += checkPolicy(inferred, policy);
         if (violations == 0) System.out.println("candor-java: no violations");
         if (violations > 0) System.exit(1); // fail CI
     }
@@ -259,6 +275,134 @@ public class Candor {
             }
         }
         return v;
+    }
+
+    /** CANDOR_POLICY (candor-spec §5): architecture-as-code. Enforces two boundary kinds, both
+     *  TRANSITIVELY (so they catch what a local diff hides):
+     *   - AS-EFF-006 `deny <Effect…> [scope]` / `pure <scope>` — WHAT a layer may do.
+     *   - AS-EFF-009 `forbid <A> -> <B>` — WHO a layer may depend on (reachability over the call graph).
+     *  A set-but-unreadable policy is LOUD (not silently passing). (AS-EFF-008 literal allowlists —
+     *  `allow <Effect> in <scope> <value>` — are parsed-but-skipped for now; they need per-call literal
+     *  extraction, the next rung.) */
+    static int checkPolicy(Map<String, TreeSet<String>> inferred, String path) {
+        if (!parsePolicy(path)) {
+            System.err.println("candor-java: CANDOR_POLICY=" + path
+                    + " could not be read; policy NOT enforced");
+            return 0;
+        }
+        int v = 0;
+        // AS-EFF-006: a method in scope must not perform (transitively) a denied effect.
+        for (var e : new TreeMap<>(inferred).entrySet()) {
+            String fn = e.getKey();
+            for (DenyRule r : denyRules) {
+                if (!scopeMatches(fn, r.scope)) continue;
+                List<String> bad = r.effects.isEmpty()
+                        ? e.getValue().stream().filter(x -> !x.equals("Unknown")).sorted().collect(Collectors.toList())
+                        : e.getValue().stream().filter(r.effects::contains).sorted().collect(Collectors.toList());
+                if (!bad.isEmpty()) {
+                    System.out.printf("[AS-EFF-006] `%s` performs { %s }, forbidden by policy%s: `%s`%n",
+                            fn, String.join(", ", bad),
+                            r.scope.isEmpty() ? "" : " (scope `" + r.scope + "`)", r.src);
+                    v++;
+                }
+            }
+        }
+        // AS-EFF-009: a method in scope A must not transitively reach into scope B (over the call graph).
+        for (ForbidRule r : forbidRules) {
+            for (String fn : new TreeSet<>(edges.keySet())) {
+                if (!scopeMatches(fn, r.from)) continue;
+                String hit = reachesScope(fn, r.to);
+                if (hit != null) {
+                    System.out.printf("[AS-EFF-009] `%s` reaches into a forbidden layer (via `%s`), "
+                            + "violating policy: `forbid %s -> %s`%n", fn, hit, r.from, r.to);
+                    v++;
+                }
+            }
+        }
+        return v;
+    }
+
+    /** Parse a CANDOR_POLICY file into deny/forbid rules. One rule per line; `#` comments + blanks
+     *  ignored. Returns false if the file can't be read (so the caller can fail loud). */
+    static boolean parsePolicy(String path) {
+        List<String> lines;
+        try {
+            lines = Files.readAllLines(Path.of(path));
+        } catch (IOException e) {
+            return false;
+        }
+        for (String raw : lines) {
+            String line = raw.trim();
+            if (line.isEmpty() || line.startsWith("#")) continue;
+            String[] t = line.split("\\s+");
+            switch (t[0]) {
+                case "deny": {
+                    DenyRule r = new DenyRule();
+                    r.src = line;
+                    for (int i = 1; i < t.length; i++) {
+                        if (KNOWN_EFFECTS.contains(t[i])) r.effects.add(t[i]);
+                        else r.scope = t[i]; // a trailing non-effect token is the scope
+                    }
+                    denyRules.add(r);
+                    break;
+                }
+                case "pure": {
+                    DenyRule r = new DenyRule(); // empty effects = ANY effect forbidden
+                    r.src = line;
+                    if (t.length > 1) r.scope = t[1];
+                    denyRules.add(r);
+                    break;
+                }
+                case "forbid": {
+                    int arrow = line.indexOf("->");
+                    if (arrow > "forbid".length()) {
+                        ForbidRule r = new ForbidRule();
+                        r.from = line.substring("forbid".length(), arrow).trim();
+                        r.to = line.substring(arrow + 2).trim();
+                        if (!r.from.isEmpty() && !r.to.isEmpty()) forbidRules.add(r);
+                    }
+                    break;
+                }
+                // `allow` (AS-EFF-008 literal allowlists) — parsed-position reserved, not yet enforced.
+                default:
+                    break;
+            }
+        }
+        return true;
+    }
+
+    /** A policy scope matches a method by dotted SEGMENT (so `domain` matches `app.domain.Svc.handle`
+     *  and the `domain_logic` package, but not `subdomain`). Mirrors the Rust impl's `scope_matches`:
+     *  a contiguous run of segments — intermediate segments exact, the LAST a prefix. Empty scope ⇒
+     *  whole project (matches everything). */
+    static boolean scopeMatches(String name, String scope) {
+        if (scope.isEmpty()) return true;
+        String[] segs = name.split("\\.");
+        String[] parts = scope.split("\\.");
+        if (parts.length == 0 || parts.length > segs.length) return false;
+        String last = parts[parts.length - 1];
+        for (int i = 0; i + parts.length <= segs.length; i++) {
+            boolean ok = true;
+            for (int j = 0; j < parts.length - 1; j++)
+                if (!segs[i + j].equals(parts[j])) { ok = false; break; }
+            if (ok && segs[i + parts.length - 1].startsWith(last)) return true;
+        }
+        return false;
+    }
+
+    /** Forward reachability over the project call graph: the first method `start` transitively reaches
+     *  whose name matches `scope` (seeded from `start`'s direct callees, so `start` itself isn't a hit),
+     *  or null. Used for AS-EFF-009 layering. */
+    static String reachesScope(String start, String scope) {
+        Deque<String> stack = new ArrayDeque<>(edges.getOrDefault(start, Set.of()));
+        Set<String> seen = new HashSet<>();
+        while (!stack.isEmpty()) {
+            String n = stack.pop();
+            if (!seen.add(n)) continue;
+            if (scopeMatches(n, scope)) return n;
+            for (String c : edges.getOrDefault(n, Set.of())) if (!seen.contains(c)) stack.push(c);
+        }
+        return null;
     }
 
     /** Load dependency reports named by CANDOR_DEPS (a path list — space/colon/comma-separated; a

@@ -450,23 +450,45 @@ public class Candor {
     }
 
     /** The network endpoint a string literal names — `host[:port]`, scheme/path/userinfo stripped — or
-     *  null if the string isn't host-shaped (an HTTP verb, a content type, a sentence, a path). The
-     *  decidable subset of "who it talks to"; rejecting non-hosts means extraction never FABRICATES an
-     *  endpoint (an over-extraction would be a false AS-EFF-008 alarm, not a missed one). */
+     *  null if the string isn't UNAMBIGUOUSLY an endpoint. Real code is full of dotted strings that are
+     *  NOT hosts — property keys (`os.name`), message keys (`terms.agency`), filenames (`page.html`),
+     *  format strings (`"status":"`) — so a bare dotted name is rejected: it's indistinguishable from a
+     *  property key without seeing the call it feeds. Accepted: a scheme URL (`https://…`), a
+     *  `host:port` with a NUMERIC port, or a bare IPv4. The cost is UNDER-extraction (a bare-hostname
+     *  `new Socket("api.example.com", 443)` isn't seen) — the sound direction for a visible-surface
+     *  allowlist (a missed host can't certify, but never silently PASSES a forbidden one); modern HTTP
+     *  clients use full URLs, which are caught. (Validated against a 2257-class Spring app, which had
+     *  ~14 false dotted "hosts" under the old loose filter.) */
     static String netHostLiteral(String s) {
         if (s == null || s.isBlank()) return null;
         String h = s.trim();
         int scheme = h.indexOf("://");
-        boolean hadScheme = scheme >= 0;
-        if (hadScheme) h = h.substring(scheme + 3);
-        int slash = h.indexOf('/');
-        if (slash >= 0) h = h.substring(0, slash);   // authority only
-        int at = h.lastIndexOf('@');
-        if (at >= 0) h = h.substring(at + 1);          // drop userinfo
-        if (h.isBlank() || h.contains(" ")) return null;
-        // A bare token must look like a host (a dotted name / IP, or `host:port`); else it's a verb etc.
-        if (!hadScheme && !h.contains(".") && !h.contains(":")) return null;
-        return h;
+        if (scheme >= 0) { // a URL: take the authority, drop path + userinfo
+            h = h.substring(scheme + 3);
+            int slash = h.indexOf('/'); if (slash >= 0) h = h.substring(0, slash);
+            int at = h.lastIndexOf('@'); if (at >= 0) h = h.substring(at + 1);
+            return (h.isBlank() || h.contains(" ")) ? null : h;
+        }
+        if (h.contains(" ") || h.contains("/")) return null;
+        int colon = h.indexOf(':');
+        if (colon > 0) { // host:port — accept only with a numeric port and a dotted/IP host
+            String host = h.substring(0, colon), port = h.substring(colon + 1);
+            boolean numericPort = !port.isEmpty() && port.chars().allMatch(Character::isDigit);
+            return (numericPort && host.contains(".")) ? h : null;
+        }
+        return looksLikeIpv4(h) ? h : null; // a bare token: only a literal IPv4 is unambiguous
+    }
+
+    /** Whether `h` is a dotted-quad IPv4 literal (`1.2.3.4`) — the one bare (scheme-less, port-less)
+     *  form that's unambiguously a network endpoint, not a property/message key. */
+    static boolean looksLikeIpv4(String h) {
+        String[] p = h.split("\\.", -1);
+        if (p.length != 4) return false;
+        for (String x : p) {
+            if (x.isEmpty() || x.length() > 3 || !x.chars().allMatch(Character::isDigit)) return false;
+            if (Integer.parseInt(x) > 255) return false;
+        }
+        return true;
     }
 
     /** The bare hostname of an endpoint (port + any residue stripped), so the allowlist matches

@@ -199,7 +199,7 @@ public class Pay {
   public void charge() { try { new URL("https://api.stripe.com/v1/charges").openStream(); } catch (Exception e) {} }
   public void leak()   { try { new URL("https://metrics.growthtracker.io/track").openStream(); } catch (Exception e) {} }
   public void deep()   { send(); }
-  void send() { try { new Socket("api.stripe.com", 443).close(); } catch (Exception e) {} }
+  void send() { try { new URL("https://api.stripe.com/internal").openStream(); } catch (Exception e) {} }
 }
 J
 javac -d "$W/bcls" $(find "$W/bsrc" -name '*.java') 2>/dev/null
@@ -212,6 +212,22 @@ absent "a TRANSITIVE allowed host is not flagged (propagated)" "$al" 'Pay.deep'
 printf 'allow Net in billing api.stripe.com metrics.growthtracker.io\n' > "$W/pol-allow2"
 al2="$(CANDOR_POLICY="$W/pol-allow2" "$CJ" "$W/bcls" 2>&1)"
 want   "adding the host to the allowlist clears it"         "$al2" 'no violations'
+# precision: a Net method full of dotted NON-host strings (property/message keys) must not report them.
+cat > "$W/bsrc/billing/Mix.java" <<'J'
+package billing;
+public class Mix {
+  public void f() {
+    String a = System.getProperty("os.name");        // dotted property key, NOT a host
+    String b = "terms.agency"; String c = "page.html";// message key / filename, NOT hosts
+    try { new java.net.URL("https://real.example.com/x").openStream(); } catch (Exception e) {}
+  }
+}
+J
+javac -d "$W/bcls" $(find "$W/bsrc" -name '*.java') 2>/dev/null
+mix="$("$CJ" "$W/bcls" --json "$W/mix.json" >/dev/null 2>&1; python3 -c "import json;print(next((e.get('hosts',[]) for e in json.load(open('$W/mix.json'))['functions'] if e['fn']=='billing.Mix.f'),[]))")"
+want   "the real URL host is extracted"                     "$mix" 'real.example.com'
+absent "a dotted property key is NOT a host"                "$mix" 'os.name'
+absent "a message key is NOT a host"                         "$mix" 'terms.agency'
 
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'

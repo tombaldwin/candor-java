@@ -98,7 +98,11 @@ gradle run --args="/path/to/classes --json /tmp/report.json"
 ```
 
 It prints a per-method effect audit and writes a candor JSON report. `bash test/smoke.sh` runs the
-behavioural suite (also in CI).
+behavioural suite, and `bash soundness/run.sh` runs the [adversarial soundness fuzzer](soundness/) —
+which threads a known effect through every JVM call form (direct / lambda / method-ref / constructor /
+static-init / interface dispatch / anon class) and asserts candor-java never reports a reachable method
+pure (effect-or-`Unknown` only). Both run in CI; the fuzzer is teeth-verified (reverting a fix fails
+its form's lane).
 
 ## Queries (read-only, over a written report)
 

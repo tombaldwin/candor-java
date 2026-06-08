@@ -31,3 +31,10 @@ jobs:
       # the baseline guard, and cross-jar inheritance + version-trust. (build, run, assert.)
       - name: Smoke tests
         run: bash test/smoke.sh
+
+      # Adversarial SOUNDNESS check: generate classes that thread a known effect through every JVM call
+      # form (direct/lambda/method-ref/constructor/static-init/interface-dispatch/anon class), and assert
+      # candor-java never reports a reachable method PURE (effect or Unknown only). Turns "never silently
+      # under-reports" from a hope into a gate. Teeth-verified (reverting a fix fails its form's lane).
+      - name: Soundness fuzzer
+        run: bash soundness/run.sh 40

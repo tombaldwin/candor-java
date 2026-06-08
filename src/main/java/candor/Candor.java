@@ -69,6 +69,9 @@ public class Candor {
     // The effect vocabulary candor-java emits (used to split a `deny <Effect…> [scope]` rule's effects
     // from its trailing scope token).
     static final Set<String> KNOWN_EFFECTS = Set.of("Net", "Fs", "Db", "Exec", "Env", "Clock", "Rand", "Log", "Ipc");
+    // java.io types whose <init> takes a file PATH as its first String arg (for AS-EFF-008 `paths`).
+    static final Set<String> PATH_CTOR_OWNERS = Set.of("java.io.File", "java.io.FileInputStream",
+            "java.io.FileOutputStream", "java.io.FileReader", "java.io.FileWriter", "java.io.RandomAccessFile");
 
     // CANDOR_POLICY rules (architecture-as-code, candor-spec §5). `deny`/`pure` = AS-EFF-006 (what a
     // layer may do); `allow … in …` = AS-EFF-008 (which endpoints); `forbid A -> B` = AS-EFF-009 (who
@@ -77,6 +80,8 @@ public class Candor {
     static final List<AllowRule> allowRules = new ArrayList<>();
     static final List<ForbidRule> forbidRules = new ArrayList<>();
     static final Map<String, TreeSet<String>> hostsDirect = new HashMap<>(); // fn -> literal Net endpoints
+    static final Map<String, TreeSet<String>> cmdsDirect = new HashMap<>();  // fn -> literal Exec commands
+    static final Map<String, TreeSet<String>> pathsDirect = new HashMap<>(); // fn -> literal Fs paths
 
     /** A `deny <Effect…> [scope]` or `pure <scope>` rule. `effects` empty ⇒ a `pure` rule (ANY effect is
      *  forbidden). `scope` empty ⇒ the whole project. */
@@ -283,13 +288,13 @@ public class Candor {
         return v;
     }
 
-    /** CANDOR_POLICY (candor-spec §5): architecture-as-code. Enforces two boundary kinds, both
+    /** CANDOR_POLICY (candor-spec §5): architecture-as-code. Enforces all three boundary kinds, each
      *  TRANSITIVELY (so they catch what a local diff hides):
      *   - AS-EFF-006 `deny <Effect…> [scope]` / `pure <scope>` — WHAT a layer may do.
+     *   - AS-EFF-008 `allow <Effect> in <scope> <value…>` — WHICH literals (Net hosts / Exec commands /
+     *     Fs paths) it may reach, against the visible surface.
      *   - AS-EFF-009 `forbid <A> -> <B>` — WHO a layer may depend on (reachability over the call graph).
-     *  A set-but-unreadable policy is LOUD (not silently passing). (AS-EFF-008 literal allowlists —
-     *  `allow <Effect> in <scope> <value>` — are parsed-but-skipped for now; they need per-call literal
-     *  extraction, the next rung.) */
+     *  A set-but-unreadable policy is LOUD (not silently passing). */
     static int checkPolicy(Map<String, TreeSet<String>> inferred, String path) {
         if (!parsePolicy(path)) {
             System.err.println("candor-java: CANDOR_POLICY=" + path
@@ -313,33 +318,16 @@ public class Candor {
                 }
             }
         }
-        // AS-EFF-008: a method in an allow-listed scope must reach ONLY the listed Net endpoints. Certifies
-        // the VISIBLE host surface (literal endpoints, propagated transitively); a method with Net but no
-        // visible host can't be certified and isn't flagged (the documented limit). Allowed values are
-        // UNIONed across every matching `allow Net …` rule, then reached hosts must be a subset.
-        Map<String, TreeSet<String>> hostsAcc = hostsFixpoint();
-        for (var e : new TreeMap<>(inferred).entrySet()) {
-            String fn = e.getKey();
-            if (!e.getValue().contains("Net")) continue;
-            Set<String> allowed = null; // null ⇒ no `allow Net` rule covers this method → not checked
-            String scopeLabel = "";
-            for (AllowRule r : allowRules) {
-                if (!"Net".equals(r.effect) || !scopeMatches(fn, r.scope)) continue;
-                if (allowed == null) { allowed = new HashSet<>(); scopeLabel = r.scope; }
-                for (String val : r.values) allowed.add(hostPart(val));
-            }
-            if (allowed == null) continue;
-            Set<String> finalAllowed = allowed;
-            List<String> bad = hostsAcc.getOrDefault(fn, new TreeSet<>()).stream()
-                    .filter(h -> !finalAllowed.contains(hostPart(h))).sorted().collect(Collectors.toList());
-            if (!bad.isEmpty()) {
-                System.out.printf("[AS-EFF-008] `%s` reaches { %s } outside the allowlist, forbidden by "
-                        + "policy%s: `allow Net … %s`%n", fn, String.join(", ", bad),
-                        scopeLabel.isEmpty() ? "" : " (scope `" + scopeLabel + "`)",
-                        String.join(" ", new TreeSet<>(allowed)));
-                v++;
-            }
-        }
+        // AS-EFF-008: a method in an allow-listed scope may reach ONLY the listed literals — Net hosts
+        // (matched by hostname), Exec commands (by basename), Fs paths (by path-prefix at a boundary).
+        // Certifies the VISIBLE literal surface (propagated transitively); a method performing the effect
+        // with no visible literal can't be certified and isn't flagged (the documented limit).
+        v += checkAllowlist(inferred, "Net", literalFixpoint(hostsDirect),
+                (allowed, reached) -> allowed.stream().anyMatch(a -> hostPart(a).equals(hostPart(reached))));
+        v += checkAllowlist(inferred, "Exec", literalFixpoint(cmdsDirect),
+                (allowed, reached) -> allowed.stream().anyMatch(a -> cmdBase(a).equals(cmdBase(reached))));
+        v += checkAllowlist(inferred, "Fs", literalFixpoint(pathsDirect),
+                (allowed, reached) -> allowed.stream().anyMatch(a -> pathCovered(a, reached)));
         // AS-EFF-009: a method in scope A must not transitively reach into scope B (over the call graph).
         for (ForbidRule r : forbidRules) {
             for (String fn : new TreeSet<>(edges.keySet())) {
@@ -350,6 +338,38 @@ public class Candor {
                             + "violating policy: `forbid %s -> %s`%n", fn, hit, r.from, r.to);
                     v++;
                 }
+            }
+        }
+        return v;
+    }
+
+    /** AS-EFF-008 for one effect: each method performing `effect` in a scope with an `allow <effect> …`
+     *  rule must reach ONLY covered literals (per the effect's `covered` matcher). Allowed values are
+     *  UNIONed across matching rules. A method with no `allow` rule for its scope is unchecked. */
+    static int checkAllowlist(Map<String, TreeSet<String>> inferred, String effect,
+            Map<String, TreeSet<String>> reachedAcc,
+            java.util.function.BiPredicate<Set<String>, String> covered) {
+        int v = 0;
+        for (var e : new TreeMap<>(inferred).entrySet()) {
+            String fn = e.getKey();
+            if (!e.getValue().contains(effect)) continue;
+            Set<String> allowed = null; // null ⇒ no `allow <effect>` rule covers this method → not checked
+            String scope = "";
+            for (AllowRule r : allowRules) {
+                if (!effect.equals(r.effect) || !scopeMatches(fn, r.scope)) continue;
+                if (allowed == null) { allowed = new HashSet<>(); scope = r.scope; }
+                allowed.addAll(r.values);
+            }
+            if (allowed == null) continue;
+            Set<String> fa = allowed;
+            List<String> bad = reachedAcc.getOrDefault(fn, new TreeSet<>()).stream()
+                    .filter(reached -> !covered.test(fa, reached)).sorted().collect(Collectors.toList());
+            if (!bad.isEmpty()) {
+                System.out.printf("[AS-EFF-008] `%s` reaches { %s } outside the allowlist, forbidden by "
+                        + "policy%s: `allow %s … %s`%n", fn, String.join(", ", bad),
+                        scope.isEmpty() ? "" : " (scope `" + scope + "`)", effect,
+                        String.join(" ", new TreeSet<>(allowed)));
+                v++;
             }
         }
         return v;
@@ -502,29 +522,85 @@ public class Candor {
         return x;
     }
 
-    /** Propagate literal Net endpoints along the SAME call graph as effects (separate set), so a method
-     *  that reaches the network only through a callee still sees the callee's endpoints — the scale path
-     *  for AS-EFF-008 (the literal often lives in a deep, even cross-layer, callee). */
-    static Map<String, TreeSet<String>> hostsFixpoint() {
-        Map<String, TreeSet<String>> hosts = new HashMap<>();
-        for (var e : hostsDirect.entrySet()) hosts.put(e.getKey(), new TreeSet<>(e.getValue()));
+    /** Propagate a literal-detail map (hosts / commands / paths) along the SAME call graph as effects, so
+     *  a method that reaches the effect only through a callee still sees the callee's literals — the scale
+     *  path for AS-EFF-008 (the literal often lives in a deep, even cross-layer, callee). */
+    static Map<String, TreeSet<String>> literalFixpoint(Map<String, TreeSet<String>> direct) {
+        Map<String, TreeSet<String>> acc = new HashMap<>();
+        for (var e : direct.entrySet()) acc.put(e.getKey(), new TreeSet<>(e.getValue()));
         boolean changed = true;
         while (changed) {
             changed = false;
             for (var caller : edges.keySet()) {
                 TreeSet<String> add = new TreeSet<>();
                 for (String c : edges.get(caller)) {
-                    var ce = hosts.get(c);
+                    var ce = acc.get(c);
                     if (ce != null) add.addAll(ce);
                 }
                 if (add.isEmpty()) continue;
-                var set = hosts.computeIfAbsent(caller, k -> new TreeSet<>());
+                var set = acc.computeIfAbsent(caller, k -> new TreeSet<>());
                 int before = set.size();
                 set.addAll(add);
                 if (set.size() != before) changed = true;
             }
         }
-        return hosts;
+        return acc;
+    }
+
+    /** The literal command/path a targeted call carries: the FIRST string constant pushed for its
+     *  arguments (the program for `new ProcessBuilder("git","clone")` → `git`, element 0 of the varargs
+     *  array; the path for `Path.of("/etc/app")`). Scans BACK from the call collecting `String` LDCs until
+     *  a prior method call / jump bounds the argument block, then returns the EARLIEST — the first arg, not
+     *  a trailing flag / the data of `Files.write(path, "content")`. Null if no literal. Never over-claims
+     *  (SPEC §2): under-extracts a runtime-computed value rather than guessing. */
+    static String firstLiteralArg(MethodNode mn, AbstractInsnNode call) {
+        String found = null;
+        for (AbstractInsnNode n = call.getPrevious(); n != null; n = n.getPrevious()) {
+            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode)
+                break; // a prior call / branch bounds this call's argument evaluation
+            if (n instanceof LdcInsnNode ldc && ldc.cst instanceof String s) found = s; // keep the earliest
+        }
+        return found;
+    }
+
+    /** Whether a path-constructor descriptor takes the path as a SINGLE leading String — `(String)` or
+     *  `(String, String...)` (Path.of's varargs) — so the FIRST string literal is unambiguously the
+     *  path. Excludes two-String overloads (`File(String,String)`, `RandomAccessFile(String,String)`)
+     *  whose second String (child name / mode) could be the only literal when the path is computed. */
+    static boolean pathArgIsSingleString(String desc) {
+        String head = "(Ljava/lang/String;";
+        return desc.startsWith(head)
+                && desc.length() > head.length()
+                && (desc.charAt(head.length()) == ')' || desc.charAt(head.length()) == '[');
+    }
+
+    /** The program a command literal names (`/usr/bin/git` → `git`), so `allow Exec … git` accepts an
+     *  absolute path to it. Mirrors the Rust `cmd_base`, plus: `Runtime.exec(String)` passes a whole
+     *  command LINE ("curl http://x"), so take the first whitespace token (the program) before the
+     *  basename — `ProcessBuilder` literals are already a bare program. */
+    static String cmdBase(String c) {
+        String first = c.trim().split("\\s+", 2)[0];
+        int i = Math.max(first.lastIndexOf('/'), first.lastIndexOf('\\'));
+        return i >= 0 ? first.substring(i + 1) : first;
+    }
+
+    /** Whether an allowed dir `a` covers the reached path `r` at a COMPONENT boundary (so `/etc/app`
+     *  covers `/etc/app/cfg` but not `/etc/apppwned`); a `..` in the reached path is never covered.
+     *  Mirrors the Rust `fs_path_covered`, including the absolute-vs-relative rootedness check. */
+    static boolean pathCovered(String a, String r) {
+        java.util.function.Function<String, List<String>> norm = s -> {
+            List<String> out = new ArrayList<>();
+            for (String c : s.split("[/\\\\]")) if (!c.isEmpty() && !c.equals(".")) out.add(c);
+            return out;
+        };
+        if (norm.apply(r).contains("..")) return false;
+        boolean aAbs = a.startsWith("/") || a.startsWith("\\");
+        boolean rAbs = r.startsWith("/") || r.startsWith("\\");
+        if (aAbs != rAbs) return false;
+        List<String> ac = norm.apply(a), rc = norm.apply(r);
+        if (ac.size() > rc.size()) return false;
+        for (int i = 0; i < ac.size(); i++) if (!ac.get(i).equals(rc.get(i))) return false;
+        return true;
     }
 
     /** Load dependency reports named by CANDOR_DEPS (a path list — space/colon/comma-separated; a
@@ -670,6 +746,26 @@ public class Candor {
                     if ("Fs".equals(effect)) { // non-breaking read/write refinement of Fs
                         List<String> k = fsKind(owner, min.name);
                         if (!k.isEmpty()) fsDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(k);
+                    }
+                    // AS-EFF-008 literal surfaces (SPEC §2 `cmds`/`paths`): the subprocess program and the
+                    // file path, read from the FIRST string-literal arg of the call that carries it — the
+                    // ProcessBuilder/Runtime.exec command, the Path.of / File / file-stream ctor path.
+                    if ((owner.equals("java.lang.ProcessBuilder") && min.name.equals("<init>"))
+                            || (owner.equals("java.lang.Runtime") && min.name.equals("exec"))) {
+                        String cmd = firstLiteralArg(mn, min);
+                        if (cmd != null) cmdsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(cmd);
+                    }
+                    // …only the overload whose path is a SINGLE leading String arg (descriptor
+                    // `(Ljava/lang/String;)` or `(Ljava/lang/String;[…` for Path.of's varargs). A
+                    // two-String ctor — `RandomAccessFile(String,String)`, `File(String,String)` — can
+                    // have a NON-path literal as its only constant (a `"r"`/`"rw"` mode, a child name)
+                    // when the path itself is runtime-computed, which firstLiteralArg would then grab.
+                    if (((owner.equals("java.nio.file.Path") && min.name.equals("of"))
+                            || (owner.equals("java.nio.file.Paths") && min.name.equals("get"))
+                            || (PATH_CTOR_OWNERS.contains(owner) && min.name.equals("<init>")))
+                            && pathArgIsSingleString(min.desc)) {
+                        String p = firstLiteralArg(mn, min);
+                        if (p != null) pathsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(p);
                     }
                     // Calls to a Spring Data repository / Feign client are I/O even though the
                     // callee has no body candor can see (Spring synthesizes the impl at runtime).
@@ -991,7 +1087,9 @@ public class Candor {
         }
 
         Map<String, TreeSet<String>> fsAcc = fsFixpoint();
-        Map<String, TreeSet<String>> hostsAcc = hostsFixpoint();
+        Map<String, TreeSet<String>> hostsAcc = literalFixpoint(hostsDirect);
+        Map<String, TreeSet<String>> cmdsAcc = literalFixpoint(cmdsDirect);
+        Map<String, TreeSet<String>> pathsAcc = literalFixpoint(pathsDirect);
         List<Map<String, Object>> entries = new ArrayList<>();
         inferred.entrySet().stream()
                 // Keep a method if it has effects, is an entry point, OR its class declares a
@@ -1048,12 +1146,19 @@ public class Candor {
                                 .collect(Collectors.toList());
                         if (!kinds.isEmpty()) m.put("fs", kinds);
                     }
-                    // Literal Net endpoints statically visible from this method (SPEC §2 `hosts`): the
-                    // decidable subset of "who it talks to", feeding the AS-EFF-008 allowlist. Omitted
-                    // when none are visible (a runtime-computed host, or no Net) — never a completeness claim.
+                    // Literal Net/Exec/Fs surfaces statically visible from this method (SPEC §2
+                    // `hosts`/`cmds`/`paths`): the decidable subset of who it talks to / what it runs /
+                    // what it touches, feeding the AS-EFF-008 allowlist. Omitted when none are visible (a
+                    // runtime-computed value, or the effect absent) — never a completeness claim.
                     TreeSet<String> hk = hostsAcc.get(fn);
                     if (inf.contains("Net") && hk != null && !hk.isEmpty())
                         m.put("hosts", new ArrayList<>(hk));
+                    TreeSet<String> ck = cmdsAcc.get(fn);
+                    if (inf.contains("Exec") && ck != null && !ck.isEmpty())
+                        m.put("cmds", new ArrayList<>(ck));
+                    TreeSet<String> pk = pathsAcc.get(fn);
+                    if (inf.contains("Fs") && pk != null && !pk.isEmpty())
+                        m.put("paths", new ArrayList<>(pk));
                     entries.add(m);
                 });
         // v0.2 self-describing envelope (candor-spec §2): a provenance header + the function entries.

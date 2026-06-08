@@ -188,6 +188,8 @@ deny Net Db Fs  domain          # the domain layer must reach no I/O — even th
 pure            parse           # parsing must be side-effect-free
 deny Exec                       # nothing may spawn a subprocess (no scope = whole project)
 allow Net in billing  api.stripe.com   # billing may reach the network — but ONLY Stripe
+allow Exec in build   git              # the build layer may run subprocesses — but ONLY git
+allow Fs  in config   /etc/app         # config code may read the filesystem — but ONLY under /etc/app
 forbid domain -> infra          # the domain layer must not depend on the infrastructure layer
 ```
 
@@ -199,19 +201,22 @@ forbid domain -> infra          # the domain layer must not depend on the infras
 
 - **`deny` / `pure`** (`AS-EFF-006`) — *what* a layer may do. A method need not perform the effect
   directly; candor flags it reaching the effect through any callee. `pure` forbids every effect.
-- **`allow <Effect> in <scope> <value…>`** (`AS-EFF-008`) — *which endpoints* an effect may reach. Today
-  `Net` hosts: "billing may only talk to Stripe", checked against the **transitive** host surface (the
-  literal endpoint is often in a deep callee). The supply-chain boundary a model can't self-check.
-  Certifies the *visible* host surface — endpoints are extracted from scheme URLs (`https://…`),
-  `host:port` literals, and IPs; a runtime-computed host (or a bare hostname indistinguishable from a
-  property/message key) is honestly invisible, not silently passed; matched port-insensitively by host.
+- **`allow <Effect> in <scope> <value…>`** (`AS-EFF-008`) — *which literals* an effect may reach, across
+  the **transitive** surface (the literal often lives in a deep callee). The supply-chain boundary a
+  model can't self-check. Three effects carry a literal surface: `Net` hosts ("billing may only talk to
+  Stripe", matched by hostname), `Exec` commands ("build may only run git", by program basename), and
+  `Fs` paths ("config may only read /etc/app", by path-prefix at a boundary). Certifies the *visible*
+  surface only — a literal is read from the call that carries it (the `ProcessBuilder`/`exec` program,
+  the `Path.of`/`File`/stream-ctor path, a scheme-URL/`host:port`/IP host); a runtime-computed value is
+  honestly invisible, never over-claimed (validated on a real Spring app — the extractor takes the
+  *first* arg, so a `ProcessBuilder("git","clone")` is `git` and a `RandomAccessFile(path,"r")` mode is
+  never mistaken for a path).
 - **`forbid <A> -> <B>`** (`AS-EFF-009`) — *who* a layer may depend on. A method in scope A must not
   *transitively* reach a method in scope B (reverse-reachability over the call graph).
 
 Scopes match by dotted **segment** (so `domain` matches `app.domain.Svc.handle` and the `domain_logic`
 package, but not `subdomain`) — the same rule as the Rust impl's `scope_matches`. A set-but-unreadable
-policy fails **loud** ("policy NOT enforced"), never silently green. (`allow` for `Exec` commands and
-`Fs` paths is the next rung — the host-literal extraction generalises to them.)
+policy fails **loud** ("policy NOT enforced"), never silently green.
 
 ### Conformance: dependency injection *is* a capability system
 

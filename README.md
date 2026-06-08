@@ -1,9 +1,22 @@
 # candor-java
 
-A [candor-spec](https://github.com/tombaldwin/candor-spec) implementation for the JVM. Reports, per
-method, which side effects it performs (transitively) — Fs, Net, Db, Exec, Env, Clock, Rand, Log… —
-read from compiled bytecode via [ASM](https://asm.ow2.io/). Sibling of the Rust reference
-implementation, [candor](https://github.com/tombaldwin/candor).
+**Enforce the architectural boundaries that AI-generated JVM code silently crosses — as a CI gate you
+can trust.** candor-java reads compiled bytecode via [ASM](https://asm.ow2.io/) and knows which methods
+reach the network, filesystem, a database, a subprocess, the environment — *transitively* — then turns
+invariants like *"the domain layer does no I/O"* or *"domain must not depend on infra"* into a
+`CANDOR_POLICY` that **fails the build** when an edit breaks them (`deny`/`pure`/`forbid`, AS-EFF-006/009).
+A [candor-spec](https://github.com/tombaldwin/candor-spec) implementation; sibling of the Rust reference
+[candor](https://github.com/tombaldwin/candor) — same classifier ideas, the JVM's grain (bytecode + Spring).
+
+**A gate is only worth trusting if it never lies.** candor-java surfaces what it can't see — reflection,
+a `native` body, dispatch over an unknown impl — as `Unknown`, never a silent "pure." That contract is
+held by an adversarial [soundness fuzzer](soundness/) in CI that threads a known effect through every
+JVM call form (direct / lambda / method-ref / constructor / static-init / interface dispatch / anon
+class) and fails if any reachable method comes back pure. So when candor-java certifies a layer clean,
+you can act on it.
+
+**It maps, too** — a per-method effect audit and instant `show`/`where`/`callers`/`map`/`diff` queries
+over the report, for an agent or a human navigating unfamiliar code.
 
 ## Status: early prototype (v0)
 

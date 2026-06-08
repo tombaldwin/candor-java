@@ -1,4 +1,14 @@
-plugins { application }
+plugins {
+    application
+    id("com.gradleup.shadow") version "9.2.2"
+}
+
+// Release version (crate-semver axis), distinct from the `spec` contract version (0.3,
+// see candor-spec §2.1) and the git-hash engine build id baked below. Bumped on each
+// published artifact; the spec field tracks interface compatibility independently.
+version = "0.3.0"
+group = "uk.co.polymorphism.candor"
+
 repositories { mavenCentral() }
 dependencies {
     implementation("org.ow2.asm:asm:9.7")

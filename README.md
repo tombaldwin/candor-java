@@ -4,7 +4,7 @@
 can trust.** candor-java reads compiled bytecode via [ASM](https://asm.ow2.io/) and knows which methods
 reach the network, filesystem, a database, a subprocess, the environment — *transitively* — then turns
 invariants like *"the domain layer does no I/O"* or *"domain must not depend on infra"* into a
-`CANDOR_POLICY` that **fails the build** when an edit breaks them (`deny`/`pure`/`forbid`, AS-EFF-006/009).
+`CANDOR_POLICY` that **fails the build** when an edit breaks them (`deny`/`pure`/`allow`/`forbid`, AS-EFF-006/008/009).
 A [candor-spec](https://github.com/tombaldwin/candor-spec) implementation; sibling of the Rust reference
 [candor](https://github.com/tombaldwin/candor) — same classifier ideas, the JVM's grain (bytecode + Spring).
 
@@ -144,7 +144,7 @@ Add `--json` to any query for machine-readable output — the form an AI agent /
 | **regression guard** | `CANDOR_BASELINE=<saved.json> gradle run --args="<classes>"` | `AS-EFF-005` + **exit 1** if any function gained an effect vs the snapshot |
 | **no-ambient** | `CANDOR_NO_AMBIENT=1` (or a name prefix) | `AS-EFF-004` for direct ambient-authority use (route it through an injected collaborator) |
 | **conformance** | `CANDOR_STRICT=1` (or a class-name prefix) | `AS-EFF-001/002/003` — a class performs an effect no injected dependency provides (or injects one it never uses) |
-| **policy** | `CANDOR_POLICY=<file> gradle run --args="<classes>"` | `AS-EFF-006/009` + **exit 1** — architecture-as-code: a method violates a `deny`/`pure`/`forbid` boundary (transitively) |
+| **policy** | `CANDOR_POLICY=<file> gradle run --args="<classes>"` | `AS-EFF-006/008/009` + **exit 1** — architecture-as-code: a method violates a `deny`/`pure`/`allow`/`forbid` boundary (transitively) |
 
 ### Policy: architecture-as-code (`CANDOR_POLICY`)
 
@@ -154,26 +154,33 @@ flags any **transitive** violation (the cause may live in another method or laye
 
 ```text
 # .candor/policy
-deny Net Db Fs  domain     # the domain layer must reach no I/O — even through a helper
-pure            parse      # parsing must be side-effect-free
-deny Exec                  # nothing may spawn a subprocess (no scope = whole project)
-forbid domain -> infra     # the domain layer must not depend on the infrastructure layer
+deny Net Db Fs  domain          # the domain layer must reach no I/O — even through a helper
+pure            parse           # parsing must be side-effect-free
+deny Exec                       # nothing may spawn a subprocess (no scope = whole project)
+allow Net in billing  api.stripe.com   # billing may reach the network — but ONLY Stripe
+forbid domain -> infra          # the domain layer must not depend on the infrastructure layer
 ```
 
 ```text
 [AS-EFF-006] `app.domain.Checkout.run` performs { Fs }, forbidden by policy (scope `domain`): `deny Net Db Fs domain`
+[AS-EFF-008] `billing.Pay.leak` reaches { metrics.growthtracker.io } outside the allowlist, forbidden by policy (scope `billing`): `allow Net … api.stripe.com`
 [AS-EFF-009] `app.domain.Order.place` reaches into a forbidden layer (via `app.infra.Repo.save`), violating policy: `forbid domain -> infra`
 ```
 
 - **`deny` / `pure`** (`AS-EFF-006`) — *what* a layer may do. A method need not perform the effect
   directly; candor flags it reaching the effect through any callee. `pure` forbids every effect.
+- **`allow <Effect> in <scope> <value…>`** (`AS-EFF-008`) — *which endpoints* an effect may reach. Today
+  `Net` hosts: "billing may only talk to Stripe", checked against the **transitive** host surface (the
+  literal endpoint is often in a deep callee). The supply-chain boundary a model can't self-check.
+  Certifies the *visible* host surface — a runtime-computed host is honestly invisible, not silently
+  passed; matched port-insensitively by hostname.
 - **`forbid <A> -> <B>`** (`AS-EFF-009`) — *who* a layer may depend on. A method in scope A must not
   *transitively* reach a method in scope B (reverse-reachability over the call graph).
 
 Scopes match by dotted **segment** (so `domain` matches `app.domain.Svc.handle` and the `domain_logic`
 package, but not `subdomain`) — the same rule as the Rust impl's `scope_matches`. A set-but-unreadable
-policy fails **loud** ("policy NOT enforced"), never silently green. (AS-EFF-008 literal allowlists —
-`allow Net in <scope> <host>` — are the next rung; they need per-call literal extraction.)
+policy fails **loud** ("policy NOT enforced"), never silently green. (`allow` for `Exec` commands and
+`Fs` paths is the next rung — the host-literal extraction generalises to them.)
 
 ### Conformance: dependency injection *is* a capability system
 

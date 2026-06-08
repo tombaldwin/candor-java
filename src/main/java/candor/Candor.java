@@ -71,13 +71,19 @@ public class Candor {
     static final Set<String> KNOWN_EFFECTS = Set.of("Net", "Fs", "Db", "Exec", "Env", "Clock", "Rand", "Log", "Ipc");
 
     // CANDOR_POLICY rules (architecture-as-code, candor-spec §5). `deny`/`pure` = AS-EFF-006 (what a
-    // layer may do); `forbid A -> B` = AS-EFF-009 (who a layer may depend on).
+    // layer may do); `allow … in …` = AS-EFF-008 (which endpoints); `forbid A -> B` = AS-EFF-009 (who
+    // a layer may depend on).
     static final List<DenyRule> denyRules = new ArrayList<>();
+    static final List<AllowRule> allowRules = new ArrayList<>();
     static final List<ForbidRule> forbidRules = new ArrayList<>();
+    static final Map<String, TreeSet<String>> hostsDirect = new HashMap<>(); // fn -> literal Net endpoints
 
     /** A `deny <Effect…> [scope]` or `pure <scope>` rule. `effects` empty ⇒ a `pure` rule (ANY effect is
      *  forbidden). `scope` empty ⇒ the whole project. */
     static class DenyRule { TreeSet<String> effects = new TreeSet<>(); String scope = ""; String src; }
+    /** An `allow <Effect> [in <scope>] <value…>` rule: a method in scope performing that effect may reach
+     *  ONLY the listed values (Net hosts today). `scope` empty ⇒ whole project. */
+    static class AllowRule { String effect; String scope = ""; TreeSet<String> values = new TreeSet<>(); String src; }
     /** A `forbid <A> -> <B>` rule: a method in scope A must not transitively reach into scope B. */
     static class ForbidRule { String from, to; }
 
@@ -307,6 +313,33 @@ public class Candor {
                 }
             }
         }
+        // AS-EFF-008: a method in an allow-listed scope must reach ONLY the listed Net endpoints. Certifies
+        // the VISIBLE host surface (literal endpoints, propagated transitively); a method with Net but no
+        // visible host can't be certified and isn't flagged (the documented limit). Allowed values are
+        // UNIONed across every matching `allow Net …` rule, then reached hosts must be a subset.
+        Map<String, TreeSet<String>> hostsAcc = hostsFixpoint();
+        for (var e : new TreeMap<>(inferred).entrySet()) {
+            String fn = e.getKey();
+            if (!e.getValue().contains("Net")) continue;
+            Set<String> allowed = null; // null ⇒ no `allow Net` rule covers this method → not checked
+            String scopeLabel = "";
+            for (AllowRule r : allowRules) {
+                if (!"Net".equals(r.effect) || !scopeMatches(fn, r.scope)) continue;
+                if (allowed == null) { allowed = new HashSet<>(); scopeLabel = r.scope; }
+                for (String val : r.values) allowed.add(hostPart(val));
+            }
+            if (allowed == null) continue;
+            Set<String> finalAllowed = allowed;
+            List<String> bad = hostsAcc.getOrDefault(fn, new TreeSet<>()).stream()
+                    .filter(h -> !finalAllowed.contains(hostPart(h))).sorted().collect(Collectors.toList());
+            if (!bad.isEmpty()) {
+                System.out.printf("[AS-EFF-008] `%s` reaches { %s } outside the allowlist, forbidden by "
+                        + "policy%s: `allow Net … %s`%n", fn, String.join(", ", bad),
+                        scopeLabel.isEmpty() ? "" : " (scope `" + scopeLabel + "`)",
+                        String.join(" ", new TreeSet<>(allowed)));
+                v++;
+            }
+        }
         // AS-EFF-009: a method in scope A must not transitively reach into scope B (over the call graph).
         for (ForbidRule r : forbidRules) {
             for (String fn : new TreeSet<>(edges.keySet())) {
@@ -363,7 +396,18 @@ public class Candor {
                     }
                     break;
                 }
-                // `allow` (AS-EFF-008 literal allowlists) — parsed-position reserved, not yet enforced.
+                case "allow": {
+                    // allow <Effect> [in <scope>] <value…>
+                    if (t.length < 3) break;
+                    AllowRule r = new AllowRule();
+                    r.src = line;
+                    r.effect = t[1];
+                    int vi = 2;
+                    if (t.length > 3 && t[2].equals("in")) { r.scope = t[3]; vi = 4; }
+                    for (int i = vi; i < t.length; i++) r.values.add(t[i]);
+                    if (!r.values.isEmpty()) allowRules.add(r);
+                    break;
+                }
                 default:
                     break;
             }
@@ -403,6 +447,62 @@ public class Candor {
             for (String c : edges.getOrDefault(n, Set.of())) if (!seen.contains(c)) stack.push(c);
         }
         return null;
+    }
+
+    /** The network endpoint a string literal names — `host[:port]`, scheme/path/userinfo stripped — or
+     *  null if the string isn't host-shaped (an HTTP verb, a content type, a sentence, a path). The
+     *  decidable subset of "who it talks to"; rejecting non-hosts means extraction never FABRICATES an
+     *  endpoint (an over-extraction would be a false AS-EFF-008 alarm, not a missed one). */
+    static String netHostLiteral(String s) {
+        if (s == null || s.isBlank()) return null;
+        String h = s.trim();
+        int scheme = h.indexOf("://");
+        boolean hadScheme = scheme >= 0;
+        if (hadScheme) h = h.substring(scheme + 3);
+        int slash = h.indexOf('/');
+        if (slash >= 0) h = h.substring(0, slash);   // authority only
+        int at = h.lastIndexOf('@');
+        if (at >= 0) h = h.substring(at + 1);          // drop userinfo
+        if (h.isBlank() || h.contains(" ")) return null;
+        // A bare token must look like a host (a dotted name / IP, or `host:port`); else it's a verb etc.
+        if (!hadScheme && !h.contains(".") && !h.contains(":")) return null;
+        return h;
+    }
+
+    /** The bare hostname of an endpoint (port + any residue stripped), so the allowlist matches
+     *  port-insensitively: `api.stripe.com:443` is covered by `allow Net … api.stripe.com`. */
+    static String hostPart(String h) {
+        String x = h;
+        int scheme = x.indexOf("://"); if (scheme >= 0) x = x.substring(scheme + 3);
+        int slash = x.indexOf('/');    if (slash >= 0)  x = x.substring(0, slash);
+        int at = x.lastIndexOf('@');   if (at >= 0)     x = x.substring(at + 1);
+        int colon = x.indexOf(':');    if (colon >= 0)  x = x.substring(0, colon);
+        return x;
+    }
+
+    /** Propagate literal Net endpoints along the SAME call graph as effects (separate set), so a method
+     *  that reaches the network only through a callee still sees the callee's endpoints — the scale path
+     *  for AS-EFF-008 (the literal often lives in a deep, even cross-layer, callee). */
+    static Map<String, TreeSet<String>> hostsFixpoint() {
+        Map<String, TreeSet<String>> hosts = new HashMap<>();
+        for (var e : hostsDirect.entrySet()) hosts.put(e.getKey(), new TreeSet<>(e.getValue()));
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            for (var caller : edges.keySet()) {
+                TreeSet<String> add = new TreeSet<>();
+                for (String c : edges.get(caller)) {
+                    var ce = hosts.get(c);
+                    if (ce != null) add.addAll(ce);
+                }
+                if (add.isEmpty()) continue;
+                var set = hosts.computeIfAbsent(caller, k -> new TreeSet<>());
+                int before = set.size();
+                set.addAll(add);
+                if (set.size() != before) changed = true;
+            }
+        }
+        return hosts;
     }
 
     /** Load dependency reports named by CANDOR_DEPS (a path list — space/colon/comma-separated; a
@@ -588,6 +688,14 @@ public class Candor {
                         && (fin.getOpcode() == Opcodes.GETSTATIC || fin.getOpcode() == Opcodes.PUTSTATIC)) {
                     // A static field access triggers the owner's class-load → its `<clinit>` runs.
                     clinitEdge(id, fin.owner);
+                } else if (insn instanceof LdcInsnNode ldc && ldc.cst instanceof String s) {
+                    // A literal Net endpoint visible in this method (`new Socket("h",p)`, `new
+                    // URL("https://api.stripe.com/…")`) — the decidable subset of "who it talks to",
+                    // feeding the AS-EFF-008 host allowlist. Non-host strings are rejected by
+                    // netHostLiteral, so this never fabricates an endpoint. Method-level (the unit the
+                    // allowlist certifies); a runtime-computed host stays honestly invisible.
+                    String host = netHostLiteral(s);
+                    if (host != null) hostsDirect.computeIfAbsent(id, k -> new TreeSet<>()).add(host);
                 } else if (insn instanceof InvokeDynamicInsnNode idin) {
                     // Lambdas & method refs: the functional-interface factory's impl method (a project
                     // `lambda$…` synthetic, or a referenced method) carries the body's effects. Edge to
@@ -861,6 +969,7 @@ public class Candor {
         }
 
         Map<String, TreeSet<String>> fsAcc = fsFixpoint();
+        Map<String, TreeSet<String>> hostsAcc = hostsFixpoint();
         List<Map<String, Object>> entries = new ArrayList<>();
         inferred.entrySet().stream()
                 // Keep a method if it has effects, is an entry point, OR its class declares a
@@ -917,6 +1026,12 @@ public class Candor {
                                 .collect(Collectors.toList());
                         if (!kinds.isEmpty()) m.put("fs", kinds);
                     }
+                    // Literal Net endpoints statically visible from this method (SPEC §2 `hosts`): the
+                    // decidable subset of "who it talks to", feeding the AS-EFF-008 allowlist. Omitted
+                    // when none are visible (a runtime-computed host, or no Net) — never a completeness claim.
+                    TreeSet<String> hk = hostsAcc.get(fn);
+                    if (inf.contains("Net") && hk != null && !hk.isEmpty())
+                        m.put("hosts", new ArrayList<>(hk));
                     entries.add(m);
                 });
         // v0.2 self-describing envelope (candor-spec §2): a provenance header + the function entries.

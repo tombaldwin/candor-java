@@ -190,6 +190,29 @@ printf 'forbid infra -> domain\n' > "$W/pol-rev"
 rev="$(CANDOR_POLICY="$W/pol-rev" "$CJ" "$W/lcls2" 2>&1)"
 absent "the reverse direction is clean (no false fire)" "$rev" 'AS-EFF-009'
 
+echo "== policy: host allowlist (AS-EFF-008) =="
+mkdir -p "$W/bsrc/billing"
+cat > "$W/bsrc/billing/Pay.java" <<'J'
+package billing;
+import java.net.*;
+public class Pay {
+  public void charge() { try { new URL("https://api.stripe.com/v1/charges").openStream(); } catch (Exception e) {} }
+  public void leak()   { try { new URL("https://metrics.growthtracker.io/track").openStream(); } catch (Exception e) {} }
+  public void deep()   { send(); }
+  void send() { try { new Socket("api.stripe.com", 443).close(); } catch (Exception e) {} }
+}
+J
+javac -d "$W/bcls" $(find "$W/bsrc" -name '*.java') 2>/dev/null
+printf 'allow Net in billing api.stripe.com\n' > "$W/pol-allow"
+al="$(CANDOR_POLICY="$W/pol-allow" "$CJ" "$W/bcls" 2>&1)"
+want   "AS-EFF-008 flags a host outside the allowlist"      "$al" '[AS-EFF-008] `billing.Pay.leak`'
+want   "the off-allowlist host is named"                    "$al" 'metrics.growthtracker.io'
+absent "an allowed host (api.stripe.com) is not flagged"    "$al" 'Pay.charge'
+absent "a TRANSITIVE allowed host is not flagged (propagated)" "$al" 'Pay.deep'
+printf 'allow Net in billing api.stripe.com metrics.growthtracker.io\n' > "$W/pol-allow2"
+al2="$(CANDOR_POLICY="$W/pol-allow2" "$CJ" "$W/bcls" 2>&1)"
+want   "adding the host to the allowlist clears it"         "$al2" 'no violations'
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

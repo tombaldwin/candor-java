@@ -129,11 +129,41 @@ gradle run --args="where   report.json <Effect>"        # who performs an effect
 gradle run --args="callers report.json <fn-substring>"  # who calls a function (inverts the `calls` graph)
 gradle run --args="map     report.json"                 # class → effects overview, most-effectful first
 gradle run --args="diff    report.json <baseline.json>" # per-function effect delta (+gained / -lost)
+gradle run --args="containment report.json [baseline.json]"  # effect-leakage diagnostic + a ratchet
 ```
 
 Add `--json` to any query for machine-readable output — the form an AI agent / MCP server consumes
 (`show`→`[{fn,inferred,direct,fs,unresolved}]`, `where`→`{effect,directly,inherited}`,
 `callers`→`{callee:[callers]}`, `map`→`{class:{effects,functions}}`, `diff`→`[{fn,gained,lost,status}]`).
+
+### `containment` — an architecture-quality signal that isn't a "score"
+
+Raw effect *counts* are domain-dependent (a database app has lots of `Db` — that's not a defect), so
+there is no single "candor score". But the **dispersion** of a boundary effect across layers *is* a
+domain-independent signal: a DB-heavy app with all `Db` in `dao` is well-architected; one with `Db`
+smeared across `model`, `actions`, *and* `dao` is leaky — regardless of how much DB it does.
+`containment` measures exactly that — for each *boundary* effect (`Db`/`Net`/`Exec`/`Fs`/`Ipc`), the
+share that lives in its dominant layer (`Log`/`Clock` are ambient — reported, not scored). Layers are
+inferred from the package after the common root, no config:
+
+```text
+  effect  contained  layers   owner  ← leaked into
+  Db            49%       4   model (838)  ← dao:833, spring:6, actions:1   # ← half the DB is in `model`, not `dao`
+  Exec         100%       1   utils (1)
+```
+
+Given a **baseline** it's a *ratchet* — gate on things getting **worse**, note when they get **better**:
+
+```text
+[containment] a boundary effect leaked into a layer it wasn't in:   ← exit 1, fail the PR
+  Db → actions
+✓ improved — a boundary effect left a layer:                        ← informational
+  Db ⊘ legacy
+```
+
+Deliberately a **diagnostic + ratchet, not a single grade** — the absolute level is domain-dependent
+and gameable, but the trend (did a boundary effect leak into a new layer?) is a real, enforceable
+quality gate. Pair it with `cargo candor snapshot`-style baselines in CI.
 
 ## Modes
 

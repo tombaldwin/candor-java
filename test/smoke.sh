@@ -197,14 +197,16 @@ echo "== @PostConstruct/@PreDestroy lifecycle callbacks are entry points =="
 # Container-invoked init/shutdown hooks — no project call site, so an init that reads config or a
 # @PreDestroy that flushes/closes does orphaned I/O. The substring match covers javax/ and jakarta/.
 # Isolated dir/package (NOT $W/lsrc — the AS-EFF-009 test compiles that whole tree).
-mkdir -p "$W/lifesrc/jakarta/annotation" "$W/lifesrc/bean"
+mkdir -p "$W/lifesrc/jakarta/annotation" "$W/lifesrc/jakarta/persistence" "$W/lifesrc/bean"
 printf 'package jakarta.annotation; import java.lang.annotation.*;\n@Retention(RetentionPolicy.RUNTIME)@Target(ElementType.METHOD) public @interface PostConstruct {}\n' > "$W/lifesrc/jakarta/annotation/PostConstruct.java"
 printf 'package jakarta.annotation; import java.lang.annotation.*;\n@Retention(RetentionPolicy.RUNTIME)@Target(ElementType.METHOD) public @interface PreDestroy {}\n' > "$W/lifesrc/jakarta/annotation/PreDestroy.java"
+printf 'package jakarta.persistence; import java.lang.annotation.*;\n@Retention(RetentionPolicy.RUNTIME)@Target(ElementType.METHOD) public @interface PrePersist {}\n' > "$W/lifesrc/jakarta/persistence/PrePersist.java"
 cat > "$W/lifesrc/bean/Bean.java" <<'J'
-package bean; import jakarta.annotation.*;
+package bean; import jakarta.annotation.*; import jakarta.persistence.*;
 public class Bean {
   @PostConstruct public void warm(){ try { new java.io.FileInputStream("/tmp/cfg").close(); } catch(Exception e){} }
   @PreDestroy public void shutdown(){ try { new java.net.Socket("10.0.0.2",9).close(); } catch(Exception e){} }
+  @PrePersist public void stamp(){ try { new java.io.FileOutputStream("/tmp/audit").close(); } catch(Exception e){} }
 }
 J
 javac -d "$W/lifecls" $(find "$W/lifesrc" -name '*.java') 2>/dev/null
@@ -214,6 +216,7 @@ want   "@PostConstruct init is an entry point (gains Fs)"  "$("$CJ" show "$W/l.j
 want   "  …@PostConstruct entryPoint=true"                 "$(lep 'bean.Bean.warm')"     'True'
 want   "@PreDestroy shutdown is an entry point (gains Net)" "$("$CJ" show "$W/l.json" 'bean.Bean.shutdown')" 'Net'
 want   "  …@PreDestroy entryPoint=true"                    "$(lep 'bean.Bean.shutdown')" 'True'
+want   "@PrePersist JPA entity callback is an entry point" "$(lep 'bean.Bean.stamp')"    'True'
 
 echo "== interface-based runtime overrides (Spring lifecycle, servlet) are entry points =="
 # Hierarchy-based, via transSupers: an InitializingBean/DisposableBean hook or a servlet doGet has no

@@ -899,7 +899,13 @@ public class Candor {
      *  the mappings/listeners they're called by the framework with no project call site — a `@PreDestroy`
      *  that flushes/closes does real I/O at shutdown. The substring matches both `javax/` and `jakarta/`. */
     static final List<String> LIFECYCLE = List.of(
-            "annotation/PostConstruct", "annotation/PreDestroy");
+            "annotation/PostConstruct", "annotation/PreDestroy",
+            // JPA entity lifecycle callbacks — invoked by the persistence provider (Hibernate/…) on
+            // persist/load/update/remove events, no project call site. An @PrePersist that stamps audit
+            // fields or an @PostLoad that fetches does real I/O. Covers javax/ and jakarta/ persistence.
+            "persistence/PrePersist", "persistence/PostPersist", "persistence/PreUpdate",
+            "persistence/PostUpdate", "persistence/PreRemove", "persistence/PostRemove",
+            "persistence/PostLoad");
 
     /** Runtime-invoked override methods: when a class's supertype chain contains `iface` and it declares
      *  `(name, desc)`, that method is an ENTRY POINT — the runtime (executor, thread scheduler, servlet

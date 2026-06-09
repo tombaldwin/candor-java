@@ -215,6 +215,28 @@ want   "  …@PostConstruct entryPoint=true"                 "$(lep 'bean.Bean.w
 want   "@PreDestroy shutdown is an entry point (gains Net)" "$("$CJ" show "$W/l.json" 'bean.Bean.shutdown')" 'Net'
 want   "  …@PreDestroy entryPoint=true"                    "$(lep 'bean.Bean.shutdown')" 'True'
 
+echo "== interface-based runtime overrides (Spring lifecycle, servlet) are entry points =="
+# Hierarchy-based, via transSupers: an InitializingBean/DisposableBean hook or a servlet doGet has no
+# project call site (Spring/the container invokes it). Stubs stand in for the framework types.
+mkdir -p "$W/rsrc/org/springframework/beans/factory" "$W/rsrc/jakarta/servlet/http" "$W/rsrc/app"
+printf 'package org.springframework.beans.factory; public interface InitializingBean { void afterPropertiesSet() throws Exception; }\n' > "$W/rsrc/org/springframework/beans/factory/InitializingBean.java"
+printf 'package org.springframework.beans.factory; public interface DisposableBean { void destroy() throws Exception; }\n' > "$W/rsrc/org/springframework/beans/factory/DisposableBean.java"
+printf 'package jakarta.servlet.http; public abstract class HttpServlet { protected void doGet(Object q, Object r){} }\n' > "$W/rsrc/jakarta/servlet/http/HttpServlet.java"
+cat > "$W/rsrc/app/Comp.java" <<'J'
+package app; import org.springframework.beans.factory.*; import jakarta.servlet.http.HttpServlet;
+public class Comp {
+  public static class Init implements InitializingBean { public void afterPropertiesSet(){ try { new java.io.FileInputStream("/tmp/c").close(); } catch(Exception e){} } }
+  public static class Disp implements DisposableBean { public void destroy(){ try { new java.net.Socket("10.0.0.2",9).close(); } catch(Exception e){} } }
+  public static class Srv extends HttpServlet { protected void doGet(Object q, Object r){ try { new java.net.Socket("10.0.0.3",8).close(); } catch(Exception e){} } }
+}
+J
+javac -d "$W/rcls" $(find "$W/rsrc" -name '*.java') 2>/dev/null
+"$CJ" "$W/rcls/app" --json "$W/rr.json" >/dev/null 2>&1
+rep2() { python3 -c "import json;print(next((e.get('entryPoint') for e in json.load(open('$W/rr.json'))['functions'] if e['fn']=='$1'), 'absent'))"; }
+want   "InitializingBean.afterPropertiesSet is an entry point" "$(rep2 'app.Comp$Init.afterPropertiesSet')" 'True'
+want   "DisposableBean.destroy is an entry point"              "$(rep2 'app.Comp$Disp.destroy')" 'True'
+want   "servlet HttpServlet.doGet is an entry point"           "$(rep2 'app.Comp$Srv.doGet')" 'True'
+
 echo "== policy: deny / pure (AS-EFF-006) =="
 # $W/cls holds Fx (reads/writes/both → Fs; spawn → Exec; dyn → Unknown).
 printf 'deny Fs Fx\n' > "$W/pol-deny"

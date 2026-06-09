@@ -721,10 +721,13 @@ public class Candor {
     static void analyze(ClassNode cn) {
         String dottedClass = cn.name.replace('/', '.');
         boolean classTx = annoPresent(cn.visibleAnnotations, TX);
-        // Supertypes once per class — used to spot runtime-invoked task methods (Runnable/Thread/Callable).
+        // Runtime-invoked overrides this class is eligible for: the RUNTIME_OVERRIDES rows whose
+        // supertype-substring appears in this class's supertype chain (computed once per class). A
+        // matching method declared here is then an entry point — the runtime invokes it, not project code.
         Set<String> supers = transSupers(cn.name);
-        boolean isRunnable = supers.contains("java/lang/Runnable") || supers.contains("java/lang/Thread");
-        boolean isCallable = supers.contains("java/util/concurrent/Callable");
+        List<String[]> runtimeRows = RUNTIME_OVERRIDES.stream()
+                .filter(r -> supers.stream().anyMatch(s -> s.contains(r[0])))
+                .toList();
         for (MethodNode mn : cn.methods) {
             // Constructors (`<init>`) AND static initializers (`<clinit>`) are both analyzed: a `new X()`
             // edges to `X.<init>`, and a class-load trigger (`new`, a static call, a static field access)
@@ -760,15 +763,15 @@ public class Candor {
             // detached thread), so the honest model is the runtime-invoked entry point it actually is.
             if (mn.name.equals("finalize") && mn.desc.equals("()V") && (mn.access & Opcodes.ACC_STATIC) == 0)
                 entryPoints.add(id);
-            // A `Runnable.run()` / `Thread.run()` / `Callable.call()` override is invoked by the runtime —
-            // an executor, the thread scheduler, a timer — NOT by a project call site (the launch is
-            // `executor.submit(r)` / `thread.start()`, and the actual invocation of run() lives in
-            // non-project JDK code candor can't see through). Same orphaned-effect shape as finalize: the
-            // task body's I/O would sit in run()'s own entry, unreachable from any root. Mark it the
-            // runtime entry point it is, so a from-entry-points walk sees the background task's effects.
-            if ((isRunnable && mn.name.equals("run") && mn.desc.equals("()V"))
-                    || (isCallable && mn.name.equals("call") && mn.desc.equals("()Ljava/lang/Object;")))
-                entryPoints.add(id);
+            // A runtime-invoked override (Runnable/Thread/Callable task body, Spring lifecycle hook,
+            // servlet/filter/listener) — invoked by the runtime with NO project call site, so its I/O
+            // would otherwise be orphaned from every reachability root (the finalize shape). A null
+            // descriptor matches by method name alone (servlet methods carry javax/jakarta param types).
+            for (String[] r : runtimeRows)
+                if (mn.name.equals(r[1]) && (r[2] == null || mn.desc.equals(r[2]))) {
+                    entryPoints.add(id);
+                    break;
+                }
 
             for (AbstractInsnNode insn : mn.instructions) {
                 if (insn instanceof MethodInsnNode min) {
@@ -897,6 +900,32 @@ public class Candor {
      *  that flushes/closes does real I/O at shutdown. The substring matches both `javax/` and `jakarta/`. */
     static final List<String> LIFECYCLE = List.of(
             "annotation/PostConstruct", "annotation/PreDestroy");
+
+    /** Runtime-invoked override methods: when a class's supertype chain contains `iface` and it declares
+     *  `(name, desc)`, that method is an ENTRY POINT — the runtime (executor, thread scheduler, servlet
+     *  container, Spring lifecycle) invokes it with NO project call site, so its I/O would otherwise be
+     *  orphaned from every reachability root (the same shape as finalize). `iface` is a SUBSTRING of the
+     *  internal supertype name, so a single entry covers `javax/` and `jakarta/` variants. */
+    static final List<String[]> RUNTIME_OVERRIDES = List.of(
+            // {supertype-substring, method, descriptor}
+            new String[] {"java/lang/Runnable", "run", "()V"},
+            new String[] {"java/lang/Thread", "run", "()V"},
+            new String[] {"java/util/concurrent/Callable", "call", "()Ljava/lang/Object;"},
+            // Spring bean lifecycle (interface form of @PostConstruct/@PreDestroy) + startup runners.
+            new String[] {"springframework/beans/factory/InitializingBean", "afterPropertiesSet", "()V"},
+            new String[] {"springframework/beans/factory/DisposableBean", "destroy", "()V"},
+            new String[] {"springframework/boot/CommandLineRunner", "run", "([Ljava/lang/String;)V"},
+            new String[] {"springframework/boot/ApplicationRunner", "run",
+                    "(Lorg/springframework/boot/ApplicationArguments;)V"},
+            // Servlet container lifecycle (raw servlets/filters/listeners — Spring MVC uses @*Mapping).
+            new String[] {"servlet/http/HttpServlet", "doGet", null},
+            new String[] {"servlet/http/HttpServlet", "doPost", null},
+            new String[] {"servlet/http/HttpServlet", "doPut", null},
+            new String[] {"servlet/http/HttpServlet", "doDelete", null},
+            new String[] {"servlet/http/HttpServlet", "service", null},
+            new String[] {"servlet/Filter", "doFilter", null},
+            new String[] {"servlet/ServletContextListener", "contextInitialized", null},
+            new String[] {"servlet/ServletContextListener", "contextDestroyed", null});
 
     static boolean annoPresent(List<AnnotationNode> anns, String descSubstring) {
         if (anns == null) return false;

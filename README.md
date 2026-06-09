@@ -15,8 +15,8 @@ JVM call form (direct / lambda / method-ref / constructor / static-init / interf
 class) and fails if any reachable method comes back pure. So when candor-java certifies a layer clean,
 you can act on it.
 
-**It maps, too** — a per-method effect audit and instant `show`/`where`/`callers`/`map`/`diff` queries
-over the report, for an agent or a human navigating unfamiliar code.
+**It maps, too** — a per-method effect audit and instant `show`/`where`/`callers`/`map`/`diff`/
+`containment`/`reachable` queries over the report, for an agent or a human navigating unfamiliar code.
 
 ## Status: early prototype (v0)
 
@@ -37,7 +37,11 @@ all of it — so candor-java reads Spring's **declarations** instead:
 - Spring Data repositories (`extends CrudRepository`/`JpaRepository`) → calls to them are `Db`
 - `RestTemplate` / `WebClient` / `@FeignClient` → `Net`; `JdbcTemplate` / `EntityManager` → `Db`;
   `JmsTemplate` / `KafkaTemplate` → `Net`; `Environment.getProperty` → `Env`
-- `@GetMapping`/`@*Mapping`, `@Scheduled`, `@KafkaListener`/`@*Listener` → marked as **entry points**
+- **Entry points** (runtime-invoked roots, no project call site): `@*Mapping`, `@Scheduled`,
+  `@*Listener`/`@EventListener`; bean lifecycle `@PostConstruct`/`@PreDestroy` + `InitializingBean`/
+  `DisposableBean` + `CommandLineRunner`/`ApplicationRunner`; servlets/filters/listeners; JPA entity
+  callbacks (`@PrePersist`/…); `Runnable`/`Thread`/`Callable` task bodies; and `finalize()`. The
+  `reachable` query unions effects over these to show what the app does at runtime.
 
 On `spring-sample/`, `register()` (a `@Transactional` method calling a Spring Data repo + a
 `RestTemplate`) correctly infers `{ Db, Net }`, and the `@GetMapping` controller inherits
@@ -130,6 +134,7 @@ gradle run --args="callers report.json <fn-substring>"  # who calls a function (
 gradle run --args="map     report.json"                 # class → effects overview, most-effectful first
 gradle run --args="diff    report.json <baseline.json>" # per-function effect delta (+gained / -lost)
 gradle run --args="containment report.json [baseline.json]"  # effect-leakage diagnostic + a ratchet
+gradle run --args="reachable report.json"               # what the app DOES at runtime (union over entry points)
 ```
 
 Add `--json` to any query for machine-readable output — the form an AI agent / MCP server consumes

@@ -988,24 +988,40 @@ public class Candor {
 
     /** CHA: project subtypes-or-self of `owner` that provide a concrete (name,desc) impl. */
     static List<String> chaTargets(String owner, String name, String desc) {
-        List<String> out = new ArrayList<>();
+        Set<String> out = new LinkedHashSet<>();
         for (ClassNode c : ALL) {
-            if (c.name.equals(owner) || transSupers(c.name).contains(owner)) {
-                if (declaresConcrete(c, name, desc)) out.add(c.name.replace('/', '.') + "." + name);
+            if (!(c.name.equals(owner) || transSupers(c.name).contains(owner))) continue;
+            if (declaresConcrete(c, name, desc)) {
+                out.add(c.name.replace('/', '.') + "." + name);
+            } else {
+                // c is owner-or-a-subtype that INHERITS the impl from its OWN superchain — a concrete
+                // GRANDPARENT (the ubiquitous `Foo` / `Foo$AbstractBase` library pattern, where the impl
+                // lives in a shared base like `FilterableList$AbstractBase`). The receiver-type-only and
+                // owner-superchain checks both miss it, because the impl is reached by going DOWN from
+                // owner to c then UP c's chain. Resolve it so the dispatch isn't a false Unknown. (Found
+                // by the gradle-cache sweep: byte-buddy `MethodList.filter`/`getOnly` were 600+ false
+                // Unknowns inside byte-buddy's own jar — pure methods, so precision, not soundness.)
+                String impl = nearestConcreteSuper(c.name, name, desc);
+                if (impl != null) out.add(impl);
             }
         }
-        // Inherited concrete impl: when neither `owner` nor any subtype overrides `(name, desc)`, the
-        // dispatch resolves to a concrete method inherited from a project SUPERclass (e.g. a call to
-        // `getBean`/`fetchSystemProperties` on a NEMsAction subclass, defined once in the base). The
-        // loop above only scans owner-and-subtypes, so it misses this — losing both the resolution
-        // (→ a false Unknown) and the edge that propagates the inherited method's real effects.
-        if (out.isEmpty())
-            for (String sup : transSupers(owner)) {
-                ClassNode c = byName.get(sup);
-                if (c != null && declaresConcrete(c, name, desc))
-                    out.add(sup.replace('/', '.') + "." + name);
-            }
-        return out;
+        // owner itself inherits a concrete from a SUPER (a default on a super-interface) with no subtype
+        // contributing — the original single-receiver inherited-concrete case.
+        if (out.isEmpty()) {
+            String impl = nearestConcreteSuper(owner, name, desc);
+            if (impl != null) out.add(impl);
+        }
+        return new ArrayList<>(out);
+    }
+
+    /** The concrete `(name, desc)` declaration `internal` would invoke via inheritance: the first one
+     *  found walking its supertype chain (excludes `internal` itself — the caller checks that). */
+    static String nearestConcreteSuper(String internal, String name, String desc) {
+        for (String sup : transSupers(internal)) {
+            ClassNode c = byName.get(sup);
+            if (c != null && declaresConcrete(c, name, desc)) return sup.replace('/', '.') + "." + name;
+        }
+        return null;
     }
 
     static boolean declaresConcrete(ClassNode c, String name, String desc) {

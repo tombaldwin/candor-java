@@ -531,6 +531,30 @@ want   "genuine project-iface dispatch stays Unknown"  "$("$CJ" show "$W/r2.json
 want   "Unknown carries a why-tag"                     "$rep2" '"unknownWhy"'
 want   "why-tag names the unresolved iface method"     "$rep2" 'dispatch:Inh$Strategy.apply'
 
+echo "== JDK effect APIs: DNS resolution + concurrent PRNGs (probe-found gaps) =="
+# A controlled JDK-effect probe found these unclassified despite being clear in-vocab effects:
+# InetAddress DNS lookups (Net) and ThreadLocalRandom/SplittableRandom (Rand, like java.util.Random).
+# getByAddress(byte[]) builds from raw bytes with NO lookup → must stay pure (precision).
+cat > "$W/src/Jdk.java" <<'J'
+import java.net.InetAddress;
+import java.util.concurrent.ThreadLocalRandom;
+public class Jdk {
+  static void dns()       { try { InetAddress.getByName("example.com"); } catch (Exception e) {} }
+  static void localHost() { try { InetAddress.getLocalHost(); } catch (Exception e) {} }
+  static void byAddr()    { try { InetAddress.getByAddress(new byte[4]); } catch (Exception e) {} }
+  static void tlr()       { int n = ThreadLocalRandom.current().nextInt(); }
+  static void split()     { long n = new java.util.SplittableRandom().nextLong(); }
+}
+J
+javac -d "$W/jcls" "$W/src/Jdk.java" 2>/dev/null
+"$CJ" "$W/jcls" --json "$W/jdk.json" >/dev/null 2>&1
+jdk="$(cat "$W/jdk.json")"
+want   "InetAddress.getByName (DNS) is Net"          "$("$CJ" show "$W/jdk.json" 'Jdk.dns')"       'Net'
+want   "InetAddress.getLocalHost is Net"             "$("$CJ" show "$W/jdk.json" 'Jdk.localHost')" 'Net'
+absent "InetAddress.getByAddress (no lookup) is pure" "$jdk"                                       '"Jdk.byAddr"'
+want   "ThreadLocalRandom is Rand"                   "$("$CJ" show "$W/jdk.json" 'Jdk.tlr')"       'Rand'
+want   "SplittableRandom is Rand"                    "$("$CJ" show "$W/jdk.json" 'Jdk.split')"     'Rand'
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

@@ -1189,6 +1189,13 @@ public class Candor {
                 || owner.equals("org.springframework.web.client.RestTemplate")
                 || owner.equals("org.springframework.web.client.RestClient")
                 || owner.startsWith("org.springframework.web.reactive.function.client.")
+                // DNS resolution — getByName/getAllByName/getLocalHost/getCanonicalHostName send a query
+                // to the resolver (UDP/TCP) = network egress. getByAddress(byte[]) builds from bytes with
+                // NO lookup, so it's excluded. (Found by a controlled JDK-effect probe: all three lookup
+                // forms read Net 0 — a silent under-report on an extremely common API.)
+                || (owner.equals("java.net.InetAddress")
+                    && (method.equals("getByName") || method.equals("getAllByName")
+                        || method.equals("getLocalHost") || method.equals("getCanonicalHostName")))
                 || (owner.equals("java.net.URL")
                     && (method.equals("openStream") || method.equals("openConnection") || method.equals("getContent"))))
             return "Net";
@@ -1223,8 +1230,12 @@ public class Candor {
                 && (owner.equals("java.time.Instant") || owner.equals("java.time.LocalDateTime")
                     || owner.equals("java.time.LocalDate") || owner.equals("java.time.ZonedDateTime")))
             return "Clock";
-        // Randomness
+        // Randomness — the concrete PRNG/CSPRNG classes (mirrors `new Random()` / `Math.random()`).
+        // ThreadLocalRandom and SplittableRandom are the java.util(.concurrent) generators a probe found
+        // unclassified despite Random being flagged — same effect category, added for consistency.
         if (owner.equals("java.util.Random") || owner.equals("java.security.SecureRandom")
+                || owner.equals("java.util.concurrent.ThreadLocalRandom")
+                || owner.equals("java.util.SplittableRandom")
                 || (owner.equals("java.lang.Math") && method.equals("random")))
             return "Rand";
         // Logging

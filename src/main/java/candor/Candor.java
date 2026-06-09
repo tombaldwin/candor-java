@@ -690,6 +690,22 @@ public class Candor {
 
     static List<ClassNode> load(Path root) throws IOException {
         List<ClassNode> out = new ArrayList<>();
+        // A `.jar`/`.zip` is an ARCHIVE, not a directory: `Files.walk` over it yields only the archive
+        // file itself (no `.class` entries), so the loader silently returned ZERO classes from a jar —
+        // despite the usage advertising `<dir-or-jar-of-classes>`. Mount it as a zip filesystem and walk
+        // its entries, so analysing a built jar / a dependency actually works.
+        String name = root.toString().toLowerCase();
+        if (Files.isRegularFile(root) && (name.endsWith(".jar") || name.endsWith(".zip"))) {
+            try (FileSystem fs = FileSystems.newFileSystem(root)) {
+                for (Path r : fs.getRootDirectories()) collectClasses(r, out);
+            }
+        } else {
+            collectClasses(root, out);
+        }
+        return out;
+    }
+
+    static void collectClasses(Path root, List<ClassNode> out) throws IOException {
         try (Stream<Path> s = Files.walk(root)) {
             for (Path p : (Iterable<Path>) s.filter(x -> x.toString().endsWith(".class"))::iterator) {
                 ClassNode cn = new ClassNode();
@@ -697,7 +713,6 @@ public class Candor {
                 out.add(cn);
             }
         }
-        return out;
     }
 
     /** Identify Spring Data repositories (effect: Db) and @FeignClient interfaces (Net). */
@@ -763,6 +778,11 @@ public class Candor {
             // Rust we can't attribute it to a drop SITE (finalization is non-deterministic and runs on a
             // detached thread), so the honest model is the runtime-invoked entry point it actually is.
             if (mn.name.equals("finalize") && mn.desc.equals("()V") && (mn.access & Opcodes.ACC_STATIC) == 0)
+                entryPoints.add(id);
+            // The program entry `public static void main(String[])` — the JVM invokes it to start the app,
+            // the root of a CLI tool's reachability (candor-spec §2, like the Rust impl's `fn main`).
+            if (mn.name.equals("main") && mn.desc.equals("([Ljava/lang/String;)V")
+                    && (mn.access & Opcodes.ACC_STATIC) != 0)
                 entryPoints.add(id);
             // A runtime-invoked override (Runnable/Thread/Callable task body, Spring lifecycle hook,
             // servlet/filter/listener) — invoked by the runtime with NO project call site, so its I/O

@@ -250,6 +250,17 @@ want   "InitializingBean.afterPropertiesSet is an entry point" "$(rep2 'app.Comp
 want   "DisposableBean.destroy is an entry point"              "$(rep2 'app.Comp$Disp.destroy')" 'True'
 want   "servlet HttpServlet.doGet is an entry point"           "$(rep2 'app.Comp$Srv.doGet')" 'True'
 
+echo "== program entry (main) + jar input (validation regressions) =="
+# main() is the JVM-invoked program entry — a reachability root, like the Rust impl's `fn main`.
+want   "public static void main is an entry point" \
+       "$(python3 -c "import json;print(next((e.get('entryPoint') for e in json.load(open('$W/r.json'))['functions'] if e['fn']=='Fx.main'), 'absent'))")" 'True'
+# A .jar is an archive, not a directory: walking it finds no .class entries, so candor used to return a
+# SILENTLY EMPTY report for a jar despite advertising jar input. Must mount + analyse the archive.
+jar cf "$W/fx.jar" -C "$W/cls" . 2>/dev/null
+"$CJ" "$W/fx.jar" --json "$W/jar.json" >/dev/null 2>&1
+want   "jar input is analysed, not silently empty"  "$(cat "$W/jar.json")" '"Fx.reads"'
+want   "jar input resolves effects (Fs from the jar)" "$("$CJ" show "$W/jar.json" reads 2>/dev/null)" 'Fs'
+
 echo "== policy: deny / pure (AS-EFF-006) =="
 # $W/cls holds Fx (reads/writes/both → Fs; spawn → Exec; dyn → Unknown).
 printf 'deny Fs Fx\n' > "$W/pol-deny"

@@ -86,6 +86,16 @@ have a dependency's *report*, not its bytecode.
   documented residual gap.
 - a **cross-jar** `<clinit>` (a static initializer in a *dependency*, reached only through the report)
   isn't attributed — the local trigger-edges below need the dependency's bytecode on the classpath.
+- **CHA over a universal interface method floods on interface-heavy libraries.** A call on an
+  interface-typed receiver (`Iterator.next`, `Function.apply`) is resolved by Class Hierarchy Analysis
+  to *every* impl in the analysed set — sound (any impl could be there), but when one impl does I/O and
+  the method is called pervasively, the effect floods. Self-analysing `scala-library` reports ~74% of
+  functions as `Net`/`Fs` because a single URL-reading `Iterator` impl is CHA-reachable from every
+  iterator traversal. The Rust impl avoids this by *devirtualizing* to the concrete type (the compiler
+  gives it the monomorphized receiver); bytecode CHA has no equivalent without type-flow analysis. In
+  practice it's bounded: a real Scala/Kotlin *app* has the stdlib as an unanalysed dependency, so those
+  calls are `Unknown`, not a flood — it bites library *self*-analysis. (Counts being misleading here is
+  exactly why candor reports a structure, not a "score" — see `containment`.)
 
 **Constructors, static initializers & lambdas/method references** *are* handled — an effectful one
 propagates to its use site instead of looking pure:

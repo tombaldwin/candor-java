@@ -1171,7 +1171,10 @@ public class Candor {
                 || owner.equals("java.io.FileReader") || owner.equals("java.io.FileWriter")
                 || owner.equals("java.io.RandomAccessFile") || owner.equals("java.io.File")
                 || owner.equals("java.nio.channels.FileChannel")
-                || owner.equals("java.nio.channels.AsynchronousFileChannel"))
+                || owner.equals("java.nio.channels.AsynchronousFileChannel")
+                // Archive readers open and read a file from disk (the ctor opens it, entries/getInputStream
+                // read it); ZipEntry/JarEntry data types stay pure. (Found by a controlled JDK probe.)
+                || owner.equals("java.util.zip.ZipFile") || owner.equals("java.util.jar.JarFile"))
             return "Fs";
         // Network — raw sockets, NIO socket channels (the channel type IS the network boundary; the
         // generic ReadableByteChannel/WritableByteChannel interfaces are NOT classified, they may wrap a
@@ -1197,7 +1200,24 @@ public class Candor {
                     && (method.equals("getByName") || method.equals("getAllByName")
                         || method.equals("getLocalHost") || method.equals("getCanonicalHostName")))
                 || (owner.equals("java.net.URL")
-                    && (method.equals("openStream") || method.equals("openConnection") || method.equals("getContent"))))
+                    && (method.equals("openStream") || method.equals("openConnection") || method.equals("getContent")))
+                // JNDI — a naming/directory lookup contacts a remote naming service (LDAP/RMI/DNS/CORBA);
+                // `InitialContext.lookup("ldap://…")` is exactly the hidden network egress an effect checker
+                // exists to surface (the Log4Shell vector). The lookup/bind/search family is the boundary;
+                // Name/NameParser data types stay pure. (Found by a controlled JDK probe — was Net 0.)
+                || (owner.startsWith("javax.naming.")
+                    && (method.equals("lookup") || method.equals("lookupLink") || method.equals("doLookup")
+                        || method.equals("bind") || method.equals("rebind") || method.equals("rename")
+                        || method.equals("list") || method.equals("listBindings") || method.equals("search")
+                        || method.equals("createSubcontext") || method.equals("destroySubcontext")
+                        || method.equals("getAttributes") || method.equals("modifyAttributes")))
+                // RMI — the registry/Naming facade resolves and invokes remote objects over the network.
+                || owner.equals("java.rmi.Naming")
+                || owner.equals("java.rmi.registry.Registry")
+                || owner.equals("java.rmi.registry.LocateRegistry")
+                // The JDK's built-in HTTP server binds a listening socket (create/bind) and serves it.
+                || (owner.equals("com.sun.net.httpserver.HttpServer")
+                    && (method.equals("create") || method.equals("bind") || method.equals("start"))))
             return "Net";
         // Messaging (Net-family)
         if (owner.equals("org.springframework.jms.core.JmsTemplate")

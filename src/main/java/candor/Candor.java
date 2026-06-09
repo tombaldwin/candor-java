@@ -1150,15 +1150,27 @@ public class Candor {
             return "Unknown";
         if (owner.equals("java.lang.reflect.Proxy") && method.equals("newProxyInstance")) return "Unknown";
         if (owner.equals("java.lang.invoke.MethodHandle") && method.startsWith("invoke")) return "Unknown";
-        // Filesystem
+        // Filesystem — classic java.io streams + NIO file channels (the channel's identity IS file I/O).
         if (owner.equals("java.nio.file.Files")
                 || owner.equals("java.io.FileInputStream") || owner.equals("java.io.FileOutputStream")
                 || owner.equals("java.io.FileReader") || owner.equals("java.io.FileWriter")
-                || owner.equals("java.io.RandomAccessFile") || owner.equals("java.io.File"))
+                || owner.equals("java.io.RandomAccessFile") || owner.equals("java.io.File")
+                || owner.equals("java.nio.channels.FileChannel")
+                || owner.equals("java.nio.channels.AsynchronousFileChannel"))
             return "Fs";
-        // Network — raw sockets, java.net.http, and Spring's outbound HTTP clients
+        // Network — raw sockets, NIO socket channels (the channel type IS the network boundary; the
+        // generic ReadableByteChannel/WritableByteChannel interfaces are NOT classified, they may wrap a
+        // file or an in-memory buffer), java.net.http, and Spring's outbound HTTP clients. Without the NIO
+        // channels, every NIO-based stack (Netty, async/reactive frameworks, modern high-perf I/O) was a
+        // silent under-report — found by the gradle-cache soundness sweep (httpcore5 uses SocketChannel).
         if (owner.equals("java.net.Socket") || owner.equals("java.net.ServerSocket")
-                || owner.equals("java.net.DatagramSocket") || owner.startsWith("java.net.http.")
+                || owner.equals("java.net.DatagramSocket")
+                || owner.equals("java.nio.channels.SocketChannel")
+                || owner.equals("java.nio.channels.ServerSocketChannel")
+                || owner.equals("java.nio.channels.DatagramChannel")
+                || owner.equals("java.nio.channels.AsynchronousSocketChannel")
+                || owner.equals("java.nio.channels.AsynchronousServerSocketChannel")
+                || owner.startsWith("java.net.http.")
                 || owner.equals("org.springframework.web.client.RestTemplate")
                 || owner.equals("org.springframework.web.client.RestClient")
                 || owner.startsWith("org.springframework.web.reactive.function.client.")

@@ -555,6 +555,31 @@ absent "InetAddress.getByAddress (no lookup) is pure" "$jdk"                    
 want   "ThreadLocalRandom is Rand"                   "$("$CJ" show "$W/jdk.json" 'Jdk.tlr')"       'Rand'
 want   "SplittableRandom is Rand"                    "$("$CJ" show "$W/jdk.json" 'Jdk.split')"     'Rand'
 
+echo "== JDK effect APIs: JNDI/RMI/HttpServer (Net), archive readers (Fs) — probe-found gaps =="
+# JNDI lookup is the Log4Shell network-egress vector; RMI + the JDK HttpServer bind/contact sockets;
+# ZipFile/JarFile read an archive off disk. Precision: ZipEntry (pure data) + a non-lookup naming method
+# must stay pure.
+cat > "$W/src/Jdk2.java" <<'J'
+import java.nio.file.*;
+public class Jdk2 {
+  static void jndi()      { try { new javax.naming.InitialContext().lookup("ldap://x"); } catch (Exception e) {} }
+  static void rmi()       { try { java.rmi.Naming.lookup("rmi://x/y"); } catch (Exception e) {} }
+  static void httpServer(){ try { com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress(0), 0); } catch (Exception e) {} }
+  static void zip()       { try { new java.util.zip.ZipFile("/tmp/x.zip").entries(); } catch (Exception e) {} }
+  static void jar()       { try { new java.util.jar.JarFile("/tmp/x.jar").entries(); } catch (Exception e) {} }
+  static void zipEntry()  { java.util.zip.ZipEntry z = new java.util.zip.ZipEntry("n"); long s = z.getSize(); } // pure
+}
+J
+javac -d "$W/jcls2" "$W/src/Jdk2.java" 2>/dev/null
+"$CJ" "$W/jcls2" --json "$W/jdk2.json" >/dev/null 2>&1
+jdk2="$(cat "$W/jdk2.json")"
+want   "JNDI InitialContext.lookup is Net (Log4Shell vector)" "$("$CJ" show "$W/jdk2.json" 'Jdk2.jndi')"       'Net'
+want   "RMI Naming.lookup is Net"                             "$("$CJ" show "$W/jdk2.json" 'Jdk2.rmi')"        'Net'
+want   "JDK HttpServer.create is Net"                         "$("$CJ" show "$W/jdk2.json" 'Jdk2.httpServer')" 'Net'
+want   "ZipFile read is Fs"                                   "$("$CJ" show "$W/jdk2.json" 'Jdk2.zip')"        'Fs'
+want   "JarFile read is Fs"                                   "$("$CJ" show "$W/jdk2.json" 'Jdk2.jar')"        'Fs'
+absent "ZipEntry data type stays pure"                        "$jdk2"                                          '"Jdk2.zipEntry"'
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

@@ -193,6 +193,28 @@ want   "  …Runnable.run() entryPoint=true"                        "$(ep 'Tk$Ta
 want   "Callable.call() task body is an entry point"              "$(ep 'Tk$Job.call')"  'True'
 want   "a run() on a NON-task class is NOT a task entry point"    "$(ep 'Tk$NotATask.run')" 'absent'
 
+echo "== @PostConstruct/@PreDestroy lifecycle callbacks are entry points =="
+# Container-invoked init/shutdown hooks — no project call site, so an init that reads config or a
+# @PreDestroy that flushes/closes does orphaned I/O. The substring match covers javax/ and jakarta/.
+# Isolated dir/package (NOT $W/lsrc — the AS-EFF-009 test compiles that whole tree).
+mkdir -p "$W/lifesrc/jakarta/annotation" "$W/lifesrc/bean"
+printf 'package jakarta.annotation; import java.lang.annotation.*;\n@Retention(RetentionPolicy.RUNTIME)@Target(ElementType.METHOD) public @interface PostConstruct {}\n' > "$W/lifesrc/jakarta/annotation/PostConstruct.java"
+printf 'package jakarta.annotation; import java.lang.annotation.*;\n@Retention(RetentionPolicy.RUNTIME)@Target(ElementType.METHOD) public @interface PreDestroy {}\n' > "$W/lifesrc/jakarta/annotation/PreDestroy.java"
+cat > "$W/lifesrc/bean/Bean.java" <<'J'
+package bean; import jakarta.annotation.*;
+public class Bean {
+  @PostConstruct public void warm(){ try { new java.io.FileInputStream("/tmp/cfg").close(); } catch(Exception e){} }
+  @PreDestroy public void shutdown(){ try { new java.net.Socket("10.0.0.2",9).close(); } catch(Exception e){} }
+}
+J
+javac -d "$W/lifecls" $(find "$W/lifesrc" -name '*.java') 2>/dev/null
+"$CJ" "$W/lifecls/bean" --json "$W/l.json" >/dev/null 2>&1
+lep() { python3 -c "import json;print(next((e.get('entryPoint') for e in json.load(open('$W/l.json'))['functions'] if e['fn']=='$1'), 'absent'))"; }
+want   "@PostConstruct init is an entry point (gains Fs)"  "$("$CJ" show "$W/l.json" 'bean.Bean.warm')" 'Fs'
+want   "  …@PostConstruct entryPoint=true"                 "$(lep 'bean.Bean.warm')"     'True'
+want   "@PreDestroy shutdown is an entry point (gains Net)" "$("$CJ" show "$W/l.json" 'bean.Bean.shutdown')" 'Net'
+want   "  …@PreDestroy entryPoint=true"                    "$(lep 'bean.Bean.shutdown')" 'True'
+
 echo "== policy: deny / pure (AS-EFF-006) =="
 # $W/cls holds Fx (reads/writes/both → Fs; spawn → Exec; dyn → Unknown).
 printf 'deny Fs Fx\n' > "$W/pol-deny"

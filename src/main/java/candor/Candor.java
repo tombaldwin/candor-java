@@ -749,7 +749,8 @@ public class Candor {
             // Spring annotations on this method (the effect Spring's proxy/generated code performs).
             if (classTx || annoPresent(mn.visibleAnnotations, TX)) dir.add("Db");
             if (annoPresent(mn.visibleAnnotations, SCHEDULED)
-                    || annoPresentAny(mn.visibleAnnotations, MAPPING_OR_LISTENER))
+                    || annoPresentAny(mn.visibleAnnotations, MAPPING_OR_LISTENER)
+                    || annoPresentAny(mn.visibleAnnotations, LIFECYCLE))
                 entryPoints.add(id);
             // A `finalize()` override is run by the GC's finalizer thread — NOT by any bytecode call.
             // It's the JVM analog of Rust's implicit-Drop hole: an effect (a socket/file opened on
@@ -890,6 +891,12 @@ public class Candor {
             "web/bind/annotation/DeleteMapping", "web/bind/annotation/PatchMapping",
             "kafka/annotation/KafkaListener", "amqp/rabbit/annotation/RabbitListener",
             "jms/annotation/JmsListener", "context/event/EventListener");
+
+    /** Container-invoked bean lifecycle callbacks (`@PostConstruct` init, `@PreDestroy` shutdown). Like
+     *  the mappings/listeners they're called by the framework with no project call site — a `@PreDestroy`
+     *  that flushes/closes does real I/O at shutdown. The substring matches both `javax/` and `jakarta/`. */
+    static final List<String> LIFECYCLE = List.of(
+            "annotation/PostConstruct", "annotation/PreDestroy");
 
     static boolean annoPresent(List<AnnotationNode> anns, String descSubstring) {
         if (anns == null) return false;

@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "candor": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["/abs/path/to/candor-java/integrations/mcp/candor-mcp.py"],
+      "env": { "CANDOR_CLASSES": "build/classes/java/main" }
+    }
+  }
+}

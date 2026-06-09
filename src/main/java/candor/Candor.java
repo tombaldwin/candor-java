@@ -129,6 +129,16 @@ public class Candor {
         if (Query.COMMANDS.contains(args[0])) {
             System.exit(Query.run(args));
         }
+        // `parsepolicy <file>` — dump the parsed CANDOR_POLICY as canonical JSON. Not a user workflow;
+        // it exists so the cross-impl conformance suite can diff this engine's policy parse against the
+        // Rust reference and prove the SPEC §6.2 grammar means the same thing in both.
+        if (args[0].equals("parsepolicy")) {
+            if (args.length < 2) { System.err.println("usage: candor parsepolicy <policy-file>"); System.exit(2); }
+            denyRules.clear(); allowRules.clear(); forbidRules.clear();
+            if (!parsePolicy(args[1])) { System.err.println("candor: cannot read policy " + args[1]); System.exit(2); }
+            System.out.println(Query.policyJson());
+            System.exit(0);
+        }
         String jsonOut = null;
         for (int i = 1; i + 1 < args.length; i++) if (args[i].equals("--json")) jsonOut = args[i + 1];
 
@@ -528,12 +538,18 @@ public class Candor {
             String[] t = line.split("\\s+");
             switch (t[0]) {
                 case "deny": {
+                    // SPEC §6.2: read tokens left-to-right; each known effect (or `Unknown`) joins the
+                    // forbidden set; the FIRST non-effect token is the scope and ENDS the rule. A `deny`
+                    // naming no known effect is DROPPED — it is NOT a `pure` rule (that distinction is
+                    // load-bearing: an empty-effect rule would forbid EVERYTHING). `Unknown` is denyable
+                    // so `deny Unknown <scope>` can forbid the unverifiable case (AS-EFF-008's companion).
                     DenyRule r = new DenyRule();
                     r.src = line;
                     for (int i = 1; i < t.length; i++) {
-                        if (KNOWN_EFFECTS.contains(t[i])) r.effects.add(t[i]);
-                        else r.scope = t[i]; // a trailing non-effect token is the scope
+                        if (KNOWN_EFFECTS.contains(t[i]) || "Unknown".equals(t[i])) r.effects.add(t[i]);
+                        else { r.scope = t[i]; break; }
                     }
+                    if (r.effects.isEmpty()) break; // names no effect -> drop (do NOT invert into pure)
                     denyRules.add(r);
                     break;
                 }
@@ -545,18 +561,21 @@ public class Candor {
                     break;
                 }
                 case "forbid": {
-                    int arrow = line.indexOf("->");
-                    if (arrow > "forbid".length()) {
+                    // SPEC §6.2: `forbid <A> -> <B>` — two scopes separated by a literal `->` TOKEN
+                    // (so `forbid a->b` without surrounding spaces is malformed and dropped).
+                    if (t.length >= 4 && t[2].equals("->")) {
                         ForbidRule r = new ForbidRule();
-                        r.from = line.substring("forbid".length(), arrow).trim();
-                        r.to = line.substring(arrow + 2).trim();
-                        if (!r.from.isEmpty() && !r.to.isEmpty()) forbidRules.add(r);
+                        r.from = t[1];
+                        r.to = t[3];
+                        forbidRules.add(r);
                     }
                     break;
                 }
                 case "allow": {
-                    // allow <Effect> [in <scope>] <value…>
+                    // SPEC §6.2: `allow <Effect> [in <scope>] <value…>` — the effect MUST be one of the
+                    // three that carry a literal surface; an `allow` for any other effect is dropped.
                     if (t.length < 3) break;
+                    if (!t[1].equals("Net") && !t[1].equals("Exec") && !t[1].equals("Fs")) break;
                     AllowRule r = new AllowRule();
                     r.src = line;
                     r.effect = t[1];

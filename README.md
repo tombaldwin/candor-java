@@ -162,6 +162,8 @@ gradle run --args="containment report.json [baseline.json]"  # effect-leakage di
 gradle run --args="reachable report.json"               # what the app DOES at runtime (union over entry points)
 gradle run --args="path report.json <fn> <Effect>"     # the call chain by which a fn comes to perform an effect
 gradle run --args="impact report.json <fn>"            # blast radius: transitive callers + downstream entry points
+gradle run --args="whatif report.json <fn> <Effect> [policy]"  # PRE-EDIT verdict: if I add <Effect> here, what
+                                                        #   propagates AND does it break the deny/pure gate? (exit 1 if so)
 ```
 
 Add `--json` to any query for machine-readable output — the form an AI agent / MCP server consumes

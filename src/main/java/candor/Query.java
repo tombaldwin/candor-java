@@ -22,7 +22,7 @@ import java.util.stream.Collectors;
  */
 public final class Query {
     static final Set<String> COMMANDS =
-            Set.of("show", "where", "callers", "map", "diff", "containment", "reachable", "path", "impact");
+            Set.of("show", "where", "callers", "map", "diff", "containment", "reachable", "path", "impact", "whatif");
     static final Gson JSON = new GsonBuilder().setPrettyPrinting().create();
 
     // Boundary effects SHOULD live in a dedicated layer — their dispersion is the architecture signal
@@ -94,6 +94,7 @@ public final class Query {
             case "reachable" -> reachable(fns, json);
             case "path" -> path(fns, arg, arg2, json);
             case "impact" -> impact(fns, arg, json);
+            case "whatif" -> whatif(pos.get(0), arg, arg2, pos.size() > 3 ? pos.get(3) : null, json);
             default -> 2;
         };
     }
@@ -280,6 +281,85 @@ public final class Query {
                 + " function(s) (the blast radius if it gained an effect):");
         for (String c : all) System.out.println("      " + c + (direct.contains(c) ? " (direct)" : ""));
         return 0;
+    }
+
+    /** whatif <report> <fn> <Effect> [policy] — the PRE-EDIT verdict (mirrors candor-query). Computes the
+     *  blast radius of introducing `effect` into `fn` (the fn + every transitive caller, all of which would
+     *  gain it), then — given a policy — reports which of them would VIOLATE a `deny <Effect>`/`pure`
+     *  boundary. Answers "if I add a network call here, what propagates and is it allowed?" BEFORE the edit.
+     *  Reuses Candor.parsePolicy/scopeMatches so the verdict matches what the real gate would do. */
+    static int whatif(String reportPath, String fn, String effect, String policyPath, boolean json) {
+        if (fn == null || effect == null) return usage("whatif <report.json> <fn> <Effect> [policy] [--json]");
+        Map<String, List<String>> cg = loadCallgraph(reportPath);
+        if (cg == null || cg.isEmpty()) {
+            System.out.println("candor: no call-graph sidecar beside the report (re-run analysis with --json).");
+            return 2;
+        }
+        Map<String, List<String>> rev = new TreeMap<>(); // callee -> direct callers
+        for (var e : cg.entrySet())
+            for (String c : e.getValue()) rev.computeIfAbsent(c, k -> new ArrayList<>()).add(e.getKey());
+        Set<String> names = new TreeSet<>(cg.keySet());
+        for (var v : cg.values()) names.addAll(v);
+        boolean exact = names.contains(fn);
+        List<String> targets = new ArrayList<>();
+        for (String n : names) if (exact ? n.equals(fn) : n.contains(fn)) targets.add(n);
+        if (targets.isEmpty()) {
+            System.out.println("candor: no function matching `" + fn + "` in the call graph.");
+            return 2;
+        }
+        TreeSet<String> affected = new TreeSet<>(targets); // target(s) + every transitive caller gain `effect`
+        Deque<String> stack = new ArrayDeque<>(targets);
+        while (!stack.isEmpty()) {
+            String n = stack.pop();
+            for (String c : rev.getOrDefault(n, List.of())) if (affected.add(c)) stack.push(c);
+        }
+
+        if (policyPath == null) policyPath = System.getenv("CANDOR_POLICY");
+        boolean havePolicy = false;
+        List<String[]> violations = new ArrayList<>(); // {fn, rule-desc}
+        if (policyPath != null) {
+            Candor.denyRules.clear();
+            havePolicy = Candor.parsePolicy(policyPath);
+            for (String f : affected) {
+                for (var r : Candor.denyRules) {
+                    boolean denies = r.effects.isEmpty() || r.effects.contains(effect);
+                    if (denies && Candor.scopeMatches(f, r.scope)) {
+                        String desc = r.effects.isEmpty()
+                                ? "pure" + (r.scope.isEmpty() ? "" : " " + r.scope)
+                                : "deny " + effect + (r.scope.isEmpty() ? "" : " " + r.scope);
+                        violations.add(new String[]{f, desc});
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (json) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("of", targets);
+            out.put("effect", effect);
+            out.put("affected", new ArrayList<>(affected));
+            List<Map<String, String>> vs = new ArrayList<>();
+            for (String[] v : violations) vs.add(Map.of("fn", v[0], "rule", v[1]));
+            out.put("violations", vs);
+            out.put("ok", violations.isEmpty());
+            emit(out);
+            return violations.isEmpty() ? 0 : 1;
+        }
+        System.out.println("whatif: adding `" + effect + "` to `" + String.join(", ", targets) + "`");
+        System.out.println("  → propagates to " + affected.size() + " function(s) (the blast radius):");
+        for (String f : affected) System.out.println("      " + f);
+        if (!havePolicy) {
+            System.out.println("  (no policy given — pass a policy file or set CANDOR_POLICY for the gate verdict)");
+            return 0;
+        }
+        if (violations.isEmpty()) {
+            System.out.println("  ✓ within policy — this edit introduces no `deny`/`pure` boundary violation.");
+            return 0;
+        }
+        System.out.println("  ⚠ WOULD VIOLATE policy (" + violations.size() + ") — run BEFORE the edit:");
+        for (String[] v : violations) System.out.println("      [AS-EFF-006] `" + v[0] + "`  (rule: `" + v[1] + "`)");
+        return 1;
     }
 
     /** A class -> effects overview of the whole report, most-effectful first. */

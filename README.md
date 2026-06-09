@@ -147,12 +147,15 @@ its form's lane).
 
 Once you've written a report (`--json report.json`), answer questions about it **without
 re-analyzing** — the sibling of the Rust impl's `candor-query`. They read the report's own fields
-(`inferred`/`direct`, and the `calls` effect graph for `callers`):
+(`inferred`/`direct`, and the `calls` effect graph), plus the full call-graph **sidecar**
+(`report.callgraph.json`, written automatically beside the report) for the pre-edit blast radius:
 
 ```sh
 gradle run --args="show    report.json <fn-substring>"  # a function's effects (* = own body; Fs(read,write) detail)
 gradle run --args="where   report.json <Effect>"        # who performs an effect (direct vs inherited)
-gradle run --args="callers report.json <fn-substring>"  # who calls a function (inverts the `calls` graph)
+gradle run --args="callers report.json <fn-substring>"  # the blast radius: who TRANSITIVELY calls a fn —
+                                                        #   works for ANY fn incl. PURE ones (pre-edit:
+                                                        #   "who is affected if I add an effect here?")
 gradle run --args="map     report.json"                 # class → effects overview, most-effectful first
 gradle run --args="diff    report.json <baseline.json>" # per-function effect delta (+gained / -lost)
 gradle run --args="containment report.json [baseline.json]"  # effect-leakage diagnostic + a ratchet

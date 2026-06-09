@@ -87,7 +87,7 @@ public final class Query {
         return switch (cmd) {
             case "show" -> show(fns, arg, json);
             case "where" -> where(fns, arg, json);
-            case "callers" -> callers(fns, arg, json);
+            case "callers" -> callers(fns, pos.get(0), arg, json);
             case "map" -> map(fns, json);
             case "diff" -> diff(fns, arg, json);
             case "containment" -> containment(fns, arg, json);
@@ -183,8 +183,16 @@ public final class Query {
     }
 
     /** Who calls a function — inverts the report's `calls` effect graph (no re-analysis). */
-    static int callers(List<Fn> fns, String q, boolean json) {
+    static int callers(List<Fn> fns, String reportPath, String q, boolean json) {
         if (q == null) return usage("callers <report.json> <function-substring> [--json]");
+        // Prefer the full call-graph sidecar (written beside the report): it records EVERY function's
+        // callees, including pure ones, so we can answer "who TRANSITIVELY calls X" for any function —
+        // the blast radius an agent needs BEFORE adding an effect to X. The report alone only has
+        // effect-relevant edges (it can't see a pure X), the old gap an agent-use eval surfaced.
+        Map<String, List<String>> cg = loadCallgraph(reportPath);
+        if (cg != null && !cg.isEmpty()) return callersViaCallgraph(cg, q, json);
+
+        // Fallback (no sidecar): the older effect-relevant, direct-only view.
         TreeMap<String, TreeSet<String>> hits = new TreeMap<>(); // callee -> its callers
         for (Fn f : fns) {
             for (String callee : f.calls) {
@@ -206,6 +214,71 @@ public final class Query {
             System.out.println("  " + e.getKey() + "  ← called by " + e.getValue().size() + ":");
             for (String c : e.getValue()) System.out.println("      " + c);
         }
+        return 0;
+    }
+
+    /** Load the call-graph sidecar (`<report-minus-.json>.callgraph.json`), or null if absent/unreadable. */
+    static Map<String, List<String>> loadCallgraph(String reportPath) {
+        try {
+            String cgPath = reportPath.endsWith(".json")
+                    ? reportPath.substring(0, reportPath.length() - 5) + ".callgraph.json"
+                    : reportPath + ".callgraph.json";
+            if (!Files.exists(Path.of(cgPath))) return null;
+            var o = JsonParser.parseString(Files.readString(Path.of(cgPath))).getAsJsonObject();
+            Map<String, List<String>> cg = new LinkedHashMap<>();
+            for (var e : o.entrySet()) {
+                List<String> callees = new ArrayList<>();
+                for (JsonElement v : e.getValue().getAsJsonArray()) callees.add(v.getAsString());
+                cg.put(e.getKey(), callees);
+            }
+            return cg;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** "Who reaches `q`?" over the full call graph: the DIRECT callers and the full TRANSITIVE set (the
+     *  blast radius if `q` gained an effect). Works for any function, effectful or pure. Mirrors
+     *  candor-scan's `callers_via_callgraph`. */
+    static int callersViaCallgraph(Map<String, List<String>> cg, String q, boolean json) {
+        Map<String, List<String>> rev = new TreeMap<>(); // callee -> its direct callers
+        for (var e : cg.entrySet())
+            for (String callee : e.getValue())
+                rev.computeIfAbsent(callee, k -> new ArrayList<>()).add(e.getKey());
+        Set<String> names = new TreeSet<>(cg.keySet());
+        for (var v : cg.values()) names.addAll(v);
+        boolean exact = names.contains(q);
+        List<String> targets = new ArrayList<>();
+        for (String n : names) if (exact ? n.equals(q) : n.contains(q)) targets.add(n);
+        if (targets.isEmpty()) {
+            if (json) emit(new LinkedHashMap<>());
+            else System.out.println("candor: no function matching `" + q + "` found in the call graph.");
+            return 0;
+        }
+        TreeSet<String> direct = new TreeSet<>();
+        for (String t : targets) direct.addAll(rev.getOrDefault(t, List.of()));
+        TreeSet<String> all = new TreeSet<>(); // transitive closure of callers (reverse BFS)
+        Deque<String> stack = new ArrayDeque<>(targets);
+        while (!stack.isEmpty()) {
+            String n = stack.pop();
+            for (String c : rev.getOrDefault(n, List.of())) if (all.add(c)) stack.push(c);
+        }
+        if (json) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("of", targets);
+            out.put("direct", new ArrayList<>(direct));
+            out.put("transitive", new ArrayList<>(all));
+            emit(out);
+            return 0;
+        }
+        String tgt = String.join(", ", targets);
+        if (all.isEmpty()) {
+            System.out.println("  `" + tgt + "` has no callers (nothing in this codebase calls it).");
+            return 0;
+        }
+        System.out.println("  `" + tgt + "` is reached by " + all.size()
+                + " function(s) (the blast radius if it gained an effect):");
+        for (String c : all) System.out.println("      " + c + (direct.contains(c) ? " (direct)" : ""));
         return 0;
     }
 

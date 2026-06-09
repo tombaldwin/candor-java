@@ -149,7 +149,7 @@ public class Candor {
         Map<String, TreeSet<String>> inferred = fixpoint();
 
         // JSON output is orthogonal — write first so `--json` can snapshot a baseline.
-        if (jsonOut != null) writeJson(inferred, jsonOut);
+        if (jsonOut != null) { writeJson(inferred, jsonOut); writeCallgraph(jsonOut); }
 
         // Modes: CANDOR_STRICT (conformance via DI), CANDOR_BASELINE (regression guard),
         // CANDOR_NO_AMBIENT (enforcement).
@@ -1542,6 +1542,22 @@ public class Candor {
         Files.writeString(Path.of(out), json);
         System.err.println("candor-java: wrote " + entries.size() + " entries (@" + prov[0] + ") to " + out);
         reportUnknownSources();
+    }
+
+    /** The FULL call graph (every project method -> its callees, including pure ones), written beside the
+     *  report as `<out-minus-.json>.callgraph.json`. The report omits pure functions, so without this a
+     *  `callers` query can't answer the PRE-EDIT blast-radius question ("who would be affected if I add an
+     *  effect to this pure function?") — the most natural thing an agent asks. Mirrors candor-scan's
+     *  callgraph sidecar so both engines answer it identically (candor-spec §2). */
+    static void writeCallgraph(String out) throws IOException {
+        String cgOut = out.endsWith(".json") ? out.substring(0, out.length() - 5) + ".callgraph.json"
+                                             : out + ".callgraph.json";
+        Map<String, List<String>> cg = new TreeMap<>();
+        for (var e : edges.entrySet()) {
+            if (e.getValue().isEmpty()) continue;
+            cg.put(e.getKey(), new ArrayList<>(new TreeSet<>(e.getValue())));
+        }
+        Files.writeString(Path.of(cgOut), new GsonBuilder().setPrettyPrinting().create().toJson(cg));
     }
 
     /** Human-readable breakdown of WHERE direct Unknowns come from, bucketed into the irreducible

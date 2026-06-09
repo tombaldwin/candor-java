@@ -16,7 +16,7 @@ class) and fails if any reachable method comes back pure. So when candor-java ce
 you can act on it.
 
 **It maps, too** — a per-method effect audit and instant `show`/`where`/`callers`/`map`/`diff`/
-`containment`/`reachable` queries over the report, for an agent or a human navigating unfamiliar code.
+`containment`/`reachable`/`path` queries over the report, for an agent or a human navigating unfamiliar code.
 
 ## Status: early prototype (v0)
 
@@ -135,6 +135,7 @@ gradle run --args="map     report.json"                 # class → effects over
 gradle run --args="diff    report.json <baseline.json>" # per-function effect delta (+gained / -lost)
 gradle run --args="containment report.json [baseline.json]"  # effect-leakage diagnostic + a ratchet
 gradle run --args="reachable report.json"               # what the app DOES at runtime (union over entry points)
+gradle run --args="path report.json <fn> <Effect>"     # the call chain by which a fn comes to perform an effect
 ```
 
 Add `--json` to any query for machine-readable output — the form an AI agent / MCP server consumes

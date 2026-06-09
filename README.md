@@ -16,7 +16,7 @@ class) and fails if any reachable method comes back pure. So when candor-java ce
 you can act on it.
 
 **It maps, too** — a per-method effect audit and instant `show`/`where`/`callers`/`map`/`diff`/
-`containment`/`reachable`/`path` queries over the report, for an agent or a human navigating unfamiliar code.
+`containment`/`reachable`/`path`/`impact` queries over the report, for an agent or a human navigating unfamiliar code.
 
 ## Status: early prototype (v0)
 

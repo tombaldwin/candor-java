@@ -22,7 +22,7 @@ import java.util.stream.Collectors;
  */
 public final class Query {
     static final Set<String> COMMANDS =
-            Set.of("show", "where", "callers", "map", "diff", "containment", "reachable", "path");
+            Set.of("show", "where", "callers", "map", "diff", "containment", "reachable", "path", "impact");
     static final Gson JSON = new GsonBuilder().setPrettyPrinting().create();
 
     // Boundary effects SHOULD live in a dedicated layer — their dispersion is the architecture signal
@@ -93,6 +93,7 @@ public final class Query {
             case "containment" -> containment(fns, arg, json);
             case "reachable" -> reachable(fns, json);
             case "path" -> path(fns, arg, arg2, json);
+            case "impact" -> impact(fns, arg, json);
             default -> 2;
         };
     }
@@ -321,6 +322,72 @@ public final class Query {
     static String layerOf(String fn, int prefixLen) {
         String[] segs = fn.split("\\.");
         return prefixLen + 2 < segs.length ? segs[prefixLen] : "(root)";
+    }
+
+    /** impact — the blast radius of a function: every effectful method that TRANSITIVELY calls it, and
+     *  which ENTRY POINTS (runtime roots) are downstream — "if I change this, what surfaces at runtime?".
+     *  The backward dual of `path`; the transitive, entry-point-scoped version of `callers`. Read-only,
+     *  reversing the report's effect-relevant `calls` graph. Scoped to effectful targets (the report's
+     *  `calls` only records effect-carrying edges, so a pure fn — omitted from the report — has no blast
+     *  radius to trace; that's the honest limit of working from the report). */
+    static int impact(List<Fn> fns, String fnArg, boolean json) {
+        if (fnArg == null) return usage("impact <report.json> <fn-substring> [--json]");
+        Map<String, Fn> byName = new HashMap<>();
+        for (Fn f : fns) byName.putIfAbsent(f.fn, f);
+        Fn target = fns.stream().filter(f -> f.fn.equals(fnArg)).findFirst()
+                .orElseGet(() -> fns.stream().filter(f -> f.fn.contains(fnArg)).findFirst().orElse(null));
+        if (target == null) {
+            System.err.println("candor impact: no function matching '" + fnArg + "'");
+            return 2;
+        }
+        // Reverse the effect-relevant call graph: callee -> [callers], then BFS backward from the target.
+        Map<String, List<String>> rev = new HashMap<>();
+        for (Fn f : fns) for (String c : f.calls) rev.computeIfAbsent(c, k -> new ArrayList<>()).add(f.fn);
+        Set<String> affected = new LinkedHashSet<>();
+        Deque<String> q = new ArrayDeque<>();
+        Set<String> seen = new HashSet<>();
+        q.add(target.fn);
+        seen.add(target.fn);
+        while (!q.isEmpty()) {
+            String cur = q.poll();
+            for (String caller : rev.getOrDefault(cur, List.of()))
+                if (seen.add(caller)) { affected.add(caller); q.add(caller); }
+        }
+        // Entry points downstream — the runtime roots a change here surfaces through (target included if it
+        // is itself a root).
+        List<Fn> roots = new ArrayList<>();
+        if (target.entryPoint) roots.add(target);
+        affected.stream().map(byName::get).filter(f -> f != null && f.entryPoint)
+                .sorted(Comparator.comparing(f -> f.fn)).forEach(roots::add);
+
+        if (json) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("fn", target.fn);
+            out.put("affectedCount", affected.size());
+            List<Map<String, Object>> rs = new ArrayList<>();
+            for (Fn r : roots) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("fn", r.fn);
+                m.put("inferred", r.inferred);
+                rs.add(m);
+            }
+            out.put("entryPoints", rs);
+            emit(out);
+            return 0;
+        }
+        System.out.println("candor impact — what changing `" + target.fn + "` affects:\n");
+        System.out.println("  " + affected.size() + " effectful function"
+                + (affected.size() == 1 ? "" : "s") + " transitively call it.");
+        if (roots.isEmpty()) {
+            System.out.println("  No entry point reaches it — not on a runtime path (dead, or a "
+                    + "library fn invoked only externally).");
+            return 0;
+        }
+        System.out.println("  " + roots.size() + " entry point" + (roots.size() == 1 ? "" : "s")
+                + " downstream (a change here surfaces at runtime via):");
+        for (Fn r : roots)
+            System.out.println("    " + r.fn + "   { " + String.join(", ", r.inferred) + " }");
+        return 0;
     }
 
     /** path — the call chain by which a function comes to perform an effect: a shortest-path BFS over the

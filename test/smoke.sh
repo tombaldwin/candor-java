@@ -222,6 +222,15 @@ want   "path: names the leaf source"                   "$pth" 'Pp.leafNet'
 want   "path --json: structured steps with source flag" "$("$CJ" path "$W/p.json" handle Net --json)" '"source": true'
 want   "path: honest when the fn doesn't perform the effect" "$("$CJ" path "$W/p.json" handle Db)" 'does not perform Db'
 
+echo "== impact: blast radius (transitive callers + downstream entry points) =="
+# In the Pp fixture, main -> handle -> mid -> leafNet. impact(leafNet) finds the transitive callers and
+# the one downstream entry point (main).
+imp="$("$CJ" impact "$W/p.json" leafNet)"
+want   "impact: counts transitive callers"               "$imp" 'transitively call it'
+want   "impact: surfaces the downstream entry point (main)" "$imp" 'Pp.main'
+want   "impact: labels entry points downstream"          "$imp" 'entry point'
+want   "impact --json: structured blast radius"          "$("$CJ" impact "$W/p.json" leafNet --json)" '"affectedCount"'
+
 echo "== @PostConstruct/@PreDestroy lifecycle callbacks are entry points =="
 # Container-invoked init/shutdown hooks — no project call site, so an init that reads config or a
 # @PreDestroy that flushes/closes does orphaned I/O. The substring match covers javax/ and jakarta/.

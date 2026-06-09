@@ -193,6 +193,16 @@ want   "  …Runnable.run() entryPoint=true"                        "$(ep 'Tk$Ta
 want   "Callable.call() task body is an entry point"              "$(ep 'Tk$Job.call')"  'True'
 want   "a run() on a NON-task class is NOT a task entry point"    "$(ep 'Tk$NotATask.run')" 'absent'
 
+echo "== reachable: runtime effect surface from entry points =="
+# Union of `inferred` over entry points = what the program performs when the runtime drives it. The Tk
+# fixture's roots are Task.run (Net) + Job.call (Fs); NotATask.run is not a root.
+rch="$("$CJ" reachable "$W/t.json")"
+want   "reachable: surfaces the task's Net"            "$rch" 'Net'
+want   "reachable: surfaces the Callable's Fs"         "$rch" 'Fs'
+want   "reachable: reports the entry-point union"      "$rch" 'union over'
+rjson="$("$CJ" reachable "$W/t.json" --json)"
+want   "reachable --json: structured effect surface"   "$rjson" '"entryPoints"'
+
 echo "== @PostConstruct/@PreDestroy lifecycle callbacks are entry points =="
 # Container-invoked init/shutdown hooks — no project call site, so an init that reads config or a
 # @PreDestroy that flushes/closes does orphaned I/O. The substring match covers javax/ and jakarta/.

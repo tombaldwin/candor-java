@@ -116,6 +116,24 @@ public final class Query {
         System.out.println(JSON.toJson(o));
     }
 
+    /** The parsed CANDOR_POLICY (Candor.{deny,allow,forbid}Rules) as canonical JSON, for the cross-impl
+     *  policy-grammar differential (SPEC §6.2). A `pure` rule appears as a deny with empty `effects`.
+     *  Rules are sorted so the comparison is order-independent. */
+    static String policyJson() {
+        List<Map<String, Object>> deny = new ArrayList<>();
+        for (var r : Candor.denyRules)
+            deny.add(Map.of("effects", new ArrayList<>(r.effects), "scope", r.scope));
+        List<Map<String, Object>> allow = new ArrayList<>();
+        for (var r : Candor.allowRules)
+            allow.add(Map.of("effect", r.effect, "scope", r.scope, "values", new ArrayList<>(r.values)));
+        List<Map<String, Object>> forbid = new ArrayList<>();
+        for (var r : Candor.forbidRules)
+            forbid.add(Map.of("from", r.from, "to", r.to));
+        Comparator<Map<String, Object>> byJson = Comparator.comparing(JSON::toJson);
+        deny.sort(byJson); allow.sort(byJson); forbid.sort(byJson);
+        return JSON.toJson(Map.of("deny", deny, "allow", allow, "forbid", forbid));
+    }
+
     /** A function's effects, instant — `*` marks an effect performed in its own body. */
     static int show(List<Fn> fns, String q, boolean json) {
         if (q == null) return usage("show <report.json> <function-substring> [--json]");

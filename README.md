@@ -8,6 +8,16 @@ invariants like *"the domain layer does no I/O"* or *"domain must not depend on 
 A [candor-spec](https://github.com/tombaldwin/candor-spec) implementation; sibling of the Rust reference
 [candor](https://github.com/tombaldwin/candor) — same classifier ideas, the JVM's grain (bytecode + Spring).
 
+**Any JVM language — Java and Kotlin both.** Because it reads *bytecode*, candor-java is
+language-agnostic: Java, Kotlin, Scala, and Groovy all lower to the same `.class` files it analyses, use
+the same JDK I/O APIs the classifier knows (`java.net`/`java.nio`), the same Spring annotations, and the
+same JVM-level `Runnable`/`main`. Java is the most battle-tested (a real 2,257-class Spring app + hundreds
+of library jars); **Kotlin is validated** — on real Kotlin bytecode (okhttp, ktor, kotlinx-coroutines)
+the network I/O is detected, `Runnable`-based coroutine dispatchers are flagged as runtime entry points,
+and nothing crashes on coroutine state machines. Caveat: a coroutine/interface-heavy *library* analysed
+*in isolation* can over-report via CHA (see the **Not yet** limitations below) — a real *app*, with the
+stdlib as an unanalysed dependency, doesn't.
+
 **A gate is only worth trusting if it never lies.** candor-java surfaces what it can't see — reflection,
 a `native` body, dispatch over an unknown impl — as `Unknown`, never a silent "pure." That contract is
 held by an adversarial [soundness fuzzer](soundness/) in CI that threads a known effect through every

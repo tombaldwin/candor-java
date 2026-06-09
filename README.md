@@ -164,7 +164,13 @@ gradle run --args="path report.json <fn> <Effect>"     # the call chain by which
 gradle run --args="impact report.json <fn>"            # blast radius: transitive callers + downstream entry points
 gradle run --args="whatif report.json <fn> <Effect> [policy]"  # PRE-EDIT verdict: if I add <Effect> here, what
                                                         #   propagates AND does it break the deny/pure gate? (exit 1 if so)
+gradle run --args="rewire report.json <baseline-report.json>"  # DE-WIRING: which methods dropped a call vs the
+                                                        #   baseline — catch a 'fix' that games the gate by disconnecting
 ```
+
+> A green effect-gate is not a green feature — it can be satisfied by *disconnecting* functionality. Run
+> `rewire` alongside the policy gate: a passing gate **plus** a clean `rewire` means the boundary was
+> respected *without* gutting the feature. (See candor's `eval/whatif-behavior` for the eval that found this.)
 
 Add `--json` to any query for machine-readable output — the form an AI agent / MCP server consumes
 (`show`→`[{fn,inferred,direct,fs,unresolved}]`, `where`→`{effect,directly,inherited}`,

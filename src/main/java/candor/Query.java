@@ -22,7 +22,8 @@ import java.util.stream.Collectors;
  */
 public final class Query {
     static final Set<String> COMMANDS =
-            Set.of("show", "where", "callers", "map", "diff", "containment", "reachable", "path", "impact", "whatif");
+            Set.of("show", "where", "callers", "map", "diff", "containment", "reachable", "path", "impact",
+                    "whatif", "rewire");
     static final Gson JSON = new GsonBuilder().setPrettyPrinting().create();
 
     // Boundary effects SHOULD live in a dedicated layer — their dispersion is the architecture signal
@@ -95,6 +96,7 @@ public final class Query {
             case "path" -> path(fns, arg, arg2, json);
             case "impact" -> impact(fns, arg, json);
             case "whatif" -> whatif(pos.get(0), arg, arg2, pos.size() > 3 ? pos.get(3) : null, json);
+            case "rewire" -> rewire(pos.get(0), arg, json);
             default -> 2;
         };
     }
@@ -359,6 +361,48 @@ public final class Query {
         }
         System.out.println("  ⚠ WOULD VIOLATE policy (" + violations.size() + ") — run BEFORE the edit:");
         for (String[] v : violations) System.out.println("      [AS-EFF-006] `" + v[0] + "`  (rule: `" + v[1] + "`)");
+        return 1;
+    }
+
+    /** rewire <cur-report> <baseline-report> — the de-wiring detector (mirrors candor-query). Diffs the
+     *  two call-graph sidecars and flags edges a method DROPPED (a call it made in the baseline and no
+     *  longer makes). The effect gate checks effect BOUNDARIES, not correctness, so it can be satisfied by
+     *  *disconnecting* functionality (a method stops calling the chain that performs the forbidden effect —
+     *  gate passes, feature broken). That removal is invisible to the effect diff but it's in the call
+     *  graph. Run alongside `policy`: a green gate PLUS a clean rewire = boundary respected, feature intact. */
+    static int rewire(String curReport, String baseReport, boolean json) {
+        if (baseReport == null) return usage("rewire <cur-report.json> <baseline-report.json> [--json]");
+        Map<String, List<String>> cur = loadCallgraph(curReport);
+        Map<String, List<String>> base = loadCallgraph(baseReport);
+        if (base == null || base.isEmpty()) {
+            System.out.println("candor: no baseline call graph beside " + baseReport + " (need its .callgraph.json).");
+            return 2;
+        }
+        if (cur == null) cur = Map.of();
+        TreeMap<String, List<String>> dropped = new TreeMap<>();
+        for (var e : base.entrySet()) {
+            Set<String> now = new HashSet<>(cur.getOrDefault(e.getKey(), List.of()));
+            List<String> gone = e.getValue().stream().filter(c -> !now.contains(c)).collect(Collectors.toList());
+            if (!gone.isEmpty()) dropped.put(e.getKey(), gone);
+        }
+        if (json) {
+            List<Map<String, Object>> ds = new ArrayList<>();
+            for (var e : dropped.entrySet()) ds.add(Map.of("caller", e.getKey(), "no_longer_calls", e.getValue()));
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("dropped", ds);
+            out.put("ok", dropped.isEmpty());
+            emit(out);
+            return dropped.isEmpty() ? 0 : 1;
+        }
+        if (dropped.isEmpty()) {
+            System.out.println("  no call edges dropped vs the baseline — nothing de-wired.");
+            return 0;
+        }
+        System.out.println("  " + dropped.size() + " method(s) DROPPED a call they made in the baseline — a "
+                + "'fix' may have disconnected functionality (the effect gate can pass while the feature is "
+                + "broken; verify it still works):");
+        for (var e : dropped.entrySet())
+            System.out.println("      " + e.getKey() + "  ⊘  no longer calls: " + String.join(", ", e.getValue()));
         return 1;
     }
 

@@ -663,6 +663,23 @@ want   "whatif: names the violating fn + the rule"             "$wi" '`com.ex.ap
 want   "whatif --json: ok=false on a violation"                "$("$CJ" whatif "$W/wi.json" quote Net "$W/wipol" --json)" '"ok": false'
 want   "whatif: a non-denied effect is within policy"          "$("$CJ" whatif "$W/wi.json" quote Db "$W/wipol")" 'within policy'
 
+echo "== rewire: the de-wiring detector (catch a 'fix' that games the gate by disconnecting a call) =="
+# A method that DROPS a call it made in the baseline — how an agent satisfies an effect gate by
+# disconnecting functionality (the gate passes, the feature breaks). The effect diff can't see it; the
+# call graph can. baseline: A.handle calls B.work; gamed: A.handle no longer calls it.
+mkdir -p "$W/rw/base/p/a" "$W/rw/base/p/b" "$W/rw/gamed/p/a" "$W/rw/gamed/p/b"
+printf 'package p.b; public class B { public static int work(int c){ return c*2; } }\n' | tee "$W/rw/base/p/b/B.java" > "$W/rw/gamed/p/b/B.java"
+printf 'package p.a; import p.b.B; public class A { public static int handle(int c){ return B.work(c); } }\n' > "$W/rw/base/p/a/A.java"
+printf 'package p.a; public class A { public static int handle(int c){ return c; } }\n' > "$W/rw/gamed/p/a/A.java"   # de-wired
+javac -d "$W/rw/bcls" $(find "$W/rw/base"  -name '*.java') 2>/dev/null
+javac -d "$W/rw/gcls" $(find "$W/rw/gamed" -name '*.java') 2>/dev/null
+"$CJ" "$W/rw/bcls" --json "$W/rw/base.json"  >/dev/null 2>&1
+"$CJ" "$W/rw/gcls" --json "$W/rw/gamed.json" >/dev/null 2>&1
+rw="$("$CJ" rewire "$W/rw/gamed.json" "$W/rw/base.json")"
+want   "rewire: flags the dropped call (de-wiring)"      "$rw" 'p.a.A.handle  ⊘  no longer calls: p.b.B.work'
+want   "rewire --json: ok=false when an edge is dropped" "$("$CJ" rewire "$W/rw/gamed.json" "$W/rw/base.json" --json)" '"ok": false'
+want   "rewire: clean when nothing is de-wired"          "$("$CJ" rewire "$W/rw/base.json" "$W/rw/base.json")" 'nothing de-wired'
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

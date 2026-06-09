@@ -22,7 +22,7 @@ import java.util.stream.Collectors;
  */
 public final class Query {
     static final Set<String> COMMANDS =
-            Set.of("show", "where", "callers", "map", "diff", "containment", "reachable");
+            Set.of("show", "where", "callers", "map", "diff", "containment", "reachable", "path");
     static final Gson JSON = new GsonBuilder().setPrettyPrinting().create();
 
     // Boundary effects SHOULD live in a dedicated layer — their dispersion is the architecture signal
@@ -35,6 +35,7 @@ public final class Query {
     /** One report entry (only the fields the queries read; gson ignores the rest). */
     static final class Fn {
         String fn = "";
+        String loc = "";
         List<String> inferred = List.of();
         List<String> direct = List.of();
         List<String> calls = List.of();
@@ -56,6 +57,7 @@ public final class Query {
             if (f.direct == null) f.direct = List.of();
             if (f.calls == null) f.calls = List.of();
             if (f.fs == null) f.fs = List.of();
+            if (f.loc == null) f.loc = "";
         }
         fns.sort(Comparator.comparing(f -> f.fn));
         return fns;
@@ -81,6 +83,7 @@ public final class Query {
             return 2;
         }
         String arg = pos.size() > 1 ? pos.get(1) : null;
+        String arg2 = pos.size() > 2 ? pos.get(2) : null;
         return switch (cmd) {
             case "show" -> show(fns, arg, json);
             case "where" -> where(fns, arg, json);
@@ -89,6 +92,7 @@ public final class Query {
             case "diff" -> diff(fns, arg, json);
             case "containment" -> containment(fns, arg, json);
             case "reachable" -> reachable(fns, json);
+            case "path" -> path(fns, arg, arg2, json);
             default -> 2;
         };
     }
@@ -317,6 +321,88 @@ public final class Query {
     static String layerOf(String fn, int prefixLen) {
         String[] segs = fn.split("\\.");
         return prefixLen + 2 < segs.length ? segs[prefixLen] : "(root)";
+    }
+
+    /** path — the call chain by which a function comes to perform an effect: a shortest-path BFS over the
+     *  effect-relevant `calls` graph from <fn> to the nearest method that performs <effect> DIRECTLY (the
+     *  source). Answers "this method touches Net — through WHAT?", the chain `where` (who performs it) and
+     *  `callers` (who calls X) describe the ends of but never connect. Read-only over the report. */
+    static int path(List<Fn> fns, String fnArg, String effect, boolean json) {
+        if (fnArg == null || effect == null)
+            return usage("path <report.json> <fn-substring> <Effect> [--json]");
+        Map<String, Fn> byName = new HashMap<>();
+        for (Fn f : fns) byName.putIfAbsent(f.fn, f);
+        Fn start = fns.stream().filter(f -> f.fn.equals(fnArg)).findFirst()
+                .orElseGet(() -> fns.stream().filter(f -> f.fn.contains(fnArg)).findFirst().orElse(null));
+        if (start == null) {
+            System.err.println("candor path: no function matching '" + fnArg + "'");
+            return 2;
+        }
+        if (!start.inferred.contains(effect)) {
+            System.out.println(start.fn + " does not perform " + effect
+                    + "  (inferred: " + start.inferred + ")");
+            if (json) emit(Map.of("fn", start.fn, "effect", effect, "path", List.of()));
+            return 0;
+        }
+        // BFS following `calls`, only through callees that carry the effect, to the first DIRECT source.
+        Map<String, String> prev = new HashMap<>();
+        Deque<String> q = new ArrayDeque<>();
+        q.add(start.fn);
+        prev.put(start.fn, null);
+        String source = null;
+        while (!q.isEmpty()) {
+            String cur = q.poll();
+            Fn f = byName.get(cur);
+            if (f == null) continue;
+            if (f.direct.contains(effect)) { source = cur; break; }
+            for (String c : f.calls) {
+                Fn cf = byName.get(c);
+                if (cf != null && cf.inferred.contains(effect) && !prev.containsKey(c)) {
+                    prev.put(c, cur);
+                    q.add(c);
+                }
+            }
+        }
+        if (source == null) {
+            // Inferred but no LOCAL direct source on a `calls` path — reached cross-jar, via a
+            // Spring-synthesized callee (repo/Feign), or through an Unknown. Honest: not locally traceable.
+            String msg = start.fn + " performs " + effect
+                    + " but its source is not a local method (cross-jar, framework-synthesized, or via Unknown) "
+                    + "— not statically traceable.";
+            System.out.println(msg);
+            if (json) emit(Map.of("fn", start.fn, "effect", effect, "path", List.of(),
+                    "note", "source not locally traceable"));
+            return 0;
+        }
+        List<String> chain = new ArrayList<>();
+        for (String n = source; n != null; n = prev.get(n)) chain.add(n);
+        Collections.reverse(chain);
+
+        if (json) {
+            List<Map<String, Object>> steps = new ArrayList<>();
+            for (int i = 0; i < chain.size(); i++) {
+                Fn f = byName.get(chain.get(i));
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("fn", chain.get(i));
+                m.put("loc", f != null ? f.loc : "");
+                m.put("source", i == chain.size() - 1);
+                steps.add(m);
+            }
+            emit(Map.of("fn", start.fn, "effect", effect, "path", steps));
+            return 0;
+        }
+        System.out.println("candor path — how `" + start.fn + "` comes to perform " + effect + ":\n");
+        for (int i = 0; i < chain.size(); i++) {
+            Fn f = byName.get(chain.get(i));
+            String indent = "  ".repeat(i + 1);
+            String arrow = i == 0 ? "" : "→ ";
+            boolean isSource = i == chain.size() - 1;
+            String tag = isSource
+                    ? "   [" + effect + " source" + (f != null && !f.loc.isEmpty() ? " @ " + f.loc : "") + "]"
+                    : "";
+            System.out.println(indent + arrow + chain.get(i) + tag);
+        }
+        return 0;
     }
 
     /** reachable — the effects the program ACTUALLY performs at runtime: the union over its ENTRY POINTS

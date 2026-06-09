@@ -626,6 +626,26 @@ absent "a fresh-local path is NOT tainted"               "$taint" '`Taint.readLo
 absent "a pure method is NOT tainted"                    "$taint" '`Taint.pure`'
 absent "taint is silent without CANDOR_TAINT"            "$("$CJ" "$W/tcls2" 2>&1)" 'AS-EFF-007'
 
+echo "== callers: the PRE-EDIT blast radius of a PURE function (the agent-use gap) =="
+# An agent about to add an effect to a pure fn asks "who depends on me?". `callers` must answer that for a
+# PURE function (not just already-effectful ones) — via the full call-graph SIDECAR written beside the
+# report (the report omits pure fns). Closes the parity gap an agent-use eval found (candor-scan had it).
+cat > "$W/src/Blast.java" <<'J'
+public class Blast {
+  static int leaf(int x) { return x * 2; }   // PURE — the fn about to gain an effect
+  static int mid(int x)  { return leaf(x); }
+  static int top(int x)  { return mid(x); }
+}
+J
+javac -d "$W/bcls" "$W/src/Blast.java" 2>/dev/null
+"$CJ" "$W/bcls" --json "$W/b.json" >/dev/null 2>&1
+bc="$("$CJ" callers "$W/b.json" leaf)"
+want   "callgraph sidecar is written beside the report"   "$(ls "$W"/b.callgraph.json 2>/dev/null)" 'b.callgraph.json'
+want   "callers of a PURE fn returns the blast radius"     "$bc" 'blast radius if it gained an effect'
+want   "  …names the direct caller"                       "$bc" 'Blast.mid (direct)'
+want   "  …names the transitive caller"                   "$bc" 'Blast.top'
+want   "callers --json: structured blast radius"          "$("$CJ" callers "$W/b.json" leaf --json)" '"transitive"'
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

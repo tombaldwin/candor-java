@@ -21,7 +21,8 @@ import java.util.stream.Collectors;
  * v0.1 bare array.
  */
 public final class Query {
-    static final Set<String> COMMANDS = Set.of("show", "where", "callers", "map", "diff", "containment");
+    static final Set<String> COMMANDS =
+            Set.of("show", "where", "callers", "map", "diff", "containment", "reachable");
     static final Gson JSON = new GsonBuilder().setPrettyPrinting().create();
 
     // Boundary effects SHOULD live in a dedicated layer — their dispersion is the architecture signal
@@ -39,6 +40,7 @@ public final class Query {
         List<String> calls = List.of();
         List<String> fs = List.of();
         boolean unresolved;
+        boolean entryPoint;
     }
 
     static List<Fn> load(String path) throws Exception {
@@ -86,6 +88,7 @@ public final class Query {
             case "map" -> map(fns, json);
             case "diff" -> diff(fns, arg, json);
             case "containment" -> containment(fns, arg, json);
+            case "reachable" -> reachable(fns, json);
             default -> 2;
         };
     }
@@ -314,6 +317,67 @@ public final class Query {
     static String layerOf(String fn, int prefixLen) {
         String[] segs = fn.split("\\.");
         return prefixLen + 2 < segs.length ? segs[prefixLen] : "(root)";
+    }
+
+    /** reachable — the effects the program ACTUALLY performs at runtime: the union over its ENTRY POINTS
+     *  (the runtime-invoked roots — main, web/queue handlers, lifecycle hooks, task bodies, finalize).
+     *  Because `inferred` is already transitive, an entry point's set IS its full reachable surface, so
+     *  the union answers "what does this service do when the framework drives it" — the question the raw
+     *  per-method dump can't, since most effectful methods are never called by project code directly.
+     *  Lists each effect with how many entry points reach it (+ a few examples); Unknown flagged as the
+     *  visibility caveat it is. No entry points → says so (nothing is marked runtime-invoked). */
+    static int reachable(List<Fn> fns, boolean json) {
+        List<Fn> entries = fns.stream().filter(f -> f.entryPoint)
+                .sorted(Comparator.comparing(f -> f.fn)).toList();
+        TreeMap<String, List<String>> byEffect = new TreeMap<>();
+        for (Fn f : entries)
+            for (String e : f.inferred) byEffect.computeIfAbsent(e, k -> new ArrayList<>()).add(f.fn);
+
+        if (json) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("entryPoints", entries.size());
+            Map<String, Object> effects = new LinkedHashMap<>();
+            byEffect.forEach((e, who) -> {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("count", who.size());
+                m.put("via", who);
+                effects.put(e, m);
+            });
+            out.put("effects", effects);
+            System.out.println(JSON.toJson(out));
+            return 0;
+        }
+
+        System.out.println("candor reachable — effects the program performs at runtime "
+                + "(union over " + entries.size() + " entry point" + (entries.size() == 1 ? "" : "s") + ")");
+        if (entries.isEmpty()) {
+            System.out.println("  (no entry points in this report — nothing is marked runtime-invoked)");
+            return 0;
+        }
+        // Boundary effects first (the ones that matter for a capability budget), then ambient, then the
+        // Unknown caveat. Anything else (shouldn't occur) trails alphabetically.
+        List<String> order = new ArrayList<>();
+        order.addAll(CONTAINED);
+        order.addAll(AMBIENT);
+        order.add("Unknown");
+        List<String> seen = new ArrayList<>(byEffect.keySet());
+        seen.sort(Comparator.comparingInt(e -> { int i = order.indexOf(e); return i < 0 ? order.size() : i; }));
+        for (String e : seen) {
+            List<String> who = byEffect.get(e);
+            String tag = e.equals("Unknown") ? "   ← visibility caveat, not a performed effect" : "";
+            String examples = who.stream().limit(3).map(Query::leaf).collect(Collectors.joining(", "));
+            if (who.size() > 3) examples += ", …";
+            System.out.printf("  %-8s %3d  (%s)%s%n", e, who.size(), examples, tag);
+        }
+        long pure = entries.stream().filter(f -> f.inferred.isEmpty()).count();
+        System.out.println("\n  " + entries.size() + " entry points; " + pure + " perform no effect (pure roots).");
+        return 0;
+    }
+
+    /** Last dotted segment-pair of a fully-qualified method name, for compact examples. */
+    static String leaf(String fn) {
+        String[] s = fn.split("\\.");
+        return s.length >= 2 ? s[s.length - 2] + "." + s[s.length - 1] : fn;
     }
 
     /** containment — how well each BOUNDARY effect (Db/Net/Exec/Fs/Ipc) stays in one layer, the

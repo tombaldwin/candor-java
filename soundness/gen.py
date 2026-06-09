@@ -51,6 +51,20 @@ def edge_forms(callee, i):
                        f"static class Impl{i} implements I{i} {{ public void run() {{ {callee}(); }} }}"]),
         # anonymous class implementing Runnable (a distinct synthesized class, resolved by CHA).
         "anon":      (f"Runnable r{i} = new Runnable() {{ public void run() {{ {callee}(); }} }}; r{i}.run();", []),
+        # interface DEFAULT method: the effect lives in a default body the impl does NOT override —
+        # resolved by walking the supertype chain to the concrete default (chaTargets supertype walk).
+        "default":   (f"D{i} d{i} = new DImpl{i}(); d{i}.act();",
+                      [f"interface D{i} {{ default void act() {{ {callee}(); }} }}",
+                       f"static class DImpl{i} implements D{i} {{}}"]),
+        # INHERITED concrete method: the effect lives in a superclass method the subclass does NOT
+        # override; a call on the subtype must resolve UP to the inherited body (chaTargets supertype walk).
+        "inherited": (f"Sub{i} s{i} = new Sub{i}(); s{i}.act();",
+                      [f"static class Base{i} {{ void act() {{ {callee}(); }} }}",
+                       f"static class Sub{i} extends Base{i} {{}}"]),
+        # SUPER call (invokespecial): an override delegates to the superclass body via `super.act()`.
+        "super":     (f"new SubS{i}().act();",
+                      [f"static class BaseS{i} {{ void act() {{ {callee}(); }} }}",
+                       f"static class SubS{i} extends BaseS{i} {{ void act() {{ super.act(); }} }}"]),
     }
 
 

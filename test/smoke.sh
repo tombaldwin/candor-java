@@ -646,6 +646,23 @@ want   "  …names the direct caller"                       "$bc" 'Blast.mid (di
 want   "  …names the transitive caller"                   "$bc" 'Blast.top'
 want   "callers --json: structured blast radius"          "$("$CJ" callers "$W/b.json" leaf --json)" '"transitive"'
 
+echo "== whatif: the PRE-EDIT policy verdict (blast radius x the gate, before the edit) =="
+# "if I add Net to pricing.quote, what propagates and does it break policy?" — answered BEFORE writing
+# code. Layers are PACKAGES (scopeMatches is segment-aware on '.'); reuses Candor.parsePolicy/scopeMatches
+# so the verdict equals what the real gate would do.
+mkdir -p "$W/wi/com/ex/pricing" "$W/wi/com/ex/api"
+printf 'package com.ex.pricing; public class P { public static int quote(int c){ return c; } }\n' > "$W/wi/com/ex/pricing/P.java"
+printf 'package com.ex.api; import com.ex.pricing.P; public class A { public static int handle(int c){ return P.quote(c); } }\n' > "$W/wi/com/ex/api/A.java"
+javac -d "$W/wicls" $(find "$W/wi" -name '*.java') 2>/dev/null
+"$CJ" "$W/wicls" --json "$W/wi.json" >/dev/null 2>&1
+printf 'deny Net api\n' > "$W/wipol"
+wi="$("$CJ" whatif "$W/wi.json" quote Net "$W/wipol")"
+want   "whatif: adding Net propagates to the transitive caller" "$wi" 'com.ex.api.A.handle'
+want   "whatif: returns the WOULD-VIOLATE verdict"              "$wi" 'WOULD VIOLATE policy'
+want   "whatif: names the violating fn + the rule"             "$wi" '`com.ex.api.A.handle`  (rule: `deny Net api`)'
+want   "whatif --json: ok=false on a violation"                "$("$CJ" whatif "$W/wi.json" quote Net "$W/wipol" --json)" '"ok": false'
+want   "whatif: a non-denied effect is within policy"          "$("$CJ" whatif "$W/wi.json" quote Db "$W/wipol")" 'within policy'
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

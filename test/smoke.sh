@@ -203,6 +203,25 @@ want   "reachable: reports the entry-point union"      "$rch" 'union over'
 rjson="$("$CJ" reachable "$W/t.json" --json)"
 want   "reachable --json: structured effect surface"   "$rjson" '"entryPoints"'
 
+echo "== path: effect provenance (the chain to the source) =="
+# A 3-deep Net chain: handle -> mid -> leafNet. `path` traces it to the direct source.
+cat > "$W/src/Pp.java" <<'J'
+public class Pp {
+  static void leafNet() { try { new java.net.Socket("h", 1); } catch (Exception e) {} }
+  static void mid()    { leafNet(); }
+  static void handle() { mid(); }
+  public static void main(String[] a) { handle(); }
+}
+J
+javac -d "$W/pcls" "$W/src/Pp.java" 2>/dev/null
+"$CJ" "$W/pcls" --json "$W/p.json" >/dev/null 2>&1
+pth="$("$CJ" path "$W/p.json" handle Net)"
+want   "path: traces the chain through the middle fn"  "$pth" 'Pp.mid'
+want   "path: marks the direct source"                 "$pth" 'Net source'
+want   "path: names the leaf source"                   "$pth" 'Pp.leafNet'
+want   "path --json: structured steps with source flag" "$("$CJ" path "$W/p.json" handle Net --json)" '"source": true'
+want   "path: honest when the fn doesn't perform the effect" "$("$CJ" path "$W/p.json" handle Db)" 'does not perform Db'
+
 echo "== @PostConstruct/@PreDestroy lifecycle callbacks are entry points =="
 # Container-invoked init/shutdown hooks — no project call site, so an init that reads config or a
 # @PreDestroy that flushes/closes does orphaned I/O. The substring match covers javax/ and jakarta/.

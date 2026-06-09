@@ -103,7 +103,7 @@ public class Candor {
         if (args.length < 1) {
             System.err.println("usage: candor <dir-or-jar-of-classes> [--json <file>]");
             System.err.println(
-                    "       candor <show|where|callers|map|diff|containment|reachable> <report.json> [arg]");
+                    "       candor <show|where|callers|map|diff|containment|reachable|path> <report.json> [arg]");
             System.exit(2);
         }
         // Read-only queries over a written report (no re-analysis) — the sibling of candor-query.

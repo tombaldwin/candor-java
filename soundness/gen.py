@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Construction-based soundness fuzzer for candor-java (sibling of the Rust impl's soundness/gen.py).
 
-Generates a compilable Java class that threads a KNOWN effect (Fs/Net/Exec/Env) from a `sink` method up
+Generates a compilable Java class that threads a KNOWN effect (Fs/Net/Exec/Env/Clock/Rand) from a `sink` method up
 through a random chain of methods, where each call edge uses a randomly-chosen JVM CALL FORM — the ways
 an effect can reach a method on the JVM: a direct static call, a lambda, a method reference, a
 constructor (`<init>`), a static initializer (`<clinit>`), interface/virtual dispatch (CHA), and an
@@ -26,6 +26,8 @@ EFFECTS = {
     "Net":  'try { java.net.Socket s = new java.net.Socket("127.0.0.1", 9); s.close(); } catch (Exception e) {}',
     "Exec": 'try { new ProcessBuilder("echo", "x").start(); } catch (Exception e) {}',
     "Env":  'System.getenv("CANDOR_FUZZ");',
+    "Clock": 'System.currentTimeMillis();',
+    "Rand":  'new java.util.Random().nextInt();',
 }
 
 

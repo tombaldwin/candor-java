@@ -50,8 +50,10 @@ all of it — so candor-java reads Spring's **declarations** instead:
 - **Entry points** (runtime-invoked roots, no project call site): `@*Mapping`, `@Scheduled`,
   `@*Listener`/`@EventListener`; bean lifecycle `@PostConstruct`/`@PreDestroy` + `InitializingBean`/
   `DisposableBean` + `CommandLineRunner`/`ApplicationRunner`; servlets/filters/listeners; JPA entity
-  callbacks (`@PrePersist`/…); `Runnable`/`Thread`/`Callable` task bodies; and `finalize()`. The
-  `reachable` query unions effects over these to show what the app does at runtime.
+  callbacks (`@PrePersist`/…); `Runnable`/`Thread`/`Callable` task bodies; `finalize()`; and **Ktor**
+  route handlers (a Kotlin `SuspendLambda` whose receiver is a `RoutingContext`/`PipelineContext` — the
+  `get("/x") { … }` body Ktor invokes from its pipeline). The `reachable` query unions effects over these
+  to show what the app does at runtime.
 
 On `spring-sample/`, `register()` (a `@Transactional` method calling a Spring Data repo + a
 `RestTemplate`) correctly infers `{ Db, Net }`, and the `@GetMapping` controller inherits

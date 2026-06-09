@@ -71,11 +71,17 @@ public class Candor {
     static final String TX = "springframework/transaction/annotation/Transactional";
     static final String SCHEDULED = "springframework/scheduling/annotation/Scheduled";
     static final String FEIGN = "openfeign/FeignClient";
-    // Ambient authorities (for CANDOR_NO_AMBIENT). Log/Unknown are not authorities.
-    static final Set<String> AMBIENT = Set.of("Net", "Fs", "Db", "Exec", "Env", "Clock", "Rand");
-    // The effect vocabulary candor-java emits (used to split a `deny <Effect…> [scope]` rule's effects
-    // from its trailing scope token).
-    static final Set<String> KNOWN_EFFECTS = Set.of("Net", "Fs", "Db", "Exec", "Env", "Clock", "Rand", "Log", "Ipc");
+    // Ambient authorities for AS-EFF-004 / CANDOR_NO_AMBIENT — the spec's `Ambient = 𝔼 \ {Log}`
+    // (SEMANTICS.md §, every effect except cross-cutting Log; Unknown is not an authority). Was missing
+    // Ipc + Clipboard, so direct Unix-socket/clipboard reaches slipped the no-ambient check (the Rust
+    // reference flags them).
+    static final Set<String> AMBIENT =
+            Set.of("Net", "Fs", "Db", "Exec", "Env", "Clock", "Rand", "Ipc", "Clipboard");
+    // The effect vocabulary candor-java emits — spec §1: 𝔼 = {Net,Fs,Db,Exec,Env,Clock,Ipc,Log,Rand,
+    // Clipboard}. Used to split a `deny <Effect…> [scope]` rule's effects from its trailing scope token,
+    // so a missing entry (Clipboard was absent) would mis-parse `deny Clipboard …` as a scope.
+    static final Set<String> KNOWN_EFFECTS =
+            Set.of("Net", "Fs", "Db", "Exec", "Env", "Clock", "Rand", "Log", "Ipc", "Clipboard");
     // java.io types whose <init> takes a file PATH as its first String arg (for AS-EFF-008 `paths`).
     static final Set<String> PATH_CTOR_OWNERS = Set.of("java.io.File", "java.io.FileInputStream",
             "java.io.FileOutputStream", "java.io.FileReader", "java.io.FileWriter", "java.io.RandomAccessFile");
@@ -1262,6 +1268,13 @@ public class Candor {
         if (owner.startsWith("org.slf4j.") || owner.startsWith("java.util.logging.")
                 || owner.startsWith("org.apache.logging.log4j.") || owner.startsWith("ch.qos.logback."))
             return "Log";
+        // Clipboard — system clipboard access (spec §1). Toolkit hands out the system clipboard/selection
+        // handle; the `Clipboard` get/setContents are the read/write. Restores cross-impl vocabulary parity
+        // — Clipboard was the one spec effect candor-java never emitted (the Rust impl classifies arboard).
+        if ((owner.equals("java.awt.Toolkit")
+                && (method.equals("getSystemClipboard") || method.equals("getSystemSelection")))
+                || owner.equals("java.awt.datatransfer.Clipboard"))
+            return "Clipboard";
         return null;
     }
 

@@ -580,6 +580,27 @@ want   "ZipFile read is Fs"                                   "$("$CJ" show "$W/
 want   "JarFile read is Fs"                                   "$("$CJ" show "$W/jdk2.json" 'Jdk2.jar')"        'Fs'
 absent "ZipEntry data type stays pure"                        "$jdk2"                                          '"Jdk2.zipEntry"'
 
+echo "== Clipboard effect (spec §1 vocabulary parity; Rust had it, candor-java did not) =="
+# Clipboard is one of the 10 spec effects (𝔼); candor-java never emitted it. AWT Toolkit hands out the
+# system clipboard; Clipboard get/setContents read/write it. DataFlavor (pure data) must stay pure. And
+# Clipboard must be an AMBIENT authority (𝔼 \ {Log}) so CANDOR_NO_AMBIENT/AS-EFF-004 flags a direct reach.
+cat > "$W/src/Clip.java" <<'J'
+import java.awt.*; import java.awt.datatransfer.*;
+public class Clip {
+  static void get() { try { Toolkit.getDefaultToolkit().getSystemClipboard().getData(DataFlavor.stringFlavor); } catch (Exception e) {} }
+  static void set() { Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection("x"), null); }
+  static void flavor() { DataFlavor f = DataFlavor.stringFlavor; }   // pure data type
+}
+J
+javac -d "$W/clcls" "$W/src/Clip.java" 2>/dev/null
+"$CJ" "$W/clcls" --json "$W/clip.json" >/dev/null 2>&1
+clip="$(cat "$W/clip.json")"
+want   "clipboard read is Clipboard"        "$("$CJ" show "$W/clip.json" 'Clip.get')" 'Clipboard'
+want   "clipboard write is Clipboard"       "$("$CJ" show "$W/clip.json" 'Clip.set')" 'Clipboard'
+absent "DataFlavor data type stays pure"    "$clip"                                   '"Clip.flavor"'
+want   "Clipboard is an ambient authority (AS-EFF-004 flags a direct reach)" \
+       "$(CANDOR_NO_AMBIENT=1 "$CJ" "$W/clcls" 2>&1)" '[AS-EFF-004] `Clip.get`'
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

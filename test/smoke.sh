@@ -601,6 +601,31 @@ absent "DataFlavor data type stays pure"    "$clip"                             
 want   "Clipboard is an ambient authority (AS-EFF-004 flags a direct reach)" \
        "$(CANDOR_NO_AMBIENT=1 "$CJ" "$W/clcls" 2>&1)" '[AS-EFF-004] `Clip.get`'
 
+echo "== AS-EFF-007 taint (CANDOR_TAINT): injection-class effect on a caller-derived argument =="
+# Intraprocedural taint dataflow: a parameter flowing (directly or through string concat) into an
+# injection-class effect (Exec/Fs/Db/Net/Env/Ipc) is flagged. A literal arg, a fresh local, and a pure
+# method must NOT flag (precision). Advisory: never fails CI. Gated by CANDOR_TAINT.
+cat > "$W/src/Taint.java" <<'J'
+import java.nio.file.*;
+public class Taint {
+  public void execParam(String cmd) throws Exception { Runtime.getRuntime().exec(cmd); }       // param -> Exec
+  public void readConcat(String key) throws Exception { Files.readAllBytes(Path.of("/c/" + key)); } // concat -> Fs
+  public static void staticExec(String c) throws Exception { Runtime.getRuntime().exec(c); }    // static slot 0
+  public void execLiteral() throws Exception { Runtime.getRuntime().exec("/bin/ls"); }          // literal -> pure
+  public void readLocal() throws Exception { String p = "/etc/hosts"; Files.readAllBytes(Path.of(p)); } // local
+  public String pure(String s) { return s.trim(); }                                            // no effect
+}
+J
+javac -d "$W/tcls2" "$W/src/Taint.java" 2>/dev/null
+taint="$(CANDOR_TAINT=1 "$CJ" "$W/tcls2" 2>&1)"
+want   "param flowing to exec is AS-EFF-007 (Exec)"        "$taint" '[AS-EFF-007] `Taint.execParam` performs { Exec }'
+want   "param through string concat to a read is flagged (Fs)" "$taint" '[AS-EFF-007] `Taint.readConcat` performs { Fs }'
+want   "static method param (slot 0) is flagged"          "$taint" '[AS-EFF-007] `Taint.staticExec`'
+absent "a literal exec arg is NOT tainted"               "$taint" '`Taint.execLiteral`'
+absent "a fresh-local path is NOT tainted"               "$taint" '`Taint.readLocal`'
+absent "a pure method is NOT tainted"                    "$taint" '`Taint.pure`'
+absent "taint is silent without CANDOR_TAINT"            "$("$CJ" "$W/tcls2" 2>&1)" 'AS-EFF-007'
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

@@ -10,7 +10,14 @@ import com.google.gson.reflect.TypeToken;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Handle;
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.*;
+import org.objectweb.asm.tree.analysis.Analyzer;
+import org.objectweb.asm.tree.analysis.BasicInterpreter;
+import org.objectweb.asm.tree.analysis.BasicValue;
+import org.objectweb.asm.tree.analysis.Frame;
+import org.objectweb.asm.tree.analysis.Interpreter;
+import org.objectweb.asm.tree.analysis.Value;
 
 import java.io.IOException;
 import java.nio.file.*;
@@ -82,6 +89,12 @@ public class Candor {
     // so a missing entry (Clipboard was absent) would mis-parse `deny Clipboard …` as a scope.
     static final Set<String> KNOWN_EFFECTS =
             Set.of("Net", "Fs", "Db", "Exec", "Env", "Clock", "Rand", "Log", "Ipc", "Clipboard");
+    // AS-EFF-007 (CANDOR_TAINT): the injection-class effects whose argument, if caller-derived, is an
+    // injection surface (path traversal / command / SQL / SSRF). Clock/Rand/Log/Clipboard aren't injectable.
+    static final Set<String> INJECTION = Set.of("Fs", "Exec", "Db", "Net", "Env", "Ipc");
+    static boolean taintEnabled = false;             // CANDOR_TAINT — run the intraprocedural taint pass
+    // fn -> injection-class effects performed on a parameter-derived (caller-controlled) argument.
+    static final Map<String, TreeSet<String>> tainted = new HashMap<>();
     // java.io types whose <init> takes a file PATH as its first String arg (for AS-EFF-008 `paths`).
     static final Set<String> PATH_CTOR_OWNERS = Set.of("java.io.File", "java.io.FileInputStream",
             "java.io.FileOutputStream", "java.io.FileReader", "java.io.FileWriter", "java.io.RandomAccessFile");
@@ -130,6 +143,7 @@ public class Candor {
         // Cross-jar inheritance (candor-spec §2): load dependency reports named by CANDOR_DEPS BEFORE
         // analyze, so a call into an already-analyzed dependency inherits its effects (vs assumed-pure).
         loadCrossDeps(System.getenv("CANDOR_DEPS"), provenance()[0]);
+        taintEnabled = System.getenv("CANDOR_TAINT") != null; // read before analyze (the pass runs per method)
         for (ClassNode cn : classes) analyze(cn);
 
         Map<String, TreeSet<String>> inferred = fixpoint();
@@ -143,7 +157,8 @@ public class Candor {
         String baseline = System.getenv("CANDOR_BASELINE");
         String noAmbient = System.getenv("CANDOR_NO_AMBIENT");
         String policy = System.getenv("CANDOR_POLICY");
-        boolean enforce = baseline != null || noAmbient != null || strict != null || policy != null;
+        boolean enforce = baseline != null || noAmbient != null || strict != null || policy != null
+                || taintEnabled;
 
         if (!enforce) {
             System.out.println("candor-java — effect audit (Spring-aware; Unknown for reflection/dispatch)\n");
@@ -167,7 +182,9 @@ public class Candor {
         if (noAmbient != null) violations += checkNoAmbient(inferred, noAmbient);
         if (baseline != null) violations += checkBaseline(inferred, baseline);
         if (policy != null) violations += checkPolicy(inferred, policy);
-        if (violations == 0) System.out.println("candor-java: no violations");
+        // AS-EFF-007 is a heuristic ADVISORY (spec §6): emit findings but never fail CI on its own.
+        int advisories = taintEnabled ? checkTaint(inferred) : 0;
+        if (violations == 0 && advisories == 0) System.out.println("candor-java: no violations");
         if (violations > 0) System.exit(1); // fail CI
     }
 
@@ -277,6 +294,113 @@ public class Candor {
             }
         }
         return v;
+    }
+
+    /**
+     * AS-EFF-007 (CANDOR_TAINT): a function performs an injection-class effect on a CALLER-DERIVED argument
+     * (path traversal / command / SQL injection / SSRF). HEURISTIC + ADVISORY — an intraprocedural,
+     * over-approximating dataflow (the `tainted` map is built in `analyze` by the taint `Analyzer`); it
+     * misses cross-method flow and over-flags a parameter that is actually validated. Mirrors the Rust
+     * impl's syntactic taint nudge. Emits findings but never fails CI (returns the count for messaging only).
+     */
+    static int checkTaint(Map<String, TreeSet<String>> inferred) {
+        int v = 0;
+        for (var e : new TreeMap<>(tainted).entrySet()) {
+            if (e.getValue().isEmpty()) continue;
+            System.out.printf("[AS-EFF-007] `%s` performs { %s } on caller-derived input (an injection "
+                    + "surface — validate/sanitize it, or confirm the source is trusted); heuristic, may "
+                    + "over- or under-flag%n", e.getKey(), String.join(", ", e.getValue()));
+            v++;
+        }
+        return v;
+    }
+
+    /** The local-variable slots holding this method's declared parameters (excluding `this`); a load from
+     *  one of these is the untrusted-input source for the taint pass. Long/double params occupy 2 slots. */
+    static Set<Integer> paramSlots(MethodNode mn) {
+        Set<Integer> s = new HashSet<>();
+        int slot = (mn.access & Opcodes.ACC_STATIC) != 0 ? 0 : 1; // instance methods carry `this` at slot 0
+        for (Type t : Type.getArgumentTypes(mn.desc)) {
+            s.add(slot);
+            slot += t.getSize();
+        }
+        return s;
+    }
+
+    /** Is any ARGUMENT (not the receiver) of the call `min` tainted in the frame `f` before it executes? */
+    static boolean argsTainted(Frame<TaintValue> f, MethodInsnNode min) {
+        if (f == null) return false;
+        int slots = 0;
+        for (Type a : Type.getArgumentTypes(min.desc)) slots += a.getSize();
+        int top = f.getStackSize();
+        for (int i = 0; i < slots && i < top; i++) { // the args occupy the top `slots` stack entries
+            TaintValue v = f.getStack(top - 1 - i);
+            if (v != null && v.tainted) return true;
+        }
+        return false;
+    }
+
+    /** A dataflow value carrying ASM's type/size (`base`) plus a taint bit (derives from a parameter). */
+    static final class TaintValue implements Value {
+        final BasicValue base;
+        final boolean tainted;
+        TaintValue(BasicValue base, boolean tainted) { this.base = base; this.tainted = tainted; }
+        public int getSize() { return base.getSize(); }
+        public boolean equals(Object o) {
+            return o instanceof TaintValue t && base.equals(t.base) && tainted == t.tainted;
+        }
+        public int hashCode() { return base.hashCode() * 2 + (tainted ? 1 : 0); }
+    }
+
+    /** Propagates taint over a method's dataflow: a load of a parameter slot is the source; taint flows
+     *  through copies, casts, arithmetic, and method calls (StringBuilder/concat carry it). Type/size
+     *  correctness is delegated to {@link BasicInterpreter} so the analyzer's frames merge soundly. */
+    static final class TaintInterpreter extends Interpreter<TaintValue> {
+        private final BasicInterpreter bi = new BasicInterpreter();
+        private final Set<Integer> params;
+        TaintInterpreter(Set<Integer> params) { super(Opcodes.ASM9); this.params = params; }
+        private static TaintValue wrap(BasicValue b, boolean t) { return b == null ? null : new TaintValue(b, t); }
+
+        public TaintValue newValue(Type type) { return wrap(bi.newValue(type), false); }
+        public TaintValue newOperation(AbstractInsnNode insn) throws org.objectweb.asm.tree.analysis.AnalyzerException {
+            return wrap(bi.newOperation(insn), false);
+        }
+        public TaintValue copyOperation(AbstractInsnNode insn, TaintValue value)
+                throws org.objectweb.asm.tree.analysis.AnalyzerException {
+            int op = insn.getOpcode();
+            // A load from a parameter slot IS the untrusted-input source; every other copy preserves taint.
+            if (op >= Opcodes.ILOAD && op <= Opcodes.ALOAD && insn instanceof VarInsnNode vi
+                    && params.contains(vi.var))
+                return new TaintValue(value.base, true);
+            return value;
+        }
+        public TaintValue unaryOperation(AbstractInsnNode insn, TaintValue value)
+                throws org.objectweb.asm.tree.analysis.AnalyzerException {
+            return wrap(bi.unaryOperation(insn, value.base), value.tainted);
+        }
+        public TaintValue binaryOperation(AbstractInsnNode insn, TaintValue a, TaintValue b)
+                throws org.objectweb.asm.tree.analysis.AnalyzerException {
+            return wrap(bi.binaryOperation(insn, a.base, b.base), a.tainted || b.tainted);
+        }
+        public TaintValue ternaryOperation(AbstractInsnNode insn, TaintValue a, TaintValue b, TaintValue c)
+                throws org.objectweb.asm.tree.analysis.AnalyzerException {
+            return wrap(bi.ternaryOperation(insn, a.base, b.base, c.base), a.tainted || b.tainted || c.tainted);
+        }
+        public TaintValue naryOperation(AbstractInsnNode insn, List<? extends TaintValue> values)
+                throws org.objectweb.asm.tree.analysis.AnalyzerException {
+            boolean t = false;
+            List<BasicValue> bases = new ArrayList<>(values.size());
+            for (TaintValue v : values) { bases.add(v.base); t |= v.tainted; }
+            // The result of a call/concat/StringBuilder carries taint if any argument did.
+            return wrap(bi.naryOperation(insn, bases), t);
+        }
+        public void returnOperation(AbstractInsnNode insn, TaintValue value, TaintValue expected) {}
+        public TaintValue merge(TaintValue a, TaintValue b) {
+            BasicValue mb = bi.merge(a.base, b.base);
+            boolean mt = a.tainted || b.tainted; // at a control-flow join, tainted if tainted on either path
+            if (mb.equals(a.base) && mt == a.tainted) return a;
+            return new TaintValue(mb, mt);
+        }
     }
 
     /** AS-EFF-005: flag a function that gained an effect versus a saved baseline report. */
@@ -815,11 +939,26 @@ public class Candor {
             if (ktorHandler && (mn.name.equals("invokeSuspend") || mn.name.equals("invoke")))
                 entryPoints.add(id);
 
+            // AS-EFF-007 taint pass (CANDOR_TAINT): a per-method dataflow whose frames tell us, at each
+            // effect call below, whether an argument is parameter-derived. Skipped without the mode, and on
+            // bodiless or malformed methods — taint is advisory, so a failed analysis must never crash.
+            Frame<TaintValue>[] taintFrames = null;
+            if (taintEnabled && mn.instructions.size() > 0
+                    && (mn.access & (Opcodes.ACC_NATIVE | Opcodes.ACC_ABSTRACT)) == 0) {
+                try {
+                    taintFrames = new Analyzer<>(new TaintInterpreter(paramSlots(mn))).analyze(cn.name, mn);
+                } catch (Throwable t) { taintFrames = null; }
+            }
+
             for (AbstractInsnNode insn : mn.instructions) {
                 if (insn instanceof MethodInsnNode min) {
                     String owner = min.owner.replace('/', '.');
                     String effect = classify(owner, min.name);
                     if (effect != null) dir.add(effect);
+                    // An injection-class effect on a caller-derived argument is an injection surface.
+                    if (taintFrames != null && effect != null && INJECTION.contains(effect)
+                            && argsTainted(taintFrames[mn.instructions.indexOf(min)], min))
+                        tainted.computeIfAbsent(id, k -> new TreeSet<>()).add(effect);
                     if ("Unknown".equals(effect)) // reflection / dynamic invoke (classify §)
                         unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                                 .add("reflect:" + owner + "." + min.name);

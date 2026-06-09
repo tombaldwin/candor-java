@@ -747,6 +747,14 @@ public class Candor {
             if (annoPresent(mn.visibleAnnotations, SCHEDULED)
                     || annoPresentAny(mn.visibleAnnotations, MAPPING_OR_LISTENER))
                 entryPoints.add(id);
+            // A `finalize()` override is run by the GC's finalizer thread — NOT by any bytecode call.
+            // It's the JVM analog of Rust's implicit-Drop hole: an effect (a socket/file opened on
+            // collection) that otherwise sits in finalize's own entry but is unreachable from any root,
+            // so a "what does this program perform" walk from entry points silently misses it. Unlike
+            // Rust we can't attribute it to a drop SITE (finalization is non-deterministic and runs on a
+            // detached thread), so the honest model is the runtime-invoked entry point it actually is.
+            if (mn.name.equals("finalize") && mn.desc.equals("()V") && (mn.access & Opcodes.ACC_STATIC) == 0)
+                entryPoints.add(id);
 
             for (AbstractInsnNode insn : mn.instructions) {
                 if (insn instanceof MethodInsnNode min) {

@@ -152,6 +152,25 @@ want   "a native method is Unknown, not silent-pure"  "$("$CJ" show "$W/n.json" 
 want   "a caller of native inherits Unknown"          "$("$CJ" show "$W/n.json" Nat.caller)"   'Unknown'
 absent "a plain pure method stays pure"               "$(cat "$W/n.json")"                     '"Nat.purePlain"'
 
+echo "== finalize() is a runtime (GC) entry point — the implicit-Drop analog =="
+# A finalize() override is run by the GC's finalizer thread with NO bytecode caller. Its effect must
+# not be orphaned out of the reachability roots; mark it an entry point so a from-entry-points walk
+# sees it. A PURE finalize must not be given a phantom effect.
+cat > "$W/src/Fin.java" <<'J'
+public class Fin {
+  static class Loud  { protected void finalize() throws Throwable { new java.net.Socket("10.0.0.2", 9); } }
+  static class Quiet { protected void finalize() throws Throwable {} }
+  public static void main(String[] a) { System.out.println(new Loud()); }
+}
+J
+javac -d "$W/fcls" "$W/src/Fin.java" 2>/dev/null
+"$CJ" "$W/fcls" --json "$W/f.json" >/dev/null 2>&1
+frep="$(cat "$W/f.json")"
+want   "effectful finalize is reported (Net seen in its body)"  "$("$CJ" show "$W/f.json" 'Fin$Loud.finalize')" 'Net'
+want   "finalize is flagged a runtime entry point"              "$frep" '"Fin$Loud.finalize"'
+want   "  …with entryPoint=true (a GC-invoked root)"            "$(python3 -c "import json;print(next(e['entryPoint'] for e in json.load(open('$W/f.json'))['functions'] if e['fn']=='Fin\$Loud.finalize'))")" 'True'
+want   "a pure finalize gets no phantom effect (empty inferred)" "$(python3 -c "import json;print(next(e['inferred'] for e in json.load(open('$W/f.json'))['functions'] if e['fn']=='Fin\$Quiet.finalize'))")" '[]'
+
 echo "== policy: deny / pure (AS-EFF-006) =="
 # $W/cls holds Fx (reads/writes/both → Fs; spawn → Exec; dyn → Unknown).
 printf 'deny Fs Fx\n' > "$W/pol-deny"

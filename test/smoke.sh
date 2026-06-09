@@ -152,6 +152,24 @@ want   "a native method is Unknown, not silent-pure"  "$("$CJ" show "$W/n.json" 
 want   "a caller of native inherits Unknown"          "$("$CJ" show "$W/n.json" Nat.caller)"   'Unknown'
 absent "a plain pure method stays pure"               "$(cat "$W/n.json")"                     '"Nat.purePlain"'
 
+echo "== CHA: dispatch resolving to a GRANDPARENT's concrete impl (the AbstractBase pattern) =="
+# Interface Svc; Base implements act() concretely; Impl extends Base WITHOUT redeclaring act. A call on
+# an Svc-typed receiver must resolve to Base.act (gaining its Net), not a false Unknown — the impl is
+# reached by going DOWN to Impl then UP to its grandparent Base. (The byte-buddy MethodList.filter case.)
+cat > "$W/src/Gp.java" <<'J'
+public class Gp {
+  interface Svc { void act(); }
+  static abstract class Base implements Svc { public void act() { try { new java.net.Socket("h",1); } catch (Exception e) {} } }
+  static class Impl extends Base {}
+  static void use(Svc s) { s.act(); }
+  public static void main(String[] a) { use(new Impl()); }
+}
+J
+javac -d "$W/gcls" "$W/src/Gp.java" 2>/dev/null
+"$CJ" "$W/gcls" --json "$W/g.json" >/dev/null 2>&1
+want   "grandparent-inherited dispatch resolves (gains Net)"   "$("$CJ" show "$W/g.json" 'Gp.use')" 'Net'
+absent "…and is NOT a false Unknown"                           "$("$CJ" show "$W/g.json" 'Gp.use')" 'Unknown'
+
 echo "== finalize() is a runtime (GC) entry point — the implicit-Drop analog =="
 # A finalize() override is run by the GC's finalizer thread with NO bytecode caller. Its effect must
 # not be orphaned out of the reachability roots; mark it an entry point so a from-entry-points walk

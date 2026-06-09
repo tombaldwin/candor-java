@@ -170,6 +170,25 @@ javac -d "$W/gcls" "$W/src/Gp.java" 2>/dev/null
 want   "grandparent-inherited dispatch resolves (gains Net)"   "$("$CJ" show "$W/g.json" 'Gp.use')" 'Net'
 absent "…and is NOT a false Unknown"                           "$("$CJ" show "$W/g.json" 'Gp.use')" 'Unknown'
 
+echo "== NIO channels are classified (SocketChannel→Net, FileChannel→Fs) =="
+# NIO networking/file I/O was a silent under-report — every NIO stack (Netty, async/reactive) was pure.
+# The concrete channel types ARE the I/O boundary; a plain ByteBuffer must stay pure (no false positive).
+cat > "$W/src/Nio.java" <<'J'
+import java.nio.channels.*; import java.net.*;
+public class Nio {
+  static void net()  throws Exception { SocketChannel.open(new InetSocketAddress("h", 1)); }
+  static void srv()  throws Exception { ServerSocketChannel.open().bind(new InetSocketAddress(80)); }
+  static void file() throws Exception { FileChannel.open(java.nio.file.Path.of("/tmp/x")); }
+  static void pure() { java.nio.ByteBuffer.allocate(8).flip(); }
+}
+J
+javac -d "$W/iocls" "$W/src/Nio.java" 2>/dev/null
+"$CJ" "$W/iocls" --json "$W/io.json" >/dev/null 2>&1
+want   "SocketChannel → Net (was a silent under-report)"  "$("$CJ" show "$W/io.json" 'Nio.net')"  'Net'
+want   "ServerSocketChannel → Net"                        "$("$CJ" show "$W/io.json" 'Nio.srv')"  'Net'
+want   "FileChannel → Fs"                                 "$("$CJ" show "$W/io.json" 'Nio.file')" 'Fs'
+absent "a plain ByteBuffer is NOT classified (no false positive)" "$(cat "$W/io.json")" '"Nio.pure"'
+
 echo "== finalize() is a runtime (GC) entry point — the implicit-Drop analog =="
 # A finalize() override is run by the GC's finalizer thread with NO bytecode caller. Its effect must
 # not be orphaned out of the reachability roots; mark it an entry point so a from-entry-points walk

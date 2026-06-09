@@ -315,6 +315,37 @@ want   "InitializingBean.afterPropertiesSet is an entry point" "$(rep2 'app.Comp
 want   "DisposableBean.destroy is an entry point"              "$(rep2 'app.Comp$Disp.destroy')" 'True'
 want   "servlet HttpServlet.doGet is an entry point"           "$(rep2 'app.Comp$Srv.doGet')" 'True'
 
+echo "== Ktor route handlers (Kotlin suspend-lambda with a RoutingContext) are entry points =="
+# A Ktor `get(\"/\") { … }` handler compiles to a SuspendLambda whose invoke bridge takes a
+# RoutingContext — Ktor invokes it from its pipeline (no project call site). Stubs stand in for the
+# Kotlin/Ktor types. A SuspendLambda WITHOUT a RoutingContext (a normal coroutine lambda) must NOT be
+# marked — precision (else every coroutine lambda floods the roots).
+mkdir -p "$W/ksrc/kotlin/coroutines/jvm/internal" "$W/ksrc/io/ktor/server/routing" "$W/ksrc/app"
+printf 'package kotlin.coroutines.jvm.internal; public class SuspendLambda {}\n' > "$W/ksrc/kotlin/coroutines/jvm/internal/SuspendLambda.java"
+printf 'package io.ktor.server.routing; public class RoutingContext {}\n' > "$W/ksrc/io/ktor/server/routing/RoutingContext.java"
+cat > "$W/ksrc/app/Handlers.java" <<'J'
+package app;
+import kotlin.coroutines.jvm.internal.SuspendLambda; import io.ktor.server.routing.RoutingContext;
+public class Handlers {
+  // A Ktor route handler: extends SuspendLambda, invoke() takes a RoutingContext. Body does Fs.
+  public static class Route extends SuspendLambda {
+    public Object invokeSuspend(Object o){ try { new java.io.FileInputStream("/tmp/x").close(); } catch(Exception e){} return null; }
+    public Object invoke(RoutingContext ctx, Object cont){ return invokeSuspend(null); }
+  }
+  // A normal coroutine lambda: extends SuspendLambda but NO RoutingContext → not a Ktor handler.
+  public static class Plain extends SuspendLambda {
+    public Object invokeSuspend(Object o){ try { new java.net.Socket("h",1); } catch(Exception e){} return null; }
+    public Object invoke(Object a, Object cont){ return invokeSuspend(null); }
+  }
+}
+J
+javac -d "$W/kcls" $(find "$W/ksrc" -name '*.java') 2>/dev/null
+"$CJ" "$W/kcls/app" --json "$W/k.json" >/dev/null 2>&1
+kep() { python3 -c "import json;print(next((e.get('entryPoint') for e in json.load(open('$W/k.json'))['functions'] if e['fn']=='$1'), 'absent'))"; }
+want   "Ktor handler invokeSuspend is an entry point (gains Fs)" "$("$CJ" show "$W/k.json" 'app.Handlers$Route.invokeSuspend')" 'Fs'
+want   "  …Ktor handler entryPoint=true"                        "$(kep 'app.Handlers$Route.invokeSuspend')" 'True'
+want   "a normal coroutine lambda is NOT a Ktor entry point"    "$(kep 'app.Handlers$Plain.invokeSuspend')" 'False'
+
 echo "== program entry (main) + jar input (validation regressions) =="
 # main() is the JVM-invoked program entry — a reachability root, like the Rust impl's `fn main`.
 want   "public static void main is an entry point" \

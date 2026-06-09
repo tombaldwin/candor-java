@@ -744,6 +744,17 @@ public class Candor {
         List<String[]> runtimeRows = RUNTIME_OVERRIDES.stream()
                 .filter(r -> supers.stream().anyMatch(s -> s.contains(r[0])))
                 .toList();
+        // Ktor route handler: a Kotlin suspend-lambda (`extends SuspendLambda`) whose receiver is a Ktor
+        // request context (`io.ktor.server.routing.RoutingContext` in 3.x, `io.ktor.util.pipeline.
+        // PipelineContext` in 2.x) — i.e. a `get("/x") { … }` body. Ktor invokes it from its request
+        // pipeline with NO project call site (the lambda is registered, then run later on another thread),
+        // so it's orphaned from reachability — the Kotlin analog of Spring @*Mapping, but a lambda with no
+        // annotation/supertype marker. The tell: a method whose descriptor carries a Ktor context PARAMETER
+        // (the erased generic is concrete on the `invoke` bridge). Mark this class's body method.
+        boolean ktorHandler = supers.contains("kotlin/coroutines/jvm/internal/SuspendLambda")
+                && cn.methods.stream().anyMatch(m ->
+                        m.desc.contains("io/ktor/server/routing/RoutingContext")
+                                || m.desc.contains("io/ktor/util/pipeline/PipelineContext"));
         for (MethodNode mn : cn.methods) {
             // Constructors (`<init>`) AND static initializers (`<clinit>`) are both analyzed: a `new X()`
             // edges to `X.<init>`, and a class-load trigger (`new`, a static call, a static field access)
@@ -793,6 +804,10 @@ public class Candor {
                     entryPoints.add(id);
                     break;
                 }
+            // The Ktor handler's BODY is `invokeSuspend` (the suspend-lambda's state machine); `invoke` is
+            // the bridge that drives it. Mark the body so its effects become a reachability root.
+            if (ktorHandler && (mn.name.equals("invokeSuspend") || mn.name.equals("invoke")))
+                entryPoints.add(id);
 
             for (AbstractInsnNode insn : mn.instructions) {
                 if (insn instanceof MethodInsnNode min) {

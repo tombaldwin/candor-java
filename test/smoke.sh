@@ -171,6 +171,28 @@ want   "finalize is flagged a runtime entry point"              "$frep" '"Fin$Lo
 want   "  …with entryPoint=true (a GC-invoked root)"            "$(python3 -c "import json;print(next(e['entryPoint'] for e in json.load(open('$W/f.json'))['functions'] if e['fn']=='Fin\$Loud.finalize'))")" 'True'
 want   "a pure finalize gets no phantom effect (empty inferred)" "$(python3 -c "import json;print(next(e['inferred'] for e in json.load(open('$W/f.json'))['functions'] if e['fn']=='Fin\$Quiet.finalize'))")" '[]'
 
+echo "== Runnable/Thread/Callable task body is a runtime entry point =="
+# run()/call() of a Runnable/Thread/Callable is invoked by an executor or the thread scheduler — the
+# launch site is `submit(r)`/`start()`, whose invocation of run() is in non-project JDK code. Same
+# orphaned-effect shape as finalize. Must be an entry point; a coincidental run() on a NON-task class
+# must NOT be (precision — uflexi has such a method and it stays a normal method).
+cat > "$W/src/Tk.java" <<'J'
+import java.util.concurrent.*;
+public class Tk {
+  static class Task implements Runnable { public void run(){ try { new java.net.Socket("10.0.0.2",9); } catch(Exception e){} } }
+  static class Job  implements Callable<Integer> { public Integer call() throws Exception { new java.io.FileOutputStream("/tmp/x").close(); return 1; } }
+  static class NotATask { public void run(){} }   // run() but not Runnable/Thread → NOT an entry point
+  public static void main(String[] a){ Executors.newFixedThreadPool(1).submit(new Task()); }
+}
+J
+javac -d "$W/tcls" "$W/src/Tk.java" 2>/dev/null
+"$CJ" "$W/tcls" --json "$W/t.json" >/dev/null 2>&1
+ep() { python3 -c "import json;print(next((e.get('entryPoint') for e in json.load(open('$W/t.json'))['functions'] if e['fn']=='$1'), 'absent'))"; }
+want   "Runnable.run() task body is an entry point (gains Net)"   "$("$CJ" show "$W/t.json" 'Tk$Task.run')" 'Net'
+want   "  …Runnable.run() entryPoint=true"                        "$(ep 'Tk$Task.run')"  'True'
+want   "Callable.call() task body is an entry point"              "$(ep 'Tk$Job.call')"  'True'
+want   "a run() on a NON-task class is NOT a task entry point"    "$(ep 'Tk$NotATask.run')" 'absent'
+
 echo "== policy: deny / pure (AS-EFF-006) =="
 # $W/cls holds Fx (reads/writes/both → Fs; spawn → Exec; dyn → Unknown).
 printf 'deny Fs Fx\n' > "$W/pol-deny"

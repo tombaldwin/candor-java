@@ -721,6 +721,10 @@ public class Candor {
     static void analyze(ClassNode cn) {
         String dottedClass = cn.name.replace('/', '.');
         boolean classTx = annoPresent(cn.visibleAnnotations, TX);
+        // Supertypes once per class — used to spot runtime-invoked task methods (Runnable/Thread/Callable).
+        Set<String> supers = transSupers(cn.name);
+        boolean isRunnable = supers.contains("java/lang/Runnable") || supers.contains("java/lang/Thread");
+        boolean isCallable = supers.contains("java/util/concurrent/Callable");
         for (MethodNode mn : cn.methods) {
             // Constructors (`<init>`) AND static initializers (`<clinit>`) are both analyzed: a `new X()`
             // edges to `X.<init>`, and a class-load trigger (`new`, a static call, a static field access)
@@ -754,6 +758,15 @@ public class Candor {
             // Rust we can't attribute it to a drop SITE (finalization is non-deterministic and runs on a
             // detached thread), so the honest model is the runtime-invoked entry point it actually is.
             if (mn.name.equals("finalize") && mn.desc.equals("()V") && (mn.access & Opcodes.ACC_STATIC) == 0)
+                entryPoints.add(id);
+            // A `Runnable.run()` / `Thread.run()` / `Callable.call()` override is invoked by the runtime —
+            // an executor, the thread scheduler, a timer — NOT by a project call site (the launch is
+            // `executor.submit(r)` / `thread.start()`, and the actual invocation of run() lives in
+            // non-project JDK code candor can't see through). Same orphaned-effect shape as finalize: the
+            // task body's I/O would sit in run()'s own entry, unreachable from any root. Mark it the
+            // runtime entry point it is, so a from-entry-points walk sees the background task's effects.
+            if ((isRunnable && mn.name.equals("run") && mn.desc.equals("()V"))
+                    || (isCallable && mn.name.equals("call") && mn.desc.equals("()Ljava/lang/Object;")))
                 entryPoints.add(id);
 
             for (AbstractInsnNode insn : mn.instructions) {

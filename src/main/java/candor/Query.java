@@ -356,9 +356,12 @@ public final class Query {
         }
         // Boundary effects first (the ones that matter for a capability budget), then ambient, then the
         // Unknown caveat. Anything else (shouldn't occur) trails alphabetically.
+        // Boundary effects first, then ambient, then Clipboard (a peripheral capability in neither
+        // set), then the Unknown caveat. Anything else trails.
         List<String> order = new ArrayList<>();
         order.addAll(CONTAINED);
         order.addAll(AMBIENT);
+        order.add("Clipboard");
         order.add("Unknown");
         List<String> seen = new ArrayList<>(byEffect.keySet());
         seen.sort(Comparator.comparingInt(e -> { int i = order.indexOf(e); return i < 0 ? order.size() : i; }));
@@ -367,10 +370,11 @@ public final class Query {
             String tag = e.equals("Unknown") ? "   ← visibility caveat, not a performed effect" : "";
             String examples = who.stream().limit(3).map(Query::leaf).collect(Collectors.joining(", "));
             if (who.size() > 3) examples += ", …";
-            System.out.printf("  %-8s %3d  (%s)%s%n", e, who.size(), examples, tag);
+            System.out.printf("  %-10s %3d  (%s)%s%n", e, who.size(), examples, tag);
         }
         long pure = entries.stream().filter(f -> f.inferred.isEmpty()).count();
-        System.out.println("\n  " + entries.size() + " entry points; " + pure + " perform no effect (pure roots).");
+        System.out.println("\n  " + entries.size() + " entry point" + (entries.size() == 1 ? "" : "s")
+                + "; " + pure + " perform no effect (pure roots).");
         return 0;
     }
 

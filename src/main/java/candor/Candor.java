@@ -168,11 +168,6 @@ public class Candor {
         String baseline = System.getenv("CANDOR_BASELINE");
         String noAmbient = System.getenv("CANDOR_NO_AMBIENT");
         String policy = System.getenv("CANDOR_POLICY");
-        // Default policy location, matching the Rust `cargo candor` convention: a committed `.candor/policy`
-        // is enforced automatically (env CANDOR_POLICY overrides). Without this, an adopter who mirrored
-        // the documented `.candor/policy` convention would silently get NO gate — the absent-gate failure
-        // §6.2 says a policy reader must never have (/code-review).
-        if (policy == null && Files.exists(Path.of(".candor/policy"))) policy = ".candor/policy";
         boolean enforce = baseline != null || noAmbient != null || strict != null || policy != null
                 || taintEnabled;
 

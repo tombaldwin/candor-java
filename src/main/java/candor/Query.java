@@ -41,6 +41,7 @@ public final class Query {
         List<String> direct = List.of();
         List<String> calls = List.of();
         List<String> fs = List.of();
+        List<String> hosts = List.of();
         boolean unresolved;
         boolean entryPoint;
     }
@@ -58,6 +59,7 @@ public final class Query {
             if (f.direct == null) f.direct = List.of();
             if (f.calls == null) f.calls = List.of();
             if (f.fs == null) f.fs = List.of();
+            if (f.hosts == null) f.hosts = List.of();
             if (f.loc == null) f.loc = "";
         }
         fns.sort(Comparator.comparing(f -> f.fn));
@@ -116,14 +118,17 @@ public final class Query {
         System.out.println(JSON.toJson(o));
     }
 
-    /** Name-match tier: 3 = exact, 2 = SEGMENT-SUFFIX (`Svc.act` matches `app.Svc.act` but not
-     *  `app.Svc.action` — the boundary before the query must be `.`), 1 = substring, 0 = none.
-     *  Queries resolve at the BEST tier any candidate reaches, mirroring candor-query (the Rust
-     *  red-team found `whatif Pricing::quote` silently widening to `quote_bulk` via substring). */
+    /** Name-match tier: 3 = exact, 2 = SEGMENT-SUFFIX (`Svc.act` matches `app.Svc.act`/`Cases$Svc.act`
+     *  but not `app.Svc.action` — the char before the query must be a JVM name boundary), 1 = substring,
+     *  0 = none. Queries resolve at the BEST tier any candidate reaches, mirroring candor-query. The
+     *  boundary is `.` OR `$`: nested-class names use `$` (`Cases$Svc.act`), so a `.`-only check dropped
+     *  inner-class queries to substring tier and re-inflated the blast radius (/code-review found it). */
     static int matchTier(String name, String q) {
         if (name.equals(q)) return 3;
-        if (name.endsWith(q) && name.length() > q.length()
-                && name.charAt(name.length() - q.length() - 1) == '.') return 2;
+        if (name.endsWith(q) && name.length() > q.length()) {
+            char b = name.charAt(name.length() - q.length() - 1);
+            if (b == '.' || b == '$') return 2;
+        }
         if (name.contains(q)) return 1;
         return 0;
     }
@@ -164,6 +169,9 @@ public final class Query {
                 m.put("inferred", sorted(f.inferred));
                 m.put("direct", sorted(f.direct));
                 if (!f.fs.isEmpty()) m.put("fs", f.fs);
+                // The engine resolves Net endpoints (hosts) per method; show MUST surface them like the
+                // Rust engine (SPEC §3.1 `hosts?`) — the Fn record previously never parsed the field.
+                if (f.hosts != null && !f.hosts.isEmpty()) m.put("hosts", f.hosts);
                 m.put("unresolved", f.unresolved);
                 out.add(m);
             }
@@ -229,33 +237,16 @@ public final class Query {
         // the blast radius an agent needs BEFORE adding an effect to X. The report alone only has
         // effect-relevant edges (it can't see a pure X), the old gap an agent-use eval surfaced.
         Map<String, List<String>> cg = loadCallgraph(reportPath);
-        if (cg != null && !cg.isEmpty()) return callersViaCallgraph(cg, q, json);
-
-        // Fallback (no sidecar): the older effect-relevant, direct-only view.
-        TreeMap<String, TreeSet<String>> hits = new TreeMap<>(); // callee -> its callers
-        int calleeTier = bestTier(fns.stream().flatMap(f -> f.calls.stream()), q);
-        if (calleeTier == 0) { System.out.println("candor: no callee matching `" + q + "`."); return 0; }
-        for (Fn f : fns) {
-            for (String callee : f.calls) {
-                if (matchTier(callee, q) >= calleeTier) hits.computeIfAbsent(callee, k -> new TreeSet<>()).add(f.fn);
-            }
+        // Fallback (no sidecar): build a graph from the report's effect-relevant `calls` edges and run
+        // the SAME query, so the output shape ({of,direct,transitive}) and JSON contract are identical
+        // to the sidecar path (a /code-review finding: the old fallback emitted a {callee:[callers]} map
+        // — and prose under --json — diverging from the pinned SPEC §3.1 shape). Transitive is
+        // necessarily incomplete here (only effectful edges), which the sidecar exists to fix.
+        if (cg == null || cg.isEmpty()) {
+            cg = new LinkedHashMap<>();
+            for (Fn f : fns) cg.put(f.fn, new ArrayList<>(f.calls));
         }
-        if (json) {
-            Map<String, List<String>> out = new LinkedHashMap<>();
-            hits.forEach((k, v) -> out.put(k, new ArrayList<>(v)));
-            emit(out);
-            return 0;
-        }
-        if (hits.isEmpty()) {
-            System.out.println("candor: nothing matching `" + q
-                    + "` is called by an effectful function (callers of pure functions aren't tracked).");
-            return 0;
-        }
-        for (var e : hits.entrySet()) {
-            System.out.println("  " + e.getKey() + "  ← called by " + e.getValue().size() + ":");
-            for (String c : e.getValue()) System.out.println("      " + c);
-        }
-        return 0;
+        return callersViaCallgraph(cg, q, json);
     }
 
     /** Load the call-graph sidecar (`<report-minus-.json>.callgraph.json`), or null if absent/unreadable. */
@@ -330,6 +321,14 @@ public final class Query {
      *  Reuses Candor.parsePolicy/scopeMatches so the verdict matches what the real gate would do. */
     static int whatif(String reportPath, String fn, String effect, String policyPath, boolean json) {
         if (fn == null || effect == null) return usage("whatif <report.json> <fn> <Effect> [policy] [--json]");
+        // Validate the effect against the vocabulary: a typo'd/lowercase effect (`net`) matches no deny
+        // rule and would print an authoritative-looking clean verdict — a false green light for the very
+        // edit the policy forbids (/code-review). Reject it as a usage error, not a pass.
+        if (!Candor.KNOWN_EFFECTS.contains(effect) && !effect.equals("Unknown")) {
+            System.err.println("candor: unknown effect `" + effect + "` (expected one of "
+                    + Candor.KNOWN_EFFECTS + " or Unknown)");
+            return 2;
+        }
         Map<String, List<String>> cg = loadCallgraph(reportPath);
         if (cg == null || cg.isEmpty()) {
             System.out.println("candor: no call-graph sidecar beside the report (re-run analysis with --json).");
@@ -355,11 +354,17 @@ public final class Query {
         }
 
         if (policyPath == null) policyPath = System.getenv("CANDOR_POLICY");
-        boolean havePolicy = false;
         List<String[]> violations = new ArrayList<>(); // {fn, rule-desc}
         if (policyPath != null) {
             Candor.denyRules.clear();
-            havePolicy = Candor.parsePolicy(policyPath);
+            // A SPECIFIED-but-unreadable policy must FAIL LOUD, not silently yield ok:true — a typo'd
+            // CANDOR_POLICY path otherwise reads as "no violations" and an agent proceeds with a
+            // forbidden edit believing the boundary was checked (/code-review; mirrors the gate's own
+            // loud-on-unreadable contract and the diff/rewire path checks).
+            if (!Candor.parsePolicy(policyPath)) {
+                System.err.println("candor: policy `" + policyPath + "` could not be read — verdict NOT computed.");
+                return 2;
+            }
             for (String f : affected) {
                 for (var r : Candor.denyRules) {
                     boolean denies = r.effects.isEmpty() || r.effects.contains(effect);
@@ -389,7 +394,7 @@ public final class Query {
         System.out.println("whatif: adding `" + effect + "` to `" + String.join(", ", targets) + "`");
         System.out.println("  → propagates to " + affected.size() + " function(s) (the blast radius):");
         for (String f : affected) System.out.println("      " + f);
-        if (!havePolicy) {
+        if (policyPath == null) {
             System.out.println("  (no policy given — pass a policy file or set CANDOR_POLICY for the gate verdict)");
             return 0;
         }
@@ -416,7 +421,14 @@ public final class Query {
             System.out.println("candor: no baseline call graph beside " + baseReport + " (need its .callgraph.json).");
             return 2;
         }
-        if (cur == null) cur = Map.of();
+        // The CURRENT side must be guarded too: a missing/typo'd current sidecar previously loaded as an
+        // empty graph, reporting EVERY baseline edge as "dropped" (a wall of false de-wiring, exit 1) —
+        // a CI alarm on a path typo. Fail loud instead, matching the baseline-side and diff/whatif checks.
+        // (/code-review found this asymmetry in both engines.)
+        if (cur == null || cur.isEmpty()) {
+            System.out.println("candor: no current call graph beside " + curReport + " (need its .callgraph.json).");
+            return 2;
+        }
         TreeMap<String, List<String>> dropped = new TreeMap<>();
         for (var e : base.entrySet()) {
             Set<String> now = new HashSet<>(cur.getOrDefault(e.getKey(), List.of()));

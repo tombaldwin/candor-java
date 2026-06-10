@@ -1015,9 +1015,45 @@ public class Candor {
                     // A static call triggers the owner's class-load → its `<clinit>` runs.
                     if (op == Opcodes.INVOKESTATIC) clinitEdge(id, min.owner);
                     if (op == Opcodes.INVOKEVIRTUAL || op == Opcodes.INVOKEINTERFACE) {
+                        // EXEMPT (SPEC §4): dispatch on the conventionally-pure java.lang.Object
+                        // surface — toString/hashCode/equals (+ erased Comparable.compareTo) — is NOT
+                        // CHA-fanned-out. Over `Object`, EVERY project class is a subtype, so one
+                        // `x.toString()` would edge every override in the jar; Kotlin emits exactly
+                        // that (`Any.toString` in string templates), which made kotlinx-coroutines
+                        // attribute one ServiceLoader-touching toString to 2160 methods (87% of the
+                        // jar). Same C2 trade as the Rust engine's dyn-Display/Error exemption — and
+                        // the documented caveat: an override of these that performs real I/O (that
+                        // kotlinx toString DOES reach a service load) is deliberately not attributed
+                        // at the dispatch site.
+                        boolean pureObjectProto =
+                                (min.name.equals("toString") && min.desc.equals("()Ljava/lang/String;"))
+                                || (min.name.equals("hashCode") && min.desc.equals("()I"))
+                                || (min.name.equals("equals") && min.desc.equals("(Ljava/lang/Object;)Z"))
+                                || (min.name.equals("compareTo") && min.desc.equals("(Ljava/lang/Object;)I"));
+                        // Kotlin functional-interface dispatch (`FunctionN.invoke`): every Kotlin
+                        // lambda compiles to a CLASS implementing kotlin.jvm.functions.FunctionN, so
+                        // CHA over the (external) FunctionN would union EVERY lambda in the jar —
+                        // kotlinx-coroutines connected 87% of its methods to one ServiceLoader path
+                        // this way. Skipping it is precise-by-construction, not a guess: the compiler
+                        // guarantees each such call's lambda has a visible creation site, which the
+                        // anonymous/local-class instantiation edge already attributes (mirroring how
+                        // a Java lambda's indy Handle is edged at creation, and SEMANTICS' CHA rule,
+                        // which fans out over LOCAL traits only). Other external-owner dispatch (e.g.
+                        // java.util.Iterator with project impls) is deliberately still CHA'd.
+                        boolean kotlinFnIface = min.owner.startsWith("kotlin/jvm/functions/");
+                        // Scheduled-task dispatch (`Runnable.run` / `Callable.call` on the EXTERNAL
+                        // interface): an event loop's `task.run()` would CHA-union every Runnable in
+                        // the jar at every poll site (kotlinx's EventLoop connected the whole jar this
+                        // way). The engine's model for task bodies is already ENTRY POINTS (the
+                        // runtime invokes them; their effects are never orphaned) — same as a named
+                        // Runnable handed to Thread.start, which has never been caller-attributed.
+                        boolean scheduledIface =
+                                (min.owner.equals("java/lang/Runnable") && min.name.equals("run"))
+                                || (min.owner.equals("java/util/concurrent/Callable") && min.name.equals("call"));
                         // Class Hierarchy Analysis: dispatch could reach any project subtype's
                         // override — add edges to all of them so their effects propagate.
-                        List<String> targets = chaTargets(min.owner, min.name, min.desc);
+                        List<String> targets = (pureObjectProto || kotlinFnIface || scheduledIface)
+                                ? List.of() : chaTargets(min.owner, min.name, min.desc);
                         edges.get(id).addAll(targets);
                         // Genuine unresolved dispatch: a PROJECT interface/abstract type that DECLARES
                         // this method, with no visible concrete impl (DI-wired, external, or strategy)
@@ -1028,7 +1064,7 @@ public class Candor {
                         // Unknown — when it actually resolves to a superclass candor never loaded, i.e.
                         // an ordinary external call (effect-free unless modelled, like every other lib
                         // call). Only a method the project ITSELF declares is a real missing-impl.
-                        if (targets.isEmpty() && effect == null && !springTyped
+                        if (targets.isEmpty() && !pureObjectProto && !kotlinFnIface && !scheduledIface && effect == null && !springTyped
                                 && isProjectIfaceOrAbstract(min.owner)
                                 && projectDeclaresMethod(min.owner, min.name, min.desc)) {
                             dir.add("Unknown");

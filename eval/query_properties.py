@@ -48,11 +48,12 @@ for jar_path in TARGETS:
     miss = [e["fn"] for e in fns if e["fn"] not in cg]
     if miss: fail(name, "sidecar completeness", f"{len(miss)} report fns not keys e.g. {miss[:3]}")
     n += 1
-    # P1 diff(self) == empty
+    # P1 diff(self) == empty — diff JSON is the {changes:[...]} envelope, so the property is
+    # "changes == []" (was checking gained/lost, which never exist in the envelope — vacuous; /code-review).
     rc, out, _ = jq("diff", rpt, rpt, "--json")
     try:
         dd = json.loads(out)
-        if dd.get("gained") or dd.get("lost"): fail(name, "diff(self)!=empty", out[:160])
+        if dd.get("changes"): fail(name, "diff(self)!=empty", out[:160])
     except Exception as ex:
         fail(name, "diff(self) unparseable", f"rc={rc} {out[:120]}")
     n += 1

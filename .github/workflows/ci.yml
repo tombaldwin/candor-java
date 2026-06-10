@@ -45,13 +45,15 @@ jobs:
       - name: Self-gate (candor-java on candor-java)
         run: |
           ./gradlew --no-daemon -q shadowJar
-          CANDOR_POLICY=.candor-policy java -jar build/libs/candor-java-*-all.jar build/classes/java/main
+          CANDOR_POLICY=.candor/policy java -jar build/libs/candor-java-*-all.jar build/classes/java/main
 
       # Kotlin-bytecode lane: Kotlin compiles the same semantics through different shapes (suspend/CPS,
       # indy lambdas, object/companion <clinit>, $default wrappers, callable refs, property getters,
       # extension + inline fns). KotlinProbe.kt threads a known effect through each; all 12 chains must
       # attribute. (The script self-skips when kotlinc is absent.)
       - name: Set up Kotlin
-        uses: fwilhe2/setup-kotlin@main
+        # Pinned to a tag's commit SHA (not @main): a mutable branch in the job that builds the release
+        # artifact and runs the self-gate is a supply-chain + reproducibility risk (/code-review).
+        uses: fwilhe2/setup-kotlin@7163c92e0f906bdf586bd76b14143aa61d6b49e4 # v1.8
       - name: Soundness (kotlin forms)
         run: bash soundness/run_kotlin.sh

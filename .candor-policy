@@ -1,0 +1,3 @@
+# candor-java self-gate (SPEC §7.12): the analyzer reads bytecode and writes reports — Fs/Env
+# are its job. It must never grow network, database, subprocess, or IPC behaviour.
+deny Net Db Exec Ipc

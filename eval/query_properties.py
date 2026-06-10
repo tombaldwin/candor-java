@@ -2,7 +2,8 @@
 """Property-test candor-java's queries against ground truth recomputed from its raw report+callgraph."""
 import json, subprocess, sys, collections, glob, os, tempfile
 
-JAR = "/Users/tom/git/candor-java/build/libs/candor-java-0.3.0-all.jar"
+import glob as _g
+JAR = max(_g.glob("/Users/tom/git/candor-java/build/libs/candor-java-*-all.jar"))
 TARGETS = [p for pat in [
     "~/.gradle/caches/modules-2/files-2.1/commons-fileupload/**/commons-fileupload-1.5.jar",
     "~/.gradle/caches/modules-2/files-2.1/commons-validator/**/commons-validator-1.7.jar",

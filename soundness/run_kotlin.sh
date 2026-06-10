@@ -30,7 +30,7 @@ fns = d["functions"] if isinstance(d, dict) else d
 got = {e["fn"]: e["inferred"] for e in fns}
 # every chain entry point must carry the effect (or Unknown) on the FUNCTION ITSELF
 CHAINS = ["plain", "lambda_call", "susp_leaf", "susp_mid", "susp_start", "inline_call",
-          "object_init", "companion_init", "ext_call", "default_call", "getter_call", "ref_call", "kio_read", "kio_rand"]
+          "object_init", "companion_init", "ext_call", "default_call", "getter_call", "ref_call", "kio_read", "kio_rand", "named_call"]
 bad = []
 # negative: pure path manipulation must NOT classify
 if got.get("KotlinProbeKt.kio_path") is not None:

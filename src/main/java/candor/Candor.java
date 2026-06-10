@@ -972,7 +972,7 @@ public class Candor {
             for (AbstractInsnNode insn : mn.instructions) {
                 if (insn instanceof MethodInsnNode min) {
                     String owner = min.owner.replace('/', '.');
-                    String effect = classify(owner, min.name);
+                    String effect = classify(owner, min.name, min.desc);
                     if (effect != null) dir.add(effect);
                     // An injection-class effect on a caller-derived argument is an injection surface.
                     if (taintFrames != null && effect != null && INJECTION.contains(effect)
@@ -1025,47 +1025,22 @@ public class Candor {
                         // the documented caveat: an override of these that performs real I/O (that
                         // kotlinx toString DOES reach a service load) is deliberately not attributed
                         // at the dispatch site.
-                        boolean pureObjectProto =
-                                (min.name.equals("toString") && min.desc.equals("()Ljava/lang/String;"))
-                                || (min.name.equals("hashCode") && min.desc.equals("()I"))
-                                || (min.name.equals("equals") && min.desc.equals("(Ljava/lang/Object;)Z"))
-                                || (min.name.equals("compareTo") && min.desc.equals("(Ljava/lang/Object;)I"));
-                        // Kotlin functional-interface dispatch (`FunctionN.invoke`): every Kotlin
-                        // lambda compiles to a CLASS implementing kotlin.jvm.functions.FunctionN, so
-                        // CHA over the (external) FunctionN would union EVERY lambda in the jar —
-                        // kotlinx-coroutines connected 87% of its methods to one ServiceLoader path
-                        // this way. Skipping it is precise-by-construction, not a guess: the compiler
-                        // guarantees each such call's lambda has a visible creation site, which the
-                        // anonymous/local-class instantiation edge already attributes (mirroring how
-                        // a Java lambda's indy Handle is edged at creation, and SEMANTICS' CHA rule,
-                        // which fans out over LOCAL traits only). Other external-owner dispatch (e.g.
-                        // java.util.Iterator with project impls) is deliberately still CHA'd.
-                        boolean kotlinFnIface = min.owner.startsWith("kotlin/jvm/functions/")
-                                // Scala's identical story (found on scala-library: Fs/Net smeared onto
-                                // ~18k of 24k methods through `FunctionN.apply` → `$anonfun$` classes):
-                                // Scala lambdas/case-lambdas compile to classes implementing
-                                // scala.FunctionN / PartialFunction / the java8 JFunction SAM bridges.
-                                || min.owner.startsWith("scala/Function")
-                                || min.owner.equals("scala/PartialFunction")
-                                || min.owner.startsWith("scala/runtime/java8/JFunction")
-                                // Groovy's twin (found on groovy-4.0.14: ~16k of 22.5k methods carried
-                                // every effect): every Groovy closure extends groovy.lang.Closure, so
-                                // CHA over Closure.call unions them all.
-                                || (min.owner.equals("groovy/lang/Closure")
-                                    && (min.name.equals("call") || min.name.equals("doCall")));
-                        // Scheduled-task dispatch (`Runnable.run` / `Callable.call` on the EXTERNAL
-                        // interface): an event loop's `task.run()` would CHA-union every Runnable in
-                        // the jar at every poll site (kotlinx's EventLoop connected the whole jar this
-                        // way). The engine's model for task bodies is already ENTRY POINTS (the
-                        // runtime invokes them; their effects are never orphaned) — same as a named
-                        // Runnable handed to Thread.start, which has never been caller-attributed.
-                        boolean scheduledIface =
-                                (min.owner.equals("java/lang/Runnable") && min.name.equals("run"))
-                                || (min.owner.equals("java/util/concurrent/Callable") && min.name.equals("call"));
-                        // Class Hierarchy Analysis: dispatch could reach any project subtype's
-                        // override — add edges to all of them so their effects propagate.
-                        List<String> targets = (pureObjectProto || kotlinFnIface || scheduledIface)
-                                ? List.of() : chaTargets(min.owner, min.name, min.desc);
+                        // Class Hierarchy Analysis: dispatch reaches any project subtype's override.
+                        // BOUNDED for a CHA-EXEMPT method (the conventionally-pure Object protocol +
+                        // the function-interface / task-dispatch verbs every lambda/closure/Runnable
+                        // implements): attribute when the receiver resolves to FEW impls (a concrete
+                        // project type, an app's handful of Runnables — precise), but DROP the fan-out
+                        // when it's broad (a library's hundreds of FunctionN/Closure impls — the
+                        // kotlinx/scala/groovy smear that connected ~87% of a jar to one source). The
+                        // runtime-invoked verbs' bodies stay reachable via RUNTIME_OVERRIDES entry
+                        // points (incl. the function-interface rows) so a named implementor isn't
+                        // orphaned. (The smear, plus the four soundness holes an UNCONDITIONAL skip
+                        // opened — concrete-receiver toString, named-implementor orphaning, synchronous
+                        // Runnable.run, all caller-attribution — were found by /code-review max.)
+                        boolean dispatchExempt = isChaExemptMethod(min.owner, min.name, min.desc);
+                        List<String> cha = chaTargets(min.owner, min.name, min.desc);
+                        boolean broadSmear = dispatchExempt && cha.size() > CHA_FANOUT_LIMIT;
+                        List<String> targets = broadSmear ? List.of() : cha;
                         edges.get(id).addAll(targets);
                         // Genuine unresolved dispatch: a PROJECT interface/abstract type that DECLARES
                         // this method, with no visible concrete impl (DI-wired, external, or strategy)
@@ -1075,8 +1050,10 @@ public class Candor {
                         // NEMsAction receiver) has no project override either, and would be mislabelled
                         // Unknown — when it actually resolves to a superclass candor never loaded, i.e.
                         // an ordinary external call (effect-free unless modelled, like every other lib
-                        // call). Only a method the project ITSELF declares is a real missing-impl.
-                        if (targets.isEmpty() && !pureObjectProto && !kotlinFnIface && !scheduledIface && effect == null && !springTyped
+                        // call). Only a method the project ITSELF declares is a real missing-impl. An
+                        // exempt method never raises Unknown (it's conventionally pure, or its body is a
+                        // runtime-invoked entry point).
+                        if (targets.isEmpty() && !dispatchExempt && effect == null && !springTyped
                                 && isProjectIfaceOrAbstract(min.owner)
                                 && projectDeclaresMethod(min.owner, min.name, min.desc)) {
                             dir.add("Unknown");
@@ -1195,7 +1172,46 @@ public class Candor {
             new String[] {"servlet/http/HttpServlet", "service", null},
             new String[] {"servlet/Filter", "doFilter", null},
             new String[] {"servlet/ServletContextListener", "contextInitialized", null},
-            new String[] {"servlet/ServletContextListener", "contextDestroyed", null});
+            new String[] {"servlet/ServletContextListener", "contextDestroyed", null},
+            // Function-interface bodies: a Kotlin/Scala/Groovy lambda or a NAMED class implementing
+            // one is invoked by whatever higher-order function received it (often external) — a
+            // runtime-invoked root, like a Runnable. Marking them entry points is what keeps a named
+            // implementor's I/O from being orphaned when bounded CHA drops the broad fan-out (the
+            // /code-review finding). `iface` matches as a substring, so "kotlin/jvm/functions/Function"
+            // covers Function0..Function22 and "scala/Function" covers Function0..N.
+            new String[] {"kotlin/jvm/functions/Function", "invoke", null},
+            new String[] {"scala/Function", "apply", null},
+            new String[] {"scala/PartialFunction", "apply", null},
+            new String[] {"groovy/lang/Closure", "call", null});
+
+    /** The number of CHA targets above which a CHA-EXEMPT dispatch (Object protocol / function-interface
+     *  / task verb) is treated as a broad smear and its fan-out dropped. An app's handful of Runnables /
+     *  closures resolve precisely (attributed); a library's hundreds of FunctionN/Closure impls exceed
+     *  this and are dropped (their bodies stay reachable via the RUNTIME_OVERRIDES entry points). */
+    static final int CHA_FANOUT_LIMIT = 12;
+
+    /** Whether a method's CHA dispatch is exempt from BROAD fan-out (SPEC §4 conventionally-pure +
+     *  runtime-dispatched verbs). Declarative + unit-tested so a new dialect is a row, not another `||`
+     *  buried in the bytecode loop. Narrow dispatch over these is still attributed precisely; only the
+     *  library-scale smear is dropped (see CHA_FANOUT_LIMIT). */
+    static boolean isChaExemptMethod(String owner, String name, String desc) {
+        // Object protocol — conventionally pure (formatting / equality / hashing / ordering).
+        if ((name.equals("toString") && desc.equals("()Ljava/lang/String;"))
+                || (name.equals("hashCode") && desc.equals("()I"))
+                || (name.equals("equals") && desc.equals("(Ljava/lang/Object;)Z"))
+                || (name.equals("compareTo") && desc.equals("(Ljava/lang/Object;)I")))
+            return true;
+        // Function-interface invocation: Kotlin FunctionN.invoke; Scala FunctionN/PartialFunction.apply
+        // + the java8 JFunction SAM bridges; Groovy Closure.call/doCall.
+        if (owner.startsWith("kotlin/jvm/functions/") && name.equals("invoke")) return true;
+        if ((owner.startsWith("scala/Function") || owner.equals("scala/PartialFunction")
+                || owner.startsWith("scala/runtime/java8/JFunction")) && name.equals("apply")) return true;
+        if (owner.equals("groovy/lang/Closure") && (name.equals("call") || name.equals("doCall"))) return true;
+        // Task-dispatch verbs on the external interface.
+        if (owner.equals("java/lang/Runnable") && name.equals("run")) return true;
+        if (owner.equals("java/util/concurrent/Callable") && name.equals("call")) return true;
+        return false;
+    }
 
     static boolean annoPresent(List<AnnotationNode> anns, String descSubstring) {
         if (anns == null) return false;
@@ -1383,7 +1399,7 @@ public class Candor {
         return List.of();
     }
 
-    static String classify(String owner, String method) {
+    static String classify(String owner, String method, String desc) {
         // Reflection / dynamic invocation — could call ANYTHING; honestly `Unknown`, never assumed
         // pure (SPEC §4 trust contract). This is the JVM's defining opacity, and the foundation of
         // the framework magic (Spring proxies, DI) candor can't otherwise see through.
@@ -1422,6 +1438,10 @@ public class Candor {
         // owner-match catching the File CTOR in the same fn.) `$default` wrappers share the base name.
         if (owner.equals("kotlin.io.FilesKt") || owner.equals("kotlin.io.TextStreamsKt")
                 || owner.equals("kotlin.io.path.PathsKt")) {
+            // A URL-receiver read (`URL.readText()/readBytes()` — TextStreamsKt) is NETWORK egress, not
+            // filesystem: the verb-prefix below would mislabel it Fs (a wrong effect, worse than an
+            // under-report). The descriptor's first parameter is the receiver. (Found by /code-review max.)
+            if (desc != null && desc.startsWith("(Ljava/net/URL;")) return "Net";
             String base = method.endsWith("$default") ? method.substring(0, method.length() - 8) : method;
             if (base.startsWith("read") || base.startsWith("write") || base.startsWith("append")
                     || base.startsWith("copy") || base.startsWith("delete") || base.startsWith("create")

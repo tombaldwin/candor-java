@@ -1572,8 +1572,10 @@ public class Candor {
         String cgOut = out.endsWith(".json") ? out.substring(0, out.length() - 5) + ".callgraph.json"
                                              : out + ".callgraph.json";
         Map<String, List<String>> cg = new TreeMap<>();
+        // SPEC §2.2: EVERY analyzed method is a key — a LEAF with no project callees gets an empty
+        // list (was skipped, which made an uncalled leaf invisible to whatif/callers and conflated
+        // "no callers" with "no such function"; mirrors the same fix in candor-scan + the lint).
         for (var e : edges.entrySet()) {
-            if (e.getValue().isEmpty()) continue;
             cg.put(e.getKey(), new ArrayList<>(new TreeSet<>(e.getValue())));
         }
         Files.writeString(Path.of(cgOut), new GsonBuilder().setPrettyPrinting().create().toJson(cg));

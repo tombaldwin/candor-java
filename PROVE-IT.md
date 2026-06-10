@@ -1,6 +1,6 @@
 # Prove it on *your* JVM repo — a 15-minute self-experiment
 
-The Rust engine's [PROVE-IT](https://github.com/tombaldwin/candor/blob/main/PROVE-IT.md) explains the
+The Rust engine's [PROVE-IT](https://github.com/tombaldwin/candor-rust/blob/main/PROVE-IT.md) explains the
 protocol and why it's fair (manual answer committed first; every claimed miss verified by you at a
 file:line; the negative result is in-scope and reported). This is the JVM variant — works on **Java,
 Kotlin, Scala, or Groovy** code, since candor-java reads bytecode.

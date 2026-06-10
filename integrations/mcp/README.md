@@ -1,6 +1,6 @@
 # candor-java MCP server
 
-The JVM sibling of [candor's Rust MCP server](https://github.com/tombaldwin/candor/tree/main/integrations/mcp).
+The JVM sibling of [candor's Rust MCP server](https://github.com/tombaldwin/candor-rust/tree/main/integrations/mcp).
 It exposes candor-java's **instant** read-only queries as native [MCP](https://modelcontextprotocol.io)
 tools — with the **same tool names and shapes** as the Rust server, so an agent uses a Rust project and a
 Java project *identically*. That cross-language sameness is the point: one set of reflexes, any language.

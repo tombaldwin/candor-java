@@ -6,7 +6,7 @@ reach the network, filesystem, a database, a subprocess, the environment — *tr
 invariants like *"the domain layer does no I/O"* or *"domain must not depend on infra"* into a
 `CANDOR_POLICY` that **fails the build** when an edit breaks them (`deny`/`pure`/`allow`/`forbid`, AS-EFF-006/008/009).
 A [candor-spec](https://github.com/tombaldwin/candor-spec) implementation; sibling of the Rust reference
-[candor](https://github.com/tombaldwin/candor) — same classifier ideas, the JVM's grain (bytecode + Spring).
+[candor](https://github.com/tombaldwin/candor-rust) — same classifier ideas, the JVM's grain (bytecode + Spring).
 
 **Any JVM language — Java and Kotlin both.** Because it reads *bytecode*, candor-java is
 language-agnostic: Java, Kotlin, Scala, and Groovy all lower to the same `.class` files it analyses, use

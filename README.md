@@ -192,9 +192,11 @@ gradle run --args="rewire report.json <baseline-report.json>"  # DE-WIRING: whic
 > `rewire` alongside the policy gate: a passing gate **plus** a clean `rewire` means the boundary was
 > respected *without* gutting the feature. (See candor's `eval/whatif-behavior` for the eval that found this.)
 
-Add `--json` to any query for machine-readable output — the form an AI agent / MCP server consumes
-(`show`→`[{fn,inferred,direct,fs,unresolved}]`, `where`→`{effect,directly,inherited}`,
-`callers`→`{callee:[callers]}`, `map`→`{class:{effects,functions}}`, `diff`→`[{fn,gained,lost,status}]`).
+Add `--json` to any query for machine-readable output — the form an AI agent / MCP server consumes,
+identical in shape to the Rust engine (SPEC §3.1): `show`→`[{fn,inferred,direct,unresolved,fs?,hosts?}]`,
+`where`→`{effect,directly,inherited}`, `callers`→`{of,direct,transitive}`,
+`map`→`{module:{effects,functions}}`, `diff`→`{changes:[{fn,gained,introduced,inherited,lost,status}]}`,
+`whatif`→`{of,effect,affected,violations,ok}`, `rewire`→`{dropped:[{caller,no_longer_calls}]}`.
 
 ### `containment` — an architecture-quality signal that isn't a "score"
 

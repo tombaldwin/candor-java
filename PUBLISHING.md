@@ -38,10 +38,17 @@ The Gradle side is DONE (maven-publish + signing config, Central-compliant POM, 
    centralPortalUsername=<portal token user>
    centralPortalPassword=<portal token pass>
    ```
-5. **Upload**: the Portal accepts a signed bundle. Simplest path:
-   `./gradlew publishToMavenLocal -PsigningInMemoryKey=… && cd ~/.m2/repository && zip -r bundle.zip io/poly/candor/candor-java/X.Y.Z`
-   → Portal → Publish → upload bundle.zip → release. (If releases become frequent, add the
-   `com.gradleup.nmcp` Portal-publishing plugin to automate this step.)
+5. **Upload**: the Portal accepts a signed bundle. NOTE: the Portal **requires `.md5` and `.sha1`
+   checksum files** for every artifact (jar/pom/sources/javadoc) alongside the `.asc` signatures, and
+   `publishToMavenLocal` does NOT write checksums — so a bare zip of `~/.m2/...` is rejected on
+   validation. Two working options:
+   - **Recommended — let a plugin build a Central-compliant bundle:** add the `com.gradleup.nmcp`
+     plugin and run `./gradlew publishAggregationToCentralPortal` (it emits signatures + checksums and
+     uploads), or its `zipAggregation` task to produce a valid `bundle.zip` for manual upload.
+   - **Manual:** after `publishToMavenLocal -PsigningInMemoryKey=…`, generate the checksums before
+     zipping, e.g. `cd ~/.m2/repository/io/poly/candor/candor-java/X.Y.Z && for f in *.jar *.pom; do
+     md5 -q "$f" > "$f.md5"; shasum "$f" | cut -d' ' -f1 > "$f.sha1"; done && zip -r bundle.zip .`
+   → Portal → Publish → upload bundle.zip → release.
 6. After Central is live, point `jbang-catalog.json` at the Central coordinates
    (`io.poly.candor:candor-java:X.Y.Z`) instead of the release URL.
 

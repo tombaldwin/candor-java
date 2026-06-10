@@ -1051,6 +1051,22 @@ public class Candor {
                     // `new C` triggers C's class-load → its `<clinit>` runs (the `<init>` edge is added
                     // separately by the INVOKESPECIAL above).
                     clinitEdge(id, tin.desc);
+                    // ANONYMOUS/LOCAL class: it exists ONLY to be used via its supertype — typically
+                    // handed to a runtime executor (`new Thread(new Runnable(){…}).start()`) that
+                    // invokes run() OUTSIDE project code, so no in-project call site ever edges its
+                    // body. Edge the INSTANTIATION to its declared methods, mirroring how a lambda's
+                    // synthetic body is edged at its invokedynamic creation site (SEMANTICS §2's
+                    // closure-attribution rule — the Rust engines attribute thread::spawn closures to
+                    // the spawner; the scheduling method must inherit, not read pure). Gated on
+                    // outerMethod != null (set exactly for anonymous + local classes), so named
+                    // top-level/member classes are untouched. Found by the soundness fuzzer's
+                    // `thread_anon` form.
+                    ClassNode anonCn = byName.get(tin.desc);
+                    if (anonCn != null && anonCn.outerMethod != null) {
+                        for (MethodNode am : anonCn.methods)
+                            if (!am.name.startsWith("<"))
+                                edges.get(id).add(tin.desc.replace('/', '.') + "." + am.name);
+                    }
                 } else if (insn instanceof FieldInsnNode fin
                         && (fin.getOpcode() == Opcodes.GETSTATIC || fin.getOpcode() == Opcodes.PUTSTATIC)) {
                     // A static field access triggers the owner's class-load → its `<clinit>` runs.

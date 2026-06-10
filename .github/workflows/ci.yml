@@ -39,6 +39,14 @@ jobs:
       - name: Soundness fuzzer
         run: bash soundness/run.sh 40
 
+      # SELF-GATE (candor-spec §7.12): candor-java analyzes ITSELF and holds its own declared policy —
+      # the analyzer reads bytecode and writes reports (Fs/Env), and must never grow Net/Db/Exec/Ipc.
+      # An effect-gate vendor whose own gate is red has no business gating anyone else.
+      - name: Self-gate (candor-java on candor-java)
+        run: |
+          ./gradlew --no-daemon -q shadowJar
+          CANDOR_POLICY=.candor-policy java -jar build/libs/candor-java-*-all.jar build/classes/java/main
+
       # Kotlin-bytecode lane: Kotlin compiles the same semantics through different shapes (suspend/CPS,
       # indy lambdas, object/companion <clinit>, $default wrappers, callable refs, property getters,
       # extension + inline fns). KotlinProbe.kt threads a known effect through each; all 12 chains must

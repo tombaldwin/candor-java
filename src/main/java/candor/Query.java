@@ -475,6 +475,7 @@ public final class Query {
         }
         Map<String, Set<String>> b = base.stream().collect(Collectors.toMap(f -> f.fn, f -> new HashSet<>(f.inferred), (x, y) -> x));
         Map<String, Set<String>> c = cur.stream().collect(Collectors.toMap(f -> f.fn, f -> new HashSet<>(f.inferred), (x, y) -> x));
+        Map<String, Set<String>> cd = cur.stream().collect(Collectors.toMap(f -> f.fn, f -> new HashSet<>(f.direct), (x, y) -> x));
         TreeSet<String> all = new TreeSet<>();
         all.addAll(b.keySet());
         all.addAll(c.keySet());
@@ -488,12 +489,20 @@ public final class Query {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("fn", fn);
             m.put("gained", gained);
+            // A gained effect is INTRODUCED here if it's in this method's own `direct` set, else
+            // INHERITED from a callee — the source vs the blast radius (mirrors candor-query).
+            Set<String> dir = cd.getOrDefault(fn, Set.of());
+            m.put("introduced", gained.stream().filter(dir::contains).toList());
+            m.put("inherited", gained.stream().filter(x -> !dir.contains(x)).toList());
             m.put("lost", lost);
             m.put("status", !c.containsKey(fn) ? "removed" : (!b.containsKey(fn) ? "new" : "changed"));
             changes.add(m);
         }
         if (json) {
-            emit(changes);
+            // The cross-language shape (SPEC §3.1): an envelope with `changes`, matching candor-query
+            // (whose envelope also carries baseline/engine provenance — optional fields a consumer
+            // must tolerate). A bare array here used to diverge from the Rust engine.
+            emit(Map.of("changes", changes));
             return 0;
         }
         if (changes.isEmpty()) {

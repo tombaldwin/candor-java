@@ -38,3 +38,12 @@ jobs:
       # under-reports" from a hope into a gate. Teeth-verified (reverting a fix fails its form's lane).
       - name: Soundness fuzzer
         run: bash soundness/run.sh 40
+
+      # Kotlin-bytecode lane: Kotlin compiles the same semantics through different shapes (suspend/CPS,
+      # indy lambdas, object/companion <clinit>, $default wrappers, callable refs, property getters,
+      # extension + inline fns). KotlinProbe.kt threads a known effect through each; all 12 chains must
+      # attribute. (The script self-skips when kotlinc is absent.)
+      - name: Set up Kotlin
+        uses: fwilhe2/setup-kotlin@main
+      - name: Soundness (kotlin forms)
+        run: bash soundness/run_kotlin.sh

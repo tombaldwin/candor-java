@@ -122,7 +122,8 @@ public class Candor {
         if (args.length < 1) {
             System.err.println("usage: candor <dir-or-jar-of-classes> [--json <file>]");
             System.err.println(
-                    "       candor <show|where|callers|map|diff|containment|reachable|path|impact> <report.json> [arg]");
+                    "       candor <show|where|callers|map|diff|containment|reachable|path|impact|whatif|rewire> <report.json> [arg]");
+            System.err.println("       candor parsepolicy <policy-file>");
             System.exit(2);
         }
         // Read-only queries over a written report (no re-analysis) — the sibling of candor-query.
@@ -525,6 +526,12 @@ public class Candor {
 
     /** Parse a CANDOR_POLICY file into deny/forbid rules. One rule per line; `#` comments + blanks
      *  ignored. Returns false if the file can't be read (so the caller can fail loud). */
+    /** SPEC §6.2: a malformed/unknown policy line is "ignored with a WARNING" — never silently
+     *  reinterpreted (a security gate must not). Mirrors the Rust parser's eprintln warnings. */
+    static void warnPolicy(String line, String reason) {
+        System.err.println("candor: ignoring policy rule (" + reason + "): " + line);
+    }
+
     static boolean parsePolicy(String path) {
         List<String> lines;
         try {
@@ -533,8 +540,12 @@ public class Candor {
             return false;
         }
         for (String raw : lines) {
-            String line = raw.trim();
-            if (line.isEmpty() || line.startsWith("#")) continue;
+            // SPEC §6.2 lexical: `#` begins a comment to end-of-line (strip it, mirroring the Rust
+            // parser's `raw_line.split('#').next()`); blank/comment-only lines are ignored. A bare
+            // `startsWith("#")` check left an INLINE comment's tokens in the rule — `deny Exec # x`
+            // neutered the deny (scope="#"), `allow Net … # x` widened the allowlist. (/code-review.)
+            String line = raw.split("#", 2)[0].trim();
+            if (line.isEmpty()) continue;
             String[] t = line.split("\\s+");
             switch (t[0]) {
                 case "deny": {
@@ -549,7 +560,7 @@ public class Candor {
                         if (KNOWN_EFFECTS.contains(t[i]) || "Unknown".equals(t[i])) r.effects.add(t[i]);
                         else { r.scope = t[i]; break; }
                     }
-                    if (r.effects.isEmpty()) break; // names no effect -> drop (do NOT invert into pure)
+                    if (r.effects.isEmpty()) { warnPolicy(line, "names no known effect"); break; }
                     denyRules.add(r);
                     break;
                 }
@@ -568,24 +579,34 @@ public class Candor {
                         r.from = t[1];
                         r.to = t[3];
                         forbidRules.add(r);
+                    } else {
+                        warnPolicy(line, "want `forbid <scope> -> <scope>`");
                     }
                     break;
                 }
                 case "allow": {
                     // SPEC §6.2: `allow <Effect> [in <scope>] <value…>` — the effect MUST be one of the
                     // three that carry a literal surface; an `allow` for any other effect is dropped.
-                    if (t.length < 3) break;
-                    if (!t[1].equals("Net") && !t[1].equals("Exec") && !t[1].equals("Fs")) break;
+                    if (t.length < 3) { warnPolicy(line, "allow names no values"); break; }
+                    if (!t[1].equals("Net") && !t[1].equals("Exec") && !t[1].equals("Fs")) {
+                        warnPolicy(line, "allow supports only Net hosts / Exec commands / Fs paths");
+                        break;
+                    }
                     AllowRule r = new AllowRule();
                     r.src = line;
                     r.effect = t[1];
+                    // optional `in <scope>` prefix; `in` ENDS the keyword even with no scope/value after
+                    // (`allow Net in` → no values → dropped), matching the Rust parser. A bare
+                    // `t.length > 3` guard let a value-less `allow Net in` keep "in" as an allowed value.
                     int vi = 2;
-                    if (t.length > 3 && t[2].equals("in")) { r.scope = t[3]; vi = 4; }
+                    if (t[2].equals("in")) { r.scope = t.length > 3 ? t[3] : ""; vi = 4; }
                     for (int i = vi; i < t.length; i++) r.values.add(t[i]);
-                    if (!r.values.isEmpty()) allowRules.add(r);
+                    if (r.values.isEmpty()) { warnPolicy(line, "allow names no values"); break; }
+                    allowRules.add(r);
                     break;
                 }
                 default:
+                    warnPolicy(line, "unknown rule kind `" + t[0] + "`");
                     break;
             }
         }

@@ -1040,7 +1040,14 @@ public class Candor {
                         // a Java lambda's indy Handle is edged at creation, and SEMANTICS' CHA rule,
                         // which fans out over LOCAL traits only). Other external-owner dispatch (e.g.
                         // java.util.Iterator with project impls) is deliberately still CHA'd.
-                        boolean kotlinFnIface = min.owner.startsWith("kotlin/jvm/functions/");
+                        boolean kotlinFnIface = min.owner.startsWith("kotlin/jvm/functions/")
+                                // Scala's identical story (found on scala-library: Fs/Net smeared onto
+                                // ~18k of 24k methods through `FunctionN.apply` → `$anonfun$` classes):
+                                // Scala lambdas/case-lambdas compile to classes implementing
+                                // scala.FunctionN / PartialFunction / the java8 JFunction SAM bridges.
+                                || min.owner.startsWith("scala/Function")
+                                || min.owner.equals("scala/PartialFunction")
+                                || min.owner.startsWith("scala/runtime/java8/JFunction");
                         // Scheduled-task dispatch (`Runnable.run` / `Callable.call` on the EXTERNAL
                         // interface): an event loop's `task.run()` would CHA-union every Runnable in
                         // the jar at every poll site (kotlinx's EventLoop connected the whole jar this

@@ -52,3 +52,10 @@ fun ref_call() { val f = ::sink; f() }
 fun kio_read(f: java.io.File): String = f.readText()
 fun kio_path(): String { kotlin.io.path.Path("/tmp/x").let { return it.toString() } } // pure: Path() + toString
 fun kio_rand(): Int = kotlin.random.Random.nextInt()
+
+// 16. NAMED class implementing a function type (NOT a lambda): compiled to a class implementing
+// kotlin.jvm.functions.Function1, invoked via Function1.invoke. A bounded-CHA skip with no entry-point
+// row ORPHANED its body — the /code-review hole. The caller must attribute (or the body must be a
+// reachable entry point — the runner asserts on named_call, the calling function).
+class NamedSender : (Int) -> Unit { override fun invoke(e: Int) { sink() } }
+fun named_call() { val f: (Int) -> Unit = NamedSender(); f(1) }

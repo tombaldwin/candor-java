@@ -1,7 +1,7 @@
 # soundness — adversarial fuzzer
 
 Makes candor-java's trust contract ("never silently pure — report the effect or `Unknown`") a *tested
-gate*, not a hope. Sibling of the [Rust impl's `soundness/`](https://github.com/tombaldwin/candor/tree/main/soundness).
+gate*, not a hope. Sibling of the [Rust impl's `soundness/`](https://github.com/tombaldwin/candor-rust/tree/main/soundness).
 
 `gen.py <seed> <dir>` emits a compilable `Gen.java` that threads a **known** effect (`Fs`/`Net`/`Exec`/
 `Env`) from a `sink` method up through a random chain, where each call edge uses a randomly chosen

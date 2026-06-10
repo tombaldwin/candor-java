@@ -116,6 +116,22 @@ public final class Query {
         System.out.println(JSON.toJson(o));
     }
 
+    /** Name-match tier: 3 = exact, 2 = SEGMENT-SUFFIX (`Svc.act` matches `app.Svc.act` but not
+     *  `app.Svc.action` — the boundary before the query must be `.`), 1 = substring, 0 = none.
+     *  Queries resolve at the BEST tier any candidate reaches, mirroring candor-query (the Rust
+     *  red-team found `whatif Pricing::quote` silently widening to `quote_bulk` via substring). */
+    static int matchTier(String name, String q) {
+        if (name.equals(q)) return 3;
+        if (name.endsWith(q) && name.length() > q.length()
+                && name.charAt(name.length() - q.length() - 1) == '.') return 2;
+        if (name.contains(q)) return 1;
+        return 0;
+    }
+
+    static int bestTier(java.util.stream.Stream<String> names, String q) {
+        return names.mapToInt(n -> matchTier(n, q)).max().orElse(0);
+    }
+
     /** The parsed CANDOR_POLICY (Candor.{deny,allow,forbid}Rules) as canonical JSON, for the cross-impl
      *  policy-grammar differential (SPEC §6.2). A `pure` rule appears as a deny with empty `effects`.
      *  Rules are sorted so the comparison is order-independent. */
@@ -137,7 +153,9 @@ public final class Query {
     /** A function's effects, instant — `*` marks an effect performed in its own body. */
     static int show(List<Fn> fns, String q, boolean json) {
         if (q == null) return usage("show <report.json> <function-substring> [--json]");
-        List<Fn> hits = fns.stream().filter(f -> f.fn.contains(q)).collect(Collectors.toList());
+        int tier = bestTier(fns.stream().map(f -> f.fn), q);
+        List<Fn> hits = tier == 0 ? List.of()
+                : fns.stream().filter(f -> matchTier(f.fn, q) >= tier).collect(Collectors.toList());
         if (json) {
             List<Map<String, Object>> out = new ArrayList<>();
             for (Fn f : hits) {
@@ -215,9 +233,11 @@ public final class Query {
 
         // Fallback (no sidecar): the older effect-relevant, direct-only view.
         TreeMap<String, TreeSet<String>> hits = new TreeMap<>(); // callee -> its callers
+        int calleeTier = bestTier(fns.stream().flatMap(f -> f.calls.stream()), q);
+        if (calleeTier == 0) { System.out.println("candor: no callee matching `" + q + "`."); return 0; }
         for (Fn f : fns) {
             for (String callee : f.calls) {
-                if (callee.contains(q)) hits.computeIfAbsent(callee, k -> new TreeSet<>()).add(f.fn);
+                if (matchTier(callee, q) >= calleeTier) hits.computeIfAbsent(callee, k -> new TreeSet<>()).add(f.fn);
             }
         }
         if (json) {
@@ -268,9 +288,9 @@ public final class Query {
                 rev.computeIfAbsent(callee, k -> new ArrayList<>()).add(e.getKey());
         Set<String> names = new TreeSet<>(cg.keySet());
         for (var v : cg.values()) names.addAll(v);
-        boolean exact = names.contains(q);
+        int tier = bestTier(names.stream(), q);
         List<String> targets = new ArrayList<>();
-        for (String n : names) if (exact ? n.equals(q) : n.contains(q)) targets.add(n);
+        for (String n : names) if (tier > 0 && matchTier(n, q) >= tier) targets.add(n);
         if (targets.isEmpty()) {
             if (json) emit(new LinkedHashMap<>());
             else System.out.println("candor: no function matching `" + q + "` found in the call graph.");
@@ -320,9 +340,9 @@ public final class Query {
             for (String c : e.getValue()) rev.computeIfAbsent(c, k -> new ArrayList<>()).add(e.getKey());
         Set<String> names = new TreeSet<>(cg.keySet());
         for (var v : cg.values()) names.addAll(v);
-        boolean exact = names.contains(fn);
+        int tier = bestTier(names.stream(), fn);
         List<String> targets = new ArrayList<>();
-        for (String n : names) if (exact ? n.equals(fn) : n.contains(fn)) targets.add(n);
+        for (String n : names) if (tier > 0 && matchTier(n, fn) >= tier) targets.add(n);
         if (targets.isEmpty()) {
             System.out.println("candor: no function matching `" + fn + "` in the call graph.");
             return 2;

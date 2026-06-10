@@ -46,3 +46,9 @@ fun getter_call() { val _u = gprop }
 
 // 10. callable reference
 fun ref_call() { val f = ::sink; f() }
+
+// 13-15. kotlin.io idioms — the IDIOMATIC file/entropy API (classified at the FilesKt/PathsKt/Random
+// owners, verb-level; pure path manipulation must stay pure)
+fun kio_read(f: java.io.File): String = f.readText()
+fun kio_path(): String { kotlin.io.path.Path("/tmp/x").let { return it.toString() } } // pure: Path() + toString
+fun kio_rand(): Int = kotlin.random.Random.nextInt()

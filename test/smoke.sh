@@ -623,6 +623,23 @@ want   "ktor HttpStatement.execute consumer is Net"  "$(kshow 'app.KtorUse.hit')
 want   "ktor bodyAsText consumer is Net"             "$(kshow 'app.KtorUse.readBody')" "Net"
 want   "ktor statement construction stays pure"      "$(kshow 'app.KtorUse.build')" "[]"
 
+echo "== groovy consumers: metaclass dynamic dispatch is reflection-class Unknown (stub-compiled) =="
+mkdir -p "$W/gvsrc/groovy/lang" "$W/gvsrc/app"
+printf 'package groovy.lang; public class GroovyShell { public Object evaluate(String s){ return null; } }\n' > "$W/gvsrc/groovy/lang/GroovyShell.java"
+printf 'package groovy.lang; public interface GroovyObject { Object invokeMethod(String n, Object a); }\n' > "$W/gvsrc/groovy/lang/GroovyObject.java"
+cat > "$W/gvsrc/app/GroovyUse.java" <<'J'
+package app; import groovy.lang.*;
+public class GroovyUse {
+  public static Object scripted(GroovyShell sh) { return sh.evaluate("anything()"); } // dynamic eval -> Unknown
+  public static Object dyn(GroovyObject o) { return o.invokeMethod("x", null); }      // metaclass dispatch -> Unknown
+}
+J
+javac -d "$W/gvcls" $(find "$W/gvsrc" -name '*.java') 2>/dev/null
+"$CJ" "$W/gvcls/app" --json "$W/gv.json" >/dev/null 2>&1
+gshow() { python3 -c "import json;print(sorted(next((e['inferred'] for e in json.load(open('$W/gv.json'))['functions'] if e['fn']=='$1'), [])))"; }
+want   "GroovyShell.evaluate consumer is Unknown"   "$(gshow 'app.GroovyUse.scripted')" "Unknown"
+want   "GroovyObject.invokeMethod consumer is Unknown" "$(gshow 'app.GroovyUse.dyn')" "Unknown"
+
 echo "== AS-EFF-007 taint (CANDOR_TAINT): injection-class effect on a caller-derived argument =="
 # Intraprocedural taint dataflow: a parameter flowing (directly or through string concat) into an
 # injection-class effect (Exec/Fs/Db/Net/Env/Ipc) is flagged. A literal arg, a fresh local, and a pure

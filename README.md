@@ -62,7 +62,9 @@ On `spring-sample/`, `register()` (a `@Transactional` method calling a Spring Da
 **Trust contract (candor-spec §4).** candor-java surfaces what it can't see as `Unknown`
 (`unresolved: true`), never silent-pure:
 - **Reflection / dynamic invocation** (`Method.invoke`, `Constructor.newInstance`,
-  `Class.forName`/`newInstance`, `MethodHandle.invoke`, `Proxy.newProxyInstance`) → `Unknown`.
+  `Class.forName`/`newInstance`, `MethodHandle.invoke`, `Proxy.newProxyInstance`) → `Unknown` — and
+  Groovy's metaclass dispatch (`MetaClass`/`GroovyObject.invokeMethod`, `GroovyShell.evaluate`),
+  which IS reflection, likewise → `Unknown`.
 - **`native` methods** — a JNI body candor can't see could perform any effect, so it's `Unknown`
   (and its callers inherit it), never the no-op an empty bytecode body would otherwise look like.
 - **Class Hierarchy Analysis** resolves interface/virtual dispatch over project types to their
@@ -80,8 +82,9 @@ candidate target and one effectful override would smear across the whole report:
   `Object` surface (the same trade the Rust engine makes for `dyn Display`/`Error` formatting).
   *The documented caveat:* an override of these that performs real I/O is not attributed at the
   dispatch site (its own method entry still carries the effect).
-- `kotlin.jvm.functions.FunctionN.invoke` — every Kotlin lambda is a class implementing FunctionN;
-  the lambda's body is instead attributed at its **creation site** (precise-by-construction).
+- `kotlin.jvm.functions.FunctionN.invoke`, `scala.FunctionN`/`PartialFunction` `apply`, and
+  `groovy.lang.Closure.call` — every Kotlin/Scala/Groovy lambda or closure is a class implementing
+  these; the body is instead attributed at its **creation site** (precise-by-construction).
 - `java.lang.Runnable.run` / `Callable.call` on the external interface — task bodies are **entry
   points** (the runtime invokes them), so their effects are never orphaned; an event loop's
   `task.run()` is not charged with every task in the jar.

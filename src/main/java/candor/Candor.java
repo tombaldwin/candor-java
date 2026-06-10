@@ -1047,7 +1047,12 @@ public class Candor {
                                 // scala.FunctionN / PartialFunction / the java8 JFunction SAM bridges.
                                 || min.owner.startsWith("scala/Function")
                                 || min.owner.equals("scala/PartialFunction")
-                                || min.owner.startsWith("scala/runtime/java8/JFunction");
+                                || min.owner.startsWith("scala/runtime/java8/JFunction")
+                                // Groovy's twin (found on groovy-4.0.14: ~16k of 22.5k methods carried
+                                // every effect): every Groovy closure extends groovy.lang.Closure, so
+                                // CHA over Closure.call unions them all.
+                                || (min.owner.equals("groovy/lang/Closure")
+                                    && (min.name.equals("call") || min.name.equals("doCall")));
                         // Scheduled-task dispatch (`Runnable.run` / `Callable.call` on the EXTERNAL
                         // interface): an event loop's `task.run()` would CHA-union every Runnable in
                         // the jar at every poll site (kotlinx's EventLoop connected the whole jar this
@@ -1387,6 +1392,15 @@ public class Candor {
         if (owner.equals("java.lang.Class") && (method.equals("newInstance") || method.equals("forName")))
             return "Unknown";
         if (owner.equals("java.lang.reflect.Proxy") && method.equals("newProxyInstance")) return "Unknown";
+        // Groovy dynamic dispatch IS reflection: MetaClass/GroovyObject.invokeMethod resolves the target
+        // at runtime through the metaclass registry and can call anything (the engine's own provenance
+        // trace ran through ExpandoMetaClass.invokeMethod into ProcessGroovyMethods.execute). Honest
+        // Unknown for consumers, exactly like Method.invoke.
+        if ((owner.startsWith("groovy.lang.MetaClass") || owner.equals("groovy.lang.GroovyObject")
+                || owner.equals("groovy.lang.MetaObjectProtocol") || owner.equals("groovy.lang.GroovyShell")
+                || owner.equals("groovy.lang.Script"))
+                && (method.startsWith("invoke") || method.equals("run") || method.equals("evaluate")))
+            return "Unknown";
         if (owner.equals("java.lang.invoke.MethodHandle") && method.startsWith("invoke")) return "Unknown";
         // Filesystem — classic java.io streams + NIO file channels (the channel's identity IS file I/O).
         if (owner.equals("java.nio.file.Files")

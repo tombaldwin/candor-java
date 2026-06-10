@@ -72,6 +72,23 @@ On `spring-sample/`, `register()` (a `@Transactional` method calling a Spring Da
 
 CHA is done with the class hierarchy ASM already gives us — no WALA/SootUp needed.
 
+**The pure-exempt dispatch set (candor-spec §4 requires this be documented).** Three dispatch shapes
+are deliberately *not* CHA-fanned-out, because over them every (or nearly every) class in the jar is a
+candidate target and one effectful override would smear across the whole report:
+
+- `toString()` / `hashCode()` / `equals(Object)` / `compareTo(Object)` — the conventionally-pure
+  `Object` surface (the same trade the Rust engine makes for `dyn Display`/`Error` formatting).
+  *The documented caveat:* an override of these that performs real I/O is not attributed at the
+  dispatch site (its own method entry still carries the effect).
+- `kotlin.jvm.functions.FunctionN.invoke` — every Kotlin lambda is a class implementing FunctionN;
+  the lambda's body is instead attributed at its **creation site** (precise-by-construction).
+- `java.lang.Runnable.run` / `Callable.call` on the external interface — task bodies are **entry
+  points** (the runtime invokes them), so their effects are never orphaned; an event loop's
+  `task.run()` is not charged with every task in the jar.
+
+All other dispatch — including over external interfaces with project impls (`java.util.Iterator`) —
+is still CHA-resolved.
+
 **Cross-jar (multi-module).** Each entry carries a stable, descriptor-bearing `hash`
 (`owner/Class.method(desc)ret` — the exact ref a call site uses), so a dependent module can inherit a
 dependency's effects across the jar boundary (candor-spec §2). Point `CANDOR_DEPS` at the

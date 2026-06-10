@@ -1437,6 +1437,18 @@ public class Candor {
                 || owner.equals("org.springframework.web.client.RestTemplate")
                 || owner.equals("org.springframework.web.client.RestClient")
                 || owner.startsWith("org.springframework.web.reactive.function.client.")
+                // ktor client (Kotlin's dominant HTTP client): the request verbs (get/post/request —
+                // INLINE suspend extensions) all funnel through `HttpStatement.execute`, the one
+                // dispatch boundary the compiler actually emits (ktor's reqwest-send analog); `body`
+                // on the statement also executes. The response readers (`bodyAsText`/`bodyAsChannel`
+                // on HttpResponseKt, `body` on HttpClientCallKt) consume the wire. Builders
+                // (HttpRequestBuilder/url/setMethod) and HttpClient() construction stay pure. (Found
+                // by a ktor-consumer probe: fetch/post/request all silent-pure.)
+                || (owner.equals("io.ktor.client.statement.HttpStatement")
+                    && (method.startsWith("execute") || method.startsWith("body")))
+                || (owner.equals("io.ktor.client.statement.HttpResponseKt")
+                    && (method.startsWith("body") || method.startsWith("read")))
+                || (owner.equals("io.ktor.client.call.HttpClientCallKt") && method.startsWith("body"))
                 // DNS resolution — getByName/getAllByName/getLocalHost/getCanonicalHostName send a query
                 // to the resolver (UDP/TCP) = network egress. getByAddress(byte[]) builds from bytes with
                 // NO lookup, so it's excluded. (Found by a controlled JDK-effect probe: all three lookup

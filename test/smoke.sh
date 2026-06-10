@@ -601,6 +601,28 @@ absent "DataFlavor data type stays pure"    "$clip"                             
 want   "Clipboard is an ambient authority (AS-EFF-004 flags a direct reach)" \
        "$(CANDOR_NO_AMBIENT=1 "$CJ" "$W/clcls" 2>&1)" '[AS-EFF-004] `Clip.get`'
 
+echo "== ktor CLIENT: HttpStatement.execute is the Net dispatch (stub-compiled) =="
+# The ktor request verbs (get/post/request) are INLINE suspend extensions — the compiler emits one
+# funnel, HttpStatement.execute (+ the response-body readers). Stub the owner so the consumer's call
+# site carries the real owner string; analyze only the consumer (classification is owner-keyed).
+mkdir -p "$W/ktsrc/io/ktor/client/statement" "$W/ktsrc/app"
+printf 'package io.ktor.client.statement; public class HttpStatement { public Object execute(Object c){ return null; } }\n' > "$W/ktsrc/io/ktor/client/statement/HttpStatement.java"
+printf 'package io.ktor.client.statement; public class HttpResponseKt { public static String bodyAsText(Object r){ return ""; } }\n' > "$W/ktsrc/io/ktor/client/statement/HttpResponseKt.java"
+cat > "$W/ktsrc/app/KtorUse.java" <<'J'
+package app; import io.ktor.client.statement.*;
+public class KtorUse {
+  public static Object hit(HttpStatement s) { return s.execute(null); }           // the dispatch -> Net
+  public static String readBody(Object r) { return HttpResponseKt.bodyAsText(r); } // response read -> Net
+  public static HttpStatement build() { return new HttpStatement(); }              // construction stays pure
+}
+J
+javac -d "$W/ktcls" $(find "$W/ktsrc" -name '*.java') 2>/dev/null
+"$CJ" "$W/ktcls/app" --json "$W/kt.json" >/dev/null 2>&1
+kshow() { python3 -c "import json;print(sorted(next((e['inferred'] for e in json.load(open('$W/kt.json'))['functions'] if e['fn']=='$1'), [])))"; }
+want   "ktor HttpStatement.execute consumer is Net"  "$(kshow 'app.KtorUse.hit')" "Net"
+want   "ktor bodyAsText consumer is Net"             "$(kshow 'app.KtorUse.readBody')" "Net"
+want   "ktor statement construction stays pure"      "$(kshow 'app.KtorUse.build')" "[]"
+
 echo "== AS-EFF-007 taint (CANDOR_TAINT): injection-class effect on a caller-derived argument =="
 # Intraprocedural taint dataflow: a parameter flowing (directly or through string concat) into an
 # injection-class effect (Exec/Fs/Db/Net/Env/Ipc) is flagged. A literal arg, a fresh local, and a pure

@@ -18,6 +18,28 @@ Point it at **compiled output** (`build/classes/java/main`, a jar) — build fir
 `/tmp/report.callgraph.json` (every method's direct callees, pure ones included — the blast-radius
 input). Method names are dot-separated: `com.example.Svc.save`.
 
+## Staying current — candor can't check for you, *you* can
+
+candor-java never makes a network call to see if it's out of date: it analyzes for the `Net` effect
+and must not perform it. So the version check is *your* job, not the tool's — you have network access,
+it doesn't. The jar has no `--version` flag, and the report envelope's `.candor.version` is the engine
+**build hash** (a git short-hash for provenance, not a semver) while `.candor.spec` is the contract
+version (`0.3`). The release semver lives in the **jar filename** (`candor-java-0.3.2-all.jar`); compare
+that to the latest GitHub release tag:
+
+```sh
+curl -s -H 'User-Agent: candor-version-check' \
+  https://api.github.com/repos/tombaldwin/candor-java/releases/latest \
+  | grep -o '"tag_name": *"[^"]*"'                                       # latest, e.g. "tag_name": "v0.3.2"
+jq -r '.candor.version, .candor.spec' /tmp/report.json                  # build hash + contract that produced this report
+```
+
+`jbang candor@tombaldwin/candor-java` resolves the jar from this repo's `jbang-catalog.json`, which
+pins a release tag — so you get whatever that catalog points at. To pick up a newer release, run
+`jbang cache clear` (forces jbang to re-read the catalog) or pin a specific jar explicitly:
+`jbang https://github.com/tombaldwin/candor-java/releases/download/<tag>/candor-java-<ver>-all.jar …`.
+PROVE-IT.md requires **0.3.2 or later** (earlier published builds have since-fixed resolution bugs).
+
 ## Query it (same names/shapes as the Rust engine — candor-spec §3.1)
 
 ```sh

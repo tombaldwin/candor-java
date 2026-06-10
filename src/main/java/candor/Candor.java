@@ -1392,6 +1392,35 @@ public class Candor {
                 // read it); ZipEntry/JarEntry data types stay pure. (Found by a controlled JDK probe.)
                 || owner.equals("java.util.zip.ZipFile") || owner.equals("java.util.jar.JarFile"))
             return "Fs";
+        // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
+        // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
+        // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation
+        // (relativeTo/normalize/resolve/name accessors), which must stay pure. The stat family
+        // (exists/isDirectory/fileSize) is Fs, mirroring the Rust engine's std::path::Path rule. (Found
+        // by a Kotlin-idiom probe: `f.readText()` was silent-pure — masked at first by the java.io.File
+        // owner-match catching the File CTOR in the same fn.) `$default` wrappers share the base name.
+        if (owner.equals("kotlin.io.FilesKt") || owner.equals("kotlin.io.TextStreamsKt")
+                || owner.equals("kotlin.io.path.PathsKt")) {
+            String base = method.endsWith("$default") ? method.substring(0, method.length() - 8) : method;
+            if (base.startsWith("read") || base.startsWith("write") || base.startsWith("append")
+                    || base.startsWith("copy") || base.startsWith("delete") || base.startsWith("create")
+                    || base.startsWith("walk") || base.startsWith("forEach") || base.startsWith("use")
+                    || base.startsWith("list") || base.equals("exists") || base.equals("notExists")
+                    || base.equals("isDirectory") || base.equals("isRegularFile")
+                    || base.equals("isSymbolicLink") || base.equals("fileSize") || base.equals("moveTo")
+                    || base.equals("inputStream") || base.equals("outputStream")
+                    || base.equals("reader") || base.equals("writer")
+                    || base.equals("bufferedReader") || base.equals("bufferedWriter")
+                    || base.equals("printWriter") || base.equals("getLastModifiedTime")
+                    || base.equals("setLastModifiedTime"))
+                return "Fs";
+            return null; // Path()/div/name/relativeTo/normalize — pure path manipulation
+        }
+        // Kotlin stdlib entropy (kotlin.random.Random / Random.Default / top-level RandomKt) — Kotlin's
+        // idiomatic randomness; whole-owner, mirroring the java.util.Random handling.
+        if (owner.equals("kotlin.random.Random") || owner.equals("kotlin.random.Random$Default")
+                || owner.equals("kotlin.random.RandomKt"))
+            return "Rand";
         // Network — raw sockets, NIO socket channels (the channel type IS the network boundary; the
         // generic ReadableByteChannel/WritableByteChannel interfaces are NOT classified, they may wrap a
         // file or an in-memory buffer), java.net.http, and Spring's outbound HTTP clients. Without the NIO

@@ -764,6 +764,30 @@ printf 'allow Db in q orders\nallow Db in q ledger.*\n' > "$W/sql2.pol"
 SQL_PERRULE=$(CANDOR_POLICY="$W/sql2.pol" "$CJ" "$W/sqlcls" 2>&1 | grep -c "AS-EFF-008.*q\.Dao\.multi")
 want "two half-covering allow rules don't pass by union" "$SQL_PERRULE" "2"
 
+# ── κ-coverage ledger: an unlisted external package the code calls is NAMED in the receipt ───────
+echo "== κ-coverage ledger =="
+mkdir -p "$W/kap/src/com/thirdparty/json" "$W/kap/src/org/acme"
+cat > "$W/kap/src/com/thirdparty/json/Mapper.java" <<'J'
+package com.thirdparty.json;
+public class Mapper { public String render(Object o) { return o.toString(); } }
+J
+cat > "$W/kap/src/org/acme/App.java" <<'J'
+package org.acme;
+import com.thirdparty.json.Mapper;
+public class App {
+    public static String run() throws Exception {
+        java.nio.file.Files.readString(java.nio.file.Path.of("/tmp/x"));
+        return new Mapper().render("x");
+    }
+}
+J
+javac -d "$W/kap/dep" "$W/kap/src/com/thirdparty/json/Mapper.java" 2>/dev/null
+javac -cp "$W/kap/dep" -d "$W/kap/app" "$W/kap/src/org/acme/App.java" 2>/dev/null
+KAP=$("$CJ" "$W/kap/app" 2>&1)
+want   "unlisted external package named in the receipt" "$KAP" "κ doesn't know 1 package"
+want   "with its grouped name and call count"           "$KAP" "com.thirdparty.json (2 calls)"
+absent "the JDK frontier stays out of the ledger"       "$KAP" "java.nio"
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

@@ -116,6 +116,10 @@ public class Candor {
     static final Map<String, TreeSet<String>> cmdsDirect = new HashMap<>();  // fn -> literal Exec commands
     static final Map<String, TreeSet<String>> pathsDirect = new HashMap<>(); // fn -> literal Fs paths
     static final Map<String, TreeSet<String>> tablesDirect = new HashMap<>(); // fn -> literal Db tables
+    // The κ-coverage ledger (the Rust/TS move): external packages this code calls where the
+    // classifier never fires are INVISIBLE, not Unknown — counted here, named in the receipt.
+    static final Map<String, Integer> kappaSeen = new TreeMap<>();      // external package -> call count
+    static final Set<String> kappaClassified = new HashSet<>();         // packages with >=1 classification
 
     /** A `deny <Effect…> [scope]` or `pure <scope>` rule. `effects` empty ⇒ a `pure` rule (ANY effect is
      *  forbidden). `scope` empty ⇒ the whole project. */
@@ -169,6 +173,25 @@ public class Candor {
 
         // JSON output is orthogonal — write first so `--json` can snapshot a baseline.
         if (jsonOut != null) { writeJson(inferred, jsonOut); writeCallgraph(jsonOut); }
+
+        // The κ-coverage disclosure (mirrors the Rust/TS receipts): external packages the bytecode
+        // demonstrably calls where the classifier never fired — invisible, not Unknown. Per-scan
+        // evidence instead of a doc footnote; never conclude "no effect" through a package named here.
+        List<Map.Entry<String, Integer>> unlisted = kappaSeen.entrySet().stream()
+                .filter(e -> !kappaClassified.contains(e.getKey()))
+                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()
+                        .thenComparing(Map.Entry.comparingByKey()))
+                .collect(Collectors.toList());
+        if (!unlisted.isEmpty()) {
+            String shown = unlisted.stream().limit(8)
+                    .map(e -> e.getKey() + " (" + e.getValue() + " call" + (e.getValue() == 1 ? "" : "s") + ")")
+                    .collect(Collectors.joining(", "));
+            String more = unlisted.size() > 8 ? " + " + (unlisted.size() - 8) + " more" : "";
+            System.err.printf("candor-java: κ doesn't know %d package%s this code calls into — effects through "
+                    + "%s are INVISIBLE (not Unknown): %s%s%n",
+                    unlisted.size(), unlisted.size() == 1 ? "" : "s",
+                    unlisted.size() == 1 ? "it" : "them", shown, more);
+        }
 
         // Modes: CANDOR_STRICT (conformance via DI), CANDOR_BASELINE (regression guard),
         // CANDOR_NO_AMBIENT (enforcement).
@@ -1101,6 +1124,15 @@ public class Candor {
                     String owner = min.owner.replace('/', '.');
                     String effect = classify(owner, min.name, min.desc);
                     if (effect != null) dir.add(effect);
+                    // κ ledger: group external owners by package; a package with zero
+                    // classifications anywhere in the scan is a named blind spot.
+                    if (!projectClasses.contains(min.owner)) {
+                        String pkg = ownerPackage(owner);
+                        if (!pkg.isEmpty() && !kappaCovers(pkg)) {
+                            kappaSeen.merge(pkg, 1, Integer::sum);
+                            if (effect != null) kappaClassified.add(pkg);
+                        }
+                    }
                     // An injection-class effect on a caller-derived argument is an injection surface.
                     if (taintFrames != null && effect != null && INJECTION.contains(effect)
                             && argsTainted(taintFrames[mn.instructions.indexOf(min)], min))
@@ -1534,6 +1566,34 @@ public class Candor {
         if (method.startsWith("write") || method.equals("append")) return List.of("write");
         if (method.startsWith("read")) return List.of("read");
         return List.of();
+    }
+
+    /** The κ-ledger grouping key for an external owner: its package segments up to the first
+     *  class-looking (uppercase-initial) segment, capped at 3 — `org.apache.commons.io.FileUtils`
+     *  -> `org.apache.commons`. Empty for a default-package class. */
+    static String ownerPackage(String owner) {
+        StringBuilder b = new StringBuilder();
+        int n = 0;
+        for (String s : owner.split("\\.")) {
+            if (s.isEmpty() || Character.isUpperCase(s.charAt(0)) || n == 3) break;
+            if (n > 0) b.append('.');
+            b.append(s);
+            n++;
+        }
+        return b.toString();
+    }
+
+    /** Packages OUTSIDE the ledger: the platform/runtime frontier (κ's builtin job — JDK, the
+     *  language runtimes) and the verb-precise third-party packages κ already covers, where zero
+     *  classifications can be legitimate (the app only touches their pure surface). Segment-exact
+     *  prefixes so `javassist` is not mistaken for `java`. */
+    static boolean kappaCovers(String pkg) {
+        for (String p : new String[] { "java", "javax", "jakarta", "jdk", "sun", "com.sun",
+                "kotlin", "kotlinx", "scala", "groovy", "org.codehaus.groovy", "org.jetbrains",
+                "org.springframework", "io.ktor", "org.slf4j", "org.apache.logging", "ch.qos.logback" }) {
+            if (pkg.equals(p) || pkg.startsWith(p + ".")) return true;
+        }
+        return false;
     }
 
     static String classify(String owner, String method, String desc) {

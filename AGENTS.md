@@ -8,15 +8,24 @@ the JVM-specific production + query surface.
 ## Produce a report
 
 ```sh
-# zero-install (the fat jar):
+# zero-install (the fat jar). No jbang? curl -Ls https://sh.jbang.dev | bash -s - app setup
 jbang candor@tombaldwin/candor-java <classes-dir-or-jar> --json /tmp/report.json
 # or: java -jar candor-java-<ver>-all.jar <classes-dir-or-jar> --json /tmp/report.json
 ```
 
-Point it at **compiled output** (`build/classes/java/main`, a jar) — build first. Analyze
+Point it at **compiled output** (`build/classes/java/main`, a jar) — build first. If the build
+won't cooperate (toolchain demands, broken snapshot), candor analyzes **any** compiled classes or
+jar — a release jar fetched from Maven Central is a fine substitute for building the repo. Analyze
 `main`, not test, classes (test code describes the harness). `--json` writes the report **and**
 `/tmp/report.callgraph.json` (every method's direct callees, pure ones included — the blast-radius
 input). Method names are dot-separated: `com.example.Svc.save`.
+
+**Report shape:** entries live in `.functions[]`, keyed **`fn`** (the method name — e.g.
+`jq -r '.functions[] | select(.unresolved) | .fn' /tmp/report.json`), with `inferred` / `direct` /
+`unresolved` / `unknownWhy` / `entryPoint` alongside. **Only effectful-or-unresolved methods appear
+in the report; pure methods are omitted** — a method present in the callgraph sidecar but absent
+from `.functions[]` is pure (as far as the engine resolved). In *neither* file = never analyzed;
+conclude nothing.
 
 ## Staying current — candor can't check for you, *you* can
 
@@ -30,8 +39,9 @@ that to the latest GitHub release tag:
 ```sh
 curl -s -H 'User-Agent: candor-version-check' \
   https://api.github.com/repos/tombaldwin/candor-java/releases/latest \
-  | grep -o '"tag_name": *"[^"]*"'                                       # latest, e.g. "tag_name": "v0.3.2"
+  | grep -o '"tag_name": *"[^"]*"'                                       # latest -> "tag_name":"v0.3.2" (compact)
 jq -r '.candor.version, .candor.spec' /tmp/report.json                  # build hash + contract that produced this report
+find ~/.jbang/cache -name 'candor-java-*-all.jar' 2>/dev/null           # the semver of what jbang actually ran
 ```
 
 `jbang candor@tombaldwin/candor-java` resolves the jar from this repo's `jbang-catalog.json`, which
@@ -41,6 +51,9 @@ pins a release tag — so you get whatever that catalog points at. To pick up a 
 PROVE-IT.md requires **0.3.2 or later** (earlier published builds have since-fixed resolution bugs).
 
 ## Query it (same names/shapes as the Rust engine — candor-spec §3.1)
+
+The jbang alias works for every query too — `jbang candor@tombaldwin/candor-java show …` — you
+never need the jar's path:
 
 ```sh
 java -jar candor.jar show     /tmp/report.json <method> [--json]   # a method's effects
@@ -82,4 +95,7 @@ Name queries resolve exact > segment-suffix (`Svc.save` matches `com.example.Svc
 present — reflection, `native` bodies, Groovy metaclass dispatch, a project interface with no visible
 impl), the set may be incomplete: read the source before relying on it. `unknownWhy` tells you whether
 the opacity is irreducible (`reflect:`/`native:`) or fixable by widening the analyzed classpath
-(`dispatch:`). Never conclude a method is pure while it is marked unresolved.
+(`dispatch:`). **`unknownWhy` appears only on the ROOT entries** — the methods whose own bodies hit
+the opaque call; methods that merely *inherit* `Unknown` carry it in `inferred` with no why. To find
+what taints an inheritor, follow its `calls` edges down (or `where Unknown` and intersect) to the
+root. Never conclude a method is pure while it is marked unresolved.

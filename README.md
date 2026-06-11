@@ -275,6 +275,7 @@ deny Exec                       # nothing may spawn a subprocess (no scope = who
 allow Net in billing  api.stripe.com   # billing may reach the network — but ONLY Stripe
 allow Exec in build   git              # the build layer may run subprocesses — but ONLY git
 allow Fs  in config   /etc/app         # config code may read the filesystem — but ONLY under /etc/app
+allow Db  in billing  ledger.*         # billing may touch the database — but ONLY the ledger schema
 forbid domain -> infra          # the domain layer must not depend on the infrastructure layer
 ```
 
@@ -288,9 +289,10 @@ forbid domain -> infra          # the domain layer must not depend on the infras
   directly; candor flags it reaching the effect through any callee. `pure` forbids every effect.
 - **`allow <Effect> in <scope> <value…>`** (`AS-EFF-008`) — *which literals* an effect may reach, across
   the **transitive** surface (the literal often lives in a deep callee). The supply-chain boundary a
-  model can't self-check. Three effects carry a literal surface: `Net` hosts ("billing may only talk to
-  Stripe", matched by hostname), `Exec` commands ("build may only run git", by program basename), and
-  `Fs` paths ("config may only read /etc/app", by path-prefix at a boundary). Certifies the *visible*
+  model can't self-check. Four effects carry a literal surface: `Net` hosts ("billing may only talk to
+  Stripe", matched by hostname), `Exec` commands ("build may only run git", by program basename),
+  `Fs` paths ("config may only read /etc/app", by path-prefix at a boundary), and `Db` tables
+  ("billing may only touch `ledger.*`", by qualified table name from SQL string literals). Certifies the *visible*
   surface only — a literal is read from the call that carries it (the `ProcessBuilder`/`exec` program,
   the `Path.of`/`File`/stream-ctor path, a scheme-URL/`host:port`/IP host); a runtime-computed value is
   honestly invisible, never over-claimed (validated on a real Spring app — the extractor takes the

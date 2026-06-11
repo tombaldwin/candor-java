@@ -183,8 +183,10 @@ public final class Query {
             return 0;
         }
         int w = hits.stream().mapToInt(f -> f.fn.length()).max().orElse(0);
+        boolean anyStar = false;
         for (Fn f : hits) {
             Set<String> direct = new HashSet<>(f.direct);
+            anyStar |= f.inferred.stream().anyMatch(direct::contains);
             String parts = sorted(f.inferred).stream()
                     .map(x -> {
                         String star = direct.contains(x) ? "*" : "";
@@ -195,7 +197,8 @@ public final class Query {
             String unk = f.unresolved ? "  ⚠ unresolved (set may be incomplete)" : "";
             System.out.printf("  %-" + w + "s  { %s }%s%n", f.fn, parts, unk);
         }
-        System.out.println("  (* = performed in the function's own body; unmarked = via a callee)");
+        // Only explain the `*` when one was actually printed (every effect inherited => no marker).
+        if (anyStar) System.out.println("  (* = performed in the function's own body; unmarked = via a callee)");
         return 0;
     }
 

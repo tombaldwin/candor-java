@@ -120,6 +120,9 @@ public class Candor {
     // classifier never fires are INVISIBLE, not Unknown — counted here, named in the receipt.
     static final Map<String, Integer> kappaSeen = new TreeMap<>();      // external package -> call count
     static final Set<String> kappaClassified = new HashSet<>();         // packages with >=1 classification
+    // Packages a CANDOR_DEPS sibling report covers: chained, not blind — even a call that joins
+    // nothing (the dep fn is pure and omitted) is the report's honest purity claim.
+    static final Set<String> depCoveredPkgs = new HashSet<>();
 
     /** A `deny <Effect…> [scope]` or `pure <scope>` rule. `effects` empty ⇒ a `pure` rule (ANY effect is
      *  forbidden). `scope` empty ⇒ the whole project. */
@@ -178,7 +181,7 @@ public class Candor {
         // demonstrably calls where the classifier never fired — invisible, not Unknown. Per-scan
         // evidence instead of a doc footnote; never conclude "no effect" through a package named here.
         List<Map.Entry<String, Integer>> unlisted = kappaSeen.entrySet().stream()
-                .filter(e -> !kappaClassified.contains(e.getKey()))
+                .filter(e -> !kappaClassified.contains(e.getKey()) && !depCoveredPkgs.contains(e.getKey()))
                 .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()
                         .thenComparing(Map.Entry.comparingByKey()))
                 .collect(Collectors.toList());
@@ -934,6 +937,8 @@ public class Candor {
                             for (JsonElement x : m.getAsJsonArray("inferred")) effs.add(x.getAsString());
                         }
                         if (!effs.isEmpty()) crossDeps.put(h, effs);
+                        // The report covers this entry's package — exempt it from the κ ledger.
+                        if (m.has("fn")) depCoveredPkgs.add(ownerPackage(m.get("fn").getAsString()));
                     }
                 } catch (Exception ex) {
                     // skip unreadable / unparseable dependency reports (like the Rust impl)

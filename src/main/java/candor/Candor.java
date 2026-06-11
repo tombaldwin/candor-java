@@ -62,6 +62,13 @@ public class Candor {
     static final Set<String> entryPoints = new HashSet<>(); // framework-invoked methods
     static final Set<String> projectClasses = new HashSet<>();
     static final Set<String> repoTypes = new HashSet<>();    // Spring Data repository interfaces (internal names)
+    // JPA's declarative tables: @Table(name="users") on an entity names its table (LITERAL name attr
+    // only — a bare @Entity's default is naming-strategy-dependent, so it contributes nothing, never a
+    // guess); a repository's generic signature names its entity. Together a Spring-Data call carries
+    // its table into the `tables` surface with no SQL string anywhere — the same declarative move as
+    // the TS engine's @Entity decorators (JPA apps are THE Db-heavy JVM shape with no SQL literals).
+    static final Map<String, String> entityTables = new HashMap<>(); // entity internal name -> table
+    static final Map<String, String> repoTables = new HashMap<>();   // repository internal name -> table
     static final Set<String> feignTypes = new HashSet<>();   // @FeignClient interfaces (internal names)
     static List<ClassNode> ALL = List.of();                  // all loaded classes (for CHA)
     static final Map<String, ClassNode> byName = new HashMap<>();      // internal name -> node
@@ -942,6 +949,16 @@ public class Candor {
     /** Identify Spring Data repositories (effect: Db) and @FeignClient interfaces (Net). */
     static void computeSpringTypes(List<ClassNode> classes) {
         for (ClassNode cn : classes) if (annoPresent(cn.visibleAnnotations, FEIGN)) feignTypes.add(cn.name);
+        // JPA entity tables: the literal @Table(name="…") (javax or jakarta persistence).
+        for (ClassNode cn : classes) {
+            if (cn.visibleAnnotations == null) continue;
+            for (AnnotationNode a : cn.visibleAnnotations) {
+                if (a.desc == null || !a.desc.contains("persistence/Table") || a.values == null) continue;
+                for (int i = 0; i + 1 < a.values.size(); i += 2)
+                    if ("name".equals(a.values.get(i)) && a.values.get(i + 1) instanceof String t && !t.isBlank())
+                        entityTables.put(cn.name, t);
+            }
+        }
         boolean changed = true;
         while (changed) {
             changed = false;
@@ -954,6 +971,16 @@ public class Candor {
                         break;
                     }
                 }
+            }
+        }
+        // A repository's entity is its FIRST generic argument (`extends CrudRepository<User, Long>`):
+        // read it from the interface's generic signature and join with the entity's declared table.
+        for (ClassNode cn : classes) {
+            if (!repoTypes.contains(cn.name) || cn.signature == null) continue;
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("<L([^;<]+);").matcher(cn.signature);
+            if (m.find()) {
+                String table = entityTables.get(m.group(1));
+                if (table != null) repoTables.put(cn.name, table);
             }
         }
     }
@@ -1083,7 +1110,11 @@ public class Candor {
                     // Calls to a Spring Data repository / Feign client are I/O even though the
                     // callee has no body candor can see (Spring synthesizes the impl at runtime).
                     boolean springTyped = repoTypes.contains(min.owner) || feignTypes.contains(min.owner);
-                    if (repoTypes.contains(min.owner)) dir.add("Db");
+                    if (repoTypes.contains(min.owner)) {
+                        dir.add("Db");
+                        String tbl = repoTables.get(min.owner); // the declarative `tables` surface
+                        if (tbl != null) tablesDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(tbl);
+                    }
                     if (feignTypes.contains(min.owner)) dir.add("Net");
 
                     int op = min.getOpcode();

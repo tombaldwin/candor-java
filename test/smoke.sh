@@ -719,6 +719,18 @@ want   "rewire: flags the dropped call (de-wiring)"      "$rw" 'p.a.A.handle  �
 want   "rewire --json: ok=false when an edge is dropped" "$("$CJ" rewire "$W/rw/gamed.json" "$W/rw/base.json" --json)" '"ok": false'
 want   "rewire: clean when nothing is de-wired"          "$("$CJ" rewire "$W/rw/base.json" "$W/rw/base.json")" 'nothing de-wired'
 
+# ── JPA declarative tables: @Table(name) + the repository's generic signature → `tables` ─────────
+echo "== JPA declarative tables =="
+javac -d "$W/jpa" $(find spring-sample -name '*.java') 2>/dev/null
+"$CJ" "$W/jpa/com/example" --json "$W/jpa.json" >/dev/null 2>&1
+JPA_SVC=$(python3 -c "import json; r=json.load(open('$W/jpa.json')); print(next((f.get('tables') for f in r['functions'] if f['fn']=='com.example.UserService.register'), []))")
+want "register carries the declared table"            "$JPA_SVC" "users"
+JPA_CTL=$(python3 -c "import json; r=json.load(open('$W/jpa.json')); print(next((f.get('tables') for f in r['functions'] if f['fn']=='com.example.UserController.get'), []))")
+want "the controller inherits it transitively"        "$JPA_CTL" "users"
+printf 'allow Db in example accounts\n' > "$W/jpa.pol"
+JPA_GATE=$(CANDOR_POLICY="$W/jpa.pol" "$CJ" "$W/jpa/com/example" 2>&1 | grep "AS-EFF-008" | head -1)
+want "the table allowlist gates the declared surface" "$JPA_GATE" "reaches { users }"
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

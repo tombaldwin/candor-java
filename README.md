@@ -288,7 +288,12 @@ forbid domain -> infra          # the domain layer must not depend on the infras
 - **`deny` / `pure`** (`AS-EFF-006`) — *what* a layer may do. A method need not perform the effect
   directly; candor flags it reaching the effect through any callee. `pure` forbids every effect.
 - **`allow <Effect> in <scope> <value…>`** (`AS-EFF-008`) — *which literals* an effect may reach, across
-  the **transitive** surface (the literal often lives in a deep callee). The supply-chain boundary a
+  the **transitive** surface (the literal often lives in a deep callee). For `Db` tables the surface is
+  fed two ways: table-position identifiers in SQL string literals, **and JPA's declarations** — a
+  literal `@Table(name = "users")` on an entity plus the repository's generic signature
+  (`extends CrudRepository<User, Long>`) carries `users` into every Spring-Data call's `tables`, no
+  SQL string anywhere (a bare `@Entity` is naming-strategy-dependent and contributes nothing — never
+  a guess). The supply-chain boundary a
   model can't self-check. Four effects carry a literal surface: `Net` hosts ("billing may only talk to
   Stripe", matched by hostname), `Exec` commands ("build may only run git", by program basename),
   `Fs` paths ("config may only read /etc/app", by path-prefix at a boundary), and `Db` tables

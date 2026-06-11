@@ -502,9 +502,12 @@ public class Candor {
         return v;
     }
 
-    /** AS-EFF-008 for one effect: each method performing `effect` in a scope with an `allow <effect> …`
-     *  rule must reach ONLY covered literals (per the effect's `covered` matcher). Allowed values are
-     *  UNIONed across matching rules. A method with no `allow` rule for its scope is unchecked. */
+    /** AS-EFF-008 for one effect: for EACH `allow <effect> …` rule whose scope matches, the method
+     *  performing `effect` must reach ONLY covered literals (per the effect's `covered` matcher).
+     *  Per-rule, not unioned across rules — the SEMANTICS predicate quantifies over each rule `r`
+     *  (and the Rust gate checks per rule), so two half-covering rules don't pass by union. A method
+     *  whose reached surface is EMPTY is a violation too — "a literal it cannot see" can't be
+     *  certified (lits_e(f) = ∅ in the predicate). No matching `allow` rule ⇒ unchecked. */
     static int checkAllowlist(Map<String, TreeSet<String>> inferred, String effect,
             Map<String, TreeSet<String>> reachedAcc,
             java.util.function.BiPredicate<Set<String>, String> covered) {
@@ -512,23 +515,26 @@ public class Candor {
         for (var e : new TreeMap<>(inferred).entrySet()) {
             String fn = e.getKey();
             if (!e.getValue().contains(effect)) continue;
-            Set<String> allowed = null; // null ⇒ no `allow <effect>` rule covers this method → not checked
-            String scope = "";
             for (AllowRule r : allowRules) {
                 if (!effect.equals(r.effect) || !scopeMatches(fn, r.scope)) continue;
-                if (allowed == null) { allowed = new HashSet<>(); scope = r.scope; }
-                allowed.addAll(r.values);
-            }
-            if (allowed == null) continue;
-            Set<String> fa = allowed;
-            List<String> bad = reachedAcc.getOrDefault(fn, new TreeSet<>()).stream()
-                    .filter(reached -> !covered.test(fa, reached)).sorted().collect(Collectors.toList());
-            if (!bad.isEmpty()) {
-                System.out.printf("[AS-EFF-008] `%s` reaches { %s } outside the allowlist, forbidden by "
-                        + "policy%s: `allow %s … %s`%n", fn, String.join(", ", bad),
-                        scope.isEmpty() ? "" : " (scope `" + scope + "`)", effect,
-                        String.join(" ", new TreeSet<>(allowed)));
-                v++;
+                TreeSet<String> reached = reachedAcc.getOrDefault(fn, new TreeSet<>());
+                if (reached.isEmpty()) {
+                    System.out.printf("[AS-EFF-008] `%s` performs %s with no visible literal — the "
+                            + "surface cannot be certified: `allow %s%s %s`%n", fn, effect, effect,
+                            r.scope.isEmpty() ? "" : " in " + r.scope,
+                            String.join(" ", r.values));
+                    v++;
+                    continue;
+                }
+                List<String> bad = reached.stream()
+                        .filter(x -> !covered.test(r.values, x)).sorted().collect(Collectors.toList());
+                if (!bad.isEmpty()) {
+                    System.out.printf("[AS-EFF-008] `%s` reaches { %s } outside the allowlist, forbidden by "
+                            + "policy%s: `allow %s … %s`%n", fn, String.join(", ", bad),
+                            r.scope.isEmpty() ? "" : " (scope `" + r.scope + "`)", effect,
+                            String.join(" ", r.values));
+                    v++;
+                }
             }
         }
         return v;
@@ -809,7 +815,8 @@ public class Candor {
      *  open with a SQL statement keyword; only FROM/JOIN/INTO (anywhere), statement-leading
      *  UPDATE/TRUNCATE, and TABLE take the following identifier, skipping ONLY/IF NOT EXISTS;
      *  `FOR UPDATE SKIP LOCKED` yields nothing (mid-statement UPDATE ignored). Mirrors the Rust
-     *  `tables_in_sql` exactly — the conformance grammar/verdict differentials keep them aligned. */
+     *  `tables_in_sql` token-for-token — SPEC §2 pins the algorithm and the cross-impl vector
+     *  battery (candor-spec conformance/tables/vectors.json, run.sh Part 4b) enforces it. */
     static List<String> tablesInSql(String sql) {
         Set<String> stmt = Set.of("select", "insert", "update", "delete", "create", "drop", "alter",
                 "truncate", "merge", "replace", "with");
@@ -819,7 +826,9 @@ public class Candor {
                 "natural", "union", "all", "distinct", "case", "when", "null", "default", "skip",
                 "nowait", "of", "from", "join", "into", "update", "delete", "insert");
         String cleaned = sql.toLowerCase().replaceAll("[(),;]", " ");
-        String[] toks = cleaned.trim().split("\s+");
+        // "\\s+" (regex any-whitespace), NOT "\s+" — the latter is the Java 15 *space escape*, which
+        // splits on literal spaces only and glues tokens across the newlines of formatted SQL.
+        String[] toks = cleaned.trim().split("\\s+");
         List<String> out = new ArrayList<>();
         if (toks.length == 0 || !stmt.contains(toks[0])) return out;
         for (int i = 0; i < toks.length; i++) {

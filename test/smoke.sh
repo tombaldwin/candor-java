@@ -731,6 +731,39 @@ printf 'allow Db in example accounts\n' > "$W/jpa.pol"
 JPA_GATE=$(CANDOR_POLICY="$W/jpa.pol" "$CJ" "$W/jpa/com/example" 2>&1 | grep "AS-EFF-008" | head -1)
 want "the table allowlist gates the declared surface" "$JPA_GATE" "reaches { users }"
 
+# ── SQL tables: multi-line literals + the opaque (no-literal) gate case ──────────────────────────
+echo "== SQL tables: multi-line literals + the opaque gate case =="
+# The \n-without-indent form is the regression: split("\s+") written with a single backslash is the
+# Java space ESCAPE, so "orders\njoin" stayed one token and both tables vanished from the surface.
+mkdir -p "$W/sql/q"
+cat > "$W/sql/q/Dao.java" <<'J'
+package q;
+import java.sql.*;
+public class Dao {
+    public static void multi(Connection c) throws SQLException {
+        String q = "SELECT o.id\nFROM orders\nJOIN ledger.entries le ON le.oid = o.id";
+        c.prepareStatement(q).executeQuery();
+    }
+    public static void opaque(Connection c, String sql) throws SQLException {
+        c.prepareStatement(sql).executeQuery();
+    }
+}
+J
+javac -d "$W/sqlcls" "$W/sql/q/Dao.java" 2>/dev/null
+"$CJ" "$W/sqlcls" --json "$W/sql.json" >/dev/null 2>&1
+SQL_TBL=$(python3 -c "import json; r=json.load(open('$W/sql.json')); print(next((f.get('tables') for f in r['functions'] if f['fn']=='q.Dao.multi'), []))")
+want "multi-line SQL: FROM table extracted across \\n"  "$SQL_TBL" "orders"
+want "multi-line SQL: qualified JOIN table too"          "$SQL_TBL" "ledger.entries"
+printf 'allow Db in q customers\n' > "$W/sql.pol"
+SQL_GATE=$(CANDOR_POLICY="$W/sql.pol" "$CJ" "$W/sqlcls" 2>&1)
+want "the allowlist flags the reached tables"            "$SQL_GATE" "reaches { ledger.entries, orders }"
+want "Db with NO visible literal cannot be certified"    "$SQL_GATE" '`q.Dao.opaque` performs Db with no visible literal'
+# Per-rule semantics (SEMANTICS AS-EFF-008 quantifies over each rule; values are NOT unioned across
+# rules): two half-covering rules must each still flag, exactly like the Rust gate.
+printf 'allow Db in q orders\nallow Db in q ledger.*\n' > "$W/sql2.pol"
+SQL_PERRULE=$(CANDOR_POLICY="$W/sql2.pol" "$CJ" "$W/sqlcls" 2>&1 | grep -c "AS-EFF-008.*q\.Dao\.multi")
+want "two half-covering allow rules don't pass by union" "$SQL_PERRULE" "2"
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

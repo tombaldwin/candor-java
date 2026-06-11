@@ -1,5 +1,7 @@
 # candor-java
 
+<p align="center"><img src="https://raw.githubusercontent.com/tombaldwin/candor/main/assets/beaky.svg" alt="Beaky, the candor canary" width="180"></p>
+
 **Enforce the architectural boundaries that AI-generated JVM code silently crosses — as a CI gate you
 can trust.** candor-java reads compiled bytecode via [ASM](https://asm.ow2.io/) and knows which methods
 reach the network, filesystem, a database, a subprocess, the environment — *transitively* — then turns

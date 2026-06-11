@@ -788,6 +788,37 @@ want   "unlisted external package named in the receipt" "$KAP" "κ doesn't know 
 want   "with its grouped name and call count"           "$KAP" "com.thirdparty.json (2 calls)"
 absent "the JDK frontier stays out of the ledger"       "$KAP" "java.nio"
 
+# ── dep-JAR chaining: scan a dependency jar once, CANDOR_DEPS carries it into the app scan ───────
+echo "== dep-jar chaining =="
+mkdir -p "$W/djc/src/com/thirdparty/io" "$W/djc/src/org/acme2"
+cat > "$W/djc/src/com/thirdparty/io/Loader.java" <<'J'
+package com.thirdparty.io;
+public class Loader {
+    public String load(String p) throws Exception {
+        return java.nio.file.Files.readString(java.nio.file.Path.of(p));
+    }
+}
+J
+cat > "$W/djc/src/org/acme2/App2.java" <<'J'
+package org.acme2;
+import com.thirdparty.io.Loader;
+public class App2 {
+    public static String run() throws Exception { return new Loader().load("/tmp/x"); }
+}
+J
+javac -d "$W/djc/depcls" "$W/djc/src/com/thirdparty/io/Loader.java" 2>/dev/null
+jar cf "$W/djc/dep.jar" -C "$W/djc/depcls" . 2>/dev/null
+javac -cp "$W/djc/dep.jar" -d "$W/djc/app" "$W/djc/src/org/acme2/App2.java" 2>/dev/null
+"$CJ" "$W/djc/dep.jar" --json "$W/djc/dep.json" >/dev/null 2>&1
+DJC_HASH=$(python3 -c "import json; r=json.load(open('$W/djc/dep.json')); print(next((f.get('hash','') for f in r['functions'] if f['fn']=='com.thirdparty.io.Loader.load'), ''))")
+want "the dep JAR scan emits the method-ref hash"  "$DJC_HASH" "com/thirdparty/io/Loader.load"
+DJC_PLAIN=$("$CJ" "$W/djc/app" 2>&1)
+absent "without CANDOR_DEPS the dep call is invisible"      "$DJC_PLAIN" "App2.run"
+want   "…and the κ ledger names the blind spot"             "$DJC_PLAIN" "com.thirdparty.io"
+DJC_CHAIN=$(CANDOR_DEPS="$W/djc/dep.json" "$CJ" "$W/djc/app" 2>&1)
+want   "with CANDOR_DEPS the app inherits the jar's effect" "$(echo "$DJC_CHAIN" | grep App2.run)" '{ Fs* }'
+absent "…and the chained package leaves the κ ledger"       "$DJC_CHAIN" "κ doesn't know"
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

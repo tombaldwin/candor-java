@@ -33,7 +33,13 @@ you can act on it.
 **It maps, too** — a per-method effect audit and instant `show`/`where`/`callers`/`map`/`diff`/
 `containment`/`reachable`/`path`/`impact` queries over the report, for an agent or a human navigating unfamiliar code.
 
-## Status: early prototype (v0)
+## Status: alpha (v0.3.x)
+
+Validated on a real 2,257-class Spring application and on real Kotlin/Scala/Groovy bytecode; holds
+the spec's cross-engine conformance suite (same fixtures and expected effect sets as the Rust
+engine, in CI); guarded by an adversarial soundness fuzzer. Alpha because the classifier and the
+Spring surface keep growing — the trust contract (§4: never silently pure) is not where the
+immaturity lives.
 
 **Works:** audit mode — resolves each call, classifies it against the effect table (matching the I/O
 boundary, not the package), and propagates transitively to a fixpoint over the call graph. Emits the
@@ -150,7 +156,18 @@ and reflection at build time). See candor-spec CLASSIFIER.md.
 
 ## Build & run
 
-Requires JDK 21 + Gradle.
+**Zero-install (recommended):** the release fat-jar via [jbang](https://www.jbang.dev) — no clone,
+no Gradle:
+
+```sh
+jbang candor@tombaldwin/candor-java /path/to/classes-or-jar --json /tmp/report.json
+```
+
+**AI agent?** Point it at [AGENTS.md](AGENTS.md) — the self-contained produce/query/trust
+instructions. **Sceptical?** [PROVE-IT.md](PROVE-IT.md) is the 15-minute self-experiment your own
+agent runs on your own codebase.
+
+From source: requires JDK 21 + Gradle.
 
 ```sh
 # compile the code you want to analyze to a directory of .class files (or point at a jar), then:
@@ -332,8 +349,9 @@ gradle run --args="/tmp/spring/com/example"
 
 ASM reads each `.class` into a node tree; for every method, each resolved call (`MethodInsnNode`) is
 classified by its target's class + method name; calls to project methods become call-graph edges; a
-fixpoint unions callee effects into callers. Same architecture as candor's first Rust version —
-deliberately, so it grows along the same path (next: `Unknown`, then CHA).
+fixpoint unions callee effects into callers. Same architecture as the Rust engine, deliberately —
+and it has grown along the same path: `Unknown` (the §4 trust contract), CHA over project types,
+Spring's declarative surface, the policy gate, and the read-only queries are all in (see above).
 
 ## License
 

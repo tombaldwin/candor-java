@@ -108,6 +108,7 @@ public class Candor {
     static final Map<String, TreeSet<String>> hostsDirect = new HashMap<>(); // fn -> literal Net endpoints
     static final Map<String, TreeSet<String>> cmdsDirect = new HashMap<>();  // fn -> literal Exec commands
     static final Map<String, TreeSet<String>> pathsDirect = new HashMap<>(); // fn -> literal Fs paths
+    static final Map<String, TreeSet<String>> tablesDirect = new HashMap<>(); // fn -> literal Db tables
 
     /** A `deny <Effect…> [scope]` or `pure <scope>` rule. `effects` empty ⇒ a `pure` rule (ANY effect is
      *  forbidden). `scope` empty ⇒ the whole project. */
@@ -477,6 +478,8 @@ public class Candor {
                 (allowed, reached) -> allowed.stream().anyMatch(a -> cmdBase(a).equals(cmdBase(reached))));
         v += checkAllowlist(inferred, "Fs", literalFixpoint(pathsDirect),
                 (allowed, reached) -> allowed.stream().anyMatch(a -> pathCovered(a, reached)));
+        v += checkAllowlist(inferred, "Db", literalFixpoint(tablesDirect),
+                (allowed, reached) -> allowed.stream().anyMatch(a -> tableCovered(a, reached)));
         // AS-EFF-009: a method in scope A must not transitively reach into scope B (over the call graph).
         for (ForbidRule r : forbidRules) {
             for (String fn : new TreeSet<>(edges.keySet())) {
@@ -588,8 +591,8 @@ public class Candor {
                     // SPEC §6.2: `allow <Effect> [in <scope>] <value…>` — the effect MUST be one of the
                     // three that carry a literal surface; an `allow` for any other effect is dropped.
                     if (t.length < 3) { warnPolicy(line, "allow names no values"); break; }
-                    if (!t[1].equals("Net") && !t[1].equals("Exec") && !t[1].equals("Fs")) {
-                        warnPolicy(line, "allow supports only Net hosts / Exec commands / Fs paths");
+                    if (!t[1].equals("Net") && !t[1].equals("Exec") && !t[1].equals("Fs") && !t[1].equals("Db")) {
+                        warnPolicy(line, "allow supports only Net hosts / Exec commands / Fs paths / Db tables");
                         break;
                     }
                     AllowRule r = new AllowRule();
@@ -779,6 +782,57 @@ public class Candor {
         if (ac.size() > rc.size()) return false;
         for (int i = 0; i < ac.size(); i++) if (!ac.get(i).equals(rc.get(i))) return false;
         return true;
+    }
+
+    /** Whether an allowed table entry `a` covers a reached table `r`: case-insensitive exact match
+     *  on the (possibly schema-qualified) name, or a `schema.*` entry covering every table in that
+     *  schema. Strict on qualification (an allowed `entries` does NOT cover `ledger.entries`).
+     *  Mirrors the Rust `db_table_covered`. */
+    static boolean tableCovered(String a, String r) {
+        a = a.toLowerCase(); r = r.toLowerCase();
+        if (a.endsWith(".*")) {
+            String schema = a.substring(0, a.length() - 2);
+            return r.startsWith(schema + ".");
+        }
+        return a.equals(r);
+    }
+
+    /** Table-position identifiers in a SQL string literal — the `Db` literal surface (SPEC §2
+     *  `tables`). Conservative by construction (a wrong capture would FABRICATE): the string must
+     *  open with a SQL statement keyword; only FROM/JOIN/INTO (anywhere), statement-leading
+     *  UPDATE/TRUNCATE, and TABLE take the following identifier, skipping ONLY/IF NOT EXISTS;
+     *  `FOR UPDATE SKIP LOCKED` yields nothing (mid-statement UPDATE ignored). Mirrors the Rust
+     *  `tables_in_sql` exactly — the conformance grammar/verdict differentials keep them aligned. */
+    static List<String> tablesInSql(String sql) {
+        Set<String> stmt = Set.of("select", "insert", "update", "delete", "create", "drop", "alter",
+                "truncate", "merge", "replace", "with");
+        Set<String> skip = Set.of("only", "if", "not", "exists", "table");
+        Set<String> stop = Set.of("select", "set", "where", "values", "on", "using", "group", "order",
+                "by", "limit", "returning", "as", "inner", "outer", "left", "right", "cross", "lateral",
+                "natural", "union", "all", "distinct", "case", "when", "null", "default", "skip",
+                "nowait", "of", "from", "join", "into", "update", "delete", "insert");
+        String cleaned = sql.toLowerCase().replaceAll("[(),;]", " ");
+        String[] toks = cleaned.trim().split("\s+");
+        List<String> out = new ArrayList<>();
+        if (toks.length == 0 || !stmt.contains(toks[0])) return out;
+        for (int i = 0; i < toks.length; i++) {
+            String tok = toks[i];
+            boolean tablePos = tok.equals("from") || tok.equals("join") || tok.equals("into")
+                    || tok.equals("table")
+                    || ((tok.equals("update") || tok.equals("truncate")) && i == 0);
+            if (!tablePos) continue;
+            int j = i + 1;
+            while (j < toks.length && skip.contains(toks[j])) j++;
+            if (j >= toks.length) continue;
+            String t = toks[j].replaceAll("^[\"'`]+|[\"'`]+$", "");
+            if (t.isEmpty() || stop.contains(t)) continue;
+            char c0 = t.charAt(0);
+            if (!(Character.isLetter(c0) || c0 == '_')) continue;
+            if (!t.matches("[a-z_][a-z0-9_.$\"`]*")) continue;
+            t = t.replaceAll("[\"`]", "");
+            if (!out.contains(t)) out.add(t);
+        }
+        return out;
     }
 
     /** Load dependency reports named by CANDOR_DEPS (a path list — space/colon/comma-separated; a
@@ -1125,6 +1179,12 @@ public class Candor {
                     // allowlist certifies); a runtime-computed host stays honestly invisible.
                     String host = netHostLiteral(s);
                     if (host != null) hostsDirect.computeIfAbsent(id, k -> new TreeSet<>()).add(host);
+                    // A literal SQL statement visible in this method: its table-position identifiers
+                    // are the Db literal surface (SPEC §2 `tables`, feeding `allow Db …`). tablesInSql
+                    // requires a leading SQL keyword and takes only table positions, so a non-SQL
+                    // string yields nothing — never fabricates (mirrors the Rust engine).
+                    List<String> tl = tablesInSql(s);
+                    if (!tl.isEmpty()) tablesDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(tl);
                 } else if (insn instanceof InvokeDynamicInsnNode idin) {
                     // Lambdas & method refs: the functional-interface factory's impl method (a project
                     // `lambda$…` synthetic, or a referenced method) carries the body's effects. Edge to
@@ -1626,6 +1686,7 @@ public class Candor {
         Map<String, TreeSet<String>> hostsAcc = literalFixpoint(hostsDirect);
         Map<String, TreeSet<String>> cmdsAcc = literalFixpoint(cmdsDirect);
         Map<String, TreeSet<String>> pathsAcc = literalFixpoint(pathsDirect);
+        Map<String, TreeSet<String>> tablesAcc = literalFixpoint(tablesDirect);
         List<Map<String, Object>> entries = new ArrayList<>();
         inferred.entrySet().stream()
                 // Keep a method if it has effects, is an entry point, OR its class declares a
@@ -1700,6 +1761,9 @@ public class Candor {
                     TreeSet<String> pk = pathsAcc.get(fn);
                     if (inf.contains("Fs") && pk != null && !pk.isEmpty())
                         m.put("paths", new ArrayList<>(pk));
+                    TreeSet<String> tk = tablesAcc.get(fn);
+                    if (inf.contains("Db") && tk != null && !tk.isEmpty())
+                        m.put("tables", new ArrayList<>(tk));
                     entries.add(m);
                 });
         // v0.2 self-describing envelope (candor-spec §2): a provenance header + the function entries.

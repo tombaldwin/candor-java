@@ -70,7 +70,7 @@ publishing {
                 name = "candor-java"
                 description =
                     "Per-method side-effect audit (Fs/Net/Db/Exec/…) for JVM bytecode — the JVM implementation of candor-spec."
-                url = "https://github.com/tombaldwin/candor-java"
+                url = "https://candor.poly.io"
                 licenses {
                     license { name = "MIT OR Apache-2.0"; url = "https://github.com/tombaldwin/candor-java#license" }
                 }

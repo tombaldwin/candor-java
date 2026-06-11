@@ -8,6 +8,9 @@ invariants like *"the domain layer does no I/O"* or *"domain must not depend on 
 A [candor-spec](https://github.com/tombaldwin/candor-spec) implementation; sibling of the Rust reference
 [candor](https://github.com/tombaldwin/candor-rust) — same classifier ideas, the JVM's grain (bytecode + Spring).
 
+**Site:** [candor.poly.io](https://candor.poly.io) — the measured case in five minutes: the
+exhibits, the pre-registered evals, and the prove-it-on-your-own-repo path.
+
 **Any JVM language — Java and Kotlin both.** Because it reads *bytecode*, candor-java is
 language-agnostic: Java, Kotlin, Scala, and Groovy all lower to the same `.class` files it analyses, use
 the same JDK I/O APIs the classifier knows (`java.net`/`java.nio`), the same Spring annotations, and the

@@ -825,12 +825,22 @@ public class Candor {
                 "by", "limit", "returning", "as", "inner", "outer", "left", "right", "cross", "lateral",
                 "natural", "union", "all", "distinct", "case", "when", "null", "default", "skip",
                 "nowait", "of", "from", "join", "into", "update", "delete", "insert");
-        String cleaned = sql.toLowerCase().replaceAll("[(),;]", " ");
+        // `,` survives as its OWN token: it lets `FROM t1, t2` continue the table list without
+        // fabricating from other comma-ridden positions (column lists, ON clauses).
+        String cleaned = sql.toLowerCase().replaceAll("[();]", " ").replace(",", " , ");
         // "\\s+" (regex any-whitespace), NOT "\s+" — the latter is the Java 15 *space escape*, which
         // splits on literal spaces only and glues tokens across the newlines of formatted SQL.
         String[] toks = cleaned.trim().split("\\s+");
         List<String> out = new ArrayList<>();
         if (toks.length == 0 || !stmt.contains(toks[0])) return out;
+        java.util.function.Function<String, String> ident = (raw) -> {
+            String t = raw.replaceAll("^[\"'`]+|[\"'`]+$", "");
+            if (t.isEmpty() || stop.contains(t)) return null;
+            char c0 = t.charAt(0);
+            if (!(Character.isLetter(c0) || c0 == '_')) return null;
+            if (!t.matches("[a-z_][a-z0-9_.$\"`]*")) return null;
+            return t.replaceAll("[\"`]", "");
+        };
         for (int i = 0; i < toks.length; i++) {
             String tok = toks[i];
             boolean tablePos = tok.equals("from") || tok.equals("join") || tok.equals("into")
@@ -840,13 +850,19 @@ public class Candor {
             int j = i + 1;
             while (j < toks.length && skip.contains(toks[j])) j++;
             if (j >= toks.length) continue;
-            String t = toks[j].replaceAll("^[\"'`]+|[\"'`]+$", "");
-            if (t.isEmpty() || stop.contains(t)) continue;
-            char c0 = t.charAt(0);
-            if (!(Character.isLetter(c0) || c0 == '_')) continue;
-            if (!t.matches("[a-z_][a-z0-9_.$\"`]*")) continue;
-            t = t.replaceAll("[\"`]", "");
-            if (!out.contains(t)) out.add(t);
+            String first = ident.apply(toks[j]);
+            if (first == null) continue;
+            if (!out.contains(first)) out.add(first);
+            // Comma-ADJACENT continuation only: `FROM t1, t2, t3` takes all three, while an alias
+            // breaks the chain (`FROM t1 a, t2` keeps just t1 — an under-report, never a guess:
+            // skipping an alias to chase the comma would fabricate tables out of
+            // `INSERT INTO t (a, b)`'s column list, whose parens are spaces by now).
+            while (j + 2 < toks.length && toks[j + 1].equals(",")) {
+                String more = ident.apply(toks[j + 2]);
+                if (more == null) break;
+                if (!out.contains(more)) out.add(more);
+                j += 2;
+            }
         }
         return out;
     }

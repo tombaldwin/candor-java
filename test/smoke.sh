@@ -819,6 +819,52 @@ DJC_CHAIN=$(CANDOR_DEPS="$W/djc/dep.json" "$CJ" "$W/djc/app" 2>&1)
 want   "with CANDOR_DEPS the app inherits the jar's effect" "$(echo "$DJC_CHAIN" | grep App2.run)" '{ Fs* }'
 absent "…and the chained package leaves the κ ledger"       "$DJC_CHAIN" "κ doesn't know"
 
+# ── chained LITERAL SURFACES + empty-report coverage + array owners (/code-review fixes) ─────────
+echo "== chained surfaces, empty-report coverage, array owners =="
+# (a) a dep doing Db on a named table; the app's `allow Db` must see the INHERITED tables surface
+mkdir -p "$W/sj/dep/com/dbl" "$W/sj/app/org/uses"
+cat > "$W/sj/dep/com/dbl/Repo.java" <<'J'
+package com.dbl;
+public class Repo {
+    public void post() throws Exception {
+        java.sql.DriverManager.getConnection("jdbc:x").prepareStatement("INSERT INTO ledger.entries VALUES (1)").executeQuery();
+    }
+}
+J
+cat > "$W/sj/app/org/uses/Svc.java" <<'J'
+package org.uses;
+public class Svc {
+    public static void settle() throws Exception { new com.dbl.Repo().post(); }
+}
+J
+javac -d "$W/sj/depcls" "$W/sj/dep/com/dbl/Repo.java" 2>/dev/null
+javac -cp "$W/sj/depcls" -d "$W/sj/appcls" "$W/sj/app/org/uses/Svc.java" 2>/dev/null
+"$CJ" "$W/sj/depcls" --json "$W/sj/dep.json" >/dev/null 2>&1
+SJ_TBL=$(CANDOR_DEPS="$W/sj/dep.json" "$CJ" "$W/sj/appcls" --json "$W/sj/app.json" >/dev/null 2>&1; python3 -c "import json; r=json.load(open('$W/sj/app.json')); print(next((f.get('tables') for f in r['functions'] if f['fn']=='org.uses.Svc.settle'), []))")
+want "the chain inherits the dep's tables surface"       "$SJ_TBL" "ledger.entries"
+printf 'allow Db in uses ledger.*\n' > "$W/sj/pol"
+SJ_GATE=$(CANDOR_DEPS="$W/sj/dep.json" CANDOR_POLICY="$W/sj/pol" "$CJ" "$W/sj/appcls" 2>&1)
+absent "an inherited surface satisfies the allowlist (no cannot-be-certified)" "$SJ_GATE" "cannot be certified"
+# (b) an all-pure dep's EMPTY report still covers its package (the serde_json rule, ported)
+mkdir -p "$W/sj/pure/com/pure"
+printf 'package com.pure;\npublic class Calc { public static int add(int a, int b) { return a + b; } }\n' > "$W/sj/pure/com/pure/Calc.java"
+javac -d "$W/sj/purecls" "$W/sj/pure/com/pure/Calc.java" 2>/dev/null
+"$CJ" "$W/sj/purecls" --json "$W/sj/pure.json" >/dev/null 2>&1
+mkdir -p "$W/sj/app2/org/uses2"
+cat > "$W/sj/app2/org/uses2/U.java" <<'J'
+package org.uses2;
+public class U { public static int go() { java.nio.file.Path.of("/x"); return com.pure.Calc.add(1, 2); } }
+J
+javac -cp "$W/sj/purecls" -d "$W/sj/app2cls" "$W/sj/app2/org/uses2/U.java" 2>/dev/null
+SJ_PURE=$(CANDOR_DEPS="$W/sj/pure.json" "$CJ" "$W/sj/app2cls" 2>&1)
+absent "an all-pure dep's EMPTY report covers its package"  "$SJ_PURE" "com.pure"
+# (c) array-type owners (enum values()' clone) never reach the ledger
+mkdir -p "$W/sj/arr/org/arr"
+printf 'package org.arr;\npublic class A { public static String[] dup(String[] xs) { return xs.clone(); } }\n' > "$W/sj/arr/org/arr/A.java"
+javac -d "$W/sj/arrcls" "$W/sj/arr/org/arr/A.java" 2>/dev/null
+SJ_ARR=$("$CJ" "$W/sj/arrcls" 2>&1)
+absent "array owners stay out of the ledger"                "$SJ_ARR" "κ doesn't know"
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

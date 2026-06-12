@@ -55,7 +55,15 @@ public class Candor {
     static final Map<String, String> loc = new HashMap<>();
     static final Map<String, String> hashOf = new HashMap<>();           // fn -> stable method-ref hash (owner.name+desc)
     static final Map<String, TreeSet<String>> viaCross = new HashMap<>();// fn -> effects inherited from a dependency report
-    static final Map<String, List<String>> crossDeps = new HashMap<>();  // method-ref hash -> effects (from CANDOR_DEPS)
+    /** One chained dependency function (CANDOR_DEPS): effects + the four literal surfaces — the
+     *  spec (§2) says a consumer inherits BOTH (effects alone made every chained `allow Db` fail
+     *  the new lits=∅ branch with an empty surface no rule could cover — /code-review). */
+    static class DepFn {
+        List<String> effects = new ArrayList<>();
+        List<String> hosts = new ArrayList<>(), cmds = new ArrayList<>(),
+                paths = new ArrayList<>(), tables = new ArrayList<>();
+    }
+    static final Map<String, DepFn> crossDeps = new HashMap<>();  // method-ref hash -> DepFn (from CANDOR_DEPS)
     static final Map<String, TreeSet<String>> fsDirect = new HashMap<>();// fn -> Fs read/write kind performed directly
     static final Map<String, TreeSet<String>> unknownWhy = new HashMap<>();// fn -> why Unknown was emitted directly (native:/reflect:/dispatch:)
     static final String FS_UNKNOWN = "?";   // Fs reached with no recorded kind (cross-jar) -> make no read/write claim
@@ -924,21 +932,39 @@ public class Candor {
                     if (fns == null) continue;
                     String depVer = obj != null && obj.has("candor") && obj.getAsJsonObject("candor").has("version")
                             ? obj.getAsJsonObject("candor").get("version").getAsString() : null;
-                    boolean stale = depVer != null && ownVersion != null && !depVer.equals(ownVersion);
+                    // A report whose version can't be VERIFIED is not trusted (§2.1) — a missing
+                    // header is as untrustworthy as a mismatched one (the Rust engine's rule;
+                    // /code-review found the engines split three ways on versionless reports).
+                    boolean stale = depVer == null || !depVer.equals(ownVersion);
+                    // File-level coverage: the producer's own `packages` list registers the
+                    // report's packages as COVERED even when `functions` is empty — an all-pure
+                    // dep's empty report is its purity claim (SPEC §2 rule 3; the serde_json
+                    // lesson, now ported from the Rust engine).
+                    if (obj != null && obj.has("packages") && obj.get("packages").isJsonArray())
+                        for (JsonElement x : obj.getAsJsonArray("packages"))
+                            depCoveredPkgs.add(x.getAsString());
                     for (JsonElement el : fns) {
                         JsonObject m = el.getAsJsonObject();
                         if (!m.has("hash") || m.get("hash").isJsonNull()) continue; // v0.1 / no cross-jar id
                         String h = m.get("hash").getAsString();
                         if (h.isBlank()) continue;
-                        List<String> effs = new ArrayList<>();
+                        DepFn de = new DepFn();
                         if (stale) {
-                            effs.add("Unknown");
-                        } else if (m.has("inferred")) {
-                            for (JsonElement x : m.getAsJsonArray("inferred")) effs.add(x.getAsString());
+                            de.effects.add("Unknown");
+                        } else {
+                            if (m.has("inferred"))
+                                for (JsonElement x : m.getAsJsonArray("inferred")) de.effects.add(x.getAsString());
+                            for (var pair : List.of(Map.entry("hosts", de.hosts), Map.entry("cmds", de.cmds),
+                                    Map.entry("paths", de.paths), Map.entry("tables", de.tables)))
+                                if (m.has(pair.getKey()) && m.get(pair.getKey()).isJsonArray())
+                                    for (JsonElement x : m.getAsJsonArray(pair.getKey()))
+                                        pair.getValue().add(x.getAsString());
                         }
-                        if (!effs.isEmpty()) crossDeps.put(h, effs);
-                        // The report covers this entry's package — exempt it from the κ ledger.
-                        if (m.has("fn")) depCoveredPkgs.add(ownerPackage(m.get("fn").getAsString()));
+                        if (!de.effects.isEmpty()) crossDeps.put(h, de);
+                        // Entry-level coverage fallback (older reports without `packages`): the
+                        // hash's owner prefix gives the EXACT package — no uppercase heuristic.
+                        int slash = h.lastIndexOf('/');
+                        if (slash > 0) depCoveredPkgs.add(h.substring(0, slash).replace('/', '.'));
                     }
                 } catch (Exception ex) {
                     // skip unreadable / unparseable dependency reports (like the Rust impl)
@@ -1129,10 +1155,14 @@ public class Candor {
                     String owner = min.owner.replace('/', '.');
                     String effect = classify(owner, min.name, min.desc);
                     if (effect != null) dir.add(effect);
-                    // κ ledger: group external owners by package; a package with zero
+                    // κ ledger: key external owners by their EXACT package (the slash-form owner
+                    // up to the class segment — no uppercase heuristic, which mangled lowercase/
+                    // obfuscated classes); array owners ([Ljava/lang/String; — every enum's
+                    // values() clone) are types, not packages, and stay out. A package with zero
                     // classifications anywhere in the scan is a named blind spot.
-                    if (!projectClasses.contains(min.owner)) {
-                        String pkg = ownerPackage(owner);
+                    if (!projectClasses.contains(min.owner) && min.owner.charAt(0) != '[') {
+                        int slash = min.owner.lastIndexOf('/');
+                        String pkg = slash > 0 ? min.owner.substring(0, slash).replace('/', '.') : "";
                         if (!pkg.isEmpty() && !kappaCovers(pkg)) {
                             kappaSeen.merge(pkg, 1, Integer::sum);
                             if (effect != null) kappaClassified.add(pkg);
@@ -1237,8 +1267,14 @@ public class Candor {
                     // for external, non-built-in, non-Spring calls (project calls trace locally;
                     // reflection is already Unknown via classify).
                     if (effect == null && !springTyped && !projectClasses.contains(min.owner)) {
-                        List<String> inh = crossDeps.get(min.owner + "." + min.name + min.desc);
-                        if (inh != null) viaCross.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh);
+                        DepFn inh = crossDeps.get(min.owner + "." + min.name + min.desc);
+                        if (inh != null) {
+                            viaCross.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.effects);
+                            if (!inh.hosts.isEmpty()) hostsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.hosts);
+                            if (!inh.cmds.isEmpty()) cmdsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.cmds);
+                            if (!inh.paths.isEmpty()) pathsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.paths);
+                            if (!inh.tables.isEmpty()) tablesDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.tables);
+                        }
                     }
                 } else if (insn instanceof TypeInsnNode tin && tin.getOpcode() == Opcodes.NEW) {
                     // `new C` triggers C's class-load → its `<clinit>` runs (the `<init>` edge is added
@@ -1573,30 +1609,18 @@ public class Candor {
         return List.of();
     }
 
-    /** The κ-ledger grouping key for an external owner: its package segments up to the first
-     *  class-looking (uppercase-initial) segment, capped at 3 — `org.apache.commons.io.FileUtils`
-     *  -> `org.apache.commons`. Empty for a default-package class. */
-    static String ownerPackage(String owner) {
-        StringBuilder b = new StringBuilder();
-        int n = 0;
-        for (String s : owner.split("\\.")) {
-            if (s.isEmpty() || Character.isUpperCase(s.charAt(0)) || n == 3) break;
-            if (n > 0) b.append('.');
-            b.append(s);
-            n++;
-        }
-        return b.toString();
-    }
-
     /** Packages OUTSIDE the ledger: the platform/runtime frontier (κ's builtin job — JDK, the
      *  language runtimes) and the verb-precise third-party packages κ already covers, where zero
      *  classifications can be legitimate (the app only touches their pure surface). Segment-exact
-     *  prefixes so `javassist` is not mistaken for `java`. */
+     *  prefixes so `javassist` is not mistaken for `java`. Hoisted to a static (the check runs in
+     *  the per-instruction hot loop). */
+    static final String[] KAPPA_COVERED_PREFIXES = { "java", "javax", "jakarta", "jdk", "sun", "com.sun",
+            "kotlin", "kotlinx", "scala", "groovy", "org.codehaus.groovy", "org.jetbrains",
+            "org.springframework", "io.ktor", "org.slf4j", "org.apache.logging", "ch.qos.logback" };
+
     static boolean kappaCovers(String pkg) {
-        for (String p : new String[] { "java", "javax", "jakarta", "jdk", "sun", "com.sun",
-                "kotlin", "kotlinx", "scala", "groovy", "org.codehaus.groovy", "org.jetbrains",
-                "org.springframework", "io.ktor", "org.slf4j", "org.apache.logging", "ch.qos.logback" }) {
-            if (pkg.equals(p) || pkg.startsWith(p + ".")) return true;
+        for (String p : KAPPA_COVERED_PREFIXES) {
+            if (pkg.equals(p) || (pkg.length() > p.length() && pkg.charAt(p.length()) == '.' && pkg.startsWith(p))) return true;
         }
         return false;
     }
@@ -1896,6 +1920,15 @@ public class Candor {
         header.put("spec", SPEC_VERSION); // candor-spec contract version (§2.1), distinct from the build id
         Map<String, Object> envelope = new LinkedHashMap<>();
         envelope.put("candor", header);
+        // The packages this report COVERS — exact, from the analyzed class names. Lets a consumer
+        // chaining this report register coverage even when `functions` is empty (an all-pure
+        // dep's report is its purity claim, SPEC §2 rule 3 — the empty-report coverage fix).
+        TreeSet<String> pkgs = new TreeSet<>();
+        for (ClassNode cn : ALL) {
+            int slash = cn.name.lastIndexOf('/');
+            if (slash > 0) pkgs.add(cn.name.substring(0, slash).replace('/', '.'));
+        }
+        envelope.put("packages", pkgs);
         envelope.put("functions", entries);
         String json = new GsonBuilder().setPrettyPrinting().create().toJson(envelope);
         Files.writeString(Path.of(out), json);

@@ -370,8 +370,10 @@ printf 'deny Fs Other\n' > "$W/pol-oos"
 poos="$(CANDOR_POLICY="$W/pol-oos" "$CJ" "$W/cls" 2>&1)"
 absent "an out-of-scope deny does not fire (segment match)"      "$poos" 'AS-EFF-006'
 want   "a clean policy reports no violations"                    "$poos" 'no violations'
-u="$(CANDOR_POLICY="$W/no-such.policy" "$CJ" "$W/cls" 2>&1)"
+u="$(CANDOR_POLICY="$W/no-such.policy" "$CJ" "$W/cls" 2>&1)"; urc=$?
 want   "an unreadable policy fails LOUD, not silent"             "$u" 'could not be read'
+if [ "$urc" -eq 2 ]; then echo "  ok   an unreadable policy FAILS the run (exit 2, spec §6.2)"; pass=$((pass+1));
+else echo "  FAIL an unreadable policy FAILS the run — got exit $urc"; fail=$((fail+1)); fi
 
 echo "== policy: layering forbid A -> B (AS-EFF-009) =="
 mkdir -p "$W/lsrc/app/domain" "$W/lsrc/app/infra"

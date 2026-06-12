@@ -1904,6 +1904,9 @@ public class Candor {
                     m.put("overdeclared", overdeclared);
                     m.put("entryPoint", entryPoints.contains(fn));
                     m.put("unresolved", inf.contains("Unknown")); // trust contract (SPEC §4)
+                    // spec ⟨0.5⟩ unitKind: a static initializer is a UNIT, not a method anyone
+                    // calls — name it so consumers render it sensibly. Absent = ordinary function.
+                    if (fn.endsWith(".<clinit>")) m.put("unitKind", "initializer");
                     // Why Unknown was emitted HERE (not inherited): native:/reflect:/dispatch: tags,
                     // so a reader can see which opacity is improvable (a missing-impl dispatch) vs
                     // irreducible (reflection, native). Omitted when this fn introduces no Unknown.

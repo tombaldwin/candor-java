@@ -516,9 +516,12 @@ public class Candor {
      *  A set-but-unreadable policy is LOUD (not silently passing). */
     static int checkPolicy(Map<String, TreeSet<String>> inferred, String path) {
         if (!parsePolicy(path)) {
+            // A SET-but-unreadable policy FAILS the run (exit 2) — it must never gate-pass: a
+            // typo'd CANDOR_POLICY path otherwise runs gateless and green (spec §6.2). Found by
+            // the spec review: this engine printed loudly but returned clean; the siblings exit 2.
             System.err.println("candor-java: CANDOR_POLICY=" + path
-                    + " could not be read; policy NOT enforced");
-            return 0;
+                    + " could not be read — failing (exit 2), policy NOT evaluated");
+            System.exit(2);
         }
         int v = 0;
         // AS-EFF-006: a method in scope must not perform (transitively) a denied effect.

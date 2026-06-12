@@ -137,6 +137,8 @@ want   "static initializer's Fs is captured"               "$("$CJ" "$W/cics" 2>
 want   "static CALL triggers <clinit> (Fs propagates)"     "$("$CJ" show "$W/ci.json" Ci.viaStaticCall)"  'Fs'
 want   "static FIELD access triggers <clinit>"             "$("$CJ" show "$W/ci.json" Ci.viaStaticField)" 'Fs'
 absent "a pure static initializer doesn't flood callers"   "$ci" '"Ci.pure"'
+want   "a <clinit> unit carries unitKind initializer (spec 0.5 draft)" \
+       "$(python3 -c "import json;print([e.get('unitKind','') for e in json.load(open('$W/ci.json'))['functions'] if e['fn'].endswith('.<clinit>')][0])")" 'initializer'
 
 echo "== native methods (invisible JNI body → Unknown) =="
 cat > "$W/src/Nat.java" <<'J'

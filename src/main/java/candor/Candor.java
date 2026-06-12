@@ -127,6 +127,10 @@ public class Candor {
     // The κ-coverage ledger (the Rust/TS move): external packages this code calls where the
     // classifier never fires are INVISIBLE, not Unknown — counted here, named in the receipt.
     static final Map<String, Integer> kappaSeen = new TreeMap<>();      // external package -> call count
+    // reflective calls with a LITERAL method name in the same body (`getMethod("x")` … `invoke`):
+    // the literal names the target, so a unique project match gets an EDGE alongside the honest
+    // Unknown (the density review's JVM slice — recall without guessing).
+    static final List<String[]> reflectPairs = new ArrayList<>();        // [callerId, literalName]
     static final Set<String> kappaClassified = new HashSet<>();         // packages with >=1 classification
     // Packages a CANDOR_DEPS sibling report covers: chained, not blind — even a call that joins
     // nothing (the dep fn is pure and omitted) is the report's honest purity claim.
@@ -179,6 +183,15 @@ public class Candor {
         loadCrossDeps(System.getenv("CANDOR_DEPS"), provenance()[0]);
         taintEnabled = System.getenv("CANDOR_TAINT") != null; // read before analyze (the pass runs per method)
         for (ClassNode cn : classes) analyze(cn);
+
+        // resolve literal-getMethod reflection: a unique project method matching the literal name
+        // edges from the reflecting caller (Unknown stays — reflection is still §4 opacity).
+        for (String[] pair : reflectPairs) {
+            String suffix = "." + pair[1];
+            List<String> matches = edges.keySet().stream()
+                    .filter(fn -> fn.endsWith(suffix)).collect(Collectors.toList());
+            if (matches.size() == 1) edges.get(pair[0]).add(matches.get(0));
+        }
 
         Map<String, TreeSet<String>> inferred = fixpoint();
 
@@ -1155,6 +1168,11 @@ public class Candor {
                     String owner = min.owner.replace('/', '.');
                     String effect = classify(owner, min.name, min.desc);
                     if (effect != null) dir.add(effect);
+                    if (owner.equals("java.lang.Class")
+                            && (min.name.equals("getMethod") || min.name.equals("getDeclaredMethod"))) {
+                        String lit = firstLiteralArg(mn, min);
+                        if (lit != null) reflectPairs.add(new String[] { id, lit });
+                    }
                     // κ ledger: key external owners by their EXACT package (the slash-form owner
                     // up to the class segment — no uppercase heuristic, which mangled lowercase/
                     // obfuscated classes); array owners ([Ljava/lang/String; — every enum's

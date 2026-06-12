@@ -865,6 +865,20 @@ javac -d "$W/sj/arrcls" "$W/sj/arr/org/arr/A.java" 2>/dev/null
 SJ_ARR=$("$CJ" "$W/sj/arrcls" 2>&1)
 absent "array owners stay out of the ledger"                "$SJ_ARR" "κ doesn't know"
 
+# ── literal-getMethod reflection: the named target's effects flow; Unknown stays ─────────────────
+echo "== literal-getMethod reflection =="
+mkdir -p "$W/refl"
+cat > "$W/refl/R.java" <<'J'
+public class R {
+    static void target() throws Exception { java.nio.file.Files.readString(java.nio.file.Path.of("/x")); }
+    static void caller() throws Exception { R.class.getMethod("target").invoke(null); }
+}
+J
+javac -d "$W/reflcls" "$W/refl/R.java" 2>/dev/null
+REFL=$("$CJ" "$W/reflcls" 2>&1 | grep "R.caller")
+want "a literal getMethod target's effects flow to the reflector" "$REFL" "Fs*"
+want "…and reflection keeps its honest Unknown"                   "$REFL" "Unknown"
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

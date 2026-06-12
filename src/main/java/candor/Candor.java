@@ -157,6 +157,21 @@ public class Candor {
         if (Query.COMMANDS.contains(args[0])) {
             System.exit(Query.run(args));
         }
+        // The agent contract for THE INSTALLED BUILD, baked into the jar as a resource — doc and
+        // engine cannot drift (the §2.1 version-trust rule applied to documentation).
+        if (args[0].equals("--agents")) {
+            try (var in = Candor.class.getResourceAsStream("/AGENTS.md")) {
+                if (in == null) {
+                    System.err.println("candor: the AGENTS.md resource is missing from this build");
+                    System.exit(2);
+                }
+                System.out.println("<!-- candor-java " + provenance()[0]
+                        + " · the agent contract for this installed version -->");
+                System.out.write(in.readAllBytes());
+                System.out.flush();
+            }
+            System.exit(0);
+        }
         // `parsepolicy <file>` — dump the parsed CANDOR_POLICY as canonical JSON. Not a user workflow;
         // it exists so the cross-impl conformance suite can diff this engine's policy parse against the
         // Rust reference and prove the SPEC §6.2 grammar means the same thing in both.

@@ -883,6 +883,17 @@ echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'
 
+# ── --agents: the self-describing engine (the contract is a jar resource) ────────────────────────
+echo "== --agents =="
+AG=$("$CJ" --agents 2>&1)
+want "--agents prints the version header"      "$AG" '<!-- candor-java'
+want "--agents prints the installed contract"  "$AG" 'ships inside the jar'
+if cmp -s "$ROOT/AGENTS.md" "$ROOT/src/main/resources/AGENTS.md"; then
+  echo "  ok   the jar resource matches the repo AGENTS.md (drift gate)"; pass=$((pass+1))
+else
+  echo "  FAIL the jar resource drifted from AGENTS.md — re-copy: cp AGENTS.md src/main/resources/AGENTS.md"; fail=$((fail+1))
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

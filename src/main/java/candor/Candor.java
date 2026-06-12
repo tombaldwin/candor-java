@@ -48,7 +48,7 @@ public class Candor {
      *  distinct from the engine build id (the report's `version`). Emitted as the envelope's `spec` so a
      *  consumer can see which contract a report conforms to; MUST match the Rust impl's
      *  `candor_report::SPEC_VERSION` and candor-spec's stated version (§2.1). */
-    static final String SPEC_VERSION = "0.3";
+    static final String SPEC_VERSION = "0.4";
 
     static final Map<String, TreeSet<String>> direct = new HashMap<>();
     static final Map<String, Set<String>> edges = new HashMap<>();

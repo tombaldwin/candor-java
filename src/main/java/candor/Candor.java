@@ -182,8 +182,24 @@ public class Candor {
             System.out.println(Query.policyJson());
             System.exit(0);
         }
+        // An unknown flag must FAIL, not be silently ignored or read as a path: a typo'd flag
+        // near a gate, or an agent following a newer doc against an older jar, deserves a loud
+        // exit 2 rather than a confusing scan of a directory named after the flag.
+        if (args[0].startsWith("--")) {
+            System.err.println("candor: unknown flag " + args[0]
+                    + " (usage: candor <dir-or-jar> [--json <file>] | candor --agents)");
+            System.exit(2);
+        }
         String jsonOut = null;
-        for (int i = 1; i + 1 < args.length; i++) if (args[i].equals("--json")) jsonOut = args[i + 1];
+        for (int i = 1; i < args.length; i++) {
+            if (args[i].equals("--json")) {
+                if (i + 1 < args.length) jsonOut = args[++i];
+            } else if (args[i].startsWith("--")) {
+                System.err.println("candor: unknown flag " + args[i]
+                        + " (usage: candor <dir-or-jar> [--json <file>])");
+                System.exit(2);
+            }
+        }
 
         List<ClassNode> classes = load(Path.of(args[0]));
         ALL = classes;

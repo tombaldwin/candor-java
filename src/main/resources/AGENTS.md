@@ -9,6 +9,10 @@ the JVM-specific production + query surface.
 > contract for the *installed* build — always prefer that over a vendored or fetched copy, which
 > can describe a different candor-java than the one you are running.
 
+A static initializer (`Type.<clinit>`) is its own unit and carries `unitKind: "initializer"`
+(spec 0.5 draft, informative) — it runs at class load, with no call site; ordinary methods omit
+the field.
+
 ## Produce a report
 
 ```sh

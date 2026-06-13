@@ -145,6 +145,16 @@ public class Candor {
     /** A `forbid <A> -> <B>` rule: a method in scope A must not transitively reach into scope B. */
     static class ForbidRule { String from, to; }
 
+    /** Reject an unrecognized leading-dash argument (spec §6.2): a typo'd flag must FAIL with exit 2,
+     *  never be silently ignored nor read as a positional path — the same gateless-green class as an
+     *  unreadable policy file. Shared by main() and Query.run so the binary has ONE posture. */
+    static void rejectUnknownFlag(String arg, java.util.Set<String> known, String usage) {
+        if (arg.startsWith("--") && !known.contains(arg)) {
+            System.err.println("candor: unknown flag " + arg + " (usage: " + usage + ")");
+            System.exit(2);
+        }
+    }
+
     public static void main(String[] args) throws IOException {
         if (args.length < 1) {
             System.err.println("usage: candor <dir-or-jar-of-classes> [--json <file>]");
@@ -182,14 +192,10 @@ public class Candor {
             System.out.println(Query.policyJson());
             System.exit(0);
         }
-        // An unknown flag must FAIL, not be silently ignored or read as a path: a typo'd flag
-        // near a gate, or an agent following a newer doc against an older jar, deserves a loud
-        // exit 2 rather than a confusing scan of a directory named after the flag.
-        if (args[0].startsWith("--")) {
-            System.err.println("candor: unknown flag " + args[0]
-                    + " (usage: candor <dir-or-jar> [--json <file>] | candor --agents)");
-            System.exit(2);
-        }
+        // The first arg is the scan target (a dir/jar) — a flag there is a typo or a newer-doc flag
+        // an older jar doesn't know; fail loudly rather than scan a path named after it.
+        var scanFlags = java.util.Set.of("--json"); // --agents handled above; the rest are unknown here
+        rejectUnknownFlag(args[0], java.util.Set.of(), "candor <dir-or-jar> [--json <file>] | candor --agents");
         String jsonOut = null;
         for (int i = 1; i < args.length; i++) {
             if (args[i].equals("--json")) {
@@ -198,10 +204,8 @@ public class Candor {
                     System.exit(2);                                        // CI gate then diffs a
                 }                                                          // stale baseline ungated)
                 jsonOut = args[++i];
-            } else if (args[i].startsWith("--")) {
-                System.err.println("candor: unknown flag " + args[i]
-                        + " (usage: candor <dir-or-jar> [--json <file>])");
-                System.exit(2);
+            } else {
+                rejectUnknownFlag(args[i], scanFlags, "candor <dir-or-jar> [--json <file>]");
             }
         }
 

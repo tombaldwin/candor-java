@@ -72,7 +72,12 @@ public final class Query {
         List<String> pos = new ArrayList<>();
         for (int i = 1; i < args.length; i++) {
             if (args[i].equals("--json")) json = true;
-            else pos.add(args[i]);
+            else {
+                // an unknown --flag must FAIL, not be swallowed as a query positional (a typo'd
+                // --jsno otherwise returns prose to a wrapper expecting JSON) — same posture as main()
+                Candor.rejectUnknownFlag(args[i], java.util.Set.of("--json"), "candor " + cmd + " <report.json> [arg] [--json]");
+                pos.add(args[i]);
+            }
         }
         if (pos.isEmpty()) {
             System.err.println("usage: candor " + cmd + " <report.json> [arg] [--json]");

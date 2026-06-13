@@ -31,6 +31,10 @@ public class Fx {
   static void netcmd()   { try { new ProcessBuilder("curl", "https://x").start(); } catch (Exception e) {} }
   static void auditcmd() { try { new ProcessBuilder("candor-scan", ".").start(); } catch (Exception e) {} }
   static void dbcmd()    { try { Runtime.getRuntime().exec("/usr/local/bin/psql -c x"); } catch (Exception e) {} }
+  // FABRICATION TRAPS (argv[0] gate): the program is a runtime VARIABLE; the literal "curl"/"psql" is a
+  // trailing ARGUMENT, not the program — refining off it would fabricate Net/Db (§1 under-report).
+  static void varhead(String t) { try { new ProcessBuilder(t, "curl").start(); } catch (Exception e) {} }
+  static void arrhead(String t) { try { Runtime.getRuntime().exec(new String[]{t, "psql"}); } catch (Exception e) {} }
   static void dyn()    { try { Class.forName("X"); } catch (Exception e) {} }
   public static void main(String[] a) { both(); spawn(); }
 }
@@ -61,6 +65,9 @@ want    "curl head keeps Exec (never dropped)"      "$("$CJ" show "$W/r.json" ne
 want    "psql head (Runtime.exec line) refines: + Db" "$("$CJ" show "$W/r.json" dbcmd)"  'Db'
 want    "candor head is Fs/Env (spec §7.12 supplied)" "$("$CJ" show "$W/r.json" auditcmd)" 'Env'
 wantnot "an unknown head 'x' stays the bare Exec cliff (no fabricated Net)" "$("$CJ" show "$W/r.json" spawn)" 'Net'
+wantnot "variable program head + trailing 'curl' literal does NOT fabricate Net (argv[0] gate)" "$("$CJ" show "$W/r.json" varhead)" 'Net'
+wantnot "variable array head + element-1 'psql' literal does NOT fabricate Db (argv[0] gate)"   "$("$CJ" show "$W/r.json" arrhead)" 'Db'
+want    "both traps keep the bare Exec cliff"        "$("$CJ" show "$W/r.json" varhead)" 'Exec'
 
 echo "== entry schema: hash, calls, fs =="
 want "hash is the descriptor-bearing ref"     "$rep" 'Fx.reads()V'
@@ -324,6 +331,19 @@ want   "impact: labels entry points downstream"          "$imp" 'entry point'
 want   "impact --json: structured blast radius"          "$("$CJ" impact "$W/p.json" leafNet --json)" '"affectedCount"'
 want   "impact --json: the affected LIST, not just a count (SPEC §3.1)" "$("$CJ" impact "$W/p.json" leafNet --json)" '"affected"'
 want   "impact --json: the affected list names a transitive caller"     "$("$CJ" impact "$W/p.json" leafNet --json)" 'Pp.mid'
+
+echo "== gains: supply-chain alarm UNION-merges same-fn rows (no phantom gain) =="
+# A hand-merged/cross-jar baseline can repeat a fn. Keep-first would DROP a row's effects and report
+# a FALSE gain; union (mirrors Rust load_fninfo / TS effectsByFn) keeps both. base A.foo = Net⊔Fs.
+printf '{"functions":[{"fn":"A.foo","inferred":["Net"]},{"fn":"A.foo","inferred":["Fs"]}]}\n' > "$W/gbase.json"
+printf '{"functions":[{"fn":"A.foo","inferred":["Net","Fs"]}]}\n' > "$W/gcur_same.json"
+absent "gains: dup-baseline rows union, cur == their union → no phantom gain" "$("$CJ" gains "$W/gcur_same.json" "$W/gbase.json" --json)" '"effect"'
+# a genuine new effect (Db) is still reported, exactly once even when cur repeats the fn
+printf '{"functions":[{"fn":"A.foo","inferred":["Net","Db"]},{"fn":"A.foo","inferred":["Db"]}]}\n' > "$W/gcur_dup.json"
+printf '{"functions":[{"fn":"A.foo","inferred":["Net"]}]}\n' > "$W/gbase1.json"
+gj="$("$CJ" gains "$W/gcur_dup.json" "$W/gbase1.json" --json)"
+want   "gains: a genuine new effect is still reported"   "$gj" '"Db"'
+want   "gains: dup cur rows do not double-count byFunction" "$(printf '%s' "$gj" | grep -c '"effect"')" '1'
 
 echo "== @PostConstruct/@PreDestroy lifecycle callbacks are entry points =="
 # Container-invoked init/shutdown hooks — no project call site, so an init that reads config or a

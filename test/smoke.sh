@@ -48,6 +48,13 @@ want "functions array present"               "$rep" '"functions"'
 want "reads performs Fs"                      "$rep" '"Fx.reads"'
 want "dyn is Unknown (reflection, trust §4)"  "$rep" '"Unknown"'
 
+echo "== atomic write (temp + move, no half-written report for a concurrent reader) =="
+# the report + callgraph land whole; the temp file is moved into place, never left behind.
+tmpleft="$(find "$W" -name '*.tmp*' 2>/dev/null)"
+absent "atomic write leaves no .tmp file behind"  "$tmpleft" "$W"
+want   "report parses as whole JSON (python round-trips it)" "$(python3 -c 'import json,sys; json.load(open(sys.argv[1])); print("WHOLE")' "$W/r.json" 2>/dev/null)" 'WHOLE'
+want   "callgraph parses as whole JSON"           "$(python3 -c 'import json,sys; json.load(open(sys.argv[1])); print("WHOLE")' "$W/r.callgraph.json" 2>/dev/null)" 'WHOLE'
+
 echo "== Exec-cliff refinement by known sub-command head (spec §4 ⟨0.5⟩) =="
 want    "curl head refines the cliff: + Net"        "$("$CJ" show "$W/r.json" netcmd)"   'Net'
 want    "curl head keeps Exec (never dropped)"      "$("$CJ" show "$W/r.json" netcmd)"   'Exec'

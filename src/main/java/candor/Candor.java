@@ -2097,7 +2097,7 @@ public class Candor {
         envelope.put("packages", pkgs);
         envelope.put("functions", entries);
         String json = new GsonBuilder().setPrettyPrinting().create().toJson(envelope);
-        Files.writeString(Path.of(out), json);
+        writeAtomic(Path.of(out), json);
         System.err.println("candor-java: wrote " + entries.size() + " entries (@" + prov[0] + ") to " + out);
         reportUnknownSources();
     }
@@ -2117,7 +2117,23 @@ public class Candor {
         for (var e : edges.entrySet()) {
             cg.put(e.getKey(), new ArrayList<>(new TreeSet<>(e.getValue())));
         }
-        Files.writeString(Path.of(cgOut), new GsonBuilder().setPrettyPrinting().create().toJson(cg));
+        writeAtomic(Path.of(cgOut), new GsonBuilder().setPrettyPrinting().create().toJson(cg));
+    }
+
+    /** Write a report file ATOMICALLY: serialize to a sibling temp file, then move it into place. A
+     *  concurrent reader (a cross-engine candor-query merging this report) must never observe a
+     *  half-written file — the same write invariant the Rust and TS backends hold. Tries an atomic
+     *  move first; falls back to a plain replacing move on a filesystem that can't do ATOMIC_MOVE
+     *  (e.g. across a tmp boundary), which still beats an in-place truncate+write. */
+    static void writeAtomic(Path path, String contents) throws IOException {
+        Path dir = path.toAbsolutePath().getParent();
+        Path tmp = Files.createTempFile(dir, path.getFileName().toString(), ".tmp");
+        Files.writeString(tmp, contents);
+        try {
+            Files.move(tmp, path, java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException atomicUnsupported) {
+            Files.move(tmp, path, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     /** Human-readable breakdown of WHERE direct Unknowns come from, bucketed into the irreducible

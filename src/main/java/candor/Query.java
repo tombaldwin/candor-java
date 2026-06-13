@@ -628,6 +628,7 @@ public final class Query {
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("fn", target.fn);
             out.put("affectedCount", affected.size());
+            out.put("affected", new ArrayList<>(new TreeSet<>(affected))); // sorted: stable cross-engine shape
             List<Map<String, Object>> rs = new ArrayList<>();
             for (Fn r : roots) {
                 Map<String, Object> m = new LinkedHashMap<>();

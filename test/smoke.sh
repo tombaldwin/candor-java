@@ -315,6 +315,8 @@ want   "impact: counts transitive callers"               "$imp" 'transitively ca
 want   "impact: surfaces the downstream entry point (main)" "$imp" 'Pp.main'
 want   "impact: labels entry points downstream"          "$imp" 'entry point'
 want   "impact --json: structured blast radius"          "$("$CJ" impact "$W/p.json" leafNet --json)" '"affectedCount"'
+want   "impact --json: the affected LIST, not just a count (SPEC §3.1)" "$("$CJ" impact "$W/p.json" leafNet --json)" '"affected"'
+want   "impact --json: the affected list names a transitive caller"     "$("$CJ" impact "$W/p.json" leafNet --json)" 'Pp.mid'
 
 echo "== @PostConstruct/@PreDestroy lifecycle callbacks are entry points =="
 # Container-invoked init/shutdown hooks — no project call site, so an init that reads config or a

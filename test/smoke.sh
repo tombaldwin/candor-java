@@ -822,6 +822,12 @@ want   "…and the κ ledger names the blind spot"             "$DJC_PLAIN" "com
 DJC_CHAIN=$(CANDOR_DEPS="$W/djc/dep.json" "$CJ" "$W/djc/app" 2>&1)
 want   "with CANDOR_DEPS the app inherits the jar's effect" "$(echo "$DJC_CHAIN" | grep App2.run)" '{ Fs* }'
 absent "…and the chained package leaves the κ ledger"       "$DJC_CHAIN" "κ doesn't know"
+# An ALL-PURE dep's EMPTY report in SPEC singular-`package` form must register coverage (SPEC §2
+# rule 3) — reading only `packages[]` (the JVM's own plural) ignored it and falsely named the
+# package a blind spot. (/code-review max: the spec + the Rust/TS producers emit singular `package`.)
+printf '{"candor":{"version":"x","spec":"0.4"},"package":"com.thirdparty.io","functions":[]}' > "$W/djc/empty-pkg.json"
+DJC_EMPTY=$(CANDOR_DEPS="$W/djc/empty-pkg.json" "$CJ" "$W/djc/app" 2>&1)
+absent "a singular-`package` empty report covers its package (no false blind spot)" "$DJC_EMPTY" "κ doesn't know"
 
 # ── chained LITERAL SURFACES + empty-report coverage + array owners (/code-review fixes) ─────────
 echo "== chained surfaces, empty-report coverage, array owners =="
@@ -882,6 +888,23 @@ javac -d "$W/reflcls" "$W/refl/R.java" 2>/dev/null
 REFL=$("$CJ" "$W/reflcls" 2>&1 | grep "R.caller")
 want "a literal getMethod target's effects flow to the reflector" "$REFL" "Fs*"
 want "…and reflection keeps its honest Unknown"                   "$REFL" "Unknown"
+
+# ── reflection MUST NOT fabricate across an unrelated receiver (the /code-review max find) ────────
+echo "== reflection fabrication guard =="
+mkdir -p "$W/refl2"
+cat > "$W/refl2/F.java" <<'J'
+public class F {
+    static void strip() throws Exception { java.nio.file.Files.readString(java.nio.file.Path.of("/x")); }   // project method named strip, does Fs
+    static void runIt() throws Exception { Runtime.getRuntime().exec("x"); }                                  // project method named runIt, does Exec
+    static void extRecv() throws Exception { String.class.getMethod("strip").invoke("y"); }                   // EXTERNAL receiver, name collides with F.strip
+    static void dynRecv(Object o) throws Exception { o.getClass().getMethod("strip").invoke(o); }             // runtime receiver
+    static void wrongLit() throws Exception { String tag = "runIt"; String.class.getMethod("strip").invoke("z"); } // nearest literal is "strip", not "runIt"
+}
+J
+javac -d "$W/refl2cls" "$W/refl2/F.java" 2>/dev/null
+absent "external-receiver reflection does NOT fabricate Fs onto the caller" "$("$CJ" "$W/refl2cls" 2>/dev/null | grep 'F.extRecv')" "Fs\*"
+absent "runtime-receiver reflection does NOT fabricate an edge"             "$("$CJ" "$W/refl2cls" 2>/dev/null | grep 'F.dynRecv')"  "Fs\*"
+absent "nearest-literal: an unrelated prior constant never fabricates Exec" "$("$CJ" "$W/refl2cls" 2>/dev/null | grep 'F.wrongLit')" "Exec\*"
 
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'

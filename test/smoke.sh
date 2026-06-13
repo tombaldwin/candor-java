@@ -16,6 +16,7 @@ W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 
 pass=0; fail=0
 want()   { if printf '%s' "$2" | grep -qF -- "$3"; then echo "  ok   $1"; pass=$((pass+1)); else echo "  FAIL $1 — missing: $3"; echo "        in: $2"; fail=$((fail+1)); fi; }
+wantnot(){ if printf '%s' "$2" | grep -qF -- "$3"; then echo "  FAIL $1 — unexpected: $3"; echo "        in: $2"; fail=$((fail+1)); else echo "  ok   $1"; pass=$((pass+1)); fi; }
 absent() { if printf '%s' "$2" | grep -qF -- "$3"; then echo "  FAIL $1 — unexpected: $3"; fail=$((fail+1)); else echo "  ok   $1"; pass=$((pass+1)); fi; }
 
 # ── fixtures ──────────────────────────────────────────────────────────────────────────────────────
@@ -27,6 +28,9 @@ public class Fx {
   static void writes() { try { Files.writeString(Path.of("/tmp/x"), "y"); } catch (Exception e) {} }
   static void both()   { reads(); writes(); }
   static void spawn()  { try { new ProcessBuilder("x").start(); } catch (Exception e) {} }
+  static void netcmd()   { try { new ProcessBuilder("curl", "https://x").start(); } catch (Exception e) {} }
+  static void auditcmd() { try { new ProcessBuilder("candor-scan", ".").start(); } catch (Exception e) {} }
+  static void dbcmd()    { try { Runtime.getRuntime().exec("/usr/local/bin/psql -c x"); } catch (Exception e) {} }
   static void dyn()    { try { Class.forName("X"); } catch (Exception e) {} }
   public static void main(String[] a) { both(); spawn(); }
 }
@@ -43,6 +47,13 @@ want "envelope declares the spec contract 0.4" "$rep" '"spec": "0.4"'
 want "functions array present"               "$rep" '"functions"'
 want "reads performs Fs"                      "$rep" '"Fx.reads"'
 want "dyn is Unknown (reflection, trust §4)"  "$rep" '"Unknown"'
+
+echo "== Exec-cliff refinement by known sub-command head (spec §4 ⟨0.5⟩) =="
+want    "curl head refines the cliff: + Net"        "$("$CJ" show "$W/r.json" netcmd)"   'Net'
+want    "curl head keeps Exec (never dropped)"      "$("$CJ" show "$W/r.json" netcmd)"   'Exec'
+want    "psql head (Runtime.exec line) refines: + Db" "$("$CJ" show "$W/r.json" dbcmd)"  'Db'
+want    "candor head is Fs/Env (spec §7.12 supplied)" "$("$CJ" show "$W/r.json" auditcmd)" 'Env'
+wantnot "an unknown head 'x' stays the bare Exec cliff (no fabricated Net)" "$("$CJ" show "$W/r.json" spawn)" 'Net'
 
 echo "== entry schema: hash, calls, fs =="
 want "hash is the descriptor-bearing ref"     "$rep" 'Fx.reads()V'

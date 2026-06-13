@@ -899,6 +899,31 @@ public class Candor {
         return i >= 0 ? first.substring(i + 1) : first;
     }
 
+    /** Refine the `Exec` cliff (spec §4 ⟨0.5⟩): the effects a literal, statically-known subprocess
+     *  head implies, matched by basename. ADDED to a caller that already carries `Exec` (a subprocess
+     *  is still spawned — `Exec` is never dropped); an unrecognised head returns {} and keeps the bare
+     *  cliff (never guess). A **candor engine** reads Fs/Env only — spec §7 item 12 (the analyzer
+     *  self-boundary) guarantees that, so that case is spec-supplied, not curation. The reference
+     *  engines share this table verbatim so the `Exec` boundary refines identically. INVARIANT: every
+     *  head is an external tool that does NOT run the analysed project's own code (so make/npm/cargo
+     *  are deliberately absent — they keep the cliff). Mirrors candor-rust's `classify_command_head`. */
+    static Set<String> commandHeadEffects(String cmd) {
+        // Only UNAMBIGUOUS single-effect tools belong here. A multi-modal head (`git status` local vs
+        // `git push` Net; `rsync` local vs remote) would FABRICATE the effect for its common case —
+        // the under-report rule forbids it, so such heads keep the bare cliff.
+        switch (cmdBase(cmd)) {
+            case "curl": case "wget": case "http": case "ssh": case "scp":
+                return Set.of("Net");
+            case "psql": case "mysql": case "sqlite3": case "mongosh": case "redis-cli":
+                return Set.of("Db");
+            case "candor": case "candor-run.sh": case "candor-scan": case "candor-query":
+            case "candor-java": case "candor-classify": case "candor-report": case "cargo-candor":
+                return Set.of("Env", "Fs"); // §7 item 12: analyzers do Fs/Env only
+            default:
+                return Set.of();
+        }
+    }
+
     /** Whether an allowed dir `a` covers the reached path `r` at a COMPONENT boundary (so `/etc/app`
      *  covers `/etc/app/cfg` but not `/etc/apppwned`); a `..` in the reached path is never covered.
      *  Mirrors the Rust `fs_path_covered`, including the absolute-vs-relative rootedness check. */
@@ -1295,7 +1320,12 @@ public class Candor {
                     if ((owner.equals("java.lang.ProcessBuilder") && min.name.equals("<init>"))
                             || (owner.equals("java.lang.Runtime") && min.name.equals("exec"))) {
                         String cmd = firstLiteralArg(mn, min);
-                        if (cmd != null) cmdsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(cmd);
+                        if (cmd != null) {
+                            cmdsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(cmd);
+                            // Refine the cliff (spec §4 ⟨0.5⟩): a known literal head adds its effects
+                            // (`curl`→Net, `candor`→Fs/Env); `Exec` stays, an unknown head adds nothing.
+                            dir.addAll(commandHeadEffects(cmd));
+                        }
                     }
                     // …only the overload whose path is a SINGLE leading String arg (descriptor
                     // `(Ljava/lang/String;)` or `(Ljava/lang/String;[…` for Path.of's varargs). A

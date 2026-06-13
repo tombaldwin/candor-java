@@ -5,7 +5,8 @@
 #   ./candor show report.json <fn>                  # query a report (also: where|callers|map|diff)
 #   ./candor where report.json Net --json           # machine-readable, for an agent
 #   CANDOR_BASELINE=base.json ./candor <classes>    # regression guard (AS-EFF-005)
-#   CANDOR_DEPS=dep.json     ./candor <classes>     # cross-jar inheritance
+#   CANDOR_DEPS=dep.json     ./candor <classes>     # cross-jar inheritance (chain a sibling report)
+#   ./candor --deps <classpath> <classes> [...]     # scan the classpath's jars + chain them (κ → builtins)
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAUNCHER="$ROOT/build/install/candor-java/bin/candor-java"
@@ -16,4 +17,33 @@ if [ ! -x "$LAUNCHER" ] || [ "$ROOT/src/main/java/candor/Candor.java" -nt "$LAUN
   echo "candor: building…" >&2
   ( cd "$ROOT" && "$GRADLE" -q installDist ) >&2
 fi
+
+# `--deps <classpath>`: scan each jar/dir in the classpath into a sibling report under .candor/deps/,
+# then run the target scan CHAINED over them — the JVM half of the dep-scan endgame (a dep's effects
+# derive from ITS calls into the JDK frontier, so κ shrinks toward builtins-only). The SHELL fans out
+# the scans, keeping the engine itself Exec-free (the analyzer's own boundary, spec §7.12). `<classpath>`
+# is `:`-separated jars/dirs, or a single directory of jars. Cached: an existing report is reused.
+if [ "${1:-}" = "--deps" ]; then
+  [ $# -ge 3 ] || { echo "candor: usage: candor --deps <classpath> <classes-or-jar> [--json out] [...]" >&2; exit 2; }
+  CP="$2"; shift 2
+  DEPS_DIR="${CANDOR_DEPS_DIR:-.candor/deps}"; mkdir -p "$DEPS_DIR"
+  # split a :-separated classpath, OR expand a single directory to its *.jar
+  entries=()
+  if [ -d "$CP" ] && [ -z "${CP##*[!:]}" ]; then
+    while IFS= read -r j; do entries+=("$j"); done < <(find "$CP" -maxdepth 1 -name '*.jar')
+  else
+    IFS=':' read -ra entries <<< "$CP"
+  fi
+  scanned=0; cached=0
+  for e in "${entries[@]}"; do
+    [ -e "$e" ] || continue
+    name="$(basename "$e" .jar)"; out="$DEPS_DIR/$name.json"
+    if [ -f "$out" ] && [ "$out" -nt "$e" ]; then cached=$((cached+1)); continue; fi
+    "$LAUNCHER" "$e" --json "$out" >/dev/null 2>&1 && scanned=$((scanned+1)) || echo "candor: --deps: skipped unreadable $e" >&2
+  done
+  echo "candor: --deps scanned $scanned classpath entr$([ "$scanned" = 1 ] && echo y || echo ies) into $DEPS_DIR$([ "$cached" -gt 0 ] && echo " ($cached cached)")" >&2
+  export CANDOR_DEPS="${CANDOR_DEPS:+$CANDOR_DEPS:}$DEPS_DIR"
+  exec "$LAUNCHER" "$@"
+fi
+
 exec "$LAUNCHER" "$@"

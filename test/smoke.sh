@@ -950,6 +950,23 @@ want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" re
 [ "$qrc" -eq 2 ] && echo "  ok   query rejects an unknown flag (exit 2)" && pass=$((pass+1)) \
                  || { echo "  FAIL query unknown-flag exit $qrc"; fail=$((fail+1)); }
 
+# ── ./candor --deps <classpath>: scan the dep jars + chain (the JVM dep-scan convenience) ─────────
+mkdir -p "$W/dep/com/lib" "$W/dapp/com/app"
+cat > "$W/dep/com/lib/L.java" <<'J'
+package com.lib;
+public class L { public String load(String p) throws Exception { return java.nio.file.Files.readString(java.nio.file.Path.of(p)); } }
+J
+cat > "$W/dapp/com/app/A.java" <<'J'
+package com.app;
+import com.lib.L;
+public class A { public static String run() throws Exception { return new L().load("/tmp/x"); } }
+J
+javac -d "$W/depcls" "$W/dep/com/lib/L.java" 2>/dev/null
+jar cf "$W/d.jar" -C "$W/depcls" . 2>/dev/null
+javac -cp "$W/d.jar" -d "$W/dappcls" "$W/dapp/com/app/A.java" 2>/dev/null
+( cd "$W" && CANDOR_DEPS_DIR="$W/.deps" "$ROOT/candor" --deps "$W/d.jar" "$W/dappcls" 2>/dev/null ) > "$W/deps.out"
+want "./candor --deps scans the classpath jar and chains it (A.run inherits Fs)" "$(grep 'A.run' "$W/deps.out")" 'Fs*'
+
 # ── --agents: the self-describing engine (the contract is a jar resource) ────────────────────────
 echo "== --agents =="
 AG=$("$CJ" --agents 2>&1)

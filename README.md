@@ -122,6 +122,18 @@ CANDOR_DEPS="/path/to/dep-report.json:/path/to/more" \
   gradle run --args="/path/to/app-classes --json /tmp/app.json"
 ```
 
+**One-command dep scan — `./candor --deps <classpath> <app-classes>`.** Rather than scan each
+dependency jar by hand, point `--deps` at the classpath (a `:`-separated list of jars, or a directory
+of jars): the wrapper scans each into a sibling report under `.candor/deps/`, then runs the app scan
+chained over them — the JVM half of the dep-scan endgame (a dependency's effects derive from *its* calls
+into the JDK frontier, so the curated classifier shrinks toward builtins-only). Cached: an unchanged
+jar's report is reused. The *shell* fans out the scans, so the engine itself never spawns a process
+(its own boundary is Fs/Env only, spec §7.12).
+
+```sh
+./candor --deps libs/ build/classes/java/main --json /tmp/app.json   # scan libs/*.jar, then the app
+```
+
 *Resolution depth:* a concrete-typed cross-jar call resolves by `hash` directly; an **interface**-typed
 call whose impl lives in the dependency can't be devirtualized from the report alone (a report carries
 no class hierarchy). For full resolution across a boundary, analyze the app **and** its deps *together*

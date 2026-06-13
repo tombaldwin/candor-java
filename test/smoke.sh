@@ -910,6 +910,11 @@ echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'
 
+# an unknown --flag in QUERY position must FAIL (exit 2), not be swallowed as a query positional
+"$CJ" show "$W/r.json" --jsno >/dev/null 2>&1; qrc=$?
+[ "$qrc" -eq 2 ] && echo "  ok   query rejects an unknown flag (exit 2)" && pass=$((pass+1)) \
+                 || { echo "  FAIL query unknown-flag exit $qrc"; fail=$((fail+1)); }
+
 # ── --agents: the self-describing engine (the contract is a jar resource) ────────────────────────
 echo "== --agents =="
 AG=$("$CJ" --agents 2>&1)

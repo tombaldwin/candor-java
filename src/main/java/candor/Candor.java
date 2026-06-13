@@ -913,8 +913,10 @@ public class Candor {
         // the under-report rule forbids it, so such heads keep the bare cliff.
         switch (cmdBase(cmd)) {
             case "curl": case "wget": case "http": case "ssh": case "scp":
+            case "sftp": case "ftp": case "telnet":
                 return Set.of("Net");
-            case "psql": case "mysql": case "sqlite3": case "mongosh": case "redis-cli":
+            case "psql": case "mysql": case "sqlite3": case "mongosh": case "mongo":
+            case "redis-cli": case "cqlsh": case "influx":
                 return Set.of("Db");
             case "candor": case "candor-run.sh": case "candor-scan": case "candor-query":
             case "candor-java": case "candor-classify": case "candor-report": case "cargo-candor":

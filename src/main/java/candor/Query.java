@@ -514,9 +514,9 @@ public final class Query {
             System.out.println("candor: cannot read baseline " + basePath);
             return 2;
         }
-        Map<String, Set<String>> b = base.stream().collect(Collectors.toMap(f -> f.fn, f -> new HashSet<>(f.inferred), (x, y) -> x));
-        Map<String, Set<String>> c = cur.stream().collect(Collectors.toMap(f -> f.fn, f -> new HashSet<>(f.inferred), (x, y) -> x));
-        Map<String, Set<String>> cd = cur.stream().collect(Collectors.toMap(f -> f.fn, f -> new HashSet<>(f.direct), (x, y) -> x));
+        Map<String, Set<String>> b = unionByFn(base, f -> f.inferred);
+        Map<String, Set<String>> c = unionByFn(cur, f -> f.inferred);
+        Map<String, Set<String>> cd = unionByFn(cur, f -> f.direct);
         TreeSet<String> all = new TreeSet<>();
         all.addAll(b.keySet());
         all.addAll(c.keySet());
@@ -565,6 +565,17 @@ public final class Query {
         return 0;
     }
 
+    /** Effects indexed by function name, UNION-merging rows that share a name. A report built by a
+     *  candor engine has one row per fn, but a hand-merged or cross-jar-combined report can repeat a
+     *  fn — keep-first would then DROP a row's effects and make diff/gains FABRICATE a phantom gain (or
+     *  MISS a real one). Unioning is the safe direction: it never drops an effect. Mirrors candor-rust
+     *  `load_fninfo` (union-at-load) and candor-ts `effectsByFn`. */
+    static Map<String, Set<String>> unionByFn(List<Fn> fns, java.util.function.Function<Fn, Collection<String>> pick) {
+        Map<String, Set<String>> m = new HashMap<>();
+        for (Fn f : fns) m.computeIfAbsent(f.fn, k -> new HashSet<>()).addAll(pick.apply(f));
+        return m;
+    }
+
     /** gains — the package-level SUPPLY-CHAIN alarm (SPEC §5.1): the UNION of effects the surface gained
      *  between two reports (base -> cur), with per-function detail. A dependency that grew a Net/Exec reach
      *  between releases. {gained:[Effect], byFunction:[{fn,effect}]} — the cross-engine machine-readable form. */
@@ -577,16 +588,17 @@ public final class Query {
             System.out.println("candor: cannot read baseline " + basePath);
             return 2;
         }
-        Map<String, Set<String>> b = base.stream().collect(Collectors.toMap(f -> f.fn, f -> new HashSet<>(f.inferred), (x, y) -> x));
+        Map<String, Set<String>> b = unionByFn(base, f -> f.inferred);
+        Map<String, Set<String>> c = unionByFn(cur, f -> f.inferred); // union cur too: no dup double-count
         TreeSet<String> gained = new TreeSet<>();
         List<Map<String, Object>> byFunction = new ArrayList<>();
-        for (Fn f : cur.stream().sorted(Comparator.comparing(x -> x.fn)).toList()) {
-            Set<String> bi = b.getOrDefault(f.fn, Set.of());
-            for (String e : new TreeSet<>(f.inferred)) {
+        for (String fn : new TreeSet<>(c.keySet())) {
+            Set<String> bi = b.getOrDefault(fn, Set.of());
+            for (String e : new TreeSet<>(c.get(fn))) {
                 if (!bi.contains(e)) {
                     gained.add(e);
                     Map<String, Object> m = new LinkedHashMap<>();
-                    m.put("fn", f.fn);
+                    m.put("fn", fn);
                     m.put("effect", e);
                     byFunction.add(m);
                 }

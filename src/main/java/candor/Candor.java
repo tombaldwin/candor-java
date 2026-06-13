@@ -159,7 +159,7 @@ public class Candor {
         if (args.length < 1) {
             System.err.println("usage: candor <dir-or-jar-of-classes> [--json <file>]");
             System.err.println(
-                    "       candor <show|where|callers|map|diff|containment|reachable|path|impact|whatif|rewire> <report.json> [arg]");
+                    "       candor <show|where|callers|map|diff|containment|reachable|path|impact|gains|whatif|rewire> <report.json> [arg]");
             System.err.println("       candor parsepolicy <policy-file>");
             System.exit(2);
         }
@@ -850,6 +850,50 @@ public class Candor {
         return found;
     }
 
+    /** The literal PROGRAM head a subprocess call NAMES — argv[0] specifically, never a later argument.
+     *  Unlike {@link #firstLiteralArg} (the earliest literal ANYWHERE in the arg window), this refuses
+     *  to refine when argv[0] is a runtime value but a trailing arg happens to be a literal whose
+     *  basename hits the head table: `new ProcessBuilder(tool, "curl")` / `exec(new String[]{prog,
+     *  "psql"})` must NOT fabricate Net/Db — the §1 under-report rule (mirrors candor-rust gating the
+     *  refinement on a program-NAMING position via `is_cmd_naming_method`). The argv[0] shape is read
+     *  from the call descriptor: a leading `String` is the scalar program (`Runtime.exec("curl …")`);
+     *  a leading `String[]` is a varargs/array whose ELEMENT 0 is the program (`ProcessBuilder("curl",
+     *  …)`, `exec(new String[]{"curl", …})`). Returns null whenever argv[0] is not a static literal —
+     *  the safe direction. Used ONLY for the effect refinement, never to widen it. */
+    static String programHeadLiteral(MethodInsnNode call) {
+        boolean arrayHead = call.desc.startsWith("([Ljava/lang/String;");
+        boolean scalarHead = call.desc.startsWith("(Ljava/lang/String;");
+        if (!arrayHead && !scalarHead) return null; // a List<String> ctor etc. names no static head
+        // The call's argument-evaluation window, bounded by a prior call/branch, real insns only
+        // (drop labels/line-numbers/frames so the array-store pattern below is contiguous).
+        List<AbstractInsnNode> win = new ArrayList<>();
+        for (AbstractInsnNode n = call.getPrevious(); n != null; n = n.getPrevious()) {
+            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode)
+                break;
+            if (n.getOpcode() >= 0) win.add(n); // skip pseudo-insns (opcode -1)
+        }
+        Collections.reverse(win); // evaluation order
+        if (scalarHead) {
+            // argv[0] is the FIRST value pushed (the instance receiver is a prior call/aload that the
+            // window already excludes for the common `Runtime.getRuntime().exec(…)` form); it names a
+            // program only if that first value is itself a String literal.
+            if (win.isEmpty()) return null;
+            AbstractInsnNode first = win.get(0);
+            return (first instanceof LdcInsnNode ldc && ldc.cst instanceof String s) ? s : null;
+        }
+        // arrayHead: argv[0] is element 0 of the leading String[]. javac emits initializers in index
+        // order, so the FIRST `ICONST_0, <elem>, AASTORE` in the window is that store — element 0 of
+        // the command array (even in the two-array `exec(String[], String[] envp)` overload, where the
+        // command array is built before envp). The head is static only if <elem> is a String literal.
+        for (int i = 0; i + 2 < win.size(); i++) {
+            if (win.get(i).getOpcode() == Opcodes.ICONST_0 && win.get(i + 2).getOpcode() == Opcodes.AASTORE) {
+                AbstractInsnNode v = win.get(i + 1);
+                return (v instanceof LdcInsnNode ldc && ldc.cst instanceof String s) ? s : null;
+            }
+        }
+        return null;
+    }
+
     /** The String literal CLOSEST to a call — its last-pushed String arg. For `getMethod("y")` the
      *  name is pushed immediately before the call, so the nearest String is unambiguously it; the
      *  loose firstLiteralArg (keep-earliest) would grab an unrelated prior constant (`String tag =
@@ -1322,12 +1366,14 @@ public class Candor {
                     if ((owner.equals("java.lang.ProcessBuilder") && min.name.equals("<init>"))
                             || (owner.equals("java.lang.Runtime") && min.name.equals("exec"))) {
                         String cmd = firstLiteralArg(mn, min);
-                        if (cmd != null) {
-                            cmdsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(cmd);
-                            // Refine the cliff (spec §4 ⟨0.5⟩): a known literal head adds its effects
-                            // (`curl`→Net, `candor`→Fs/Env); `Exec` stays, an unknown head adds nothing.
-                            dir.addAll(commandHeadEffects(cmd));
-                        }
+                        if (cmd != null) cmdsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(cmd);
+                        // Refine the cliff (spec §4 ⟨0.5⟩): a known literal head adds its effects
+                        // (`curl`→Net, `candor`→Fs/Env); `Exec` stays, an unknown head adds nothing.
+                        // The head MUST come from argv[0] (programHeadLiteral), NOT the loose
+                        // firstLiteralArg: `new ProcessBuilder(toolVar, "curl")` names no static
+                        // program, so its trailing literal must not fabricate Net (§1 under-report).
+                        String head = programHeadLiteral(min);
+                        if (head != null) dir.addAll(commandHeadEffects(head));
                     }
                     // …only the overload whose path is a SINGLE leading String arg (descriptor
                     // `(Ljava/lang/String;)` or `(Ljava/lang/String;[…` for Path.of's varargs). A
@@ -2124,15 +2170,23 @@ public class Candor {
      *  concurrent reader (a cross-engine candor-query merging this report) must never observe a
      *  half-written file — the same write invariant the Rust and TS backends hold. Tries an atomic
      *  move first; falls back to a plain replacing move on a filesystem that can't do ATOMIC_MOVE
-     *  (e.g. across a tmp boundary), which still beats an in-place truncate+write. */
+     *  (e.g. across a tmp boundary), which still beats an in-place truncate+write. On ANY failure
+     *  (disk full mid-write, both moves rejected) the temp is removed so a failed run never leaves an
+     *  accumulating `<name>.json<rnd>.tmp` residue beside the report. */
     static void writeAtomic(Path path, String contents) throws IOException {
         Path dir = path.toAbsolutePath().getParent();
         Path tmp = Files.createTempFile(dir, path.getFileName().toString(), ".tmp");
-        Files.writeString(tmp, contents);
+        boolean moved = false;
         try {
-            Files.move(tmp, path, java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-        } catch (IOException atomicUnsupported) {
-            Files.move(tmp, path, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            Files.writeString(tmp, contents);
+            try {
+                Files.move(tmp, path, java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException atomicUnsupported) {
+                Files.move(tmp, path, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+            moved = true;
+        } finally {
+            if (!moved) Files.deleteIfExists(tmp);
         }
     }
 

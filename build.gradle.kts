@@ -8,7 +8,7 @@ plugins {
 // Release version (crate-semver axis), distinct from the `spec` contract version (0.3,
 // see candor-spec §2.1) and the git-hash engine build id baked below. Bumped on each
 // published artifact; the spec field tracks interface compatibility independently.
-version = "0.4.2"
+version = "0.4.3"
 group = "io.poly.candor"
 
 repositories { mavenCentral() }

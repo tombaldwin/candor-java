@@ -13,15 +13,21 @@ A [candor-spec](https://github.com/tombaldwin/candor-spec) implementation; sibli
 **Site:** [candor.poly.io](https://candor.poly.io) — the measured case in five minutes: the
 exhibits, the pre-registered evals, and the prove-it-on-your-own-repo path.
 
-**Any JVM language — Java and Kotlin both.** Because it reads *bytecode*, candor-java is
-language-agnostic: Java, Kotlin, Scala, and Groovy all lower to the same `.class` files it analyses, use
-the same JDK I/O APIs the classifier knows (`java.net`/`java.nio`), the same Spring annotations, and the
-same JVM-level `Runnable`/`main`. Java is the most battle-tested (a real 2,257-class Spring app + hundreds
-of library jars); **Kotlin is validated** — on real Kotlin bytecode (okhttp, ktor, kotlinx-coroutines)
-the network I/O is detected, `Runnable`-based coroutine dispatchers are flagged as runtime entry points,
-and nothing crashes on coroutine state machines. Caveat: a coroutine/interface-heavy *library* analysed
-*in isolation* can over-report via CHA (see the **Not yet** limitations below) — a real *app*, with the
-stdlib as an unanalysed dependency, doesn't.
+**Any JVM language — Java, Kotlin, Scala, Groovy.** Because it reads *bytecode*, candor-java is
+language-agnostic: all four lower to the same `.class` files it analyses, use the same JDK I/O APIs the
+classifier knows (`java.net`/`java.nio`), the same Spring annotations, and the same JVM-level
+`Runnable`/`main`. Java is the most battle-tested (a real 2,257-class Spring app + hundreds of library
+jars). **Kotlin, Scala and Groovy are validated on real bytecode:** Kotlin (okhttp, ktor,
+kotlinx-coroutines) detects the network I/O and flags `Runnable`-based dispatchers as entry points;
+Scala (scala-library, cats) and Groovy (groovy runtime, groovy-json) parse without crashing, attribute
+real effects to their genuine sources (`scala.sys.process` → Exec, `Source.fromURL` → Net), and land
+the dynamic surface (Scala's broad collection dispatch, Groovy's MOP/metaclass) in honest `Unknown`
+rather than silently passing. *(That validation pass fixed two real engine bugs — `System.getProperty`
+was miscounted as `Env`, and CHA over a deep hierarchy fanned out unbounded; both now correct, with
+the bounded-CHA `≤12`-or-`Unknown` discipline applied to all dispatch.)* Caveat: an interface-heavy
+*library analysed in isolation* (the stdlib/runtime itself) can over-report via class-init chains (see
+**Not yet** below) — a real *app*, with the runtime as an unanalysed dependency, doesn't (cats analysed
+clean: all-`Unknown` typeclass dispatch, zero fabricated effects).
 
 **A gate is only worth trusting if it never lies.** candor-java surfaces what it can't see — reflection,
 a `native` body, dispatch over an unknown impl — as `Unknown`, never a silent "pure." That contract is
@@ -33,7 +39,7 @@ you can act on it.
 **It maps, too** — a per-method effect audit and instant `show`/`where`/`callers`/`map`/`diff`/
 `containment`/`reachable`/`path`/`impact` queries over the report, for an agent or a human navigating unfamiliar code.
 
-## Status: alpha (v0.3.x)
+## Status: alpha (v0.4.x)
 
 Validated on a real 2,257-class Spring application and on real Kotlin/Scala/Groovy bytecode; holds
 the spec's cross-engine conformance suite (same fixtures and expected effect sets as the Rust

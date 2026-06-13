@@ -1347,9 +1347,25 @@ public class Candor {
                         // Runnable.run, all caller-attribution — were found by /code-review max.)
                         boolean dispatchExempt = isChaExemptMethod(min.owner, min.name, min.desc);
                         List<String> cha = chaTargets(min.owner, min.name, min.desc);
-                        boolean broadSmear = dispatchExempt && cha.size() > CHA_FANOUT_LIMIT;
-                        List<String> targets = broadSmear ? List.of() : cha;
+                        // BOUNDED CHA (SPEC §4): a dispatch over a local abstraction resolves to its
+                        // implementors only when the fan-out is NARROW (≤ CHA_FANOUT_LIMIT); a broad
+                        // fan-out is honest indeterminacy. Previously only EXEMPT methods (the pure
+                        // Object protocol) were bounded, so a non-exempt collection method (`isEmpty`/
+                        // `size`/`next`) over a deep hierarchy (scala-library: hundreds of impls) edged
+                        // to EVERY override and connected ~everything to a few effect sources — a
+                        // ThreadLocalRandom in one TrieMap.computeSize flooded 13k functions with Rand.
+                        boolean broad = cha.size() > CHA_FANOUT_LIMIT;
+                        List<String> targets = broad ? List.of() : cha;
                         edges.get(id).addAll(targets);
+                        // A broad NON-exempt dispatch over a project abstraction → Unknown, not silent
+                        // (an effectful impl could be among the many; exempt methods are conventionally
+                        // pure / runtime-entry, so they drop to nothing without Unknown).
+                        if (broad && !dispatchExempt && effect == null && !springTyped
+                                && isProjectIfaceOrAbstract(min.owner)) {
+                            dir.add("Unknown");
+                            unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                                    .add("dispatch-broad:" + owner + "." + min.name);
+                        }
                         // Genuine unresolved dispatch: a PROJECT interface/abstract type that DECLARES
                         // this method, with no visible concrete impl (DI-wired, external, or strategy)
                         // → honest Unknown (SPEC §4). The `projectDeclaresMethod` gate is essential:
@@ -1361,7 +1377,7 @@ public class Candor {
                         // call). Only a method the project ITSELF declares is a real missing-impl. An
                         // exempt method never raises Unknown (it's conventionally pure, or its body is a
                         // runtime-invoked entry point).
-                        if (targets.isEmpty() && !dispatchExempt && effect == null && !springTyped
+                        if (!broad && targets.isEmpty() && !dispatchExempt && effect == null && !springTyped
                                 && isProjectIfaceOrAbstract(min.owner)
                                 && projectDeclaresMethod(min.owner, min.name, min.desc)) {
                             dir.add("Unknown");
@@ -1871,10 +1887,15 @@ public class Candor {
         // Subprocess
         if (owner.equals("java.lang.ProcessBuilder") && method.equals("start")) return "Exec";
         if (owner.equals("java.lang.Runtime") && method.equals("exec")) return "Exec";
-        // Environment / config
-        if (owner.equals("java.lang.System")
-                && (method.equals("getenv") || method.equals("getProperty") || method.equals("setProperty")))
-            return "Env";
+        // Environment. `Env` is the OS process ENVIRONMENT (spec §1: "environment variables"),
+        // i.e. System.getenv — NOT System.getProperty/setProperty, which read/write JVM system
+        // PROPERTIES (os.name, line.separator, -D flags): JVM config, not the OS environment, and
+        // read pervasively at class-init (lumping them flooded a scala-library scan with a spurious
+        // 14k Env — and `getProperty("os.name")` is not an env read in any case). Properties are
+        // low-signal config, left unclassified like console writes (§1).
+        if (owner.equals("java.lang.System") && method.equals("getenv")) return "Env";
+        // Spring's Environment.getProperty reads a MERGED source that includes the OS environment, so
+        // it genuinely may surface an env var — a sound over-approximation, kept as Env.
         if (owner.equals("org.springframework.core.env.Environment") && method.equals("getProperty")) return "Env";
         // Clock
         if (owner.equals("java.lang.System") && (method.equals("currentTimeMillis") || method.equals("nanoTime")))

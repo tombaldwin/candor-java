@@ -23,7 +23,7 @@ import java.util.stream.Collectors;
 public final class Query {
     static final Set<String> COMMANDS =
             Set.of("show", "where", "callers", "map", "diff", "containment", "reachable", "path", "impact",
-                    "whatif", "rewire");
+                    "gains", "whatif", "rewire");
     static final Gson JSON = new GsonBuilder().setPrettyPrinting().create();
 
     // Boundary effects SHOULD live in a dedicated layer — their dispersion is the architecture signal
@@ -102,6 +102,7 @@ public final class Query {
             case "reachable" -> reachable(fns, json);
             case "path" -> path(fns, arg, arg2, json);
             case "impact" -> impact(fns, arg, json);
+            case "gains" -> gains(fns, arg, json);
             case "whatif" -> whatif(pos.get(0), arg, arg2, pos.size() > 3 ? pos.get(3) : null, json);
             case "rewire" -> rewire(pos.get(0), arg, json);
             default -> 2;
@@ -561,6 +562,44 @@ public final class Query {
             String tag = st.equals("removed") ? "  (removed fn)" : (st.equals("new") ? "  (new fn)" : "");
             System.out.println("  " + m.get("fn") + tag + "   { " + String.join(" ", parts) + " }");
         }
+        return 0;
+    }
+
+    /** gains — the package-level SUPPLY-CHAIN alarm (SPEC §5.1): the UNION of effects the surface gained
+     *  between two reports (base -> cur), with per-function detail. A dependency that grew a Net/Exec reach
+     *  between releases. {gained:[Effect], byFunction:[{fn,effect}]} — the cross-engine machine-readable form. */
+    static int gains(List<Fn> cur, String basePath, boolean json) {
+        if (basePath == null) return usage("gains <report.json> <baseline.json> [--json]");
+        List<Fn> base;
+        try {
+            base = load(basePath);
+        } catch (Exception e) {
+            System.out.println("candor: cannot read baseline " + basePath);
+            return 2;
+        }
+        Map<String, Set<String>> b = base.stream().collect(Collectors.toMap(f -> f.fn, f -> new HashSet<>(f.inferred), (x, y) -> x));
+        TreeSet<String> gained = new TreeSet<>();
+        List<Map<String, Object>> byFunction = new ArrayList<>();
+        for (Fn f : cur.stream().sorted(Comparator.comparing(x -> x.fn)).toList()) {
+            Set<String> bi = b.getOrDefault(f.fn, Set.of());
+            for (String e : new TreeSet<>(f.inferred)) {
+                if (!bi.contains(e)) {
+                    gained.add(e);
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("fn", f.fn);
+                    m.put("effect", e);
+                    byFunction.add(m);
+                }
+            }
+        }
+        if (json) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("gained", new ArrayList<>(gained));
+            out.put("byFunction", byFunction);
+            emit(out);
+            return 0;
+        }
+        for (Map<String, Object> m : byFunction) System.out.println(m.get("fn") + "\t" + m.get("effect"));
         return 0;
     }
 

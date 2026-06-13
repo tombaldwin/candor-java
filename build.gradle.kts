@@ -38,6 +38,12 @@ val generateBuildInfo by tasks.registering {
     outputs.file(out)
     val ver = candorVersion
     val tc = candorToolchain
+    // Declare ver/tc as INPUTS so Gradle re-runs when HEAD (or the JDK) moves. Without this the task
+    // was always UP-TO-DATE and baked a STALE build id — two behaviourally different jars then carried
+    // the same `version`, defeating the §2.1 version-trust comparison (a /code-review max find: the
+    // v0.4.1 release jar predated a guard commit yet reported the same build hash as the rebuild).
+    inputs.property("version", ver)
+    inputs.property("toolchain", tc)
     doLast {
         out.get().asFile.apply { parentFile.mkdirs() }
             .writeText("version=$ver\ntoolchain=$tc\n")

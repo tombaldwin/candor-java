@@ -215,13 +215,17 @@ public class Candor {
         taintEnabled = System.getenv("CANDOR_TAINT") != null; // read before analyze (the pass runs per method)
         for (ClassNode cn : classes) analyze(cn);
 
-        // resolve literal-getMethod reflection: a unique project method matching the literal name
-        // edges from the reflecting caller (Unknown stays — reflection is still §4 opacity).
+        // Resolve literal-getMethod reflection: edge to the named method OF THE RECEIVER CLASS only —
+        // `Helper.class.getMethod("strip")` → `Helper.strip`. A receiver we can't pin to a project
+        // class (a runtime `obj.getClass()`, or an EXTERNAL `String.class`) forms NO edge: the §4
+        // Unknown stands. Matching by global leaf-name suffix (the old code) fabricated an edge to an
+        // unrelated same-named project method — the exact "candor never fabricates an effect" breach
+        // candor-scan's own comments record removing. Unknown stays either way (reflection is opaque).
         for (String[] pair : reflectPairs) {
-            String suffix = "." + pair[1];
-            List<String> matches = edges.keySet().stream()
-                    .filter(fn -> fn.endsWith(suffix)).collect(Collectors.toList());
-            if (matches.size() == 1) edges.get(pair[0]).add(matches.get(0));
+            String caller = pair[0], lit = pair[1], recv = pair[2];
+            if (recv.isEmpty() || !projectClasses.contains(recv)) continue;
+            String target = recv.replace('/', '.') + "." + lit;
+            if (edges.containsKey(target)) edges.get(caller).add(target);
         }
 
         Map<String, TreeSet<String>> inferred = fixpoint();
@@ -838,6 +842,34 @@ public class Candor {
         return found;
     }
 
+    /** The String literal CLOSEST to a call — its last-pushed String arg. For `getMethod("y")` the
+     *  name is pushed immediately before the call, so the nearest String is unambiguously it; the
+     *  loose firstLiteralArg (keep-earliest) would grab an unrelated prior constant (`String tag =
+     *  "runIt"; … c.getMethod("strip")` returned "runIt" — a fabricated target). */
+    static String nearestLiteralArg(MethodNode mn, AbstractInsnNode call) {
+        for (AbstractInsnNode n = call.getPrevious(); n != null; n = n.getPrevious()) {
+            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode)
+                return null;
+            if (n instanceof LdcInsnNode ldc && ldc.cst instanceof String s) return s; // NEAREST
+        }
+        return null;
+    }
+
+    /** The receiver Class type of a reflective `X.class.getMethod("y")` — the nearest `LDC X.class`
+     *  Type constant before the call (internal slash-form), bounded by a prior call/branch. Null when
+     *  the receiver is a RUNTIME Class value (`obj.getClass()`, a field): then the reflection target
+     *  is genuinely indeterminate and an edge MUST NOT be fabricated (the §4 Unknown stands). */
+    static String reflectReceiver(MethodNode mn, AbstractInsnNode call) {
+        for (AbstractInsnNode n = call.getPrevious(); n != null; n = n.getPrevious()) {
+            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode)
+                return null; // a prior call (e.g. getClass()) or branch bounds the receiver evaluation
+            if (n instanceof LdcInsnNode ldc && ldc.cst instanceof org.objectweb.asm.Type t
+                    && t.getSort() == org.objectweb.asm.Type.OBJECT)
+                return t.getInternalName();
+        }
+        return null;
+    }
+
     /** Whether a path-constructor descriptor takes the path as a SINGLE leading String — `(String)` or
      *  `(String, String...)` (Path.of's varargs) — so the FIRST string literal is unambiguously the
      *  path. Excludes two-String overloads (`File(String,String)`, `RandomAccessFile(String,String)`)
@@ -983,13 +1015,19 @@ public class Candor {
                     // header is as untrustworthy as a mismatched one (the Rust engine's rule;
                     // /code-review found the engines split three ways on versionless reports).
                     boolean stale = depVer == null || !depVer.equals(ownVersion);
-                    // File-level coverage: the producer's own `packages` list registers the
-                    // report's packages as COVERED even when `functions` is empty — an all-pure
-                    // dep's empty report is its purity claim (SPEC §2 rule 3; the serde_json
-                    // lesson, now ported from the Rust engine).
-                    if (obj != null && obj.has("packages") && obj.get("packages").isJsonArray())
-                        for (JsonElement x : obj.getAsJsonArray("packages"))
-                            depCoveredPkgs.add(x.getAsString());
+                    // File-level coverage: the producer's own package name(s) register the report's
+                    // packages as COVERED even when `functions` is empty — an all-pure dep's empty
+                    // report is its purity claim (SPEC §2 rule 3; the serde_json lesson). Accept BOTH
+                    // the spec's singular `"package": "<name>"` (what candor-report and candor-ts
+                    // emit) AND this engine's own plural `packages[]` — reading only the array meant an
+                    // all-pure spec-form report was ignored and its package falsely named a blind spot.
+                    if (obj != null) {
+                        if (obj.has("package") && obj.get("package").isJsonPrimitive())
+                            depCoveredPkgs.add(obj.get("package").getAsString());
+                        if (obj.has("packages") && obj.get("packages").isJsonArray())
+                            for (JsonElement x : obj.getAsJsonArray("packages"))
+                                depCoveredPkgs.add(x.getAsString());
+                    }
                     for (JsonElement el : fns) {
                         JsonObject m = el.getAsJsonObject();
                         if (!m.has("hash") || m.get("hash").isJsonNull()) continue; // v0.1 / no cross-jar id
@@ -1008,10 +1046,17 @@ public class Candor {
                                         pair.getValue().add(x.getAsString());
                         }
                         if (!de.effects.isEmpty()) crossDeps.put(h, de);
-                        // Entry-level coverage fallback (older reports without `packages`): the
-                        // hash's owner prefix gives the EXACT package — no uppercase heuristic.
-                        int slash = h.lastIndexOf('/');
-                        if (slash > 0) depCoveredPkgs.add(h.substring(0, slash).replace('/', '.'));
+                        // Entry-level coverage fallback (reports with no package field): the hash's
+                        // package prefix gives the EXACT package. The spec join key is `pkg#qual`
+                        // (Rust/TS) — take what's before `#`; this engine's own hash is the
+                        // slash-form `owner/Class.method(desc)`, so fall back to the last `/`.
+                        int hashSep = h.indexOf('#');
+                        if (hashSep > 0) {
+                            depCoveredPkgs.add(h.substring(0, hashSep));
+                        } else {
+                            int slash = h.lastIndexOf('/');
+                            if (slash > 0) depCoveredPkgs.add(h.substring(0, slash).replace('/', '.'));
+                        }
                     }
                 } catch (Exception ex) {
                     // skip unreadable / unparseable dependency reports (like the Rust impl)
@@ -1204,8 +1249,13 @@ public class Candor {
                     if (effect != null) dir.add(effect);
                     if (owner.equals("java.lang.Class")
                             && (min.name.equals("getMethod") || min.name.equals("getDeclaredMethod"))) {
-                        String lit = firstLiteralArg(mn, min);
-                        if (lit != null) reflectPairs.add(new String[] { id, lit });
+                        // Capture the literal method NAME (nearest String, not an unrelated earlier
+                        // constant) AND the RECEIVER class (the `X.class` literal). The edge is only
+                        // formed in resolution when the receiver is a project class — never a global
+                        // leaf-name match that fabricates an edge to an unrelated same-named method.
+                        String lit = nearestLiteralArg(mn, min);
+                        String recv = reflectReceiver(mn, min);
+                        if (lit != null) reflectPairs.add(new String[] { id, lit, recv == null ? "" : recv });
                     }
                     // κ ledger: key external owners by their EXACT package (the slash-form owner
                     // up to the class segment — no uppercase heuristic, which mangled lowercase/

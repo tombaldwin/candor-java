@@ -114,6 +114,41 @@ javac -d "$W/ctcls" "$W/src/Ct.java"
 want   "effectful constructor reaches its new X() site" "$("$CJ" show "$W/ct.json" Ct.build)" 'Fs'
 absent "a pure constructor stays pure"                  "$(cat "$W/ct.json")"                 '"Ct.pure"'
 
+# ── System.getProperty is JVM config, NOT the OS environment (the scala-library validation fix) ──
+echo "== env vs system properties =="
+cat > "$W/src/EnvProp.java" <<'J'
+public class EnvProp {
+  static String prop() { return System.getProperty("os.name"); }       // JVM property — NOT Env
+  static String env()  { return System.getenv("HOME"); }               // OS env var — Env
+}
+J
+javac -d "$W/epcls" "$W/src/EnvProp.java" 2>/dev/null
+EP=$("$CJ" "$W/epcls" --json "$W/ep.json" >/dev/null 2>&1; cat "$W/ep.json")
+absent "System.getProperty is NOT Env (JVM config, not OS environment)" "$EP" '"EnvProp.prop"'
+want   "System.getenv IS Env"                                           "$("$CJ" show "$W/ep.json" EnvProp.env 2>/dev/null)" 'Env'
+
+# ── bounded CHA (SPEC §4): a dispatch over a project abstraction with >12 impls reads Unknown ─────
+echo "== bounded CHA fan-out =="
+mkdir -p "$W/cha"
+{ echo "public class ChaTest {"
+  echo "  interface Op { void run(); }"
+  for i in $(seq 1 14); do echo "  static class Op$i implements Op { public void run() {} } "; done
+  echo "  static void dispatch(Op o) { o.run(); }"   # 14 impls > 12 -> Unknown, not 14 edges
+  echo "}"; } > "$W/cha/ChaTest.java"
+javac -d "$W/chacls" "$W/cha/ChaTest.java" 2>/dev/null
+CHA=$("$CJ" "$W/chacls" 2>/dev/null | grep 'ChaTest.dispatch')
+want "a >12-impl dispatch reads Unknown (bounded CHA), not all-edges" "$CHA" 'Unknown'
+# and a NARROW dispatch (≤12) still resolves precisely
+mkdir -p "$W/chan"
+{ echo "public class ChaNarrow {"
+  echo "  interface Op { void run(); }"
+  echo "  static class A implements Op { public void run() { try { java.nio.file.Files.readString(java.nio.file.Path.of(\"/x\")); } catch (Exception e) {} } }"
+  echo "  static class B implements Op { public void run() {} }"
+  echo "  static void dispatch(Op o) { o.run(); }"
+  echo "}"; } > "$W/chan/ChaNarrow.java"
+javac -d "$W/chancls" "$W/chan/ChaNarrow.java" 2>/dev/null
+want "a ≤12-impl dispatch still resolves to its impls (A's Fs)" "$("$CJ" "$W/chancls" 2>/dev/null | grep 'ChaNarrow.dispatch')" 'Fs'
+
 echo "== static initializers (<clinit>) =="
 cat > "$W/src/Ci.java" <<'J'
 import java.nio.file.*;

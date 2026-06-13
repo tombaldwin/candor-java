@@ -193,7 +193,11 @@ public class Candor {
         String jsonOut = null;
         for (int i = 1; i < args.length; i++) {
             if (args[i].equals("--json")) {
-                if (i + 1 < args.length) jsonOut = args[++i];
+                if (i + 1 >= args.length) { // a trailing --json with no value must FAIL, not be
+                    System.err.println("candor: --json requires a value"); // silently dropped (a
+                    System.exit(2);                                        // CI gate then diffs a
+                }                                                          // stale baseline ungated)
+                jsonOut = args[++i];
             } else if (args[i].startsWith("--")) {
                 System.err.println("candor: unknown flag " + args[i]
                         + " (usage: candor <dir-or-jar> [--json <file>])");

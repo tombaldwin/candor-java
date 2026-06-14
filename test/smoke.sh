@@ -187,16 +187,26 @@ public class Ci {
   static void viaStaticField() { byte[] b = Cfg.DATA; }  // GETSTATIC triggers <clinit>
   static class Pure { static { int x = 1; } static int f() { return 2; } }
   static void pure() { int n = Pure.f(); }               // pure <clinit> → caller stays pure
-}
+  static class Helper { Helper() { read(); }
+    void read() { try { Files.readAllBytes(Path.of("/x")); } catch (Exception e) {} } } // Fs in a METHOD
+  static class Deep { static final Helper H = new Helper(); // <clinit> CONSTRUCTS Helper — Fs is TRANSITIVE
+    static int g() { return 1; } }
+  static void viaDeep() { int n = Deep.g(); }            // triggers Deep.<clinit>; the Fs is transitive
+}                                                         // (via the Helper ctor) → NOT attributed to viaDeep
 J
 javac -d "$W/cics" "$W/src/Ci.java"
 "$CJ" "$W/cics" --json "$W/ci.json" >/dev/null 2>&1
 ci="$(cat "$W/ci.json")"
 # the audit output prints the fn name unescaped (the JSON escapes `<clinit>` as <…)
 want   "static initializer's Fs is captured"               "$("$CJ" "$W/cics" 2>/dev/null)" 'Ci$Cfg.<clinit> '
-want   "static CALL triggers <clinit> (Fs propagates)"     "$("$CJ" show "$W/ci.json" Ci.viaStaticCall)"  'Fs'
+want   "static CALL triggers <clinit> (DIRECT Fs propagates)" "$("$CJ" show "$W/ci.json" Ci.viaStaticCall)"  'Fs'
 want   "static FIELD access triggers <clinit>"             "$("$CJ" show "$W/ci.json" Ci.viaStaticField)" 'Fs'
 absent "a pure static initializer doesn't flood callers"   "$ci" '"Ci.pure"'
+# A <clinit> trigger contributes the static block's DIRECT effects only — the TRANSITIVE effects of objects
+# it builds are not attributed to the trigger (else a guava-vendoring jar collapses to Log). The <clinit>
+# keeps its OWN inferred; the trigger site does not.
+absent "transitive <clinit> Fs (via a constructed object) is NOT attributed to the trigger" "$ci" '"Ci.viaDeep"'
+want   "the <clinit> itself keeps its own transitive Fs"   "$("$CJ" show "$W/ci.json" 'Ci$Deep.<clinit>')" 'Fs'
 want   "a <clinit> unit carries unitKind initializer (spec 0.5 draft)" \
        "$(python3 -c "import json;print([e.get('unitKind','') for e in json.load(open('$W/ci.json'))['functions'] if e['fn'].endswith('.<clinit>')][0])")" 'initializer'
 

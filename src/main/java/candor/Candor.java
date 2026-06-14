@@ -1829,7 +1829,82 @@ public class Candor {
         return false;
     }
 
+    /** Proven-PURE accessors/factories/inert ctors on owners whose effect is otherwise whole-owner
+     *  (File→Fs, Socket→Net, Clock, Random→Rand, ZipFile/JarFile→Fs, Clipboard). The cardinal sin of
+     *  an effect-checker is fabricating an effect on a PURE method, so we SUBTRACT only the methods we
+     *  can prove do NO I/O / read NO entropy / read NO clock — and KEEP the whole-owner effect for
+     *  everything else (the safe direction: when in doubt, KEEP it effectful). Mirrors the verb-gating
+     *  already done for java.nio.file.Files, java.sql.Statement, kotlin.io.FilesKt, ktor, InetAddress,
+     *  JNDI. Consulted by `classify` BEFORE the owner-match fires; returns true ⇒ classify returns null.
+     *  CRITICAL: this may only ever REMOVE a fabrication, never introduce an under-report, so the
+     *  effectful members of each type (delete/exists/getCanonicalPath; getInput/OutputStream; instant;
+     *  nextInt/getSeed; entries; getContents) are deliberately ABSENT here and keep firing. */
+    static boolean isPureHandleAccessor(String owner, String method) {
+        switch (owner) {
+            // java.io.File — a File is just an immutable PATHNAME object; these touch NO filesystem.
+            // The inert ctor (`new File(...)`) does ZERO I/O (it stores the path string). The effectful
+            // members — delete/exists/isDirectory/mkdir/listFiles/getCanonicalPath/getCanonicalFile
+            // (resolve symlinks → touch the FS) — are NOT listed, so they keep returning Fs.
+            case "java.io.File":
+                return method.equals("<init>") || method.equals("getName") || method.equals("getParent")
+                        || method.equals("getParentFile") || method.equals("getPath")
+                        || method.equals("getAbsolutePath") || method.equals("getAbsoluteFile")
+                        || method.equals("isAbsolute") || method.equals("toURI") || method.equals("toPath")
+                        || method.equals("toString") || method.equals("hashCode") || method.equals("equals")
+                        || method.equals("compareTo");
+            // java.net.Socket family — these read fields cached on the handle (the port/address bound at
+            // construct/connect time, the closed/bound/connected flags); they do NO wire I/O. The I/O
+            // boundary (getInputStream/getOutputStream/connect/bind/send/receive/close) is NOT listed.
+            case "java.net.Socket":
+            case "java.net.ServerSocket":
+            case "java.net.DatagramSocket":
+                return method.equals("getPort") || method.equals("getLocalPort")
+                        || method.equals("getInetAddress") || method.equals("getLocalAddress")
+                        || method.equals("getLocalSocketAddress") || method.equals("getRemoteSocketAddress")
+                        || method.equals("isClosed") || method.equals("isBound") || method.equals("isConnected")
+                        || method.equals("isInputShutdown") || method.equals("isOutputShutdown")
+                        || method.equals("getReuseAddress") || method.equals("getSoTimeout")
+                        || method.equals("toString") || method.equals("hashCode") || method.equals("equals");
+            // java.time.Clock — the factories (systemUTC/system/fixed/offset/tick*) build a Clock object
+            // and the accessors (getZone/withZone) read its zone; NONE read the wall clock. The actual
+            // clock reads — instant()/millis() — are NOT listed, so they keep returning Clock.
+            case "java.time.Clock":
+                return method.equals("systemUTC") || method.equals("systemDefaultZone")
+                        || method.equals("system") || method.equals("fixed") || method.equals("offset")
+                        || method.equals("tick") || method.equals("tickMillis") || method.equals("tickSeconds")
+                        || method.equals("tickMinutes") || method.equals("getZone") || method.equals("withZone")
+                        || method.equals("toString") || method.equals("hashCode") || method.equals("equals");
+            // java.util.Random / SecureRandom / ThreadLocalRandom / SplittableRandom — these read NO
+            // entropy: getInstance/getInstanceStrong build a generator, getAlgorithm/getProvider read
+            // its metadata. The draws (next*/ints/longs/doubles/getSeed/generateSeed/setSeed) are NOT
+            // listed, so they keep returning Rand.
+            case "java.util.Random":
+            case "java.security.SecureRandom":
+            case "java.util.concurrent.ThreadLocalRandom":
+            case "java.util.SplittableRandom":
+                return method.equals("getInstance") || method.equals("getInstanceStrong")
+                        || method.equals("getAlgorithm") || method.equals("getProvider")
+                        || method.equals("getParameters") || method.equals("toString");
+            // java.util.zip.ZipFile / java.util.jar.JarFile — getName returns the cached path, size()
+            // returns the cached entry count (no re-read of the archive). The ctor (OPENS the archive),
+            // entries()/getInputStream()/getEntry()/stream() (READ it) are NOT listed → keep Fs.
+            case "java.util.zip.ZipFile":
+            case "java.util.jar.JarFile":
+                return method.equals("getName") || method.equals("size") || method.equals("toString");
+            // java.awt.datatransfer.Clipboard — getName returns the clipboard's label; the actual
+            // get/setContents (read/write the system clipboard) are NOT listed → keep Clipboard.
+            case "java.awt.datatransfer.Clipboard":
+                return method.equals("getName") || method.equals("toString");
+            default:
+                return false;
+        }
+    }
+
     static String classify(String owner, String method, String desc) {
+        // A proven-pure accessor/factory/inert-ctor on an otherwise-effectful handle type is PURE — the
+        // whole-owner rules below would fabricate the type's effect on it (the cardinal sin). Subtract
+        // these explicitly; everything else on the type keeps its effect. (See isPureHandleAccessor.)
+        if (isPureHandleAccessor(owner, method)) return null;
         // Reflection / dynamic invocation — could call ANYTHING; honestly `Unknown`, never assumed
         // pure (SPEC §4 trust contract). This is the JVM's defining opacity, and the foundation of
         // the framework magic (Spring proxies, DI) candor can't otherwise see through.

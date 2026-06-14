@@ -172,6 +172,22 @@ CASES = [
      [
         ("dc.receive(java.nio.ByteBuffer.allocate(1))", "receives a datagram from the wire"),
      ], "Net"),
+
+    # ---- java.util.logging: the whole-PACKAGE Log gate would paint Log onto the package's pure value
+    # and data types. Level is a pure value object; LogRecord is the DATA carrier (a Handler emits it,
+    # the record does not); LogManager is the registry. Only Logger.log/info/... PRODUCE a record. ----
+    ("JulLogging", "import java.util.logging.*;", "Logger lg, Level lv, LogRecord rec",
+     [
+        ("lv.intValue()",   "returns the level's int rank (field read), emits nothing"),
+        ("lv.getName()",    "returns the level name string, emits nothing"),
+        ("rec.getLevel()",  "reads the record's level field, emits nothing"),
+        ("rec.getMessage()","reads the record's message field, emits nothing"),
+        ("rec.getMillis()", "reads the record's timestamp field, emits nothing"),
+        ("LogManager.getLogManager()", "returns the singleton registry, emits nothing"),
+     ],
+     [
+        ("lg.info(\"x\")",  "PRODUCES a log record at INFO — the genuine emit verb"),
+     ], "Log"),
 ]
 
 

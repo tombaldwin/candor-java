@@ -2046,45 +2046,39 @@ public class Candor {
         }
     }
 
-    // The `Log` effect means PRODUCING a log record (the Logger.trace/debug/info/warn/error/log emit
-    // + the backend append). The whole-package logging gate (classify, below) synthesizes `Log` on
-    // ANY method of ANY class in the slf4j/jul/log4j2/logback packages — but those packages also hold
-    // pure DATA TYPES and HELPERS that emit nothing: a Marker is a plain named bag of references, a
-    // MarkerFactory is a registry lookup, MessageFormatter is a string formatter. Classifying their
-    // accessors as `Log` is the cardinal sin (a PURE method reported effectful — found by a real-world
-    // slf4j/guava sweep). This carve-out subtracts ONLY methods PROVABLY pure by bytecode (a data
-    // accessor / a factory lookup / a formatter helper doing no output); the genuine emit verbs
-    // (trace/debug/info/warn/error/log) and is*Enabled predicates are NOT listed, so they keep `Log`.
-    // SAFETY: when in doubt, keep Log — never drop a real logging effect.
-    static boolean isPureLoggingAccessor(String owner, String method) {
-        // Universal pure accessors — none of these names is an emit verb, on ANY logging-package class.
-        // getName returns the logger/marker name (a cached field), the Object trio is identity/printing.
-        if (method.equals("equals") || method.equals("hashCode") || method.equals("toString")
-                || method.equals("getName"))
-            return true;
-        // A Marker is a plain data object: a name + a list of child Marker references. NONE of its
-        // members emits a log record — they manipulate/inspect that in-memory tree (verified by
-        // bytecode: getName is getfield;areturn, contains/add/remove iterate the referenceList).
-        if (owner.equals("org.slf4j.Marker") || owner.equals("org.slf4j.helpers.BasicMarker")
-                || owner.equals("org.slf4j.helpers.MarkerIgnoringBase"))
-            return method.equals("add") || method.equals("remove") || method.equals("contains")
-                    || method.equals("hasChildren") || method.equals("hasReferences")
-                    || method.equals("iterator");
-        // MarkerFactory / IMarkerFactory — a registry LOOKUP that returns (or interns) a Marker data
-        // object; no logging output (bytecode: getstatic the factory field, invoke getMarker, areturn).
-        if (owner.equals("org.slf4j.MarkerFactory") || owner.equals("org.slf4j.IMarkerFactory")
-                || owner.equals("org.slf4j.helpers.BasicMarkerFactory"))
-            return method.equals("getMarker") || method.equals("getDetachedMarker")
-                    || method.equals("getIMarkerFactory") || method.equals("exists")
-                    || method.equals("detachMarker");
-        // MessageFormatter / NormalizedParameters / FormattingTuple — pure string-formatting helpers.
-        // They build a FormattingTuple from a pattern + args (and split a trailing Throwable from the
-        // argument array); they produce a String/tuple, they emit NOTHING (verified by bytecode).
-        if (owner.equals("org.slf4j.helpers.MessageFormatter")
-                || owner.equals("org.slf4j.helpers.NormalizedParameters")
-                || owner.equals("org.slf4j.helpers.FormattingTuple"))
-            return true;
-        return false;
+    // The `Log` effect means PRODUCING a log record. The genuine emit surface across slf4j / jul /
+    // log4j2 / logback is a NARROW, NAMED set of verbs on the Logger (and the fluent builder's terminal
+    // `log()`, the backend Appender/Handler append). Everything else in those packages — Markers, Levels,
+    // ThreadContext maps, Message data types, formatters, config/registry lookups, util helpers — emits
+    // NOTHING. The classify() gate therefore fires Log ONLY on these verbs (VERB-PRECISE), letting every
+    // other logging-package method fall through to its real, transitively-analysed effect (a util that
+    // reads env is Env, a config loader that reads a file is Fs) — never a fabricated Log.
+    //
+    // This replaces an earlier whole-package gate + a growing per-type pure-accessor allowlist: a real
+    // log4j-api scan showed the whole-package rule fabricated Log on ~100 non-Logger classes (and MASKED
+    // their genuine Env/Fs). Verb-precise is the same narrowing the Rust classifier applies to
+    // effect-bearing crates. SAFETY (no lost Log): every public emit entry point is named here, and
+    // loggers reach the backend through these verbs, so Log still propagates through the call graph.
+    static boolean isLogEmitVerb(String method) {
+        switch (method) {
+            // slf4j / log4j2 / logback shared level verbs + the generic log()
+            case "trace": case "debug": case "info": case "warn": case "error":
+            case "fatal": case "log":
+            // jul level verbs + structured/localised emit
+            case "severe": case "warning": case "config": case "fine": case "finer": case "finest":
+            case "logp": case "logrb": case "entering": case "exiting":
+            // throwable-logging emit (all four frameworks)
+            case "catching": case "throwing":
+            // log4j2 internal emit pipeline (public verbs delegate through these; named so Log propagates
+            // even when the terminal append is out-of-jar) + fluent/structured entry points
+            case "logIfEnabled": case "logMessage": case "printf": case "doLog": case "forcedLog":
+            case "logEvent": case "traceEntry": case "traceExit":
+            // backend append / publish (log4j-core Appender, jul Handler, logback Appender)
+            case "doAppend": case "append": case "callAppenders": case "publish":
+                return true;
+            default:
+                return false;
+        }
     }
 
     static String classify(String owner, String method, String desc) {
@@ -2253,13 +2247,14 @@ public class Candor {
                 || owner.equals("java.util.SplittableRandom")
                 || (owner.equals("java.lang.Math") && method.equals("random")))
             return "Rand";
-        // Logging — PRODUCING a log record. This is a whole-PACKAGE prefix gate, so it would otherwise
-        // fabricate `Log` on the pure data types / helpers those packages also contain (Markers, the
-        // MarkerFactory lookup, the MessageFormatter). Carve those out FIRST — they emit nothing.
+        // Logging — PRODUCING a log record. VERB-PRECISE within the slf4j / jul / log4j2 / logback
+        // packages: only the genuine emit verbs are Log; every other method (Markers, Levels, Message
+        // data types, ThreadContext maps, formatters, config/registry, util) falls through to its real
+        // transitively-analysed effect, never a fabricated Log. (See isLogEmitVerb.)
         if (owner.startsWith("org.slf4j.") || owner.startsWith("java.util.logging.")
                 || owner.startsWith("org.apache.logging.log4j.") || owner.startsWith("ch.qos.logback.")) {
-            if (isPureLoggingAccessor(owner, method)) return null;
-            return "Log";
+            if (isLogEmitVerb(method)) return "Log";
+            return null;
         }
         // Clipboard — system clipboard access (spec §1). Toolkit hands out the system clipboard/selection
         // handle; the `Clipboard` get/setContents are the read/write. Restores cross-impl vocabulary parity

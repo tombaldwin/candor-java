@@ -1480,7 +1480,10 @@ public class Candor {
                         // to EVERY override and connected ~everything to a few effect sources — a
                         // ThreadLocalRandom in one TrieMap.computeSize flooded 13k functions with Rand.
                         boolean broad = cha.size() > CHA_FANOUT_LIMIT;
-                        List<String> targets = broad ? List.of() : cha;
+                        // A java.util container-iteration dispatch never fans out (it would smear one
+                        // effectful custom iterator/collection over every loop — the jts Rand fabrication).
+                        boolean container = isStdlibContainerDispatch(min.owner);
+                        List<String> targets = (broad || container) ? List.of() : cha;
                         edges.get(id).addAll(targets);
                         // A broad NON-exempt dispatch over a project abstraction → Unknown, not silent
                         // (an effectful impl could be among the many; exempt methods are conventionally
@@ -1679,6 +1682,27 @@ public class Candor {
         if (owner.equals("java/lang/Runnable") && name.equals("run")) return true;
         if (owner.equals("java/util/concurrent/Callable") && name.equals("call")) return true;
         return false;
+    }
+
+    /** Dispatch on a java.util CONTAINER interface — iterating/accessing a collection is ubiquitous and
+     *  conventionally pure, and the syntactic pass can't pin which concrete iterator/collection the
+     *  receiver is. CHA-fanning a `next()`/`iterator()`/`get()` to EVERY project implementor smears one
+     *  effectful custom impl's effect onto every method that loops: jts's `HotPixelIndex$CoordinateShuffler
+     *  .next` (a real `Random.nextInt`) fabricated `Rand` onto 1228 pure geometry methods, because it is
+     *  one of only 3 `Iterator` impls (under the fan-out limit). Don't fan these out (the fanout-size bound
+     *  only catches library-scale hierarchies). An effect in a custom container impl is then under-reported
+     *  at the loop site (the safe direction) — the impl's own method still carries it. */
+    static boolean isStdlibContainerDispatch(String owner) {
+        switch (owner) {
+            case "java/util/Iterator": case "java/util/ListIterator": case "java/util/Enumeration":
+            case "java/util/Iterable": case "java/util/Collection": case "java/util/List":
+            case "java/util/Set": case "java/util/Queue": case "java/util/Deque":
+            case "java/util/Map": case "java/util/SortedSet": case "java/util/NavigableSet":
+            case "java/util/SortedMap": case "java/util/NavigableMap": case "java/util/Spliterator":
+                return true;
+            default:
+                return false;
+        }
     }
 
     static boolean annoPresent(List<AnnotationNode> anns, String descSubstring) {

@@ -81,6 +81,12 @@ public class Candor {
     static List<ClassNode> ALL = List.of();                  // all loaded classes (for CHA)
     static final Map<String, ClassNode> byName = new HashMap<>();      // internal name -> node
     static final Map<String, Set<String>> transSupersCache = new HashMap<>();
+    /** Reverse-subtype index for CHA: owner internal name -> loaded classes that are owner-or-a-subtype
+     *  (the transitive subclasses + interface implementors). Built ONCE after load, before analyze, so
+     *  chaTargets() consults O(subtypes-of-owner) candidates instead of scanning ALL classes per call
+     *  site — collapsing the old O(call-sites × all-classes) quadratic. Membership is exactly the old
+     *  per-class predicate `c.name == owner || transSupers(c.name).contains(owner)`, inverted. */
+    static final Map<String, List<String>> subtypeIndex = new HashMap<>();
     static final Set<String> classesWithClinit = new HashSet<>(); // project classes with a `<clinit>`
 
     // --- Spring markers (internal names / annotation-desc substrings) ---
@@ -216,6 +222,7 @@ public class Candor {
             byName.put(cn.name, cn);
             for (MethodNode mn : cn.methods) if (mn.name.equals("<clinit>")) classesWithClinit.add(cn.name);
         }
+        buildSubtypeIndex(classes);
         computeSpringTypes(classes);
         // Cross-jar inheritance (candor-spec §2): load dependency reports named by CANDOR_DEPS BEFORE
         // analyze, so a call into an already-analyzed dependency inherits its effects (vs assumed-pure).
@@ -1665,11 +1672,34 @@ public class Candor {
         return r;
     }
 
+    /** Build the reverse-subtype index ONCE: owner -> loaded classes that are owner-or-a-subtype, in
+     *  `ALL` order. For each loaded class `c` we record `c.name` against itself and against every
+     *  transitive supertype of `c.name` — the exact inverse of chaTargets()'s old per-class predicate
+     *  `c.name == owner || transSupers(c.name).contains(owner)`. Iterating `classes` (== `ALL`) in
+     *  order makes every owner's candidate list identical, element-for-element AND in the same order,
+     *  to the old ALL-scan that filtered by that predicate. Reuses the memoized transSupers. */
+    static void buildSubtypeIndex(List<ClassNode> classes) {
+        for (ClassNode c : classes) {
+            // self: the `c.name == owner` arm. (No dedupe needed — a class appears once in `classes`,
+            // and `c.name ∉ transSupers(c.name)` for a well-formed acyclic chain; transSupers seeds the
+            // cache before recursing so a self-cycle can't add c.name to its own super set.)
+            subtypeIndex.computeIfAbsent(c.name, k -> new ArrayList<>()).add(c.name);
+            // every transitive supertype: the `transSupers(c.name).contains(owner)` arm.
+            for (String sup : transSupers(c.name))
+                subtypeIndex.computeIfAbsent(sup, k -> new ArrayList<>()).add(c.name);
+        }
+    }
+
     /** CHA: project subtypes-or-self of `owner` that provide a concrete (name,desc) impl. */
     static List<String> chaTargets(String owner, String name, String desc) {
         Set<String> out = new LinkedHashSet<>();
-        for (ClassNode c : ALL) {
-            if (!(c.name.equals(owner) || transSupers(c.name).contains(owner))) continue;
+        // O(subtypes-of-owner) via the precomputed reverse index instead of scanning ALL classes. The
+        // candidate set + its order are identical to the old `for (ClassNode c : ALL) if (c.name==owner
+        // || transSupers(c.name).contains(owner))` filter (see buildSubtypeIndex), so `out` — and thus
+        // cha.size(), the ≤CHA_FANOUT_LIMIT cap, the Unknown-on-overflow, and the edge set — are byte-
+        // for-byte unchanged.
+        for (String cName : subtypeIndex.getOrDefault(owner, List.of())) {
+            ClassNode c = byName.get(cName);
             if (declaresConcrete(c, name, desc)) {
                 out.add(c.name.replace('/', '.') + "." + name);
             } else {

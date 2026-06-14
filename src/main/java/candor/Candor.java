@@ -170,6 +170,76 @@ public class Candor {
         }
     }
 
+    /** Clear every mutable analysis accumulator so a scan starts from a clean slate. The engine's
+     *  state lives in static collections (an analysis cache the binary fills once per run, not a
+     *  singleton the process owns); without this a SECOND in-process scan would double-count edges
+     *  and inherit the prior run's repo/entity/clinit/rule sets — fabricating effects from leftover
+     *  state. Resetting here makes {@link #runScan} REENTRANT (the audit's highest structural risk).
+     *  The immutable Set.of(...) markers (REPO_MARKERS, AMBIENT, KNOWN_EFFECTS, INJECTION,
+     *  PATH_CTOR_OWNERS) are constants, not state, and are deliberately left untouched. */
+    static void resetState() {
+        direct.clear(); edges.clear(); loc.clear(); hashOf.clear(); viaCross.clear();
+        crossDeps.clear(); fsDirect.clear(); unknownWhy.clear();
+        entryPoints.clear(); projectClasses.clear(); repoTypes.clear();
+        entityTables.clear(); repoTables.clear(); feignTypes.clear();
+        ALL = List.of();
+        byName.clear(); transSupersCache.clear(); subtypeIndex.clear();
+        overloadDescs.clear(); classesWithClinit.clear();
+        taintEnabled = false; tainted.clear();
+        denyRules.clear(); allowRules.clear(); forbidRules.clear();
+        hostsDirect.clear(); cmdsDirect.clear(); pathsDirect.clear(); tablesDirect.clear();
+        kappaSeen.clear(); reflectPairs.clear(); kappaClassified.clear(); depCoveredPkgs.clear();
+    }
+
+    /** The analysis core, factored out of {@link #main} so it is REENTRANT (resets first) and free of
+     *  System.exit (so it is unit-testable in-process): reset state, load the target, index overloads
+     *  + CHA subtypes, compute Spring types, chain CANDOR_DEPS, run per-method analysis, resolve
+     *  literal-reflection edges, then return the inferred per-method effect sets from the fixpoint. */
+    static Map<String, TreeSet<String>> runScan(Path target) throws IOException {
+        resetState();
+        List<ClassNode> classes = load(target);
+        ALL = classes;
+        for (ClassNode cn : classes) {
+            projectClasses.add(cn.name);
+            byName.put(cn.name, cn);
+            String dc = cn.name.replace('/', '.');
+            for (MethodNode mn : cn.methods) {
+                if (mn.name.equals("<clinit>")) classesWithClinit.add(cn.name);
+                // Record this name's descriptor so overloaded names can be disambiguated (methodId).
+                // EXCLUDE compiler-generated bridge/synthetic forwarders (a covariant-return or generic
+                // bridge `call()Object` beside the real `call()Integer`): they aren't real overloads —
+                // counting them would split a UNIQUE method (every Callable/Comparable impl) into a
+                // disambiguated id and break the bare-`class.method` the report/entry-point rows use.
+                // The bridge body just forwards to the real method, so leaving both bare (re-collapsed)
+                // is correct — its effect IS the real method's.
+                if ((mn.access & (Opcodes.ACC_BRIDGE | Opcodes.ACC_SYNTHETIC)) != 0) continue;
+                overloadDescs.computeIfAbsent(dc + "." + mn.name, k -> new HashSet<>()).add(mn.desc);
+            }
+        }
+        buildSubtypeIndex(classes);
+        computeSpringTypes(classes);
+        // Cross-jar inheritance (candor-spec §2): load dependency reports named by CANDOR_DEPS BEFORE
+        // analyze, so a call into an already-analyzed dependency inherits its effects (vs assumed-pure).
+        loadCrossDeps(System.getenv("CANDOR_DEPS"), provenance()[0]);
+        taintEnabled = System.getenv("CANDOR_TAINT") != null; // read before analyze (the pass runs per method)
+        for (ClassNode cn : classes) analyze(cn);
+
+        // Resolve literal-getMethod reflection: edge to the named method OF THE RECEIVER CLASS only —
+        // `Helper.class.getMethod("strip")` → `Helper.strip`. A receiver we can't pin to a project
+        // class (a runtime `obj.getClass()`, or an EXTERNAL `String.class`) forms NO edge: the §4
+        // Unknown stands. Matching by global leaf-name suffix (the old code) fabricated an edge to an
+        // unrelated same-named project method — the exact "candor never fabricates an effect" breach
+        // candor-scan's own comments record removing. Unknown stays either way (reflection is opaque).
+        for (String[] pair : reflectPairs) {
+            String caller = pair[0], lit = pair[1], recv = pair[2];
+            if (recv.isEmpty() || !projectClasses.contains(recv)) continue;
+            String callee = recv.replace('/', '.') + "." + lit;
+            if (edges.containsKey(callee)) edges.get(caller).add(callee);
+        }
+
+        return fixpoint();
+    }
+
     public static void main(String[] args) throws IOException {
         if (args.length < 1) {
             System.err.println("usage: candor <dir-or-jar-of-classes> [--json <file>]");
@@ -207,6 +277,23 @@ public class Candor {
             System.out.println(Query.policyJson());
             System.exit(0);
         }
+        // `selftest-reentrant <dirty-target> <real-target> --json <file>` — the REENTRANCY gate. Not a
+        // user workflow: it scans <dirty-target> first to populate every static accumulator, then scans
+        // <real-target> in the SAME process and writes <real-target>'s report. If resetState() missed an
+        // accumulator, the first scan's edges/repo/entity/rule state leak into the second and the report
+        // diverges from a fresh-process scan of <real-target> — which soundness/reentrancy.sh diffs.
+        if (args[0].equals("selftest-reentrant")) {
+            String rj = null;
+            for (int i = 3; i < args.length; i++) if (args[i].equals("--json") && i + 1 < args.length) rj = args[++i];
+            if (args.length < 3 || rj == null) {
+                System.err.println("usage: candor selftest-reentrant <dirty-target> <real-target> --json <file>");
+                System.exit(2);
+            }
+            runScan(Path.of(args[1]));                       // dirty the statics
+            var inferred = runScan(Path.of(args[2]));        // real scan must be independent of the above
+            writeJson(inferred, rj); writeCallgraph(rj);
+            System.exit(0);
+        }
         // The first arg is the scan target (a dir/jar) — a flag there is a typo or a newer-doc flag
         // an older jar doesn't know; fail loudly rather than scan a path named after it.
         var scanFlags = java.util.Set.of("--json"); // --agents handled above; the rest are unknown here
@@ -224,47 +311,7 @@ public class Candor {
             }
         }
 
-        List<ClassNode> classes = load(Path.of(args[0]));
-        ALL = classes;
-        for (ClassNode cn : classes) {
-            projectClasses.add(cn.name);
-            byName.put(cn.name, cn);
-            String dc = cn.name.replace('/', '.');
-            for (MethodNode mn : cn.methods) {
-                if (mn.name.equals("<clinit>")) classesWithClinit.add(cn.name);
-                // Record this name's descriptor so overloaded names can be disambiguated (methodId).
-                // EXCLUDE compiler-generated bridge/synthetic forwarders (a covariant-return or generic
-                // bridge `call()Object` beside the real `call()Integer`): they aren't real overloads —
-                // counting them would split a UNIQUE method (every Callable/Comparable impl) into a
-                // disambiguated id and break the bare-`class.method` the report/entry-point rows use.
-                // The bridge body just forwards to the real method, so leaving both bare (re-collapsed)
-                // is correct — its effect IS the real method's.
-                if ((mn.access & (Opcodes.ACC_BRIDGE | Opcodes.ACC_SYNTHETIC)) != 0) continue;
-                overloadDescs.computeIfAbsent(dc + "." + mn.name, k -> new HashSet<>()).add(mn.desc);
-            }
-        }
-        buildSubtypeIndex(classes);
-        computeSpringTypes(classes);
-        // Cross-jar inheritance (candor-spec §2): load dependency reports named by CANDOR_DEPS BEFORE
-        // analyze, so a call into an already-analyzed dependency inherits its effects (vs assumed-pure).
-        loadCrossDeps(System.getenv("CANDOR_DEPS"), provenance()[0]);
-        taintEnabled = System.getenv("CANDOR_TAINT") != null; // read before analyze (the pass runs per method)
-        for (ClassNode cn : classes) analyze(cn);
-
-        // Resolve literal-getMethod reflection: edge to the named method OF THE RECEIVER CLASS only —
-        // `Helper.class.getMethod("strip")` → `Helper.strip`. A receiver we can't pin to a project
-        // class (a runtime `obj.getClass()`, or an EXTERNAL `String.class`) forms NO edge: the §4
-        // Unknown stands. Matching by global leaf-name suffix (the old code) fabricated an edge to an
-        // unrelated same-named project method — the exact "candor never fabricates an effect" breach
-        // candor-scan's own comments record removing. Unknown stays either way (reflection is opaque).
-        for (String[] pair : reflectPairs) {
-            String caller = pair[0], lit = pair[1], recv = pair[2];
-            if (recv.isEmpty() || !projectClasses.contains(recv)) continue;
-            String target = recv.replace('/', '.') + "." + lit;
-            if (edges.containsKey(target)) edges.get(caller).add(target);
-        }
-
-        Map<String, TreeSet<String>> inferred = fixpoint();
+        Map<String, TreeSet<String>> inferred = runScan(Path.of(args[0]));
 
         // JSON output is orthogonal — write first so `--json` can snapshot a baseline.
         if (jsonOut != null) { writeJson(inferred, jsonOut); writeCallgraph(jsonOut); }

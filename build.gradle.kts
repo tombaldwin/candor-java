@@ -13,9 +13,9 @@ group = "io.poly.candor"
 
 repositories { mavenCentral() }
 dependencies {
-    implementation("org.ow2.asm:asm:9.7")
-    implementation("org.ow2.asm:asm-tree:9.7")
-    implementation("org.ow2.asm:asm-analysis:9.7") // AS-EFF-007 taint dataflow (Analyzer/Interpreter)
+    implementation("org.ow2.asm:asm:9.8")
+    implementation("org.ow2.asm:asm-tree:9.8")
+    implementation("org.ow2.asm:asm-analysis:9.8") // AS-EFF-007 taint dataflow (Analyzer/Interpreter)
     implementation("com.google.code.gson:gson:2.11.0")
 }
 java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }

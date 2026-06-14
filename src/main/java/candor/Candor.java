@@ -1215,12 +1215,31 @@ public class Candor {
     }
 
     static void collectClasses(Path root, List<ClassNode> out) throws IOException {
+        int[] skipped = {0};
+        String[] firstErr = {null};
         try (Stream<Path> s = Files.walk(root)) {
             for (Path p : (Iterable<Path>) s.filter(x -> x.toString().endsWith(".class"))::iterator) {
-                ClassNode cn = new ClassNode();
-                new ClassReader(Files.readAllBytes(p)).accept(cn, 0);
-                out.add(cn);
+                // A MULTI-RELEASE jar ships version-specific overrides under META-INF/versions/<N>/; analyse
+                // the BASE classes (the runtime picks the override; the base is the portable surface) and
+                // skip the versioned copies — they are duplicates of the same class, and the newest ones may
+                // be a bytecode version even a current ASM can't read.
+                if (p.toString().replace('\\', '/').contains("/META-INF/versions/")) continue;
+                // TOLERATE a class ASM can't parse (a future-major-version class, a corrupt entry): skip it
+                // and DISCLOSE the count, never ABORT the whole scan on one bad class (the old behaviour —
+                // one Java-25 entry in a multi-release jar threw IllegalArgumentException and killed the run).
+                try {
+                    ClassNode cn = new ClassNode();
+                    new ClassReader(Files.readAllBytes(p)).accept(cn, 0);
+                    out.add(cn);
+                } catch (Exception | LinkageError e) {
+                    skipped[0]++;
+                    if (firstErr[0] == null) firstErr[0] = p.getFileName() + ": " + e.getMessage();
+                }
             }
+        }
+        if (skipped[0] > 0) {
+            System.err.println("candor-java: skipped " + skipped[0] + " unparseable class file(s) — their effects are"
+                + " INVISIBLE, not analysed (e.g. " + firstErr[0] + "). A newer bytecode version may need an ASM bump.");
         }
     }
 

@@ -1882,15 +1882,19 @@ public class Candor {
                         || method.equals("toString") || method.equals("hashCode") || method.equals("equals");
             // java.util.Random / SecureRandom / ThreadLocalRandom / SplittableRandom — these read NO
             // entropy: getInstance/getInstanceStrong build a generator, getAlgorithm/getProvider read
-            // its metadata. The draws (next*/ints/longs/doubles/getSeed/generateSeed/setSeed) are NOT
-            // listed, so they keep returning Rand.
+            // its metadata. ThreadLocalRandom.current() is a pure thread-local FACTORY: it returns the
+            // singleton `instance` and, on first call, seeds the thread's state from an atomic counter
+            // (mixMurmur64 of a counter) — NOT from OS entropy/a CSPRNG (verified in the JDK source);
+            // the actual draws come later. The draws (next*/ints/longs/doubles/getSeed/generateSeed/
+            // setSeed) are NOT listed, so they keep returning Rand.
             case "java.util.Random":
             case "java.security.SecureRandom":
             case "java.util.concurrent.ThreadLocalRandom":
             case "java.util.SplittableRandom":
                 return method.equals("getInstance") || method.equals("getInstanceStrong")
                         || method.equals("getAlgorithm") || method.equals("getProvider")
-                        || method.equals("getParameters") || method.equals("toString");
+                        || method.equals("getParameters") || method.equals("current")
+                        || method.equals("toString");
             // java.util.zip.ZipFile / java.util.jar.JarFile — getName returns the cached path, size()
             // returns the cached entry count (no re-read of the archive). The ctor (OPENS the archive),
             // entries()/getInputStream()/getEntry()/stream() (READ it) are NOT listed → keep Fs.
@@ -1901,6 +1905,30 @@ public class Candor {
             // get/setContents (read/write the system clipboard) are NOT listed → keep Clipboard.
             case "java.awt.datatransfer.Clipboard":
                 return method.equals("getName") || method.equals("toString");
+            // java.nio.channels.FileChannel / AsynchronousFileChannel — isOpen() is `!closed`, a pure
+            // field read inherited from AbstractInterruptibleChannel (verified in the JDK source). The
+            // real file I/O — read/write/map/force/truncate/transferTo/transferFrom/lock/size — is NOT
+            // listed → keeps Fs. DELIBERATELY ABSENT: position() (the no-arg getter). Despite looking
+            // like a cached accessor, FileChannelImpl.position() issues an lseek syscall (nd.seek(fd,-1))
+            // to read the current OS file-pointer, so it is genuine Fs I/O — the SAFETY RULE (keep the
+            // effect when not PROVABLY pure) forbids subtracting it.
+            case "java.nio.channels.FileChannel":
+            case "java.nio.channels.AsynchronousFileChannel":
+                return method.equals("isOpen")
+                        || method.equals("toString") || method.equals("hashCode") || method.equals("equals");
+            // java.nio.channels socket channels — the accessors read fields cached on the handle (open
+            // flag, connect state, blocking mode, the addresses bound/connected at setup time) and
+            // socket() lazily wraps the channel in an adaptor object; NONE touch the wire (verified in
+            // SocketChannelImpl/ServerSocketChannelImpl/DatagramChannelImpl). The network boundary —
+            // connect/finishConnect/read/write/send/receive/bind/accept — is NOT listed → keeps Net.
+            case "java.nio.channels.SocketChannel":
+            case "java.nio.channels.ServerSocketChannel":
+            case "java.nio.channels.DatagramChannel":
+                return method.equals("isOpen") || method.equals("isConnected")
+                        || method.equals("isConnectionPending") || method.equals("isBlocking")
+                        || method.equals("getLocalAddress") || method.equals("getRemoteAddress")
+                        || method.equals("socket")
+                        || method.equals("toString") || method.equals("hashCode") || method.equals("equals");
             default:
                 return false;
         }

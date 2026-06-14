@@ -87,6 +87,15 @@ public class Candor {
      *  site — collapsing the old O(call-sites × all-classes) quadratic. Membership is exactly the old
      *  per-class predicate `c.name == owner || transSupers(c.name).contains(owner)`, inverted. */
     static final Map<String, List<String>> subtypeIndex = new HashMap<>();
+    /** Overload index: `dottedClass.methodName` -> the set of distinct JVM descriptors declared under
+     *  that name in that class. A report/edge node is keyed `class.method` (descriptor-LESS); when a
+     *  name has MORE THAN ONE descriptor here the overloads would collapse into one node whose effects
+     *  are the UNION of every overload — a PURE `hmac(byte[])` inheriting an effectful `hmac(File)`'s
+     *  Fs (commons-codec, the cardinal sin: a pure byte[] HMAC reported as a filesystem read). So an
+     *  OVERLOADED name gets a readable param-type suffix (`hmac(byte[])`) appended to its id at EVERY
+     *  build/lookup site; a UNIQUE name keeps the bare `class.method` — so non-overloaded methods (incl.
+     *  every conformance fixture, matched by leaf name) are byte-for-byte unchanged. */
+    static final Map<String, Set<String>> overloadDescs = new HashMap<>();
     static final Set<String> classesWithClinit = new HashSet<>(); // project classes with a `<clinit>`
 
     // --- Spring markers (internal names / annotation-desc substrings) ---
@@ -220,7 +229,19 @@ public class Candor {
         for (ClassNode cn : classes) {
             projectClasses.add(cn.name);
             byName.put(cn.name, cn);
-            for (MethodNode mn : cn.methods) if (mn.name.equals("<clinit>")) classesWithClinit.add(cn.name);
+            String dc = cn.name.replace('/', '.');
+            for (MethodNode mn : cn.methods) {
+                if (mn.name.equals("<clinit>")) classesWithClinit.add(cn.name);
+                // Record this name's descriptor so overloaded names can be disambiguated (methodId).
+                // EXCLUDE compiler-generated bridge/synthetic forwarders (a covariant-return or generic
+                // bridge `call()Object` beside the real `call()Integer`): they aren't real overloads —
+                // counting them would split a UNIQUE method (every Callable/Comparable impl) into a
+                // disambiguated id and break the bare-`class.method` the report/entry-point rows use.
+                // The bridge body just forwards to the real method, so leaving both bare (re-collapsed)
+                // is correct — its effect IS the real method's.
+                if ((mn.access & (Opcodes.ACC_BRIDGE | Opcodes.ACC_SYNTHETIC)) != 0) continue;
+                overloadDescs.computeIfAbsent(dc + "." + mn.name, k -> new HashSet<>()).add(mn.desc);
+            }
         }
         buildSubtypeIndex(classes);
         computeSpringTypes(classes);
@@ -319,7 +340,7 @@ public class Candor {
             TreeSet<String> p = performed.computeIfAbsent(dc, k -> new TreeSet<>());
             for (MethodNode mn : cn.methods) {
                 if (mn.name.startsWith("<")) continue;
-                var inf = inferred.get(dc + "." + mn.name);
+                var inf = inferred.get(methodId(dc, mn.name, mn.desc));
                 if (inf != null) p.addAll(inf);
             }
         }
@@ -1268,7 +1289,7 @@ public class Candor {
             // edges to `X.<init>`, and a class-load trigger (`new`, a static call, a static field access)
             // edges to `X.<clinit>` (see below), so an effectful constructor OR static initializer
             // propagates to its use site instead of being silently pure.
-            String id = dottedClass + "." + mn.name;
+            String id = methodId(dottedClass, mn.name, mn.desc);
             var dir = direct.computeIfAbsent(id, k -> new TreeSet<>());
             edges.computeIfAbsent(id, k -> new HashSet<>());
             loc.putIfAbsent(id, cn.sourceFile + ":" + firstLine(mn));
@@ -1470,8 +1491,9 @@ public class Candor {
                                     .add("dispatch:" + owner + "." + min.name);
                         }
                     } else if (projectClasses.contains(min.owner)) {
-                        // static / special (super, private, ctor) — the exact target.
-                        edges.get(id).add(owner + "." + min.name);
+                        // static / special (super, private, ctor) — the exact target (descriptor known,
+                        // so an overloaded callee resolves to the right overload's node).
+                        edges.get(id).add(methodId(owner, min.name, min.desc));
                     }
                     // Cross-jar inheritance (candor-spec §2): a call into a DEPENDENCY analyzed
                     // separately — inherit its recorded effects via the stable method-ref hash. Only
@@ -1511,7 +1533,7 @@ public class Candor {
                             // a never-called private `exec(..)` → a phantom Exec + command literal on the
                             // spawner). A live private helper is still reached transitively via its caller.
                             if (!am.name.startsWith("<") && (am.access & Opcodes.ACC_PRIVATE) == 0)
-                                edges.get(id).add(tin.desc.replace('/', '.') + "." + am.name);
+                                edges.get(id).add(methodId(tin.desc.replace('/', '.'), am.name, am.desc));
                     }
                 } else if (insn instanceof FieldInsnNode fin
                         && (fin.getOpcode() == Opcodes.GETSTATIC || fin.getOpcode() == Opcodes.PUTSTATIC)) {
@@ -1537,7 +1559,7 @@ public class Candor {
                     // it so they propagate here — else passing an effectful lambda looks pure.
                     for (Object a : idin.bsmArgs) {
                         if (a instanceof Handle h && projectClasses.contains(h.getOwner()))
-                            edges.get(id).add(h.getOwner().replace('/', '.') + "." + h.getName());
+                            edges.get(id).add(methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc()));
                     }
                 }
             }
@@ -1701,7 +1723,7 @@ public class Candor {
         for (String cName : subtypeIndex.getOrDefault(owner, List.of())) {
             ClassNode c = byName.get(cName);
             if (declaresConcrete(c, name, desc)) {
-                out.add(c.name.replace('/', '.') + "." + name);
+                out.add(methodId(c.name.replace('/', '.'), name, desc));
             } else {
                 // c is owner-or-a-subtype that INHERITS the impl from its OWN superchain — a concrete
                 // GRANDPARENT (the ubiquitous `Foo` / `Foo$AbstractBase` library pattern, where the impl
@@ -1728,9 +1750,50 @@ public class Candor {
     static String nearestConcreteSuper(String internal, String name, String desc) {
         for (String sup : transSupers(internal)) {
             ClassNode c = byName.get(sup);
-            if (c != null && declaresConcrete(c, name, desc)) return sup.replace('/', '.') + "." + name;
+            if (c != null && declaresConcrete(c, name, desc)) return methodId(sup.replace('/', '.'), name, desc);
         }
         return null;
+    }
+
+    /** The node/edge id for a project method. UNIQUE name in its class → bare `class.method` (so every
+     *  non-overloaded method, including every conformance fixture matched by leaf name, is unchanged).
+     *  OVERLOADED name (>1 descriptor under `class.method`) → a stable per-overload suffix derived from
+     *  the descriptor's param types (`HmacUtils.hmac(byte[])`), so a pure overload no longer unions an
+     *  effectful sibling's effect. Keyed by the DECLARING class so the node-build site (the method's own
+     *  class) and every edge site (call-site `owner`/CHA-resolved class) agree on the same id. A
+     *  desc/owner candor can't see (a non-project owner, an unknown descriptor) falls back to the bare
+     *  name — harmless, since those never key a project node. */
+    static String methodId(String dottedClass, String name, String desc) {
+        Set<String> descs = overloadDescs.get(dottedClass + "." + name);
+        if (descs == null || descs.size() <= 1 || desc == null)
+            return dottedClass + "." + name;
+        return dottedClass + "." + name + "(" + paramTypeList(desc) + ")";
+    }
+
+    /** A method descriptor's argument types as a readable, comma-separated list of source-form names
+     *  (`(MessageDigest,byte[])` -> `MessageDigest,byte[]`) — the human-facing overload disambiguator.
+     *  Stable per descriptor and collision-free across a class's overloads (Java forbids two overloads
+     *  with the same erased parameter types). */
+    static String paramTypeList(String desc) {
+        StringBuilder sb = new StringBuilder();
+        for (Type t : Type.getArgumentTypes(desc)) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(shortTypeName(t));
+        }
+        return sb.toString();
+    }
+
+    /** A Type as its short source name: `byte[]`, `MessageDigest` (simple name for objects, so the
+     *  suffix stays readable), `int`, etc. */
+    static String shortTypeName(Type t) {
+        if (t.getSort() == Type.ARRAY)
+            return shortTypeName(t.getElementType()) + "[]".repeat(t.getDimensions());
+        if (t.getSort() == Type.OBJECT) {
+            String cn = t.getClassName();
+            int dot = cn.lastIndexOf('.');
+            return dot >= 0 ? cn.substring(dot + 1) : cn;
+        }
+        return t.getClassName(); // primitives: int, long, byte, ...
     }
 
     static boolean declaresConcrete(ClassNode c, String name, String desc) {
@@ -2202,7 +2265,7 @@ public class Candor {
             TreeSet<String> p = performed.computeIfAbsent(dc, k -> new TreeSet<>());
             for (MethodNode mn : cn.methods) {
                 if (mn.name.startsWith("<")) continue;
-                String fn = dc + "." + mn.name;
+                String fn = methodId(dc, mn.name, mn.desc);
                 fnToClass.put(fn, dc);
                 var inf = inferred.get(fn);
                 if (inf != null) p.addAll(inf);

@@ -302,6 +302,40 @@ want   "reachable: reports the entry-point union"      "$rch" 'union over'
 rjson="$("$CJ" reachable "$W/t.json" --json)"
 want   "reachable --json: structured effect surface"   "$rjson" '"entryPoints"'
 
+echo "== overload disambiguation: a pure overload never unions an effectful sibling's effect =="
+# candor keys a report node by class.method — descriptor-LESS. Overloaded methods (same name, different
+# params) would collapse into ONE node whose effects are the UNION of every overload, so a PURE overload
+# inherits an effectful sibling's effect — the cardinal sin (commons-codec: a pure `hmac(byte[])` reported
+# as a filesystem read, borrowed from `hmac(File)`). FIX: an OVERLOADED name gets a readable param-type
+# suffix per overload; a UNIQUE name keeps the bare class.method (so conformance leaf-name matching and
+# every non-overloaded method are unchanged). Here `digest(byte[])` is pure and `digest(File)` is Fs:
+# they must be TWO distinct entries with their OWN correct effects, and `solo()` (unique) stays bare.
+cat > "$W/src/Ov.java" <<'J'
+import java.io.*;
+public class Ov {
+  // overloaded: one pure (in-memory), one effectful (reads a File) — SAME name `digest`
+  static int digest(byte[] b) { int h=0; for (byte x: b) h=h*31+x; return h; }        // PURE
+  static int digest(File f) throws IOException { return new FileInputStream(f).read(); } // Fs
+  static int solo(byte[] b) { return digest(b); }   // UNIQUE name -> bare class.method, must stay pure
+  public static void main(String[] a) throws IOException { digest(new byte[0]); digest(new File("x")); solo(new byte[0]); }
+}
+J
+javac -d "$W/ovcls" "$W/src/Ov.java" 2>/dev/null
+"$CJ" "$W/ovcls" --json "$W/ov.json" >/dev/null 2>&1
+# Node ids live in the callgraph (the report's `functions` omits pure methods); assert the id FORMS there.
+ovcg="$(cat "$W/ov.callgraph.json")"
+# Two DISTINCT nodes exist for the overloaded name `digest`, each with its OWN param-typed id.
+want   "the effectful overload is its own node Ov.digest(File)"   "$ovcg" '"Ov.digest(File)"'
+want   "the pure overload is a SEPARATE node Ov.digest(byte[])"   "$ovcg" '"Ov.digest(byte[])"'
+# The effectful overload carries Fs; the pure overload does NOT inherit it (the cardinal-sin guard).
+want    "  …the File overload carries Fs"                         "$("$CJ" show "$W/ov.json" 'Ov.digest(File)')" 'Fs'
+wantnot "  …the byte[] overload does NOT inherit the sibling's Fs" "$("$CJ" show "$W/ov.json" 'Ov.digest(byte[])')" 'Fs'
+# A UNIQUE method keeps the BARE class.method id (NOT disambiguated) and stays pure — the conformance
+# leaf-name contract: disambiguation must touch ONLY overloaded names.
+want    "a unique method keeps the bare class.method id"          "$ovcg" '"Ov.solo"'
+wantnot "  …the bare unique id is NOT disambiguated"              "$ovcg" '"Ov.solo('
+wantnot "  …and the unique pure method has no fabricated effect"  "$("$CJ" show "$W/ov.json" 'Ov.solo')" 'Fs'
+
 echo "== path: effect provenance (the chain to the source) =="
 # A 3-deep Net chain: handle -> mid -> leafNet. `path` traces it to the direct source.
 cat > "$W/src/Pp.java" <<'J'

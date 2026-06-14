@@ -17,9 +17,13 @@ dependencies {
     implementation("org.ow2.asm:asm-tree:9.8")
     implementation("org.ow2.asm:asm-analysis:9.8") // AS-EFF-007 taint dataflow (Analyzer/Interpreter)
     implementation("com.google.code.gson:gson:2.11.0")
+    // Native unit tests (JUnit 5). junit-platform-launcher must be declared explicitly on Gradle 9+.
+    testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.10.2")
 }
 java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
 application { mainClass = "candor.Candor" }
+tasks.named<Test>("test") { useJUnitPlatform() }
 
 // Lint gate: javac's own -Xlint, warnings-as-errors. The engine is single-module hand-written Java;
 // -Xlint catches the real footguns (unchecked/rawtypes, fallthrough, finally, overrides) without a

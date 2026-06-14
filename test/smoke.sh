@@ -711,6 +711,12 @@ import java.time.*;
 import java.util.Random;
 import java.security.SecureRandom;
 import java.util.zip.ZipFile;
+import java.util.concurrent.ThreadLocalRandom;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.channels.SocketChannel;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.DatagramChannel;
 public class Fab {
   // java.io.File — a File is an immutable pathname; these touch no filesystem (the ctor does ZERO I/O).
   static String  fName()   { return new File("/tmp/x").getName(); }          // PURE (inert ctor + accessor)
@@ -739,6 +745,27 @@ public class Fab {
   static String  zName(ZipFile z)    { return z.getName(); }                 // PURE (no ctor in this fn)
   static int     zSize(ZipFile z)    { return z.size(); }                    // PURE
   static Object  zEntries(ZipFile z) { return z.entries(); }                 // Fs (reads archive)
+  // java.util.concurrent.ThreadLocalRandom — current() is a pure thread-local factory (seeds from an
+  // atomic counter, not OS entropy); the draws read entropy.
+  static ThreadLocalRandom tlrCur()  { return ThreadLocalRandom.current(); } // PURE (factory, no entropy)
+  static int     tlrNext()           { return ThreadLocalRandom.current().nextInt(); } // Rand (draws)
+  // java.nio.channels.FileChannel — isOpen() is a field read; position()/size() lseek/stat the fd.
+  static boolean fcOpen(FileChannel fc) { return fc.isOpen(); }              // PURE (!closed field read)
+  static long    fcPos(FileChannel fc)  throws Exception { return fc.position(); } // Fs (lseek syscall)
+  static long    fcSize(FileChannel fc) throws Exception { return fc.size(); }     // Fs (stat the file)
+  static int     fcRead(FileChannel fc) throws Exception { return fc.read(ByteBuffer.allocate(1)); } // Fs
+  // NIO socket channels — open/state/blocking flags + cached addresses + socket() adaptor are pure;
+  // read/write/accept/receive touch the wire.
+  static boolean scOpen(SocketChannel sc)        { return sc.isOpen(); }            // PURE
+  static boolean scConn(SocketChannel sc)        { return sc.isConnected(); }       // PURE
+  static java.net.SocketAddress scLoc(SocketChannel sc) throws Exception { return sc.getLocalAddress(); } // PURE
+  static java.net.Socket scSock(SocketChannel sc) { return sc.socket(); }           // PURE (adaptor)
+  static int     scRead(SocketChannel sc) throws Exception { return sc.read(ByteBuffer.allocate(1)); } // Net
+  static boolean sscOpen(ServerSocketChannel ssc) { return ssc.isOpen(); }          // PURE
+  static java.nio.channels.SocketChannel sscAccept(ServerSocketChannel ssc) throws Exception { return ssc.accept(); } // Net
+  static boolean dcOpen(DatagramChannel dc)      { return dc.isOpen(); }            // PURE
+  static java.net.SocketAddress dcRemote(DatagramChannel dc) throws Exception { return dc.getRemoteAddress(); } // PURE
+  static java.net.SocketAddress dcRecv(DatagramChannel dc) throws Exception { return dc.receive(ByteBuffer.allocate(1)); } // Net
 }
 J
 javac -d "$W/fabcls" "$W/src/Fab.java" 2>/dev/null
@@ -758,6 +785,15 @@ absent "Clock.getZone accessor is pure"                    "$fab" '"Fab.cZone"'
 absent "SecureRandom.getAlgorithm is pure (no entropy)"    "$fab" '"Fab.rAlgo"'
 absent "ZipFile.getName accessor is pure"                  "$fab" '"Fab.zName"'
 absent "ZipFile.size accessor is pure (cached count)"      "$fab" '"Fab.zSize"'
+absent "ThreadLocalRandom.current is pure (factory)"       "$fab" '"Fab.tlrCur"'
+absent "FileChannel.isOpen is pure (field read)"           "$fab" '"Fab.fcOpen"'
+absent "SocketChannel.isOpen is pure"                      "$fab" '"Fab.scOpen"'
+absent "SocketChannel.isConnected is pure"                 "$fab" '"Fab.scConn"'
+absent "SocketChannel.getLocalAddress is pure (cached)"    "$fab" '"Fab.scLoc"'
+absent "SocketChannel.socket adaptor is pure"              "$fab" '"Fab.scSock"'
+absent "ServerSocketChannel.isOpen is pure"                "$fab" '"Fab.sscOpen"'
+absent "DatagramChannel.isOpen is pure"                    "$fab" '"Fab.dcOpen"'
+absent "DatagramChannel.getRemoteAddress is pure (cached)" "$fab" '"Fab.dcRemote"'
 # (b) genuinely-effectful members on the SAME types STILL fire (no under-report introduced)
 want   "File.delete still Fs"                "$("$CJ" show "$W/fab.json" 'Fab.fDelete')"   'Fs'
 want   "File.exists still Fs"                "$("$CJ" show "$W/fab.json" 'Fab.fExists')"   'Fs'
@@ -768,6 +804,13 @@ want   "Clock.millis still Clock"            "$("$CJ" show "$W/fab.json" 'Fab.cM
 want   "Random.nextInt still Rand"           "$("$CJ" show "$W/fab.json" 'Fab.rNext')"     'Rand'
 want   "SecureRandom.generateSeed still Rand" "$("$CJ" show "$W/fab.json" 'Fab.rSeed')"    'Rand'
 want   "ZipFile.entries still Fs"            "$("$CJ" show "$W/fab.json" 'Fab.zEntries')"  'Fs'
+want   "ThreadLocalRandom.nextInt still Rand" "$("$CJ" show "$W/fab.json" 'Fab.tlrNext')" 'Rand'
+want   "FileChannel.position still Fs (lseek)" "$("$CJ" show "$W/fab.json" 'Fab.fcPos')"  'Fs'
+want   "FileChannel.size still Fs (stat)"    "$("$CJ" show "$W/fab.json" 'Fab.fcSize')"   'Fs'
+want   "FileChannel.read still Fs"           "$("$CJ" show "$W/fab.json" 'Fab.fcRead')"   'Fs'
+want   "SocketChannel.read still Net"        "$("$CJ" show "$W/fab.json" 'Fab.scRead')"   'Net'
+want   "ServerSocketChannel.accept still Net" "$("$CJ" show "$W/fab.json" 'Fab.sscAccept')" 'Net'
+want   "DatagramChannel.receive still Net"   "$("$CJ" show "$W/fab.json" 'Fab.dcRecv')"   'Net'
 
 echo "== anon-class instantiation edges to the INVOKABLE surface, not dead private helpers =="
 # A runtime-executor anon class (Runnable) has its run() invoked outside project code, so the

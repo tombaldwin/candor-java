@@ -49,4 +49,13 @@ done
 echo
 echo "soundness: $pass passed, $fail failed"
 [ -n "$failed_seeds" ] && echo "soundness: failing seeds:$failed_seeds"
-[ "$fail" -eq 0 ]
+
+# Fabrication probe — the precision counterpart to the soundness fuzzer above. The fuzzer guards against
+# UNDER-reporting (a reachable effect going silent-pure); this guards against OVER-reporting (a PURE
+# accessor/factory of an effect-bearing owner being fabricated effectful — candor's cardinal sin). It
+# reuses the launcher we just built. A failure here gates the run exactly like a soundness failure.
+echo
+echo "soundness: running fabrication probe…"
+CJ="$CJ" python3 "$ROOT/soundness/fabrication_probe.py"; fab=$?
+
+[ "$fail" -eq 0 ] && [ "$fab" -eq 0 ]

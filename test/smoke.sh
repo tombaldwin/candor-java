@@ -697,6 +697,78 @@ absent "DataFlavor data type stays pure"    "$clip"                             
 want   "Clipboard is an ambient authority (AS-EFF-004 flags a direct reach)" \
        "$(CANDOR_NO_AMBIENT=1 "$CJ" "$W/clcls" 2>&1)" '[AS-EFF-004] `Clip.get`'
 
+echo "== whole-owner fabrication guard: pure handle accessors + inert ctors stay PURE =="
+# The cardinal sin of an effect-checker is fabricating an effect on a PURE method. Several handle types
+# carry their effect at WHOLE-OWNER level (File→Fs, Socket→Net, Clock, Random→Rand, ZipFile/JarFile→Fs,
+# Clipboard) — but their path/field accessors and inert ctors do NO I/O / read NO entropy / read NO
+# clock. isPureHandleAccessor SUBTRACTS exactly those; everything else on the type keeps its effect.
+# Each case is proven BOTH directions: (a) the pure accessor/inert-ctor is pure, (b) a genuinely
+# effectful method on the SAME type still fires. (Found: every accessor below was fabricating.)
+cat > "$W/src/Fab.java" <<'J'
+import java.io.File;
+import java.net.Socket;
+import java.time.*;
+import java.util.Random;
+import java.security.SecureRandom;
+import java.util.zip.ZipFile;
+public class Fab {
+  // java.io.File — a File is an immutable pathname; these touch no filesystem (the ctor does ZERO I/O).
+  static String  fName()   { return new File("/tmp/x").getName(); }          // PURE (inert ctor + accessor)
+  static String  fParent() { return new File("/tmp/x").getParent(); }        // PURE
+  static boolean fAbs()    { return new File("/tmp/x").isAbsolute(); }       // PURE
+  static java.net.URI fUri(){ return new File("/tmp/x").toURI(); }           // PURE
+  static boolean fDelete() { return new File("/tmp/x").delete(); }           // Fs (real I/O)
+  static boolean fExists() { return new File("/tmp/x").exists(); }           // Fs (stat)
+  static String  fCanon()  { try { return new File("/tmp/x").getCanonicalPath(); } catch (Exception e) { return null; } } // Fs (resolves symlinks)
+  // java.net.Socket — these read fields cached on the handle; the streams are the wire boundary.
+  static int     sPort(Socket s)   { return s.getPort(); }                   // PURE
+  static boolean sClosed(Socket s) { return s.isClosed(); }                  // PURE
+  static java.net.SocketAddress sRemote(Socket s) { return s.getRemoteSocketAddress(); } // PURE
+  static java.io.OutputStream sOut(Socket s) { try { return s.getOutputStream(); } catch (Exception e) { return null; } } // Net (I/O boundary)
+  // java.time.Clock — factories/accessors read NO wall clock; instant()/millis() do.
+  static Clock   cUtc()            { return Clock.systemUTC(); }             // PURE
+  static Clock   cFixed()          { return Clock.fixed(Instant.EPOCH, ZoneOffset.UTC); } // PURE
+  static ZoneId  cZone(Clock c)    { return c.getZone(); }                   // PURE
+  static Instant cInstant(Clock c) { return c.instant(); }                   // Clock (reads time)
+  static long    cMillis(Clock c)  { return c.millis(); }                    // Clock (reads time)
+  // java.util.Random / SecureRandom — metadata is pure; the draws read entropy.
+  static String  rAlgo(SecureRandom r) { return r.getAlgorithm(); }          // PURE
+  static int     rNext(Random r)       { return r.nextInt(); }               // Rand (draws)
+  static byte[]  rSeed(SecureRandom r) { return r.generateSeed(8); }         // Rand (entropy)
+  // java.util.zip.ZipFile — getName/size are cached; entries() re-reads the archive.
+  static String  zName(ZipFile z)    { return z.getName(); }                 // PURE (no ctor in this fn)
+  static int     zSize(ZipFile z)    { return z.size(); }                    // PURE
+  static Object  zEntries(ZipFile z) { return z.entries(); }                 // Fs (reads archive)
+}
+J
+javac -d "$W/fabcls" "$W/src/Fab.java" 2>/dev/null
+"$CJ" "$W/fabcls" --json "$W/fab.json" >/dev/null 2>&1
+fab="$(cat "$W/fab.json")"
+# (a) pure accessors / inert ctors — effect ABSENT
+absent "File.getName + inert new File() is pure (no Fs)"   "$fab" '"Fab.fName"'
+absent "File.getParent is pure"                            "$fab" '"Fab.fParent"'
+absent "File.isAbsolute is pure"                           "$fab" '"Fab.fAbs"'
+absent "File.toURI is pure"                                "$fab" '"Fab.fUri"'
+absent "Socket.getPort is pure (cached field)"             "$fab" '"Fab.sPort"'
+absent "Socket.isClosed is pure"                           "$fab" '"Fab.sClosed"'
+absent "Socket.getRemoteSocketAddress is pure"             "$fab" '"Fab.sRemote"'
+absent "Clock.systemUTC factory is pure (reads no time)"   "$fab" '"Fab.cUtc"'
+absent "Clock.fixed factory is pure"                       "$fab" '"Fab.cFixed"'
+absent "Clock.getZone accessor is pure"                    "$fab" '"Fab.cZone"'
+absent "SecureRandom.getAlgorithm is pure (no entropy)"    "$fab" '"Fab.rAlgo"'
+absent "ZipFile.getName accessor is pure"                  "$fab" '"Fab.zName"'
+absent "ZipFile.size accessor is pure (cached count)"      "$fab" '"Fab.zSize"'
+# (b) genuinely-effectful members on the SAME types STILL fire (no under-report introduced)
+want   "File.delete still Fs"                "$("$CJ" show "$W/fab.json" 'Fab.fDelete')"   'Fs'
+want   "File.exists still Fs"                "$("$CJ" show "$W/fab.json" 'Fab.fExists')"   'Fs'
+want   "File.getCanonicalPath still Fs"      "$("$CJ" show "$W/fab.json" 'Fab.fCanon')"    'Fs'
+want   "Socket.getOutputStream still Net"    "$("$CJ" show "$W/fab.json" 'Fab.sOut')"      'Net'
+want   "Clock.instant still Clock"           "$("$CJ" show "$W/fab.json" 'Fab.cInstant')"  'Clock'
+want   "Clock.millis still Clock"            "$("$CJ" show "$W/fab.json" 'Fab.cMillis')"   'Clock'
+want   "Random.nextInt still Rand"           "$("$CJ" show "$W/fab.json" 'Fab.rNext')"     'Rand'
+want   "SecureRandom.generateSeed still Rand" "$("$CJ" show "$W/fab.json" 'Fab.rSeed')"    'Rand'
+want   "ZipFile.entries still Fs"            "$("$CJ" show "$W/fab.json" 'Fab.zEntries')"  'Fs'
+
 echo "== ktor CLIENT: HttpStatement.execute is the Net dispatch (stub-compiled) =="
 # The ktor request verbs (get/post/request) are INLINE suspend extensions — the compiler emits one
 # funnel, HttpStatement.execute (+ the response-body readers). Stub the owner so the consumer's call

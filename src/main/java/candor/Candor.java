@@ -1964,6 +1964,47 @@ public class Candor {
         }
     }
 
+    // The `Log` effect means PRODUCING a log record (the Logger.trace/debug/info/warn/error/log emit
+    // + the backend append). The whole-package logging gate (classify, below) synthesizes `Log` on
+    // ANY method of ANY class in the slf4j/jul/log4j2/logback packages — but those packages also hold
+    // pure DATA TYPES and HELPERS that emit nothing: a Marker is a plain named bag of references, a
+    // MarkerFactory is a registry lookup, MessageFormatter is a string formatter. Classifying their
+    // accessors as `Log` is the cardinal sin (a PURE method reported effectful — found by a real-world
+    // slf4j/guava sweep). This carve-out subtracts ONLY methods PROVABLY pure by bytecode (a data
+    // accessor / a factory lookup / a formatter helper doing no output); the genuine emit verbs
+    // (trace/debug/info/warn/error/log) and is*Enabled predicates are NOT listed, so they keep `Log`.
+    // SAFETY: when in doubt, keep Log — never drop a real logging effect.
+    static boolean isPureLoggingAccessor(String owner, String method) {
+        // Universal pure accessors — none of these names is an emit verb, on ANY logging-package class.
+        // getName returns the logger/marker name (a cached field), the Object trio is identity/printing.
+        if (method.equals("equals") || method.equals("hashCode") || method.equals("toString")
+                || method.equals("getName"))
+            return true;
+        // A Marker is a plain data object: a name + a list of child Marker references. NONE of its
+        // members emits a log record — they manipulate/inspect that in-memory tree (verified by
+        // bytecode: getName is getfield;areturn, contains/add/remove iterate the referenceList).
+        if (owner.equals("org.slf4j.Marker") || owner.equals("org.slf4j.helpers.BasicMarker")
+                || owner.equals("org.slf4j.helpers.MarkerIgnoringBase"))
+            return method.equals("add") || method.equals("remove") || method.equals("contains")
+                    || method.equals("hasChildren") || method.equals("hasReferences")
+                    || method.equals("iterator");
+        // MarkerFactory / IMarkerFactory — a registry LOOKUP that returns (or interns) a Marker data
+        // object; no logging output (bytecode: getstatic the factory field, invoke getMarker, areturn).
+        if (owner.equals("org.slf4j.MarkerFactory") || owner.equals("org.slf4j.IMarkerFactory")
+                || owner.equals("org.slf4j.helpers.BasicMarkerFactory"))
+            return method.equals("getMarker") || method.equals("getDetachedMarker")
+                    || method.equals("getIMarkerFactory") || method.equals("exists")
+                    || method.equals("detachMarker");
+        // MessageFormatter / NormalizedParameters / FormattingTuple — pure string-formatting helpers.
+        // They build a FormattingTuple from a pattern + args (and split a trailing Throwable from the
+        // argument array); they produce a String/tuple, they emit NOTHING (verified by bytecode).
+        if (owner.equals("org.slf4j.helpers.MessageFormatter")
+                || owner.equals("org.slf4j.helpers.NormalizedParameters")
+                || owner.equals("org.slf4j.helpers.FormattingTuple"))
+            return true;
+        return false;
+    }
+
     static String classify(String owner, String method, String desc) {
         // A proven-pure accessor/factory/inert-ctor on an otherwise-effectful handle type is PURE — the
         // whole-owner rules below would fabricate the type's effect on it (the cardinal sin). Subtract
@@ -2130,10 +2171,14 @@ public class Candor {
                 || owner.equals("java.util.SplittableRandom")
                 || (owner.equals("java.lang.Math") && method.equals("random")))
             return "Rand";
-        // Logging
+        // Logging — PRODUCING a log record. This is a whole-PACKAGE prefix gate, so it would otherwise
+        // fabricate `Log` on the pure data types / helpers those packages also contain (Markers, the
+        // MarkerFactory lookup, the MessageFormatter). Carve those out FIRST — they emit nothing.
         if (owner.startsWith("org.slf4j.") || owner.startsWith("java.util.logging.")
-                || owner.startsWith("org.apache.logging.log4j.") || owner.startsWith("ch.qos.logback."))
+                || owner.startsWith("org.apache.logging.log4j.") || owner.startsWith("ch.qos.logback.")) {
+            if (isPureLoggingAccessor(owner, method)) return null;
             return "Log";
+        }
         // Clipboard — system clipboard access (spec §1). Toolkit hands out the system clipboard/selection
         // handle; the `Clipboard` get/setContents are the read/write. Restores cross-impl vocabulary parity
         // — Clipboard was the one spec effect candor-java never emitted (the Rust impl classifies arboard).

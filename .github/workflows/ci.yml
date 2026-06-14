@@ -39,6 +39,13 @@ jobs:
       - name: Soundness fuzzer
         run: bash soundness/run.sh 40
 
+      # REENTRANCY gate: the engine's state lives in ~33 static accumulators; runScan() calls
+      # resetState() before each scan so a second in-process scan starts clean. This proves it — an
+      # in-process re-scan after an unrelated dirty scan must be byte-identical to a fresh-process scan.
+      # Teeth-verified (removing resetState() leaks the dirty tree's functions and fails the diff).
+      - name: Reentrancy (no state leak across in-process scans)
+        run: bash soundness/reentrancy.sh
+
       # SELF-GATE (candor-spec §7.12): candor-java analyzes ITSELF and holds its own declared policy —
       # the analyzer reads bytecode and writes reports (Fs/Env), and must never grow Net/Db/Exec/Ipc.
       # An effect-gate vendor whose own gate is red has no business gating anyone else.

@@ -766,6 +766,12 @@ public class Fab {
   static boolean dcOpen(DatagramChannel dc)      { return dc.isOpen(); }            // PURE
   static java.net.SocketAddress dcRemote(DatagramChannel dc) throws Exception { return dc.getRemoteAddress(); } // PURE
   static java.net.SocketAddress dcRecv(DatagramChannel dc) throws Exception { return dc.receive(ByteBuffer.allocate(1)); } // Net
+  // java.util.logging — the whole-PACKAGE logging gate would fabricate Log on a Logger's pure name
+  // accessor (getName is getfield;areturn). The genuine emit (info/log) stays Log. (Real-world slf4j
+  // sweep found pure Marker/formatter/factory accessors over-claiming Log; the jul Logger.getName
+  // accessor is the same class of bug, reachable with only JDK types.)
+  static String lgName(java.util.logging.Logger l) { return l.getName(); }   // PURE (cached field read)
+  static void   lgInfo(java.util.logging.Logger l) { l.info("hi"); }         // Log (real emit)
 }
 J
 javac -d "$W/fabcls" "$W/src/Fab.java" 2>/dev/null
@@ -794,6 +800,7 @@ absent "SocketChannel.socket adaptor is pure"              "$fab" '"Fab.scSock"'
 absent "ServerSocketChannel.isOpen is pure"                "$fab" '"Fab.sscOpen"'
 absent "DatagramChannel.isOpen is pure"                    "$fab" '"Fab.dcOpen"'
 absent "DatagramChannel.getRemoteAddress is pure (cached)" "$fab" '"Fab.dcRemote"'
+absent "Logger.getName is pure (cached field, not a Log emit)" "$fab" '"Fab.lgName"'
 # (b) genuinely-effectful members on the SAME types STILL fire (no under-report introduced)
 want   "File.delete still Fs"                "$("$CJ" show "$W/fab.json" 'Fab.fDelete')"   'Fs'
 want   "File.exists still Fs"                "$("$CJ" show "$W/fab.json" 'Fab.fExists')"   'Fs'
@@ -811,6 +818,7 @@ want   "FileChannel.read still Fs"           "$("$CJ" show "$W/fab.json" 'Fab.fc
 want   "SocketChannel.read still Net"        "$("$CJ" show "$W/fab.json" 'Fab.scRead')"   'Net'
 want   "ServerSocketChannel.accept still Net" "$("$CJ" show "$W/fab.json" 'Fab.sscAccept')" 'Net'
 want   "DatagramChannel.receive still Net"   "$("$CJ" show "$W/fab.json" 'Fab.dcRecv')"   'Net'
+want   "Logger.info still Log (real emit)"   "$("$CJ" show "$W/fab.json" 'Fab.lgInfo')"   'Log'
 
 echo "== anon-class instantiation edges to the INVOKABLE surface, not dead private helpers =="
 # A runtime-executor anon class (Runnable) has its run() invoked outside project code, so the

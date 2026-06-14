@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.reflect.TypeToken;
 
@@ -49,10 +50,21 @@ public final class Query {
     static List<Fn> load(String path) throws Exception {
         JsonElement root = JsonParser.parseString(Files.readString(Path.of(path)));
         // v0.2 self-describing envelope { candor, functions:[...] } OR legacy v0.1 bare array [...].
-        JsonArray arr = root.isJsonObject()
-                ? root.getAsJsonObject().getAsJsonArray("functions")
-                : (root.isJsonArray() ? root.getAsJsonArray() : null);
-        if (arr == null) return List.of();
+        // A parsable JSON that is NEITHER (an object with no `functions`, a scalar) is NOT a candor
+        // report — FAIL LOUD. Returning List.of() silently read a half-written/foreign file as "all
+        // pure", a silent under-report (gains then alarmed on everything; show said "no effects").
+        JsonArray arr;
+        if (root.isJsonObject()) {
+            JsonObject obj = root.getAsJsonObject();
+            if (!obj.has("functions"))
+                throw new IllegalArgumentException("not a candor report: object has no 'functions' array");
+            arr = obj.getAsJsonArray("functions"); // a present-but-empty [] is a valid pure report
+        } else if (root.isJsonArray()) {
+            arr = root.getAsJsonArray();
+        } else {
+            throw new IllegalArgumentException("not a candor report: expected an envelope object or a bare array");
+        }
+        if (arr == null) throw new IllegalArgumentException("candor report 'functions' is not an array");
         List<Fn> fns = new Gson().fromJson(arr, new TypeToken<List<Fn>>() {}.getType());
         for (Fn f : fns) { // gson leaves absent optional arrays null — normalize
             if (f.inferred == null) f.inferred = List.of();
@@ -188,7 +200,7 @@ public final class Query {
             System.out.println("candor: no effectful function matching `" + q + "` (pure functions are omitted).");
             return 0;
         }
-        int w = hits.stream().mapToInt(f -> f.fn.length()).max().orElse(0);
+        int w = Math.max(1, hits.stream().mapToInt(f -> f.fn.length()).max().orElse(0)); // never %-0s (an empty fn → MissingFormatWidthException)
         boolean anyStar = false;
         for (Fn f : hits) {
             Set<String> direct = new HashSet<>(f.direct);

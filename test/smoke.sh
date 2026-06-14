@@ -345,6 +345,23 @@ gj="$("$CJ" gains "$W/gcur_dup.json" "$W/gbase1.json" --json)"
 want   "gains: a genuine new effect is still reported"   "$gj" '"Db"'
 want   "gains: dup cur rows do not double-count byFunction" "$(printf '%s' "$gj" | grep -c '"effect"')" '1'
 
+echo "== query loader: a malformed-shape report FAILS LOUD, never silently 'all pure' =="
+# An object with no `functions` key (a half-written / foreign file) was read as List.of() → silent
+# under-report (show said 'no effects', gains alarmed on everything). Now it fails loud (exit 2).
+printf '{"fn":"x","inferred":["Net"]}\n' > "$W/obj.json"
+oj="$("$CJ" show "$W/obj.json" x 2>&1)"; ojc=$?
+want "loader: object-without-functions fails loud (not silent-empty)" "$oj" 'cannot read report'
+want "loader: object-without-functions exits 2" "$ojc" '2'
+# the same malformed file as a gains BASELINE must not read as empty → maximal false alarm
+printf '{"candor":{},"functions":[{"fn":"a","inferred":["Net"]}]}\n' > "$W/gcur.json"
+want "loader: malformed gains baseline fails loud (no phantom all-gained)" "$("$CJ" gains "$W/gcur.json" "$W/obj.json" 2>&1)" 'cannot read baseline'
+# an entry with an empty fn must not crash show with a %-0s MissingFormatWidthException
+printf '[{"inferred":["Db"]}]\n' > "$W/emptyfn.json"
+want "loader: an empty-fn entry renders without a %-0s crash" "$("$CJ" show "$W/emptyfn.json" '' 2>&1)" 'Db'
+# a legitimately-empty report (functions:[]) is STILL a clean pure report, not an error
+printf '{"candor":{"version":"x"},"functions":[]}\n' > "$W/empty.json"
+want "loader: a legit empty report is clean-pure (not an error)" "$("$CJ" show "$W/empty.json" x 2>&1)" 'pure functions are omitted'
+
 echo "== @PostConstruct/@PreDestroy lifecycle callbacks are entry points =="
 # Container-invoked init/shutdown hooks — no project call site, so an init that reads config or a
 # @PreDestroy that flushes/closes does orphaned I/O. The substring match covers javax/ and jakarta/.

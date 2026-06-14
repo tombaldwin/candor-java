@@ -1943,6 +1943,18 @@ public class Candor {
     }
 
     static Map<String, TreeSet<String>> fixpoint() {
+        return computeFixpoint(direct, edges, viaCross);
+    }
+
+    /** The PURE least-fixpoint of effect propagation over the call graph — factored out of
+     *  {@link #fixpoint()} with its three inputs passed explicitly (no static reads) so it is
+     *  unit-testable with synthetic graphs. {@code direct} = each fn's own-body effects;
+     *  {@code edges} = caller → callees; {@code viaCross} = effects inherited from a CANDOR_DEPS
+     *  sibling report. Result: each fn's transitive (inferred) effect set. */
+    static Map<String, TreeSet<String>> computeFixpoint(
+            Map<String, TreeSet<String>> direct,
+            Map<String, Set<String>> edges,
+            Map<String, TreeSet<String>> viaCross) {
         Map<String, TreeSet<String>> eff = new HashMap<>();
         for (var k : direct.keySet()) eff.put(k, new TreeSet<>(direct.get(k)));
         // Seed in effects inherited via cross-jar calls (kept out of `direct` — they're not in this

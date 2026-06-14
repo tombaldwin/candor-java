@@ -210,6 +210,25 @@ want   "the <clinit> itself keeps its own transitive Fs"   "$("$CJ" show "$W/ci.
 want   "a <clinit> unit carries unitKind initializer (spec 0.5 draft)" \
        "$(python3 -c "import json;print([e.get('unitKind','') for e in json.load(open('$W/ci.json'))['functions'] if e['fn'].endswith('.<clinit>')][0])")" 'initializer'
 
+echo "== java.util container dispatch is not CHA-fanned-out (no iterator-effect smear) =="
+cat > "$W/src/Cd.java" <<'J'
+import java.util.*;
+public class Cd {
+  // a custom iterator whose next() genuinely draws entropy
+  static class RandIter implements Iterator<Integer> {
+    public boolean hasNext() { return false; }
+    public Integer next() { return new Random().nextInt(); }   // Rand — a real custom-iterator effect
+  }
+  // a PURE method that iterates a plain list via Iterator.next() — must NOT inherit RandIter's Rand
+  static int sum(List<Integer> xs) { int s = 0; for (Integer x : xs) { s += x; } return s; }
+}
+J
+javac -d "$W/cd" "$W/src/Cd.java"
+"$CJ" "$W/cd" --json "$W/cd.json" >/dev/null 2>&1
+cd_json="$(cat "$W/cd.json")"
+absent "iterating a list does NOT inherit a sibling custom iterator's Rand (the jts smear)" "$cd_json" '"Cd.sum"'
+want   "the custom iterator's own next() keeps its real Rand"  "$("$CJ" show "$W/cd.json" 'Cd$RandIter.next')" 'Rand'
+
 echo "== native methods (invisible JNI body → Unknown) =="
 cat > "$W/src/Nat.java" <<'J'
 public class Nat {

@@ -27,6 +27,11 @@ jobs:
       - name: Compile
         run: ./gradlew --no-daemon compileJava
 
+      # Native unit tests (JUnit 5): the pure static helpers — scope matcher, Net host-literal parser,
+      # the §6.2 literal-coverage rules, the classification predicates — pinned at the method boundary.
+      - name: Unit tests
+        run: ./gradlew --no-daemon test
+
       # Behavioural end-to-end tests: the v0.2 report, the entry schema (hash/calls/fs), the queries,
       # the baseline guard, and cross-jar inheritance + version-trust. (build, run, assert.)
       - name: Smoke tests

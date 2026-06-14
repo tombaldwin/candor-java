@@ -378,6 +378,20 @@ fixpoint unions callee effects into callers. Same architecture as the Rust engin
 and it has grown along the same path: `Unknown` (the §4 trust contract), CHA over project types,
 Spring's declarative surface, the policy gate, and the read-only queries are all in (see above).
 
+## Development
+
+```sh
+./gradlew installDist        # build the CLI → build/install/candor-java/bin/candor-java
+./gradlew test               # native unit tests (JUnit 5): the pure helpers + the propagation fixpoint
+bash test/smoke.sh           # end-to-end behavioural tests (report schema, queries, the gate, cross-jar)
+bash soundness/run.sh        # the §7.13 soundness fuzzer (every reachable method effect-or-Unknown, never silently pure)
+bash soundness/reentrancy.sh # proves the engine is reentrant — no static-state leak across in-process scans
+CJ=build/install/candor-java/bin/candor-java python3 soundness/fabrication_probe.py   # the never-fabricate probe
+```
+
+Compilation is gated by `-Xlint:all -Werror` (`build.gradle.kts`) — javac warnings are build errors.
+The analysis core is reentrant: every scan starts from a clean slate (`resetState()` in `runScan`).
+
 ## License
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.

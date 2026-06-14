@@ -769,6 +769,28 @@ want   "Random.nextInt still Rand"           "$("$CJ" show "$W/fab.json" 'Fab.rN
 want   "SecureRandom.generateSeed still Rand" "$("$CJ" show "$W/fab.json" 'Fab.rSeed')"    'Rand'
 want   "ZipFile.entries still Fs"            "$("$CJ" show "$W/fab.json" 'Fab.zEntries')"  'Fs'
 
+echo "== anon-class instantiation edges to the INVOKABLE surface, not dead private helpers =="
+# A runtime-executor anon class (Runnable) has its run() invoked outside project code, so the
+# instantiation edges to the anon class's methods. A PRIVATE helper can't be a framework-invoked
+# override (reached only via an in-class call), so a DEAD private effectful helper must NOT leak.
+mkdir -p "$W/an"
+cat > "$W/an/A.java" <<'J'
+public class A {
+  Runnable launch() {
+    return new Runnable() {
+      public void run() { helperLive(); }
+      void helperLive() { try { new java.io.FileInputStream("/x").read(); } catch (Exception e) {} }
+      private void helperDead() { try { Runtime.getRuntime().exec("rm -rf /"); } catch (Exception e) {} }
+    };
+  }
+}
+J
+javac -d "$W/anout" "$W/an/A.java" 2>/dev/null
+"$CJ" "$W/anout" --json "$W/an.json" >/dev/null 2>&1
+anLaunch="$("$CJ" show "$W/an.json" 'A.launch')"
+absent "anon-class: a DEAD private exec() does not leak Exec onto the spawner" "$anLaunch" 'Exec'
+want   "anon-class: a LIVE helper reached via the run() override still propagates (Fs)" "$anLaunch" 'Fs'
+
 echo "== ktor CLIENT: HttpStatement.execute is the Net dispatch (stub-compiled) =="
 # The ktor request verbs (get/post/request) are INLINE suspend extensions — the compiler emits one
 # funnel, HttpStatement.execute (+ the response-body readers). Stub the owner so the consumer's call

@@ -1497,7 +1497,13 @@ public class Candor {
                     ClassNode anonCn = byName.get(tin.desc);
                     if (anonCn != null && anonCn.outerMethod != null) {
                         for (MethodNode am : anonCn.methods)
-                            if (!am.name.startsWith("<"))
+                            // Edge to the framework-INVOKABLE surface only: a PRIVATE method can't be an
+                            // override a runtime executor calls — it is reachable solely via an in-class
+                            // call from a live method (a normal edge), so a DEAD private helper must not
+                            // inherit at the instantiation site (it fabricated the helper's effect — e.g.
+                            // a never-called private `exec(..)` → a phantom Exec + command literal on the
+                            // spawner). A live private helper is still reached transitively via its caller.
+                            if (!am.name.startsWith("<") && (am.access & Opcodes.ACC_PRIVATE) == 0)
                                 edges.get(id).add(tin.desc.replace('/', '.') + "." + am.name);
                     }
                 } else if (insn instanceof FieldInsnNode fin

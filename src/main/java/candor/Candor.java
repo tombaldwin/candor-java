@@ -1884,7 +1884,13 @@ public class Candor {
                 var set = eff.computeIfAbsent(caller, k -> new TreeSet<>());
                 int before = set.size();
                 for (String callee : edges.get(caller)) {
-                    var ce = eff.get(callee);
+                    // A class-load TRIGGER edge (the only way to reach a `<clinit>`) contributes the static
+                    // initializer's DIRECT effects ONLY — its own static-block I/O (a banner log, a
+                    // property/env read) is a real first-touch effect, but the deep TRANSITIVE effects of
+                    // the data structures it builds are not (they collapsed jars to `Log` via guava
+                    // construction reaching an error-path logger). The clinit keeps its own full `inferred`
+                    // (its body edges aren't triggers); only its CONSUMERS are limited to `direct`.
+                    var ce = callee.endsWith(".<clinit>") ? direct.get(callee) : eff.get(callee);
                     if (ce != null) set.addAll(ce);
                 }
                 if (set.size() != before) changed = true;

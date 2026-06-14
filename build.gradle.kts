@@ -21,6 +21,14 @@ dependencies {
 java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
 application { mainClass = "candor.Candor" }
 
+// Lint gate: javac's own -Xlint, warnings-as-errors. The engine is single-module hand-written Java;
+// -Xlint catches the real footguns (unchecked/rawtypes, fallthrough, finally, overrides) without a
+// third-party analyzer's setup cost. `this-escape` and `processing` are filtered: the former fires on
+// legitimate constructor patterns, the latter only matters with annotation processors (none here).
+tasks.withType<JavaCompile>().configureEach {
+    options.compilerArgs.addAll(listOf("-Xlint:all,-this-escape,-processing", "-Werror"))
+}
+
 // Provenance (candor-spec §2.1): bake the engine build id (git short hash) + toolchain into a resource
 // so the report's `candor` header reflects the BINARY that ran, not the source tree it was built from.
 fun sh(vararg a: String): String = try {

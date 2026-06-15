@@ -1841,7 +1841,15 @@ public class Candor {
                     // `lambda$…` synthetic, or a referenced method) carries the body's effects. Edge to
                     // it so they propagate here — else passing an effectful lambda looks pure.
                     for (Object a : idin.bsmArgs) {
-                        if (a instanceof Handle h && projectClasses.contains(h.getOwner()))
+                        // Only METHOD-kind handles (tags H_INVOKEVIRTUAL..H_INVOKEINTERFACE, i.e. >= 5)
+                        // are call targets carrying effects. FIELD-kind handles (H_GETFIELD..H_PUTSTATIC,
+                        // tags 1-4) also appear in bsmArgs — e.g. a `record`'s java.lang.runtime.ObjectMethods
+                        // bootstrap for equals/hashCode/toString passes an H_GETFIELD handle per component.
+                        // Their `desc` is a FIELD descriptor (no `()`), and a field read/write is pure, so
+                        // skip them: passing one to methodId would feed a field descriptor to
+                        // Type.getArgumentTypes and crash the whole scan.
+                        if (a instanceof Handle h && h.getTag() >= Opcodes.H_INVOKEVIRTUAL
+                                && projectClasses.contains(h.getOwner()))
                             edges.get(id).add(methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc()));
                     }
                 }
@@ -2066,7 +2074,10 @@ public class Candor {
      *  name — harmless, since those never key a project node. */
     static String methodId(String dottedClass, String name, String desc) {
         Set<String> descs = overloadDescs.get(dottedClass + "." + name);
-        if (descs == null || descs.size() <= 1 || desc == null)
+        // Bare name unless this is a genuine overload with a parseable METHOD descriptor. The `(` guard is
+        // defence-in-depth: a non-method descriptor (a field handle that slipped a caller's guard) must
+        // never reach Type.getArgumentTypes, which overruns and crashes the scan on anything without `()`.
+        if (descs == null || descs.size() <= 1 || desc == null || !desc.startsWith("("))
             return dottedClass + "." + name;
         return dottedClass + "." + name + "(" + paramTypeList(desc) + ")";
     }

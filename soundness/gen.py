@@ -178,6 +178,17 @@ def edge_forms(callee, i):
             f"MR{i} m{i} = MC{i} ? new MR{i}() : new MR{i}(); Runnable rmr{i} = m{i}::go; rmr{i}.run();",
             [f"static boolean MC{i};",
              f"static class MR{i} {{ void go() {{ {callee}(); }} }}"]),
+        # RECORD: a record's compiler-synthesized equals/hashCode/toString carry an `invokedynamic` to
+        # java.lang.runtime.ObjectMethods whose bootstrap args include an H_GETFIELD Handle per component
+        # (owner = the record class, a PROJECT class). That handle is a FIELD-kind handle: its `desc` is a
+        # FIELD descriptor ("I"), not a method descriptor. The component `v{i}` also has an OVERLOADED
+        # method name here (accessor `v{i}()` + `v{i}(int)`), so the handle routes into methodId →
+        # paramTypeList → Type.getArgumentTypes on a parenthesis-less descriptor, which overran and CRASHED
+        # the whole scan (found on a real app: uFlexi). The fix skips non-method-kind handles. The effect is
+        # threaded through `rtouch{i}` so the chain stays sound; the teeth are that the scan must COMPLETE.
+        "record": (
+            f"new Rec{i}(1).rtouch{i}();",
+            [f"record Rec{i}(int v{i}) {{ int v{i}(int n) {{ return n; }} void rtouch{i}() {{ {callee}(); }} }}"]),
     }
 
 

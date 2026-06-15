@@ -1036,6 +1036,20 @@ public class Candor {
         return found;
     }
 
+    /** The literal int constant pushed closest before `call` — the port of a `(String host, int port)`
+     *  Socket/InetSocketAddress ctor, for the SPEC §2 `host[:port]` surface. Null if the port is a runtime
+     *  value (then no port is appended — the safe direction). Bounded to this call's arg window. */
+    static String intLiteralBefore(AbstractInsnNode call) {
+        for (AbstractInsnNode n = call.getPrevious(); n != null; n = n.getPrevious()) {
+            int op = n.getOpcode();
+            if (op >= Opcodes.ICONST_0 && op <= Opcodes.ICONST_5) return String.valueOf(op - Opcodes.ICONST_0);
+            if (n instanceof IntInsnNode iin && (op == Opcodes.BIPUSH || op == Opcodes.SIPUSH)) return String.valueOf(iin.operand);
+            if (n instanceof LdcInsnNode ldc && ldc.cst instanceof Integer i) return String.valueOf(i);
+            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode) break;
+        }
+        return null;
+    }
+
     /** The literal PROGRAM head a subprocess call NAMES — argv[0] specifically, never a later argument.
      *  Unlike {@link #firstLiteralArg} (the earliest literal ANYWHERE in the arg window), this refuses
      *  to refine when argv[0] is a runtime value but a trailing arg happens to be a literal whose
@@ -1624,8 +1638,13 @@ public class Candor {
                         // The host must look like a host (a dotted name / IPv4), not e.g. a "localhost"
                         // bareword that could equally be anything — reuse hostPart's shape via a dot test,
                         // matching netHostLiteral's "contains a dot" gate for bare host:port.
-                        if (h != null && h.contains(".") && !h.contains("/") && !h.contains(" "))
-                            hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(h);
+                        if (h != null && h.contains(".") && !h.contains("/") && !h.contains(" ")) {
+                            // Append the literal int port for `host:port` (SPEC §2) — so a two-arg
+                            // Socket("h", 443) matches the URL form's `h:port` and candor-scan, instead of
+                            // dropping the statically-known port (adversarial coverage-gap review, GAP2).
+                            String port = intLiteralBefore(min);
+                            hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(port != null ? h + ":" + port : h);
+                        }
                     }
                     // Calls to a Spring Data repository / Feign client are I/O even though the
                     // callee has no body candor can see (Spring synthesizes the impl at runtime).

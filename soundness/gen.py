@@ -93,6 +93,14 @@ def edge_forms(callee, i):
         # NAMED Callable invoked synchronously via call().
         "named_call":(f"try {{ new NC{i}().call(); }} catch (Exception e) {{}}",
                       [f"static class NC{i} implements java.util.concurrent.Callable<Object> {{ public Object call() {{ {callee}(); return null; }} }}"]),
+        # for-each over a CUSTOM Iterable: desugars to `iterator().next()` where the `.next()` receiver is
+        # the java.util.Iterator INTERFACE type (not a pinned impl), so the effect resolves only by CHA
+        # fan-out to the project's Iterator impls. Skipping java.util-container dispatch silently drops the
+        # iterator's effect at the loop site — the §4 silent-pure violation 3c25656 introduced (fuzzer-blind
+        # until this form: `for (x : customBag)` came back pure though next() performs I/O).
+        "foreach":   (f"for (Object o{i} : new Bag{i}()) {{}}",
+                      [f"static class Bag{i} implements Iterable<Object> {{ public java.util.Iterator<Object> iterator() {{ return new It{i}(); }} }}",
+                       f"static class It{i} implements java.util.Iterator<Object> {{ public boolean hasNext() {{ return false; }} public Object next() {{ {callee}(); return null; }} }}"]),
     }
 
 

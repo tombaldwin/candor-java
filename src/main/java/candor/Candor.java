@@ -1501,6 +1501,23 @@ public class Candor {
                         String p = firstLiteralArg(mn, min);
                         if (p != null) pathsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(p);
                     }
+                    // A bare-hostname Net endpoint: `new Socket("api.stripe.com", 443)` /
+                    // `new InetSocketAddress("api.stripe.com", 443)` names the host as a STRING argv[0]
+                    // with a numeric port — but as a bare hostname (no scheme/`:port`) netHostLiteral
+                    // rejects it (deliberately, to avoid the ~14 false dotted "hosts" a loose filter
+                    // produced). Here the CALL SITE disambiguates: a `(String host, int port)` ctor's
+                    // first String literal IS a host, so extract it without loosening netHostLiteral.
+                    // Gated to the `(Ljava/lang/String;I…` shape, so the `(InetAddress,int)` and
+                    // `(String,int,InetAddress,int)`-with-computed-host overloads add nothing.
+                    if ((owner.equals("java.net.Socket") || owner.equals("java.net.InetSocketAddress"))
+                            && min.name.equals("<init>") && min.desc.startsWith("(Ljava/lang/String;I")) {
+                        String h = firstLiteralArg(mn, min);
+                        // The host must look like a host (a dotted name / IPv4), not e.g. a "localhost"
+                        // bareword that could equally be anything — reuse hostPart's shape via a dot test,
+                        // matching netHostLiteral's "contains a dot" gate for bare host:port.
+                        if (h != null && h.contains(".") && !h.contains("/") && !h.contains(" "))
+                            hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(h);
+                    }
                     // Calls to a Spring Data repository / Feign client are I/O even though the
                     // callee has no body candor can see (Spring synthesizes the impl at runtime).
                     boolean springTyped = repoTypes.contains(min.owner) || feignTypes.contains(min.owner);

@@ -2176,13 +2176,15 @@ public class Candor {
                 var set = eff.computeIfAbsent(caller, k -> new TreeSet<>());
                 int before = set.size();
                 for (String callee : edges.get(caller)) {
-                    // A class-load TRIGGER edge (the only way to reach a `<clinit>`) contributes the static
-                    // initializer's DIRECT effects ONLY — its own static-block I/O (a banner log, a
-                    // property/env read) is a real first-touch effect, but the deep TRANSITIVE effects of
-                    // the data structures it builds are not (they collapsed jars to `Log` via guava
-                    // construction reaching an error-path logger). The clinit keeps its own full `inferred`
-                    // (its body edges aren't triggers); only its CONSUMERS are limited to `direct`.
-                    var ce = callee.endsWith(".<clinit>") ? direct.get(callee) : eff.get(callee);
+                    // A class-load TRIGGER edge propagates the `<clinit>`'s FULL transitive effects (spec §5:
+                    // `inferred` is the transitive fixpoint over edges). Touching the class runs its static
+                    // initializer, which can transitively reach whatever the static block calls or constructs,
+                    // so the trigger site CAN reach those effects — sound over-approximation ("can reach"). A
+                    // prior direct-only narrowing here under-reported (the §7.13 soundness fuzzer caught it on
+                    // every clinit form: a real effect threaded through a static block came back pure). The
+                    // guava-construction `Log` smear that narrowing avoided is sound-but-imprecise — the target
+                    // of a separate precision effort, never a reason to drop a real reachable effect.
+                    var ce = eff.get(callee);
                     if (ce != null) set.addAll(ce);
                 }
                 if (set.size() != before) changed = true;

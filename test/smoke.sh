@@ -533,6 +533,25 @@ want   "an unreadable policy fails LOUD, not silent"             "$u" 'could not
 if [ "$urc" -eq 2 ]; then echo "  ok   an unreadable policy FAILS the run (exit 2, spec §6.2)"; pass=$((pass+1));
 else echo "  FAIL an unreadable policy FAILS the run — got exit $urc"; fail=$((fail+1)); fi
 
+echo "== crash-safety: an unreadable scan target exits 2 with a clean message =="
+# nonexistent path, corrupt/empty jar, and an uppercase non-zip .JAR must not dump a stack trace + exit 1
+np="$("$CJ" "$W/no-such-path-xyz" 2>&1)"; npc=$?
+want "scan target nonexistent → clean message"                  "$np" 'no such path'
+if [ "$npc" -eq 2 ]; then echo "  ok   nonexistent scan target exits 2"; pass=$((pass+1));
+else echo "  FAIL nonexistent scan target — got exit $npc"; fail=$((fail+1)); fi
+absent "nonexistent scan target dumps no stack trace"           "$np" 'at candor.'
+head -c 200 /dev/urandom > "$W/garbage.jar"
+gj="$("$CJ" "$W/garbage.jar" 2>&1)"; gjc=$?
+want "corrupt jar → clean 'cannot read scan target'"            "$gj" 'cannot read scan target'
+if [ "$gjc" -eq 2 ]; then echo "  ok   corrupt jar exits 2"; pass=$((pass+1));
+else echo "  FAIL corrupt jar — got exit $gjc"; fail=$((fail+1)); fi
+absent "corrupt jar dumps no stack trace"                       "$gj" 'at candor.'
+printf 'not a zip' > "$W/NOTAZIP.JAR"
+nz="$("$CJ" "$W/NOTAZIP.JAR" 2>&1)"; nzc=$?
+want "uppercase non-zip .JAR → clean message"                   "$nz" 'cannot read scan target'
+if [ "$nzc" -eq 2 ]; then echo "  ok   uppercase non-zip .JAR exits 2"; pass=$((pass+1));
+else echo "  FAIL uppercase non-zip .JAR — got exit $nzc"; fail=$((fail+1)); fi
+
 echo "== policy: layering forbid A -> B (AS-EFF-009) =="
 mkdir -p "$W/lsrc/app/domain" "$W/lsrc/app/infra"
 cat > "$W/lsrc/app/infra/Repo.java" <<'J'

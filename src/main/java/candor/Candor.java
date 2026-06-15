@@ -311,7 +311,23 @@ public class Candor {
             }
         }
 
-        Map<String, TreeSet<String>> inferred = runScan(Path.of(args[0]));
+        // CRASH-SAFETY: a nonexistent path, or a corrupt/truncated/empty/uppercase-ext "jar", must not
+        // dump a stack trace and exit 1 — the archive layer throws raw NoSuchFileException / ZipException
+        // / ProviderNotFoundException (a RuntimeException, not IOException). Match the unreadable-policy
+        // posture: a clean one-line diagnostic and exit 2.
+        Path scanTarget = Path.of(args[0]);
+        if (!Files.exists(scanTarget)) {
+            System.err.println("candor: no such path: " + args[0]);
+            System.exit(2);
+        }
+        Map<String, TreeSet<String>> inferred;
+        try {
+            inferred = runScan(scanTarget);
+        } catch (IOException | RuntimeException e) {
+            System.err.println("candor: cannot read scan target " + args[0] + ": " + e.getMessage());
+            System.exit(2);
+            return; // unreachable — exit(2) above; satisfies the definite-assignment of `inferred`
+        }
 
         // JSON output is orthogonal — write first so `--json` can snapshot a baseline.
         if (jsonOut != null) { writeJson(inferred, jsonOut); writeCallgraph(jsonOut); }

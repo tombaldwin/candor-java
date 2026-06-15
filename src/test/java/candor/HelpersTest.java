@@ -136,4 +136,16 @@ class HelpersTest {
         // no project impl anywhere in the chain → null, so the caller keeps the CHA (sound fall-through)
         assertNull(Candor.monomorphicTarget("p/Lonely", "compute", "()I"));
     }
+
+    /** The numeric semver-tuple compare behind `--check-update`: equal, patch-newer, minor-newer, older,
+     *  and the trailing-zero padding ("0.5" == "0.5.0") so a 2-component spec never spuriously trips. */
+    @Test
+    void compareSemverIsNumericTuple() {
+        assertEquals(0, Candor.compareSemver("0.5.0", "0.5.0"));        // equal
+        assertTrue(Candor.compareSemver("0.5.1", "0.5.0") > 0);         // patch newer
+        assertTrue(Candor.compareSemver("0.6.0", "0.5.9") > 0);         // minor newer beats higher patch
+        assertTrue(Candor.compareSemver("0.5.0", "0.6.0") < 0);         // older
+        assertTrue(Candor.compareSemver("0.10.0", "0.9.0") > 0);        // NUMERIC, not lexical (10 > 9)
+        assertEquals(0, Candor.compareSemver("0.5", "0.5.0"));          // missing components pad to 0
+    }
 }

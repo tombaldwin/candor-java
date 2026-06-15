@@ -246,6 +246,7 @@ public class Candor {
             System.err.println(
                     "       candor <show|where|callers|map|diff|containment|reachable|path|impact|gains|whatif|rewire> <report.json> [arg]");
             System.err.println("       candor parsepolicy <policy-file>");
+            System.err.println("       candor --version | --check-update | --agents");
             System.exit(2);
         }
         // Read-only queries over a written report (no re-analysis) — the sibling of candor-query.
@@ -265,6 +266,19 @@ public class Candor {
                 System.out.write(in.readAllBytes());
                 System.out.flush();
             }
+            System.exit(0);
+        }
+        // `--version` — the clean RELEASE semver (the GitHub-tag / jar-filename axis) + spec, then the
+        // upgrade line. No network. The version an agent reads to decide whether to `--check-update`.
+        if (args[0].equals("--version")) {
+            System.out.println("candor-java " + release() + " (spec " + SPEC_VERSION + ")");
+            System.out.println("upgrade: jbang --fresh candor@tombaldwin/candor-java");
+            System.exit(0);
+        }
+        // `--check-update` — print the version line, then ONE 4s-bounded GitHub GET to see if a newer
+        // release exists. Never hangs, never throws (checkUpdate handles every failure as a no-op + exit 0).
+        if (args[0].equals("--check-update")) {
+            checkUpdate();
             System.exit(0);
         }
         // `parsepolicy <file>` — dump the parsed CANDOR_POLICY as canonical JSON. Not a user workflow;
@@ -2778,5 +2792,91 @@ public class Candor {
         } catch (IOException ignored) {
         }
         return new String[] {version, toolchain};
+    }
+
+    /** The clean RELEASE semver (e.g. "0.5.0") — the crate-semver axis that GitHub releases tag and the
+     *  `-all.jar` filename carry, distinct from {@link #provenance()}'s git-hash build id. Baked into
+     *  build-info.properties as `release` by the Gradle build; falls back to "unknown" if absent. */
+    static String release() {
+        try (var in = Candor.class.getResourceAsStream("/candor/build-info.properties")) {
+            if (in != null) {
+                Properties p = new Properties();
+                p.load(in);
+                return p.getProperty("release", "unknown");
+            }
+        } catch (IOException ignored) {
+        }
+        return "unknown";
+    }
+
+    /** Numeric semver-tuple compare: split on '.', compare component-wise as ints (missing components are
+     *  0, so "0.5" == "0.5.0"). Non-numeric components compare as 0. Returns <0 / 0 / >0 like
+     *  {@link Integer#compare}. Used by `--check-update` to decide whether a newer release exists. */
+    static int compareSemver(String a, String b) {
+        String[] as = a.split("\\."), bs = b.split("\\.");
+        int n = Math.max(as.length, bs.length);
+        for (int i = 0; i < n; i++) {
+            int ai = i < as.length ? parseIntOrZero(as[i]) : 0;
+            int bi = i < bs.length ? parseIntOrZero(bs[i]) : 0;
+            if (ai != bi) return Integer.compare(ai, bi);
+        }
+        return 0;
+    }
+
+    private static int parseIntOrZero(String s) {
+        try {
+            return Integer.parseInt(s.trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    /** `--check-update`: GET the latest GitHub release with a hard 4s timeout, parse `tag_name` with a
+     *  minimal regex (no JSON dep), and report whether a newer release exists. NEVER hangs, NEVER throws:
+     *  any failure (no network / timeout / non-2xx / unparseable / rate-limited) prints a one-line stderr
+     *  diagnostic and returns 0. The ONLY path that touches the network. */
+    static void checkUpdate() {
+        String ver = release();
+        System.out.println("candor-java " + ver + " (spec " + SPEC_VERSION + ")");
+        String latest = fetchLatestRelease();
+        if (latest == null) {
+            System.err.println("candor-java: could not reach api.github.com to check for updates");
+            return;
+        }
+        if (compareSemver(latest, ver) > 0) {
+            System.out.println("candor-java " + ver + " -> " + latest + " available");
+            System.out.println("run: jbang --fresh candor@tombaldwin/candor-java");
+        } else {
+            System.out.println("up to date (latest is " + latest + ")");
+        }
+    }
+
+    /** One network GET to the GitHub releases-latest endpoint, hard 4s timeout, returning the `tag_name`
+     *  with a leading "v" stripped — or null on ANY failure. Isolated so {@link #checkUpdate} stays
+     *  failure-free. */
+    private static String fetchLatestRelease() {
+        try {
+            var client = java.net.http.HttpClient.newBuilder()
+                    .connectTimeout(java.time.Duration.ofSeconds(4))
+                    .build();
+            var req = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(
+                            "https://api.github.com/repos/tombaldwin/candor-java/releases/latest"))
+                    .timeout(java.time.Duration.ofSeconds(4))
+                    .header("User-Agent", "candor-java")
+                    .header("Accept", "application/vnd.github+json")
+                    .GET()
+                    .build();
+            var resp = client.send(req, java.net.http.HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() < 200 || resp.statusCode() >= 300) return null;
+            var m = java.util.regex.Pattern
+                    .compile("\"tag_name\"\\s*:\\s*\"([^\"]+)\"")
+                    .matcher(resp.body());
+            if (!m.find()) return null;
+            String tag = m.group(1);
+            return tag.startsWith("v") ? tag.substring(1) : tag;
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

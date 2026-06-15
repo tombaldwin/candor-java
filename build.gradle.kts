@@ -43,6 +43,11 @@ fun sh(vararg a: String): String = try {
 val candorVersion: String = sh("git", "rev-parse", "--short", "HEAD").ifEmpty { "unknown" }
 val candorToolchain: String =
     "jdk-" + (java.toolchain.languageVersion.orNull?.asInt() ?: Runtime.version().feature())
+// The clean release semver (the crate-semver axis, == this Gradle project `version`). Distinct from
+// the git-hash build id baked as `version` above: GitHub releases tag and the `-all.jar` filename
+// carry THIS, and `--version` / `--check-update` compare against it. Baked as `release` so the binary
+// reports its release identity without re-deriving it from the manifest.
+val candorRelease: String = project.version.toString()
 
 val buildInfoDir = layout.buildDirectory.dir("generated/candor-buildinfo")
 val generateBuildInfo by tasks.registering {
@@ -50,15 +55,17 @@ val generateBuildInfo by tasks.registering {
     outputs.file(out)
     val ver = candorVersion
     val tc = candorToolchain
+    val rel = candorRelease
     // Declare ver/tc as INPUTS so Gradle re-runs when HEAD (or the JDK) moves. Without this the task
     // was always UP-TO-DATE and baked a STALE build id — two behaviourally different jars then carried
     // the same `version`, defeating the §2.1 version-trust comparison (a /code-review max find: the
     // v0.4.1 release jar predated a guard commit yet reported the same build hash as the rebuild).
     inputs.property("version", ver)
     inputs.property("toolchain", tc)
+    inputs.property("release", rel)
     doLast {
         out.get().asFile.apply { parentFile.mkdirs() }
-            .writeText("version=$ver\ntoolchain=$tc\n")
+            .writeText("version=$ver\ntoolchain=$tc\nrelease=$rel\n")
     }
 }
 sourceSets["main"].resources.srcDir(buildInfoDir)

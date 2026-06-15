@@ -1939,9 +1939,14 @@ public class Candor {
         if ((owner.startsWith("scala/Function") || owner.equals("scala/PartialFunction")
                 || owner.startsWith("scala/runtime/java8/JFunction")) && name.equals("apply")) return true;
         if (owner.equals("groovy/lang/Closure") && (name.equals("call") || name.equals("doCall"))) return true;
-        // Task-dispatch verbs on the external interface.
-        if (owner.equals("java/lang/Runnable") && name.equals("run")) return true;
-        if (owner.equals("java/util/concurrent/Callable") && name.equals("call")) return true;
+        // NB: java.lang.Runnable.run / java.util.concurrent.Callable.call are NOT exempt. They can be
+        // NAMED project classes (not just lambdas), and an unpinned `r.run()` over them was silently pure
+        // (the §7.13 fuzzer's task_unpinned form caught it). They now go through normal bounded CHA —
+        // narrow → fan out to the actual impls, broad → Unknown — like any other interface dispatch. A
+        // lambda's own effect is still captured at its creation site (closure attribution), so this only
+        // adds the sound over-approximation for genuinely-unresolvable task receivers. The Kotlin/Scala/
+        // Groovy FUNCTION-object dispatch above stays exempt: there the impls are lambda classes whose
+        // effect IS captured at creation, and fanning out smears (the documented FunctionN.invoke case).
         return false;
     }
 

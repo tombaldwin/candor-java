@@ -116,6 +116,17 @@ def edge_forms(callee, i):
             [f"static class Sup{i}_0 implements java.util.function.Supplier<Object> {{ public Object get() {{ {callee}(); return null; }} }}"]
             + [f"static class Sup{i}_{k} implements java.util.function.Supplier<Object> {{ public Object get() {{ return null; }} }}"
                for k in range(1, 13)]),
+        # UNPINNED java.lang.Runnable.run(): the receiver `r` comes from iterating a List<Runnable> (the
+        # element type is the Runnable INTERFACE, not a pinned `new`), so run() resolves only by CHA
+        # fan-out to the project's Runnable impls. Runnable.run / Callable.call USED to be CHA-exempt → an
+        # unpinned task dispatch came back silently pure; now they go through normal bounded CHA (narrow →
+        # fan out to the actual impls, broad → Unknown). A pinned `new TR().run()` would resolve
+        # monomorphically and never exercise the exempt path — the list element is the point.
+        "task_unpinned": (
+            f"Runnable rr{i} = C{i} ? new TR{i}() : new TU{i}(); rr{i}.run();",
+            [f"static boolean C{i};",
+             f"static class TR{i} implements Runnable {{ public void run() {{ {callee}(); }} }}",
+             f"static class TU{i} implements Runnable {{ public void run() {{}} }}"]),
     }
 
 

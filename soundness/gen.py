@@ -127,6 +127,57 @@ def edge_forms(callee, i):
             [f"static boolean C{i};",
              f"static class TR{i} implements Runnable {{ public void run() {{ {callee}(); }} }}",
              f"static class TU{i} implements Runnable {{ public void run() {{}} }}"]),
+        # ---- DEFENSE-IN-DEPTH forms: verified SOUND in the cross-engine hunt; these lock the behavior. ----
+        # OVERLOAD: two same-name `ov{i}` overloads — the SUPERTYPE/interface-param one is effectful and
+        # reaches `callee`; the unrelated-ref one is a pure decoy. Called with a SUBTYPE argument (the
+        # static type is the interface base, sourced from a branch-MERGE so it stays unpinned), so
+        # overload resolution must select the supertype overload to thread the effect. A boxed-vs-
+        # primitive sibling pair (`box{i}(Integer)` effectful vs `box{i}(int)` pure) is exercised with a
+        # boxed `Integer` receiver so the reference overload — not int — is selected and reaches `callee`.
+        "overload": (
+            f"OvBase{i} ob{i} = OC{i} ? new OvSub{i}() : new OvSubB{i}(); ov{i}(ob{i}); Integer bx{i} = OC{i} ? 1 : 2; box{i}(bx{i});",
+            [f"static boolean OC{i};",
+             f"interface OvBase{i} {{}}",
+             f"static class OvSub{i} implements OvBase{i} {{}}",
+             f"static class OvSubB{i} implements OvBase{i} {{}}",
+             f"static void ov{i}(OvBase{i} x) {{ {callee}(); }}",   # effectful (supertype/iface param)
+             f"static void ov{i}(String s) {{}}",                    # pure decoy (unrelated ref overload)
+             f"static void box{i}(Integer n) {{ {callee}(); }}",     # effectful (boxed ref overload)
+             f"static void box{i}(int n) {{}}"]),                     # pure decoy (primitive overload)
+        # GEN_BRIDGE: a named generic-interface impl reached through a synthetic BRIDGE method. A
+        # `Function<String,String>` impl's `apply(String)` does the chain effect; the JVM emits a
+        # `apply(Object)` bridge that forwards. Invoked via an UNPINNED receiver (branch-merge of two
+        # impls, typed as the erased Function interface) so resolution goes through the bridge, not a
+        # pinned concrete call.
+        "gen_bridge": (
+            f"java.util.function.Function<String,String> gf{i} = GC{i} ? new GFn{i}() : new GFnB{i}(); gf{i}.apply(\"x\");",
+            [f"static boolean GC{i};",
+             f"static class GFn{i} implements java.util.function.Function<String,String> {{ public String apply(String s) {{ {callee}(); return s; }} }}",
+             f"static class GFnB{i} implements java.util.function.Function<String,String> {{ public String apply(String s) {{ {callee}(); return s; }} }}"]),
+        # ENUM_CONST: the effect lives in an enum CONSTANT's method-override body (anonymous-class-per-
+        # constant — each constant compiles to a synthetic subclass of the enum). Reached via the enum's
+        # ABSTRACT method on an UNPINNED enum-typed receiver (branch-merge of two constants), so dispatch
+        # must resolve to the per-constant override.
+        "enum_const": (
+            f"En{i} e{i} = EC{i} ? En{i}.A : En{i}.B; e{i}.act();",
+            [f"static boolean EC{i};",
+             f"enum En{i} {{ A {{ void act() {{ {callee}(); }} }}, B {{ void act() {{ {callee}(); }} }}; abstract void act(); }}"]),
+        # ARRAY_IFACE: `Handler[] hs; for (Handler h : hs) h.handle();` where a handler impl does the
+        # effect. The loop receiver `h` is an ARRAY ELEMENT typed as the Handler interface — unpinned —
+        # so handle() resolves only by CHA fan-out to the project's Handler impls.
+        "array_iface": (
+            f"Handler{i}[] hs{i} = new Handler{i}[] {{ new HImpl{i}(), new HImplB{i}() }}; for (Handler{i} h{i} : hs{i}) {{ h{i}.handle(); }}",
+            [f"interface Handler{i} {{ void handle(); }}",
+             f"static class HImpl{i} implements Handler{i} {{ public void handle() {{ {callee}(); }} }}",
+             f"static class HImplB{i} implements Handler{i} {{ public void handle() {{ {callee}(); }} }}"]),
+        # INSTANCE_METHODREF: a BOUND instance method reference `obj::method` (method does the effect)
+        # stored as a Runnable and invoked. The bound receiver `obj` comes from a branch-MERGE so it is
+        # not a pinned single `new`; the invokedynamic Handle targets the instance method, which must
+        # resolve to the effectful body.
+        "instance_methodref": (
+            f"MR{i} m{i} = MC{i} ? new MR{i}() : new MR{i}(); Runnable rmr{i} = m{i}::go; rmr{i}.run();",
+            [f"static boolean MC{i};",
+             f"static class MR{i} {{ void go() {{ {callee}(); }} }}"]),
     }
 
 

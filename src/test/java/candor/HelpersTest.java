@@ -6,6 +6,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
+import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.MethodNode;
 
 /**
  * Native unit tests (JUnit 5) for candor-java's PURE static helpers — the policy scope matcher, the
@@ -94,5 +97,43 @@ class HelpersTest {
         assertTrue(Candor.tableCovered("public.*", "public.orders")); // schema wildcard
         assertFalse(Candor.tableCovered("users", "orders"));
         assertFalse(Candor.tableCovered("public.*", "private.orders"));
+    }
+
+    /** Helper: register a project class (name, super) declaring the given concrete methods, mirroring
+     *  the load-time wiring of {@code byName}/{@code overloadDescs} the resolver reads. */
+    private static void registerClass(String internal, String superName, String... methodNames) {
+        ClassNode cn = new ClassNode();
+        cn.name = internal;
+        cn.superName = superName;
+        for (String m : methodNames) {
+            MethodNode mn = new MethodNode(Opcodes.ASM9, Opcodes.ACC_PUBLIC, m, "()I", null, null);
+            cn.methods.add(mn);
+            Candor.overloadDescs.computeIfAbsent(internal.replace('/', '.') + "." + m,
+                    k -> new java.util.HashSet<>()).add("()I");
+        }
+        Candor.byName.put(internal, cn);
+    }
+
+    /** monomorphicTarget resolves a provable `new T` dispatch to exactly the method T invokes — itself
+     *  when it declares the impl, its nearest concrete super otherwise, and null when no project impl is
+     *  visible (the receiver-provenance soundness fix's resolution step). */
+    @Test
+    void monomorphicTargetResolvesLikeVirtualDispatch() {
+        Candor.byName.clear();
+        Candor.transSupersCache.clear();
+        Candor.overloadDescs.clear();
+        registerClass("p/Base", "java/lang/Object", "compute");          // Base declares compute()
+        registerClass("p/Dirty", "p/Base", "compute");                   // Dirty overrides compute()
+        registerClass("p/Plain", "p/Base");                              // Plain inherits Base.compute()
+        registerClass("p/Lonely", "java/lang/Object");                   // declares nothing
+
+        // a `new Base` dispatch resolves to Base.compute itself
+        assertEquals("p.Base.compute", Candor.monomorphicTarget("p/Base", "compute", "()I"));
+        // a `new Dirty` dispatch resolves to Dirty's OWN override, never the pure sibling Base
+        assertEquals("p.Dirty.compute", Candor.monomorphicTarget("p/Dirty", "compute", "()I"));
+        // a `new Plain` (no override) resolves UP to the nearest concrete super that declares it
+        assertEquals("p.Base.compute", Candor.monomorphicTarget("p/Plain", "compute", "()I"));
+        // no project impl anywhere in the chain → null, so the caller keeps the CHA (sound fall-through)
+        assertNull(Candor.monomorphicTarget("p/Lonely", "compute", "()I"));
     }
 }

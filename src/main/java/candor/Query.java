@@ -43,6 +43,9 @@ public final class Query {
         List<String> calls = List.of();
         List<String> fs = List.of();
         List<String> hosts = List.of();
+        List<String> tables = List.of();
+        List<String> paths = List.of();
+        List<String> cmds = List.of();
         boolean unresolved;
         boolean entryPoint;
     }
@@ -66,12 +69,26 @@ public final class Query {
         }
         if (arr == null) throw new IllegalArgumentException("candor report 'functions' is not an array");
         List<Fn> fns = new Gson().fromJson(arr, new TypeToken<List<Fn>>() {}.getType());
+        // An entry with no `fn` key, `fn: null`, or a blank `fn` is not addressable — every query keys,
+        // sorts, and formats by `f.fn`, so a null there NPEs (map's lastIndexOf, the sort below) and a
+        // blank one throws a MissingFormatWidthException (`%-0s`). Such an entry can't be named, queried,
+        // or pathed; drop it loudly rather than crash. (gson leaves an absent String at its `""` default,
+        // so a missing key surfaces as blank, not null.) A foreign file with NO valid entries is still
+        // caught by the not-a-report branches above.
+        int beforeFilter = fns.size();
+        fns.removeIf(f -> f.fn == null || f.fn.isEmpty());
+        if (fns.size() < beforeFilter)
+            System.err.println("candor: skipping " + (beforeFilter - fns.size())
+                    + " report entr" + (beforeFilter - fns.size() == 1 ? "y" : "ies") + " with no 'fn'");
         for (Fn f : fns) { // gson leaves absent optional arrays null — normalize
             if (f.inferred == null) f.inferred = List.of();
             if (f.direct == null) f.direct = List.of();
             if (f.calls == null) f.calls = List.of();
             if (f.fs == null) f.fs = List.of();
             if (f.hosts == null) f.hosts = List.of();
+            if (f.tables == null) f.tables = List.of();
+            if (f.paths == null) f.paths = List.of();
+            if (f.cmds == null) f.cmds = List.of();
             if (f.loc == null) f.loc = "";
         }
         fns.sort(Comparator.comparing(f -> f.fn));
@@ -190,6 +207,11 @@ public final class Query {
                 // The engine resolves Net endpoints (hosts) per method; show MUST surface them like the
                 // Rust engine (SPEC §3.1 `hosts?`) — the Fn record previously never parsed the field.
                 if (f.hosts != null && !f.hosts.isEmpty()) m.put("hosts", f.hosts);
+                // Literal effect surfaces (tables/paths/cmds) mirror fs/hosts — the Rust engine's show
+                // surfaces them too; omitting them hid e.g. a Db fn's `tables`. Omit when empty.
+                if (f.tables != null && !f.tables.isEmpty()) m.put("tables", f.tables);
+                if (f.paths != null && !f.paths.isEmpty()) m.put("paths", f.paths);
+                if (f.cmds != null && !f.cmds.isEmpty()) m.put("cmds", f.cmds);
                 m.put("unresolved", f.unresolved);
                 out.add(m);
             }
@@ -734,7 +756,9 @@ public final class Query {
             return 2;
         }
         if (!start.inferred.contains(effect)) {
-            System.out.println(start.fn + " does not perform " + effect
+            // In --json mode stdout must be JSON-only (a jq/MCP consumer parses it); send the human note
+            // to stderr so it doesn't precede the JSON object on stdout.
+            (json ? System.err : System.out).println(start.fn + " does not perform " + effect
                     + "  (inferred: " + start.inferred + ")");
             if (json) emit(Map.of("fn", start.fn, "effect", effect, "path", List.of()));
             return 0;
@@ -764,7 +788,8 @@ public final class Query {
             String msg = start.fn + " performs " + effect
                     + " but its source is not a local method (cross-jar, framework-synthesized, or via Unknown) "
                     + "— not statically traceable.";
-            System.out.println(msg);
+            // --json: stdout JSON-only, the human note goes to stderr (see the no-effect branch above).
+            (json ? System.err : System.out).println(msg);
             if (json) emit(Map.of("fn", start.fn, "effect", effect, "path", List.of(),
                     "note", "source not locally traceable"));
             return 0;

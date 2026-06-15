@@ -418,9 +418,10 @@ want "loader: object-without-functions exits 2" "$ojc" '2'
 # the same malformed file as a gains BASELINE must not read as empty → maximal false alarm
 printf '{"candor":{},"functions":[{"fn":"a","inferred":["Net"]}]}\n' > "$W/gcur.json"
 want "loader: malformed gains baseline fails loud (no phantom all-gained)" "$("$CJ" gains "$W/gcur.json" "$W/obj.json" 2>&1)" 'cannot read baseline'
-# an entry with an empty fn must not crash show with a %-0s MissingFormatWidthException
+# an entry with an empty/absent fn is not addressable (every query keys/sorts/formats by fn) — the
+# loader drops it loudly rather than crash show with a %-0s MissingFormatWidthException
 printf '[{"inferred":["Db"]}]\n' > "$W/emptyfn.json"
-want "loader: an empty-fn entry renders without a %-0s crash" "$("$CJ" show "$W/emptyfn.json" '' 2>&1)" 'Db'
+want "loader: an empty-fn entry is dropped loudly, no %-0s crash" "$("$CJ" show "$W/emptyfn.json" '' 2>&1)" "report entr"
 # a legitimately-empty report (functions:[]) is STILL a clean pure report, not an error
 printf '{"candor":{"version":"x"},"functions":[]}\n' > "$W/empty.json"
 want "loader: a legit empty report is clean-pure (not an error)" "$("$CJ" show "$W/empty.json" x 2>&1)" 'pure functions are omitted'

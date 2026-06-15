@@ -47,7 +47,7 @@ rep="$(cat "$W/r.json")"
 want "report is the v0.2 envelope"            "$rep" '"candor"'
 want "envelope carries a version"             "$rep" '"version"'
 want "envelope carries a toolchain"           "$rep" '"toolchain"'
-want "envelope declares the spec contract 0.4" "$rep" '"spec": "0.4"'
+want "envelope declares the spec contract 0.5" "$rep" '"spec": "0.5"'
 want "functions array present"               "$rep" '"functions"'
 want "reads performs Fs"                      "$rep" '"Fx.reads"'
 want "dyn is Unknown (reflection, trust §4)"  "$rep" '"Unknown"'

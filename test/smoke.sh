@@ -199,20 +199,20 @@ public class Ci {
   static class Deep { static final Helper H = new Helper(); // <clinit> CONSTRUCTS Helper — Fs is TRANSITIVE
     static int g() { return 1; } }
   static void viaDeep() { int n = Deep.g(); }            // triggers Deep.<clinit>; the Fs is transitive
-}                                                         // (via the Helper ctor) → NOT attributed to viaDeep
+}                                                         // (via the Helper ctor) → soundly attributed to viaDeep
 J
 javac -d "$W/cics" "$W/src/Ci.java"
 "$CJ" "$W/cics" --json "$W/ci.json" >/dev/null 2>&1
 ci="$(cat "$W/ci.json")"
 # the audit output prints the fn name unescaped (the JSON escapes `<clinit>` as <…)
 want   "static initializer's Fs is captured"               "$("$CJ" "$W/cics" 2>/dev/null)" 'Ci$Cfg.<clinit> '
-want   "static CALL triggers <clinit> (DIRECT Fs propagates)" "$("$CJ" show "$W/ci.json" Ci.viaStaticCall)"  'Fs'
+want   "static CALL triggers <clinit> (Fs propagates)"     "$("$CJ" show "$W/ci.json" Ci.viaStaticCall)"  'Fs'
 want   "static FIELD access triggers <clinit>"             "$("$CJ" show "$W/ci.json" Ci.viaStaticField)" 'Fs'
 absent "a pure static initializer doesn't flood callers"   "$ci" '"Ci.pure"'
-# A <clinit> trigger contributes the static block's DIRECT effects only — the TRANSITIVE effects of objects
-# it builds are not attributed to the trigger (else a guava-vendoring jar collapses to Log). The <clinit>
-# keeps its OWN inferred; the trigger site does not.
-absent "transitive <clinit> Fs (via a constructed object) is NOT attributed to the trigger" "$ci" '"Ci.viaDeep"'
+# A <clinit> trigger propagates the static initializer's FULL transitive effects (spec §5): touching the
+# class runs its <clinit>, which here CONSTRUCTS a Helper whose ctor reaches Fs — so the trigger CAN reach
+# Fs (sound "can reach"). The §7.13 fuzzer caught the prior direct-only narrowing dropping exactly this.
+want   "transitive <clinit> Fs (via a constructed object) IS attributed to the trigger" "$("$CJ" show "$W/ci.json" Ci.viaDeep)" 'Fs'
 want   "the <clinit> itself keeps its own transitive Fs"   "$("$CJ" show "$W/ci.json" 'Ci$Deep.<clinit>')" 'Fs'
 want   "a <clinit> unit carries unitKind initializer (spec 0.5 draft)" \
        "$(python3 -c "import json;print([e.get('unitKind','') for e in json.load(open('$W/ci.json'))['functions'] if e['fn'].endswith('.<clinit>')][0])")" 'initializer'

@@ -43,19 +43,20 @@ class FixpointTest {
     }
 
     @Test
-    void clinitContributesOnlyItsDirectEffectsToConsumers() {
-        // The class-load trigger edge: a caller of `X.<clinit>` inherits the clinit's DIRECT effects
-        // (its static-block first-touch I/O) but NOT the clinit's TRANSITIVE effects (the deep effects
-        // of structures it builds — the guava-construction-reaches-a-logger fabrication this rule fixed).
+    void clinitTriggerPropagatesTransitiveEffectsToConsumers() {
+        // The class-load trigger edge propagates the clinit's FULL transitive effects (spec §5): touching
+        // `X` runs `X.<clinit>`, which transitively reaches whatever it calls — so a consumer CAN reach
+        // those effects (sound "can reach"). The §7.13 soundness fuzzer caught the prior direct-only
+        // narrowing dropping exactly this (a real effect threaded through a static block came back pure).
         var direct = Map.of("X.<clinit>", set("Log"), "deep", set("Net"));
         var edges = Map.of(
                 "user", Set.of("X.<clinit>"),
                 "X.<clinit>", Set.of("deep")); // the clinit body itself reaches a Net fn
         var r = Candor.computeFixpoint(direct, edges, Map.of());
-        // the clinit keeps its OWN full transitive set...
+        // the clinit keeps its own full transitive set...
         assertEquals(set("Log", "Net"), inferred(r, "X.<clinit>"));
-        // ...but its consumer sees only the clinit's DIRECT effects, never the transitive Net.
-        assertEquals(set("Log"), inferred(r, "user"));
+        // ...and its consumer reaches it transitively too (Log from the static block + Net through the body).
+        assertEquals(set("Log", "Net"), inferred(r, "user"));
     }
 
     @Test

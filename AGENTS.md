@@ -35,29 +35,38 @@ in the report; pure methods are omitted** — a method present in the callgraph 
 from `.functions[]` is pure (as far as the engine resolved). In *neither* file = never analyzed;
 conclude nothing.
 
-## Staying current — candor can't check for you, *you* can
+## Already installed? Report the version and ask before upgrading — before you scan
 
-candor-java never makes a network call to see if it's out of date: it analyzes for the `Net` effect
-and must not perform it, so it never phones home. The version check is therefore *your* job, not the
-tool's — you have network access, it doesn't. The tool's only contribution is telling you, offline,
-what it currently is:
+If this project already has candor-java (a `.candor/` report directory, or the fat jar /
+`jbang candor@tombaldwin/candor-java` available), do this **first**, before scanning:
 
-```sh
-candor --version        # candor-java <ver> (spec <spec>)  +  the upgrade line — no network
-```
+1. **Tell the user which version they're on.** Run the offline version flag and state it plainly —
+   e.g. *"This project is on candor-java 0.5.2 (spec 0.5)."*
+   ```sh
+   candor --version        # i.e. java -jar candor-java-*-all.jar --version — offline, no network
+   ```
+   On a build too old for the flag, read `candor.version` / `candor.spec` from an existing
+   `.candor/report*.json` instead.
+2. **Check whether it's current.** candor-java never phones home — it analyzes for the `Net` effect
+   and must not perform it, so the version check is *your* job, not the tool's: you have network
+   access, it doesn't. Compare the installed RELEASE semver against the latest GitHub release tag:
+   ```sh
+   curl -s -H 'User-Agent: candor-version-check' \
+     https://api.github.com/repos/tombaldwin/candor-java/releases/latest \
+     | grep -o '"tag_name": *"[^"]*"'                                    # latest -> "tag_name":"v0.5.0" (compact)
+   ```
+3. **If it's behind, *ask* before upgrading.** Say e.g. *"candor-java 0.5.3 is available (you're on
+   0.5.2) — upgrade before I scan?"* and run `jbang --fresh candor@tombaldwin/candor-java` only if the
+   user agrees. Never upgrade silently: an analysis tool's version is part of its result's provenance,
+   so the user decides when it changes.
 
-That prints the clean RELEASE semver `<ver>` (the GitHub-tag / jar-filename axis) and the contract
-`<spec>`, then `upgrade: jbang --fresh candor@tombaldwin/candor-java`. Take that `<ver>` and compare it
-yourself to the latest GitHub release tag, then upgrade if it's behind:
+If it's already current (or the user declines), just proceed. If candor-java isn't installed at all,
+skip this and install per *Produce a report* above.
 
-```sh
-curl -s -H 'User-Agent: candor-version-check' \
-  https://api.github.com/repos/tombaldwin/candor-java/releases/latest \
-  | grep -o '"tag_name": *"[^"]*"'                                       # latest -> "tag_name":"v0.5.0" (compact)
-```
-
-(The report envelope's `.candor.version` is still the engine **build hash** — a git short-hash for
-provenance, not a semver — while `.candor.spec` is the contract version, `0.5`.)
+`candor --version` prints the clean RELEASE semver `<ver>` (the GitHub-tag / jar-filename axis) and the
+contract `<spec>`, then `upgrade: jbang --fresh candor@tombaldwin/candor-java`. (The report envelope's
+`.candor.version` is still the engine **build hash** — a git short-hash for provenance, not a semver —
+while `.candor.spec` is the contract version, `0.5`.)
 
 `jbang candor@tombaldwin/candor-java` resolves the jar from this repo's `jbang-catalog.json`, which
 pins a release tag — so you get whatever that catalog points at. To pick up a newer release, run

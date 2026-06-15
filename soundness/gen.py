@@ -101,6 +101,21 @@ def edge_forms(callee, i):
         "foreach":   (f"for (Object o{i} : new Bag{i}()) {{}}",
                       [f"static class Bag{i} implements Iterable<Object> {{ public java.util.Iterator<Object> iterator() {{ return new It{i}(); }} }}",
                        f"static class It{i} implements java.util.Iterator<Object> {{ public boolean hasNext() {{ return false; }} public Object next() {{ {callee}(); return null; }} }}"]),
+        # BROAD fan-out over an EXTERNAL interface: 13 (> CHA_FANOUT_LIMIT=12) project impls of
+        # java.util.function.Supplier dispatched at a SINGLE site (`s.get()` looped over all of them),
+        # ONE of which reaches `callee`. Bounded CHA DROPS the whole fan-out (broad), and because the
+        # owner (Supplier) is EXTERNAL the old `isProjectIfaceOrAbstract(owner)` Unknown-gate was false —
+        # so the caller went SILENTLY PURE though a dropped project body carries the effect (the cardinal
+        # §4 violation). The fix raises Unknown whenever a broad drop discards PROJECT impls (cha non-
+        # empty). Asserts the caller is effect-or-Unknown, never pure. The other forms use a SINGLE impl,
+        # so this broad-drop path was fuzzer-blind. (/code-review max found the hole.)
+        "fanout": (
+            "java.util.List<java.util.function.Supplier<Object>> sup{0} = new java.util.ArrayList<>();".format(i)
+            + "".join(f"sup{i}.add(new Sup{i}_{k}());" for k in range(13))
+            + f"for (java.util.function.Supplier<Object> z{i} : sup{i}) {{ z{i}.get(); }}",
+            [f"static class Sup{i}_0 implements java.util.function.Supplier<Object> {{ public Object get() {{ {callee}(); return null; }} }}"]
+            + [f"static class Sup{i}_{k} implements java.util.function.Supplier<Object> {{ public Object get() {{ return null; }} }}"
+               for k in range(1, 13)]),
     }
 
 

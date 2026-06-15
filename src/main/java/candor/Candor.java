@@ -1731,14 +1731,29 @@ public class Candor {
                         // a reason to drop a real reachable effect; a broad fan-out still drops to Unknown.
                         List<String> targets = broad ? List.of() : cha;
                         edges.get(id).addAll(targets);
-                        // A broad NON-exempt dispatch over a project abstraction → Unknown, not silent
-                        // (an effectful impl could be among the many; exempt methods are conventionally
-                        // pure / runtime-entry, so they drop to nothing without Unknown).
+                        // A broad NON-exempt dispatch that DROPS project implementors → Unknown, not
+                        // silent-pure (an effectful body could be among the many we just dropped; exempt
+                        // methods are conventionally pure / runtime-entry, so they drop to nothing without
+                        // Unknown). The discriminator is "are we dropping PROJECT impls whose effects we'd
+                        // otherwise have propagated" — i.e. `cha` is non-empty — NOT "is the OWNER a project
+                        // type". `chaTargets` only ever returns project-defined CONCRETE bodies (it scans
+                        // byName, which holds project classes alone), so a non-empty `cha` IS that signal.
+                        // The owner can be an EXTERNAL interface (java.util.function.Supplier, Runnable,
+                        // Callable, java.util.List…) the project has ≥13 implementors of: bounded CHA drops
+                        // the whole fan-out, and the old `isProjectIfaceOrAbstract(min.owner)` gate was
+                        // FALSE for the external owner, so the caller went silently pure even though one of
+                        // the dropped project bodies wrote a file (the cardinal soundness sin). We preserve
+                        // the curated-κ posture for UBIQUITOUS stdlib dispatch (List.add / Iterator.next on
+                        // stdlib-only impls): there `cha` is EMPTY (no project class declares the body), so
+                        // no Unknown floods — they contribute nothing. (Found by /code-review max: 13+
+                        // project Suppliers, one effectful, over a single dispatch site.)
                         if (broad && !dispatchExempt && effect == null && !springTyped
-                                && isProjectIfaceOrAbstract(min.owner)) {
+                                && (isProjectIfaceOrAbstract(min.owner) || !cha.isEmpty())) {
                             dir.add("Unknown");
-                            unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
-                                    .add("dispatch-broad:" + owner + "." + min.name);
+                            String why = isProjectIfaceOrAbstract(min.owner)
+                                    ? "dispatch-broad:" + owner + "." + min.name
+                                    : "dispatch-broad-ext:" + owner + "." + min.name;
+                            unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(why);
                         }
                         // Genuine unresolved dispatch: a PROJECT interface/abstract type that DECLARES
                         // this method, with no visible concrete impl (DI-wired, external, or strategy)

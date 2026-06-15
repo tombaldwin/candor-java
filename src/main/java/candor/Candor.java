@@ -1475,15 +1475,19 @@ public class Candor {
                     // ProcessBuilder/Runtime.exec command, the Path.of / File / file-stream ctor path.
                     if ((owner.equals("java.lang.ProcessBuilder") && min.name.equals("<init>"))
                             || (owner.equals("java.lang.Runtime") && min.name.equals("exec"))) {
-                        String cmd = firstLiteralArg(mn, min);
-                        if (cmd != null) cmdsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(cmd);
-                        // Refine the cliff (spec §4 ⟨0.5⟩): a known literal head adds its effects
-                        // (`curl`→Net, `candor`→Fs/Env); `Exec` stays, an unknown head adds nothing.
-                        // The head MUST come from argv[0] (programHeadLiteral), NOT the loose
-                        // firstLiteralArg: `new ProcessBuilder(toolVar, "curl")` names no static
-                        // program, so its trailing literal must not fabricate Net (§1 under-report).
+                        // Only the program HEAD (argv[0]) names the command — a later argument is DATA
+                        // (§4; mirrors candor-rust's is_cmd_naming_method). `programHeadLiteral` reads
+                        // argv[0] specifically; the loose `firstLiteralArg` would grab a trailing literal
+                        // (`new ProcessBuilder(toolVar, "curl")` → "curl"), fabricating a `cmds` head and
+                        // letting `allow Exec curl` spuriously pass on a DYNAMIC head. Both the literal
+                        // capture AND the cliff refinement (spec §4 ⟨0.5⟩: `curl`→Net, `candor`→Fs/Env)
+                        // therefore key off argv[0]; a dynamic head keeps the bare Exec cliff with no
+                        // `cmds`. Exec itself is emitted unconditionally below — only the literal tightens.
                         String head = programHeadLiteral(min);
-                        if (head != null) dir.addAll(commandHeadEffects(head));
+                        if (head != null) {
+                            cmdsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(head);
+                            dir.addAll(commandHeadEffects(head));
+                        }
                     }
                     // …only the overload whose path is a SINGLE leading String arg (descriptor
                     // `(Ljava/lang/String;)` or `(Ljava/lang/String;[…` for Path.of's varargs). A

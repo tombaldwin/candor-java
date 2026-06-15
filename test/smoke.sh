@@ -268,6 +268,37 @@ javac -d "$W/gcls" "$W/src/Gp.java" 2>/dev/null
 want   "grandparent-inherited dispatch resolves (gains Net)"   "$("$CJ" show "$W/g.json" 'Gp.use')" 'Net'
 absent "…and is NOT a false Unknown"                           "$("$CJ" show "$W/g.json" 'Gp.use')" 'Unknown'
 
+# ── monomorphic-receiver narrowing (SOUNDNESS): a dispatch on a PROVABLE single `new T` resolves to the
+# one method T invokes, NOT its CHA siblings — so a pure receiver doesn't fabricate an effectful sibling's
+# effect. The genuinely-polymorphic receivers (param / field / branch-merged) MUST still keep the CHA. ──
+echo "== monomorphic-receiver narrowing (no sibling-effect fabrication) =="
+mkdir -p "$W/mono"
+cat > "$W/mono/Mono.java" <<'J'
+public class Mono {
+  static class Base { int compute() { return 41; } }                                   // PURE
+  static class Dirty extends Base {                                                     // effectful sibling
+    int compute() { try { new java.net.Socket("1.2.3.4", 80); } catch (Exception e) {} return 1; } }
+  Base field;
+  int callMonoBase()  { Base b = new Base();  return b.compute(); }   // provable new Base  → PURE
+  int callMonoDirty() { Base b = new Dirty(); return b.compute(); }   // provable new Dirty → {Net}
+  int callParam(Base b) { return b.compute(); }                      // PARAM  receiver → CHA → {Net}
+  int callField()       { return field.compute(); }                  // FIELD  receiver → CHA → {Net}
+  int callReturn()      { return make().compute(); }                 // RETURN receiver → CHA → {Net}
+  Base make() { return new Dirty(); }
+  int callMerge(boolean c) {                                         // BRANCH-merged new → CHA → {Net}
+    Base b; if (c) b = new Base(); else b = new Dirty(); return b.compute(); }
+}
+J
+javac -d "$W/monocls" "$W/mono/Mono.java" 2>/dev/null
+"$CJ" "$W/monocls" --json "$W/mono.json" >/dev/null 2>&1
+absent "a provably new-Base receiver is PURE (no fabricated sibling Net)" "$(cat "$W/mono.json")" '"Mono.callMonoBase"'
+want   "a provably new-Dirty receiver resolves to Dirty's real Net"       "$("$CJ" show "$W/mono.json" Mono.callMonoDirty)" 'Net'
+want   "a PARAM receiver keeps the CHA (Dirty's Net must NOT vanish)"        "$("$CJ" show "$W/mono.json" Mono.callParam)"  'Net'
+want   "a FIELD receiver keeps the CHA"                                      "$("$CJ" show "$W/mono.json" Mono.callField)"  'Net'
+want   "a RETURN-value receiver keeps the CHA"                               "$("$CJ" show "$W/mono.json" Mono.callReturn)" 'Net'
+want   "a BRANCH-merged new (Base|Dirty) keeps the CHA"                      "$("$CJ" show "$W/mono.json" Mono.callMerge)"  'Net'
+want   "the effectful sibling's own compute still carries Net"               "$("$CJ" show "$W/mono.json" 'Mono$Dirty.compute')" 'Net'
+
 echo "== NIO channels are classified (SocketChannel→Net, FileChannel→Fs) =="
 # NIO networking/file I/O was a silent under-report — every NIO stack (Netty, async/reactive) was pure.
 # The concrete channel types ARE the I/O boundary; a plain ByteBuffer must stay pure (no false positive).

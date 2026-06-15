@@ -607,6 +607,97 @@ public class Candor {
         }
     }
 
+    /** Receiver-provenance value (the soundness fix for monomorphic-dispatch fabrication). Carries ASM's
+     *  type/size (`base`) plus, when this value is PROVABLY a single freshly-constructed `new T`, that
+     *  type's internal name in `newType`; otherwise `newType` is null ("indeterminate" — a parameter, a
+     *  field, a return value, a merge of different new-types, or anything else). A non-null `newType` is a
+     *  guarantee, never a guess: it is set ONLY by `newOperation` on a NEW insn and survives only copies,
+     *  loads/stores, and merges that agree on the exact same type. */
+    static final class ProvValue implements Value {
+        final BasicValue base;
+        final String newType; // internal name of a provable `new T` receiver, or null = indeterminate
+        ProvValue(BasicValue base, String newType) { this.base = base; this.newType = newType; }
+        public int getSize() { return base.getSize(); }
+        public boolean equals(Object o) {
+            return o instanceof ProvValue p && base.equals(p.base) && Objects.equals(newType, p.newType);
+        }
+        public int hashCode() { return base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode()); }
+    }
+
+    /** Tracks, per stack/local value, whether it is PROVABLY a single `new T` — the receiver-provenance
+     *  dataflow that lets an invokevirtual on a freshly-allocated, single-typed receiver resolve to the
+     *  one method T dispatches, SKIPPING the CHA sibling fan-out (the monomorphic fabrication fix). Type/
+     *  size correctness is delegated to {@link BasicInterpreter} so frames merge soundly. SOUND BY
+     *  CONSTRUCTION: only `newOperation` on a NEW insn mints a `newType`; every other production (params
+     *  via `newValue`, field/array/return values via the base interpreter, constants) is indeterminate;
+     *  and `merge` of two DIFFERENT new-types (or a new with a non-new) collapses to indeterminate — so a
+     *  genuinely polymorphic receiver (param/field/branch-merged) NEVER narrows, keeping the CHA. */
+    static final class ProvInterpreter extends Interpreter<ProvValue> {
+        private final BasicInterpreter bi = new BasicInterpreter();
+        ProvInterpreter() { super(Opcodes.ASM9); }
+        private static ProvValue wrap(BasicValue b, String t) { return b == null ? null : new ProvValue(b, t); }
+
+        public ProvValue newValue(Type type) { return wrap(bi.newValue(type), null); }
+        public ProvValue newOperation(AbstractInsnNode insn) throws org.objectweb.asm.tree.analysis.AnalyzerException {
+            // The NEW opcode (and ONLY it among newOperation's insns) yields an UNINITIALIZED single-typed
+            // reference; that type is the provable receiver type. LDC / GETSTATIC / constants / etc. carry
+            // no allocation-site guarantee, so they stay indeterminate.
+            String t = (insn.getOpcode() == Opcodes.NEW) ? ((TypeInsnNode) insn).desc : null;
+            return wrap(bi.newOperation(insn), t);
+        }
+        public ProvValue copyOperation(AbstractInsnNode insn, ProvValue value) { return value; }
+        public ProvValue unaryOperation(AbstractInsnNode insn, ProvValue value)
+                throws org.objectweb.asm.tree.analysis.AnalyzerException {
+            // A unary op (cast, conversion, getfield, arraylength, …) never preserves the allocation-site
+            // guarantee: even CHECKCAST of a `new T` keeps T, but a field read off it does not — and we
+            // can't tell them apart cheaply, so conservatively drop to indeterminate. (The sound direction:
+            // dropping a true `new T` only FORGOES a narrow and keeps the CHA over-approximation.)
+            return wrap(bi.unaryOperation(insn, value.base), null);
+        }
+        public ProvValue binaryOperation(AbstractInsnNode insn, ProvValue a, ProvValue b)
+                throws org.objectweb.asm.tree.analysis.AnalyzerException {
+            return wrap(bi.binaryOperation(insn, a.base, b.base), null);
+        }
+        public ProvValue ternaryOperation(AbstractInsnNode insn, ProvValue a, ProvValue b, ProvValue c)
+                throws org.objectweb.asm.tree.analysis.AnalyzerException {
+            return wrap(bi.ternaryOperation(insn, a.base, b.base, c.base), null);
+        }
+        public ProvValue naryOperation(AbstractInsnNode insn, List<? extends ProvValue> values)
+                throws org.objectweb.asm.tree.analysis.AnalyzerException {
+            List<BasicValue> bases = new ArrayList<>(values.size());
+            for (ProvValue v : values) bases.add(v.base);
+            // A call/multianewarray result is never a tracked allocation site (its return value's runtime
+            // type is unknown to a syntactic pass) — indeterminate.
+            return wrap(bi.naryOperation(insn, bases), null);
+        }
+        public void returnOperation(AbstractInsnNode insn, ProvValue value, ProvValue expected) {}
+        public ProvValue merge(ProvValue a, ProvValue b) {
+            BasicValue mb = bi.merge(a.base, b.base);
+            // CRITICAL for soundness: a control-flow join keeps the `new T` guarantee ONLY when BOTH paths
+            // bring the SAME new-type; a new-vs-new(other), a new-vs-indeterminate, or any disagreement
+            // collapses to indeterminate, so a branch-merged receiver (`if (c) new Base() else new Dirty()`)
+            // is NOT monomorphic and the CHA fan-out is preserved.
+            String mt = Objects.equals(a.newType, b.newType) ? a.newType : null;
+            if (mb.equals(a.base) && Objects.equals(mt, a.newType)) return a;
+            return new ProvValue(mb, mt);
+        }
+    }
+
+    /** The provable single `new T` receiver internal name of the call `min` in frame `f`, or null if the
+     *  receiver is NOT provably a single freshly-constructed type (a param/field/return/merge — the
+     *  genuinely polymorphic case that MUST keep the CHA). The receiver is the stack entry just below the
+     *  call's arguments. */
+    static String monomorphicReceiver(Frame<ProvValue> f, MethodInsnNode min) {
+        if (f == null) return null;
+        int argSlots = 0;
+        for (Type a : Type.getArgumentTypes(min.desc)) argSlots += a.getSize();
+        int top = f.getStackSize();
+        int recvIdx = top - 1 - argSlots; // below the args sits the receiver
+        if (recvIdx < 0) return null;
+        ProvValue rv = f.getStack(recvIdx);
+        return rv == null ? null : rv.newType;
+    }
+
     /** AS-EFF-005: flag a function that gained an effect versus a saved baseline report. */
     static int checkBaseline(Map<String, TreeSet<String>> inferred, String path) {
         Map<String, Set<String>> base = loadBaseline(path);
@@ -1435,6 +1526,20 @@ public class Candor {
                 } catch (Throwable t) { taintFrames = null; }
             }
 
+            // Receiver-provenance pass (SOUNDNESS, always-on): tells us at each invokevirtual below whether
+            // the receiver is PROVABLY a single `new T`. If so, the dispatch narrows to the one method T
+            // resolves — no CHA sibling fan-out (the monomorphic-fabrication fix). Anything else (param,
+            // field, return, branch-merged type → genuinely polymorphic) keeps the full CHA over-
+            // approximation. Like the taint pass it is fail-soft: a bodiless/native/abstract method, or any
+            // analyzer failure, leaves `provFrames` null and the dispatch keeps the CHA exactly as before.
+            Frame<ProvValue>[] provFrames = null;
+            if (mn.instructions.size() > 0
+                    && (mn.access & (Opcodes.ACC_NATIVE | Opcodes.ACC_ABSTRACT)) == 0) {
+                try {
+                    provFrames = new Analyzer<>(new ProvInterpreter()).analyze(cn.name, mn);
+                } catch (Throwable t) { provFrames = null; }
+            }
+
             for (AbstractInsnNode insn : mn.instructions) {
                 if (insn instanceof MethodInsnNode min) {
                     String owner = min.owner.replace('/', '.');
@@ -1559,6 +1664,28 @@ public class Candor {
                         // opened — concrete-receiver toString, named-implementor orphaning, synchronous
                         // Runnable.run, all caller-attribution — were found by /code-review max.)
                         boolean dispatchExempt = isChaExemptMethod(min.owner, min.name, min.desc);
+                        // SOUNDNESS — monomorphic-receiver narrowing: if the receiver is PROVABLY a single
+                        // `new T` (the provenance pass above), this dispatch resolves to exactly the one
+                        // method T invokes — NOT its CHA siblings. `b = new Base(); b.compute()` must read
+                        // Base.compute alone, never the sibling Dirty.compute's Net. We narrow ONLY when the
+                        // receiver is provably a single new-type AND that type resolves a concrete impl in
+                        // its own chain; ANY other receiver (param/field/return/branch-merged → genuinely
+                        // polymorphic) falls through to the unchanged CHA over-approximation below, so a real
+                        // polymorphic effect is never lost. INVOKEINTERFACE is included: a provable `new T`
+                        // under an interface call still dispatches to T's concrete impl.
+                        String monoRecv = monomorphicReceiver(provFrames == null ? null
+                                : provFrames[mn.instructions.indexOf(min)], min);
+                        if (monoRecv != null && byName.containsKey(monoRecv)) {
+                            String monoTarget = monomorphicTarget(monoRecv, min.name, min.desc);
+                            if (monoTarget != null) {
+                                edges.get(id).add(monoTarget);
+                                continue; // skip CHA fan-out + the Unknown branches for this resolved call
+                            }
+                            // No concrete impl visible in T's own chain (impl is in an unloaded super) → the
+                            // call resolves outside the project, an ordinary external call: no edge, no
+                            // Unknown, and still no CHA (T is concrete, so there ARE no polymorphic siblings).
+                            continue;
+                        }
                         List<String> cha = chaTargets(min.owner, min.name, min.desc);
                         // BOUNDED CHA (SPEC §4): a dispatch over a local abstraction resolves to its
                         // implementors only when the fan-out is NARROW (≤ CHA_FANOUT_LIMIT); a broad
@@ -1874,6 +2001,18 @@ public class Candor {
             if (impl != null) out.add(impl);
         }
         return new ArrayList<>(out);
+    }
+
+    /** The single method a dispatch on a PROVABLY-`new recv` receiver actually invokes: `recv` itself if it
+     *  declares a concrete `(name,desc)`, else `recv`'s nearest concrete superclass that does — exactly how
+     *  the JVM resolves virtual dispatch on a known concrete type. Used to NARROW an invokevirtual on a
+     *  monomorphic receiver, replacing the CHA sibling fan-out with the one real target. Returns null only
+     *  if no concrete impl is visible in `recv`'s own chain (then the caller keeps the CHA — sound). */
+    static String monomorphicTarget(String recv, String name, String desc) {
+        ClassNode c = byName.get(recv);
+        if (c != null && declaresConcrete(c, name, desc))
+            return methodId(recv.replace('/', '.'), name, desc);
+        return nearestConcreteSuper(recv, name, desc);
     }
 
     /** The concrete `(name, desc)` declaration `internal` would invoke via inheritance: the first one

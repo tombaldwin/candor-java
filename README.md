@@ -195,6 +195,8 @@ candor never phones home (it audits the `Net` effect and must not perform it), s
 release is the **agent's** job: read the installed `<ver>` from `--version`, compare it to the latest
 GitHub release tag yourself, then `jbang --fresh candor@tombaldwin/candor-java` if it's behind.
 
+**Staying current:** check your installed version and upgrade — [candor/AGENTS.md §2a](https://github.com/tombaldwin/candor/blob/main/AGENTS.md#2a-staying-current--check-the-version-upgrade). `candor --version` prints the build, the spec, and the upgrade one-liner (offline; candor never phones home).
+
 From source: requires JDK 21 + Gradle.
 
 ```sh

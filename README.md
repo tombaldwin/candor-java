@@ -188,12 +188,12 @@ agent runs on your own codebase.
 **Version & updates:**
 
 ```sh
-candor --version        # prints: candor-java <ver> (spec <spec>) + the upgrade line
-candor --check-update    # one 4s-bounded GitHub check; says "up to date" or names a newer release
+candor --version        # prints: candor-java <ver> (spec <spec>) + the upgrade line — no network
 ```
 
-`--check-update` makes a single network call (hard 4-second timeout) and never hangs or throws — an
-unreachable network just prints a one-line note and exits 0.
+candor never phones home (it audits the `Net` effect and must not perform it), so checking for a newer
+release is the **agent's** job: read the installed `<ver>` from `--version`, compare it to the latest
+GitHub release tag yourself, then `jbang --fresh candor@tombaldwin/candor-java` if it's behind.
 
 From source: requires JDK 21 + Gradle.
 

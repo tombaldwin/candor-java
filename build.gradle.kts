@@ -45,8 +45,8 @@ val candorToolchain: String =
     "jdk-" + (java.toolchain.languageVersion.orNull?.asInt() ?: Runtime.version().feature())
 // The clean release semver (the crate-semver axis, == this Gradle project `version`). Distinct from
 // the git-hash build id baked as `version` above: GitHub releases tag and the `-all.jar` filename
-// carry THIS, and `--version` / `--check-update` compare against it. Baked as `release` so the binary
-// reports its release identity without re-deriving it from the manifest.
+// carry THIS, and `--version` reports it. Baked as `release` so the binary reports its release
+// identity without re-deriving it from the manifest.
 val candorRelease: String = project.version.toString()
 
 val buildInfoDir = layout.buildDirectory.dir("generated/candor-buildinfo")

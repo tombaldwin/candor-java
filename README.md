@@ -185,6 +185,16 @@ jbang candor@tombaldwin/candor-java /path/to/classes-or-jar --json /tmp/report.j
 instructions. **Sceptical?** [PROVE-IT.md](PROVE-IT.md) is the 15-minute self-experiment your own
 agent runs on your own codebase.
 
+**Version & updates:**
+
+```sh
+candor --version        # prints: candor-java <ver> (spec <spec>) + the upgrade line
+candor --check-update    # one 4s-bounded GitHub check; says "up to date" or names a newer release
+```
+
+`--check-update` makes a single network call (hard 4-second timeout) and never hangs or throws — an
+unreachable network just prints a one-line note and exits 0.
+
 From source: requires JDK 21 + Gradle.
 
 ```sh

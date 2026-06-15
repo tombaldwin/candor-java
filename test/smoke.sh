@@ -620,6 +620,21 @@ mix="$("$CJ" "$W/bcls" --json "$W/mix.json" >/dev/null 2>&1; python3 -c "import 
 want   "the real URL host is extracted"                     "$mix" 'real.example.com'
 absent "a dotted property key is NOT a host"                "$mix" 'os.name'
 absent "a message key is NOT a host"                         "$mix" 'terms.agency'
+# a two-arg Socket(String host, int port) names the host as argv[0] — extract it (candor-scan does too).
+cat > "$W/bsrc/billing/Sk.java" <<'J'
+package billing;
+import java.net.*;
+public class Sk {
+  public void two()  throws Exception { new Socket("api.stripe.com", 443).close(); }   // host as argv[0]
+  public void dyn(String h) throws Exception { new Socket(h, 443).close(); }            // dynamic head: no host
+}
+J
+javac -d "$W/bcls" $(find "$W/bsrc" -name '*.java') 2>/dev/null
+"$CJ" "$W/bcls" --json "$W/sk.json" >/dev/null 2>&1
+sktwo="$(python3 -c "import json;print(next((e.get('hosts',[]) for e in json.load(open('$W/sk.json'))['functions'] if e['fn']=='billing.Sk.two'),[]))")"
+skdyn="$(python3 -c "import json;print(next((e.get('hosts',[]) for e in json.load(open('$W/sk.json'))['functions'] if e['fn']=='billing.Sk.dyn'),[]))")"
+want   "two-arg Socket(host,port) extracts the host"        "$sktwo" 'api.stripe.com'
+absent "a dynamic Socket host is honestly invisible"        "$skdyn" 'stripe'
 
 echo "== policy: Exec command + Fs path allowlists (AS-EFF-008) =="
 mkdir -p "$W/asrc/svc"

@@ -35,22 +35,29 @@ in the report; pure methods are omitted** — a method present in the callgraph 
 from `.functions[]` is pure (as far as the engine resolved). In *neither* file = never analyzed;
 conclude nothing.
 
-## Staying current — ask the tool
+## Staying current — candor can't check for you, *you* can
 
-candor-java exposes its own version + update check, so you no longer have to assemble one by hand:
+candor-java never makes a network call to see if it's out of date: it analyzes for the `Net` effect
+and must not perform it, so it never phones home. The version check is therefore *your* job, not the
+tool's — you have network access, it doesn't. The tool's only contribution is telling you, offline,
+what it currently is:
 
 ```sh
 candor --version        # candor-java <ver> (spec <spec>)  +  the upgrade line — no network
-candor --check-update    # prints the version line, then ONE 4s-bounded GitHub check:
-                         #   "up to date (latest is <v>)"  — or  "<ver> -> <v> available" + the upgrade cmd
 ```
 
-`--check-update` is the only command that touches the network (a single GET, hard 4-second timeout); on
-any failure it prints `candor-java: could not reach api.github.com to check for updates` to stderr and
-exits 0 — it never hangs and never throws. The release semver `<ver>` it reports is the GitHub-tag /
-jar-filename axis; the report envelope's `.candor.version` is still the engine **build hash** (git
-short-hash provenance) and `.candor.spec` the contract version (`0.5`). The scan path itself never makes
-a network call (candor analyzes for the `Net` effect and must not perform it) — the check is opt-in.
+That prints the clean RELEASE semver `<ver>` (the GitHub-tag / jar-filename axis) and the contract
+`<spec>`, then `upgrade: jbang --fresh candor@tombaldwin/candor-java`. Take that `<ver>` and compare it
+yourself to the latest GitHub release tag, then upgrade if it's behind:
+
+```sh
+curl -s -H 'User-Agent: candor-version-check' \
+  https://api.github.com/repos/tombaldwin/candor-java/releases/latest \
+  | grep -o '"tag_name": *"[^"]*"'                                       # latest -> "tag_name":"v0.5.0" (compact)
+```
+
+(The report envelope's `.candor.version` is still the engine **build hash** — a git short-hash for
+provenance, not a semver — while `.candor.spec` is the contract version, `0.5`.)
 
 `jbang candor@tombaldwin/candor-java` resolves the jar from this repo's `jbang-catalog.json`, which
 pins a release tag — so you get whatever that catalog points at. To pick up a newer release, run

@@ -323,7 +323,11 @@ public class Candor {
         Map<String, TreeSet<String>> inferred;
         try {
             inferred = runScan(scanTarget);
-        } catch (IOException | RuntimeException e) {
+        } catch (IOException | java.nio.file.ProviderNotFoundException e) {
+            // Scoped to the file-read failures load() can raise: NoSuchFileException/ZipException
+            // (IOException) + ProviderNotFoundException (a RuntimeException, for an unrecognized
+            // archive). NOT a blanket `RuntimeException` catch — that would MASK a genuine analysis
+            // bug (an NPE in analyze/fixpoint) as a file error, hiding an engine defect.
             System.err.println("candor: cannot read scan target " + args[0] + ": " + e.getMessage());
             System.exit(2);
             return; // unreachable — exit(2) above; satisfies the definite-assignment of `inferred`

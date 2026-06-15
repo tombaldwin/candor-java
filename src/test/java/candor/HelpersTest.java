@@ -74,15 +74,6 @@ class HelpersTest {
     }
 
     @Test
-    void isStdlibContainerDispatchIsInterfacesOnly() {
-        assertTrue(Candor.isStdlibContainerDispatch("java/util/List"));
-        assertTrue(Candor.isStdlibContainerDispatch("java/util/Map"));
-        assertTrue(Candor.isStdlibContainerDispatch("java/util/Iterator"));
-        assertFalse(Candor.isStdlibContainerDispatch("java/util/ArrayList")); // a concrete impl, not the iface
-        assertFalse(Candor.isStdlibContainerDispatch("com/example/MyList"));
-    }
-
-    @Test
     void pathCoveredIsPrefixAndTraversalSafe() {
         assertTrue(Candor.pathCovered("/etc", "/etc/passwd"));
         assertTrue(Candor.pathCovered("/etc", "/etc"));

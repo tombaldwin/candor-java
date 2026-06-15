@@ -217,24 +217,29 @@ want   "the <clinit> itself keeps its own transitive Fs"   "$("$CJ" show "$W/ci.
 want   "a <clinit> unit carries unitKind initializer (spec 0.5 draft)" \
        "$(python3 -c "import json;print([e.get('unitKind','') for e in json.load(open('$W/ci.json'))['functions'] if e['fn'].endswith('.<clinit>')][0])")" 'initializer'
 
-echo "== java.util container dispatch is not CHA-fanned-out (no iterator-effect smear) =="
+echo "== java.util container dispatch DOES fan out — a custom iterator's effect reaches the loop (sound) =="
 cat > "$W/src/Cd.java" <<'J'
 import java.util.*;
 public class Cd {
-  // a custom iterator whose next() genuinely draws entropy
-  static class RandIter implements Iterator<Integer> {
+  // a custom iterator whose next() performs Fs
+  static class FsIter implements Iterator<Integer> {
     public boolean hasNext() { return false; }
-    public Integer next() { return new Random().nextInt(); }   // Rand — a real custom-iterator effect
+    public Integer next() {
+      try { java.nio.file.Files.readAllBytes(java.nio.file.Path.of("/x")); } catch (Exception e) {}
+      return 1;
+    }
   }
-  // a PURE method that iterates a plain list via Iterator.next() — must NOT inherit RandIter's Rand
-  static int sum(List<Integer> xs) { int s = 0; for (Integer x : xs) { s += x; } return s; }
+  static class Bag implements Iterable<Integer> { public Iterator<Integer> iterator() { return new FsIter(); } }
+  // for-each over a custom Iterable — at runtime reaches FsIter.next -> Fs; must NOT be silently pure.
+  // (Iterator.next() dispatch fans out over the project's Iterator impls; the over-approximation that
+  // can smear a sibling iterator's effect onto an unrelated loop is sound "can reach", not fabrication.)
+  static void forEach(Bag b) { for (Integer x : b) {} }
 }
 J
 javac -d "$W/cd" "$W/src/Cd.java"
 "$CJ" "$W/cd" --json "$W/cd.json" >/dev/null 2>&1
-cd_json="$(cat "$W/cd.json")"
-absent "iterating a list does NOT inherit a sibling custom iterator's Rand (the jts smear)" "$cd_json" '"Cd.sum"'
-want   "the custom iterator's own next() keeps its real Rand"  "$("$CJ" show "$W/cd.json" 'Cd$RandIter.next')" 'Rand'
+want   "for-each over a custom Iterable inherits the iterator's effect (sound — no silent-pure)" "$("$CJ" show "$W/cd.json" Cd.forEach)" 'Fs'
+want   "the custom iterator's own next() carries its effect"  "$("$CJ" show "$W/cd.json" 'Cd$FsIter.next')" 'Fs'
 
 echo "== native methods (invisible JNI body → Unknown) =="
 cat > "$W/src/Nat.java" <<'J'

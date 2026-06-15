@@ -68,6 +68,13 @@ wantnot "an unknown head 'x' stays the bare Exec cliff (no fabricated Net)" "$("
 wantnot "variable program head + trailing 'curl' literal does NOT fabricate Net (argv[0] gate)" "$("$CJ" show "$W/r.json" varhead)" 'Net'
 wantnot "variable array head + element-1 'psql' literal does NOT fabricate Db (argv[0] gate)"   "$("$CJ" show "$W/r.json" arrhead)" 'Db'
 want    "both traps keep the bare Exec cliff"        "$("$CJ" show "$W/r.json" varhead)" 'Exec'
+# The verdict-flipping case: a trailing-argument literal must not populate `cmds` either — else
+# `allow Exec curl` would spuriously certify a DYNAMIC head (candor-scan correctly fails it).
+want    "a literal HEAD captures cmds"               "$("$CJ" show "$W/r.json" netcmd --json)"  '"curl"'
+absent  "a dynamic head with trailing 'curl' captures NO cmds (no verdict flip)" "$("$CJ" show "$W/r.json" varhead --json)" '"cmds"'
+printf 'allow Exec curl\n' > "$W/excurl.pol"
+ldv="$(CANDOR_POLICY="$W/excurl.pol" "$CJ" "$W/cls" 2>&1)"
+want "allow Exec curl does NOT certify the dynamic-head spawn (uncertified, AS-EFF-008)" "$ldv" '`Fx.varhead` performs Exec with no visible literal'
 
 echo "== entry schema: hash, calls, fs =="
 want "hash is the descriptor-bearing ref"     "$rep" 'Fx.reads()V'

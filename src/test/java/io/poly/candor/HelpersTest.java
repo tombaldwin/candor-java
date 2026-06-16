@@ -94,6 +94,16 @@ class HelpersTest {
         assertEquals("Db", Candor.classify("java.sql.Connection", "prepareStatement", "(Ljava/lang/String;)Ljava/sql/PreparedStatement;"));
     }
 
+    /** The full java.time `.now()` surface reads the clock — not just Instant/LocalDateTime/LocalDate/
+     *  ZonedDateTime; OffsetDateTime in particular is very common. The arithmetic ops stay pure. */
+    @Test
+    void javaTimeNowClassifiesAsClock() {
+        assertEquals("Clock", Candor.classify("java.time.OffsetDateTime", "now", "()Ljava/time/OffsetDateTime;"));
+        assertEquals("Clock", Candor.classify("java.time.LocalTime", "now", "()Ljava/time/LocalTime;"));
+        assertEquals("Clock", Candor.classify("java.time.Year", "now", "()Ljava/time/Year;"));
+        assertNull(Candor.classify("java.time.OffsetDateTime", "plusDays", "(J)Ljava/time/OffsetDateTime;"));
+    }
+
     @Test
     void multicastSocketClassifiesAsNet() {
         assertEquals("Net", Candor.classify("java.net.MulticastSocket", "receive", "(Ljava/net/DatagramPacket;)V"));

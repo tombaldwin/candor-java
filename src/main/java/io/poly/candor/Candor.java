@@ -2640,7 +2640,12 @@ public class Candor {
         if (owner.equals("java.time.Clock")) return "Clock";
         if (method.equals("now")
                 && (owner.equals("java.time.Instant") || owner.equals("java.time.LocalDateTime")
-                    || owner.equals("java.time.LocalDate") || owner.equals("java.time.ZonedDateTime")))
+                    || owner.equals("java.time.LocalDate") || owner.equals("java.time.ZonedDateTime")
+                    // the rest of the java.time `.now()` surface — OffsetDateTime is very common; the
+                    // partials (LocalTime/Year/YearMonth/MonthDay/OffsetTime) likewise read the clock.
+                    || owner.equals("java.time.OffsetDateTime") || owner.equals("java.time.OffsetTime")
+                    || owner.equals("java.time.LocalTime") || owner.equals("java.time.Year")
+                    || owner.equals("java.time.YearMonth") || owner.equals("java.time.MonthDay")))
             return "Clock";
         // Randomness — the concrete PRNG/CSPRNG classes (mirrors `new Random()` / `Math.random()`).
         // ThreadLocalRandom and SplittableRandom are the java.util(.concurrent) generators a probe found

@@ -236,7 +236,23 @@ public class Candor {
         // analyze, so a call into an already-analyzed dependency inherits its effects (vs assumed-pure).
         loadCrossDeps(System.getenv("CANDOR_DEPS"), provenance()[0]);
         taintEnabled = System.getenv("CANDOR_TAINT") != null; // read before analyze (the pass runs per method)
-        for (ClassNode cn : classes) analyze(cn);
+        // Per-class fail-soft: an exotic/malformed class that throws ANYWHERE in analyze (e.g. a malformed
+        // method descriptor that ASM validates only lazily in Type.getArgumentTypes — the 0.5.6 crash class,
+        // re-surfaced via an overloaded-name path the desc.startsWith("(") guard doesn't catch) must NOT
+        // abort the WHOLE scan and silently zero EVERY other class's analysis (a DoS). Skip + disclose the
+        // one bad class, mirroring collectClasses's tolerance.
+        int analyzeSkipped = 0; String firstAnalyzeErr = null;
+        for (ClassNode cn : classes) {
+            try {
+                analyze(cn);
+            } catch (Throwable t) {
+                analyzeSkipped++;
+                if (firstAnalyzeErr == null) firstAnalyzeErr = cn.name + ": " + t;
+            }
+        }
+        if (analyzeSkipped > 0)
+            System.err.printf("candor-java: skipped %d unanalyzable class(es) (e.g. %s)%n",
+                    analyzeSkipped, firstAnalyzeErr);
 
         // Resolve literal-getMethod reflection: edge to the named method OF THE RECEIVER CLASS only —
         // `Helper.class.getMethod("strip")` → `Helper.strip`. A receiver we can't pin to a project
@@ -2215,7 +2231,37 @@ public class Candor {
             new String[] {"logback/core/Appender", "doAppend", null},
             new String[] {"java/util/logging/Handler", "publish", null},
             new String[] {"logging/log4j/core/Appender", "append", null},
-            new String[] {"log4j/Appender", "doAppend", null});
+            new String[] {"log4j/Appender", "doAppend", null},
+            // SCHEDULING / JOB / BATCH / WORKFLOW / serverless callbacks — invoked by the scheduler/engine/
+            // runtime with no in-project call site (the finalize/Runnable shape). Supertype-substring gated
+            // (one row per interface; covers javax/jakarta + impl variants), so a same-named non-implementor
+            // is never fabricated as a root.
+            new String[] {"org/quartz/Job", "execute", null},
+            new String[] {"batch/core/step/tasklet/Tasklet", "execute", null},
+            new String[] {"batch/item/ItemReader", "read", null},
+            new String[] {"batch/item/ItemWriter", "write", null},
+            new String[] {"batch/item/ItemProcessor", "process", null},
+            new String[] {"batch/core/StepExecutionListener", "beforeStep", null},
+            new String[] {"batch/core/StepExecutionListener", "afterStep", null},
+            new String[] {"engine/delegate/JavaDelegate", "execute", null},   // Camunda + Activiti
+            new String[] {"lambda/runtime/RequestHandler", "handleRequest", null},        // AWS Lambda
+            new String[] {"lambda/runtime/RequestStreamHandler", "handleRequest", null},
+            new String[] {"io/vertx/core/Verticle", "start", null},
+            new String[] {"io/vertx/core/Handler", "handle", null},
+            new String[] {"org/apache/camel/Processor", "process", null},
+            new String[] {"kafka/streams/processor/Processor", "process", null},
+            new String[] {"jobrunr/jobs/lambdas/JobRequestHandler", "run", null},
+            // Android component lifecycle — the framework instantiates + invokes these with no project call
+            // site (the servlet-doGet shape). The dominant Android entry points.
+            new String[] {"android/app/Activity", "onCreate", null},
+            new String[] {"android/app/Activity", "onStart", null},
+            new String[] {"android/app/Activity", "onResume", null},
+            new String[] {"android/app/Service", "onStartCommand", null},
+            new String[] {"android/app/Service", "onBind", null},
+            new String[] {"android/app/Service", "onCreate", null},
+            new String[] {"android/app/IntentService", "onHandleIntent", null},
+            new String[] {"android/content/BroadcastReceiver", "onReceive", null},
+            new String[] {"android/app/Application", "onCreate", null});
 
     /** The number of CHA targets above which a CHA-EXEMPT dispatch (Object protocol / function-interface
      *  / task verb) is treated as a broad smear and its fan-out dropped. An app's handful of Runnables /
@@ -2297,6 +2343,7 @@ public class Candor {
         r.add("annotation/JsonValue");
         r.add("annotation/JsonAnySetter");
         r.add("annotation/JsonAnyGetter");
+        r.add("ejb/Schedule");   // EJB timer (jakarta/javax) — container-invoked on a schedule
         ROOT_ANNOTATIONS = List.copyOf(r);
     }
 
@@ -2538,10 +2585,12 @@ public class Candor {
      *  used only when simple names clash across a class's overloads. */
     static String paramTypeListFq(String desc) {
         StringBuilder sb = new StringBuilder();
-        for (Type t : Type.getArgumentTypes(desc)) {
-            if (sb.length() > 0) sb.append(',');
-            sb.append(fqTypeName(t));
-        }
+        try {
+            for (Type t : Type.getArgumentTypes(desc)) {     // fail soft on a malformed descriptor (see paramTypeList)
+                if (sb.length() > 0) sb.append(',');
+                sb.append(fqTypeName(t));
+            }
+        } catch (Throwable t) { return ""; }
         return sb.toString();
     }
 
@@ -2556,10 +2605,16 @@ public class Candor {
      *  with the same erased parameter types). */
     static String paramTypeList(String desc) {
         StringBuilder sb = new StringBuilder();
-        for (Type t : Type.getArgumentTypes(desc)) {
-            if (sb.length() > 0) sb.append(',');
-            sb.append(shortTypeName(t));
-        }
+        // Type.getArgumentTypes validates the descriptor lazily and THROWS on a malformed one (e.g. a
+        // missing `;` — ASM stores the raw UTF8 and doesn't check at parse time). Fail soft: a bad
+        // descriptor yields an empty suffix rather than aborting the scan (the per-class guard in runScan
+        // also catches it, but keeping methodId total is cheaper and keeps the id stable-ish).
+        try {
+            for (Type t : Type.getArgumentTypes(desc)) {
+                if (sb.length() > 0) sb.append(',');
+                sb.append(shortTypeName(t));
+            }
+        } catch (Throwable t) { return ""; }
         return sb.toString();
     }
 
@@ -2885,6 +2940,57 @@ public class Candor {
                 && (method.startsWith("invoke") || method.equals("run") || method.equals("evaluate")))
             return "Unknown";
         if (owner.equals("java.lang.invoke.MethodHandle") && method.startsWith("invoke")) return "Unknown";
+
+        // ── ARBITRARY-CODE-EXECUTION / OPAQUE sinks → Unknown (could perform ANY effect; same posture as
+        // reflection/Method.invoke and candor-ts's `eval()`). These run a code/expression string, deserialize
+        // untrusted data (gadget-chain RCE), parse XXE-able XML, or call native code — all security sinks
+        // that read SILENT-PURE (no classify row; their JDK packages are even κ-"covered" so undisclosed).
+        // Scripting / expression-language eval:
+        if ((owner.equals("javax.script.ScriptEngine") || owner.equals("javax.script.CompiledScript")
+                || owner.equals("javax.script.Invocable") || owner.equals("javax.script.Compilable"))
+                && (method.equals("eval") || method.startsWith("invoke") || method.equals("compile")))
+            return "Unknown";
+        if (owner.equals("org.springframework.expression.Expression") && method.startsWith("getValue")) return "Unknown";
+        if (owner.equals("ognl.Ognl") && (method.equals("getValue") || method.equals("setValue"))) return "Unknown";
+        if (owner.equals("org.mvel2.MVEL") && (method.equals("eval") || method.startsWith("execute"))) return "Unknown";
+        if (owner.equals("org.apache.commons.jexl3.JexlExpression") && method.equals("evaluate")) return "Unknown";
+        if (owner.startsWith("jakarta.el.") && method.equals("getValue")) return "Unknown";
+        if (owner.startsWith("javax.el.") && method.equals("getValue")) return "Unknown";
+        if (owner.equals("groovy.util.Eval") || owner.equals("groovy.lang.GroovyClassLoader")) return "Unknown";
+        if (owner.equals("bsh.Interpreter") && method.equals("eval")) return "Unknown";
+        if (owner.equals("org.jruby.embed.ScriptingContainer") && method.startsWith("runScriptlet")) return "Unknown";
+        if (owner.equals("org.python.util.PythonInterpreter") && (method.equals("exec") || method.equals("eval"))) return "Unknown";
+        if (owner.equals("clojure.lang.Compiler") && method.equals("eval")) return "Unknown";
+        if (owner.equals("javax.tools.JavaCompiler") && method.equals("run")) return "Unknown";
+        // Untrusted deserialization (gadget-chain RCE) + XXE-able XML parsing → Unknown (the realized effect
+        // depends on the payload/config a static pass can't see). ObjectInputStream.readObject is THE classic
+        // Java RCE sink; candor roots a project class's readObject CALLBACK but the readObject CALL is the sink.
+        if (owner.equals("java.io.ObjectInputStream") && (method.equals("readObject") || method.equals("readUnshared")))
+            return "Unknown";
+        if (owner.equals("java.beans.XMLDecoder") && method.equals("readObject")) return "Unknown";
+        if ((owner.equals("javax.xml.parsers.DocumentBuilder") || owner.equals("javax.xml.parsers.SAXParser")
+                || owner.equals("org.xml.sax.XMLReader")) && method.equals("parse"))
+            return "Unknown";
+        if (owner.equals("javax.xml.transform.Transformer") && method.equals("transform")) return "Unknown";
+        // FFI / native execution: a native call runs arbitrary machine code (opaque like a `native` body,
+        // already Unknown). JNA Function.invoke* / Library-interface dispatch / Unsafe raw memory / Panama
+        // symbol+upcall / Instrumentation rewrite → Unknown; load-a-native-lib / attach-to-another-JVM → Exec.
+        if (owner.equals("com.sun.jna.Function") && method.startsWith("invoke")) return "Unknown";
+        if ((owner.equals("sun.misc.Unsafe") || owner.equals("jdk.internal.misc.Unsafe"))
+                && (method.endsWith("Memory") || method.startsWith("put") || method.startsWith("get")
+                    || method.equals("defineClass") || method.equals("defineAnonymousClass")
+                    || method.equals("allocateInstance")))
+            return "Unknown";
+        if ((owner.equals("java.lang.foreign.SymbolLookup") && method.equals("find"))
+                || (owner.equals("java.lang.foreign.Linker") && method.equals("upcallStub")))
+            return "Unknown";
+        if (owner.equals("java.lang.instrument.Instrumentation")
+                && (method.equals("redefineClasses") || method.equals("retransformClasses"))) return "Unknown";
+        if (owner.equals("com.sun.jna.Native") && method.equals("load")) return "Exec";  // loads + runs native lib init
+        if (owner.equals("com.sun.tools.attach.VirtualMachine")
+                && (method.equals("attach") || method.equals("loadAgent") || method.startsWith("loadAgent")))
+            return "Exec";  // attaches to + injects code into another process
+
         // Filesystem — classic java.io streams + NIO file channels (the channel's identity IS file I/O).
         if (owner.equals("java.nio.file.Files")
                 || owner.equals("java.io.FileInputStream") || owner.equals("java.io.FileOutputStream")
@@ -2913,6 +3019,15 @@ public class Candor {
         // the File/Path ctor descriptors only (no fabrication on the pure ctors). (JDK Fs-deep probe.)
         if (owner.equals("java.util.Scanner") && method.equals("<init>") && desc != null
                 && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;")))
+            return "Fs";
+        // PrintStream/PrintWriter/Formatter open a file directly in their (String fileName)/(File) ctors (no
+        // wrapped FileOutputStream to catch elsewhere) → Fs. CTOR-DESCRIPTOR-GATED to the file-opening forms:
+        // the (OutputStream)/(Writer)/(Appendable) overloads defer to the wrapped sink and stay pure (so an
+        // in-memory PrintWriter(StringWriter)/PrintStream(ByteArrayOutputStream) never fabricates).
+        if ((owner.equals("java.io.PrintStream") || owner.equals("java.io.PrintWriter")
+                || owner.equals("java.util.Formatter"))
+                && method.equals("<init>") && desc != null
+                && (desc.startsWith("(Ljava/lang/String;") || desc.startsWith("(Ljava/io/File;")))
             return "Fs";
         // WatchService.take()/poll() block on filesystem change events. java.nio.file.Path is otherwise
         // pure path manipulation (resolve/getParent/normalize), so VERB-gate it: toRealPath resolves
@@ -3081,10 +3196,90 @@ public class Candor {
                 || (owner.equals("com.sun.net.httpserver.HttpServer")
                     && (method.equals("create") || method.equals("bind") || method.equals("start"))))
             return "Net";
-        // Messaging (Net-family)
+        // Messaging (Net-family) — Spring templates + the RAW broker/mail clients (as ubiquitous as the
+        // templates that were already modeled; each was silent-pure, not even Unknown, because a pinned
+        // concrete receiver resolved to an unmodeled owner). Message BUILDERS (MimeMessage.setText,
+        // ProducerRecord ctor, TextMessage.setText) stay pure — only the send/connect/fetch verbs are Net.
         if (owner.equals("org.springframework.jms.core.JmsTemplate")
-                || owner.equals("org.springframework.kafka.core.KafkaTemplate"))
+                || owner.equals("org.springframework.kafka.core.KafkaTemplate")
+                || owner.equals("org.springframework.amqp.rabbit.core.RabbitTemplate")
+                // JavaMail / Jakarta Mail — SMTP send + IMAP/POP connect & fetch
+                || ((owner.equals("javax.mail.Transport") || owner.equals("jakarta.mail.Transport"))
+                    && (method.equals("send") || method.equals("sendMessage") || method.equals("connect")))
+                || ((owner.equals("javax.mail.Store") || owner.equals("jakarta.mail.Store")
+                        || owner.equals("javax.mail.Folder") || owner.equals("jakarta.mail.Folder"))
+                    && (method.equals("connect") || method.equals("open") || method.startsWith("getMessage")
+                        || method.equals("fetch")))
+                // raw Kafka producer/consumer
+                || (owner.equals("org.apache.kafka.clients.producer.KafkaProducer")
+                    && (method.equals("send") || method.equals("flush")))
+                || (owner.equals("org.apache.kafka.clients.consumer.KafkaConsumer")
+                    && (method.equals("poll") || method.startsWith("commit")))
+                // raw JMS producer/consumer
+                || ((owner.equals("javax.jms.MessageProducer") || owner.equals("jakarta.jms.MessageProducer"))
+                    && method.equals("send"))
+                || ((owner.equals("javax.jms.MessageConsumer") || owner.equals("jakarta.jms.MessageConsumer"))
+                    && (method.equals("receive") || method.startsWith("receive")))
+                // RabbitMQ AMQP wire
+                || (owner.equals("com.rabbitmq.client.Channel")
+                    && (method.equals("basicPublish") || method.equals("basicGet") || method.equals("basicConsume")))
+                || (owner.equals("com.rabbitmq.client.ConnectionFactory") && method.equals("newConnection"))
+                // MQTT / NATS / Pulsar / ZeroMQ
+                || (owner.equals("org.eclipse.paho.client.mqttv3.MqttClient")
+                    && (method.equals("publish") || method.equals("connect") || method.equals("subscribe")))
+                || (owner.equals("io.nats.client.Connection") && method.equals("publish"))
+                || (owner.equals("org.apache.pulsar.client.api.Producer") && method.equals("send"))
+                // Spring WebSocket send (java.net.http.WebSocket.send* is already Net — parity)
+                || (owner.equals("org.springframework.web.socket.WebSocketSession") && method.equals("sendMessage")))
             return "Net";
+        // Distributed caches / KV stores — RAW concrete clients (interface-typed Lettuce/Hazelcast/Ignite/
+        // Ehcache/JCache correctly fall to the Unknown dispatch-floor; in-process Caffeine/Guava stay pure —
+        // so this is ONLY the concrete remote clients that silently resolved to pure). Net (remote round-trip).
+        if (owner.equals("redis.clients.jedis.Jedis") || owner.equals("redis.clients.jedis.JedisCluster")
+                || owner.equals("net.spy.memcached.MemcachedClient")
+                || owner.equals("org.apache.zookeeper.ZooKeeper"))
+            return "Net";
+        // PKI revocation — CertPathValidator (OCSP/CRL fetch) + a network CertStore (LDAP/HTTP) make a remote
+        // lookup hidden inside the JDK, the same shape as JNDI.lookup (already Net).
+        if (owner.equals("java.security.cert.CertPathValidator") && method.equals("validate")) return "Net";
+        if (owner.equals("java.security.cert.CertStore")
+                && (method.equals("getCertificates") || method.equals("getCRLs"))) return "Net";
+        // ── Android SDK (candor scans the pre-dex JVM bytecode) — the android.* effect surface was entirely
+        // unmodeled (silent-pure, often not even Unknown for concrete owners). The high-frequency mappings:
+        if (owner.equals("android.database.sqlite.SQLiteDatabase")    // local SQLite DB ops
+                && (method.equals("query") || method.equals("rawQuery") || method.equals("insert")
+                    || method.equals("update") || method.equals("delete") || method.startsWith("execSQL")
+                    || method.startsWith("insertOrThrow") || method.equals("replace")))
+            return "Db";
+        if (owner.equals("android.database.sqlite.SQLiteOpenHelper")
+                && (method.equals("getWritableDatabase") || method.equals("getReadableDatabase"))) return "Db";
+        // ContentResolver is a Binder RPC to another app's ContentProvider → Ipc (cross-app data access).
+        if (owner.equals("android.content.ContentResolver")
+                && (method.equals("query") || method.equals("insert") || method.equals("update")
+                    || method.equals("delete") || method.startsWith("openInputStream")
+                    || method.startsWith("openOutputStream") || method.startsWith("openFileDescriptor")
+                    || method.equals("call") || method.startsWith("bulkInsert")))
+            return "Ipc";
+        if (owner.equals("android.webkit.WebView")
+                && (method.equals("loadUrl") || method.equals("postUrl") || method.startsWith("loadData"))) return "Net";
+        // Settings.{System,Secure,Global}.getString/putString — ambient system settings / device-id reads.
+        if (owner.startsWith("android.provider.Settings$")
+                && (method.startsWith("getString") || method.startsWith("putString")
+                    || method.startsWith("getInt") || method.startsWith("putInt"))) return "Env";
+        if (owner.equals("android.content.ClipboardManager") || owner.equals("android.text.ClipboardManager"))
+            return "Clipboard";
+        // SharedPreferences.Editor.commit/apply writes the prefs XML file; Context.openFile* opens app-private files.
+        if (owner.equals("android.content.SharedPreferences$Editor")
+                && (method.equals("commit") || method.equals("apply"))) return "Fs";
+        if (owner.equals("android.content.Context")
+                && (method.equals("openFileInput") || method.equals("openFileOutput")
+                    || method.equals("getFilesDir") || method.equals("getCacheDir")
+                    || method.equals("deleteFile"))) return "Fs";
+        // Context component-launch is Binder IPC to other app components.
+        if (owner.equals("android.content.Context")
+                && (method.equals("startActivity") || method.equals("startService")
+                    || method.equals("startForegroundService") || method.equals("sendBroadcast")
+                    || method.equals("bindService"))) return "Ipc";
         // Database — JDBC, Spring JdbcTemplate, JPA EntityManager (Spring Data repos handled in analyze)
         if ((owner.equals("java.sql.Statement") || owner.equals("java.sql.PreparedStatement")
                 || owner.equals("java.sql.CallableStatement") || owner.equals("java.sql.Connection")

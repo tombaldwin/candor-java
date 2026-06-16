@@ -2512,6 +2512,11 @@ public class Candor {
         // silent under-report — found by the gradle-cache soundness sweep (httpcore5 uses SocketChannel).
         if (owner.equals("java.net.Socket") || owner.equals("java.net.ServerSocket")
                 || owner.equals("java.net.DatagramSocket")
+                // MulticastSocket extends DatagramSocket; a receiver TYPED as MulticastSocket emits
+                // invokevirtual owner=java/net/MulticastSocket for the inherited send/receive, which the
+                // exact-owner match above misses — a silent Net under-report (multicast send/receive IS
+                // network I/O). joinGroup/leaveGroup likewise.
+                || owner.equals("java.net.MulticastSocket")
                 || owner.equals("java.nio.channels.SocketChannel")
                 || owner.equals("java.nio.channels.ServerSocketChannel")
                 || owner.equals("java.nio.channels.DatagramChannel")

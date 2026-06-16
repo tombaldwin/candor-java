@@ -103,20 +103,34 @@ def run_query(args):
         return f"candor: query failed ({e})"
 
 
+def arg(args, key):
+    """Required-arg getter. A missing/empty value is a clear error, not a silent whole-report query.
+    A leading-dash value is rejected — it would be parsed as a FLAG by candor (argument injection)."""
+    v = args.get(key, "")
+    if not isinstance(v, str) or v == "":
+        raise ValueError(f"missing required argument: {key}")
+    if v.startswith("-"):
+        raise ValueError(f"argument {key!r} may not start with '-'")
+    return v
+
+
 def dispatch(name, args):
-    if name == "candor_effects":
-        return run_query(["show", REPORT, args.get("function", ""), "--json"])
-    if name == "candor_where":
-        return run_query(["where", REPORT, args.get("effect", ""), "--json"])
-    if name == "candor_callers":
-        return run_query(["callers", REPORT, args.get("function", ""), "--json"])
-    if name == "candor_whatif":
-        q = ["whatif", REPORT, args.get("function", ""), args.get("effect", "")]
-        pol = os.environ.get("CANDOR_POLICY") or (".candor/policy" if os.path.exists(".candor/policy") else None)
-        if pol:
-            q.append(pol)
-        q.append("--json")
-        return run_query(q)
+    try:
+        if name == "candor_effects":
+            return run_query(["show", REPORT, arg(args, "function"), "--json"])
+        if name == "candor_where":
+            return run_query(["where", REPORT, arg(args, "effect"), "--json"])
+        if name == "candor_callers":
+            return run_query(["callers", REPORT, arg(args, "function"), "--json"])
+        if name == "candor_whatif":
+            q = ["whatif", REPORT, arg(args, "function"), arg(args, "effect")]
+            pol = os.environ.get("CANDOR_POLICY") or (".candor/policy" if os.path.exists(".candor/policy") else None)
+            if pol:
+                q.append(pol)
+            q.append("--json")
+            return run_query(q)
+    except ValueError as e:
+        return f"candor: {e}"
     return None
 
 

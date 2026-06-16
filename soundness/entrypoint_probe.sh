@@ -13,7 +13,10 @@ JAR="$(ls "$ROOT"/build/libs/candor-java-*-all.jar 2>/dev/null | sort | tail -1)
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 cat > "$TMP/EP.java" <<'EOF'
 import java.io.*;
+import java.util.*;
+import java.lang.reflect.*;
 public class EP {
+  @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME) @interface JsonCreator {}
   static class S implements Serializable {
     private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException { in.defaultReadObject(); new FileOutputStream("/tmp/candor_ep").close(); }
     private void writeObject(ObjectOutputStream out) throws IOException { out.defaultWriteObject(); System.getenv("X"); }
@@ -24,12 +27,30 @@ public class EP {
     public void readExternal(ObjectInput in) { System.getenv("Y"); }
     public void writeExternal(ObjectOutput out) { System.currentTimeMillis(); }
   }
-  // NON-serializable decoy: same method names + signatures must NOT be rooted (no fabrication).
+  // JDK reflective/runtime invocation: sort machinery calls compare/compareTo; the proxy runtime calls
+  // invoke; Jackson calls a @JsonCreator factory. Each does I/O with NO in-project call site → must root.
+  static class Cmp implements Comparator<String> {
+    public int compare(String a, String b) { try { new java.net.Socket("127.0.0.1",9).close(); } catch (Exception e) {} return 0; }
+  }
+  static class Ord implements Comparable<Ord> {
+    public int compareTo(Ord o) { try { new FileOutputStream("/tmp/candor_ep_o").close(); } catch (Exception e) {} return 0; }
+  }
+  static class Handler implements InvocationHandler {
+    public Object invoke(Object p, Method m, Object[] a) { try { new java.net.Socket("127.0.0.1",9).close(); } catch (Exception e) {} return null; }
+  }
+  static class Maker {
+    @JsonCreator static Maker of(String s) { System.getenv("MK"); return new Maker(); }
+  }
+  // NON-implementor decoy: same method NAMES + signatures, but the class implements NONE of the runtime
+  // interfaces — must NOT be rooted (the supertype/annotation gate guards against fabrication). Effectful
+  // so the methods appear in the report (candor omits pure fns) and the entryPoint flag can be asserted.
   static class D {
     private void readObject(ObjectInputStream in) { try { new FileOutputStream("/tmp/candor_ep_d").close(); } catch (Exception e) {} }
     Object readResolve() { System.getenv("Z"); return null; }
+    public int compare(Object a, Object b) { try { new FileOutputStream("/tmp/candor_ep_dc").close(); } catch (Exception e) {} return 0; }
+    public int compareTo(Object o) { System.getenv("DCT"); return 0; }
   }
-  public static void main(String[] a) { new S(); new X(); new D(); }
+  public static void main(String[] a) { new S(); new X(); new Cmp(); new Ord(); new Handler(); Maker.of(""); new D(); }
 }
 EOF
 javac -d "$TMP/out" "$TMP/EP.java" 2>/dev/null || { echo "entrypoint-probe: GENERATOR BUG — fixture does not compile"; exit 1; }
@@ -39,17 +60,19 @@ import json, sys
 fns = {f["fn"]: f for f in json.load(open(sys.argv[1]))["functions"]}
 ep  = lambda n: fns.get(n, {}).get("entryPoint", False)
 must_root = ["EP$S.readObject", "EP$S.writeObject", "EP$S.readResolve", "EP$S.finalize",
-             "EP$X.readExternal", "EP$X.writeExternal"]
-must_not  = ["EP$D.readObject", "EP$D.readResolve"]
+             "EP$X.readExternal", "EP$X.writeExternal",
+             "EP$Cmp.compare", "EP$Ord.compareTo", "EP$Handler.invoke", "EP$Maker.of"]
+must_not  = ["EP$D.readObject", "EP$D.readResolve", "EP$D.compare", "EP$D.compareTo"]
 bad = []
 for n in must_root:
     if n not in fns:   bad.append(f"{n} MISSING from report (its effect went silent)")
     elif not ep(n):    bad.append(f"{n} entryPoint=false — orphaned from roots (should be a runtime root)")
 for n in must_not:
-    if ep(n):          bad.append(f"{n} entryPoint=true — FABRICATED root on a non-serializable class")
+    if ep(n):          bad.append(f"{n} entryPoint=true — FABRICATED root on a non-implementor class")
 if bad:
     print("entrypoint-probe: FAIL")
     for b in bad: print("  " + b)
     sys.exit(1)
-print("entrypoint-probe: OK — serialization/finalize callbacks rooted; non-serializable decoy not fabricated")
+print("entrypoint-probe: OK — serialization/finalize/Comparator/Comparable/InvocationHandler/@JsonCreator "
+      "callbacks rooted; non-implementor decoy not fabricated")
 PY

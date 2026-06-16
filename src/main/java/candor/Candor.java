@@ -107,6 +107,10 @@ public class Candor {
             "org/springframework/data/jpa/repository/JpaRepository");
     static final String TX = "springframework/transaction/annotation/Transactional";
     static final String SCHEDULED = "springframework/scheduling/annotation/Scheduled";
+    // Jackson invokes a @JsonCreator-annotated constructor/factory REFLECTIVELY during deserialization,
+    // with no in-project call site — an effectful creator body (validation that logs, a resource opened
+    // on construction) is orphaned from every root, the serialization-callback shape. Root it.
+    static final String JSON_CREATOR = "JsonCreator";
     static final String FEIGN = "openfeign/FeignClient";
     // Ambient authorities for AS-EFF-004 / CANDOR_NO_AMBIENT — the spec's `Ambient = 𝔼 \ {Log}`
     // (SEMANTICS.md §, every effect except cross-cutting Log; Unknown is not an authority). Was missing
@@ -1510,7 +1514,8 @@ public class Candor {
             if (classTx || annoPresent(mn.visibleAnnotations, TX)) dir.add("Db");
             if (annoPresent(mn.visibleAnnotations, SCHEDULED)
                     || annoPresentAny(mn.visibleAnnotations, MAPPING_OR_LISTENER)
-                    || annoPresentAny(mn.visibleAnnotations, LIFECYCLE))
+                    || annoPresentAny(mn.visibleAnnotations, LIFECYCLE)
+                    || annoPresent(mn.visibleAnnotations, JSON_CREATOR))
                 entryPoints.add(id);
             // A `finalize()` override is run by the GC's finalizer thread — NOT by any bytecode call.
             // It's the JVM analog of Rust's implicit-Drop hole: an effect (a socket/file opened on
@@ -1948,7 +1953,20 @@ public class Candor {
             new String[] {"kotlin/jvm/functions/Function", "invoke", null},
             new String[] {"scala/Function", "apply", null},
             new String[] {"scala/PartialFunction", "apply", null},
-            new String[] {"groovy/lang/Closure", "call", null});
+            new String[] {"groovy/lang/Closure", "call", null},
+            // JDK reflective/runtime invocation — the runtime calls these on a project IMPLEMENTOR with no
+            // in-project call site, so an effectful body is orphaned from every root (the finalize/
+            // serialization shape). `Comparator.compare`/`Comparable.compareTo` are invoked by the sort
+            // machinery (Collections.sort, stream.sorted, TreeMap/TreeSet); `InvocationHandler.invoke` by
+            // the JDK dynamic-proxy runtime. GATED on actually implementing the interface (the supertype
+            // filter above), so a same-named method on an unrelated class is never fabricated as a root.
+            // A null descriptor on compare/compareTo also roots the synthetic erased BRIDGE — sound, since
+            // the bridge forwards to the typed body. (compareTo stays CHA-exempt for DISPATCH fan-out — a
+            // separate concern from rooting its own effects.)
+            new String[] {"java/util/Comparator", "compare", null},
+            new String[] {"java/lang/Comparable", "compareTo", null},
+            new String[] {"java/lang/reflect/InvocationHandler", "invoke",
+                    "(Ljava/lang/Object;Ljava/lang/reflect/Method;[Ljava/lang/Object;)Ljava/lang/Object;"});
 
     /** The number of CHA targets above which a CHA-EXEMPT dispatch (Object protocol / function-interface
      *  / task verb) is treated as a broad smear and its fan-out dropped. An app's handful of Runnables /

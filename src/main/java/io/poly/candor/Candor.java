@@ -1879,9 +1879,21 @@ public class Candor {
                         // Their `desc` is a FIELD descriptor (no `()`), and a field read/write is pure, so
                         // skip them: passing one to methodId would feed a field descriptor to
                         // Type.getArgumentTypes and crash the whole scan.
-                        if (a instanceof Handle h && h.getTag() >= Opcodes.H_INVOKEVIRTUAL
-                                && projectClasses.contains(h.getOwner()))
-                            edges.get(id).add(methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc()));
+                        if (a instanceof Handle h && h.getTag() >= Opcodes.H_INVOKEVIRTUAL) {
+                            if (projectClasses.contains(h.getOwner()))
+                                edges.get(id).add(methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc()));
+                            else {
+                                // A method REFERENCE to a NON-project method (`File::delete`,
+                                // `System::getenv`) handed to a stream stage / functional API IS invoked by
+                                // that stage — but it has no project node to edge to, so classify the target
+                                // the same way the direct-call path does, else its effect is lost. The direct
+                                // call (`f.delete()`) classifies; the ref (`removeIf(File::delete)`) did not —
+                                // a silent-pure hole found by a streams/method-ref sweep. A pure target →
+                                // null → nothing added (no fabrication).
+                                String eff = classify(h.getOwner().replace('/', '.'), h.getName(), h.getDesc());
+                                if (eff != null) dir.add(eff);
+                            }
+                        }
                     }
                     // A bootstrap that is NOT one of the JVM's STRUCTURAL indy factories (lambda/method-ref
                     // creation, string concat, record ObjectMethods, pattern-switch, constant-dynamic) is a
@@ -2534,6 +2546,19 @@ public class Candor {
                 // read it); ZipEntry/JarEntry data types stay pure. (Found by a controlled JDK probe.)
                 || owner.equals("java.util.zip.ZipFile") || owner.equals("java.util.jar.JarFile"))
             return "Fs";
+        // java.util.Scanner(File)/(Path) opens and reads a file. CTOR-DESCRIPTOR-GATED: Scanner(String) is
+        // pure (a string source) and Scanner(InputStream/Readable) defers to its source's owner — so gate to
+        // the File/Path ctor descriptors only (no fabrication on the pure ctors). (JDK Fs-deep probe.)
+        if (owner.equals("java.util.Scanner") && method.equals("<init>") && desc != null
+                && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;")))
+            return "Fs";
+        // WatchService.take()/poll() block on filesystem change events. java.nio.file.Path is otherwise
+        // pure path manipulation (resolve/getParent/normalize), so VERB-gate it: toRealPath resolves
+        // symlinks against the live FS and register walks/stats the watched dir. (JDK Fs-deep probe.)
+        if (owner.equals("java.nio.file.WatchService") && (method.equals("take") || method.equals("poll")))
+            return "Fs";
+        if (owner.equals("java.nio.file.Path") && (method.equals("toRealPath") || method.equals("register")))
+            return "Fs";
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation
@@ -2593,6 +2618,21 @@ public class Candor {
                 // construction and stays pure.
                 || (owner.equals("java.net.http.HttpClient")
                     && (method.equals("send") || method.equals("sendAsync")))
+                // java.net.http.WebSocket: the wire verbs (sendText/sendBinary/sendPing/sendPong/sendClose/
+                // request) transmit, and Builder.buildAsync OPENS the connection. The 0.5.15 narrowing of
+                // the blanket `java.net.http.` prefix to HttpClient.send fixed a builder FABRICATION but
+                // REGRESSED the whole WebSocket API to silent-pure — restore it verb-precisely. The pure
+                // `HttpClient.newWebSocketBuilder()` factory stays pure (no `build` verb here).
+                || (owner.equals("java.net.http.WebSocket") && method.startsWith("send"))
+                || (owner.equals("java.net.http.WebSocket") && method.equals("request"))
+                || (owner.equals("java.net.http.WebSocket$Builder") && method.equals("buildAsync"))
+                // TLS sockets: SSLSocket extends java.net.Socket, so a receiver typed SSLSocket emits
+                // owner=javax/net/ssl/SSLSocket for the inherited getInputStream/getOutputStream and for
+                // startHandshake — missed by the exact java.net.Socket match (same shape as MulticastSocket,
+                // silent TLS I/O). The factories open the connection.
+                || owner.equals("javax.net.ssl.SSLSocket")
+                || (owner.equals("javax.net.ssl.SSLSocketFactory") && method.equals("createSocket"))
+                || (owner.equals("javax.net.SocketFactory") && method.equals("createSocket"))
                 || owner.equals("org.springframework.web.client.RestTemplate")
                 || owner.equals("org.springframework.web.client.RestClient")
                 || owner.startsWith("org.springframework.web.reactive.function.client.")
@@ -2660,11 +2700,23 @@ public class Candor {
                 // by the java.sql-only list, so the standard connection entry point read silent-pure.
                 || owner.equals("javax.sql.DataSource") || owner.equals("javax.sql.CommonDataSource"))
                 && (method.startsWith("execute") || method.equals("getConnection")
-                    || method.equals("prepareStatement") || method.equals("prepareCall")))
+                    || method.equals("prepareStatement") || method.equals("prepareCall")
+                    // commit/rollback finalize the transaction at the server (a real round-trip);
+                    // setAutoCommit(false) begins one — all DB I/O the execute*-only gate missed.
+                    || method.equals("commit") || method.equals("rollback") || method.equals("setAutoCommit")))
             return "Db";
         if (owner.equals("org.springframework.jdbc.core.JdbcTemplate")
-                || owner.equals("org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate")
-                || owner.equals("jakarta.persistence.EntityManager") || owner.equals("javax.persistence.EntityManager"))
+                || owner.equals("org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate"))
+            return "Db";
+        // JPA EntityManager — the whole-owner rule FABRICATED Db on its pure surface: `createQuery`/
+        // `createNamedQuery`/`createNativeQuery` BUILD a Query (no execution), and `clear`/`detach`/
+        // `getCriteriaBuilder`/`contains` are in-memory persistence-context ops touching no DB (cardinal
+        // sin; found by a Db-deep sweep). Gate to the methods that actually round-trip: find/getReference
+        // (SELECT), persist/merge/remove/refresh (the unit-of-work DB ops), flush (forces the SQL), lock.
+        if ((owner.equals("jakarta.persistence.EntityManager") || owner.equals("javax.persistence.EntityManager"))
+                && (method.equals("find") || method.equals("getReference") || method.equals("persist")
+                    || method.equals("merge") || method.equals("remove") || method.equals("refresh")
+                    || method.equals("flush") || method.equals("lock")))
             return "Db";
         // Subprocess
         // ProcessBuilder.start() spawns one process; the static startPipeline(List) spawns a whole pipeline
@@ -2673,6 +2725,19 @@ public class Candor {
         if (owner.equals("java.lang.ProcessBuilder")
                 && (method.equals("start") || method.equals("startPipeline"))) return "Exec";
         if (owner.equals("java.lang.Runtime") && method.equals("exec")) return "Exec";
+        // Driving an already-spawned subprocess is Exec too — getInputStream/getErrorStream read its
+        // output, getOutputStream feeds its stdin (an unmonitored data channel), waitFor blocks on it.
+        // Splitting spawn (start(), in one method) from drive (these, in another) lost the effect on the
+        // driver. java.lang.Process getters typed as I/O verbs; toHandle/exitValue/isAlive stay pure.
+        if (owner.equals("java.lang.Process")
+                && (method.equals("getInputStream") || method.equals("getOutputStream")
+                    || method.equals("getErrorStream") || method.equals("waitFor"))) return "Exec";
+        // System.load/loadLibrary (and the Runtime twins) load a native image and RUN its JNI init
+        // (JNI_OnLoad) — arbitrary native-code execution (candor already treats a `native` body as
+        // Unknown; the call that loads+triggers it must not be invisible). The gateway to every native
+        // effect → Exec.
+        if ((owner.equals("java.lang.System") || owner.equals("java.lang.Runtime"))
+                && (method.equals("load") || method.equals("loadLibrary"))) return "Exec";
         // Environment. `Env` is the OS process ENVIRONMENT (spec §1: "environment variables"),
         // i.e. System.getenv — NOT System.getProperty/setProperty, which read/write JVM system
         // PROPERTIES (os.name, line.separator, -D flags): JVM config, not the OS environment, and
@@ -2680,6 +2745,9 @@ public class Candor {
         // 14k Env — and `getProperty("os.name")` is not an env read in any case). Properties are
         // low-signal config, left unclassified like console writes (§1).
         if (owner.equals("java.lang.System") && method.equals("getenv")) return "Env";
+        // ProcessBuilder.environment() returns the live child-process env map — reading it surfaces the
+        // same OS environment as getenv (an Env disclosure), writing it sets a subprocess env var.
+        if (owner.equals("java.lang.ProcessBuilder") && method.equals("environment")) return "Env";
         // Spring's Environment.getProperty reads a MERGED source that includes the OS environment, so
         // it genuinely may surface an env var — a sound over-approximation, kept as Env.
         if (owner.equals("org.springframework.core.env.Environment") && method.equals("getProperty")) return "Env";
@@ -2696,12 +2764,24 @@ public class Candor {
                     || owner.equals("java.time.LocalTime") || owner.equals("java.time.Year")
                     || owner.equals("java.time.YearMonth") || owner.equals("java.time.MonthDay")))
             return "Clock";
+        // Legacy date/time: the NO-ARG `new java.util.Date()` reads System.currentTimeMillis, and
+        // `Calendar.getInstance()` / no-arg `new GregorianCalendar()` initialize to "now". ARITY-PRECISE:
+        // `new Date(long)` / `new GregorianCalendar(y,m,d)` take a value and are pure (no clock read), so
+        // gate the ctors to the no-arg descriptor to avoid fabricating Clock on the valued forms.
+        if (method.equals("<init>") && "()V".equals(desc)
+                && (owner.equals("java.util.Date") || owner.equals("java.util.GregorianCalendar")))
+            return "Clock";
+        if (owner.equals("java.util.Calendar") && method.equals("getInstance")) return "Clock";
         // Randomness — the concrete PRNG/CSPRNG classes (mirrors `new Random()` / `Math.random()`).
         // ThreadLocalRandom and SplittableRandom are the java.util(.concurrent) generators a probe found
         // unclassified despite Random being flagged — same effect category, added for consistency.
         if (owner.equals("java.util.Random") || owner.equals("java.security.SecureRandom")
                 || owner.equals("java.util.concurrent.ThreadLocalRandom")
                 || owner.equals("java.util.SplittableRandom")
+                // java.util.random.RandomGenerator is the Java 17+ root interface for all PRNGs; code typed
+                // to it (or to RandomGeneratorFactory.create() results) bypasses the concrete-class matches
+                // above. The sub-interfaces (Jumpable/Splittable/StreamableGenerator) extend it.
+                || owner.equals("java.util.random.RandomGenerator")
                 || (owner.equals("java.lang.Math") && method.equals("random")))
             return "Rand";
         // UUID.randomUUID() draws a v4 UUID from a SecureRandom (genuine entropy) — Rand. METHOD-precise:

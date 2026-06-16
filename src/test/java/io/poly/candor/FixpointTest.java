@@ -1,4 +1,4 @@
-package candor;
+package io.poly.candor;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 

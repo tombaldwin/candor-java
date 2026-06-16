@@ -12,8 +12,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAUNCHER="$ROOT/build/install/candor-java/bin/candor-java"
 GRADLE="$ROOT/gradlew"; [ -x "$GRADLE" ] || GRADLE="gradle"
 # Build on first use, or whenever the engine source is newer than the installed launcher (self-healing).
-if [ ! -x "$LAUNCHER" ] || [ "$ROOT/src/main/java/candor/Candor.java" -nt "$LAUNCHER" ] \
-   || [ "$ROOT/src/main/java/candor/Query.java" -nt "$LAUNCHER" ]; then
+if [ ! -x "$LAUNCHER" ] || [ "$ROOT/src/main/java/io/poly/candor/Candor.java" -nt "$LAUNCHER" ] \
+   || [ "$ROOT/src/main/java/io/poly/candor/Query.java" -nt "$LAUNCHER" ]; then
   echo "candor: building…" >&2
   ( cd "$ROOT" && "$GRADLE" -q installDist ) >&2
 fi

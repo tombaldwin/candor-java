@@ -8,7 +8,7 @@ plugins {
 // Release version (crate-semver axis), distinct from the `spec` contract version (0.3,
 // see candor-spec §2.1) and the git-hash engine build id baked below. Bumped on each
 // published artifact; the spec field tracks interface compatibility independently.
-version = "0.5.12"
+version = "0.5.13"
 group = "io.poly.candor"
 
 repositories { mavenCentral() }
@@ -22,7 +22,7 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.10.2")
 }
 java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
-application { mainClass = "candor.Candor" }
+application { mainClass = "io.poly.candor.Candor" }
 tasks.named<Test>("test") { useJUnitPlatform() }
 
 // Lint gate: javac's own -Xlint, warnings-as-errors. The engine is single-module hand-written Java;

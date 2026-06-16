@@ -113,6 +113,38 @@ class HelpersTest {
         assertEquals("Net", Candor.classify("java.net.DatagramSocket", "receive", "(Ljava/net/DatagramPacket;)V"));
     }
 
+    /** java.net.http: only HttpClient.send/sendAsync transmit. The old blanket `java.net.http.` prefix
+     *  FABRICATED Net on the pure builder/factory surface (the cardinal sin); the real wire I/O on a
+     *  HttpURLConnection obtained elsewhere went silent-pure. Pin verb-precision in both directions. */
+    @Test
+    void javaNetHttpIsVerbPreciseNoBuilderFabrication() {
+        // the send verbs DO transmit → Net
+        assertEquals("Net", Candor.classify("java.net.http.HttpClient", "send",
+                "(Ljava/net/http/HttpRequest;Ljava/net/http/HttpResponse$BodyHandler;)Ljava/net/http/HttpResponse;"));
+        assertEquals("Net", Candor.classify("java.net.http.HttpClient", "sendAsync",
+                "(Ljava/net/http/HttpRequest;Ljava/net/http/HttpResponse$BodyHandler;)Ljava/util/concurrent/CompletableFuture;"));
+        // the pure BUILDER/FACTORY surface must NOT fabricate Net (no transmission)
+        assertNull(Candor.classify("java.net.http.HttpRequest", "newBuilder", "()Ljava/net/http/HttpRequest$Builder;"));
+        assertNull(Candor.classify("java.net.http.HttpRequest$Builder", "build", "()Ljava/net/http/HttpRequest;"));
+        assertNull(Candor.classify("java.net.http.HttpRequest$Builder", "uri", "(Ljava/net/URI;)Ljava/net/http/HttpRequest$Builder;"));
+        assertNull(Candor.classify("java.net.http.HttpClient", "newBuilder", "()Ljava/net/http/HttpClient$Builder;"));
+        // J-2: the wire verbs on a lazy URLConnection/HttpURLConnection DO transmit → Net
+        assertEquals("Net", Candor.classify("java.net.HttpURLConnection", "getInputStream", "()Ljava/io/InputStream;"));
+        assertEquals("Net", Candor.classify("java.net.HttpURLConnection", "getResponseCode", "()I"));
+        assertEquals("Net", Candor.classify("java.net.URLConnection", "connect", "()V"));
+        assertEquals("Net", Candor.classify("java.net.URLConnection", "getOutputStream", "()Ljava/io/OutputStream;"));
+        // ...but the pure getters do not
+        assertNull(Candor.classify("java.net.HttpURLConnection", "getRequestMethod", "()Ljava/lang/String;"));
+        assertNull(Candor.classify("java.net.HttpURLConnection", "setRequestProperty", "(Ljava/lang/String;Ljava/lang/String;)V"));
+    }
+
+    /** ProcessBuilder spawns via start() AND the Java 9+ static startPipeline(List) — both are Exec. */
+    @Test
+    void processBuilderStartPipelineIsExec() {
+        assertEquals("Exec", Candor.classify("java.lang.ProcessBuilder", "start", "()Ljava/lang/Process;"));
+        assertEquals("Exec", Candor.classify("java.lang.ProcessBuilder", "startPipeline", "(Ljava/util/List;)Ljava/util/List;"));
+    }
+
     /** UUID.randomUUID() draws v4 entropy from SecureRandom → Rand; the rest of UUID is pure value ops
      *  (classifying the whole owner would fabricate Rand onto fromString/getMostSignificantBits/…). Also
      *  pins that a JDK functional-interface SAM is recognized for the unpinned-dispatch Unknown rule. */

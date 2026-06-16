@@ -1883,6 +1883,19 @@ public class Candor {
                                 && projectClasses.contains(h.getOwner()))
                             edges.get(id).add(methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc()));
                     }
+                    // A bootstrap that is NOT one of the JVM's STRUCTURAL indy factories (lambda/method-ref
+                    // creation, string concat, record ObjectMethods, pattern-switch, constant-dynamic) is a
+                    // DYNAMIC-LANGUAGE dispatch bootstrap — Groovy's `IndyInterface.bootstrap`, JRuby, etc.
+                    // Its bsmArgs carry only a call-NAME string (no resolvable target handle), so the
+                    // dispatch is opaque exactly like reflection: it could reach any method and perform any
+                    // effect. Without this, compiled dynamic Groovy (the default, non-@CompileStatic mode)
+                    // dropped EVERY call — Fs/Exec/Net all silent-pure. Honest Unknown (SPEC §4), never
+                    // silent-pure. (Found by a JVM-dialect sweep on compiled Groovy.)
+                    if (idin.bsm != null && !STRUCTURAL_INDY_BSM.contains(idin.bsm.getOwner())) {
+                        dir.add("Unknown");
+                        unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                                .add("indy:" + idin.bsm.getOwner().replace('/', '.'));
+                    }
                 }
             }
         }
@@ -1898,6 +1911,18 @@ public class Candor {
         if (classesWithClinit.contains(internalOwner))
             edges.get(callerId).add(internalOwner.replace('/', '.') + ".<clinit>");
     }
+
+    /** The JVM's STRUCTURAL invokedynamic bootstrap factories: lambda/method-ref creation, string
+     *  concatenation, record ObjectMethods (equals/hashCode/toString), pattern-switch, and
+     *  constant-dynamic. An indy whose bootstrap is NONE of these is dynamic-language dispatch
+     *  (Groovy `IndyInterface`, JRuby, …) — opaque like reflection, so it raises Unknown rather than
+     *  going silent-pure. */
+    static final Set<String> STRUCTURAL_INDY_BSM = Set.of(
+            "java/lang/invoke/LambdaMetafactory",
+            "java/lang/invoke/StringConcatFactory",
+            "java/lang/runtime/ObjectMethods",
+            "java/lang/runtime/SwitchBootstraps",
+            "java/lang/invoke/ConstantBootstraps");
 
     // entry-point annotation substrings (HTTP mappings + message listeners)
     static final List<String> MAPPING_OR_LISTENER = List.of(
@@ -2559,7 +2584,15 @@ public class Candor {
                 || owner.equals("java.nio.channels.DatagramChannel")
                 || owner.equals("java.nio.channels.AsynchronousSocketChannel")
                 || owner.equals("java.nio.channels.AsynchronousServerSocketChannel")
-                || owner.startsWith("java.net.http.")
+                // java.net.http: ONLY HttpClient.send/sendAsync touch the wire. The old blanket
+                // `java.net.http.` prefix FABRICATED Net on the entire pure builder/factory surface —
+                // `HttpRequest.newBuilder()…build()`, `HttpClient.newBuilder()`, BodyHandlers/BodyPublishers —
+                // none of which transmit (the cardinal sin: Net on a provably-pure request builder; found by
+                // a Net-deep sweep). Mirror the ktor verb-precision below: the send verbs are the one
+                // dispatch boundary that performs I/O; everything else in the package is request
+                // construction and stays pure.
+                || (owner.equals("java.net.http.HttpClient")
+                    && (method.equals("send") || method.equals("sendAsync")))
                 || owner.equals("org.springframework.web.client.RestTemplate")
                 || owner.equals("org.springframework.web.client.RestClient")
                 || owner.startsWith("org.springframework.web.reactive.function.client.")
@@ -2584,6 +2617,18 @@ public class Candor {
                         || method.equals("getLocalHost") || method.equals("getCanonicalHostName")))
                 || (owner.equals("java.net.URL")
                     && (method.equals("openStream") || method.equals("openConnection") || method.equals("getContent")))
+                // URLConnection / HttpURLConnection wire verbs: `URL.openConnection()` returns a LAZY
+                // connection that performs NO I/O until a wire verb runs — and that verb is very commonly in
+                // a DIFFERENT method than the openConnection() call (open in a helper, read the body in
+                // another), so classifying only openConnection left the actual transmission silent-pure
+                // (found by a Net-deep sweep). connect()/getInputStream()/getOutputStream()/getContent()/
+                // getResponseCode()/getResponseMessage() each trigger the request; the pure getters
+                // (getURL/getRequestMethod/setRequestProperty) stay unclassified — no fabrication.
+                || ((owner.equals("java.net.URLConnection") || owner.equals("java.net.HttpURLConnection")
+                        || owner.equals("javax.net.ssl.HttpsURLConnection"))
+                    && (method.equals("connect") || method.equals("getInputStream")
+                        || method.equals("getOutputStream") || method.equals("getContent")
+                        || method.equals("getResponseCode") || method.equals("getResponseMessage")))
                 // JNDI — a naming/directory lookup contacts a remote naming service (LDAP/RMI/DNS/CORBA);
                 // `InitialContext.lookup("ldap://…")` is exactly the hidden network egress an effect checker
                 // exists to surface (the Log4Shell vector). The lookup/bind/search family is the boundary;
@@ -2622,7 +2667,11 @@ public class Candor {
                 || owner.equals("jakarta.persistence.EntityManager") || owner.equals("javax.persistence.EntityManager"))
             return "Db";
         // Subprocess
-        if (owner.equals("java.lang.ProcessBuilder") && method.equals("start")) return "Exec";
+        // ProcessBuilder.start() spawns one process; the static startPipeline(List) spawns a whole pipeline
+        // of them (Java 9+) — same Exec, a distinct method name the `start`-only match missed (found by an
+        // Exec-deep sweep).
+        if (owner.equals("java.lang.ProcessBuilder")
+                && (method.equals("start") || method.equals("startPipeline"))) return "Exec";
         if (owner.equals("java.lang.Runtime") && method.equals("exec")) return "Exec";
         // Environment. `Env` is the OS process ENVIRONMENT (spec §1: "environment variables"),
         // i.e. System.getenv — NOT System.getProperty/setProperty, which read/write JVM system

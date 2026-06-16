@@ -17,7 +17,12 @@ cd "$ROOT"
 
 echo "soundness: building candor-java…"
 GRADLE="./gradlew"; [ -x "$GRADLE" ] || GRADLE="gradle"   # prefer the wrapper (CI has no system gradle)
-"$GRADLE" -q installDist >/dev/null 2>&1 || { echo "FAIL: candor-java did not build"; exit 1; }
+# installDist → the `$CJ` launcher the fuzzer/fabrication probe drive; shadowJar → the fat `-all.jar`
+# the entrypoint + functional-SAM probes scan. Both are needed: in a FRESH checkout (CI) the soundness
+# step runs BEFORE the self-gate's shadowJar, so without building it here those two probes found no jar
+# and failed the lane (the rename release surfaced it — the jar happened to exist from a prior local
+# build before).
+"$GRADLE" -q installDist shadowJar >/dev/null 2>&1 || { echo "FAIL: candor-java did not build"; exit 1; }
 CJ="$ROOT/build/install/candor-java/bin/candor-java"
 [ -x "$CJ" ] || { echo "FAIL: no launcher at $CJ"; exit 1; }
 

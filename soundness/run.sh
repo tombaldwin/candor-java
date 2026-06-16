@@ -58,4 +58,8 @@ echo
 echo "soundness: running fabrication probe…"
 CJ="$CJ" python3 "$ROOT/soundness/fabrication_probe.py"; fab=$?
 
-[ "$fail" -eq 0 ] && [ "$fab" -eq 0 ]
+echo
+echo "soundness: running entry-point probe (runtime-invoked-callback rooting)…"
+if bash "$ROOT/soundness/entrypoint_probe.sh"; then ep=0; else ep=1; fi
+
+[ "$fail" -eq 0 ] && [ "$fab" -eq 0 ] && [ "$ep" -eq 0 ]

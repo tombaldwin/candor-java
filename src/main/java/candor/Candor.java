@@ -1520,6 +1520,16 @@ public class Candor {
             // detached thread), so the honest model is the runtime-invoked entry point it actually is.
             if (mn.name.equals("finalize") && mn.desc.equals("()V") && (mn.access & Opcodes.ACC_STATIC) == 0)
                 entryPoints.add(id);
+            // Serialization callbacks (readObject/writeObject/readExternal/writeExternal/readResolve/
+            // writeReplace/readObjectNoData) are invoked REFLECTIVELY by ObjectInput/OutputStream during
+            // (de)serialization — no project call site, so an effect (custom read/write doing I/O, a
+            // resource opened on resolve, decryption) is orphaned from every reachability root: the
+            // finalize shape. Mark them as runtime-invoked entry points, GATED on the class being
+            // Serializable/Externalizable so a same-named method on an unrelated class isn't fabricated.
+            if ((mn.access & Opcodes.ACC_STATIC) == 0
+                    && (supers.contains("java/io/Serializable") || supers.contains("java/io/Externalizable"))
+                    && isSerializationCallback(mn.name, mn.desc))
+                entryPoints.add(id);
             // The program entry `public static void main(String[])` — the JVM invokes it to start the app,
             // the root of a CLI tool's reachability (candor-spec §2, like the Rust impl's `fn main`).
             if (mn.name.equals("main") && mn.desc.equals("([Ljava/lang/String;)V")
@@ -1893,6 +1903,22 @@ public class Candor {
      *  container, Spring lifecycle) invokes it with NO project call site, so its I/O would otherwise be
      *  orphaned from every reachability root (the same shape as finalize). `iface` is a SUBSTRING of the
      *  internal supertype name, so a single entry covers `javax/` and `jakarta/` variants. */
+    /** The canonical Java serialization callback signatures (the Serializable/Externalizable contract).
+     *  Their stream-typed descriptors are the giveaway; the runtime invokes them reflectively with no
+     *  in-project call site, so without this their I/O is orphaned from every reachability root. */
+    static boolean isSerializationCallback(String name, String desc) {
+        switch (name) {
+            case "readObject":       return desc.equals("(Ljava/io/ObjectInputStream;)V");
+            case "writeObject":      return desc.equals("(Ljava/io/ObjectOutputStream;)V");
+            case "readExternal":     return desc.equals("(Ljava/io/ObjectInput;)V");
+            case "writeExternal":    return desc.equals("(Ljava/io/ObjectOutput;)V");
+            case "readObjectNoData": return desc.equals("()V");
+            case "readResolve":      return desc.equals("()Ljava/lang/Object;");
+            case "writeReplace":     return desc.equals("()Ljava/lang/Object;");
+            default:                 return false;
+        }
+    }
+
     static final List<String[]> RUNTIME_OVERRIDES = List.of(
             // {supertype-substring, method, descriptor}
             new String[] {"java/lang/Runnable", "run", "()V"},

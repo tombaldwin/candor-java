@@ -186,6 +186,9 @@ def edge_forms(callee, i):
         # paramTypeList → Type.getArgumentTypes on a parenthesis-less descriptor, which overran and CRASHED
         # the whole scan (found on a real app: uFlexi). The fix skips non-method-kind handles. The effect is
         # threaded through `rtouch{i}` so the chain stays sound; the teeth are that the scan must COMPLETE.
+        # DO NOT remove `int v{i}(int n)`: that decoy OVERLOADS the component accessor so overloadDescs has
+        # >1 desc, which is what routes the H_GETFIELD handle into methodId→paramTypeList (the crash path).
+        # Without it methodId short-circuits to the bare name and the form silently stops reproducing the bug.
         "record": (
             f"new Rec{i}(1).rtouch{i}();",
             [f"record Rec{i}(int v{i}) {{ int v{i}(int n) {{ return n; }} void rtouch{i}() {{ {callee}(); }} }}"]),

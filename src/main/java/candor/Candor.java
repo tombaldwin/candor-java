@@ -2609,7 +2609,11 @@ public class Candor {
         // Database — JDBC, Spring JdbcTemplate, JPA EntityManager (Spring Data repos handled in analyze)
         if ((owner.equals("java.sql.Statement") || owner.equals("java.sql.PreparedStatement")
                 || owner.equals("java.sql.CallableStatement") || owner.equals("java.sql.Connection")
-                || owner.equals("java.sql.DriverManager"))
+                || owner.equals("java.sql.DriverManager")
+                // javax.sql.DataSource.getConnection — the POOLED-connection acquisition every HikariCP/
+                // Tomcat-JDBC/Spring DataSource app uses (interface dispatch lands on this owner); missed
+                // by the java.sql-only list, so the standard connection entry point read silent-pure.
+                || owner.equals("javax.sql.DataSource") || owner.equals("javax.sql.CommonDataSource"))
                 && (method.startsWith("execute") || method.equals("getConnection")
                     || method.equals("prepareStatement") || method.equals("prepareCall")))
             return "Db";

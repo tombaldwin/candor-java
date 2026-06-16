@@ -86,6 +86,14 @@ class HelpersTest {
      *  a receiver typed as MulticastSocket emits invokevirtual owner=java/net/MulticastSocket for the
      *  inherited send/receive, which the DatagramSocket row misses — a silent Net under-report until
      *  MulticastSocket got its own row. (Pinned here so the row can't be dropped by a future cleanup.) */
+    /** javax.sql.DataSource.getConnection() — the pooled-connection entry point every HikariCP/Spring
+     *  DataSource app uses — is Db; the java.sql-only list missed it. */
+    @Test
+    void dataSourceGetConnectionClassifiesAsDb() {
+        assertEquals("Db", Candor.classify("javax.sql.DataSource", "getConnection", "()Ljava/sql/Connection;"));
+        assertEquals("Db", Candor.classify("java.sql.Connection", "prepareStatement", "(Ljava/lang/String;)Ljava/sql/PreparedStatement;"));
+    }
+
     @Test
     void multicastSocketClassifiesAsNet() {
         assertEquals("Net", Candor.classify("java.net.MulticastSocket", "receive", "(Ljava/net/DatagramPacket;)V"));

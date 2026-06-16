@@ -347,4 +347,51 @@ class HelpersTest {
         // no project impl anywhere in the chain → null, so the caller keeps the CHA (sound fall-through)
         assertNull(Candor.monomorphicTarget("p/Lonely", "compute", "()I"));
     }
+
+    /** Arbitrary-code-execution / opaque security sinks → Unknown (eval / untrusted-deser RCE / XXE / FFI). */
+    @Test
+    void codeExecutionAndDeserSinksAreUnknown() {
+        assertEquals("Unknown", Candor.classify("javax.script.ScriptEngine", "eval", "(Ljava/lang/String;)Ljava/lang/Object;"));
+        assertEquals("Unknown", Candor.classify("org.springframework.expression.Expression", "getValue", "(Ljava/lang/Object;)Ljava/lang/Object;"));
+        assertEquals("Unknown", Candor.classify("ognl.Ognl", "getValue", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"));
+        assertEquals("Unknown", Candor.classify("org.mvel2.MVEL", "eval", "(Ljava/lang/String;)Ljava/lang/Object;"));
+        assertEquals("Unknown", Candor.classify("java.io.ObjectInputStream", "readObject", "()Ljava/lang/Object;"));
+        assertEquals("Unknown", Candor.classify("java.beans.XMLDecoder", "readObject", "()Ljava/lang/Object;"));
+        assertEquals("Unknown", Candor.classify("javax.xml.parsers.DocumentBuilder", "parse", "(Ljava/io/InputStream;)Lorg/w3c/dom/Document;"));
+        assertEquals("Unknown", Candor.classify("com.sun.jna.Function", "invoke", "(Ljava/lang/Class;[Ljava/lang/Object;)Ljava/lang/Object;"));
+        assertEquals("Exec", Candor.classify("com.sun.jna.Native", "load", "(Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/Object;"));
+        assertEquals("Exec", Candor.classify("com.sun.tools.attach.VirtualMachine", "loadAgent", "(Ljava/lang/String;)V"));
+    }
+
+    /** Mail/MQ clients + raw cache clients → Net (the ubiquitous ones, parallel to the modeled templates);
+     *  the message BUILDERS stay pure. PrintStream/Writer/Formatter file ctors → Fs; in-memory overloads pure. */
+    @Test
+    void messagingCacheNetAndFileStreamFs() {
+        assertEquals("Net", Candor.classify("javax.mail.Transport", "send", "(Ljavax/mail/Message;)V"));
+        assertEquals("Net", Candor.classify("org.apache.kafka.clients.producer.KafkaProducer", "send", "(Lorg/apache/kafka/clients/producer/ProducerRecord;)Ljava/util/concurrent/Future;"));
+        assertEquals("Net", Candor.classify("com.rabbitmq.client.Channel", "basicPublish", "(Ljava/lang/String;Ljava/lang/String;Lcom/rabbitmq/client/AMQP$BasicProperties;[B)V"));
+        assertEquals("Net", Candor.classify("redis.clients.jedis.Jedis", "get", "(Ljava/lang/String;)Ljava/lang/String;"));
+        assertEquals("Net", Candor.classify("net.spy.memcached.MemcachedClient", "get", "(Ljava/lang/String;)Ljava/lang/Object;"));
+        // a pure builder must NOT be Net
+        assertNull(Candor.classify("javax.mail.internet.MimeMessage", "setText", "(Ljava/lang/String;)V"));
+        // file-opening Print*/Formatter ctors → Fs; the OutputStream/Writer overloads stay pure
+        assertEquals("Fs", Candor.classify("java.io.PrintStream", "<init>", "(Ljava/lang/String;)V"));
+        assertEquals("Fs", Candor.classify("java.io.PrintWriter", "<init>", "(Ljava/io/File;)V"));
+        assertEquals("Fs", Candor.classify("java.util.Formatter", "<init>", "(Ljava/lang/String;)V"));
+        assertNull(Candor.classify("java.io.PrintStream", "<init>", "(Ljava/io/OutputStream;)V"));
+        assertNull(Candor.classify("java.io.PrintWriter", "<init>", "(Ljava/io/Writer;)V"));
+    }
+
+    /** Android SDK κ rows: SQLite→Db, ContentResolver→Ipc, WebView→Net, Settings→Env, ClipboardManager,
+     *  SharedPreferences.Editor→Fs. */
+    @Test
+    void androidSdkEffects() {
+        assertEquals("Db", Candor.classify("android.database.sqlite.SQLiteDatabase", "rawQuery", "(Ljava/lang/String;[Ljava/lang/String;)Landroid/database/Cursor;"));
+        assertEquals("Ipc", Candor.classify("android.content.ContentResolver", "query", "(Landroid/net/Uri;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;"));
+        assertEquals("Net", Candor.classify("android.webkit.WebView", "loadUrl", "(Ljava/lang/String;)V"));
+        assertEquals("Env", Candor.classify("android.provider.Settings$Secure", "getString", "(Landroid/content/ContentResolver;Ljava/lang/String;)Ljava/lang/String;"));
+        assertEquals("Clipboard", Candor.classify("android.content.ClipboardManager", "setPrimaryClip", "(Landroid/content/ClipData;)V"));
+        assertEquals("Fs", Candor.classify("android.content.SharedPreferences$Editor", "commit", "()Z"));
+        assertEquals("Ipc", Candor.classify("android.content.Context", "startActivity", "(Landroid/content/Intent;)V"));
+    }
 }

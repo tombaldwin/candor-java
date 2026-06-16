@@ -1749,24 +1749,25 @@ public class Candor {
                         // under an interface call still dispatches to T's concrete impl.
                         String monoRecv = monomorphicReceiver(provFrames == null ? null
                                 : provFrames[mn.instructions.indexOf(min)], min);
-                        if (monoRecv != null) {
-                            // A provably-monomorphic receiver (`new T`) has NO polymorphic siblings, so this
-                            // resolves to exactly T's method — never its CHA subtypes. `b = new Base();
-                            // b.compute()` must read Base.compute alone, not the sibling Dirty.compute's Net.
-                            if (byName.containsKey(monoRecv)) {
-                                String monoTarget = monomorphicTarget(monoRecv, min.name, min.desc);
-                                if (monoTarget != null) edges.get(id).add(monoTarget);
-                                // else: no concrete impl in T's own chain (impl in an unloaded super) → an
-                                // ordinary external call (no edge). T is concrete → no polymorphic siblings.
-                            }
-                            // An EXTERNAL monoRecv (`new java.util.ArrayList<>()`) is PROVABLY that exact
-                            // type, never a project subtype → the call resolves to the external method, and
-                            // CHA fan-out to project subtypes of monoRecv would FABRICATE: once transSupers
-                            // files a `class LoudList extends ArrayList { add(){…io…} }` under ArrayList, an
-                            // unguarded fan-out would smear LoudList's effect onto every plain
-                            // `new ArrayList().add()`. A pinned receiver has no siblings either way → skip CHA.
-                            continue; // skip CHA fan-out + the Unknown branches for this resolved call
+                        if (monoRecv != null && byName.containsKey(monoRecv)) {
+                            // A provably-monomorphic PROJECT receiver (`new T`) has NO polymorphic siblings,
+                            // so this resolves to exactly T's method — never its CHA subtypes. `b = new
+                            // Base(); b.compute()` must read Base.compute alone, not the sibling Dirty's Net.
+                            // No concrete impl in T's own chain (impl in an unloaded super) → an ordinary
+                            // external call (no edge). Either way: resolved locally, so skip CHA, the Unknown
+                            // branches, AND cross-dep (a project call traces locally, never inherits a dep).
+                            String monoTarget = monomorphicTarget(monoRecv, min.name, min.desc);
+                            if (monoTarget != null) edges.get(id).add(monoTarget);
+                            continue;
                         }
+                        // CHA runs ONLY for a genuinely POLYMORPHIC receiver (monoRecv == null). An EXTERNAL
+                        // monoRecv (`new java.util.ArrayList<>()`) is PROVABLY that exact type, never a
+                        // project subtype, so CHA fan-out would FABRICATE: once transSupers files a `class
+                        // LoudList extends ArrayList { add(){…io…} }` under ArrayList, an unguarded fan-out
+                        // smears LoudList's effect onto every plain `new ArrayList().add()`. Skip CHA for it
+                        // — but DON'T `continue`: fall through to the cross-jar inheritance block below, since
+                        // the call is into an external/dependency method that may carry recorded effects.
+                        if (monoRecv == null) {
                         List<String> cha = chaTargets(min.owner, min.name, min.desc);
                         // BOUNDED CHA (SPEC §4): a dispatch over a local abstraction resolves to its
                         // implementors only when the fan-out is NARROW (≤ CHA_FANOUT_LIMIT); a broad
@@ -1841,6 +1842,7 @@ public class Candor {
                             unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                                     .add("dispatch-fn:" + owner + "." + min.name);
                         }
+                        } // end CHA block (monoRecv == null)
                     } else if (projectClasses.contains(min.owner)) {
                         // static / special (super, private, ctor) — the exact target (descriptor known,
                         // so an overloaded callee resolves to the right overload's node).

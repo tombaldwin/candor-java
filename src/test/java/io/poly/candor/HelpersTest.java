@@ -145,6 +145,86 @@ class HelpersTest {
         assertEquals("Exec", Candor.classify("java.lang.ProcessBuilder", "startPipeline", "(Ljava/util/List;)Ljava/util/List;"));
     }
 
+    /** java.net.http.WebSocket wire verbs + the SSLSocket/factory family are Net (the WebSocket case was a
+     *  REGRESSION from the 0.5.15 java.net.http prefix narrowing; SSLSocket extends Socket like Multicast). */
+    @Test
+    void webSocketAndTlsSocketsAreNet() {
+        assertEquals("Net", Candor.classify("java.net.http.WebSocket", "sendText", "(Ljava/lang/CharSequence;Z)Ljava/util/concurrent/CompletableFuture;"));
+        assertEquals("Net", Candor.classify("java.net.http.WebSocket", "sendBinary", "(Ljava/nio/ByteBuffer;Z)Ljava/util/concurrent/CompletableFuture;"));
+        assertEquals("Net", Candor.classify("java.net.http.WebSocket", "request", "(J)V"));
+        assertEquals("Net", Candor.classify("java.net.http.WebSocket$Builder", "buildAsync", "(Ljava/net/URI;Ljava/net/http/WebSocket$Listener;)Ljava/util/concurrent/CompletableFuture;"));
+        // the factory that vends a builder stays pure
+        assertNull(Candor.classify("java.net.http.HttpClient", "newWebSocketBuilder", "()Ljava/net/http/WebSocket$Builder;"));
+        assertEquals("Net", Candor.classify("javax.net.ssl.SSLSocket", "getInputStream", "()Ljava/io/InputStream;"));
+        assertEquals("Net", Candor.classify("javax.net.ssl.SSLSocket", "startHandshake", "()V"));
+        assertEquals("Net", Candor.classify("javax.net.ssl.SSLSocketFactory", "createSocket", "(Ljava/lang/String;I)Ljava/net/Socket;"));
+        assertEquals("Net", Candor.classify("javax.net.SocketFactory", "createSocket", "(Ljava/lang/String;I)Ljava/net/Socket;"));
+    }
+
+    /** EntityManager whole-owner Db FABRICATED on its pure builder/cache surface; gate to the round-tripping
+     *  methods. Connection.commit/rollback/setAutoCommit are real DB I/O the execute*-gate missed. */
+    @Test
+    void entityManagerDbIsMethodGatedNoBuilderFabrication() {
+        // round-trips → Db
+        assertEquals("Db", Candor.classify("jakarta.persistence.EntityManager", "find", "(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;"));
+        assertEquals("Db", Candor.classify("jakarta.persistence.EntityManager", "persist", "(Ljava/lang/Object;)V"));
+        assertEquals("Db", Candor.classify("jakarta.persistence.EntityManager", "flush", "()V"));
+        // pure builders / persistence-context ops must NOT fabricate Db
+        assertNull(Candor.classify("jakarta.persistence.EntityManager", "createQuery", "(Ljava/lang/String;)Ljakarta/persistence/Query;"));
+        assertNull(Candor.classify("jakarta.persistence.EntityManager", "createNativeQuery", "(Ljava/lang/String;)Ljakarta/persistence/Query;"));
+        assertNull(Candor.classify("jakarta.persistence.EntityManager", "clear", "()V"));
+        assertNull(Candor.classify("jakarta.persistence.EntityManager", "detach", "(Ljava/lang/Object;)V"));
+        assertNull(Candor.classify("jakarta.persistence.EntityManager", "getCriteriaBuilder", "()Ljakarta/persistence/criteria/CriteriaBuilder;"));
+        // Connection transaction control → Db
+        assertEquals("Db", Candor.classify("java.sql.Connection", "commit", "()V"));
+        assertEquals("Db", Candor.classify("java.sql.Connection", "rollback", "()V"));
+        assertEquals("Db", Candor.classify("java.sql.Connection", "setAutoCommit", "(Z)V"));
+    }
+
+    /** Subprocess/native/env deep: Process pipe & control verbs (Exec), System/Runtime.load* (native-code
+     *  load → Exec), ProcessBuilder.environment (Env). Pure Process getters (toHandle/exitValue) stay pure. */
+    @Test
+    void processNativeAndEnvDeep() {
+        assertEquals("Exec", Candor.classify("java.lang.Process", "getInputStream", "()Ljava/io/InputStream;"));
+        assertEquals("Exec", Candor.classify("java.lang.Process", "getOutputStream", "()Ljava/io/OutputStream;"));
+        assertEquals("Exec", Candor.classify("java.lang.Process", "waitFor", "()I"));
+        assertNull(Candor.classify("java.lang.Process", "exitValue", "()I"));
+        assertNull(Candor.classify("java.lang.Process", "toHandle", "()Ljava/lang/ProcessHandle;"));
+        assertEquals("Exec", Candor.classify("java.lang.System", "loadLibrary", "(Ljava/lang/String;)V"));
+        assertEquals("Exec", Candor.classify("java.lang.System", "load", "(Ljava/lang/String;)V"));
+        assertEquals("Exec", Candor.classify("java.lang.Runtime", "load", "(Ljava/lang/String;)V"));
+        assertEquals("Env", Candor.classify("java.lang.ProcessBuilder", "environment", "()Ljava/util/Map;"));
+    }
+
+    /** Fs deep: Scanner(File/Path) ctor, WatchService take/poll, Path.toRealPath/register. Scanner(String)
+     *  and pure Path manipulation (getParent/normalize) must NOT fabricate Fs. */
+    @Test
+    void fsDeepScannerWatchPath() {
+        assertEquals("Fs", Candor.classify("java.util.Scanner", "<init>", "(Ljava/io/File;)V"));
+        assertEquals("Fs", Candor.classify("java.util.Scanner", "<init>", "(Ljava/nio/file/Path;)V"));
+        assertNull(Candor.classify("java.util.Scanner", "<init>", "(Ljava/lang/String;)V"));   // string source — pure
+        assertNull(Candor.classify("java.util.Scanner", "<init>", "(Ljava/io/InputStream;)V")); // source-deferred — pure
+        assertEquals("Fs", Candor.classify("java.nio.file.WatchService", "take", "()Ljava/nio/file/WatchKey;"));
+        assertEquals("Fs", Candor.classify("java.nio.file.Path", "toRealPath", "([Ljava/nio/file/LinkOption;)Ljava/nio/file/Path;"));
+        assertEquals("Fs", Candor.classify("java.nio.file.Path", "register", "(Ljava/nio/file/WatchService;[Ljava/nio/file/WatchEvent$Kind;)Ljava/nio/file/WatchKey;"));
+        assertNull(Candor.classify("java.nio.file.Path", "getParent", "()Ljava/nio/file/Path;"));      // pure path op
+        assertNull(Candor.classify("java.nio.file.Path", "normalize", "()Ljava/nio/file/Path;"));
+        assertNull(Candor.classify("java.nio.file.Path", "resolve", "(Ljava/nio/file/Path;)Ljava/nio/file/Path;"));
+    }
+
+    /** Clock/Rand completeness: no-arg Date()/GregorianCalendar()/Calendar.getInstance() read the clock;
+     *  RandomGenerator (Java 17+ interface) draws entropy. Valued ctors stay pure (arity-precise, no fab). */
+    @Test
+    void clockRandCompleteness() {
+        assertEquals("Clock", Candor.classify("java.util.Date", "<init>", "()V"));
+        assertEquals("Clock", Candor.classify("java.util.GregorianCalendar", "<init>", "()V"));
+        assertEquals("Clock", Candor.classify("java.util.Calendar", "getInstance", "()Ljava/util/Calendar;"));
+        assertNull(Candor.classify("java.util.Date", "<init>", "(J)V"));                  // value, not clock — pure
+        assertNull(Candor.classify("java.util.GregorianCalendar", "<init>", "(III)V"));   // pure
+        assertEquals("Rand", Candor.classify("java.util.random.RandomGenerator", "nextInt", "()I"));
+        assertEquals("Rand", Candor.classify("java.util.random.RandomGenerator", "nextLong", "()J"));
+    }
+
     /** UUID.randomUUID() draws v4 entropy from SecureRandom → Rand; the rest of UUID is pure value ops
      *  (classifying the whole owner would fabricate Rand onto fromString/getMostSignificantBits/…). Also
      *  pins that a JDK functional-interface SAM is recognized for the unpinned-dispatch Unknown rule. */

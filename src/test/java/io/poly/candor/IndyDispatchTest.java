@@ -76,4 +76,40 @@ class IndyDispatchTest {
         assertFalse(eff.contains("Unknown"),
                 "a structural-factory invokedynamic must NOT fabricate Unknown, got " + eff);
     }
+
+    /** A method REFERENCE to a NON-project JDK effect method, handed to a stream/functional stage that
+     *  invokes it (`removeIf(File::delete)`, `map(System::getenv)`), was silent-pure — the LambdaMetafactory
+     *  indy carries the target as a method handle whose owner is a JDK class, which the handler edged only
+     *  for project owners and never classified. Compile a real fixture (javac emits the real indy) and scan. */
+    @Test
+    void methodRefToJdkEffectIsClassified() throws Exception {
+        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
+        org.junit.jupiter.api.Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
+        Path dir = Files.createTempDirectory("candor-mref");
+        try {
+            Path src = dir.resolve("M.java");
+            Files.writeString(src, String.join("\n",
+                "import java.io.File;",
+                "import java.util.List;",
+                "import java.util.stream.Collectors;",
+                "public class M {",
+                "  void refDelete(List<File> fs) { fs.removeIf(File::delete); }",          // Fs
+                "  Object refGetenv(List<String> ks) {",
+                "    return ks.stream().map(System::getenv).collect(Collectors.toList()); }", // Env
+                "}"));
+            Path out = dir.resolve("cls");
+            Files.createDirectories(out);
+            int rc = jc.run(null, null, null, "-d", out.toString(), src.toString());
+            org.junit.jupiter.api.Assertions.assertEquals(0, rc, "fixture must compile");
+            Map<String, TreeSet<String>> r = Candor.runScan(out);
+            assertTrue(r.getOrDefault("M.refDelete", new TreeSet<>()).contains("Fs"),
+                    "removeIf(File::delete) must read Fs, got " + r.get("M.refDelete"));
+            assertTrue(r.getOrDefault("M.refGetenv", new TreeSet<>()).contains("Env"),
+                    "map(System::getenv) must read Env, got " + r.get("M.refGetenv"));
+        } finally {
+            try (Stream<Path> s = Files.walk(dir)) {
+                s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+            }
+        }
+    }
 }

@@ -28,6 +28,9 @@ EFFECTS = {
     "Env":  'System.getenv("CANDOR_FUZZ");',
     "Clock": 'System.currentTimeMillis();',
     "Rand":  'new java.util.Random().nextInt();',
+    # Db was fuzzer-blind (no leaf) — so the whole JDBC/JPA Db classification surface was unexercised by the
+    # soundness fuzzer. DriverManager.getConnection is a self-contained Db sink (no param needed).
+    "Db":   'try { java.sql.DriverManager.getConnection("jdbc:candor:fuzz"); } catch (Exception e) {}',
 }
 
 

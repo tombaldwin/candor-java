@@ -203,6 +203,40 @@ class HelpersTest {
         assertEquals("Db", Candor.classify("java.sql.Connection", "setAutoCommit", "(Z)V"));
     }
 
+    /** JPA/Hibernate query EXECUTION verbs are the round-trip (createQuery is a pure builder) — without
+     *  these the whole JPA query path read pure. */
+    @Test
+    void jpaQueryExecutionVerbsAreDb() {
+        assertEquals("Db", Candor.classify("jakarta.persistence.Query", "getResultList", "()Ljava/util/List;"));
+        assertEquals("Db", Candor.classify("jakarta.persistence.TypedQuery", "getSingleResult", "()Ljava/lang/Object;"));
+        assertEquals("Db", Candor.classify("jakarta.persistence.Query", "executeUpdate", "()I"));
+        assertEquals("Db", Candor.classify("jakarta.persistence.StoredProcedureQuery", "execute", "()Z"));
+        assertEquals("Db", Candor.classify("org.hibernate.Session", "get", "(Ljava/lang/Class;Ljava/io/Serializable;)Ljava/lang/Object;"));
+        assertEquals("Db", Candor.classify("org.hibernate.query.Query", "list", "()Ljava/util/List;"));
+    }
+
+    /** NIO Fs deep: memory-mapped file I/O (MappedByteBuffer), FileStore disk stats, FileDescriptor.sync. */
+    @Test
+    void nioMappedBufferAndFileStoreAreFs() {
+        assertEquals("Fs", Candor.classify("java.nio.MappedByteBuffer", "put", "(IB)Ljava/nio/ByteBuffer;"));
+        assertEquals("Fs", Candor.classify("java.nio.MappedByteBuffer", "force", "()Ljava/nio/MappedByteBuffer;"));
+        assertEquals("Fs", Candor.classify("java.nio.file.FileStore", "getTotalSpace", "()J"));
+        assertEquals("Fs", Candor.classify("java.io.FileDescriptor", "sync", "()V"));
+    }
+
+    /** Groovy GDK + Scala stdlib I/O — the dialects' OWN stdlib, as fundamental as java.io. Was silent-pure
+     *  (no classify row + κ-"covered"). URL-receiver GDK reads are Net; the pure GDK surface stays pure. */
+    @Test
+    void groovyGdkAndScalaStdlibIo() {
+        assertEquals("Fs", Candor.classify("org.codehaus.groovy.runtime.ResourceGroovyMethods", "getText", "(Ljava/io/File;)Ljava/lang/String;"));
+        assertEquals("Fs", Candor.classify("org.codehaus.groovy.runtime.ResourceGroovyMethods", "leftShift", "(Ljava/io/File;Ljava/lang/Object;)Ljava/io/File;"));
+        assertEquals("Net", Candor.classify("org.codehaus.groovy.runtime.ResourceGroovyMethods", "getText", "(Ljava/net/URL;)Ljava/lang/String;"));
+        assertEquals("Exec", Candor.classify("org.codehaus.groovy.runtime.ProcessGroovyMethods", "execute", "(Ljava/lang/String;)Ljava/lang/Process;"));
+        assertEquals("Fs", Candor.classify("scala.io.Source$", "fromFile", "(Ljava/lang/String;)Lscala/io/BufferedSource;"));
+        // the pure GDK surface (a non-I/O helper) must NOT be classified
+        assertNull(Candor.classify("org.codehaus.groovy.runtime.ResourceGroovyMethods", "size", "(Ljava/io/File;)J"));
+    }
+
     /** Subprocess/native/env deep: Process pipe & control verbs (Exec), System/Runtime.load* (native-code
      *  load → Exec), ProcessBuilder.environment (Env). Pure Process getters (toHandle/exitValue) stay pure. */
     @Test

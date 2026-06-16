@@ -438,7 +438,7 @@ public class Candor {
         int v = 0;
         for (ClassNode cn : ALL) {
             String dc = cn.name.replace('/', '.');
-            if (!inScope(scope, dc)) continue;
+            if (!gateScopeCovers(scope, dc)) continue;
             TreeSet<String> declared = new TreeSet<>();
             if (cn.fields != null)
                 for (FieldNode f : cn.fields) {
@@ -511,7 +511,7 @@ public class Candor {
     static int checkNoAmbient(Map<String, TreeSet<String>> inferred, String scope) {
         int v = 0;
         for (var e : new TreeMap<>(inferred).entrySet()) {
-            if (!inScope(scope, e.getKey())) continue;
+            if (!gateScopeCovers(scope, e.getKey())) continue;
             List<String> ambient = direct.getOrDefault(e.getKey(), new TreeSet<>()).stream()
                     .filter(AMBIENT::contains).sorted().collect(Collectors.toList());
             if (!ambient.isEmpty()) {
@@ -1450,8 +1450,13 @@ public class Candor {
         }
     }
 
-    static boolean inScope(String var, String name) {
-        return var.equals("1") || var.isEmpty() || name.startsWith(var);
+    /** Whether a CANDOR_* gate scope covers a dotted method/class name. The `1`/empty value is the
+     *  whole-project flag; any other value is a real scope, matched through {@link #scopeMatches} so the
+     *  gate scopes are SEGMENT- and `::`-aware exactly like the §6.2 policy gate. The old raw `startsWith`
+     *  silently diverged — a `::`-written or non-prefix scope disabled the gate (a false PASS on a real
+     *  ambient/strict violation) AND prefix-bled (`com.foo` matched `com.foobar`). */
+    static boolean gateScopeCovers(String scope, String dottedName) {
+        return scope.equals("1") || scope.isEmpty() || scopeMatches(dottedName, scope);
     }
 
     static List<ClassNode> load(Path root) throws IOException {
@@ -1589,6 +1594,16 @@ public class Candor {
             // from every reachability root (silent-pure for a blast-radius / --agents walk). Resolve the
             // annotation type's own meta-annotations recursively.
             if (annoOrMetaMatches(mn.visibleAnnotations, ROOT_ANNOTATIONS))
+                entryPoints.add(id);
+            // gRPC service handler: a project class extends a generated `*ImplBase` and overrides an RPC
+            // method whose signature carries an `io.grpc.stub.StreamObserver` — invoked by the gRPC server
+            // runtime with no in-project call site. RUNTIME_OVERRIDES can't key on it (the RPC method names
+            // are arbitrary) and the generated base isn't on candor's classpath (transSupers can't see
+            // `BindableService`), so key on the `*ImplBase` direct super + the StreamObserver-param signature
+            // — both gRPC-specific, so no fabrication.
+            if (cn.superName != null && cn.superName.endsWith("ImplBase")
+                    && mn.desc.contains("Lio/grpc/stub/StreamObserver;")
+                    && (mn.access & (Opcodes.ACC_STATIC | Opcodes.ACC_ABSTRACT)) == 0)
                 entryPoints.add(id);
             // A `finalize()` override is run by the GC's finalizer thread — NOT by any bytecode call.
             // It's the JVM analog of Rust's implicit-Drop hole: an effect (a socket/file opened on
@@ -2164,7 +2179,43 @@ public class Candor {
             // in-project call site. ForkJoinTask implements Future/Serializable — NOT Runnable/Callable —
             // so the Runnable row never covered it (silent-pure). null desc matches compute()V (Action),
             // compute()Object (Task + its erased bridge).
-            new String[] {"java/util/concurrent/ForkJoinTask", "compute", null});
+            new String[] {"java/util/concurrent/ForkJoinTask", "compute", null},
+            // (DE)SERIALIZATION-framework callbacks — the framework invokes a project implementor reflectively
+            // with NO in-project call site (the finalize/serialization shape). Supertype-substring gated, so a
+            // same-named method on an unrelated class is never fabricated. One substring per interface covers
+            // its javax/jakarta + library-variant FQNs.
+            new String[] {"JsonDeserializer", "deserialize", null},      // Jackson + Gson (both end JsonDeserializer)
+            new String[] {"JsonSerializer", "serialize", null},          // Jackson + Gson
+            new String[] {"databind/KeyDeserializer", "deserializeKey", null},
+            new String[] {"databind/util/StdConverter", "convert", null},
+            new String[] {"gson/TypeAdapter", "read", null},
+            new String[] {"gson/TypeAdapter", "write", null},
+            new String[] {"gson/InstanceCreator", "createInstance", null},
+            new String[] {"kryo/Serializer", "read", null},
+            new String[] {"kryo/Serializer", "write", null},
+            new String[] {"kryo/KryoSerializable", "read", null},
+            new String[] {"kryo/KryoSerializable", "write", null},
+            new String[] {"adapters/XmlAdapter", "unmarshal", null},
+            new String[] {"adapters/XmlAdapter", "marshal", null},
+            new String[] {"ws/rs/ext/MessageBodyReader", "readFrom", null},
+            new String[] {"ws/rs/ext/MessageBodyWriter", "writeTo", null},
+            new String[] {"core/convert/converter/Converter", "convert", null},   // Spring conversion service
+            new String[] {"springframework/format/Formatter", "parse", null},
+            new String[] {"springframework/format/Formatter", "print", null},
+            // RUNTIME-GENERATED PROXY interceptors — invoked by the CGLIB/ByteBuddy-generated subclass at
+            // runtime, the same orphan shape as the JDK InvocationHandler (already rooted). cglib's substring
+            // covers BOTH net.sf.cglib and the Spring-repackaged org.springframework.cglib; cglib has its OWN
+            // InvocationHandler (a DIFFERENT FQN from java.lang.reflect's).
+            new String[] {"cglib/proxy/MethodInterceptor", "intercept", null},
+            new String[] {"cglib/proxy/InvocationHandler", "invoke", null},
+            // LOGGING appender/handler callbacks — the logging framework invokes a project-defined appender
+            // with no in-project call site; a network/file appender does real Net/Fs. (The Log EMIT is config;
+            // the appender BODY is the effect that matters.) Covers logback Appender, jul Handler, log4j1/2.
+            new String[] {"logback/core/Appender", "append", null},
+            new String[] {"logback/core/Appender", "doAppend", null},
+            new String[] {"java/util/logging/Handler", "publish", null},
+            new String[] {"logging/log4j/core/Appender", "append", null},
+            new String[] {"log4j/Appender", "doAppend", null});
 
     /** The number of CHA targets above which a CHA-EXEMPT dispatch (Object protocol / function-interface
      *  / task verb) is treated as a broad smear and its fan-out dropped. An app's handful of Runnables /
@@ -2241,6 +2292,11 @@ public class Candor {
         r.addAll(LIFECYCLE);
         r.add(SCHEDULED);
         r.add(JSON_CREATOR);
+        // Jackson serialization callbacks invoked reflectively during (de)serialization, no project call
+        // site: @JsonValue (custom serialize), @JsonAnySetter (deser overflow), @JsonAnyGetter (ser).
+        r.add("annotation/JsonValue");
+        r.add("annotation/JsonAnySetter");
+        r.add("annotation/JsonAnyGetter");
         ROOT_ANNOTATIONS = List.copyOf(r);
     }
 
@@ -2838,8 +2894,20 @@ public class Candor {
                 || owner.equals("java.nio.channels.AsynchronousFileChannel")
                 // Archive readers open and read a file from disk (the ctor opens it, entries/getInputStream
                 // read it); ZipEntry/JarEntry data types stay pure. (Found by a controlled JDK probe.)
-                || owner.equals("java.util.zip.ZipFile") || owner.equals("java.util.jar.JarFile"))
+                || owner.equals("java.util.zip.ZipFile") || owner.equals("java.util.jar.JarFile")
+                // MappedByteBuffer is returned ONLY by FileChannel.map — it is unambiguously file-backed (no
+                // in-memory variant), so put/get/force on it is real mmap file I/O. A receiver typed as the
+                // ByteBuffer supertype stays correctly excluded (ambiguous, may be a heap buffer); the
+                // MappedByteBuffer exact owner is the file boundary (same shape as the MulticastSocket fix).
+                || owner.equals("java.nio.MappedByteBuffer"))
             return "Fs";
+        // FileStore disk-space/metadata stats (getTotalSpace/getUsableSpace/type/…) hit the filesystem;
+        // FileDescriptor.sync is an fsync syscall. (Files.getFileStore — the open — is already Fs above.)
+        if (owner.equals("java.nio.file.FileStore")
+                && (method.startsWith("get") || method.equals("type") || method.equals("isReadOnly")
+                    || method.equals("supportsFileAttributeView")))
+            return "Fs";
+        if (owner.equals("java.io.FileDescriptor") && method.equals("sync")) return "Fs";
         // java.util.Scanner(File)/(Path) opens and reads a file. CTOR-DESCRIPTOR-GATED: Scanner(String) is
         // pure (a string source) and Scanner(InputStream/Readable) defers to its source's owner — so gate to
         // the File/Path ctor descriptors only (no fabrication on the pure ctors). (JDK Fs-deep probe.)
@@ -2886,6 +2954,38 @@ public class Candor {
         if (owner.equals("kotlin.random.Random") || owner.equals("kotlin.random.Random$Default")
                 || owner.equals("kotlin.random.RandomKt"))
             return "Rand";
+        // Groovy GDK — the language's OWN stdlib I/O, which @CompileStatic compiles to direct static calls
+        // (as fundamental to Groovy as java.io is to Java). ResourceGroovyMethods holds the File/URL
+        // read/write extension methods (`f.text`/`f.bytes`/`f << s` → getText/getBytes/leftShift);
+        // ProcessGroovyMethods.execute spawns. Was silent-pure (no classify row + the package is
+        // κ-"covered", so not even disclosed). Found by a JVM-dialect sweep. Verb-gated so the pure GDK
+        // surface (path/string helpers) stays pure.
+        if (owner.equals("org.codehaus.groovy.runtime.ResourceGroovyMethods")) {
+            if (desc != null && desc.startsWith("(Ljava/net/URL;")) return "Net"; // URL receiver = network egress
+            if (method.startsWith("get") || method.startsWith("read") || method.startsWith("set")
+                    || method.startsWith("write") || method.startsWith("append") || method.equals("leftShift")
+                    || method.startsWith("eachLine") || method.startsWith("eachByte")
+                    || method.startsWith("newReader") || method.startsWith("newWriter")
+                    || method.startsWith("newInputStream") || method.startsWith("newOutputStream")
+                    || method.startsWith("withReader") || method.startsWith("withWriter")
+                    || method.startsWith("withInputStream") || method.startsWith("withOutputStream")
+                    || method.startsWith("filterLine") || method.startsWith("splitEachLine"))
+                return "Fs";
+            return null;
+        }
+        if (owner.equals("org.codehaus.groovy.runtime.ProcessGroovyMethods") && method.startsWith("execute"))
+            return "Exec";
+        // Scala stdlib I/O — the language's own stdlib. scala.io.Source file/URL reads; scala.sys.process
+        // subprocess spawn (`cmd.!` / `.run` compile to $bang / run on the process owners).
+        if (owner.equals("scala.io.Source$") || owner.equals("scala.io.Source")) {
+            if (method.equals("fromFile") || method.equals("fromPath") || method.equals("fromResource")) return "Fs";
+            if (method.equals("fromURL") || method.equals("fromURI")) return "Net";
+            return null;
+        }
+        if (owner.startsWith("scala.sys.process")
+                && (method.equals("run") || method.startsWith("$bang") || method.startsWith("lazyLines")
+                    || method.startsWith("lineStream")))
+            return "Exec";
         // Network — raw sockets, NIO socket channels (the channel type IS the network boundary; the
         // generic ReadableByteChannel/WritableByteChannel interfaces are NOT classified, they may wrap a
         // file or an in-memory buffer), java.net.http, and Spring's outbound HTTP clients. Without the NIO
@@ -3020,6 +3120,32 @@ public class Candor {
                 && (method.equals("find") || method.equals("getReference") || method.equals("persist")
                     || method.equals("merge") || method.equals("remove") || method.equals("refresh")
                     || method.equals("flush") || method.equals("lock")))
+            return "Db";
+        // JPA query EXECUTION verbs — `em.createQuery(hql)` is a pure BUILDER (above), but the round-trip is
+        // on the returned Query/TypedQuery/StoredProcedureQuery. Without classifying these, the whole JPA
+        // query path (createQuery + getResultList in one method) read pure (Unknown if unpinned, fully
+        // silent-pure if the Query receiver was monomorphically pinned). getResultStream also executes.
+        if ((owner.equals("jakarta.persistence.Query") || owner.equals("javax.persistence.Query")
+                || owner.equals("jakarta.persistence.TypedQuery") || owner.equals("javax.persistence.TypedQuery")
+                || owner.equals("jakarta.persistence.StoredProcedureQuery")
+                || owner.equals("javax.persistence.StoredProcedureQuery"))
+                && (method.equals("getResultList") || method.equals("getSingleResult")
+                    || method.equals("getResultStream") || method.equals("executeUpdate")
+                    || method.equals("execute")))
+            return "Db";
+        // Hibernate Session — get/load fetch by id, the query factories execute via list/uniqueResult on the
+        // returned org.hibernate.query.Query, persist/save/update/delete/saveOrUpdate are the unit-of-work DB
+        // ops. createQuery/createNativeQuery stay pure builders (their execution is list/uniqueResult, below).
+        if (owner.equals("org.hibernate.Session")
+                && (method.equals("get") || method.equals("load") || method.equals("save")
+                    || method.equals("update") || method.equals("delete") || method.equals("persist")
+                    || method.equals("saveOrUpdate") || method.equals("merge") || method.equals("refresh")
+                    || method.equals("flush") || method.equals("byId")))
+            return "Db";
+        if ((owner.equals("org.hibernate.query.Query") || owner.equals("org.hibernate.Query"))
+                && (method.equals("list") || method.equals("uniqueResult") || method.equals("getResultList")
+                    || method.equals("getSingleResult") || method.equals("executeUpdate")
+                    || method.equals("scroll") || method.equals("stream")))
             return "Db";
         // Subprocess
         // ProcessBuilder.start() spawns one process; the static startPipeline(List) spawns a whole pipeline

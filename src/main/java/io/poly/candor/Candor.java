@@ -105,6 +105,16 @@ public class Candor {
             "org/springframework/data/repository/ListCrudRepository",
             "org/springframework/data/repository/PagingAndSortingRepository",
             "org/springframework/data/jpa/repository/JpaRepository");
+    /** Any Spring Data repository BASE interface — under `org/springframework/data/` and ending in
+     *  `Repository`. Covers JPA, reactive (ReactiveCrudRepository), and every store module
+     *  (Mongo/Cassandra/Elasticsearch/R2dbc)
+     *  without enumerating each: the framework bases all live under this package and end in "Repository".
+     *  REPO_MARKERS stays as the JPA/JDBC-core fast set; this catches the rest (those bases are framework
+     *  interfaces NOT in the scanned classes, so the transitive marker chain breaks at them → silent-pure
+     *  inherited CRUD on reactive/NoSQL repos). */
+    static boolean isSpringDataRepoBase(String internal) {
+        return internal.startsWith("org/springframework/data/") && internal.endsWith("Repository");
+    }
     static final String TX = "springframework/transaction/annotation/Transactional";
     static final String SCHEDULED = "springframework/scheduling/annotation/Scheduled";
     // Jackson invokes a @JsonCreator-annotated constructor/factory REFLECTIVELY during deserialization,
@@ -187,7 +197,7 @@ public class Candor {
         entryPoints.clear(); projectClasses.clear(); repoTypes.clear();
         entityTables.clear(); repoTables.clear(); feignTypes.clear();
         ALL = List.of();
-        byName.clear(); transSupersCache.clear(); subtypeIndex.clear();
+        byName.clear(); transSupersCache.clear(); subtypeIndex.clear(); annoMetaCache.clear();
         overloadDescs.clear(); classesWithClinit.clear();
         taintEnabled = false; tainted.clear();
         denyRules.clear(); allowRules.clear(); forbidRules.clear();
@@ -945,8 +955,8 @@ public class Candor {
      *  whole project (matches everything). */
     static boolean scopeMatches(String name, String scope) {
         if (scope.isEmpty()) return true;
-        String[] segs = name.split("\\.");
-        String[] parts = scope.split("\\.");
+        String[] segs = nameSegments(name);
+        String[] parts = nameSegments(scope);
         if (parts.length == 0 || parts.length > segs.length) return false;
         String last = parts[parts.length - 1];
         for (int i = 0; i + parts.length <= segs.length; i++) {
@@ -956,6 +966,17 @@ public class Candor {
             if (ok && segs[i + parts.length - 1].startsWith(last)) return true;
         }
         return false;
+    }
+
+    /** Split a name OR a policy scope into segments on BOTH `.` and `::`, dropping empties. candor-java
+     *  node ids are dotted (`com.foo.A.m`), but spec §6.2 + the conformance battery write scopes with `::`
+     *  (`app::db`, `forbid app::web -> app::db`) and a Rust report names fns with `::` — so a `::`-written
+     *  policy scope must still match a dotted name (it silently never did: the gate was a dead rule →
+     *  a real violation passed). Mirrors the Rust impl's `name_segments` (splits on `.` and `:`). */
+    static String[] nameSegments(String s) {
+        List<String> out = new ArrayList<>();
+        for (String seg : s.split("[.:]")) if (!seg.isEmpty()) out.add(seg);
+        return out.toArray(new String[0]);
     }
 
     /** Forward reachability over the project call graph: the first method `start` transitively reaches
@@ -1060,8 +1081,21 @@ public class Candor {
     static String firstLiteralArg(MethodNode mn, AbstractInsnNode call) {
         String found = null;
         for (AbstractInsnNode n = call.getPrevious(); n != null; n = n.getPrevious()) {
-            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode)
-                break; // a prior call / branch bounds this call's argument evaluation
+            // Bound the back-scan at the START of THIS call's statement, so a literal from a PRIOR
+            // statement is never grabbed. Without the NEW/store bounds, `new Socket(runtimeHost, 443)`
+            // preceded by `String tag = "internal.metrics.svc"` captured `tag` as the host — fabricating a
+            // host on a runtime-computed destination and DEFEATING the AS-EFF-008 allowlist (an attacker
+            // host certified under the wrong literal). Boundaries: a prior call/branch (already), the
+            // receiver's `new` (a constructor's allocation begins this statement; a real literal ARG sits
+            // after the NEW/DUP so it's still captured), and a `*STORE`/PUTFIELD/PUTSTATIC ending the prior
+            // statement.
+            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode
+                    || (n instanceof TypeInsnNode && n.getOpcode() == Opcodes.NEW)
+                    || (n instanceof VarInsnNode v && v.getOpcode() >= Opcodes.ISTORE
+                            && v.getOpcode() <= Opcodes.ASTORE)
+                    || (n instanceof FieldInsnNode fi
+                            && (fi.getOpcode() == Opcodes.PUTFIELD || fi.getOpcode() == Opcodes.PUTSTATIC)))
+                break;
             if (n instanceof LdcInsnNode ldc && ldc.cst instanceof String s) found = s; // keep the earliest
         }
         return found;
@@ -1316,11 +1350,19 @@ public class Candor {
                 try {
                     JsonElement root = JsonParser.parseString(Files.readString(f));
                     JsonObject obj = root.isJsonObject() ? root.getAsJsonObject() : null;
-                    JsonArray fns = obj != null ? obj.getAsJsonArray("functions")
+                    // isJsonArray-gated reads (not getAsJsonArray, which THROWS on a non-array `functions`).
+                    // A throw here was caught by the per-FILE catch below and abandoned the WHOLE report — so
+                    // a single malformed field made every caller of the dep read PURE instead of the §2.1
+                    // Unknown. Be resilient field-by-field and downgrade to Unknown, never silently drop.
+                    JsonArray fns = obj != null && obj.has("functions") && obj.get("functions").isJsonArray()
+                            ? obj.getAsJsonArray("functions")
                             : (root.isJsonArray() ? root.getAsJsonArray() : null);
                     if (fns == null) continue;
-                    String depVer = obj != null && obj.has("candor") && obj.getAsJsonObject("candor").has("version")
-                            ? obj.getAsJsonObject("candor").get("version").getAsString() : null;
+                    String depVer = null;
+                    if (obj != null && obj.has("candor") && obj.get("candor").isJsonObject()) {
+                        JsonElement v = obj.getAsJsonObject("candor").get("version");
+                        if (v != null && v.isJsonPrimitive()) depVer = v.getAsString(); // JsonNull → null → stale
+                    }
                     // A report whose version can't be VERIFIED is not trusted (§2.1) — a missing
                     // header is as untrustworthy as a mismatched one (the Rust engine's rule;
                     // /code-review found the engines split three ways on versionless reports).
@@ -1339,16 +1381,28 @@ public class Candor {
                                 depCoveredPkgs.add(x.getAsString());
                     }
                     for (JsonElement el : fns) {
+                        if (!el.isJsonObject()) continue;                 // a non-object entry → skip (not pure-able)
                         JsonObject m = el.getAsJsonObject();
-                        if (!m.has("hash") || m.get("hash").isJsonNull()) continue; // v0.1 / no cross-jar id
+                        if (!m.has("hash") || !m.get("hash").isJsonPrimitive()) continue; // v0.1 / no cross-jar id
                         String h = m.get("hash").getAsString();
                         if (h.isBlank()) continue;
                         DepFn de = new DepFn();
                         if (stale) {
                             de.effects.add("Unknown");
                         } else {
-                            if (m.has("inferred"))
-                                for (JsonElement x : m.getAsJsonArray("inferred")) de.effects.add(x.getAsString());
+                            // `inferred` present but MALFORMED (JsonNull / a string / an object, or a
+                            // non-string element) is an untrustworthy claim → Unknown, never silently dropped
+                            // (the §2.1 contract: a corrupt same-version report ≠ pure). A clean array of
+                            // strings reads its effects; a genuinely ABSENT inferred field stays pure.
+                            if (m.has("inferred") && m.get("inferred").isJsonArray()) {
+                                for (JsonElement x : m.getAsJsonArray("inferred"))
+                                    if (x.isJsonPrimitive()) de.effects.add(x.getAsString());
+                                    else de.effects.add("Unknown");
+                            } else if (m.has("inferred") && !m.get("inferred").isJsonNull()) {
+                                de.effects.add("Unknown");
+                            } else if (m.has("inferred")) {
+                                de.effects.add("Unknown"); // inferred: null → untrusted
+                            }
                             for (var pair : List.of(Map.entry("hosts", de.hosts), Map.entry("cmds", de.cmds),
                                     Map.entry("paths", de.paths), Map.entry("tables", de.tables)))
                                 if (m.has(pair.getKey()) && m.get(pair.getKey()).isJsonArray())
@@ -1465,7 +1519,7 @@ public class Candor {
             for (ClassNode cn : classes) {
                 if (repoTypes.contains(cn.name) || cn.interfaces == null) continue;
                 for (String itf : cn.interfaces) {
-                    if (REPO_MARKERS.contains(itf) || repoTypes.contains(itf)) {
+                    if (REPO_MARKERS.contains(itf) || repoTypes.contains(itf) || isSpringDataRepoBase(itf)) {
                         repoTypes.add(cn.name);
                         changed = true;
                         break;
@@ -1529,10 +1583,12 @@ public class Candor {
 
             // Spring annotations on this method (the effect Spring's proxy/generated code performs).
             if (classTx || annoPresent(mn.visibleAnnotations, TX)) dir.add("Db");
-            if (annoPresent(mn.visibleAnnotations, SCHEDULED)
-                    || annoPresentAny(mn.visibleAnnotations, MAPPING_OR_LISTENER)
-                    || annoPresentAny(mn.visibleAnnotations, LIFECYCLE)
-                    || annoPresent(mn.visibleAnnotations, JSON_CREATOR))
+            // META-ANNOTATION aware: a method carrying a COMPOSED annotation (Spring's stereotype idiom —
+            // `@GetMapping` is itself `@RequestMapping`; a team's `@ApiEndpoint`/`@NightlyJob` wraps a known
+            // marker) was NOT rooted by a direct-annotation-only check, orphaning a framework-invoked method
+            // from every reachability root (silent-pure for a blast-radius / --agents walk). Resolve the
+            // annotation type's own meta-annotations recursively.
+            if (annoOrMetaMatches(mn.visibleAnnotations, ROOT_ANNOTATIONS))
                 entryPoints.add(id);
             // A `finalize()` override is run by the GC's finalizer thread — NOT by any bytecode call.
             // It's the JVM analog of Rust's implicit-Drop hole: an effect (a socket/file opened on
@@ -1898,7 +1954,7 @@ public class Candor {
                         // analog. RUNTIME_OVERRIDES also roots run/call; this attributes it to the spawner so
                         // a blast-radius walk from the scheduler isn't pure. (Found by an async/threading sweep.)
                         for (MethodNode am : anonCn.methods)
-                            if ((am.name.equals("run") || am.name.equals("call"))
+                            if ((am.name.equals("run") || am.name.equals("call") || am.name.equals("compute"))
                                     && (am.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC)) == 0)
                                 edges.get(id).add(methodId(tin.desc.replace('/', '.'), am.name, am.desc));
                     }
@@ -2102,7 +2158,13 @@ public class Candor {
             new String[] {"servlet/AsyncListener", "onComplete", null},
             new String[] {"servlet/AsyncListener", "onTimeout", null},
             new String[] {"servlet/AsyncListener", "onError", null},
-            new String[] {"servlet/AsyncListener", "onStartAsync", null});
+            new String[] {"servlet/AsyncListener", "onStartAsync", null},
+            // Fork/join task bodies: a RecursiveTask/RecursiveAction's compute() is invoked by the
+            // ForkJoinPool runtime (`pool.invoke(t)`, `t.fork()`, `ForkJoinTask.invokeAll(...)`) with no
+            // in-project call site. ForkJoinTask implements Future/Serializable — NOT Runnable/Callable —
+            // so the Runnable row never covered it (silent-pure). null desc matches compute()V (Action),
+            // compute()Object (Task + its erased bridge).
+            new String[] {"java/util/concurrent/ForkJoinTask", "compute", null});
 
     /** The number of CHA targets above which a CHA-EXEMPT dispatch (Object protocol / function-interface
      *  / task verb) is treated as a broad smear and its fan-out dropped. An app's handful of Runnables /
@@ -2171,6 +2233,66 @@ public class Candor {
         return false;
     }
 
+    /** All the entry-point-rooting annotation markers (HTTP mappings/listeners/lifecycle + @Scheduled +
+     *  @JsonCreator), as one list for the meta-annotation-aware matcher. */
+    static final List<String> ROOT_ANNOTATIONS;
+    static {
+        List<String> r = new ArrayList<>(MAPPING_OR_LISTENER);
+        r.addAll(LIFECYCLE);
+        r.add(SCHEDULED);
+        r.add(JSON_CREATOR);
+        ROOT_ANNOTATIONS = List.copyOf(r);
+    }
+
+    /** Whether any annotation in `anns` — DIRECTLY or via its META-annotation chain — matches a marker.
+     *  Spring's stereotype model is composed annotations (`@GetMapping` is meta-annotated `@RequestMapping`;
+     *  teams define `@ApiEndpoint = @GetMapping`), so a direct-only check orphans framework-invoked methods.
+     *  Resolves each annotation TYPE's own annotations (project class via byName, else off candor's classpath
+     *  via ASM), recursing with a visited-set + depth bound; JDK meta-annotations are skipped. The
+     *  decoy-safe property holds: an UNRELATED `@com.myapp.GetMapping` whose meta-chain never reaches a real
+     *  marker is not rooted (no fabrication). */
+    static boolean annoOrMetaMatches(List<AnnotationNode> anns, List<String> markers) {
+        if (anns == null) return false;
+        Set<String> visited = new HashSet<>();
+        for (AnnotationNode a : anns)
+            if (a.desc != null && annoDescMatchesMeta(a.desc, markers, visited, 0)) return true;
+        return false;
+    }
+
+    static boolean annoDescMatchesMeta(String desc, List<String> markers, Set<String> visited, int depth) {
+        for (String m : markers) if (desc.contains(m)) return true;
+        if (depth >= 5 || !desc.startsWith("L") || !desc.endsWith(";")) return false;
+        String internal = desc.substring(1, desc.length() - 1);
+        // a JDK meta-annotation (@Retention/@Target/@Documented/@Inherited) never reaches a framework marker
+        if (internal.startsWith("java/") || !visited.add(internal)) return false;
+        List<AnnotationNode> meta = annotationTypeAnnotations(internal);
+        if (meta == null) return false;
+        for (AnnotationNode a : meta)
+            if (a.desc != null && annoDescMatchesMeta(a.desc, markers, visited, depth + 1)) return true;
+        return false;
+    }
+
+    /** The visible annotations declared ON an annotation type (its meta-annotations), or null if
+     *  unresolvable. A project annotation comes from byName; a framework one is read off candor's classpath
+     *  via ASM (same posture as {@link #externalSupers}). Cached per type. */
+    static final Map<String, List<AnnotationNode>> annoMetaCache = new HashMap<>();
+    static List<AnnotationNode> annotationTypeAnnotations(String internal) {
+        if (annoMetaCache.containsKey(internal)) return annoMetaCache.get(internal);
+        List<AnnotationNode> out = null;
+        ClassNode cn = byName.get(internal);
+        if (cn != null) out = cn.visibleAnnotations;
+        else {
+            try {
+                ClassNode an = new ClassNode();
+                new ClassReader(internal).accept(an,
+                        ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+                out = an.visibleAnnotations;
+            } catch (Throwable t) { /* not on candor's classpath → unresolvable, stays unrooted (sound) */ }
+        }
+        annoMetaCache.put(internal, out);
+        return out;
+    }
+
     static int firstLine(MethodNode mn) {
         for (AbstractInsnNode insn : mn.instructions) if (insn instanceof LineNumberNode ln) return ln.line;
         return 0;
@@ -2205,7 +2327,7 @@ public class Candor {
     static boolean isTaskType(String internal) {
         Set<String> s = transSupers(internal);
         return s.contains("java/lang/Runnable") || s.contains("java/util/concurrent/Callable")
-                || s.contains("java/lang/Thread");
+                || s.contains("java/lang/Thread") || s.contains("java/util/concurrent/ForkJoinTask");
     }
 
     /** JDK executor owners whose submit/execute/schedule verbs invoke a Runnable/Callable TASK argument. */
@@ -2343,7 +2465,33 @@ public class Candor {
         // never reach Type.getArgumentTypes, which overruns and crashes the scan on anything without `()`.
         if (descs == null || descs.size() <= 1 || desc == null || !desc.startsWith("("))
             return dottedClass + "." + name;
-        return dottedClass + "." + name + "(" + paramTypeList(desc) + ")";
+        String suffix = paramTypeList(desc);
+        // Simple param names CAN collide across overloads whose param types share a SIMPLE name from
+        // different packages (`f(a.User)` vs `f(b.User)` both → "User") — Java forbids same-ERASED-descriptor
+        // overloads, not same-simple-name ones. Two overloads sharing a node id UNION their effects →
+        // fabrication on the pure sibling (and every caller of it). When the readable suffix is ambiguous,
+        // fall back to FULLY-QUALIFIED param names (unique per descriptor); the common non-colliding case
+        // keeps the short, readable form.
+        boolean ambiguous = descs.stream()
+                .filter(d -> d != null && d.startsWith("(") && !d.equals(desc))
+                .anyMatch(d -> paramTypeList(d).equals(suffix));
+        return dottedClass + "." + name + "(" + (ambiguous ? paramTypeListFq(desc) : suffix) + ")";
+    }
+
+    /** Like {@link #paramTypeList} but with FULLY-QUALIFIED object names — the collision-free disambiguator
+     *  used only when simple names clash across a class's overloads. */
+    static String paramTypeListFq(String desc) {
+        StringBuilder sb = new StringBuilder();
+        for (Type t : Type.getArgumentTypes(desc)) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(fqTypeName(t));
+        }
+        return sb.toString();
+    }
+
+    static String fqTypeName(Type t) {
+        if (t.getSort() == Type.ARRAY) return fqTypeName(t.getElementType()) + "[]".repeat(t.getDimensions());
+        return t.getClassName(); // OBJECT → fully-qualified (a.User); primitive → int/long/...
     }
 
     /** A method descriptor's argument types as a readable, comma-separated list of source-form names
@@ -2852,7 +3000,16 @@ public class Candor {
                     || method.equals("commit") || method.equals("rollback") || method.equals("setAutoCommit")))
             return "Db";
         if (owner.equals("org.springframework.jdbc.core.JdbcTemplate")
-                || owner.equals("org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate"))
+                || owner.equals("org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate")
+                // Reactive SQL (R2DBC) + the NoSQL store templates — the reactive/store analog of
+                // JdbcTemplate, all whole-owner Db. A method returning Mono/Flux off these still does the DB
+                // round-trip; missing them left reactive data layers silent-pure.
+                || owner.equals("org.springframework.r2dbc.core.DatabaseClient")
+                || owner.equals("org.springframework.data.r2dbc.core.R2dbcEntityTemplate")
+                || owner.equals("org.springframework.data.mongodb.core.MongoTemplate")
+                || owner.equals("org.springframework.data.mongodb.core.ReactiveMongoTemplate")
+                || owner.equals("org.springframework.data.cassandra.core.CassandraTemplate")
+                || owner.equals("org.springframework.data.redis.core.RedisTemplate"))
             return "Db";
         // JPA EntityManager — the whole-owner rule FABRICATED Db on its pure surface: `createQuery`/
         // `createNamedQuery`/`createNativeQuery` BUILD a Query (no execution), and `clear`/`detach`/

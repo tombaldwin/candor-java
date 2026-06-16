@@ -159,6 +159,11 @@ public final class Query {
      *  boundary is `.` OR `$`: nested-class names use `$` (`Cases$Svc.act`), so a `.`-only check dropped
      *  inner-class queries to substring tier and re-inflated the blast radius (/code-review found it). */
     static int matchTier(String name, String q) {
+        // An EMPTY query matches NOTHING, never everything: `name.contains("")` is always true, so an
+        // unset/empty fn arg (a shell variable that didn't expand) otherwise selected the WHOLE codebase and
+        // produced a real-looking whole-graph blast-radius / policy verdict (same bug candor-rust fixed in
+        // match_tier). An empty query is a usage error upstream; here it simply resolves to tier 0.
+        if (q.isEmpty()) return 0;
         if (name.equals(q)) return 3;
         if (name.endsWith(q) && name.length() > q.length()) {
             char b = name.charAt(name.length() - q.length() - 1);

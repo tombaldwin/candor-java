@@ -27,6 +27,28 @@ class HelpersTest {
         assertFalse(Candor.scopeMatches("a", "a.b"));              // scope longer than the name
     }
 
+    /** A policy scope written with `::` (spec §6.2 + the conformance battery use it; a Rust report names
+     *  fns with `::`) must match a candor-java DOTTED node id — it silently never did (dead rule →
+     *  gate-evasion). nameSegments splits on both `.` and `::`. */
+    @Test
+    void scopeMatchesDoubleColonAndDot() {
+        assertTrue(Candor.scopeMatches("app.db.Dao.query", "app::db"));   // :: scope vs dotted name
+        assertTrue(Candor.scopeMatches("app.db.Dao.query", "app.db"));    // dot scope still works
+        assertTrue(Candor.scopeMatches("app.web.Web.handle", "app::web"));
+        assertFalse(Candor.scopeMatches("app.db.Dao.query", "other::scope")); // no over-match
+        assertFalse(Candor.scopeMatches("app.db.Dao.query", "app::web"));     // wrong segment
+    }
+
+    /** An EMPTY query matches NOTHING (tier 0), never the whole codebase — `name.contains("")` was always
+     *  true, so an unset/empty fn arg selected every function (false whole-graph blast-radius). */
+    @Test
+    void matchTierEmptyQuerySelectsNothing() {
+        assertEquals(0, Query.matchTier("com.foo.Bar.baz", ""));     // empty → no match
+        assertEquals(3, Query.matchTier("com.foo.Bar.baz", "com.foo.Bar.baz")); // exact still 3
+        assertEquals(2, Query.matchTier("com.foo.Bar.baz", "Bar.baz"));          // segment-suffix still 2
+        assertEquals(1, Query.matchTier("com.foo.Bar.baz", "foo"));              // substring still 1
+    }
+
     @Test
     void looksLikeIpv4IsStrict() {
         assertTrue(Candor.looksLikeIpv4("127.0.0.1"));

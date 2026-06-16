@@ -630,12 +630,20 @@ public class Candor {
     static final class ProvValue implements Value {
         final BasicValue base;
         final String newType; // internal name of a provable `new T` receiver, or null = indeterminate
-        ProvValue(BasicValue base, String newType) { this.base = base; this.newType = newType; }
+        final boolean fromIndy; // produced by an invokedynamic (a lambda/method-ref) — its body is edged at
+                                // creation, so an executor hand-off of it needs no Unknown (vs a field/param)
+        ProvValue(BasicValue base, String newType) { this(base, newType, false); }
+        ProvValue(BasicValue base, String newType, boolean fromIndy) {
+            this.base = base; this.newType = newType; this.fromIndy = fromIndy;
+        }
         public int getSize() { return base.getSize(); }
         public boolean equals(Object o) {
-            return o instanceof ProvValue p && base.equals(p.base) && Objects.equals(newType, p.newType);
+            return o instanceof ProvValue p && base.equals(p.base)
+                    && Objects.equals(newType, p.newType) && fromIndy == p.fromIndy;
         }
-        public int hashCode() { return base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode()); }
+        public int hashCode() {
+            return (base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode())) * 31 + (fromIndy ? 1 : 0);
+        }
     }
 
     /** Tracks, per stack/local value, whether it is PROVABLY a single `new T` — the receiver-provenance
@@ -681,8 +689,14 @@ public class Candor {
             List<BasicValue> bases = new ArrayList<>(values.size());
             for (ProvValue v : values) bases.add(v.base);
             // A call/multianewarray result is never a tracked allocation site (its return value's runtime
-            // type is unknown to a syntactic pass) — indeterminate.
-            return wrap(bi.naryOperation(insn, bases), null);
+            // type is unknown to a syntactic pass) — indeterminate `newType`. But an INVOKEDYNAMIC result
+            // IS a lambda/method-ref whose body candor edges at this creation site, so flag it: an executor
+            // hand-off of a lambda needs no Unknown (the body is already captured), unlike an opaque
+            // field/param task. (fromIndy is read ONLY at the hand-off site — monomorphicReceiver, which
+            // reads newType, is unaffected.)
+            BasicValue b = bi.naryOperation(insn, bases);
+            boolean indy = insn.getOpcode() == Opcodes.INVOKEDYNAMIC;
+            return b == null ? null : new ProvValue(b, null, indy);
         }
         public void returnOperation(AbstractInsnNode insn, ProvValue value, ProvValue expected) {}
         public ProvValue merge(ProvValue a, ProvValue b) {
@@ -692,8 +706,11 @@ public class Candor {
             // collapses to indeterminate, so a branch-merged receiver (`if (c) new Base() else new Dirty()`)
             // is NOT monomorphic and the CHA fan-out is preserved.
             String mt = Objects.equals(a.newType, b.newType) ? a.newType : null;
-            if (mb.equals(a.base) && Objects.equals(mt, a.newType)) return a;
-            return new ProvValue(mb, mt);
+            // a join is "definitely a lambda" only when BOTH paths are — else treat as opaque (a lambda-vs-
+            // field merge must NOT be skipped at the hand-off site).
+            boolean mi = a.fromIndy && b.fromIndy;
+            if (mb.equals(a.base) && Objects.equals(mt, a.newType) && mi == a.fromIndy) return a;
+            return new ProvValue(mb, mt, mi);
         }
     }
 
@@ -1584,6 +1601,19 @@ public class Candor {
                     String owner = min.owner.replace('/', '.');
                     String effect = classify(owner, min.name, min.desc);
                     if (effect != null) dir.add(effect);
+                    // Executor hand-off: `es.submit(task)`/`execute`/`schedule*` and `new Thread(task)` invoke
+                    // the task's run()/call() OUTSIDE project code. A fresh `new R()` (the NEW-site edge
+                    // attributes R.run) or an inline lambda (edged at its indy) is already captured; an OPAQUE
+                    // task — a field, a param, a factory return — has an unknown body, so the handing-off
+                    // method must read Unknown (parallel to an unpinned `task.run()`), else it is silent-pure.
+                    if (isExecutorHandoff(min.owner, min.name, min.desc) && provFrames != null) {
+                        ProvValue task = handoffTaskArg(provFrames[mn.instructions.indexOf(min)], min);
+                        if (task != null && !task.fromIndy && task.newType == null) {
+                            dir.add("Unknown");
+                            unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                                    .add("task-handoff:" + owner + "." + min.name);
+                        }
+                    }
                     if (owner.equals("java.lang.Class")
                             && (min.name.equals("getMethod") || min.name.equals("getDeclaredMethod"))) {
                         // Capture the literal method NAME (nearest String, not an unrelated earlier
@@ -1719,16 +1749,23 @@ public class Candor {
                         // under an interface call still dispatches to T's concrete impl.
                         String monoRecv = monomorphicReceiver(provFrames == null ? null
                                 : provFrames[mn.instructions.indexOf(min)], min);
-                        if (monoRecv != null && byName.containsKey(monoRecv)) {
-                            String monoTarget = monomorphicTarget(monoRecv, min.name, min.desc);
-                            if (monoTarget != null) {
-                                edges.get(id).add(monoTarget);
-                                continue; // skip CHA fan-out + the Unknown branches for this resolved call
+                        if (monoRecv != null) {
+                            // A provably-monomorphic receiver (`new T`) has NO polymorphic siblings, so this
+                            // resolves to exactly T's method — never its CHA subtypes. `b = new Base();
+                            // b.compute()` must read Base.compute alone, not the sibling Dirty.compute's Net.
+                            if (byName.containsKey(monoRecv)) {
+                                String monoTarget = monomorphicTarget(monoRecv, min.name, min.desc);
+                                if (monoTarget != null) edges.get(id).add(monoTarget);
+                                // else: no concrete impl in T's own chain (impl in an unloaded super) → an
+                                // ordinary external call (no edge). T is concrete → no polymorphic siblings.
                             }
-                            // No concrete impl visible in T's own chain (impl is in an unloaded super) → the
-                            // call resolves outside the project, an ordinary external call: no edge, no
-                            // Unknown, and still no CHA (T is concrete, so there ARE no polymorphic siblings).
-                            continue;
+                            // An EXTERNAL monoRecv (`new java.util.ArrayList<>()`) is PROVABLY that exact
+                            // type, never a project subtype → the call resolves to the external method, and
+                            // CHA fan-out to project subtypes of monoRecv would FABRICATE: once transSupers
+                            // files a `class LoudList extends ArrayList { add(){…io…} }` under ArrayList, an
+                            // unguarded fan-out would smear LoudList's effect onto every plain
+                            // `new ArrayList().add()`. A pinned receiver has no siblings either way → skip CHA.
+                            continue; // skip CHA fan-out + the Unknown branches for this resolved call
                         }
                         List<String> cha = chaTargets(min.owner, min.name, min.desc);
                         // BOUNDED CHA (SPEC §4): a dispatch over a local abstraction resolves to its
@@ -1848,6 +1885,20 @@ public class Candor {
                             // spawner). A live private helper is still reached transitively via its caller.
                             if (!am.name.startsWith("<") && (am.access & Opcodes.ACC_PRIVATE) == 0)
                                 edges.get(id).add(methodId(tin.desc.replace('/', '.'), am.name, am.desc));
+                    } else if (anonCn != null && isTaskType(tin.desc)) {
+                        // A NAMED class that is a TASK TYPE (implements Runnable/Callable or extends Thread)
+                        // instantiated here is almost always handed to a runtime — `new Thread(new R()).start()`,
+                        // `es.submit(new R())`, `new MyThread().start()` — which invokes its run()/call()
+                        // OUTSIDE project code, so no in-project call site edges the body. Edge the
+                        // instantiation to the task SAM only (run/call — not every method; a named task can
+                        // have unrelated helpers), mirroring the anon case. The anon branch above is gated on
+                        // outerMethod, which is null for named top-level/member classes — this is the named
+                        // analog. RUNTIME_OVERRIDES also roots run/call; this attributes it to the spawner so
+                        // a blast-radius walk from the scheduler isn't pure. (Found by an async/threading sweep.)
+                        for (MethodNode am : anonCn.methods)
+                            if ((am.name.equals("run") || am.name.equals("call"))
+                                    && (am.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC)) == 0)
+                                edges.get(id).add(methodId(tin.desc.replace('/', '.'), am.name, am.desc));
                     }
                 } else if (insn instanceof FieldInsnNode fin
                         && (fin.getOpcode() == Opcodes.GETSTATIC || fin.getOpcode() == Opcodes.PUTSTATIC)) {
@@ -1936,13 +1987,31 @@ public class Candor {
             "java/lang/runtime/SwitchBootstraps",
             "java/lang/invoke/ConstantBootstraps");
 
-    // entry-point annotation substrings (HTTP mappings + message listeners)
+    // entry-point annotation substrings (HTTP mappings + message listeners + container-invoked methods).
+    // Each names a method the FRAMEWORK invokes with no in-project call site (Spring proxy, JAX-RS/Micronaut
+    // container, AspectJ weaver, Kafka listener container, @Bean factory at startup) — so an effectful body
+    // is orphaned from every reachability root without rooting it (the finalize shape). Rooting is sound,
+    // never fabrication: each is genuinely framework-invoked. Substrings cover javax/ + jakarta/ variants.
     static final List<String> MAPPING_OR_LISTENER = List.of(
             "web/bind/annotation/RequestMapping", "web/bind/annotation/GetMapping",
             "web/bind/annotation/PostMapping", "web/bind/annotation/PutMapping",
             "web/bind/annotation/DeleteMapping", "web/bind/annotation/PatchMapping",
             "kafka/annotation/KafkaListener", "amqp/rabbit/annotation/RabbitListener",
-            "jms/annotation/JmsListener", "context/event/EventListener");
+            "jms/annotation/JmsListener", "context/event/EventListener",
+            // Spring @Async (proxy invokes it on another thread, decoupled from the call site) + @Bean
+            // factory methods (Spring calls them at context startup) + the multi-method @KafkaHandler form.
+            "scheduling/annotation/Async", "context/annotation/Bean", "kafka/annotation/KafkaHandler",
+            // JAX-RS / Jakarta REST resource methods (container-invoked) — covers javax.ws.rs + jakarta.ws.rs.
+            "ws/rs/GET", "ws/rs/POST", "ws/rs/PUT", "ws/rs/DELETE", "ws/rs/PATCH", "ws/rs/HEAD", "ws/rs/Path",
+            // Micronaut HTTP controller methods (container-invoked).
+            "micronaut/http/annotation/Get", "micronaut/http/annotation/Post",
+            "micronaut/http/annotation/Put", "micronaut/http/annotation/Delete",
+            "micronaut/http/annotation/Patch",
+            // AspectJ advice — the weaver invokes it at every matched join point; effectful advice (audit
+            // logging, metrics push) has no in-project call site.
+            "aspectj/lang/annotation/Around", "aspectj/lang/annotation/Before",
+            "aspectj/lang/annotation/After", "aspectj/lang/annotation/AfterReturning",
+            "aspectj/lang/annotation/AfterThrowing");
 
     /** Container-invoked bean lifecycle callbacks (`@PostConstruct` init, `@PreDestroy` shutdown). Like
      *  the mappings/listeners they're called by the framework with no project call site — a `@PreDestroy`
@@ -2019,7 +2088,19 @@ public class Candor {
             new String[] {"java/util/Comparator", "compare", null},
             new String[] {"java/lang/Comparable", "compareTo", null},
             new String[] {"java/lang/reflect/InvocationHandler", "invoke",
-                    "(Ljava/lang/Object;Ljava/lang/reflect/Method;[Ljava/lang/Object;)Ljava/lang/Object;"});
+                    "(Ljava/lang/Object;Ljava/lang/reflect/Method;[Ljava/lang/Object;)Ljava/lang/Object;"},
+            // Bean Validation: the validator runtime invokes isValid on a project ConstraintValidator with
+            // no in-project call site (covers javax/ + jakarta/ via the substring).
+            new String[] {"validation/ConstraintValidator", "isValid", null},
+            // java.util.TimerTask is scheduled and run by a Timer thread. It implements Runnable, so the
+            // Runnable row would cover it ONCE transSupers walks the external TimerTask supertype — but root
+            // it explicitly too (cheap, and independent of external-supertype resolution being available).
+            new String[] {"java/util/TimerTask", "run", "()V"},
+            // Servlet async lifecycle callbacks — the container invokes them on a registered AsyncListener.
+            new String[] {"servlet/AsyncListener", "onComplete", null},
+            new String[] {"servlet/AsyncListener", "onTimeout", null},
+            new String[] {"servlet/AsyncListener", "onError", null},
+            new String[] {"servlet/AsyncListener", "onStartAsync", null});
 
     /** The number of CHA targets above which a CHA-EXEMPT dispatch (Object protocol / function-interface
      *  / task verb) is treated as a broad smear and its fan-out dropped. An app's handful of Runnables /
@@ -2093,20 +2174,83 @@ public class Candor {
         return 0;
     }
 
-    /** Transitive supertypes (internal names) of a project type; stops at non-project ancestors. */
+    /** Transitive supertypes (internal names) of a type. For a PROJECT class the supers come from its
+     *  ClassNode; for an EXTERNAL ancestor they are read off candor's runtime classpath via ASM. The
+     *  external walk matters because a project class can extend an external type (`class LoudList extends
+     *  ArrayList`) and override a method DECLARED further up the EXTERNAL chain (`List.add`); without
+     *  walking ArrayList's own supers, `LoudList` is never filed under `List`, so a base-typed dispatch on
+     *  the grandparent interface (`l.add()` where `l: List`) finds no project subtype and goes silent-pure. */
     static Set<String> transSupers(String internal) {
         Set<String> cached = transSupersCache.get(internal);
         if (cached != null) return cached;
         Set<String> r = new HashSet<>();
         transSupersCache.put(internal, r); // seed first to break cycles
+        List<String> sup = new ArrayList<>();
         ClassNode cn = byName.get(internal);
         if (cn != null) {
-            List<String> sup = new ArrayList<>();
             if (cn.superName != null) sup.add(cn.superName);
             if (cn.interfaces != null) sup.addAll(cn.interfaces);
-            for (String s : sup) { r.add(s); r.addAll(transSupers(s)); }
+        } else {
+            sup.addAll(externalSupers(internal));  // a JDK/library ancestor — read its own supers off the classpath
         }
+        for (String s : sup) { r.add(s); r.addAll(transSupers(s)); }
         return r;
+    }
+
+    /** Whether `internal` is a RUNTIME-INVOKED task type — implements Runnable/Callable or extends Thread
+     *  (transitively, including through external supertypes via {@link #transSupers}). Such a class's
+     *  run()/call() is invoked by an executor/scheduler with no in-project call site. */
+    static boolean isTaskType(String internal) {
+        Set<String> s = transSupers(internal);
+        return s.contains("java/lang/Runnable") || s.contains("java/util/concurrent/Callable")
+                || s.contains("java/lang/Thread");
+    }
+
+    /** JDK executor owners whose submit/execute/schedule verbs invoke a Runnable/Callable TASK argument. */
+    static final Set<String> EXECUTOR_OWNERS = Set.of(
+            "java/util/concurrent/Executor", "java/util/concurrent/ExecutorService",
+            "java/util/concurrent/ScheduledExecutorService", "java/util/concurrent/AbstractExecutorService",
+            "java/util/concurrent/ThreadPoolExecutor", "java/util/concurrent/ScheduledThreadPoolExecutor",
+            "java/util/concurrent/ForkJoinPool");
+
+    /** A call that HANDS OFF a Runnable/Callable task to a runtime that invokes it — an executor
+     *  submit/execute/schedule verb, or `new Thread(task)`. Gated on the FIRST parameter being the task
+     *  (Runnable/Callable), which is always the deepest argument, so the owner+verb set stays small and a
+     *  project method that merely happens to be named `submit` is excluded by the owner gate. */
+    static boolean isExecutorHandoff(String owner, String name, String desc) {
+        if (desc == null || !(desc.startsWith("(Ljava/lang/Runnable;")
+                || desc.startsWith("(Ljava/util/concurrent/Callable;"))) return false;
+        if (owner.equals("java/lang/Thread") && name.equals("<init>")) return true;
+        return EXECUTOR_OWNERS.contains(owner)
+                && (name.equals("submit") || name.equals("execute") || name.equals("schedule")
+                    || name.equals("scheduleAtFixedRate") || name.equals("scheduleWithFixedDelay"));
+    }
+
+    /** The TASK argument (arg0 — the deepest) of an executor hand-off call, from the provenance frame. */
+    static ProvValue handoffTaskArg(Frame<ProvValue> f, MethodInsnNode min) {
+        if (f == null) return null;
+        int argSlots = 0;
+        for (Type a : Type.getArgumentTypes(min.desc)) argSlots += a.getSize();
+        int idx = f.getStackSize() - argSlots; // arg0 sits at the bottom of the call's argument block
+        return idx >= 0 && idx < f.getStackSize() ? f.getStack(idx) : null;
+    }
+
+    /** Direct supertypes (internal names) of an EXTERNAL class, read off candor's runtime classpath via
+     *  ASM. JDK classes (java/util/ArrayList → AbstractList → List/Collection) resolve; the SCANNED
+     *  project's own third-party deps are not on candor's classpath, so they fail to load and yield nothing
+     *  — the same sound under-approximation as before (never fabrication). Never throws. Cached per name. */
+    static final Map<String, List<String>> externalSupersCache = new HashMap<>();
+    static List<String> externalSupers(String internal) {
+        List<String> cached = externalSupersCache.get(internal);
+        if (cached != null) return cached;
+        List<String> out = new ArrayList<>();
+        try {
+            ClassReader cr = new ClassReader(internal);
+            if (cr.getSuperName() != null) out.add(cr.getSuperName());
+            for (String i : cr.getInterfaces()) out.add(i);
+        } catch (Throwable t) { /* not on candor's classpath / unreadable → no supers (sound) */ }
+        externalSupersCache.put(internal, out);
+        return out;
     }
 
     /** Build the reverse-subtype index ONCE: owner -> loaded classes that are owner-or-a-subtype, in

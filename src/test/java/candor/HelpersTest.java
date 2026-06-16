@@ -95,6 +95,20 @@ class HelpersTest {
         assertEquals("Net", Candor.classify("java.net.DatagramSocket", "receive", "(Ljava/net/DatagramPacket;)V"));
     }
 
+    /** UUID.randomUUID() draws v4 entropy from SecureRandom → Rand; the rest of UUID is pure value ops
+     *  (classifying the whole owner would fabricate Rand onto fromString/getMostSignificantBits/…). Also
+     *  pins that a JDK functional-interface SAM is recognized for the unpinned-dispatch Unknown rule. */
+    @Test
+    void uuidRandomIsRandButUuidValueOpsArePure() {
+        assertEquals("Rand", Candor.classify("java.util.UUID", "randomUUID", "()Ljava/util/UUID;"));
+        assertNull(Candor.classify("java.util.UUID", "fromString", "(Ljava/lang/String;)Ljava/util/UUID;"));
+        assertNull(Candor.classify("java.util.UUID", "getMostSignificantBits", "()J"));
+        assertTrue(Candor.isJdkFunctionalSam("java/lang/Runnable", "run"));
+        assertTrue(Candor.isJdkFunctionalSam("java/util/function/Supplier", "get"));
+        assertTrue(Candor.isJdkFunctionalSam("java/util/concurrent/Callable", "call"));
+        assertFalse(Candor.isJdkFunctionalSam("java/util/List", "size")); // stdlib, not a SAM → no flood
+    }
+
     @Test
     void tableCoveredIsExactOrSchemaWildcard() {
         assertTrue(Candor.tableCovered("users", "USERS"));         // case-insensitive

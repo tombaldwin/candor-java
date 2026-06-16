@@ -1788,6 +1788,22 @@ public class Candor {
                             unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                                     .add("dispatch:" + owner + "." + min.name);
                         }
+                        // A JDK FUNCTIONAL-INTERFACE SAM (`Runnable.run`, `Callable.call`,
+                        // `java.util.function.*`) invoked on an UNPINNED receiver with EMPTY CHA — the only
+                        // implementors are lambdas/method-refs whose bodies aren't reachable from THIS call
+                        // site (a field-stored handler `this.cb.run()`, a passed-in callback `h.run()`).
+                        // Both gates above miss it: empty CHA is never "broad" (so the broad-ext gate skips),
+                        // and the external functional-interface owner isn't a project iface (so the
+                        // missing-impl gate skips) — leaving the caller SILENTLY PURE though the lambda can
+                        // perform any effect (the 0.5.5 task_unpinned fuzzer used NAMED types, so it was
+                        // blind to the lambda-only case). Honest Unknown. Stdlib non-functional dispatch
+                        // (`list.size()`, `map.get()`) is unaffected — those owners aren't functional SAMs.
+                        if (!broad && targets.isEmpty() && !dispatchExempt && effect == null && !springTyped
+                                && isJdkFunctionalSam(min.owner, min.name)) {
+                            dir.add("Unknown");
+                            unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                                    .add("dispatch-fn:" + owner + "." + min.name);
+                        }
                     } else if (projectClasses.contains(min.owner)) {
                         // static / special (super, private, ctor) — the exact target (descriptor known,
                         // so an overloaded callee resolves to the right overload's node).
@@ -1978,6 +1994,19 @@ public class Candor {
      *  runtime-dispatched verbs). Declarative + unit-tested so a new dialect is a row, not another `||`
      *  buried in the bytecode loop. Narrow dispatch over these is still attributed precisely; only the
      *  library-scale smear is dropped (see CHA_FANOUT_LIMIT). */
+    /** A JDK FUNCTIONAL-INTERFACE single-abstract-method invocation — its only implementors are lambdas/
+     *  method-refs whose bodies don't resolve from the call site, so an unpinned dispatch with no project
+     *  impl is honest Unknown (never silent-pure). java.util.function.* covers Supplier/Function/Consumer/
+     *  Predicate/UnaryOperator/BiFunction/IntFunction/… (their SAM is the package's only abstract method);
+     *  Runnable.run and Callable.call are the two outside that package. NOT the Kotlin/Scala/Groovy
+     *  FunctionN (those stay isChaExemptMethod — their lambda effect is captured at creation). */
+    static boolean isJdkFunctionalSam(String owner, String name) {
+        if (owner.startsWith("java/util/function/")) return true;
+        if (owner.equals("java/lang/Runnable") && name.equals("run")) return true;
+        if (owner.equals("java/util/concurrent/Callable") && name.equals("call")) return true;
+        return false;
+    }
+
     static boolean isChaExemptMethod(String owner, String name, String desc) {
         // Object protocol — conventionally pure (formatting / equality / hashing / ordering).
         if ((name.equals("toString") && desc.equals("()Ljava/lang/String;"))
@@ -2609,6 +2638,10 @@ public class Candor {
                 || owner.equals("java.util.SplittableRandom")
                 || (owner.equals("java.lang.Math") && method.equals("random")))
             return "Rand";
+        // UUID.randomUUID() draws a v4 UUID from a SecureRandom (genuine entropy) — Rand. METHOD-precise:
+        // UUID's other members (fromString/nameUUIDFromBytes/getMostSignificantBits/toString/compareTo)
+        // are pure value ops, so classifying the whole owner would fabricate Rand onto them.
+        if (owner.equals("java.util.UUID") && method.equals("randomUUID")) return "Rand";
         // Logging — PRODUCING a log record. VERB-PRECISE within the slf4j / jul / log4j2 / logback
         // packages: only the genuine emit verbs are Log; every other method (Markers, Levels, Message
         // data types, ThreadContext maps, formatters, config/registry, util) falls through to its real

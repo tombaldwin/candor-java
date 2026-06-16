@@ -105,8 +105,15 @@ class HelpersTest {
         assertNull(Candor.classify("java.util.UUID", "getMostSignificantBits", "()J"));
         assertTrue(Candor.isJdkFunctionalSam("java/lang/Runnable", "run"));
         assertTrue(Candor.isJdkFunctionalSam("java/util/function/Supplier", "get"));
+        assertTrue(Candor.isJdkFunctionalSam("java/util/function/Function", "apply"));
+        assertTrue(Candor.isJdkFunctionalSam("java/util/function/Predicate", "test"));
         assertTrue(Candor.isJdkFunctionalSam("java/util/concurrent/Callable", "call"));
         assertFalse(Candor.isJdkFunctionalSam("java/util/List", "size")); // stdlib, not a SAM → no flood
+        // the package's pure DEFAULT methods are NOT the SAM — composing functions is not an effect
+        assertFalse(Candor.isJdkFunctionalSam("java/util/function/Function", "andThen"));
+        assertFalse(Candor.isJdkFunctionalSam("java/util/function/Function", "compose"));
+        assertFalse(Candor.isJdkFunctionalSam("java/util/function/Predicate", "and"));
+        assertFalse(Candor.isJdkFunctionalSam("java/util/function/Predicate", "negate"));
     }
 
     @Test

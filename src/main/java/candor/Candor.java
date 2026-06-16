@@ -1994,14 +1994,22 @@ public class Candor {
      *  runtime-dispatched verbs). Declarative + unit-tested so a new dialect is a row, not another `||`
      *  buried in the bytecode loop. Narrow dispatch over these is still attributed precisely; only the
      *  library-scale smear is dropped (see CHA_FANOUT_LIMIT). */
+    /** The single-ABSTRACT-method names of java.util.function.* (Function/BiFunction/operators → apply*;
+     *  Consumer → accept; Predicate → test; Supplier → get*). Matched by NAME so the package's pure DEFAULT
+     *  methods (andThen/compose/and/or/negate — known JDK plumbing that wraps the receiver into a new
+     *  composed lambda, no effect at the call site) are NOT treated as the SAM. Without this, idiomatic
+     *  function composition (`a.andThen(b)`) flooded Unknown — a precision regression. */
+    static final Set<String> FUNCTION_PKG_SAM = Set.of(
+            "apply", "applyAsInt", "applyAsLong", "applyAsDouble", "applyAsBoolean",
+            "accept", "test", "get", "getAsInt", "getAsLong", "getAsDouble", "getAsBoolean");
+
     /** A JDK FUNCTIONAL-INTERFACE single-abstract-method invocation — its only implementors are lambdas/
      *  method-refs whose bodies don't resolve from the call site, so an unpinned dispatch with no project
-     *  impl is honest Unknown (never silent-pure). java.util.function.* covers Supplier/Function/Consumer/
-     *  Predicate/UnaryOperator/BiFunction/IntFunction/… (their SAM is the package's only abstract method);
-     *  Runnable.run and Callable.call are the two outside that package. NOT the Kotlin/Scala/Groovy
-     *  FunctionN (those stay isChaExemptMethod — their lambda effect is captured at creation). */
+     *  impl is honest Unknown (never silent-pure). Restricted to the actual SAM names (not the package's
+     *  concrete default methods); Runnable.run and Callable.call are the two outside the package. NOT the
+     *  Kotlin/Scala/Groovy FunctionN (those stay isChaExemptMethod — their lambda effect is captured). */
     static boolean isJdkFunctionalSam(String owner, String name) {
-        if (owner.startsWith("java/util/function/")) return true;
+        if (owner.startsWith("java/util/function/")) return FUNCTION_PKG_SAM.contains(name);
         if (owner.equals("java/lang/Runnable") && name.equals("run")) return true;
         if (owner.equals("java/util/concurrent/Callable") && name.equals("call")) return true;
         return false;

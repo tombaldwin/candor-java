@@ -82,6 +82,19 @@ class HelpersTest {
         assertFalse(Candor.pathCovered("etc", "/etc"));    // relative allow vs absolute reach
     }
 
+    /** The Net classifier matches socket owners by exact type. MulticastSocket extends DatagramSocket;
+     *  a receiver typed as MulticastSocket emits invokevirtual owner=java/net/MulticastSocket for the
+     *  inherited send/receive, which the DatagramSocket row misses — a silent Net under-report until
+     *  MulticastSocket got its own row. (Pinned here so the row can't be dropped by a future cleanup.) */
+    @Test
+    void multicastSocketClassifiesAsNet() {
+        assertEquals("Net", Candor.classify("java.net.MulticastSocket", "receive", "(Ljava/net/DatagramPacket;)V"));
+        assertEquals("Net", Candor.classify("java.net.MulticastSocket", "send", "(Ljava/net/DatagramPacket;)V"));
+        assertEquals("Net", Candor.classify("java.net.MulticastSocket", "joinGroup", "(Ljava/net/SocketAddress;Ljava/net/NetworkInterface;)V"));
+        // control: the DatagramSocket base it extends was already classified
+        assertEquals("Net", Candor.classify("java.net.DatagramSocket", "receive", "(Ljava/net/DatagramPacket;)V"));
+    }
+
     @Test
     void tableCoveredIsExactOrSchemaWildcard() {
         assertTrue(Candor.tableCovered("users", "USERS"));         // case-insensitive

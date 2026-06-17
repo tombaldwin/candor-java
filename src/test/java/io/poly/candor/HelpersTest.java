@@ -394,4 +394,62 @@ class HelpersTest {
         assertEquals("Fs", Candor.classify("android.content.SharedPreferences$Editor", "commit", "()Z"));
         assertEquals("Ipc", Candor.classify("android.content.Context", "startActivity", "(Landroid/content/Intent;)V"));
     }
+
+    /** Round-9 FABRICATION fixes — whole-owner rules must NOT fire on the conventionally-pure / config
+     *  surface (these were cardinal-sin regressions from the 0.5.16–0.5.20 rows). */
+    @Test
+    void wholeOwnerRulesDoNotFabricateOnPureMethods() {
+        // MappedByteBuffer: get*/put*/force = Fs; capacity/position/limit (pure Buffer queries) = NOT Fs
+        assertEquals("Fs", Candor.classify("java.nio.MappedByteBuffer", "force", "()Ljava/nio/MappedByteBuffer;"));
+        assertEquals("Fs", Candor.classify("java.nio.MappedByteBuffer", "put", "(IB)Ljava/nio/ByteBuffer;"));
+        assertNull(Candor.classify("java.nio.MappedByteBuffer", "capacity", "()I"));
+        assertNull(Candor.classify("java.nio.MappedByteBuffer", "position", "()I"));
+        assertNull(Candor.classify("java.nio.MappedByteBuffer", "order", "()Ljava/nio/ByteOrder;"));
+        // Jedis: a command = Net; getDB/toString/equals = pure
+        assertEquals("Net", Candor.classify("redis.clients.jedis.Jedis", "get", "(Ljava/lang/String;)Ljava/lang/String;"));
+        assertNull(Candor.classify("redis.clients.jedis.Jedis", "getDB", "()I"));
+        assertNull(Candor.classify("redis.clients.jedis.Jedis", "toString", "()Ljava/lang/String;"));
+        assertNull(Candor.classify("org.apache.zookeeper.ZooKeeper", "getSessionId", "()J"));
+        // SocketChannel config verbs = pure (not Net); read/write still Net
+        assertEquals("Net", Candor.classify("java.nio.channels.SocketChannel", "read", "(Ljava/nio/ByteBuffer;)I"));
+        assertNull(Candor.classify("java.nio.channels.SocketChannel", "setOption", "(Ljava/net/SocketOption;Ljava/lang/Object;)Ljava/nio/channels/SocketChannel;"));
+        assertNull(Candor.classify("java.nio.channels.SocketChannel", "configureBlocking", "(Z)Ljava/nio/channels/SelectableChannel;"));
+        assertNull(Candor.classify("java.nio.channels.SocketChannel", "register", "(Ljava/nio/channels/Selector;I)Ljava/nio/channels/SelectionKey;"));
+        // Settings: EXACT owner+method (the startsWith over-match fabricated on NameValueCache helpers)
+        assertEquals("Env", Candor.classify("android.provider.Settings$Secure", "getString", "(Landroid/content/ContentResolver;Ljava/lang/String;)Ljava/lang/String;"));
+        assertNull(Candor.classify("android.provider.Settings$NameValueCache", "getStringForUser", "(Ljava/lang/String;)Ljava/lang/String;"));
+    }
+
+    /** Round-9 silent-pure adds: resource/bundle/ServiceLoader → Fs; Process.destroy/ProcessHandle.destroy →
+     *  Exec; Selector.select/MulticastChannel.join → Net; OkHttp/Apache/AWS clients → Net (builders pure). */
+    @Test
+    void round9SilentPureAdds() {
+        assertEquals("Fs", Candor.classify("java.lang.Class", "getResourceAsStream", "(Ljava/lang/String;)Ljava/io/InputStream;"));
+        assertEquals("Fs", Candor.classify("java.lang.ClassLoader", "getResource", "(Ljava/lang/String;)Ljava/net/URL;"));
+        assertEquals("Fs", Candor.classify("java.util.ResourceBundle", "getBundle", "(Ljava/lang/String;)Ljava/util/ResourceBundle;"));
+        assertEquals("Fs", Candor.classify("java.util.ServiceLoader", "load", "(Ljava/lang/Class;)Ljava/util/ServiceLoader;"));
+        assertEquals("Exec", Candor.classify("java.lang.Process", "destroy", "()V"));
+        assertEquals("Exec", Candor.classify("java.lang.ProcessHandle", "destroyForcibly", "()Z"));
+        assertEquals("Net", Candor.classify("java.nio.channels.Selector", "select", "()I"));
+        assertEquals("Net", Candor.classify("java.nio.channels.MulticastChannel", "join", "(Ljava/net/InetAddress;Ljava/nio/channels/MembershipKey;)Ljava/nio/channels/MembershipKey;"));
+        assertEquals("Net", Candor.classify("okhttp3.Call", "execute", "()Lokhttp3/Response;"));
+        assertEquals("Net", Candor.classify("org.apache.http.impl.client.CloseableHttpClient", "execute", "(Lorg/apache/http/client/methods/HttpUriRequest;)Lorg/apache/http/client/methods/CloseableHttpResponse;"));
+        assertEquals("Net", Candor.classify("software.amazon.awssdk.services.s3.S3Client", "getObject", "(Lsoftware/amazon/awssdk/services/s3/model/GetObjectRequest;)Ljava/lang/Object;"));
+        // an AWS model getter (v1 get*) must NOT be Net (client-class gate)
+        assertNull(Candor.classify("com.amazonaws.services.s3.model.GetObjectRequest", "getBucketName", "()Ljava/lang/String;"));
+    }
+
+    /** Round-9 over-rooting fix: the RUNTIME_OVERRIDES supertype match is now segment-anchored. */
+    @Test
+    void supertypeMatchesIsSegmentAnchored() {
+        assertTrue(Candor.supertypeMatches("com/fasterxml/jackson/databind/JsonDeserializer", "JsonDeserializer"));
+        assertTrue(Candor.supertypeMatches("com/google/gson/JsonDeserializer", "JsonDeserializer"));
+        assertFalse(Candor.supertypeMatches("com/acme/JsonDeserializerMetrics", "JsonDeserializer")); // infix → no
+        assertTrue(Candor.supertypeMatches("net/sf/cglib/proxy/MethodInterceptor", "cglib/proxy/MethodInterceptor"));
+        assertFalse(Candor.supertypeMatches("com/co/batch/item/ItemReader", "springframework/batch/item/ItemReader"));
+        assertTrue(Candor.supertypeMatches("org/springframework/batch/item/ItemReader", "springframework/batch/item/ItemReader"));
+        // the FunctionN prefix convention still works
+        assertTrue(Candor.supertypeMatches("kotlin/jvm/functions/Function1", "kotlin/jvm/functions/Function"));
+        assertTrue(Candor.supertypeMatches("scala/Function2", "scala/Function"));
+    }
 }

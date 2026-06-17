@@ -141,7 +141,11 @@ public class Candor {
     static final Map<String, TreeSet<String>> tainted = new HashMap<>();
     // java.io types whose <init> takes a file PATH as its first String arg (for AS-EFF-008 `paths`).
     static final Set<String> PATH_CTOR_OWNERS = Set.of("java.io.File", "java.io.FileInputStream",
-            "java.io.FileOutputStream", "java.io.FileReader", "java.io.FileWriter", "java.io.RandomAccessFile");
+            "java.io.FileOutputStream", "java.io.FileReader", "java.io.FileWriter", "java.io.RandomAccessFile",
+            // java.util.logging.FileHandler(String pattern) opens the named log file — its path must reach the
+            // AS-EFF-008 surface, else a forbidden log path (e.g. /etc/shadow.copy) is invisible and a benign
+            // co-located Fs literal MASKS it (a gate evasion — the 0.5.27 FileHandler Fs rule without surfacing).
+            "java.util.logging.FileHandler");
 
     // CANDOR_POLICY rules (architecture-as-code, candor-spec §5). `deny`/`pure` = AS-EFF-006 (what a
     // layer may do); `allow … in …` = AS-EFF-008 (which endpoints); `forbid A -> B` = AS-EFF-009 (who
@@ -1856,7 +1860,13 @@ public class Candor {
                     // first String literal IS a host, so extract it without loosening netHostLiteral.
                     // Gated to the `(Ljava/lang/String;I…` shape, so the `(InetAddress,int)` and
                     // `(String,int,InetAddress,int)`-with-computed-host overloads add nothing.
-                    if ((owner.equals("java.net.Socket") || owner.equals("java.net.InetSocketAddress"))
+                    if ((owner.equals("java.net.Socket") || owner.equals("java.net.InetSocketAddress")
+                            // java.util.logging.SocketHandler(String host, int port) opens a log socket to that
+                            // host — same `(String,int)` shape. Its host must reach the AS-EFF-008 surface, else
+                            // a forbidden exfil host (e.g. evil.exfil.com) is invisible and a benign co-located
+                            // Net literal MASKS it (the 0.5.27 SocketHandler Net rule without surfacing → a gate
+                            // EVASION found by a security sweep).
+                            || owner.equals("java.util.logging.SocketHandler"))
                             && min.name.equals("<init>") && min.desc.startsWith("(Ljava/lang/String;I")) {
                         String h = firstLiteralArg(mn, min);
                         // The host must look like a host (a dotted name / IPv4), not e.g. a "localhost"
@@ -2136,8 +2146,15 @@ public class Candor {
                         // skip them: passing one to methodId would feed a field descriptor to
                         // Type.getArgumentTypes and crash the whole scan.
                         if (a instanceof Handle h && h.getTag() >= Opcodes.H_INVOKEVIRTUAL) {
-                            if (projectClasses.contains(h.getOwner()))
+                            if (projectClasses.contains(h.getOwner())) {
                                 edges.get(id).add(methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc()));
+                                // A static method-ref / ctor-ref (`H::staticM`, `H::new`) TRIGGERS H's class
+                                // load → its <clinit> runs (JVMS §5.5), exactly like a static call / NEW /
+                                // static-field access. The other three triggers call clinitEdge; this one
+                                // didn't, so a ref to a pure body on a class with an effectful <clinit> read
+                                // silently pure (round-15 hole, the analog of the §5.5 superclass fix).
+                                clinitEdge(id, h.getOwner());
+                            }
                             else {
                                 // A method REFERENCE to a NON-project method (`File::delete`,
                                 // `System::getenv`) handed to a stream stage / functional API IS invoked by
@@ -2500,7 +2517,18 @@ public class Candor {
             new String[] {"jakarta/websocket/Endpoint", "onOpen", null},
             new String[] {"javax/websocket/Endpoint", "onOpen", null},
             // Spring StateMachine action body — the state-machine runtime invokes execute() on a transition.
-            new String[] {"springframework/statemachine/action/Action", "execute", null});
+            new String[] {"springframework/statemachine/action/Action", "execute", null},
+            // More mainstream runtime-invoked callbacks (round-15): Spring OncePerRequestFilter (the base
+            // declares doFilter final + dispatches to the project's doFilterInternal override — extremely
+            // common in Spring Security/MVC filters); Spring WebFlux WebFilter; GCP Cloud Functions (the
+            // official serverless model — the runtime invokes service/accept on the deployed class); Pulsar
+            // consumer MessageListener.
+            new String[] {"web/filter/OncePerRequestFilter", "doFilterInternal", null},
+            new String[] {"web/server/WebFilter", "filter", null},
+            new String[] {"cloud/functions/HttpFunction", "service", null},
+            new String[] {"cloud/functions/BackgroundFunction", "accept", null},
+            new String[] {"cloud/functions/CloudEventsFunction", "accept", null},
+            new String[] {"pulsar/client/api/MessageListener", "received", null});
 
     /** The number of CHA targets above which a CHA-EXEMPT dispatch (Object protocol / function-interface
      *  / task verb) is treated as a broad smear and its fan-out dropped. An app's handful of Runnables /
@@ -2674,6 +2702,7 @@ public class Candor {
         // container-invoked timer on a top-tier framework).
         r.add("micronaut/scheduling/annotation/Scheduled");
         r.add("quarkus/scheduler/Scheduled");
+        r.add("azure/functions/annotation/FunctionName");   // Azure Functions (the official Java model)
         // jakarta/javax.websocket POJO @ServerEndpoint handlers — the container invokes the @OnMessage/
         // @OnOpen/@OnClose/@OnError methods with no project call site, and there's no interface form for the
         // annotated style (round-13). The substring covers javax/ + jakarta/ websocket.
@@ -3167,12 +3196,41 @@ public class Candor {
             case "java.net.Socket":
             case "java.net.ServerSocket":
             case "java.net.DatagramSocket":
+            // MulticastSocket extends DatagramSocket and javax.net.ssl.SSLSocket extends Socket — a receiver
+            // TYPED as the subclass emits owner=subclass for the INHERITED pure accessors, which sailed past
+            // the Socket carve-out and got fabricated Net by the subclass's whole-owner Net rule (the cardinal
+            // sin; found by a fabrication sweep — these survived 14 rounds). They inherit exactly this
+            // accessor set. (SSLSocket's OWN pure config surface is handled in its case below.)
+            case "java.net.MulticastSocket":
                 return method.equals("getPort") || method.equals("getLocalPort")
                         || method.equals("getInetAddress") || method.equals("getLocalAddress")
                         || method.equals("getLocalSocketAddress") || method.equals("getRemoteSocketAddress")
                         || method.equals("isClosed") || method.equals("isBound") || method.equals("isConnected")
                         || method.equals("isInputShutdown") || method.equals("isOutputShutdown")
                         || method.equals("getReuseAddress") || method.equals("getSoTimeout")
+                        || method.equals("getTimeToLive") || method.equals("getInterface")
+                        || method.equals("getNetworkInterface") || method.equals("getLoopbackMode")
+                        || method.equals("toString") || method.equals("hashCode") || method.equals("equals");
+            // javax.net.ssl.SSLSocket — the inherited Socket accessors PLUS its own pure HANDSHAKE-CONFIG
+            // surface (cipher-suite/protocol/parameter get+set touch NO wire). Only startHandshake /
+            // getInputStream / getOutputStream / getSession (forces a handshake) do I/O — NOT listed → Net.
+            case "javax.net.ssl.SSLSocket":
+                return method.equals("getPort") || method.equals("getLocalPort")
+                        || method.equals("getInetAddress") || method.equals("getLocalAddress")
+                        || method.equals("getLocalSocketAddress") || method.equals("getRemoteSocketAddress")
+                        || method.equals("isClosed") || method.equals("isBound") || method.equals("isConnected")
+                        || method.equals("isInputShutdown") || method.equals("isOutputShutdown")
+                        || method.equals("getReuseAddress") || method.equals("getSoTimeout")
+                        || method.equals("getEnabledCipherSuites") || method.equals("getSupportedCipherSuites")
+                        || method.equals("setEnabledCipherSuites") || method.equals("getEnabledProtocols")
+                        || method.equals("getSupportedProtocols") || method.equals("setEnabledProtocols")
+                        || method.equals("getSSLParameters") || method.equals("setSSLParameters")
+                        || method.equals("getUseClientMode") || method.equals("setUseClientMode")
+                        || method.equals("getNeedClientAuth") || method.equals("setNeedClientAuth")
+                        || method.equals("getWantClientAuth") || method.equals("setWantClientAuth")
+                        || method.equals("getEnableSessionCreation") || method.equals("setEnableSessionCreation")
+                        || method.equals("addHandshakeCompletedListener")
+                        || method.equals("removeHandshakeCompletedListener")
                         || method.equals("toString") || method.equals("hashCode") || method.equals("equals");
             // java.time.Clock — the factories (systemUTC/system/fixed/offset/tick*) build a Clock object
             // and the accessors (getZone/withZone) read its zone; NONE read the wall clock. The actual
@@ -3546,6 +3604,11 @@ public class Candor {
                 && method.equals("execute")) return "Net";
         if (owner.equals("retrofit2.Call") && (method.equals("execute") || method.equals("enqueue"))) return "Net";
         if (owner.equals("com.google.api.client.http.HttpRequest") && method.equals("execute")) return "Net";
+        // Apache HttpClient FLUENT facade — the same library as the modeled classic HttpClient.execute, via
+        // the `Request.get(uri).execute()` one-liner entry class (hc4 + hc5).
+        if ((owner.equals("org.apache.http.client.fluent.Request")
+                || owner.equals("org.apache.hc.client5.http.fluent.Request"))
+                && method.equals("execute")) return "Net";
         // Apache HttpAsyncClient — the ASYNC sibling of the already-modeled classic HttpClient.execute (hc4
         // nio + hc5 async). execute kicks off the request.
         if ((owner.equals("org.apache.http.nio.client.HttpAsyncClient")

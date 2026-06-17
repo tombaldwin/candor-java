@@ -601,6 +601,26 @@ class HelpersTest {
         assertNull(Candor.classify("kotlin.collections.CollectionsKt", "first", "(Ljava/util/List;)Ljava/lang/Object;")); // pure verb stays pure
     }
 
+    /** Round-15: MulticastSocket/SSLSocket inherited + SSL-config accessors must NOT fabricate Net (the
+     *  whole-owner Net rule sailed past the isPureHandleAccessor carve-out); Apache fluent Request.execute. */
+    @Test
+    void round15FabricationAndCompleteness() {
+        // inherited Socket accessors on the subclass — PURE (were fabricating Net)
+        assertNull(Candor.classify("java.net.MulticastSocket", "getPort", "()I"));
+        assertNull(Candor.classify("java.net.MulticastSocket", "isClosed", "()Z"));
+        assertNull(Candor.classify("javax.net.ssl.SSLSocket", "getPort", "()I"));
+        // SSLSocket's own handshake-config surface — PURE (touch no wire)
+        assertNull(Candor.classify("javax.net.ssl.SSLSocket", "getEnabledCipherSuites", "()[Ljava/lang/String;"));
+        assertNull(Candor.classify("javax.net.ssl.SSLSocket", "setEnabledCipherSuites", "([Ljava/lang/String;)V"));
+        assertNull(Candor.classify("javax.net.ssl.SSLSocket", "setUseClientMode", "(Z)V"));
+        // but the real I/O on these types stays Net
+        assertEquals("Net", Candor.classify("java.net.MulticastSocket", "send", "(Ljava/net/DatagramPacket;)V"));
+        assertEquals("Net", Candor.classify("javax.net.ssl.SSLSocket", "startHandshake", "()V"));
+        assertEquals("Net", Candor.classify("javax.net.ssl.SSLSocket", "getOutputStream", "()Ljava/io/OutputStream;"));
+        // Apache fluent facade
+        assertEquals("Net", Candor.classify("org.apache.hc.client5.http.fluent.Request", "execute", "()Lorg/apache/hc/client5/http/fluent/Response;"));
+    }
+
     /** Round-10 JDBC silent-pure adds: ResultSet cursor moves, Connection.isValid, Driver.connect,
      *  DatabaseMetaData catalog queries, concrete-pool getConnection → Db; scalar reads + capability
      *  getters stay pure (no fabrication). */

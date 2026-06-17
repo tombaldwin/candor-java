@@ -1061,21 +1061,23 @@ public class Candor {
     }
 
     static String hostPart(String h) {
-        String x = h;
-        int scheme = x.indexOf("://"); if (scheme >= 0) x = x.substring(scheme + 3);
-        int slash = x.indexOf('/');    if (slash >= 0)  x = x.substring(0, slash);
-        int at = x.lastIndexOf('@');   if (at >= 0)     x = x.substring(at + 1);
-        // IPv6-aware (mirror candor-rust policy::host_part): a bracketed `[ipv6]` or `[ipv6]:port` yields
-        // the bracketed host; a BARE IPv6 literal (>1 colon, no brackets) has no port to strip and is
-        // returned whole — a naive first-colon split collapsed every `2001:db8::*` to `2001`, so one
-        // allowed IPv6 accepted any address in that block (gate-evasion). host/IPv4 (≤1 colon) splits.
-        if (x.startsWith("[")) {
-            int close = x.indexOf(']');
-            return close >= 0 ? x.substring(1, close) : x.substring(1);
+        // Byte-for-byte the candor-rust `policy::host_part` (the GATE-side normalizer): strip ONLY a
+        // `[ipv6]` bracket or a trailing `:port`. It does NOT strip scheme/path/userinfo — an earlier
+        // java-only version did, which (a) diverged from rust (same policy → different verdict across
+        // engines) and (b) silently WIDENED a policy author's allow literal: `allow Net build@github.com`
+        // got cleaned to `github.com`, broadening the intended scope. The REACHED host stored in
+        // hostsDirect is already a clean authority (netHostLiteral drops scheme/path/userinfo at
+        // extraction), so the gate compares clean-vs-clean; the allow literal is taken verbatim, as rust
+        // does. A bracketed `[ipv6]`/`[ipv6]:port` → the bracketed host; a BARE IPv6 (>1 colon, no
+        // brackets) → returned whole (a naive first-colon split collapsed every `2001:db8::*` to `2001`,
+        // so one allowed IPv6 accepted the whole block); host/IPv4 (≤1 colon) → split at the colon.
+        if (h.startsWith("[")) {
+            int close = h.indexOf(']');
+            return close >= 0 ? h.substring(1, close) : h.substring(1);
         }
-        if (countChar(x, ':') > 1) return x;   // bare IPv6 literal — no port suffix to strip
-        int colon = x.indexOf(':');    if (colon >= 0)  x = x.substring(0, colon);
-        return x;
+        if (countChar(h, ':') > 1) return h;   // bare IPv6 literal — no port suffix to strip
+        int colon = h.indexOf(':');
+        return colon >= 0 ? h.substring(0, colon) : h;
     }
 
     /** Propagate a literal-detail map (hosts / commands / paths) along the SAME call graph as effects, so
@@ -1130,6 +1132,58 @@ public class Candor {
             if (n instanceof LdcInsnNode ldc && ldc.cst instanceof String s) found = s; // keep the earliest
         }
         return found;
+    }
+
+    /** Every String literal pushed in `call`'s OWN argument window — bounded at the statement start
+     *  exactly like {@link #firstLiteralArg} (a prior call/branch/NEW/`*STORE`/PUT* ends the window). Used
+     *  to attribute a host/SQL literal to the SPECIFIC host/SQL-bearing call that consumes it. The old
+     *  method-wide LDC sweep captured ANY host/SQL-shaped string in a host/SQL-bearing method, so a benign
+     *  URL literal certified a runtime-computed host (an AS-EFF-008 gate EVASION) and a SQL-shaped log line
+     *  poisoned the table allowlist. Keyed to the call's own window, a literal in another statement is
+     *  never captured — mirroring candor-rust's per-classified-call `str_arg` attribution. */
+    static List<String> literalArgsInWindow(AbstractInsnNode call, Map<Integer, String> constLocals) {
+        List<String> out = new ArrayList<>();
+        for (AbstractInsnNode n = call.getPrevious(); n != null; n = n.getPrevious()) {
+            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode
+                    || (n instanceof TypeInsnNode && n.getOpcode() == Opcodes.NEW)
+                    || (n instanceof VarInsnNode v && v.getOpcode() >= Opcodes.ISTORE
+                            && v.getOpcode() <= Opcodes.ASTORE)
+                    || (n instanceof FieldInsnNode fi
+                            && (fi.getOpcode() == Opcodes.PUTFIELD || fi.getOpcode() == Opcodes.PUTSTATIC)))
+                break;
+            if (n instanceof LdcInsnNode ldc && ldc.cst instanceof String s) out.add(s);
+            // Dataflow-lite: an arg that is a load of a PROVABLY-CONSTANT local (`String sql = "…"; q(sql)`)
+            // resolves to its literal — the common "assign then use" shape the per-call window alone misses.
+            // A load of a runtime/param local is NOT in constLocals, so the evasion stays killed (a benign
+            // literal that never reaches the sink's arg slot is still never captured).
+            else if (n instanceof VarInsnNode v && v.getOpcode() == Opcodes.ALOAD && constLocals.containsKey(v.var))
+                out.add(constLocals.get(v.var));
+        }
+        return out;
+    }
+
+    /** Locals provably bound to a single String constant: an index whose EVERY `ASTORE` is fed directly by
+     *  the SAME `LDC "…"`. An index ever stored a non-literal (a param, a method result, a concat) or two
+     *  different literals is ambiguous and excluded — so resolving a load of one is sound (it is exactly that
+     *  constant at every use). Used by {@link #literalArgsInWindow} to attribute a host/SQL literal that
+     *  reaches the sink THROUGH a local, without re-introducing the method-wide over-capture. */
+    static Map<Integer, String> constStringLocals(MethodNode mn) {
+        Map<Integer, String> m = new HashMap<>();
+        Set<Integer> ambiguous = new HashSet<>();
+        for (AbstractInsnNode n = mn.instructions.getFirst(); n != null; n = n.getNext()) {
+            if (n instanceof VarInsnNode v && v.getOpcode() == Opcodes.ASTORE) {
+                AbstractInsnNode p = v.getPrevious();
+                while (p != null && p.getOpcode() < 0) p = p.getPrevious(); // skip labels/frames/line-nos
+                String s = (p instanceof LdcInsnNode ldc && ldc.cst instanceof String str) ? str : null;
+                if (s == null || (m.containsKey(v.var) && !m.get(v.var).equals(s))) {
+                    ambiguous.add(v.var);
+                    m.remove(v.var);
+                } else if (!ambiguous.contains(v.var)) {
+                    m.put(v.var, s);
+                }
+            }
+        }
+        return m;
     }
 
     /** The literal int constant pushed closest before `call` — the port of a `(String host, int port)`
@@ -1705,20 +1759,12 @@ public class Candor {
                 } catch (Throwable t) { provFrames = null; }
             }
 
-            // Pre-scan: does this method call a HOST-bearing Net sink (Socket/URL/InetAddress/…) or a
-            // SQL-bearing Db sink? The per-LDC host/table literal sweep below is gated on these — else the
-            // whole-owner KV/messaging Net rows (Jedis/Kafka/Rabbit/Mqtt) would make the method Net and a
-            // benign Redis KEY / topic / routing-key that happens to look like host:port gets fabricated as
-            // a Net HOST (feeding the AS-EFF-008 allowlist — the same security-relevant fabrication class as
-            // the prior-statement host bug, re-introduced by the new key-value rows). A KV/messaging method
-            // has no host-bearing call, so no host is captured.
-            boolean hasHostSink = false, hasSqlSink = false;
-            for (AbstractInsnNode insn : mn.instructions)
-                if (insn instanceof MethodInsnNode mi) {
-                    if (isHostBearingOwner(mi.owner)) hasHostSink = true;
-                    if (isSqlBearingOwner(mi.owner)) hasSqlSink = true;
-                }
-
+            // Host/table literals are extracted PER host/SQL-bearing CALL (from each call's own argument
+            // window — see literalArgsInWindow at the call sites below), not by a method-wide LDC sweep.
+            // The per-call attribution mirrors candor-rust's `str_arg` and kills the AS-EFF-008 evasion
+            // where a benign URL literal in a host-bearing method certified a runtime-computed host. The
+            // const-local map lets the window resolve a literal that reaches the sink through a local.
+            Map<Integer, String> constLocals = constStringLocals(mn);
             for (AbstractInsnNode insn : mn.instructions) {
                 if (insn instanceof MethodInsnNode min) {
                     String owner = min.owner.replace('/', '.');
@@ -1824,6 +1870,26 @@ public class Candor {
                             hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(port != null ? h + ":" + port : h);
                         }
                     }
+                    // Host literal from THIS host-bearing call's OWN argument (a URL/URI string, a Spring/
+                    // ktor request URL) — per-call attribution mirroring candor-rust's `str_arg`. Replaces
+                    // the old method-wide LDC sweep, which captured any host-shaped string in a host-bearing
+                    // method and so let a benign URL literal certify a runtime-computed host (AS-EFF-008
+                    // evasion) / a never-contacted host poison the allowlist. netHostLiteral rejects
+                    // non-hosts, so a benign non-URL arg adds nothing; the bare `Socket(host,port)` case is
+                    // handled above (netHostLiteral rejects a scheme-less bare host by design).
+                    if (isHostBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;"))
+                        for (String lit : literalArgsInWindow(min, constLocals)) {
+                            String hl = netHostLiteral(lit);
+                            if (hl != null) hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(hl);
+                        }
+                    // Table literals from THIS SQL-bearing call's OWN argument (the executed/prepared SQL) —
+                    // same per-call attribution. tablesInSql needs a leading SQL keyword so a non-SQL arg
+                    // yields nothing; a SQL-shaped log line in another statement is no longer mis-attributed.
+                    if (isSqlBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;"))
+                        for (String lit : literalArgsInWindow(min, constLocals)) {
+                            List<String> tl = tablesInSql(lit);
+                            if (!tl.isEmpty()) tablesDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(tl);
+                        }
                     // Calls to a Spring Data repository / Feign client are I/O even though the
                     // callee has no body candor can see (Spring synthesizes the impl at runtime).
                     boolean springTyped = repoTypes.contains(min.owner) || feignTypes.contains(min.owner);
@@ -1923,7 +1989,14 @@ public class Candor {
                         // stdlib-only impls): there `cha` is EMPTY (no project class declares the body), so
                         // no Unknown floods — they contribute nothing. (Found by /code-review max: 13+
                         // project Suppliers, one effectful, over a single dispatch site.)
-                        if (broad && !dispatchExempt && effect == null && !springTyped
+                        // The exemption that suppresses this Unknown is ONLY the Object-protocol subset
+                        // (toString/hashCode/equals/compareTo — §4 pure even when overridden). The
+                        // function-object exemptions (Kotlin/Scala/Groovy invoke/apply/call) do NOT suppress
+                        // it: when the broad fan-out DROPS NAMED project impls (`!cha.isEmpty()`), one of
+                        // them can do real I/O, so honest Unknown — not silent-pure (the round-11 hole). A
+                        // lambda-only function site has EMPTY cha (lambdas aren't named project classes), so
+                        // it still raises nothing — the documented FunctionN lambda-smear avoidance holds.
+                        if (broad && !isObjectProtocolExempt(min.name, min.desc) && effect == null && !springTyped
                                 && (isProjectIfaceOrAbstract(min.owner) || !cha.isEmpty())) {
                             dir.add("Unknown");
                             String why = isProjectIfaceOrAbstract(min.owner)
@@ -1977,6 +2050,21 @@ public class Candor {
                     // reflection is already Unknown via classify).
                     if (effect == null && !springTyped && !projectClasses.contains(min.owner)) {
                         DepFn inh = crossDeps.get(min.owner + "." + min.name + min.desc);
+                        // INTERFACE/SUPERTYPE-typed dep call: `Store s = new FileStore(); s.save()`
+                        // compiles to INVOKEINTERFACE on `lib/Store`, but the dep report keys the body
+                        // by its CONCRETE owner (`lib/FileStore.save`). The static call-site owner misses
+                        // it, so the caller read SILENTLY PURE though the dep writes a file. When the
+                        // receiver is provably a single `new T` (the monomorphic receiver) and T is NOT a
+                        // project class (a dep type — a project T would have traced locally above), retry
+                        // the join on the concrete impl's hash. Sound: it is the EXACT runtime type, so
+                        // this is the one body the JVM dispatches to — never a CHA over-approximation.
+                        int xop = min.getOpcode();
+                        if (inh == null && (xop == Opcodes.INVOKEVIRTUAL || xop == Opcodes.INVOKEINTERFACE)) {
+                            String cRecv = monomorphicReceiver(provFrames == null ? null
+                                    : provFrames[mn.instructions.indexOf(min)], min);
+                            if (cRecv != null && !byName.containsKey(cRecv) && !cRecv.equals(min.owner))
+                                inh = crossDeps.get(cRecv + "." + min.name + min.desc);
+                        }
                         if (inh != null) {
                             viaCross.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.effects);
                             if (!inh.hosts.isEmpty()) hostsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.hosts);
@@ -2029,21 +2117,6 @@ public class Candor {
                         && (fin.getOpcode() == Opcodes.GETSTATIC || fin.getOpcode() == Opcodes.PUTSTATIC)) {
                     // A static field access triggers the owner's class-load → its `<clinit>` runs.
                     clinitEdge(id, fin.owner);
-                } else if (insn instanceof LdcInsnNode ldc && ldc.cst instanceof String s) {
-                    // A literal Net endpoint visible in this method (`new Socket("h",p)`, `new
-                    // URL("https://api.stripe.com/…")`) — the decidable subset of "who it talks to",
-                    // feeding the AS-EFF-008 host allowlist. Non-host strings are rejected by
-                    // netHostLiteral, so this never fabricates an endpoint. Method-level (the unit the
-                    // allowlist certifies); a runtime-computed host stays honestly invisible.
-                    String host = hasHostSink ? netHostLiteral(s) : null;  // gated: only a host-bearing method
-                    if (host != null) hostsDirect.computeIfAbsent(id, k -> new TreeSet<>()).add(host);
-                    // A literal SQL statement visible in this method: its table-position identifiers
-                    // are the Db literal surface (SPEC §2 `tables`, feeding `allow Db …`). tablesInSql
-                    // requires a leading SQL keyword and takes only table positions, so a non-SQL
-                    // string yields nothing — never fabricates (mirrors the Rust engine). Gated on a
-                    // SQL-bearing call so a non-SQL Db client (a KV store) can't fabricate a table.
-                    List<String> tl = hasSqlSink ? tablesInSql(s) : List.of();
-                    if (!tl.isEmpty()) tablesDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(tl);
                 } else if (insn instanceof InvokeDynamicInsnNode idin) {
                     // Lambdas & method refs: the functional-interface factory's impl method (a project
                     // `lambda$…` synthetic, or a referenced method) carries the body's effects. Edge to
@@ -2337,7 +2410,26 @@ public class Candor {
             new String[] {"javafx/application/Application", "start", null},
             new String[] {"javafx/application/Application", "init", null},
             new String[] {"android/view/View$OnClickListener", "onClick", null},
-            new String[] {"android/os/Handler", "handleMessage", null});
+            new String[] {"android/os/Handler", "handleMessage", null},
+            // JDK runtime-invoked callbacks orphaned from every reachability root (the finalize/serialization
+            // shape) — invoked by the JVM/executor/bean machinery with no project call site:
+            // java.util.concurrent.Flow.Subscriber (JDK reactive — registered with SubmissionPublisher; the
+            // direct analog of the already-rooted reactivestreams Subscriber, the inconsistency a sweep
+            // flagged); Thread.UncaughtExceptionHandler (set as the default/per-thread handler, run by the
+            // JVM on an uncaught throw — often remote crash reporting); the executor-config callbacks
+            // RejectedExecutionHandler/ThreadFactory; the bean/Swing PropertyChangeListener; the custom
+            // Spliterator/ResourceBundle.Control loaders. Supertype-substring gated → no fabrication on a
+            // same-named non-implementor (verified by the entrypoint probe's decoy).
+            new String[] {"java/util/concurrent/Flow$Subscriber", "onNext", null},
+            new String[] {"java/util/concurrent/Flow$Subscriber", "onError", null},
+            new String[] {"java/util/concurrent/Flow$Subscriber", "onComplete", null},
+            new String[] {"java/util/concurrent/Flow$Subscriber", "onSubscribe", null},
+            new String[] {"java/lang/Thread$UncaughtExceptionHandler", "uncaughtException", null},
+            new String[] {"java/util/concurrent/RejectedExecutionHandler", "rejectedExecution", null},
+            new String[] {"java/util/concurrent/ThreadFactory", "newThread", null},
+            new String[] {"java/beans/PropertyChangeListener", "propertyChange", null},
+            new String[] {"java/util/Spliterator", "tryAdvance", null},
+            new String[] {"java/util/ResourceBundle$Control", "newBundle", null});
 
     /** The number of CHA targets above which a CHA-EXEMPT dispatch (Object protocol / function-interface
      *  / task verb) is treated as a broad smear and its fan-out dropped. An app's handful of Runnables /
@@ -2370,13 +2462,22 @@ public class Candor {
         return false;
     }
 
-    static boolean isChaExemptMethod(String owner, String name, String desc) {
-        // Object protocol — conventionally pure (formatting / equality / hashing / ordering).
-        if ((name.equals("toString") && desc.equals("()Ljava/lang/String;"))
+    /** The §4 conventionally-pure Object protocol (formatting / equality / hashing / ordering) — a SUBSET
+     *  of isChaExemptMethod. These stay pure even under a broad fan-out: an effectful override is spec-§4
+     *  pure by convention, so dropping it raises NO Unknown. The OTHER exemptions (Kotlin/Scala/Groovy
+     *  function-objects) are NOT here: a NAMED class implementing FunctionN can do real I/O, so a broad
+     *  fan-out that DROPS such named impls must raise Unknown, not stay silent (the round-11 hole — a
+     *  >12-impl unpinned `Function0.invoke` with one effectful NAMED impl read silently pure). */
+    static boolean isObjectProtocolExempt(String name, String desc) {
+        return (name.equals("toString") && desc.equals("()Ljava/lang/String;"))
                 || (name.equals("hashCode") && desc.equals("()I"))
                 || (name.equals("equals") && desc.equals("(Ljava/lang/Object;)Z"))
-                || (name.equals("compareTo") && desc.equals("(Ljava/lang/Object;)I")))
-            return true;
+                || (name.equals("compareTo") && desc.equals("(Ljava/lang/Object;)I"));
+    }
+
+    static boolean isChaExemptMethod(String owner, String name, String desc) {
+        // Object protocol — conventionally pure (formatting / equality / hashing / ordering).
+        if (isObjectProtocolExempt(name, desc)) return true;
         // Function-interface invocation: Kotlin FunctionN.invoke; Scala FunctionN/PartialFunction.apply
         // + the java8 JFunction SAM bridges; Groovy Closure.call/doCall.
         if (owner.startsWith("kotlin/jvm/functions/") && name.equals("invoke")) return true;
@@ -2447,6 +2548,13 @@ public class Candor {
             case "getSignerRegion": case "getSignerRegionOverride": case "getResourceUrl":
             case "getUrl": case "getCachedResponseMetadata": case "getServiceName":
             case "getEndpointPrefix": case "getClientConfiguration": case "getServiceNameIntern":
+            // The pure config getters INHERITED from com.amazonaws.AmazonWebServiceClient (the base of
+            // every v1 `Amazon*Client`): they match the `get*` verb but read cached local config / build a
+            // signer object — no request. Without them the `*Client` Net rule still FABRICATED Net on a
+            // provably-pure accessor (the round-11 finding — same class as getRegion, carve-out was
+            // incomplete). getBucketRegionViaHeadRequest is deliberately absent (it issues a HEAD → Net).
+            case "getTimeOffset": case "getSignerOverride": case "getRequestMetricsCollector":
+            case "getMonitoringListeners": case "getSignerByURI": case "getEndpoint":
                 return true;
             default: return false;
         }
@@ -3525,7 +3633,13 @@ public class Candor {
                 || owner.equals("org.apache.tomcat.jdbc.pool.DataSource")
                 || owner.equals("org.apache.commons.dbcp2.BasicDataSource")
                 || owner.equals("org.apache.commons.dbcp.BasicDataSource")
-                || owner.equals("com.mchange.v2.c3p0.ComboPooledDataSource"))
+                || owner.equals("com.mchange.v2.c3p0.ComboPooledDataSource")
+                || owner.equals("com.alibaba.druid.pool.DruidDataSource")
+                || owner.equals("oracle.jdbc.pool.OracleDataSource")
+                || owner.equals("oracle.ucp.jdbc.PoolDataSource")
+                || owner.equals("org.postgresql.ds.PGSimpleDataSource")
+                || owner.equals("org.h2.jdbcx.JdbcDataSource")
+                || owner.equals("org.springframework.jdbc.datasource.DriverManagerDataSource"))
                 && (method.startsWith("execute") || method.equals("getConnection")
                     || method.equals("prepareStatement") || method.equals("prepareCall")
                     // Connection.isValid pings the server (a real round-trip the execute*-only gate missed).
@@ -3554,7 +3668,14 @@ public class Candor {
                 && (method.equals("getTables") || method.equals("getColumns") || method.equals("getPrimaryKeys")
                     || method.equals("getImportedKeys") || method.equals("getExportedKeys")
                     || method.equals("getIndexInfo") || method.equals("getSchemas") || method.equals("getCatalogs")
-                    || method.equals("getProcedures") || method.equals("getFunctions")))
+                    || method.equals("getProcedures") || method.equals("getFunctions")
+                    || method.equals("getColumnPrivileges") || method.equals("getTablePrivileges")
+                    || method.equals("getBestRowIdentifier") || method.equals("getVersionColumns")
+                    || method.equals("getCrossReference") || method.equals("getTypeInfo")
+                    || method.equals("getUDTs") || method.equals("getSuperTypes") || method.equals("getSuperTables")
+                    || method.equals("getAttributes") || method.equals("getProcedureColumns")
+                    || method.equals("getFunctionColumns") || method.equals("getPseudoColumns")
+                    || method.equals("getClientInfoProperties") || method.equals("getTableTypes")))
             return "Db";
         if (owner.equals("org.springframework.jdbc.core.JdbcTemplate")
                 || owner.equals("org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate")

@@ -576,6 +576,31 @@ class HelpersTest {
         assertFalse(Candor.isSqlBearingOwner("com/mongodb/client/MongoCollection")); // a collection name is not SQL
     }
 
+    /** Round-14: logging RESOURCE handlers/appenders (SocketHandler→Net, FileHandler→Fs, DBAppender→Db) are
+     *  no longer swallowed by the logging-package gate; JavaFX Clipboard; Kotlin collection-entropy → Rand.
+     *  Config getters of the handlers stay pure (verb-gated). */
+    @Test
+    void round14Completeness() {
+        // logging resource handlers — the ctor opens a socket/file/DB
+        assertEquals("Net", Candor.classify("java.util.logging.SocketHandler", "<init>", "(Ljava/lang/String;I)V"));
+        assertEquals("Fs", Candor.classify("java.util.logging.FileHandler", "<init>", "(Ljava/lang/String;)V"));
+        assertEquals("Net", Candor.classify("ch.qos.logback.classic.net.SocketAppender", "start", "()V"));
+        assertEquals("Fs", Candor.classify("ch.qos.logback.core.FileAppender", "openFile", "(Ljava/lang/String;)V"));
+        assertEquals("Db", Candor.classify("org.apache.logging.log4j.core.appender.db.jdbc.JDBCAppender", "append", "(Lorg/apache/logging/log4j/core/LogEvent;)V"));
+        // config getter of a handler stays pure (verb-gated, not whole-owner)
+        assertNull(Candor.classify("java.util.logging.SocketHandler", "getLevel", "()Ljava/util/logging/Level;"));
+        // a plain Logger emit is still Log (not swallowed)
+        assertEquals("Log", Candor.classify("java.util.logging.Logger", "info", "(Ljava/lang/String;)V"));
+        // JavaFX clipboard
+        assertEquals("Clipboard", Candor.classify("javafx.scene.input.Clipboard", "setContent", "(Ljavafx/scene/input/ClipboardContent;)Z"));
+        assertEquals("Clipboard", Candor.classify("javafx.scene.input.Clipboard", "getString", "()Ljava/lang/String;"));
+        assertNull(Candor.classify("javafx.scene.input.Clipboard", "toString", "()Ljava/lang/String;")); // §4 pure
+        // Kotlin collection entropy
+        assertEquals("Rand", Candor.classify("kotlin.collections.CollectionsKt", "random", "(Ljava/util/Collection;Lkotlin/random/Random;)Ljava/lang/Object;"));
+        assertEquals("Rand", Candor.classify("kotlin.ranges.RangesKt", "random", "(Lkotlin/ranges/IntRange;Lkotlin/random/Random;)I"));
+        assertNull(Candor.classify("kotlin.collections.CollectionsKt", "first", "(Ljava/util/List;)Ljava/lang/Object;")); // pure verb stays pure
+    }
+
     /** Round-10 JDBC silent-pure adds: ResultSet cursor moves, Connection.isValid, Driver.connect,
      *  DatabaseMetaData catalog queries, concrete-pool getConnection → Db; scalar reads + capability
      *  getters stay pure (no fabrication). */

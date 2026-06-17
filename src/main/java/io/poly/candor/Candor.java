@@ -1993,10 +1993,15 @@ public class Candor {
                         // (toString/hashCode/equals/compareTo — §4 pure even when overridden). The
                         // function-object exemptions (Kotlin/Scala/Groovy invoke/apply/call) do NOT suppress
                         // it: when the broad fan-out DROPS NAMED project impls (`!cha.isEmpty()`), one of
-                        // them can do real I/O, so honest Unknown — not silent-pure (the round-11 hole). A
-                        // lambda-only function site has EMPTY cha (lambdas aren't named project classes), so
-                        // it still raises nothing — the documented FunctionN lambda-smear avoidance holds.
-                        if (broad && !isObjectProtocolExempt(min.name, min.desc) && effect == null && !springTyped
+                        // them can do real I/O, so honest Unknown — not silent-pure (the round-11 hole). BUT a
+                        // function-object dispatch whose dropped impls are ALL synthetic LAMBDAS raises nothing
+                        // — their effect is captured at the lambda creation site, and they're named synthetic
+                        // classes in byName (NOT empty cha as a stale comment claimed), so a >12-lambda
+                        // higher-order site would otherwise falsely flood Unknown (round-12 regression).
+                        boolean allLambdaImpls = dispatchExempt && !isObjectProtocolExempt(min.name, min.desc)
+                                && chaImplsAllSynthetic(min.owner, min.name, min.desc);
+                        if (broad && !isObjectProtocolExempt(min.name, min.desc) && !allLambdaImpls
+                                && effect == null && !springTyped
                                 && (isProjectIfaceOrAbstract(min.owner) || !cha.isEmpty())) {
                             dir.add("Unknown");
                             String why = isProjectIfaceOrAbstract(min.owner)
@@ -2429,7 +2434,31 @@ public class Candor {
             new String[] {"java/util/concurrent/ThreadFactory", "newThread", null},
             new String[] {"java/beans/PropertyChangeListener", "propertyChange", null},
             new String[] {"java/util/Spliterator", "tryAdvance", null},
-            new String[] {"java/util/ResourceBundle$Control", "newBundle", null});
+            new String[] {"java/util/ResourceBundle$Control", "newBundle", null},
+            // Framework runtime-invoked callbacks (INTERFACE forms — candor roots the ANNOTATION forms like
+            // @EventListener/@JmsListener/@RabbitListener, but a raw interface implementor has no project
+            // call site either). Spring: ApplicationListener (event), Smart/Lifecycle (bean start/stop),
+            // HandlerInterceptor (per-request MVC), BeanPostProcessor (per-bean startup), FactoryBean
+            // (bean materialization). Messaging: JMS/AMQP MessageListener, Kafka ConsumerRebalanceListener.
+            // Servlet session/request listeners. All container-invoked, segment-gated (no over-root).
+            new String[] {"springframework/context/ApplicationListener", "onApplicationEvent", null},
+            new String[] {"springframework/context/Lifecycle", "start", null},
+            new String[] {"springframework/context/Lifecycle", "stop", null},
+            new String[] {"springframework/web/servlet/HandlerInterceptor", "preHandle", null},
+            new String[] {"springframework/web/servlet/HandlerInterceptor", "postHandle", null},
+            new String[] {"springframework/web/servlet/HandlerInterceptor", "afterCompletion", null},
+            new String[] {"springframework/beans/factory/config/BeanPostProcessor", "postProcessBeforeInitialization", null},
+            new String[] {"springframework/beans/factory/config/BeanPostProcessor", "postProcessAfterInitialization", null},
+            new String[] {"springframework/beans/factory/FactoryBean", "getObject", null},
+            new String[] {"jms/MessageListener", "onMessage", null},                 // javax/jakarta jms
+            new String[] {"amqp/core/MessageListener", "onMessage", null},           // Spring AMQP
+            new String[] {"amqp/rabbit/listener/api/ChannelAwareMessageListener", "onMessage", null},
+            new String[] {"kafka/clients/consumer/ConsumerRebalanceListener", "onPartitionsAssigned", null},
+            new String[] {"kafka/clients/consumer/ConsumerRebalanceListener", "onPartitionsRevoked", null},
+            new String[] {"servlet/http/HttpSessionListener", "sessionCreated", null},
+            new String[] {"servlet/http/HttpSessionListener", "sessionDestroyed", null},
+            new String[] {"servlet/ServletRequestListener", "requestInitialized", null},
+            new String[] {"servlet/ServletRequestListener", "requestDestroyed", null});
 
     /** The number of CHA targets above which a CHA-EXEMPT dispatch (Object protocol / function-interface
      *  / task verb) is treated as a broad smear and its fan-out dropped. An app's handful of Runnables /
@@ -2765,6 +2794,29 @@ public class Candor {
     }
 
     /** CHA: project subtypes-or-self of `owner` that provide a concrete (name,desc) impl. */
+    /** Whether EVERY concrete impl a CHA dispatch over (owner,name,desc) resolves to is a SYNTHETIC class —
+     *  a compiler-generated lambda/closure body, NOT a named project class. Kotlin/Scala/Groovy lambdas
+     *  compile to synthetic FunctionN/Closure impls whose effect is captured at the lambda's CREATION site
+     *  (the indy/new edge), so a broad fan-out that drops them need NOT raise Unknown at the dispatcher — the
+     *  premise "lambdas have empty cha" was FALSE (they're named synthetic classes in byName), which made a
+     *  >CHA_FANOUT_LIMIT higher-order site over PURE lambdas falsely report Unknown (a round-12 precision
+     *  regression). A NAMED (non-synthetic) implementor IS still flagged, so the round-11 soundness gain
+     *  (a named effectful impl visible from the caller) is preserved. Conservative: an INHERITED concrete
+     *  (a named base, not a lambda) → false (raise Unknown). Mirrors chaTargets' contribution logic. */
+    static boolean chaImplsAllSynthetic(String owner, String name, String desc) {
+        boolean any = false;
+        for (String cName : subtypeIndex.getOrDefault(owner, List.of())) {
+            ClassNode c = byName.get(cName);
+            if (declaresConcrete(c, name, desc)) {
+                any = true;
+                if ((c.access & Opcodes.ACC_SYNTHETIC) == 0) return false; // a NAMED implementor
+            } else if (nearestConcreteSuper(c.name, name, desc) != null) {
+                return false; // an inherited concrete impl — a named base, not a lambda
+            }
+        }
+        return any; // true only if ≥1 impl and ALL were synthetic lambdas
+    }
+
     static List<String> chaTargets(String owner, String name, String desc) {
         Set<String> out = new LinkedHashSet<>();
         // O(subtypes-of-owner) via the precomputed reverse index instead of scanning ALL classes. The
@@ -3292,6 +3344,25 @@ public class Candor {
                     || method.equals("supportsFileAttributeView")))
             return "Fs";
         if (owner.equals("java.io.FileDescriptor") && method.equals("sync")) return "Fs";
+        // commons-io FileUtils/IOUtils + guava Files/MoreFiles — the ubiquitous file-convenience libs (the
+        // analog of the modeled java.nio.file.Files/FileInputStream/FileWriter). Verb-gated to the file
+        // read/write/copy/move/delete operators; the pure helpers (closeQuietly, lineIterator builders) and
+        // the in-memory stream overloads of IOUtils (toString(InputStream) is on a stream, not a file —
+        // but commons-io's IOUtils is dominantly used for file streams; gate to the unambiguous file verbs).
+        if ((owner.equals("org.apache.commons.io.FileUtils"))
+                && (method.startsWith("read") || method.startsWith("write") || method.startsWith("copy")
+                    || method.startsWith("move") || method.startsWith("delete") || method.startsWith("force")
+                    || method.startsWith("touch") || method.startsWith("cleanDirectory")
+                    || method.startsWith("listFiles") || method.startsWith("openInputStream")
+                    || method.startsWith("openOutputStream") || method.startsWith("iterateFiles")))
+            return "Fs";
+        if ((owner.equals("com.google.common.io.Files") || owner.equals("com.google.common.io.MoreFiles"))
+                && (method.startsWith("toByteArray") || method.startsWith("write") || method.startsWith("copy")
+                    || method.startsWith("move") || method.startsWith("readLines") || method.equals("asByteSource")
+                    || method.equals("asCharSource") || method.equals("asByteSink") || method.equals("asCharSink")
+                    || method.startsWith("createParentDirs") || method.startsWith("touch")
+                    || method.startsWith("deleteRecursively") || method.startsWith("deleteDirectoryContents")))
+            return "Fs";
         // Classpath RESOURCE reads (a file/jar entry off disk) — the ubiquitous config/i18n-loading idioms:
         // Class/ClassLoader.getResource*, ResourceBundle.getBundle, ServiceLoader (reads META-INF/services),
         // FileSystems.newFileSystem (mounts a jar/zip), LogManager/Preferences (OS prefs store). All Fs.
@@ -3417,6 +3488,13 @@ public class Candor {
                 && method.equals("execute")) return "Net";
         if (owner.equals("retrofit2.Call") && (method.equals("execute") || method.equals("enqueue"))) return "Net";
         if (owner.equals("com.google.api.client.http.HttpRequest") && method.equals("execute")) return "Net";
+        // Apache HttpAsyncClient — the ASYNC sibling of the already-modeled classic HttpClient.execute (hc4
+        // nio + hc5 async). execute kicks off the request.
+        if ((owner.equals("org.apache.http.nio.client.HttpAsyncClient")
+                || owner.equals("org.apache.http.impl.nio.client.CloseableHttpAsyncClient")
+                || owner.equals("org.apache.hc.client5.http.impl.async.CloseableHttpAsyncClient")
+                || owner.equals("org.apache.hc.client5.http.async.HttpAsyncClient"))
+                && method.equals("execute")) return "Net";
         // okhttp WebSocket — the wire verbs (Call.execute/enqueue above is the HTTP path; the WS path is
         // distinct and was silent-pure). send/close transmit; the factory opens the connection.
         if (owner.equals("okhttp3.WebSocket") && (method.equals("send") || method.equals("close"))) return "Net";
@@ -3780,7 +3858,13 @@ public class Candor {
         // and on Query/ResultQuery execute; the builder chain (selectFrom/insertInto/query/resultQuery —
         // all return query BUILDERS) stays pure (classifying them would FABRICATE Db on a pure builder).
         if (owner.equals("org.jooq.DSLContext")
-                && (method.startsWith("fetch") || method.equals("execute") || method.startsWith("batch")
+                && (method.startsWith("fetch") || method.equals("execute")
+                    // batch(Query…/String…/Collection) are pure BUILDERS that return an org.jooq.Batch (no
+                    // I/O until Batch.execute) — the SQL analog of selectFrom. Only the batchStore/batchInsert/
+                    // batchUpdate/batchDelete/batchMerge variants execute. The bare `startsWith("batch")`
+                    // FABRICATED Db on the builder (round-12 cardinal sin); gate to the executing variants.
+                    || method.equals("batchStore") || method.equals("batchInsert") || method.equals("batchUpdate")
+                    || method.equals("batchDelete") || method.equals("batchMerge")
                     || method.startsWith("transactionResult"))) return "Db";
         if ((owner.equals("org.jooq.Query") || owner.equals("org.jooq.ResultQuery"))
                 && (method.equals("execute") || method.startsWith("fetch"))) return "Db";
@@ -3795,6 +3879,18 @@ public class Candor {
                 || owner.equals("org.neo4j.driver.async.AsyncSession"))
                 && (method.equals("run") || method.startsWith("execute") || method.startsWith("read")
                     || method.startsWith("write"))) return "Db";
+        // jdbi3 — Handle/Jdbi terminal verbs run the SQL (createQuery/createUpdate return builders, stay pure).
+        if ((owner.equals("org.jdbi.v3.core.Handle") || owner.equals("org.jdbi.v3.core.Jdbi"))
+                && (method.equals("execute") || method.startsWith("select") || method.equals("inTransaction")
+                    || method.equals("useTransaction") || method.equals("withHandle") || method.equals("useHandle")))
+            return "Db";
+        // Spring Data JDBC aggregate template — the template sibling of the modeled JdbcTemplate/MongoTemplate
+        // (the CrudRepository INTERFACE path is covered by repoTypes; this is the imperative template).
+        if (owner.equals("org.springframework.data.jdbc.core.JdbcAggregateTemplate")
+                && (method.equals("save") || method.startsWith("insert") || method.equals("update")
+                    || method.startsWith("delete") || method.startsWith("findBy") || method.startsWith("findAll")
+                    || method.equals("findById") || method.equals("count") || method.equals("existsById")))
+            return "Db";
         // Subprocess
         // ProcessBuilder.start() spawns one process; the static startPipeline(List) spawns a whole pipeline
         // of them (Java 9+) — same Exec, a distinct method name the `start`-only match missed (found by an
@@ -3802,6 +3898,13 @@ public class Candor {
         if (owner.equals("java.lang.ProcessBuilder")
                 && (method.equals("start") || method.equals("startPipeline"))) return "Exec";
         if (owner.equals("java.lang.Runtime") && method.equals("exec")) return "Exec";
+        // Subprocess convenience libs (the analog of the modeled ProcessBuilder.start/Runtime.exec):
+        // Apache commons-exec DefaultExecutor.execute, zt-exec ProcessExecutor.execute. The setX config
+        // setters stay pure (verb-gated).
+        if (owner.equals("org.apache.commons.exec.DefaultExecutor") && method.equals("execute")) return "Exec";
+        if (owner.equals("org.zeroturnaround.exec.ProcessExecutor")
+                && (method.equals("execute") || method.equals("executeNoTimeout") || method.equals("start")))
+            return "Exec";
         // Driving an already-spawned subprocess is Exec too — getInputStream/getErrorStream read its
         // output, getOutputStream feeds its stdin (an unmonitored data channel), waitFor blocks on it.
         // Splitting spawn (start(), in one method) from drive (these, in another) lost the effect on the
@@ -3833,6 +3936,9 @@ public class Candor {
         // Spring's Environment.getProperty reads a MERGED source that includes the OS environment, so
         // it genuinely may surface an env var — a sound over-approximation, kept as Env.
         if (owner.equals("org.springframework.core.env.Environment") && method.equals("getProperty")) return "Env";
+        // commons-lang3 SystemUtils.getEnvironmentVariable — reads an OS env var (the analog of System.getenv).
+        if (owner.equals("org.apache.commons.lang3.SystemUtils") && method.equals("getEnvironmentVariable"))
+            return "Env";
         // Clock
         if (owner.equals("java.lang.System") && (method.equals("currentTimeMillis") || method.equals("nanoTime")))
             return "Clock";

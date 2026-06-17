@@ -531,6 +531,29 @@ class HelpersTest {
         assertNull(Candor.classify("io.micronaut.http.client.HttpClient", "toBlocking", "()Lio/micronaut/http/client/BlockingHttpClient;"));
     }
 
+    /** Round-12: jOOQ DSLContext.batch(Query…) is a pure BUILDER (FABRICATION fixed) — only the
+     *  batchStore/batchInsert/… variants execute; and the classifier-completeness batch (commons-io/
+     *  commons-exec/jdbi/HttpAsyncClient/guava-Files/JdbcAggregateTemplate/SystemUtils). */
+    @Test
+    void round12FixesAndCompleteness() {
+        // jOOQ batch: builder pure, executor variants Db
+        assertNull(Candor.classify("org.jooq.DSLContext", "batch", "(Lorg/jooq/Query;)Lorg/jooq/Batch;")); // builder
+        assertEquals("Db", Candor.classify("org.jooq.DSLContext", "batchStore", "(Ljava/util/Collection;)[I"));
+        // completeness
+        assertEquals("Fs", Candor.classify("org.apache.commons.io.FileUtils", "readFileToString", "(Ljava/io/File;)Ljava/lang/String;"));
+        assertEquals("Fs", Candor.classify("org.apache.commons.io.FileUtils", "writeStringToFile", "(Ljava/io/File;Ljava/lang/String;)V"));
+        assertEquals("Fs", Candor.classify("com.google.common.io.Files", "toByteArray", "(Ljava/io/File;)[B"));
+        assertEquals("Exec", Candor.classify("org.apache.commons.exec.DefaultExecutor", "execute", "(Lorg/apache/commons/exec/CommandLine;)I"));
+        assertEquals("Exec", Candor.classify("org.zeroturnaround.exec.ProcessExecutor", "execute", "()Lorg/zeroturnaround/exec/ProcessResult;"));
+        assertEquals("Db", Candor.classify("org.jdbi.v3.core.Handle", "execute", "(Ljava/lang/String;)I"));
+        assertEquals("Db", Candor.classify("org.springframework.data.jdbc.core.JdbcAggregateTemplate", "save", "(Ljava/lang/Object;)Ljava/lang/Object;"));
+        assertEquals("Net", Candor.classify("org.apache.hc.client5.http.impl.async.CloseableHttpAsyncClient", "execute", "(Lorg/apache/hc/core5/http/nio/AsyncRequestProducer;Lorg/apache/hc/core5/http/nio/AsyncResponseConsumer;Lorg/apache/hc/core5/concurrent/FutureCallback;)Ljava/util/concurrent/Future;"));
+        assertEquals("Env", Candor.classify("org.apache.commons.lang3.SystemUtils", "getEnvironmentVariable", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"));
+        // fabrication-avoidance: config setters / builders of these owners stay pure
+        assertNull(Candor.classify("org.zeroturnaround.exec.ProcessExecutor", "directory", "(Ljava/io/File;)Lorg/zeroturnaround/exec/ProcessExecutor;"));
+        assertNull(Candor.classify("org.apache.commons.io.FileUtils", "getTempDirectory", "()Ljava/io/File;")); // returns a path, no I/O
+    }
+
     /** Round-10 JDBC silent-pure adds: ResultSet cursor moves, Connection.isValid, Driver.connect,
      *  DatabaseMetaData catalog queries, concrete-pool getConnection → Db; scalar reads + capability
      *  getters stay pure (no fabrication). */

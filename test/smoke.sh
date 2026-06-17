@@ -119,6 +119,31 @@ PY
 stale="$(CANDOR_DEPS="$W/stale.json" "$CJ" "$W/acls" --json "$W/a2.json" 2>/dev/null; cat "$W/a2.json")"
 want "stale-engine dep -> inherited Unknown"  "$(python3 -c "import json;print(next(e['inferred'] for e in json.load(open('$W/a2.json'))['functions'] if e['fn']=='App.run'))")" 'Unknown'
 
+# INTERFACE/SUPERTYPE-typed dep call must inherit too: `Iface x = new DepImpl(); x.m()` compiles to
+# INVOKEINTERFACE on the iface, but the dep report keys the body by its CONCRETE owner. Without the
+# monomorphic-receiver retry the caller read SILENTLY PURE though the dep writes a file.
+mkdir -p "$W/depi/lib" "$W/iapp/iapp"
+cat > "$W/depi/lib/Store.java"     <<'J'
+package lib; public interface Store { void save(String s); }
+J
+cat > "$W/depi/lib/FileStore.java" <<'J'
+package lib; import java.nio.file.*;
+public class FileStore implements Store { public void save(String s){ try{ Files.writeString(Path.of("/tmp/x"),s);}catch(Exception e){} } }
+J
+javac -d "$W/depicls" "$W/depi/lib/Store.java" "$W/depi/lib/FileStore.java"
+"$CJ" "$W/depicls" --json "$W/depi.json" >/dev/null 2>&1
+cat > "$W/iapp/iapp/IApp.java" <<'J'
+package iapp; import lib.*;
+public class IApp {
+  void viaConcrete(){ new FileStore().save("x"); }            // INVOKEVIRTUAL on FileStore
+  void viaIface(){ Store s = new FileStore(); s.save("x"); }  // INVOKEINTERFACE on Store
+}
+J
+javac -cp "$W/depicls" -d "$W/iappcls" "$W/iapp/iapp/IApp.java"
+idep="$(CANDOR_DEPS="$W/depi.json" "$CJ" "$W/iappcls" --json "$W/ia.json" 2>/dev/null; cat "$W/ia.json")"
+want "concrete-typed dep call inherits Fs"                "$("$CJ" show "$W/ia.json" IApp.viaConcrete 2>/dev/null)" 'Fs'
+want "INTERFACE-typed dep call inherits Fs (mono-recv retry)" "$("$CJ" show "$W/ia.json" IApp.viaIface 2>/dev/null)" 'Fs'
+
 echo "== lambdas / method refs =="
 cat > "$W/src/Lam.java" <<'J'
 import java.nio.file.*;

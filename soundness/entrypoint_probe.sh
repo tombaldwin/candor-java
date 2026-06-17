@@ -89,6 +89,17 @@ public class EP {
   static class Act implements java.awt.event.ActionListener {
     public void actionPerformed(java.awt.event.ActionEvent e) { try { new java.net.Socket("127.0.0.1",9).close(); } catch (Exception ex) {} }
   }
+  // JDK runtime-invoked callbacks (java.base, no stub): Flow.Subscriber (the JDK analog of the rooted
+  // reactivestreams Subscriber) + Thread.UncaughtExceptionHandler — both invoked by the runtime with no
+  // project call site.
+  static class FlowSub implements java.util.concurrent.Flow.Subscriber<Object> {
+    public void onSubscribe(java.util.concurrent.Flow.Subscription s) {}
+    public void onNext(Object o) { try { new java.net.Socket("127.0.0.1",9).close(); } catch (Exception e) {} }
+    public void onError(Throwable t) {} public void onComplete() {}
+  }
+  static class Ueh implements Thread.UncaughtExceptionHandler {
+    public void uncaughtException(Thread t, Throwable e) { try { new java.net.Socket("127.0.0.1",9).close(); } catch (Exception x) {} }
+  }
   // NON-implementor decoy: same method NAMES + signatures, but the class implements NONE of the runtime
   // interfaces — must NOT be rooted (the supertype/annotation gate guards against fabrication). Effectful
   // so the methods appear in the report (candor omits pure fns) and the entryPoint flag can be asserted.
@@ -99,7 +110,7 @@ public class EP {
     public int compareTo(Object o) { System.getenv("DCT"); return 0; }
   }
   public static void main(String[] a) { new S(); new X(); new Cmp(); new Ord(); new Handler(); Maker.of("");
-    new Conv(); new Cmd(); new Health(); new Obs(); new Sub(); new Act(); new D(); }
+    new Conv(); new Cmd(); new Health(); new Obs(); new Sub(); new Act(); new FlowSub(); new Ueh(); new D(); }
 }
 EOF
 javac -d "$TMP/out" $(find "$TMP" -name '*.java') 2>/dev/null || { echo "entrypoint-probe: GENERATOR BUG — fixture does not compile"; exit 1; }
@@ -112,7 +123,8 @@ must_root = ["EP$S.readObject", "EP$S.writeObject", "EP$S.readResolve", "EP$S.fi
              "EP$X.readExternal", "EP$X.writeExternal",
              "EP$Cmp.compare", "EP$Ord.compareTo", "EP$Handler.invoke", "EP$Maker.of",
              "EP$Conv.convertToDatabaseColumn", "EP$Cmd.run", "EP$Health.health",
-             "EP$Obs.onEvent", "EP$Sub.handle", "EP$Act.actionPerformed"]
+             "EP$Obs.onEvent", "EP$Sub.handle", "EP$Act.actionPerformed",
+             "EP$FlowSub.onNext", "EP$Ueh.uncaughtException"]
 must_not  = ["EP$D.readObject", "EP$D.readResolve", "EP$D.compare", "EP$D.compareTo"]
 bad = []
 for n in must_root:
@@ -125,6 +137,6 @@ if bad:
     for b in bad: print("  " + b)
     sys.exit(1)
 print("entrypoint-probe: OK — serialization/finalize/Comparator/Comparable/InvocationHandler/@JsonCreator/"
-      "AttributeConverter/Hystrix/HealthIndicator/@Observes/@Subscribe/ActionListener callbacks rooted; "
-      "non-implementor decoy not fabricated")
+      "AttributeConverter/Hystrix/HealthIndicator/@Observes/@Subscribe/ActionListener/Flow.Subscriber/"
+      "UncaughtExceptionHandler callbacks rooted; non-implementor decoy not fabricated")
 PY

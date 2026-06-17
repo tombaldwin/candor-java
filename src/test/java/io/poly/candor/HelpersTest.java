@@ -59,10 +59,16 @@ class HelpersTest {
     }
 
     @Test
-    void hostPartStripsSchemeUserinfoPathPort() {
-        assertEquals("host.com", Candor.hostPart("https://user@host.com:8080/path"));
+    void hostPartStripsOnlyPortAndBrackets() {
+        // The GATE-side normalizer mirrors candor-rust policy::host_part: it strips ONLY a [ipv6] bracket
+        // or a trailing :port. It does NOT strip scheme/userinfo/path — that's netHostLiteral's job at
+        // EXTRACTION (the reached host is already clean). Stripping them here diverged from rust and
+        // silently WIDENED a policy author's allow literal (`build@github.com` → `github.com`).
         assertEquals("host.com", Candor.hostPart("host.com"));
         assertEquals("host.com", Candor.hostPart("host.com:443"));
+        // a URL/userinfo-form allow literal is taken VERBATIM (no auto-clean) — as rust does
+        assertEquals("https://user@host.com:8080/path", Candor.hostPart("https://user@host.com:8080/path"));
+        assertEquals("build@github.com", Candor.hostPart("build@github.com"));
     }
 
     @Test
@@ -468,6 +474,31 @@ class HelpersTest {
         assertEquals("Net", Candor.classify("com.amazonaws.services.s3.AmazonS3Client", "getBucketRegionViaHeadRequest", "(Ljava/lang/String;)Ljava/lang/String;"));
     }
 
+    /** Round-11: the AWS carve-out was INCOMPLETE — the pure config getters inherited from
+     *  AmazonWebServiceClient (getTimeOffset/getSignerOverride/getRequestMetricsCollector/
+     *  getMonitoringListeners/getSignerByURI) still fabricated Net. They must be pure. */
+    @Test
+    void awsInheritedBaseGettersAreNotFabricatedAsNet() {
+        for (String g : new String[] {"getTimeOffset", "getSignerOverride", "getRequestMetricsCollector",
+                "getMonitoringListeners", "getSignerByURI", "getEndpoint"})
+            assertNull(Candor.classify("com.amazonaws.services.s3.AmazonS3Client", g, "()Ljava/lang/Object;"),
+                    g + " is a pure config getter, must NOT be Net");
+    }
+
+    /** Round-11: the DatabaseMetaData catalog-query verb list was incomplete (getColumnPrivileges/getUDTs/…
+     *  run a system-catalog SELECT) and Druid/Oracle/PG/H2 pools were missing → silent-pure. Capability
+     *  getters stay pure. */
+    @Test
+    void round11JdbcCompleteness() {
+        for (String q : new String[] {"getColumnPrivileges", "getTablePrivileges", "getUDTs",
+                "getCrossReference", "getTypeInfo", "getSuperTables", "getAttributes", "getProcedureColumns"})
+            assertEquals("Db", Candor.classify("java.sql.DatabaseMetaData", q, "()Ljava/sql/ResultSet;"),
+                    q + " runs a catalog SELECT");
+        assertNull(Candor.classify("java.sql.DatabaseMetaData", "supportsTransactions", "()Z")); // capability flag pure
+        assertEquals("Db", Candor.classify("com.alibaba.druid.pool.DruidDataSource", "getConnection", "()Ljava/sql/Connection;"));
+        assertEquals("Db", Candor.classify("org.postgresql.ds.PGSimpleDataSource", "getConnection", "()Ljava/sql/Connection;"));
+    }
+
     /** Round-10 JDBC silent-pure adds: ResultSet cursor moves, Connection.isValid, Driver.connect,
      *  DatabaseMetaData catalog queries, concrete-pool getConnection → Db; scalar reads + capability
      *  getters stay pure (no fabrication). */
@@ -488,8 +519,10 @@ class HelpersTest {
     @Test
     void hostPartIsIpv6Aware() {
         assertEquals("api.stripe.com", Candor.hostPart("api.stripe.com:443"));
-        assertEquals("api.stripe.com", Candor.hostPart("https://api.stripe.com/v1/charges"));
         assertEquals("10.0.0.1", Candor.hostPart("10.0.0.1:6379"));
+        // NB: a raw URL never reaches hostPart — netHostLiteral cleans the reached host to a bare authority
+        // at extraction, and a policy author writes a bare host. (A URL has >1 colon so the bare-IPv6 guard
+        // returns it verbatim, which is harmless — it simply won't match a clean reached host.)
         // bracketed IPv6 with/without port → the bracketed host
         assertEquals("2001:db8::1", Candor.hostPart("[2001:db8::1]:443"));
         assertEquals("2001:db8::1", Candor.hostPart("[2001:db8::1]"));

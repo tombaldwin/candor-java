@@ -452,4 +452,49 @@ class HelpersTest {
         assertTrue(Candor.supertypeMatches("kotlin/jvm/functions/Function1", "kotlin/jvm/functions/Function"));
         assertTrue(Candor.supertypeMatches("scala/Function2", "scala/Function"));
     }
+
+    /** Round-10 AWS-client config-getter FABRICATION regression (0.5.21): the `*Client` Net rule matched
+     *  the client's OWN pure config getters (getRegion/getUrl/getCachedResponseMetadata) → fabricated Net.
+     *  They must be pure; a real op (getObject) and the HEAD-issuing getBucketRegionViaHeadRequest stay Net. */
+    @Test
+    void awsClientConfigGettersAreNotFabricatedAsNet() {
+        assertNull(Candor.classify("com.amazonaws.services.s3.AmazonS3Client", "getRegion", "()Lcom/amazonaws/services/s3/model/Region;"));
+        assertNull(Candor.classify("com.amazonaws.services.s3.AmazonS3Client", "getRegionName", "()Ljava/lang/String;"));
+        assertNull(Candor.classify("com.amazonaws.services.s3.AmazonS3Client", "getUrl", "(Ljava/lang/String;Ljava/lang/String;)Ljava/net/URL;"));
+        assertNull(Candor.classify("com.amazonaws.services.s3.AmazonS3Client", "getCachedResponseMetadata", "(Lcom/amazonaws/AmazonWebServiceRequest;)Ljava/lang/Object;"));
+        assertNull(Candor.classify("com.amazonaws.services.s3.AmazonS3Client", "getResourceUrl", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"));
+        // real ops stay Net
+        assertEquals("Net", Candor.classify("com.amazonaws.services.s3.AmazonS3Client", "getObject", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Object;"));
+        assertEquals("Net", Candor.classify("com.amazonaws.services.s3.AmazonS3Client", "getBucketRegionViaHeadRequest", "(Ljava/lang/String;)Ljava/lang/String;"));
+    }
+
+    /** Round-10 JDBC silent-pure adds: ResultSet cursor moves, Connection.isValid, Driver.connect,
+     *  DatabaseMetaData catalog queries, concrete-pool getConnection → Db; scalar reads + capability
+     *  getters stay pure (no fabrication). */
+    @Test
+    void round10JdbcSilentPureAdds() {
+        assertEquals("Db", Candor.classify("java.sql.ResultSet", "next", "()Z"));
+        assertEquals("Db", Candor.classify("java.sql.ResultSet", "refreshRow", "()V"));
+        assertNull(Candor.classify("java.sql.ResultSet", "getString", "(I)Ljava/lang/String;"));   // in-memory row read
+        assertEquals("Db", Candor.classify("java.sql.Connection", "isValid", "(I)Z"));
+        assertEquals("Db", Candor.classify("java.sql.Driver", "connect", "(Ljava/lang/String;Ljava/util/Properties;)Ljava/sql/Connection;"));
+        assertEquals("Db", Candor.classify("java.sql.DatabaseMetaData", "getTables", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;)Ljava/sql/ResultSet;"));
+        assertNull(Candor.classify("java.sql.DatabaseMetaData", "getDatabaseProductName", "()Ljava/lang/String;")); // capability getter pure
+        assertEquals("Db", Candor.classify("com.zaxxer.hikari.HikariDataSource", "getConnection", "()Ljava/sql/Connection;"));
+    }
+
+    /** Round-10 IPv6 hostPart gate-evasion: a naive first-colon split collapsed `2001:db8::1` to `2001`, so
+     *  one allowed IPv6 covered the whole block. Bracketed and bare IPv6 are now handled; host:port splits. */
+    @Test
+    void hostPartIsIpv6Aware() {
+        assertEquals("api.stripe.com", Candor.hostPart("api.stripe.com:443"));
+        assertEquals("api.stripe.com", Candor.hostPart("https://api.stripe.com/v1/charges"));
+        assertEquals("10.0.0.1", Candor.hostPart("10.0.0.1:6379"));
+        // bracketed IPv6 with/without port → the bracketed host
+        assertEquals("2001:db8::1", Candor.hostPart("[2001:db8::1]:443"));
+        assertEquals("2001:db8::1", Candor.hostPart("[2001:db8::1]"));
+        // bare IPv6 (no brackets, >1 colon) → returned whole, NOT collapsed to "2001"
+        assertEquals("2001:db8::1", Candor.hostPart("2001:db8::1"));
+        assertEquals("::1", Candor.hostPart("::1"));
+    }
 }

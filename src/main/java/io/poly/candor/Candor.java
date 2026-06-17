@@ -1568,7 +1568,7 @@ public class Candor {
         // matching method declared here is then an entry point — the runtime invokes it, not project code.
         Set<String> supers = transSupers(cn.name);
         List<String[]> runtimeRows = RUNTIME_OVERRIDES.stream()
-                .filter(r -> supers.stream().anyMatch(s -> s.contains(r[0])))
+                .filter(r -> supers.stream().anyMatch(s -> supertypeMatches(s, r[0])))
                 .toList();
         // Ktor route handler: a Kotlin suspend-lambda (`extends SuspendLambda`) whose receiver is a Ktor
         // request context (`io.ktor.server.routing.RoutingContext` in 3.x, `io.ktor.util.pipeline.
@@ -1617,7 +1617,8 @@ public class Candor {
             // are arbitrary) and the generated base isn't on candor's classpath (transSupers can't see
             // `BindableService`), so key on the `*ImplBase` direct super + the StreamObserver-param signature
             // — both gRPC-specific, so no fabrication.
-            if (cn.superName != null && cn.superName.endsWith("ImplBase")
+            if (cn.superName != null && cn.superName.toLowerCase().contains("grpc")
+                    && cn.superName.endsWith("ImplBase")
                     && mn.desc.contains("Lio/grpc/stub/StreamObserver;")
                     && (mn.access & (Opcodes.ACC_STATIC | Opcodes.ACC_ABSTRACT)) == 0)
                 entryPoints.add(id);
@@ -1682,6 +1683,20 @@ public class Candor {
                     provFrames = new Analyzer<>(new ProvInterpreter()).analyze(cn.name, mn);
                 } catch (Throwable t) { provFrames = null; }
             }
+
+            // Pre-scan: does this method call a HOST-bearing Net sink (Socket/URL/InetAddress/…) or a
+            // SQL-bearing Db sink? The per-LDC host/table literal sweep below is gated on these — else the
+            // whole-owner KV/messaging Net rows (Jedis/Kafka/Rabbit/Mqtt) would make the method Net and a
+            // benign Redis KEY / topic / routing-key that happens to look like host:port gets fabricated as
+            // a Net HOST (feeding the AS-EFF-008 allowlist — the same security-relevant fabrication class as
+            // the prior-statement host bug, re-introduced by the new key-value rows). A KV/messaging method
+            // has no host-bearing call, so no host is captured.
+            boolean hasHostSink = false, hasSqlSink = false;
+            for (AbstractInsnNode insn : mn.instructions)
+                if (insn instanceof MethodInsnNode mi) {
+                    if (isHostBearingOwner(mi.owner)) hasHostSink = true;
+                    if (isSqlBearingOwner(mi.owner)) hasSqlSink = true;
+                }
 
             for (AbstractInsnNode insn : mn.instructions) {
                 if (insn instanceof MethodInsnNode min) {
@@ -1999,13 +2014,14 @@ public class Candor {
                     // feeding the AS-EFF-008 host allowlist. Non-host strings are rejected by
                     // netHostLiteral, so this never fabricates an endpoint. Method-level (the unit the
                     // allowlist certifies); a runtime-computed host stays honestly invisible.
-                    String host = netHostLiteral(s);
+                    String host = hasHostSink ? netHostLiteral(s) : null;  // gated: only a host-bearing method
                     if (host != null) hostsDirect.computeIfAbsent(id, k -> new TreeSet<>()).add(host);
                     // A literal SQL statement visible in this method: its table-position identifiers
                     // are the Db literal surface (SPEC §2 `tables`, feeding `allow Db …`). tablesInSql
                     // requires a leading SQL keyword and takes only table positions, so a non-SQL
-                    // string yields nothing — never fabricates (mirrors the Rust engine).
-                    List<String> tl = tablesInSql(s);
+                    // string yields nothing — never fabricates (mirrors the Rust engine). Gated on a
+                    // SQL-bearing call so a non-SQL Db client (a KV store) can't fabricate a table.
+                    List<String> tl = hasSqlSink ? tablesInSql(s) : List.of();
                     if (!tl.isEmpty()) tablesDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(tl);
                 } else if (insn instanceof InvokeDynamicInsnNode idin) {
                     // Lambdas & method refs: the functional-interface factory's impl method (a project
@@ -2231,18 +2247,18 @@ public class Candor {
             new String[] {"logback/core/Appender", "doAppend", null},
             new String[] {"java/util/logging/Handler", "publish", null},
             new String[] {"logging/log4j/core/Appender", "append", null},
-            new String[] {"log4j/Appender", "doAppend", null},
+            new String[] {"apache/log4j/Appender", "doAppend", null},
             // SCHEDULING / JOB / BATCH / WORKFLOW / serverless callbacks — invoked by the scheduler/engine/
             // runtime with no in-project call site (the finalize/Runnable shape). Supertype-substring gated
             // (one row per interface; covers javax/jakarta + impl variants), so a same-named non-implementor
             // is never fabricated as a root.
             new String[] {"org/quartz/Job", "execute", null},
-            new String[] {"batch/core/step/tasklet/Tasklet", "execute", null},
-            new String[] {"batch/item/ItemReader", "read", null},
-            new String[] {"batch/item/ItemWriter", "write", null},
-            new String[] {"batch/item/ItemProcessor", "process", null},
-            new String[] {"batch/core/StepExecutionListener", "beforeStep", null},
-            new String[] {"batch/core/StepExecutionListener", "afterStep", null},
+            new String[] {"springframework/batch/core/step/tasklet/Tasklet", "execute", null},
+            new String[] {"springframework/batch/item/ItemReader", "read", null},
+            new String[] {"springframework/batch/item/ItemWriter", "write", null},
+            new String[] {"springframework/batch/item/ItemProcessor", "process", null},
+            new String[] {"springframework/batch/core/StepExecutionListener", "beforeStep", null},
+            new String[] {"springframework/batch/core/StepExecutionListener", "afterStep", null},
             new String[] {"engine/delegate/JavaDelegate", "execute", null},   // Camunda + Activiti
             new String[] {"lambda/runtime/RequestHandler", "handleRequest", null},        // AWS Lambda
             new String[] {"lambda/runtime/RequestStreamHandler", "handleRequest", null},
@@ -2261,7 +2277,15 @@ public class Candor {
             new String[] {"android/app/Service", "onCreate", null},
             new String[] {"android/app/IntentService", "onHandleIntent", null},
             new String[] {"android/content/BroadcastReceiver", "onReceive", null},
-            new String[] {"android/app/Application", "onCreate", null});
+            new String[] {"android/app/Application", "onCreate", null},
+            // Reactive-streams Subscriber callbacks (Reactor/RxJava/project publishers invoke them) + NIO
+            // async-I/O CompletionHandler (invoked by the AsynchronousChannelGroup on completion) — both the
+            // runtime-invoked-callback orphan shape, like ForkJoinTask.compute.
+            new String[] {"reactivestreams/Subscriber", "onNext", null},
+            new String[] {"reactivestreams/Subscriber", "onError", null},
+            new String[] {"reactivestreams/Subscriber", "onComplete", null},
+            new String[] {"java/nio/channels/CompletionHandler", "completed", null},
+            new String[] {"java/nio/channels/CompletionHandler", "failed", null});
 
     /** The number of CHA targets above which a CHA-EXEMPT dispatch (Object protocol / function-interface
      *  / task verb) is treated as a broad smear and its fan-out dropped. An app's handful of Runnables /
@@ -2318,6 +2342,53 @@ public class Candor {
         return false;
     }
 
+
+    /** Whether an internal supertype name matches a RUNTIME_OVERRIDES row's substring at a SEGMENT boundary.
+     *  The old raw `contains` over-rooted: a project `com/acme/JsonDeserializerMetrics` matched the
+     *  `JsonDeserializer` row (infix), and a coincidental `com/co/batch/item/ItemReader` matched the Spring
+     *  Batch row. Anchor it: exact, or a `/`-delimited suffix (the type name + optional package tail). The
+     *  ONE exception is the FunctionN convention (kotlin `Function0..22`, scala `Function0..N`) where the row
+     *  is a PREFIX of the leaf type — detected by the row ending in "Function". */
+    /** The §4 conventionally-pure object protocol — never an effect, even on an effect-bearing owner.
+     *  Used to subtract fabrications from whole-owner classify rules. */
+    /** Owners whose string ARG is genuinely a network HOST/endpoint (so a host-literal extraction is
+     *  meaningful). Excludes KV/messaging clients (Jedis/Kafka/Rabbit/Mqtt/…) whose string args are
+     *  keys/topics/routing-keys, not hosts — gating the literal sweep on this prevents fabricating a host
+     *  from a Redis key that happens to look like host:port. */
+    static boolean isHostBearingOwner(String internalOwner) {
+        return internalOwner.equals("java/net/Socket") || internalOwner.equals("java/net/ServerSocket")
+                || internalOwner.equals("java/net/InetSocketAddress") || internalOwner.equals("java/net/InetAddress")
+                || internalOwner.equals("java/net/URL") || internalOwner.equals("java/net/URI")
+                || internalOwner.equals("java/net/URLConnection") || internalOwner.equals("java/net/HttpURLConnection")
+                || internalOwner.equals("javax/net/ssl/HttpsURLConnection")
+                || internalOwner.equals("java/net/DatagramSocket") || internalOwner.equals("java/net/MulticastSocket")
+                || internalOwner.equals("javax/net/ssl/SSLSocket")
+                || internalOwner.startsWith("java/net/http/")
+                || internalOwner.startsWith("org/springframework/web/")
+                || internalOwner.startsWith("io/ktor/") || internalOwner.startsWith("javax/naming/");
+    }
+
+    /** Owners whose string arg is genuinely SQL (so a table extraction is meaningful) — JDBC + JPA + the
+     *  SQL templates. Excludes Android SQLite execSQL/rawQuery? No — those ARE SQL; but a non-SQL Db client
+     *  (a KV store classified Db) is excluded. */
+    static boolean isSqlBearingOwner(String internalOwner) {
+        return internalOwner.startsWith("java/sql/") || internalOwner.startsWith("javax/persistence/")
+                || internalOwner.startsWith("jakarta/persistence/") || internalOwner.startsWith("org/hibernate/")
+                || internalOwner.startsWith("org/springframework/jdbc/")
+                || internalOwner.equals("android/database/sqlite/SQLiteDatabase");
+    }
+
+    /** The §4 conventionally-pure object protocol — never an effect, even on an effect-bearing owner.
+     *  Used to subtract fabrications from whole-owner classify rules. */
+    static boolean isConventionallyPure(String method) {
+        return method.equals("toString") || method.equals("hashCode") || method.equals("equals")
+                || method.equals("getClass");
+    }
+
+    static boolean supertypeMatches(String internalSuper, String row) {
+        if (internalSuper.equals(row) || internalSuper.endsWith("/" + row)) return true;
+        return row.endsWith("Function") && internalSuper.startsWith(row);
+    }
 
     static boolean annoPresent(List<AnnotationNode> anns, String descSubstring) {
         if (anns == null) return false;
@@ -2876,6 +2947,13 @@ public class Candor {
                         || method.equals("isConnectionPending") || method.equals("isBlocking")
                         || method.equals("getLocalAddress") || method.equals("getRemoteAddress")
                         || method.equals("socket")
+                        // config/registration verbs touch NO wire — a whole-owner Net rule fabricated Net on
+                        // them (cardinal sin, found by a NIO sweep). setOption sets a socket option,
+                        // configureBlocking sets a flag, register registers interest with a selector,
+                        // supportedOptions returns a static Set, bind selects a local endpoint.
+                        || method.equals("setOption") || method.equals("getOption")
+                        || method.equals("supportedOptions") || method.equals("configureBlocking")
+                        || method.equals("register") || method.equals("validOps")
                         || method.equals("toString") || method.equals("hashCode") || method.equals("equals");
             default:
                 return false;
@@ -3000,12 +3078,17 @@ public class Candor {
                 || owner.equals("java.nio.channels.AsynchronousFileChannel")
                 // Archive readers open and read a file from disk (the ctor opens it, entries/getInputStream
                 // read it); ZipEntry/JarEntry data types stay pure. (Found by a controlled JDK probe.)
-                || owner.equals("java.util.zip.ZipFile") || owner.equals("java.util.jar.JarFile")
-                // MappedByteBuffer is returned ONLY by FileChannel.map — it is unambiguously file-backed (no
-                // in-memory variant), so put/get/force on it is real mmap file I/O. A receiver typed as the
-                // ByteBuffer supertype stays correctly excluded (ambiguous, may be a heap buffer); the
-                // MappedByteBuffer exact owner is the file boundary (same shape as the MulticastSocket fix).
-                || owner.equals("java.nio.MappedByteBuffer"))
+                || owner.equals("java.util.zip.ZipFile") || owner.equals("java.util.jar.JarFile"))
+            return "Fs";
+        // MappedByteBuffer is file-backed (returned only by FileChannel.map), so its get*/put*/force/load
+        // touch the mapped file → Fs. VERB-GATED (was whole-owner): the inherited Buffer queries
+        // capacity()/position()/limit()/remaining()/order()/hasArray()/isDirect()/duplicate()/slice() are
+        // PURE in-memory ops — a whole-owner rule fabricated Fs on them (cardinal sin, found by a
+        // fabrication sweep). get*/put* don't collide with any pure Buffer method name. isLoaded() does a
+        // mincore syscall → Fs.
+        if (owner.equals("java.nio.MappedByteBuffer")
+                && (method.startsWith("get") || method.startsWith("put")
+                    || method.equals("force") || method.equals("load") || method.equals("isLoaded")))
             return "Fs";
         // FileStore disk-space/metadata stats (getTotalSpace/getUsableSpace/type/…) hit the filesystem;
         // FileDescriptor.sync is an fsync syscall. (Files.getFileStore — the open — is already Fs above.)
@@ -3014,6 +3097,21 @@ public class Candor {
                     || method.equals("supportsFileAttributeView")))
             return "Fs";
         if (owner.equals("java.io.FileDescriptor") && method.equals("sync")) return "Fs";
+        // Classpath RESOURCE reads (a file/jar entry off disk) — the ubiquitous config/i18n-loading idioms:
+        // Class/ClassLoader.getResource*, ResourceBundle.getBundle, ServiceLoader (reads META-INF/services),
+        // FileSystems.newFileSystem (mounts a jar/zip), LogManager/Preferences (OS prefs store). All Fs.
+        if ((owner.equals("java.lang.Class") || owner.equals("java.lang.ClassLoader")
+                || owner.equals("java.lang.Module"))
+                && (method.equals("getResourceAsStream") || method.equals("getResource")
+                    || method.equals("getResources") || method.equals("getSystemResourceAsStream")
+                    || method.equals("getSystemResource") || method.equals("getSystemResources"))) return "Fs";
+        if (owner.equals("java.util.ResourceBundle") && method.equals("getBundle")) return "Fs";
+        if (owner.equals("java.util.ServiceLoader") && method.equals("load")) return "Fs";
+        if (owner.equals("java.nio.file.FileSystems") && method.equals("newFileSystem")) return "Fs";
+        if (owner.equals("java.util.prefs.Preferences")
+                && (method.startsWith("get") || method.startsWith("put") || method.equals("remove")
+                    || method.equals("flush") || method.equals("sync"))) return "Fs";
+        if (owner.equals("java.util.logging.LogManager") && method.equals("readConfiguration")) return "Fs";
         // java.util.Scanner(File)/(Path) opens and reads a file. CTOR-DESCRIPTOR-GATED: Scanner(String) is
         // pure (a string source) and Scanner(InputStream/Readable) defers to its source's owner — so gate to
         // the File/Path ctor descriptors only (no fabrication on the pure ctors). (JDK Fs-deep probe.)
@@ -3106,6 +3204,32 @@ public class Candor {
         // file or an in-memory buffer), java.net.http, and Spring's outbound HTTP clients. Without the NIO
         // channels, every NIO-based stack (Netty, async/reactive frameworks, modern high-perf I/O) was a
         // silent under-report — found by the gradle-cache soundness sweep (httpcore5 uses SocketChannel).
+        // Selector.select* is the readiness-wait of every NIO reactor (Netty/Vert.x event loop) — a blocking
+        // network-I/O wait; verb-gated (open/keys/selectedKeys/wakeup/close stay pure). MulticastChannel.join
+        // is IGMP group join (network egress, the NIO twin of MulticastSocket.joinGroup).
+        if (owner.equals("java.nio.channels.Selector")
+                && (method.equals("select") || method.equals("selectNow"))) return "Net";
+        if (owner.equals("java.nio.channels.MulticastChannel") && method.equals("join")) return "Net";
+        // HTTP / cloud-storage clients — the CONCRETE-class ubiquitous ones (parallel to the already-modeled
+        // RestTemplate/WebClient/Jedis; a pinned concrete receiver resolved to pure → silent-pure). Verb-gated
+        // so request/URL BUILDERS stay pure (no fabrication).
+        if ((owner.equals("okhttp3.Call") || owner.equals("okhttp3.RealCall"))
+                && (method.equals("execute") || method.equals("enqueue"))) return "Net";
+        if ((owner.equals("org.apache.http.client.HttpClient")
+                || owner.equals("org.apache.http.impl.client.CloseableHttpClient")
+                || owner.equals("org.apache.hc.client5.http.classic.HttpClient")
+                || owner.equals("org.apache.hc.client5.http.impl.classic.CloseableHttpClient"))
+                && method.equals("execute")) return "Net";
+        if (owner.equals("retrofit2.Call") && (method.equals("execute") || method.equals("enqueue"))) return "Net";
+        if (owner.equals("com.google.api.client.http.HttpRequest") && method.equals("execute")) return "Net";
+        if ((owner.startsWith("software.amazon.awssdk.services.") || owner.startsWith("com.amazonaws.services."))
+                && owner.endsWith("Client")   // the CLIENT classes only — not the model/request getters (v1 uses get*)
+                && (method.startsWith("get") || method.startsWith("put") || method.startsWith("list")
+                    || method.startsWith("create") || method.startsWith("delete") || method.startsWith("send")
+                    || method.startsWith("query") || method.startsWith("scan") || method.startsWith("update")
+                    || method.startsWith("describe") || method.startsWith("invoke") || method.startsWith("upload")
+                    || method.startsWith("download") || method.startsWith("receive") || method.startsWith("publish"))
+                && !isConventionallyPure(method)) return "Net";
         if (owner.equals("java.net.Socket") || owner.equals("java.net.ServerSocket")
                 || owner.equals("java.net.DatagramSocket")
                 // MulticastSocket extends DatagramSocket; a receiver TYPED as MulticastSocket emits
@@ -3235,9 +3359,15 @@ public class Candor {
         // Distributed caches / KV stores — RAW concrete clients (interface-typed Lettuce/Hazelcast/Ignite/
         // Ehcache/JCache correctly fall to the Unknown dispatch-floor; in-process Caffeine/Guava stay pure —
         // so this is ONLY the concrete remote clients that silently resolved to pure). Net (remote round-trip).
-        if (owner.equals("redis.clients.jedis.Jedis") || owner.equals("redis.clients.jedis.JedisCluster")
+        if ((owner.equals("redis.clients.jedis.Jedis") || owner.equals("redis.clients.jedis.JedisCluster")
                 || owner.equals("net.spy.memcached.MemcachedClient")
                 || owner.equals("org.apache.zookeeper.ZooKeeper"))
+                // EXEMPT the conventionally-pure surface from the whole-owner Net rule (else a fabrication on
+                // toString/hashCode/equals and the cached field-reads getDB/getSessionId/getState/
+                // getSessionTimeout — found by a fabrication sweep). The remaining methods are commands.
+                && !isConventionallyPure(method)
+                && !(method.equals("getDB") || method.equals("getSessionId") || method.equals("getState")
+                     || method.equals("getSessionTimeout")))
             return "Net";
         // PKI revocation — CertPathValidator (OCSP/CRL fetch) + a network CertStore (LDAP/HTTP) make a remote
         // lookup hidden inside the JDK, the same shape as JNDI.lookup (already Net).
@@ -3263,10 +3393,15 @@ public class Candor {
         if (owner.equals("android.webkit.WebView")
                 && (method.equals("loadUrl") || method.equals("postUrl") || method.startsWith("loadData"))) return "Net";
         // Settings.{System,Secure,Global}.getString/putString — ambient system settings / device-id reads.
-        if (owner.startsWith("android.provider.Settings$")
-                && (method.startsWith("getString") || method.startsWith("putString")
-                    || method.startsWith("getInt") || method.startsWith("putInt"))) return "Env";
-        if (owner.equals("android.content.ClipboardManager") || owner.equals("android.text.ClipboardManager"))
+        // EXACT owner + EXACT method (was startsWith, which fabricated Env on the NameValueCache inner
+        // class's getStringHelper/getIntForCache — found by a fabrication sweep).
+        if ((owner.equals("android.provider.Settings$System") || owner.equals("android.provider.Settings$Secure")
+                || owner.equals("android.provider.Settings$Global"))
+                && (method.equals("getString") || method.equals("putString") || method.equals("getInt")
+                    || method.equals("putInt") || method.equals("getLong") || method.equals("putLong")
+                    || method.equals("getFloat") || method.equals("putFloat"))) return "Env";
+        if ((owner.equals("android.content.ClipboardManager") || owner.equals("android.text.ClipboardManager"))
+                && !isConventionallyPure(method))
             return "Clipboard";
         // SharedPreferences.Editor.commit/apply writes the prefs XML file; Context.openFile* opens app-private files.
         if (owner.equals("android.content.SharedPreferences$Editor")
@@ -3355,7 +3490,12 @@ public class Candor {
         // driver. java.lang.Process getters typed as I/O verbs; toHandle/exitValue/isAlive stay pure.
         if (owner.equals("java.lang.Process")
                 && (method.equals("getInputStream") || method.equals("getOutputStream")
-                    || method.equals("getErrorStream") || method.equals("waitFor"))) return "Exec";
+                    || method.equals("getErrorStream") || method.equals("waitFor")
+                    // destroy/destroyForcibly send SIGTERM/SIGKILL — subprocess CONTROL (spec §1 Exec =
+                    // "spawning / controlling a subprocess"); were silent-pure.
+                    || method.equals("destroy") || method.equals("destroyForcibly"))) return "Exec";
+        if (owner.equals("java.lang.ProcessHandle")
+                && (method.equals("destroy") || method.equals("destroyForcibly"))) return "Exec";
         // System.load/loadLibrary (and the Runtime twins) load a native image and RUN its JNI init
         // (JNI_OnLoad) — arbitrary native-code execution (candor already treats a `native` body as
         // Unknown; the call that loads+triggers it must not be invisible). The gateway to every native

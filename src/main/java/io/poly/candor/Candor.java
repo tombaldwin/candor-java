@@ -2230,7 +2230,12 @@ public class Candor {
             // project call site (the @EventListener shape). Guava EventBus (`common/eventbus/Subscribe`)
             // + Greenrobot EventBus (`greenrobot/eventbus/Subscribe`, method-name `onEvent*` historically
             // but @Subscribe in v3). A handler that persists/pushes is otherwise orphaned.
-            "common/eventbus/Subscribe", "greenrobot/eventbus/Subscribe");
+            "common/eventbus/Subscribe", "greenrobot/eventbus/Subscribe",
+            // Spring Integration @ServiceActivator (the EIP handler the messaging runtime invokes) + the
+            // related endpoint annotations; Spring Shell @ShellMethod (the shell invokes it per command).
+            "integration/annotation/ServiceActivator", "integration/annotation/Transformer",
+            "integration/annotation/Filter", "integration/annotation/Router",
+            "integration/annotation/Splitter", "shell/standard/ShellMethod");
 
     /** Container-invoked bean lifecycle callbacks (`@PostConstruct` init, `@PreDestroy` shutdown). Like
      *  the mappings/listeners they're called by the framework with no project call site — a `@PreDestroy`
@@ -2493,7 +2498,9 @@ public class Candor {
             new String[] {"io/reactivex/rxjava3/core/Observer", "onComplete", null},
             new String[] {"lmax/disruptor/EventHandler", "onEvent", null},
             new String[] {"jakarta/websocket/Endpoint", "onOpen", null},
-            new String[] {"javax/websocket/Endpoint", "onOpen", null});
+            new String[] {"javax/websocket/Endpoint", "onOpen", null},
+            // Spring StateMachine action body — the state-machine runtime invokes execute() on a transition.
+            new String[] {"springframework/statemachine/action/Action", "execute", null});
 
     /** The number of CHA targets above which a CHA-EXEMPT dispatch (Object protocol / function-interface
      *  / task verb) is treated as a broad smear and its fan-out dropped. An app's handful of Runnables /
@@ -2663,6 +2670,10 @@ public class Candor {
         r.add("annotation/JsonAnySetter");
         r.add("annotation/JsonAnyGetter");
         r.add("ejb/Schedule");   // EJB timer (jakarta/javax) — container-invoked on a schedule
+        // Micronaut + Quarkus @Scheduled — the inconsistency with the already-rooted Spring @Scheduled (a
+        // container-invoked timer on a top-tier framework).
+        r.add("micronaut/scheduling/annotation/Scheduled");
+        r.add("quarkus/scheduler/Scheduled");
         // jakarta/javax.websocket POJO @ServerEndpoint handlers — the container invokes the @OnMessage/
         // @OnOpen/@OnClose/@OnError methods with no project call site, and there's no interface form for the
         // annotated style (round-13). The substring covers javax/ + jakarta/ websocket.
@@ -3471,6 +3482,15 @@ public class Candor {
         if (owner.equals("kotlin.random.Random") || owner.equals("kotlin.random.Random$Default")
                 || owner.equals("kotlin.random.RandomKt"))
             return "Rand";
+        // Kotlin stdlib collection/range/array entropy verbs — `list.random()` / `(1..6).random()` /
+        // `arr.random()` / `list.shuffled()` draw entropy inside the stdlib body (candor doesn't descend
+        // into kotlin-stdlib), so the VERB must be classified, like kotlin.random.Random above. Verb-gated
+        // (these owners have hundreds of pure methods → NOT whole-owner).
+        if ((owner.equals("kotlin.collections.CollectionsKt") || owner.equals("kotlin.ranges.RangesKt")
+                || owner.equals("kotlin.collections.ArraysKt"))
+                && (method.equals("random") || method.equals("randomOrNull") || method.equals("shuffled")
+                    || method.equals("shuffle")))
+            return "Rand";
         // Groovy GDK — the language's OWN stdlib I/O, which @CompileStatic compiles to direct static calls
         // (as fundamental to Groovy as java.io is to Java). ResourceGroovyMethods holds the File/URL
         // read/write extension methods (`f.text`/`f.bytes`/`f << s` → getText/getBytes/leftShift);
@@ -4025,6 +4045,29 @@ public class Candor {
         // transitively-analysed effect, never a fabricated Log. (See isLogEmitVerb.)
         if (owner.startsWith("org.slf4j.") || owner.startsWith("java.util.logging.")
                 || owner.startsWith("org.apache.logging.log4j.") || owner.startsWith("ch.qos.logback.")) {
+            // RESOURCE-OPENING handlers/appenders are NOT just Log — they open a file/socket/DB connection
+            // (the ctor) and transmit (publish/append) to it. A network log handler is a real exfil channel;
+            // a file handler does Fs; a DB appender does Db. The package gate below would `return null`
+            // (silent-pure) for these. Verb-gated (ctor + the transmit/lifecycle verbs) so the inherited
+            // config getters (getLevel/getFormatter/…) stay pure — no fabrication. (Found by a fresh
+            // classify-gate review; the soundness fuzzer's Log form only exercises Logger.info.)
+            boolean opensResource = method.equals("<init>") || method.equals("publish") || method.equals("append")
+                    || method.equals("doAppend") || method.equals("start") || method.equals("flush")
+                    || method.equals("close") || method.equals("openFile") || method.equals("setFile");
+            if (opensResource) {
+                if (owner.equals("java.util.logging.SocketHandler")
+                        || owner.endsWith(".SocketAppender") || owner.endsWith(".SSLSocketAppender")
+                        || owner.endsWith(".SyslogAppender") || owner.endsWith(".KafkaAppender")
+                        || owner.endsWith(".SmtpAppender") || owner.endsWith(".HttpAppender"))
+                    return "Net";
+                if (owner.equals("java.util.logging.FileHandler")
+                        || owner.endsWith(".FileAppender") || owner.endsWith(".RollingFileAppender")
+                        || owner.endsWith(".RollingRandomAccessFileAppender") || owner.endsWith(".RandomAccessFileAppender"))
+                    return "Fs";
+                if (owner.endsWith(".DBAppender") || owner.endsWith(".JDBCAppender")
+                        || owner.endsWith(".JPAAppender") || owner.endsWith(".CassandraAppender"))
+                    return "Db";
+            }
             if (isLogEmitVerb(method)) return "Log";
             return null;
         }
@@ -4034,6 +4077,13 @@ public class Candor {
         if ((owner.equals("java.awt.Toolkit")
                 && (method.equals("getSystemClipboard") || method.equals("getSystemSelection")))
                 || owner.equals("java.awt.datatransfer.Clipboard"))
+            return "Clipboard";
+        // JavaFX clipboard (the AWT successor) — getSystemClipboard hands out the handle; setContent/
+        // getString/getContent/hasString read/write it. Verb-gated so the pure quartet stays pure.
+        if (owner.equals("javafx.scene.input.Clipboard")
+                && !isConventionallyPure(method)
+                && (method.equals("getSystemClipboard") || method.startsWith("get") || method.startsWith("set")
+                    || method.startsWith("has") || method.equals("clear")))
             return "Clipboard";
         return null;
     }

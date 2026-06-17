@@ -111,6 +111,17 @@ CASES = [
         ("ThreadLocalRandom.current().nextInt()", "draws entropy"),
      ], "Rand"),
 
+    # ---- java.util.random.RandomGenerator (Java 17+ root interface): isDeprecated is pure metadata ----
+    # sweep [22]: the whole-owner Rand rule had NO carve-out for the interface's pure default methods.
+    ("RandomGenerator", "import java.util.random.RandomGenerator;", "RandomGenerator g",
+     [
+        ("g.isDeprecated()", "a pure metadata DEFAULT method — reports whether the algorithm is deprecated, no entropy draw"),
+     ],
+     [
+        ("g.nextInt()",      "draws entropy"),
+        ("g.nextLong()",     "draws entropy"),
+     ], "Rand"),
+
     # ---- java.util.zip.ZipFile: cached name/count vs reading the archive ----
     ("ZipFile", "import java.util.zip.ZipFile;", "ZipFile z",
      [

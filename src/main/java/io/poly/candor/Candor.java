@@ -3417,6 +3417,31 @@ public class Candor {
                 && method.equals("execute")) return "Net";
         if (owner.equals("retrofit2.Call") && (method.equals("execute") || method.equals("enqueue"))) return "Net";
         if (owner.equals("com.google.api.client.http.HttpRequest") && method.equals("execute")) return "Net";
+        // okhttp WebSocket — the wire verbs (Call.execute/enqueue above is the HTTP path; the WS path is
+        // distinct and was silent-pure). send/close transmit; the factory opens the connection.
+        if (owner.equals("okhttp3.WebSocket") && (method.equals("send") || method.equals("close"))) return "Net";
+        // gRPC CLIENT calls — candor roots the gRPC SERVER `*ImplBase` (StreamObserver) but the client path
+        // was unmodeled. The blocking/async/future stub verbs funnel through io.grpc.stub.ClientCalls (the
+        // generated stub's method calls these, so a typed-stub call propagates). Channel.newCall is NOT here
+        // — it only CREATES a ClientCall object (no wire I/O until start/sendMessage), so it stays pure.
+        if (owner.equals("io.grpc.stub.ClientCalls")
+                && (method.startsWith("blocking") || method.startsWith("async") || method.startsWith("futureUnary")))
+            return "Net";
+        // Micronaut HTTP client — exchange/retrieve EXECUTE the request (toBlocking() only adapts, stays pure).
+        if ((owner.equals("io.micronaut.http.client.HttpClient")
+                || owner.equals("io.micronaut.http.client.BlockingHttpClient")
+                || owner.startsWith("io.micronaut.http.client.Reactive"))
+                && (method.equals("exchange") || method.equals("retrieve"))) return "Net";
+        // Vert.x — get/post on WebClient build an HttpRequest (pure); the TERMINAL `send*` transmits. For the
+        // core client the terminal is HttpClientRequest.send/end. Gate to the terminals so builders stay pure.
+        if (owner.equals("io.vertx.ext.web.client.HttpRequest") && method.startsWith("send")) return "Net";
+        if (owner.equals("io.vertx.core.http.HttpClientRequest")
+                && (method.equals("send") || method.equals("end"))) return "Net";
+        // Reactor-Netty — get/post/put configure the client (immutable builder, pure); the `response*`
+        // terminals execute and consume the wire.
+        if (owner.equals("reactor.netty.http.client.HttpClient")
+                && (method.equals("response") || method.equals("responseContent") || method.equals("responseSingle")
+                    || method.equals("responseConnection"))) return "Net";
         if ((owner.startsWith("software.amazon.awssdk.services.") || owner.startsWith("com.amazonaws.services."))
                 && owner.endsWith("Client")   // the CLIENT classes only — not the model/request getters (v1 uses get*)
                 && (method.startsWith("get") || method.startsWith("put") || method.startsWith("list")
@@ -3725,6 +3750,51 @@ public class Candor {
                     || method.equals("getSingleResult") || method.equals("executeUpdate")
                     || method.equals("scroll") || method.equals("stream")))
             return "Db";
+        // ── Raw data-store DRIVERS (the layer UNDER the Spring templates already modeled above). A non-Spring
+        // app — or Spring code typed to the driver — calls these directly; they were silent-pure though their
+        // Spring-template analog (MongoTemplate/CassandraTemplate/RedisTemplate/R2dbc) IS modeled, an
+        // inconsistency a completeness sweep keeps re-finding. Verb-gated so the BUILDERS/getters of each
+        // driver stay pure (no fabrication on a query builder / cached-metadata getter).
+        // MongoDB driver (sync + reactivestreams). MongoCollection carries the CRUD round-trips; the
+        // database/client handles only the getCollection/getDatabase navigation (also a round-trip on first
+        // use, but the I/O that matters is the collection op). Gate to the operation verbs.
+        if ((owner.equals("com.mongodb.client.MongoCollection")
+                || owner.equals("com.mongodb.reactivestreams.client.MongoCollection"))
+                && (method.startsWith("find") || method.startsWith("insert") || method.startsWith("update")
+                    || method.startsWith("replace") || method.startsWith("delete") || method.equals("aggregate")
+                    || method.equals("countDocuments") || method.equals("estimatedDocumentCount")
+                    || method.equals("distinct") || method.startsWith("bulkWrite") || method.startsWith("watch")
+                    || method.startsWith("createIndex") || method.startsWith("drop")
+                    || method.startsWith("findOneAndUpdate") || method.startsWith("findOneAndReplace")
+                    || method.startsWith("findOneAndDelete") || method.startsWith("mapReduce")))
+            return "Db";
+        // Datastax Cassandra driver (the dominant CqlSession).
+        if (owner.equals("com.datastax.oss.driver.api.core.CqlSession")
+                && (method.startsWith("execute") || method.startsWith("prepare"))) return "Db";
+        // R2DBC reactive-SQL SPI — the reactive analog of JDBC. Connection.createStatement BUILDS (pure);
+        // Statement.execute / Batch.execute / ConnectionFactory.create round-trip.
+        if ((owner.equals("io.r2dbc.spi.Statement") || owner.equals("io.r2dbc.spi.Batch"))
+                && method.equals("execute")) return "Db";
+        if (owner.equals("io.r2dbc.spi.ConnectionFactory") && method.equals("create")) return "Db";
+        // jOOQ — ONLY the TERMINAL operators run the SQL. fetch*/execute on DSLContext (`dsl.fetch(sql)`)
+        // and on Query/ResultQuery execute; the builder chain (selectFrom/insertInto/query/resultQuery —
+        // all return query BUILDERS) stays pure (classifying them would FABRICATE Db on a pure builder).
+        if (owner.equals("org.jooq.DSLContext")
+                && (method.startsWith("fetch") || method.equals("execute") || method.startsWith("batch")
+                    || method.startsWith("transactionResult"))) return "Db";
+        if ((owner.equals("org.jooq.Query") || owner.equals("org.jooq.ResultQuery"))
+                && (method.equals("execute") || method.startsWith("fetch"))) return "Db";
+        // MyBatis SqlSession.
+        if (owner.equals("org.apache.ibatis.session.SqlSession")
+                && (method.startsWith("select") || method.startsWith("insert") || method.startsWith("update")
+                    || method.startsWith("delete") || method.equals("commit") || method.equals("rollback")
+                    || method.equals("flushStatements"))) return "Db";
+        // Neo4j official driver — Session.run / Transaction.run execute the Cypher; session() is a factory.
+        if ((owner.equals("org.neo4j.driver.Session") || owner.equals("org.neo4j.driver.Transaction")
+                || owner.equals("org.neo4j.driver.reactive.RxSession")
+                || owner.equals("org.neo4j.driver.async.AsyncSession"))
+                && (method.equals("run") || method.startsWith("execute") || method.startsWith("read")
+                    || method.startsWith("write"))) return "Db";
         // Subprocess
         // ProcessBuilder.start() spawns one process; the static startPipeline(List) spawns a whole pipeline
         // of them (Java 9+) — same Exec, a distinct method name the `start`-only match missed (found by an

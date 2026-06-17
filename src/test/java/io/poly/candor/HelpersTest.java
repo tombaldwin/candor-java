@@ -499,6 +499,38 @@ class HelpersTest {
         assertEquals("Db", Candor.classify("org.postgresql.ds.PGSimpleDataSource", "getConnection", "()Ljava/sql/Connection;"));
     }
 
+    /** Round-12: raw data-store DRIVERS (under the already-modeled Spring templates) — Mongo/Cassandra/
+     *  R2DBC/jOOQ/MyBatis/Neo4j → Db; the gRPC client + okhttp WebSocket + Micronaut/Vert.x/Reactor HTTP →
+     *  Net. Verb-gated, so each driver's BUILDERS/metadata getters stay pure (no fabrication). */
+    @Test
+    void round12RawDriverClassifier() {
+        // Db drivers — the operation verbs
+        assertEquals("Db", Candor.classify("com.mongodb.client.MongoCollection", "insertOne", "(Ljava/lang/Object;)Lcom/mongodb/client/result/InsertOneResult;"));
+        assertEquals("Db", Candor.classify("com.mongodb.client.MongoCollection", "find", "()Lcom/mongodb/client/FindIterable;"));
+        assertEquals("Db", Candor.classify("com.datastax.oss.driver.api.core.CqlSession", "execute", "(Ljava/lang/String;)Lcom/datastax/oss/driver/api/core/cql/ResultSet;"));
+        assertEquals("Db", Candor.classify("io.r2dbc.spi.Statement", "execute", "()Lorg/reactivestreams/Publisher;"));
+        assertEquals("Db", Candor.classify("org.jooq.DSLContext", "fetch", "(Ljava/lang/String;)Lorg/jooq/Result;"));
+        assertEquals("Db", Candor.classify("org.apache.ibatis.session.SqlSession", "selectList", "(Ljava/lang/String;)Ljava/util/List;"));
+        assertEquals("Db", Candor.classify("org.neo4j.driver.Session", "run", "(Ljava/lang/String;)Lorg/neo4j/driver/Result;"));
+        // Net clients
+        assertEquals("Net", Candor.classify("io.grpc.stub.ClientCalls", "blockingUnaryCall", "(Lio/grpc/Channel;Lio/grpc/MethodDescriptor;Lio/grpc/CallOptions;Ljava/lang/Object;)Ljava/lang/Object;"));
+        assertEquals("Net", Candor.classify("okhttp3.WebSocket", "send", "(Ljava/lang/String;)Z"));
+        assertEquals("Net", Candor.classify("io.vertx.ext.web.client.HttpRequest", "send", "()Lio/vertx/core/Future;")); // terminal, not the get/post builder
+        assertEquals("Net", Candor.classify("reactor.netty.http.client.HttpClient", "response", "()Lreactor/core/publisher/Mono;"));
+        assertEquals("Net", Candor.classify("io.micronaut.http.client.HttpClient", "retrieve", "(Lio/micronaut/http/HttpRequest;)Lorg/reactivestreams/Publisher;"));
+        // FABRICATION-avoidance: builders / metadata getters of these drivers stay pure (verb-gated)
+        assertNull(Candor.classify("com.mongodb.client.MongoCollection", "getNamespace", "()Lcom/mongodb/MongoNamespace;"));
+        assertNull(Candor.classify("com.mongodb.client.MongoCollection", "withReadPreference", "(Lcom/mongodb/ReadPreference;)Lcom/mongodb/client/MongoCollection;"));
+        assertNull(Candor.classify("com.datastax.oss.driver.api.core.CqlSession", "getMetadata", "()Lcom/datastax/oss/driver/api/core/metadata/Metadata;"));
+        assertNull(Candor.classify("org.jooq.DSLContext", "render", "(Lorg/jooq/QueryPart;)Ljava/lang/String;"));
+        assertNull(Candor.classify("org.jooq.DSLContext", "selectFrom", "(Lorg/jooq/Table;)Lorg/jooq/SelectWhereStep;")); // builder
+        assertNull(Candor.classify("io.r2dbc.spi.Connection", "createStatement", "(Ljava/lang/String;)Lio/r2dbc/spi/Statement;")); // builder
+        // HTTP-client BUILDERS stay pure (only the terminals are Net)
+        assertNull(Candor.classify("io.vertx.ext.web.client.WebClient", "get", "(Ljava/lang/String;)Lio/vertx/ext/web/client/HttpRequest;"));
+        assertNull(Candor.classify("reactor.netty.http.client.HttpClient", "post", "()Lreactor/netty/http/client/HttpClient$RequestSender;"));
+        assertNull(Candor.classify("io.micronaut.http.client.HttpClient", "toBlocking", "()Lio/micronaut/http/client/BlockingHttpClient;"));
+    }
+
     /** Round-10 JDBC silent-pure adds: ResultSet cursor moves, Connection.isValid, Driver.connect,
      *  DatabaseMetaData catalog queries, concrete-pool getConnection → Db; scalar reads + capability
      *  getters stay pure (no fabrication). */

@@ -3218,17 +3218,17 @@ public class Candor {
      *  classifications can be legitimate (the app only touches their pure surface). Segment-exact
      *  prefixes so `javassist` is not mistaken for `java`. Hoisted to a static (the check runs in
      *  the per-instruction hot loop). */
-    // The packages κ's classifier COMPREHENSIVELY models (the genuine platform frontier) + the logging
-    // frameworks whose I/O verbs ARE classified (Log) so their effectful surface is never floored. A
-    // floored call into one of these is a known-pure op, NOT a blind spot — exclude from the ledger.
-    // NOTE (sweep [2]): the JVM-language stdlibs (kotlin/scala/groovy/jetbrains) and frameworks
-    // (org.springframework, io.ktor) were REMOVED — candor models only a fraction of them, so declaring
-    // the whole namespace "covered" silenced the floor for every unmodeled member (e.g.
-    // org.springframework.util.FileCopyUtils.copy → Fs read silent AND undisclosed). They now flow to the
-    // κ ledger + per-fn `invisible` like any uncurated dependency (the lambda smear is in classify, not
-    // gated here, so it is unaffected). The genuine JDK platform stays covered (no java.util flooding).
+    // The namespaces κ treats as its FRONTIER — a floored call into one is a known-pure op (the stdlib's
+    // pure collections/strings/paths; the effectful surface is either classified or, for the JVM-language
+    // lambdas, handled by the FunctionN smear in classify), NOT a blind spot, so it is excluded from the
+    // ledger to avoid flooding pure stdlib calls with `invisible` disclosure. (sweep [2] was REVERTED:
+    // removing these over-disclosed pure ops — e.g. kotlin.io.path.Path — breaking the kotlin soundness
+    // probe; the genuine gap is an UNMODELED EFFECTFUL member of a covered framework like
+    // org.springframework.util.FileCopyUtils, which κ can't distinguish from a pure unmodeled member —
+    // the real fix is to MODEL that specific member (precision), not to drop the namespace's coverage.)
     static final String[] KAPPA_COVERED_PREFIXES = { "java", "javax", "jakarta", "jdk", "sun", "com.sun",
-            "org.slf4j", "org.apache.logging", "ch.qos.logback" };
+            "kotlin", "kotlinx", "scala", "groovy", "org.codehaus.groovy", "org.jetbrains",
+            "org.springframework", "io.ktor", "org.slf4j", "org.apache.logging", "ch.qos.logback" };
 
     static boolean kappaCovers(String pkg) {
         for (String p : KAPPA_COVERED_PREFIXES) {

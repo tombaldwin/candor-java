@@ -122,6 +122,18 @@ class HelpersTest {
         assertEquals("Db", Candor.classify("java.sql.Connection", "prepareStatement", "(Ljava/lang/String;)Ljava/sql/PreparedStatement;"));
     }
 
+    /** sweep [21]/[22]: whole-owner fabrication carve-outs — pure predicate/metadata reads stay pure. */
+    @Test
+    void wholeOwnerPureAccessorsAreNotFabricated() {
+        // Jedis isConnected/isBroken read the cached local socket-state flag — no command, no round-trip.
+        assertNull(Candor.classify("redis.clients.jedis.Jedis", "isConnected", "()Z"));
+        assertNull(Candor.classify("redis.clients.jedis.Jedis", "isBroken", "()Z"));
+        assertEquals("Net", Candor.classify("redis.clients.jedis.Jedis", "get", "(Ljava/lang/String;)Ljava/lang/String;"));
+        // RandomGenerator.isDeprecated is a pure metadata default method; draws stay Rand.
+        assertNull(Candor.classify("java.util.random.RandomGenerator", "isDeprecated", "()Z"));
+        assertEquals("Rand", Candor.classify("java.util.random.RandomGenerator", "nextInt", "()I"));
+    }
+
     /** The full java.time `.now()` surface reads the clock — not just Instant/LocalDateTime/LocalDate/
      *  ZonedDateTime; OffsetDateTime in particular is very common. The arithmetic ops stay pure. */
     @Test

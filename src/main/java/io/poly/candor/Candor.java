@@ -1861,6 +1861,11 @@ public class Candor {
                         if (head != null) {
                             cmdsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(head);
                             dir.addAll(commandHeadEffects(head));
+                        } else {
+                            // a program-NAMING Exec call with a RUNTIME head (no literal) — the command is
+                            // invisible to the gate, so a benign sibling literal must not mask it (sweep [0],
+                            // the masking guard generalized from Net to Exec/Fs/Db).
+                            surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Exec");
                         }
                     }
                     // …only the overload whose path is a SINGLE leading String arg (descriptor
@@ -1874,6 +1879,9 @@ public class Candor {
                             && pathArgIsSingleString(min.desc)) {
                         String p = firstLiteralArg(mn, min);
                         if (p != null) pathsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(p);
+                        // a path-establishing call with a RUNTIME path (single-String arg, no literal) — the
+                        // path is invisible to the gate (masking guard generalized to Fs, sweep [0]).
+                        else surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Fs");
                     }
                     // A bare-hostname Net endpoint: `new Socket("api.stripe.com", 443)` /
                     // `new InetSocketAddress("api.stripe.com", 443)` names the host as a STRING argv[0]
@@ -1941,11 +1949,19 @@ public class Candor {
                     // Table literals from THIS SQL-bearing call's OWN argument (the executed/prepared SQL) —
                     // same per-call attribution. tablesInSql needs a leading SQL keyword so a non-SQL arg
                     // yields nothing; a SQL-shaped log line in another statement is no longer mis-attributed.
-                    if (isSqlBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;"))
+                    if (isSqlBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;")) {
+                        boolean anySqlLiteral = false;
                         for (String lit : literalArgsInWindow(min, constLocals)) {
+                            anySqlLiteral = true;
                             List<String> tl = tablesInSql(lit);
                             if (!tl.isEmpty()) tablesDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(tl);
                         }
+                        // a SQL-establishing call with a RUNTIME query (String arg, no literal) — the table is
+                        // invisible to the gate (masking guard generalized to Db, sweep [0]). A literal SQL
+                        // with no table (`SELECT 1`) is visible-but-tableless, NOT incomplete.
+                        if (!anySqlLiteral)
+                            surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Db");
+                    }
                     // Calls to a Spring Data repository / Feign client are I/O even though the
                     // callee has no body candor can see (Spring synthesizes the impl at runtime).
                     boolean springTyped = repoTypes.contains(min.owner) || feignTypes.contains(min.owner);
@@ -3202,9 +3218,17 @@ public class Candor {
      *  classifications can be legitimate (the app only touches their pure surface). Segment-exact
      *  prefixes so `javassist` is not mistaken for `java`. Hoisted to a static (the check runs in
      *  the per-instruction hot loop). */
+    // The packages κ's classifier COMPREHENSIVELY models (the genuine platform frontier) + the logging
+    // frameworks whose I/O verbs ARE classified (Log) so their effectful surface is never floored. A
+    // floored call into one of these is a known-pure op, NOT a blind spot — exclude from the ledger.
+    // NOTE (sweep [2]): the JVM-language stdlibs (kotlin/scala/groovy/jetbrains) and frameworks
+    // (org.springframework, io.ktor) were REMOVED — candor models only a fraction of them, so declaring
+    // the whole namespace "covered" silenced the floor for every unmodeled member (e.g.
+    // org.springframework.util.FileCopyUtils.copy → Fs read silent AND undisclosed). They now flow to the
+    // κ ledger + per-fn `invisible` like any uncurated dependency (the lambda smear is in classify, not
+    // gated here, so it is unaffected). The genuine JDK platform stays covered (no java.util flooding).
     static final String[] KAPPA_COVERED_PREFIXES = { "java", "javax", "jakarta", "jdk", "sun", "com.sun",
-            "kotlin", "kotlinx", "scala", "groovy", "org.codehaus.groovy", "org.jetbrains",
-            "org.springframework", "io.ktor", "org.slf4j", "org.apache.logging", "ch.qos.logback" };
+            "org.slf4j", "org.apache.logging", "ch.qos.logback" };
 
     static boolean kappaCovers(String pkg) {
         for (String p : KAPPA_COVERED_PREFIXES) {
@@ -3844,7 +3868,10 @@ public class Candor {
                 // getSessionTimeout — found by a fabrication sweep). The remaining methods are commands.
                 && !isConventionallyPure(method)
                 && !(method.equals("getDB") || method.equals("getSessionId") || method.equals("getState")
-                     || method.equals("getSessionTimeout")))
+                     || method.equals("getSessionTimeout")
+                     // isConnected/isBroken are pure predicate reads of the cached local socket-state flag —
+                     // no command, no round-trip (sweep [21]; the whole-owner rule over-matched them).
+                     || method.equals("isConnected") || method.equals("isBroken")))
             return "Net";
         // PKI revocation — CertPathValidator (OCSP/CRL fetch) + a network CertStore (LDAP/HTTP) make a remote
         // lookup hidden inside the JDK, the same shape as JNDI.lookup (already Net).
@@ -4143,7 +4170,11 @@ public class Candor {
                 // above. The sub-interfaces (Jumpable/Splittable/StreamableGenerator) extend it.
                 || owner.equals("java.util.random.RandomGenerator")
                 || (owner.equals("java.lang.Math") && method.equals("random")))
-            return "Rand";
+            // isDeprecated() is a pure metadata DEFAULT method on the RandomGenerator interface (no entropy
+            // draw); the whole-owner rule fabricated Rand on it (sweep [22]). isConventionallyPure guards the
+            // toString/equals/hashCode surface too. Every genuine draw (next*/ints/longs/doubles) stays Rand.
+            if (!method.equals("isDeprecated") && !isConventionallyPure(method))
+                return "Rand";
         // UUID.randomUUID() draws a v4 UUID from a SecureRandom (genuine entropy) — Rand. METHOD-precise:
         // UUID's other members (fromString/nameUUIDFromBytes/getMostSignificantBits/toString/compareTo)
         // are pure value ops, so classifying the whole owner would fabricate Rand onto them.

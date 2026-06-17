@@ -1993,15 +1993,16 @@ public class Candor {
                         // (toString/hashCode/equals/compareTo — §4 pure even when overridden). The
                         // function-object exemptions (Kotlin/Scala/Groovy invoke/apply/call) do NOT suppress
                         // it: when the broad fan-out DROPS NAMED project impls (`!cha.isEmpty()`), one of
-                        // them can do real I/O, so honest Unknown — not silent-pure (the round-11 hole). BUT a
-                        // function-object dispatch whose dropped impls are ALL synthetic LAMBDAS raises nothing
-                        // — their effect is captured at the lambda creation site, and they're named synthetic
-                        // classes in byName (NOT empty cha as a stale comment claimed), so a >12-lambda
-                        // higher-order site would otherwise falsely flood Unknown (round-12 regression).
-                        boolean allLambdaImpls = dispatchExempt && !isObjectProtocolExempt(min.name, min.desc)
-                                && chaImplsAllSynthetic(min.owner, min.name, min.desc);
-                        if (broad && !isObjectProtocolExempt(min.name, min.desc) && !allLambdaImpls
-                                && effect == null && !springTyped
+                        // them can do real I/O, so honest Unknown — not silent-pure (the round-11 hole). This
+                        // INCLUDES a broad fan-out over synthetic Kotlin/Scala/Groovy LAMBDA classes: their
+                        // invoke()/apply() body is reachable ONLY through this dispatch edge (a `new Lam()`
+                        // edges <init>, NOT invoke — unlike a Java indy lambda whose body is edged at the indy
+                        // site), so suppressing the Unknown here AND dropping the edge made an effectful lambda
+                        // SILENT-PURE (a round-12 chaImplsAllSynthetic regression — reverted). A >12-lambda
+                        // higher-order site reporting Unknown is the SOUND over-approximation (the dispatcher
+                        // invokes an unresolvable function), not a bug; the precise effects are still captured
+                        // at each lambda's own rooted invoke() entry (the kotlin/Function RUNTIME_OVERRIDES row).
+                        if (broad && !isObjectProtocolExempt(min.name, min.desc) && effect == null && !springTyped
                                 && (isProjectIfaceOrAbstract(min.owner) || !cha.isEmpty())) {
                             dir.add("Unknown");
                             String why = isProjectIfaceOrAbstract(min.owner)
@@ -2177,6 +2178,15 @@ public class Candor {
     static void clinitEdge(String callerId, String internalOwner) {
         if (classesWithClinit.contains(internalOwner))
             edges.get(callerId).add(internalOwner.replace('/', '.') + ".<clinit>");
+        // JVMS §5.5: initializing a class FIRST initializes its superclasses — so touching `Sub` runs
+        // `Base.<clinit>` too. Edge to every project SUPERCLASS's <clinit> as well, else an effect in a base
+        // class's static initializer is silently dropped when only the subclass is touched (round-13 hole;
+        // the 0.5.2/0.5.3 clinit work fixed direct-class transitivity, not the superclass chain). Sound
+        // over-approximation (a super-INTERFACE without a default method isn't initialized by a subclass load,
+        // but edging its <clinit> at worst over-reports). transSupers is cached, so this is cheap.
+        for (String sup : transSupers(internalOwner))
+            if (!sup.equals(internalOwner) && classesWithClinit.contains(sup))
+                edges.get(callerId).add(sup.replace('/', '.') + ".<clinit>");
     }
 
     /** The JVM's STRUCTURAL invokedynamic bootstrap factories: lambda/method-ref creation, string
@@ -2458,7 +2468,32 @@ public class Candor {
             new String[] {"servlet/http/HttpSessionListener", "sessionCreated", null},
             new String[] {"servlet/http/HttpSessionListener", "sessionDestroyed", null},
             new String[] {"servlet/ServletRequestListener", "requestInitialized", null},
-            new String[] {"servlet/ServletRequestListener", "requestDestroyed", null});
+            new String[] {"servlet/ServletRequestListener", "requestDestroyed", null},
+            // More container-invoked framework callbacks (round-13): Spring Security auth (loadUserByUsername
+            // — a DB/LDAP lookup on every login), Spring *Aware injected setters + SmartInitializingSingleton,
+            // JAX-RS container filters + ExceptionMapper, RxJava Observer (distinct from reactivestreams),
+            // LMAX Disruptor EventHandler, jakarta.websocket Endpoint. All runtime-invoked, segment-gated.
+            new String[] {"security/core/userdetails/UserDetailsService", "loadUserByUsername", null},
+            new String[] {"context/ApplicationContextAware", "setApplicationContext", null},
+            new String[] {"context/EnvironmentAware", "setEnvironment", null},
+            new String[] {"beans/factory/BeanFactoryAware", "setBeanFactory", null},
+            new String[] {"beans/factory/BeanNameAware", "setBeanName", null},
+            new String[] {"context/ResourceLoaderAware", "setResourceLoader", null},
+            new String[] {"context/ApplicationEventPublisherAware", "setApplicationEventPublisher", null},
+            new String[] {"web/context/ServletContextAware", "setServletContext", null},
+            new String[] {"beans/factory/SmartInitializingSingleton", "afterSingletonsInstantiated", null},
+            new String[] {"ws/rs/container/ContainerRequestFilter", "filter", null},
+            new String[] {"ws/rs/container/ContainerResponseFilter", "filter", null},
+            new String[] {"ws/rs/ext/ExceptionMapper", "toResponse", null},
+            new String[] {"io/reactivex/Observer", "onNext", null},               // RxJava 2
+            new String[] {"io/reactivex/Observer", "onError", null},
+            new String[] {"io/reactivex/Observer", "onComplete", null},
+            new String[] {"io/reactivex/rxjava3/core/Observer", "onNext", null},   // RxJava 3
+            new String[] {"io/reactivex/rxjava3/core/Observer", "onError", null},
+            new String[] {"io/reactivex/rxjava3/core/Observer", "onComplete", null},
+            new String[] {"lmax/disruptor/EventHandler", "onEvent", null},
+            new String[] {"jakarta/websocket/Endpoint", "onOpen", null},
+            new String[] {"javax/websocket/Endpoint", "onOpen", null});
 
     /** The number of CHA targets above which a CHA-EXEMPT dispatch (Object protocol / function-interface
      *  / task verb) is treated as a broad smear and its fan-out dropped. An app's handful of Runnables /
@@ -2557,7 +2592,16 @@ public class Candor {
         return internalOwner.startsWith("java/sql/") || internalOwner.startsWith("javax/persistence/")
                 || internalOwner.startsWith("jakarta/persistence/") || internalOwner.startsWith("org/hibernate/")
                 || internalOwner.startsWith("org/springframework/jdbc/")
-                || internalOwner.equals("android/database/sqlite/SQLiteDatabase");
+                || internalOwner.equals("android/database/sqlite/SQLiteDatabase")
+                // The raw-SQL DRIVERS classified Db (0.5.24/0.5.25): their SQL string args carry tables too.
+                // Without them, a method mixing an allowed JDBC table with a forbidden jOOQ/jdbi table reported
+                // only the allowed one → AS-EFF-008 certified a method hitting the forbidden table (round-13
+                // gate EVASION). NB: Mongo is deliberately ABSENT — a collection name is not SQL and tablesInSql
+                // (needs a leading SQL keyword) extracts nothing from it anyway.
+                || internalOwner.startsWith("org/jooq/") || internalOwner.startsWith("org/jdbi/")
+                || internalOwner.startsWith("org/apache/ibatis/") || internalOwner.startsWith("org/neo4j/driver/")
+                || internalOwner.startsWith("com/datastax/oss/") || internalOwner.startsWith("io/r2dbc/")
+                || internalOwner.equals("org/springframework/data/jdbc/core/JdbcAggregateTemplate");
     }
 
     /** The §4 conventionally-pure object protocol — never an effect, even on an effect-bearing owner.
@@ -2619,6 +2663,11 @@ public class Candor {
         r.add("annotation/JsonAnySetter");
         r.add("annotation/JsonAnyGetter");
         r.add("ejb/Schedule");   // EJB timer (jakarta/javax) — container-invoked on a schedule
+        // jakarta/javax.websocket POJO @ServerEndpoint handlers — the container invokes the @OnMessage/
+        // @OnOpen/@OnClose/@OnError methods with no project call site, and there's no interface form for the
+        // annotated style (round-13). The substring covers javax/ + jakarta/ websocket.
+        r.add("websocket/OnMessage"); r.add("websocket/OnOpen");
+        r.add("websocket/OnClose"); r.add("websocket/OnError");
         ROOT_ANNOTATIONS = List.copyOf(r);
     }
 
@@ -2794,29 +2843,6 @@ public class Candor {
     }
 
     /** CHA: project subtypes-or-self of `owner` that provide a concrete (name,desc) impl. */
-    /** Whether EVERY concrete impl a CHA dispatch over (owner,name,desc) resolves to is a SYNTHETIC class —
-     *  a compiler-generated lambda/closure body, NOT a named project class. Kotlin/Scala/Groovy lambdas
-     *  compile to synthetic FunctionN/Closure impls whose effect is captured at the lambda's CREATION site
-     *  (the indy/new edge), so a broad fan-out that drops them need NOT raise Unknown at the dispatcher — the
-     *  premise "lambdas have empty cha" was FALSE (they're named synthetic classes in byName), which made a
-     *  >CHA_FANOUT_LIMIT higher-order site over PURE lambdas falsely report Unknown (a round-12 precision
-     *  regression). A NAMED (non-synthetic) implementor IS still flagged, so the round-11 soundness gain
-     *  (a named effectful impl visible from the caller) is preserved. Conservative: an INHERITED concrete
-     *  (a named base, not a lambda) → false (raise Unknown). Mirrors chaTargets' contribution logic. */
-    static boolean chaImplsAllSynthetic(String owner, String name, String desc) {
-        boolean any = false;
-        for (String cName : subtypeIndex.getOrDefault(owner, List.of())) {
-            ClassNode c = byName.get(cName);
-            if (declaresConcrete(c, name, desc)) {
-                any = true;
-                if ((c.access & Opcodes.ACC_SYNTHETIC) == 0) return false; // a NAMED implementor
-            } else if (nearestConcreteSuper(c.name, name, desc) != null) {
-                return false; // an inherited concrete impl — a named base, not a lambda
-            }
-        }
-        return any; // true only if ≥1 impl and ALL were synthetic lambdas
-    }
-
     static List<String> chaTargets(String owner, String name, String desc) {
         Set<String> out = new LinkedHashSet<>();
         // O(subtypes-of-owner) via the precomputed reverse index instead of scanning ALL classes. The
@@ -3344,6 +3370,15 @@ public class Candor {
                     || method.equals("supportsFileAttributeView")))
             return "Fs";
         if (owner.equals("java.io.FileDescriptor") && method.equals("sync")) return "Fs";
+        // javax.imageio.ImageIO — the dominant image read/write API (analog of FileReader/Files). Gate to the
+        // FILE-descriptor overloads: read(File)/write(…,File) do Fs; read(URL) does Net; the stream overloads
+        // (read(InputStream)/write(…,OutputStream)) wrap a caller-supplied stream and stay pure (the Fs is on
+        // the underlying FileInputStream, caught at its construction).
+        if (owner.equals("javax.imageio.ImageIO")) {
+            if (method.equals("read") && desc.startsWith("(Ljava/io/File;")) return "Fs";
+            if (method.equals("read") && desc.startsWith("(Ljava/net/URL;")) return "Net";
+            if (method.equals("write") && desc.contains("Ljava/io/File;")) return "Fs";
+        }
         // commons-io FileUtils/IOUtils + guava Files/MoreFiles — the ubiquitous file-convenience libs (the
         // analog of the modeled java.nio.file.Files/FileInputStream/FileWriter). Verb-gated to the file
         // read/write/copy/move/delete operators; the pure helpers (closeQuietly, lineIterator builders) and
@@ -3357,9 +3392,12 @@ public class Candor {
                     || method.startsWith("openOutputStream") || method.startsWith("iterateFiles")))
             return "Fs";
         if ((owner.equals("com.google.common.io.Files") || owner.equals("com.google.common.io.MoreFiles"))
+                // NB: asByteSource/asCharSource/asByteSink/asCharSink are LAZY FACTORIES — they return a
+                // Source/Sink VIEW and touch no file until a terminal read/write, so classifying them Fs
+                // FABRICATED on a provably-pure builder (round-13 cardinal sin). Only the eager verbs below
+                // do I/O.
                 && (method.startsWith("toByteArray") || method.startsWith("write") || method.startsWith("copy")
-                    || method.startsWith("move") || method.startsWith("readLines") || method.equals("asByteSource")
-                    || method.equals("asCharSource") || method.equals("asByteSink") || method.equals("asCharSink")
+                    || method.startsWith("move") || method.startsWith("readLines")
                     || method.startsWith("createParentDirs") || method.startsWith("touch")
                     || method.startsWith("deleteRecursively") || method.startsWith("deleteDirectoryContents")))
             return "Fs";
@@ -3623,7 +3661,12 @@ public class Candor {
                 || owner.equals("java.rmi.registry.LocateRegistry")
                 // The JDK's built-in HTTP server binds a listening socket (create/bind) and serves it.
                 || (owner.equals("com.sun.net.httpserver.HttpServer")
-                    && (method.equals("create") || method.equals("bind") || method.equals("start"))))
+                    && (method.equals("create") || method.equals("bind") || method.equals("start")))
+                // JMX remote — JMXConnectorFactory.connect opens a remote management channel (RMI/JMXMP);
+                // JMXConnector.getMBeanServerConnection materializes it. Same remote-channel shape as RMI/JNDI.
+                || (owner.equals("javax.management.remote.JMXConnectorFactory") && method.equals("connect"))
+                || (owner.equals("javax.management.remote.JMXConnector")
+                    && (method.equals("connect") || method.equals("getMBeanServerConnection"))))
             return "Net";
         // Messaging (Net-family) — Spring templates + the RAW broker/mail clients (as ubiquitous as the
         // templates that were already modeled; each was silent-pure, not even Unknown, because a pinned

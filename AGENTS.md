@@ -123,3 +123,10 @@ the opacity is irreducible (`reflect:`/`native:`) or fixable by widening the ana
 the opaque call; methods that merely *inherit* `Unknown` carry it in `inferred` with no why. To find
 what taints an inheritor, follow its `calls` edges down (or `where Unknown` and intersect) to the
 root. Never conclude a method is pure while it is marked unresolved.
+
+`invisible` is the other incompleteness flag, and it qualifies `inferred` the same way: it lists the
+external packages a method (transitively) calls into where candor's classifier could not see — effects
+through them are NOT in `inferred`. So `inferred: []` with a non-empty `invisible` means **"pure as far
+as candor could analyse, but it could not see through these packages"** — not "pure". Treat an effect
+claim on any method carrying `invisible` as a lower bound, and read the source (or model those packages)
+before relying on it. The per-scan κ line on stderr is the same disclosure aggregated.

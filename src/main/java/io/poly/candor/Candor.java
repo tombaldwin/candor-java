@@ -167,6 +167,11 @@ public class Candor {
     // The κ-coverage ledger (the Rust/TS move): external packages this code calls where the
     // classifier never fires are INVISIBLE, not Unknown — counted here, named in the receipt.
     static final Map<String, Integer> kappaSeen = new TreeMap<>();      // external package -> call count
+    // fn -> the external packages it DIRECTLY calls into where the classifier FLOORED the call (returned
+    // pure). Post-filtered to the genuinely-blind packages (κ never fired anywhere) + propagated transitively
+    // → the per-method `invisible` disclosure: a method's effect set is reported HONESTLY (it carries the
+    // packages candor couldn't see through, so a `pure`/partial effect set is never an unqualified claim).
+    static final Map<String, TreeSet<String>> blindDirect = new HashMap<>();
     // reflective calls with a LITERAL method name in the same body (`getMethod("x")` … `invoke`):
     // the literal names the target, so a unique project match gets an EDGE alongside the honest
     // Unknown (the density review's JVM slice — recall without guessing).
@@ -215,6 +220,7 @@ public class Candor {
         hostsDirect.clear(); cmdsDirect.clear(); pathsDirect.clear(); tablesDirect.clear();
         surfaceIncomplete.clear();
         kappaSeen.clear(); reflectPairs.clear(); kappaClassified.clear(); depCoveredPkgs.clear();
+        blindDirect.clear();
     }
 
     /** The analysis core, factored out of {@link #main} so it is REENTRANT (resets first) and free of
@@ -1821,6 +1827,10 @@ public class Candor {
                         if (!pkg.isEmpty() && !kappaCovers(pkg)) {
                             kappaSeen.merge(pkg, 1, Integer::sum);
                             if (effect != null) kappaClassified.add(pkg);
+                            // A FLOORED call (classifier returned pure) into an external package is a candidate
+                            // per-method blind spot. Post-filtered to packages κ never classified ANYWHERE
+                            // (so a known package's pure method isn't disclosed) and propagated to callers.
+                            else blindDirect.computeIfAbsent(id, k -> new TreeSet<>()).add(pkg);
                         }
                     }
                     // An injection-class effect on a caller-derived argument is an injection surface.
@@ -4223,13 +4233,25 @@ public class Candor {
         Map<String, TreeSet<String>> cmdsAcc = literalFixpoint(cmdsDirect);
         Map<String, TreeSet<String>> pathsAcc = literalFixpoint(pathsDirect);
         Map<String, TreeSet<String>> tablesAcc = literalFixpoint(tablesDirect);
+        // Per-method BLIND SPOTS (honesty disclosure): the external packages a method transitively reaches
+        // where the classifier was floored AND κ never classified the package ANYWHERE (a genuine blind spot,
+        // not a known-pure stdlib op). Propagated along the call graph like the literal surfaces, then
+        // intersected with the global-blind set — so `inferred` is never an unqualified claim: a `pure`
+        // method that reaches an unanalyzable package carries it in `invisible`.
+        Set<String> globalBlind = kappaSeen.keySet().stream()
+                .filter(p -> !kappaClassified.contains(p) && !depCoveredPkgs.contains(p))
+                .collect(Collectors.toSet());
+        Map<String, TreeSet<String>> blindAcc = literalFixpoint(blindDirect);
         List<Map<String, Object>> entries = new ArrayList<>();
         inferred.entrySet().stream()
-                // Keep a method if it has effects, is an entry point, OR its class declares a
-                // capability — so a class that injects-but-never-uses one (overdeclared /
-                // AS-EFF-002) is still visible in the JSON even when all its methods are pure.
+                // Keep a method if it has effects, is an entry point, has a BLIND SPOT (an unanalyzable
+                // reach — so the honesty disclosure survives even on a `pure`-looking method), OR its class
+                // declares a capability (an injects-but-never-uses class stays visible, overdeclared /
+                // AS-EFF-002).
                 .filter(e -> {
                     if (!e.getValue().isEmpty() || entryPoints.contains(e.getKey())) return true;
+                    if (blindAcc.getOrDefault(e.getKey(), new TreeSet<>()).stream().anyMatch(globalBlind::contains))
+                        return true;
                     String dc = fnToClass.get(e.getKey());
                     return dc != null && !declaredByClass.getOrDefault(dc, new TreeSet<>()).isEmpty();
                 })
@@ -4253,6 +4275,13 @@ public class Candor {
                     m.put("fn", fn);
                     m.put("loc", loc.getOrDefault(fn, "?"));
                     m.put("inferred", new ArrayList<>(inf));
+                    // HONESTY: the external packages this method transitively reaches that candor could NOT
+                    // analyse (κ floored them, never classified anywhere) — effects through them are NOT in
+                    // `inferred`. So `inferred` is never read as a completeness claim: a `pure` method that
+                    // calls into one of these is disclosed, not silently certified. Omitted when none.
+                    List<String> invisible = blindAcc.getOrDefault(fn, new TreeSet<>()).stream()
+                            .filter(globalBlind::contains).sorted().collect(Collectors.toList());
+                    if (!invisible.isEmpty()) m.put("invisible", invisible);
                     m.put("direct", new ArrayList<>(direct.getOrDefault(fn, new TreeSet<>())));
                     m.put("declared", new ArrayList<>(declared));
                     m.put("undeclared", undeclared);

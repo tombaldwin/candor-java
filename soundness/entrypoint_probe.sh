@@ -11,6 +11,33 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 JAR="$(ls "$ROOT"/build/libs/candor-java-*-all.jar 2>/dev/null | sort | tail -1)"
 [ -n "${JAR:-}" ] || { echo "entrypoint-probe: no built jar (run gradle shadowJar first)"; exit 1; }
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+# Framework stubs (real package paths so the supertype/annotation gate matches the FQN, not a nested name).
+# candor roots on the supertype-name substring / annotation desc, so a faithful stub is enough — no jars.
+mkdir -p "$TMP/jakarta/persistence" "$TMP/com/netflix/hystrix" \
+         "$TMP/org/springframework/boot/actuate/health" "$TMP/jakarta/enterprise/event" \
+         "$TMP/com/google/common/eventbus"
+cat > "$TMP/jakarta/persistence/AttributeConverter.java" <<'EOF'
+package jakarta.persistence;
+public interface AttributeConverter<X,Y> { Y convertToDatabaseColumn(X x); X convertToEntityAttribute(Y y); }
+EOF
+cat > "$TMP/com/netflix/hystrix/HystrixCommand.java" <<'EOF'
+package com.netflix.hystrix;
+public abstract class HystrixCommand<T> { protected abstract T run() throws Exception; }
+EOF
+cat > "$TMP/org/springframework/boot/actuate/health/HealthIndicator.java" <<'EOF'
+package org.springframework.boot.actuate.health;
+public interface HealthIndicator { Object health(); }
+EOF
+cat > "$TMP/jakarta/enterprise/event/Observes.java" <<'EOF'
+package jakarta.enterprise.event;
+import java.lang.annotation.*;
+@Retention(RetentionPolicy.RUNTIME) @Target(ElementType.PARAMETER) public @interface Observes {}
+EOF
+cat > "$TMP/com/google/common/eventbus/Subscribe.java" <<'EOF'
+package com.google.common.eventbus;
+import java.lang.annotation.*;
+@Retention(RetentionPolicy.RUNTIME) @Target(ElementType.METHOD) public @interface Subscribe {}
+EOF
 cat > "$TMP/EP.java" <<'EOF'
 import java.io.*;
 import java.util.*;
@@ -41,6 +68,27 @@ public class EP {
   static class Maker {
     @JsonCreator static Maker of(String s) { System.getenv("MK"); return new Maker(); }
   }
+  // Round-10 runtime-invoked roots: JPA AttributeConverter, Hystrix command body, Spring Boot
+  // HealthIndicator, CDI @Observes (PARAM annotation), Guava EventBus @Subscribe, Swing ActionListener.
+  static class Conv implements jakarta.persistence.AttributeConverter<String,String> {
+    public String convertToDatabaseColumn(String x) { try { new java.net.Socket("127.0.0.1",9).close(); } catch (Exception e) {} return x; }
+    public String convertToEntityAttribute(String y) { return y; }
+  }
+  static class Cmd extends com.netflix.hystrix.HystrixCommand<String> {
+    protected String run() { try { new java.net.Socket("127.0.0.1",9).close(); } catch (Exception e) {} return null; }
+  }
+  static class Health implements org.springframework.boot.actuate.health.HealthIndicator {
+    public Object health() { try { new java.net.Socket("127.0.0.1",9).close(); } catch (Exception e) {} return null; }
+  }
+  static class Obs {
+    public void onEvent(@jakarta.enterprise.event.Observes Object e) { try { new java.net.Socket("127.0.0.1",9).close(); } catch (Exception ex) {} }
+  }
+  static class Sub {
+    @com.google.common.eventbus.Subscribe public void handle(Object e) { try { new java.net.Socket("127.0.0.1",9).close(); } catch (Exception ex) {} }
+  }
+  static class Act implements java.awt.event.ActionListener {
+    public void actionPerformed(java.awt.event.ActionEvent e) { try { new java.net.Socket("127.0.0.1",9).close(); } catch (Exception ex) {} }
+  }
   // NON-implementor decoy: same method NAMES + signatures, but the class implements NONE of the runtime
   // interfaces — must NOT be rooted (the supertype/annotation gate guards against fabrication). Effectful
   // so the methods appear in the report (candor omits pure fns) and the entryPoint flag can be asserted.
@@ -50,10 +98,11 @@ public class EP {
     public int compare(Object a, Object b) { try { new FileOutputStream("/tmp/candor_ep_dc").close(); } catch (Exception e) {} return 0; }
     public int compareTo(Object o) { System.getenv("DCT"); return 0; }
   }
-  public static void main(String[] a) { new S(); new X(); new Cmp(); new Ord(); new Handler(); Maker.of(""); new D(); }
+  public static void main(String[] a) { new S(); new X(); new Cmp(); new Ord(); new Handler(); Maker.of("");
+    new Conv(); new Cmd(); new Health(); new Obs(); new Sub(); new Act(); new D(); }
 }
 EOF
-javac -d "$TMP/out" "$TMP/EP.java" 2>/dev/null || { echo "entrypoint-probe: GENERATOR BUG — fixture does not compile"; exit 1; }
+javac -d "$TMP/out" $(find "$TMP" -name '*.java') 2>/dev/null || { echo "entrypoint-probe: GENERATOR BUG — fixture does not compile"; exit 1; }
 java -jar "$JAR" "$TMP/out" --json "$TMP/r.json" >/dev/null 2>&1 || { echo "entrypoint-probe: scan FAILED on the fixture"; exit 1; }
 python3 - "$TMP/r.json" <<'PY'
 import json, sys
@@ -61,7 +110,9 @@ fns = {f["fn"]: f for f in json.load(open(sys.argv[1]))["functions"]}
 ep  = lambda n: fns.get(n, {}).get("entryPoint", False)
 must_root = ["EP$S.readObject", "EP$S.writeObject", "EP$S.readResolve", "EP$S.finalize",
              "EP$X.readExternal", "EP$X.writeExternal",
-             "EP$Cmp.compare", "EP$Ord.compareTo", "EP$Handler.invoke", "EP$Maker.of"]
+             "EP$Cmp.compare", "EP$Ord.compareTo", "EP$Handler.invoke", "EP$Maker.of",
+             "EP$Conv.convertToDatabaseColumn", "EP$Cmd.run", "EP$Health.health",
+             "EP$Obs.onEvent", "EP$Sub.handle", "EP$Act.actionPerformed"]
 must_not  = ["EP$D.readObject", "EP$D.readResolve", "EP$D.compare", "EP$D.compareTo"]
 bad = []
 for n in must_root:
@@ -73,6 +124,7 @@ if bad:
     print("entrypoint-probe: FAIL")
     for b in bad: print("  " + b)
     sys.exit(1)
-print("entrypoint-probe: OK — serialization/finalize/Comparator/Comparable/InvocationHandler/@JsonCreator "
-      "callbacks rooted; non-implementor decoy not fabricated")
+print("entrypoint-probe: OK — serialization/finalize/Comparator/Comparable/InvocationHandler/@JsonCreator/"
+      "AttributeConverter/Hystrix/HealthIndicator/@Observes/@Subscribe/ActionListener callbacks rooted; "
+      "non-implementor decoy not fabricated")
 PY

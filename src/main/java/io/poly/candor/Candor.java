@@ -1054,11 +1054,26 @@ public class Candor {
 
     /** The bare hostname of an endpoint (port + any residue stripped), so the allowlist matches
      *  port-insensitively: `api.stripe.com:443` is covered by `allow Net … api.stripe.com`. */
+    static int countChar(String s, char c) {
+        int n = 0;
+        for (int i = 0; i < s.length(); i++) if (s.charAt(i) == c) n++;
+        return n;
+    }
+
     static String hostPart(String h) {
         String x = h;
         int scheme = x.indexOf("://"); if (scheme >= 0) x = x.substring(scheme + 3);
         int slash = x.indexOf('/');    if (slash >= 0)  x = x.substring(0, slash);
         int at = x.lastIndexOf('@');   if (at >= 0)     x = x.substring(at + 1);
+        // IPv6-aware (mirror candor-rust policy::host_part): a bracketed `[ipv6]` or `[ipv6]:port` yields
+        // the bracketed host; a BARE IPv6 literal (>1 colon, no brackets) has no port to strip and is
+        // returned whole — a naive first-colon split collapsed every `2001:db8::*` to `2001`, so one
+        // allowed IPv6 accepted any address in that block (gate-evasion). host/IPv4 (≤1 colon) splits.
+        if (x.startsWith("[")) {
+            int close = x.indexOf(']');
+            return close >= 0 ? x.substring(1, close) : x.substring(1);
+        }
+        if (countChar(x, ':') > 1) return x;   // bare IPv6 literal — no port suffix to strip
         int colon = x.indexOf(':');    if (colon >= 0)  x = x.substring(0, colon);
         return x;
     }
@@ -1611,6 +1626,12 @@ public class Candor {
             // annotation type's own meta-annotations recursively.
             if (annoOrMetaMatches(mn.visibleAnnotations, ROOT_ANNOTATIONS))
                 entryPoints.add(id);
+            // CDI observer method: `void onX(@Observes Event e)` is invoked by the CDI container when the
+            // event fires, with NO project call site (the @EventListener shape). Unlike the mappings the
+            // marker is a PARAMETER annotation, so the method-annotation path above misses it — scan the
+            // per-parameter annotation lists. Covers javax/ + jakarta/ enterprise.event.Observes(Async).
+            if (anyParamAnnoMatches(mn, PARAM_ROOT_ANNOTATIONS))
+                entryPoints.add(id);
             // gRPC service handler: a project class extends a generated `*ImplBase` and overrides an RPC
             // method whose signature carries an `io.grpc.stub.StreamObserver` — invoked by the gRPC server
             // runtime with no in-project call site. RUNTIME_OVERRIDES can't key on it (the RPC method names
@@ -2116,7 +2137,12 @@ public class Candor {
             // logging, metrics push) has no in-project call site.
             "aspectj/lang/annotation/Around", "aspectj/lang/annotation/Before",
             "aspectj/lang/annotation/After", "aspectj/lang/annotation/AfterReturning",
-            "aspectj/lang/annotation/AfterThrowing");
+            "aspectj/lang/annotation/AfterThrowing",
+            // Event-bus subscribers — the bus invokes the @Subscribe method on event delivery with no
+            // project call site (the @EventListener shape). Guava EventBus (`common/eventbus/Subscribe`)
+            // + Greenrobot EventBus (`greenrobot/eventbus/Subscribe`, method-name `onEvent*` historically
+            // but @Subscribe in v3). A handler that persists/pushes is otherwise orphaned.
+            "common/eventbus/Subscribe", "greenrobot/eventbus/Subscribe");
 
     /** Container-invoked bean lifecycle callbacks (`@PostConstruct` init, `@PreDestroy` shutdown). Like
      *  the mappings/listeners they're called by the framework with no project call site — a `@PreDestroy`
@@ -2285,7 +2311,33 @@ public class Candor {
             new String[] {"reactivestreams/Subscriber", "onError", null},
             new String[] {"reactivestreams/Subscriber", "onComplete", null},
             new String[] {"java/nio/channels/CompletionHandler", "completed", null},
-            new String[] {"java/nio/channels/CompletionHandler", "failed", null});
+            new String[] {"java/nio/channels/CompletionHandler", "failed", null},
+            // JPA AttributeConverter — the persistence provider invokes convert* on a project @Converter
+            // during entity load/store with NO project call site (the orphan shape); an encrypting/
+            // remote-resolving converter does real I/O. Covers javax/ + jakarta/ persistence.
+            new String[] {"persistence/AttributeConverter", "convertToDatabaseColumn", null},
+            new String[] {"persistence/AttributeConverter", "convertToEntityAttribute", null},
+            // Netflix Hystrix command body + fallback — the Hystrix runtime invokes run()/getFallback() on
+            // a worker thread when the command is executed/queued, no direct project call site.
+            new String[] {"netflix/hystrix/HystrixCommand", "run", null},
+            new String[] {"netflix/hystrix/HystrixCommand", "getFallback", null},
+            new String[] {"netflix/hystrix/HystrixObservableCommand", "construct", null},
+            // Spring Boot Actuator health check — the actuator endpoint invokes health() on a registered
+            // HealthIndicator (often pinging a DB/remote) with no project call site.
+            new String[] {"boot/actuate/health/HealthIndicator", "health", null},
+            new String[] {"boot/actuate/info/InfoContributor", "contribute", null},
+            // GUI event callbacks — the UI toolkit's event-dispatch thread invokes these on a registered
+            // listener with no project call site (the servlet/Runnable shape). Swing/AWT ActionListener +
+            // SwingWorker background work; JavaFX EventHandler + Application lifecycle; Android click/message
+            // handlers. A handler that hits the network/disk/DB is otherwise orphaned from every root.
+            new String[] {"java/awt/event/ActionListener", "actionPerformed", null},
+            new String[] {"javax/swing/SwingWorker", "doInBackground", null},
+            new String[] {"javax/swing/SwingWorker", "done", null},
+            new String[] {"javafx/event/EventHandler", "handle", null},
+            new String[] {"javafx/application/Application", "start", null},
+            new String[] {"javafx/application/Application", "init", null},
+            new String[] {"android/view/View$OnClickListener", "onClick", null},
+            new String[] {"android/os/Handler", "handleMessage", null});
 
     /** The number of CHA targets above which a CHA-EXEMPT dispatch (Object protocol / function-interface
      *  / task verb) is treated as a broad smear and its fan-out dropped. An app's handful of Runnables /
@@ -2385,6 +2437,21 @@ public class Candor {
                 || method.equals("getClass");
     }
 
+    /** AWS v1/v2 client config getters that match the `get*` Net verb but make no request — pure local
+     *  accessors of already-resolved config. Without this carve-out the `*Client` Net rule fabricates Net
+     *  on a provably-pure getter (cardinal sin). NB: getBucketRegionViaHeadRequest is deliberately absent
+     *  (it issues a HEAD → genuinely Net). */
+    static boolean isAwsPureClientGetter(String method) {
+        switch (method) {
+            case "getRegion": case "getRegionName": case "getRegionNameFromAuthorityOrSigner":
+            case "getSignerRegion": case "getSignerRegionOverride": case "getResourceUrl":
+            case "getUrl": case "getCachedResponseMetadata": case "getServiceName":
+            case "getEndpointPrefix": case "getClientConfiguration": case "getServiceNameIntern":
+                return true;
+            default: return false;
+        }
+    }
+
     static boolean supertypeMatches(String internalSuper, String row) {
         if (internalSuper.equals(row) || internalSuper.endsWith("/" + row)) return true;
         return row.endsWith("Function") && internalSuper.startsWith(row);
@@ -2416,6 +2483,26 @@ public class Candor {
         r.add("annotation/JsonAnyGetter");
         r.add("ejb/Schedule");   // EJB timer (jakarta/javax) — container-invoked on a schedule
         ROOT_ANNOTATIONS = List.copyOf(r);
+    }
+
+    /** Marker annotations that appear on a PARAMETER (not the method) yet still mean the runtime invokes
+     *  the method with no project call site. CDI's `@Observes`/`@ObservesAsync` are the canonical case:
+     *  `void on(@Observes E e)` is a container-fired event observer. Covers javax/ + jakarta/ enterprise. */
+    static final List<String> PARAM_ROOT_ANNOTATIONS = List.of(
+            "enterprise/event/Observes", "enterprise/event/ObservesAsync");
+
+    /** Whether any of the method's parameters carries one of the param-root markers (meta-annotation aware).
+     *  ASM exposes per-parameter annotations as a {@code List<AnnotationNode>[]} (one slot per parameter). */
+    static boolean anyParamAnnoMatches(MethodNode mn, List<String> markers) {
+        return paramAnnoListHas(mn.visibleParameterAnnotations, markers)
+                || paramAnnoListHas(mn.invisibleParameterAnnotations, markers);
+    }
+
+    static boolean paramAnnoListHas(List<AnnotationNode>[] params, List<String> markers) {
+        if (params == null) return false;
+        for (List<AnnotationNode> p : params)
+            if (annoOrMetaMatches(p, markers)) return true;
+        return false;
     }
 
     /** Whether any annotation in `anns` — DIRECTLY or via its META-annotation chain — matches a marker.
@@ -3229,7 +3316,14 @@ public class Candor {
                     || method.startsWith("query") || method.startsWith("scan") || method.startsWith("update")
                     || method.startsWith("describe") || method.startsWith("invoke") || method.startsWith("upload")
                     || method.startsWith("download") || method.startsWith("receive") || method.startsWith("publish"))
-                && !isConventionallyPure(method)) return "Net";
+                && !isConventionallyPure(method)
+                // AWS v1 CLIENT classes themselves carry pure config getters that match `get*` but make
+                // no request: getRegion/getRegionName/getSignerRegion/getResourceUrl/getUrl/
+                // getCachedResponseMetadata, etc. The 0.5.21 `owner.endsWith("Client")` gate stopped the
+                // v1 *model* getters fabricating, but the client's OWN config getters still matched get* →
+                // FABRICATED Net on a provably-pure accessor (cardinal sin, regression). Carve them out by
+                // exact name. getBucketRegionViaHeadRequest is NOT here → stays Net (it does a HEAD).
+                && !isAwsPureClientGetter(method)) return "Net";
         if (owner.equals("java.net.Socket") || owner.equals("java.net.ServerSocket")
                 || owner.equals("java.net.DatagramSocket")
                 // MulticastSocket extends DatagramSocket; a receiver TYPED as MulticastSocket emits
@@ -3422,12 +3516,45 @@ public class Candor {
                 // javax.sql.DataSource.getConnection — the POOLED-connection acquisition every HikariCP/
                 // Tomcat-JDBC/Spring DataSource app uses (interface dispatch lands on this owner); missed
                 // by the java.sql-only list, so the standard connection entry point read silent-pure.
-                || owner.equals("javax.sql.DataSource") || owner.equals("javax.sql.CommonDataSource"))
+                || owner.equals("javax.sql.DataSource") || owner.equals("javax.sql.CommonDataSource")
+                // Concrete connection-pool DataSources: a receiver typed as the concrete pool emits its OWN
+                // owner for getConnection (interface dispatch on javax.sql.DataSource is only seen when the
+                // receiver is typed as the interface). The dominant pools — without these a `HikariDataSource
+                // ds; ds.getConnection()` read silent-pure.
+                || owner.equals("com.zaxxer.hikari.HikariDataSource")
+                || owner.equals("org.apache.tomcat.jdbc.pool.DataSource")
+                || owner.equals("org.apache.commons.dbcp2.BasicDataSource")
+                || owner.equals("org.apache.commons.dbcp.BasicDataSource")
+                || owner.equals("com.mchange.v2.c3p0.ComboPooledDataSource"))
                 && (method.startsWith("execute") || method.equals("getConnection")
                     || method.equals("prepareStatement") || method.equals("prepareCall")
+                    // Connection.isValid pings the server (a real round-trip the execute*-only gate missed).
+                    || method.equals("isValid")
                     // commit/rollback finalize the transaction at the server (a real round-trip);
                     // setAutoCommit(false) begins one — all DB I/O the execute*-only gate missed.
                     || method.equals("commit") || method.equals("rollback") || method.equals("setAutoCommit")))
+            return "Db";
+        // java.sql.Driver.connect opens the physical connection (the layer under DriverManager) — silent-pure
+        // for code that bypasses DriverManager and calls a Driver directly (pool internals, custom routing).
+        if (owner.equals("java.sql.Driver") && method.equals("connect")) return "Db";
+        // ResultSet is a LIVE DB CURSOR: cursor-movement verbs fetch rows from the server (a round-trip in
+        // streaming/forward-only mode), updatable-set writes flush to the DB, and refreshRow re-reads. The
+        // scalar getXxx reads of the CURRENT row are in-memory, so they stay pure (no fabrication — Db on a
+        // cursor-advance is sound). Covers java.sql.ResultSet + RowSet (javax.sql).
+        if ((owner.equals("java.sql.ResultSet") || owner.startsWith("javax.sql.") && owner.endsWith("RowSet"))
+                && (method.equals("next") || method.equals("previous") || method.equals("first")
+                    || method.equals("last") || method.equals("absolute") || method.equals("relative")
+                    || method.equals("refreshRow") || method.equals("insertRow") || method.equals("updateRow")
+                    || method.equals("deleteRow")))
+            return "Db";
+        // DatabaseMetaData catalog queries round-trip to the server (getTables/getColumns/getPrimaryKeys/…
+        // run a system-catalog SELECT). The whole-owner would FABRICATE on its many pure capability getters
+        // (supportsX/getMaxX/getDatabaseProductName), so gate to the catalog-FETCH verbs only.
+        if (owner.equals("java.sql.DatabaseMetaData")
+                && (method.equals("getTables") || method.equals("getColumns") || method.equals("getPrimaryKeys")
+                    || method.equals("getImportedKeys") || method.equals("getExportedKeys")
+                    || method.equals("getIndexInfo") || method.equals("getSchemas") || method.equals("getCatalogs")
+                    || method.equals("getProcedures") || method.equals("getFunctions")))
             return "Db";
         if (owner.equals("org.springframework.jdbc.core.JdbcTemplate")
                 || owner.equals("org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate")

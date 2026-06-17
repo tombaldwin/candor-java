@@ -31,6 +31,11 @@ EFFECTS = {
     # Db was fuzzer-blind (no leaf) — so the whole JDBC/JPA Db classification surface was unexercised by the
     # soundness fuzzer. DriverManager.getConnection is a self-contained Db sink (no param needed).
     "Db":   'try { java.sql.DriverManager.getConnection("jdbc:candor:fuzz"); } catch (Exception e) {}',
+    # Log + Clipboard were also fuzzer-blind (classify-only, never propagation-tested). jul Logger.info is a
+    # Log emit verb; Toolkit.getSystemClipboard is the Clipboard read/write handle. Both self-contained (the
+    # fuzzer only scans bytecode — getSystemClipboard's headless throw is irrelevant + try-guarded anyway).
+    "Log":  'java.util.logging.Logger.getGlobal().info("candor_fuzz");',
+    "Clipboard": 'try { java.awt.Toolkit.getDefaultToolkit().getSystemClipboard(); } catch (Throwable e) {}',
 }
 
 

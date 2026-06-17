@@ -188,6 +188,37 @@ CASES = [
      [
         ("lg.info(\"x\")",  "PRODUCES a log record at INFO — the genuine emit verb"),
      ], "Log"),
+
+    # ---- java.sql.ResultSet: a LIVE DB cursor. Cursor-movement verbs fetch rows (Db); the metadata/config
+    # getters of the cursor object read cached fields and must stay pure (the round-10 ResultSet Db rule
+    # must not paint the whole owner). getString-of-the-current-row is in-memory (classify leaves it pure). ----
+    ("ResultSet", "import java.sql.ResultSet;", "ResultSet rs",
+     [
+        ("rs.getRow()",           "returns the current row NUMBER (cached counter), no fetch"),
+        ("rs.getType()",          "returns the cursor TYPE constant (config), no fetch"),
+        ("rs.getConcurrency()",   "returns the concurrency mode constant (config), no fetch"),
+        ("rs.getFetchSize()",     "returns the fetch-size hint field, no fetch"),
+        ("rs.getFetchDirection()","returns the fetch-direction field, no fetch"),
+        ("rs.getString(1)",       "reads column 1 of the ALREADY-FETCHED current row (in-memory)"),
+     ],
+     [
+        ("rs.next()",       "advances the cursor — fetches the next row (server round-trip)"),
+        ("rs.refreshRow()", "re-reads the current row from the DB"),
+     ], "Db"),
+
+    # ---- java.sql.DatabaseMetaData: catalog QUERIES round-trip (Db); the capability flags / product-info
+    # getters read cached handshake data and must stay pure (the round-10 catalog rule is verb-gated). ----
+    ("DatabaseMetaData", "import java.sql.DatabaseMetaData;", "DatabaseMetaData md",
+     [
+        ("md.getDatabaseProductName()", "returns the product name cached at connect, no query"),
+        ("md.getDriverName()",          "returns the driver name string, no query"),
+        ("md.supportsTransactions()",   "returns a static capability flag, no query"),
+        ("md.getMaxConnections()",      "returns a static capability number, no query"),
+     ],
+     [
+        ("md.getTables(null,null,\"%\",null)", "runs a system-catalog SELECT (round-trip)"),
+        ("md.getColumns(null,null,\"%\",\"%\")", "runs a system-catalog SELECT (round-trip)"),
+     ], "Db"),
 ]
 
 

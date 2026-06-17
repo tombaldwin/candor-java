@@ -219,6 +219,61 @@ CASES = [
         ("md.getTables(null,null,\"%\",null)", "runs a system-catalog SELECT (round-trip)"),
         ("md.getColumns(null,null,\"%\",\"%\")", "runs a system-catalog SELECT (round-trip)"),
      ], "Db"),
+
+    # ---- java.net.MulticastSocket (extends DatagramSocket) — a receiver typed as the SUBCLASS emits
+    # owner=MulticastSocket for the INHERITED pure accessors, which sailed past the Socket carve-out and got
+    # fabricated Net by the whole-owner rule. (The 14-round-old cardinal sin, fixed in 0.5.28 — gated here.) ----
+    ("MulticastSocket", "import java.net.*;", "MulticastSocket s, DatagramPacket p",
+     [
+        ("s.getPort()",        "cached remote-port field"),
+        ("s.getLocalPort()",   "cached local-port field"),
+        ("s.isClosed()",       "closed flag"),
+        ("s.getTimeToLive()",  "cached TTL field, no wire"),
+        ("s.getInterface()",   "cached multicast-interface field"),
+     ],
+     [
+        ("s.send(p)", "transmits a datagram over the wire"),
+     ], "Net"),
+
+    # ---- javax.net.ssl.SSLSocket (extends Socket) — inherited Socket accessors PLUS its own pure handshake-
+    # CONFIG surface (cipher/protocol/parameter get+set touch no wire). Only startHandshake / getOutputStream /
+    # getInputStream / getSession do I/O. (Whole-owner Net fabricated on the config surface; fixed 0.5.28.) ----
+    ("SSLSocket", "import javax.net.ssl.*;", "SSLSocket s",
+     [
+        ("s.getPort()",                  "cached port field"),
+        ("s.getEnabledCipherSuites()",   "handshake config list, no wire"),
+        ("s.getSupportedProtocols()",    "static capability list"),
+        ("s.getUseClientMode()",         "config flag"),
+        ("s.getSSLParameters()",         "config object"),
+     ],
+     [
+        ("s.getOutputStream()", "opens the write side of the TLS connection"),
+        ("s.startHandshake()",  "performs the TLS handshake over the wire"),
+     ], "Net"),
+
+    # ---- java.util.logging.SocketHandler — a network log handler: publish() transmits the record over the
+    # socket (Net, an exfil channel), but the inherited config getters touch nothing. The logging-package gate
+    # would swallow publish as `return null` without the resource-handler carve-out (fixed 0.5.27). ----
+    ("JulSocketHandler", "import java.util.logging.*;", "SocketHandler h, LogRecord rec",
+     [
+        ("h.getLevel()",     "config getter, no I/O"),
+        ("h.getFormatter()", "config getter, no I/O"),
+        ("h.getFilter()",    "config getter, no I/O"),
+     ],
+     [
+        ("h.publish(rec)", "transmits the record over the socket"),
+     ], "Net"),
+
+    # ---- java.util.logging.FileHandler — publish() writes the record to the log file (Fs); config getters
+    # touch nothing. ----
+    ("JulFileHandler", "import java.util.logging.*;", "FileHandler h, LogRecord rec",
+     [
+        ("h.getLevel()",    "config getter, no I/O"),
+        ("h.getEncoding()", "config getter, no I/O"),
+     ],
+     [
+        ("h.publish(rec)", "writes the record to the log file"),
+     ], "Fs"),
 ]
 
 

@@ -75,6 +75,20 @@ def edge_forms(callee, i):
         "super":     (f"new SubS{i}().act();",
                       [f"static class BaseS{i} {{ void act() {{ {callee}(); }} }}",
                        f"static class SubS{i} extends BaseS{i} {{ void act() {{ super.act(); }} }}"]),
+        # SUPERCLASS <clinit> chain: the effect lives in a BASE class's <clinit>; touching the SUBCLASS (a
+        # static call) triggers the base's class-load too (JVMS §5.5), so clinitEdge must walk the supertype
+        # chain. Was a silent-pure hole (candor-java 0.5.26).
+        "clinit_super": (f"SubCl{i}.touch();",
+                      [f"static class BaseCl{i} {{ static {{ {callee}(); }} }}",
+                       f"static class SubCl{i} extends BaseCl{i} {{ static void touch() {{}} }}"]),
+        # METHOD-REF <clinit>: a static method-ref to a PURE body on a class with an effectful <clinit> — the
+        # ref resolution triggers the class load (the indy site must clinitEdge the owner), even though the
+        # referenced body does nothing. Was a silent-pure hole (candor-java 0.5.28).
+        "methodref_clinit": (f"Runnable rmc{i} = HRef{i}::pure; rmc{i}.run();",
+                      [f"static class HRef{i} {{ static {{ {callee}(); }} static void pure() {{}} }}"]),
+        # CTOR-REF <clinit>: same trigger via `H::new`.
+        "ctorref_clinit": (f"java.util.function.Supplier<Object> sct{i} = HCtor{i}::new; sct{i}.get();",
+                      [f"static class HCtor{i} {{ static {{ {callee}(); }} HCtor{i}() {{}} }}"]),
         # ---- concurrency / resource forms: the runtime invokes the body, no in-project call to run() ----
         # Thread with a lambda: the effect is in a `lambda$` synthetic; the SCHEDULING method must
         # inherit it (SEMANTICS §2: closure effects attribute to the nearest enclosing function — the

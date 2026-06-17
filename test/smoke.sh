@@ -696,6 +696,26 @@ sktwo="$(python3 -c "import json;print(next((e.get('hosts',[]) for e in json.loa
 skdyn="$(python3 -c "import json;print(next((e.get('hosts',[]) for e in json.load(open('$W/sk.json'))['functions'] if e['fn']=='billing.Sk.dyn'),[]))")"
 want   "two-arg Socket(host,port) extracts the host"        "$sktwo" 'api.stripe.com'
 absent "a dynamic Socket host is honestly invisible"        "$skdyn" 'stripe'
+# MASKING evasion (the round-15 HIGH): a method with a benign ALLOWED host AND an invisible Net reach (a
+# RUNTIME-host Socket / a host-less Net owner) must NOT be certified by the benign literal — the invisible
+# forbidden endpoint would otherwise slip through. The surface is INCOMPLETE → "cannot be certified".
+cat > "$W/bsrc/billing/Mask.java" <<'J'
+package billing;
+import java.net.*;
+public class Mask {
+  // benign allowed host (api.stripe.com) + a RUNTIME-host socket (invisible endpoint) → must NOT certify
+  public void mask(String evil) throws Exception {
+    new URL("https://api.stripe.com/x").openStream();
+    new Socket(evil, 9000).close();
+  }
+  // only the allowed literal host → certifies cleanly
+  public void clean() throws Exception { new URL("https://api.stripe.com/y").openStream(); }
+}
+J
+javac -d "$W/bcls" $(find "$W/bsrc" -name '*.java') 2>/dev/null
+mk="$(CANDOR_POLICY="$W/pol-allow" "$CJ" "$W/bcls" 2>&1)"
+want   "masking: a benign host does NOT certify an invisible runtime-host reach" "$mk" '`billing.Mask.mask` performs Net with no visible literal'
+absent "masking: a clean literal-only method still certifies"                    "$mk" 'Mask.clean'
 
 echo "== policy: Exec command + Fs path allowlists (AS-EFF-008) =="
 mkdir -p "$W/asrc/svc"

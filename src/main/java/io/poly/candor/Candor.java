@@ -157,6 +157,13 @@ public class Candor {
     static final Map<String, TreeSet<String>> cmdsDirect = new HashMap<>();  // fn -> literal Exec commands
     static final Map<String, TreeSet<String>> pathsDirect = new HashMap<>(); // fn -> literal Fs paths
     static final Map<String, TreeSet<String>> tablesDirect = new HashMap<>(); // fn -> literal Db tables
+    // fn -> the set of effects whose literal SURFACE is INCOMPLETE: the method has a reach for that effect
+    // whose endpoint is structurally invisible (a host-less Net owner like gRPC/WebSocket, or a host-
+    // establishing Net call with a RUNTIME string host). The AS-EFF-008 gate treats an incomplete surface
+    // as uncertifiable EVEN when other (benign) literals are present — else a benign literal MASKS the
+    // invisible forbidden endpoint (a gate evasion; the empty-surface failsafe alone is per-method, missing
+    // the partial case). Propagated transitively like the literal surfaces.
+    static final Map<String, TreeSet<String>> surfaceIncomplete = new HashMap<>();
     // The κ-coverage ledger (the Rust/TS move): external packages this code calls where the
     // classifier never fires are INVISIBLE, not Unknown — counted here, named in the receipt.
     static final Map<String, Integer> kappaSeen = new TreeMap<>();      // external package -> call count
@@ -206,6 +213,7 @@ public class Candor {
         taintEnabled = false; tainted.clear();
         denyRules.clear(); allowRules.clear(); forbidRules.clear();
         hostsDirect.clear(); cmdsDirect.clear(); pathsDirect.clear(); tablesDirect.clear();
+        surfaceIncomplete.clear();
         kappaSeen.clear(); reflectPairs.clear(); kappaClassified.clear(); depCoveredPkgs.clear();
     }
 
@@ -817,15 +825,17 @@ public class Candor {
         }
         // AS-EFF-008: a method in an allow-listed scope may reach ONLY the listed literals — Net hosts
         // (matched by hostname), Exec commands (by basename), Fs paths (by path-prefix at a boundary).
-        // Certifies the VISIBLE literal surface (propagated transitively); a method performing the effect
-        // with no visible literal can't be certified and isn't flagged (the documented limit).
-        v += checkAllowlist(inferred, "Net", literalFixpoint(hostsDirect),
+        // Certifies the VISIBLE literal surface (propagated transitively). A method whose surface is empty OR
+        // INCOMPLETE (a structurally-invisible reach — see surfaceIncomplete) can't be certified: fail-closed,
+        // so a benign visible literal can't MASK an invisible forbidden endpoint.
+        Map<String, TreeSet<String>> incomplete = literalFixpoint(surfaceIncomplete);
+        v += checkAllowlist(inferred, "Net", literalFixpoint(hostsDirect), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> hostPart(a).equals(hostPart(reached))));
-        v += checkAllowlist(inferred, "Exec", literalFixpoint(cmdsDirect),
+        v += checkAllowlist(inferred, "Exec", literalFixpoint(cmdsDirect), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> cmdBase(a).equals(cmdBase(reached))));
-        v += checkAllowlist(inferred, "Fs", literalFixpoint(pathsDirect),
+        v += checkAllowlist(inferred, "Fs", literalFixpoint(pathsDirect), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> pathCovered(a, reached)));
-        v += checkAllowlist(inferred, "Db", literalFixpoint(tablesDirect),
+        v += checkAllowlist(inferred, "Db", literalFixpoint(tablesDirect), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> tableCovered(a, reached)));
         // AS-EFF-009: a method in scope A must not transitively reach into scope B (over the call graph).
         for (ForbidRule r : forbidRules) {
@@ -849,7 +859,7 @@ public class Candor {
      *  whose reached surface is EMPTY is a violation too — "a literal it cannot see" can't be
      *  certified (lits_e(f) = ∅ in the predicate). No matching `allow` rule ⇒ unchecked. */
     static int checkAllowlist(Map<String, TreeSet<String>> inferred, String effect,
-            Map<String, TreeSet<String>> reachedAcc,
+            Map<String, TreeSet<String>> reachedAcc, Map<String, TreeSet<String>> incompleteAcc,
             java.util.function.BiPredicate<Set<String>, String> covered) {
         int v = 0;
         for (var e : new TreeMap<>(inferred).entrySet()) {
@@ -858,7 +868,10 @@ public class Candor {
             for (AllowRule r : allowRules) {
                 if (!effect.equals(r.effect) || !scopeMatches(fn, r.scope)) continue;
                 TreeSet<String> reached = reachedAcc.getOrDefault(fn, new TreeSet<>());
-                if (reached.isEmpty()) {
+                // Empty surface OR an INCOMPLETE one (a structurally-invisible reach — a host-less Net owner
+                // or a runtime-host call) can't be certified: fail-closed. Without the incompleteness gate a
+                // benign visible literal would MASK the invisible forbidden endpoint (the gate EVASION).
+                if (reached.isEmpty() || incompleteAcc.getOrDefault(fn, new TreeSet<>()).contains(effect)) {
                     System.out.printf("[AS-EFF-008] `%s` performs %s with no visible literal — the "
                             + "surface cannot be certified: `allow %s%s %s`%n", fn, effect, effect,
                             r.scope.isEmpty() ? "" : " in " + r.scope,
@@ -1860,6 +1873,7 @@ public class Candor {
                     // first String literal IS a host, so extract it without loosening netHostLiteral.
                     // Gated to the `(Ljava/lang/String;I…` shape, so the `(InetAddress,int)` and
                     // `(String,int,InetAddress,int)`-with-computed-host overloads add nothing.
+                    boolean capturedHostHere = false;
                     if ((owner.equals("java.net.Socket") || owner.equals("java.net.InetSocketAddress")
                             // java.util.logging.SocketHandler(String host, int port) opens a log socket to that
                             // host — same `(String,int)` shape. Its host must reach the AS-EFF-008 surface, else
@@ -1878,6 +1892,7 @@ public class Candor {
                             // dropping the statically-known port (adversarial coverage-gap review, GAP2).
                             String port = intLiteralBefore(min);
                             hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(port != null ? h + ":" + port : h);
+                            capturedHostHere = true;
                         }
                     }
                     // Host literal from THIS host-bearing call's OWN argument (a URL/URI string, a Spring/
@@ -1890,8 +1905,29 @@ public class Candor {
                     if (isHostBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;"))
                         for (String lit : literalArgsInWindow(min, constLocals)) {
                             String hl = netHostLiteral(lit);
-                            if (hl != null) hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(hl);
+                            if (hl != null) { hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(hl); capturedHostHere = true; }
                         }
+                    // AS-EFF-008 surface COMPLETENESS (the masking fix): a Net reach whose host is structurally
+                    // invisible makes the method's host surface incomplete, so the gate must NOT certify it just
+                    // because OTHER (benign) hosts are visible. Two structurally-invisible shapes (no
+                    // false-positive on the split `new URL("h").openStream()`, where the host IS captured at the
+                    // ctor and openStream has no String arg):
+                    //  (1) a Net call on a host-LESS owner (gRPC ClientCalls, okhttp WebSocket, the reactive-HTTP
+                    //      terminals, a logging SocketAppender) — the host lives in a builder/config candor
+                    //      can't see;
+                    //  (2) a host-establishing Net call whose host is a RUNTIME string (a host-bearing owner,
+                    //      a leading `String` host arg, but no literal captured — `restTemplate.getForObject(
+                    //      runtimeUrl,…)`, `new Socket(runtimeHost,port)`, `InetAddress.getByName(runtimeHost)`).
+                    // The URL-object split-construct/use masking (`new URL(runtimeVar).openStream()`) and the
+                    // InetAddress-typed Socket ctor need value-flow and stay backlog (a host-bearing USE with no
+                    // String arg is never flagged here, so the common literal case is unaffected).
+                    if ("Net".equals(effect)) {
+                        boolean hostLessOwner = !isHostBearingOwner(min.owner);
+                        boolean runtimeStringHost = isHostBearingOwner(min.owner)
+                                && min.desc.startsWith("(Ljava/lang/String;") && !capturedHostHere;
+                        if (hostLessOwner || runtimeStringHost)
+                            surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
+                    }
                     // Table literals from THIS SQL-bearing call's OWN argument (the executed/prepared SQL) —
                     // same per-call attribution. tablesInSql needs a leading SQL keyword so a non-SQL arg
                     // yields nothing; a SQL-shaped log line in another statement is no longer mis-attributed.

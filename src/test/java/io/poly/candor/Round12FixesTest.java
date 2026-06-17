@@ -83,27 +83,30 @@ class Round12FixesTest {
         } finally { rm(cls.getParent()); }
     }
 
-    /** A broad (>12) unpinned Kotlin Function0 dispatch over PURE SYNTHETIC LAMBDA impls must NOT raise
-     *  Unknown — their effect (none here) is captured at the creation site; flooding Unknown was a round-12
-     *  regression. (Named effectful impls still raise Unknown — see Round11FixesTest.exemptBroadFanoutRaisesUnknown.) */
+    /** A broad (>12) unpinned Kotlin Function0 dispatch over SYNTHETIC LAMBDA impls must reach Unknown — NOT
+     *  be silent-pure. A synthetic lambda CLASS's invoke() body is reachable ONLY through this dispatch edge
+     *  (a `new Lam()` edges <init>, not invoke), so an earlier "suppress Unknown for all-synthetic" fix
+     *  (chaImplsAllSynthetic) made an effectful lambda SILENT-PURE — reverted. The broad-dispatch Unknown is
+     *  the sound over-approximation (the dispatcher invokes an unresolvable function). */
     @Test
-    void exemptBroadFanoutOverLambdasNoUnknownFlood() throws Exception {
+    void exemptBroadFanoutOverLambdasReachesUnknownNotSilentPure() throws Exception {
         Path dir = Files.createTempDirectory("candor-r12-syn");
         Path out = dir.resolve("cls");
         Files.createDirectories(out.resolve("app"));
         Files.createDirectories(out.resolve("kotlin/jvm/functions"));
-        // kotlin.jvm.functions.Function0 stub interface
         write(out.resolve("kotlin/jvm/functions/Function0.class"), ifaceFunction0());
-        // 14 PURE synthetic lambda impls
-        for (int i = 0; i < 14; i++)
+        // 13 PURE synthetic lambda impls + 1 EFFECTFUL (Net) — the effectful one must not be silently dropped
+        for (int i = 0; i < 13; i++)
             write(out.resolve("app/Lam" + i + ".class"), syntheticPureFn("app/Lam" + i));
-        // app.Big.call(Function0) { return f.invoke(); } + main that news all 14 (so they're in the graph)
+        write(out.resolve("app/Lam13.class"), syntheticNetFn("app/Lam13"));
         write(out.resolve("app/Big.class"), bigCaller());
         try {
             Map<String, TreeSet<String>> r = Candor.runScan(out);
             TreeSet<String> eff = r.getOrDefault("app.Big.call", new TreeSet<>());
-            assertFalse(eff.contains("Unknown"),
-                    "a broad dispatch over PURE synthetic lambdas must NOT flood Unknown, got " + eff);
+            assertFalse(eff.isEmpty(),
+                    "a broad dispatch dropping a synthetic lambda whose invoke() does I/O must NOT be silent-pure");
+            assertTrue(eff.contains("Unknown") || eff.contains("Net"),
+                    "broad lambda dispatch must reach Unknown (or the effect), got " + eff);
         } finally { rm(dir); }
     }
 
@@ -136,6 +139,36 @@ class Round12FixesTest {
         ctor.visitEnd();
         MethodVisitor inv = cw.visitMethod(Opcodes.ACC_PUBLIC, "invoke", "()Ljava/lang/Object;", null, null);
         inv.visitCode();
+        inv.visitInsn(Opcodes.ACONST_NULL);
+        inv.visitInsn(Opcodes.ARETURN);
+        inv.visitMaxs(0, 0);
+        inv.visitEnd();
+        cw.visitEnd();
+        return cw.toByteArray();
+    }
+
+    /** A SYNTHETIC Function0 impl whose invoke() does real Net I/O (new Socket) — reachable only via the
+     *  dispatch edge, so a broad fan-out that drops it must still surface Unknown/Net at the caller. */
+    private static byte[] syntheticNetFn(String internal) {
+        ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        cw.visit(Opcodes.V11, Opcodes.ACC_FINAL | Opcodes.ACC_SUPER | Opcodes.ACC_SYNTHETIC, internal, null,
+                "java/lang/Object", new String[] {"kotlin/jvm/functions/Function0"});
+        MethodVisitor ctor = cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+        ctor.visitCode();
+        ctor.visitVarInsn(Opcodes.ALOAD, 0);
+        ctor.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        ctor.visitInsn(Opcodes.RETURN);
+        ctor.visitMaxs(0, 0);
+        ctor.visitEnd();
+        MethodVisitor inv = cw.visitMethod(Opcodes.ACC_PUBLIC, "invoke", "()Ljava/lang/Object;", null, null);
+        inv.visitCode();
+        // new java.net.Socket("h", 80)  (effect: Net) — value popped, then return null
+        inv.visitTypeInsn(Opcodes.NEW, "java/net/Socket");
+        inv.visitInsn(Opcodes.DUP);
+        inv.visitLdcInsn("h");
+        inv.visitIntInsn(Opcodes.BIPUSH, 80);
+        inv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/net/Socket", "<init>", "(Ljava/lang/String;I)V", false);
+        inv.visitInsn(Opcodes.POP);
         inv.visitInsn(Opcodes.ACONST_NULL);
         inv.visitInsn(Opcodes.ARETURN);
         inv.visitMaxs(0, 0);

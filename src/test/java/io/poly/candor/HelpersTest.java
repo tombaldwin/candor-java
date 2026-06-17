@@ -554,6 +554,28 @@ class HelpersTest {
         assertNull(Candor.classify("org.apache.commons.io.FileUtils", "getTempDirectory", "()Ljava/io/File;")); // returns a path, no I/O
     }
 
+    /** Round-13: guava as*Source/as*Sink are LAZY FACTORIES (FABRICATION fixed → pure); ImageIO File
+     *  overloads (Fs) + URL overload (Net); JMXConnectorFactory.connect (Net). */
+    @Test
+    void round13FixesAndCompleteness() {
+        // guava lazy factories must be PURE (were fabricating Fs)
+        assertNull(Candor.classify("com.google.common.io.Files", "asByteSource", "(Ljava/io/File;)Lcom/google/common/io/ByteSource;"));
+        assertNull(Candor.classify("com.google.common.io.Files", "asCharSink", "(Ljava/io/File;Ljava/nio/charset/Charset;)Lcom/google/common/io/CharSink;"));
+        // but the eager verbs stay Fs
+        assertEquals("Fs", Candor.classify("com.google.common.io.Files", "write", "([BLjava/io/File;)V"));
+        // ImageIO: File → Fs, URL → Net, write(File) → Fs; stream overloads pure
+        assertEquals("Fs", Candor.classify("javax.imageio.ImageIO", "read", "(Ljava/io/File;)Ljava/awt/image/BufferedImage;"));
+        assertEquals("Net", Candor.classify("javax.imageio.ImageIO", "read", "(Ljava/net/URL;)Ljava/awt/image/BufferedImage;"));
+        assertEquals("Fs", Candor.classify("javax.imageio.ImageIO", "write", "(Ljava/awt/image/RenderedImage;Ljava/lang/String;Ljava/io/File;)Z"));
+        assertNull(Candor.classify("javax.imageio.ImageIO", "read", "(Ljava/io/InputStream;)Ljava/awt/image/BufferedImage;")); // stream overload pure
+        // JMX remote
+        assertEquals("Net", Candor.classify("javax.management.remote.JMXConnectorFactory", "connect", "(Ljavax/management/remote/JMXServiceURL;)Ljavax/management/remote/JMXConnector;"));
+        // the new SQL-bearing owners (so their table literals reach the gate)
+        assertTrue(Candor.isSqlBearingOwner("org/jooq/DSLContext"));
+        assertTrue(Candor.isSqlBearingOwner("org/jdbi/v3/core/Handle"));
+        assertFalse(Candor.isSqlBearingOwner("com/mongodb/client/MongoCollection")); // a collection name is not SQL
+    }
+
     /** Round-10 JDBC silent-pure adds: ResultSet cursor moves, Connection.isValid, Driver.connect,
      *  DatabaseMetaData catalog queries, concrete-pool getConnection → Db; scalar reads + capability
      *  getters stay pure (no fabrication). */

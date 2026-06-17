@@ -134,6 +134,28 @@ class HelpersTest {
         assertEquals("Rand", Candor.classify("java.util.random.RandomGenerator", "nextInt", "()I"));
     }
 
+    /** sweep [2] precision follow-up: known-effectful members of the κ-COVERED `org.springframework`
+     *  namespace must be MODELED (not floored silently because the namespace is "covered"). */
+    @Test
+    void springFilesystemUtilitiesClassifyAsFs() {
+        // FileSystemUtils is whole-owner Fs — both methods walk the live filesystem.
+        assertEquals("Fs", Candor.classify("org.springframework.util.FileSystemUtils", "deleteRecursively",
+                "(Ljava/io/File;)Z"));
+        assertEquals("Fs", Candor.classify("org.springframework.util.FileSystemUtils", "copyRecursively",
+                "(Ljava/io/File;Ljava/io/File;)V"));
+        // FileCopyUtils is Fs only in its File-typed overloads (the cited gap: copy(File,File) → Fs read+write).
+        assertEquals("Fs", Candor.classify("org.springframework.util.FileCopyUtils", "copy",
+                "(Ljava/io/File;Ljava/io/File;)I"));
+        assertEquals("Fs", Candor.classify("org.springframework.util.FileCopyUtils", "copyToByteArray",
+                "(Ljava/io/File;)[B"));
+        // ...but the InputStream/OutputStream pumps are NOT Fs — they defer to the stream's own owner, so
+        // an in-memory copy never fabricates (the cardinal sin we avoid by descriptor-gating, not owner-gating).
+        assertNull(Candor.classify("org.springframework.util.FileCopyUtils", "copy",
+                "(Ljava/io/InputStream;Ljava/io/OutputStream;)I"));
+        assertNull(Candor.classify("org.springframework.util.FileCopyUtils", "copyToByteArray",
+                "(Ljava/io/InputStream;)[B"));
+    }
+
     /** The full java.time `.now()` surface reads the clock — not just Instant/LocalDateTime/LocalDate/
      *  ZonedDateTime; OffsetDateTime in particular is very common. The arithmetic ops stay pure. */
     @Test

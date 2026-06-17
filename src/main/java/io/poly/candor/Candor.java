@@ -3577,6 +3577,18 @@ public class Candor {
             return "Fs";
         if (owner.equals("java.nio.file.Path") && (method.equals("toRealPath") || method.equals("register")))
             return "Fs";
+        // Spring filesystem utilities — known-effectful members of a κ-COVERED namespace
+        // (`org.springframework`), which the covered-prefix ledger otherwise can't distinguish from a pure
+        // unmodeled Spring member, so they floored silently (sweep [2]: the real fix is to MODEL the member,
+        // not drop the namespace's coverage). FileSystemUtils is whole-owner Fs (deleteRecursively /
+        // copyRecursively both walk the live FS). FileCopyUtils.copy/copyToByteArray are Fs only in their
+        // File-typed overloads (DESCRIPTOR-GATED on `Ljava/io/File;`): the InputStream/OutputStream/Reader/
+        // Writer pumps defer to the stream's own owner and must stay pure (no fabrication on an in-memory copy).
+        if (owner.equals("org.springframework.util.FileSystemUtils")
+                && (method.equals("deleteRecursively") || method.equals("copyRecursively"))) return "Fs";
+        if (owner.equals("org.springframework.util.FileCopyUtils")
+                && (method.equals("copy") || method.equals("copyToByteArray"))
+                && desc != null && desc.contains("Ljava/io/File;")) return "Fs";
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation

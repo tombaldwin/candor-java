@@ -1178,6 +1178,81 @@ public class Candor {
         return found;
     }
 
+    /** The internal owners whose `<init>` (or `URI.create`) builds a URL/URI VALUE — the host-establishing
+     *  CONSTRUCTION of the split construct-then-use idiom (`new URL(host).openStream()`). Distinct from the
+     *  Net TERMINAL (openStream/openConnection/getContent), which carries no host arg of its own. */
+    static boolean isUrlValueOwner(String internalOwner) {
+        return internalOwner.equals("java/net/URL") || internalOwner.equals("java/net/URI");
+    }
+
+    /** The host literal attributable to a URL/URI Net TERMINAL's receiver, or null when no literal host is
+     *  cheaply attributable (then the gate must fail-CLOSED — see surfaceIncomplete). The Net effect of
+     *  `URL.openStream()`/`openConnection()`/`getContent()` fires on the terminal, but the host is fixed at
+     *  the `new URL(String)` CONSTRUCTION, which is NOT itself a Net call. Without linking the two, a benign
+     *  `new URL("good.com").openStream()` populated the method's host surface and MASKED a sibling
+     *  `new URL(getenv).openStream()` — the AS-EFF-008 URL split construct/use gate EVASION. Two shapes are
+     *  cheaply attributable (anything else → null = incomplete, the sound over-approximation):
+     *   (1) INLINE — `new URL("lit").openStream()`: the receiver is constructed by the INVOKESPECIAL
+     *       `URL.<init>` (or `URI.create`/`URI.<init>`) immediately preceding the terminal in this statement;
+     *       read that ctor's first literal arg.
+     *   (2) THROUGH A CONST LOCAL — `URL u = new URL("lit"); u.openStream()`: the receiver is an ALOAD of a
+     *       local whose EVERY definition is a `new URL(lit)`/`URI.create(lit)` (urlLocals, built like
+     *       constStringLocals) — so resolving its host is sound. */
+    static String urlTerminalHost(AbstractInsnNode terminal, Map<Integer, String> urlLocals,
+            Map<Integer, String> constLocals) {
+        // The instruction producing the receiver sits immediately before the terminal (the terminal takes
+        // no args). Skip pseudo-insns (labels/line-numbers/frames, opcode < 0).
+        AbstractInsnNode r = terminal.getPrevious();
+        while (r != null && r.getOpcode() < 0) r = r.getPrevious();
+        if (r == null) return null;
+        // (1) INLINE: receiver is the URL/URI value-building call (`new URL("lit")` → INVOKESPECIAL <init>;
+        //     `URI.create("lit")` → INVOKESTATIC). Extract the host from ITS own argument window.
+        if (r instanceof MethodInsnNode ctor && isUrlValueOwner(ctor.owner)
+                && (ctor.name.equals("<init>") || ctor.name.equals("create"))) {
+            for (String lit : literalArgsInWindow(ctor, constLocals)) {
+                String hl = netHostLiteral(lit);
+                if (hl != null) return hl;
+            }
+            return null; // a URL built from a RUNTIME string — no literal host attributable
+        }
+        // (2) THROUGH A LOCAL: `u.openStream()` where the receiver is an ALOAD of a const-URL local.
+        if (r instanceof VarInsnNode v && v.getOpcode() == Opcodes.ALOAD && urlLocals.containsKey(v.var))
+            return urlLocals.get(v.var);
+        return null;
+    }
+
+    /** Locals provably bound to a single `new URL(lit)`/`URI.create(lit)` whose host literal is statically
+     *  known — the two-statement split `URL u = new URL("https://good.com"); u.openStream();`. An index ever
+     *  stored a runtime URL, two different literal hosts, or a non-URL value is ambiguous and EXCLUDED, so a
+     *  later `u.openStream()` reads incomplete (fail-closed) rather than inheriting a benign host. Mirrors
+     *  {@link #constStringLocals} but keys on the URL-value ctor and stores the EXTRACTED host. */
+    static Map<Integer, String> constUrlLocals(MethodNode mn, Map<Integer, String> constLocals) {
+        Map<Integer, String> m = new HashMap<>();
+        Set<Integer> ambiguous = new HashSet<>();
+        for (AbstractInsnNode n = mn.instructions.getFirst(); n != null; n = n.getNext()) {
+            if (n instanceof VarInsnNode v && v.getOpcode() == Opcodes.ASTORE) {
+                AbstractInsnNode p = v.getPrevious();
+                while (p != null && p.getOpcode() < 0) p = p.getPrevious();
+                String host = null;
+                if (p instanceof MethodInsnNode ctor && isUrlValueOwner(ctor.owner)
+                        && (ctor.name.equals("<init>") || ctor.name.equals("create"))) {
+                    for (String lit : literalArgsInWindow(ctor, constLocals)) {
+                        String hl = netHostLiteral(lit);
+                        if (hl != null) { host = hl; break; }
+                    }
+                }
+                // A non-URL store, a runtime-URL store (host==null), or a disagreeing host → ambiguous.
+                if (host == null || (m.containsKey(v.var) && !m.get(v.var).equals(host))) {
+                    ambiguous.add(v.var);
+                    m.remove(v.var);
+                } else if (!ambiguous.contains(v.var)) {
+                    m.put(v.var, host);
+                }
+            }
+        }
+        return m;
+    }
+
     /** Every String literal pushed in `call`'s OWN argument window — bounded at the statement start
      *  exactly like {@link #firstLiteralArg} (a prior call/branch/NEW/`*STORE`/PUT* ends the window). Used
      *  to attribute a host/SQL literal to the SPECIFIC host/SQL-bearing call that consumes it. The old
@@ -1816,6 +1891,11 @@ public class Candor {
             // where a benign URL literal in a host-bearing method certified a runtime-computed host. The
             // const-local map lets the window resolve a literal that reaches the sink through a local.
             Map<Integer, String> constLocals = constStringLocals(mn);
+            // URL/URI values provably built from a literal host — lets a split `URL u = new URL("h"); u.open
+            // Stream()` still attribute its host (so the common literal case is not over-flagged), while a
+            // runtime-built URL stays unattributable → the terminal reads incomplete (the URL split-construct
+            // /use AS-EFF-008 fail-closed, replacing the old value-flow backlog at the Net surface below).
+            Map<Integer, String> urlLocals = constUrlLocals(mn, constLocals);
             for (AbstractInsnNode insn : mn.instructions) {
                 if (insn instanceof MethodInsnNode min) {
                     String owner = min.owner.replace('/', '.');
@@ -1965,22 +2045,33 @@ public class Candor {
                         }
                     // AS-EFF-008 surface COMPLETENESS (the masking fix): a Net reach whose host is structurally
                     // invisible makes the method's host surface incomplete, so the gate must NOT certify it just
-                    // because OTHER (benign) hosts are visible. Two structurally-invisible shapes (no
-                    // false-positive on the split `new URL("h").openStream()`, where the host IS captured at the
-                    // ctor and openStream has no String arg):
+                    // because OTHER (benign) hosts are visible. THREE structurally-invisible shapes:
                     //  (1) a Net call on a host-LESS owner (gRPC ClientCalls, okhttp WebSocket, the reactive-HTTP
                     //      terminals, a logging SocketAppender) — the host lives in a builder/config candor
                     //      can't see;
                     //  (2) a host-establishing Net call whose host is a RUNTIME string (a host-bearing owner,
                     //      a leading `String` host arg, but no literal captured — `restTemplate.getForObject(
                     //      runtimeUrl,…)`, `new Socket(runtimeHost,port)`, `InetAddress.getByName(runtimeHost)`).
-                    // The URL-object split-construct/use masking (`new URL(runtimeVar).openStream()`) and the
-                    // InetAddress-typed Socket ctor need value-flow and stay backlog (a host-bearing USE with no
-                    // String arg is never flagged here, so the common literal case is unaffected).
+                    //  (3) a URL/URI Net TERMINAL (`openStream`/`openConnection`/`getContent`) whose host was
+                    //      fixed at a SEPARATE `new URL(String)` CONSTRUCTION (no Net effect, no String arg on
+                    //      the terminal). The split construct-then-use idiom: `new URL(getenv).openStream()`
+                    //      reaches a fully runtime-controlled host while a benign sibling `new URL("good").
+                    //      openStream()` populated hostsDirect and MASKED it (the AS-EFF-008 URL gate EVASION,
+                    //      formerly a value-flow backlog). FAIL-CLOSED unless the host is cheaply attributable
+                    //      to the terminal's receiver — inline `new URL("lit").openStream()` or a const-URL
+                    //      local — so the common inline-literal-URL case still certifies (urlTerminalHost).
                     if ("Net".equals(effect)) {
                         boolean hostLessOwner = !isHostBearingOwner(min.owner);
                         boolean runtimeStringHost = isHostBearingOwner(min.owner)
                                 && min.desc.startsWith("(Ljava/lang/String;") && !capturedHostHere;
+                        boolean urlTerminal = isUrlValueOwner(min.owner) && !min.desc.startsWith("(Ljava/lang/String;")
+                                && (min.name.equals("openStream") || min.name.equals("openConnection")
+                                        || min.name.equals("getContent"));
+                        if (urlTerminal) {
+                            String h = urlTerminalHost(min, urlLocals, constLocals);
+                            if (h != null) hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(h);
+                            else surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
+                        }
                         if (hostLessOwner || runtimeStringHost)
                             surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
                     }

@@ -24,7 +24,7 @@ import java.util.stream.Collectors;
 public final class Query {
     static final Set<String> COMMANDS =
             Set.of("show", "where", "callers", "map", "diff", "containment", "reachable", "path", "impact",
-                    "gains", "whatif", "rewire");
+                    "blindspots", "gains", "whatif", "rewire");
     static final Gson JSON = new GsonBuilder().setPrettyPrinting().create();
 
     // Boundary effects SHOULD live in a dedicated layer — their dispersion is the architecture signal
@@ -46,6 +46,7 @@ public final class Query {
         List<String> tables = List.of();
         List<String> paths = List.of();
         List<String> cmds = List.of();
+        List<String> unknownWhy = List.of();   // ⟨0.6⟩ present on a DIRECT Unknown source; used by `blindspots`
         boolean unresolved;
         boolean entryPoint;
     }
@@ -131,6 +132,7 @@ public final class Query {
             case "reachable" -> reachable(fns, json);
             case "path" -> path(fns, arg, arg2, json);
             case "impact" -> impact(fns, arg, json);
+            case "blindspots" -> blindspots(fns, json);
             case "gains" -> gains(fns, arg, json);
             case "whatif" -> whatif(pos.get(0), arg, arg2, pos.size() > 3 ? pos.get(3) : null, json);
             case "rewire" -> rewire(pos.get(0), arg, json);
@@ -684,6 +686,56 @@ public final class Query {
      *  reversing the report's effect-relevant `calls` graph. Scoped to effectful targets (the report's
      *  `calls` only records effect-carrying edges, so a pure fn — omitted from the report — has no blast
      *  radius to trace; that's the honest limit of working from the report). */
+    /** blindspots (SPEC §3.1 ⟨0.6⟩) — the Unknown SOURCES: units whose OWN body has an unresolvable call
+     *  (so they carry `unknownWhy`), each ranked by its Unknown blast radius (the transitive callers that
+     *  inherit `Unknown` through it). The actionable inverse of a widely-propagated `Unknown`: a report can
+     *  read 60% Unknown from a handful of root causes — this names them, ranked, to declare/resolve/accept.
+     *  Reverse-BFS over the report's effect-relevant `calls` edges (the channel Unknown propagates along),
+     *  the same graph `impact` uses. */
+    static int blindspots(List<Fn> fns, boolean json) {
+        Map<String, List<String>> rev = new HashMap<>();
+        for (Fn f : fns) for (String c : f.calls) rev.computeIfAbsent(c, k -> new ArrayList<>()).add(f.fn);
+        int totalUnknown = (int) fns.stream().filter(f -> f.inferred.contains("Unknown")).count();
+        List<Map<String, Object>> sources = new ArrayList<>();
+        for (Fn f : fns) {
+            if (f.unknownWhy == null || f.unknownWhy.isEmpty()) continue; // a SOURCE carries its own why
+            Set<String> affected = new TreeSet<>();
+            Deque<String> q = new ArrayDeque<>();
+            Set<String> seen = new HashSet<>();
+            q.add(f.fn);
+            seen.add(f.fn);
+            while (!q.isEmpty()) {
+                String cur = q.poll();
+                for (String caller : rev.getOrDefault(cur, List.of()))
+                    if (seen.add(caller)) { affected.add(caller); q.add(caller); }
+            }
+            Map<String, Object> s = new LinkedHashMap<>();
+            s.put("fn", f.fn);
+            s.put("why", f.unknownWhy);
+            s.put("reaches", affected.size());
+            s.put("affected", new ArrayList<>(affected)); // sorted (TreeSet): stable cross-engine shape
+            sources.add(s);
+        }
+        sources.sort((a, b) -> Integer.compare((Integer) b.get("reaches"), (Integer) a.get("reaches")));
+        if (json) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("sources", sources);
+            out.put("totalUnknown", totalUnknown);
+            emit(out);
+            return 0;
+        }
+        if (sources.isEmpty()) {
+            System.out.println("  no Unknown sources — every call resolved (or no Unknown in this report).");
+            return 0;
+        }
+        System.out.println("  " + sources.size() + " Unknown source(s) explaining " + totalUnknown
+                + " Unknown function(s) — the blind spots to declare, resolve, or accept:");
+        for (Map<String, Object> s : sources)
+            System.out.printf("  %-52s reaches %4d  %s%n", leaf((String) s.get("fn")),
+                    (Integer) s.get("reaches"), s.get("why"));
+        return 0;
+    }
+
     static int impact(List<Fn> fns, String fnArg, boolean json) {
         if (fnArg == null) return usage("impact <report.json> <fn-substring> [--json]");
         Map<String, Fn> byName = new HashMap<>();

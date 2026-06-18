@@ -118,6 +118,46 @@ class StructuralDispatchTest {
         assertTrue(eff(r, "B.lambdaSubmit").isEmpty(), "es.submit(pure lambda) must stay pure, got " + r.get("B.lambdaSubmit"));
     }
 
+    /** #3b — the SAME opaque-task hand-off must read Unknown for CompletableFuture `*Async` stages and
+     *  java.util.Timer.schedule (not only ExecutorService.submit). An opaque field/param Runnable/Supplier/
+     *  TimerTask whose body is unknown → Unknown; an inline lambda or `new R()` with a real effect must keep
+     *  the REAL effect (edged at the indy/NEW site), NOT be downgraded to Unknown; a pure inline lambda stays
+     *  pure (no fabrication). Mirrors B.fieldSubmit/B.lambdaSubmit for the CF/Timer owners. */
+    @Test
+    void opaqueTaskHandoffToCompletableFutureAndTimerReadsUnknown() throws Exception {
+        Map<String, TreeSet<String>> r = compileAndScan(Map.of("CFT.java", String.join("\n",
+            "import java.util.concurrent.*;",
+            "import java.util.function.*;",
+            "import java.util.*;",
+            "class MyR implements Runnable {",
+            "  public void run(){ try { new java.io.FileInputStream(\"y\"); } catch(Exception e){} } }",
+            "public class CFT {",
+            "  Runnable task; Supplier<String> sup; TimerTask tt;",
+            // executor baseline (must stay Unknown — unchanged)
+            "  void viaExecutor(ExecutorService es){ es.submit(task); }",
+            // the bug: opaque task → CF.runAsync / supplyAsync, and opaque TimerTask → timer.schedule
+            "  void viaCF(){ CompletableFuture.runAsync(task); }",
+            "  void viaSupply(){ CompletableFuture.supplyAsync(sup); }",
+            "  void viaTimer(Timer timer){ timer.schedule(tt, 0L); }",
+            // no-regression: inline lambda / new R() with a real Fs effect keep Fs (not Unknown)
+            "  void inlineLambda(){ CompletableFuture.runAsync(() -> { try { new java.io.FileInputStream(\"x\"); } catch(Exception e){} }); }",
+            "  void newRunnable(){ CompletableFuture.runAsync(new MyR()); }",
+            // no-fabrication: a pure inline lambda to runAsync stays pure
+            "  void pureLambda(){ CompletableFuture.runAsync(() -> {}); }",
+            "}")));
+        assertTrue(eff(r, "CFT.viaExecutor").contains("Unknown"), "es.submit(field) must read Unknown");
+        assertTrue(eff(r, "CFT.viaCF").contains("Unknown"), "CompletableFuture.runAsync(opaque) must read Unknown");
+        assertTrue(eff(r, "CFT.viaSupply").contains("Unknown"), "CompletableFuture.supplyAsync(opaque) must read Unknown");
+        assertTrue(eff(r, "CFT.viaTimer").contains("Unknown"), "Timer.schedule(opaque TimerTask) must read Unknown");
+        // no-regression: the inline-lambda / new-task body's REAL effect is preserved, NOT downgraded.
+        assertTrue(eff(r, "CFT.inlineLambda").contains("Fs"), "runAsync(inline effect lambda) must keep Fs, got " + r.get("CFT.inlineLambda"));
+        assertTrue(!eff(r, "CFT.inlineLambda").contains("Unknown"), "runAsync(inline lambda) must NOT be downgraded to Unknown, got " + r.get("CFT.inlineLambda"));
+        assertTrue(eff(r, "CFT.newRunnable").contains("Fs"), "runAsync(new effect Runnable) must keep Fs, got " + r.get("CFT.newRunnable"));
+        assertTrue(!eff(r, "CFT.newRunnable").contains("Unknown"), "runAsync(new R()) must NOT be downgraded to Unknown, got " + r.get("CFT.newRunnable"));
+        // no-fabrication: a genuinely pure inline lambda stays pure.
+        assertTrue(eff(r, "CFT.pureLambda").isEmpty(), "runAsync(pure lambda) must stay pure, got " + r.get("CFT.pureLambda"));
+    }
+
     /** #4 — framework-invoked methods with no in-project call site are rooted as entry points (so a
      *  reachability/blast-radius walk surfaces them): Spring @Async, JAX-RS @GET, AspectJ @Around,
      *  ConstraintValidator.isValid, and TimerTask.run (the last via external-supertype resolution). */

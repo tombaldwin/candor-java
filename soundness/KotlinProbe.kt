@@ -59,3 +59,12 @@ fun kio_rand(): Int = kotlin.random.Random.nextInt()
 // reachable entry point — the runner asserts on named_call, the calling function).
 class NamedSender : (Int) -> Unit { override fun invoke(e: Int) { sink() } }
 fun named_call() { val f: (Int) -> Unit = NamedSender(); f(1) }
+
+// 17. `by lazy` TRUE-FORWARDING: an effectful deferred lambda stored in a field (kotlin/Lazy) and FORCED
+// at a property getter must charge the FORCING site (a cross-class reader), not just the constructor.
+// `lazy_force` reads ANOTHER class's lazy property — it must carry the effect (the silent-pure hole).
+class LazyEff { val data: Int by lazy { sink(); 42 } }       // construction: LazyKt.lazy(λ) -> field
+fun lazy_force(h: LazyEff): Int = h.data                     // force: Lazy.getValue — must be Fs/Unknown
+// NEGATIVE (no-fabrication): a PURE-init lazy's reader must stay PURE — its lambda contributes nothing.
+class LazyPure { val v2: Int by lazy { 1 + 1 } }
+fun lazy_pure_force(h: LazyPure): Int = h.v2               // must NOT classify (the runner asserts pure)

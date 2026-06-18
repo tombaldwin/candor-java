@@ -180,6 +180,18 @@ public class Candor {
     // Packages a CANDOR_DEPS sibling report covers: chained, not blind — even a call that joins
     // nothing (the dep fn is pure and omitted) is the report's honest purity claim.
     static final Set<String> depCoveredPkgs = new HashSet<>();
+    // TRUE-FORWARDING for deferred-execution containers (`by lazy`, ThreadLocal.withInitial, …). A
+    // deferred lambda stored in a FIELD and FORCED at a getter/reader otherwise reads silent-pure — the
+    // effect is charged only to the constructor (the lambda-construction over-approximation) and the
+    // lambda body, NOT the forcing site (the read that actually RUNS it). We bind, per field, the
+    // lambda(s) stored into a recognised container when that field is assigned in `<init>`/`<clinit>`,
+    // then at a FORCING call site (the container's value-getter, on a receiver that is a GET* of a bound
+    // field — possibly in ANOTHER class) edge the enclosing method to those lambdas. The existing effect
+    // propagation then carries the lambda's REAL effect to the forcing method. FIELD-SCOPED (key includes
+    // the field), so a pure-init lazy contributes nothing and stays pure — this is what prevents flooding.
+    // Key form: `internalOwner/fieldName:fieldDesc` (e.g. `Holder/data$delegate:Lkotlin/Lazy;`).
+    static final Map<String, Set<String>> deferredFieldLambdas = new HashMap<>(); // field-key -> lambda body ids
+    static final List<String[]> deferredForcePairs = new ArrayList<>();           // [callerId, field-key]
 
     /** A `deny <Effect…> [scope]` or `pure <scope>` rule. `effects` empty ⇒ a `pure` rule (ANY effect is
      *  forbidden). `scope` empty ⇒ the whole project. */
@@ -220,6 +232,7 @@ public class Candor {
         hostsDirect.clear(); cmdsDirect.clear(); pathsDirect.clear(); tablesDirect.clear();
         surfaceIncomplete.clear();
         kappaSeen.clear(); reflectPairs.clear(); kappaClassified.clear(); depCoveredPkgs.clear();
+        deferredFieldLambdas.clear(); deferredForcePairs.clear();
         blindDirect.clear();
     }
 
@@ -283,6 +296,14 @@ public class Candor {
             if (recv.isEmpty() || !projectClasses.contains(recv)) continue;
             String callee = recv.replace('/', '.') + "." + lit;
             if (edges.containsKey(callee)) edges.get(caller).add(callee);
+        }
+
+        // TRUE-FORWARDING resolution (after ALL classes analysed, so a force site can reach a field bound
+        // in another class): edge each forcing method to the lambda(s) stored in the SPECIFIC field it
+        // forces. Field-scoped, so a pure-init lazy's lambda contributes nothing and the reader stays pure.
+        for (String[] pair : deferredForcePairs) {
+            Set<String> lambdas = deferredFieldLambdas.get(pair[1]);
+            if (lambdas != null) edges.computeIfAbsent(pair[0], k -> new HashSet<>()).addAll(lambdas);
         }
 
         return fixpoint();
@@ -1686,6 +1707,13 @@ public class Candor {
             // call site in a dependent jar uses, so that jar can inherit this method's effects.
             hashOf.putIfAbsent(id, cn.name + "." + mn.name + mn.desc);
 
+            // TRUE-FORWARDING bindings: in a constructor / static initializer, find each PUTFIELD/PUTSTATIC
+            // whose stored value came from a recognised deferred-execution container construction
+            // (`LazyKt.lazy(λ)`, `ThreadLocal.withInitial(λ)`, or a `new …LazyImpl(λ)`) whose argument is a
+            // lambda/method-ref. Bind the field to that lambda body so a later FORCE of the field edges to it.
+            if (mn.name.equals("<init>") || mn.name.equals("<clinit>"))
+                bindDeferredFields(cn, mn);
+
             // A `native` method has no bytecode body — its JNI implementation could perform ANY effect,
             // exactly the opacity reflection has. Honest `Unknown`, never silent-pure (SPEC §4); else a
             // call into a project-declared native binding would look like a no-op.
@@ -1805,6 +1833,16 @@ public class Candor {
                             unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                                     .add("task-handoff:" + owner + "." + min.name);
                         }
+                    }
+                    // TRUE-FORWARDING force site: a known container-forcing call (`Lazy.getValue` /
+                    // `ThreadLocal.get`) on a receiver that is a GET* of a tracked deferred field — possibly
+                    // a field of ANOTHER class (`t.tl.get()`). Bind, per the SPECIFIC field, a deferred edge
+                    // resolved after all classes are analysed (the binding side may be in any class). The
+                    // receiver is the GET* immediately producing the container value; we require its field
+                    // descriptor to be a container type so an unrelated `.get()` never matches.
+                    if (isDeferredForce(min.owner, min.name)) {
+                        String fieldKey = forcedFieldKey(mn, min);
+                        if (fieldKey != null) deferredForcePairs.add(new String[] { id, fieldKey });
                     }
                     if (owner.equals("java.lang.Class")
                             && (min.name.equals("getMethod") || min.name.equals("getDeclaredMethod"))) {
@@ -2279,6 +2317,100 @@ public class Candor {
             "java/lang/runtime/ObjectMethods",
             "java/lang/runtime/SwitchBootstraps",
             "java/lang/invoke/ConstantBootstraps");
+
+    /** CURATED deferred-execution containers: a CONSTRUCTION call that stows a lambda/Supplier/Function0
+     *  into a field, paired with the FORCING method that later RUNS it. A construction is recognised by
+     *  the static factory / constructor it uses; a forcing call by its `owner.name` on a GET* of a bound
+     *  field. Kept SMALL and explicit — only containers whose getter provably runs the stored lambda — so
+     *  forwarding is sound and field-scoped (an unrelated `.get()` on a non-tracked field binds nothing).
+     *  Verified against real bytecode (javap) of the two repros. */
+    // CONSTRUCTIONS — `owner.name(desc-prefix)` static factories that take the deferred lambda as an arg.
+    // The kotlin `by lazy` compiler emits `kotlin/LazyKt.lazy(Function0)`; java emits
+    // `java/lang/ThreadLocal.withInitial(Supplier)`. The lambda is the indy result pushed just before.
+    static boolean isDeferredFactory(String owner, String name) {
+        return (owner.equals("kotlin/LazyKt") && name.equals("lazy"))
+                || (owner.equals("java/lang/ThreadLocal") && name.equals("withInitial"));
+    }
+    // CONSTRUCTIONS via a direct constructor: `new kotlin/SynchronizedLazyImpl(Function0)` etc. (the
+    // forms `LazyKt.lazy` delegates to; some kotlin versions / `lazy(mode){}` emit the impl ctor directly).
+    static final Set<String> DEFERRED_LAZY_IMPLS = Set.of(
+            "kotlin/SynchronizedLazyImpl", "kotlin/UnsafeLazyImpl", "kotlin/SafePublicationLazyImpl");
+    // FORCING methods — `owner.name` (descriptor-insensitive: kotlin emits the parameterless
+    // `Lazy.getValue()Ljava/lang/Object;` from the property getter; the 2-arg `getValue(thisRef,prop)`
+    // KProperty form is the same forcing). A `ThreadLocal.get()` runs the withInitial Supplier on first
+    // touch. `Lazy.getValue` / `Lazy.isInitialized` only the first reads value; getValue is THE force.
+    static boolean isDeferredForce(String owner, String name) {
+        return (owner.equals("kotlin/Lazy") && name.equals("getValue"))
+                || (owner.equals("java/lang/ThreadLocal") && name.equals("get"));
+    }
+    // The container field types a forcing call must be reading, so an unrelated `.get()` (Optional, Map…)
+    // on a same-named field never matches. Keyed by the field DESCRIPTOR at the GET* site.
+    static final Set<String> DEFERRED_FIELD_DESCS =
+            Set.of("Lkotlin/Lazy;", "Ljava/lang/ThreadLocal;");
+
+    /** Bind each deferred field this `<init>`/`<clinit>` assigns to the lambda body it stores. Walk the
+     *  body; at each PUTFIELD/PUTSTATIC of a container-typed field, scan BACK over the value-producing
+     *  window for (a) a deferred FACTORY call (`LazyKt.lazy` / `ThreadLocal.withInitial`) or a `new
+     *  …LazyImpl`, and (b) the INVOKEDYNAMIC (lambda/method-ref) feeding it. The indy's method handle is
+     *  the body whose effect must forward. Bound under `owner/field:desc` (cross-class lookup at the force
+     *  site). Conservative: if the construction or the lambda handle isn't found in the window, bind
+     *  nothing (the §1 under-report direction — but then the constructor's own indy edge still charges
+     *  <init>; only the forcing site stays unforwarded, never a fabrication). */
+    static void bindDeferredFields(ClassNode cn, MethodNode mn) {
+        for (AbstractInsnNode insn : mn.instructions) {
+            if (!(insn instanceof FieldInsnNode fi)) continue;
+            if (fi.getOpcode() != Opcodes.PUTFIELD && fi.getOpcode() != Opcodes.PUTSTATIC) continue;
+            if (!DEFERRED_FIELD_DESCS.contains(fi.desc)) continue;
+            // Scan back: a deferred construction (factory call OR LazyImpl ctor) must appear before this
+            // PUT, and an indy carrying a project method-ref handle must feed that construction's arg.
+            boolean sawConstruction = false;
+            Handle lambda = null;
+            int depth = 0; // bound the scan to a few statements so we don't cross unrelated puts
+            for (AbstractInsnNode n = fi.getPrevious(); n != null && depth < 64; n = n.getPrevious(), depth++) {
+                if (n instanceof MethodInsnNode m) {
+                    if (isDeferredFactory(m.owner, m.name)) sawConstruction = true;
+                    else if (m.getOpcode() == Opcodes.INVOKESPECIAL && m.name.equals("<init>")
+                            && DEFERRED_LAZY_IMPLS.contains(m.owner)) sawConstruction = true;
+                } else if (n instanceof InvokeDynamicInsnNode idin && sawConstruction) {
+                    for (Object a : idin.bsmArgs)
+                        if (a instanceof Handle h && h.getTag() >= Opcodes.H_INVOKEVIRTUAL
+                                && projectClasses.contains(h.getOwner())) {
+                            lambda = h;
+                            break;
+                        }
+                    if (lambda != null) break;
+                } else if (n instanceof FieldInsnNode pf
+                        && (pf.getOpcode() == Opcodes.PUTFIELD || pf.getOpcode() == Opcodes.PUTSTATIC)) {
+                    break; // a prior store bounds this statement
+                }
+            }
+            if (sawConstruction && lambda != null) {
+                String key = fi.owner + "/" + fi.name + ":" + fi.desc;
+                deferredFieldLambdas.computeIfAbsent(key, k -> new HashSet<>())
+                        .add(methodId(lambda.getOwner().replace('/', '.'), lambda.getName(), lambda.getDesc()));
+            }
+        }
+    }
+
+    /** The field-key forced by a `Lazy.getValue` / `ThreadLocal.get` call, or null. The receiver is the
+     *  container value produced by the nearest preceding GETFIELD/GETSTATIC of a container-typed field
+     *  (bounded by a prior call/branch). `t.tl.get()` reads `Ti.tl` cross-class; `this.data$delegate
+     *  .getValue()` reads the local field — both resolve to the GET* immediately before the call's args. */
+    static String forcedFieldKey(MethodNode mn, MethodInsnNode call) {
+        for (AbstractInsnNode n = call.getPrevious(); n != null; n = n.getPrevious()) {
+            if (n instanceof FieldInsnNode fi
+                    && (fi.getOpcode() == Opcodes.GETFIELD || fi.getOpcode() == Opcodes.GETSTATIC)
+                    && DEFERRED_FIELD_DESCS.contains(fi.desc))
+                return fi.owner + "/" + fi.name + ":" + fi.desc;
+            // The receiver GET* sits in the call's own evaluation window; a prior call/branch/store bounds
+            // it. (For the 2-arg KProperty `getValue(thisRef, prop)` the args are pushed AFTER the receiver,
+            // so the receiver GET* is still the earliest field access reached scanning back — but a prior
+            // MethodInsn for an arg would bound too early. We stop at the FIRST container GET* found, which
+            // is correct for the parameterless getValue/get the kotlin/jdk compilers emit for property reads.)
+            if (n instanceof JumpInsnNode) break;
+        }
+        return null;
+    }
 
     // entry-point annotation substrings (HTTP mappings + message listeners + container-invoked methods).
     // Each names a method the FRAMEWORK invokes with no in-project call site (Spring proxy, JAX-RS/Micronaut

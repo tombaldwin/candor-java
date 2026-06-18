@@ -3018,17 +3018,43 @@ public class Candor {
             "java/util/concurrent/ThreadPoolExecutor", "java/util/concurrent/ScheduledThreadPoolExecutor",
             "java/util/concurrent/ForkJoinPool");
 
-    /** A call that HANDS OFF a Runnable/Callable task to a runtime that invokes it — an executor
-     *  submit/execute/schedule verb, or `new Thread(task)`. Gated on the FIRST parameter being the task
-     *  (Runnable/Callable), which is always the deepest argument, so the owner+verb set stays small and a
-     *  project method that merely happens to be named `submit` is excluded by the owner gate. */
+    /** CompletableFuture verbs whose FIRST argument is a deferred task (Runnable/Supplier/Function/Consumer/
+     *  BiConsumer/BiFunction) invoked OUTSIDE project code by a CF stage. The `*Async` family + the two
+     *  static factories. (The non-Async siblings — thenApply/thenRun/… — run the function inline on the
+     *  completing thread; their callbacks are already edged at the indy/NEW site, so they are NOT listed.) */
+    static final Set<String> COMPLETABLE_FUTURE_VERBS = Set.of(
+            "runAsync", "supplyAsync", "thenRunAsync", "thenApplyAsync", "thenAcceptAsync",
+            "thenComposeAsync", "whenCompleteAsync", "handleAsync");
+
+    /** java/util/Timer verbs whose FIRST argument is a TimerTask invoked OUTSIDE project code by the timer. */
+    static final Set<String> TIMER_VERBS = Set.of(
+            "schedule", "scheduleAtFixedRate", "scheduleWithFixedDelay");
+
+    /** Functional-interface descriptors that, as the FIRST parameter, name a deferred TASK whose body is
+     *  invoked by the runtime (executor/CF stage/timer) with no in-project call site. */
+    static final Set<String> TASK_ARG_PREFIXES = Set.of(
+            "(Ljava/lang/Runnable;", "(Ljava/util/concurrent/Callable;", "(Ljava/util/function/Supplier;",
+            "(Ljava/util/function/Function;", "(Ljava/util/function/Consumer;",
+            "(Ljava/util/function/BiConsumer;", "(Ljava/util/function/BiFunction;",
+            "(Ljava/util/TimerTask;");
+
+    /** A call that HANDS OFF a deferred task to a runtime that invokes it — an executor
+     *  submit/execute/schedule verb, `new Thread(task)`, a CompletableFuture `*Async` stage, or a
+     *  java.util.Timer schedule. Gated on the FIRST parameter being the task (always the deepest argument
+     *  for these verbs), so the owner+verb set stays small and a project method that merely happens to be
+     *  named `submit`/`schedule` is excluded by the owner gate. */
     static boolean isExecutorHandoff(String owner, String name, String desc) {
-        if (desc == null || !(desc.startsWith("(Ljava/lang/Runnable;")
-                || desc.startsWith("(Ljava/util/concurrent/Callable;"))) return false;
+        if (desc == null) return false;
+        boolean taskArg = false;
+        for (String p : TASK_ARG_PREFIXES) { if (desc.startsWith(p)) { taskArg = true; break; } }
+        if (!taskArg) return false;
         if (owner.equals("java/lang/Thread") && name.equals("<init>")) return true;
-        return EXECUTOR_OWNERS.contains(owner)
+        if (EXECUTOR_OWNERS.contains(owner)
                 && (name.equals("submit") || name.equals("execute") || name.equals("schedule")
-                    || name.equals("scheduleAtFixedRate") || name.equals("scheduleWithFixedDelay"));
+                    || name.equals("scheduleAtFixedRate") || name.equals("scheduleWithFixedDelay"))) return true;
+        if (owner.equals("java/util/concurrent/CompletableFuture") && COMPLETABLE_FUTURE_VERBS.contains(name))
+            return true;
+        return owner.equals("java/util/Timer") && TIMER_VERBS.contains(name);
     }
 
     /** The TASK argument (arg0 — the deepest) of an executor hand-off call, from the provenance frame. */

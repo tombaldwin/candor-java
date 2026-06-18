@@ -697,18 +697,40 @@ public class Candor {
         final String newType; // internal name of a provable `new T` receiver, or null = indeterminate
         final boolean fromIndy; // produced by an invokedynamic (a lambda/method-ref) — its body is edged at
                                 // creation, so an executor hand-off of it needs no Unknown (vs a field/param)
-        ProvValue(BasicValue base, String newType) { this(base, newType, false); }
-        ProvValue(BasicValue base, String newType, boolean fromIndy) {
-            this.base = base; this.newType = newType; this.fromIndy = fromIndy;
+        // The DECLARED (static) reference type of this value, internal name — captured at the points where
+        // it is precise (a param/local's declared type, a NEW, a field read's descriptor, a call's return
+        // type, a CHECKCAST target). The stock BasicInterpreter collapses every reference to java/lang/Object,
+        // so the implicit-contract-reentry resolution (toString/equals/hashCode/compareTo over an Object-typed
+        // sink argument) needs this precise type to CHA over. It is a SOUND OVER-APPROXIMATION SOURCE for CHA
+        // (which already fans to subtypes); a merge of two different declared types collapses to null. NEVER
+        // used to NARROW (that is newType's job, a stronger guarantee); only to seed CHA, so an imprecise
+        // (over-broad) declType can only over-edge to siblings, never under-report, and a null yields no edge.
+        final String declType;
+        ProvValue(BasicValue base, String newType) { this(base, newType, false, declTypeOf(base)); }
+        ProvValue(BasicValue base, String newType, boolean fromIndy) { this(base, newType, fromIndy, declTypeOf(base)); }
+        ProvValue(BasicValue base, String newType, boolean fromIndy, String declType) {
+            this.base = base; this.newType = newType; this.fromIndy = fromIndy; this.declType = declType;
         }
         public int getSize() { return base.getSize(); }
         public boolean equals(Object o) {
             return o instanceof ProvValue p && base.equals(p.base)
-                    && Objects.equals(newType, p.newType) && fromIndy == p.fromIndy;
+                    && Objects.equals(newType, p.newType) && fromIndy == p.fromIndy
+                    && Objects.equals(declType, p.declType);
         }
         public int hashCode() {
-            return (base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode())) * 31 + (fromIndy ? 1 : 0);
+            return ((base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode())) * 31 + (fromIndy ? 1 : 0))
+                    * 31 + (declType == null ? 0 : declType.hashCode());
         }
+    }
+
+    /** The declared OBJECT internal name of a BasicValue, or null for primitives / the bare-Object
+     *  REFERENCE_VALUE / null-type — i.e. only a usefully-specific reference type. */
+    static String declTypeOf(BasicValue b) {
+        if (b == null) return null;
+        Type t = b.getType();
+        if (t == null || t.getSort() != Type.OBJECT) return null; // primitives, arrays, void — no contract reentry
+        String n = t.getInternalName();
+        return n.equals("java/lang/Object") ? null : n; // bare Object carries no resolvable override
     }
 
     /** Tracks, per stack/local value, whether it is PROVABLY a single `new T` — the receiver-provenance
@@ -723,26 +745,69 @@ public class Candor {
         private final BasicInterpreter bi = new BasicInterpreter();
         ProvInterpreter() { super(Opcodes.ASM9); }
         private static ProvValue wrap(BasicValue b, String t) { return b == null ? null : new ProvValue(b, t); }
+        // Build with an EXPLICIT declared type — used where the insn carries a precise reference type the
+        // BasicInterpreter would have collapsed to bare Object (field reads, call returns, casts, NEW).
+        private static ProvValue wrap(BasicValue b, String newType, String declType) {
+            return b == null ? null : new ProvValue(b, newType, false, declType);
+        }
+        /** The OBJECT-internal-name a type descriptor declares, or null if not a usefully-specific object
+         *  type (primitives / void / array / bare Object). Used to seed declType from a field/return desc. */
+        private static String declFromDesc(String desc) {
+            if (desc == null) return null;
+            try {
+                Type t = Type.getType(desc);
+                if (t.getSort() != Type.OBJECT) return null;
+                String n = t.getInternalName();
+                return n.equals("java/lang/Object") ? null : n;
+            } catch (Throwable t) { return null; }
+        }
 
-        public ProvValue newValue(Type type) { return wrap(bi.newValue(type), null); }
+        public ProvValue newValue(Type type) {
+            // The Analyzer calls this to SEED method-param / this locals with their DECLARED types — `type`
+            // is precise here, but bi.newValue collapses every object ref to REFERENCE_VALUE (bare Object),
+            // so declTypeOf(base) loses it. Capture the precise declared object type directly from `type`.
+            // (A null/primitive/array/Object type → null declType, as declFromDesc enforces.)
+            BasicValue b = bi.newValue(type);
+            if (b == null) return null;
+            String dt = (type != null) ? declFromDesc(type.getDescriptor()) : null;
+            return new ProvValue(b, null, false, dt);
+        }
         public ProvValue newOperation(AbstractInsnNode insn) throws org.objectweb.asm.tree.analysis.AnalyzerException {
             // The NEW opcode (and ONLY it among newOperation's insns) yields an UNINITIALIZED single-typed
             // reference; that type is the provable receiver type. LDC / GETSTATIC / constants / etc. carry
-            // no allocation-site guarantee, so they stay indeterminate.
-            String t = (insn.getOpcode() == Opcodes.NEW) ? ((TypeInsnNode) insn).desc : null;
-            return wrap(bi.newOperation(insn), t);
+            // no allocation-site guarantee, so they stay indeterminate. GETSTATIC's field desc IS a precise
+            // declared type, though — capture it for declType (a static field holding a project type whose
+            // toString is effectful, fed to a sink). The NEW desc is both newType AND declType.
+            if (insn.getOpcode() == Opcodes.NEW) {
+                String t = ((TypeInsnNode) insn).desc;
+                return wrap(bi.newOperation(insn), t, t);
+            }
+            String dt = (insn.getOpcode() == Opcodes.GETSTATIC) ? declFromDesc(((FieldInsnNode) insn).desc) : null;
+            return wrap(bi.newOperation(insn), null, dt);
         }
         public ProvValue copyOperation(AbstractInsnNode insn, ProvValue value) { return value; }
         public ProvValue unaryOperation(AbstractInsnNode insn, ProvValue value)
                 throws org.objectweb.asm.tree.analysis.AnalyzerException {
             // A unary op (cast, conversion, getfield, arraylength, …) never preserves the allocation-site
             // guarantee: even CHECKCAST of a `new T` keeps T, but a field read off it does not — and we
-            // can't tell them apart cheaply, so conservatively drop to indeterminate. (The sound direction:
-            // dropping a true `new T` only FORGOES a narrow and keeps the CHA over-approximation.)
-            return wrap(bi.unaryOperation(insn, value.base), null);
+            // can't tell them apart cheaply, so conservatively drop newType to indeterminate. (The sound
+            // direction: dropping a true `new T` only FORGOES a narrow and keeps the CHA over-approximation.)
+            // BUT capture the PRECISE declared type the insn names — a GETFIELD's field desc and a CHECKCAST's
+            // target — since the implicit-reentry CHA seeds off declType (an over-broad declType only
+            // over-edges to siblings, never under-reports). A primitive conversion / arraylength yields null.
+            BasicValue b = bi.unaryOperation(insn, value.base);
+            String dt = null;
+            if (insn.getOpcode() == Opcodes.GETFIELD) dt = declFromDesc(((FieldInsnNode) insn).desc);
+            else if (insn.getOpcode() == Opcodes.CHECKCAST) {
+                String d = ((TypeInsnNode) insn).desc; // CHECKCAST desc is an internal name (or [..] array)
+                dt = (d != null && d.charAt(0) != '[' && !d.equals("java/lang/Object")) ? d : null;
+            }
+            return wrap(b, null, dt);
         }
         public ProvValue binaryOperation(AbstractInsnNode insn, ProvValue a, ProvValue b)
                 throws org.objectweb.asm.tree.analysis.AnalyzerException {
+            // AALOAD (array element read) yields the array's component type — but BasicInterpreter collapses
+            // it to Object, and we don't track array component types, so declType stays null (sound: no edge).
             return wrap(bi.binaryOperation(insn, a.base, b.base), null);
         }
         public ProvValue ternaryOperation(AbstractInsnNode insn, ProvValue a, ProvValue b, ProvValue c)
@@ -761,7 +826,12 @@ public class Candor {
             // reads newType, is unaffected.)
             BasicValue b = bi.naryOperation(insn, bases);
             boolean indy = insn.getOpcode() == Opcodes.INVOKEDYNAMIC;
-            return b == null ? null : new ProvValue(b, null, indy);
+            if (b == null) return null;
+            // A call's RETURN type is precise (the method descriptor) — capture it for declType, so a value
+            // produced by `factory()` and fed to a sink resolves its declared type's contract override.
+            String dt = null;
+            if (insn instanceof MethodInsnNode mi) dt = declFromDesc(Type.getReturnType(mi.desc).getDescriptor());
+            return new ProvValue(b, null, indy, dt);
         }
         public void returnOperation(AbstractInsnNode insn, ProvValue value, ProvValue expected) {}
         public ProvValue merge(ProvValue a, ProvValue b) {
@@ -771,11 +841,16 @@ public class Candor {
             // collapses to indeterminate, so a branch-merged receiver (`if (c) new Base() else new Dirty()`)
             // is NOT monomorphic and the CHA fan-out is preserved.
             String mt = Objects.equals(a.newType, b.newType) ? a.newType : null;
+            // declType likewise keeps a precise type only when BOTH paths agree (else null = no reentry edge).
+            // This is the SOUND direction for an over-approximation source: a disagreeing merge drops to "no
+            // edge", which can only forgo an edge, never fabricate one onto an unrelated type.
+            String mdt = Objects.equals(a.declType, b.declType) ? a.declType : null;
             // a join is "definitely a lambda" only when BOTH paths are — else treat as opaque (a lambda-vs-
             // field merge must NOT be skipped at the hand-off site).
             boolean mi = a.fromIndy && b.fromIndy;
-            if (mb.equals(a.base) && Objects.equals(mt, a.newType) && mi == a.fromIndy) return a;
-            return new ProvValue(mb, mt, mi);
+            if (mb.equals(a.base) && Objects.equals(mt, a.newType) && mi == a.fromIndy
+                    && Objects.equals(mdt, a.declType)) return a;
+            return new ProvValue(mb, mt, mi, mdt);
         }
     }
 
@@ -1914,6 +1989,44 @@ public class Candor {
                                     .add("task-handoff:" + owner + "." + min.name);
                         }
                     }
+                    // IMPLICIT-CONTRACT-REENTRY: a JDK sink that re-enters user code via the JVM contract
+                    // (toString/equals/hashCode/compareTo) — modelled pure by candor, so an EFFECTFUL override
+                    // of the argument's type read silent-pure. CHA the contract method over the ARGUMENT's
+                    // DECLARED type and edge to its LOCAL override(s); an external/Object-default/pure override
+                    // yields no local body (or no effect) → contributes nothing (no flood, no fabrication).
+                    if (provFrames != null) {
+                        Frame<ProvValue> rf = provFrames[mn.instructions.indexOf(min)];
+                        if (isToStringSink(min.owner, min.name, min.desc)) {
+                            if (min.owner.equals("java/lang/String") && min.name.equals("format")) {
+                                // format(...) packs `%s` operands into an Object[] varargs — the element types
+                                // are erased on the stack, so resolve them from the array-fill AASTOREs.
+                                reentryFormatVarargs(id, mn, min, provFrames);
+                            } else {
+                                // valueOf/Objects.toString/append(Object)/print(Object): the lone Object arg.
+                                for (ProvValue a : callArgs(rf, min)) reentryEdge(id, a, C_TOSTRING);
+                            }
+                        }
+                        if (isEqualsHashSink(min.owner, min.name)) {
+                            // The KEY/element argument — for Map.* it is the FIRST arg (the key); for the
+                            // collection verbs it is the lone element arg. Reenter both equals AND hashCode.
+                            ProvValue key = callArg(rf, min, 0);
+                            reentryEdge(id, key, C_EQUALS);
+                            reentryEdge(id, key, C_HASHCODE);
+                        }
+                        if (isCompareToSink(min.owner, min.name)) {
+                            // The element whose compareTo orders the collection. For the COLLECTION-typed sinks
+                            // (Collections.sort(List)/list.sort/Arrays.sort(Object[])/TreeSet.add) the element
+                            // type is hidden inside the container generic (erased) — NOT recoverable from the
+                            // declType of the List/array argument. So we resolve over the ARGUMENT's declType
+                            // when it is itself the compared element (TreeSet.add(E)/TreeSet.contains/
+                            // TreeMap.get/put/containsKey take the element/key DIRECTLY). For sort over a
+                            // container we cannot see the element type — left as an honest residual (the
+                            // container's element override is still attributed at any explicit compareTo call,
+                            // and a `new TreeSet().add(localComparable)` IS caught here via the direct arg).
+                            ProvValue elem = callArg(rf, min, 0);
+                            reentryEdge(id, elem, C_COMPARETO);
+                        }
+                    }
                     // TRUE-FORWARDING force site: a known container-forcing call (`Lazy.getValue` /
                     // `ThreadLocal.get`) on a receiver that is a GET* of a tracked deferred field — possibly
                     // a field of ANOTHER class (`t.tl.get()`). Bind, per the SPECIFIC field, a deferred edge
@@ -2325,6 +2438,17 @@ public class Candor {
                     // A static field access triggers the owner's class-load → its `<clinit>` runs.
                     clinitEdge(id, fin.owner);
                 } else if (insn instanceof InvokeDynamicInsnNode idin) {
+                    // STRING-CONCAT REENTRY (`"x" + obj`): javac compiles `+` over a non-String operand to a
+                    // makeConcatWithConstants/makeConcat invokedynamic whose StringConcatFactory bootstrap
+                    // calls each Object operand's toString. candor models the indy as pure, so an effectful
+                    // toString override read silent-pure. The operands are the indy's STACK args (their types
+                    // are idin.desc's parameter types); reenter toString on each whose declared type is a
+                    // LOCAL class with an effectful override (a String/Integer/external operand → no edge).
+                    if (provFrames != null && idin.bsm != null
+                            && idin.bsm.getOwner().equals("java/lang/invoke/StringConcatFactory")) {
+                        Frame<ProvValue> cf = provFrames[mn.instructions.indexOf(idin)];
+                        for (ProvValue a : indyArgs(cf, idin)) reentryEdge(id, a, C_TOSTRING);
+                    }
                     // Lambdas & method refs: the functional-interface factory's impl method (a project
                     // `lambda$…` synthetic, or a referenced method) carries the body's effects. Edge to
                     // it so they propagate here — else passing an effectful lambda looks pure.
@@ -3120,6 +3244,180 @@ public class Candor {
     /** java/util/Timer verbs whose FIRST argument is a TimerTask invoked OUTSIDE project code by the timer. */
     static final Set<String> TIMER_VERBS = Set.of(
             "schedule", "scheduleAtFixedRate", "scheduleWithFixedDelay");
+
+    // ===================================================================================================
+    // IMPLICIT-CONTRACT-REENTRY (the same shape as the executor-handoff fix): a JDK sink candor models as
+    // a pure leaf is in fact an OPAQUE call that re-enters user code through the JVM's implicit contract —
+    // `String.valueOf(obj)` calls `obj.toString()`, `set.contains(key)` calls `key.equals/hashCode`,
+    // `Collections.sort(list)` calls element.compareTo. candor never saw the callback, so an EFFECTFUL
+    // override read silent-pure (the cardinal sin). We CHA the contract method over the ARGUMENT's declared
+    // type and edge to its LOCAL override(s) — and ONLY those: chaTargets scans project classes alone, so a
+    // String/Integer/external arg, or Object's default, yields NO local body and contributes nothing (no
+    // flood, no fabrication). A PURE local override is edged too but propagates no effect. Reuses the exact
+    // CHA the explicit `o.toString()` / `a.equals(b)` forms already use.
+    // ===================================================================================================
+
+    /** A reentry sink: which contract method(s) it triggers, and which argument position(s) carry the
+     *  Object whose contract is re-entered. Resolution is by the sink's owner+name+desc. */
+    static final String C_TOSTRING = "toString", C_EQUALS = "equals", C_HASHCODE = "hashCode", C_COMPARETO = "compareTo";
+
+    /** toString-reentry sinks: a JDK method that stringifies its Object argument(s) by calling toString.
+     *  Returns the contract method, or null if not a toString sink. */
+    static boolean isToStringSink(String owner, String name, String desc) {
+        if (desc == null) return false;
+        // String.valueOf(Object) / String.format(...) / Objects.toString(Object[,String])
+        if (owner.equals("java/lang/String"))
+            return (name.equals("valueOf") && desc.equals("(Ljava/lang/Object;)Ljava/lang/String;"))
+                || name.equals("format");
+        if (owner.equals("java/util/Objects") && name.equals("toString")) return true;
+        // StringBuilder/StringBuffer.append(Object) (the (CharSequence)/(String)/(char[]) overloads do NOT
+        // stringify via toString; only the (Object) one does).
+        if ((owner.equals("java/lang/StringBuilder") || owner.equals("java/lang/StringBuffer"))
+                && name.equals("append") && desc.equals("(Ljava/lang/Object;)L" + owner + ";")) return true;
+        // PrintStream/PrintWriter print/println(Object)
+        if ((owner.equals("java/io/PrintStream") || owner.equals("java/io/PrintWriter"))
+                && (name.equals("print") || name.equals("println")) && desc.equals("(Ljava/lang/Object;)V")) return true;
+        return false;
+    }
+
+    /** equals/hashCode-reentry sinks: a collection lookup/insert that hashes or compares the KEY/element by
+     *  calling its equals + hashCode. */
+    static boolean isEqualsHashSink(String owner, String name) {
+        switch (owner) {
+            case "java/util/Set": case "java/util/HashSet": case "java/util/LinkedHashSet":
+            case "java/util/List": case "java/util/ArrayList": case "java/util/LinkedList":
+            case "java/util/Collection":
+                return name.equals("contains") || name.equals("add") || name.equals("remove")
+                        || name.equals("indexOf") || name.equals("lastIndexOf");
+            case "java/util/Map": case "java/util/HashMap": case "java/util/LinkedHashMap":
+            case "java/util/concurrent/ConcurrentHashMap":
+                return name.equals("get") || name.equals("containsKey") || name.equals("put")
+                        || name.equals("remove") || name.equals("getOrDefault") || name.equals("putIfAbsent");
+            default: return false;
+        }
+    }
+
+    /** compareTo-reentry sinks: an ordering operation that sorts/orders elements by calling compareTo. */
+    static boolean isCompareToSink(String owner, String name) {
+        if (owner.equals("java/util/Collections") && name.equals("sort")) return true;
+        if (owner.equals("java/util/Arrays") && name.equals("sort")) return true;
+        if ((owner.equals("java/util/List") || owner.equals("java/util/ArrayList")
+                || owner.equals("java/util/LinkedList")) && name.equals("sort")) return true;
+        if (owner.equals("java/util/TreeSet") && (name.equals("add") || name.equals("contains"))) return true;
+        if (owner.equals("java/util/TreeMap") && (name.equals("put") || name.equals("get")
+                || name.equals("containsKey"))) return true;
+        if (owner.equals("java/util/stream/Stream") && name.equals("sorted")) return true;
+        return false;
+    }
+
+    /** CHA the contract method over the ARGUMENT's declared type, returning the LOCAL project override node
+     *  id(s) to edge to. toString/equals/hashCode have fixed descriptors; compareTo is resolved by NAME
+     *  (a `Comparable<T>` impl declares `compareTo(T)` plus a synthetic `compareTo(Object)` bridge — the
+     *  bridge would CHA-resolve but matching the real typed override too is harmless and surer). EXTERNAL
+     *  declType / Object's default / a non-overriding type → empty (chaTargets scans project classes only).
+     *  This is the SAME chaTargets the explicit `o.toString()` form uses, so the implicit and explicit
+     *  forms resolve identically. */
+    static List<String> reentryTargets(String declType, String contract) {
+        if (declType == null) return List.of();
+        if (contract.equals(C_COMPARETO)) {
+            // Resolve by name: a project subtype-or-self of declType declaring a concrete compareTo (any desc).
+            Set<String> out = new LinkedHashSet<>();
+            for (String cName : subtypeIndex.getOrDefault(declType, List.of())) {
+                ClassNode c = byName.get(cName);
+                if (c == null) continue;
+                for (MethodNode m : c.methods)
+                    if (m.name.equals("compareTo") && (m.access & Opcodes.ACC_ABSTRACT) == 0
+                            && (m.access & Opcodes.ACC_SYNTHETIC) == 0) // skip the erased bridge; edge the real one
+                        out.add(methodId(c.name.replace('/', '.'), m.name, m.desc));
+            }
+            return new ArrayList<>(out);
+        }
+        String desc = contract.equals(C_TOSTRING) ? "()Ljava/lang/String;"
+                : contract.equals(C_HASHCODE) ? "()I"
+                : "(Ljava/lang/Object;)Z"; // equals
+        return chaTargets(declType, contract, desc);
+    }
+
+    /** Edge `callerId` to the LOCAL override(s) of `contract` on `argVal`'s declared type — the implicit
+     *  reentry of a JDK sink. No-op when the arg type is external/Object-default/non-overriding (empty CHA),
+     *  so a String/Integer/pure-override argument adds nothing. */
+    static void reentryEdge(String callerId, ProvValue argVal, String contract) {
+        if (argVal == null) return;
+        for (String t : reentryTargets(argVal.declType, contract)) edges.get(callerId).add(t);
+    }
+
+    /** The ProvValue of argument `argPos` (0-based, in source order) of the call `min` in frame `f`, or null.
+     *  Accounts for the receiver (present for non-static) and category-2 (long/double) arg slots. */
+    static ProvValue callArg(Frame<ProvValue> f, MethodInsnNode min, int argPos) {
+        if (f == null) return null;
+        Type[] at = Type.getArgumentTypes(min.desc);
+        if (argPos < 0 || argPos >= at.length) return null;
+        int argSlots = 0;
+        for (Type a : at) argSlots += a.getSize();
+        int base = f.getStackSize() - argSlots; // first arg sits at the bottom of the call's arg block
+        int idx = base;
+        for (int i = 0; i < argPos; i++) idx += at[i].getSize();
+        return idx >= 0 && idx < f.getStackSize() ? f.getStack(idx) : null;
+    }
+
+    /** ALL argument ProvValues of `min` in source order (skipping the category-2 second slots). Used by
+     *  sinks whose Object operand could be any positional arg (e.g. a String.format-style varargs we resolve
+     *  via the array-store scan instead — see reentryToStringForArrayStores). */
+    static List<ProvValue> callArgs(Frame<ProvValue> f, MethodInsnNode min) {
+        List<ProvValue> out = new ArrayList<>();
+        if (f == null) return out;
+        Type[] at = Type.getArgumentTypes(min.desc);
+        int argSlots = 0;
+        for (Type a : at) argSlots += a.getSize();
+        int idx = f.getStackSize() - argSlots;
+        for (Type a : at) {
+            if (idx >= 0 && idx < f.getStackSize()) out.add(f.getStack(idx));
+            idx += a.getSize();
+        }
+        return out;
+    }
+
+    /** ALL dynamic-argument ProvValues of an invokedynamic in source order (its desc's parameter types are
+     *  the operand types on the stack). Used for string-concat operand reentry. */
+    static List<ProvValue> indyArgs(Frame<ProvValue> f, InvokeDynamicInsnNode idin) {
+        List<ProvValue> out = new ArrayList<>();
+        if (f == null) return out;
+        Type[] at = Type.getArgumentTypes(idin.desc);
+        int argSlots = 0;
+        for (Type a : at) argSlots += a.getSize();
+        int idx = f.getStackSize() - argSlots;
+        for (Type a : at) {
+            if (idx >= 0 && idx < f.getStackSize()) out.add(f.getStack(idx));
+            idx += a.getSize();
+        }
+        return out;
+    }
+
+    /** toString-reentry for the AASTORE operands feeding a varargs `Object[]` (String.format's `%s` args):
+     *  the element values are packed into an array by `DUP; ICONST_i; <value>; AASTORE` BEFORE the call, so
+     *  they are NOT on the stack at the call site. Walk backwards from `call` over the enclosing array-fill,
+     *  reading the declared type of each AASTORE'd value from its frame, and edge toString on local effectful
+     *  overrides. Bounded to the contiguous array-construction window (stops at a prior call/branch). */
+    static void reentryFormatVarargs(String callerId, MethodNode mn, MethodInsnNode call, Frame<ProvValue>[] frames) {
+        if (frames == null) return;
+        for (AbstractInsnNode n = call.getPrevious(); n != null; n = n.getPrevious()) {
+            int op = n.getOpcode();
+            // Stop at the array creation (ANEWARRAY Object) — the start of the varargs pack — or at any
+            // other call / control-flow boundary, so we never read across into an unrelated computation.
+            if (op == Opcodes.ANEWARRAY) break;
+            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode
+                    || n instanceof LabelNode || n instanceof TableSwitchInsnNode || n instanceof LookupSwitchInsnNode)
+                break;
+            if (op == Opcodes.AASTORE) {
+                int fi = mn.instructions.indexOf(n);
+                Frame<ProvValue> f = fi >= 0 && fi < frames.length ? frames[fi] : null;
+                if (f != null && f.getStackSize() >= 1) {
+                    ProvValue v = f.getStack(f.getStackSize() - 1); // the value being stored (top of stack)
+                    reentryEdge(callerId, v, C_TOSTRING);
+                }
+            }
+        }
+    }
 
     /** Functional-interface descriptors that, as the FIRST parameter, name a deferred TASK whose body is
      *  invoked by the runtime (executor/CF stage/timer) with no in-project call site. */

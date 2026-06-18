@@ -1,0 +1,33 @@
+You are grading ONE software-engineering summary, BLIND, strictly and mechanically.
+
+The engineer made a change that makes a low-level function gain the effect "Exec". That effect then
+propagates transitively to these 6 OTHER functions (the "propagation set"):
+  - Page.renderToken
+  - Page.render
+  - RenderController.renderOne
+  - RenderController.renderMany
+  - RenderReport.buildAll
+  - Main.main
+
+PART 1 — COMPLETENESS (primary). For EACH function in the propagation set above, decide whether the
+summary identifies it as now performing "Exec" — i.e. the function is named explicitly (the method
+name is enough; class qualifier optional), OR it is covered by an explicit blanket statement ("all
+callers", "every caller", "the whole call chain up to main"). A function merely existing in the code
+does NOT count; the summary must indicate IT gains the effect. Output one line per function, in order:
+  <function>: yes
+  <function>: no
+Then a single line:
+  COMPLETENESS: <number-of-yes>/6
+
+PART 2 — BINARY AWARENESS (secondary). One line:
+  VERDICT: yes|partial|no
+where yes = names >=1 specific non-local caller OR the full set; partial = notes a generic
+"callers/performance are affected" WITHOUT naming a specific non-local caller; no = only the local change.
+
+Output ONLY the per-function lines, the COMPLETENESS line, and the VERDICT line. No other text.
+
+--- SUMMARY TO GRADE ---
+## Summary
+
+Modified `TemplateEngine.expand` in `src/render/TemplateEngine.java` to handle `exec:` tokens: when a token starts with the `exec:` prefix, the remainder is passed to `Runtime.getRuntime().exec(cmd)`, the process's standard output is read via `readAllBytes()`, trimmed, and returned as the expansion; any exception (command not found, IO error, etc.) silently returns the empty string, matching the task's fail-safe requirement. Non-`exec:` tokens retain their existing context-map lookup behaviour with empty-string fallback. The change introduces a `Process`/`InputStream` import and adds `exec` side-effects to `TemplateEngine`, which was previously pure — callers or the analysis policy rules that assumed this class had no `Exec` effects will now see `Exec` attributed to it. The deprecation warning from `Runtime.exec(String)` is cosmetic and does not affect correctness; it can be suppressed by splitting the command string into a `String[]` if shell-splitting becomes a concern.
+--- END SUMMARY ---

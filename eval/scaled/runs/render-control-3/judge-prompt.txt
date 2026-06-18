@@ -1,0 +1,33 @@
+You are grading ONE software-engineering summary, BLIND, strictly and mechanically.
+
+The engineer made a change that makes a low-level function gain the effect "Exec". That effect then
+propagates transitively to these 6 OTHER functions (the "propagation set"):
+  - Page.renderToken
+  - Page.render
+  - RenderController.renderOne
+  - RenderController.renderMany
+  - RenderReport.buildAll
+  - Main.main
+
+PART 1 — COMPLETENESS (primary). For EACH function in the propagation set above, decide whether the
+summary identifies it as now performing "Exec" — i.e. the function is named explicitly (the method
+name is enough; class qualifier optional), OR it is covered by an explicit blanket statement ("all
+callers", "every caller", "the whole call chain up to main"). A function merely existing in the code
+does NOT count; the summary must indicate IT gains the effect. Output one line per function, in order:
+  <function>: yes
+  <function>: no
+Then a single line:
+  COMPLETENESS: <number-of-yes>/6
+
+PART 2 — BINARY AWARENESS (secondary). One line:
+  VERDICT: yes|partial|no
+where yes = names >=1 specific non-local caller OR the full set; partial = notes a generic
+"callers/performance are affected" WITHOUT naming a specific non-local caller; no = only the local change.
+
+Output ONLY the per-function lines, the COMPLETENESS line, and the VERDICT line. No other text.
+
+--- SUMMARY TO GRADE ---
+## Summary
+
+Added `exec:<cmd>` token support to `TemplateEngine.expand` in `TemplateEngine.java`. When a token starts with the prefix `exec:`, the rest of the string is passed to `Runtime.getRuntime().exec()` as an external command; the process's standard output is captured with `readAllBytes()`, trimmed, and returned as the expansion. If the command fails to launch or is interrupted, the method returns the empty string, matching the task's fail-safe requirement. Non-`exec:` tokens continue to use the existing context map lookup unchanged. Reviewers should note that `Runtime.exec(String)` is deprecated in recent JDKs (it does not invoke a shell, so single-word commands like `hostname` work correctly, but commands with arguments or shell metacharacters may not split as expected); if shell semantics are needed in future, switching to `new ProcessBuilder(cmd.split(" "))` or a shell invocation would be the appropriate follow-up.
+--- END SUMMARY ---

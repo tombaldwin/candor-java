@@ -1,0 +1,4 @@
+task	catalog
+condition	treatment
+runid	catalog-treatment-1
+effect	Fs

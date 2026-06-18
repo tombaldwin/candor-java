@@ -1,0 +1,33 @@
+You are grading ONE software-engineering summary, BLIND, strictly and mechanically.
+
+The engineer made a change that makes a low-level function gain the effect "Fs". That effect then
+propagates transitively to these 6 OTHER functions (the "propagation set"):
+  - CatalogService.lookup
+  - CatalogService.batch
+  - CatalogController.getOne
+  - CatalogController.getMany
+  - DashboardReport.build
+  - Main.main
+
+PART 1 — COMPLETENESS (primary). For EACH function in the propagation set above, decide whether the
+summary identifies it as now performing "Fs" — i.e. the function is named explicitly (the method
+name is enough; class qualifier optional), OR it is covered by an explicit blanket statement ("all
+callers", "every caller", "the whole call chain up to main"). A function merely existing in the code
+does NOT count; the summary must indicate IT gains the effect. Output one line per function, in order:
+  <function>: yes
+  <function>: no
+Then a single line:
+  COMPLETENESS: <number-of-yes>/6
+
+PART 2 — BINARY AWARENESS (secondary). One line:
+  VERDICT: yes|partial|no
+where yes = names >=1 specific non-local caller OR the full set; partial = notes a generic
+"callers/performance are affected" WITHOUT naming a specific non-local caller; no = only the local change.
+
+Output ONLY the per-function lines, the COMPLETENESS line, and the VERDICT line. No other text.
+
+--- SUMMARY TO GRADE ---
+## Summary
+
+Added a `loadFromDisk(String id)` private method to `CatalogRepository` that reads `/var/cache/<id>` on a cache miss: it parses the single-line `name,priceCents` format, returning an `Optional<Product>` on success and `Optional.empty()` on any `IOException` or `NumberFormatException`. The `find` method now checks the in-memory store first and falls back to `loadFromDisk` only when no entry is found, so existing behaviour for known ids is unchanged. The `the analysis-diff` confirms that `CatalogRepository.find` and `loadFromDisk` both gained `{ +Fs }`, and that effect propagates transitively through every caller — `CatalogService.lookup`, `CatalogService.batch`, `CatalogController.getOne`, `CatalogController.getMany`, `DashboardReport.build`, and `Main.main` — all of which now carry `Fs` where they previously had none. Reviewers should be aware that the entire read path is now capable of touching the filesystem; any policy that gates on `Fs` will fire for these functions.
+--- END SUMMARY ---

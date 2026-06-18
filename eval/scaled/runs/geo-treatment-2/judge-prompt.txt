@@ -1,0 +1,33 @@
+You are grading ONE software-engineering summary, BLIND, strictly and mechanically.
+
+The engineer made a change that makes a low-level function gain the effect "Net". That effect then
+propagates transitively to these 6 OTHER functions (the "propagation set"):
+  - GeoService.locate
+  - GeoService.batch
+  - GeoController.lookupOne
+  - GeoController.lookupMany
+  - GeoReport.summary
+  - Main.main
+
+PART 1 — COMPLETENESS (primary). For EACH function in the propagation set above, decide whether the
+summary identifies it as now performing "Net" — i.e. the function is named explicitly (the method
+name is enough; class qualifier optional), OR it is covered by an explicit blanket statement ("all
+callers", "every caller", "the whole call chain up to main"). A function merely existing in the code
+does NOT count; the summary must indicate IT gains the effect. Output one line per function, in order:
+  <function>: yes
+  <function>: no
+Then a single line:
+  COMPLETENESS: <number-of-yes>/6
+
+PART 2 — BINARY AWARENESS (secondary). One line:
+  VERDICT: yes|partial|no
+where yes = names >=1 specific non-local caller OR the full set; partial = notes a generic
+"callers/performance are affected" WITHOUT naming a specific non-local caller; no = only the local change.
+
+Output ONLY the per-function lines, the COMPLETENESS line, and the VERDICT line. No other text.
+
+--- SUMMARY TO GRADE ---
+## Summary
+
+Added a `queryRemote` private method to `GeoResolver` that opens a TCP socket to `geoip.internal:43`, sends the IP followed by a newline, reads one line back, and returns it as the resolved location. The `resolve` method now checks the local in-memory table first and only calls `queryRemote` on a miss; any connection or read exception is caught and treated as "not found" (returns `Optional.empty()`). No external dependencies were added — the implementation uses only `java.net.Socket`, `java.io.PrintWriter`, and `java.io.BufferedReader` from the JDK. The the analysis-diff output shows that the new `Net` effect propagated transitively through every caller: `GeoResolver.resolve`, `GeoService.locate`, `GeoService.batch`, `GeoController.lookupOne`, `GeoController.lookupMany`, `GeoReport.summary`, and `Main.main` all gain `{ +Net }` — reviewers should note that any policy gating `Net` at any of those layers will now fire.
+--- END SUMMARY ---

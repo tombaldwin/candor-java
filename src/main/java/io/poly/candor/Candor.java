@@ -2026,6 +2026,15 @@ public class Candor {
                             ProvValue elem = callArg(rf, min, 0);
                             reentryEdge(id, elem, C_COMPARETO);
                         }
+                        // WRITER side (R16): constructing a JDK formatting facade over a CUSTOM sink drives
+                        // the sink's append/write when it formats. `new Formatter(Appendable)` → append;
+                        // `new PrintWriter(Writer|OutputStream)` / `new PrintStream(OutputStream)` → write.
+                        // The sink's method is reached only THROUGH the non-local facade, so otherwise it was
+                        // silent — the write-fmt writer-side blind spot (cf. the rust/swift engines). The sink
+                        // is the ctor's first arg; resolve-or-skip over its declType (a std StringBuilder /
+                        // FileOutputStream has no LOCAL append/write override → contributes nothing).
+                        String sinkContract = formatterSinkCtor(min.owner, min.name, min.desc);
+                        if (sinkContract != null) reentryEdge(id, callArg(rf, min, 0), sinkContract);
                     }
                     // TRUE-FORWARDING force site: a known container-forcing call (`Lazy.getValue` /
                     // `ThreadLocal.get`) on a receiver that is a GET* of a tracked deferred field — possibly
@@ -3260,9 +3269,23 @@ public class Candor {
     /** A reentry sink: which contract method(s) it triggers, and which argument position(s) carry the
      *  Object whose contract is re-entered. Resolution is by the sink's owner+name+desc. */
     static final String C_TOSTRING = "toString", C_EQUALS = "equals", C_HASHCODE = "hashCode", C_COMPARETO = "compareTo";
+    static final String C_APPEND = "append", C_WRITE = "write";   // the WRITER side (R16): Appendable.append / Writer/OutputStream.write
 
     /** toString-reentry sinks: a JDK method that stringifies its Object argument(s) by calling toString.
      *  Returns the contract method, or null if not a toString sink. */
+    /** If `min` constructs a JDK formatting facade WRAPPING a sink, the writer-side reentry contract for that
+     *  sink (C_APPEND / C_WRITE); else null. `new Formatter(Appendable)` drives append; `new PrintWriter(
+     *  Writer|OutputStream)` / `new PrintStream(OutputStream)` drive write. The File/String ctor overloads are
+     *  file I/O (Fs, classified elsewhere), not a wrapped sink — excluded by the first-arg type. */
+    static String formatterSinkCtor(String owner, String name, String desc) {
+        if (!name.equals("<init>")) return null;
+        if (owner.equals("java/util/Formatter") && desc.startsWith("(Ljava/lang/Appendable;")) return C_APPEND;
+        if (owner.equals("java/io/PrintWriter")
+                && (desc.startsWith("(Ljava/io/Writer;") || desc.startsWith("(Ljava/io/OutputStream;"))) return C_WRITE;
+        if (owner.equals("java/io/PrintStream") && desc.startsWith("(Ljava/io/OutputStream;")) return C_WRITE;
+        return null;
+    }
+
     static boolean isToStringSink(String owner, String name, String desc) {
         if (desc == null) return false;
         // String.valueOf(Object) / String.format(...) / Objects.toString(Object[,String])
@@ -3319,15 +3342,17 @@ public class Candor {
      *  forms resolve identically. */
     static List<String> reentryTargets(String declType, String contract) {
         if (declType == null) return List.of();
-        if (contract.equals(C_COMPARETO)) {
-            // Resolve by name: a project subtype-or-self of declType declaring a concrete compareTo (any desc).
+        // By-NAME contracts (multiple overloads / erased descs): compareTo, and the WRITER side —
+        // Appendable.append / Writer.write reached through a JDK formatting facade. Resolve to a project
+        // subtype-or-self of declType declaring a concrete method of that name (any desc).
+        if (contract.equals(C_COMPARETO) || contract.equals(C_APPEND) || contract.equals(C_WRITE)) {
             Set<String> out = new LinkedHashSet<>();
             for (String cName : subtypeIndex.getOrDefault(declType, List.of())) {
                 ClassNode c = byName.get(cName);
                 if (c == null) continue;
                 for (MethodNode m : c.methods)
-                    if (m.name.equals("compareTo") && (m.access & Opcodes.ACC_ABSTRACT) == 0
-                            && (m.access & Opcodes.ACC_SYNTHETIC) == 0) // skip the erased bridge; edge the real one
+                    if (m.name.equals(contract) && (m.access & Opcodes.ACC_ABSTRACT) == 0
+                            && (m.access & Opcodes.ACC_SYNTHETIC) == 0) // skip bridges; edge the real impl(s)
                         out.add(methodId(c.name.replace('/', '.'), m.name, m.desc));
             }
             return new ArrayList<>(out);

@@ -159,6 +159,37 @@ class ImplicitReentryTest {
         finally { rm(cls.getParent()); }
     }
 
+    // ---- WRITER side (R16): a JDK formatting facade over a CUSTOM sink drives the sink's append/write.
+    // `new Formatter(Appendable).format` / `new PrintWriter(Writer).printf` reach the sink's method only
+    // through the non-local facade, so an effectful custom sink was silent-pure (the write-fmt writer-side
+    // blind spot, closed in the rust/scan/swift engines too). A std StringBuilder sink stays pure. ------
+    private static Path compileWriter() throws Exception {
+        return compile(Map.of("app/W.java", String.join("\n",
+            "package app;",
+            "import java.io.*; import java.util.*;",
+            "class LoudSink implements Appendable {",
+            "  public Appendable append(CharSequence c){ try{ new FileOutputStream(\"/tmp/ls\").write(1);}catch(Exception e){} return this; }",
+            "  public Appendable append(CharSequence c,int s,int e){ return this; }",
+            "  public Appendable append(char c){ return this; } }",
+            "class LoudWriter extends Writer {",
+            "  public void write(char[] b,int o,int l){ try{ new FileOutputStream(\"/tmp/lw\").write(1);}catch(Exception e){} }",
+            "  public void flush(){} public void close(){} }",
+            "public class W {",
+            "  void viaFormatter(){ LoudSink s = new LoudSink(); new Formatter(s).format(\"hi %s\", 1); }",
+            "  void viaPrintWriter(){ LoudWriter w = new LoudWriter(); new PrintWriter(w).printf(\"hi %s\", 1); }",
+            "  void viaStringBuilder(){ StringBuilder sb = new StringBuilder(); new Formatter(sb).format(\"hi %s\", 1); } }")));
+    }
+
+    @Test void writerSideCustomSinkCarriesEffect() throws Exception {
+        Path cls = compileWriter();
+        try {
+            Map<String, TreeSet<String>> r = Candor.runScan(cls);
+            assertTrue(fs(r, "app.W.viaFormatter"), "new Formatter(customAppendable).format must carry the sink's append Fs");
+            assertTrue(fs(r, "app.W.viaPrintWriter"), "new PrintWriter(customWriter).printf must carry the sink's write Fs");
+            assertFalse(fs(r, "app.W.viaStringBuilder"), "a std StringBuilder sink must stay pure (no fabrication)");
+        } finally { rm(cls.getParent()); }
+    }
+
     /** Wrap a single method body in the shared D class + contract-override fixtures. */
     private static String wrap(String method) {
         return String.join("\n",

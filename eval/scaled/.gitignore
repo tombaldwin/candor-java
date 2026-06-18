@@ -1,0 +1,6 @@
+# Regenerable baseline cache (rebuilt by harness.sh from the fixtures on demand).
+.cache/
+# Per-trial work dirs are large; commit only PROMPT.md / summary / judgement / meta under runs/.
+runs/*/work/
+runs/*/cur.json
+runs/*/baseline.json

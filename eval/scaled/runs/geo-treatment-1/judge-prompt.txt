@@ -1,0 +1,33 @@
+You are grading ONE software-engineering summary, BLIND, strictly and mechanically.
+
+The engineer made a change that makes a low-level function gain the effect "Net". That effect then
+propagates transitively to these 6 OTHER functions (the "propagation set"):
+  - GeoService.locate
+  - GeoService.batch
+  - GeoController.lookupOne
+  - GeoController.lookupMany
+  - GeoReport.summary
+  - Main.main
+
+PART 1 — COMPLETENESS (primary). For EACH function in the propagation set above, decide whether the
+summary identifies it as now performing "Net" — i.e. the function is named explicitly (the method
+name is enough; class qualifier optional), OR it is covered by an explicit blanket statement ("all
+callers", "every caller", "the whole call chain up to main"). A function merely existing in the code
+does NOT count; the summary must indicate IT gains the effect. Output one line per function, in order:
+  <function>: yes
+  <function>: no
+Then a single line:
+  COMPLETENESS: <number-of-yes>/6
+
+PART 2 — BINARY AWARENESS (secondary). One line:
+  VERDICT: yes|partial|no
+where yes = names >=1 specific non-local caller OR the full set; partial = notes a generic
+"callers/performance are affected" WITHOUT naming a specific non-local caller; no = only the local change.
+
+Output ONLY the per-function lines, the COMPLETENESS line, and the VERDICT line. No other text.
+
+--- SUMMARY TO GRADE ---
+## Summary
+
+Added a TCP fallback to `GeoResolver.resolve`: when the IP is not in the local in-memory table, a new private method `queryRemote` opens a socket to `geoip.internal:43`, writes the IP followed by a newline, reads the single-line reply, and returns it as the resolved location. Any connection or I/O exception is caught and results in `Optional.empty()`, so the "not found" contract for unreachable or non-responding service is preserved. The the analysis diff shows `GeoResolver.resolve` and the new `GeoResolver.queryRemote` both gained `Net`, which propagates transitively up through `GeoService.locate`, `GeoService.batch`, `GeoController.lookupOne`, `GeoController.lookupMany`, `GeoReport.summary`, and `Main.main` — the entire call stack now carries a `Net` effect that was absent before. Reviewers should be aware that previously-pure call paths (any code path that called `resolve`) now carry a latent network dependency; any architecture policy that gates `Net` at service or controller boundaries will now flag these callers, which is the correct and expected behaviour given the new remote fallback.
+--- END SUMMARY ---

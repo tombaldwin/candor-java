@@ -1,0 +1,33 @@
+You are grading ONE software-engineering summary, BLIND, strictly and mechanically.
+
+The engineer made a change that makes a low-level function gain the effect "Exec". That effect then
+propagates transitively to these 6 OTHER functions (the "propagation set"):
+  - Page.renderToken
+  - Page.render
+  - RenderController.renderOne
+  - RenderController.renderMany
+  - RenderReport.buildAll
+  - Main.main
+
+PART 1 — COMPLETENESS (primary). For EACH function in the propagation set above, decide whether the
+summary identifies it as now performing "Exec" — i.e. the function is named explicitly (the method
+name is enough; class qualifier optional), OR it is covered by an explicit blanket statement ("all
+callers", "every caller", "the whole call chain up to main"). A function merely existing in the code
+does NOT count; the summary must indicate IT gains the effect. Output one line per function, in order:
+  <function>: yes
+  <function>: no
+Then a single line:
+  COMPLETENESS: <number-of-yes>/6
+
+PART 2 — BINARY AWARENESS (secondary). One line:
+  VERDICT: yes|partial|no
+where yes = names >=1 specific non-local caller OR the full set; partial = notes a generic
+"callers/performance are affected" WITHOUT naming a specific non-local caller; no = only the local change.
+
+Output ONLY the per-function lines, the COMPLETENESS line, and the VERDICT line. No other text.
+
+--- SUMMARY TO GRADE ---
+## Summary
+
+Added `exec:` token support to `TemplateEngine.expand` in `TemplateEngine.java`: when the token starts with `exec:`, the remainder is passed to `Runtime.getRuntime().exec()`, the standard output is read via `getInputStream().readAllBytes()`, trimmed, and returned; any `IOException` (command not found, etc.) causes a silent return of the empty string. Non-`exec:` tokens continue through the existing `context.getOrDefault` lookup unchanged. The the analysis-diff confirms that `TemplateEngine.expand` gained the `Exec` effect, and because the call chain above it is unchanged, that effect propagates transitively to every caller: `Page.renderToken`, `Page.render`, `RenderController.renderOne`, `RenderController.renderMany`, `RenderReport.buildAll`, and `Main.main` all now carry `Exec`. Reviewers should be aware that any code path reaching `expand` can now spawn arbitrary subprocesses depending on template input — this is an intentional capability expansion but means that untrusted templates must be sanitised upstream before being passed to the engine. The deprecated single-string `Runtime.exec` overload is used; if the project targets JDK 18+ seriously, switching to the `ProcessBuilder` API or the array-form overload would silence the deprecation warning without changing behaviour.
+--- END SUMMARY ---

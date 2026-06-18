@@ -1,0 +1,33 @@
+You are grading ONE software-engineering summary, BLIND, strictly and mechanically.
+
+The engineer made a change that makes a low-level function gain the effect "Fs". That effect then
+propagates transitively to these 6 OTHER functions (the "propagation set"):
+  - CatalogService.lookup
+  - CatalogService.batch
+  - CatalogController.getOne
+  - CatalogController.getMany
+  - DashboardReport.build
+  - Main.main
+
+PART 1 — COMPLETENESS (primary). For EACH function in the propagation set above, decide whether the
+summary identifies it as now performing "Fs" — i.e. the function is named explicitly (the method
+name is enough; class qualifier optional), OR it is covered by an explicit blanket statement ("all
+callers", "every caller", "the whole call chain up to main"). A function merely existing in the code
+does NOT count; the summary must indicate IT gains the effect. Output one line per function, in order:
+  <function>: yes
+  <function>: no
+Then a single line:
+  COMPLETENESS: <number-of-yes>/6
+
+PART 2 — BINARY AWARENESS (secondary). One line:
+  VERDICT: yes|partial|no
+where yes = names >=1 specific non-local caller OR the full set; partial = notes a generic
+"callers/performance are affected" WITHOUT naming a specific non-local caller; no = only the local change.
+
+Output ONLY the per-function lines, the COMPLETENESS line, and the VERDICT line. No other text.
+
+--- SUMMARY TO GRADE ---
+## Summary
+
+Added a disk-based fallback to `CatalogRepository.find`: on a cache miss (id absent from the in-memory `store`), it now reads `/var/cache/<id>` using `java.nio.file.Files.readAllLines`, parses the first line as `name,priceCents`, constructs a `Product`, and returns it wrapped in `Optional`. If the file is missing, unreadable, or the line cannot be parsed (wrong format or non-integer price), the method catches the `IOException` or `NumberFormatException` and returns `Optional.empty()`, preserving the "not found" contract. No new dependencies were introduced — only standard JDK `java.nio.file` APIs. The rest of the codebase (`CatalogService`, `CatalogController`, etc.) requires no changes since they already consume `Optional<Product>` from `find`. Reviewers should note that the file path is constructed directly from the caller-supplied `id` string with `Path.of("/var/cache", id)`, which resolves safely for simple id strings but ids containing path separators could allow directory traversal in a production context.
+--- END SUMMARY ---

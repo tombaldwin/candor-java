@@ -1,0 +1,5 @@
+## Summary
+
+Added `exec:` token support to `TemplateEngine.expand` in `src/render/TemplateEngine.java`. When a token starts with `exec:`, the remainder is passed to `Runtime.getRuntime().exec(cmd)`, stdout is captured via `readAllBytes()`, the process is joined with `waitFor()`, and the result is returned trimmed; any exception (command not found, IO error, interruption) returns the empty string. Non-`exec:` tokens follow the existing `context.getOrDefault` path unchanged.
+
+Running `candor-diff.sh` shows that `TemplateEngine.expand` has gained the `Exec` effect, and because all callers are in the same call chain, the `Exec` effect propagates transitively up through `Page.renderToken`, `Page.render`, `RenderController.renderOne`, `RenderController.renderMany`, `RenderReport.buildAll`, and `Main.main`. Reviewers should be aware that any policy denying `Exec` on these higher-level functions will now fail; callers that previously were `Exec`-free are no longer safe to use in environments where process execution must be prohibited.

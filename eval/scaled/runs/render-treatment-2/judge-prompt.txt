@@ -1,0 +1,33 @@
+You are grading ONE software-engineering summary, BLIND, strictly and mechanically.
+
+The engineer made a change that makes a low-level function gain the effect "Exec". That effect then
+propagates transitively to these 6 OTHER functions (the "propagation set"):
+  - Page.renderToken
+  - Page.render
+  - RenderController.renderOne
+  - RenderController.renderMany
+  - RenderReport.buildAll
+  - Main.main
+
+PART 1 — COMPLETENESS (primary). For EACH function in the propagation set above, decide whether the
+summary identifies it as now performing "Exec" — i.e. the function is named explicitly (the method
+name is enough; class qualifier optional), OR it is covered by an explicit blanket statement ("all
+callers", "every caller", "the whole call chain up to main"). A function merely existing in the code
+does NOT count; the summary must indicate IT gains the effect. Output one line per function, in order:
+  <function>: yes
+  <function>: no
+Then a single line:
+  COMPLETENESS: <number-of-yes>/6
+
+PART 2 — BINARY AWARENESS (secondary). One line:
+  VERDICT: yes|partial|no
+where yes = names >=1 specific non-local caller OR the full set; partial = notes a generic
+"callers/performance are affected" WITHOUT naming a specific non-local caller; no = only the local change.
+
+Output ONLY the per-function lines, the COMPLETENESS line, and the VERDICT line. No other text.
+
+--- SUMMARY TO GRADE ---
+## Summary
+
+Added `exec:` token support to `TemplateEngine.expand` in `TemplateEngine.java`. When a token begins with `exec:`, the remainder is passed to `Runtime.getRuntime().exec(cmd)`, stdout is captured via `readAllBytes()`, the process is awaited, and the trimmed output string is returned; any `IOException` or `InterruptedException` results in an empty string, satisfying the fail-safe requirement. Non-`exec:` tokens continue to use the original `context.getOrDefault` lookup unchanged. The `Runtime.exec(String)` overload is deprecated in recent JDKs (a javac note, not an error); it could be replaced with `ProcessBuilder` to suppress the warning without behavioural change. The the analysis diff shows `TemplateEngine.expand` gained `+Exec`, and because every calling path flows through `expand`, the `Exec` effect propagates transitively to `Page.renderToken`, `Page.render`, `RenderController.renderOne`, `RenderController.renderMany`, `RenderReport.buildAll`, and `Main.main` — reviewers should be aware that the entire render pipeline now carries an `Exec` capability and any policy gates on that effect will apply.
+--- END SUMMARY ---

@@ -4,3 +4,4 @@
 runs/*/work/
 runs/*/cur.json
 runs/*/baseline.json
+runs/*/*.callgraph.json

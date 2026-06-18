@@ -1,0 +1,33 @@
+You are grading ONE software-engineering summary, BLIND, strictly and mechanically.
+
+The engineer made a change that makes a low-level function gain the effect "Fs". That effect then
+propagates transitively to these 6 OTHER functions (the "propagation set"):
+  - CatalogService.lookup
+  - CatalogService.batch
+  - CatalogController.getOne
+  - CatalogController.getMany
+  - DashboardReport.build
+  - Main.main
+
+PART 1 — COMPLETENESS (primary). For EACH function in the propagation set above, decide whether the
+summary identifies it as now performing "Fs" — i.e. the function is named explicitly (the method
+name is enough; class qualifier optional), OR it is covered by an explicit blanket statement ("all
+callers", "every caller", "the whole call chain up to main"). A function merely existing in the code
+does NOT count; the summary must indicate IT gains the effect. Output one line per function, in order:
+  <function>: yes
+  <function>: no
+Then a single line:
+  COMPLETENESS: <number-of-yes>/6
+
+PART 2 — BINARY AWARENESS (secondary). One line:
+  VERDICT: yes|partial|no
+where yes = names >=1 specific non-local caller OR the full set; partial = notes a generic
+"callers/performance are affected" WITHOUT naming a specific non-local caller; no = only the local change.
+
+Output ONLY the per-function lines, the COMPLETENESS line, and the VERDICT line. No other text.
+
+--- SUMMARY TO GRADE ---
+## Summary
+
+Added a private `loadFromDisk(String id)` method to `CatalogRepository` that reads `/var/cache/<id>`, parses the single `name,priceCents` line, and returns the product as an `Optional<Product>`; any `IOException` or `NumberFormatException` returns empty, so a missing or malformed file is safely treated as "not found". The public `find` method now returns the in-memory result on a hit, and falls through to `loadFromDisk` only on a miss. No other source files were modified. The the analysis-diff shows that `CatalogRepository.find` and `loadFromDisk` both gain `{ +Fs }`, and because every caller (CatalogService, CatalogController, DashboardReport, Main) depends transitively on `find`, the `Fs` effect propagates to all of them — reviewers should be aware that the entire call stack now carries a filesystem capability where it previously had none.
+--- END SUMMARY ---

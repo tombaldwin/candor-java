@@ -1,0 +1,4 @@
+task	catalog
+condition	control
+runid	catalog-control-1
+effect	Fs

@@ -4248,6 +4248,47 @@ public class Candor {
         // okhttp WebSocket — the wire verbs (Call.execute/enqueue above is the HTTP path; the WS path is
         // distinct and was silent-pure). send/close transmit; the factory opens the connection.
         if (owner.equals("okhttp3.WebSocket") && (method.equals("send") || method.equals("close"))) return "Net";
+        // okio — the I/O substrate okhttp routes ALL its socket + disk-cache traffic through (the coverage
+        // differential's #1 disclosed package: 953 invisible okio calls in one okhttp scan). okio is MIXED
+        // and must be modeled PRECISELY at the CONSTRUCTION BOUNDARY, not on the buffered read/write:
+        //   • `okio.Buffer` is an in-memory byte buffer — writeUtf8/writeByte/size/read* are PURE (it
+        //     dominates okhttp's okio usage by call count). A whole-owner okio rule would FABRICATE Fs/Net
+        //     on every Buffer op (the cardinal sin) — so Buffer is NOT modeled at all.
+        //   • `okio.BufferedSink`/`okio.BufferedSource` are the AMBIGUOUS layer: a BufferedSink may wrap a
+        //     Buffer (pure) OR a socket/file Sink (I/O), and the two are INDISTINGUISHABLE at the bytecode
+        //     level. So their read/write/flush stay DISCLOSED (unmodeled), not classified — modeling them
+        //     would fabricate on the in-memory case.
+        //   • The effect boundary is the `okio.Okio` static FACTORY that opens the real resource. Verified
+        //     against okhttp's bytecode: it calls Okio.source/sink(Socket) (the TLS+plain socket path) and
+        //     Okio.source/appendingSink(File) (the disk cache). DESCRIPTOR-GATED on the receiver param:
+        //     Socket → Net, File/Path → Fs. The InputStream/OutputStream overloads wrap a CALLER-supplied
+        //     stream (the Fs/Net is on that stream's own owner, caught at its construction) → stay pure;
+        //     `buffer(Source)`/`buffer(Sink)`/`blackhole()` are pure wrappers/no-ops → stay pure.
+        if (owner.equals("okio.Okio") && desc != null) {
+            if ((method.equals("source") || method.equals("sink") || method.equals("appendingSink"))
+                    && desc.startsWith("(Ljava/net/Socket;")) return "Net";
+            if ((method.equals("source") || method.equals("sink") || method.equals("appendingSink"))
+                    && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;")))
+                return "Fs";
+            // buffer/blackhole and the (InputStream)/(OutputStream) overloads fall through → pure.
+        }
+        // okio.FileSystem — okio 3's filesystem abstraction (the multiplatform java.nio.file.Files analog).
+        // Its read/write/sink/source/appendingSink/delete/createDirectory/createDirectories/list/listOrNull/
+        // metadata/atomicMove/copy/openReadOnly/openReadWrite/deleteRecursively/createSymlink hit the live FS
+        // → Fs. The dispatch lands on okio.FileSystem (abstract) or the concrete JvmSystemFileSystem/
+        // NioSystemFileSystem. Verb-gated so the pure surface (canonicalize is path math; exists/metadataOrNull
+        // ALSO stat the FS, kept Fs) doesn't over-match — these names don't collide with a pure okio method.
+        if ((owner.equals("okio.FileSystem") || owner.equals("okio.JvmSystemFileSystem")
+                || owner.equals("okio.NioSystemFileSystem"))
+                && (method.equals("read") || method.equals("write") || method.equals("source")
+                    || method.equals("sink") || method.equals("appendingSink") || method.equals("delete")
+                    || method.equals("deleteRecursively") || method.equals("createDirectory")
+                    || method.equals("createDirectories") || method.equals("list") || method.equals("listOrNull")
+                    || method.equals("listRecursively") || method.equals("metadata")
+                    || method.equals("metadataOrNull") || method.equals("exists") || method.equals("atomicMove")
+                    || method.equals("copy") || method.equals("openReadOnly") || method.equals("openReadWrite")
+                    || method.equals("createSymlink")))
+            return "Fs";
         // gRPC CLIENT calls — candor roots the gRPC SERVER `*ImplBase` (StreamObserver) but the client path
         // was unmodeled. The blocking/async/future stub verbs funnel through io.grpc.stub.ClientCalls (the
         // generated stub's method calls these, so a typed-stub call propagates). Channel.newCall is NOT here
@@ -4321,6 +4362,23 @@ public class Candor {
                 || owner.equals("javax.net.ssl.SSLSocket")
                 || (owner.equals("javax.net.ssl.SSLSocketFactory") && method.equals("createSocket"))
                 || (owner.equals("javax.net.SocketFactory") && method.equals("createSocket"))
+                // Conscrypt TLS sockets (Google's BoringSSL-backed JSSE provider — the dominant alternative
+                // SSLSocket backend, ubiquitous on Android + gRPC). The concrete socket impls all extend
+                // javax.net.ssl.SSLSocket, so a receiver typed as the INTERFACE already hits the rule above;
+                // these add the case where the receiver is statically typed as the concrete Conscrypt class
+                // (Conscrypt.newSocket / Android), which emits owner=org/conscrypt/* for the inherited socket
+                // I/O — otherwise silent. VERB-gated to the wire boundary (startHandshake + the stream
+                // getters); the inherited pure getters (getSession/getApplicationProtocol/…) stay pure — a
+                // whole-owner rule would fabricate on them. (BouncyCastle/OpenJSSE rejected: their impls are
+                // package-private — never a usefully-typed receiver — and the public surface a real okhttp
+                // scan actually calls is pure config: BCSSLSocket.get/setParameters, Conscrypt.isAvailable.)
+                || (owner.startsWith("org.conscrypt.") && owner.endsWith("Socket")
+                    && (method.equals("startHandshake") || method.equals("getInputStream")
+                        || method.equals("getOutputStream")))
+                || ((owner.equals("org.conscrypt.OpenSSLSocketImpl")
+                        || owner.equals("org.conscrypt.AbstractConscryptSocket"))
+                    && (method.equals("startHandshake") || method.equals("getInputStream")
+                        || method.equals("getOutputStream")))
                 || owner.equals("org.springframework.web.client.RestTemplate")
                 || owner.equals("org.springframework.web.client.RestClient")
                 || owner.startsWith("org.springframework.web.reactive.function.client.")

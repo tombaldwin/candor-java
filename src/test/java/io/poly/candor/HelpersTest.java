@@ -156,6 +156,72 @@ class HelpersTest {
                 "(Ljava/io/InputStream;)[B"));
     }
 
+    /** okio coverage calibration: okhttp routes ALL its socket + disk-cache I/O through okio (the #1
+     *  disclosed package in an okhttp scan: 953 invisible okio calls). Model PRECISELY at the
+     *  construction boundary — the `okio.Okio` static factory, descriptor-gated on the receiver type —
+     *  NOT on the in-memory `okio.Buffer` (which must stay pure) nor on the buffered read/write (which
+     *  can't be distinguished from a Buffer-backed sink, so stays disclosed). */
+    @Test
+    void okioConstructionBoundaryClassifiesPrecisely() {
+        // Okio.source/sink/appendingSink(Socket) open socket I/O → Net.
+        assertEquals("Net", Candor.classify("okio.Okio", "source", "(Ljava/net/Socket;)Lokio/Source;"));
+        assertEquals("Net", Candor.classify("okio.Okio", "sink", "(Ljava/net/Socket;)Lokio/Sink;"));
+        // Okio.source/sink/appendingSink(File|Path) open file I/O → Fs.
+        assertEquals("Fs", Candor.classify("okio.Okio", "source", "(Ljava/io/File;)Lokio/Source;"));
+        assertEquals("Fs", Candor.classify("okio.Okio", "appendingSink", "(Ljava/io/File;)Lokio/Sink;"));
+        assertEquals("Fs", Candor.classify("okio.Okio", "sink", "(Ljava/nio/file/Path;[Ljava/nio/file/OpenOption;)Lokio/Sink;"));
+        // PURE: the (InputStream)/(OutputStream) overloads wrap a caller stream (effect is on that
+        // stream's own owner); buffer()/blackhole() are pure wrappers. NONE may fabricate an effect.
+        assertNull(Candor.classify("okio.Okio", "source", "(Ljava/io/InputStream;)Lokio/Source;"));
+        assertNull(Candor.classify("okio.Okio", "sink", "(Ljava/io/OutputStream;)Lokio/Sink;"));
+        assertNull(Candor.classify("okio.Okio", "buffer", "(Lokio/Source;)Lokio/BufferedSource;"));
+        assertNull(Candor.classify("okio.Okio", "buffer", "(Lokio/Sink;)Lokio/BufferedSink;"));
+        assertNull(Candor.classify("okio.Okio", "blackhole", "()Lokio/Sink;"));
+        // PURE: okio.Buffer is an in-memory byte buffer — writeUtf8/size/readByte/write must stay pure
+        // (a whole-owner okio rule would fabricate Fs/Net on the dominant okhttp okio usage — cardinal sin).
+        assertNull(Candor.classify("okio.Buffer", "writeUtf8", "(Ljava/lang/String;)Lokio/Buffer;"));
+        assertNull(Candor.classify("okio.Buffer", "size", "()J"));
+        assertNull(Candor.classify("okio.Buffer", "readByte", "()B"));
+        assertNull(Candor.classify("okio.Buffer", "writeByte", "(I)Lokio/Buffer;"));
+        // PURE: the BufferedSink/BufferedSource read/write/flush layer is AMBIGUOUS (may wrap a Buffer or
+        // a socket/file) — stays DISCLOSED, not classified, so an in-memory sink never fabricates.
+        assertNull(Candor.classify("okio.BufferedSink", "writeUtf8", "(Ljava/lang/String;)Lokio/BufferedSink;"));
+        assertNull(Candor.classify("okio.BufferedSink", "flush", "()V"));
+        assertNull(Candor.classify("okio.BufferedSource", "readByte", "()B"));
+        // okio.FileSystem (okio 3's java.nio.file.Files analog) — the FS verbs hit disk → Fs; the concrete
+        // JvmSystemFileSystem too. canonicalize is pure path math → stays pure.
+        assertEquals("Fs", Candor.classify("okio.FileSystem", "read",
+                "(Lokio/Path;Lkotlin/jvm/functions/Function1;)Ljava/lang/Object;"));
+        assertEquals("Fs", Candor.classify("okio.FileSystem", "delete", "(Lokio/Path;Z)V"));
+        assertEquals("Fs", Candor.classify("okio.FileSystem", "list", "(Lokio/Path;)Ljava/util/List;"));
+        assertEquals("Fs", Candor.classify("okio.JvmSystemFileSystem", "sink",
+                "(Lokio/Path;Z)Lokio/Sink;"));
+        assertNull(Candor.classify("okio.FileSystem", "canonicalize", "(Lokio/Path;)Lokio/Path;"));
+    }
+
+    /** Conscrypt TLS sockets (Google's dominant alternative SSLSocket backend) extend
+     *  javax.net.ssl.SSLSocket; a receiver typed as the CONCRETE conscrypt class emits owner=org/conscrypt/*
+     *  for the inherited socket I/O, otherwise silent. Verb-gated to the wire boundary; pure config getters
+     *  stay pure (no fabrication — BouncyCastle/OpenJSSE rejected: package-private impls / pure-config-only
+     *  public surface; jgss rejected: initSecContext produces tokens, the wire I/O is on the app's socket). */
+    @Test
+    void conscryptTlsSocketIoClassifiesAsNet() {
+        assertEquals("Net", Candor.classify("org.conscrypt.OpenSSLSocketImpl", "startHandshake", "()V"));
+        assertEquals("Net", Candor.classify("org.conscrypt.ConscryptEngineSocket", "getInputStream",
+                "()Ljava/io/InputStream;"));
+        assertEquals("Net", Candor.classify("org.conscrypt.ConscryptFileDescriptorSocket", "getOutputStream",
+                "()Ljava/io/OutputStream;"));
+        // PURE config/probe surface stays pure (not fabricated) — these are what a real okhttp scan actually
+        // calls in org.conscrypt (isAvailable / get-application-protocol), and they do no wire I/O.
+        assertNull(Candor.classify("org.conscrypt.Conscrypt", "isAvailable", "()Z"));
+        assertNull(Candor.classify("org.conscrypt.OpenSSLSocketImpl", "getApplicationProtocol",
+                "()Ljava/lang/String;"));
+        // jgss + BouncyCastle config are NOT modeled (rejected) — must read null, never a fabricated Net.
+        assertNull(Candor.classify("org.ietf.jgss.GSSContext", "initSecContext", "([BII)[B"));
+        assertNull(Candor.classify("org.bouncycastle.jsse.BCSSLSocket", "getParameters",
+                "()Lorg/bouncycastle/jsse/BCSSLParameters;"));
+    }
+
     /** The full java.time `.now()` surface reads the clock — not just Instant/LocalDateTime/LocalDate/
      *  ZonedDateTime; OffsetDateTime in particular is very common. The arithmetic ops stay pure. */
     @Test

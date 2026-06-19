@@ -370,7 +370,7 @@ public class Candor {
             }
             runScan(Path.of(args[1]));                       // dirty the statics
             var inferred = runScan(Path.of(args[2]));        // real scan must be independent of the above
-            writeJson(inferred, rj); writeCallgraph(rj);
+            writeJson(inferred, rj); writeCallgraph(rj); writeHierarchy(rj);
             System.exit(0);
         }
         // The first arg is the scan target (a dir/jar) — a flag there is a typo or a newer-doc flag
@@ -413,7 +413,7 @@ public class Candor {
         }
 
         // JSON output is orthogonal — write first so `--json` can snapshot a baseline.
-        if (jsonOut != null) { writeJson(inferred, jsonOut); writeCallgraph(jsonOut); }
+        if (jsonOut != null) { writeJson(inferred, jsonOut); writeCallgraph(jsonOut); writeHierarchy(jsonOut); }
 
         // The κ-coverage disclosure (mirrors the Rust/TS receipts): external packages the bytecode
         // demonstrably calls where the classifier never fired — invisible, not Unknown. Per-scan
@@ -5048,6 +5048,27 @@ public class Candor {
             cg.put(e.getKey(), new ArrayList<>(new TreeSet<>(e.getValue())));
         }
         writeAtomic(Path.of(cgOut), new GsonBuilder().setPrettyPrinting().create().toJson(cg));
+    }
+
+    /** Write the type-hierarchy sidecar (`<report-stem>.hierarchy.json`) ⟨0.7⟩: each PROJECT type →
+     *  its direct supertypes + implemented interfaces (dotted; project AND external supers kept, so a
+     *  `dispatch-broad-ext` over an external interface still resolves). A SEPARATE sidecar — not a key
+     *  in the §2.2 call-graph sidecar, whose every top-level key is a function — and compact (O(classes),
+     *  one short list each), so the precise dispatch-frontier query can resolve "is R an override of
+     *  OWNER.M?" by name + subtype WITHOUT the engine storing the exploded candidate edges bounded-CHA
+     *  drops (which would re-encode the very flood it prevents). `java/lang/Object` is omitted as noise. */
+    static void writeHierarchy(String out) throws IOException {
+        String hOut = out.endsWith(".json") ? out.substring(0, out.length() - 5) + ".hierarchy.json"
+                                            : out + ".hierarchy.json";
+        Map<String, List<String>> h = new TreeMap<>();
+        for (ClassNode cn : ALL) {
+            if (!projectClasses.contains(cn.name)) continue; // key on the project types we resolve overrides for
+            TreeSet<String> sup = new TreeSet<>();
+            if (cn.superName != null && !cn.superName.equals("java/lang/Object")) sup.add(cn.superName.replace('/', '.'));
+            if (cn.interfaces != null) for (String i : cn.interfaces) sup.add(i.replace('/', '.'));
+            if (!sup.isEmpty()) h.put(cn.name.replace('/', '.'), new ArrayList<>(sup));
+        }
+        writeAtomic(Path.of(hOut), new GsonBuilder().setPrettyPrinting().create().toJson(h));
     }
 
     /** Write a report file ATOMICALLY: serialize to a sibling temp file, then move it into place. A

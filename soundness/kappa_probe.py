@@ -81,6 +81,9 @@ EFFECT_CASES = [
     # Exec — java.awt.Desktop launches the OS default handler (an external program)
     ("desktopBrowse", "Exec", "java.awt.Desktop d, java.net.URI u", "d.browse(u)"),
     ("desktopOpen", "Exec", "java.awt.Desktop d, java.io.File f", "d.open(f)"),
+    # Fs — javax media readers that open a File (ImageIO already modeled; AudioSystem added 0.7.8)
+    ("imageReadFile", "Fs", "java.io.File f", "javax.imageio.ImageIO.read(f)"),
+    ("audioReadFile", "Fs", "java.io.File f", "javax.sound.sampled.AudioSystem.getAudioInputStream(f)"),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).

@@ -4589,6 +4589,46 @@ public class Candor {
         // is in-memory → pure).
         if (owner.equals("org.apache.pdfbox.Loader") && method.equals("loadPDF") && desc != null
                 && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;"))) return "Fs";
+        // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 3) ──
+        // Spring Data repository BASE interfaces (CrudRepository/ListCrudRepository/PagingAndSortingRepository/
+        // JpaRepository/Reactive*…) — a DIRECT call on the base interface (`CrudRepository<X,Y> r; r.save(x)`)
+        // hits the datastore → Db. (The 1851 detection marks PROJECT sub-interfaces; this covers the base
+        // interface call site itself.) Every declared method is a store op; exclude only the Object protocol.
+        if (owner.startsWith("org.springframework.data.") && owner.endsWith("Repository")
+                && !isConventionallyPure(method)) return "Db";
+        // Lettuce — sync/async/reactive Redis command interfaces (RedisCommands and its RedisStringCommands/
+        // RedisKeyCommands/… supers) are Redis-over-TCP → Net, mirroring Jedis. Whole command-interface
+        // surface; the Object protocol stays pure.
+        if (owner.startsWith("io.lettuce.core.api.") && owner.endsWith("Commands")
+                && !isConventionallyPure(method)) return "Net";
+        // OpenFeign — the SPI the generated @RequestLine proxy delegates the wire-send to (the user interface
+        // has no body, so feign.Client.execute is the honest leaf). The Default/okhttp/httpclient adapters
+        // all implement it.
+        if (owner.equals("feign.Client") && method.equals("execute")) return "Net";
+        // Apache Avro container files — DataFileReader ctor / DataFileWriter.create on a File open the file
+        // off disk → Fs. desc CONTAINS java.io.File (create's File is the 2nd arg, after the Schema); the
+        // SeekableInput/OutputStream overloads are caller-supplied → pure.
+        if (owner.equals("org.apache.avro.file.DataFileReader") && method.equals("<init>")
+                && desc != null && desc.contains("Ljava/io/File;")) return "Fs";
+        if (owner.equals("org.apache.avro.file.DataFileWriter") && method.equals("create")
+                && desc != null && desc.contains("Ljava/io/File;")) return "Fs";
+        // Typesafe Config — parseFile(File) reads config off disk → Fs (verb-gated; parseString/parseReader
+        // are in-memory/caller-stream → pure).
+        if (owner.equals("com.typesafe.config.ConfigFactory")
+                && (method.equals("parseFile") || method.equals("parseFileAnySyntax"))) return "Fs";
+        // Apache Commons Configuration2 fluent Configurations — every loader reads its source; ARG-gated:
+        // a File arg → Fs, a URL arg → Net (the String/path-name overloads also read the FS → Fs).
+        if (owner.equals("org.apache.commons.configuration2.builder.fluent.Configurations") && desc != null) {
+            if (desc.contains("Ljava/net/URL;")) return "Net";
+            if (desc.contains("Ljava/io/File;") || desc.contains("Ljava/lang/String;")) return "Fs";
+        }
+        // javax.sound AudioSystem — getAudioInputStream(File) reads the audio file → Fs, (URL) fetches → Net
+        // (descriptor-gated, like ImageIO; the InputStream overload is a caller stream → pure). Found by a
+        // JDK-leaf probe.
+        if (owner.equals("javax.sound.sampled.AudioSystem") && method.equals("getAudioInputStream") && desc != null) {
+            if (desc.startsWith("(Ljava/io/File;")) return "Fs";
+            if (desc.startsWith("(Ljava/net/URL;")) return "Net";
+        }
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation

@@ -32,15 +32,22 @@ finding:
 - **`SellerBookingModel.hasTemporaryPurchaseExpired`** — two control agents included it; it has no path
   to `getMailLinks`. A **hand-tracing over-report**; candor (and the exact-match control) correctly
   excluded it.
-- **`NEMsScheduledTaskAction.execute`** — one control agent included it, and it is **right**: the
-  abstract `execute` calls the abstract `performTask()` (NEMsScheduledTaskAction.java:47→52), which
-  dispatches to the Net-performing subclass overrides (`STPollForMessages`/`STRebookAra...`). **candor
-  missed this** — a real under-report on **dispatch through an abstract/inherited method**. This is the
-  *same* gap class jsoup surfaced (`DataUtil.detectCharset`'s explicit-receiver inherited call), now
-  confirmed on two independent real codebases — a specific, high-value candor-java precision target.
+- **`NEMsScheduledTaskAction.execute`** — one control agent included it, and at runtime it does reach a
+  Net path: the abstract `execute` calls the abstract `performTask()` (NEMsScheduledTaskAction.java:47→52),
+  which dispatches to the Net-performing subclass overrides (`STPollForMessages`/`STRebookAra...`). But
+  candor did **not** silently drop it: it reports `execute` as `{ Clock, Db, Unknown }` with
+  `unknownWhy = dispatch-broad:…performTask` — `performTask` has **15 implementors**, over the bounded-CHA
+  limit, so candor **discloses** it cannot resolve the dispatch rather than fabricate the edge or
+  over-propagate to all 15. That is the spec trust contract working (`Unknown`, never assumed pure) — the
+  *opposite* of an under-report. The `callers` query returns candor's **confirmed** reachers, so a function
+  that reaches the target only through an unresolved broad dispatch isn't *asserted* as a caller — but it
+  *is* flagged `Unknown` in the per-function report. The control agent asserted the specific edge using
+  knowledge of the runtime wiring; candor declined to, and said so.
 
-So candor's set is sound enough to match the best expert trace exactly, with one disclosed dispatch gap
-— "disclosure, not a completeness proof," and the gap is now characterised precisely for a fix.
+So candor's set matched the best expert trace exactly on the resolvable graph, and the one human/candor
+difference is a **disclosed `Unknown`** at a 15-way dispatch, not a silent miss — "disclosure, not a
+completeness proof," demonstrated precisely. (Earlier drafts of this file mischaracterised this as a
+candor under-report / precision bug; that was wrong — verified against the report's `unknownWhy`.)
 
 ## Determinism
 
@@ -54,5 +61,8 @@ codebase is slow and noisy even for a frontier model.
   and the cleanest statistic.
 - One target, one app, N=6/arm. The target is a concrete static method (chosen precisely so candor's set
   is clean ground truth); a dispatch-heavy target would reintroduce the jsoup-style divergence.
-- The `NEMsScheduledTaskAction.execute` miss is a genuine candor-java limitation, reported here rather
-  than hidden — and it is the actionable output of running on real code.
+- The one human/candor difference (`NEMsScheduledTaskAction.execute`) is candor disclosing `Unknown` at a
+  15-way `dispatch-broad`, not a silent miss — sound and disclosed by design, not a bug. The `callers`
+  query returning confirmed-reachers-only (excluding functions that reach the target solely via an
+  unresolved dispatch) is a deliberate soundness choice; surfacing those "possible via Unknown dispatch"
+  reachers would be a query *feature*, not a correctness fix.

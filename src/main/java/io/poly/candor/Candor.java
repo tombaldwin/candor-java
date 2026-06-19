@@ -2034,21 +2034,24 @@ public class Candor {
                                     .add("task-handoff:" + owner + "." + min.name);
                         }
                     }
-                    // NAMED FUNCTIONAL-INTERFACE INSTANCE handed to an EXTERNAL HOF. A `new EffCons()` (a
-                    // project class implementing java.util.function.*/Runnable/Callable) passed to a library
-                    // method that invokes its SAM OUTSIDE project code (`Stream.forEach`, `List.sort`,
-                    // `Optional.map`) read SILENT-PURE: there is no invokedynamic (so the lambda
-                    // creation-edge never fires) and no in-project SAM invoke (so the callback: Unknown gate
-                    // never fires — the `.accept()` is inside the unanalysed JDK body). A lambda or
-                    // method-ref in the SAME position IS sound (edged at its indy), so this is an INTERNAL
-                    // asymmetry / cardinal sin. Edge the instance's SAM surface here, mirroring the lambda
-                    // creation-edge and GATED exactly like `lambdaEscapesUninvoked`: a storing-container call
-                    // (`list.add(consumer)` STORES, never invokes) keeps the no-edge → the instance stays
-                    // pure. Restricted to a freshly-constructed instance (`newType`, a guarantee) of a
-                    // project functional impl, and to EXTERNAL callees — a PROJECT callee's body is analysed,
-                    // which already handles the param flow without fabricating on a store.
+                    // NAMED FUNCTIONAL-INTERFACE INSTANCE handed to a known-INVOKING library HOF. A
+                    // `new EffCons()` (a project class implementing java.util.function.*/Comparator/FileFilter)
+                    // passed to a library method that INVOKES its SAM outside project code (`Stream.forEach`,
+                    // `List.sort`, `File.listFiles`) reads SILENT-PURE: there is no invokedynamic (so the
+                    // lambda creation-edge never fires) and no in-project SAM invoke (the `.accept()` is inside
+                    // the unanalysed JDK body). A lambda/method-ref in the SAME position IS sound (edged at its
+                    // indy), so this was an INTERNAL asymmetry. Edge the instance's SAM surface here — GATED on
+                    // an explicit ALLOWLIST of known-INVOKING HOF method names (isInvokingHof). The earlier
+                    // `!isStoringContainerCall` gate was UNSOUND (a code review found it FABRICATED: it fired
+                    // for ANY external non-store, so `Objects.requireNonNull(c)` / `Optional.ofNullable(c)` /
+                    // `map.getOrDefault(k,c)` / `Stream.of(c)` / `new TreeMap<>(cmp)` — which merely RECEIVE
+                    // or STORE the instance, never invoke it — edged the SAM = a phantom effect). The allowlist
+                    // never fabricates on a non-invoking sink; a genuinely-invoking HOF not on the list is a
+                    // sound UNDER-report (no edge), never a fabrication. Restricted to a freshly-constructed
+                    // (`newType`) project functional impl and EXTERNAL callees (a project callee's body is
+                    // analysed directly).
                     if (provFrames != null && !projectClasses.contains(min.owner)
-                            && !isStoringContainerCall(min.owner, min.name)) {
+                            && isInvokingHof(min.name)) {
                         for (ProvValue a : callArgs(provFrames[mn.instructions.indexOf(min)], min)) {
                             if (a == null || a.newType == null) continue;
                             edges.get(id).addAll(functionalSamSurface(a.newType));
@@ -3147,14 +3150,8 @@ public class Candor {
                 || internal.equals("java/lang/Runnable") || internal.equals("java/util/concurrent/Callable"));
     }
 
-    /** The invokable SAM surface — non-private, non-static, non-abstract, non-`<init>` methods (the SAM
-     *  override plus any synthetic bridge, never private helpers) — of a PROJECT class that DIRECTLY
-     *  implements a recognised JDK functional interface; the bodies a library HOF invokes on it. Empty if
-     *  the type is unknown, not a project class, or implements no such interface (so a non-functional
-     *  `new Foo()` passed to a library method edges nothing). Mirrors the anonymous-class instantiation-edge
-     *  surface, applied to a named functional impl handed to an external HOF. */
     /** A JDK functional interface a LIBRARY HOF invokes on a passed instance — the java.util.function set
-     *  plus the common library SAMs NOT in that package: `Comparator` (sort/TreeMap/sorted), `FileFilter`/
+     *  plus the common library SAMs NOT in that package: `Comparator` (sort/sorted), `FileFilter`/
      *  `FilenameFilter` (File.listFiles). Broader than {@link #isFunctionalIface} on PURPOSE: kept separate
      *  so the private-forwarding param-count (which uses isFunctionalIface) is unaffected by this widening. */
     static boolean isHofFunctionalIface(String internal) {
@@ -3164,6 +3161,38 @@ public class Candor {
                 || "java/io/FilenameFilter".equals(internal);
     }
 
+    /** Library method SIMPLE-NAMES that INVOKE a functional/Comparator/FileFilter argument's SAM (so a
+     *  freshly-constructed project impl passed to one really runs and its effect must propagate). An
+     *  ALLOWLIST — the safe direction: a name NOT here means no creation-site edge (a sound UNDER-report),
+     *  whereas the old `!isStoringContainerCall` gate fired for ANY external non-store and FABRICATED on
+     *  receive/store/compare sinks (requireNonNull / ofNullable / getOrDefault / Stream.of / indexOf /
+     *  new TreeMap). Stream/Collection/Optional/Map higher-order verbs + the Comparator sorts + File
+     *  listing. A STORE/box/null-check/compare/factory sink is deliberately ABSENT. */
+    static boolean isInvokingHof(String name) {
+        switch (name) {
+            // Stream / Collection / Iterable element-consuming + transforming HOFs
+            case "forEach": case "forEachOrdered": case "removeIf": case "replaceAll":
+            case "map": case "mapToInt": case "mapToLong": case "mapToDouble": case "mapToObj":
+            case "flatMap": case "filter": case "peek":
+            case "anyMatch": case "allMatch": case "noneMatch": case "takeWhile": case "dropWhile":
+            // Map HOFs
+            case "computeIfAbsent": case "computeIfPresent": case "compute": case "merge":
+            // Optional HOFs
+            case "ifPresent": case "ifPresentOrElse":
+            // Comparator-consuming sorts + selectors
+            case "sort": case "sorted": case "min": case "max":
+            // FileFilter / FilenameFilter
+            case "listFiles": case "list":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /** The invokable SAM surface — non-private/static/abstract/`<init>` methods (the SAM override + any
+     *  synthetic bridge) — of a PROJECT class that DIRECTLY implements a recognised functional interface;
+     *  the bodies a library HOF invokes on it. Empty if the type is unknown, not a project class, or
+     *  implements no such interface (a non-functional `new Foo()` edges nothing). */
     static Set<String> functionalSamSurface(String classInternal) {
         ClassNode cn = byName.get(classInternal);
         if (cn == null || cn.interfaces == null || cn.interfaces.stream().noneMatch(Candor::isHofFunctionalIface))

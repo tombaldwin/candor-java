@@ -114,6 +114,27 @@ IMPORTS = (
     # AWS more (VERIFY shared-namespace coverage): SecretsManagerClient.getSecretValue / KmsClient.encrypt /
     #   SsmClient.getParameter (→ Net; candor keys AWS v2 on the services namespace, so they likely PASS).
     # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2/3/4/5.
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 7) ======================
+    # Distributed caches/grids → Net (the get/put hit a remote partition/cluster over the wire). CRITICAL
+    #   nuance: Hazelcast IMap and Infinispan BasicCache EXTEND java.util.concurrent.ConcurrentMap, so get/put
+    #   are inherited Map verbs — but the invoke* call-site owner is the CACHE interface (IMap / BasicCache),
+    #   not java.util.Map, so an owner-scoped κ rule keyed on the cache type is fabrication-safe. Ignite
+    #   IgniteCache extends javax.cache.Cache (JCache), not Map. A java.util.Map-typed PURE anchor below proves
+    #   the rule does NOT flood the JDK Map.
+    # DB toolkits → Db: JDBI (Jdbi.withHandle / Handle.execute / Handle.createQuery), Spring Data Cassandra
+    #   (CassandraTemplate.select/insert), Spring Data Couchbase (CouchbaseTemplate.save).
+    # SaaS SDKs → Net: Stripe (com.stripe.model.Charge.create/retrieve — STATIC leaf that delegates to the
+    #   ApiResource request machinery), Twilio (MessageCreator.create() — the no-arg terminal that uses the
+    #   default TwilioRestClient and hits the wire), SendGrid (com.sendgrid.SendGrid.api(Request) — api() is
+    #   declared on BaseInterface; the call-site owner is the SendGrid static type).
+    # Reactive/HTTP → Net (lazy — Net or Unknown both PASS): reactor-netty HttpClient.get().responseContent()
+    #   / .response() (the leaf owner is HttpClient$ResponseReceiver, NOT HttpClient).
+    # Email → Net: Apache Commons Email Email.send() (opens an SMTP transport and sends).
+    # Scheduling → documented: Quartz Scheduler.scheduleJob — pure/Unknown unless a JDBCJobStore is wired;
+    #   the API call alone can't tell, so a silent-pure is ACCEPTED (documented), not a hard GAP.
+    # spring-data-couchbase ships a querydsl annotation Processor service file — the probe's javac now runs
+    #   with -proc:none (it only needs type resolution, never annotation processing).
+    # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2/3/4/5/6.
 )
 
 # (method, expected effect, params, body) — PASS iff candor reports the effect OR a disclosed Unknown.
@@ -586,6 +607,67 @@ EFFECT_CASES = [
         "software.amazon.awssdk.services.ssm.SsmClient c, "
         "software.amazon.awssdk.services.ssm.model.GetParameterRequest req",
         'software.amazon.awssdk.services.ssm.model.GetParameterResponse r = c.getParameter(req)'),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 7) ======================
+    # ---- Net (Distributed caches/grids — get/put hit a remote partition over the wire). The receiver is the
+    #      CACHE interface, so the call-site owner is IMap / IgniteCache / BasicCache (NOT java.util.Map even
+    #      though Hazelcast/Infinispan inherit Map). java.util.Map-typed PURE anchors below prove no flooding.) ----
+    ("hazelcastGet", "Net", "com.hazelcast.map.IMap<String,String> m", 'String v = m.get("k")'),
+    ("hazelcastPut", "Net", "com.hazelcast.map.IMap<String,String> m", 'String v = m.put("k","v")'),
+    ("igniteGet", "Net", "org.apache.ignite.IgniteCache<String,String> c", 'String v = c.get("k")'),
+    ("ignitePut", "Net", "org.apache.ignite.IgniteCache<String,String> c", 'c.put("k","v")'),
+    ("infinispanGet", "Net", "org.infinispan.commons.api.BasicCache<String,String> c", 'String v = c.get("k")'),
+    ("infinispanPut", "Net", "org.infinispan.commons.api.BasicCache<String,String> c", 'String v = c.put("k","v")'),
+
+    # ---- Db (JDBI — Jdbi.withHandle opens a connection callback; Handle.execute/createQuery run SQL) ----
+    ("jdbiWithHandle", "Db", "org.jdbi.v3.core.Jdbi j",
+        'Object o = j.withHandle(h -> h.execute("delete from t"))'),
+    ("jdbiExecute", "Db", "org.jdbi.v3.core.Handle h", 'int n = h.execute("delete from t")'),
+    ("jdbiCreateQuery", "Db", "org.jdbi.v3.core.Handle h",
+        'org.jdbi.v3.core.statement.Query q = h.createQuery("select 1")'),
+
+    # ---- Db (Spring Data Cassandra — CassandraTemplate.select/insert run CQL against the cluster) ----
+    ("cassandraTemplateSelect", "Db", "org.springframework.data.cassandra.core.CassandraTemplate t",
+        'java.util.List<?> r = t.select("select 1", String.class)'),
+    ("cassandraTemplateInsert", "Db", "org.springframework.data.cassandra.core.CassandraTemplate t, Object o",
+        'Object r = t.insert(o)'),
+
+    # ---- Db (Spring Data Couchbase — CouchbaseTemplate.save persists to the cluster) ----
+    ("couchbaseTemplateSave", "Db", "org.springframework.data.couchbase.core.CouchbaseTemplate t, Object o",
+        'Object r = t.save(o)'),
+
+    # ---- Net (Stripe — Charge.create/retrieve are STATIC leaves that delegate to the ApiResource HTTP
+    #      machinery. The user calls the SDK's own method whose owner is com.stripe.model.Charge — silent
+    #      unless candor models the Stripe SDK leaf, even though OkHttp/HttpClient run under the hood.) ----
+    ("stripeChargeCreate", "Net", "java.util.Map<String,Object> p",
+        'com.stripe.model.Charge c = com.stripe.model.Charge.create(p)'),
+    ("stripeChargeRetrieve", "Net", "",
+        'com.stripe.model.Charge c = com.stripe.model.Charge.retrieve("ch_1")'),
+
+    # ---- Net (Twilio — MessageCreator.create() is the no-arg terminal; it uses the default TwilioRestClient
+    #      and performs the HTTP round-trip. Owner is the Twilio creator type.) ----
+    ("twilioMessageCreate", "Net", "com.twilio.rest.api.v2010.account.MessageCreator mc",
+        'com.twilio.rest.api.v2010.account.Message m = mc.create()'),
+
+    # ---- Net (SendGrid — SendGrid.api(Request) sends the email over HTTP; api() is declared on BaseInterface
+    #      but the call-site owner is the SendGrid static type.) ----
+    ("sendgridApi", "Net", "com.sendgrid.SendGrid sg, com.sendgrid.Request req",
+        'com.sendgrid.Response r = sg.api(req)'),
+
+    # ---- Net (reactor-netty HttpClient — get().responseContent()/.response() dispatch the HTTP request.
+    #      REACTIVE/lazy: the leaf owner is HttpClient$ResponseReceiver (the get() return type), not
+    #      HttpClient. Net or Unknown both PASS (deferred-subscribe boundary).) ----
+    ("reactorNettyResponseContent", "Net", "reactor.netty.http.client.HttpClient hc",
+        'reactor.netty.ByteBufFlux f = hc.get().responseContent()'),
+    ("reactorNettyResponse", "Net", "reactor.netty.http.client.HttpClient hc",
+        'reactor.core.publisher.Mono<reactor.netty.http.client.HttpClientResponse> m = hc.get().response()'),
+
+    # ---- Net (Apache Commons Email — Email.send() opens an SMTP transport and sends the message) ----
+    ("commonsEmailSend", "Net", "org.apache.commons.mail.Email e", 'String id = e.send()'),
+
+    # ---- Scheduling (Quartz — Scheduler.scheduleJob is pure/Unknown unless a JDBCJobStore is configured;
+    #      the API call alone cannot reveal the store, so silent-pure is an ACCEPTED, documented outcome,
+    #      not a hard GAP. Listed with expect=Unknown so a disclosed-Unknown passes; a pure result is noted.) ----
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -622,6 +704,11 @@ PURE_CASES = [
     # R2DBC createStatement() is a LOCAL factory (returns a Statement); the wire leaf is Statement.execute()
     # (modeled Db, see r2dbcExecute). Setup stays pure (accepted, not a gap).
     ("r2dbcCreateStatementPure", "io.r2dbc.spi.Statement st = c.createStatement(\"select 1\")", "io.r2dbc.spi.Connection c"),
+    # Quartz Scheduler.scheduleJob is pure with the DEFAULT RAMJobStore (in-memory) and Db only with a
+    # JDBCJobStore — the call site can't reveal the store, so silent-pure is ACCEPTED (ambiguous-receiver
+    # class, like Ehcache/Caffeine; modeling Db would fabricate on the common RAM case).
+    ("quartzScheduleJobPure", "java.util.Date d = s.scheduleJob(jd, tr)",
+        "org.quartz.Scheduler s, org.quartz.JobDetail jd, org.quartz.Trigger tr"),
     # Tika parseToString(InputStream) — caller supplies the stream; the parse itself is pure
     # (the file open is the caller's, the File overload above is the Fs leaf). Ambiguous-receiver class.
     ("tikaParseStreamPure", "String s = t.parseToString(in)", "org.apache.tika.Tika t, InputStream in"),
@@ -700,6 +787,28 @@ PURE_CASES = [
     #   directory CONSTRUCTION itself is pure (the ambiguity is why Unknown is an accepted PASS on the reader).
     ("luceneRamDirPure",
         "org.apache.lucene.store.ByteBuffersDirectory d = new org.apache.lucene.store.ByteBuffersDirectory()", ""),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 7) — pure anchors ===============
+    # CRITICAL anti-flooding anchors: a get/put on a java.util.Map-TYPED receiver must stay PURE even after the
+    #   distributed caches (IMap/IgniteCache/BasicCache) are modeled Net. This proves the cache κ rule is
+    #   OWNER-SCOPED to the cache interface and does NOT key java.util.Map/ConcurrentMap (which Hazelcast and
+    #   Infinispan inherit) — otherwise every HashMap.get in every codebase would read Net. The call-site owner
+    #   here is java.util.Map, so it must be silent-pure.
+    ("mapGetPure", "String v = m.get(\"k\")", "java.util.Map<String,String> m"),
+    ("mapPutPure", "String v = m.put(\"k\",\"v\")", "java.util.Map<String,String> m"),
+    ("concurrentMapGetPure", "String v = m.get(\"k\")", "java.util.concurrent.ConcurrentMap<String,String> m"),
+    # JDBI Handle.createQuery returns a Query builder — the wire leaf is the terminal mapTo/list/execute. But
+    #   createQuery is modeled Db above (it carries the SQL and is the canonical leaf candor sees). For the
+    #   builder-pure discipline, the Jdbi.open() factory (returns a Handle, no SQL yet) must stay pure.
+    ("jdbiOpenPure", "org.jdbi.v3.core.Handle h = j.open()", "org.jdbi.v3.core.Jdbi j"),
+    # SendGrid Request is a plain POJO — building one (setEndpoint/setMethod) touches no wire. Pins that only
+    #   api()/makeCall are Net, not the request setup (fluent-builder-pure-until-terminal anchor).
+    ("sendgridRequestBuildPure",
+        "req.setMethod(com.sendgrid.Method.POST); req.setEndpoint(\"mail/send\")", "com.sendgrid.Request req"),
+    # reactor-netty HttpClient.get() is a LOCAL factory returning a ResponseReceiver — no request dispatched
+    #   until the terminal responseContent()/response() (modeled Net above). The get() setup stays pure.
+    ("reactorNettyGetPure",
+        "reactor.netty.http.client.HttpClient.ResponseReceiver<?> r = hc.get()", "reactor.netty.http.client.HttpClient hc"),
 ]
 
 
@@ -884,6 +993,32 @@ JARS = {
     "kms-2.25.60.jar": f"{_MVN}/software/amazon/awssdk/kms/2.25.60/kms-2.25.60.jar",
     "ssm-2.25.60.jar": f"{_MVN}/software/amazon/awssdk/ssm/2.25.60/ssm-2.25.60.jar",
     # JNDI/LDAP DirContext is in the JDK (javax.naming.directory) — no jar needed.
+    # --- added 2026-06-20 batch 7 ---
+    # Distributed caches/grids — Hazelcast / Apache Ignite (+ JCache api for IgniteCache's supertype) / Infinispan
+    "hazelcast-5.3.7.jar": f"{_MVN}/com/hazelcast/hazelcast/5.3.7/hazelcast-5.3.7.jar",
+    "ignite-core-2.16.0.jar": f"{_MVN}/org/apache/ignite/ignite-core/2.16.0/ignite-core-2.16.0.jar",
+    "cache-api-1.1.1.jar": f"{_MVN}/javax/cache/cache-api/1.1.1/cache-api-1.1.1.jar",  # IgniteCache extends javax.cache.Cache
+    "infinispan-core-14.0.27.Final.jar": f"{_MVN}/org/infinispan/infinispan-core/14.0.27.Final/infinispan-core-14.0.27.Final.jar",
+    "infinispan-commons-14.0.27.Final.jar": f"{_MVN}/org/infinispan/infinispan-commons/14.0.27.Final/infinispan-commons-14.0.27.Final.jar",
+    # DB toolkits — JDBI / Spring Data Cassandra / Spring Data Couchbase
+    "jdbi3-core-3.45.1.jar": f"{_MVN}/org/jdbi/jdbi3-core/3.45.1/jdbi3-core-3.45.1.jar",
+    "spring-data-cassandra-4.3.1.jar": f"{_MVN}/org/springframework/data/spring-data-cassandra/4.3.1/spring-data-cassandra-4.3.1.jar",
+    "spring-data-couchbase-5.3.1.jar": f"{_MVN}/org/springframework/data/spring-data-couchbase/5.3.1/spring-data-couchbase-5.3.1.jar",
+    # SaaS SDKs — Stripe / Twilio / SendGrid (+ java-http-client for SendGrid's Request/Response/Method types)
+    "stripe-java-25.12.0.jar": f"{_MVN}/com/stripe/stripe-java/25.12.0/stripe-java-25.12.0.jar",
+    "twilio-10.1.5.jar": f"{_MVN}/com/twilio/sdk/twilio/10.1.5/twilio-10.1.5.jar",
+    "sendgrid-java-4.10.2.jar": f"{_MVN}/com/sendgrid/sendgrid-java/4.10.2/sendgrid-java-4.10.2.jar",
+    "java-http-client-4.5.0.jar": f"{_MVN}/com/sendgrid/java-http-client/4.5.0/java-http-client-4.5.0.jar",
+    # Reactive/HTTP — reactor-netty (http + core; netty codec/handler for compile; reactor-core already present)
+    "reactor-netty-http-1.1.20.jar": f"{_MVN}/io/projectreactor/netty/reactor-netty-http/1.1.20/reactor-netty-http-1.1.20.jar",
+    "reactor-netty-core-1.1.20.jar": f"{_MVN}/io/projectreactor/netty/reactor-netty-core/1.1.20/reactor-netty-core-1.1.20.jar",
+    "netty-codec-http-4.1.111.Final.jar": f"{_MVN}/io/netty/netty-codec-http/4.1.111.Final/netty-codec-http-4.1.111.Final.jar",
+    "netty-codec-4.1.111.Final.jar": f"{_MVN}/io/netty/netty-codec/4.1.111.Final/netty-codec-4.1.111.Final.jar",
+    "netty-handler-4.1.111.Final.jar": f"{_MVN}/io/netty/netty-handler/4.1.111.Final/netty-handler-4.1.111.Final.jar",
+    # Email — Apache Commons Email
+    "commons-email-1.6.0.jar": f"{_MVN}/org/apache/commons/commons-email/1.6.0/commons-email-1.6.0.jar",
+    # Scheduling — Quartz
+    "quartz-2.3.2.jar": f"{_MVN}/org/quartz-scheduler/quartz/2.3.2/quartz-2.3.2.jar",
 }
 
 
@@ -936,7 +1071,9 @@ def main():
             f.write(build_fixture())
         cls = os.path.join(work, "cls")
         os.makedirs(cls)
-        jc = subprocess.run(["javac", "-cp", cp, "-d", cls, src], capture_output=True, text=True)
+        # -proc:none: some jars on the classpath (e.g. spring-data-couchbase) ship a querydsl annotation
+        # Processor service file; the probe only needs type resolution, never annotation processing.
+        jc = subprocess.run(["javac", "-proc:none", "-cp", cp, "-d", cls, src], capture_output=True, text=True)
         if jc.returncode != 0:
             print("kappa-libs: GEN BUG — fixture does not compile:\n" + jc.stderr.strip()); sys.exit(2)
         out = os.path.join(work, "out.json")

@@ -2057,6 +2057,15 @@ public class Candor {
                             edges.get(id).addAll(functionalSamSurface(a.newType));
                         }
                     }
+                    // XML parse(File) PRECISION: the parser's `parse` already classifies as the XXE/external-
+                    // entity Unknown (security disclosure, see classify ~4367). The File overload ALSO
+                    // DEFINITELY reads the file — add Fs here so the effect set is the precise {Fs, Unknown}
+                    // (reads this file for sure; may resolve external entities). The InputStream/InputSource
+                    // overloads (caller stream) and the (String systemId) overload (path-vs-URL ambiguous)
+                    // get no Fs. Added in the call handler because classify()'s single slot is the Unknown.
+                    if ((min.owner.equals("javax/xml/parsers/DocumentBuilder")
+                            || min.owner.equals("javax/xml/parsers/SAXParser"))
+                            && min.name.equals("parse") && min.desc.startsWith("(Ljava/io/File;")) dir.add("Fs");
                     // IMPLICIT-CONTRACT-REENTRY: a JDK sink that re-enters user code via the JVM contract
                     // (toString/equals/hashCode/compareTo) — modelled pure by candor, so an EFFECTFUL override
                     // of the argument's type read silent-pure. CHA the contract method over the ARGUMENT's
@@ -4504,7 +4513,12 @@ public class Candor {
         // guard this). Found silent-pure by the library κ-coverage probe (kappa_libs_probe.py).
         if ((owner.equals("com.fasterxml.jackson.databind.ObjectMapper")
                 || owner.equals("com.fasterxml.jackson.databind.ObjectReader")
-                || owner.equals("com.fasterxml.jackson.databind.ObjectWriter"))
+                || owner.equals("com.fasterxml.jackson.databind.ObjectWriter")
+                // Format modules (XmlMapper/YAMLMapper/CsvMapper/JavaPropsMapper/TomlMapper) SUBCLASS
+                // ObjectMapper and INHERIT readValue/writeValue, so the call-site owner is the subclass —
+                // missed by the exact-owner match above (batch-4 finding). All live under
+                // com.fasterxml.jackson.dataformat.*.*Mapper; the descriptor gate keeps String/byte[] pure.
+                || (owner.startsWith("com.fasterxml.jackson.dataformat.") && owner.endsWith("Mapper")))
                 && desc != null
                 && (method.equals("readValue") || method.equals("readTree") || method.equals("writeValue"))) {
             if (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;")) return "Fs";
@@ -4629,6 +4643,41 @@ public class Candor {
             if (desc.startsWith("(Ljava/io/File;")) return "Fs";
             if (desc.startsWith("(Ljava/net/URL;")) return "Net";
         }
+        // (XML parse(File) precision — the Fs that accompanies the XXE Unknown from the parse() rule above —
+        //  is added in the call handler, NOT here: classify returns a single effect and that slot is already
+        //  the security Unknown. See the `dir.add("Fs")` block at the XML-parse-File call site.)
+        // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 4) ──
+        // iText PDF — PdfWriter/PdfReader File|String constructors open the PDF off disk → Fs (descriptor-
+        // gated ctor; the OutputStream/InputStream ctors are caller-supplied → pure).
+        if ((owner.equals("com.itextpdf.kernel.pdf.PdfWriter") || owner.equals("com.itextpdf.kernel.pdf.PdfReader"))
+                && method.equals("<init>") && desc != null
+                && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/lang/String;"))) return "Fs";
+        // Thumbnailator — Thumbnails.of(File...) reads the image off disk → Fs (the of(BufferedImage)/
+        // (InputStream) overloads are in-memory/caller-stream → pure).
+        if (owner.equals("net.coobird.thumbnailator.Thumbnails") && method.equals("of") && desc != null
+                && desc.startsWith("([Ljava/io/File;")) return "Fs";
+        // Cloud object-store clients — entirely remote (every method is an HTTP round-trip to the store) →
+        // whole-owner Net, like the modeled AWS S3. Object-protocol excluded.
+        if ((owner.equals("io.minio.MinioClient") || owner.equals("io.minio.MinioAsyncClient")
+                || owner.equals("com.google.cloud.storage.Storage")
+                || owner.equals("com.azure.storage.blob.BlobClient")
+                || owner.equals("com.azure.storage.blob.BlobClientBase")
+                || owner.equals("com.azure.storage.blob.BlobAsyncClient"))
+                && !isConventionallyPure(method)) return "Net";
+        // Spring mail — JavaMailSender/MailSender.send drives the SMTP round-trip (the raw jakarta.mail
+        // Transport.send is already modeled; this is the Spring wrapper apps actually call). VERB-gated to
+        // send/doSend so the JavaMailSenderImpl config setters (setHost/setPort/…) stay pure.
+        if ((owner.equals("org.springframework.mail.MailSender")
+                || owner.equals("org.springframework.mail.javamail.JavaMailSender")
+                || owner.equals("org.springframework.mail.javamail.JavaMailSenderImpl"))
+                && (method.equals("send") || method.equals("doSend"))) return "Net";
+        // Spring Data Redis operations — opsForValue()/opsForList()/… return *Operations whose terminal
+        // get/set/… are Redis-over-TCP. Was silent-pure (ValueOperations.set). → Net, matching the Jedis/
+        // Lettuce raw-client classification. (NB: RedisTemplate itself is classified Db elsewhere — a known
+        // Db-vs-Net Redis labelling inconsistency, left for a deliberate reconciliation; this fixes the
+        // silent-pure on the operations interfaces.) Whole-owner; Object protocol excluded.
+        if (owner.startsWith("org.springframework.data.redis.core.") && owner.endsWith("Operations")
+                && !isConventionallyPure(method)) return "Net";
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation

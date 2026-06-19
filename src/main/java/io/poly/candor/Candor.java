@@ -2547,16 +2547,15 @@ public class Candor {
                         // Type.getArgumentTypes and crash the whole scan.
                         if (a instanceof Handle h && h.getTag() >= Opcodes.H_INVOKEVIRTUAL) {
                             // A lambda that does NOT run at this creation site must not be edged here, else its
-                            // effect smears onto the initializer and every method that triggers the class's init
-                            // (a fabrication found by the Kotlin/field sweep). Two such shapes: (a) stowed into a
-                            // deferred container (`by lazy`, ThreadLocal.withInitial — attributed at the force
-                            // site by isDeferredForce); (b) stored straight into a field IN AN INITIALIZER (run
-                            // later via a field-SAM, which discloses Unknown). Scoping (b) to <clinit>/<init>
-                            // targets the class-init amplifier while leaving ordinary in-method lambda
-                            // attribution (localised, not a smear) unchanged.
-                            boolean initMethod = mn.name.equals("<clinit>") || mn.name.equals("<init>");
-                            boolean deferred = feedsDeferredFactory(idin)
-                                    || (initMethod && lambdaImmediatelyStored(idin));
+                            // effect is misattributed to this method and (via the <clinit>/<init> + class-init
+                            // amplifier) SMEARED onto every method touching the class — a fabrication found by
+                            // the Kotlin/field sweep. Two shapes: (a) stowed into a deferred container
+                            // (`by lazy`, ThreadLocal.withInitial — attributed at the force site by
+                            // isDeferredForce); (b) escapes uninvoked — returned, or stored into a field/
+                            // collection, then run later via an unpinned SAM that discloses Unknown. A lambda
+                            // passed to a CALL that runs it (executor/stream/forEach/a forwarding sink) is NOT
+                            // matched, so its effect still propagates.
+                            boolean deferred = feedsDeferredFactory(idin) || lambdaEscapesUninvoked(idin);
                             if (projectClasses.contains(h.getOwner())) {
                                 if (!deferred)
                                     edges.get(id).add(methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc()));
@@ -2677,18 +2676,20 @@ public class Candor {
         }
     }
 
-    /** Whether the lambda an {@code idin} creates ESCAPES UNINVOKED at this site — stored into a field
-     *  (PUTFIELD/PUTSTATIC) or into a collection/map (a storing container call) rather than passed to a
-     *  call that runs it. Such a lambda does not RUN here; it runs at a later invocation (a field- or
-     *  collection-SAM, which discloses Unknown). Used (in {@code <clinit>}/{@code <init>} only) to suppress
-     *  the creation-site edge that would otherwise attribute the effect to the initializer and SMEAR it onto
-     *  every method that triggers the class's init. Conservative: the FIRST consuming op decides; an
-     *  unrecognised call (which might invoke the lambda) keeps the edge. */
-    static boolean lambdaImmediatelyStored(InvokeDynamicInsnNode idin) {
+    /** Whether the lambda an {@code idin} creates ESCAPES THIS METHOD UNINVOKED — it is RETURNED
+     *  (ARETURN), stored into a field (PUTFIELD/PUTSTATIC), or put into a collection/map (a storing
+     *  container call) rather than passed to a call that runs it. Such a lambda does not RUN here; it runs
+     *  at a later invocation on an unpinned receiver (a field-/collection-/return-value SAM), which
+     *  discloses Unknown — so suppressing the creation-site edge here never silent-pures, it just stops the
+     *  effect being misattributed to this method (and, via the <clinit>/<init> + class-init amplifier,
+     *  SMEARED onto every method touching the class). The generic creation-edge is still added for a lambda
+     *  passed to a CALL (executor/stream/forEach/a forwarding sink) — that path runs it. Conservative: the
+     *  FIRST consuming op decides; an unrecognised call (which might invoke the lambda) keeps the edge. */
+    static boolean lambdaEscapesUninvoked(InvokeDynamicInsnNode idin) {
         int budget = 6;
         for (AbstractInsnNode n = idin.getNext(); n != null && budget-- > 0; n = n.getNext()) {
             int op = n.getOpcode();
-            if (op == Opcodes.PUTFIELD || op == Opcodes.PUTSTATIC) return true;
+            if (op == Opcodes.ARETURN || op == Opcodes.PUTFIELD || op == Opcodes.PUTSTATIC) return true;
             if (n instanceof MethodInsnNode mi) return isStoringContainerCall(mi.owner, mi.name);
             if (n instanceof InvokeDynamicInsnNode) return false;
         }

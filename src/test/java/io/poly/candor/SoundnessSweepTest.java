@@ -218,6 +218,35 @@ class SoundnessSweepTest {
                 "an INVOKING container HOF (computeIfAbsent) must still attribute the lambda's effect, got " + eff(r, "A.invoke"));
     }
 
+    /** A factory method that RETURNS an effectful lambda must not be attributed the effect — it constructs
+     *  the closure, it does not run it; the eventual invocation on the returned value discloses Unknown.
+     *  Else the effect smears to the factory's callers, and (when called from an initializer) across the
+     *  class via &lt;clinit&gt;. */
+    @Test
+    void factoryReturnedLambdaIsNotAttributed() throws Exception {
+        var r = scan("public class A {\n"
+                + "  static Runnable HANDLER = makeHandler();\n"
+                + "  static Runnable makeHandler(){ return () -> { net(); }; }\n"
+                + "  static void net(){ " + NET + " }\n"
+                + "  static void fs(){ " + FS + " }\n"
+                + "  public static void clean(){ fs(); }\n"
+                + "}");
+        assertFalse(eff(r, "A.makeHandler").contains("Net"),
+                "a factory that returns (does not run) a lambda must not be attributed its effect, got " + eff(r, "A.makeHandler"));
+        assertFalse(eff(r, "A.clean").contains("Net"),
+                "the returned-lambda effect must not smear via <clinit>, got " + eff(r, "A.clean"));
+    }
+
+    /** No-over-suppression control: a lambda PASSED TO A CALL that runs it (a stream stage) must STILL be
+     *  attributed — the escape detection must only fire for store/return, never for an invoking consumer. */
+    @Test
+    void lambdaPassedToInvokerIsStillAttributed() throws Exception {
+        var r = scan("import java.util.*; import java.util.stream.*;\n"
+                + "public class A { public void use(List<String> l){ l.forEach(s -> { " + NET + " }); } }");
+        assertTrue(eff(r, "A.use").contains("Net"),
+                "a lambda passed to an invoking consumer (forEach) must still attribute its effect, got " + eff(r, "A.use"));
+    }
+
     /** No-fabrication control: a genuinely pure version of the trickiest shape stays pure. */
     @Test
     void pureControlStaysPure() throws Exception {

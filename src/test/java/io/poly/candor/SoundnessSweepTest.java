@@ -285,6 +285,25 @@ class SoundnessSweepTest {
                 "stored-not-invoked must not fabricate Fs, got " + eff(r, "A.use"));
     }
 
+    /** ANTI-FABRICATION (regression for a code-review finding): a named functional instance passed to an
+     *  external method that merely RECEIVES it — null-check, Optional-wrap, Comparator stored in a TreeMap
+     *  ctor — must stay PURE. The first cut gated on `!isStoringContainerCall` (any external non-store),
+     *  which fabricated the SAM's effect on these non-invoking sinks; the allowlist (isInvokingHof) fixes it. */
+    @Test
+    void namedFunctionalInstanceToNonInvokingSinkStaysPure() throws Exception {
+        var r = scan("import java.util.*; import java.util.function.*;\n"
+                + "public class A {\n"
+                + "  static class Eff implements Consumer<String> { public void accept(String s){ " + FS + " } }\n"
+                + "  static class Cmp implements Comparator<String> { public int compare(String a,String b){ " + FS + " return 0; } }\n"
+                + "  public void nullCheck(){ Objects.requireNonNull(new Eff()); }\n"
+                + "  public void wrap(){ Optional.ofNullable(new Eff()); }\n"
+                + "  public void treeCtor(){ Map<String,Integer> m = new TreeMap<>(new Cmp()); }\n"
+                + "}");
+        assertFalse(eff(r, "A.nullCheck").contains("Fs"), "requireNonNull must not fabricate, got " + eff(r, "A.nullCheck"));
+        assertFalse(eff(r, "A.wrap").contains("Fs"), "Optional.ofNullable must not fabricate, got " + eff(r, "A.wrap"));
+        assertFalse(eff(r, "A.treeCtor").contains("Fs"), "TreeMap ctor must not fabricate, got " + eff(r, "A.treeCtor"));
+    }
+
     /** A named `java.util.Comparator` with an effectful `compare`, handed to a library sort API
      *  (`List.sort`/`Collections.sort`/`Stream.sorted`/`new TreeMap`), must surface the effect. Comparator
      *  is a SAM the JDK invokes outside project code but is NOT in `java.util.function.*` — the

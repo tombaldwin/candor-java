@@ -256,4 +256,32 @@ class SoundnessSweepTest {
         assertFalse(eff(r, "A.use").contains("Net"), "must not fabricate Net, got " + eff(r, "A.use"));
         assertFalse(eff(r, "A.use").contains("Fs"), "must not fabricate Fs, got " + eff(r, "A.use"));
     }
+
+    /** A NAMED class implementing a JDK functional interface, handed to an EXTERNAL HOF that invokes its
+     *  SAM outside project code (`Stream.forEach`), must surface the SAM's effect. A lambda/method-ref in
+     *  the SAME position is sound (edged at its indy), so a silent-pure here was an INTERNAL asymmetry —
+     *  the named-instance-into-library-HOF cardinal sin (found by the novel-constructs sweep). */
+    @Test
+    void namedFunctionalInstanceIntoLibraryHofNotPure() throws Exception {
+        var r = scan("import java.util.stream.*; import java.util.function.*;\n"
+                + "public class A {\n"
+                + "  static class Eff implements Consumer<String> { public void accept(String s){ " + FS + " } }\n"
+                + "  public void use(){ Stream.of(\"x\").forEach(new Eff()); }\n"
+                + "}");
+        mustHave(r, "A.use", "Fs");
+    }
+
+    /** The anti-fabrication anchor for the fix above: a named functional instance only STORED in a
+     *  container (never invoked) must stay PURE — the storing-container gate must keep the fix from
+     *  over-reporting, exactly as a stored lambda stays pure. */
+    @Test
+    void namedFunctionalInstanceStoredStaysPure() throws Exception {
+        var r = scan("import java.util.*; import java.util.function.*;\n"
+                + "public class A {\n"
+                + "  static class Eff implements Consumer<String> { public void accept(String s){ " + FS + " } }\n"
+                + "  public void use(){ List<Consumer<String>> b = new ArrayList<>(); b.add(new Eff()); }\n"
+                + "}");
+        assertFalse(eff(r, "A.use").contains("Fs"),
+                "stored-not-invoked must not fabricate Fs, got " + eff(r, "A.use"));
+    }
 }

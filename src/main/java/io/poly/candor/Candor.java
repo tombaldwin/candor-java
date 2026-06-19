@@ -4859,6 +4859,79 @@ public class Candor {
         // Jasypt PBE encryptors — the default RandomSaltGenerator draws a per-call salt from SecureRandom →
         // Rand (a fixed-salt config would be pure compute, but random is the default).
         if (owner.startsWith("org.jasypt.encryption.pbe.") && method.equals("encrypt")) return "Rand";
+        // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 9) ──
+        // GCP services do NOT share a wire-namespace (unlike AWS) — each is its own owner. (GCS Storage
+        // already modeled in an earlier batch.)
+        if (owner.equals("com.google.cloud.bigquery.BigQuery")
+                && (method.equals("query") || method.equals("insertAll") || method.equals("listTableData")
+                    || method.equals("getQueryResults"))) return "Net";
+        // Firestore — the reference/query types do the fetch/write → Net (verb-gated; DocumentSnapshot.get,
+        // which reads a field from an already-fetched snapshot, is a DIFFERENT owner → stays pure).
+        if ((owner.equals("com.google.cloud.firestore.CollectionReference")
+                || owner.equals("com.google.cloud.firestore.DocumentReference")
+                || owner.equals("com.google.cloud.firestore.Query")
+                || owner.equals("com.google.cloud.firestore.CollectionGroup"))
+                && (method.equals("get") || method.equals("getAll") || method.equals("set")
+                    || method.equals("update") || method.equals("delete") || method.equals("create")
+                    || method.equals("add") || method.equals("commit"))) return "Net";
+        if (owner.equals("com.google.cloud.pubsub.v1.Publisher") && method.equals("publish")) return "Net";
+        // Kubernetes (fabric8) — the DSL TERMINAL verbs hit the API server → Net (the withName/inNamespace
+        // filter accessors are pure DSL views and not in the verb set).
+        if (owner.startsWith("io.fabric8.kubernetes.client.dsl.")) {
+            switch (method) {
+                case "list": case "create": case "get": case "delete": case "replace": case "update":
+                case "patch": case "edit": case "watch": case "createOrReplace": case "serverSideApply":
+                case "getLog": case "exec": case "getList":
+                    return "Net";
+                default: break;
+            }
+        }
+        // docker-java — *Cmd.exec() talks to the Docker daemon → Net (the dockerClient.pingCmd() builders
+        // are pure).
+        if (owner.startsWith("com.github.dockerjava.api.command.") && owner.endsWith("Cmd")
+                && method.equals("exec")) return "Net";
+        // HashiCorp Vault — Spring VaultTemplate + vault-java-driver Logical do the secrets round-trip → Net.
+        // (VaultTemplate is otherwise FLOOR-SUPPRESSED as an org.springframework.* κ-covered prefix —
+        // modeling it explicitly here surfaces the real Net leaf the floor was hiding.)
+        if ((owner.equals("org.springframework.vault.core.VaultTemplate")
+                || owner.equals("org.springframework.vault.core.VaultKeyValueOperations")
+                || owner.equals("io.github.jopenlibs.vault.api.Logical"))
+                && (method.equals("read") || method.equals("write") || method.equals("list")
+                    || method.equals("delete"))) return "Net";
+        // Redisson distributed objects (org.redisson.api.R*) — data verbs are Redis-over-TCP → Net.
+        // OWNER-scoped to the R* family (RMap extends ConcurrentMap, so a java.util.Map-typed receiver is
+        // NOT matched and stays pure). EXACT data verbs (getName/getCodec etc. stay pure).
+        if (owner.startsWith("org.redisson.api.R")) {
+            switch (method) {
+                case "get": case "set": case "getAndSet": case "put": case "putIfAbsent": case "remove":
+                case "add": case "contains": case "containsKey": case "isExists": case "delete":
+                case "trySet": case "compareAndSet": case "fastPut": case "fastRemove": case "expire":
+                    return "Net";
+                default: break;
+            }
+        }
+        // etcd jetcd KV → Net.
+        if (owner.equals("io.etcd.jetcd.KV")
+                && (method.equals("get") || method.equals("put") || method.equals("delete")
+                    || method.equals("txn"))) return "Net";
+        // Consul (orbitz) KeyValueClient → Net.
+        if (owner.equals("com.orbitz.consul.KeyValueClient")
+                && (method.equals("getValue") || method.equals("getValues") || method.equals("getKeys")
+                    || method.equals("putValue") || method.equals("deleteKey"))) return "Net";
+        // UnboundID LDAP → Net.
+        if (owner.equals("com.unboundid.ldap.sdk.LDAPConnection")
+                && (method.equals("search") || method.equals("bind") || method.equals("connect")
+                    || method.equals("modify") || method.equals("add") || method.equals("delete")
+                    || method.equals("compare") || method.equals("modifyDN"))) return "Net";
+        // Chronicle Queue — the builder's build() opens/creates the on-disk memory-mapped queue dir → Fs
+        // (Chronicle Queue is always file-backed; no in-memory variant of this builder).
+        if (owner.equals("net.openhft.chronicle.queue.impl.single.SingleChronicleQueueBuilder")
+                && method.equals("build")) return "Fs";
+        // Sardine WebDAV → Net.
+        if (owner.equals("com.github.sardine.Sardine")
+                && (method.equals("get") || method.equals("put") || method.equals("delete")
+                    || method.equals("list") || method.equals("exists") || method.equals("move")
+                    || method.equals("copy"))) return "Net";
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation

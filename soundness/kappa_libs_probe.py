@@ -161,6 +161,42 @@ IMPORTS = (
     #   aggregator/shaded stub with NO .class files for com.arangodb.* (only 19 entries, no ArangoDatabase),
     #   so the fixture can't compile against it without resolving split shaded modules; skipped as heavy.
     # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2/3/4/5/6/7.
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 9) ======================
+    # Cloud-native infra clients, secrets, more datastores. KEY FINDING: unlike AWS v2 (which keys on the
+    #   software.amazon.awssdk.services.* shared namespace), the GCP services do NOT share a namespace — each
+    #   service is a DISTINCT top-level class: com.google.cloud.bigquery.BigQuery, com.google.cloud.firestore
+    #   .CollectionReference, com.google.cloud.pubsub.v1.Publisher, com.google.cloud.storage.Storage (already
+    #   modeled). So each GCP service needs its own owner-scoped rule; there is no single com.google.cloud.*
+    #   wire-namespace (com.google.cloud also hosts pure value types like Timestamp/Date/Policy).
+    # GCP -> Net: BigQuery.query/insertAll (owner com.google.cloud.bigquery.BigQuery); Firestore
+    #   CollectionReference.get / DocumentReference.get (the get() is inherited from Query but the call-site
+    #   owner is the concrete CollectionReference/DocumentReference); Pub/Sub Publisher.publish (owner
+    #   com.google.cloud.pubsub.v1.Publisher). All return ApiFuture (async) — Net or Unknown both PASS.
+    # Kubernetes -> Net: fabric8 — the fluent DSL terminal is MixedOperation.list() (the call-site owner of
+    #   `client.pods().list()` is io.fabric8.kubernetes.client.dsl.MixedOperation; the intermediate pods() is a
+    #   pure DSL accessor). The clean modellable leaf is the Listable.list / Createable.create terminal verb,
+    #   NOT the per-resource accessors (pods()/nodes()/…). Listable/Createable/Gettable are the terminal mixins.
+    # Docker -> Net/Exec: docker-java — the *Cmd.exec() terminal hits the Docker daemon (the call-site owner is
+    #   the per-command type, e.g. com.github.dockerjava.api.command.PingCmd, all extending SyncDockerCmd.exec).
+    #   The modellable leaf is SyncDockerCmd.exec (or each *Cmd.exec); the *Cmd() accessors on DockerClient are
+    #   pure builders. Net (daemon socket/HTTP) or Exec or Unknown all PASS.
+    # Secrets -> Net: Spring Vault VaultTemplate.read/write (owner org.springframework.vault.core.VaultTemplate);
+    #   vault-java-driver (jopenlibs fork) Logical.read/write (owner io.github.jopenlibs.vault.api.Logical;
+    #   Vault.logical() is a pure accessor).
+    # Datastores -> Net: Redisson RBucket.get/set (owner org.redisson.api.RBucket; RedissonClient.getBucket is
+    #   a pure factory -> anchor); etcd jetcd KV.get/put (owner io.etcd.jetcd.KV; returns CompletableFuture -
+    #   async, Net|Unknown PASS); Consul orbitz KeyValueClient.getValue/putValue (owner com.orbitz.consul
+    #   .KeyValueClient).
+    # LDAP -> Net: UnboundID LDAPConnection.search/bind/connect (owner com.unboundid.ldap.sdk.LDAPConnection).
+    # Memory-mapped file store -> Fs: Chronicle Queue ChronicleQueue.singleBuilder(File).build() opens/creates
+    #   the on-disk queue dir; the call-site owner of build() is SingleChronicleQueueBuilder (NOT ChronicleQueue).
+    # WebDAV -> Net: Sardine.get/put (owner com.github.sardine.Sardine).
+    # PURE anchors: Redisson getBucket factory, BigQuery QueryJobConfiguration builder, Vault.logical() accessor,
+    #   DockerClient.pingCmd() accessor, KubernetesClient.pods() DSL accessor (all builders/factories pure-
+    #   until-terminal). A java.util.Map anchor is unnecessary here (no new Map-implementing owner added).
+    # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2/3/4/5/6/7/8.
+    # SKIPPED: ecwid Consul (com.ecwid.consul.v1.ConsulClient) — redundant with orbitz; not added to keep the
+    #   datastore set lean (one Consul client suffices to characterize the gap).
 )
 
 # (method, expected effect, params, body) — PASS iff candor reports the effect OR a disclosed Unknown.
@@ -762,6 +798,89 @@ EFFECT_CASES = [
     #      only) is the documented accepted outcome.) ----
     ("jasyptEncrypt", "Rand", "org.jasypt.encryption.pbe.StandardPBEStringEncryptor enc",
         'String s = enc.encrypt("secret")'),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 9) ======================
+    # ---- Net (GCP BigQuery — query/insertAll hit the BigQuery REST API. Owner com.google.cloud.bigquery
+    #      .BigQuery. NB: GCP does NOT share a wire-namespace like AWS; each service is its own class.) ----
+    ("gcpBigQueryQuery", "Net", "com.google.cloud.bigquery.BigQuery b",
+        'com.google.cloud.bigquery.TableResult r = b.query(null)'),
+    ("gcpBigQueryInsertAll", "Net", "com.google.cloud.bigquery.BigQuery b",
+        'com.google.cloud.bigquery.InsertAllResponse r = b.insertAll(null)'),
+
+    # ---- Net (GCP Firestore — CollectionReference.get() / DocumentReference.get() run a query over the wire.
+    #      get() is inherited from Query but the call-site owner is the concrete reference type. Returns
+    #      ApiFuture (async) -> Net|Unknown PASS.) ----
+    ("gcpFirestoreCollGet", "Net", "com.google.cloud.firestore.CollectionReference c",
+        'com.google.api.core.ApiFuture<com.google.cloud.firestore.QuerySnapshot> r = c.get()'),
+    ("gcpFirestoreDocGet", "Net", "com.google.cloud.firestore.DocumentReference d",
+        'com.google.api.core.ApiFuture<com.google.cloud.firestore.DocumentSnapshot> r = d.get()'),
+
+    # ---- Net (GCP Pub/Sub — Publisher.publish queues+sends to the topic. Owner com.google.cloud.pubsub.v1
+    #      .Publisher; returns ApiFuture -> Net|Unknown PASS.) ----
+    ("gcpPubsubPublish", "Net", "com.google.cloud.pubsub.v1.Publisher p",
+        'com.google.api.core.ApiFuture<String> r = p.publish(com.google.pubsub.v1.PubsubMessage.getDefaultInstance())'),
+
+    # ---- Net (Kubernetes fabric8 — client.pods().list() lists pods via the API server. The call-site owner of
+    #      the .list() terminal is io.fabric8.kubernetes.client.dsl.MixedOperation (extends Listable). The
+    #      pods() accessor is a pure DSL view; the list()/create() terminal verbs are the wire leaves.) ----
+    ("k8sPodsList", "Net", "io.fabric8.kubernetes.client.KubernetesClient c",
+        'io.fabric8.kubernetes.api.model.PodList l = c.pods().list()'),
+
+    # ---- Net/Exec (Docker docker-java — *Cmd.exec() hits the Docker daemon over its socket/HTTP. The call-site
+    #      owner of exec() is the per-command type (PingCmd/InfoCmd), all extending SyncDockerCmd.exec. The
+    #      pingCmd()/infoCmd() accessors are pure builders. Net|Exec|Unknown all PASS.) ----
+    ("dockerPingExec", "Net", "com.github.dockerjava.api.DockerClient c", 'c.pingCmd().exec()'),
+    ("dockerInfoExec", "Net", "com.github.dockerjava.api.DockerClient c",
+        'com.github.dockerjava.api.model.Info i = c.infoCmd().exec()'),
+
+    # ---- Net (Spring Vault — VaultTemplate.read/write hit the Vault HTTP API. Owner org.springframework.vault
+    #      .core.VaultTemplate. NB: candor currently DROPS these functions from the report entirely (no entry),
+    #      not just classifies them pure — recorded as a GAP, see report.) ----
+    ("springVaultRead", "Net", "org.springframework.vault.core.VaultTemplate t",
+        'org.springframework.vault.support.VaultResponse r = t.read("secret/x")'),
+    ("springVaultWrite", "Net", "org.springframework.vault.core.VaultTemplate t",
+        'org.springframework.vault.support.VaultResponse r = t.write("secret/x", "v")'),
+
+    # ---- Net (vault-java-driver jopenlibs fork — Logical.read/write hit the Vault HTTP API. Owner
+    #      io.github.jopenlibs.vault.api.Logical; Vault.logical() is a pure accessor.) ----
+    ("vaultDriverRead", "Net", "io.github.jopenlibs.vault.Vault v",
+        'io.github.jopenlibs.vault.response.LogicalResponse r = v.logical().read("secret/x")'),
+
+    # ---- Net (Redisson — RBucket.get/set do KV round-trips to Redis over TCP. Owner org.redisson.api.RBucket;
+    #      RedissonClient.getBucket is a pure factory -> anchor below.) ----
+    ("redissonBucketGet", "Net", "org.redisson.api.RBucket<String> b", 'String v = b.get()'),
+    ("redissonBucketSet", "Net", "org.redisson.api.RBucket<String> b", 'b.set("v")'),
+
+    # ---- Net (etcd jetcd — KV.get/put hit the etcd cluster over gRPC. Owner io.etcd.jetcd.KV; returns
+    #      CompletableFuture (async) -> Net|Unknown PASS.) ----
+    ("jetcdKvGet", "Net", "io.etcd.jetcd.KV kv, io.etcd.jetcd.ByteSequence k",
+        'java.util.concurrent.CompletableFuture<io.etcd.jetcd.kv.GetResponse> r = kv.get(k)'),
+    ("jetcdKvPut", "Net", "io.etcd.jetcd.KV kv, io.etcd.jetcd.ByteSequence k",
+        'java.util.concurrent.CompletableFuture<io.etcd.jetcd.kv.PutResponse> r = kv.put(k, k)'),
+
+    # ---- Net (Consul orbitz — KeyValueClient.getValue/putValue hit the Consul HTTP API. Owner com.orbitz
+    #      .consul.KeyValueClient.) ----
+    ("consulGetValue", "Net", "com.orbitz.consul.KeyValueClient c",
+        'java.util.Optional<com.orbitz.consul.model.kv.Value> r = c.getValue("k")'),
+    ("consulPutValue", "Net", "com.orbitz.consul.KeyValueClient c", 'boolean ok = c.putValue("k", "v")'),
+
+    # ---- Net (UnboundID LDAP — LDAPConnection.search/bind/connect issue LDAP ops over the socket. Owner
+    #      com.unboundid.ldap.sdk.LDAPConnection.) ----
+    ("ldapSearch", "Net", "com.unboundid.ldap.sdk.LDAPConnection c, com.unboundid.ldap.sdk.SearchRequest req",
+        'com.unboundid.ldap.sdk.SearchResult r = c.search(req)'),
+    ("ldapBind", "Net", "com.unboundid.ldap.sdk.LDAPConnection c",
+        'com.unboundid.ldap.sdk.BindResult r = c.bind("uid=x", "pw")'),
+    ("ldapConnect", "Net", "com.unboundid.ldap.sdk.LDAPConnection c", 'c.connect("host", 389)'),
+
+    # ---- Fs (Chronicle Queue — singleBuilder(File).build() opens/creates the on-disk memory-mapped queue dir.
+    #      The call-site owner of build() is SingleChronicleQueueBuilder, NOT ChronicleQueue.) ----
+    ("chronicleQueueBuild", "Fs", "File f",
+        'net.openhft.chronicle.queue.ChronicleQueue q = net.openhft.chronicle.queue.ChronicleQueue.singleBuilder(f).build()'),
+
+    # ---- Net (Sardine WebDAV — get/put move bytes to/from the WebDAV server over HTTP. Owner com.github
+    #      .sardine.Sardine.) ----
+    ("sardineGet", "Net", "com.github.sardine.Sardine s", 'InputStream in = s.get("http://h/f")'),
+    ("sardinePut", "Net", "com.github.sardine.Sardine s", 's.put("http://h/f", new byte[1])'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -931,6 +1050,31 @@ PURE_CASES = [
     ("kryoWriteObjectPure",
         "k.writeObject(out, new Object())",
         "com.esotericsoftware.kryo.Kryo k, com.esotericsoftware.kryo.io.Output out"),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 9) — pure anchors ===============
+    # Redisson getBucket(name) is a LOCAL factory — it returns an RBucket handle, no Redis round-trip until the
+    #   terminal get/set (modeled Net above). Must stay pure (fluent-builder-pure-until-terminal anchor).
+    ("redissonGetBucketPure",
+        "org.redisson.api.RBucket<String> b = rc.getBucket(\"k\")", "org.redisson.api.RedissonClient rc"),
+    # BigQuery QueryJobConfiguration.newBuilder(sql) is a pure request BUILDER — no wire until BigQuery.query
+    #   (modeled Net above) consumes it. Pins that GCP option/builder setup stays pure.
+    ("bigQueryBuilderPure",
+        "com.google.cloud.bigquery.QueryJobConfiguration.Builder bld = com.google.cloud.bigquery.QueryJobConfiguration.newBuilder(\"select 1\")",
+        ""),
+    # Vault.logical() is a pure ACCESSOR — returns the Logical API view, no wire until read/write (modeled Net
+    #   above). Pins that the accessor stays pure (the wire leaf is Logical.read/write).
+    ("vaultLogicalAccessorPure",
+        "io.github.jopenlibs.vault.api.Logical lg = v.logical()", "io.github.jopenlibs.vault.Vault v"),
+    # DockerClient.pingCmd() is a pure BUILDER — returns a PingCmd, no daemon round-trip until exec() (Net/Exec
+    #   above). Pins the *Cmd() accessors stay pure (the wire leaf is the exec() terminal).
+    ("dockerPingCmdBuilderPure",
+        "com.github.dockerjava.api.command.PingCmd cmd = c.pingCmd()", "com.github.dockerjava.api.DockerClient c"),
+    # KubernetesClient.pods() is a pure DSL ACCESSOR — returns a MixedOperation view, no API-server round-trip
+    #   until the terminal list()/create() (modeled Net above). Pins the per-resource accessors stay pure.
+    ("k8sPodsAccessorPure",
+        "io.fabric8.kubernetes.client.dsl.MixedOperation<io.fabric8.kubernetes.api.model.Pod,"
+        "io.fabric8.kubernetes.api.model.PodList,io.fabric8.kubernetes.client.dsl.PodResource> op = c.pods()",
+        "io.fabric8.kubernetes.client.KubernetesClient c"),
 ]
 
 
@@ -1175,6 +1319,37 @@ JARS = {
     "kryo-5.6.0.jar": f"{_MVN}/com/esotericsoftware/kryo/5.6.0/kryo-5.6.0.jar",
     # SKIPPED: ArangoDB java-driver — the published jar is an aggregator/shaded stub with no com.arangodb
     #   .class files (only 19 entries); compiling the fixture against it needs split shaded modules. Skipped.
+    # --- added 2026-06-20 batch 9 ---
+    # GCP services — BigQuery / Firestore / Pub-Sub. (google-cloud-core + gax already present from GCS batch 4.)
+    # api-common carries com.google.api.core.ApiFuture; proto-google-cloud-pubsub-v1 carries the PubsubMessage
+    # proto type used in the publish fixture.
+    "google-cloud-bigquery-2.40.0.jar": f"{_MVN}/com/google/cloud/google-cloud-bigquery/2.40.0/google-cloud-bigquery-2.40.0.jar",
+    "google-cloud-firestore-3.21.0.jar": f"{_MVN}/com/google/cloud/google-cloud-firestore/3.21.0/google-cloud-firestore-3.21.0.jar",
+    "google-cloud-pubsub-1.130.0.jar": f"{_MVN}/com/google/cloud/google-cloud-pubsub/1.130.0/google-cloud-pubsub-1.130.0.jar",
+    "api-common-2.33.0.jar": f"{_MVN}/com/google/api/api-common/2.33.0/api-common-2.33.0.jar",  # com.google.api.core.ApiFuture
+    "proto-google-cloud-pubsub-v1-1.130.0.jar": f"{_MVN}/com/google/api/grpc/proto-google-cloud-pubsub-v1/1.130.0/proto-google-cloud-pubsub-v1-1.130.0.jar",  # PubsubMessage proto
+    # Kubernetes — fabric8 client-api + model (model-core/common for the api.model types like PodList)
+    "kubernetes-client-api-6.13.1.jar": f"{_MVN}/io/fabric8/kubernetes-client-api/6.13.1/kubernetes-client-api-6.13.1.jar",
+    "kubernetes-model-core-6.13.1.jar": f"{_MVN}/io/fabric8/kubernetes-model-core/6.13.1/kubernetes-model-core-6.13.1.jar",
+    "kubernetes-model-common-6.13.1.jar": f"{_MVN}/io/fabric8/kubernetes-model-common/6.13.1/kubernetes-model-common-6.13.1.jar",
+    # Docker — docker-java-api (the API/command interfaces; no transport jar needed to compile the fixture)
+    "docker-java-api-3.3.6.jar": f"{_MVN}/com/github/docker-java/docker-java-api/3.3.6/docker-java-api-3.3.6.jar",
+    # Secrets — Spring Vault (spring-core/beans/web already present) + vault-java-driver (jopenlibs fork)
+    "spring-vault-core-3.1.1.jar": f"{_MVN}/org/springframework/vault/spring-vault-core/3.1.1/spring-vault-core-3.1.1.jar",
+    "vault-java-driver-6.2.0.jar": f"{_MVN}/io/github/jopenlibs/vault-java-driver/6.2.0/vault-java-driver-6.2.0.jar",
+    # Datastores — Redisson / etcd jetcd / Consul (orbitz)
+    "redisson-3.31.0.jar": f"{_MVN}/org/redisson/redisson/3.31.0/redisson-3.31.0.jar",
+    "jetcd-core-0.8.2.jar": f"{_MVN}/io/etcd/jetcd-core/0.8.2/jetcd-core-0.8.2.jar",
+    "consul-client-1.5.3.jar": f"{_MVN}/com/orbitz/consul/consul-client/1.5.3/consul-client-1.5.3.jar",
+    # LDAP — UnboundID LDAP SDK
+    "unboundid-ldapsdk-7.0.1.jar": f"{_MVN}/com/unboundid/unboundid-ldapsdk/7.0.1/unboundid-ldapsdk-7.0.1.jar",
+    # Memory-mapped file store — Chronicle Queue (+ chronicle-core/bytes/wire for the Closeable supertype/build)
+    "chronicle-queue-5.25ea0.jar": f"{_MVN}/net/openhft/chronicle-queue/5.25ea0/chronicle-queue-5.25ea0.jar",
+    "chronicle-core-2.25ea0.jar": f"{_MVN}/net/openhft/chronicle-core/2.25ea0/chronicle-core-2.25ea0.jar",
+    "chronicle-bytes-2.25ea0.jar": f"{_MVN}/net/openhft/chronicle-bytes/2.25ea0/chronicle-bytes-2.25ea0.jar",
+    "chronicle-wire-2.25ea0.jar": f"{_MVN}/net/openhft/chronicle-wire/2.25ea0/chronicle-wire-2.25ea0.jar",
+    # WebDAV — Sardine
+    "sardine-5.12.jar": f"{_MVN}/com/github/lookfirst/sardine/5.12/sardine-5.12.jar",
 }
 
 
@@ -1271,7 +1446,8 @@ def main():
     print(f"\nkappa-libs: OK — {len(EFFECT_CASES)} library effect leaves classified "
           f"(slf4j/log4j/jackson/commons-io/commons-exec/guava/okhttp/httpclient5/spring/poi/"
           f"jpa/mongo/jedis/kafka/jsoup/aws-s3/grpc/webclient/restclient/hibernate/"
-          f"cassandra/mybatis/jooq/rabbitmq/jms/spring-amqp/aws-dynamo-sqs-sns/retrofit/httpclient4/+gaps), "
+          f"cassandra/mybatis/jooq/rabbitmq/jms/spring-amqp/aws-dynamo-sqs-sns/retrofit/httpclient4/"
+          f"gcp-bigquery-firestore-pubsub/k8s/docker/vault/redisson/jetcd/consul/ldap/chronicle/sardine/+gaps), "
           f"{len(PURE_CASES)} pure neighbours unflooded")
 
 

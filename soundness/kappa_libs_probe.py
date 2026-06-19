@@ -82,6 +82,22 @@ IMPORTS = (
     # File/PDF/image: iText PdfWriter/PdfReader, Thumbnailator.
     # Pure anchors: OpenCSV CSVReader(Reader), Commons CSV CSVParser.parse(Reader), jackson XmlMapper(String).
     # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2/3.
+    # ====================== ADDED LIBRARIES (2026-06-19 batch 5) ======================
+    # SSH/SFTP: JSch (Session.connect / ChannelSftp.get|put), SSHJ (SSHClient.connect).
+    # Search: Elasticsearch + OpenSearch low-level RestClient.performRequest (HTTP; the high-level
+    #   typed clients drag in a heavy jakarta.json tree — the low-level client is self-contained over httpcore).
+    # Datastores: InfluxDB WriteApi.writeRecord, Couchbase Collection.get|upsert (both wire datastores → Net).
+    # HTTP/async: AsyncHttpClient.executeRequest, Vert.x WebClient HttpRequest.send.
+    # Templating: FreeMarker Configuration.getTemplate(String) (Fs — reads the template file);
+    #   Velocity getTemplate/mergeTemplate (Fs). Caller-writer terminals (Template.process(model,Writer),
+    #   Velocity Template.merge(ctx,Writer)) are PURE anchors.
+    # File formats / IO: Apache Commons VFS FileObject.getInputStream (Fs for local scheme);
+    #   univocity CsvParser.parse(File) (Fs), parse(Reader)/parse(InputStream) PURE anchors.
+    # Config/secrets: dotenv-java Dotenv.load() (Fs — reads .env off disk).
+    # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2/3/4.
+    # SKIPPED (heavy dep trees, noted in the report): Apache Parquet/ORC (Hadoop tree); the high-level
+    #   Elasticsearch/OpenSearch typed Java clients (jakarta.json + transport); Thymeleaf (its core leaf is a
+    #   caller-supplied Writer like FreeMarker.process — covered by the FreeMarker/Velocity caller-writer anchors).
 )
 
 # (method, expected effect, params, body) — PASS iff candor reports the effect OR a disclosed Unknown.
@@ -416,6 +432,67 @@ EFFECT_CASES = [
     # Thumbnailator Thumbnails.of(File...) reads the source image(s) off disk.
     ("thumbnailatorOfFile", "Fs", "File f",
         'net.coobird.thumbnailator.Thumbnails.Builder<File> b = net.coobird.thumbnailator.Thumbnails.of(f)'),
+
+    # ====================== ADDED LIBRARIES (2026-06-19 batch 5) ======================
+    # ---- Net (JSch SSH/SFTP — Session.connect opens the SSH socket; ChannelSftp.get/put move bytes over it) ----
+    ("jschSessionConnect", "Net", "com.jcraft.jsch.Session s", 's.connect()'),
+    ("jschSftpGet", "Net", "com.jcraft.jsch.ChannelSftp c", 'c.get("remote", "local")'),
+    ("jschSftpPut", "Net", "com.jcraft.jsch.ChannelSftp c", 'c.put("local", "remote")'),
+
+    # ---- Net (SSHJ — SSHClient.connect(String) opens the SSH socket; declared on the SocketClient superclass) ----
+    ("sshjConnect", "Net", "net.schmizz.sshj.SSHClient c", 'c.connect("host")'),
+
+    # ---- Net (Elasticsearch / OpenSearch low-level RestClient — performRequest is the HTTP round-trip) ----
+    ("esRestPerformRequest", "Net",
+        "org.elasticsearch.client.RestClient c, org.elasticsearch.client.Request req",
+        'org.elasticsearch.client.Response r = c.performRequest(req)'),
+    ("opensearchRestPerformRequest", "Net",
+        "org.opensearch.client.RestClient c, org.opensearch.client.Request req",
+        'org.opensearch.client.Response r = c.performRequest(req)'),
+
+    # ---- Net (InfluxDB — WriteApi.writeRecord writes a line-protocol record to the server over HTTP) ----
+    ("influxWriteRecord", "Net",
+        "com.influxdb.client.WriteApi w, com.influxdb.client.domain.WritePrecision p",
+        'w.writeRecord(p, "m,t=v f=1")'),
+
+    # ---- Net (Couchbase — Collection.get/upsert do KV round-trips to the cluster over the wire) ----
+    ("couchbaseGet", "Net", "com.couchbase.client.java.Collection c",
+        'com.couchbase.client.java.kv.GetResult r = c.get("id")'),
+    ("couchbaseUpsert", "Net", "com.couchbase.client.java.Collection c, Object doc",
+        'com.couchbase.client.java.kv.MutationResult r = c.upsert("id", doc)'),
+
+    # ---- Net (AsyncHttpClient — executeRequest(Request) fires the HTTP request) ----
+    ("asyncHttpExecute", "Net",
+        "org.asynchttpclient.AsyncHttpClient c, org.asynchttpclient.Request req",
+        'org.asynchttpclient.ListenableFuture<org.asynchttpclient.Response> f = c.executeRequest(req)'),
+
+    # ---- Net (Vert.x WebClient — HttpRequest.send() dispatches the HTTP request; returns a Future, but the
+    #      send is the wire leaf. Reactive/deferred boundary → Net or Unknown both PASS, tested honestly) ----
+    ("vertxWebClientSend", "Net", "io.vertx.ext.web.client.HttpRequest<io.vertx.core.buffer.Buffer> req",
+        'io.vertx.core.Future<io.vertx.ext.web.client.HttpResponse<io.vertx.core.buffer.Buffer>> f = req.send()'),
+
+    # ---- Fs (FreeMarker — Configuration.getTemplate(String) loads+reads the template file off disk) ----
+    ("freemarkerGetTemplate", "Fs", "freemarker.template.Configuration cfg",
+        'freemarker.template.Template t = cfg.getTemplate("t.ftl")'),
+
+    # ---- Fs (Velocity — getTemplate(String) reads the template file; mergeTemplate(name,..) also reads it) ----
+    ("velocityGetTemplate", "Fs", "org.apache.velocity.app.VelocityEngine e",
+        'org.apache.velocity.Template t = e.getTemplate("t.vm")'),
+    ("velocityMergeTemplate", "Fs",
+        "org.apache.velocity.app.VelocityEngine e, org.apache.velocity.context.Context ctx, Writer w",
+        'boolean ok = e.mergeTemplate("t.vm", "UTF-8", ctx, w)'),
+
+    # ---- Fs/Net (Commons VFS — FileContent.getInputStream opens the resource (getContent() is a lazy view;
+    #      the terminal getInputStream is the leaf). Local scheme is Fs, remote schemes (ftp/http/sftp) would
+    #      be Net. Ambiguous-receiver/scheme → Fs|Net|Unknown all PASS) ----
+    ("vfsGetInputStream", "Fs", "org.apache.commons.vfs2.FileObject fo",
+        'InputStream in = fo.getContent().getInputStream()'),
+
+    # ---- Fs (univocity — CsvParser.parse(File) opens+reads the CSV off disk; parse(Reader) is a pure anchor) ----
+    ("univocityParseFile", "Fs", "com.univocity.parsers.csv.CsvParser p, File f", 'p.parse(f)'),
+
+    # ---- Fs (dotenv-java — Dotenv.load() reads the .env file off the working directory) ----
+    ("dotenvLoad", "Fs", "", 'io.github.cdimascio.dotenv.Dotenv d = io.github.cdimascio.dotenv.Dotenv.load()'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -498,6 +575,23 @@ PURE_CASES = [
         "Object o = m.readValue(\"<x/>\", Object.class)", "com.fasterxml.jackson.dataformat.xml.XmlMapper m"),
     ("yamlMapperReadStringPure",
         "Object o = m.readValue(\"a: 1\", Object.class)", "com.fasterxml.jackson.dataformat.yaml.YAMLMapper m"),
+
+    # ====================== ADDED LIBRARIES (2026-06-19 batch 5) — pure anchors ===============
+    # FreeMarker Template.process(model, Writer) — the caller supplies the Writer (its file open is the
+    #   caller's `new FileWriter`), so the render itself touches no file. getTemplate(String) above is the Fs leaf.
+    ("freemarkerProcessWriterPure",
+        "t.process(new Object(), w)", "freemarker.template.Template t, Writer w"),
+    # Velocity Template.merge(ctx, Writer) — caller-supplied Writer; the render is pure (getTemplate is the Fs leaf).
+    ("velocityMergeWriterPure",
+        "t.merge(ctx, w)", "org.apache.velocity.Template t, org.apache.velocity.context.Context ctx, Writer w"),
+    # univocity CsvParser.parse(Reader) / parse(InputStream) — caller-supplied stream; the file open is the
+    #   caller's. parse(File) above is the Fs leaf; these caller-stream overloads must stay pure.
+    ("univocityParseReaderPure", "p.parse(rd)", "com.univocity.parsers.csv.CsvParser p, Reader rd"),
+    ("univocityParseStreamPure", "p.parse(in)", "com.univocity.parsers.csv.CsvParser p, InputStream in"),
+    # Couchbase Bucket.collection(name) is a LOCAL factory (returns a Collection handle, no wire round-trip);
+    #   the wire leaf is Collection.get/upsert (modeled Net above). Setup stays pure (accepted, not a gap).
+    ("couchbaseCollectionFactoryPure",
+        "com.couchbase.client.java.Collection c = b.defaultCollection()", "com.couchbase.client.java.Bucket b"),
 ]
 
 
@@ -633,6 +727,31 @@ JARS = {
     # Pure anchors — OpenCSV / Apache Commons CSV (caller-stream ctors must stay pure)
     "opencsv-5.9.jar": f"{_MVN}/com/opencsv/opencsv/5.9/opencsv-5.9.jar",
     "commons-csv-1.11.0.jar": f"{_MVN}/org/apache/commons/commons-csv/1.11.0/commons-csv-1.11.0.jar",
+    # --- added 2026-06-19 batch 5 ---
+    # SSH/SFTP — JSch (the maintained mwiede fork; same com.jcraft.jsch package) + SSHJ
+    "jsch-0.2.18.jar": f"{_MVN}/com/github/mwiede/jsch/0.2.18/jsch-0.2.18.jar",
+    "sshj-0.38.0.jar": f"{_MVN}/com/hierynomus/sshj/0.38.0/sshj-0.38.0.jar",
+    # Search — Elasticsearch + OpenSearch low-level REST clients (self-contained over httpcore, already present)
+    "elasticsearch-rest-client-8.14.1.jar": f"{_MVN}/org/elasticsearch/client/elasticsearch-rest-client/8.14.1/elasticsearch-rest-client-8.14.1.jar",
+    "opensearch-rest-client-2.14.0.jar": f"{_MVN}/org/opensearch/client/opensearch-rest-client/2.14.0/opensearch-rest-client-2.14.0.jar",
+    # Datastores — InfluxDB (api + core for WritePrecision) + Couchbase (java-client + core-io 2.6.2)
+    "influxdb-client-java-7.1.0.jar": f"{_MVN}/com/influxdb/influxdb-client-java/7.1.0/influxdb-client-java-7.1.0.jar",
+    "influxdb-client-core-7.1.0.jar": f"{_MVN}/com/influxdb/influxdb-client-core/7.1.0/influxdb-client-core-7.1.0.jar",
+    "couchbase-java-client-3.6.2.jar": f"{_MVN}/com/couchbase/client/java-client/3.6.2/java-client-3.6.2.jar",
+    "couchbase-core-io-2.6.2.jar": f"{_MVN}/com/couchbase/client/core-io/2.6.2/core-io-2.6.2.jar",
+    # HTTP/async — AsyncHttpClient + Vert.x WebClient (vertx-core for Future/Buffer types)
+    "async-http-client-3.0.0.jar": f"{_MVN}/org/asynchttpclient/async-http-client/3.0.0/async-http-client-3.0.0.jar",
+    "vertx-web-client-4.5.8.jar": f"{_MVN}/io/vertx/vertx-web-client/4.5.8/vertx-web-client-4.5.8.jar",
+    "vertx-core-4.5.8.jar": f"{_MVN}/io/vertx/vertx-core/4.5.8/vertx-core-4.5.8.jar",
+    # Templating — FreeMarker + Velocity (velocity needs commons-lang3 for compile)
+    "freemarker-2.3.32.jar": f"{_MVN}/org/freemarker/freemarker/2.3.32/freemarker-2.3.32.jar",
+    "velocity-engine-core-2.3.jar": f"{_MVN}/org/apache/velocity/velocity-engine-core/2.3/velocity-engine-core-2.3.jar",
+    "commons-lang3-3.14.0.jar": f"{_MVN}/org/apache/commons/commons-lang3/3.14.0/commons-lang3-3.14.0.jar",
+    # File formats / IO — Apache Commons VFS + univocity-parsers
+    "commons-vfs2-2.9.0.jar": f"{_MVN}/org/apache/commons/commons-vfs2/2.9.0/commons-vfs2-2.9.0.jar",
+    "univocity-parsers-2.9.1.jar": f"{_MVN}/com/univocity/univocity-parsers/2.9.1/univocity-parsers-2.9.1.jar",
+    # Config/secrets — dotenv-java
+    "dotenv-java-3.0.0.jar": f"{_MVN}/io/github/cdimascio/dotenv-java/3.0.0/dotenv-java-3.0.0.jar",
 }
 
 

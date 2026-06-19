@@ -4678,6 +4678,54 @@ public class Candor {
         // silent-pure on the operations interfaces.) Whole-owner; Object protocol excluded.
         if (owner.startsWith("org.springframework.data.redis.core.") && owner.endsWith("Operations")
                 && !isConventionallyPure(method)) return "Net";
+        // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 5) ──
+        // SSH/SFTP — JSch + SSHJ open/transfer over the SSH socket → Net (verb-gated; config setters pure).
+        if (owner.equals("com.jcraft.jsch.Session") && method.equals("connect")) return "Net";
+        if (owner.equals("com.jcraft.jsch.ChannelSftp") && (method.equals("get") || method.equals("put"))) return "Net";
+        if ((owner.equals("net.schmizz.sshj.SSHClient") || owner.equals("net.schmizz.sshj.SocketClient"))
+                && method.equals("connect")) return "Net";
+        // Elasticsearch / OpenSearch low-level REST clients — performRequest is the HTTP round-trip → Net.
+        if ((owner.equals("org.elasticsearch.client.RestClient") || owner.equals("org.opensearch.client.RestClient"))
+                && (method.equals("performRequest") || method.equals("performRequestAsync"))) return "Net";
+        // InfluxDB write API — line-protocol over HTTP → Net (write* verbs).
+        if (owner.equals("com.influxdb.client.WriteApi") && method.startsWith("write")) return "Net";
+        // Couchbase KV — Collection data verbs are cluster round-trips → Net (verb-gated; name/async/reactive
+        // accessors stay pure).
+        if (owner.equals("com.couchbase.client.java.Collection")) {
+            switch (method) {
+                case "get": case "upsert": case "insert": case "replace": case "remove": case "exists":
+                case "getAndLock": case "getAndTouch": case "touch": case "unlock": case "mutateIn":
+                case "lookupIn": case "scan":
+                    return "Net";
+                default: break;
+            }
+        }
+        // AsyncHttpClient — executeRequest fires the wire request → Net.
+        if (owner.equals("org.asynchttpclient.AsyncHttpClient") && method.equals("executeRequest")) return "Net";
+        // FreeMarker / Velocity — getTemplate reads the template file off disk → Fs; Velocity mergeTemplate
+        // reads the named template too. (The render process(model,Writer)/merge(ctx,Writer) is caller-stream
+        // → pure.)
+        if (owner.equals("freemarker.template.Configuration") && method.equals("getTemplate")) return "Fs";
+        if (owner.equals("org.apache.velocity.app.VelocityEngine")
+                && (method.equals("getTemplate") || method.equals("mergeTemplate"))) return "Fs";
+        // Apache Commons VFS — FileContent.get{Input,Output}Stream opens the resource (local scheme → Fs;
+        // ftp/http schemes would be Net but the scheme isn't statically known → Fs, the common case).
+        if (owner.equals("org.apache.commons.vfs2.FileContent")
+                && (method.equals("getInputStream") || method.equals("getOutputStream"))) return "Fs";
+        // univocity parsers — parse(File) opens the file → Fs (descriptor-gated; parse(Reader)/(InputStream)
+        // are caller-supplied → pure). Concrete parsers (CsvParser/TsvParser/FixedWidthParser) are the call
+        // owners (parse is inherited from AbstractParser but emitted on the static type).
+        if (owner.startsWith("com.univocity.parsers.") && owner.endsWith("Parser") && method.equals("parse")
+                && desc != null && desc.startsWith("(Ljava/io/File;")) return "Fs";
+        // dotenv-java — Dotenv.load reads the .env file → Fs.
+        if ((owner.equals("io.github.cdimascio.dotenv.Dotenv")
+                || owner.equals("io.github.cdimascio.dotenv.DotenvBuilder")) && method.equals("load")) return "Fs";
+        // Crypto KEY GENERATION draws entropy (from a SecureRandom) → Rand, like SecureRandom.nextBytes/
+        // UUID.randomUUID. (JDK leaf, found by a crypto probe.) KeyFactory/SecretKeyFactory are deterministic
+        // key derivation → stay pure; Cipher.doFinal is pure compute.
+        if (owner.equals("java.security.KeyPairGenerator")
+                && (method.equals("generateKeyPair") || method.equals("genKeyPair"))) return "Rand";
+        if (owner.equals("javax.crypto.KeyGenerator") && method.equals("generateKey")) return "Rand";
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation

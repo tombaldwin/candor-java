@@ -177,6 +177,26 @@ class SoundnessSweepTest {
                 "the force site must still attribute the deferred lambda's Net, got " + eff(r, "A.force"));
     }
 
+    /** The broader form of the deferred-lambda smear: a plain static/instance field holding a lambda
+     *  (created in &lt;clinit&gt;/&lt;init&gt;, invoked later via a field-SAM) must not attribute its effect to the
+     *  initializer — else class-init triggering smears it onto unrelated methods. The field-SAM invocation
+     *  discloses Unknown instead (honest), and the initializer/neighbours stay clean. */
+    @Test
+    void fieldStoredLambdaDoesNotSmearViaClinit() throws Exception {
+        var r = scan("public class A {\n"
+                + "  static Runnable R = () -> { net(); };\n"
+                + "  static void net(){ " + NET + " }\n"
+                + "  static void fs(){ " + FS + " }\n"
+                + "  public static void clean(){ fs(); }\n"
+                + "  public static void runIt(){ R.run(); }\n"
+                + "}");
+        assertFalse(eff(r, "A.clean").contains("Net"),
+                "a field-stored lambda's effect must not smear via <clinit> onto a neighbour, got " + eff(r, "A.clean"));
+        assertTrue(eff(r, "A.clean").contains("Fs"), "its own Fs must remain, got " + eff(r, "A.clean"));
+        assertFalse(eff(r, "A.runIt").isEmpty(),
+                "the field-SAM invocation must disclose (Unknown), never silent-pure, got " + eff(r, "A.runIt"));
+    }
+
     /** No-fabrication control: a genuinely pure version of the trickiest shape stays pure. */
     @Test
     void pureControlStaysPure() throws Exception {

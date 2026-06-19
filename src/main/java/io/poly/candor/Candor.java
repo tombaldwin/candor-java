@@ -2546,11 +2546,17 @@ public class Candor {
                         // skip them: passing one to methodId would feed a field descriptor to
                         // Type.getArgumentTypes and crash the whole scan.
                         if (a instanceof Handle h && h.getTag() >= Opcodes.H_INVOKEVIRTUAL) {
-                            // A lambda stowed into a deferred container (`by lazy`, ThreadLocal.withInitial)
-                            // does NOT run at this creation site — its body is attributed at the force site
-                            // (isDeferredForce). Edging it here would smear the effect onto <clinit> and thus
-                            // every static touch of the class (a Kotlin-sweep fabrication). Skip the body edge.
-                            boolean deferred = feedsDeferredFactory(idin);
+                            // A lambda that does NOT run at this creation site must not be edged here, else its
+                            // effect smears onto the initializer and every method that triggers the class's init
+                            // (a fabrication found by the Kotlin/field sweep). Two such shapes: (a) stowed into a
+                            // deferred container (`by lazy`, ThreadLocal.withInitial — attributed at the force
+                            // site by isDeferredForce); (b) stored straight into a field IN AN INITIALIZER (run
+                            // later via a field-SAM, which discloses Unknown). Scoping (b) to <clinit>/<init>
+                            // targets the class-init amplifier while leaving ordinary in-method lambda
+                            // attribution (localised, not a smear) unchanged.
+                            boolean initMethod = mn.name.equals("<clinit>") || mn.name.equals("<init>");
+                            boolean deferred = feedsDeferredFactory(idin)
+                                    || (initMethod && lambdaImmediatelyStored(idin));
                             if (projectClasses.contains(h.getOwner())) {
                                 if (!deferred)
                                     edges.get(id).add(methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc()));
@@ -2653,6 +2659,21 @@ public class Candor {
                 return mi.name.equals("<init>") && DEFERRED_LAZY_IMPLS.contains(mi.owner);
             }
             if (n instanceof InvokeDynamicInsnNode) return false; // another indy intervenes
+        }
+        return false;
+    }
+
+    /** Whether the lambda an {@code idin} creates is IMMEDIATELY stored into a field (PUTFIELD/PUTSTATIC)
+     *  rather than passed to a consuming call. Such a lambda does not RUN at the store site — it runs when
+     *  the field is later invoked (a field-SAM, which discloses Unknown). Used (in {@code <clinit>}/
+     *  {@code <init>} only) to suppress the creation-site edge that would otherwise attribute the lambda's
+     *  effect to the initializer and SMEAR it onto every method that triggers the class's init. */
+    static boolean lambdaImmediatelyStored(InvokeDynamicInsnNode idin) {
+        int budget = 6;
+        for (AbstractInsnNode n = idin.getNext(); n != null && budget-- > 0; n = n.getNext()) {
+            int op = n.getOpcode();
+            if (op == Opcodes.PUTFIELD || op == Opcodes.PUTSTATIC) return true;
+            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode) return false; // consumed by a call
         }
         return false;
     }

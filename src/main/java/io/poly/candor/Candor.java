@@ -4526,6 +4526,69 @@ public class Candor {
                 || owner.equals("org.apache.poi.xssf.usermodel.XSSFWorkbookFactory")
                 || owner.equals("org.apache.poi.hssf.usermodel.HSSFWorkbookFactory"))
                 && method.equals("create") && desc != null && desc.startsWith("(Ljava/io/File;")) return "Fs";
+        // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 2) ──
+        // Netty — the async network transport. VERB-gated (the config/accessor surface — group/channel/
+        // handler/option/pipeline/alloc/id — stays pure). Bootstrap.connect / ServerBootstrap.bind open the
+        // socket; the ChannelOutboundInvoker family (Channel/ChannelHandlerContext/ChannelPipeline) write/
+        // connect/flush/bind to it.
+        if (owner.equals("io.netty.bootstrap.Bootstrap") && method.equals("connect")) return "Net";
+        if (owner.equals("io.netty.bootstrap.ServerBootstrap") && method.equals("bind")) return "Net";
+        if ((owner.equals("io.netty.channel.Channel") || owner.equals("io.netty.channel.ChannelHandlerContext")
+                || owner.equals("io.netty.channel.ChannelOutboundInvoker")
+                || owner.equals("io.netty.channel.ChannelPipeline"))
+                && (method.equals("write") || method.equals("writeAndFlush") || method.equals("connect")
+                    || method.equals("flush") || method.equals("bind"))) return "Net";
+        // gRPC low-level ClientCall (the generated stubs' blockingUnaryCall is already modeled; this closes
+        // streaming / hand-rolled calls that drive ClientCall directly).
+        if (owner.equals("io.grpc.ClientCall")
+                && (method.equals("sendMessage") || method.equals("halfClose") || method.equals("start")
+                    || method.equals("request"))) return "Net";
+        // Apache Commons Net FTPClient — an intrinsic network client. VERB-gated to the wire actions; the
+        // setX/getX config surface stays pure (no fabrication on setBufferSize/setControlEncoding).
+        if (owner.equals("org.apache.commons.net.ftp.FTPClient")) {
+            switch (method) {
+                case "connect": case "disconnect": case "login": case "logout":
+                case "retrieveFile": case "retrieveFileStream": case "storeFile": case "storeFileStream":
+                case "appendFile": case "appendFileStream": case "listFiles": case "listDirectories":
+                case "listNames": case "deleteFile": case "makeDirectory": case "removeDirectory":
+                case "changeWorkingDirectory": case "rename": case "sendCommand": case "getReply":
+                case "completePendingCommand": case "abort":
+                    return "Net";
+                default: break;
+            }
+        }
+        // Flyway / Liquibase — schema migration runners. VERB-gated → Db (the static configure()/fluent
+        // builders stay pure). (Liquibase's update(String,Writer) SQL-dump overloads are rare; verb-gating
+        // accepts a small over-approximation there vs the common DB-hitting overloads.)
+        if (owner.equals("org.flywaydb.core.Flyway")
+                && (method.equals("migrate") || method.equals("clean") || method.equals("validate")
+                    || method.equals("baseline") || method.equals("repair") || method.equals("info")))
+            return "Db";
+        if (owner.equals("liquibase.Liquibase")
+                && (method.equals("update") || method.equals("rollback") || method.equals("dropAll")
+                    || method.equals("changeLogSync") || method.equals("forceReleaseLocks")))
+            return "Db";
+        // JGit Git.open(File|Path) opens an on-disk repository → Fs (descriptor-gated; the builder
+        // cloneRepository() stays pure until its .call()).
+        if (owner.equals("org.eclipse.jgit.api.Git") && method.equals("open") && desc != null
+                && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;"))) return "Fs";
+        // Apache Commons Compress archive readers — the File/Path CONSTRUCTORS open the archive → Fs
+        // (descriptor-gated ctor; the SeekableByteChannel ctor is a caller-supplied handle → stays pure).
+        if ((owner.equals("org.apache.commons.compress.archivers.zip.ZipFile")
+                || owner.equals("org.apache.commons.compress.archivers.sevenz.SevenZFile")
+                || owner.equals("org.apache.commons.compress.archivers.tar.TarFile"))
+                && method.equals("<init>") && desc != null
+                && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;"))) return "Fs";
+        // Apache Tika facade — parseToString(File|Path) reads the file → Fs, (URL) fetches → Net
+        // (descriptor-gated; the InputStream overload is a caller stream → pure).
+        if (owner.equals("org.apache.tika.Tika") && method.equals("parseToString") && desc != null) {
+            if (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;")) return "Fs";
+            if (desc.startsWith("(Ljava/net/URL;")) return "Net";
+        }
+        // Apache PDFBox 3 Loader.loadPDF(File|Path) reads the PDF → Fs (descriptor-gated; the byte[] overload
+        // is in-memory → pure).
+        if (owner.equals("org.apache.pdfbox.Loader") && method.equals("loadPDF") && desc != null
+                && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;"))) return "Fs";
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation

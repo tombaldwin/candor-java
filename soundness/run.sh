@@ -79,4 +79,11 @@ echo
 echo "soundness: running smear probe (deferred/stored-lambda no-<clinit>-smear)…"
 CJ="$CJ" python3 "$ROOT/soundness/smear_probe.py"; sm=$?
 
-[ "$fail" -eq 0 ] && [ "$fab" -eq 0 ] && [ "$ep" -eq 0 ] && [ "$fs" -eq 0 ] && [ "$sm" -eq 0 ]
+# κ-coverage probe — the DIRECT effect-leaf gate. The fuzzer plants leaves candor ALREADY knows; this asserts
+# candor CLASSIFIES the common JDK/library leaves across all ten effects in the first place (an unmodelled leaf
+# makes every caller silent-pure — invisible to the chain fuzzer). Also pins deliberately-pure neighbours.
+echo
+echo "soundness: running κ-coverage probe (direct effect-leaf classification, all 10 effects)…"
+CJ="$CJ" python3 "$ROOT/soundness/kappa_probe.py"; kp=$?
+
+[ "$fail" -eq 0 ] && [ "$fab" -eq 0 ] && [ "$ep" -eq 0 ] && [ "$fs" -eq 0 ] && [ "$sm" -eq 0 ] && [ "$kp" -eq 0 ]

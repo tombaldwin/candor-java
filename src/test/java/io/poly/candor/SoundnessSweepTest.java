@@ -197,6 +197,27 @@ class SoundnessSweepTest {
                 "the field-SAM invocation must disclose (Unknown), never silent-pure, got " + eff(r, "A.runIt"));
     }
 
+    /** A lambda stored into a COLLECTION/MAP in an initializer (a registry: {@code M.put("k", () -> eff)})
+     *  is stored, not invoked there — its effect must not smear via {@code <clinit>}. But an INVOKING
+     *  container HOF ({@code computeIfAbsent}) must still attribute it (it runs the lambda) — the storing
+     *  vs invoking distinction must be preserved. */
+    @Test
+    void collectionStoredLambdaDoesNotSmearButInvokingHofDoes() throws Exception {
+        var r = scan("import java.util.*;\n"
+                + "public class A {\n"
+                + "  static Map<String,Runnable> M = new HashMap<>();\n"
+                + "  static { M.put(\"k\", () -> { net(); }); }\n"
+                + "  static void net(){ " + NET + " }\n"
+                + "  static void fs(){ " + FS + " }\n"
+                + "  public static void clean(){ fs(); }\n"
+                + "  public static String invoke(Map<String,String> m, String k){ return m.computeIfAbsent(k, x -> { net(); return x; }); }\n"
+                + "}");
+        assertFalse(eff(r, "A.clean").contains("Net"),
+                "a map-stored lambda must not smear via <clinit>, got " + eff(r, "A.clean"));
+        assertTrue(eff(r, "A.invoke").contains("Net"),
+                "an INVOKING container HOF (computeIfAbsent) must still attribute the lambda's effect, got " + eff(r, "A.invoke"));
+    }
+
     /** No-fabrication control: a genuinely pure version of the trickiest shape stays pure. */
     @Test
     void pureControlStaysPure() throws Exception {

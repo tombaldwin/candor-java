@@ -71,6 +71,17 @@ IMPORTS = (
     # File/config: Avro, Typesafe Config, Commons Configuration2; protobuf/Gson/KeyStore pure anchors.
     # All referenced by FULLY-QUALIFIED name in the bodies (no wildcard imports) — same clash-avoidance
     # discipline as batch 2 (Response/Channel/Configuration/Session all collide across these libs).
+    # ====================== ADDED LIBRARIES (2026-06-19 batch 4) ======================
+    # Jackson format modules: XmlMapper/YAMLMapper/CsvMapper (subclasses of ObjectMapper but a DIFFERENT
+    #   owner — the exact-owner jackson κ rule keys on com.fasterxml.jackson.databind.ObjectMapper, so the
+    #   File overloads called on a subclass-typed receiver carry the subclass owner and likely read pure).
+    # Email: jakarta.mail Transport.send, Spring JavaMailSender/JavaMailSenderImpl.send.
+    # Cloud storage: Google Cloud Storage, MinIO, Azure Blob.
+    # Datastores: Neo4j, R2DBC, Spring Data MongoTemplate, Spring Data RedisTemplate/ValueOperations.
+    # Messaging: Apache Pulsar, Spring Kafka.
+    # File/PDF/image: iText PdfWriter/PdfReader, Thumbnailator.
+    # Pure anchors: OpenCSV CSVReader(Reader), Commons CSV CSVParser.parse(Reader), jackson XmlMapper(String).
+    # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2/3.
 )
 
 # (method, expected effect, params, body) — PASS iff candor reports the effect OR a disclosed Unknown.
@@ -320,6 +331,91 @@ EFFECT_CASES = [
     ("commonsConfigProps", "Fs",
         "org.apache.commons.configuration2.builder.fluent.Configurations cfgs, File f",
         'org.apache.commons.configuration2.PropertiesConfiguration c = cfgs.properties(f)'),
+
+    # ====================== ADDED LIBRARIES (2026-06-19 batch 4) ======================
+    # ---- Fs/Net (jackson FORMAT MODULES — XmlMapper/YAMLMapper/CsvMapper are SUBCLASSES of ObjectMapper.
+    #      readValue(File)/writeValue(File) are inherited, but the invokevirtual call-site owner is the
+    #      SUBCLASS type, not com.fasterxml.jackson.databind.ObjectMapper, so candor's exact-owner jackson
+    #      κ rule likely MISSES these → silent-pure. Expected Fs (File) / Net (URL). String overloads are
+    #      pure anchors below.) ----
+    ("xmlMapperReadFile",  "Fs",  "com.fasterxml.jackson.dataformat.xml.XmlMapper m, File f",
+        'Object o = m.readValue(f, String.class)'),
+    ("xmlMapperWriteFile", "Fs",  "com.fasterxml.jackson.dataformat.xml.XmlMapper m, File f",
+        'm.writeValue(f, "x")'),
+    ("xmlMapperReadUrl",   "Net", "com.fasterxml.jackson.dataformat.xml.XmlMapper m, java.net.URL u",
+        'Object o = m.readValue(u, String.class)'),
+    ("yamlMapperReadFile", "Fs",  "com.fasterxml.jackson.dataformat.yaml.YAMLMapper m, File f",
+        'Object o = m.readValue(f, String.class)'),
+    ("yamlMapperWriteFile","Fs",  "com.fasterxml.jackson.dataformat.yaml.YAMLMapper m, File f",
+        'm.writeValue(f, "x")'),
+    ("csvMapperReadFile",  "Fs",  "com.fasterxml.jackson.dataformat.csv.CsvMapper m, File f",
+        'Object o = m.readValue(f, String.class)'),
+    ("csvMapperWriteFile", "Fs",  "com.fasterxml.jackson.dataformat.csv.CsvMapper m, File f",
+        'm.writeValue(f, "x")'),
+
+    # ---- Net (Email — jakarta.mail Transport.send is a static SMTP send; Spring JavaMailSender.send wraps it) ----
+    ("jakartaMailSend", "Net", "jakarta.mail.Message msg",
+        'jakarta.mail.Transport.send(msg)'),
+    ("springMailSend", "Net", "org.springframework.mail.javamail.JavaMailSender s, jakarta.mail.internet.MimeMessage m",
+        's.send(m)'),
+    ("springMailImplSend", "Net", "org.springframework.mail.javamail.JavaMailSenderImpl s, jakarta.mail.internet.MimeMessage m",
+        's.send(m)'),
+
+    # ---- Net (Cloud storage — GCS/MinIO/Azure are all object stores over HTTP) ----
+    ("gcsGet", "Net", "com.google.cloud.storage.Storage st, com.google.cloud.storage.BlobId id",
+        'com.google.cloud.storage.Blob b = st.get(id)'),
+    ("gcsCreate", "Net", "com.google.cloud.storage.Storage st, com.google.cloud.storage.BlobInfo bi",
+        'com.google.cloud.storage.Blob b = st.create(bi, new byte[1])'),
+    ("gcsReadAllBytes", "Net", "com.google.cloud.storage.Storage st, com.google.cloud.storage.BlobId id",
+        'byte[] b = st.readAllBytes(id)'),
+    ("minioGetObject", "Net", "io.minio.MinioClient c, io.minio.GetObjectArgs a",
+        'io.minio.GetObjectResponse r = c.getObject(a)'),
+    ("minioPutObject", "Net", "io.minio.MinioClient c, io.minio.PutObjectArgs a",
+        'io.minio.ObjectWriteResponse r = c.putObject(a)'),
+    ("azureBlobDownload", "Net", "com.azure.storage.blob.BlobClient bc",
+        'com.azure.core.util.BinaryData d = bc.downloadContent()'),
+    ("azureBlobUpload", "Net", "com.azure.storage.blob.BlobClient bc, com.azure.core.util.BinaryData d",
+        'bc.upload(d)'),
+
+    # ---- Db/Net (Datastores) ----
+    # Neo4j Session.run — Cypher over the bolt protocol (a remote graph DB; Db is the right layer here).
+    ("neo4jRun", "Db", "org.neo4j.driver.Session s", 'org.neo4j.driver.Result r = s.run("MATCH (n) RETURN n")'),
+    # R2DBC Statement.execute — REACTIVE: returns a Publisher, the actual query is deferred to subscribe.
+    #   Expected to be Unknown or pure (lazy reactive boundary); tested honestly (PASS on Db or Unknown).
+    ("r2dbcExecute", "Db", "io.r2dbc.spi.Statement st",
+        'org.reactivestreams.Publisher<? extends io.r2dbc.spi.Result> p = st.execute()'),
+    # Spring Data MongoTemplate find/insert — the Spring-Data Mongo DB leaves.
+    ("mongoTemplateFind", "Db", "org.springframework.data.mongodb.core.MongoTemplate t, org.springframework.data.mongodb.core.query.Query q",
+        'java.util.List<?> r = t.find(q, String.class)'),
+    ("mongoTemplateInsert", "Db", "org.springframework.data.mongodb.core.MongoTemplate t, Object o",
+        'Object r = t.insert(o)'),
+    # Spring Data Redis — RedisTemplate.opsForValue() is a factory; the terminal get/set on ValueOperations
+    #   is the wire leaf (Redis over TCP → Net, same as Jedis/Lettuce).
+    ("redisTemplateOpsGet", "Net", "org.springframework.data.redis.core.RedisTemplate<String,String> t",
+        'String v = t.opsForValue().get("k")'),
+    ("redisValueOpsSet", "Net", "org.springframework.data.redis.core.ValueOperations<String,String> ops",
+        'ops.set("k", "v")'),
+
+    # ---- Net (Messaging) ----
+    # Pulsar Producer.send — publishes to the broker over TCP.
+    ("pulsarSend", "Net", "org.apache.pulsar.client.api.Producer<byte[]> p",
+        'org.apache.pulsar.client.api.MessageId id = p.send(new byte[1])'),
+    # Spring KafkaTemplate.send — produces to the Kafka broker (wraps the Kafka producer, modeled as Net).
+    ("springKafkaSend", "Net", "org.springframework.kafka.core.KafkaTemplate<String,String> t",
+        'java.util.concurrent.CompletableFuture<?> f = t.send("topic", "v")'),
+
+    # ---- Fs (File/PDF/image — iText/Thumbnailator open files on disk) ----
+    # iText PdfWriter(File) / PdfWriter(String) open the output PDF on disk.
+    ("itextPdfWriterFile", "Fs", "File f",
+        'com.itextpdf.kernel.pdf.PdfWriter w = new com.itextpdf.kernel.pdf.PdfWriter(f)'),
+    ("itextPdfWriterString", "Fs", "String path",
+        'com.itextpdf.kernel.pdf.PdfWriter w = new com.itextpdf.kernel.pdf.PdfWriter(path)'),
+    # iText PdfReader(File) reads the PDF off disk.
+    ("itextPdfReaderFile", "Fs", "File f",
+        'com.itextpdf.kernel.pdf.PdfReader r = new com.itextpdf.kernel.pdf.PdfReader(f)'),
+    # Thumbnailator Thumbnails.of(File...) reads the source image(s) off disk.
+    ("thumbnailatorOfFile", "Fs", "File f",
+        'net.coobird.thumbnailator.Thumbnails.Builder<File> b = net.coobird.thumbnailator.Thumbnails.of(f)'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -353,6 +449,9 @@ PURE_CASES = [
     # JMS createProducer() is a LOCAL factory call (no broker round-trip) — the wire leaf is JMSProducer/
     # MessageProducer.send (modeled as Net, see jmsSend). Setup stays pure (accepted, not a gap).
     ("jmsCreateProducerPure", "jakarta.jms.JMSProducer p = ctx.createProducer()", "jakarta.jms.JMSContext ctx"),
+    # R2DBC createStatement() is a LOCAL factory (returns a Statement); the wire leaf is Statement.execute()
+    # (modeled Db, see r2dbcExecute). Setup stays pure (accepted, not a gap).
+    ("r2dbcCreateStatementPure", "io.r2dbc.spi.Statement st = c.createStatement(\"select 1\")", "io.r2dbc.spi.Connection c"),
     # Tika parseToString(InputStream) — caller supplies the stream; the parse itself is pure
     # (the file open is the caller's, the File overload above is the Fs leaf). Ambiguous-receiver class.
     ("tikaParseStreamPure", "String s = t.parseToString(in)", "org.apache.tika.Tika t, InputStream in"),
@@ -383,6 +482,22 @@ PURE_CASES = [
     ("avroWriterStreamPure",
         "org.apache.avro.file.DataFileWriter<Object> r = w.create(sc, os)",
         "org.apache.avro.file.DataFileWriter<Object> w, org.apache.avro.Schema sc, OutputStream os"),
+
+    # ====================== ADDED LIBRARIES (2026-06-19 batch 4) — pure anchors ===============
+    # OpenCSV CSVReader(Reader) — the caller supplies the Reader (its file open is the caller's `new
+    #   FileReader`), so the CSVReader ctor itself touches no file (caller-stream class, like SnakeYAML/POI).
+    ("opencsvReaderPure", "com.opencsv.CSVReader r = new com.opencsv.CSVReader(rd)", "Reader rd"),
+    # Apache Commons CSV CSVParser.parse(Reader, CSVFormat) — caller-supplied Reader; the file open is the
+    #   caller's. The File/Path/URL overloads ARE Fs leaves, but parse(Reader) must stay pure.
+    ("commonsCsvParseReaderPure",
+        "org.apache.commons.csv.CSVParser p = org.apache.commons.csv.CSVParser.parse(rd, org.apache.commons.csv.CSVFormat.DEFAULT)",
+        "Reader rd"),
+    # jackson FORMAT MODULE in-memory String (de)serialization touches no file/socket — must stay pure even
+    #   after the File siblings above are modeled (guards against over-classifying the whole subclass owner).
+    ("xmlMapperReadStringPure",
+        "Object o = m.readValue(\"<x/>\", Object.class)", "com.fasterxml.jackson.dataformat.xml.XmlMapper m"),
+    ("yamlMapperReadStringPure",
+        "Object o = m.readValue(\"a: 1\", Object.class)", "com.fasterxml.jackson.dataformat.yaml.YAMLMapper m"),
 ]
 
 
@@ -485,6 +600,39 @@ JARS = {
     # Pure anchors (protobuf in-memory decode, Gson in-memory parse; KeyStore is JDK)
     "protobuf-java-3.25.3.jar": f"{_MVN}/com/google/protobuf/protobuf-java/3.25.3/protobuf-java-3.25.3.jar",
     "gson-2.11.0.jar": f"{_MVN}/com/google/code/gson/gson/2.11.0/gson-2.11.0.jar",
+    # --- added 2026-06-19 batch 4 ---
+    # Jackson format modules (subclasses of ObjectMapper; jackson-core/databind/annotations already present)
+    "jackson-dataformat-xml-2.17.1.jar": f"{_MVN}/com/fasterxml/jackson/dataformat/jackson-dataformat-xml/2.17.1/jackson-dataformat-xml-2.17.1.jar",
+    "jackson-dataformat-yaml-2.17.1.jar": f"{_MVN}/com/fasterxml/jackson/dataformat/jackson-dataformat-yaml/2.17.1/jackson-dataformat-yaml-2.17.1.jar",
+    "jackson-dataformat-csv-2.17.1.jar": f"{_MVN}/com/fasterxml/jackson/dataformat/jackson-dataformat-csv/2.17.1/jackson-dataformat-csv-2.17.1.jar",
+    "stax2-api-4.2.2.jar": f"{_MVN}/org/codehaus/woodstox/stax2-api/4.2.2/stax2-api-4.2.2.jar",  # XmlMapper compile dep
+    # Email — jakarta.mail API + Spring context-support (JavaMailSender)
+    "jakarta.mail-api-2.1.3.jar": f"{_MVN}/jakarta/mail/jakarta.mail-api/2.1.3/jakarta.mail-api-2.1.3.jar",
+    "jakarta.activation-api-2.1.3.jar": f"{_MVN}/jakarta/activation/jakarta.activation-api/2.1.3/jakarta.activation-api-2.1.3.jar",
+    "spring-context-support-6.1.10.jar": f"{_MVN}/org/springframework/spring-context-support/6.1.10/spring-context-support-6.1.10.jar",
+    # Cloud storage — GCS / MinIO / Azure Blob (all HTTP object stores)
+    "google-cloud-storage-2.40.0.jar": f"{_MVN}/com/google/cloud/google-cloud-storage/2.40.0/google-cloud-storage-2.40.0.jar",
+    "gax-2.50.0.jar": f"{_MVN}/com/google/api/gax/2.50.0/gax-2.50.0.jar",  # GCS compile dep (com.google.api.gax)
+    "google-cloud-core-2.40.0.jar": f"{_MVN}/com/google/cloud/google-cloud-core/2.40.0/google-cloud-core-2.40.0.jar",  # com.google.cloud.Service
+    "minio-8.5.10.jar": f"{_MVN}/io/minio/minio/8.5.10/minio-8.5.10.jar",
+    "azure-storage-blob-12.26.1.jar": f"{_MVN}/com/azure/azure-storage-blob/12.26.1/azure-storage-blob-12.26.1.jar",
+    "azure-core-1.49.1.jar": f"{_MVN}/com/azure/azure-core/1.49.1/azure-core-1.49.1.jar",  # BinaryData type
+    # Datastores — Neo4j / R2DBC / Spring Data Mongo / Spring Data Redis
+    "neo4j-java-driver-5.21.0.jar": f"{_MVN}/org/neo4j/driver/neo4j-java-driver/5.21.0/neo4j-java-driver-5.21.0.jar",
+    "r2dbc-spi-1.0.0.RELEASE.jar": f"{_MVN}/io/r2dbc/r2dbc-spi/1.0.0.RELEASE/r2dbc-spi-1.0.0.RELEASE.jar",
+    "spring-data-mongodb-4.3.1.jar": f"{_MVN}/org/springframework/data/spring-data-mongodb/4.3.1/spring-data-mongodb-4.3.1.jar",
+    "spring-data-redis-3.3.1.jar": f"{_MVN}/org/springframework/data/spring-data-redis/3.3.1/spring-data-redis-3.3.1.jar",
+    # Messaging — Apache Pulsar / Spring Kafka (kafka-clients already present)
+    "pulsar-client-api-3.2.4.jar": f"{_MVN}/org/apache/pulsar/pulsar-client-api/3.2.4/pulsar-client-api-3.2.4.jar",
+    "spring-kafka-3.1.5.jar": f"{_MVN}/org/springframework/kafka/spring-kafka/3.1.5/spring-kafka-3.1.5.jar",
+    # File/PDF/image — iText (kernel/io/commons split) + Thumbnailator
+    "itext-kernel-8.0.4.jar": f"{_MVN}/com/itextpdf/kernel/8.0.4/kernel-8.0.4.jar",
+    "itext-io-8.0.4.jar": f"{_MVN}/com/itextpdf/io/8.0.4/io-8.0.4.jar",
+    "itext-commons-8.0.4.jar": f"{_MVN}/com/itextpdf/commons/8.0.4/commons-8.0.4.jar",
+    "thumbnailator-0.4.20.jar": f"{_MVN}/net/coobird/thumbnailator/0.4.20/thumbnailator-0.4.20.jar",
+    # Pure anchors — OpenCSV / Apache Commons CSV (caller-stream ctors must stay pure)
+    "opencsv-5.9.jar": f"{_MVN}/com/opencsv/opencsv/5.9/opencsv-5.9.jar",
+    "commons-csv-1.11.0.jar": f"{_MVN}/org/apache/commons/commons-csv/1.11.0/commons-csv-1.11.0.jar",
 }
 
 

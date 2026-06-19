@@ -84,6 +84,8 @@ EFFECT_CASES = [
     # Fs — javax media readers that open a File (ImageIO already modeled; AudioSystem added 0.7.8)
     ("imageReadFile", "Fs", "java.io.File f", "javax.imageio.ImageIO.read(f)"),
     ("audioReadFile", "Fs", "java.io.File f", "javax.sound.sampled.AudioSystem.getAudioInputStream(f)"),
+    # XML parse(File) → {Fs, Unknown}: reads the file (Fs) plus the XXE/external-entity disclosure (Unknown)
+    ("xmlParseFile", "Fs", "javax.xml.parsers.DocumentBuilder b, java.io.File f", "b.parse(f)"),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).

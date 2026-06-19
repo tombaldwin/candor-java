@@ -156,6 +156,27 @@ class SoundnessSweepTest {
         assertTrue(eff(r, "A.use").contains("Unknown"), "reflection must read Unknown, got " + eff(r, "A.use"));
     }
 
+    /** Deferred-execution containers (ThreadLocal.withInitial, Kotlin {@code by lazy}) stow a lambda that
+     *  runs at the FORCE site, not at creation. The lambda's effect must NOT be edged to the creation site
+     *  (&lt;clinit&gt;/&lt;init&gt;) — else, since any static touch of the class triggers its init, the effect smears
+     *  onto every such method (a fabrication found by the Kotlin sweep: a {@code by lazy { net }} flooded an
+     *  unrelated fs-only method with Net). The force site must still attribute it (no under-report). */
+    @Test
+    void deferredContainerEffectDoesNotSmearViaClinit() throws Exception {
+        var r = scan("public class A {\n"
+                + "  static final ThreadLocal<String> TL = ThreadLocal.withInitial(() -> { net(); return \"x\"; });\n"
+                + "  static void net(){ " + NET + " }\n"
+                + "  static void fs(){ " + FS + " }\n"
+                + "  public static void touchesClass(){ fs(); }\n"
+                + "  public static String force(){ return TL.get(); }\n"
+                + "}");
+        assertFalse(eff(r, "A.touchesClass").contains("Net"),
+                "deferred-lambda effect must not smear via <clinit> onto an unrelated method, got " + eff(r, "A.touchesClass"));
+        assertTrue(eff(r, "A.touchesClass").contains("Fs"), "its own Fs must remain, got " + eff(r, "A.touchesClass"));
+        assertTrue(eff(r, "A.force").contains("Net"),
+                "the force site must still attribute the deferred lambda's Net, got " + eff(r, "A.force"));
+    }
+
     /** No-fabrication control: a genuinely pure version of the trickiest shape stays pure. */
     @Test
     void pureControlStaysPure() throws Exception {

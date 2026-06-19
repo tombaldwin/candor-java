@@ -2546,8 +2546,14 @@ public class Candor {
                         // skip them: passing one to methodId would feed a field descriptor to
                         // Type.getArgumentTypes and crash the whole scan.
                         if (a instanceof Handle h && h.getTag() >= Opcodes.H_INVOKEVIRTUAL) {
+                            // A lambda stowed into a deferred container (`by lazy`, ThreadLocal.withInitial)
+                            // does NOT run at this creation site — its body is attributed at the force site
+                            // (isDeferredForce). Edging it here would smear the effect onto <clinit> and thus
+                            // every static touch of the class (a Kotlin-sweep fabrication). Skip the body edge.
+                            boolean deferred = feedsDeferredFactory(idin);
                             if (projectClasses.contains(h.getOwner())) {
-                                edges.get(id).add(methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc()));
+                                if (!deferred)
+                                    edges.get(id).add(methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc()));
                                 // A static method-ref / ctor-ref (`H::staticM`, `H::new`) TRIGGERS H's class
                                 // load → its <clinit> runs (JVMS §5.5), exactly like a static call / NEW /
                                 // static-field access. The other three triggers call clinitEdge; this one
@@ -2630,6 +2636,25 @@ public class Candor {
     static boolean isDeferredFactory(String owner, String name) {
         return (owner.equals("kotlin/LazyKt") && name.equals("lazy"))
                 || (owner.equals("java/lang/ThreadLocal") && name.equals("withInitial"));
+    }
+
+    /** Whether the lambda an {@code idin} creates is IMMEDIATELY stowed into a curated deferred-execution
+     *  container ({@code by lazy} → {@code LazyKt.lazy} / {@code new …LazyImpl}; {@code ThreadLocal.withInitial})
+     *  rather than invoked at this site — found by scanning forward to the first consuming call. When it is,
+     *  the lambda body must NOT be edged to this CREATION site: it does not run here (only at the force site,
+     *  which {@link #isDeferredForce} attributes). Without this, a {@code val x by lazy { effect }} field
+     *  attributes the effect to {@code <clinit>}, and since ANY static touch of the class triggers
+     *  {@code <clinit>}, that effect smears onto every such method (a fabrication found by the Kotlin sweep). */
+    static boolean feedsDeferredFactory(InvokeDynamicInsnNode idin) {
+        int budget = 8;
+        for (AbstractInsnNode n = idin.getNext(); n != null && budget-- > 0; n = n.getNext()) {
+            if (n instanceof MethodInsnNode mi) {
+                if (isDeferredFactory(mi.owner, mi.name)) return true;
+                return mi.name.equals("<init>") && DEFERRED_LAZY_IMPLS.contains(mi.owner);
+            }
+            if (n instanceof InvokeDynamicInsnNode) return false; // another indy intervenes
+        }
+        return false;
     }
     // CONSTRUCTIONS via a direct constructor: `new kotlin/SynchronizedLazyImpl(Function0)` etc. (the
     // forms `LazyKt.lazy` delegates to; some kotlin versions / `lazy(mode){}` emit the impl ctor directly).

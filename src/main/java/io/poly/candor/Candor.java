@@ -4932,6 +4932,44 @@ public class Candor {
                 && (method.equals("get") || method.equals("put") || method.equals("delete")
                     || method.equals("list") || method.equals("exists") || method.equals("move")
                     || method.equals("copy"))) return "Net";
+        // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 10) ──
+        // Apache Curator — the fluent *Builder.forPath terminal hits ZooKeeper → Net (the create()/getData()
+        // builder accessors stay pure). forPath always does the ZK round-trip regardless of builder.
+        if (owner.startsWith("org.apache.curator.framework.api.") && method.equals("forPath")) return "Net";
+        // Apache Solr — SolrClient query/add/commit/etc. do the HTTP request → Net (matches the modeled
+        // Elasticsearch RestClient; search engines over HTTP).
+        if (owner.equals("org.apache.solr.client.solrj.SolrClient")
+                && (method.equals("query") || method.equals("add") || method.equals("commit")
+                    || method.equals("deleteById") || method.equals("deleteByQuery") || method.equals("request")
+                    || method.equals("getById") || method.equals("optimize"))) return "Net";
+        // GCP Spanner — ReadContext.executeQuery/read run the SQL query against Spanner → Db (the singleUse()/
+        // readWriteTransaction() builder accessors stay pure).
+        if (owner.equals("com.google.cloud.spanner.ReadContext")
+                && (method.equals("executeQuery") || method.equals("read") || method.equals("readRow")
+                    || method.equals("executeQueryAsync") || method.equals("readUsingIndex"))) return "Db";
+        // Azure CosmosDB — CosmosContainer item ops over HTTP → Net (matches Azure Blob / DynamoDB).
+        if (owner.equals("com.azure.cosmos.CosmosContainer")
+                && (method.equals("readItem") || method.equals("createItem") || method.equals("upsertItem")
+                    || method.equals("deleteItem") || method.equals("replaceItem") || method.equals("queryItems")
+                    || method.equals("patchItem"))) return "Net";
+        // Azure Service Bus — sender writes to the broker → Net.
+        if (owner.equals("com.azure.messaging.servicebus.ServiceBusSenderClient")
+                && (method.equals("sendMessage") || method.equals("sendMessages")
+                    || method.equals("scheduleMessage") || method.equals("scheduleMessages"))) return "Net";
+        // Azure Key Vault secrets → Net.
+        if (owner.equals("com.azure.security.keyvault.secrets.SecretClient")
+                && (method.equals("getSecret") || method.equals("setSecret") || method.startsWith("beginDelete")
+                    || method.startsWith("listProperties") || method.equals("getDeletedSecret"))) return "Net";
+        // GCP Secret Manager → Net (own owner; GCP has no shared wire-namespace).
+        if (owner.equals("com.google.cloud.secretmanager.v1.SecretManagerServiceClient")
+                && (method.equals("accessSecretVersion") || method.equals("getSecret")
+                    || method.equals("createSecret") || method.equals("addSecretVersion")
+                    || method.equals("listSecrets"))) return "Net";
+        // RSocket reactive RPC → Net (returns Mono/Flux; wire deferred — Net is sound).
+        if (owner.equals("io.rsocket.RSocket")
+                && (method.equals("requestResponse") || method.equals("fireAndForget")
+                    || method.equals("requestStream") || method.equals("requestChannel")
+                    || method.equals("metadataPush"))) return "Net";
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation

@@ -82,7 +82,7 @@ never need the jar's path:
 ```sh
 java -jar candor.jar show     /tmp/report.json <method> [--json]   # a method's effects
 java -jar candor.jar where    /tmp/report.json Db [--json]         # direct sources vs inheritors
-java -jar candor.jar callers  /tmp/report.json <method> [--json]   # the BLAST RADIUS (works for pure methods)
+java -jar candor.jar callers  /tmp/report.json <method> [--json] [--include-unknown]  # the BLAST RADIUS (works for pure methods)
 java -jar candor.jar whatif   /tmp/report.json <method> Net [policy] [--json]  # pre-edit gate verdict
 java -jar candor.jar diff     /tmp/report.json baseline.json [--json]
 java -jar candor.jar map|containment|reachable|path|impact /tmp/report.json …
@@ -92,7 +92,11 @@ Name queries resolve exact > segment-suffix (`Svc.save` matches `com.example.Svc
 `Svc.save_all`) > substring — same ladder as the Rust engine.
 
 - **Blast radius of editing a method** → `callers <method>` (NOT its `inferred`, which is what the
-  method itself does). Works pre-edit for a still-pure method.
+  method itself does). Works pre-edit for a still-pure method. The transitive set is candor's
+  *confirmed* reachers; add **`--include-unknown`** to also disclose the *unresolved-dispatch frontier*
+  — functions that MAY reach the method through a `dispatch:` candor declined to resolve. Resolved
+  precisely against the `<report>.hierarchy.json` sidecar (a confirmed reacher that is an override of the
+  dispatched method); a lower-bound disclosure, labelled "cannot confirm", never asserted.
 - **Decide BEFORE you edit** → `whatif <method> <Effect> [policy]` — every transitive caller gains the
   effect; crossed with `CANDOR_POLICY` it returns which functions would violate.
 - **Enforce in CI** → `CANDOR_POLICY` (candor-spec §6.2: `deny`/`pure`/`allow`/`forbid`) +

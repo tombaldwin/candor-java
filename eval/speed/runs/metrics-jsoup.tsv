@@ -1,0 +1,13 @@
+arm	trial	tokens	tool_calls	duration_ms	distinct_methods
+control	1	54947	23	204918	18
+control	2	46862	25	209729	17
+control	3	47793	22	197008	17
+control	4	51229	18	154987	18
+control	5	43297	20	169839	17
+control	6	46144	20	171287	18
+treatment	1	22253	1	12900	34
+treatment	2	22253	1	13809	34
+treatment	3	22253	1	13290	34
+treatment	4	22253	1	12893	34
+treatment	5	22253	1	13151	34
+treatment	6	22253	1	12842	34

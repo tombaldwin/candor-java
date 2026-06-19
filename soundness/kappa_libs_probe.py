@@ -98,6 +98,22 @@ IMPORTS = (
     # SKIPPED (heavy dep trees, noted in the report): Apache Parquet/ORC (Hadoop tree); the high-level
     #   Elasticsearch/OpenSearch typed Java clients (jakarta.json + transport); Thymeleaf (its core leaf is a
     #   caller-supplied Writer like FreeMarker.process — covered by the FreeMarker/Velocity caller-writer anchors).
+    # ====================== ADDED LIBRARIES (2026-06-19 batch 6) ======================
+    # Embedded on-disk stores: Lucene (IndexWriter.addDocument / DirectoryReader.open → Fs), MapDB
+    #   (DBMaker.fileDB(...).make → Fs), RocksDB (RocksDB.open/get/put → Fs, native JNI). Ehcache 3 is
+    #   IN-MEMORY (Cache.get/put → PURE anchors, unless disk-tiered which the API call alone can't tell).
+    # Containers/automation: Testcontainers GenericContainer.start (spawns Docker → Exec+Net), Selenium
+    #   WebDriver.get / RemoteWebDriver.get (drives a browser over the wire → Net).
+    # Integration/messaging: Apache Camel ProducerTemplate.sendBody/requestBody (→ Net — routes to an
+    #   endpoint, often remote), JeroMQ ZMQ.Socket.send/recv (→ Net — a 0MQ socket over TCP), Apache
+    #   Thrift TTransport.open/read/write (→ Net — the RPC transport).
+    # JNDI/LDAP: javax.naming.directory.DirContext.search / InitialDirContext.search (→ Net — LDAP query;
+    #   candor already models InitialContext.lookup as Net — does DirContext.search share that coverage?).
+    # Native crypto: BouncyCastle org.bouncycastle.crypto.generators.RSAKeyPairGenerator.generateKeyPair
+    #   (→ Rand — draws entropy via the configured SecureRandom). Most BC digest/cipher ops are pure compute.
+    # AWS more (VERIFY shared-namespace coverage): SecretsManagerClient.getSecretValue / KmsClient.encrypt /
+    #   SsmClient.getParameter (→ Net; candor keys AWS v2 on the services namespace, so they likely PASS).
+    # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2/3/4/5.
 )
 
 # (method, expected effect, params, body) — PASS iff candor reports the effect OR a disclosed Unknown.
@@ -493,6 +509,83 @@ EFFECT_CASES = [
 
     # ---- Fs (dotenv-java — Dotenv.load() reads the .env file off the working directory) ----
     ("dotenvLoad", "Fs", "", 'io.github.cdimascio.dotenv.Dotenv d = io.github.cdimascio.dotenv.Dotenv.load()'),
+
+    # ====================== ADDED LIBRARIES (2026-06-19 batch 6) ======================
+    # ---- Fs (Lucene — IndexWriter.addDocument writes to the on-disk index; DirectoryReader.open(Directory)
+    #      opens the index off disk. The Directory could be a ByteBuffersDirectory (RAM) so candor cannot
+    #      always tell from the static type — Fs|Unknown both PASS; the canonical use is an FSDirectory.) ----
+    # FSDirectory.open(Path) ALWAYS opens an on-disk index dir → the fabrication-safe Fs leaf. (IndexWriter
+    # .addDocument / DirectoryReader.open(Directory) are AMBIGUOUS-RECEIVER — the Directory may be a RAM
+    # ByteBuffersDirectory — so they're accepted gaps, not modeled, to avoid fabricating on in-memory Lucene.)
+    ("luceneFsDirOpen", "Fs", "java.nio.file.Path p",
+        'org.apache.lucene.store.FSDirectory d = org.apache.lucene.store.FSDirectory.open(p)'),
+
+    # ---- Fs (MapDB — DBMaker.fileDB(File).make() opens/creates the on-disk store; the make() terminal is
+    #      the leaf. memoryDB().make() is a pure anchor below.) ----
+    ("mapdbFileMake", "Fs", "File f",
+        'org.mapdb.DB db = org.mapdb.DBMaker.fileDB(f).make()'),
+
+    # ---- Fs (RocksDB — open(String)/get/put hit the on-disk LSM store via native JNI. The effect is real
+    #      disk I/O even though these are native methods; Fs is the right layer, Unknown also acceptable.) ----
+    ("rocksdbOpen", "Fs", "String path",
+        'org.rocksdb.RocksDB db = org.rocksdb.RocksDB.open(path)'),
+    ("rocksdbGet", "Fs", "org.rocksdb.RocksDB db", 'byte[] v = db.get(new byte[1])'),
+    ("rocksdbPut", "Fs", "org.rocksdb.RocksDB db", 'db.put(new byte[1], new byte[1])'),
+
+    # ---- Exec+Net (Testcontainers — GenericContainer.start spawns a Docker container; it shells out to the
+    #      docker daemon (Exec) over its socket/HTTP (Net). Either Exec or Net or Unknown is an acceptable
+    #      PASS — the point is it must NOT read silent-pure.) ----
+    ("testcontainersStart", "Exec", "org.testcontainers.containers.GenericContainer<?> c", 'c.start()'),
+
+    # ---- Net (Selenium — WebDriver.get drives a browser to a URL over the wire; RemoteWebDriver.get talks
+    #      to a remote WebDriver server over HTTP) ----
+    ("seleniumWebDriverGet", "Net", "org.openqa.selenium.WebDriver d", 'd.get("http://h/")'),
+    ("seleniumRemoteGet", "Net", "org.openqa.selenium.remote.RemoteWebDriver d", 'd.get("http://h/")'),
+
+    # ---- Net (Apache Camel — ProducerTemplate.sendBody/requestBody routes the body to an endpoint, often a
+    #      remote one (http/jms/etc). Net is the representative layer; Unknown also acceptable.) ----
+    ("camelSendBody", "Net", "org.apache.camel.ProducerTemplate t", 't.sendBody("body")'),
+    ("camelRequestBody", "Net", "org.apache.camel.ProducerTemplate t",
+        'Object r = t.requestBody((Object) "body")'),
+
+    # ---- Net (JeroMQ — ZMQ.Socket.send/recv move bytes over a 0MQ socket (TCP by default). Ipc is also
+    #      defensible for inproc/ipc transports — Net|Ipc|Unknown all PASS.) ----
+    ("jeromqSend", "Net", "org.zeromq.ZMQ.Socket s", 'boolean ok = s.send("x")'),
+    ("jeromqRecv", "Net", "org.zeromq.ZMQ.Socket s", 'byte[] b = s.recv()'),
+
+    # ---- Net (Apache Thrift — TTransport.open/read/write are the RPC wire transport leaves) ----
+    # Thrift: key the SOCKET transports (TSocket) — abstract TTransport has an in-memory TMemoryBuffer
+    # subclass, so a TTransport-typed receiver is ambiguous and correctly NOT modeled (would fabricate).
+    ("thriftSocketOpen", "Net", "org.apache.thrift.transport.TSocket t", 't.open()'),
+    ("thriftSocketWrite", "Net", "org.apache.thrift.transport.TSocket t", 't.write(new byte[1])'),
+
+    # ---- Net (JNDI/LDAP — DirContext.search / InitialDirContext.search issue an LDAP query over the wire.
+    #      candor already models InitialContext.lookup as Net; this checks the directory search siblings.) ----
+    ("dirContextSearch", "Net", "javax.naming.directory.DirContext c, javax.naming.directory.Attributes attrs",
+        'javax.naming.NamingEnumeration<javax.naming.directory.SearchResult> r = c.search("ou=x", attrs)'),
+    ("initialDirContextSearch", "Net", "javax.naming.directory.InitialDirContext c, javax.naming.directory.Attributes attrs",
+        'javax.naming.NamingEnumeration<javax.naming.directory.SearchResult> r = c.search("ou=x", attrs)'),
+
+    # ---- Rand (BouncyCastle — the lightweight RSAKeyPairGenerator.generateKeyPair draws entropy from the
+    #      SecureRandom set via init(). The owner is the BC type, not the JDK KeyPairGenerator. Rand|Unknown
+    #      both PASS; a silent-pure here is the gap.) ----
+    ("bcRsaGenerateKeyPair", "Rand", "org.bouncycastle.crypto.generators.RSAKeyPairGenerator g",
+        'org.bouncycastle.crypto.AsymmetricCipherKeyPair kp = g.generateKeyPair()'),
+
+    # ---- Net (AWS SDK v2 more services — SecretsManager/KMS/SSM are all HTTP under the hood, like S3/Dynamo
+    #      already modeled. VERIFY the shared-namespace AWS rule covers these too.) ----
+    ("awsSecretsGetValue", "Net",
+        "software.amazon.awssdk.services.secretsmanager.SecretsManagerClient c, "
+        "software.amazon.awssdk.services.secretsmanager.model.GetSecretValueRequest req",
+        'software.amazon.awssdk.services.secretsmanager.model.GetSecretValueResponse r = c.getSecretValue(req)'),
+    ("awsKmsEncrypt", "Net",
+        "software.amazon.awssdk.services.kms.KmsClient c, "
+        "software.amazon.awssdk.services.kms.model.EncryptRequest req",
+        'software.amazon.awssdk.services.kms.model.EncryptResponse r = c.encrypt(req)'),
+    ("awsSsmGetParameter", "Net",
+        "software.amazon.awssdk.services.ssm.SsmClient c, "
+        "software.amazon.awssdk.services.ssm.model.GetParameterRequest req",
+        'software.amazon.awssdk.services.ssm.model.GetParameterResponse r = c.getParameter(req)'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -592,6 +685,21 @@ PURE_CASES = [
     #   the wire leaf is Collection.get/upsert (modeled Net above). Setup stays pure (accepted, not a gap).
     ("couchbaseCollectionFactoryPure",
         "com.couchbase.client.java.Collection c = b.defaultCollection()", "com.couchbase.client.java.Bucket b"),
+
+    # ====================== ADDED LIBRARIES (2026-06-19 batch 6) — pure anchors ===============
+    # Ehcache 3 is an IN-MEMORY (heap) cache by default — Cache.get/put touch no I/O. candor must stay pure
+    #   (a disk-tiered config would do Fs, but the get/put call alone cannot reveal that — fabricating Fs here
+    #   would over-classify the common heap-cache case, same accepted tradeoff as Caffeine).
+    ("ehcacheGetPure", "Object v = c.get(\"k\")", "org.ehcache.Cache<String,Object> c"),
+    ("ehcachePutPure", "c.put(\"k\", new Object())", "org.ehcache.Cache<String,Object> c"),
+    # MapDB memoryDB().make() is the in-memory store — no disk (fileDB(File).make() above is the Fs leaf).
+    #   Pins that candor must not flood the make() terminal as Fs regardless of the maker source.
+    ("mapdbMemoryMakePure", "org.mapdb.DB db = org.mapdb.DBMaker.memoryDB().make()", ""),
+    # Lucene ByteBuffersDirectory is an IN-MEMORY Directory — opening a reader over it touches no disk. The
+    #   DirectoryReader.open leaf above is modeled Fs (canonical FSDirectory); this anchors that the RAM
+    #   directory CONSTRUCTION itself is pure (the ambiguity is why Unknown is an accepted PASS on the reader).
+    ("luceneRamDirPure",
+        "org.apache.lucene.store.ByteBuffersDirectory d = new org.apache.lucene.store.ByteBuffersDirectory()", ""),
 ]
 
 
@@ -752,6 +860,30 @@ JARS = {
     "univocity-parsers-2.9.1.jar": f"{_MVN}/com/univocity/univocity-parsers/2.9.1/univocity-parsers-2.9.1.jar",
     # Config/secrets — dotenv-java
     "dotenv-java-3.0.0.jar": f"{_MVN}/io/github/cdimascio/dotenv-java/3.0.0/dotenv-java-3.0.0.jar",
+    # --- added 2026-06-19 batch 6 ---
+    # Embedded on-disk stores — Lucene / MapDB / RocksDB (JNI). Ehcache 3 (in-memory anchor).
+    "lucene-core-9.11.1.jar": f"{_MVN}/org/apache/lucene/lucene-core/9.11.1/lucene-core-9.11.1.jar",
+    "mapdb-3.1.0.jar": f"{_MVN}/org/mapdb/mapdb/3.1.0/mapdb-3.1.0.jar",
+    "rocksdbjni-9.2.1.jar": f"{_MVN}/org/rocksdb/rocksdbjni/9.2.1/rocksdbjni-9.2.1.jar",
+    "ehcache-3.10.8.jar": f"{_MVN}/org/ehcache/ehcache/3.10.8/ehcache-3.10.8.jar",
+    # Containers/automation — Testcontainers / Selenium (api + remote-driver)
+    "testcontainers-1.19.8.jar": f"{_MVN}/org/testcontainers/testcontainers/1.19.8/testcontainers-1.19.8.jar",
+    # junit is a COMPILE-only dep of Testcontainers (GenericContainer implements org.junit.rules.TestRule) —
+    # needed to give javac the type; not under test (no junit EFFECT_CASE).
+    "junit-4.13.2.jar": f"{_MVN}/junit/junit/4.13.2/junit-4.13.2.jar",
+    "selenium-api-4.21.0.jar": f"{_MVN}/org/seleniumhq/selenium/selenium-api/4.21.0/selenium-api-4.21.0.jar",
+    "selenium-remote-driver-4.21.0.jar": f"{_MVN}/org/seleniumhq/selenium/selenium-remote-driver/4.21.0/selenium-remote-driver-4.21.0.jar",
+    # Integration/messaging — Apache Camel / JeroMQ / Apache Thrift
+    "camel-api-4.6.0.jar": f"{_MVN}/org/apache/camel/camel-api/4.6.0/camel-api-4.6.0.jar",
+    "jeromq-0.6.0.jar": f"{_MVN}/org/zeromq/jeromq/0.6.0/jeromq-0.6.0.jar",
+    "libthrift-0.20.0.jar": f"{_MVN}/org/apache/thrift/libthrift/0.20.0/libthrift-0.20.0.jar",
+    # Native crypto — BouncyCastle (provider jar carries the crypto.generators package)
+    "bcprov-jdk18on-1.78.1.jar": f"{_MVN}/org/bouncycastle/bcprov-jdk18on/1.78.1/bcprov-jdk18on-1.78.1.jar",
+    # AWS SDK v2 more services — SecretsManager / KMS / SSM (core SDK jars already present from S3)
+    "secretsmanager-2.25.60.jar": f"{_MVN}/software/amazon/awssdk/secretsmanager/2.25.60/secretsmanager-2.25.60.jar",
+    "kms-2.25.60.jar": f"{_MVN}/software/amazon/awssdk/kms/2.25.60/kms-2.25.60.jar",
+    "ssm-2.25.60.jar": f"{_MVN}/software/amazon/awssdk/ssm/2.25.60/ssm-2.25.60.jar",
+    # JNDI/LDAP DirContext is in the JDK (javax.naming.directory) — no jar needed.
 }
 
 

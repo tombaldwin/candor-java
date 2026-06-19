@@ -4726,6 +4726,49 @@ public class Candor {
         if (owner.equals("java.security.KeyPairGenerator")
                 && (method.equals("generateKeyPair") || method.equals("genKeyPair"))) return "Rand";
         if (owner.equals("javax.crypto.KeyGenerator") && method.equals("generateKey")) return "Rand";
+        // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 6) ──
+        // RocksDB — embedded on-disk KV store (native JNI). No in-memory variant on this class → whole-owner
+        // Fs for the I/O verbs (the open/get/put/write/merge/delete/iterator are all disk).
+        if (owner.equals("org.rocksdb.RocksDB")) {
+            switch (method) {
+                case "open": case "openReadOnly": case "get": case "put": case "write": case "merge":
+                case "delete": case "deleteRange": case "newIterator": case "multiGetAsList": case "flush":
+                    return "Fs";
+                default: break;
+            }
+        }
+        // MapDB — model the FILE factory `DBMaker.fileDB(File|String)` as Fs (it configures a disk store).
+        // NOT the shared `Maker.make()` terminal: `memoryDB().make()` reaches the same make() and must stay
+        // pure (anchor mapdbMemoryMakePure).
+        if (owner.equals("org.mapdb.DBMaker") && method.equals("fileDB")) return "Fs";
+        // Lucene — `FSDirectory.open(Path)` always opens an on-disk index dir → Fs (descriptor-clean). The
+        // IndexWriter.addDocument / DirectoryReader.open(Directory) leaves are AMBIGUOUS-RECEIVER (the
+        // Directory may be a RAM ByteBuffersDirectory), so modelling them whole-owner would fabricate on the
+        // in-memory variant — left as accepted gaps (the FSDirectory.open factory is the safe disk signal).
+        if (owner.equals("org.apache.lucene.store.FSDirectory") && method.equals("open")) return "Fs";
+        // Testcontainers — GenericContainer.start shells out to the Docker daemon → Exec.
+        if (owner.equals("org.testcontainers.containers.GenericContainer") && method.equals("start")) return "Exec";
+        // Selenium — WebDriver.get drives a browser / talks to a remote WebDriver server over HTTP → Net.
+        // OWNER-scoped (not a global `get` rule — that would collide with bean getters).
+        if ((owner.equals("org.openqa.selenium.WebDriver") || owner.equals("org.openqa.selenium.remote.RemoteWebDriver"))
+                && method.equals("get")) return "Net";
+        // Apache Camel — ProducerTemplate routes a body to an endpoint (usually remote) → Net.
+        if (owner.equals("org.apache.camel.ProducerTemplate")
+                && (method.startsWith("sendBody") || method.startsWith("requestBody")
+                    || method.startsWith("asyncSendBody") || method.startsWith("asyncRequestBody"))) return "Net";
+        // JeroMQ (0MQ) — Socket.send/recv move bytes over the 0MQ socket → Net (TCP default).
+        if (owner.equals("org.zeromq.ZMQ$Socket")
+                && (method.startsWith("send") || method.startsWith("recv"))) return "Net";
+        // Apache Thrift — the SOCKET transports do the RPC wire I/O → Net. Keyed to the socket types (NOT
+        // abstract TTransport, whose TMemoryBuffer subclass is in-memory → would fabricate).
+        if ((owner.equals("org.apache.thrift.transport.TSocket")
+                || owner.equals("org.apache.thrift.transport.TNonblockingSocket"))
+                && (method.equals("open") || method.equals("read") || method.equals("write")
+                    || method.equals("flush"))) return "Net";
+        // BouncyCastle low-level key-pair generators draw entropy → Rand (the jcajce KeyPairGenerator extends
+        // java.security.KeyPairGenerator, already covered; this is the org.bouncycastle.crypto.generators.*
+        // API). BC digest/cipher ops stay pure compute.
+        if (owner.startsWith("org.bouncycastle.crypto.generators.") && method.equals("generateKeyPair")) return "Rand";
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation
@@ -4907,7 +4950,12 @@ public class Candor {
                     || method.startsWith("create") || method.startsWith("delete") || method.startsWith("send")
                     || method.startsWith("query") || method.startsWith("scan") || method.startsWith("update")
                     || method.startsWith("describe") || method.startsWith("invoke") || method.startsWith("upload")
-                    || method.startsWith("download") || method.startsWith("receive") || method.startsWith("publish"))
+                    || method.startsWith("download") || method.startsWith("receive") || method.startsWith("publish")
+                    // KMS / crypto service verbs — over-HTTP calls that the original verb list missed
+                    // (batch-6: KmsClient.encrypt read silent-pure). decrypt/sign/verify/reEncrypt/generate*.
+                    || method.startsWith("encrypt") || method.startsWith("decrypt") || method.startsWith("sign")
+                    || method.startsWith("verify") || method.startsWith("reEncrypt")
+                    || method.startsWith("generate"))
                 && !isConventionallyPure(method)
                 // AWS v1 CLIENT classes themselves carry pure config getters that match `get*` but make
                 // no request: getRegion/getRegionName/getSignerRegion/getResourceUrl/getUrl/

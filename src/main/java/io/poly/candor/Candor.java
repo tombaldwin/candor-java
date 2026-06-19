@@ -2663,17 +2663,34 @@ public class Candor {
         return false;
     }
 
-    /** Whether the lambda an {@code idin} creates is IMMEDIATELY stored into a field (PUTFIELD/PUTSTATIC)
-     *  rather than passed to a consuming call. Such a lambda does not RUN at the store site — it runs when
-     *  the field is later invoked (a field-SAM, which discloses Unknown). Used (in {@code <clinit>}/
-     *  {@code <init>} only) to suppress the creation-site edge that would otherwise attribute the lambda's
-     *  effect to the initializer and SMEAR it onto every method that triggers the class's init. */
+    /** A {@code java.util} collection/map method that STORES its argument for later (never invokes it):
+     *  {@code put}/{@code add}/{@code set}/{@code push}/{@code offer}…. Deliberately EXCLUDES the invoking
+     *  HOFs ({@code computeIfAbsent}/{@code merge}/{@code forEach}/{@code replaceAll}…), which DO run the
+     *  lambda — those must keep the creation-site edge. */
+    static boolean isStoringContainerCall(String owner, String name) {
+        if (!owner.startsWith("java/util/")) return false;
+        switch (name) {
+            case "put": case "putIfAbsent": case "add": case "addFirst": case "addLast":
+            case "set": case "push": case "offer": case "offerFirst": case "offerLast":
+                return true;
+            default: return false;
+        }
+    }
+
+    /** Whether the lambda an {@code idin} creates ESCAPES UNINVOKED at this site — stored into a field
+     *  (PUTFIELD/PUTSTATIC) or into a collection/map (a storing container call) rather than passed to a
+     *  call that runs it. Such a lambda does not RUN here; it runs at a later invocation (a field- or
+     *  collection-SAM, which discloses Unknown). Used (in {@code <clinit>}/{@code <init>} only) to suppress
+     *  the creation-site edge that would otherwise attribute the effect to the initializer and SMEAR it onto
+     *  every method that triggers the class's init. Conservative: the FIRST consuming op decides; an
+     *  unrecognised call (which might invoke the lambda) keeps the edge. */
     static boolean lambdaImmediatelyStored(InvokeDynamicInsnNode idin) {
         int budget = 6;
         for (AbstractInsnNode n = idin.getNext(); n != null && budget-- > 0; n = n.getNext()) {
             int op = n.getOpcode();
             if (op == Opcodes.PUTFIELD || op == Opcodes.PUTSTATIC) return true;
-            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode) return false; // consumed by a call
+            if (n instanceof MethodInsnNode mi) return isStoringContainerCall(mi.owner, mi.name);
+            if (n instanceof InvokeDynamicInsnNode) return false;
         }
         return false;
     }

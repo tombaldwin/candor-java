@@ -121,4 +121,35 @@ class PrivateFunctionalParamForwardingTest {
         assertTrue(eff(r, "D.each").contains("Unknown"),
                 "a public functional-param sink must keep Unknown (external callers unknown), got " + r.get("D.each"));
     }
+
+    /** Bail #3 (the CARDINAL-SIN guard) — a forwardable-LOOKING sink must only have the Unknown suppressed
+     *  for a SAM invoked on the PARAM itself. A second functional value invoked in the same method — here an
+     *  element of an {@code F[]} param, opaque — must KEEP its Unknown; the param's lambda must not mask it.
+     *  Caught by an adversarial soundness sweep (the receiver-identity gate, {@link Candor#samIsOnParam}). */
+    @Test
+    void arrayElementSamIsNotSuppressedByParamForwarding() throws Exception {
+        Map<String, TreeSet<String>> r = compileAndScan(Map.of("E.java", String.join("\n",
+            "import java.util.function.Consumer;",
+            "public class E {",
+            // `c` is the forwardable param; `more[0]` is an opaque array element — its SAM must stay Unknown
+            "  private static void sink(Consumer<String> c, Consumer<String>[] more){ c.accept(\"x\"); more[0].accept(\"y\"); }",
+            "  void use(Consumer<String>[] arr){ sink(s -> {}, arr); }",
+            "}")));
+        assertTrue(eff(r, "E.sink").contains("Unknown"),
+                "the opaque array-element SAM must keep Unknown (not be masked by the param's pure lambda), got " + r.get("E.sink"));
+    }
+
+    /** Bail #4 — when the SOLE SAM is on a non-param functional value (an opaque array element, the param
+     *  never invoked), the sink must read Unknown, not silently pure. */
+    @Test
+    void samOnlyOnNonParamValueKeepsUnknown() throws Exception {
+        Map<String, TreeSet<String>> r = compileAndScan(Map.of("G.java", String.join("\n",
+            "import java.util.function.Consumer;",
+            "public class G {",
+            "  private static void sink(Consumer<String> c, Consumer<String>[] more){ more[0].accept(\"y\"); }",
+            "  void use(Consumer<String>[] arr){ sink(s -> {}, arr); }",
+            "}")));
+        assertTrue(eff(r, "G.sink").contains("Unknown"),
+                "a SAM on a non-param F value must keep Unknown, got " + r.get("G.sink"));
+    }
 }

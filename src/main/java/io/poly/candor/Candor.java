@@ -2034,6 +2034,26 @@ public class Candor {
                                     .add("task-handoff:" + owner + "." + min.name);
                         }
                     }
+                    // NAMED FUNCTIONAL-INTERFACE INSTANCE handed to an EXTERNAL HOF. A `new EffCons()` (a
+                    // project class implementing java.util.function.*/Runnable/Callable) passed to a library
+                    // method that invokes its SAM OUTSIDE project code (`Stream.forEach`, `List.sort`,
+                    // `Optional.map`) read SILENT-PURE: there is no invokedynamic (so the lambda
+                    // creation-edge never fires) and no in-project SAM invoke (so the callback: Unknown gate
+                    // never fires — the `.accept()` is inside the unanalysed JDK body). A lambda or
+                    // method-ref in the SAME position IS sound (edged at its indy), so this is an INTERNAL
+                    // asymmetry / cardinal sin. Edge the instance's SAM surface here, mirroring the lambda
+                    // creation-edge and GATED exactly like `lambdaEscapesUninvoked`: a storing-container call
+                    // (`list.add(consumer)` STORES, never invokes) keeps the no-edge → the instance stays
+                    // pure. Restricted to a freshly-constructed instance (`newType`, a guarantee) of a
+                    // project functional impl, and to EXTERNAL callees — a PROJECT callee's body is analysed,
+                    // which already handles the param flow without fabricating on a store.
+                    if (provFrames != null && !projectClasses.contains(min.owner)
+                            && !isStoringContainerCall(min.owner, min.name)) {
+                        for (ProvValue a : callArgs(provFrames[mn.instructions.indexOf(min)], min)) {
+                            if (a == null || a.newType == null) continue;
+                            edges.get(id).addAll(functionalSamSurface(a.newType));
+                        }
+                    }
                     // IMPLICIT-CONTRACT-REENTRY: a JDK sink that re-enters user code via the JVM contract
                     // (toString/equals/hashCode/compareTo) — modelled pure by candor, so an EFFECTFUL override
                     // of the argument's type read silent-pure. CHA the contract method over the ARGUMENT's
@@ -3125,6 +3145,25 @@ public class Candor {
     static boolean isFunctionalIface(String internal) {
         return internal != null && (internal.startsWith("java/util/function/")
                 || internal.equals("java/lang/Runnable") || internal.equals("java/util/concurrent/Callable"));
+    }
+
+    /** The invokable SAM surface — non-private, non-static, non-abstract, non-`<init>` methods (the SAM
+     *  override plus any synthetic bridge, never private helpers) — of a PROJECT class that DIRECTLY
+     *  implements a recognised JDK functional interface; the bodies a library HOF invokes on it. Empty if
+     *  the type is unknown, not a project class, or implements no such interface (so a non-functional
+     *  `new Foo()` passed to a library method edges nothing). Mirrors the anonymous-class instantiation-edge
+     *  surface, applied to a named functional impl handed to an external HOF. */
+    static Set<String> functionalSamSurface(String classInternal) {
+        ClassNode cn = byName.get(classInternal);
+        if (cn == null || cn.interfaces == null || cn.interfaces.stream().noneMatch(Candor::isFunctionalIface))
+            return Set.of();
+        Set<String> out = new HashSet<>();
+        String dotted = classInternal.replace('/', '.');
+        for (MethodNode m : cn.methods)
+            if (!m.name.startsWith("<")
+                    && (m.access & (Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_ABSTRACT)) == 0)
+                out.add(methodId(dotted, m.name, m.desc));
+        return out;
     }
 
     /** The PROJECT method body a lambda/method-ref invokedynamic creates (its `lambda$…` synthetic or the

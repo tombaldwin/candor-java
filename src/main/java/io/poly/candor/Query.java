@@ -99,13 +99,15 @@ public final class Query {
     static int run(String[] args) {
         String cmd = args[0];
         boolean json = false;
+        boolean includeUnknown = false; // `callers --include-unknown`: also disclose the unresolved-dispatch frontier
         List<String> pos = new ArrayList<>();
         for (int i = 1; i < args.length; i++) {
             if (args[i].equals("--json")) json = true;
+            else if (args[i].equals("--include-unknown")) includeUnknown = true;
             else {
                 // an unknown --flag must FAIL, not be swallowed as a query positional (a typo'd
                 // --jsno otherwise returns prose to a wrapper expecting JSON) — same posture as main()
-                Candor.rejectUnknownFlag(args[i], java.util.Set.of("--json"), "candor " + cmd + " <report.json> [arg] [--json]");
+                Candor.rejectUnknownFlag(args[i], java.util.Set.of("--json", "--include-unknown"), "candor " + cmd + " <report.json> [arg] [--json] [--include-unknown]");
                 pos.add(args[i]);
             }
         }
@@ -125,7 +127,7 @@ public final class Query {
         return switch (cmd) {
             case "show" -> show(fns, arg, json);
             case "where" -> where(fns, arg, json);
-            case "callers" -> callers(fns, pos.get(0), arg, json);
+            case "callers" -> callers(fns, pos.get(0), arg, json, includeUnknown);
             case "map" -> map(fns, json);
             case "diff" -> diff(fns, arg, json);
             case "containment" -> containment(fns, arg, json);
@@ -280,8 +282,8 @@ public final class Query {
     }
 
     /** Who calls a function — inverts the report's `calls` effect graph (no re-analysis). */
-    static int callers(List<Fn> fns, String reportPath, String q, boolean json) {
-        if (q == null) return usage("callers <report.json> <function-substring> [--json]");
+    static int callers(List<Fn> fns, String reportPath, String q, boolean json, boolean includeUnknown) {
+        if (q == null) return usage("callers <report.json> <function-substring> [--json] [--include-unknown]");
         // Prefer the full call-graph sidecar (written beside the report): it records EVERY function's
         // callees, including pure ones, so we can answer "who TRANSITIVELY calls X" for any function —
         // the blast radius an agent needs BEFORE adding an effect to X. The report alone only has
@@ -296,7 +298,35 @@ public final class Query {
             cg = new LinkedHashMap<>();
             for (Fn f : fns) cg.put(f.fn, new ArrayList<>(f.calls));
         }
-        return callersViaCallgraph(cg, q, json);
+        // --include-unknown: the transitive `callers` set is candor's CONFIRMED reachers — it cannot
+        // include a function that reaches `q` only through a dispatch candor declined to resolve (a
+        // `dispatch-broad` over >CHA_FANOUT_LIMIT implementors, disclosed as Unknown not silent-pure).
+        // Map each such function to the simple method name(s) it broad-dispatches on, so the query can
+        // disclose "these MAY also reach `q` if the runtime dispatch lands on a reaching override" — the
+        // unresolved-dispatch frontier, making the blast radius own up to its lower-bound nature. Built
+        // only when the flag is set, so default output is byte-for-byte unchanged (cross-engine parity).
+        Map<String, Set<String>> broadByFn = null;
+        if (includeUnknown) {
+            broadByFn = new LinkedHashMap<>();
+            for (Fn f : fns) {
+                for (String why : f.unknownWhy) {
+                    if (why.startsWith("dispatch-broad:") || why.startsWith("dispatch-broad-ext:")) {
+                        String m = simpleMethod(why.substring(why.indexOf(':') + 1));
+                        if (!m.isEmpty()) broadByFn.computeIfAbsent(f.fn, k -> new TreeSet<>()).add(m);
+                    }
+                }
+            }
+        }
+        return callersViaCallgraph(cg, q, json, broadByFn);
+    }
+
+    /** The bare method name of a `pkg.Class.method(desc)` (or a `dispatch-broad:` `owner.method`): drop
+     *  any `(…)` descriptor, then take the segment after the last dot. */
+    static String simpleMethod(String fqn) {
+        int paren = fqn.indexOf('(');
+        String base = paren >= 0 ? fqn.substring(0, paren) : fqn;
+        int dot = base.lastIndexOf('.');
+        return dot >= 0 ? base.substring(dot + 1) : base;
     }
 
     /** Load the call-graph sidecar (`<report-minus-.json>.callgraph.json`), or null if absent/unreadable. */
@@ -323,6 +353,12 @@ public final class Query {
      *  blast radius if `q` gained an effect). Works for any function, effectful or pure. Mirrors
      *  candor-scan's `callers_via_callgraph`. */
     static int callersViaCallgraph(Map<String, List<String>> cg, String q, boolean json) {
+        return callersViaCallgraph(cg, q, json, null);
+    }
+
+    static int callersViaCallgraph(Map<String, List<String>> cg, String q, boolean json,
+                                   Map<String, Set<String>> broadByFn) {
+        boolean incl = broadByFn != null; // --include-unknown: disclose the unresolved-dispatch frontier
         Map<String, List<String>> rev = new TreeMap<>(); // callee -> its direct callers
         for (var e : cg.entrySet())
             for (String callee : e.getValue())
@@ -345,22 +381,56 @@ public final class Query {
             String n = stack.pop();
             for (String c : rev.getOrDefault(n, List.of())) if (all.add(c)) stack.push(c);
         }
+        // The unresolved-dispatch frontier (--include-unknown only): functions whose broad dispatch is on
+        // a method whose SIMPLE NAME matches a confirmed reacher (or `q` itself) — i.e. one of the
+        // implementors candor dropped could be a reaching override, so they MAY also reach `q`. candor
+        // can't confirm it (the dispatch was unresolvable), so these are disclosed, never asserted. Match
+        // is by simple method name (no class hierarchy in the report) → a possible over-list, the honest
+        // direction for a lower-bound disclosure. A function already in the confirmed set is not re-listed.
+        List<Map<String, String>> possible = new ArrayList<>();
+        if (incl) {
+            Set<String> reachedSimple = new TreeSet<>();
+            for (String r : all) reachedSimple.add(simpleMethod(r));
+            for (String t : targets) reachedSimple.add(simpleMethod(t));
+            Set<String> confirmed = new HashSet<>(all);
+            confirmed.addAll(targets);
+            for (var e : new TreeMap<>(broadByFn).entrySet()) {
+                if (confirmed.contains(e.getKey())) continue;
+                TreeSet<String> hits = new TreeSet<>();
+                for (String m : e.getValue()) if (reachedSimple.contains(m)) hits.add(m);
+                if (!hits.isEmpty()) {
+                    Map<String, String> row = new LinkedHashMap<>();
+                    row.put("fn", e.getKey());
+                    row.put("viaDispatchOn", String.join(",", hits));
+                    possible.add(row);
+                }
+            }
+        }
         if (json) {
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("of", targets);
             out.put("direct", new ArrayList<>(direct));
             out.put("transitive", new ArrayList<>(all));
+            if (incl) out.put("possibleViaUnknownDispatch", possible); // present only under --include-unknown
             emit(out);
             return 0;
         }
         String tgt = String.join(", ", targets);
-        if (all.isEmpty()) {
+        if (all.isEmpty() && possible.isEmpty()) {
             System.out.println("  `" + tgt + "` has no callers (nothing in this codebase calls it).");
             return 0;
         }
-        System.out.println("  `" + tgt + "` is reached by " + all.size()
-                + " function(s) (the blast radius if it gained an effect):");
-        for (String c : all) System.out.println("      " + c + (direct.contains(c) ? " (direct)" : ""));
+        if (!all.isEmpty()) {
+            System.out.println("  `" + tgt + "` is reached by " + all.size()
+                    + " function(s) (the blast radius if it gained an effect):");
+            for (String c : all) System.out.println("      " + c + (direct.contains(c) ? " (direct)" : ""));
+        }
+        if (incl && !possible.isEmpty()) {
+            System.out.println("  + " + possible.size() + " function(s) MAY also reach `" + tgt
+                    + "` via an unresolved broad dispatch candor declined to resolve (cannot confirm):");
+            for (Map<String, String> r : possible)
+                System.out.println("      " + r.get("fn") + "  (via dispatch on " + r.get("viaDispatchOn") + ")");
+        }
         return 0;
     }
 

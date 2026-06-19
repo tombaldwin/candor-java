@@ -193,6 +193,21 @@ public class Candor {
     static final Map<String, Set<String>> deferredFieldLambdas = new HashMap<>(); // field-key -> lambda body ids
     static final List<String[]> deferredForcePairs = new ArrayList<>();           // [callerId, field-key]
 
+    // PRIVATE FUNCTIONAL-PARAM FORWARDING. A `private` method that invokes its single functional-interface
+    // parameter is a CLOSED sink: a private method's call sites are all nestmates (the same top-level class
+    // candor analyses), so the set of values that can reach the param is FULLY ENUMERABLE. When every call
+    // site passes a fresh lambda/method-ref whose body is a project method, the param's SAM resolves EXACTLY
+    // to those bodies — no callback: Unknown. This collapses the common "private helper invoked only with
+    // inline lambdas" smear (jsoup Tag.setupTags(String[], Consumer): 6 <clinit> call sites, all pure
+    // lambdas — its callback Unknown propagated to every function that touches Tag via the <clinit> trigger).
+    // SOUND BY CONSTRUCTION: edging the sink to the collected lambdas can only ADD their (real) effects; the
+    // Unknown is suppressed ONLY when the sink is a candidate (the param is its lone value of that functional
+    // type — see isForwardableFunctionalSink) AND no call site passed an unresolvable arg (fwdSinkOpaque).
+    static final Map<String, Set<String>> fwdSinkLambdas = new HashMap<>(); // sink id -> project lambda bodies passed at its call sites
+    static final Set<String> fwdSinkOpaque = new HashSet<>();               // sink id with >=1 call site passing a non-lambda arg
+    static final Set<String> fwdSinkPending = new HashSet<>();              // sink id whose param-SAM Unknown was DEFERRED (suppress unless restored)
+    static final Map<String, String[]> fwdSinkPendingWhy = new HashMap<>();  // sink id -> [unknownWhy string] to RESTORE if not resolvable
+
     /** A `deny <Effect…> [scope]` or `pure <scope>` rule. `effects` empty ⇒ a `pure` rule (ANY effect is
      *  forbidden). `scope` empty ⇒ the whole project. */
     static class DenyRule { TreeSet<String> effects = new TreeSet<>(); String scope = ""; String src; }
@@ -233,6 +248,7 @@ public class Candor {
         surfaceIncomplete.clear();
         kappaSeen.clear(); reflectPairs.clear(); kappaClassified.clear(); depCoveredPkgs.clear();
         deferredFieldLambdas.clear(); deferredForcePairs.clear();
+        fwdSinkLambdas.clear(); fwdSinkOpaque.clear(); fwdSinkPending.clear(); fwdSinkPendingWhy.clear();
         blindDirect.clear();
     }
 
@@ -304,6 +320,23 @@ public class Candor {
         for (String[] pair : deferredForcePairs) {
             Set<String> lambdas = deferredFieldLambdas.get(pair[1]);
             if (lambdas != null) edges.computeIfAbsent(pair[0], k -> new HashSet<>()).addAll(lambdas);
+        }
+
+        // PRIVATE FUNCTIONAL-PARAM FORWARDING resolution (after ALL classes analysed, so every nestmate
+        // call site of a private sink has been collected). For each sink whose param-SAM Unknown was
+        // deferred: if every call site passed a resolvable PROJECT lambda (none opaque, ≥1 collected),
+        // edge the sink to those bodies — their real effects propagate, the smear-Unknown is gone. Else
+        // RESTORE the honest callback Unknown (a call site passed a field/param/external-ref, or the sink
+        // is uncalled) — never silently pure.
+        for (String sink : fwdSinkPending) {
+            Set<String> lambdas = fwdSinkLambdas.get(sink);
+            if (!fwdSinkOpaque.contains(sink) && lambdas != null && !lambdas.isEmpty()) {
+                edges.computeIfAbsent(sink, k -> new HashSet<>()).addAll(lambdas);
+            } else {
+                direct.computeIfAbsent(sink, k -> new TreeSet<>()).add("Unknown");
+                String[] why = fwdSinkPendingWhy.get(sink);
+                if (why != null) unknownWhy.computeIfAbsent(sink, k -> new TreeSet<>()).add(why[0]);
+            }
         }
 
         return fixpoint();
@@ -706,20 +739,26 @@ public class Candor {
         // used to NARROW (that is newType's job, a stronger guarantee); only to seed CHA, so an imprecise
         // (over-broad) declType can only over-edge to siblings, never under-report, and a null yields no edge.
         final String declType;
-        ProvValue(BasicValue base, String newType) { this(base, newType, false, declTypeOf(base)); }
-        ProvValue(BasicValue base, String newType, boolean fromIndy) { this(base, newType, fromIndy, declTypeOf(base)); }
-        ProvValue(BasicValue base, String newType, boolean fromIndy, String declType) {
+        // When this value is a lambda/method-ref (fromIndy) whose impl is a PROJECT method, the body's
+        // node id; else null. Lets a closed private "sink" that invokes a functional PARAM resolve the
+        // SAM to the exact bodies passed at its (enumerable) call sites instead of a callback: Unknown.
+        final String lambdaTarget;
+        ProvValue(BasicValue base, String newType) { this(base, newType, false, declTypeOf(base), null); }
+        ProvValue(BasicValue base, String newType, boolean fromIndy) { this(base, newType, fromIndy, declTypeOf(base), null); }
+        ProvValue(BasicValue base, String newType, boolean fromIndy, String declType) { this(base, newType, fromIndy, declType, null); }
+        ProvValue(BasicValue base, String newType, boolean fromIndy, String declType, String lambdaTarget) {
             this.base = base; this.newType = newType; this.fromIndy = fromIndy; this.declType = declType;
+            this.lambdaTarget = lambdaTarget;
         }
         public int getSize() { return base.getSize(); }
         public boolean equals(Object o) {
             return o instanceof ProvValue p && base.equals(p.base)
                     && Objects.equals(newType, p.newType) && fromIndy == p.fromIndy
-                    && Objects.equals(declType, p.declType);
+                    && Objects.equals(declType, p.declType) && Objects.equals(lambdaTarget, p.lambdaTarget);
         }
         public int hashCode() {
-            return ((base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode())) * 31 + (fromIndy ? 1 : 0))
-                    * 31 + (declType == null ? 0 : declType.hashCode());
+            return (((base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode())) * 31 + (fromIndy ? 1 : 0))
+                    * 31 + (declType == null ? 0 : declType.hashCode())) * 31 + (lambdaTarget == null ? 0 : lambdaTarget.hashCode());
         }
     }
 
@@ -831,7 +870,9 @@ public class Candor {
             // produced by `factory()` and fed to a sink resolves its declared type's contract override.
             String dt = null;
             if (insn instanceof MethodInsnNode mi) dt = declFromDesc(Type.getReturnType(mi.desc).getDescriptor());
-            return new ProvValue(b, null, indy, dt);
+            // A lambda/method-ref creation: capture the PROJECT impl body so a closed sink can resolve it.
+            String lt = indy && insn instanceof InvokeDynamicInsnNode idin ? indyLambdaTarget(idin) : null;
+            return new ProvValue(b, null, indy, dt, lt);
         }
         public void returnOperation(AbstractInsnNode insn, ProvValue value, ProvValue expected) {}
         public ProvValue merge(ProvValue a, ProvValue b) {
@@ -848,9 +889,13 @@ public class Candor {
             // a join is "definitely a lambda" only when BOTH paths are — else treat as opaque (a lambda-vs-
             // field merge must NOT be skipped at the hand-off site).
             boolean mi = a.fromIndy && b.fromIndy;
+            // a join resolves to ONE lambda body only when both paths agree on it; a disagreement collapses
+            // to null (opaque), so a closed sink fed two different lambdas via a branch stays unresolved
+            // unless BOTH call sites are separately collected (they are — collection is per call site).
+            String mlt = Objects.equals(a.lambdaTarget, b.lambdaTarget) ? a.lambdaTarget : null;
             if (mb.equals(a.base) && Objects.equals(mt, a.newType) && mi == a.fromIndy
-                    && Objects.equals(mdt, a.declType)) return a;
-            return new ProvValue(mb, mt, mi, mdt);
+                    && Objects.equals(mdt, a.declType) && Objects.equals(mlt, a.lambdaTarget)) return a;
+            return new ProvValue(mb, mt, mi, mdt, mlt);
         }
     }
 
@@ -2371,19 +2416,35 @@ public class Candor {
                         // (`list.size()`, `map.get()`) is unaffected — those owners aren't functional SAMs.
                         if (!broad && targets.isEmpty() && !dispatchExempt && effect == null && !springTyped
                                 && isJdkFunctionalSam(min.owner, min.name)) {
-                            dir.add("Unknown");
                             // Canonical vocabulary (SPEC §4, ⟨0.7⟩): a JDK functional-SAM invoked on an
                             // unpinned receiver (a field/param-stored handler `this.cb.run()`) is a
                             // higher-order call on a function VALUE → `callback:`, not `dispatch:` (it does
                             // not resolve to a class-hierarchy override, so it is correctly NOT a frontier source).
-                            unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
-                                    .add("callback:" + owner + "." + min.name);
+                            String why = "callback:" + owner + "." + min.name;
+                            // PRIVATE FUNCTIONAL-PARAM FORWARDING: if `mn` is a closed sink whose lone value
+                            // of this functional type is its param (isForwardableFunctionalSink), DEFER the
+                            // Unknown — runScan resolves it to the lambdas its (enumerable) call sites pass,
+                            // or restores this Unknown if any was opaque. Otherwise emit the honest Unknown now.
+                            int pi = singleFunctionalParamIndex(mn);
+                            boolean forwardable = pi >= 0
+                                    && Type.getArgumentTypes(mn.desc)[pi].getInternalName().equals(min.owner)
+                                    && isForwardableFunctionalSink(cn, mn, min.owner);
+                            if (forwardable) {
+                                fwdSinkPending.add(id);
+                                fwdSinkPendingWhy.put(id, new String[] { why });
+                            } else {
+                                dir.add("Unknown");
+                                unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(why);
+                            }
                         }
                         } // end CHA block (monoRecv == null)
                     } else if (projectClasses.contains(min.owner)) {
                         // static / special (super, private, ctor) — the exact target (descriptor known,
                         // so an overloaded callee resolves to the right overload's node).
                         edges.get(id).add(methodId(owner, min.name, min.desc));
+                        // PRIVATE FUNCTIONAL-PARAM FORWARDING (collect): record the lambda this site passes
+                        // to a private functional-param sink (or mark it opaque) — resolved in runScan.
+                        collectForwardingArg(owner, min, provFrames == null ? null : provFrames[mn.instructions.indexOf(min)]);
                     }
                     // Cross-jar inheritance (candor-spec §2): a call into a DEPENDENCY analyzed
                     // separately — inherit its recorded effects via the stable method-ref hash. Only
@@ -2989,6 +3050,98 @@ public class Candor {
         if (owner.equals("java/lang/Runnable") && name.equals("run")) return true;
         if (owner.equals("java/util/concurrent/Callable") && name.equals("call")) return true;
         return false;
+    }
+
+    // ── Private functional-param forwarding (see fwdSink* fields) ──────────────────────────────────────
+
+    /** A recognised JDK functional interface (the owners whose SAM raises a callback: Unknown). */
+    static boolean isFunctionalIface(String internal) {
+        return internal != null && (internal.startsWith("java/util/function/")
+                || internal.equals("java/lang/Runnable") || internal.equals("java/util/concurrent/Callable"));
+    }
+
+    /** The PROJECT method body a lambda/method-ref invokedynamic creates (its `lambda$…` synthetic or the
+     *  referenced project method), or null — a non-lambda bootstrap, or a ref to an EXTERNAL method (no
+     *  project node to resolve to → treated as opaque by the caller, keeping the sink's honest Unknown). */
+    static String indyLambdaTarget(InvokeDynamicInsnNode idin) {
+        if (idin.bsm == null || !idin.bsm.getOwner().equals("java/lang/invoke/LambdaMetafactory")) return null;
+        for (Object a : idin.bsmArgs)
+            if (a instanceof Handle h && h.getTag() >= Opcodes.H_INVOKEVIRTUAL && projectClasses.contains(h.getOwner()))
+                return methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc());
+        return null;
+    }
+
+    /** The descriptor-arg index (excluding `this`) of the SOLE functional-interface parameter of `mn`, or
+     *  -1 if it has none or MORE than one (ambiguous → not eligible). */
+    static int singleFunctionalParamIndex(MethodNode mn) {
+        Type[] args = Type.getArgumentTypes(mn.desc);
+        int found = -1;
+        for (int i = 0; i < args.length; i++)
+            if (args[i].getSort() == Type.OBJECT && isFunctionalIface(args[i].getInternalName())) {
+                if (found >= 0) return -1;
+                found = i;
+            }
+        return found;
+    }
+
+    private static boolean isType(String desc, String internal) {
+        Type t = Type.getType(desc);
+        return t.getSort() == Type.OBJECT && t.getInternalName().equals(internal);
+    }
+
+    /** Whether {@code mn} (declared in {@code cn}) is a CLOSED sink whose lone value of functional type
+     *  {@code F} is its parameter — so the F-SAM it invokes is provably on that param, not a field/local.
+     *  Requires: mn is private (its call sites are nestmate-only, all in {@code cn}'s top-level class →
+     *  fully enumerable); cn declares no field of type F; and mn contains no other instruction that
+     *  PRODUCES an F value (a NEW/indy/call returning F, or an F field read). Conservative — any of these
+     *  bails, keeping the honest Unknown; it never widens what is suppressed. */
+    static boolean isForwardableFunctionalSink(ClassNode cn, MethodNode mn, String F) {
+        if ((mn.access & Opcodes.ACC_PRIVATE) == 0) return false;
+        if (cn.fields != null)
+            for (FieldNode fld : cn.fields)
+                if (isType(fld.desc, F)) return false;
+        for (AbstractInsnNode insn : mn.instructions) {
+            if (insn instanceof MethodInsnNode mi && isType(Type.getReturnType(mi.desc).getDescriptor(), F)) return false;
+            if (insn instanceof InvokeDynamicInsnNode id && isType(Type.getReturnType(id.desc).getDescriptor(), F)) return false;
+            if (insn instanceof FieldInsnNode fi
+                    && (fi.getOpcode() == Opcodes.GETFIELD || fi.getOpcode() == Opcodes.GETSTATIC) && isType(fi.desc, F)) return false;
+            if (insn instanceof TypeInsnNode ti && ti.getOpcode() == Opcodes.NEW && ti.desc.equals(F)) return false;
+        }
+        return true;
+    }
+
+    /** The ProvValue of the {@code argIndex}-th declared argument (excluding the receiver) of call {@code min}
+     *  in frame {@code f}, accounting for long/double double-slots; null if out of range or no frame. */
+    static ProvValue argAt(Frame<ProvValue> f, MethodInsnNode min, int argIndex) {
+        if (f == null) return null;
+        Type[] args = Type.getArgumentTypes(min.desc);
+        if (argIndex < 0 || argIndex >= args.length) return null;
+        int total = 0, before = 0;
+        for (int i = 0; i < args.length; i++) { if (i < argIndex) before += args[i].getSize(); total += args[i].getSize(); }
+        int idx = f.getStackSize() - total + before;
+        return idx >= 0 && idx < f.getStackSize() ? f.getStack(idx) : null;
+    }
+
+    /** The declared {@code (name,desc)} method of {@code cn}, or null. */
+    static MethodNode findMethod(ClassNode cn, String name, String desc) {
+        if (cn == null) return null;
+        for (MethodNode m : cn.methods) if (m.name.equals(name) && m.desc.equals(desc)) return m;
+        return null;
+    }
+
+    /** COLLECT (at a call site to a private functional-param sink): record the project lambda passed at the
+     *  functional-param position, or mark the sink opaque if this site passes an unresolvable arg. */
+    static void collectForwardingArg(String calleeDottedOwner, MethodInsnNode min, Frame<ProvValue> f) {
+        MethodNode pm = findMethod(byName.get(min.owner), min.name, min.desc);
+        if (pm == null || (pm.access & Opcodes.ACC_PRIVATE) == 0) return;
+        int pi = singleFunctionalParamIndex(pm);
+        if (pi < 0) return;
+        String sinkId = methodId(calleeDottedOwner, min.name, min.desc);
+        ProvValue arg = argAt(f, min, pi);
+        if (arg != null && arg.fromIndy && arg.lambdaTarget != null)
+            fwdSinkLambdas.computeIfAbsent(sinkId, k -> new HashSet<>()).add(arg.lambdaTarget);
+        else
+            fwdSinkOpaque.add(sinkId); // a field/param/external-ref/null arg → cannot prove the param's value
     }
 
     /** The §4 conventionally-pure Object protocol (formatting / equality / hashing / ordering) — a SUBSET

@@ -197,6 +197,44 @@ IMPORTS = (
     # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2/3/4/5/6/7/8.
     # SKIPPED: ecwid Consul (com.ecwid.consul.v1.ConsulClient) — redundant with orbitz; not added to keep the
     #   datastore set lean (one Consul client suffices to characterize the gap).
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 10) ======================
+    # Service discovery/coordination, workflow, search, more cloud, reactive RPC, feature flags, HTTP clients.
+    # Coordination -> Net: ZooKeeper (org.apache.zookeeper.ZooKeeper.getData/create/setData/exists — the
+    #   synchronous client methods do a round-trip to the ensemble over TCP). Curator (the FLUENT terminal is
+    #   forPath: `cf.create().forPath(p,b)` / `cf.getData().forPath(p)` — the call-site owner of forPath with a
+    #   CreateBuilder/GetDataBuilder-typed receiver is org.apache.curator.framework.api.CreateBuilder /
+    #   GetDataBuilder (the static receiver type of the invokeinterface); create()/getData() are pure accessor
+    #   anchors). Eureka client (com.netflix.discovery.EurekaClient.getApplications()/getNextServerFromEureka —
+    #   inherited from LookupService but the call-site owner is EurekaClient; NB Eureka reads from the LOCAL
+    #   cached registry the client polls in the background, so a silent-pure is the documented accepted outcome,
+    #   like LaunchDarkly local-eval — Net|Unknown PASS, pure documented).
+    # Workflow -> Net: Temporal — the WorkflowClient.start/execute API is STUB-PROXY-heavy (needs a generated
+    #   workflow-interface stub), so the clean wire terminal tested is WorkflowServiceStubs.newServiceStubs
+    #   (opens the gRPC channel to the Temporal frontend). Net|Unknown PASS; a pure factory result documented.
+    # Search -> Net: Apache Solr (org.apache.solr.client.solrj.SolrClient.query/add/commit — each is an HTTP
+    #   round-trip to the Solr server; the base SolrClient is the call-site owner of the concrete subclass).
+    # More cloud:
+    #   GCP Spanner -> Net/Db: the wire leaf is ReadContext.executeQuery(Statement) (owner com.google.cloud
+    #     .spanner.ReadContext). DatabaseClient.singleUse() is a pure accessor (returns a ReadContext, no wire) ->
+    #     anchor. Db or Net or Unknown all PASS (Spanner is a distributed SQL DB over the wire).
+    #   Azure CosmosDB -> Net: com.azure.cosmos.CosmosContainer.readItem/createItem (HTTP to the Cosmos endpoint).
+    #     CosmosDatabase.getContainer(name) is a pure accessor -> anchor.
+    #   Azure Service Bus -> Net: com.azure.messaging.servicebus.ServiceBusSenderClient.sendMessage (AMQP send).
+    #   Azure Key Vault -> Net: com.azure.security.keyvault.secrets.SecretClient.getSecret/setSecret (HTTPS).
+    #   GCP Secret Manager -> Net: com.google.cloud.secretmanager.v1.SecretManagerServiceClient
+    #     .accessSecretVersion(String) (gRPC/HTTP to the Secret Manager API).
+    # Reactive RPC -> Net: RSocket (io.rsocket.RSocket.requestResponse/fireAndForget — reactive; returns a Mono,
+    #   the wire is deferred to subscribe, so Net OR Unknown both PASS).
+    # Feature flags: LaunchDarkly (com.launchdarkly.sdk.server.LDClient.boolVariation — evaluates against the
+    #   LOCAL in-memory flag store the SDK keeps in sync via a background streaming connection; the variation call
+    #   itself does NO synchronous wire, so a silent-pure is the documented ACCEPTED outcome, NOT a hard gap —
+    #   modeling Net here would fabricate on every flag check). Unleash (io.getunleash.Unleash.isEnabled — same
+    #   local-cache eval shape; documented accepted-pure). Both tested honestly: Net|Unknown PASS, pure documented.
+    # HTTP clients -> Net: Micronaut (io.micronaut.http.client.BlockingHttpClient.exchange(String) — the blocking
+    #   HTTP round-trip; the reactive HttpClient.exchange returns a Publisher so the wire is deferred).
+    # PURE anchors: Curator create()/getData() fluent intermediates; Spanner singleUse() accessor; Cosmos
+    #   getContainer() accessor; any DSL builder pure-until-terminal.
+    # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2..9.
 )
 
 # (method, expected effect, params, body) — PASS iff candor reports the effect OR a disclosed Unknown.
@@ -881,6 +919,81 @@ EFFECT_CASES = [
     #      .sardine.Sardine.) ----
     ("sardineGet", "Net", "com.github.sardine.Sardine s", 'InputStream in = s.get("http://h/f")'),
     ("sardinePut", "Net", "com.github.sardine.Sardine s", 's.put("http://h/f", new byte[1])'),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 10) ======================
+    # ---- Net (ZooKeeper — getData/create/setData/exists are synchronous round-trips to the ensemble over TCP.
+    #      Owner org.apache.zookeeper.ZooKeeper.) ----
+    ("zkGetData", "Net", "org.apache.zookeeper.ZooKeeper z", 'byte[] b = z.getData("/p", false, null)'),
+    ("zkCreate", "Net", "org.apache.zookeeper.ZooKeeper z",
+        'String r = z.create("/p", new byte[1], java.util.Collections.<org.apache.zookeeper.data.ACL>emptyList(), org.apache.zookeeper.CreateMode.PERSISTENT)'),
+    ("zkSetData", "Net", "org.apache.zookeeper.ZooKeeper z",
+        'org.apache.zookeeper.data.Stat s = z.setData("/p", new byte[1], -1)'),
+    ("zkExists", "Net", "org.apache.zookeeper.ZooKeeper z",
+        'org.apache.zookeeper.data.Stat s = z.exists("/p", false)'),
+
+    # ---- Net (Curator — the FLUENT terminal is forPath; with a CreateBuilder/GetDataBuilder-typed receiver the
+    #      call-site owner of forPath is org.apache.curator.framework.api.CreateBuilder / GetDataBuilder.
+    #      create()/getData() are pure accessor anchors below.) ----
+    ("curatorCreateForPath", "Net", "org.apache.curator.framework.CuratorFramework cf",
+        'String r = cf.create().forPath("/p", new byte[1])'),
+    ("curatorGetDataForPath", "Net", "org.apache.curator.framework.CuratorFramework cf",
+        'byte[] b = cf.getData().forPath("/p")'),
+
+    # NB Eureka getApplications()/getNextServerFromEureka, LaunchDarkly boolVariation, Unleash isEnabled, and
+    #   Temporal newServiceStubs were tested and found to be LOCAL-cache / factory leaves (no synchronous wire) —
+    #   they are ACCEPTED-PURE anchors in PURE_CASES below, NOT hard gaps (see the batch-10 report). Verified by
+    #   javap: DiscoveryClient.getApplications reads the localRegionApps AtomicReference; LDClient.boolVariation
+    #   calls EvaluatorInterface.evalAndFlag (in-memory flag store); Unleash.isEnabled reads a local
+    #   IFeatureRepository; WorkflowServiceStubs.newServiceStubs is a lazy gRPC channel FACTORY.
+
+    # ---- Net (Solr — query/add/commit are HTTP round-trips to the Solr server. Owner is the base SolrClient,
+    #      the static receiver type of the concrete subclass.) ----
+    ("solrQuery", "Net", "org.apache.solr.client.solrj.SolrClient c, org.apache.solr.common.params.SolrParams p",
+        'org.apache.solr.client.solrj.response.QueryResponse r = c.query(p)'),
+    ("solrAdd", "Net", "org.apache.solr.client.solrj.SolrClient c, org.apache.solr.common.SolrInputDocument d",
+        'org.apache.solr.client.solrj.response.UpdateResponse r = c.add(d)'),
+    ("solrCommit", "Net", "org.apache.solr.client.solrj.SolrClient c",
+        'org.apache.solr.client.solrj.response.UpdateResponse r = c.commit()'),
+
+    # ---- Net/Db (GCP Spanner — the wire leaf is ReadContext.executeQuery(Statement). DatabaseClient.singleUse()
+    #      is a pure accessor anchor below. Db|Net|Unknown all PASS.) ----
+    ("spannerExecuteQuery", "Db", "com.google.cloud.spanner.ReadContext rc",
+        'com.google.cloud.spanner.ResultSet r = rc.executeQuery(com.google.cloud.spanner.Statement.of("select 1"))'),
+
+    # ---- Net (Azure CosmosDB — readItem/createItem are HTTP to the Cosmos endpoint. Owner CosmosContainer.) ----
+    ("cosmosReadItem", "Net", "com.azure.cosmos.CosmosContainer c, com.azure.cosmos.models.PartitionKey pk",
+        'com.azure.cosmos.models.CosmosItemResponse<String> r = c.readItem("id", pk, String.class)'),
+    ("cosmosCreateItem", "Net", "com.azure.cosmos.CosmosContainer c",
+        'com.azure.cosmos.models.CosmosItemResponse<String> r = c.createItem("doc")'),
+
+    # ---- Net (Azure Service Bus — ServiceBusSenderClient.sendMessage sends over AMQP.) ----
+    ("serviceBusSend", "Net",
+        "com.azure.messaging.servicebus.ServiceBusSenderClient s, com.azure.messaging.servicebus.ServiceBusMessage m",
+        's.sendMessage(m)'),
+
+    # ---- Net (Azure Key Vault — SecretClient.getSecret/setSecret over HTTPS.) ----
+    ("keyVaultGetSecret", "Net", "com.azure.security.keyvault.secrets.SecretClient c",
+        'com.azure.security.keyvault.secrets.models.KeyVaultSecret s = c.getSecret("name")'),
+    ("keyVaultSetSecret", "Net", "com.azure.security.keyvault.secrets.SecretClient c",
+        'com.azure.security.keyvault.secrets.models.KeyVaultSecret s = c.setSecret("name", "val")'),
+
+    # ---- Net (GCP Secret Manager — accessSecretVersion(String) is a gRPC/HTTP round-trip. Owner
+    #      com.google.cloud.secretmanager.v1.SecretManagerServiceClient.) ----
+    ("gcpSecretAccess", "Net", "com.google.cloud.secretmanager.v1.SecretManagerServiceClient c",
+        'com.google.cloud.secretmanager.v1.AccessSecretVersionResponse r = c.accessSecretVersion("projects/p/secrets/s/versions/1")'),
+
+    # ---- Net (RSocket — requestResponse/fireAndForget are REACTIVE (return a Mono; wire deferred to subscribe).
+    #      Net OR Unknown both PASS.) ----
+    ("rsocketRequestResponse", "Net", "io.rsocket.RSocket s, io.rsocket.Payload p",
+        'reactor.core.publisher.Mono<io.rsocket.Payload> m = s.requestResponse(p)'),
+    ("rsocketFireAndForget", "Net", "io.rsocket.RSocket s, io.rsocket.Payload p",
+        'reactor.core.publisher.Mono<Void> m = s.fireAndForget(p)'),
+
+    # (Feature flags LaunchDarkly/Unleash -> accepted-pure anchors in PURE_CASES; see note above.)
+
+    # ---- Net (Micronaut — BlockingHttpClient.exchange(String) is the blocking HTTP round-trip.) ----
+    ("micronautExchange", "Net", "io.micronaut.http.client.BlockingHttpClient c",
+        'io.micronaut.http.HttpResponse<String> r = c.exchange("http://h/", String.class)'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -1075,6 +1188,44 @@ PURE_CASES = [
         "io.fabric8.kubernetes.client.dsl.MixedOperation<io.fabric8.kubernetes.api.model.Pod,"
         "io.fabric8.kubernetes.api.model.PodList,io.fabric8.kubernetes.client.dsl.PodResource> op = c.pods()",
         "io.fabric8.kubernetes.client.KubernetesClient c"),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 10) — pure anchors ===============
+    # Curator create()/getData() are pure fluent ACCESSORS — they return a builder, no round-trip to the ensemble
+    #   until the terminal forPath (modeled Net above). Must stay pure (fluent-builder-pure-until-terminal anchor).
+    ("curatorCreateAccessorPure",
+        "org.apache.curator.framework.api.CreateBuilder b = cf.create()", "org.apache.curator.framework.CuratorFramework cf"),
+    ("curatorGetDataAccessorPure",
+        "org.apache.curator.framework.api.GetDataBuilder b = cf.getData()", "org.apache.curator.framework.CuratorFramework cf"),
+    # Spanner DatabaseClient.singleUse() is a pure ACCESSOR — returns a ReadContext, no wire until executeQuery
+    #   (modeled Db above). Must stay pure.
+    ("spannerSingleUsePure",
+        "com.google.cloud.spanner.ReadContext rc = dc.singleUse()", "com.google.cloud.spanner.DatabaseClient dc"),
+    # Azure CosmosDatabase.getContainer(name) is a pure ACCESSOR — returns a CosmosContainer handle, no wire until
+    #   readItem/createItem (modeled Net above). Must stay pure.
+    ("cosmosGetContainerPure",
+        "com.azure.cosmos.CosmosContainer c = db.getContainer(\"c\")", "com.azure.cosmos.CosmosDatabase db"),
+    # ACCEPTED-PURE service-discovery / feature-flag reads — these serve from a LOCAL in-memory cache the client
+    #   keeps in sync via a BACKGROUND connection; the read call itself does NO synchronous wire, so it is
+    #   genuinely pure and must STAY pure (modeling Net would fabricate on every flag check / registry read).
+    #   Verified by javap (batch-10 report):
+    #     Eureka DiscoveryClient.getApplications() -> getfield localRegionApps (AtomicReference, local registry).
+    #     LaunchDarkly LDClient.boolVariation -> EvaluatorInterface.evalAndFlag (in-memory flag store).
+    #     Unleash DefaultUnleash.isEnabled -> reads a local IFeatureRepository.
+    ("eurekaGetApplicationsPure",
+        "com.netflix.discovery.shared.Applications a = ec.getApplications()", "com.netflix.discovery.EurekaClient ec"),
+    ("eurekaNextServerPure",
+        "com.netflix.appinfo.InstanceInfo i = ec.getNextServerFromEureka(\"vip\", false)",
+        "com.netflix.discovery.EurekaClient ec"),
+    ("ldBoolVariationPure",
+        "boolean b = c.boolVariation(\"flag\", ctx, false)",
+        "com.launchdarkly.sdk.server.LDClient c, com.launchdarkly.sdk.LDContext ctx"),
+    ("unleashIsEnabledPure", "boolean b = u.isEnabled(\"toggle\")", "io.getunleash.Unleash u"),
+    # Temporal WorkflowServiceStubs.newServiceStubs is a lazy gRPC channel FACTORY (the channel connects on the
+    #   first RPC, not here) — a setup/factory leaf, like the deferred class. Accepted-pure (the wire happens on
+    #   the workflow stub RPCs, which are proxy-generated and not statically resolvable).
+    ("temporalServiceStubsPure",
+        "io.temporal.serviceclient.WorkflowServiceStubs s = io.temporal.serviceclient.WorkflowServiceStubs.newServiceStubs(opts)",
+        "io.temporal.serviceclient.WorkflowServiceStubsOptions opts"),
 ]
 
 
@@ -1350,6 +1501,36 @@ JARS = {
     "chronicle-wire-2.25ea0.jar": f"{_MVN}/net/openhft/chronicle-wire/2.25ea0/chronicle-wire-2.25ea0.jar",
     # WebDAV — Sardine
     "sardine-5.12.jar": f"{_MVN}/com/github/lookfirst/sardine/5.12/sardine-5.12.jar",
+    # --- added 2026-06-20 batch 10 ---
+    # Coordination/service-discovery — ZooKeeper (+ jute for the wire types) / Curator framework (+ client) / Eureka
+    "zookeeper-3.9.2.jar": f"{_MVN}/org/apache/zookeeper/zookeeper/3.9.2/zookeeper-3.9.2.jar",
+    "zookeeper-jute-3.9.2.jar": f"{_MVN}/org/apache/zookeeper/zookeeper-jute/3.9.2/zookeeper-jute-3.9.2.jar",
+    "curator-framework-5.6.0.jar": f"{_MVN}/org/apache/curator/curator-framework/5.6.0/curator-framework-5.6.0.jar",
+    "curator-client-5.6.0.jar": f"{_MVN}/org/apache/curator/curator-client/5.6.0/curator-client-5.6.0.jar",
+    "eureka-client-2.0.3.jar": f"{_MVN}/com/netflix/eureka/eureka-client/2.0.3/eureka-client-2.0.3.jar",
+    # Workflow — Temporal (serviceclient carries WorkflowServiceStubs; sdk for the client API surface)
+    "temporal-serviceclient-1.24.1.jar": f"{_MVN}/io/temporal/temporal-serviceclient/1.24.1/temporal-serviceclient-1.24.1.jar",
+    "temporal-sdk-1.24.1.jar": f"{_MVN}/io/temporal/temporal-sdk/1.24.1/temporal-sdk-1.24.1.jar",
+    # Search — Apache Solr SolrJ (+ solr-common shipped inside; needs http2/jetty? the SolrParams/InputDocument
+    #   types are in solr-solrj itself)
+    "solr-solrj-9.6.1.jar": f"{_MVN}/org/apache/solr/solr-solrj/9.6.1/solr-solrj-9.6.1.jar",
+    # More cloud — GCP Spanner / Azure Cosmos / Azure Service Bus / Azure Key Vault / GCP Secret Manager
+    #   (google-cloud-core + gax + api-common already present from earlier GCP batches)
+    "google-cloud-spanner-6.69.0.jar": f"{_MVN}/com/google/cloud/google-cloud-spanner/6.69.0/google-cloud-spanner-6.69.0.jar",
+    "azure-cosmos-4.61.1.jar": f"{_MVN}/com/azure/azure-cosmos/4.61.1/azure-cosmos-4.61.1.jar",
+    "azure-messaging-servicebus-7.17.1.jar": f"{_MVN}/com/azure/azure-messaging-servicebus/7.17.1/azure-messaging-servicebus-7.17.1.jar",
+    "azure-security-keyvault-secrets-4.8.1.jar": f"{_MVN}/com/azure/azure-security-keyvault-secrets/4.8.1/azure-security-keyvault-secrets-4.8.1.jar",
+    "google-cloud-secretmanager-2.43.0.jar": f"{_MVN}/com/google/cloud/google-cloud-secretmanager/2.43.0/google-cloud-secretmanager-2.43.0.jar",
+    "proto-google-cloud-secretmanager-v1-2.43.0.jar": f"{_MVN}/com/google/api/grpc/proto-google-cloud-secretmanager-v1/2.43.0/proto-google-cloud-secretmanager-v1-2.43.0.jar",  # AccessSecretVersionResponse/Request protos
+    # Reactive RPC — RSocket (reactor-core + reactive-streams already present)
+    "rsocket-core-1.1.4.jar": f"{_MVN}/io/rsocket/rsocket-core/1.1.4/rsocket-core-1.1.4.jar",
+    # Feature flags — LaunchDarkly server SDK (shaded; carries com.launchdarkly.sdk.*) / Unleash
+    "launchdarkly-java-server-sdk-7.4.1.jar": f"{_MVN}/com/launchdarkly/launchdarkly-java-server-sdk/7.4.1/launchdarkly-java-server-sdk-7.4.1.jar",
+    "unleash-client-java-9.2.5.jar": f"{_MVN}/io/getunleash/unleash-client-java/9.2.5/unleash-client-java-9.2.5.jar",
+    # HTTP clients — Micronaut (http-client-core for BlockingHttpClient + http for HttpResponse/HttpRequest)
+    "micronaut-http-client-core-4.5.1.jar": f"{_MVN}/io/micronaut/micronaut-http-client-core/4.5.1/micronaut-http-client-core-4.5.1.jar",
+    "micronaut-http-4.5.1.jar": f"{_MVN}/io/micronaut/micronaut-http/4.5.1/micronaut-http-4.5.1.jar",
+    "micronaut-core-4.5.1.jar": f"{_MVN}/io/micronaut/micronaut-core/4.5.1/micronaut-core-4.5.1.jar",  # io.micronaut.core.type.Argument
 }
 
 

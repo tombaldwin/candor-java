@@ -298,4 +298,13 @@ class SoundnessSweepTest {
                 + "}");
         mustHave(r, "A.use", "Fs");
     }
+
+    /** `java.lang.System.Logger` (the JDK 9+ platform logging facade) must classify its `log` emit as Log,
+     *  consistently with java.util.logging/slf4j/log4j. It was absent from the Log owner gate → silent-pure
+     *  (found by the κ-coverage audit). Verb-precise: isLoggable/getName stay pure (no Log fabrication). */
+    @Test
+    void systemLoggerEmitsLog() throws Exception {
+        var r = scan("public class A { public void use(System.Logger l){ l.log(System.Logger.Level.INFO, \"x\"); } }");
+        mustHave(r, "A.use", "Log");
+    }
 }

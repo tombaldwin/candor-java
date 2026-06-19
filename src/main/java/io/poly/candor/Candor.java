@@ -5131,7 +5131,12 @@ public class Candor {
         // data types, ThreadContext maps, formatters, config/registry, util) falls through to its real
         // transitively-analysed effect, never a fabricated Log. (See isLogEmitVerb.)
         if (owner.startsWith("org.slf4j.") || owner.startsWith("java.util.logging.")
-                || owner.startsWith("org.apache.logging.log4j.") || owner.startsWith("ch.qos.logback.")) {
+                || owner.startsWith("org.apache.logging.log4j.") || owner.startsWith("ch.qos.logback.")
+                // java.lang.System.Logger — the JDK 9+ platform logging facade (libraries use it to avoid a
+                // logging-framework dep). Was absent → a `System.Logger.log(...)` read silent-pure while the
+                // SAME call via java.util.logging was Log (a κ-coverage inconsistency, not by design). The
+                // emit verb `log` is already in isLogEmitVerb; isLoggable/getName fall through to pure.
+                || owner.equals("java.lang.System$Logger")) {
             // RESOURCE-OPENING handlers/appenders are NOT just Log — they open a file/socket/DB connection
             // (the ctor) and transmit (publish/append) to it. A network log handler is a real exfil channel;
             // a file handler does Fs; a DB appender does Db. The package gate below would `return null`

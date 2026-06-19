@@ -4466,6 +4466,21 @@ public class Candor {
         if (owner.equals("org.springframework.util.FileCopyUtils")
                 && (method.equals("copy") || method.equals("copyToByteArray"))
                 && desc != null && desc.contains("Ljava/io/File;")) return "Fs";
+        // Jackson (one of the most-used JVM libraries) — ObjectMapper/ObjectReader/ObjectWriter
+        // (de)serialization is Fs/Net ONLY in the File/Path/URL overloads (DESCRIPTOR-GATED on the FIRST
+        // arg): readValue/readTree(File|Path) and writeValue(File|Path) touch the filesystem; readValue/
+        // readTree(URL) fetches over the network. The String/byte[]/InputStream/OutputStream/Reader/Writer/
+        // JsonParser overloads (de)serialize an in-memory value or a CALLER-supplied stream (whose effect is
+        // the caller's) → stay pure (no fabrication; the kappa_libs_probe jacksonRead/WriteStringPure anchors
+        // guard this). Found silent-pure by the library κ-coverage probe (kappa_libs_probe.py).
+        if ((owner.equals("com.fasterxml.jackson.databind.ObjectMapper")
+                || owner.equals("com.fasterxml.jackson.databind.ObjectReader")
+                || owner.equals("com.fasterxml.jackson.databind.ObjectWriter"))
+                && desc != null
+                && (method.equals("readValue") || method.equals("readTree") || method.equals("writeValue"))) {
+            if (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;")) return "Fs";
+            if (desc.startsWith("(Ljava/net/URL;")) return "Net";
+        }
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation

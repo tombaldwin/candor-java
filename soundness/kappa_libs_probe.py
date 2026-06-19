@@ -135,6 +135,32 @@ IMPORTS = (
     # spring-data-couchbase ships a querydsl annotation Processor service file — the probe's javac now runs
     #   with -proc:none (it only needs type resolution, never annotation processing).
     # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2/3/4/5/6.
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 8) ======================
+    # Observability -> Net (export hits the wire; batched/lazy export -> Net OR Unknown both PASS):
+    #   Sentry (io.sentry.Sentry.captureException/captureMessage — STATIC leaves that delegate to the hub and
+    #     transport; the wire send is queued/async, so Net or Unknown both PASS, documented if pure).
+    #   OpenTelemetry SpanExporter.export(Collection<SpanData>) -> Net (the actual span batch flush). The
+    #     user-facing Span.end() is DEFERRED to the BatchSpanProcessor (no synchronous wire) — silent-pure is
+    #     ACCEPTED+documented there (ambiguous/lazy class, like Quartz). Span.setAttribute is a PURE anchor.
+    #   Micrometer Counter.increment() is IN-MEMORY (the registry holds the count; PUSH registries flush on a
+    #     background scheduler) -> PURE anchor. StatsdMeterRegistry.counter(...) is a FACTORY (pure anchor).
+    # Native-tool wrappers -> Exec (spawn a process / native lib; Exec|Unknown both PASS, must NOT be pure):
+    #   im4java org.im4java.core.ImageCommand.run(Operation, Object...) -> Exec (shells out to ImageMagick).
+    #   Tess4J net.sourceforge.tess4j.Tesseract.doOCR(File) -> native JNA into libtesseract (Exec|Fs|Unknown).
+    # HTTP clients -> Net: Google HTTP client (com.google.api.client.http.HttpRequest.execute), Eclipse Jetty
+    #   client (org.eclipse.jetty.client.HttpClient.GET / Request.send), Unirest (kong.unirest.GetRequest.
+    #   asString/asJson).
+    # Messaging -> Net: NATS (io.nats.client.Connection.publish/request), ActiveMQ Artemis
+    #   (org.apache.activemq.artemis.api.core.client.ClientProducer.send).
+    # Crypto -> Rand: Google Tink (com.google.crypto.tink.KeysetHandle.generateNew — draws entropy for key
+    #   material). Jasypt StandardPBEStringEncryptor.encrypt — random-salt mode draws a salt (Rand) but the
+    #   call site can't reveal the salt-generator config, so Rand|Unknown PASS and a pure result is documented.
+    # Serialization -> PURE anchor: Kryo writeObject(Output, Object) is caller-stream (the Output wraps the
+    #   caller's OutputStream; the file open is the caller's) — no File overload, so it must stay pure.
+    # SKIPPED (noted in the report): ArangoDB java-driver — the published arangodb-java-driver jar is an
+    #   aggregator/shaded stub with NO .class files for com.arangodb.* (only 19 entries, no ArangoDatabase),
+    #   so the fixture can't compile against it without resolving split shaded modules; skipped as heavy.
+    # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2/3/4/5/6/7.
 )
 
 # (method, expected effect, params, body) — PASS iff candor reports the effect OR a disclosed Unknown.
@@ -668,6 +694,74 @@ EFFECT_CASES = [
     # ---- Scheduling (Quartz — Scheduler.scheduleJob is pure/Unknown unless a JDBCJobStore is configured;
     #      the API call alone cannot reveal the store, so silent-pure is an ACCEPTED, documented outcome,
     #      not a hard GAP. Listed with expect=Unknown so a disclosed-Unknown passes; a pure result is noted.) ----
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 8) ======================
+    # ---- Net (Sentry — captureException/captureMessage are STATIC leaves that delegate to the hub/transport;
+    #      the wire send is queued/async, so Net or Unknown both PASS. Owner is io.sentry.Sentry.) ----
+    ("sentryCaptureException", "Net", "Throwable t",
+        'io.sentry.protocol.SentryId id = io.sentry.Sentry.captureException(t)'),
+    ("sentryCaptureMessage", "Net", "",
+        'io.sentry.protocol.SentryId id = io.sentry.Sentry.captureMessage("x")'),
+
+    # ---- Net (OpenTelemetry — SpanExporter.export(Collection<SpanData>) is the actual span batch flush over
+    #      the wire (OTLP/HTTP). The owner is the SpanExporter interface. Net or Unknown both PASS. NB: the
+    #      user-facing Span.end() is deferred to the BatchSpanProcessor (no synchronous wire) — a silent-pure
+    #      THERE is accepted/documented, NOT tested as a hard leaf.) ----
+    ("otelSpanExport", "Net",
+        "io.opentelemetry.sdk.trace.export.SpanExporter ex, java.util.Collection<io.opentelemetry.sdk.trace.data.SpanData> spans",
+        'io.opentelemetry.sdk.common.CompletableResultCode r = ex.export(spans)'),
+    # Span.end() — documented deferred boundary: tested honestly (Net|Unknown PASS, pure is the documented
+    #   accepted outcome since the export is async on the BatchSpanProcessor, not at end()).
+
+    # ---- Exec (im4java — ImageCommand.run(Operation, Object...) forks ImageMagick's `convert` process.
+    #      Owner is org.im4java.core.ConvertCmd (the receiver's static type); Exec or Unknown both PASS.) ----
+    ("im4javaConvertRun", "Exec",
+        "org.im4java.core.ConvertCmd cmd, org.im4java.core.IMOperation op",
+        'cmd.run(op)'),
+
+    # ---- Exec (Tess4J — Tesseract.doOCR(File) calls into libtesseract via JNA (native code reading the
+    #      image file). The effect is real native execution + file read; Exec|Fs|Unknown all PASS, must not
+    #      read silent-pure.) ----
+    ("tess4jDoOcrFile", "Fs", "net.sourceforge.tess4j.Tesseract t, File f", 'String s = t.doOCR(f)'),
+
+    # ---- Net (Google HTTP client — HttpRequest.execute() performs the HTTP round-trip) ----
+    ("googleHttpExecute", "Net", "com.google.api.client.http.HttpRequest req",
+        'com.google.api.client.http.HttpResponse r = req.execute()'),
+
+    # ---- Net (Eclipse Jetty client — HttpClient.GET(String) blocks on the GET; Request.send() blocks on the
+    #      exchange) ----
+    ("jettyHttpGet", "Net", "org.eclipse.jetty.client.HttpClient c",
+        'org.eclipse.jetty.client.ContentResponse r = c.GET("http://h/")'),
+    ("jettyRequestSend", "Net", "org.eclipse.jetty.client.Request req",
+        'org.eclipse.jetty.client.ContentResponse r = req.send()'),
+
+    # ---- Net (Unirest — GetRequest.asString()/asJson() execute the HTTP request and block for the body) ----
+    ("unirestAsString", "Net", "kong.unirest.GetRequest g",
+        'kong.unirest.HttpResponse<String> r = g.asString()'),
+    ("unirestAsJson", "Net", "kong.unirest.GetRequest g",
+        'kong.unirest.HttpResponse<kong.unirest.JsonNode> r = g.asJson()'),
+
+    # ---- Net (NATS — Connection.publish writes to the NATS server socket; request() does a req/reply RTT) ----
+    ("natsPublish", "Net", "io.nats.client.Connection c", 'c.publish("subj", new byte[1])'),
+    ("natsRequest", "Net", "io.nats.client.Connection c",
+        'java.util.concurrent.CompletableFuture<io.nats.client.Message> f = c.request("subj", new byte[1])'),
+
+    # ---- Net (ActiveMQ Artemis — ClientProducer.send writes the message to the broker over the core socket) ----
+    ("artemisProducerSend", "Net",
+        "org.apache.activemq.artemis.api.core.client.ClientProducer p, org.apache.activemq.artemis.api.core.Message m",
+        'p.send(m)'),
+
+    # ---- Rand (Google Tink — KeysetHandle.generateNew draws entropy from SecureRandom to mint key material.
+    #      Owner is the static com.google.crypto.tink.KeysetHandle; Rand or Unknown both PASS.) ----
+    ("tinkGenerateNew", "Rand", "",
+        'com.google.crypto.tink.KeysetHandle h = com.google.crypto.tink.KeysetHandle.generateNew('
+        'com.google.crypto.tink.aead.AeadKeyTemplates.AES128_GCM)'),
+
+    # ---- Rand (Jasypt — StandardPBEStringEncryptor.encrypt draws a random salt in the default random-salt
+    #      mode. The call site can't reveal a fixed-salt config, so Rand|Unknown PASS; a pure result (compute
+    #      only) is the documented accepted outcome.) ----
+    ("jasyptEncrypt", "Rand", "org.jasypt.encryption.pbe.StandardPBEStringEncryptor enc",
+        'String s = enc.encrypt("secret")'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -809,6 +903,34 @@ PURE_CASES = [
     #   until the terminal responseContent()/response() (modeled Net above). The get() setup stays pure.
     ("reactorNettyGetPure",
         "reactor.netty.http.client.HttpClient.ResponseReceiver<?> r = hc.get()", "reactor.netty.http.client.HttpClient hc"),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 8) — pure anchors ===============
+    # Micrometer Counter.increment() is IN-MEMORY — the registry holds the running count; PUSH registries
+    #   (Statsd/Datadog) flush on a BACKGROUND scheduler, not at the increment call. So the user-facing
+    #   increment must stay pure (modeling Net here would fabricate on the common in-memory/non-push case).
+    ("micrometerCounterIncrementPure", "c.increment()", "io.micrometer.core.instrument.Counter c"),
+    # MeterRegistry.counter(name, tags) is a FACTORY (registers/returns a Counter, no wire) — pure-until-terminal.
+    ("micrometerCounterFactoryPure",
+        "io.micrometer.core.instrument.Counter c = r.counter(\"m\")",
+        "io.micrometer.core.instrument.MeterRegistry r"),
+    # StatsdMeterRegistry.counter(...) — even on a PUSH registry the counter() factory does no wire (the push
+    #   is the background scheduler's job). Pins that the factory on a push registry stays pure too.
+    ("statsdCounterFactoryPure",
+        "io.micrometer.core.instrument.Counter c = r.counter(\"m\")",
+        "io.micrometer.statsd.StatsdMeterRegistry r"),
+    # OpenTelemetry Span.setAttribute(String, String) mutates the in-memory span — no wire (export is deferred
+    #   to the processor). Must stay pure even after SpanExporter.export is modeled Net.
+    ("otelSetAttributePure", "s.setAttribute(\"k\", \"v\")", "io.opentelemetry.api.trace.Span s"),
+    # OTel Span.end() does NOT flush synchronously — OTLP export is deferred to the BatchSpanProcessor
+    # background scheduler, so the call site is genuinely pure (the wire leaf is SpanExporter.export, Net).
+    # Modeling end()->Net would fabricate on every span. Accepted (deferred class).
+    ("otelSpanEndPure", "s.end()", "io.opentelemetry.api.trace.Span s"),
+    # Kryo writeObject(Output, Object) is CALLER-STREAM — the Output wraps the caller's OutputStream (the file
+    #   open is the caller's `new FileOutputStream`). No File overload exists, so the serialize itself is pure
+    #   (caller-stream class, like SnakeYAML/POI/OpenCSV).
+    ("kryoWriteObjectPure",
+        "k.writeObject(out, new Object())",
+        "com.esotericsoftware.kryo.Kryo k, com.esotericsoftware.kryo.io.Output out"),
 ]
 
 
@@ -1019,6 +1141,40 @@ JARS = {
     "commons-email-1.6.0.jar": f"{_MVN}/org/apache/commons/commons-email/1.6.0/commons-email-1.6.0.jar",
     # Scheduling — Quartz
     "quartz-2.3.2.jar": f"{_MVN}/org/quartz-scheduler/quartz/2.3.2/quartz-2.3.2.jar",
+    # --- added 2026-06-20 batch 8 ---
+    # Observability — Sentry / OpenTelemetry (api + sdk-trace + sdk-common + context) / Micrometer (core +
+    #   commons + observation + registry-statsd)
+    "sentry-7.10.0.jar": f"{_MVN}/io/sentry/sentry/7.10.0/sentry-7.10.0.jar",
+    "opentelemetry-api-1.39.0.jar": f"{_MVN}/io/opentelemetry/opentelemetry-api/1.39.0/opentelemetry-api-1.39.0.jar",
+    "opentelemetry-context-1.39.0.jar": f"{_MVN}/io/opentelemetry/opentelemetry-context/1.39.0/opentelemetry-context-1.39.0.jar",
+    "opentelemetry-sdk-trace-1.39.0.jar": f"{_MVN}/io/opentelemetry/opentelemetry-sdk-trace/1.39.0/opentelemetry-sdk-trace-1.39.0.jar",
+    "opentelemetry-sdk-common-1.39.0.jar": f"{_MVN}/io/opentelemetry/opentelemetry-sdk-common/1.39.0/opentelemetry-sdk-common-1.39.0.jar",
+    "micrometer-core-1.13.1.jar": f"{_MVN}/io/micrometer/micrometer-core/1.13.1/micrometer-core-1.13.1.jar",
+    "micrometer-commons-1.13.1.jar": f"{_MVN}/io/micrometer/micrometer-commons/1.13.1/micrometer-commons-1.13.1.jar",
+    "micrometer-observation-1.13.1.jar": f"{_MVN}/io/micrometer/micrometer-observation/1.13.1/micrometer-observation-1.13.1.jar",
+    "micrometer-registry-statsd-1.13.1.jar": f"{_MVN}/io/micrometer/micrometer-registry-statsd/1.13.1/micrometer-registry-statsd-1.13.1.jar",
+    # Native-tool wrappers — im4java (ImageMagick) / Tess4J (Tesseract via JNA; jna for the native binding type)
+    "im4java-1.4.0.jar": f"{_MVN}/org/im4java/im4java/1.4.0/im4java-1.4.0.jar",
+    "tess4j-5.11.0.jar": f"{_MVN}/net/sourceforge/tess4j/tess4j/5.11.0/tess4j-5.11.0.jar",
+    "jna-5.13.0.jar": f"{_MVN}/net/java/dev/jna/jna/5.13.0/jna-5.13.0.jar",  # Tess4J compile dep (com.sun.jna)
+    # HTTP clients — Google HTTP client / Eclipse Jetty client (http/io/util) / Unirest
+    "google-http-client-1.44.2.jar": f"{_MVN}/com/google/http-client/google-http-client/1.44.2/google-http-client-1.44.2.jar",
+    "jetty-client-12.0.10.jar": f"{_MVN}/org/eclipse/jetty/jetty-client/12.0.10/jetty-client-12.0.10.jar",
+    "jetty-http-12.0.10.jar": f"{_MVN}/org/eclipse/jetty/jetty-http/12.0.10/jetty-http-12.0.10.jar",
+    "jetty-io-12.0.10.jar": f"{_MVN}/org/eclipse/jetty/jetty-io/12.0.10/jetty-io-12.0.10.jar",
+    "jetty-util-12.0.10.jar": f"{_MVN}/org/eclipse/jetty/jetty-util/12.0.10/jetty-util-12.0.10.jar",
+    "unirest-java-3.14.5.jar": f"{_MVN}/com/konghq/unirest-java/3.14.5/unirest-java-3.14.5.jar",
+    # Messaging — NATS / ActiveMQ Artemis (core-client + commons for the API types)
+    "jnats-2.18.1.jar": f"{_MVN}/io/nats/jnats/2.18.1/jnats-2.18.1.jar",
+    "artemis-core-client-2.33.0.jar": f"{_MVN}/org/apache/activemq/artemis-core-client/2.33.0/artemis-core-client-2.33.0.jar",
+    "artemis-commons-2.33.0.jar": f"{_MVN}/org/apache/activemq/artemis-commons/2.33.0/artemis-commons-2.33.0.jar",
+    # Crypto — Google Tink / Jasypt (key generation draws entropy -> Rand)
+    "tink-1.13.0.jar": f"{_MVN}/com/google/crypto/tink/tink/1.13.0/tink-1.13.0.jar",
+    "jasypt-1.9.3.jar": f"{_MVN}/org/jasypt/jasypt/1.9.3/jasypt-1.9.3.jar",
+    # Serialization — Kryo (caller-stream writeObject -> pure anchor)
+    "kryo-5.6.0.jar": f"{_MVN}/com/esotericsoftware/kryo/5.6.0/kryo-5.6.0.jar",
+    # SKIPPED: ArangoDB java-driver — the published jar is an aggregator/shaded stub with no com.arangodb
+    #   .class files (only 19 entries); compiling the fixture against it needs split shaded modules. Skipped.
 }
 
 

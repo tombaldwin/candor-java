@@ -4824,6 +4824,41 @@ public class Candor {
         if (owner.equals("org.apache.commons.mail.Email")
                 && (method.equals("send") || method.equals("sendMimeMessage"))) return "Net";
         if (owner.equals("javax.mail.Transport") && method.equals("send")) return "Net";
+        // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 8) ──
+        // Sentry — capture* sends to the Sentry transport → Net (async-queued; Net is sound).
+        if (owner.equals("io.sentry.Sentry") && method.startsWith("capture")) return "Net";
+        // OpenTelemetry OTLP exporter — SpanExporter.export flushes spans over the wire → Net. (Span.end()
+        // is DEFERRED to the batch processor — deliberately NOT modeled; would fabricate on every span.)
+        if (owner.equals("io.opentelemetry.sdk.trace.export.SpanExporter") && method.equals("export")) return "Net";
+        // im4java — *Cmd.run shells out to the ImageMagick binary (ProcessBuilder.start) → Exec.
+        if (((owner.startsWith("org.im4java.core.") && owner.endsWith("Cmd"))
+                || owner.equals("org.im4java.process.ProcessStarter")) && method.equals("run")) return "Exec";
+        // Tess4J — doOCR(File) reads the image off disk → Fs (descriptor-gated; doOCR(BufferedImage) is
+        // in-memory → pure). The JNA-native OCR itself is in-process (not a subprocess), so Fs — the certain
+        // file read — is the sound classification, not Exec.
+        if ((owner.equals("net.sourceforge.tess4j.Tesseract") || owner.equals("net.sourceforge.tess4j.ITesseract"))
+                && method.equals("doOCR") && desc != null && desc.contains("Ljava/io/File;")) return "Fs";
+        // Eclipse Jetty client — GET / Request.send do the HTTP exchange → Net.
+        if (owner.equals("org.eclipse.jetty.client.HttpClient") && method.equals("GET")) return "Net";
+        if (owner.equals("org.eclipse.jetty.client.Request") && method.equals("send")) return "Net";
+        // Unirest — the as* terminals execute the request → Net (asFile also writes a file, but Net covers
+        // the wire effect).
+        if (owner.startsWith("kong.unirest.")) {
+            switch (method) {
+                case "asString": case "asJson": case "asObject": case "asBytes": case "asEmpty":
+                case "asFile": case "asPaged":
+                    return "Net";
+                default: break;
+            }
+        }
+        // Artemis core client — ClientProducer.send writes to the broker → Net.
+        if (owner.equals("org.apache.activemq.artemis.api.core.client.ClientProducer") && method.equals("send"))
+            return "Net";
+        // Google Tink — KeysetHandle.generateNew mints key material from SecureRandom → Rand.
+        if (owner.equals("com.google.crypto.tink.KeysetHandle") && method.equals("generateNew")) return "Rand";
+        // Jasypt PBE encryptors — the default RandomSaltGenerator draws a per-call salt from SecureRandom →
+        // Rand (a fixed-salt config would be pure compute, but random is the default).
+        if (owner.startsWith("org.jasypt.encryption.pbe.") && method.equals("encrypt")) return "Rand";
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation
@@ -5162,7 +5197,8 @@ public class Candor {
                 // MQTT / NATS / Pulsar / ZeroMQ
                 || (owner.equals("org.eclipse.paho.client.mqttv3.MqttClient")
                     && (method.equals("publish") || method.equals("connect") || method.equals("subscribe")))
-                || (owner.equals("io.nats.client.Connection") && method.equals("publish"))
+                || (owner.equals("io.nats.client.Connection")
+                    && (method.equals("publish") || method.equals("request") || method.equals("requestWithTimeout")))
                 || (owner.equals("org.apache.pulsar.client.api.Producer") && method.equals("send"))
                 // Spring WebSocket send (java.net.http.WebSocket.send* is already Net — parity)
                 || (owner.equals("org.springframework.web.socket.WebSocketSession") && method.equals("sendMessage")))

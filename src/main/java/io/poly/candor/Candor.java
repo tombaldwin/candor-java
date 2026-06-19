@@ -2288,7 +2288,13 @@ public class Candor {
                         // `size`/`next`) over a deep hierarchy (scala-library: hundreds of impls) edged
                         // to EVERY override and connected ~everything to a few effect sources — a
                         // ThreadLocalRandom in one TrieMap.computeSize flooded 13k functions with Rand.
-                        boolean broad = cha.size() > CHA_FANOUT_LIMIT;
+                        // A CLOSED ENUM owner is exempt from the bound: its constant bodies are the WHOLE
+                        // visible+possible target set (no external subtype can exist), so resolving all of
+                        // them is exact, not the open-hierarchy over-approximation the limit guards against.
+                        // Without this, an enum state machine (process/read over 26/68 constants) drops past
+                        // the limit to a CIRCULAR Unknown (each state dispatches to the others) that smears
+                        // across its whole transitive caller set — the dominant Unknown driver on real OO.
+                        boolean broad = cha.size() > CHA_FANOUT_LIMIT && !isClosedEnumOwner(min.owner);
                         // A NARROW java.util container-iteration dispatch (Iterator.next / Iterable etc.)
                         // DOES fan out: skipping it under-reported a custom Iterable's effect at the loop
                         // site (`for (x : customBag)` came back pure) — the §7.13 fuzzer's for-each form
@@ -2996,6 +3002,21 @@ public class Candor {
                 || (name.equals("hashCode") && desc.equals("()I"))
                 || (name.equals("equals") && desc.equals("(Ljava/lang/Object;)Z"))
                 || (name.equals("compareTo") && desc.equals("(Ljava/lang/Object;)I"));
+    }
+
+    /** A PROVABLY-CLOSED dispatch owner: an enum. An enum cannot be extended (the JVM forbids it),
+     *  so its only subtypes are its own constant bodies — synthetic subclasses compiled into the same
+     *  class file, ALL of which `chaTargets` already enumerates. A dispatch over it therefore resolves
+     *  EXACTLY to that finite, fully-visible set, and resolving all of them is sound even past
+     *  CHA_FANOUT_LIMIT. This is NOT the open-hierarchy smear the bound guards against: an open abstract
+     *  class or interface (scala-library's hundreds of collection impls; a DI-wired strategy) may have an
+     *  external/unseen subtype, so its broad fan-out stays honest Unknown — but a closed enum has none.
+     *  The high-value case is the enum STATE MACHINE with per-constant method bodies (jsoup
+     *  HtmlTreeBuilderState/TokeniserState: 26/68 constants, a mutually-recursive cluster the >12 drop
+     *  turned into a CIRCULAR Unknown that smeared ~600 functions; the true effect-union is pure). */
+    static boolean isClosedEnumOwner(String internal) {
+        ClassNode cn = byName.get(internal);
+        return cn != null && ((cn.access & Opcodes.ACC_ENUM) != 0 || "java/lang/Enum".equals(cn.superName));
     }
 
     static boolean isChaExemptMethod(String owner, String name, String desc) {

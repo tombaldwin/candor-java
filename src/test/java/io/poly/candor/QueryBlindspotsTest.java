@@ -21,7 +21,7 @@ class QueryBlindspotsTest {
         Query.Fn src = new Query.Fn();
         src.fn = "app.Svc.dispatch";
         src.inferred = List.of("Unknown");
-        src.unknownWhy = List.of("dispatch-broad:app.I.run"); // a real SOURCE
+        src.unknownWhy = List.of("dispatch:app.I.run"); // a real SOURCE
         Query.Fn caller = new Query.Fn();
         caller.fn = "app.Ctrl.handle";
         caller.inferred = List.of("Unknown"); // Unknown ONLY because it calls the source (no own why)

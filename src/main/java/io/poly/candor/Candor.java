@@ -2328,10 +2328,12 @@ public class Candor {
                         if (broad && !isObjectProtocolExempt(min.name, min.desc) && effect == null && !springTyped
                                 && (isProjectIfaceOrAbstract(min.owner) || !cha.isEmpty())) {
                             dir.add("Unknown");
-                            String why = isProjectIfaceOrAbstract(min.owner)
-                                    ? "dispatch-broad:" + owner + "." + min.name
-                                    : "dispatch-broad-ext:" + owner + "." + min.name;
-                            unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(why);
+                            // Canonical `unknownWhy` vocabulary (SPEC §4, ⟨0.7⟩): a bounded-CHA broad
+                            // dispatch is an unresolved virtual dispatch → `dispatch:owner.member`. The
+                            // former `dispatch-broad:`/`dispatch-broad-ext:` (project vs external owner)
+                            // distinction is folded away — it is still an unresolved dispatch, resolved
+                            // identically by the frontier; the owner type carries the project/external info.
+                            unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add("dispatch:" + owner + "." + min.name);
                         }
                         // Genuine unresolved dispatch: a PROJECT interface/abstract type that DECLARES
                         // this method, with no visible concrete impl (DI-wired, external, or strategy)
@@ -2364,8 +2366,12 @@ public class Candor {
                         if (!broad && targets.isEmpty() && !dispatchExempt && effect == null && !springTyped
                                 && isJdkFunctionalSam(min.owner, min.name)) {
                             dir.add("Unknown");
+                            // Canonical vocabulary (SPEC §4, ⟨0.7⟩): a JDK functional-SAM invoked on an
+                            // unpinned receiver (a field/param-stored handler `this.cb.run()`) is a
+                            // higher-order call on a function VALUE → `callback:`, not `dispatch:` (it does
+                            // not resolve to a class-hierarchy override, so it is correctly NOT a frontier source).
                             unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
-                                    .add("dispatch-fn:" + owner + "." + min.name);
+                                    .add("callback:" + owner + "." + min.name);
                         }
                         } // end CHA block (monoRecv == null)
                     } else if (projectClasses.contains(min.owner)) {
@@ -5052,7 +5058,7 @@ public class Candor {
 
     /** Write the type-hierarchy sidecar (`<report-stem>.hierarchy.json`) ⟨0.7⟩: each PROJECT type →
      *  its direct supertypes + implemented interfaces (dotted; project AND external supers kept, so a
-     *  `dispatch-broad-ext` over an external interface still resolves). A SEPARATE sidecar — not a key
+     *  a `dispatch:` over an external-owner interface still resolves). A SEPARATE sidecar — not a key
      *  in the §2.2 call-graph sidecar, whose every top-level key is a function — and compact (O(classes),
      *  one short list each), so the precise dispatch-frontier query can resolve "is R an override of
      *  OWNER.M?" by name + subtype WITHOUT the engine storing the exploded candidate edges bounded-CHA

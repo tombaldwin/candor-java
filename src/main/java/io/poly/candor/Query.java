@@ -300,10 +300,12 @@ public final class Query {
         }
         // --include-unknown ⟨0.7⟩: the transitive `callers` set is candor's CONFIRMED reachers — it
         // cannot include a function that reaches `q` only through a dispatch candor declined to resolve
-        // (a `dispatch-broad` over >CHA_FANOUT_LIMIT implementors, disclosed as Unknown not silent-pure).
-        // Map each such function to the FULL dispatch key(s) `OWNER.M` it broad-dispatches on; the query
-        // then discloses "these MAY also reach `q`" — precisely, by resolving whether a confirmed reacher
-        // is an OVERRIDE of OWNER.M (same method name AND a subtype of OWNER per the hierarchy sidecar).
+        // (an unresolved virtual/interface dispatch, disclosed as Unknown via `dispatch:OWNER.M`, not
+        // silent-pure). Map each such function to the dispatch key(s) `OWNER.M`; the query then discloses
+        // "these MAY also reach `q`" — precisely, by resolving whether a confirmed reacher is an OVERRIDE
+        // of OWNER.M (same method name AND a subtype of OWNER per the hierarchy sidecar). Keys off the
+        // canonical `dispatch:` reason (SPEC §4 ⟨0.7⟩); `callback:`/`reflect:`/`native:` are NOT frontier
+        // sources (a function value / reflection / native boundary doesn't resolve to a hierarchy override).
         // Built only when the flag is set, so default output is byte-for-byte unchanged (cross-engine parity).
         Map<String, Set<String>> broadByFn = null;
         Map<String, List<String>> hier = null;
@@ -311,7 +313,7 @@ public final class Query {
             broadByFn = new LinkedHashMap<>();
             for (Fn f : fns) {
                 for (String why : f.unknownWhy) {
-                    if (why.startsWith("dispatch-broad:") || why.startsWith("dispatch-broad-ext:")) {
+                    if (why.startsWith("dispatch:")) {
                         String key = why.substring(why.indexOf(':') + 1); // OWNER.M (dotted)
                         if (!key.isEmpty()) broadByFn.computeIfAbsent(f.fn, k -> new TreeSet<>()).add(key);
                     }
@@ -429,7 +431,7 @@ public final class Query {
             for (String c : rev.getOrDefault(n, List.of())) if (all.add(c)) stack.push(c);
         }
         // The unresolved-dispatch frontier (--include-unknown only): a function F broad-dispatches on
-        // OWNER.M (carries dispatch-broad:OWNER.M — an Unknown candor disclosed rather than resolve). F
+        // OWNER.M (carries dispatch:OWNER.M — an Unknown candor disclosed rather than resolve). F
         // MAY also reach `q` iff a confirmed reacher R is an OVERRIDE of OWNER.M — same method name AND R's
         // declaring type is a subtype of OWNER per the hierarchy sidecar. The subtype check (vs a bare
         // simple-name match) drops unrelated same-named dispatches — PRECISE. If the hierarchy sidecar is

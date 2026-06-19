@@ -1,0 +1,13 @@
+arm	trial	tokens	tool_calls	duration_ms	note
+control	1	68973	32	483139	exact match to candor 41-set
+control	2	81484	38	558229	
+control	3	84095	55	580431	+NEMsScheduledTaskAction.execute (candor under-report, real)
+control	4	79102	33	672753	+hasTemporaryPurchaseExpired (over-report)
+control	5	81414	49	411906	+hasTemporaryPurchaseExpired (over-report)
+control	6	67461	45	338964	
+treatment	1	23757	1	19705	
+treatment	2	23757	1	18607	
+treatment	3	23757	1	20048	
+treatment	4	23756	1	19773	
+treatment	5	23757	1	19081	
+treatment	6	23759	1	18652	

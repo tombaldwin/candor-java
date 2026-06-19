@@ -4769,6 +4769,61 @@ public class Candor {
         // java.security.KeyPairGenerator, already covered; this is the org.bouncycastle.crypto.generators.*
         // API). BC digest/cipher ops stay pure compute.
         if (owner.startsWith("org.bouncycastle.crypto.generators.") && method.equals("generateKeyPair")) return "Rand";
+        // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 7) ──
+        // Distributed caches/data grids — get/put/etc. are CLUSTER round-trips → Net. OWNER-scoped to the
+        // cache interfaces (Hazelcast IMap / Ignite IgniteCache / Infinispan BasicCache+Cache). IMap and
+        // BasicCache EXTEND java.util.concurrent.ConcurrentMap, so we must NOT key java.util.Map — a Map-typed
+        // receiver stays pure (anchors mapGetPure/concurrentMapGetPure). Verb set = data ops; local accessors
+        // (getName/getLocalMapStats) stay pure.
+        if (owner.equals("com.hazelcast.map.IMap") || owner.equals("org.apache.ignite.IgniteCache")
+                || owner.equals("org.infinispan.commons.api.BasicCache") || owner.equals("org.infinispan.Cache")) {
+            switch (method) {
+                case "get": case "getAll": case "getAsync": case "put": case "putAll": case "putAsync":
+                case "putIfAbsent": case "set": case "setAsync": case "remove": case "removeAll":
+                case "removeAsync": case "delete": case "replace": case "merge": case "compute":
+                case "computeIfAbsent": case "computeIfPresent": case "containsKey": case "containsValue":
+                case "clear": case "loadAll": case "keySet": case "values": case "entrySet":
+                case "size": case "isEmpty":
+                    return "Net";
+                default: break;
+            }
+        }
+        // JDBI read path — Handle.createQuery/select builds+runs a SELECT → Db (execute/withHandle already
+        // modeled; this closes the uncovered SELECT side).
+        if (owner.equals("org.jdbi.v3.core.Handle")
+                && (method.equals("createQuery") || method.equals("select") || method.equals("createUpdate")
+                    || method.equals("createCall") || method.equals("createScript"))) return "Db";
+        // Spring Data Couchbase template → Db (sibling of the already-modeled Cassandra/Mongo templates).
+        if (owner.equals("org.springframework.data.couchbase.core.CouchbaseTemplate")) {
+            switch (method) {
+                case "save": case "insert": case "upsert": case "findById": case "findByQuery":
+                case "findByAnalytics": case "remove": case "removeById": case "existsById":
+                    return "Db";
+                default: break;
+            }
+        }
+        // SaaS SDKs — the user calls the SDK's OWN resource method; the HTTP runs INSIDE the SDK (via OkHttp/
+        // HttpClient) where candor can't see it from the user's call site → silent unless the SDK leaf is
+        // modeled. VERB-gated on the SDK ACTION verbs (model getters/setX stay pure).
+        if ((owner.startsWith("com.stripe.model.") || owner.startsWith("com.stripe.service."))
+                && (method.equals("create") || method.equals("retrieve") || method.equals("update")
+                    || method.equals("list") || method.equals("delete") || method.equals("cancel")
+                    || method.equals("capture") || method.equals("confirm") || method.equals("search"))) return "Net";
+        if (owner.startsWith("com.twilio.")
+                && (owner.endsWith("Creator") || owner.endsWith("Updater") || owner.endsWith("Fetcher")
+                    || owner.endsWith("Deleter") || owner.endsWith("Reader"))
+                && (method.equals("create") || method.equals("update") || method.equals("fetch")
+                    || method.equals("delete") || method.equals("read"))) return "Net";
+        if ((owner.equals("com.sendgrid.SendGrid") || owner.equals("com.sendgrid.BaseInterface"))
+                && (method.equals("api") || method.equals("makeCall"))) return "Net";
+        // Reactor Netty HttpClient response terminals → Net (the get()/post() request builders stay pure).
+        if (owner.equals("reactor.netty.http.client.HttpClient$ResponseReceiver") && method.startsWith("response"))
+            return "Net";
+        // Apache Commons Email (legacy javax.mail) → Net; + the legacy javax.mail.Transport.send leaf that
+        // candor's jakarta.mail rule doesn't match (commons-email 1.6 still uses javax.mail).
+        if (owner.equals("org.apache.commons.mail.Email")
+                && (method.equals("send") || method.equals("sendMimeMessage"))) return "Net";
+        if (owner.equals("javax.mail.Transport") && method.equals("send")) return "Net";
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation

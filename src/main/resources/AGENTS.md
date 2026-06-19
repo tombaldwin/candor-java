@@ -94,7 +94,7 @@ Name queries resolve exact > segment-suffix (`Svc.save` matches `com.example.Svc
 - **Blast radius of editing a method** → `callers <method>` (NOT its `inferred`, which is what the
   method itself does). Works pre-edit for a still-pure method. The transitive set is candor's
   *confirmed* reachers; add **`--include-unknown`** to also disclose the *unresolved-dispatch frontier*
-  — functions that MAY reach the method through a `dispatch-broad` candor declined to resolve. Resolved
+  — functions that MAY reach the method through a `dispatch:` candor declined to resolve. Resolved
   precisely against the `<report>.hierarchy.json` sidecar (a confirmed reacher that is an override of the
   dispatched method); a lower-bound disclosure, labelled "cannot confirm", never asserted.
 - **Decide BEFORE you edit** → `whatif <method> <Effect> [policy]` — every transitive caller gains the

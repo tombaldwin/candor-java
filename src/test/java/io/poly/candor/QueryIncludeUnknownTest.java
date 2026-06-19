@@ -17,8 +17,8 @@ import org.junit.jupiter.api.Test;
 /**
  * {@code callers --include-unknown} ⟨0.7⟩ — the unresolved-dispatch frontier. The confirmed transitive
  * callers never include a function that reaches the target only through a dispatch candor declined to
- * resolve (a {@code dispatch-broad} over the CHA fan-out limit, disclosed as Unknown). The flag discloses
- * those "MAY also reach" functions — a function F carrying {@code dispatch-broad:OWNER.M} is listed iff a
+ * resolve (an unresolved dispatch, `dispatch:`, disclosed as Unknown). The flag discloses
+ * those "MAY also reach" functions — a function F carrying {@code dispatch:OWNER.M} is listed iff a
  * confirmed reacher is an override of OWNER.M (same method name AND a subtype of OWNER per the hierarchy).
  * The subtype check makes it precise; with no hierarchy it falls back to a simple-name match (over-lists).
  * Default output (no flag) stays byte-for-byte unchanged.

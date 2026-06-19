@@ -30,18 +30,22 @@ sets** — they disagreed with candor *and with each other*. Adjudicated against
   `charset`, `ensureMetaCharsetElement` — all call `select(...)` via the inherited `Element.select`
   (Document.java:173, 185, 311). Hand-tracers systematically missed that `Document extends Element` and
   its own methods call `select`.
-- **control caught 1 (+3 transitive) real caller candor missed:** `DataUtil.detectCharset` calls
-  `doc.select(metaCharset)` (DataUtil.java:276), reached transitively via `detectCharsetForStreamParser`
-  / `streamParser` / `HttpConnection$Response.streamParser`. candor's caller set omits these — a real
-  resolution gap on an **explicit-receiver call to an inherited method** (it resolves the implicit-`this`
-  inherited `select` in `Document.forms`, but missed `doc.select` where `doc` is a `Document` local).
+- **control listed `DataUtil.detectCharset` (+ its `streamParser` chain), which candor's `callers` set
+  did not.** detectCharset calls `doc.select(metaCharset)` (DataUtil.java:276). But candor does **not**
+  report detectCharset as pure: it carries `inferred = { Clock, Unknown }` — i.e. it is **flagged
+  Unknown**, not silently dropped. So this is not the cardinal sin. The `callers` query lists candor's
+  *confirmed* reachers; detectCharset carries an unresolved (`Unknown`) call, so it isn't asserted as a
+  confirmed caller even though it is disclosed as effect-uncertain in the per-function report. Whether
+  the specific `doc.select` edge is a resolution miss or folded into detectCharset's existing `Unknown`
+  is **unverified** — I am not claiming a specific bug here.
 
-So ~14 of the union's ~22 distinct methods are common, with ~4 gaps **each way**. The honest reading is
-**not** "candor is complete" — it is the project's stated contract: candor is **instant, deterministic,
-and surfaced real callers that all six expert tracers missed**, while having its own disclosed gap. That
-is "disclosure, not a completeness proof," demonstrated on real code. (The `detectCharset` miss is a
-genuine candor-java precision bug worth a follow-up sweep: explicit-receiver dispatch to an inherited
-method.)
+So ~14 of the union's ~22 distinct methods are common, with the differences being (a) candor catching
+inherited-`select` callers all six tracers missed and (b) candor disclosing `Unknown` where a tracer
+asserted a concrete edge. The honest reading is **not** "candor is complete" and **not** "candor
+under-reports" — it is the project's stated contract: candor is **instant, deterministic, surfaces real
+callers humans miss, and discloses `Unknown` rather than guess**. "Disclosure, not a completeness proof,"
+on real code. (An earlier draft called the detectCharset difference a candor precision bug; that was
+unverified and overstated — detectCharset is `Unknown`-flagged, not silent.)
 
 ## What this supports
 

@@ -2421,14 +2421,17 @@ public class Candor {
                             // higher-order call on a function VALUE → `callback:`, not `dispatch:` (it does
                             // not resolve to a class-hierarchy override, so it is correctly NOT a frontier source).
                             String why = "callback:" + owner + "." + min.name;
-                            // PRIVATE FUNCTIONAL-PARAM FORWARDING: if `mn` is a closed sink whose lone value
-                            // of this functional type is its param (isForwardableFunctionalSink), DEFER the
-                            // Unknown — runScan resolves it to the lambdas its (enumerable) call sites pass,
-                            // or restores this Unknown if any was opaque. Otherwise emit the honest Unknown now.
+                            // PRIVATE FUNCTIONAL-PARAM FORWARDING: DEFER this Unknown only when (a) `mn` is
+                            // private (its call sites are nestmate-only → the values reaching the param are
+                            // fully enumerable) and (b) THIS SAM is provably invoked on that param itself
+                            // (samIsOnParam — receiver-identity, NOT a field/array-element/other F value).
+                            // runScan then resolves it to the lambdas the call sites pass, or restores this
+                            // Unknown if any was opaque. Otherwise emit the honest Unknown now.
                             int pi = singleFunctionalParamIndex(mn);
                             boolean forwardable = pi >= 0
+                                    && (mn.access & Opcodes.ACC_PRIVATE) != 0
                                     && Type.getArgumentTypes(mn.desc)[pi].getInternalName().equals(min.owner)
-                                    && isForwardableFunctionalSink(cn, mn, min.owner);
+                                    && samIsOnParam(mn, min, provFrames, pi);
                             if (forwardable) {
                                 fwdSinkPending.add(id);
                                 fwdSinkPendingWhy.put(id, new String[] { why });
@@ -3084,30 +3087,38 @@ public class Candor {
         return found;
     }
 
-    private static boolean isType(String desc, String internal) {
-        Type t = Type.getType(desc);
-        return t.getSort() == Type.OBJECT && t.getInternalName().equals(internal);
+    /** The local-variable slot of declared argument {@code argIndex} (long/double occupy 2 slots; +1 for
+     *  the {@code this} slot of an instance method). */
+    static int paramLocalSlot(MethodNode mn, int argIndex) {
+        int slot = (mn.access & Opcodes.ACC_STATIC) != 0 ? 0 : 1;
+        Type[] args = Type.getArgumentTypes(mn.desc);
+        for (int i = 0; i < argIndex; i++) slot += args[i].getSize();
+        return slot;
     }
 
-    /** Whether {@code mn} (declared in {@code cn}) is a CLOSED sink whose lone value of functional type
-     *  {@code F} is its parameter — so the F-SAM it invokes is provably on that param, not a field/local.
-     *  Requires: mn is private (its call sites are nestmate-only, all in {@code cn}'s top-level class →
-     *  fully enumerable); cn declares no field of type F; and mn contains no other instruction that
-     *  PRODUCES an F value (a NEW/indy/call returning F, or an F field read). Conservative — any of these
-     *  bails, keeping the honest Unknown; it never widens what is suppressed. */
-    static boolean isForwardableFunctionalSink(ClassNode cn, MethodNode mn, String F) {
-        if ((mn.access & Opcodes.ACC_PRIVATE) == 0) return false;
-        if (cn.fields != null)
-            for (FieldNode fld : cn.fields)
-                if (isType(fld.desc, F)) return false;
-        for (AbstractInsnNode insn : mn.instructions) {
-            if (insn instanceof MethodInsnNode mi && isType(Type.getReturnType(mi.desc).getDescriptor(), F)) return false;
-            if (insn instanceof InvokeDynamicInsnNode id && isType(Type.getReturnType(id.desc).getDescriptor(), F)) return false;
-            if (insn instanceof FieldInsnNode fi
-                    && (fi.getOpcode() == Opcodes.GETFIELD || fi.getOpcode() == Opcodes.GETSTATIC) && isType(fi.desc, F)) return false;
-            if (insn instanceof TypeInsnNode ti && ti.getOpcode() == Opcodes.NEW && ti.desc.equals(F)) return false;
-        }
-        return true;
+    /** The receiver ProvValue of instance call {@code min} in frame {@code f} — the stack slot just below
+     *  the call's argument block; null if no frame or out of range. */
+    static ProvValue receiverProv(Frame<ProvValue> f, MethodInsnNode min) {
+        if (f == null) return null;
+        int argSlots = 0;
+        for (Type a : Type.getArgumentTypes(min.desc)) argSlots += a.getSize();
+        int idx = f.getStackSize() - argSlots - 1;
+        return idx >= 0 && idx < f.getStackSize() ? f.getStack(idx) : null;
+    }
+
+    /** Whether the SAM call {@code min} in {@code mn} is invoked on the UNMODIFIED parameter at descriptor
+     *  index {@code argIndex} — the soundness anchor for deferring its callback Unknown. Proof by ProvValue
+     *  reference identity: the entry frame holds the param's value in its local slot, and {@code
+     *  copyOperation} preserves that instance through ALOAD and aliasing assignment; any transform that
+     *  produces a DIFFERENT functional value (an AALOAD of an F[] element, a call/field result, a
+     *  reassignment) yields a distinct instance, so the receiver is NOT {@code ==} the param and the SAM is
+     *  correctly left as an honest Unknown. This is what stops a `more[0].accept()` / field-handler call in
+     *  an otherwise-forwardable method from being silently suppressed. */
+    static boolean samIsOnParam(MethodNode mn, MethodInsnNode min, Frame<ProvValue>[] provFrames, int argIndex) {
+        if (provFrames == null || provFrames.length == 0) return false;
+        ProvValue recv = receiverProv(provFrames[mn.instructions.indexOf(min)], min);
+        ProvValue paramVal = provFrames[0].getLocal(paramLocalSlot(mn, argIndex));
+        return recv != null && recv == paramVal;
     }
 
     /** The ProvValue of the {@code argIndex}-th declared argument (excluding the receiver) of call {@code min}

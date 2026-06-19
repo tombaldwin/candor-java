@@ -63,6 +63,14 @@ IMPORTS = (
     # imports) to avoid clashes among the many libraries that define same-simple-name types
     # (Response, Channel, Document, Loader, Configuration, …). FQNs keep the call-site owner
     # unambiguous, which is exactly what κ matches on.
+    # ====================== ADDED LIBRARIES (2026-06-19 batch 3) ======================
+    # Datastores/DB: Cassandra, MyBatis, jOOQ, Spring Data, Lettuce.
+    # Messaging: RabbitMQ, Jakarta JMS, Spring AMQP.
+    # Cloud: AWS v2 DynamoDB/SQS/SNS (over HTTP).
+    # HTTP clients: Retrofit, OpenFeign, Apache HttpClient 4.x.
+    # File/config: Avro, Typesafe Config, Commons Configuration2; protobuf/Gson/KeyStore pure anchors.
+    # All referenced by FULLY-QUALIFIED name in the bodies (no wildcard imports) — same clash-avoidance
+    # discipline as batch 2 (Response/Channel/Configuration/Session all collide across these libs).
 )
 
 # (method, expected effect, params, body) — PASS iff candor reports the effect OR a disclosed Unknown.
@@ -216,6 +224,102 @@ EFFECT_CASES = [
     ("hibernatePersist", "Db", "org.hibernate.Session s, Object o", 's.persist(o)'),
     ("hibernateQueryList", "Db", "org.hibernate.Session s",
         'java.util.List<?> r = s.createQuery("from X", Object.class).list()'),
+
+    # ====================== ADDED LIBRARIES (2026-06-19 batch 3) ======================
+    # ---- Db (Cassandra java-driver — CqlSession.execute(String); inherited default from SyncCqlSession,
+    #      so the call-site owner is the static receiver type CqlSession) ----
+    ("cassandraExecute", "Db", "com.datastax.oss.driver.api.core.CqlSession s",
+        'com.datastax.oss.driver.api.core.cql.ResultSet r = s.execute("select 1")'),
+
+    # ---- Db (MyBatis SqlSession — selectList / insert / update terminals run SQL) ----
+    ("mybatisSelectList", "Db", "org.apache.ibatis.session.SqlSession s",
+        'java.util.List<?> r = s.selectList("ns.q")'),
+    ("mybatisInsert", "Db", "org.apache.ibatis.session.SqlSession s", 'int n = s.insert("ns.ins")'),
+    ("mybatisUpdate", "Db", "org.apache.ibatis.session.SqlSession s", 'int n = s.update("ns.upd")'),
+
+    # ---- Db (jOOQ DSLContext — fetch / execute against the configured connection) ----
+    ("jooqFetch", "Db", "org.jooq.DSLContext d",
+        'org.jooq.Result<org.jooq.Record> r = d.fetch("select 1")'),
+    ("jooqExecute", "Db", "org.jooq.DSLContext d", 'int n = d.execute("update t set x=1")'),
+
+    # ---- Db (Spring Data CrudRepository — save/findAll/findById/delete; impl is generated at runtime,
+    #      so the leaf candor sees is the interface method, exactly as in the PetClinic dogfood) ----
+    ("springDataSave", "Db", "org.springframework.data.repository.CrudRepository<Object,Long> repo, Object e",
+        'Object r = repo.save(e)'),
+    ("springDataFindAll", "Db", "org.springframework.data.repository.CrudRepository<Object,Long> repo",
+        'Iterable<Object> r = repo.findAll()'),
+    ("springDataFindById", "Db", "org.springframework.data.repository.CrudRepository<Object,Long> repo",
+        'java.util.Optional<Object> r = repo.findById(1L)'),
+    ("springDataDelete", "Db", "org.springframework.data.repository.CrudRepository<Object,Long> repo, Object e",
+        'repo.delete(e)'),
+
+    # ---- Net (Lettuce sync RedisCommands — get/set over the Redis socket) ----
+    ("lettuceGet", "Net", "io.lettuce.core.api.sync.RedisCommands<String,String> c", 'String v = c.get("k")'),
+    ("lettuceSet", "Net", "io.lettuce.core.api.sync.RedisCommands<String,String> c", 'String v = c.set("k","v")'),
+
+    # ---- Net (RabbitMQ Channel — basicPublish / basicConsume over the AMQP socket) ----
+    ("rabbitPublish", "Net", "com.rabbitmq.client.Channel ch",
+        'ch.basicPublish("ex", "rk", null, new byte[1])'),
+    ("rabbitConsume", "Net", "com.rabbitmq.client.Channel ch, com.rabbitmq.client.Consumer cons",
+        'String tag = ch.basicConsume("q", cons)'),
+
+    # ---- Net (Jakarta JMS — MessageProducer.send; JMSContext.createProducer is setup but opens the link) ----
+    ("jmsSend", "Net", "jakarta.jms.MessageProducer p, jakarta.jms.Message m", 'p.send(m)'),
+
+    # ---- Net (Spring AMQP RabbitTemplate — convertAndSend publishes to the broker) ----
+    ("springAmqpSend", "Net", "org.springframework.amqp.rabbit.core.RabbitTemplate t, Object o",
+        't.convertAndSend(o)'),
+
+    # ---- Net (AWS SDK v2 DynamoDB/SQS/SNS — all HTTP under the hood, like S3 already modeled) ----
+    ("awsDynamoGetItem", "Net",
+        "software.amazon.awssdk.services.dynamodb.DynamoDbClient c, "
+        "software.amazon.awssdk.services.dynamodb.model.GetItemRequest req",
+        'software.amazon.awssdk.services.dynamodb.model.GetItemResponse r = c.getItem(req)'),
+    ("awsDynamoPutItem", "Net",
+        "software.amazon.awssdk.services.dynamodb.DynamoDbClient c, "
+        "software.amazon.awssdk.services.dynamodb.model.PutItemRequest req",
+        'software.amazon.awssdk.services.dynamodb.model.PutItemResponse r = c.putItem(req)'),
+    ("awsSqsSendMessage", "Net",
+        "software.amazon.awssdk.services.sqs.SqsClient c, "
+        "software.amazon.awssdk.services.sqs.model.SendMessageRequest req",
+        'software.amazon.awssdk.services.sqs.model.SendMessageResponse r = c.sendMessage(req)'),
+    ("awsSnsPublish", "Net",
+        "software.amazon.awssdk.services.sns.SnsClient c, "
+        "software.amazon.awssdk.services.sns.model.PublishRequest req",
+        'software.amazon.awssdk.services.sns.model.PublishResponse r = c.publish(req)'),
+
+    # ---- Net (Retrofit — Call.execute() performs the HTTP round-trip) ----
+    ("retrofitExecute", "Net", "retrofit2.Call<String> call",
+        'retrofit2.Response<String> r = call.execute()'),
+
+    # ---- Net (OpenFeign — feign.Client.execute(Request,Options) is the real wire send the generated
+    #      proxy delegates to; the @RequestLine interface itself has no body) ----
+    ("feignClientExecute", "Net",
+        "feign.Client c, feign.Request req, feign.Request.Options opts",
+        'feign.Response r = c.execute(req, opts)'),
+
+    # ---- Net (Apache HttpClient 4.x — org.apache.http.client.HttpClient.execute; older package than
+    #      the modeled httpclient5 org.apache.hc.*) ----
+    ("hc4Execute", "Net",
+        "org.apache.http.client.HttpClient c, org.apache.http.client.methods.HttpUriRequest req",
+        'org.apache.http.HttpResponse r = c.execute(req)'),
+
+    # ---- Fs (Apache Avro — DataFileReader(File,..) reads the container off disk; DataFileWriter.create(Schema,File) opens it) ----
+    ("avroReaderFile", "Fs",
+        "File f, org.apache.avro.io.DatumReader<Object> dr",
+        'org.apache.avro.file.DataFileReader<Object> rdr = new org.apache.avro.file.DataFileReader<>(f, dr)'),
+    ("avroWriterCreateFile", "Fs",
+        "org.apache.avro.file.DataFileWriter<Object> w, org.apache.avro.Schema sc, File f",
+        'org.apache.avro.file.DataFileWriter<Object> r = w.create(sc, f)'),
+
+    # ---- Fs (Typesafe Config — ConfigFactory.parseFile(File) reads the config off disk) ----
+    ("typesafeParseFile", "Fs", "File f",
+        'com.typesafe.config.Config c = com.typesafe.config.ConfigFactory.parseFile(f)'),
+
+    # ---- Fs (Apache Commons Configuration2 — Configurations.properties(File) opens+reads the file) ----
+    ("commonsConfigProps", "Fs",
+        "org.apache.commons.configuration2.builder.fluent.Configurations cfgs, File f",
+        'org.apache.commons.configuration2.PropertiesConfiguration c = cfgs.properties(f)'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -246,6 +350,9 @@ PURE_CASES = [
     # Caffeine is an IN-MEMORY cache — getIfPresent touches no I/O. candor must stay pure (no fab).
     ("caffeineGetPure", "Object v = c.getIfPresent(\"k\")", "com.github.benmanes.caffeine.cache.Cache<String,Object> c"),
     ("caffeinePutPure", "c.put(\"k\", new Object())", "com.github.benmanes.caffeine.cache.Cache<String,Object> c"),
+    # JMS createProducer() is a LOCAL factory call (no broker round-trip) — the wire leaf is JMSProducer/
+    # MessageProducer.send (modeled as Net, see jmsSend). Setup stays pure (accepted, not a gap).
+    ("jmsCreateProducerPure", "jakarta.jms.JMSProducer p = ctx.createProducer()", "jakarta.jms.JMSContext ctx"),
     # Tika parseToString(InputStream) — caller supplies the stream; the parse itself is pure
     # (the file open is the caller's, the File overload above is the Fs leaf). Ambiguous-receiver class.
     ("tikaParseStreamPure", "String s = t.parseToString(in)", "org.apache.tika.Tika t, InputStream in"),
@@ -256,6 +363,26 @@ PURE_CASES = [
     ("compressChannelPure",
         "org.apache.commons.compress.archivers.zip.ZipFile z = new org.apache.commons.compress.archivers.zip.ZipFile(chan)",
         "java.nio.channels.SeekableByteChannel chan"),
+
+    # ====================== ADDED LIBRARIES (2026-06-19 batch 3) — pure anchors ===============
+    # protobuf parseFrom(byte[]) — in-memory wire-format decode, no I/O (Timestamp is a well-known type
+    # shipped in protobuf-java; any generated message's static parseFrom(byte[]) is the same shape).
+    ("protobufParseBytesPure",
+        "com.google.protobuf.Timestamp t = com.google.protobuf.Timestamp.parseFrom(new byte[1])", ""),
+    # KeyStore.load(InputStream, char[]) — caller supplies the stream; the file open is the caller's
+    # `new FileInputStream`, so the load itself is pure (caller-stream class, like SnakeYAML/POI).
+    ("keystoreLoadStreamPure",
+        "ks.load(in, new char[0])", "java.security.KeyStore ks, InputStream in"),
+    # Gson fromJson(String) — in-memory JSON parse, no File overload exists (mirror of SnakeYAML/jackson string).
+    ("gsonFromStringPure",
+        "Object o = g.fromJson(\"{}\", Object.class)", "com.google.gson.Gson g"),
+    # Typesafe Config parseString — in-memory, no disk read (parseFile above is the Fs leaf).
+    ("typesafeParseStringPure",
+        "com.typesafe.config.Config c = com.typesafe.config.ConfigFactory.parseString(\"a=1\")", ""),
+    # Avro DataFileWriter.create(Schema, OutputStream) — caller-supplied stream; pure (the File overload is the Fs leaf).
+    ("avroWriterStreamPure",
+        "org.apache.avro.file.DataFileWriter<Object> r = w.create(sc, os)",
+        "org.apache.avro.file.DataFileWriter<Object> w, org.apache.avro.Schema sc, OutputStream os"),
 ]
 
 
@@ -328,6 +455,36 @@ JARS = {
     "hibernate-core-6.5.2.Final.jar": f"{_MVN}/org/hibernate/orm/hibernate-core/6.5.2.Final/hibernate-core-6.5.2.Final.jar",
     # Caffeine (in-memory cache — pure anchor)
     "caffeine-3.1.8.jar": f"{_MVN}/com/github/ben-manes/caffeine/caffeine/3.1.8/caffeine-3.1.8.jar",
+    # --- added 2026-06-19 batch 3 ---
+    # Datastores/DB
+    "java-driver-core-4.17.0.jar": f"{_MVN}/com/datastax/oss/java-driver-core/4.17.0/java-driver-core-4.17.0.jar",
+    "mybatis-3.5.16.jar": f"{_MVN}/org/mybatis/mybatis/3.5.16/mybatis-3.5.16.jar",
+    "jooq-3.19.10.jar": f"{_MVN}/org/jooq/jooq/3.19.10/jooq-3.19.10.jar",
+    "spring-data-commons-3.3.1.jar": f"{_MVN}/org/springframework/data/spring-data-commons/3.3.1/spring-data-commons-3.3.1.jar",
+    "lettuce-core-6.3.2.RELEASE.jar": f"{_MVN}/io/lettuce/lettuce-core/6.3.2.RELEASE/lettuce-core-6.3.2.RELEASE.jar",
+    # Messaging
+    "amqp-client-5.21.0.jar": f"{_MVN}/com/rabbitmq/amqp-client/5.21.0/amqp-client-5.21.0.jar",
+    "jakarta.jms-api-3.1.0.jar": f"{_MVN}/jakarta/jms/jakarta.jms-api/3.1.0/jakarta.jms-api-3.1.0.jar",
+    "spring-rabbit-3.1.6.jar": f"{_MVN}/org/springframework/amqp/spring-rabbit/3.1.6/spring-rabbit-3.1.6.jar",
+    "spring-amqp-3.1.6.jar": f"{_MVN}/org/springframework/amqp/spring-amqp/3.1.6/spring-amqp-3.1.6.jar",
+    "spring-context-6.1.10.jar": f"{_MVN}/org/springframework/spring-context/6.1.10/spring-context-6.1.10.jar",
+    "spring-messaging-6.1.10.jar": f"{_MVN}/org/springframework/spring-messaging/6.1.10/spring-messaging-6.1.10.jar",
+    # Cloud (AWS v2 — DynamoDB/SQS/SNS; core SDK jars already present from S3)
+    "dynamodb-2.25.60.jar": f"{_MVN}/software/amazon/awssdk/dynamodb/2.25.60/dynamodb-2.25.60.jar",
+    "sqs-2.25.60.jar": f"{_MVN}/software/amazon/awssdk/sqs/2.25.60/sqs-2.25.60.jar",
+    "sns-2.25.60.jar": f"{_MVN}/software/amazon/awssdk/sns/2.25.60/sns-2.25.60.jar",
+    # HTTP clients
+    "retrofit-2.11.0.jar": f"{_MVN}/com/squareup/retrofit2/retrofit/2.11.0/retrofit-2.11.0.jar",
+    "feign-core-13.2.1.jar": f"{_MVN}/io/github/openfeign/feign-core/13.2.1/feign-core-13.2.1.jar",
+    "httpclient-4.5.14.jar": f"{_MVN}/org/apache/httpcomponents/httpclient/4.5.14/httpclient-4.5.14.jar",
+    "httpcore-4.4.16.jar": f"{_MVN}/org/apache/httpcomponents/httpcore/4.4.16/httpcore-4.4.16.jar",
+    # File/config
+    "avro-1.11.3.jar": f"{_MVN}/org/apache/avro/avro/1.11.3/avro-1.11.3.jar",
+    "config-1.4.3.jar": f"{_MVN}/com/typesafe/config/1.4.3/config-1.4.3.jar",
+    "commons-configuration2-2.10.1.jar": f"{_MVN}/org/apache/commons/commons-configuration2/2.10.1/commons-configuration2-2.10.1.jar",
+    # Pure anchors (protobuf in-memory decode, Gson in-memory parse; KeyStore is JDK)
+    "protobuf-java-3.25.3.jar": f"{_MVN}/com/google/protobuf/protobuf-java/3.25.3/protobuf-java-3.25.3.jar",
+    "gson-2.11.0.jar": f"{_MVN}/com/google/code/gson/gson/2.11.0/gson-2.11.0.jar",
 }
 
 
@@ -421,7 +578,8 @@ def main():
         sys.exit(1)
     print(f"\nkappa-libs: OK — {len(EFFECT_CASES)} library effect leaves classified "
           f"(slf4j/log4j/jackson/commons-io/commons-exec/guava/okhttp/httpclient5/spring/poi/"
-          f"jpa/mongo/jedis/kafka/jsoup/aws-s3/grpc/webclient/restclient/hibernate/+gaps), "
+          f"jpa/mongo/jedis/kafka/jsoup/aws-s3/grpc/webclient/restclient/hibernate/"
+          f"cassandra/mybatis/jooq/rabbitmq/jms/spring-amqp/aws-dynamo-sqs-sns/retrofit/httpclient4/+gaps), "
           f"{len(PURE_CASES)} pure neighbours unflooded")
 
 

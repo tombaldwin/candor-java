@@ -57,6 +57,33 @@ public class EffectAgent {
         leaf("java/sql/Connection", "prepareStatement", "Db");
         leaf("java/sql/Connection", "prepareCall", "Db");
         leaf("java/sql/Connection", "createStatement", "Db");
+        // --- Env (no syscall → no JFR event; call-site instrumentation catches it) ---
+        leaf("java/lang/System", "getenv", "Env");
+        // --- Clock ---
+        leaf("java/lang/System", "currentTimeMillis", "Clock");
+        leaf("java/lang/System", "nanoTime", "Clock");
+        for (String t : new String[] {"java/time/Instant", "java/time/LocalDate", "java/time/LocalDateTime",
+                "java/time/LocalTime", "java/time/ZonedDateTime", "java/time/OffsetDateTime", "java/time/Year"})
+            leaf(t, "now", "Clock");
+        leaf("java/time/Clock", "instant", "Clock");
+        leaf("java/time/Clock", "millis", "Clock");
+        // --- Rand (entropy draws across the RNG owners; matched by name = all overloads) ---
+        for (String owner : new String[] {"java/util/Random", "java/security/SecureRandom",
+                "java/util/concurrent/ThreadLocalRandom"})
+            for (String m : new String[] {"nextInt", "nextLong", "nextDouble", "nextFloat", "nextBoolean",
+                    "nextBytes", "nextGaussian", "ints", "longs", "doubles"})
+                leaf(owner, m, "Rand");
+        leaf("java/lang/Math", "random", "Rand");
+        leaf("java/util/UUID", "randomUUID", "Rand");
+        // --- Log (emit verbs across the logging facades; java.lang.System.Logger is the JDK platform one) ---
+        for (String m : new String[] {"trace", "debug", "info", "warn", "error"})
+            leaf("org/slf4j/Logger", m, "Log");
+        for (String m : new String[] {"trace", "debug", "info", "warn", "error", "fatal", "log"})
+            leaf("org/apache/logging/log4j/Logger", m, "Log");
+        for (String m : new String[] {"log", "logp", "logrb", "info", "warning", "severe", "fine", "finer",
+                "finest", "config"})
+            leaf("java/util/logging/Logger", m, "Log");
+        leaf("java/lang/System$Logger", "log", "Log");
     }
 
     private static void leaf(String owner, String name, String effect) {

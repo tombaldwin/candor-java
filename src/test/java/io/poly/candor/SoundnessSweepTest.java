@@ -284,4 +284,18 @@ class SoundnessSweepTest {
         assertFalse(eff(r, "A.use").contains("Fs"),
                 "stored-not-invoked must not fabricate Fs, got " + eff(r, "A.use"));
     }
+
+    /** A named `java.util.Comparator` with an effectful `compare`, handed to a library sort API
+     *  (`List.sort`/`Collections.sort`/`Stream.sorted`/`new TreeMap`), must surface the effect. Comparator
+     *  is a SAM the JDK invokes outside project code but is NOT in `java.util.function.*` — the
+     *  named-instance fix had to recognise it explicitly (the sort/TreeMap idiom is ubiquitous). */
+    @Test
+    void namedComparatorIntoSortNotPure() throws Exception {
+        var r = scan("import java.util.*;\n"
+                + "public class A {\n"
+                + "  static class Cmp implements Comparator<String> { public int compare(String a,String b){ " + FS + " return 0; } }\n"
+                + "  public void use(List<String> xs){ xs.sort(new Cmp()); }\n"
+                + "}");
+        mustHave(r, "A.use", "Fs");
+    }
 }

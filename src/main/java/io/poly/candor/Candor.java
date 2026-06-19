@@ -4510,6 +4510,22 @@ public class Candor {
             if (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;")) return "Fs";
             if (desc.startsWith("(Ljava/net/URL;")) return "Net";
         }
+        // jsoup PUBLIC API (the dogfood covered jsoup INTERNALS — HttpConnection/DataUtil — but not these
+        // user-facing entry leaves; found silent-pure by the library κ-coverage probe). `org.jsoup.Connection`
+        // is the fluent HTTP builder: url/userAgent/header/data/method return the builder (PURE), only the
+        // TERMINAL get/post/execute do the round-trip → Net (verb-gated). `Jsoup.parse(File|Path,…)` reads the
+        // file → Fs (descriptor-gated first arg); parse(String|InputStream,…) stays pure (in-memory / caller stream).
+        if (owner.equals("org.jsoup.Connection")
+                && (method.equals("get") || method.equals("post") || method.equals("execute"))) return "Net";
+        if (owner.equals("org.jsoup.Jsoup") && method.equals("parse") && desc != null
+                && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;"))) return "Fs";
+        // Apache POI — WorkbookFactory.create(File) opens+reads the spreadsheet from disk → Fs.
+        // DESCRIPTOR-GATED on the File arg (mirrors the jackson rule): the (InputStream)/(boolean) overloads
+        // defer to a caller stream / in-memory and stay pure. Covers the format-specific factory subclasses.
+        if ((owner.equals("org.apache.poi.ss.usermodel.WorkbookFactory")
+                || owner.equals("org.apache.poi.xssf.usermodel.XSSFWorkbookFactory")
+                || owner.equals("org.apache.poi.hssf.usermodel.HSSFWorkbookFactory"))
+                && method.equals("create") && desc != null && desc.startsWith("(Ljava/io/File;")) return "Fs";
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation
@@ -5088,6 +5104,14 @@ public class Candor {
         if (owner.equals("java.lang.ProcessBuilder")
                 && (method.equals("start") || method.equals("startPipeline"))) return "Exec";
         if (owner.equals("java.lang.Runtime") && method.equals("exec")) return "Exec";
+        // java.awt.Desktop launches an EXTERNAL program (the OS default handler for a URI/file) → Exec, the
+        // same capability as ProcessBuilder/Runtime.exec. VERB-gated to the launch verbs; the factory/query
+        // surface (getDesktop/isDesktopSupported/isSupported/getSupportedActions/setX handlers) stays pure.
+        // (Found silent-pure by a JDK κ probe.)
+        if (owner.equals("java.awt.Desktop")
+                && (method.equals("browse") || method.equals("open") || method.equals("edit")
+                    || method.equals("print") || method.equals("mail")
+                    || method.equals("browseFileDirectory") || method.equals("openHelpViewer"))) return "Exec";
         // Subprocess convenience libs (the analog of the modeled ProcessBuilder.start/Runtime.exec):
         // Apache commons-exec DefaultExecutor.execute, zt-exec ProcessExecutor.execute. The setX config
         // setters stay pure (verb-gated).

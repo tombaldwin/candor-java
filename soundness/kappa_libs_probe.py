@@ -42,6 +42,22 @@ IMPORTS = (
     "import okhttp3.*;"
     "import org.springframework.jdbc.core.*;"
     "import org.springframework.web.client.*;"
+    # --- added libraries ---
+    "import org.yaml.snakeyaml.*;"
+    "import org.apache.hc.client5.http.impl.classic.*;"
+    "import org.apache.hc.core5.http.*;"
+    "import org.apache.commons.exec.*;"
+    "import org.apache.poi.ss.usermodel.*;"
+    "import jakarta.persistence.*;"
+    "import com.mongodb.client.*;"
+    "import org.bson.*;"
+    # NB: redis.clients.jedis.Jedis referenced by FQN below — no wildcard import
+    # to avoid clashing with okhttp3.Response (both define a Response type).
+    "import org.apache.kafka.clients.producer.*;"
+    "import org.apache.kafka.clients.consumer.*;"
+    "import org.jsoup.*;"
+    # NB: log4j Logger referenced by FQN below — no `import org.apache.logging.log4j.*`
+    # to avoid clashing with slf4j's Logger (both *-imported).
 )
 
 # (method, expected effect, params, body) — PASS iff candor reports the effect OR a disclosed Unknown.
@@ -89,6 +105,47 @@ EFFECT_CASES = [
 
     # ---- Db (javax.sql.DataSource — JDK type, modeled) ----
     ("dataSourceGetConn", "Db", "DataSource ds", 'java.sql.Connection c = ds.getConnection()'),
+
+    # ====================== ADDED LIBRARIES (2026-06-19 sweep) ======================
+    # ---- Net (Apache HttpClient 5 — CloseableHttpClient.execute) ----
+    ("hc5Execute", "Net", "CloseableHttpClient c, ClassicHttpRequest req",
+        'org.apache.hc.core5.http.ClassicHttpResponse r = c.execute(req)'),
+
+    # ---- Exec (Apache Commons Exec — Executor.execute(CommandLine)) ----
+    ("commonsExecRun", "Exec", "DefaultExecutor e, CommandLine cl", 'int rc = e.execute(cl)'),
+
+    # ---- Fs (Apache POI — WorkbookFactory.create(File)) ----
+    ("poiCreateFile", "Fs", "File f", 'Workbook wb = WorkbookFactory.create(f)'),
+
+    # ---- Db (Jakarta Persistence / JPA — EntityManager + Query terminals) ----
+    ("jpaPersist",    "Db", "EntityManager em, Object o", 'em.persist(o)'),
+    ("jpaFind",       "Db", "EntityManager em", 'Object o = em.find(String.class, 1)'),
+    ("jpaMerge",      "Db", "EntityManager em, Object o", 'Object r = em.merge(o)'),
+    ("jpaResultList", "Db", "EntityManager em",
+        'java.util.List<?> r = em.createQuery("from X").getResultList()'),
+    ("jpaExecUpdate", "Db", "EntityManager em",
+        'int n = em.createQuery("delete from X").executeUpdate()'),
+
+    # ---- Db/Net (MongoDB driver — eager insertOne; lazy find() iterable) ----
+    ("mongoInsertOne", "Db", "MongoCollection<Document> c, Document d", 'c.insertOne(d)'),
+    ("mongoFind",      "Db", "MongoCollection<Document> c", 'FindIterable<Document> it = c.find()'),
+
+    # ---- Net (Jedis — get/set; candor models the Jedis socket as Net, a datastore over TCP) ----
+    ("jedisGet", "Net", "redis.clients.jedis.Jedis j", 'String v = j.get("k")'),
+    ("jedisSet", "Net", "redis.clients.jedis.Jedis j", 'String v = j.set("k", "v")'),
+
+    # ---- Net (Kafka — producer.send / consumer.poll) ----
+    ("kafkaSend", "Net", "KafkaProducer<String,String> p, ProducerRecord<String,String> rec",
+        'java.util.concurrent.Future<RecordMetadata> f = p.send(rec)'),
+    ("kafkaPoll", "Net", "KafkaConsumer<String,String> c",
+        'ConsumerRecords<String,String> r = c.poll(java.time.Duration.ofMillis(1))'),
+
+    # ---- Net/Fs (jsoup public API — connect().get() is Net; parse(File) is Fs) ----
+    ("jsoupConnectGet", "Net", "", 'org.jsoup.nodes.Document d = Jsoup.connect("http://h/").get()'),
+    ("jsoupParseFile",  "Fs",  "File f", 'org.jsoup.nodes.Document d = Jsoup.parse(f, "UTF-8")'),
+
+    # ---- Log (Log4j 2 — Logger.info; FQN to avoid clash with slf4j Logger) ----
+    ("log4jInfo", "Log", "org.apache.logging.log4j.Logger l", 'l.info("x")'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -100,6 +157,20 @@ PURE_CASES = [
     # ObjectMapper in-memory string (de)serialization touches no file/socket — must stay pure.
     ("jacksonReadStringPure", "Object o = m.readValue(\"{}\", Object.class)", "ObjectMapper m"),
     ("jacksonWriteStringPure", "String s = m.writeValueAsString(new Object())", "ObjectMapper m"),
+
+    # ---- SnakeYAML: every load/dump overload takes a CALLER-SUPPLIED stream/string (no File overload
+    #      exists in 2.x). The file open is the caller's `new FileInputStream` — the Yaml leaf is pure.
+    #      These pin that: candor must NOT fabricate Fs on the parse itself (ambiguous-receiver class).
+    ("yamlLoadStreamPure", "Object o = new Yaml().load(in)", "InputStream in"),
+    ("yamlLoadReaderPure", "Object o = new Yaml().load(rd)", "Reader rd"),
+    ("yamlLoadStringPure", "Object o = new Yaml().load(\"a: 1\")", ""),
+    ("yamlDumpWriterPure", "new Yaml().dump(new Object(), w)", "Writer w"),
+
+    # ---- POI: the InputStream overload is caller-supplied — pure (the File overload is the Fs leaf above).
+    ("poiCreateStreamPure", "Workbook wb = WorkbookFactory.create(in)", "InputStream in"),
+
+    # ---- jsoup: in-memory parse(String) touches nothing — must stay pure (parse(File) above is the Fs leaf).
+    ("jsoupParseStringPure", "org.jsoup.nodes.Document d = Jsoup.parse(\"<p>x\")", ""),
 ]
 
 
@@ -121,6 +192,21 @@ JARS = {
     "spring-beans-6.1.10.jar": f"{_MVN}/org/springframework/spring-beans/6.1.10/spring-beans-6.1.10.jar",
     "spring-tx-6.1.10.jar": f"{_MVN}/org/springframework/spring-tx/6.1.10/spring-tx-6.1.10.jar",
     "spring-web-6.1.10.jar": f"{_MVN}/org/springframework/spring-web/6.1.10/spring-web-6.1.10.jar",
+    # --- added 2026-06-19 sweep ---
+    "snakeyaml-2.2.jar": f"{_MVN}/org/yaml/snakeyaml/2.2/snakeyaml-2.2.jar",
+    "httpclient5-5.3.1.jar": f"{_MVN}/org/apache/httpcomponents/client5/httpclient5/5.3.1/httpclient5-5.3.1.jar",
+    "httpcore5-5.2.4.jar": f"{_MVN}/org/apache/httpcomponents/core5/httpcore5/5.2.4/httpcore5-5.2.4.jar",
+    "commons-exec-1.4.0.jar": f"{_MVN}/org/apache/commons/commons-exec/1.4.0/commons-exec-1.4.0.jar",
+    "poi-5.2.5.jar": f"{_MVN}/org/apache/poi/poi/5.2.5/poi-5.2.5.jar",
+    "poi-ooxml-5.2.5.jar": f"{_MVN}/org/apache/poi/poi-ooxml/5.2.5/poi-ooxml-5.2.5.jar",
+    "jakarta.persistence-api-3.1.0.jar": f"{_MVN}/jakarta/persistence/jakarta.persistence-api/3.1.0/jakarta.persistence-api-3.1.0.jar",
+    "mongodb-driver-sync-5.1.1.jar": f"{_MVN}/org/mongodb/mongodb-driver-sync/5.1.1/mongodb-driver-sync-5.1.1.jar",
+    "mongodb-driver-core-5.1.1.jar": f"{_MVN}/org/mongodb/mongodb-driver-core/5.1.1/mongodb-driver-core-5.1.1.jar",
+    "bson-5.1.1.jar": f"{_MVN}/org/mongodb/bson/5.1.1/bson-5.1.1.jar",
+    "jedis-5.1.3.jar": f"{_MVN}/redis/clients/jedis/5.1.3/jedis-5.1.3.jar",
+    "kafka-clients-3.7.1.jar": f"{_MVN}/org/apache/kafka/kafka-clients/3.7.1/kafka-clients-3.7.1.jar",
+    "jsoup-1.18.1.jar": f"{_MVN}/org/jsoup/jsoup/1.18.1/jsoup-1.18.1.jar",
+    "log4j-api-2.23.1.jar": f"{_MVN}/org/apache/logging/log4j/log4j-api/2.23.1/log4j-api-2.23.1.jar",
 }
 
 
@@ -213,7 +299,8 @@ def main():
             print(g)
         sys.exit(1)
     print(f"\nkappa-libs: OK — {len(EFFECT_CASES)} library effect leaves classified "
-          f"(slf4j/jackson/commons-io/guava/okhttp/spring), {len(PURE_CASES)} pure neighbours unflooded")
+          f"(slf4j/log4j/jackson/commons-io/commons-exec/guava/okhttp/httpclient5/spring/poi/"
+          f"jpa/mongo/jedis/kafka/jsoup), {len(PURE_CASES)} pure neighbours unflooded")
 
 
 if __name__ == "__main__":

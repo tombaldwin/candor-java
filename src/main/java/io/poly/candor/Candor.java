@@ -3153,9 +3153,20 @@ public class Candor {
      *  the type is unknown, not a project class, or implements no such interface (so a non-functional
      *  `new Foo()` passed to a library method edges nothing). Mirrors the anonymous-class instantiation-edge
      *  surface, applied to a named functional impl handed to an external HOF. */
+    /** A JDK functional interface a LIBRARY HOF invokes on a passed instance — the java.util.function set
+     *  plus the common library SAMs NOT in that package: `Comparator` (sort/TreeMap/sorted), `FileFilter`/
+     *  `FilenameFilter` (File.listFiles). Broader than {@link #isFunctionalIface} on PURPOSE: kept separate
+     *  so the private-forwarding param-count (which uses isFunctionalIface) is unaffected by this widening. */
+    static boolean isHofFunctionalIface(String internal) {
+        return isFunctionalIface(internal)
+                || "java/util/Comparator".equals(internal)
+                || "java/io/FileFilter".equals(internal)
+                || "java/io/FilenameFilter".equals(internal);
+    }
+
     static Set<String> functionalSamSurface(String classInternal) {
         ClassNode cn = byName.get(classInternal);
-        if (cn == null || cn.interfaces == null || cn.interfaces.stream().noneMatch(Candor::isFunctionalIface))
+        if (cn == null || cn.interfaces == null || cn.interfaces.stream().noneMatch(Candor::isHofFunctionalIface))
             return Set.of();
         Set<String> out = new HashSet<>();
         String dotted = classInternal.replace('/', '.');

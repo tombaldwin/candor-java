@@ -1,0 +1,2 @@
+# Per-trial work dirs are large; commit only PROMPT.md / meta / measurement under runs/.
+runs/*/work/

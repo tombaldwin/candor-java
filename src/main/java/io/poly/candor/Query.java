@@ -298,35 +298,82 @@ public final class Query {
             cg = new LinkedHashMap<>();
             for (Fn f : fns) cg.put(f.fn, new ArrayList<>(f.calls));
         }
-        // --include-unknown: the transitive `callers` set is candor's CONFIRMED reachers — it cannot
-        // include a function that reaches `q` only through a dispatch candor declined to resolve (a
-        // `dispatch-broad` over >CHA_FANOUT_LIMIT implementors, disclosed as Unknown not silent-pure).
-        // Map each such function to the simple method name(s) it broad-dispatches on, so the query can
-        // disclose "these MAY also reach `q` if the runtime dispatch lands on a reaching override" — the
-        // unresolved-dispatch frontier, making the blast radius own up to its lower-bound nature. Built
-        // only when the flag is set, so default output is byte-for-byte unchanged (cross-engine parity).
+        // --include-unknown ⟨0.7⟩: the transitive `callers` set is candor's CONFIRMED reachers — it
+        // cannot include a function that reaches `q` only through a dispatch candor declined to resolve
+        // (a `dispatch-broad` over >CHA_FANOUT_LIMIT implementors, disclosed as Unknown not silent-pure).
+        // Map each such function to the FULL dispatch key(s) `OWNER.M` it broad-dispatches on; the query
+        // then discloses "these MAY also reach `q`" — precisely, by resolving whether a confirmed reacher
+        // is an OVERRIDE of OWNER.M (same method name AND a subtype of OWNER per the hierarchy sidecar).
+        // Built only when the flag is set, so default output is byte-for-byte unchanged (cross-engine parity).
         Map<String, Set<String>> broadByFn = null;
+        Map<String, List<String>> hier = null;
         if (includeUnknown) {
             broadByFn = new LinkedHashMap<>();
             for (Fn f : fns) {
                 for (String why : f.unknownWhy) {
                     if (why.startsWith("dispatch-broad:") || why.startsWith("dispatch-broad-ext:")) {
-                        String m = simpleMethod(why.substring(why.indexOf(':') + 1));
-                        if (!m.isEmpty()) broadByFn.computeIfAbsent(f.fn, k -> new TreeSet<>()).add(m);
+                        String key = why.substring(why.indexOf(':') + 1); // OWNER.M (dotted)
+                        if (!key.isEmpty()) broadByFn.computeIfAbsent(f.fn, k -> new TreeSet<>()).add(key);
                     }
                 }
             }
+            hier = loadHierarchy(reportPath); // null → the query falls back to a simple-name match (over-lists)
         }
-        return callersViaCallgraph(cg, q, json, broadByFn);
+        return callersViaCallgraph(cg, q, json, broadByFn, hier);
     }
 
-    /** The bare method name of a `pkg.Class.method(desc)` (or a `dispatch-broad:` `owner.method`): drop
-     *  any `(…)` descriptor, then take the segment after the last dot. */
+    /** The bare method name of a `pkg.Class.method(desc)`: drop any `(…)` descriptor, then take the
+     *  segment after the last dot. */
     static String simpleMethod(String fqn) {
         int paren = fqn.indexOf('(');
         String base = paren >= 0 ? fqn.substring(0, paren) : fqn;
         int dot = base.lastIndexOf('.');
         return dot >= 0 ? base.substring(dot + 1) : base;
+    }
+
+    /** The declaring type of a `pkg.Class.method(desc)`: drop any `(…)` descriptor, then the trailing
+     *  `.method`. Inner-class `$` is preserved so it matches a hierarchy-sidecar key. */
+    static String declaringType(String fqn) {
+        int paren = fqn.indexOf('(');
+        String base = paren >= 0 ? fqn.substring(0, paren) : fqn;
+        int dot = base.lastIndexOf('.');
+        return dot >= 0 ? base.substring(0, dot) : base;
+    }
+
+    /** Load the type-hierarchy sidecar (`<report-stem>.hierarchy.json`, ⟨0.7⟩), or null if absent. */
+    static Map<String, List<String>> loadHierarchy(String reportPath) {
+        try {
+            String hPath = reportPath.endsWith(".json")
+                    ? reportPath.substring(0, reportPath.length() - 5) + ".hierarchy.json"
+                    : reportPath + ".hierarchy.json";
+            if (!Files.exists(Path.of(hPath))) return null;
+            var o = JsonParser.parseString(Files.readString(Path.of(hPath))).getAsJsonObject();
+            Map<String, List<String>> h = new LinkedHashMap<>();
+            for (var e : o.entrySet()) {
+                List<String> sup = new ArrayList<>();
+                for (JsonElement v : e.getValue().getAsJsonArray()) sup.add(v.getAsString());
+                h.put(e.getKey(), sup);
+            }
+            return h;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Is `type` a subtype of (or equal to) `owner`, per the hierarchy sidecar? Reflexive + transitive
+     *  over recorded direct supertypes/interfaces. */
+    static boolean isSubtypeOf(String type, String owner, Map<String, List<String>> hier) {
+        if (type.equals(owner)) return true;
+        Set<String> seen = new HashSet<>();
+        Deque<String> st = new ArrayDeque<>();
+        st.push(type);
+        while (!st.isEmpty()) {
+            for (String s : hier.getOrDefault(st.pop(), List.of())) {
+                if (s.equals(owner)) return true;
+                if (seen.add(s)) st.push(s);
+            }
+        }
+        return false;
     }
 
     /** Load the call-graph sidecar (`<report-minus-.json>.callgraph.json`), or null if absent/unreadable. */
@@ -353,11 +400,11 @@ public final class Query {
      *  blast radius if `q` gained an effect). Works for any function, effectful or pure. Mirrors
      *  candor-scan's `callers_via_callgraph`. */
     static int callersViaCallgraph(Map<String, List<String>> cg, String q, boolean json) {
-        return callersViaCallgraph(cg, q, json, null);
+        return callersViaCallgraph(cg, q, json, null, null);
     }
 
     static int callersViaCallgraph(Map<String, List<String>> cg, String q, boolean json,
-                                   Map<String, Set<String>> broadByFn) {
+                                   Map<String, Set<String>> broadByFn, Map<String, List<String>> hier) {
         boolean incl = broadByFn != null; // --include-unknown: disclose the unresolved-dispatch frontier
         Map<String, List<String>> rev = new TreeMap<>(); // callee -> its direct callers
         for (var e : cg.entrySet())
@@ -381,23 +428,33 @@ public final class Query {
             String n = stack.pop();
             for (String c : rev.getOrDefault(n, List.of())) if (all.add(c)) stack.push(c);
         }
-        // The unresolved-dispatch frontier (--include-unknown only): functions whose broad dispatch is on
-        // a method whose SIMPLE NAME matches a confirmed reacher (or `q` itself) — i.e. one of the
-        // implementors candor dropped could be a reaching override, so they MAY also reach `q`. candor
-        // can't confirm it (the dispatch was unresolvable), so these are disclosed, never asserted. Match
-        // is by simple method name (no class hierarchy in the report) → a possible over-list, the honest
-        // direction for a lower-bound disclosure. A function already in the confirmed set is not re-listed.
+        // The unresolved-dispatch frontier (--include-unknown only): a function F broad-dispatches on
+        // OWNER.M (carries dispatch-broad:OWNER.M — an Unknown candor disclosed rather than resolve). F
+        // MAY also reach `q` iff a confirmed reacher R is an OVERRIDE of OWNER.M — same method name AND R's
+        // declaring type is a subtype of OWNER per the hierarchy sidecar. The subtype check (vs a bare
+        // simple-name match) drops unrelated same-named dispatches — PRECISE. If the hierarchy sidecar is
+        // absent (hier == null), fall back to a simple-name match, which OVER-lists — the safe direction
+        // for a lower-bound disclosure. candor never asserts these; they are disclosed as "cannot confirm".
         List<Map<String, String>> possible = new ArrayList<>();
         if (incl) {
-            Set<String> reachedSimple = new TreeSet<>();
-            for (String r : all) reachedSimple.add(simpleMethod(r));
-            for (String t : targets) reachedSimple.add(simpleMethod(t));
             Set<String> confirmed = new HashSet<>(all);
             confirmed.addAll(targets);
+            // confirmed reachers indexed by simple method name -> their declaring types (for the subtype check)
+            Map<String, List<String>> reacherTypesByMethod = new HashMap<>();
+            for (String r : confirmed)
+                reacherTypesByMethod.computeIfAbsent(simpleMethod(r), k -> new ArrayList<>()).add(declaringType(r));
             for (var e : new TreeMap<>(broadByFn).entrySet()) {
-                if (confirmed.contains(e.getKey())) continue;
+                if (confirmed.contains(e.getKey())) continue; // already a confirmed caller — not "additional"
                 TreeSet<String> hits = new TreeSet<>();
-                for (String m : e.getValue()) if (reachedSimple.contains(m)) hits.add(m);
+                for (String key : e.getValue()) { // key = OWNER.M (dotted)
+                    String m = simpleMethod(key);
+                    String owner = declaringType(key);
+                    List<String> reacherTypes = reacherTypesByMethod.get(m);
+                    if (reacherTypes == null) continue;
+                    boolean hit = hier == null // no hierarchy sidecar → simple-name match (over-lists)
+                            || reacherTypes.stream().anyMatch(t -> isSubtypeOf(t, owner, hier));
+                    if (hit) hits.add(m);
+                }
                 if (!hits.isEmpty()) {
                     Map<String, String> row = new LinkedHashMap<>();
                     row.put("fn", e.getKey());

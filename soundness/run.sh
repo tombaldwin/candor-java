@@ -71,4 +71,12 @@ echo
 echo "soundness: running functional-SAM probe (lambda-only dispatch → Unknown, no flood)…"
 if bash "$ROOT/soundness/functional_sam_probe.sh"; then fs=0; else fs=1; fi
 
-[ "$fail" -eq 0 ] && [ "$fab" -eq 0 ] && [ "$ep" -eq 0 ] && [ "$fs" -eq 0 ]
+# Smear probe — the deferred/stored-lambda FABRICATION counterpart. The fuzzer above threads an effect UP
+# a call chain (under-report direction); this checks the orthogonal escape direction: a lambda STORED in a
+# field/collection/deferred-container or RETURNED by a factory in an initializer must NOT smear its effect
+# via <clinit> onto unrelated methods, while its eventual invocation still discloses (effect or Unknown).
+echo
+echo "soundness: running smear probe (deferred/stored-lambda no-<clinit>-smear)…"
+CJ="$CJ" python3 "$ROOT/soundness/smear_probe.py"; sm=$?
+
+[ "$fail" -eq 0 ] && [ "$fab" -eq 0 ] && [ "$ep" -eq 0 ] && [ "$fs" -eq 0 ] && [ "$sm" -eq 0 ]

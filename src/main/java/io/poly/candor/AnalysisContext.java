@@ -74,4 +74,13 @@ final class AnalysisContext {
     final Set<String> fwdSinkOpaque = new HashSet<>();                     // sink id with >=1 non-lambda-arg site
     final Set<String> fwdSinkPending = new HashSet<>();                    // sink id whose param-SAM Unknown was DEFERRED
     final Map<String, String[]> fwdSinkPendingWhy = new HashMap<>();       // sink id -> [unknownWhy tag] to RESTORE
+
+    // ---- folded in for LB-1 (were per-scan statics on Candor/Cha/Policy) ----
+    final Map<String, List<AnnotationNode>> annoMetaCache = new HashMap<>(); // meta/composed-annotation resolution cache
+    final Map<String, Boolean> sealedClosedMemo = new HashMap<>();           // Cha: sealed-closure verdict memo
+    final Map<String, Boolean> sealedUnseenMemo = new HashMap<>();           // Cha: sealed-permit-unseen memo
+    final Map<String, List<String>> externalSupersCache = new HashMap<>();   // Cha: external-class supers (classpath) cache
+    final List<PolicyRule.Deny> denyRules = new ArrayList<>();               // CANDOR_POLICY deny/pure (AS-EFF-006)
+    final List<PolicyRule.Allow> allowRules = new ArrayList<>();             // CANDOR_POLICY allow (AS-EFF-008)
+    final List<PolicyRule.Forbid> forbidRules = new ArrayList<>();           // CANDOR_POLICY forbid (AS-EFF-009)
 }

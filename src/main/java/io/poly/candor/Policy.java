@@ -23,9 +23,6 @@ final class Policy {
     // CANDOR_POLICY rules (architecture-as-code, candor-spec §6.2), the typed sealed model.PolicyRule
     // family. `deny`/`pure` (Deny) = AS-EFF-006 (what a layer may do); `allow … in …` (Allow) =
     // AS-EFF-008 (which endpoints); `forbid A -> B` (Forbid) = AS-EFF-009 (who a layer may depend on).
-    static final List<PolicyRule.Deny> denyRules = new ArrayList<>();
-    static final List<PolicyRule.Allow> allowRules = new ArrayList<>();
-    static final List<PolicyRule.Forbid> forbidRules = new ArrayList<>();
 
     /** AS-EFF-004: flag direct use of ambient authority (route it through an injected collaborator). */
     static int checkNoAmbient(Map<String, EffectSet> inferred, String scope) {
@@ -105,7 +102,7 @@ final class Policy {
         // AS-EFF-006: a method in scope must not perform (transitively) a denied effect.
         for (var e : new TreeMap<>(inferred).entrySet()) {
             String fn = e.getKey();
-            for (PolicyRule.Deny r : denyRules) {
+            for (PolicyRule.Deny r : ctx.denyRules) {
                 if (!scopeMatches(fn, r.scope())) continue;
                 // pure rule (empty effects) ⇒ any effect except Unknown (handled by AS-EFF-003);
                 // deny rule ⇒ the inferred effects that intersect the denied set.
@@ -135,7 +132,7 @@ final class Policy {
         v += checkAllowlist(inferred, "Db", literalFixpoint(ctx.tablesDirect), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> tableCovered(a, reached)));
         // AS-EFF-009: a method in scope A must not transitively reach into scope B (over the call graph).
-        for (PolicyRule.Forbid r : forbidRules) {
+        for (PolicyRule.Forbid r : ctx.forbidRules) {
             for (String fn : new TreeSet<>(ctx.edges.keySet())) {
                 if (!scopeMatches(fn, r.from())) continue;
                 String hit = reachesScope(fn, r.to());
@@ -162,7 +159,7 @@ final class Policy {
         for (var e : new TreeMap<>(inferred).entrySet()) {
             String fn = e.getKey();
             if (!e.getValue().contains(Effect.fromSpecName(effect))) continue;
-            for (PolicyRule.Allow r : allowRules) {
+            for (PolicyRule.Allow r : ctx.allowRules) {
                 if (!effect.equals(r.effect().specName()) || !scopeMatches(fn, r.scope())) continue;
                 TreeSet<String> reached = reachedAcc.getOrDefault(fn, new TreeSet<>());
                 // Empty surface OR an INCOMPLETE one (a structurally-invisible reach — a host-less Net owner
@@ -227,19 +224,19 @@ final class Policy {
                         else { scope = t[i]; break; }
                     }
                     if (effNames.isEmpty()) { warnPolicy(line, "names no known effect"); break; }
-                    denyRules.add(new PolicyRule.Deny(EffectSet.ofNames(effNames), scope, line));
+                    ctx.denyRules.add(new PolicyRule.Deny(EffectSet.ofNames(effNames), scope, line));
                     break;
                 }
                 case "pure": {
                     // empty effects = ANY effect forbidden
-                    denyRules.add(new PolicyRule.Deny(EffectSet.empty(), t.length > 1 ? t[1] : "", line));
+                    ctx.denyRules.add(new PolicyRule.Deny(EffectSet.empty(), t.length > 1 ? t[1] : "", line));
                     break;
                 }
                 case "forbid": {
                     // SPEC §6.2: `forbid <A> -> <B>` — two scopes separated by a literal `->` TOKEN
                     // (so `forbid a->b` without surrounding spaces is malformed and dropped).
                     if (t.length >= 4 && t[2].equals("->")) {
-                        forbidRules.add(new PolicyRule.Forbid(t[1], t[3]));
+                        ctx.forbidRules.add(new PolicyRule.Forbid(t[1], t[3]));
                     } else {
                         warnPolicy(line, "want `forbid <scope> -> <scope>`");
                     }
@@ -262,7 +259,7 @@ final class Policy {
                     TreeSet<String> values = new TreeSet<>(); // sorted: the wire surface order
                     for (int i = vi; i < t.length; i++) values.add(t[i]);
                     if (values.isEmpty()) { warnPolicy(line, "allow names no values"); break; }
-                    allowRules.add(new PolicyRule.Allow(Effect.fromSpecName(t[1]), scope, values, line));
+                    ctx.allowRules.add(new PolicyRule.Allow(Effect.fromSpecName(t[1]), scope, values, line));
                     break;
                 }
                 default:

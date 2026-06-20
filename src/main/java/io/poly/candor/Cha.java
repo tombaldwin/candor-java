@@ -41,7 +41,6 @@ final class Cha {
     // Memoized verdict of the (transitive) sealed-closure walk — called in the per-instruction hot loop.
     // CLEARED in resetState (a stale verdict across scans would be the prior-review "state riding a
     // different-lifecycle structure" bug — the conformance harness drives several scans in one JVM).
-    static final Map<String, Boolean> sealedClosedMemo = new HashMap<>();
 
     /** True iff {@code internal} is a SEALED type whose ENTIRE transitive permitted-subtype closure is (a)
      *  fully VISIBLE (every permit in `byName` — else candor can't analyze its effect → silent-pure) and (b)
@@ -50,17 +49,16 @@ final class Cha {
      *  bounded (honest Unknown). Memoized + cycle-guarded (a sealed cycle is impossible in valid bytecode but
      *  cheap to guard against malformed input). */
     static boolean isFullyClosedSealed(String internal) {
-        Boolean memo = sealedClosedMemo.get(internal);
+        Boolean memo = ctx.sealedClosedMemo.get(internal);
         if (memo != null) return memo;
         ClassNode cn = ctx.byName.get(internal);
         boolean r = cn != null && cn.permittedSubclasses != null && !cn.permittedSubclasses.isEmpty()
                 && closedAndVisible(internal, new HashSet<>());
-        sealedClosedMemo.put(internal, r);
+        ctx.sealedClosedMemo.put(internal, r);
         return r;
     }
 
     // Memoized: does a SEALED type's transitive permit-closure name a subtype NOT on the classpath?
-    static final Map<String, Boolean> sealedUnseenMemo = new HashMap<>();
 
     /** True iff {@code internal} is a SEALED type whose transitive permit-closure includes a subtype absent
      *  from `byName`. Then candor KNOWS (from the `permits` attribute) a specific subtype exists that it
@@ -70,12 +68,12 @@ final class Cha {
      *  but candor can't prove it — the accepted bounded-CHA tradeoff). Fixes a pre-existing silent-pure the
      *  sealed-CHA review surfaced. */
     static boolean sealedHasUnseenPermit(String internal) {
-        Boolean memo = sealedUnseenMemo.get(internal);
+        Boolean memo = ctx.sealedUnseenMemo.get(internal);
         if (memo != null) return memo;
         ClassNode cn = ctx.byName.get(internal);
         boolean r = cn != null && cn.permittedSubclasses != null && !cn.permittedSubclasses.isEmpty()
                 && permitClosureHasUnseen(internal, new HashSet<>());
-        sealedUnseenMemo.put(internal, r);
+        ctx.sealedUnseenMemo.put(internal, r);
         return r;
     }
 
@@ -129,9 +127,8 @@ final class Cha {
      *  ASM. JDK classes (java/util/ArrayList → AbstractList → List/Collection) resolve; the SCANNED
      *  project's own third-party deps are not on candor's classpath, so they fail to load and yield nothing
      *  — the same sound under-approximation as before (never fabrication). Never throws. Cached per name. */
-    static final Map<String, List<String>> externalSupersCache = new HashMap<>();
     static List<String> externalSupers(String internal) {
-        List<String> cached = externalSupersCache.get(internal);
+        List<String> cached = ctx.externalSupersCache.get(internal);
         if (cached != null) return cached;
         List<String> out = new ArrayList<>();
         try {
@@ -139,7 +136,7 @@ final class Cha {
             if (cr.getSuperName() != null) out.add(cr.getSuperName());
             for (String i : cr.getInterfaces()) out.add(i);
         } catch (Throwable t) { /* not on candor's classpath / unreadable → no supers (sound) */ }
-        externalSupersCache.put(internal, out);
+        ctx.externalSupersCache.put(internal, out);
         return out;
     }
 

@@ -126,13 +126,9 @@ public class Candor {
      *  The immutable Set.of(...) markers (REPO_MARKERS, AMBIENT, KNOWN_EFFECTS, INJECTION,
      *  PATH_CTOR_OWNERS) are constants, not state, and are deliberately left untouched. */
     static void resetState() {
-        // LB-0: the per-scan AnalysisContext is replaced wholesale (a fresh instance = a fresh slate).
-        // The remaining process-static state not yet folded into the context (LB-1) is still cleared:
-        // Candor's annotation cache, Cha's sealed-closure memos, and Policy's parsed rule lists.
+        // ALL per-scan state now lives in AnalysisContext, so a fresh instance IS the reset (LB-1a).
+        // (LB-1b will remove this static handle entirely and thread the context per scan.)
         ctx = new AnalysisContext();
-        annoMetaCache.clear();
-        sealedClosedMemo.clear(); sealedUnseenMemo.clear();
-        denyRules.clear(); allowRules.clear(); forbidRules.clear();
     }
 
     /** The analysis core, factored out of {@link #main} so it is REENTRANT (resets first) and free of
@@ -267,7 +263,7 @@ public class Candor {
         // Rust reference and prove the SPEC §6.2 grammar means the same thing in both.
         if (args[0].equals("parsepolicy")) {
             if (args.length < 2) { System.err.println("usage: candor parsepolicy <policy-file>"); System.exit(2); }
-            denyRules.clear(); allowRules.clear(); forbidRules.clear();
+            ctx.denyRules.clear(); ctx.allowRules.clear(); ctx.forbidRules.clear();
             if (!parsePolicy(args[1])) { System.err.println("candor: cannot read policy " + args[1]); System.exit(2); }
             System.out.println(Query.policyJson());
             System.exit(0);
@@ -2174,9 +2170,8 @@ public class Candor {
     /** The visible annotations declared ON an annotation type (its meta-annotations), or null if
      *  unresolvable. A project annotation comes from byName; a framework one is read off candor's classpath
      *  via ASM (same posture as {@link #externalSupers}). Cached per type. */
-    static final Map<String, List<AnnotationNode>> annoMetaCache = new HashMap<>();
     static List<AnnotationNode> annotationTypeAnnotations(String internal) {
-        if (annoMetaCache.containsKey(internal)) return annoMetaCache.get(internal);
+        if (ctx.annoMetaCache.containsKey(internal)) return ctx.annoMetaCache.get(internal);
         List<AnnotationNode> out = null;
         ClassNode cn = ctx.byName.get(internal);
         if (cn != null) out = cn.visibleAnnotations;
@@ -2188,7 +2183,7 @@ public class Candor {
                 out = an.visibleAnnotations;
             } catch (Throwable t) { /* not on candor's classpath → unresolvable, stays unrooted (sound) */ }
         }
-        annoMetaCache.put(internal, out);
+        ctx.annoMetaCache.put(internal, out);
         return out;
     }
 

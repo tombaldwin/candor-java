@@ -5072,6 +5072,60 @@ public class Candor {
         if (owner.equals("com.clickhouse.client.ClickHouseClient")
                 && (method.equals("execute") || method.equals("send") || method.equals("executeAndWait")))
             return "Db";
+        // ── Spring-ecosystem FLOOR-SUPPRESSED leaves (batch 13) ──────────────────────────────────────────
+        // candor treats org.springframework.* as a κ-covered prefix → an unmodeled Spring sub-library leaf is
+        // DROPPED from the report entirely (worse than a disclosed Unknown). A systemic class: explicit rules
+        // surface the real effect for each UNAMBIGUOUS Spring sub-lib. (The genuinely AMBIGUOUS ones —
+        // MessagingTemplate→in-process DirectChannel, SessionRepository→in-memory MapSessionRepository — are
+        // deliberately NOT modeled: a Net/Db rule would FABRICATE on the in-memory variant; left accepted.)
+        if (owner.equals("org.springframework.batch.core.launch.JobLauncher") && method.equals("run")) return "Db";
+        // Spring Cloud OpenFeign load-balanced client (the FeignBlockingLoadBalancerClient + retrying wrapper
+        // implement feign.Client; the floor hides them even though feign.Client.execute is modeled).
+        if (owner.startsWith("org.springframework.cloud.openfeign.") && method.equals("execute")) return "Net";
+        // Spring Data Elasticsearch — ElasticsearchOperations is an ES cluster client (HTTP) → Net.
+        if (owner.equals("org.springframework.data.elasticsearch.core.ElasticsearchOperations")) {
+            switch (method) {
+                case "save": case "saveAll": case "search": case "searchForStream": case "get": case "multiGet":
+                case "delete": case "deleteAll": case "index": case "bulkIndex": case "bulkUpdate":
+                case "count": case "searchSimilar": case "update":
+                    return "Net";
+                default: break;
+            }
+        }
+        // Spring Data Neo4j — Neo4jTemplate runs Cypher over bolt (remote graph DB) → Db.
+        if (owner.equals("org.springframework.data.neo4j.core.Neo4jTemplate")
+                && (method.equals("save") || method.equals("saveAll") || method.equals("findById")
+                    || method.equals("findAll") || method.equals("delete") || method.equals("deleteById")
+                    || method.equals("deleteAll") || method.equals("count") || method.equals("existsById"))) return "Db";
+        // Spring LDAP — LdapTemplate issues LDAP ops over the wire → Net.
+        if (owner.equals("org.springframework.ldap.core.LdapTemplate")) {
+            switch (method) {
+                case "search": case "lookup": case "bind": case "unbind": case "rebind": case "modifyAttributes":
+                case "lookupContext": case "searchForObject": case "searchForContext": case "authenticate":
+                case "list": case "listBindings": case "rename":
+                    return "Net";
+                default: break;
+            }
+        }
+        // ── Non-Spring datastores (batch 13) — these were INVISIBLE-DISCLOSED (sound), modeled for precision ──
+        // OrientDB session → Db.
+        if (owner.equals("com.orientechnologies.orient.core.db.ODatabaseSession")
+                && (method.equals("query") || method.equals("command") || method.equals("execute")
+                    || method.equals("save") || method.equals("load") || method.equals("commit")
+                    || method.equals("begin") || method.equals("delete"))) return "Db";
+        // ArangoDB database → Net (HTTP/VST; the collection()/graph() navigators stay pure).
+        if (owner.equals("com.arangodb.ArangoDatabase")) {
+            switch (method) {
+                case "query": case "getVersion": case "getInfo": case "createCollection": case "getCollections":
+                case "createGraph": case "getGraphs": case "drop": case "exists": case "create":
+                case "transaction": case "getDocument": case "insertDocument":
+                    return "Net";
+                default: break;
+            }
+        }
+        // RethinkDB — ReqlExpr.run is the query terminal; Connection$Builder.connect opens the socket → Net.
+        if (owner.equals("com.rethinkdb.gen.ast.ReqlExpr") && method.equals("run")) return "Net";
+        if (owner.equals("com.rethinkdb.net.Connection$Builder") && method.equals("connect")) return "Net";
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation

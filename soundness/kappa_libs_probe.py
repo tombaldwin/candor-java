@@ -304,6 +304,44 @@ IMPORTS = (
     # PURE anchors: Braintree gateway construction (new BraintreeGateway(env,m,k,s) — holds the Http but does no
     #   wire); Spring AI prompt builder (cc.prompt().user(..) — the fluent builder before .call(), no wire).
     # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2..11.
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 13) ======================
+    # SPRING-ECOSYSTEM FLOOR-SUPPRESSION SWEEP + a few datastores. PURPOSE: map the blast radius of the
+    # org.springframework.* κ-FLOOR. candor treats org.springframework.* as a κ-COVERED prefix, so for a
+    # Spring SUB-LIBRARY candor does NOT model, the effectful leaf is DROPPED FROM THE REPORT ENTIRELY —
+    # not even disclosed as `invisible`/Unknown — which is strictly WORSE than a normal silent-pure. (A
+    # normal unmodeled NON-Spring package surfaces a per-function `invisible: [pkg]` disclosure; a Spring
+    # one is silently absent.) This already bit Spring Vault (VaultTemplate, batch 9) and Spring AI
+    # (ChatClient/ChatModel, batch 12); this batch hunts the rest. The runner now prints a FLOOR? column:
+    #   FLOOR   = function ABSENT from the report (silently dropped) AND the owner is org.springframework.*
+    #             (a real effect made invisible — the structural finding).
+    #   INVIS   = function PRESENT with a per-fn `invisible:[pkg]` disclosure (the NON-Spring κ-unknown-
+    #             package soft gap — disclosed, not silent; candor is honest it can't see the package).
+    #   pure    = function ABSENT and NOT a Spring owner (genuinely pure / accepted in-memory).
+    # Spring sub-libs ADDED (each tested DIRECTLY at the real terminal an app calls):
+    #   Spring Integration core MessagingTemplate.send/convertAndSend -> Net/Unknown (routes to a channel,
+    #     often remote). MessageChannel.send tested too — a channel can be in-memory (DirectChannel) so it
+    #     is the ambiguous-receiver case, but it is ALSO floor-dropped here (org.springframework.messaging).
+    #   Spring Batch JobLauncher.run -> Db (writes the JobRepository).
+    #   Spring Cloud OpenFeign FeignBlockingLoadBalancerClient.execute -> Net. NB the underlying effect is
+    #     feign.Client.execute (already modeled) but the call-site owner is the org.springframework.cloud
+    #     wrapper class, so the FLOOR drops it — a clean demonstration the floor hides even a wrapper whose
+    #     delegate IS modeled.
+    #   Spring Data Elasticsearch ElasticsearchOperations.save/search -> Net.
+    #   Spring Data Neo4j Neo4jTemplate.save/findById -> Db (Cypher over bolt).
+    #   Spring LDAP LdapTemplate.lookup/search/bind -> Net (LDAP over the wire).
+    #   Spring Session SessionRepository.save/findById -> Db/Net (backend-dependent; ambiguous like a cache,
+    #     a JDBC/Redis backend is Db/Net but a MapSessionRepository is in-memory). Tested+documented; the
+    #     floor drops it regardless of backend. MapSessionRepository.save = the in-memory anchor (also dropped).
+    #   Spring Data Redis RedisTemplate.execute(RedisCallback) -> Db expected; VERIFY it is NOT floored (it
+    #     is the only Spring case here that is already correctly modeled — see RESULTS, a WIN).
+    #   (Spring RestTemplate/RestClient/WebClient, JdbcTemplate, KafkaTemplate, Spring AI: already in earlier
+    #     batches as correctly-modeled EFFECT_CASES — they prove the floor is NOT blanket; what's modeled shows.)
+    # NON-Spring datastores ADDED (breadth; these surface the `invisible`-package disclosure, NOT the floor):
+    #   OrientDB ODatabaseSession.query/command -> Db; ArangoDB ArangoDatabase.query/getVersion -> Net (the
+    #     com.arangodb:CORE artifact, NOT the 19-entry shaded aggregator stub which is still skipped);
+    #     RethinkDB ReqlExpr.run / connection().connect() -> Net; H2 native MVStore.open/openMap -> Fs
+    #     (on-disk MVStore file; openMap on an already-open store is the in-memory map view — anchor).
+    # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2..12.
 )
 
 # (method, expected effect, params, body) — PASS iff candor reports the effect OR a disclosed Unknown.
@@ -1218,6 +1256,89 @@ EFFECT_CASES = [
     ("springAiOpenAiModelCall", "Net",
         "org.springframework.ai.openai.OpenAiChatModel m, org.springframework.ai.chat.prompt.Prompt p",
         'org.springframework.ai.chat.model.ChatResponse cr = m.call(p)'),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 13) ======================
+    # --- Spring sub-libraries (FLOOR-SUPPRESSION sweep — owner org.springframework.*; a GAP here is a
+    #     SILENT DROP, the structural finding; see the FLOOR? column in the RESULTS table) ---
+    # NOTE: Spring Integration MessagingTemplate.send/convertAndSend and MessageChannel.send are AMBIGUOUS-
+    #   receiver (a DirectChannel is in-process → pure; an outbound-adapter channel is Net) — candor cannot
+    #   tell at the call site, so they are NOT modeled (a Net rule would FABRICATE on the common in-process
+    #   integration-flow case). Accepted floor-drop, like Quartz/cache. Not gated here.
+    # Spring Batch — JobLauncher.run writes the JobRepository (the job/step metadata DB).
+    ("springBatchJobRun", "Db",
+        "org.springframework.batch.core.launch.JobLauncher l, org.springframework.batch.core.Job job, "
+        "org.springframework.batch.core.JobParameters p",
+        'org.springframework.batch.core.JobExecution e = l.run(job, p)'),
+
+    # Spring Cloud OpenFeign — FeignBlockingLoadBalancerClient.execute is the blocking wire send (delegates to
+    #   feign.Client.execute, which IS modeled — but the call-site owner is the org.springframework.cloud
+    #   wrapper, so the FLOOR drops it even though the delegate is covered).
+    ("springFeignLbExecute", "Net",
+        "org.springframework.cloud.openfeign.loadbalancer.FeignBlockingLoadBalancerClient c, "
+        "feign.Request req, feign.Request.Options o",
+        'feign.Response r = c.execute(req, o)'),
+
+    # Spring Data Elasticsearch — ElasticsearchOperations.save/search hit the ES cluster over HTTP.
+    ("springDataEsSave", "Net",
+        "org.springframework.data.elasticsearch.core.ElasticsearchOperations ops, Object o",
+        'Object r = ops.save(o)'),
+    ("springDataEsSearch", "Net",
+        "org.springframework.data.elasticsearch.core.ElasticsearchOperations ops, "
+        "org.springframework.data.elasticsearch.core.query.Query q",
+        'org.springframework.data.elasticsearch.core.SearchHits<String> h = ops.search(q, String.class)'),
+
+    # Spring Data Neo4j — Neo4jTemplate.save/findById run Cypher over the bolt protocol (a remote graph DB).
+    ("springDataNeo4jSave", "Db",
+        "org.springframework.data.neo4j.core.Neo4jTemplate t, Object o", 'Object r = t.save(o)'),
+    ("springDataNeo4jFindById", "Db",
+        "org.springframework.data.neo4j.core.Neo4jTemplate t",
+        'java.util.Optional<String> r = t.findById("id", String.class)'),
+
+    # Spring LDAP — LdapTemplate.lookup/search/bind issue LDAP ops over the wire.
+    ("springLdapLookup", "Net", "org.springframework.ldap.core.LdapTemplate t", 'Object o = t.lookup("ou=x")'),
+    ("springLdapSearch", "Net",
+        "org.springframework.ldap.core.LdapTemplate t, org.springframework.ldap.core.AttributesMapper<String> am",
+        'java.util.List<String> r = t.search("ou=x", "(cn=*)", am)'),
+    ("springLdapBind", "Net", "org.springframework.ldap.core.LdapTemplate t", 't.bind("cn=x", null, null)'),
+
+    # NOTE: Spring Session SessionRepository.save/findById is AMBIGUOUS-receiver (JDBC/Redis/Mongo backends
+    #   are Db/Net, but MapSessionRepository is in-memory) — candor cannot tell at the SessionRepository
+    #   interface call site, so NOT modeled (a rule would fabricate on MapSessionRepository). Accepted
+    #   floor-drop, like a cache. The in-memory case is pinned by mapSessionRepoSavePure below.
+
+    # Spring Data Redis — RedisTemplate.execute(RedisCallback) runs against the Redis connection. VERIFY it is
+    #   already modeled (NOT floored) — the one Spring case here expected to PASS (a WIN; the opsForValue
+    #   path was modeled in batch 4, this checks the execute(callback) sibling).
+    ("springRedisTemplateExecute", "Db",
+        "org.springframework.data.redis.core.RedisTemplate<String,String> t",
+        'Object o = t.execute((org.springframework.data.redis.core.RedisCallback<Object>) c -> null)'),
+
+    # --- Non-Spring datastores (breadth; these surface the per-fn `invisible:[pkg]` disclosure = INVIS, NOT
+    #     the floor — candor is honest it can't see the package) ---
+    # OrientDB — ODatabaseSession.query/command run SQL against the (often remote) OrientDB server.
+    ("orientdbQuery", "Db", "com.orientechnologies.orient.core.db.ODatabaseSession db",
+        'com.orientechnologies.orient.core.sql.executor.OResultSet rs = db.query("select 1")'),
+    ("orientdbCommand", "Db", "com.orientechnologies.orient.core.db.ODatabaseSession db",
+        'com.orientechnologies.orient.core.sql.executor.OResultSet rs = db.command("insert into x set y=1")'),
+
+    # ArangoDB — ArangoDatabase.query/getVersion hit the ArangoDB server over HTTP (the com.arangodb:CORE
+    #   artifact carries the real classes; the published arangodb-java-driver jar is a 19-entry shaded stub).
+    ("arangoQuery", "Net", "com.arangodb.ArangoDatabase db",
+        'com.arangodb.ArangoCursor<String> c = db.query("FOR x IN c RETURN x", String.class)'),
+    ("arangoVersion", "Net", "com.arangodb.ArangoDatabase db",
+        'com.arangodb.entity.ArangoDBVersion v = db.getVersion()'),
+
+    # RethinkDB — ReqlExpr.run(Connection) is the JSON-protocol query round-trip; connection().connect()
+    #   opens the socket.
+    ("rethinkRun", "Net", "com.rethinkdb.gen.ast.ReqlExpr e, com.rethinkdb.net.Connection conn",
+        'com.rethinkdb.net.Result<Object> r = e.run(conn)'),
+    ("rethinkConnect", "Net", "",
+        'com.rethinkdb.net.Connection conn = com.rethinkdb.RethinkDB.r.connection().hostname("h").port(28015).connect()'),
+
+    # NOTE: H2 MVStore.open(String fileName) is AMBIGUOUS — a null fileName opens an IN-MEMORY store, so the
+    #   (String) descriptor can't be soundly gated to Fs (would fabricate on the in-memory case). Candor
+    #   already discloses it INVISIBLE (the org.h2.mvstore package is κ-unknown → sound soft gap), so it is
+    #   left accepted, not modeled.
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -1477,6 +1598,18 @@ PURE_CASES = [
     #   report); absence == pure for the anchor (got == []), so it correctly reads pure here either way.
     ("springAiPromptBuilderPure",
         'var s = cc.prompt().user("hi")', "org.springframework.ai.chat.client.ChatClient cc"),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 13) — pure anchors ===============
+    # Spring Session MapSessionRepository is the IN-MEMORY backend — save/findById touch a heap Map, no
+    #   wire/disk. Must stay pure (the ambiguous SessionRepository above is the backend-dependent leaf).
+    #   NB this is org.springframework.* so it is ALSO floor-dropped (absent == pure for the anchor either way).
+    ("mapSessionRepoSavePure",
+        "r.save(r.createSession())", "org.springframework.session.MapSessionRepository r"),
+    # H2 MVStore.openMap on an ALREADY-OPEN store is the in-memory map view (the disk open was MVStore.open,
+    #   the Fs leaf above) — must stay pure. NB org.h2.mvstore is a κ-unknown package, so candor discloses
+    #   `invisible:[org.h2.mvstore]` here rather than fabricating — which reads pure (got==[]) for the anchor.
+    ("mvstoreOpenMapPure",
+        'org.h2.mvstore.MVMap<String,String> m = s.openMap("d")', "org.h2.mvstore.MVStore s"),
 ]
 
 
@@ -1843,6 +1976,33 @@ JARS = {
     "google-maps-services-2.2.0.jar": f"{_MVN}/com/google/maps/google-maps-services/2.2.0/google-maps-services-2.2.0.jar",
     # ClickHouse native client (carries ClickHouseClient/ClickHouseRequest/ClickHouseNode). JDBC is java.sql-covered.
     "clickhouse-client-0.6.0.jar": f"{_MVN}/com/clickhouse/clickhouse-client/0.6.0/clickhouse-client-0.6.0.jar",
+    # --- added 2026-06-20 batch 13 ---
+    # SPRING-ECOSYSTEM FLOOR sweep (all org.springframework.* — floor-dropped at scan time):
+    # Spring Integration core (MessagingTemplate; spring-messaging already present supplies MessageChannel/Message).
+    "spring-integration-core-6.3.1.jar": f"{_MVN}/org/springframework/integration/spring-integration-core/6.3.1/spring-integration-core-6.3.1.jar",
+    # Spring Batch (core carries JobLauncher/Job/JobParameters/JobExecution; infrastructure is a compile dep).
+    "spring-batch-core-5.1.2.jar": f"{_MVN}/org/springframework/batch/spring-batch-core/5.1.2/spring-batch-core-5.1.2.jar",
+    "spring-batch-infrastructure-5.1.2.jar": f"{_MVN}/org/springframework/batch/spring-batch-infrastructure/5.1.2/spring-batch-infrastructure-5.1.2.jar",
+    # Spring Cloud OpenFeign (FeignBlockingLoadBalancerClient; feign-core already present supplies feign.Client/Request/Response).
+    "spring-cloud-openfeign-core-4.1.3.jar": f"{_MVN}/org/springframework/cloud/spring-cloud-openfeign-core/4.1.3/spring-cloud-openfeign-core-4.1.3.jar",
+    # Spring Data Elasticsearch (ElasticsearchOperations + query.Query/SearchHits; spring-data-commons already present).
+    "spring-data-elasticsearch-5.3.1.jar": f"{_MVN}/org/springframework/data/spring-data-elasticsearch/5.3.1/spring-data-elasticsearch-5.3.1.jar",
+    # Spring Data Neo4j (Neo4jTemplate; neo4j-java-driver + spring-data-commons already present).
+    "spring-data-neo4j-7.3.1.jar": f"{_MVN}/org/springframework/data/spring-data-neo4j/7.3.1/spring-data-neo4j-7.3.1.jar",
+    # Spring LDAP (LdapTemplate + AttributesMapper).
+    "spring-ldap-core-3.2.4.jar": f"{_MVN}/org/springframework/ldap/spring-ldap-core/3.2.4/spring-ldap-core-3.2.4.jar",
+    # Spring Session (SessionRepository/Session/MapSessionRepository).
+    "spring-session-core-3.3.1.jar": f"{_MVN}/org/springframework/session/spring-session-core/3.3.1/spring-session-core-3.3.1.jar",
+    # NON-Spring datastores (these surface the `invisible:[pkg]` disclosure, NOT the floor):
+    # OrientDB (orientdb-core is self-contained for ODatabaseSession.query/command + OResultSet).
+    "orientdb-core-3.2.30.jar": f"{_MVN}/com/orientechnologies/orientdb-core/3.2.30/orientdb-core-3.2.30.jar",
+    # RethinkDB (rethinkdb-driver carries ReqlExpr/RethinkDB/Connection; jackson already present is its compile dep).
+    "rethinkdb-driver-2.4.4.jar": f"{_MVN}/com/rethinkdb/rethinkdb-driver/2.4.4/rethinkdb-driver-2.4.4.jar",
+    # ArangoDB — the com.arangodb:CORE artifact (408 classes incl. ArangoDatabase). The published
+    #   com.arangodb:arangodb-java-driver jar is a 19-entry shaded aggregator STUB (no .class files) — skipped.
+    "arangodb-core-7.7.1.jar": f"{_MVN}/com/arangodb/core/7.7.1/core-7.7.1.jar",
+    # H2 (org.h2.mvstore.MVStore lives in the main h2 jar — native MVStore engine; JDBC is java.sql-covered).
+    "h2-2.2.224.jar": f"{_MVN}/com/h2database/h2/2.2.224/h2-2.2.224.jar",
 }
 
 
@@ -1909,31 +2069,65 @@ def main():
         report = json.load(open(out))
         fns = report.get("functions", []) if isinstance(report, dict) else report
         inferred = {e["fn"].split("(")[0]: e.get("inferred", []) for e in fns if isinstance(e, dict)}
+        # per-function `invisible:[pkg]` disclosure (a κ-unknown package candor is honest it can't see
+        # through) — distinct from the Spring FLOOR (silent drop) and from a fabricated effect.
+        invisible = {e["fn"].split("(")[0]: e.get("invisible", []) for e in fns if isinstance(e, dict)}
         present = set(inferred.keys())
 
-    rows, gaps, fabs = [], [], []
-    for name, eff, _p, body in EFFECT_CASES:
+    # FLOOR detection: candor treats org.springframework.* as a κ-COVERED prefix, so a Spring leaf it does
+    # NOT model is DROPPED from the report ENTIRELY (silently absent — not even an `invisible` disclosure),
+    # strictly worse than a normal silent-pure. A leaf is FLOOR-SUPPRESSED iff it is ABSENT from the report
+    # AND its call-site owner is org.springframework.* (i.e. the case touches a Spring type). This is the
+    # structural finding this batch maps. (Genuinely-pure functions are ALSO absent, but a Spring leaf that
+    # really does I/O being absent == the floor hid a real effect; the non-Spring equivalent would surface
+    # an `invisible:[pkg]` disclosure instead of vanishing.)
+    def is_spring(params, body):
+        return "org.springframework" in (params + " " + body)
+
+    def floor_state(name, params, body):
+        """Return FLOOR? marker: '' (present, no floor), 'FLOOR' (Spring, dropped),
+        'INVIS' (present + invisible disclosure), 'drop' (absent, non-Spring => pure/omitted)."""
+        key = "KL." + name
+        if key in present:
+            return "INVIS" if invisible.get(key) else ""
+        return "FLOOR" if is_spring(params, body) else "drop"
+
+    rows, gaps, fabs, floored = [], [], [], []
+    for name, eff, params, body in EFFECT_CASES:
         got = inferred.get("KL." + name, [])
+        fs = floor_state(name, params, body)
         ok = eff in got or "Unknown" in got
         verdict = f"ok({eff})" if eff in got else ("ok(Unknown)" if "Unknown" in got else "GAP")
-        rows.append((name, eff, got or [], verdict))
+        rows.append((name, eff, got or [], fs, verdict))
         if not ok:
-            gaps.append(f"  GAP  KL.{name} [{body}] -> {got or 'pure/omitted'}  (must surface {eff} or Unknown)")
-    for name, body, _p in PURE_CASES:
+            tag = "FLOOR-SUPPRESSED" if fs == "FLOOR" else ("INVISIBLE-pkg" if fs == "INVIS" else "GAP")
+            gaps.append(f"  {tag}  KL.{name} [{body}] -> "
+                        f"{got or (invisible.get('KL.'+name) and 'invisible:'+str(invisible['KL.'+name]) or 'pure/DROPPED')}"
+                        f"  (must surface {eff} or Unknown)")
+            if fs == "FLOOR":
+                floored.append(name)
+    for name, body, params in PURE_CASES:
         got = inferred.get("KL." + name, [])
-        rows.append((name, "(pure)", got or [], "ok(pure)" if not got else "FABRICATION"))
+        fs = floor_state(name, params, body)
+        rows.append((name, "(pure)", got or [], fs, "ok(pure)" if not got else "FABRICATION"))
         if got:
             fabs.append(f"  FABRICATION  KL.{name} [{body}] -> {got}  (must stay pure)")
 
     w = max(len(r[0]) for r in rows)
-    print(f"{'leaf'.ljust(w)}  {'expect':8}  {'candor':22}  verdict")
-    print("-" * (w + 40))
-    for name, eff, got, verdict in rows:
-        print(f"{name.ljust(w)}  {eff:8}  {str(got)[:22]:22}  {verdict}")
+    print(f"{'leaf'.ljust(w)}  {'expect':8}  {'candor':22}  {'FLOOR?':6}  verdict")
+    print("-" * (w + 48))
+    for name, eff, got, fs, verdict in rows:
+        print(f"{name.ljust(w)}  {eff:8}  {str(got)[:22]:22}  {fs:6}  {verdict}")
 
     n = len(EFFECT_CASES) + len(PURE_CASES)
+    if floored:
+        print(f"\nkappa-libs: {len(floored)} FLOOR-SUPPRESSED leaf(s) — org.springframework.* dropped from the "
+              f"report ENTIRELY (silent, worse than pure; no `invisible` disclosure):")
+        for f in floored:
+            print(f"  FLOOR  KL.{f}")
     if gaps or fabs:
-        print(f"\nkappa-libs: {len(gaps)} coverage gap(s), {len(fabs)} over-classification(s) of {n} library leaves:")
+        print(f"\nkappa-libs: {len(gaps)} coverage gap(s) ({len(floored)} of them FLOOR-suppressed), "
+              f"{len(fabs)} over-classification(s) of {n} library leaves:")
         for g in gaps + fabs:
             print(g)
         sys.exit(1)

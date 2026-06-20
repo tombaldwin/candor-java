@@ -103,3 +103,32 @@ live, the cost/risk of LB-1 outweighs the benefit.
 Suggested posture: **do LB-0 if you want the state owned by a named object now** (cheap, sets the seam);
 **defer LB-1/LB-2 until a re-entrancy/embedding need is concrete** — at which point this scope makes it
 a planned, incremental, gated change rather than a rewrite.
+
+## Progress + LB-1b execution notes (from an attempt)
+
+**Done and on `main`:** LB-0 (`92985cc`) and **LB-1a** (`8ac3007`) — all 45 per-scan fields now live in
+one `AnalysisContext`, accessed via the single `AnalysisState.ctx` handle; `resetState()` is one line.
+Behavior-identical, fully gated. This is the substantive "state is a named, owned, per-scan object" win.
+
+**LB-1b (remove the handle → thread `ctx`) was attempted and rolled back** — it is NOT safely automatable
+by text tooling. Concrete obstacles found, for whoever does the dedicated pass:
+
+1. **The ASM interpreter classes can't take a `ctx` parameter.** `TaintInterpreter`/`ProvInterpreter`
+   (nested `Interpreter<V>` subclasses) and `ProvValue` override framework methods with FIXED signatures
+   (`newValue`/`naryOperation`/the `Value` ctors), and `ProvValue`'s constructor calls `declTypeOf`/
+   `indyLambdaTarget` which need `ctx`. These must hold `ctx` as an **instance field** (constructed
+   `new ProvInterpreter(ctx)` from `analyze`), i.e. the *instance-object* approach — param-threading
+   doesn't reach them.
+2. **Decision: `runScan(AnalysisContext ctx, Path)`** (caller owns/creates `ctx`) keeps `runScan`'s
+   return type unchanged, so test/`main` callers just create a local `ctx` and read its state after —
+   smaller ripple than returning the context.
+3. **Auto-threading is unreliable** here: brace-matching to find method bodies is fooled by braces inside
+   string literals (e.g. the AS-EFF `"{ %s }"` messages) and by nested classes, producing both
+   false-positive params (methods given an unused `ctx`) and false-negatives; multi-call lines
+   (`writeJson(…); writeCallgraph(…); writeHierarchy(…)`) and javac's 100-error cap caused arg runaways.
+   **Use an IDE's "Introduce Parameter" / "Make non-static" refactoring** (real semantic analysis), or do
+   it by hand method-by-method, NOT a regex/text threader.
+4. **Surface to thread:** ~41 methods that use `ctx` need the param + their call sites the arg; the
+   cascade roots at `main`/`runScan`/`Query.whatif`/`parsepolicy` (which create the context). Plus the
+   ~74 `AnalysisState.ctx.<field>` refs in 15 test files become a local `ctx` the test creates and passes
+   to `runScan`. Gate exactly as LB-0/LB-1a (byte-identity + tests + soundness + conformance).

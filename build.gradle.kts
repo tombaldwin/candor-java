@@ -1,4 +1,10 @@
 import net.ltgt.gradle.errorprone.errorprone
+import java.io.ByteArrayInputStream
+import java.io.DataInputStream
+import java.net.URI
+import java.nio.file.FileSystems
+import java.nio.file.Files
+import java.util.zip.GZIPOutputStream
 
 plugins {
     application
@@ -17,6 +23,10 @@ plugins {
     // preview a refactor (changes nothing), `rewriteRun` to apply it — then ALWAYS re-run the full gate
     // battery (byte-identity oracle + soundness + conformance). See docs/openrewrite.md.
     id("org.openrewrite.rewrite") version "7.4.1"
+    // GraalVM native-image: build a standalone `candor` binary with ~native startup (no JVM warmup) —
+    // the big win for a CLI run on every push / in agent loops. `./gradlew nativeCompile` (Gradle
+    // auto-provisions a GraalVM toolchain via the foojay resolver). See docs/native-image.md.
+    id("org.graalvm.buildtools.native") version "1.1.2"
 }
 
 // Release version (crate-semver axis), distinct from the `spec` contract version (0.3,
@@ -54,6 +64,32 @@ dependencies {
     // Native unit tests (JUnit 5). junit-platform-launcher must be declared explicitly on Gradle 9+.
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.10.2")
+}
+
+// GraalVM native-image. candor reads two bundled RESOURCES via getResourceAsStream (AGENTS.md, the
+// build-info.properties provenance) — included below. It does NO reflection on analysed classes (ASM
+// reads bytes), and serializes only Maps/Lists via Gson (whose own native-image metadata ships in the
+// gson jar), so no candor-specific reflection config is needed. --no-fallback makes a missing config a
+// hard error rather than a silent JVM-fallback image.
+graalvmNative {
+    toolchainDetection.set(true)
+    // The plugin's bundled GraalVM reachability-metadata repository requires a recent GraalVM. candor
+    // needs none of it — its only reflective dependency (Gson) ships its own metadata inside the gson jar
+    // — so disable it (keeps the build working on a GraalVM CE 21 toolchain).
+    metadataRepository { enabled.set(false) }
+    binaries {
+        named("main") {
+            imageName.set("candor")
+            mainClass.set("io.poly.candor.Candor")
+            buildArgs.add("--no-fallback")
+            buildArgs.add("-H:IncludeResources=AGENTS\\.md")
+            buildArgs.add("-H:IncludeResources=candor/build-info\\.properties")
+            // The build-time JDK supertype index — candor reads JDK class hierarchies off its runtime
+            // classpath via ASM on the JVM, but a native image has no .class files; this index lets
+            // Cha.externalSupers resolve JDK hierarchies in native, keeping native == jar (see Cha).
+            buildArgs.add("-H:IncludeResources=candor/jdk-supertypes\\.idx\\.gz")
+        }
+    }
 }
 java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
 application { mainClass = "io.poly.candor.Candor" }
@@ -120,6 +156,68 @@ val generateBuildInfo by tasks.registering {
 }
 sourceSets["main"].resources.srcDir(buildInfoDir)
 tasks.named("processResources") { dependsOn(generateBuildInfo) }
+
+// JDK supertype index (for GraalVM native-image): candor resolves JDK/external class hierarchies by
+// reading their .class bytes off its runtime classpath (Cha.externalSupers via ASM ClassReader). A
+// native image carries no .class files, so that read fails and candor would UNDER-report. We capture the
+// build JDK's direct super+interfaces for every class here and bundle it (gzipped); externalSupers falls
+// back to it only when ClassReader can't read the bytes — so the JVM/jar path is unchanged and the native
+// image resolves the same JDK hierarchies. Pure constant-pool parse (no ASM on the build-script classpath).
+fun parseSupers(bytes: ByteArray): Triple<String, String?, List<String>>? {
+    val din = DataInputStream(ByteArrayInputStream(bytes))
+    if (din.readInt() != -0x35014542) return null            // 0xCAFEBABE
+    din.readUnsignedShort(); din.readUnsignedShort()         // minor, major
+    val cpCount = din.readUnsignedShort()
+    val classNameIdx = IntArray(cpCount)                     // CONSTANT_Class index -> name (Utf8) index
+    val utf8 = arrayOfNulls<String>(cpCount)
+    var i = 1
+    while (i < cpCount) {
+        when (din.readUnsignedByte()) {
+            1 -> utf8[i] = din.readUTF()                     // Utf8 (u2 len + modified-UTF8 == readUTF)
+            7 -> classNameIdx[i] = din.readUnsignedShort()  // Class
+            8, 16, 19, 20 -> din.readUnsignedShort()        // String/MethodType/Module/Package (u2)
+            15 -> { din.readUnsignedByte(); din.readUnsignedShort() }   // MethodHandle (u1+u2)
+            3, 4, 9, 10, 11, 12, 17, 18 -> din.readInt()    // 4-byte constants
+            5, 6 -> { din.readLong(); i++ }                 // Long/Double occupy two cp slots
+            else -> return null
+        }
+        i++
+    }
+    din.readUnsignedShort()                                  // access_flags
+    val thisClass = din.readUnsignedShort()
+    val superClass = din.readUnsignedShort()
+    val ifaceCount = din.readUnsignedShort()
+    val ifaces = (0 until ifaceCount).map { din.readUnsignedShort() }
+    fun nm(cpIdx: Int): String? = if (cpIdx == 0) null else utf8[classNameIdx[cpIdx]]
+    val thisName = nm(thisClass) ?: return null
+    return Triple(thisName, nm(superClass), ifaces.mapNotNull { nm(it) })
+}
+
+val jdkSupersDir = layout.buildDirectory.dir("generated/candor-jdksupers")
+val generateJdkSupertypes by tasks.registering {
+    val out = jdkSupersDir.map { it.file("candor/jdk-supertypes.idx.gz") }
+    outputs.file(out)
+    inputs.property("jdk", System.getProperty("java.version"))   // regenerate on a JDK change
+    doLast {
+        val fs = FileSystems.newFileSystem(URI.create("jrt:/"), emptyMap<String, Any>())
+        val sb = StringBuilder()
+        var n = 0
+        Files.walk(fs.getPath("/modules")).use { stream ->
+            stream.filter {
+                val s = it.toString(); s.endsWith(".class") && !s.endsWith("module-info.class")
+            }.forEach { p ->
+                val t = parseSupers(Files.readAllBytes(p)) ?: return@forEach
+                val supers = (listOfNotNull(t.second) + t.third)
+                if (supers.isNotEmpty()) { sb.append(t.first).append(' ').append(supers.joinToString(" ")).append('\n'); n++ }
+            }
+        }
+        val f = out.get().asFile.apply { parentFile.mkdirs() }
+        GZIPOutputStream(f.outputStream()).use { it.write(sb.toString().toByteArray(Charsets.UTF_8)) }
+        logger.lifecycle("candor: wrote JDK supertype index ($n classes, ${f.length() / 1024}KB gz)")
+    }
+}
+sourceSets["main"].resources.srcDir(jdkSupersDir)
+tasks.named("processResources") { dependsOn(generateJdkSupertypes) }
 
 // ---- Publishing (Maven Central via the Central Portal; see PUBLISHING.md for the one-time setup) ----
 // Central REQUIRES sources + javadoc jars, a full POM (name/description/url/licenses/scm/developers),

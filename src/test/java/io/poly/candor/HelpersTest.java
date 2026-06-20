@@ -20,11 +20,11 @@ class HelpersTest {
 
     @Test
     void scopeMatchesIsSegmentPrefix() {
-        assertTrue(Candor.scopeMatches("a.b.foo", "b"));            // last part start-matches a segment
-        assertTrue(Candor.scopeMatches("svc.Handler.run", "svc.Handler"));
-        assertTrue(Candor.scopeMatches("anything", ""));           // empty scope = whole project
-        assertFalse(Candor.scopeMatches("a.b", "x"));
-        assertFalse(Candor.scopeMatches("a", "a.b"));              // scope longer than the name
+        assertTrue(Policy.scopeMatches("a.b.foo", "b"));            // last part start-matches a segment
+        assertTrue(Policy.scopeMatches("svc.Handler.run", "svc.Handler"));
+        assertTrue(Policy.scopeMatches("anything", ""));           // empty scope = whole project
+        assertFalse(Policy.scopeMatches("a.b", "x"));
+        assertFalse(Policy.scopeMatches("a", "a.b"));              // scope longer than the name
     }
 
     /** A policy scope written with `::` (spec §6.2 + the conformance battery use it; a Rust report names
@@ -32,11 +32,11 @@ class HelpersTest {
      *  gate-evasion). nameSegments splits on both `.` and `::`. */
     @Test
     void scopeMatchesDoubleColonAndDot() {
-        assertTrue(Candor.scopeMatches("app.db.Dao.query", "app::db"));   // :: scope vs dotted name
-        assertTrue(Candor.scopeMatches("app.db.Dao.query", "app.db"));    // dot scope still works
-        assertTrue(Candor.scopeMatches("app.web.Web.handle", "app::web"));
-        assertFalse(Candor.scopeMatches("app.db.Dao.query", "other::scope")); // no over-match
-        assertFalse(Candor.scopeMatches("app.db.Dao.query", "app::web"));     // wrong segment
+        assertTrue(Policy.scopeMatches("app.db.Dao.query", "app::db"));   // :: scope vs dotted name
+        assertTrue(Policy.scopeMatches("app.db.Dao.query", "app.db"));    // dot scope still works
+        assertTrue(Policy.scopeMatches("app.web.Web.handle", "app::web"));
+        assertFalse(Policy.scopeMatches("app.db.Dao.query", "other::scope")); // no over-match
+        assertFalse(Policy.scopeMatches("app.db.Dao.query", "app::web"));     // wrong segment
     }
 
     /** An EMPTY query matches NOTHING (tier 0), never the whole codebase — `name.contains("")` was always

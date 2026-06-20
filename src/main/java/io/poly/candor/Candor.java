@@ -798,6 +798,22 @@ public class Candor {
                     if ((min.owner.equals("javax/xml/parsers/DocumentBuilder")
                             || min.owner.equals("javax/xml/parsers/SAXParser"))
                             && min.name.equals("parse") && min.desc.startsWith("(Ljava/io/File;")) dir.add(Effect.FS);
+                    // R17 — a rooted ENTRY POINT reading an externally-provided ABSTRACT java.io stream: the
+                    // receiver is the entry point's OWN parameter (framework-injected), its concrete impl is
+                    // unresolvable, and the read/write on the abstract base classifies pure. The I/O is real
+                    // but of unknown kind (Fs/Net per the concrete) → disclose Unknown, not silent-pure.
+                    // Gated to entry points so an internal helper reading a PASSED stream — whose in-project
+                    // caller HAS the concrete (effect already attributed at the creation site) — doesn't
+                    // flood. SOUNDNESS.md R17 (the abstract-java.io-stream boundary).
+                    if (effect == null && provFrames != null && isAbstractStreamIo(min.owner, min.name)
+                            && ctx().entryPoints.contains(id)) {
+                        ProvValue recv = receiverProv(provFrames[mn.instructions.indexOf(min)], min);
+                        if (isOwnParam(mn, recv, provFrames)) {
+                            dir.add(Effect.UNKNOWN);
+                            ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                                    .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
+                        }
+                    }
                     // IMPLICIT-CONTRACT-REENTRY: a JDK sink that re-enters user code via the JVM contract
                     // (toString/equals/hashCode/compareTo) — modelled pure by candor, so an EFFECTFUL override
                     // of the argument's type read silent-pure. CHA the contract method over the ARGUMENT's
@@ -2023,6 +2039,32 @@ public class Candor {
         ProvValue recv = receiverProv(provFrames[mn.instructions.indexOf(min)], min);
         ProvValue paramVal = provFrames[0].getLocal(paramLocalSlot(mn, argIndex));
         return recv != null && recv == paramVal;
+    }
+
+    /** R17 — an I/O verb on an ABSTRACT {@code java.io} stream base (Reader/InputStream/Writer/OutputStream).
+     *  A call on the abstract base means the concrete impl is unresolved; the verb decides it's genuine I/O
+     *  (a read-, write-, or skip-prefixed method, or transferTo/append) rather than pure plumbing such as
+     *  close/flush/mark/ready. */
+    static boolean isAbstractStreamIo(String internalOwner, String name) {
+        boolean base = internalOwner.equals("java/io/Reader") || internalOwner.equals("java/io/InputStream")
+                || internalOwner.equals("java/io/Writer") || internalOwner.equals("java/io/OutputStream");
+        return base && (name.startsWith("read") || name.startsWith("write")
+                || name.startsWith("skip") || name.equals("transferTo") || name.equals("append"));
+    }
+
+    /** R17 — true iff {@code v} is (by ProvValue identity) one of {@code mn}'s OWN declared parameters. The
+     *  same param-identity proof {@link #samIsOnParam} uses: an entry point's stream param is framework-
+     *  injected, so reading it is I/O of unknown kind that must be DISCLOSED, not read silent-pure. */
+    @SuppressWarnings("ReferenceEquality")
+    static boolean isOwnParam(MethodNode mn, ProvValue v, Frame<ProvValue>[] provFrames) {
+        if (v == null || provFrames == null || provFrames.length == 0) return false;
+        Frame<ProvValue> f0 = provFrames[0];
+        int n = Type.getArgumentTypes(mn.desc).length;
+        for (int i = 0; i < n; i++) {
+            int slot = paramLocalSlot(mn, i);
+            if (slot >= 0 && slot < f0.getLocals() && f0.getLocal(slot) == v) return true;
+        }
+        return false;
     }
 
     /** The ProvValue of the {@code argIndex}-th declared argument (excluding the receiver) of call {@code min}

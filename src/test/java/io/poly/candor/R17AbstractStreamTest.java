@@ -1,0 +1,86 @@
+package io.poly.candor;
+
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import io.poly.candor.model.EffectSet;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Stream;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Test;
+
+/**
+ * R17 (SOUNDNESS.md §5) — the abstract-{@code java.io}-stream boundary. A rooted ENTRY POINT that reads
+ * its OWN abstract stream parameter (framework-injected; concrete impl unresolvable) used to read
+ * silent-pure. The provenance-gated fix discloses {@code Unknown} for exactly that case, while NOT
+ * flooding internal helpers that read a passed stream (whose in-project caller holds the concrete).
+ */
+class R17AbstractStreamTest {
+
+    private static Path compile(Map<String, String> sources) throws Exception {
+        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
+        Assumptions.assumeTrue(jc != null, "no system Java compiler — skip");
+        Path dir = Files.createTempDirectory("candor-r17");
+        List<String> files = new ArrayList<>();
+        for (Map.Entry<String, String> e : sources.entrySet()) {
+            Path p = dir.resolve(e.getKey());
+            Files.createDirectories(p.getParent());
+            Files.writeString(p, e.getValue());
+            files.add(p.toString());
+        }
+        Path out = dir.resolve("cls");
+        Files.createDirectories(out);
+        List<String> args = new ArrayList<>(List.of("-d", out.toString()));
+        args.addAll(files);
+        assertTrue(jc.run(null, null, null, args.toArray(new String[0])) == 0, "fixture must compile");
+        return out;
+    }
+
+    private static void rm(Path dir) throws Exception {
+        try (Stream<Path> s = Files.walk(dir)) {
+            s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+        }
+    }
+
+    @Test
+    void entryPointReadingItsAbstractStreamParamDisclosesUnknownWithoutFlooding() throws Exception {
+        Path cls = compile(Map.of(
+            // A framework annotation candor roots (@Subscribe), at its real FQN with RUNTIME retention.
+            "com/google/common/eventbus/Subscribe.java",
+            "package com.google.common.eventbus; import java.lang.annotation.*;"
+                + " @Retention(RetentionPolicy.RUNTIME) @Target(ElementType.METHOD) public @interface Subscribe {}",
+            "app/R17.java",
+            "package app; import java.io.*; import com.google.common.eventbus.Subscribe; public class R17 {"
+                + " @Subscribe void onData(InputStream s) throws IOException { s.readAllBytes(); }"   // entry reads abstract param
+                + " void helper(InputStream s) throws IOException { s.read(); }"                       // non-entry -> must stay pure
+                + " void use() throws IOException { helper(new FileInputStream(\"/tmp/x\")); }"        // caller has concrete -> Fs
+                + " void readsOwnFile() throws IOException { new FileInputStream(\"/tmp/x\").read(); } }")); // concrete -> Fs
+        try {
+            Map<String, EffectSet> r = Candor.runScan(cls);
+
+            // The fix: a rooted entry point reading its OWN abstract stream param discloses Unknown.
+            assertTrue(r.getOrDefault("app.R17.onData", EffectSet.empty()).toNames().contains("Unknown"),
+                    "entry point reading its abstract InputStream param must disclose Unknown (R17), not read pure");
+
+            // No flood: a NON-entry helper reading a passed abstract stream stays pure (its caller holds the
+            // concrete, so the effect is attributed at the creation site, not here).
+            assertFalse(r.getOrDefault("app.R17.helper", EffectSet.empty()).toNames().contains("Unknown"),
+                    "internal helper reading a passed stream must NOT be flooded with Unknown");
+            assertTrue(r.getOrDefault("app.R17.helper", EffectSet.empty()).isEmpty(),
+                    "internal helper reading a passed stream stays pure (R17 is entry-point-gated)");
+
+            // The common case is unchanged: an in-scope concrete creation is attributed Fs at the creator.
+            assertTrue(r.getOrDefault("app.R17.use", EffectSet.empty()).toNames().contains("Fs"),
+                    "the caller that creates the concrete FileInputStream carries Fs");
+            assertTrue(r.getOrDefault("app.R17.readsOwnFile", EffectSet.empty()).toNames().contains("Fs"),
+                    "a method that creates + reads a concrete stream carries Fs (unchanged)");
+        } finally {
+            rm(cls.getParent());
+        }
+    }
+}

@@ -3,6 +3,12 @@ plugins {
     `maven-publish`
     signing
     id("com.gradleup.shadow") version "9.2.2"
+    // OpenRewrite: type-attributed, semantic source refactoring for mechanical/large-scale changes
+    // (the safe alternative to regex for ambiguous or signature-changing edits). Recipes are declared in
+    // rewrite.yml + listed under `rewrite { activeRecipe(...) }` below. Run `./gradlew rewriteDryRun` to
+    // preview a refactor (changes nothing), `rewriteRun` to apply it — then ALWAYS re-run the full gate
+    // battery (byte-identity oracle + soundness + conformance). See docs/openrewrite.md.
+    id("org.openrewrite.rewrite") version "7.4.1"
 }
 
 // Release version (crate-semver axis), distinct from the `spec` contract version (0.3,
@@ -12,11 +18,28 @@ version = "0.7.8"
 group = "io.poly.candor"
 
 repositories { mavenCentral() }
+
+// OpenRewrite recipes to run with `rewriteRun`/`rewriteDryRun`. No recipe is active by default, so
+// `rewriteRun` is a safe no-op until you opt one in for a specific refactor (otherwise a stray run could
+// churn the whole tree). Add the recipe(s) for the change at hand here, ALWAYS `rewriteDryRun` and review
+// the patch first, then `rewriteRun` + the full gate battery. See docs/openrewrite.md.
+//   NOTE: org.openrewrite.java.RemoveUnusedImports is the canonical demonstrator but on this codebase it
+//   UNFOLDS our wildcard imports (import ...tree.* -> explicit classes) across ~50 files — against our
+//   established style — so it is deliberately NOT activated. (Verified via rewriteDryRun.)
+rewrite {
+    // activeRecipe("io.poly.candor.YourRecipe")   // <- opt in per refactor (define in rewrite.yml)
+}
+
 dependencies {
     implementation("org.ow2.asm:asm:9.8")
     implementation("org.ow2.asm:asm-tree:9.8")
     implementation("org.ow2.asm:asm-analysis:9.8") // AS-EFF-007 taint dataflow (Analyzer/Interpreter)
     implementation("com.google.code.gson:gson:2.11.0")
+    // OpenRewrite recipe modules available to the recipes above (the BOM pins a coherent set). The core
+    // java recipes (RemoveUnusedImports, ChangeType/ChangeMethodName, …) ship with the plugin; this BOM
+    // + static-analysis adds the best-practices recipe library for future custom/composed recipes.
+    rewrite(platform("org.openrewrite.recipe:rewrite-recipe-bom:3.33.0"))
+    rewrite("org.openrewrite.recipe:rewrite-static-analysis")
     // Native unit tests (JUnit 5). junit-platform-launcher must be declared explicitly on Gradle 9+.
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.10.2")

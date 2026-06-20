@@ -5362,6 +5362,38 @@ public class Candor {
                     || method.startsWith("batch"))) return "Net";  // search SaaS
         if (owner.equals("com.contentful.java.cda.FetchQuery")
                 && (method.equals("all") || method.equals("one"))) return "Net";  // headless CMS terminal
+        // ── Precision (batch 24) — last SaaS-Net pass (vein mined out). All body-confirmed wire calls. ──
+        // Firebase Admin — FCM push + Auth admin → Net. NOT verifyIdToken (local cached-key JWT verify) or
+        // createCustomToken (local JWT sign) — those are in-memory crypto, anchored pure.
+        if (owner.equals("com.google.firebase.messaging.FirebaseMessaging")
+                && (method.startsWith("send") || method.equals("subscribeToTopic")
+                    || method.equals("unsubscribeFromTopic"))) return "Net";
+        if ((owner.equals("com.google.firebase.auth.FirebaseAuth")
+                || owner.equals("com.google.firebase.auth.AbstractFirebaseAuth"))
+                && (method.equals("createUser") || method.equals("getUser") || method.equals("updateUser")
+                    || method.equals("deleteUser") || method.startsWith("getUserBy") || method.equals("listUsers")
+                    || method.equals("setCustomUserClaims") || method.equals("revokeRefreshTokens")
+                    || method.startsWith("generate") || method.equals("importUsers"))) return "Net";
+        // Email SaaS — Postmark / Mailjet wire terminals → Net.
+        if (owner.equals("com.postmarkapp.postmark.client.ApiClient") && method.equals("deliverMessage"))
+            return "Net";
+        if (owner.equals("com.mailjet.client.MailjetClient")
+                && (method.equals("post") || method.equals("get") || method.equals("put") || method.equals("delete")))
+            return "Net";
+        // SMS/comms — MessageBird / Plivo → Net (Plivo's Creator/Updater/... terminals, like Twilio).
+        if (owner.equals("com.messagebird.MessageBirdClient") && method.startsWith("send")) return "Net";
+        if (owner.startsWith("com.plivo.api.models.")
+                && (method.equals("create") || method.equals("update") || method.equals("fetch")
+                    || method.equals("delete"))) return "Net";
+        // Realtime push — Pusher.trigger / Ably Channel.publish → Net.
+        if ((owner.equals("com.pusher.rest.Pusher") || owner.equals("com.pusher.rest.PusherAbstract"))
+                && method.equals("trigger")) return "Net";
+        if ((owner.equals("io.ably.lib.rest.Channel") || owner.equals("io.ably.lib.rest.ChannelBase"))
+                && method.equals("publish")) return "Net";
+        // Observability SaaS — New Relic *BatchSender.sendBatch (synchronous wire; TelemetryClient.sendBatch
+        // is the deferred/buffered void variant → anchored pure).
+        if (owner.startsWith("com.newrelic.telemetry.") && owner.endsWith("BatchSender")
+                && method.equals("sendBatch")) return "Net";
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation

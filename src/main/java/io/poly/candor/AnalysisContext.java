@@ -9,11 +9,10 @@ import io.poly.candor.model.*;
  *  forwarding bookkeeping). One INSTANCE per scan: a fresh {@code AnalysisContext} is a fresh slate, so
  *  no global clear is needed.
  *
- *  <p>LB-0/LB-1a: the fields moved here from {@code AnalysisState} (instance, no longer static); the
- *  engine reaches them through the single {@link AnalysisState#ctx} handle ({@code ctx.direct} …). That
- *  handle is process-global, so the engine is re-entrant only for SEQUENTIAL in-process scans (a fresh
- *  context per scan), NOT thread-safe. LB-1b removes the handle and threads the context per scan, making
- *  concurrent scans safe. Spec-vocabulary + Spring-marker CONSTANTS stay in Candor. See
+ *  <p>The fields moved here from {@code AnalysisState} (LB-0/LB-1a); the engine reaches them through the
+ *  {@link AnalysisState#ctx()} accessor ({@code ctx().direct} …), which is backed by a per-thread
+ *  {@link ThreadLocal} (LB-1b). Each scanning thread therefore owns its own context, so concurrent /
+ *  parallel scans are isolated. Spec-vocabulary + Spring-marker CONSTANTS stay in Candor. See
  *  docs/level-b-scoping.md. */
 final class AnalysisContext {
     final Map<String, EffectSet> direct = new HashMap<>();

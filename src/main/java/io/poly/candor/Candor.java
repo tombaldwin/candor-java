@@ -118,36 +118,31 @@ public class Candor {
         }
     }
 
-    /** Clear every mutable analysis accumulator so a scan starts from a clean slate. The engine's
-     *  state lives in static collections (an analysis cache the binary fills once per run, not a
-     *  singleton the process owns); without this a SECOND in-process scan would double-count edges
-     *  and inherit the prior run's repo/entity/clinit/rule sets — fabricating effects from leftover
-     *  state. Resetting here makes {@link #runScan} re-entrant for SEQUENTIAL in-process scans (the
-     *  audit's highest structural risk). It is NOT thread-safe: {@code ctx} is a process-global handle,
-     *  so concurrent scans would clobber each other — LB-1b threads the context per scan to fix that.
-     *  The immutable Set.of(...) markers (REPO_MARKERS, AMBIENT, KNOWN_EFFECTS, INJECTION,
-     *  PATH_CTOR_OWNERS) are constants, not state, and are deliberately left untouched. */
+    /** Start the current thread's scan from a clean slate. All per-scan state lives on
+     *  {@link AnalysisContext}; {@link AnalysisState#newContext()} installs a fresh one for THIS thread,
+     *  so a second in-process scan can't double-count edges or inherit the prior run's
+     *  repo/entity/clinit/rule sets. Because the context is thread-local, concurrent scans on different
+     *  threads are isolated (LB-1b). The immutable Set.of(...) markers (REPO_MARKERS, AMBIENT,
+     *  KNOWN_EFFECTS, INJECTION, PATH_CTOR_OWNERS) are constants, not state, and are left untouched. */
     static void resetState() {
-        // ALL per-scan state now lives in AnalysisContext, so a fresh instance IS the reset (LB-1a).
-        // (LB-1b will remove this static handle entirely and thread the context per scan.)
-        ctx = new AnalysisContext();
+        newContext();
     }
 
-    /** The analysis core, factored out of {@link #main} so it is re-entrant for sequential reuse (resets
-     *  first; not thread-safe — see {@link #resetState}) and free of
+    /** The analysis core, factored out of {@link #main} so it is re-entrant (resets the thread's context
+     *  first; safe to run concurrently on separate threads — the context is thread-local) and free of
      *  System.exit (so it is unit-testable in-process): reset state, load the target, index overloads
      *  + CHA subtypes, compute Spring types, chain CANDOR_DEPS, run per-method analysis, resolve
      *  literal-reflection edges, then return the inferred per-method effect sets from the fixpoint. */
     static Map<String, EffectSet> runScan(Path target) throws IOException {
         resetState();
         List<ClassNode> classes = load(target);
-        ctx.ALL = classes;
+        ctx().ALL = classes;
         for (ClassNode cn : classes) {
-            ctx.projectClasses.add(cn.name);
-            ctx.byName.put(cn.name, cn);
+            ctx().projectClasses.add(cn.name);
+            ctx().byName.put(cn.name, cn);
             String dc = cn.name.replace('/', '.');
             for (MethodNode mn : cn.methods) {
-                if (mn.name.equals("<clinit>")) ctx.classesWithClinit.add(cn.name);
+                if (mn.name.equals("<clinit>")) ctx().classesWithClinit.add(cn.name);
                 // Record this name's descriptor so overloaded names can be disambiguated (methodId).
                 // EXCLUDE compiler-generated bridge/synthetic forwarders (a covariant-return or generic
                 // bridge `call()Object` beside the real `call()Integer`): they aren't real overloads —
@@ -156,7 +151,7 @@ public class Candor {
                 // The bridge body just forwards to the real method, so leaving both bare (re-collapsed)
                 // is correct — its effect IS the real method's.
                 if ((mn.access & (Opcodes.ACC_BRIDGE | Opcodes.ACC_SYNTHETIC)) != 0) continue;
-                ctx.overloadDescs.computeIfAbsent(dc + "." + mn.name, k -> new HashSet<>()).add(mn.desc);
+                ctx().overloadDescs.computeIfAbsent(dc + "." + mn.name, k -> new HashSet<>()).add(mn.desc);
             }
         }
         buildSubtypeIndex(classes);
@@ -164,7 +159,7 @@ public class Candor {
         // Cross-jar inheritance (candor-spec §2): load dependency reports named by CANDOR_DEPS BEFORE
         // analyze, so a call into an already-analyzed dependency inherits its effects (vs assumed-pure).
         loadCrossDeps(System.getenv("CANDOR_DEPS"), provenance()[0]);
-        ctx.taintEnabled = System.getenv(Mode.TAINT.envVar()) != null; // read before analyze (the pass runs per method)
+        ctx().taintEnabled = System.getenv(Mode.TAINT.envVar()) != null; // read before analyze (the pass runs per method)
         // Per-class fail-soft: an exotic/malformed class that throws ANYWHERE in analyze (e.g. a malformed
         // method descriptor that ASM validates only lazily in Type.getArgumentTypes — the 0.5.6 crash class,
         // re-surfaced via an overloaded-name path the desc.startsWith("(") guard doesn't catch) must NOT
@@ -189,19 +184,19 @@ public class Candor {
         // Unknown stands. Matching by global leaf-name suffix (the old code) fabricated an edge to an
         // unrelated same-named project method — the exact "candor never fabricates an effect" breach
         // candor-scan's own comments record removing. Unknown stays either way (reflection is opaque).
-        for (String[] pair : ctx.reflectPairs) {
+        for (String[] pair : ctx().reflectPairs) {
             String caller = pair[0], lit = pair[1], recv = pair[2];
-            if (recv.isEmpty() || !ctx.projectClasses.contains(recv)) continue;
+            if (recv.isEmpty() || !ctx().projectClasses.contains(recv)) continue;
             String callee = recv.replace('/', '.') + "." + lit;
-            if (ctx.edges.containsKey(callee)) ctx.edges.get(caller).add(callee);
+            if (ctx().edges.containsKey(callee)) ctx().edges.get(caller).add(callee);
         }
 
         // TRUE-FORWARDING resolution (after ALL classes analysed, so a force site can reach a field bound
         // in another class): edge each forcing method to the lambda(s) stored in the SPECIFIC field it
         // forces. Field-scoped, so a pure-init lazy's lambda contributes nothing and the reader stays pure.
-        for (String[] pair : ctx.deferredForcePairs) {
-            Set<String> lambdas = ctx.deferredFieldLambdas.get(pair[1]);
-            if (lambdas != null) ctx.edges.computeIfAbsent(pair[0], k -> new HashSet<>()).addAll(lambdas);
+        for (String[] pair : ctx().deferredForcePairs) {
+            Set<String> lambdas = ctx().deferredFieldLambdas.get(pair[1]);
+            if (lambdas != null) ctx().edges.computeIfAbsent(pair[0], k -> new HashSet<>()).addAll(lambdas);
         }
 
         // PRIVATE FUNCTIONAL-PARAM FORWARDING resolution (after ALL classes analysed, so every nestmate
@@ -210,14 +205,14 @@ public class Candor {
         // edge the sink to those bodies — their real effects propagate, the smear-Unknown is gone. Else
         // RESTORE the honest callback Unknown (a call site passed a field/param/external-ref, or the sink
         // is uncalled) — never silently pure.
-        for (String sink : ctx.fwdSinkPending) {
-            Set<String> lambdas = ctx.fwdSinkLambdas.get(sink);
-            if (!ctx.fwdSinkOpaque.contains(sink) && lambdas != null && !lambdas.isEmpty()) {
-                ctx.edges.computeIfAbsent(sink, k -> new HashSet<>()).addAll(lambdas);
+        for (String sink : ctx().fwdSinkPending) {
+            Set<String> lambdas = ctx().fwdSinkLambdas.get(sink);
+            if (!ctx().fwdSinkOpaque.contains(sink) && lambdas != null && !lambdas.isEmpty()) {
+                ctx().edges.computeIfAbsent(sink, k -> new HashSet<>()).addAll(lambdas);
             } else {
-                ctx.direct.computeIfAbsent(sink, k -> EffectSet.empty()).add(Effect.UNKNOWN);
-                String[] why = ctx.fwdSinkPendingWhy.get(sink);
-                if (why != null) ctx.unknownWhy.computeIfAbsent(sink, k -> new TreeSet<>()).add(UnknownReason.parse(why[0]));
+                ctx().direct.computeIfAbsent(sink, k -> EffectSet.empty()).add(Effect.UNKNOWN);
+                String[] why = ctx().fwdSinkPendingWhy.get(sink);
+                if (why != null) ctx().unknownWhy.computeIfAbsent(sink, k -> new TreeSet<>()).add(UnknownReason.parse(why[0]));
             }
         }
 
@@ -266,7 +261,7 @@ public class Candor {
         // Rust reference and prove the SPEC §6.2 grammar means the same thing in both.
         if (args[0].equals("parsepolicy")) {
             if (args.length < 2) { System.err.println("usage: candor parsepolicy <policy-file>"); System.exit(2); }
-            ctx.denyRules.clear(); ctx.allowRules.clear(); ctx.forbidRules.clear();
+            ctx().denyRules.clear(); ctx().allowRules.clear(); ctx().forbidRules.clear();
             if (!parsePolicy(args[1])) { System.err.println("candor: cannot read policy " + args[1]); System.exit(2); }
             System.out.println(Query.policyJson());
             System.exit(0);
@@ -336,8 +331,8 @@ public class Candor {
         // The κ-coverage disclosure (mirrors the Rust/TS receipts): external packages the bytecode
         // demonstrably calls where the classifier never fired — invisible, not Unknown. Per-scan
         // evidence instead of a doc footnote; never conclude "no effect" through a package named here.
-        List<Map.Entry<String, Integer>> unlisted = ctx.kappaSeen.entrySet().stream()
-                .filter(e -> !ctx.kappaClassified.contains(e.getKey()) && !ctx.depCoveredPkgs.contains(e.getKey()))
+        List<Map.Entry<String, Integer>> unlisted = ctx().kappaSeen.entrySet().stream()
+                .filter(e -> !ctx().kappaClassified.contains(e.getKey()) && !ctx().depCoveredPkgs.contains(e.getKey()))
                 .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()
                         .thenComparing(Map.Entry.comparingByKey()))
                 .collect(Collectors.toList());
@@ -359,7 +354,7 @@ public class Candor {
         String noAmbient = System.getenv(Mode.NO_AMBIENT.envVar());
         String policy = System.getenv(Mode.POLICY.envVar());
         boolean enforce = baseline != null || noAmbient != null || strict != null || policy != null
-                || ctx.taintEnabled;
+                || ctx().taintEnabled;
 
         if (!enforce) {
             System.out.println("candor-java — effect audit (Spring-aware; Unknown for reflection/dispatch)\n");
@@ -367,11 +362,11 @@ public class Candor {
                     .filter(e -> !e.getValue().isEmpty())
                     .sorted(Map.Entry.comparingByKey())
                     .forEach(e -> {
-                        var d = ctx.direct.getOrDefault(e.getKey(), EffectSet.empty()).toNames();
+                        var d = ctx().direct.getOrDefault(e.getKey(), EffectSet.empty()).toNames();
                         String set = e.getValue().toNames().stream()
                                 .map(x -> d.contains(x) ? x : x + "*")
                                 .collect(Collectors.joining(", "));
-                        String tag = ctx.entryPoints.contains(e.getKey()) ? "  [entry]" : "";
+                        String tag = ctx().entryPoints.contains(e.getKey()) ? "  [entry]" : "";
                         System.out.printf("  %-52s { %s }%s%n", e.getKey(), set, tag);
                     });
             System.out.println("\n(* = via callee, [entry] = framework-invoked entry point)");
@@ -386,7 +381,7 @@ public class Candor {
         if (baseline != null) violations += checkBaseline(inferred, baseline);
         if (policy != null) violations += checkPolicy(inferred, policy);
         // AS-EFF-007 is a heuristic ADVISORY (spec §6): emit findings but never fail CI on its own.
-        int advisories = ctx.taintEnabled ? checkTaint(inferred) : 0;
+        int advisories = ctx().taintEnabled ? checkTaint(inferred) : 0;
         if (violations == 0 && advisories == 0) System.out.println("candor-java: no violations");
         if (violations > 0) System.exit(1); // fail CI
     }
@@ -415,7 +410,7 @@ public class Candor {
 
     static int checkConformance(ClassConformance cc, String scope) {
         int v = 0;
-        for (ClassNode cn : ctx.ALL) {
+        for (ClassNode cn : ctx().ALL) {
             String dc = cn.name.replace('/', '.');
             if (!gateScopeCovers(scope, dc)) continue;
             EffectSet declared = cc.declared().getOrDefault(dc, EffectSet.empty());
@@ -447,12 +442,12 @@ public class Candor {
 
     /** Effects a field of type `internal` can supply (Spring repo/template, or a project collaborator). */
     static EffectSet typeEffects(String internal, Map<String, EffectSet> performed) {
-        if (ctx.repoTypes.contains(internal)) return EffectSet.of(Effect.DB);
-        if (ctx.feignTypes.contains(internal)) return EffectSet.of(Effect.NET);
+        if (ctx().repoTypes.contains(internal)) return EffectSet.of(Effect.DB);
+        if (ctx().feignTypes.contains(internal)) return EffectSet.of(Effect.NET);
         String dotted = internal.replace('/', '.');
         EffectSet lib = classifyType(dotted);
         if (!lib.isEmpty()) return lib;
-        if (ctx.byName.containsKey(internal)) return performed.getOrDefault(dotted, EffectSet.empty());
+        if (ctx().byName.containsKey(internal)) return performed.getOrDefault(dotted, EffectSet.empty());
         return EffectSet.empty();
     }
 
@@ -492,7 +487,7 @@ public class Candor {
     static ClassConformance classConformance(Map<String, EffectSet> inferred, String declaredScope) {
         Map<String, EffectSet> performed = new HashMap<>();
         Map<String, String> fnToClass = new HashMap<>();
-        for (ClassNode cn : ctx.ALL) {
+        for (ClassNode cn : ctx().ALL) {
             String dc = cn.name.replace('/', '.');
             EffectSet p = performed.computeIfAbsent(dc, k -> EffectSet.empty());
             for (MethodNode mn : cn.methods) {
@@ -504,7 +499,7 @@ public class Candor {
             }
         }
         Map<String, EffectSet> declared = new HashMap<>();
-        for (ClassNode cn : ctx.ALL) {
+        for (ClassNode cn : ctx().ALL) {
             String dc = cn.name.replace('/', '.');
             if (declaredScope != null && !gateScopeCovers(declaredScope, dc)) continue;
             EffectSet d = EffectSet.empty();
@@ -576,12 +571,12 @@ public class Candor {
             // edges to `X.<clinit>` (see below), so an effectful constructor OR static initializer
             // propagates to its use site instead of being silently pure.
             String id = methodId(dottedClass, mn.name, mn.desc);
-            var dir = ctx.direct.computeIfAbsent(id, k -> EffectSet.empty());
-            ctx.edges.computeIfAbsent(id, k -> new HashSet<>());
-            ctx.loc.putIfAbsent(id, cn.sourceFile + ":" + firstLine(mn));
+            var dir = ctx().direct.computeIfAbsent(id, k -> EffectSet.empty());
+            ctx().edges.computeIfAbsent(id, k -> new HashSet<>());
+            ctx().loc.putIfAbsent(id, cn.sourceFile + ":" + firstLine(mn));
             // Stable, descriptor-bearing cross-jar identity (candor-spec §2 `hash`): the exact ref a
             // call site in a dependent jar uses, so that jar can inherit this method's effects.
-            ctx.hashOf.putIfAbsent(id, cn.name + "." + mn.name + mn.desc);
+            ctx().hashOf.putIfAbsent(id, cn.name + "." + mn.name + mn.desc);
 
             // TRUE-FORWARDING bindings: in a constructor / static initializer, find each PUTFIELD/PUTSTATIC
             // whose stored value came from a recognised deferred-execution container construction
@@ -595,7 +590,7 @@ public class Candor {
             // call into a project-declared native binding would look like a no-op.
             if ((mn.access & Opcodes.ACC_NATIVE) != 0) {
                 dir.add(Effect.UNKNOWN);
-                ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(UnknownReason.Kind.NATIVE, mn.name));
+                ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(UnknownReason.Kind.NATIVE, mn.name));
             }
 
             // Spring annotations on this method (the effect Spring's proxy/generated code performs).
@@ -606,13 +601,13 @@ public class Candor {
             // from every reachability root (silent-pure for a blast-radius / --agents walk). Resolve the
             // annotation type's own meta-annotations recursively.
             if (annoOrMetaMatches(mn.visibleAnnotations, ROOT_ANNOTATIONS))
-                ctx.entryPoints.add(id);
+                ctx().entryPoints.add(id);
             // CDI observer method: `void onX(@Observes Event e)` is invoked by the CDI container when the
             // event fires, with NO project call site (the @EventListener shape). Unlike the mappings the
             // marker is a PARAMETER annotation, so the method-annotation path above misses it — scan the
             // per-parameter annotation lists. Covers javax/ + jakarta/ enterprise.event.Observes(Async).
             if (anyParamAnnoMatches(mn, PARAM_ROOT_ANNOTATIONS))
-                ctx.entryPoints.add(id);
+                ctx().entryPoints.add(id);
             // gRPC service handler: a project class extends a generated `*ImplBase` and overrides an RPC
             // method whose signature carries an `io.grpc.stub.StreamObserver` — invoked by the gRPC server
             // runtime with no in-project call site. RUNTIME_OVERRIDES can't key on it (the RPC method names
@@ -623,7 +618,7 @@ public class Candor {
                     && cn.superName.endsWith("ImplBase")
                     && mn.desc.contains("Lio/grpc/stub/StreamObserver;")
                     && (mn.access & (Opcodes.ACC_STATIC | Opcodes.ACC_ABSTRACT)) == 0)
-                ctx.entryPoints.add(id);
+                ctx().entryPoints.add(id);
             // A `finalize()` override is run by the GC's finalizer thread — NOT by any bytecode call.
             // It's the JVM analog of Rust's implicit-Drop hole: an effect (a socket/file opened on
             // collection) that otherwise sits in finalize's own entry but is unreachable from any root,
@@ -631,7 +626,7 @@ public class Candor {
             // Rust we can't attribute it to a drop SITE (finalization is non-deterministic and runs on a
             // detached thread), so the honest model is the runtime-invoked entry point it actually is.
             if (mn.name.equals("finalize") && mn.desc.equals("()V") && (mn.access & Opcodes.ACC_STATIC) == 0)
-                ctx.entryPoints.add(id);
+                ctx().entryPoints.add(id);
             // Serialization callbacks (readObject/writeObject/readExternal/writeExternal/readResolve/
             // writeReplace/readObjectNoData) are invoked REFLECTIVELY by ObjectInput/OutputStream during
             // (de)serialization — no project call site, so an effect (custom read/write doing I/O, a
@@ -641,31 +636,31 @@ public class Candor {
             if ((mn.access & Opcodes.ACC_STATIC) == 0
                     && (supers.contains("java/io/Serializable") || supers.contains("java/io/Externalizable"))
                     && isSerializationCallback(mn.name, mn.desc))
-                ctx.entryPoints.add(id);
+                ctx().entryPoints.add(id);
             // The program entry `public static void main(String[])` — the JVM invokes it to start the app,
             // the root of a CLI tool's reachability (candor-spec §2, like the Rust impl's `fn main`).
             if (mn.name.equals("main") && mn.desc.equals("([Ljava/lang/String;)V")
                     && (mn.access & Opcodes.ACC_STATIC) != 0)
-                ctx.entryPoints.add(id);
+                ctx().entryPoints.add(id);
             // A runtime-invoked override (Runnable/Thread/Callable task body, Spring lifecycle hook,
             // servlet/filter/listener) — invoked by the runtime with NO project call site, so its I/O
             // would otherwise be orphaned from every reachability root (the finalize shape). A null
             // descriptor matches by method name alone (servlet methods carry javax/jakarta param types).
             for (String[] r : runtimeRows)
                 if (mn.name.equals(r[1]) && (r[2] == null || mn.desc.equals(r[2]))) {
-                    ctx.entryPoints.add(id);
+                    ctx().entryPoints.add(id);
                     break;
                 }
             // The Ktor handler's BODY is `invokeSuspend` (the suspend-lambda's state machine); `invoke` is
             // the bridge that drives it. Mark the body so its effects become a reachability root.
             if (ktorHandler && (mn.name.equals("invokeSuspend") || mn.name.equals("invoke")))
-                ctx.entryPoints.add(id);
+                ctx().entryPoints.add(id);
 
             // AS-EFF-007 taint pass (CANDOR_TAINT): a per-method dataflow whose frames tell us, at each
             // effect call below, whether an argument is parameter-derived. Skipped without the mode, and on
             // bodiless or malformed methods — taint is advisory, so a failed analysis must never crash.
             Frame<TaintValue>[] taintFrames = null;
-            if (ctx.taintEnabled && mn.instructions.size() > 0
+            if (ctx().taintEnabled && mn.instructions.size() > 0
                     && (mn.access & (Opcodes.ACC_NATIVE | Opcodes.ACC_ABSTRACT)) == 0) {
                 try {
                     taintFrames = new Analyzer<>(new TaintInterpreter(paramSlots(mn))).analyze(cn.name, mn);
@@ -711,7 +706,7 @@ public class Candor {
                         ProvValue task = handoffTaskArg(provFrames[mn.instructions.indexOf(min)], min);
                         if (task != null && !task.fromIndy && task.newType == null) {
                             dir.add(Effect.UNKNOWN);
-                            ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                            ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                                     .add(UnknownReason.of(UnknownReason.Kind.TASK_HANDOFF, owner + "." + min.name));
                         }
                     }
@@ -731,11 +726,11 @@ public class Candor {
                     // sound UNDER-report (no edge), never a fabrication. Restricted to a freshly-constructed
                     // (`newType`) project functional impl and EXTERNAL callees (a project callee's body is
                     // analysed directly).
-                    if (provFrames != null && !ctx.projectClasses.contains(min.owner)
+                    if (provFrames != null && !ctx().projectClasses.contains(min.owner)
                             && isInvokingHof(min.name)) {
                         for (ProvValue a : callArgs(provFrames[mn.instructions.indexOf(min)], min)) {
                             if (a == null || a.newType == null) continue;
-                            ctx.edges.get(id).addAll(functionalSamSurface(a.newType));
+                            ctx().edges.get(id).addAll(functionalSamSurface(a.newType));
                         }
                     }
                     // XML parse(File) PRECISION: the parser's `parse` already classifies as the XXE/external-
@@ -802,7 +797,7 @@ public class Candor {
                     // descriptor to be a container type so an unrelated `.get()` never matches.
                     if (isDeferredForce(min.owner, min.name)) {
                         String fieldKey = forcedFieldKey(mn, min);
-                        if (fieldKey != null) ctx.deferredForcePairs.add(new String[] { id, fieldKey });
+                        if (fieldKey != null) ctx().deferredForcePairs.add(new String[] { id, fieldKey });
                     }
                     if (owner.equals("java.lang.Class")
                             && (min.name.equals("getMethod") || min.name.equals("getDeclaredMethod"))) {
@@ -812,23 +807,23 @@ public class Candor {
                         // leaf-name match that fabricates an edge to an unrelated same-named method.
                         String lit = nearestLiteralArg(mn, min);
                         String recv = reflectReceiver(mn, min);
-                        if (lit != null) ctx.reflectPairs.add(new String[] { id, lit, recv == null ? "" : recv });
+                        if (lit != null) ctx().reflectPairs.add(new String[] { id, lit, recv == null ? "" : recv });
                     }
                     // κ ledger: key external owners by their EXACT package (the slash-form owner
                     // up to the class segment — no uppercase heuristic, which mangled lowercase/
                     // obfuscated classes); array owners ([Ljava/lang/String; — every enum's
                     // values() clone) are types, not packages, and stay out. A package with zero
                     // classifications anywhere in the scan is a named blind spot.
-                    if (!ctx.projectClasses.contains(min.owner) && min.owner.charAt(0) != '[') {
+                    if (!ctx().projectClasses.contains(min.owner) && min.owner.charAt(0) != '[') {
                         int slash = min.owner.lastIndexOf('/');
                         String pkg = slash > 0 ? min.owner.substring(0, slash).replace('/', '.') : "";
                         if (!pkg.isEmpty() && !kappaCovers(pkg)) {
-                            ctx.kappaSeen.merge(pkg, 1, Integer::sum);
-                            if (effect != null) ctx.kappaClassified.add(pkg);
+                            ctx().kappaSeen.merge(pkg, 1, Integer::sum);
+                            if (effect != null) ctx().kappaClassified.add(pkg);
                             // A FLOORED call (classifier returned pure) into an external package is a candidate
                             // per-method blind spot. Post-filtered to packages κ never classified ANYWHERE
                             // (so a known package's pure method isn't disclosed) and propagated to callers.
-                            else ctx.blindDirect.computeIfAbsent(id, k -> new TreeSet<>()).add(pkg);
+                            else ctx().blindDirect.computeIfAbsent(id, k -> new TreeSet<>()).add(pkg);
                         } else if (!pkg.isEmpty() && effect == null
                                 && pkg.startsWith("org.springframework")
                                 && isSpringIoOwner(min.owner) && !isConventionallyPure(min.name)) {
@@ -843,20 +838,20 @@ public class Candor {
                             // The modeled Spring templates' I/O methods return effect!=null so never reach here;
                             // only a genuinely-unmodeled member (or a rare pure accessor → harmless Unknown) does.
                             dir.add(Effect.UNKNOWN);
-                            ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                            ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                                     .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
                         }
                     }
                     // An injection-class effect on a caller-derived argument is an injection surface.
                     if (taintFrames != null && effect != null && INJECTION.contains(effect)
                             && argsTainted(taintFrames[mn.instructions.indexOf(min)], min))
-                        ctx.tainted.computeIfAbsent(id, k -> EffectSet.empty()).add(effect);
+                        ctx().tainted.computeIfAbsent(id, k -> EffectSet.empty()).add(effect);
                     if (effect == Effect.UNKNOWN) // reflection / dynamic invoke (classify §)
-                        ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                        ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                                 .add(UnknownReason.of(UnknownReason.Kind.REFLECT, owner + "." + min.name));
                     if (effect == Effect.FS) { // non-breaking read/write refinement of Fs
                         List<String> k = fsKind(owner, min.name);
-                        if (!k.isEmpty()) ctx.fsDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(k);
+                        if (!k.isEmpty()) ctx().fsDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(k);
                     }
                     // AS-EFF-008 literal surfaces (SPEC §2 `cmds`/`paths`): the subprocess program and the
                     // file path, read from the FIRST string-literal arg of the call that carries it — the
@@ -873,13 +868,13 @@ public class Candor {
                         // `cmds`. Exec itself is emitted unconditionally below — only the literal tightens.
                         String head = programHeadLiteral(min);
                         if (head != null) {
-                            ctx.cmdsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(head);
+                            ctx().cmdsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(head);
                             dir.addAll(EffectSet.ofNames(commandHeadEffects(head)));
                         } else {
                             // a program-NAMING Exec call with a RUNTIME head (no literal) — the command is
                             // invisible to the gate, so a benign sibling literal must not mask it (sweep [0],
                             // the masking guard generalized from Net to Exec/Fs/Db).
-                            ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Exec");
+                            ctx().surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Exec");
                         }
                     }
                     // …only the overload whose path is a SINGLE leading String arg (descriptor
@@ -892,10 +887,10 @@ public class Candor {
                             || (PATH_CTOR_OWNERS.contains(owner) && min.name.equals("<init>")))
                             && pathArgIsSingleString(min.desc)) {
                         String p = firstLiteralArg(mn, min);
-                        if (p != null) ctx.pathsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(p);
+                        if (p != null) ctx().pathsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(p);
                         // a path-establishing call with a RUNTIME path (single-String arg, no literal) — the
                         // path is invisible to the gate (masking guard generalized to Fs, sweep [0]).
-                        else ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Fs");
+                        else ctx().surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Fs");
                     }
                     // A bare-hostname Net endpoint: `new Socket("api.stripe.com", 443)` /
                     // `new InetSocketAddress("api.stripe.com", 443)` names the host as a STRING argv[0]
@@ -923,7 +918,7 @@ public class Candor {
                             // Socket("h", 443) matches the URL form's `h:port` and candor-scan, instead of
                             // dropping the statically-known port (adversarial coverage-gap review, GAP2).
                             String port = intLiteralBefore(min);
-                            ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(port != null ? h + ":" + port : h);
+                            ctx().hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(port != null ? h + ":" + port : h);
                             capturedHostHere = true;
                         }
                     }
@@ -937,7 +932,7 @@ public class Candor {
                     if (isHostBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;"))
                         for (String lit : literalArgsInWindow(min, constLocals)) {
                             String hl = netHostLiteral(lit);
-                            if (hl != null) { ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(hl); capturedHostHere = true; }
+                            if (hl != null) { ctx().hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(hl); capturedHostHere = true; }
                         }
                     // AS-EFF-008 surface COMPLETENESS (the masking fix): a Net reach whose host is structurally
                     // invisible makes the method's host surface incomplete, so the gate must NOT certify it just
@@ -965,11 +960,11 @@ public class Candor {
                                         || min.name.equals("getContent"));
                         if (urlTerminal) {
                             String h = urlTerminalHost(min, urlLocals, constLocals);
-                            if (h != null) ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(h);
-                            else ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
+                            if (h != null) ctx().hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(h);
+                            else ctx().surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
                         }
                         if (hostLessOwner || runtimeStringHost)
-                            ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
+                            ctx().surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
                     }
                     // Table literals from THIS SQL-bearing call's OWN argument (the executed/prepared SQL) —
                     // same per-call attribution. tablesInSql needs a leading SQL keyword so a non-SQL arg
@@ -979,23 +974,23 @@ public class Candor {
                         for (String lit : literalArgsInWindow(min, constLocals)) {
                             anySqlLiteral = true;
                             List<String> tl = tablesInSql(lit);
-                            if (!tl.isEmpty()) ctx.tablesDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(tl);
+                            if (!tl.isEmpty()) ctx().tablesDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(tl);
                         }
                         // a SQL-establishing call with a RUNTIME query (String arg, no literal) — the table is
                         // invisible to the gate (masking guard generalized to Db, sweep [0]). A literal SQL
                         // with no table (`SELECT 1`) is visible-but-tableless, NOT incomplete.
                         if (!anySqlLiteral)
-                            ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Db");
+                            ctx().surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Db");
                     }
                     // Calls to a Spring Data repository / Feign client are I/O even though the
                     // callee has no body candor can see (Spring synthesizes the impl at runtime).
-                    boolean springTyped = ctx.repoTypes.contains(min.owner) || ctx.feignTypes.contains(min.owner);
-                    if (ctx.repoTypes.contains(min.owner)) {
+                    boolean springTyped = ctx().repoTypes.contains(min.owner) || ctx().feignTypes.contains(min.owner);
+                    if (ctx().repoTypes.contains(min.owner)) {
                         dir.add(Effect.DB);
-                        String tbl = ctx.repoTables.get(min.owner); // the declarative `tables` surface
-                        if (tbl != null) ctx.tablesDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(tbl);
+                        String tbl = ctx().repoTables.get(min.owner); // the declarative `tables` surface
+                        if (tbl != null) ctx().tablesDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(tbl);
                     }
-                    if (ctx.feignTypes.contains(min.owner)) dir.add(Effect.NET);
+                    if (ctx().feignTypes.contains(min.owner)) dir.add(Effect.NET);
 
                     int op = min.getOpcode();
                     // A static call triggers the owner's class-load → its `<clinit>` runs.
@@ -1035,7 +1030,7 @@ public class Candor {
                         // under an interface call still dispatches to T's concrete impl.
                         String monoRecv = monomorphicReceiver(provFrames == null ? null
                                 : provFrames[mn.instructions.indexOf(min)], min);
-                        if (monoRecv != null && ctx.byName.containsKey(monoRecv)) {
+                        if (monoRecv != null && ctx().byName.containsKey(monoRecv)) {
                             // A provably-monomorphic PROJECT receiver (`new T`) has NO polymorphic siblings,
                             // so this resolves to exactly T's method — never its CHA subtypes. `b = new
                             // Base(); b.compute()` must read Base.compute alone, not the sibling Dirty's Net.
@@ -1043,7 +1038,7 @@ public class Candor {
                             // external call (no edge). Either way: resolved locally, so skip CHA, the Unknown
                             // branches, AND cross-dep (a project call traces locally, never inherits a dep).
                             String monoTarget = monomorphicTarget(monoRecv, min.name, min.desc);
-                            if (monoTarget != null) ctx.edges.get(id).add(monoTarget);
+                            if (monoTarget != null) ctx().edges.get(id).add(monoTarget);
                             continue;
                         }
                         // CHA runs ONLY for a genuinely POLYMORPHIC receiver (monoRecv == null). An EXTERNAL
@@ -1075,7 +1070,7 @@ public class Candor {
                         // catches it. The jts Rand "smear" the skip avoided is sound over-approximation, not
                         // a reason to drop a real reachable effect; a broad fan-out still drops to Unknown.
                         List<String> targets = broad ? List.of() : cha;
-                        ctx.edges.get(id).addAll(targets);
+                        ctx().edges.get(id).addAll(targets);
                         // PROVABLE-INCOMPLETENESS: a sealed type whose permit-closure names an off-classpath
                         // subtype is KNOWN-incomplete — the narrow path resolves only the visible permits and
                         // would read silent-pure on the unseen one. Disclose Unknown (the visible impls' edges
@@ -1083,7 +1078,7 @@ public class Candor {
                         // Only matters on the narrow path; a broad sealed-unseen already drops to Unknown below.
                         if (!broad && sealedHasUnseenPermit(min.owner)) {
                             dir.add(Effect.UNKNOWN);
-                            ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
+                            ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
                         }
                         // A broad NON-exempt dispatch that DROPS project implementors → Unknown, not
                         // silent-pure (an effectful body could be among the many we just dropped; exempt
@@ -1122,7 +1117,7 @@ public class Candor {
                             // former `dispatch-broad:`/`dispatch-broad-ext:` (project vs external owner)
                             // distinction is folded away — it is still an unresolved dispatch, resolved
                             // identically by the frontier; the owner type carries the project/external info.
-                            ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
+                            ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
                         }
                         // Genuine unresolved dispatch: a PROJECT interface/abstract type that DECLARES
                         // this method, with no visible concrete impl (DI-wired, external, or strategy)
@@ -1139,7 +1134,7 @@ public class Candor {
                                 && isProjectIfaceOrAbstract(min.owner)
                                 && projectDeclaresMethod(min.owner, min.name, min.desc)) {
                             dir.add(Effect.UNKNOWN);
-                            ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                            ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                                     .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
                         }
                         // A JDK FUNCTIONAL-INTERFACE SAM (`Runnable.run`, `Callable.call`,
@@ -1171,18 +1166,18 @@ public class Candor {
                                     && Type.getArgumentTypes(mn.desc)[pi].getInternalName().equals(min.owner)
                                     && samIsOnParam(mn, min, provFrames, pi);
                             if (forwardable) {
-                                ctx.fwdSinkPending.add(id);
-                                ctx.fwdSinkPendingWhy.put(id, new String[] { why });
+                                ctx().fwdSinkPending.add(id);
+                                ctx().fwdSinkPendingWhy.put(id, new String[] { why });
                             } else {
                                 dir.add(Effect.UNKNOWN);
-                                ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.parse(why));
+                                ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.parse(why));
                             }
                         }
                         } // end CHA block (monoRecv == null)
-                    } else if (ctx.projectClasses.contains(min.owner)) {
+                    } else if (ctx().projectClasses.contains(min.owner)) {
                         // static / special (super, private, ctor) — the exact target (descriptor known,
                         // so an overloaded callee resolves to the right overload's node).
-                        ctx.edges.get(id).add(methodId(owner, min.name, min.desc));
+                        ctx().edges.get(id).add(methodId(owner, min.name, min.desc));
                         // PRIVATE FUNCTIONAL-PARAM FORWARDING (collect): record the lambda this site passes
                         // to a private functional-param sink (or mark it opaque) — resolved in runScan.
                         collectForwardingArg(owner, min, provFrames == null ? null : provFrames[mn.instructions.indexOf(min)]);
@@ -1191,8 +1186,8 @@ public class Candor {
                     // separately — inherit its recorded effects via the stable method-ref hash. Only
                     // for external, non-built-in, non-Spring calls (project calls trace locally;
                     // reflection is already Unknown via classify).
-                    if (effect == null && !springTyped && !ctx.projectClasses.contains(min.owner)) {
-                        DepFn inh = ctx.crossDeps.get(min.owner + "." + min.name + min.desc);
+                    if (effect == null && !springTyped && !ctx().projectClasses.contains(min.owner)) {
+                        DepFn inh = ctx().crossDeps.get(min.owner + "." + min.name + min.desc);
                         // INTERFACE/SUPERTYPE-typed dep call: `Store s = new FileStore(); s.save()`
                         // compiles to INVOKEINTERFACE on `lib/Store`, but the dep report keys the body
                         // by its CONCRETE owner (`lib/FileStore.save`). The static call-site owner misses
@@ -1205,15 +1200,15 @@ public class Candor {
                         if (inh == null && (xop == Opcodes.INVOKEVIRTUAL || xop == Opcodes.INVOKEINTERFACE)) {
                             String cRecv = monomorphicReceiver(provFrames == null ? null
                                     : provFrames[mn.instructions.indexOf(min)], min);
-                            if (cRecv != null && !ctx.byName.containsKey(cRecv) && !cRecv.equals(min.owner))
-                                inh = ctx.crossDeps.get(cRecv + "." + min.name + min.desc);
+                            if (cRecv != null && !ctx().byName.containsKey(cRecv) && !cRecv.equals(min.owner))
+                                inh = ctx().crossDeps.get(cRecv + "." + min.name + min.desc);
                         }
                         if (inh != null) {
-                            ctx.viaCross.computeIfAbsent(id, k -> EffectSet.empty()).addAll(inh.effects);
-                            if (!inh.hosts.isEmpty()) ctx.hostsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.hosts);
-                            if (!inh.cmds.isEmpty()) ctx.cmdsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.cmds);
-                            if (!inh.paths.isEmpty()) ctx.pathsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.paths);
-                            if (!inh.tables.isEmpty()) ctx.tablesDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.tables);
+                            ctx().viaCross.computeIfAbsent(id, k -> EffectSet.empty()).addAll(inh.effects);
+                            if (!inh.hosts.isEmpty()) ctx().hostsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.hosts);
+                            if (!inh.cmds.isEmpty()) ctx().cmdsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.cmds);
+                            if (!inh.paths.isEmpty()) ctx().pathsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.paths);
+                            if (!inh.tables.isEmpty()) ctx().tablesDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.tables);
                         }
                     }
                 } else if (insn instanceof TypeInsnNode tin && tin.getOpcode() == Opcodes.NEW) {
@@ -1230,7 +1225,7 @@ public class Candor {
                     // outerMethod != null (set exactly for anonymous + local classes), so named
                     // top-level/member classes are untouched. Found by the soundness fuzzer's
                     // `thread_anon` form.
-                    ClassNode anonCn = ctx.byName.get(tin.desc);
+                    ClassNode anonCn = ctx().byName.get(tin.desc);
                     if (anonCn != null && anonCn.outerMethod != null) {
                         for (MethodNode am : anonCn.methods)
                             // Edge to the framework-INVOKABLE surface only: a PRIVATE method can't be an
@@ -1240,7 +1235,7 @@ public class Candor {
                             // a never-called private `exec(..)` → a phantom Exec + command literal on the
                             // spawner). A live private helper is still reached transitively via its caller.
                             if (!am.name.startsWith("<") && (am.access & Opcodes.ACC_PRIVATE) == 0)
-                                ctx.edges.get(id).add(methodId(tin.desc.replace('/', '.'), am.name, am.desc));
+                                ctx().edges.get(id).add(methodId(tin.desc.replace('/', '.'), am.name, am.desc));
                     } else if (anonCn != null && isTaskType(tin.desc)) {
                         // A NAMED class that is a TASK TYPE (implements Runnable/Callable or extends Thread)
                         // instantiated here is almost always handed to a runtime — `new Thread(new R()).start()`,
@@ -1254,7 +1249,7 @@ public class Candor {
                         for (MethodNode am : anonCn.methods)
                             if ((am.name.equals("run") || am.name.equals("call") || am.name.equals("compute"))
                                     && (am.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC)) == 0)
-                                ctx.edges.get(id).add(methodId(tin.desc.replace('/', '.'), am.name, am.desc));
+                                ctx().edges.get(id).add(methodId(tin.desc.replace('/', '.'), am.name, am.desc));
                     }
                 } else if (insn instanceof FieldInsnNode fin
                         && (fin.getOpcode() == Opcodes.GETSTATIC || fin.getOpcode() == Opcodes.PUTSTATIC)) {
@@ -1294,9 +1289,9 @@ public class Candor {
                             // passed to a CALL that runs it (executor/stream/forEach/a forwarding sink) is NOT
                             // matched, so its effect still propagates.
                             boolean deferred = feedsDeferredFactory(idin) || lambdaEscapesUninvoked(idin);
-                            if (ctx.projectClasses.contains(h.getOwner())) {
+                            if (ctx().projectClasses.contains(h.getOwner())) {
                                 if (!deferred)
-                                    ctx.edges.get(id).add(methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc()));
+                                    ctx().edges.get(id).add(methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc()));
                                 // A static method-ref / ctor-ref (`H::staticM`, `H::new`) TRIGGERS H's class
                                 // load → its <clinit> runs (JVMS §5.5), exactly like a static call / NEW /
                                 // static-field access. The other three triggers call clinitEdge; this one
@@ -1327,7 +1322,7 @@ public class Candor {
                     // silent-pure. (Found by a JVM-dialect sweep on compiled Groovy.)
                     if (idin.bsm != null && !STRUCTURAL_INDY_BSM.contains(idin.bsm.getOwner())) {
                         dir.add(Effect.UNKNOWN);
-                        ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                        ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                                 .add(UnknownReason.of(UnknownReason.Kind.INDY, idin.bsm.getOwner().replace('/', '.')));
                     }
                 }
@@ -1342,8 +1337,8 @@ public class Candor {
      *  time we reach this site — which is the SOUND direction (the I/O genuinely runs on first trigger).
      *  Only project classes that actually have a `<clinit>` (so the edge isn't dangling). */
     static void clinitEdge(String callerId, String internalOwner) {
-        if (ctx.classesWithClinit.contains(internalOwner))
-            ctx.edges.get(callerId).add(internalOwner.replace('/', '.') + ".<clinit>");
+        if (ctx().classesWithClinit.contains(internalOwner))
+            ctx().edges.get(callerId).add(internalOwner.replace('/', '.') + ".<clinit>");
         // JVMS §5.5: initializing a class FIRST initializes its superclasses — so touching `Sub` runs
         // `Base.<clinit>` too. Edge to every project SUPERCLASS's <clinit> as well, else an effect in a base
         // class's static initializer is silently dropped when only the subclass is touched (round-13 hole;
@@ -1351,8 +1346,8 @@ public class Candor {
         // over-approximation (a super-INTERFACE without a default method isn't initialized by a subclass load,
         // but edging its <clinit> at worst over-reports). transSupers is cached, so this is cheap.
         for (String sup : transSupers(internalOwner))
-            if (!sup.equals(internalOwner) && ctx.classesWithClinit.contains(sup))
-                ctx.edges.get(callerId).add(sup.replace('/', '.') + ".<clinit>");
+            if (!sup.equals(internalOwner) && ctx().classesWithClinit.contains(sup))
+                ctx().edges.get(callerId).add(sup.replace('/', '.') + ".<clinit>");
     }
 
     /** The JVM's STRUCTURAL invokedynamic bootstrap factories: lambda/method-ref creation, string
@@ -1476,7 +1471,7 @@ public class Candor {
                 } else if (n instanceof InvokeDynamicInsnNode idin && sawConstruction) {
                     for (Object a : idin.bsmArgs)
                         if (a instanceof Handle h && h.getTag() >= Opcodes.H_INVOKEVIRTUAL
-                                && ctx.projectClasses.contains(h.getOwner())) {
+                                && ctx().projectClasses.contains(h.getOwner())) {
                             lambda = h;
                             break;
                         }
@@ -1488,7 +1483,7 @@ public class Candor {
             }
             if (sawConstruction && lambda != null) {
                 String key = fi.owner + "/" + fi.name + ":" + fi.desc;
-                ctx.deferredFieldLambdas.computeIfAbsent(key, k -> new HashSet<>())
+                ctx().deferredFieldLambdas.computeIfAbsent(key, k -> new HashSet<>())
                         .add(methodId(lambda.getOwner().replace('/', '.'), lambda.getName(), lambda.getDesc()));
             }
         }
@@ -1909,7 +1904,7 @@ public class Candor {
      *  the bodies a library HOF invokes on it. Empty if the type is unknown, not a project class, or
      *  implements no such interface (a non-functional `new Foo()` edges nothing). */
     static Set<String> functionalSamSurface(String classInternal) {
-        ClassNode cn = ctx.byName.get(classInternal);
+        ClassNode cn = ctx().byName.get(classInternal);
         if (cn == null || cn.interfaces == null || cn.interfaces.stream().noneMatch(Candor::isHofFunctionalIface))
             return Set.of();
         Set<String> out = new HashSet<>();
@@ -1927,7 +1922,7 @@ public class Candor {
     static String indyLambdaTarget(InvokeDynamicInsnNode idin) {
         if (idin.bsm == null || !idin.bsm.getOwner().equals("java/lang/invoke/LambdaMetafactory")) return null;
         for (Object a : idin.bsmArgs)
-            if (a instanceof Handle h && h.getTag() >= Opcodes.H_INVOKEVIRTUAL && ctx.projectClasses.contains(h.getOwner()))
+            if (a instanceof Handle h && h.getTag() >= Opcodes.H_INVOKEVIRTUAL && ctx().projectClasses.contains(h.getOwner()))
                 return methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc());
         return null;
     }
@@ -2001,16 +1996,16 @@ public class Candor {
     /** COLLECT (at a call site to a private functional-param sink): record the project lambda passed at the
      *  functional-param position, or mark the sink opaque if this site passes an unresolvable arg. */
     static void collectForwardingArg(String calleeDottedOwner, MethodInsnNode min, Frame<ProvValue> f) {
-        MethodNode pm = findMethod(ctx.byName.get(min.owner), min.name, min.desc);
+        MethodNode pm = findMethod(ctx().byName.get(min.owner), min.name, min.desc);
         if (pm == null || (pm.access & Opcodes.ACC_PRIVATE) == 0) return;
         int pi = singleFunctionalParamIndex(pm);
         if (pi < 0) return;
         String sinkId = methodId(calleeDottedOwner, min.name, min.desc);
         ProvValue arg = argAt(f, min, pi);
         if (arg != null && arg.fromIndy && arg.lambdaTarget != null)
-            ctx.fwdSinkLambdas.computeIfAbsent(sinkId, k -> new HashSet<>()).add(arg.lambdaTarget);
+            ctx().fwdSinkLambdas.computeIfAbsent(sinkId, k -> new HashSet<>()).add(arg.lambdaTarget);
         else
-            ctx.fwdSinkOpaque.add(sinkId); // a field/param/external-ref/null arg → cannot prove the param's value
+            ctx().fwdSinkOpaque.add(sinkId); // a field/param/external-ref/null arg → cannot prove the param's value
     }
 
     /** The §4 conventionally-pure Object protocol (formatting / equality / hashing / ordering) — a SUBSET
@@ -2196,9 +2191,9 @@ public class Candor {
      *  unresolvable. A project annotation comes from byName; a framework one is read off candor's classpath
      *  via ASM (same posture as {@link #externalSupers}). Cached per type. */
     static List<AnnotationNode> annotationTypeAnnotations(String internal) {
-        if (ctx.annoMetaCache.containsKey(internal)) return ctx.annoMetaCache.get(internal);
+        if (ctx().annoMetaCache.containsKey(internal)) return ctx().annoMetaCache.get(internal);
         List<AnnotationNode> out = null;
-        ClassNode cn = ctx.byName.get(internal);
+        ClassNode cn = ctx().byName.get(internal);
         if (cn != null) out = cn.visibleAnnotations;
         else {
             try {
@@ -2208,7 +2203,7 @@ public class Candor {
                 out = an.visibleAnnotations;
             } catch (Throwable t) { /* not on candor's classpath → unresolvable, stays unrooted (sound) */ }
         }
-        ctx.annoMetaCache.put(internal, out);
+        ctx().annoMetaCache.put(internal, out);
         return out;
     }
 
@@ -2224,12 +2219,12 @@ public class Candor {
      *  walking ArrayList's own supers, `LoudList` is never filed under `List`, so a base-typed dispatch on
      *  the grandparent interface (`l.add()` where `l: List`) finds no project subtype and goes silent-pure. */
     static Set<String> transSupers(String internal) {
-        Set<String> cached = ctx.transSupersCache.get(internal);
+        Set<String> cached = ctx().transSupersCache.get(internal);
         if (cached != null) return cached;
         Set<String> r = new HashSet<>();
-        ctx.transSupersCache.put(internal, r); // seed first to break cycles
+        ctx().transSupersCache.put(internal, r); // seed first to break cycles
         List<String> sup = new ArrayList<>();
-        ClassNode cn = ctx.byName.get(internal);
+        ClassNode cn = ctx().byName.get(internal);
         if (cn != null) {
             if (cn.superName != null) sup.add(cn.superName);
             if (cn.interfaces != null) sup.addAll(cn.interfaces);
@@ -2361,8 +2356,8 @@ public class Candor {
         // subtype-or-self of declType declaring a concrete method of that name (any desc).
         if (contract.equals(C_COMPARETO) || contract.equals(C_APPEND) || contract.equals(C_WRITE)) {
             Set<String> out = new LinkedHashSet<>();
-            for (String cName : ctx.subtypeIndex.getOrDefault(declType, List.of())) {
-                ClassNode c = ctx.byName.get(cName);
+            for (String cName : ctx().subtypeIndex.getOrDefault(declType, List.of())) {
+                ClassNode c = ctx().byName.get(cName);
                 if (c == null) continue;
                 for (MethodNode m : c.methods)
                     if (m.name.equals(contract) && (m.access & Opcodes.ACC_ABSTRACT) == 0
@@ -2382,7 +2377,7 @@ public class Candor {
      *  so a String/Integer/pure-override argument adds nothing. */
     static void reentryEdge(String callerId, ProvValue argVal, String contract) {
         if (argVal == null) return;
-        for (String t : reentryTargets(argVal.declType, contract)) ctx.edges.get(callerId).add(t);
+        for (String t : reentryTargets(argVal.declType, contract)) ctx().edges.get(callerId).add(t);
     }
 
     /** The ProvValue of argument `argPos` (0-based, in source order) of the call `min` in frame `f`, or null.
@@ -2500,15 +2495,15 @@ public class Candor {
      *  (FS_UNKNOWN), so the report presents an empty `fs` (no claim) rather than a misleading partial. */
     static Map<String, TreeSet<String>> fsFixpoint() {
         Map<String, TreeSet<String>> fs = new HashMap<>();
-        for (var e : ctx.fsDirect.entrySet()) fs.put(e.getKey(), new TreeSet<>(e.getValue()));
-        for (var e : ctx.viaCross.entrySet())
+        for (var e : ctx().fsDirect.entrySet()) fs.put(e.getKey(), new TreeSet<>(e.getValue()));
+        for (var e : ctx().viaCross.entrySet())
             if (e.getValue().contains(Effect.FS)) fs.computeIfAbsent(e.getKey(), k -> new TreeSet<>()).add(FS_UNKNOWN);
         boolean changed = true;
         while (changed) {
             changed = false;
-            for (var caller : ctx.edges.keySet()) {
+            for (var caller : ctx().edges.keySet()) {
                 TreeSet<String> add = new TreeSet<>();
-                for (String c : ctx.edges.get(caller)) {
+                for (String c : ctx().edges.get(caller)) {
                     var ce = fs.get(c);
                     if (ce != null) add.addAll(ce);
                 }
@@ -2523,7 +2518,7 @@ public class Candor {
     }
 
     static Map<String, EffectSet> fixpoint() {
-        return computeFixpoint(ctx.direct, ctx.edges, ctx.viaCross);
+        return computeFixpoint(ctx().direct, ctx().edges, ctx().viaCross);
     }
 
     /** The PURE least-fixpoint of effect propagation over the call graph — factored out of

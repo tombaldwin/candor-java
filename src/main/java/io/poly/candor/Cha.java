@@ -25,7 +25,7 @@ final class Cha {
      *  HtmlTreeBuilderState/TokeniserState: 26/68 constants, a mutually-recursive cluster the >12 drop
      *  turned into a CIRCULAR Unknown that smeared ~600 functions; the true effect-union is pure). */
     static boolean isClosedEnumOwner(String internal) {
-        ClassNode cn = ctx.byName.get(internal);
+        ClassNode cn = ctx().byName.get(internal);
         return cn != null && ((cn.access & Opcodes.ACC_ENUM) != 0 || "java/lang/Enum".equals(cn.superName));
     }
 
@@ -45,12 +45,12 @@ final class Cha {
      *  bounded (honest Unknown). Memoized + cycle-guarded (a sealed cycle is impossible in valid bytecode but
      *  cheap to guard against malformed input). */
     static boolean isFullyClosedSealed(String internal) {
-        Boolean memo = ctx.sealedClosedMemo.get(internal);
+        Boolean memo = ctx().sealedClosedMemo.get(internal);
         if (memo != null) return memo;
-        ClassNode cn = ctx.byName.get(internal);
+        ClassNode cn = ctx().byName.get(internal);
         boolean r = cn != null && cn.permittedSubclasses != null && !cn.permittedSubclasses.isEmpty()
                 && closedAndVisible(internal, new HashSet<>());
-        ctx.sealedClosedMemo.put(internal, r);
+        ctx().sealedClosedMemo.put(internal, r);
         return r;
     }
 
@@ -62,22 +62,22 @@ final class Cha {
      *  but candor can't prove it — the accepted bounded-CHA tradeoff). Fixes a pre-existing silent-pure the
      *  sealed-CHA review surfaced. */
     static boolean sealedHasUnseenPermit(String internal) {
-        Boolean memo = ctx.sealedUnseenMemo.get(internal);
+        Boolean memo = ctx().sealedUnseenMemo.get(internal);
         if (memo != null) return memo;
-        ClassNode cn = ctx.byName.get(internal);
+        ClassNode cn = ctx().byName.get(internal);
         boolean r = cn != null && cn.permittedSubclasses != null && !cn.permittedSubclasses.isEmpty()
                 && permitClosureHasUnseen(internal, new HashSet<>());
-        ctx.sealedUnseenMemo.put(internal, r);
+        ctx().sealedUnseenMemo.put(internal, r);
         return r;
     }
 
     private static boolean permitClosureHasUnseen(String internal, Set<String> seen) {
         if (!seen.add(internal)) return false;
-        ClassNode cn = ctx.byName.get(internal);
+        ClassNode cn = ctx().byName.get(internal);
         if (cn == null) return true;                                  // this permit itself is off-classpath
         if (cn.permittedSubclasses == null) return false;            // a visible leaf
         for (String p : cn.permittedSubclasses)
-            if (!ctx.byName.containsKey(p) || permitClosureHasUnseen(p, seen)) return true;
+            if (!ctx().byName.containsKey(p) || permitClosureHasUnseen(p, seen)) return true;
         return false;
     }
 
@@ -85,13 +85,13 @@ final class Cha {
      *  closed (final/record, or a sealed type that is itself closedAndVisible). `seen` guards cycles. */
     private static boolean closedAndVisible(String internal, Set<String> seen) {
         if (!seen.add(internal)) return true;   // already on the walk path (cycle) — don't re-fail it
-        ClassNode cn = ctx.byName.get(internal);
+        ClassNode cn = ctx().byName.get(internal);
         if (cn == null) return false;           // gate 2: an unseen type can't be analyzed
         if (cn.permittedSubclasses == null || cn.permittedSubclasses.isEmpty())
             // a leaf: must be final (incl. records, which are ACC_FINAL) — else it is `non-sealed` (open).
             return (cn.access & Opcodes.ACC_FINAL) != 0;
         for (String p : cn.permittedSubclasses) {
-            if (!ctx.byName.containsKey(p)) return false;        // gate 2: a permit not on the classpath
+            if (!ctx().byName.containsKey(p)) return false;        // gate 2: a permit not on the classpath
             if (!closedAndVisible(p, seen)) return false;    // gate 1+2 recursively
         }
         return true;
@@ -122,7 +122,7 @@ final class Cha {
      *  project's own third-party deps are not on candor's classpath, so they fail to load and yield nothing
      *  — the same sound under-approximation as before (never fabrication). Never throws. Cached per name. */
     static List<String> externalSupers(String internal) {
-        List<String> cached = ctx.externalSupersCache.get(internal);
+        List<String> cached = ctx().externalSupersCache.get(internal);
         if (cached != null) return cached;
         List<String> out = new ArrayList<>();
         try {
@@ -130,7 +130,7 @@ final class Cha {
             if (cr.getSuperName() != null) out.add(cr.getSuperName());
             for (String i : cr.getInterfaces()) out.add(i);
         } catch (Throwable t) { /* not on candor's classpath / unreadable → no supers (sound) */ }
-        ctx.externalSupersCache.put(internal, out);
+        ctx().externalSupersCache.put(internal, out);
         return out;
     }
 
@@ -145,10 +145,10 @@ final class Cha {
             // self: the `c.name == owner` arm. (No dedupe needed — a class appears once in `classes`,
             // and `c.name ∉ transSupers(c.name)` for a well-formed acyclic chain; transSupers seeds the
             // cache before recursing so a self-cycle can't add c.name to its own super set.)
-            ctx.subtypeIndex.computeIfAbsent(c.name, k -> new ArrayList<>()).add(c.name);
+            ctx().subtypeIndex.computeIfAbsent(c.name, k -> new ArrayList<>()).add(c.name);
             // every transitive supertype: the `transSupers(c.name).contains(owner)` arm.
             for (String sup : transSupers(c.name))
-                ctx.subtypeIndex.computeIfAbsent(sup, k -> new ArrayList<>()).add(c.name);
+                ctx().subtypeIndex.computeIfAbsent(sup, k -> new ArrayList<>()).add(c.name);
         }
     }
 
@@ -160,8 +160,8 @@ final class Cha {
         // || transSupers(c.name).contains(owner))` filter (see buildSubtypeIndex), so `out` — and thus
         // cha.size(), the ≤CHA_FANOUT_LIMIT cap, the Unknown-on-overflow, and the edge set — are byte-
         // for-byte unchanged.
-        for (String cName : ctx.subtypeIndex.getOrDefault(owner, List.of())) {
-            ClassNode c = ctx.byName.get(cName);
+        for (String cName : ctx().subtypeIndex.getOrDefault(owner, List.of())) {
+            ClassNode c = ctx().byName.get(cName);
             if (declaresConcrete(c, name, desc)) {
                 out.add(methodId(c.name.replace('/', '.'), name, desc));
             } else {
@@ -191,7 +191,7 @@ final class Cha {
      *  monomorphic receiver, replacing the CHA sibling fan-out with the one real target. Returns null only
      *  if no concrete impl is visible in `recv`'s own chain (then the caller keeps the CHA — sound). */
     static String monomorphicTarget(String recv, String name, String desc) {
-        ClassNode c = ctx.byName.get(recv);
+        ClassNode c = ctx().byName.get(recv);
         if (c != null && declaresConcrete(c, name, desc))
             return methodId(recv.replace('/', '.'), name, desc);
         return nearestConcreteSuper(recv, name, desc);
@@ -201,7 +201,7 @@ final class Cha {
      *  found walking its supertype chain (excludes `internal` itself — the caller checks that). */
     static String nearestConcreteSuper(String internal, String name, String desc) {
         for (String sup : transSupers(internal)) {
-            ClassNode c = ctx.byName.get(sup);
+            ClassNode c = ctx().byName.get(sup);
             if (c != null && declaresConcrete(c, name, desc)) return methodId(sup.replace('/', '.'), name, desc);
         }
         return null;
@@ -216,7 +216,7 @@ final class Cha {
      *  desc/owner candor can't see (a non-project owner, an unknown descriptor) falls back to the bare
      *  name — harmless, since those never key a project node. */
     static String methodId(String dottedClass, String name, String desc) {
-        Set<String> descs = ctx.overloadDescs.get(dottedClass + "." + name);
+        Set<String> descs = ctx().overloadDescs.get(dottedClass + "." + name);
         // Bare name unless this is a genuine overload with a parseable METHOD descriptor. The `(` guard is
         // defence-in-depth: a non-method descriptor (a field handle that slipped a caller's guard) must
         // never reach Type.getArgumentTypes, which overruns and crashes the scan on anything without `()`.
@@ -293,7 +293,7 @@ final class Cha {
     }
 
     static boolean isProjectIfaceOrAbstract(String internal) {
-        ClassNode cn = ctx.byName.get(internal);
+        ClassNode cn = ctx().byName.get(internal);
         return cn != null && (cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT)) != 0;
     }
 
@@ -306,7 +306,7 @@ final class Cha {
         Set<String> types = new HashSet<>(transSupers(owner));
         types.add(owner);
         for (String t : types) {
-            ClassNode c = ctx.byName.get(t);
+            ClassNode c = ctx().byName.get(t);
             if (c == null) continue; // framework supertype — not a project declaration
             for (MethodNode mn : c.methods)
                 if (mn.name.equals(name) && mn.desc.equals(desc)) return true;

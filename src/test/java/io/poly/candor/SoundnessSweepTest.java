@@ -43,6 +43,27 @@ class SoundnessSweepTest {
         }
     }
 
+    /** Compile {@code src}, DELETE {@code deleteClass}.class (simulate an off-classpath type), then scan —
+     *  for the sealed-unseen-permit gate (a permit named in `permits` but absent from the analysis classpath). */
+    private static Map<String, TreeSet<String>> scanDeleting(String src, String deleteClass) throws Exception {
+        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
+        Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
+        Path dir = Files.createTempDirectory("candor-sweep");
+        try {
+            Path f = dir.resolve("A.java");
+            Files.writeString(f, src);
+            Path out = dir.resolve("cls");
+            Files.createDirectories(out);
+            assertEquals(0, jc.run(null, null, null, "-d", out.toString(), f.toString()), "fixture must compile");
+            Files.deleteIfExists(out.resolve(deleteClass + ".class"));
+            return Candor.runScan(out);
+        } finally {
+            try (Stream<Path> s = Files.walk(dir)) {
+                s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
+            }
+        }
+    }
+
     private static TreeSet<String> eff(Map<String, TreeSet<String>> r, String fn) {
         return r.getOrDefault(fn, new TreeSet<>());
     }
@@ -318,6 +339,38 @@ class SoundnessSweepTest {
         sb.append("public class A { public void use(Sh s){ s.op(); } }");
         var r = scan(sb.toString());
         mustHave(r, "A.use", "Fs");
+    }
+
+    /** PROVABLE-INCOMPLETENESS gate (cardinal-sin fix): a sealed type with an OFF-CLASSPATH effectful permit
+     *  must disclose Unknown even on the NARROW path — candor knows (from `permits`) a subtype it can't see
+     *  exists, so resolving only the visible subset would silent-pure the unseen one. */
+    @Test
+    void sealedUnseenPermitDisclosesUnknown() throws Exception {
+        // 5 permits (≤12 → narrow); the effectful Ghost is compiled then deleted (off-classpath).
+        String src = "sealed interface Sb permits Ghost,V1,V2,V3,V4 { void op(); }\n"
+                + "final class Ghost implements Sb { public void op(){ " + FS + " } }\n"
+                + "final class V1 implements Sb { public void op(){} }\n"
+                + "final class V2 implements Sb { public void op(){} }\n"
+                + "final class V3 implements Sb { public void op(){} }\n"
+                + "final class V4 implements Sb { public void op(){} }\n"
+                + "public class A { public void use(Sb s){ s.op(); } }";
+        var r = scanDeleting(src, "Ghost");
+        assertTrue(eff(r, "A.use").contains("Unknown"),
+                "sealed type with an unseen effectful permit must disclose Unknown (not silent-pure), got " + eff(r, "A.use"));
+    }
+
+    /** Anti-over-disclosure for the gate above: a FULLY-VISIBLE sealed hierarchy must resolve precisely (no
+     *  spurious Unknown from the provable-incompleteness check). */
+    @Test
+    void sealedFullyVisibleNotOverDisclosed() throws Exception {
+        var r = scan("sealed interface Sv permits U1,U2,U3 { void op(); }\n"
+                + "final class U1 implements Sv { public void op(){} }\n"
+                + "final class U2 implements Sv { public void op(){ " + FS + " } }\n"
+                + "final class U3 implements Sv { public void op(){} }\n"
+                + "public class A { public void use(Sv s){ s.op(); } }");
+        assertTrue(eff(r, "A.use").contains("Fs"), "must resolve, got " + eff(r, "A.use"));
+        assertFalse(eff(r, "A.use").contains("Unknown"),
+                "fully-visible sealed must NOT be over-disclosed Unknown, got " + eff(r, "A.use"));
     }
 
     /** Regression: an OPEN (non-sealed) hierarchy over the bound must STILL drop to disclosed Unknown — the

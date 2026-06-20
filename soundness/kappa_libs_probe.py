@@ -1495,6 +1495,28 @@ EFFECT_CASES = [
     #      FLOOR-DROPPED silent rather than `invisible`-disclosed. Expect Db|Unknown.) ----
     ("rowsetExecuteNoArg", "Db", "javax.sql.rowset.JdbcRowSet rs", 'rs.execute()'),
     ("rowsetExecuteConn", "Db", "javax.sql.rowset.CachedRowSet rs, java.sql.Connection c", 'rs.execute(c)'),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 16) ======================
+    # FRONTIER: PARTIALLY-MODELED κ-COVERED (java.*/javax.*/jakarta.*) types where candor models SOME verbs
+    #   but an effectful SIBLING verb falls through. Where the sibling is ABSENT from the report (covered prefix
+    #   suppresses the `invisible` disclosure) it is FLOOR-SUPPRESSED (silent) = the worst cardinal sin.
+    # --- java.sql.Connection TRANSACTION CONTROL → Db. commit/rollback/setAutoCommit ARE modeled (verified ok);
+    #     setSavepoint/releaseSavepoint are the gap: SAVEPOINT/RELEASE SAVEPOINT are SQL statements sent to the
+    #     server (a real round-trip), yet they are FLOOR-DROPPED silent. Expect Db|Unknown; got: silent (FLOOR). ---
+    ("connSetSavepoint",     "Db", "java.sql.Connection c", 'java.sql.Savepoint s = c.setSavepoint()'),
+    ("connReleaseSavepoint", "Db", "java.sql.Connection c, java.sql.Savepoint s", 'c.releaseSavepoint(s)'),
+    # --- jakarta.persistence.EntityTransaction.commit/rollback → Db. EntityManager flush/refresh/lock/remove ARE
+    #     modeled (verified ok), but EntityTransaction.commit FLUSHES the persistence context to the DB and
+    #     rollback issues ROLLBACK — both genuine Db round-trips, FLOOR-DROPPED silent. Very common JPA idiom.
+    #     Expect Db|Unknown; got: silent (FLOOR). ---
+    ("etCommit",   "Db", "jakarta.persistence.EntityTransaction t", 't.commit()'),
+    ("etRollback", "Db", "jakarta.persistence.EntityTransaction t", 't.rollback()'),
+    # --- jakarta.jms transacted-session COMMIT/ROLLBACK → Net (broker round-trip). MessageProducer.send IS modeled
+    #     (jmsSend, Net), but Session.commit/rollback and JMSContext.commit flush/ack to the broker over the wire,
+    #     FLOOR-DROPPED silent. Expect Net|Unknown; got: silent (FLOOR). ---
+    ("jmsSessionCommit",   "Net", "jakarta.jms.Session s", 's.commit()'),
+    ("jmsSessionRollback", "Net", "jakarta.jms.Session s", 's.rollback()'),
+    ("jmsCtxCommit",       "Net", "jakarta.jms.JMSContext c", 'c.commit()'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -1820,6 +1842,32 @@ PURE_CASES = [
     #   above is the Fs leaf). Must stay pure.
     ("onnxCreateSessionBytesPure",
         'ai.onnxruntime.OrtSession s = env.createSession(new byte[1])', "ai.onnxruntime.OrtEnvironment env"),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 16) — pure anchors ===============
+    # These guard the batch-16 frontier fixes (Connection/EntityTransaction/JMS transaction verbs): the
+    #   modeled effectful verbs sit beside LOCAL-only siblings that must NOT be over-classified by a κ widening.
+    # java.io.File NAME/PATH accessors are pure STRING ops — they touch no FS. The stat/mutate verbs
+    #   (exists/length/delete/mkdir/listFiles/renameTo/createNewFile/canRead/lastModified/setLastModified —
+    #   all already modeled Fs) are the leaves; these accessors must STAY pure (anti-fabrication anchor).
+    ("fileGetNamePure",         "String s = f.getName()",         "File f"),
+    ("fileGetPathPure",         "String s = f.getPath()",         "File f"),
+    ("fileGetParentPure",       "String s = f.getParent()",       "File f"),
+    ("fileToPathPure",          "java.nio.file.Path p = f.toPath()", "File f"),
+    ("fileGetAbsolutePathPure", "String s = f.getAbsolutePath()", "File f"),
+    # java.sql.Statement.addBatch BUFFERS the SQL string LOCALLY (no round-trip; executeBatch is the Db leaf,
+    #   modeled). getGeneratedKeys returns ALREADY-BUFFERED keys from the prior execute (no round-trip). Both
+    #   pure — must not be over-classified Db when the savepoint/EntityTransaction verbs are modeled.
+    ("stmtAddBatchPure",          "s.addBatch(\"x\")",                          "java.sql.Statement s"),
+    ("stmtGetGeneratedKeysPure",  "java.sql.ResultSet r = s.getGeneratedKeys()", "java.sql.Statement s"),
+    # java.sql.Connection.getMetaData returns a DatabaseMetaData VALUE object lazily (no round-trip; the
+    #   metadata QUERIES getTables/getColumns ARE modeled Db). Must stay pure.
+    ("connGetMetaDataPure",  "java.sql.DatabaseMetaData m = c.getMetaData()", "java.sql.Connection c"),
+    # jakarta.persistence.EntityManager.detach EVICTS an entity from the in-memory persistence context — a
+    #   purely local op, NO DB round-trip (unlike flush/refresh/lock/remove which ARE modeled Db). Must stay pure.
+    ("emDetachPure", "em.detach(o)", "jakarta.persistence.EntityManager em, Object o"),
+    # java.net.URLClassLoader constructor just STORES the URL[] (no I/O until a findClass/findResource); pure.
+    ("urlClassLoaderCtorPure",
+        "java.net.URLClassLoader cl = new java.net.URLClassLoader(u)", "java.net.URL[] u"),
 ]
 
 

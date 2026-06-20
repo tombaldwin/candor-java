@@ -6,15 +6,18 @@ import java.util.*;
 import java.util.stream.*;
 import com.google.gson.*;
 import org.objectweb.asm.tree.*;
+import io.poly.candor.model.*;
 import static io.poly.candor.Candor.*;
 import static io.poly.candor.AnalysisState.*;
 import static io.poly.candor.Literals.*;
 import static io.poly.candor.Cha.*;
 
-/** Report output — writeJson/writeCallgraph/writeHierarchy/writeAtomic + reportUnknownSources +
- *  provenance/release (the build-id header). EXTRACTED from Candor.java (refactor P5-Report); reads the
- *  analysis result state via the static import. See REFACTOR_PLAN.md. */
-final class Report {
+/** Report output — builds the typed {@link io.poly.candor.model.Report} (one {@link Effector} per unit)
+ *  and serializes it via {@link ReportJson}; plus the callgraph/hierarchy sidecars, the atomic writer,
+ *  the Unknown-source stderr breakdown, and the build-id provenance. Reads the analysis result state via
+ *  the static imports. (Was {@code Report} before the domain-model work freed that name for the model
+ *  envelope record.) See candor-spec/MODEL.md. */
+final class ReportWriter {
     static void writeJson(Map<String, TreeSet<String>> inferred, String out) throws IOException {
         // Per-class conformance (same model as checkConformance, SPEC §5): declared = effects
         // the class's injected dependency types can supply; performed = union over its methods.
@@ -60,7 +63,7 @@ final class Report {
                 .filter(p -> !kappaClassified.contains(p) && !depCoveredPkgs.contains(p))
                 .collect(Collectors.toSet());
         Map<String, TreeSet<String>> blindAcc = literalFixpoint(blindDirect);
-        List<Map<String, Object>> entries = new ArrayList<>();
+        List<Effector> effectors = new ArrayList<>();
         inferred.entrySet().stream()
                 // Keep a method if it has effects, is an entry point, has a BLIND SPOT (an unanalyzable
                 // reach — so the honesty disclosure survives even on a `pure`-looking method), OR its class
@@ -89,91 +92,80 @@ final class Report {
                             .sorted().collect(Collectors.toList());
                     List<String> overdeclared = declared.stream()
                             .filter(x -> !perf.contains(x)).sorted().collect(Collectors.toList());
-                    Map<String, Object> m = new LinkedHashMap<>();
-                    m.put("fn", fn);
-                    m.put("loc", loc.getOrDefault(fn, "?"));
-                    m.put("inferred", new ArrayList<>(inf));
                     // HONESTY: the external packages this method transitively reaches that candor could NOT
                     // analyse (κ floored them, never classified anywhere) — effects through them are NOT in
-                    // `inferred`. So `inferred` is never read as a completeness claim: a `pure` method that
-                    // calls into one of these is disclosed, not silently certified. Omitted when none.
+                    // `inferred`. So `inferred` is never read as a completeness claim. Omitted when none.
                     List<String> invisible = blindAcc.getOrDefault(fn, new TreeSet<>()).stream()
                             .filter(globalBlind::contains).sorted().collect(Collectors.toList());
-                    if (!invisible.isEmpty()) m.put("invisible", invisible);
-                    m.put("direct", new ArrayList<>(direct.getOrDefault(fn, new TreeSet<>())));
-                    m.put("declared", new ArrayList<>(declared));
-                    m.put("undeclared", undeclared);
-                    m.put("overdeclared", overdeclared);
-                    m.put("entryPoint", entryPoints.contains(fn));
-                    m.put("unresolved", inf.contains("Unknown")); // trust contract (SPEC §4)
-                    // spec ⟨0.5⟩ unitKind: a static initializer is a UNIT, not a method anyone
-                    // calls — name it so consumers render it sensibly. Absent = ordinary function.
-                    if (fn.endsWith(".<clinit>")) m.put("unitKind", "initializer");
-                    // Why Unknown was emitted HERE (not inherited): native:/reflect:/dispatch: tags,
-                    // so a reader can see which opacity is improvable (a missing-impl dispatch) vs
-                    // irreducible (reflection, native). Omitted when this fn introduces no Unknown.
-                    TreeSet<String> uw = unknownWhy.get(fn);
-                    if (uw != null && !uw.isEmpty()) m.put("unknownWhy", new ArrayList<>(uw));
-                    m.put("hash", hashOf.getOrDefault(fn, "")); // cross-jar join key (SPEC §2)
                     // Effect-relevant local call graph (SPEC §2 `calls`): the EFFECTFUL local callees,
                     // so a consumer can answer "who calls X?" from the report without re-analysis.
-                    // Omitted when empty.
                     List<String> calls = edges.getOrDefault(fn, Set.of()).stream()
                             .filter(c -> {
                                 TreeSet<String> ce = inferred.get(c);
                                 return ce != null && !ce.isEmpty();
                             })
                             .sorted().collect(Collectors.toList());
-                    if (!calls.isEmpty()) m.put("calls", calls);
                     // Fs read/write detail (SPEC §2 `fs`): the access kind, when known AND complete.
-                    // Empty when unknown, when the fn performs no Fs, or when reached cross-jar
-                    // (FS_UNKNOWN) — never a misleading partial. Omitted when empty.
+                    // Empty when unknown, when the fn performs no Fs, or when reached cross-jar (FS_UNKNOWN).
+                    List<String> fsKinds = List.of();
                     TreeSet<String> fk = fsAcc.get(fn);
-                    if (inf.contains("Fs") && fk != null && !fk.contains(FS_UNKNOWN)) {
-                        List<String> kinds = fk.stream().filter(x -> !x.equals(FS_UNKNOWN)).sorted()
+                    if (inf.contains("Fs") && fk != null && !fk.contains(FS_UNKNOWN))
+                        fsKinds = fk.stream().filter(x -> !x.equals(FS_UNKNOWN)).sorted()
                                 .collect(Collectors.toList());
-                        if (!kinds.isEmpty()) m.put("fs", kinds);
-                    }
-                    // Literal Net/Exec/Fs surfaces statically visible from this method (SPEC §2
-                    // `hosts`/`cmds`/`paths`): the decidable subset of who it talks to / what it runs /
-                    // what it touches, feeding the AS-EFF-008 allowlist. Omitted when none are visible (a
-                    // runtime-computed value, or the effect absent) — never a completeness claim.
+                    // Literal Net/Exec/Fs/Db surfaces statically visible from this method (SPEC §2). Empty
+                    // when none are visible (a runtime-computed value, or the effect absent).
                     TreeSet<String> hk = hostsAcc.get(fn);
-                    if (inf.contains("Net") && hk != null && !hk.isEmpty())
-                        m.put("hosts", new ArrayList<>(hk));
+                    List<String> hosts = inf.contains("Net") && hk != null && !hk.isEmpty()
+                            ? new ArrayList<>(hk) : List.of();
                     TreeSet<String> ck = cmdsAcc.get(fn);
-                    if (inf.contains("Exec") && ck != null && !ck.isEmpty())
-                        m.put("cmds", new ArrayList<>(ck));
+                    List<String> cmds = inf.contains("Exec") && ck != null && !ck.isEmpty()
+                            ? new ArrayList<>(ck) : List.of();
                     TreeSet<String> pk = pathsAcc.get(fn);
-                    if (inf.contains("Fs") && pk != null && !pk.isEmpty())
-                        m.put("paths", new ArrayList<>(pk));
+                    List<String> paths = inf.contains("Fs") && pk != null && !pk.isEmpty()
+                            ? new ArrayList<>(pk) : List.of();
                     TreeSet<String> tk = tablesAcc.get(fn);
-                    if (inf.contains("Db") && tk != null && !tk.isEmpty())
-                        m.put("tables", new ArrayList<>(tk));
-                    entries.add(m);
+                    List<String> tables = inf.contains("Db") && tk != null && !tk.isEmpty()
+                            ? new ArrayList<>(tk) : List.of();
+                    // Why Unknown was emitted HERE (not inherited): native:/reflect:/dispatch:/… tags.
+                    TreeSet<String> uw = unknownWhy.get(fn);
+                    List<UnknownReason> reasons = uw == null ? List.of()
+                            : uw.stream().map(UnknownReason::parse).filter(Objects::nonNull)
+                                    .collect(Collectors.toList());
+                    // spec ⟨0.5⟩ unitKind: a static initializer is a UNIT, not a method anyone calls.
+                    EffectorKind kind = fn.endsWith(".<clinit>") ? EffectorKind.INITIALIZER : EffectorKind.FUNCTION;
+                    effectors.add(new Effector(
+                            fn,
+                            loc.getOrDefault(fn, "?"),
+                            EffectSet.ofNames(inf),
+                            invisible,
+                            EffectSet.ofNames(direct.getOrDefault(fn, new TreeSet<>())),
+                            EffectSet.ofNames(declared),
+                            EffectSet.ofNames(undeclared),
+                            EffectSet.ofNames(overdeclared),
+                            entryPoints.contains(fn),
+                            inf.contains("Unknown"), // trust contract (SPEC §4)
+                            kind,
+                            reasons,
+                            hashOf.getOrDefault(fn, ""), // cross-jar join key (SPEC §2)
+                            calls,
+                            fsKinds, hosts, cmds, paths, tables));
                 });
-        // v0.2 self-describing envelope (candor-spec §2): a provenance header + the function entries.
-        // Readers still accept the legacy v0.1 bare array (see loadBaseline) during migration.
+        // v0.2 self-describing envelope (candor-spec §2): a provenance header + the entries. Readers
+        // still accept the legacy v0.1 bare array (see loadBaseline) during migration.
         String[] prov = provenance();
-        Map<String, Object> header = new LinkedHashMap<>();
-        header.put("version", prov[0]);
-        header.put("toolchain", prov[1]);
-        header.put("spec", SPEC_VERSION); // candor-spec contract version (§2.1), distinct from the build id
-        Map<String, Object> envelope = new LinkedHashMap<>();
-        envelope.put("candor", header);
         // The packages this report COVERS — exact, from the analyzed class names. Lets a consumer
-        // chaining this report register coverage even when `functions` is empty (an all-pure
-        // dep's report is its purity claim, SPEC §2 rule 3 — the empty-report coverage fix).
+        // chaining this report register coverage even when `functions` is empty (SPEC §2 rule 3).
         TreeSet<String> pkgs = new TreeSet<>();
         for (ClassNode cn : ALL) {
             int slash = cn.name.lastIndexOf('/');
             if (slash > 0) pkgs.add(cn.name.substring(0, slash).replace('/', '.'));
         }
-        envelope.put("packages", pkgs);
-        envelope.put("functions", entries);
-        String json = new GsonBuilder().setPrettyPrinting().create().toJson(envelope);
-        writeAtomic(Path.of(out), json);
-        System.err.println("candor-java: wrote " + entries.size() + " entries (@" + prov[0] + ") to " + out);
+        Report report = new Report(
+                new Provenance(prov[0], prov[1], SPEC_VERSION), // §2.1 — contract version distinct from build id
+                new ArrayList<>(pkgs),
+                effectors);
+        writeAtomic(Path.of(out), ReportJson.serialize(report));
+        System.err.println("candor-java: wrote " + effectors.size() + " entries (@" + prov[0] + ") to " + out);
         reportUnknownSources();
     }
 

@@ -42,6 +42,20 @@ public final class EffectSet {
         return new EffectSet(s);
     }
 
+    /**
+     * Build from spec-name strings. Names outside the §1 vocabulary (a hypothetical language-specific
+     * effect on a foreign report) are skipped — candor-java only ever produces the standard vocabulary,
+     * so this is exact for its own reports.
+     */
+    public static EffectSet ofNames(Collection<String> names) {
+        EnumSet<Effect> s = EnumSet.noneOf(Effect.class);
+        for (String n : names) {
+            Effect e = Effect.fromSpecName(n);
+            if (e != null) s.add(e);
+        }
+        return new EffectSet(s);
+    }
+
     public boolean contains(Effect e) {
         return set.contains(e);
     }

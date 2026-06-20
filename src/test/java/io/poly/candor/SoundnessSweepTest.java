@@ -304,6 +304,51 @@ class SoundnessSweepTest {
         assertFalse(eff(r, "A.treeCtor").contains("Fs"), "TreeMap ctor must not fabricate, got " + eff(r, "A.treeCtor"));
     }
 
+    /** SEALED closed-hierarchy carve-out: a sealed type with >CHA_FANOUT_LIMIT(12) FINAL permits, one
+     *  effectful, resolves to the effect (the permits list is the complete target set — sound+exact past the
+     *  bound, like an enum). Was `dispatch:` Unknown before the carve-out. */
+    @Test
+    void sealedClosedHierarchyResolvesPastBound() throws Exception {
+        StringBuilder sb = new StringBuilder("sealed interface Sh permits ");
+        for (int i = 1; i <= 13; i++) sb.append("X").append(i).append(i < 13 ? "," : "");
+        sb.append(" { void op(); }\n");
+        for (int i = 1; i <= 13; i++)
+            sb.append("final class X").append(i).append(" implements Sh { public void op(){ ")
+              .append(i == 6 ? FS : "").append(" } }\n");
+        sb.append("public class A { public void use(Sh s){ s.op(); } }");
+        var r = scan(sb.toString());
+        mustHave(r, "A.use", "Fs");
+    }
+
+    /** Regression: an OPEN (non-sealed) hierarchy over the bound must STILL drop to disclosed Unknown — the
+     *  bound exists to prevent open-hierarchy smear; the carve-out must not swallow it. */
+    @Test
+    void openHierarchyOverLimitStaysUnknown() throws Exception {
+        StringBuilder sb = new StringBuilder("interface O { void op(); }\n");
+        for (int i = 1; i <= 13; i++)
+            sb.append("class Y").append(i).append(" implements O { public void op(){ ")
+              .append(i == 6 ? FS : "").append(" } }\n");
+        sb.append("public class A { public void use(O o){ o.op(); } }");
+        var r = scan(sb.toString());
+        assertTrue(eff(r, "A.use").contains("Unknown"),
+                "open >12 hierarchy must stay disclosed-Unknown (not resolved, not silent), got " + eff(r, "A.use"));
+    }
+
+    /** A pure sealed hierarchy past the bound stays PURE (not Unknown, not a fabricated effect) — the
+     *  carve-out resolves to the exact set, which is empty-effect here. */
+    @Test
+    void pureSealedHierarchyStaysPure() throws Exception {
+        StringBuilder sb = new StringBuilder("sealed interface Sp permits ");
+        for (int i = 1; i <= 13; i++) sb.append("Z").append(i).append(i < 13 ? "," : "");
+        sb.append(" { void op(); }\n");
+        for (int i = 1; i <= 13; i++)
+            sb.append("final class Z").append(i).append(" implements Sp { public void op(){ int x=1; } }\n");
+        sb.append("public class A { public void use(Sp s){ s.op(); } }");
+        var r = scan(sb.toString());
+        assertFalse(eff(r, "A.use").contains("Fs"), "pure sealed must not fabricate, got " + eff(r, "A.use"));
+        assertFalse(eff(r, "A.use").contains("Unknown"), "pure sealed must resolve (not Unknown), got " + eff(r, "A.use"));
+    }
+
     /** A named `java.util.Comparator` with an effectful `compare`, handed to a library sort API
      *  (`List.sort`/`Collections.sort`/`Stream.sorted`/`new TreeMap`), must surface the effect. Comparator
      *  is a SAM the JDK invokes outside project code but is NOT in `java.util.function.*` — the

@@ -61,11 +61,11 @@ class Round15FixesTest {
         try {
             Map<String, TreeSet<String>> r = Candor.runScan(cls);
             assertTrue(r.getOrDefault("app.A.net", new TreeSet<>()).contains("Net"), "SocketHandler is Net");
-            assertTrue(Candor.hostsDirect.getOrDefault("app.A.net", new TreeSet<>()).contains("evil.exfil.com:9000"),
-                    "the SocketHandler host must be surfaced, got " + Candor.hostsDirect.get("app.A.net"));
+            assertTrue(AnalysisState.hostsDirect.getOrDefault("app.A.net", new TreeSet<>()).contains("evil.exfil.com:9000"),
+                    "the SocketHandler host must be surfaced, got " + AnalysisState.hostsDirect.get("app.A.net"));
             assertTrue(r.getOrDefault("app.A.fs", new TreeSet<>()).contains("Fs"), "FileHandler is Fs");
-            assertTrue(Candor.pathsDirect.getOrDefault("app.A.fs", new TreeSet<>()).contains("/etc/shadow.copy"),
-                    "the FileHandler path must be surfaced, got " + Candor.pathsDirect.get("app.A.fs"));
+            assertTrue(AnalysisState.pathsDirect.getOrDefault("app.A.fs", new TreeSet<>()).contains("/etc/shadow.copy"),
+                    "the FileHandler path must be surfaced, got " + AnalysisState.pathsDirect.get("app.A.fs"));
         } finally { rm(cls.getParent()); }
     }
 
@@ -108,9 +108,9 @@ class Round15FixesTest {
                 "public class A {}"))));
         try {
             Candor.runScan(cls);
-            assertTrue(Candor.entryPoints.contains("app.F.doFilterInternal"), "OncePerRequestFilter must be rooted");
-            assertTrue(Candor.entryPoints.contains("app.Fn.service"), "GCP HttpFunction must be rooted");
-            assertFalse(Candor.entryPoints.contains("app.NotAFilter.doFilterInternal"),
+            assertTrue(AnalysisState.entryPoints.contains("app.F.doFilterInternal"), "OncePerRequestFilter must be rooted");
+            assertTrue(AnalysisState.entryPoints.contains("app.Fn.service"), "GCP HttpFunction must be rooted");
+            assertFalse(AnalysisState.entryPoints.contains("app.NotAFilter.doFilterInternal"),
                     "a non-implementor doFilterInternal must NOT be over-rooted");
         } finally { rm(cls.getParent()); }
     }

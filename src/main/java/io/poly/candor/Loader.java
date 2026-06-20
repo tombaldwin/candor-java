@@ -8,6 +8,7 @@ import org.objectweb.asm.*;
 import org.objectweb.asm.tree.*;
 import com.google.gson.*;
 import static io.poly.candor.Candor.*;
+import static io.poly.candor.AnalysisState.*;
 import static io.poly.candor.Cha.*;
 import static io.poly.candor.Literals.*;
 import static io.poly.candor.Policy.*;

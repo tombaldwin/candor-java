@@ -81,8 +81,8 @@ class Round13FixesTest {
         try {
             Map<String, TreeSet<String>> r = Candor.runScan(cls);
             assertTrue(r.getOrDefault("app.D.run", new TreeSet<>()).contains("Db"), "jOOQ execute is Db");
-            assertTrue(Candor.tablesDirect.getOrDefault("app.D.run", new TreeSet<>()).contains("accounts"),
-                    "the jOOQ SQL's table must reach the surface, got " + Candor.tablesDirect.get("app.D.run"));
+            assertTrue(AnalysisState.tablesDirect.getOrDefault("app.D.run", new TreeSet<>()).contains("accounts"),
+                    "the jOOQ SQL's table must reach the surface, got " + AnalysisState.tablesDirect.get("app.D.run"));
         } finally { rm(cls.getParent()); }
     }
 
@@ -117,12 +117,12 @@ class Round13FixesTest {
                 "public class A {}"))));
         try {
             Candor.runScan(cls);
-            assertTrue(Candor.entryPoints.contains("app.Uds.loadUserByUsername"), "UserDetailsService must be rooted");
-            assertTrue(Candor.entryPoints.contains("app.Aware.setApplicationContext"), "*Aware setter must be rooted");
-            assertTrue(Candor.entryPoints.contains("app.Obs.onNext"), "RxJava Observer must be rooted");
-            assertTrue(Candor.entryPoints.contains("app.Filt.filter"), "ContainerRequestFilter must be rooted");
-            assertTrue(Candor.entryPoints.contains("app.Ws.onMsg"), "@OnMessage must be rooted");
-            assertFalse(Candor.entryPoints.contains("app.NotAware.setApplicationContext"),
+            assertTrue(AnalysisState.entryPoints.contains("app.Uds.loadUserByUsername"), "UserDetailsService must be rooted");
+            assertTrue(AnalysisState.entryPoints.contains("app.Aware.setApplicationContext"), "*Aware setter must be rooted");
+            assertTrue(AnalysisState.entryPoints.contains("app.Obs.onNext"), "RxJava Observer must be rooted");
+            assertTrue(AnalysisState.entryPoints.contains("app.Filt.filter"), "ContainerRequestFilter must be rooted");
+            assertTrue(AnalysisState.entryPoints.contains("app.Ws.onMsg"), "@OnMessage must be rooted");
+            assertFalse(AnalysisState.entryPoints.contains("app.NotAware.setApplicationContext"),
                     "a non-implementor setApplicationContext must NOT be over-rooted");
         } finally { rm(cls.getParent()); }
     }

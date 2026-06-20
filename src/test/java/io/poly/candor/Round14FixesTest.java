@@ -70,11 +70,11 @@ class Round14FixesTest {
                 "class Sm {}"))));
         try {
             Candor.runScan(cls);
-            assertTrue(Candor.entryPoints.contains("app.A.tick"), "Micronaut @Scheduled must be rooted");
-            assertTrue(Candor.entryPoints.contains("app.A.handle"), "@ServiceActivator must be rooted");
-            assertTrue(Candor.entryPoints.contains("app.SmAction.execute"), "StateMachine Action must be rooted");
-            assertFalse(Candor.entryPoints.contains("app.A.plain"), "an unannotated method must NOT be rooted");
-            assertFalse(Candor.entryPoints.contains("app.NotAnAction.execute"),
+            assertTrue(AnalysisState.entryPoints.contains("app.A.tick"), "Micronaut @Scheduled must be rooted");
+            assertTrue(AnalysisState.entryPoints.contains("app.A.handle"), "@ServiceActivator must be rooted");
+            assertTrue(AnalysisState.entryPoints.contains("app.SmAction.execute"), "StateMachine Action must be rooted");
+            assertFalse(AnalysisState.entryPoints.contains("app.A.plain"), "an unannotated method must NOT be rooted");
+            assertFalse(AnalysisState.entryPoints.contains("app.NotAnAction.execute"),
                     "a non-implementor execute must NOT be over-rooted");
         } finally { rm(cls.getParent()); }
     }

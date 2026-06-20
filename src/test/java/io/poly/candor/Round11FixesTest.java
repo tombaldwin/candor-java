@@ -73,12 +73,12 @@ class Round11FixesTest {
             "}")));
         try {
             Candor.runScan(cls);
-            assertTrue(Candor.hostsDirect.getOrDefault("app.A.evade", new TreeSet<>()).isEmpty(),
+            assertTrue(AnalysisState.hostsDirect.getOrDefault("app.A.evade", new TreeSet<>()).isEmpty(),
                     "a benign URL literal must NOT be captured when the real host is runtime, got "
-                            + Candor.hostsDirect.get("app.A.evade"));
-            assertTrue(Candor.hostsDirect.getOrDefault("app.A.inline", new TreeSet<>()).contains("inline.example.com"),
+                            + AnalysisState.hostsDirect.get("app.A.evade"));
+            assertTrue(AnalysisState.hostsDirect.getOrDefault("app.A.inline", new TreeSet<>()).contains("inline.example.com"),
                     "an inline URL host must be captured");
-            assertTrue(Candor.hostsDirect.getOrDefault("app.A.viaLocal", new TreeSet<>()).contains("local.example.com"),
+            assertTrue(AnalysisState.hostsDirect.getOrDefault("app.A.viaLocal", new TreeSet<>()).contains("local.example.com"),
                     "a const-local URL host must be captured (dataflow-lite)");
         } finally { rm(cls.getParent()); }
     }
@@ -103,9 +103,9 @@ class Round11FixesTest {
             "}")));
         try {
             Candor.runScan(cls);
-            assertTrue(Candor.tablesDirect.getOrDefault("app.D.evade", new TreeSet<>()).isEmpty(),
-                    "a SQL-shaped log must NOT be attributed, got " + Candor.tablesDirect.get("app.D.evade"));
-            assertTrue(Candor.tablesDirect.getOrDefault("app.D.viaLocal", new TreeSet<>()).contains("customers"),
+            assertTrue(AnalysisState.tablesDirect.getOrDefault("app.D.evade", new TreeSet<>()).isEmpty(),
+                    "a SQL-shaped log must NOT be attributed, got " + AnalysisState.tablesDirect.get("app.D.evade"));
+            assertTrue(AnalysisState.tablesDirect.getOrDefault("app.D.viaLocal", new TreeSet<>()).contains("customers"),
                     "a const-local SQL table must be extracted");
         } finally { rm(cls.getParent()); }
     }
@@ -156,10 +156,10 @@ class Round11FixesTest {
             "public class A {}")));
         try {
             Candor.runScan(cls);
-            assertTrue(Candor.entryPoints.contains("app.Sub.onNext"), "Flow.Subscriber.onNext must be rooted");
-            assertTrue(Candor.entryPoints.contains("app.Ueh.uncaughtException"),
+            assertTrue(AnalysisState.entryPoints.contains("app.Sub.onNext"), "Flow.Subscriber.onNext must be rooted");
+            assertTrue(AnalysisState.entryPoints.contains("app.Ueh.uncaughtException"),
                     "Thread.UncaughtExceptionHandler.uncaughtException must be rooted");
-            assertFalse(Candor.entryPoints.contains("app.NotAHandler.uncaughtException"),
+            assertFalse(AnalysisState.entryPoints.contains("app.NotAHandler.uncaughtException"),
                     "a non-implementor with the same method must NOT be over-rooted");
         } finally { rm(cls.getParent()); }
     }

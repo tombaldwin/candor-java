@@ -425,10 +425,10 @@ class HelpersTest {
         for (String m : methodNames) {
             MethodNode mn = new MethodNode(Opcodes.ASM9, Opcodes.ACC_PUBLIC, m, "()I", null, null);
             cn.methods.add(mn);
-            Candor.overloadDescs.computeIfAbsent(internal.replace('/', '.') + "." + m,
+            AnalysisState.overloadDescs.computeIfAbsent(internal.replace('/', '.') + "." + m,
                     k -> new java.util.HashSet<>()).add("()I");
         }
-        Candor.byName.put(internal, cn);
+        AnalysisState.byName.put(internal, cn);
     }
 
     /** monomorphicTarget resolves a provable `new T` dispatch to exactly the method T invokes — itself
@@ -436,9 +436,9 @@ class HelpersTest {
      *  visible (the receiver-provenance soundness fix's resolution step). */
     @Test
     void monomorphicTargetResolvesLikeVirtualDispatch() {
-        Candor.byName.clear();
-        Candor.transSupersCache.clear();
-        Candor.overloadDescs.clear();
+        AnalysisState.byName.clear();
+        AnalysisState.transSupersCache.clear();
+        AnalysisState.overloadDescs.clear();
         registerClass("p/Base", "java/lang/Object", "compute");          // Base declares compute()
         registerClass("p/Dirty", "p/Base", "compute");                   // Dirty overrides compute()
         registerClass("p/Plain", "p/Base");                              // Plain inherits Base.compute()

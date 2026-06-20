@@ -64,9 +64,9 @@ class Round9FixesTest {
         try {
             Map<String, TreeSet<String>> r = Candor.runScan(cls);
             assertTrue(r.getOrDefault("app.A.redis", new TreeSet<>()).contains("Net"), "the Jedis call is still Net");
-            assertTrue(Candor.hostsDirect.getOrDefault("app.A.redis", new TreeSet<>()).isEmpty(),
-                    "a Redis key must NOT be captured as a host, got " + Candor.hostsDirect.get("app.A.redis"));
-            assertTrue(Candor.hostsDirect.getOrDefault("app.A.real", new TreeSet<>()).contains("api.x.com:443"),
+            assertTrue(AnalysisState.hostsDirect.getOrDefault("app.A.redis", new TreeSet<>()).isEmpty(),
+                    "a Redis key must NOT be captured as a host, got " + AnalysisState.hostsDirect.get("app.A.redis"));
+            assertTrue(AnalysisState.hostsDirect.getOrDefault("app.A.real", new TreeSet<>()).contains("api.x.com:443"),
                     "a genuine Socket host must still be captured");
         } finally { rm(cls.getParent()); }
     }
@@ -92,9 +92,9 @@ class Round9FixesTest {
                 "public class A {}"))));
         try {
             Candor.runScan(cls);
-            assertTrue(Candor.entryPoints.contains("app.Sub.onNext"), "Subscriber.onNext must be rooted");
-            assertTrue(Candor.entryPoints.contains("app.Handler.completed"), "CompletionHandler.completed must be rooted");
-            assertFalse(Candor.entryPoints.contains("app.JsonDeserializerMetrics.deserialize"),
+            assertTrue(AnalysisState.entryPoints.contains("app.Sub.onNext"), "Subscriber.onNext must be rooted");
+            assertTrue(AnalysisState.entryPoints.contains("app.Handler.completed"), "CompletionHandler.completed must be rooted");
+            assertFalse(AnalysisState.entryPoints.contains("app.JsonDeserializerMetrics.deserialize"),
                     "a class merely CONTAINING 'JsonDeserializer' must NOT be over-rooted");
         } finally { rm(cls.getParent()); }
     }

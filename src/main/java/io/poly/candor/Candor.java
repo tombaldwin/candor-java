@@ -4970,6 +4970,58 @@ public class Candor {
                 && (method.equals("requestResponse") || method.equals("fireAndForget")
                     || method.equals("requestStream") || method.equals("requestChannel")
                     || method.equals("metadataPush"))) return "Net";
+        // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 11) ──
+        // AI/LLM clients — the model API is HTTP/gRPC inside the SDK, invisible at the user's call → Net.
+        // theokanning OpenAI:
+        if (owner.equals("com.theokanning.openai.service.OpenAiService") && method.startsWith("create")) return "Net";
+        // Anthropic SDK service classes:
+        if (owner.startsWith("com.anthropic.services.")
+                && (method.equals("create") || method.equals("createStreaming") || method.equals("retrieve")
+                    || method.equals("list"))) return "Net";
+        // LangChain4j — CHAT models are always a remote API → generate/chat → Net. embed() is NOT keyed:
+        // EmbeddingModel can be an in-process (onnx) model, so leave it ambiguous (no fabrication).
+        if (owner.startsWith("dev.langchain4j.model.")
+                && (method.equals("generate") || method.equals("chat"))) return "Net";
+        // Vector DBs — gRPC/HTTP data plane → Net (owner-scoped verb sets).
+        if (owner.equals("io.pinecone.clients.Index")
+                && (method.equals("upsert") || method.equals("query") || method.equals("fetch")
+                    || method.equals("update") || method.equals("deleteByIds") || method.equals("deleteAll")
+                    || method.equals("describeIndexStats") || method.equals("list"))) return "Net";
+        if (owner.equals("io.qdrant.client.QdrantClient") && method.endsWith("Async")) return "Net";
+        if (owner.equals("io.milvus.client.MilvusServiceClient")) {
+            switch (method) {
+                case "search": case "insert": case "query": case "delete": case "upsert": case "get":
+                case "createCollection": case "dropCollection": case "loadCollection": case "flush":
+                    return "Net";
+                default: break;
+            }
+        }
+        // Memcached (xmemcached; spymemcached already modeled) + Aerospike → Net.
+        if (owner.equals("net.rubyeye.xmemcached.XMemcachedClient")
+                && (method.equals("get") || method.equals("set") || method.equals("delete")
+                    || method.equals("add") || method.equals("replace") || method.equals("incr")
+                    || method.equals("decr") || method.equals("append") || method.equals("prepend"))) return "Net";
+        if (owner.equals("com.aerospike.client.AerospikeClient")) {
+            switch (method) {
+                case "get": case "put": case "delete": case "exists": case "operate": case "query":
+                case "scanAll": case "add": case "append": case "prepend": case "execute": case "truncate":
+                    return "Net";
+                default: break;
+            }
+        }
+        // Gremlin (TinkerPop) graph driver → Net.
+        if (owner.equals("org.apache.tinkerpop.gremlin.driver.Client")
+                && (method.equals("submit") || method.equals("submitAsync"))) return "Net";
+        // web3j — Request.send/sendAsync is the JSON-RPC transport every web3j call bottoms out in → Net.
+        if (owner.equals("org.web3j.protocol.core.Request")
+                && (method.equals("send") || method.equals("sendAsync"))) return "Net";
+        // Azure Event Hubs producer + Table Storage client → Net.
+        if (owner.equals("com.azure.messaging.eventhubs.EventHubProducerClient") && method.equals("send"))
+            return "Net";
+        if (owner.equals("com.azure.data.tables.TableClient")
+                && (method.equals("createEntity") || method.equals("getEntity") || method.equals("updateEntity")
+                    || method.equals("deleteEntity") || method.equals("upsertEntity")
+                    || method.equals("listEntities"))) return "Net";
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation

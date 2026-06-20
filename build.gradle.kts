@@ -1,8 +1,16 @@
+import net.ltgt.gradle.errorprone.errorprone
+
 plugins {
     application
     `maven-publish`
     signing
     id("com.gradleup.shadow") version "9.2.2"
+    // Error Prone: compile-time bug-pattern detection (==-on-boxed, format-string mismatch, ignored
+    // returns, …), many findings carrying a suggested fix. OFF by default — the everyday build and all
+    // gates are unchanged. Enable an ADVISORY run with `-Perrorprone`: findings print as warnings and
+    // -Werror is dropped for that invocation so they never block (the "advisory before -Werror" posture
+    // we used for -Xlint). Promote checks to errors once the codebase is clean. See docs/errorprone.md.
+    id("net.ltgt.errorprone") version "5.1.0"
     // OpenRewrite: type-attributed, semantic source refactoring for mechanical/large-scale changes
     // (the safe alternative to regex for ambiguous or signature-changing edits). Recipes are declared in
     // rewrite.yml + listed under `rewrite { activeRecipe(...) }` below. Run `./gradlew rewriteDryRun` to
@@ -40,6 +48,9 @@ dependencies {
     // + static-analysis adds the best-practices recipe library for future custom/composed recipes.
     rewrite(platform("org.openrewrite.recipe:rewrite-recipe-bom:3.33.0"))
     rewrite("org.openrewrite.recipe:rewrite-static-analysis")
+    // Error Prone analyzer (used only when -Perrorprone is set; the plugin auto-adds the jdk.compiler
+    // --add-exports and forks javac on JDK 16+).
+    errorprone("com.google.errorprone:error_prone_core:2.50.0")
     // Native unit tests (JUnit 5). junit-platform-launcher must be declared explicitly on Gradle 9+.
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.10.2")
@@ -52,8 +63,16 @@ tasks.named<Test>("test") { useJUnitPlatform() }
 // -Xlint catches the real footguns (unchecked/rawtypes, fallthrough, finally, overrides) without a
 // third-party analyzer's setup cost. `this-escape` and `processing` are filtered: the former fires on
 // legitimate constructor patterns, the latter only matters with annotation processors (none here).
+// Error Prone is an explicit, advisory opt-in: `-Perrorprone` enables it AND drops -Werror for that run
+// so its findings (and any -Xlint warning) print without failing the build. Default builds are byte-for-
+// byte the same as before this plugin existed.
+val errorproneOn = (providers.gradleProperty("errorprone").orNull ?: "false") != "false"
 tasks.withType<JavaCompile>().configureEach {
-    options.compilerArgs.addAll(listOf("-Xlint:all,-this-escape,-processing", "-Werror"))
+    val args = mutableListOf("-Xlint:all,-this-escape,-processing")
+    if (!errorproneOn) args.add("-Werror")
+    options.compilerArgs.addAll(args)
+    options.errorprone.enabled.set(errorproneOn)
+    if (errorproneOn) options.errorprone.allErrorsAsWarnings.set(true)
 }
 
 // Provenance (candor-spec §2.1): bake the engine build id (git short hash) + toolchain into a resource

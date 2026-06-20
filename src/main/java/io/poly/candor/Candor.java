@@ -227,7 +227,7 @@ public class Candor {
             } else {
                 direct.computeIfAbsent(sink, k -> EffectSet.empty()).add(Effect.UNKNOWN);
                 String[] why = fwdSinkPendingWhy.get(sink);
-                if (why != null) unknownWhy.computeIfAbsent(sink, k -> new TreeSet<>()).add(why[0]);
+                if (why != null) unknownWhy.computeIfAbsent(sink, k -> new TreeSet<>()).add(UnknownReason.parse(why[0]));
             }
         }
 
@@ -564,7 +564,7 @@ public class Candor {
             // call into a project-declared native binding would look like a no-op.
             if ((mn.access & Opcodes.ACC_NATIVE) != 0) {
                 dir.add(Effect.UNKNOWN);
-                unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add("native:" + mn.name);
+                unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(UnknownReason.Kind.NATIVE, mn.name));
             }
 
             // Spring annotations on this method (the effect Spring's proxy/generated code performs).
@@ -681,7 +681,7 @@ public class Candor {
                         if (task != null && !task.fromIndy && task.newType == null) {
                             dir.add(Effect.UNKNOWN);
                             unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
-                                    .add("task-handoff:" + owner + "." + min.name);
+                                    .add(UnknownReason.of(UnknownReason.Kind.TASK_HANDOFF, owner + "." + min.name));
                         }
                     }
                     // NAMED FUNCTIONAL-INTERFACE INSTANCE handed to a known-INVOKING library HOF. A
@@ -813,7 +813,7 @@ public class Candor {
                             // only a genuinely-unmodeled member (or a rare pure accessor → harmless Unknown) does.
                             dir.add(Effect.UNKNOWN);
                             unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
-                                    .add("dispatch:" + owner + "." + min.name);
+                                    .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
                         }
                     }
                     // An injection-class effect on a caller-derived argument is an injection surface.
@@ -822,7 +822,7 @@ public class Candor {
                         tainted.computeIfAbsent(id, k -> EffectSet.empty()).add(effect);
                     if (effect == Effect.UNKNOWN) // reflection / dynamic invoke (classify §)
                         unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
-                                .add("reflect:" + owner + "." + min.name);
+                                .add(UnknownReason.of(UnknownReason.Kind.REFLECT, owner + "." + min.name));
                     if (effect == Effect.FS) { // non-breaking read/write refinement of Fs
                         List<String> k = fsKind(owner, min.name);
                         if (!k.isEmpty()) fsDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(k);
@@ -1052,7 +1052,7 @@ public class Candor {
                         // Only matters on the narrow path; a broad sealed-unseen already drops to Unknown below.
                         if (!broad && sealedHasUnseenPermit(min.owner)) {
                             dir.add(Effect.UNKNOWN);
-                            unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add("dispatch:" + owner + "." + min.name);
+                            unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
                         }
                         // A broad NON-exempt dispatch that DROPS project implementors → Unknown, not
                         // silent-pure (an effectful body could be among the many we just dropped; exempt
@@ -1091,7 +1091,7 @@ public class Candor {
                             // former `dispatch-broad:`/`dispatch-broad-ext:` (project vs external owner)
                             // distinction is folded away — it is still an unresolved dispatch, resolved
                             // identically by the frontier; the owner type carries the project/external info.
-                            unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add("dispatch:" + owner + "." + min.name);
+                            unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
                         }
                         // Genuine unresolved dispatch: a PROJECT interface/abstract type that DECLARES
                         // this method, with no visible concrete impl (DI-wired, external, or strategy)
@@ -1109,7 +1109,7 @@ public class Candor {
                                 && projectDeclaresMethod(min.owner, min.name, min.desc)) {
                             dir.add(Effect.UNKNOWN);
                             unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
-                                    .add("dispatch:" + owner + "." + min.name);
+                                    .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
                         }
                         // A JDK FUNCTIONAL-INTERFACE SAM (`Runnable.run`, `Callable.call`,
                         // `java.util.function.*`) invoked on an UNPINNED receiver with EMPTY CHA — the only
@@ -1144,7 +1144,7 @@ public class Candor {
                                 fwdSinkPendingWhy.put(id, new String[] { why });
                             } else {
                                 dir.add(Effect.UNKNOWN);
-                                unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(why);
+                                unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.parse(why));
                             }
                         }
                         } // end CHA block (monoRecv == null)
@@ -1297,7 +1297,7 @@ public class Candor {
                     if (idin.bsm != null && !STRUCTURAL_INDY_BSM.contains(idin.bsm.getOwner())) {
                         dir.add(Effect.UNKNOWN);
                         unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
-                                .add("indy:" + idin.bsm.getOwner().replace('/', '.'));
+                                .add(UnknownReason.of(UnknownReason.Kind.INDY, idin.bsm.getOwner().replace('/', '.')));
                     }
                 }
             }

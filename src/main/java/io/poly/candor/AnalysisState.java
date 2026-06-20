@@ -27,7 +27,7 @@ final class AnalysisState {
     }
     static final Map<String, DepFn> crossDeps = new HashMap<>();  // method-ref hash -> DepFn (from CANDOR_DEPS)
     static final Map<String, TreeSet<String>> fsDirect = new HashMap<>();// fn -> Fs read/write kind performed directly
-    static final Map<String, TreeSet<String>> unknownWhy = new HashMap<>();// fn -> why Unknown was emitted directly (native:/reflect:/dispatch:)
+    static final Map<String, TreeSet<UnknownReason>> unknownWhy = new HashMap<>();// fn -> why Unknown was emitted directly (native:/reflect:/dispatch:)
     static final Set<String> entryPoints = new HashSet<>(); // framework-invoked methods
     static final Set<String> projectClasses = new HashSet<>();
     static final Set<String> repoTypes = new HashSet<>();    // Spring Data repository interfaces (internal names)

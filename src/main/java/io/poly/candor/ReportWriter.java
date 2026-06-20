@@ -127,10 +127,8 @@ final class ReportWriter {
                     List<String> tables = inf.contains(Effect.DB) && tk != null && !tk.isEmpty()
                             ? new ArrayList<>(tk) : List.of();
                     // Why Unknown was emitted HERE (not inherited): native:/reflect:/dispatch:/… tags.
-                    TreeSet<String> uw = unknownWhy.get(fn);
-                    List<UnknownReason> reasons = uw == null ? List.of()
-                            : uw.stream().map(UnknownReason::parse).filter(Objects::nonNull)
-                                    .collect(Collectors.toList());
+                    TreeSet<UnknownReason> uw = unknownWhy.get(fn);
+                    List<UnknownReason> reasons = uw == null ? List.of() : new ArrayList<>(uw);
                     // spec ⟨0.5⟩ unitKind: a static initializer is a UNIT, not a method anyone calls.
                     EffectorKind kind = fn.endsWith(".<clinit>") ? EffectorKind.INITIALIZER : EffectorKind.FUNCTION;
                     effectors.add(new Effector(
@@ -240,11 +238,10 @@ final class ReportWriter {
         if (unknownWhy.isEmpty()) return;
         var byCategory = new java.util.TreeMap<String, Integer>();   // native|reflect|dispatch -> count
         var byTarget = new java.util.TreeMap<String, Integer>();     // specific owner/method -> count
-        for (TreeSet<String> reasons : unknownWhy.values())
-            for (String r : reasons) {
-                String cat = r.substring(0, r.indexOf(':'));
-                byCategory.merge(cat, 1, Integer::sum);
-                byTarget.merge(r, 1, Integer::sum);
+        for (TreeSet<UnknownReason> reasons : unknownWhy.values())
+            for (UnknownReason r : reasons) {
+                byCategory.merge(r.prefix(), 1, Integer::sum);
+                byTarget.merge(r.format(), 1, Integer::sum);
             }
         System.err.println("\ncandor-java: Unknown sources (direct) — " + unknownWhy.size() + " methods");
         byCategory.forEach((c, n) -> System.err.println(String.format("  %-9s %4d", c, n)));

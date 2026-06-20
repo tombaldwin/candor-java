@@ -5157,6 +5157,48 @@ public class Candor {
         // RethinkDB — ReqlExpr.run is the query terminal; Connection$Builder.connect opens the socket → Net.
         if (owner.equals("com.rethinkdb.gen.ast.ReqlExpr") && method.equals("run")) return "Net";
         if (owner.equals("com.rethinkdb.net.Connection$Builder") && method.equals("connect")) return "Net";
+        // ── More library effect leaves (batch 14 — precision: these were already INVISIBLE-DISCLOSED=sound;
+        //    modeled to upgrade the disclosure to the concrete effect) ──────────────────────────────────
+        // HTTP/stream SERVER frameworks — start()/init() binds a listening socket → Net (a different leaf
+        // shape than the many HTTP *clients*; the route-registration / config methods stay pure).
+        if ((owner.equals("io.javalin.Javalin") || owner.equals("io.undertow.Undertow")
+                || owner.equals("org.eclipse.jetty.server.Server")
+                || owner.equals("org.apache.kafka.streams.KafkaStreams"))
+                && method.equals("start")) return "Net";
+        if (owner.equals("spark.Spark") && method.equals("init")) return "Net";
+        // Apache Geode/GemFire Region — distributed cache, cluster round-trips → Net. Region extends
+        // ConcurrentMap, so OWNER-scoped (a java.util.Map receiver stays pure, like Hazelcast/Infinispan).
+        if (owner.equals("org.apache.geode.cache.Region")) {
+            switch (method) {
+                case "get": case "put": case "putAll": case "getAll": case "remove": case "removeAll":
+                case "create": case "invalidate": case "destroy": case "putIfAbsent": case "replace":
+                case "query": case "containsKey": case "containsValueForKey": case "keySetOnServer":
+                    return "Net";
+                default: break;
+            }
+        }
+        // SimpleJavaMail → Net (SMTP send).
+        if (owner.equals("org.simplejavamail.api.mailer.Mailer") && method.equals("sendMail")) return "Net";
+        // docx4j — WordprocessingMLPackage/OpcPackage load/save on a File touch disk → Fs (descriptor-gated;
+        // the InputStream/OutputStream overloads are caller-stream → pure).
+        if (owner.startsWith("org.docx4j.openpackaging.packages.")
+                && (method.equals("load") || method.equals("save"))
+                && desc != null && desc.contains("Ljava/io/File;")) return "Fs";
+        // Template engines — the file-loading verb reads the template off disk → Fs (the in-memory
+        // compileInline / getLiteralTemplate / Reader overloads stay pure).
+        if (owner.equals("com.github.jknack.handlebars.Handlebars") && method.equals("compile")) return "Fs";
+        if (owner.startsWith("com.github.mustachejava.") && method.equals("compile")
+                && desc != null && desc.startsWith("(Ljava/lang/String;)")) return "Fs";
+        if (owner.equals("io.pebbletemplates.pebble.PebbleEngine") && method.equals("getTemplate")) return "Fs";
+        // ffmpeg wrapper — *.run forks the ffmpeg/ffprobe binary → Exec.
+        if (owner.startsWith("net.bramp.ffmpeg.") && method.equals("run")) return "Exec";
+        // ML — ONNX Runtime createSession(String|path) loads the model off disk → Fs (createSession(byte[])
+        // is in-memory → pure); OrtSession.run is opaque native inference → Unknown (can't see into native).
+        if (owner.equals("ai.onnxruntime.OrtEnvironment") && method.equals("createSession")
+                && desc != null && desc.startsWith("(Ljava/lang/String;")) return "Fs";
+        if (owner.equals("ai.onnxruntime.OrtSession") && method.equals("run")) return "Unknown";
+        // Stanford CoreNLP — the pipeline ctor loads serialized models off disk/classpath → Fs.
+        if (owner.equals("edu.stanford.nlp.pipeline.StanfordCoreNLP") && method.equals("<init>")) return "Fs";
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation

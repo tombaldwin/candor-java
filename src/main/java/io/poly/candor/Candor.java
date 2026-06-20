@@ -748,6 +748,9 @@ public class Candor {
             // runtime-built URL stays unattributable → the terminal reads incomplete (the URL split-construct
             // /use AS-EFF-008 fail-closed, replacing the old value-flow backlog at the Net surface below).
             Map<Integer, String> urlLocals = constUrlLocals(mn, constLocals);
+            // This method's entry-point status is settled before the loop (entry detection above) and `id`
+            // is fixed, so hoist it out of the per-instruction loop (used by the R17 gate below).
+            boolean isEntry = ctx().entryPoints.contains(id);
             for (AbstractInsnNode insn : mn.instructions) {
                 if (insn instanceof MethodInsnNode min) {
                     String owner = min.owner.replace('/', '.');
@@ -805,10 +808,9 @@ public class Candor {
                     // Gated to entry points so an internal helper reading a PASSED stream — whose in-project
                     // caller HAS the concrete (effect already attributed at the creation site) — doesn't
                     // flood. SOUNDNESS.md R17 (the abstract-java.io-stream boundary).
-                    if (effect == null && provFrames != null && isAbstractStreamIo(min.owner, min.name)
-                            && ctx().entryPoints.contains(id)) {
+                    if (effect == null && isEntry && provFrames != null && isAbstractStreamIo(min.owner, min.name)) {
                         ProvValue recv = receiverProv(provFrames[mn.instructions.indexOf(min)], min);
-                        if (isOwnParam(mn, recv, provFrames)) {
+                        if (isOwnParam(mn, recv, provFrames[0])) {
                             dir.add(Effect.UNKNOWN);
                             ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                                     .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
@@ -2030,40 +2032,44 @@ public class Candor {
      *  reassignment) yields a distinct instance, so the receiver is NOT {@code ==} the param and the SAM is
      *  correctly left as an honest Unknown. This is what stops a `more[0].accept()` / field-handler call in
      *  an otherwise-forwardable method from being silently suppressed. */
-    // ReferenceEquality is INTENTIONAL: this asks whether the call's receiver is the SAME dataflow value
-    // object as the parameter (object identity in the prov frame), not value-equality — that identity is
-    // exactly the "the SAM is the param itself" signal. .equals() would be wrong here.
-    @SuppressWarnings("ReferenceEquality")
     static boolean samIsOnParam(MethodNode mn, MethodInsnNode min, Frame<ProvValue>[] provFrames, int argIndex) {
         if (provFrames == null || provFrames.length == 0) return false;
         ProvValue recv = receiverProv(provFrames[mn.instructions.indexOf(min)], min);
-        ProvValue paramVal = provFrames[0].getLocal(paramLocalSlot(mn, argIndex));
-        return recv != null && recv == paramVal;
+        return isParamValue(mn, recv, provFrames[0], argIndex);
+    }
+
+    /** True iff {@code v} is (by ProvValue reference identity) the value of declared parameter
+     *  {@code argIndex} in the method's entry frame {@code f0}. The shared param-identity proof used by
+     *  {@link #samIsOnParam} (single arg) and {@link #isOwnParam} (any arg). ReferenceEquality is
+     *  INTENTIONAL: a ProvValue is a dataflow IDENTITY — the entry frame holds the param's instance and
+     *  ALOAD/aliasing preserve it, while any transform (an array-element load, a call/field result, a
+     *  reassignment) yields a DISTINCT instance — so {@code ==} answers "is this value the param itself";
+     *  {@code .equals} would be wrong. */
+    @SuppressWarnings("ReferenceEquality")
+    static boolean isParamValue(MethodNode mn, ProvValue v, Frame<ProvValue> f0, int argIndex) {
+        if (v == null || f0 == null) return false;
+        int slot = paramLocalSlot(mn, argIndex);
+        return slot < f0.getLocals() && f0.getLocal(slot) == v;
     }
 
     /** R17 — an I/O verb on an ABSTRACT {@code java.io} stream base (Reader/InputStream/Writer/OutputStream).
      *  A call on the abstract base means the concrete impl is unresolved; the verb decides it's genuine I/O
      *  (a read-, write-, or skip-prefixed method, or transferTo/append) rather than pure plumbing such as
-     *  close/flush/mark/ready. */
+     *  close/flush/mark/reset/ready — note {@code ready()} is read-PREFIXED but a non-blocking probe, not a
+     *  read, so it is excluded explicitly. */
     static boolean isAbstractStreamIo(String internalOwner, String name) {
         boolean base = internalOwner.equals("java/io/Reader") || internalOwner.equals("java/io/InputStream")
                 || internalOwner.equals("java/io/Writer") || internalOwner.equals("java/io/OutputStream");
-        return base && (name.startsWith("read") || name.startsWith("write")
+        return base && !name.equals("ready") && (name.startsWith("read") || name.startsWith("write")
                 || name.startsWith("skip") || name.equals("transferTo") || name.equals("append"));
     }
 
-    /** R17 — true iff {@code v} is (by ProvValue identity) one of {@code mn}'s OWN declared parameters. The
-     *  same param-identity proof {@link #samIsOnParam} uses: an entry point's stream param is framework-
-     *  injected, so reading it is I/O of unknown kind that must be DISCLOSED, not read silent-pure. */
-    @SuppressWarnings("ReferenceEquality")
-    static boolean isOwnParam(MethodNode mn, ProvValue v, Frame<ProvValue>[] provFrames) {
-        if (v == null || provFrames == null || provFrames.length == 0) return false;
-        Frame<ProvValue> f0 = provFrames[0];
+    /** R17 — true iff {@code v} is (by ProvValue identity) one of {@code mn}'s OWN declared parameters. An
+     *  entry point's stream param is framework-injected, so reading it is I/O of unknown kind that must be
+     *  DISCLOSED, not read silent-pure. {@code f0} is the method's entry frame ({@code provFrames[0]}). */
+    static boolean isOwnParam(MethodNode mn, ProvValue v, Frame<ProvValue> f0) {
         int n = Type.getArgumentTypes(mn.desc).length;
-        for (int i = 0; i < n; i++) {
-            int slot = paramLocalSlot(mn, i);
-            if (slot >= 0 && slot < f0.getLocals() && f0.getLocal(slot) == v) return true;
-        }
+        for (int i = 0; i < n; i++) if (isParamValue(mn, v, f0, i)) return true;
         return false;
     }
 

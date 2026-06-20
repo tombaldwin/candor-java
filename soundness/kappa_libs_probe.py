@@ -386,6 +386,34 @@ IMPORTS = (
     #   edu.stanford.nlp.pipeline.StanfordCoreNLP(String) -> Fs (loads serialized models off disk/classpath)).
     #   DJL SKIPPED (heavy native engine tree).
     # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2..13.
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 15) ======================
+    # GOAL: confirm whether any SILENT-PURE / FLOOR cardinal sins remain, vs only disclosed (invisible/Unknown)
+    #   precision gaps. Batch 14 found 0 silent-pure (all invisible-disclosed). KEY INSIGHT for where the real
+    #   cardinal sins still hide: candor's `invisible:[pkg]` disclosure fires PER-PACKAGE at the call site even
+    #   when OTHER members of the same 3rd-party owner ARE modeled — VERIFIED here: okhttp3.Cache.evictAll (a
+    #   sibling of the modeled okhttp3.Call.execute) reports invisible:[okhttp3], NOT silent-pure; Hibernate
+    #   StatelessSession.get/insert report invisible:[org.hibernate]; Mongo GridFSBucket.downloadToStream reports
+    #   invisible:[com.mongodb.client.gridfs]. So "partially-modeled 3rd-party package" does NOT yield silent-pure
+    #   — candor falls back to the honest package-level disclosure. The ONLY place an unmodeled effectful member
+    #   reads SILENT (no effect, no invisible, no unknownWhy) is a κ-COVERED JDK prefix (java.*/javax.*/jakarta.*):
+    #   there candor suppresses the invisible disclosure (it "knows" the JDK), so an unmodeled member is
+    #   FLOOR-DROPPED from the report ENTIRELY — the worst kind. This batch therefore targets PARTIALLY-MODELED
+    #   JDK TYPES (candor models SOME verbs of the owner, so the type is not "unknown", and the unmodeled verbs
+    #   fall through silently). NO new jars — every leaf is a JDK type already on the boot classpath.
+    # java.util.prefs.Preferences is PARTIALLY MODELED -> Fs: put/get/flush/sync/remove/putInt are classified Fs,
+    #   but removeNode()/clear()/exportNode(OutputStream)/exportSubtree(OutputStream) and the static
+    #   importPreferences(InputStream) are FLOOR-DROPPED silent — yet they ALL hit the same backing store
+    #   (disk/registry). removeNode/clear DELETE persisted data; exportNode/exportSubtree READ the store to emit
+    #   XML; importPreferences WRITES the store. These are genuine Fs the floor hides -> SILENT-PURE cardinal sins.
+    # javax.sql.rowset.RowSet.execute() / execute(Connection) connects to the data source and runs the command
+    #   = a DB round-trip -> Db. candor models javax.sql.DataSource (Db) but NOT the javax.sql.rowset.* RowSet
+    #   types, and javax.* is κ-covered so the leaf is FLOOR-DROPPED silent -> a SILENT-PURE Db cardinal sin.
+    # PURE/DISCLOSED CONTROLS proving the distinction (not gaps): okhttpCacheEvict/hibernateStatelessGet/
+    #   gridfsDownload surface invisible:[pkg] (sound, low-value); java.sql DatabaseMetaData.getTables/getColumns,
+    #   CallableStatement.execute, Connection.commit/rollback, RowSet's sibling java.sql verbs, java.util.zip
+    #   ZipFile(File), java.util.jar JarFile(File), javax.imageio ImageIO.read(File/URL), java.util.Scanner(File),
+    #   java.util.logging FileHandler(String), java.net.Socket.connect, java.rmi Naming.lookup, java.net.http
+    #   HttpClient.send/sendAsync are all ALREADY MODELED (verified during the batch — they classify correctly).
 )
 
 # (method, expected effect, params, body) — PASS iff candor reports the effect OR a disclosed Unknown.
@@ -1447,6 +1475,26 @@ EFFECT_CASES = [
     # Stanford CoreNLP — new StanfordCoreNLP(String) loads serialized models off disk/classpath -> Fs.
     ("corenlpNew", "Fs", "",
         'edu.stanford.nlp.pipeline.StanfordCoreNLP p = new edu.stanford.nlp.pipeline.StanfordCoreNLP("props")'),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 15) ======================
+    # ---- Fs (java.util.prefs.Preferences PARTIALLY-MODELED siblings — the floor-dropped backing-store verbs) ----
+    # removeNode() DELETES a whole subtree from the backing store (disk/registry) -> Fs. Modeled siblings
+    #   put/get/flush/sync/remove are Fs, but removeNode is FLOOR-DROPPED silent. Expect Fs|Unknown; got: silent.
+    ("prefsRemoveNode", "Fs", "java.util.prefs.Preferences p", 'p.removeNode()'),
+    # clear() removes ALL keys at this node from the backing store -> Fs. (remove(String) IS modeled; clear is not.)
+    ("prefsClear", "Fs", "java.util.prefs.Preferences p", 'p.clear()'),
+    # exportNode(OutputStream) READS the backing store for this node and emits XML to the stream -> Fs (the read).
+    ("prefsExportNode", "Fs", "java.util.prefs.Preferences p, OutputStream os", 'p.exportNode(os)'),
+    # exportSubtree(OutputStream) READS the whole subtree from the backing store -> Fs.
+    ("prefsExportSubtree", "Fs", "java.util.prefs.Preferences p, OutputStream os", 'p.exportSubtree(os)'),
+    # static importPreferences(InputStream) parses the XML and WRITES the backing store -> Fs.
+    ("prefsImport", "Fs", "InputStream in", 'java.util.prefs.Preferences.importPreferences(in)'),
+
+    # ---- Db (javax.sql.rowset.RowSet.execute — connects to the data source and runs the command = DB round-trip.
+    #      candor models javax.sql.DataSource (Db) but NOT javax.sql.rowset.*; javax.* is κ-covered so it is
+    #      FLOOR-DROPPED silent rather than `invisible`-disclosed. Expect Db|Unknown.) ----
+    ("rowsetExecuteNoArg", "Db", "javax.sql.rowset.JdbcRowSet rs", 'rs.execute()'),
+    ("rowsetExecuteConn", "Db", "javax.sql.rowset.CachedRowSet rs, java.sql.Connection c", 'rs.execute(c)'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -2274,16 +2322,30 @@ def main():
     # structural finding this batch maps. (Genuinely-pure functions are ALSO absent, but a Spring leaf that
     # really does I/O being absent == the floor hid a real effect; the non-Spring equivalent would surface
     # an `invisible:[pkg]` disclosure instead of vanishing.)
-    def is_spring(params, body):
-        return "org.springframework" in (params + " " + body)
+    # κ-COVERED prefixes: candor treats these namespaces as "known", so it SUPPRESSES the `invisible:[pkg]`
+    # disclosure for them. An UNMODELED effectful member of a covered prefix is therefore DROPPED from the
+    # report ENTIRELY (silently absent — no effect, no invisible, no unknownWhy), strictly worse than a normal
+    # silent-pure. org.springframework.* is one such prefix; the JDK prefixes (java.*/javax.*/jakarta.*/kotlin.*)
+    # are the others. A leaf is FLOOR-SUPPRESSED iff it is ABSENT from the report AND its call-site owner is a
+    # covered prefix. (Genuinely-pure functions are ALSO absent, but a covered-prefix leaf that really does I/O
+    # being absent == the floor hid a real effect; a NON-covered package would surface `invisible:[pkg]` instead.)
+    COVERED = ("org.springframework", "java.", "javax.", "jakarta.", "kotlin.")
+
+    def covered_owner(params, body):
+        text = params + " " + body
+        return any(p in text for p in COVERED)
 
     def floor_state(name, params, body):
-        """Return FLOOR? marker: '' (present, no floor), 'FLOOR' (Spring, dropped),
-        'INVIS' (present + invisible disclosure), 'drop' (absent, non-Spring => pure/omitted)."""
+        """STATE column: '' (present, effect/Unknown — ok), 'INVIS' (present + invisible disclosure — sound,
+        low-value precision gap), 'SILENT' (present but inferred=[] AND no invisible AND no unknownWhy — a
+        cardinal sin: candor thinks it is pure), 'FLOOR' (ABSENT + covered-prefix owner — the floor silently
+        dropped a real effect, the worst kind), 'drop' (ABSENT + non-covered owner — genuinely pure/omitted)."""
         key = "KL." + name
         if key in present:
-            return "INVIS" if invisible.get(key) else ""
-        return "FLOOR" if is_spring(params, body) else "drop"
+            if invisible.get(key):
+                return "INVIS"
+            return "" if inferred.get(key) else "SILENT"
+        return "FLOOR" if covered_owner(params, body) else "drop"
 
     rows, gaps, fabs, floored = [], [], [], []
     for name, eff, params, body in EFFECT_CASES:
@@ -2293,12 +2355,13 @@ def main():
         verdict = f"ok({eff})" if eff in got else ("ok(Unknown)" if "Unknown" in got else "GAP")
         rows.append((name, eff, got or [], fs, verdict))
         if not ok:
-            tag = "FLOOR-SUPPRESSED" if fs == "FLOOR" else ("INVISIBLE-pkg" if fs == "INVIS" else "GAP")
+            tag = {"FLOOR": "FLOOR-SUPPRESSED", "SILENT": "SILENT-PURE",
+                   "INVIS": "INVISIBLE-pkg"}.get(fs, "GAP")
             gaps.append(f"  {tag}  KL.{name} [{body}] -> "
                         f"{got or (invisible.get('KL.'+name) and 'invisible:'+str(invisible['KL.'+name]) or 'pure/DROPPED')}"
                         f"  (must surface {eff} or Unknown)")
-            if fs == "FLOOR":
-                floored.append(name)
+            if fs in ("FLOOR", "SILENT"):
+                floored.append(f"{fs}:{name}")
     for name, body, params in PURE_CASES:
         got = inferred.get("KL." + name, [])
         fs = floor_state(name, params, body)
@@ -2314,12 +2377,13 @@ def main():
 
     n = len(EFFECT_CASES) + len(PURE_CASES)
     if floored:
-        print(f"\nkappa-libs: {len(floored)} FLOOR-SUPPRESSED leaf(s) — org.springframework.* dropped from the "
-              f"report ENTIRELY (silent, worse than pure; no `invisible` disclosure):")
+        print(f"\nkappa-libs: {len(floored)} CARDINAL-SIN leaf(s) — a κ-covered prefix "
+              f"(org.springframework.*/java.*/javax.*/jakarta.*) hid a real effect (silent, no `invisible` "
+              f"disclosure, no unknownWhy — candor thinks it is pure):")
         for f in floored:
-            print(f"  FLOOR  KL.{f}")
+            print(f"  {f.split(':',1)[0]}  KL.{f.split(':',1)[1]}")
     if gaps or fabs:
-        print(f"\nkappa-libs: {len(gaps)} coverage gap(s) ({len(floored)} of them FLOOR-suppressed), "
+        print(f"\nkappa-libs: {len(gaps)} coverage gap(s) ({len(floored)} of them SILENT/FLOOR cardinal sins), "
               f"{len(fabs)} over-classification(s) of {n} library leaves:")
         for g in gaps + fabs:
             print(g)

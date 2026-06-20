@@ -4499,7 +4499,13 @@ public class Candor {
         if (owner.equals("java.nio.file.FileSystems") && method.equals("newFileSystem")) return "Fs";
         if (owner.equals("java.util.prefs.Preferences")
                 && (method.startsWith("get") || method.startsWith("put") || method.equals("remove")
-                    || method.equals("flush") || method.equals("sync"))) return "Fs";
+                    || method.equals("flush") || method.equals("sync")
+                    // removeNode/clear delete the persisted subtree/keys; export*/importPreferences read+write
+                    // the backing store (batch-15: these unmodeled verbs were FLOOR-DROPPED silent under the
+                    // κ-covered java.* prefix — a cardinal sin, not disclosed).
+                    || method.equals("removeNode") || method.equals("clear")
+                    || method.equals("exportNode") || method.equals("exportSubtree")
+                    || method.equals("importPreferences"))) return "Fs";
         if (owner.equals("java.util.logging.LogManager") && method.equals("readConfiguration")) return "Fs";
         // java.util.Scanner(File)/(Path) opens and reads a file. CTOR-DESCRIPTOR-GATED: Scanner(String) is
         // pure (a string source) and Scanner(InputStream/Readable) defers to its source's owner — so gate to
@@ -5649,6 +5655,11 @@ public class Candor {
                     || method.equals("refreshRow") || method.equals("insertRow") || method.equals("updateRow")
                     || method.equals("deleteRow")))
             return "Db";
+        // RowSet.execute()/execute(Connection) runs the configured query against the DB → Db (a RowSet-only
+        // verb; ResultSet has none). javax.sql.rowset.* (JdbcRowSet/CachedRowSet/…) was FLOOR-DROPPED silent
+        // under the κ-covered javax.* prefix — batch-15 cardinal sin. (acceptChanges also flushes to the DB.)
+        if (owner.startsWith("javax.sql.") && owner.endsWith("RowSet")
+                && (method.equals("execute") || method.equals("acceptChanges"))) return "Db";
         // DatabaseMetaData catalog queries round-trip to the server (getTables/getColumns/getPrimaryKeys/…
         // run a system-catalog SELECT). The whole-owner would FABRICATE on its many pure capability getters
         // (supportsX/getMaxX/getDatabaseProductName), so gate to the catalog-FETCH verbs only.

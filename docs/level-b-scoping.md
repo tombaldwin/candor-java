@@ -1,7 +1,8 @@
 # Level B — scoping: instance `AnalysisContext` (de-globalize the engine)
 
-Status: **scoping only** (not started). This sizes the work to convert candor-java's global mutable
-static state into a per-scan instance, so the recommendation can be made with real numbers.
+Status: **LB-0 + LB-1a + LB-1b DONE** (see the Progress section at the end). The engine state is a
+per-thread `AnalysisContext` and the engine is re-entrant. LB-2 (a public embeddable entry point) is the
+only remaining, optional, phase. The original scoping below is kept for context.
 
 ## Goal & what it buys
 
@@ -110,25 +111,30 @@ a planned, incremental, gated change rather than a rewrite.
 one `AnalysisContext`, accessed via the single `AnalysisState.ctx` handle; `resetState()` is one line.
 Behavior-identical, fully gated. This is the substantive "state is a named, owned, per-scan object" win.
 
-**LB-1b (remove the handle → thread `ctx`) was attempted and rolled back** — it is NOT safely automatable
-by text tooling. Concrete obstacles found, for whoever does the dedicated pass:
+**LB-1b — DONE (`8d41225`), via a ThreadLocal context** (NOT the param/instance-threading approach
+originally sketched, which had failed text-automation). The engine is now re-entrant: each scanning
+thread owns its own `AnalysisContext`.
 
-1. **The ASM interpreter classes can't take a `ctx` parameter.** `TaintInterpreter`/`ProvInterpreter`
-   (nested `Interpreter<V>` subclasses) and `ProvValue` override framework methods with FIXED signatures
-   (`newValue`/`naryOperation`/the `Value` ctors), and `ProvValue`'s constructor calls `declTypeOf`/
-   `indyLambdaTarget` which need `ctx`. These must hold `ctx` as an **instance field** (constructed
-   `new ProvInterpreter(ctx)` from `analyze`), i.e. the *instance-object* approach — param-threading
-   doesn't reach them.
-2. **Decision: `runScan(AnalysisContext ctx, Path)`** (caller owns/creates `ctx`) keeps `runScan`'s
-   return type unchanged, so test/`main` callers just create a local `ctx` and read its state after —
-   smaller ripple than returning the context.
-3. **Auto-threading is unreliable** here: brace-matching to find method bodies is fooled by braces inside
-   string literals (e.g. the AS-EFF `"{ %s }"` messages) and by nested classes, producing both
-   false-positive params (methods given an unused `ctx`) and false-negatives; multi-call lines
-   (`writeJson(…); writeCallgraph(…); writeHierarchy(…)`) and javac's 100-error cap caused arg runaways.
-   **Use an IDE's "Introduce Parameter" / "Make non-static" refactoring** (real semantic analysis), or do
-   it by hand method-by-method, NOT a regex/text threader.
-4. **Surface to thread:** ~41 methods that use `ctx` need the param + their call sites the arg; the
-   cascade roots at `main`/`runScan`/`Query.whatif`/`parsepolicy` (which create the context). Plus the
-   ~74 `AnalysisState.ctx.<field>` refs in 15 test files become a local `ctx` the test creates and passes
-   to `runScan`. Gate exactly as LB-0/LB-1a (byte-identity + tests + soundness + conformance).
+**What shipped:**
+- `AnalysisState.ctx` (a single static field) → `ThreadLocal<AnalysisContext>` behind a `ctx()` accessor;
+  `resetState()` → `newContext()` (installs a fresh context for the current thread).
+- Mechanical, unambiguous: 217 `ctx.<field>` → `ctx().<field>` across the 7 engine files (`perl`), 74
+  `AnalysisState.ctx.<field>` → `…ctx().<field>` across 15 test files. The token was unambiguous (one
+  handle declaration; bare `ctx` in test string fixtures untouched), so regex + the compiler as backstop
+  was safe — no IDE/OpenRewrite pass needed.
+- `ReentrancyConcurrencyTest` proves isolation: two threads scan a Net target and a pure target in a
+  tight interleaved loop; no effect leaks across threads (fails against the old shared handle).
+
+**Why ThreadLocal beat param/instance-threading.** The blocker for the param approach was the ASM
+interpreter classes — `TaintInterpreter`/`ProvInterpreter`/`ProvValue` (nested `Interpreter<V>`
+subclasses) override framework methods with FIXED signatures, so they can't take a `ctx` param; they'd
+each have to hold `ctx` as an instance field (the instance-object graph), a large high-risk change.
+ThreadLocal sidesteps that entirely — the interpreters just call `ctx()` like everything else — and
+achieves the actual goal (concurrent-scan isolation) with a uniform low-risk edit. The only thing it does
+NOT give is a fully handle-free "pass the context explicitly" pure-OO form; a single-thread *nested*
+runScan would still clobber, but candor has no such nesting. Trade accepted.
+
+**Caveat:** ThreadLocal on a pooled/long-lived thread holds the last scan's context until the next
+`newContext()` (or thread death). For the CLI (one scan per process) this is irrelevant; an embedder
+reusing threads should call `resetState()`/`newContext()` at the top of each scan — which `runScan`
+already does.

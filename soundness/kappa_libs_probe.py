@@ -1260,10 +1260,13 @@ EFFECT_CASES = [
     # ====================== ADDED LIBRARIES (2026-06-20 batch 13) ======================
     # --- Spring sub-libraries (FLOOR-SUPPRESSION sweep — owner org.springframework.*; a GAP here is a
     #     SILENT DROP, the structural finding; see the FLOOR? column in the RESULTS table) ---
-    # NOTE: Spring Integration MessagingTemplate.send/convertAndSend and MessageChannel.send are AMBIGUOUS-
-    #   receiver (a DirectChannel is in-process → pure; an outbound-adapter channel is Net) — candor cannot
-    #   tell at the call site, so they are NOT modeled (a Net rule would FABRICATE on the common in-process
-    #   integration-flow case). Accepted floor-drop, like Quartz/cache. Not gated here.
+    # Spring Integration MessagingTemplate.send is AMBIGUOUS-receiver (DirectChannel in-process → pure; an
+    #   outbound-adapter channel is Net) — candor can't tell, so a concrete Net rule would FABRICATE. Under
+    #   the STRUCTURAL Spring-floor fix it now discloses Unknown (the honest answer for the ambiguous I/O type;
+    #   MessagingTemplate ends in *Template). Was previously SILENTLY floor-dropped.
+    ("springIntegrationSend", "Unknown",
+        "org.springframework.integration.core.MessagingTemplate t, org.springframework.messaging.Message<?> m",
+        't.send(m)'),
     # Spring Batch — JobLauncher.run writes the JobRepository (the job/step metadata DB).
     ("springBatchJobRun", "Db",
         "org.springframework.batch.core.launch.JobLauncher l, org.springframework.batch.core.Job job, "
@@ -1301,10 +1304,13 @@ EFFECT_CASES = [
         'java.util.List<String> r = t.search("ou=x", "(cn=*)", am)'),
     ("springLdapBind", "Net", "org.springframework.ldap.core.LdapTemplate t", 't.bind("cn=x", null, null)'),
 
-    # NOTE: Spring Session SessionRepository.save/findById is AMBIGUOUS-receiver (JDBC/Redis/Mongo backends
-    #   are Db/Net, but MapSessionRepository is in-memory) — candor cannot tell at the SessionRepository
-    #   interface call site, so NOT modeled (a rule would fabricate on MapSessionRepository). Accepted
-    #   floor-drop, like a cache. The in-memory case is pinned by mapSessionRepoSavePure below.
+    # Spring Session SessionRepository.save is AMBIGUOUS-receiver (JDBC/Redis/Mongo = Db/Net; MapSessionRepository
+    #   = in-memory) — a concrete rule would fabricate. Under the STRUCTURAL Spring-floor fix it discloses
+    #   Unknown (the honest answer; SessionRepository ends in *Repository). Was previously SILENTLY floor-dropped.
+    ("springSessionSave", "Unknown",
+        "org.springframework.session.SessionRepository<org.springframework.session.Session> r, "
+        "org.springframework.session.Session s",
+        'r.save(s)'),
 
     # Spring Data Redis — RedisTemplate.execute(RedisCallback) runs against the Redis connection. VERIFY it is
     #   already modeled (NOT floored) — the one Spring case here expected to PASS (a WIN; the opsForValue
@@ -1598,13 +1604,20 @@ PURE_CASES = [
     #   report); absence == pure for the anchor (got == []), so it correctly reads pure here either way.
     ("springAiPromptBuilderPure",
         'var s = cc.prompt().user("hi")', "org.springframework.ai.chat.client.ChatClient cc"),
+    # CRITICAL anti-flood anchor for the STRUCTURAL Spring-floor fix (batch 13): a PURE Spring utility class
+    # (StringUtils — NOT an I/O-convention *Template/*Operations/*Repository/*Gateway type) must STILL be
+    # floored/pure, NOT disclosed Unknown. This proves the structural fix's owner-suffix gate is tight and
+    # doesn't flood the (very common) pure Spring-util surface — the reason the κ floor exists in the first place.
+    ("springStringUtilsPure", 'boolean b = org.springframework.util.StringUtils.hasText("x")', ""),
+    ("springObjectUtilsPure", 'boolean b = org.springframework.util.ObjectUtils.isEmpty("x")', ""),
 
     # ====================== ADDED LIBRARIES (2026-06-20 batch 13) — pure anchors ===============
-    # Spring Session MapSessionRepository is the IN-MEMORY backend — save/findById touch a heap Map, no
-    #   wire/disk. Must stay pure (the ambiguous SessionRepository above is the backend-dependent leaf).
-    #   NB this is org.springframework.* so it is ALSO floor-dropped (absent == pure for the anchor either way).
-    ("mapSessionRepoSavePure",
-        "r.save(r.createSession())", "org.springframework.session.MapSessionRepository r"),
+    # NB: MapSessionRepository (the in-memory Spring Session backend) is NO LONGER a pure anchor — under the
+    #   STRUCTURAL Spring-floor fix (batch 13), a *Repository (an I/O-convention Spring type) discloses Unknown
+    #   even on the in-memory impl, because candor's name-based κ can't distinguish MapSessionRepository (pure)
+    #   from a JDBC/Redis-backed one at the call site. Unknown is the honest ambiguous answer (NOT a fabricated
+    #   concrete effect); the mild over-disclosure on the rare in-memory case is the accepted cost of catching
+    #   every unmodeled backed Spring repo/template. (See springSessionSave/springIntegrationSend → Unknown.)
     # H2 MVStore.openMap on an ALREADY-OPEN store is the in-memory map view (the disk open was MVStore.open,
     #   the Fs leaf above) — must stay pure. NB org.h2.mvstore is a κ-unknown package, so candor discloses
     #   `invisible:[org.h2.mvstore]` here rather than fabricating — which reads pure (got==[]) for the anchor.

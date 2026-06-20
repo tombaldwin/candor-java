@@ -57,6 +57,8 @@ compile_all() {
   javac -d "$WORK/hofio"          "$CORPUS_SRC/HofIo.java"
   javac -d "$WORK/strategy"       "$CORPUS_SRC/Strategy.java"
   javac -d "$WORK/absreader"      "$CORPUS_SRC/AbstractReaderParse.java"
+  javac -d "$WORK/asyncnetfs"     "$CORPUS_SRC/AsyncNetFs.java"
+  javac -d "$WORK/asyncexec"      "$CORPUS_SRC/AsyncExec.java"
 
   echo "== compiled =="
 }
@@ -84,6 +86,11 @@ corpus_entries() {
   entry hof-io          "$WORK/hofio"          corpus.HofIo                  jfr   corpus
   entry strategy        "$WORK/strategy"       corpus.Strategy               agent corpus
   entry abstract-reader "$WORK/absreader"      corpus.AbstractReaderParse    jfr   corpus
+
+  # --- session-mechanism confirmation: real Net/Fs/Exec through virtual threads / CompletableFuture /
+  #     parallel streams — runtime ground truth for the lambda-attribution the synthetic sweep checked statically ---
+  entry async-netfs     "$WORK/asyncnetfs"     corpus.AsyncNetFs             jfr   corpus
+  entry async-exec      "$WORK/asyncexec"      corpus.AsyncExec              agent corpus
 }
 
 # ---------------------------------------------------------------------------------------------

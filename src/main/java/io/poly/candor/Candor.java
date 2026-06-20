@@ -241,7 +241,7 @@ public class Candor {
         entityTables.clear(); repoTables.clear(); feignTypes.clear();
         ALL = List.of();
         byName.clear(); transSupersCache.clear(); subtypeIndex.clear(); annoMetaCache.clear();
-        sealedClosedMemo.clear();
+        sealedClosedMemo.clear(); sealedUnseenMemo.clear();
         overloadDescs.clear(); classesWithClinit.clear();
         taintEnabled = false; tainted.clear();
         denyRules.clear(); allowRules.clear(); forbidRules.clear();
@@ -2396,6 +2396,15 @@ public class Candor {
                         // a reason to drop a real reachable effect; a broad fan-out still drops to Unknown.
                         List<String> targets = broad ? List.of() : cha;
                         edges.get(id).addAll(targets);
+                        // PROVABLE-INCOMPLETENESS: a sealed type whose permit-closure names an off-classpath
+                        // subtype is KNOWN-incomplete — the narrow path resolves only the visible permits and
+                        // would read silent-pure on the unseen one. Disclose Unknown (the visible impls' edges
+                        // above still carry their real effects; this adds the honest "+ an unseen permit").
+                        // Only matters on the narrow path; a broad sealed-unseen already drops to Unknown below.
+                        if (!broad && sealedHasUnseenPermit(min.owner)) {
+                            dir.add("Unknown");
+                            unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add("dispatch:" + owner + "." + min.name);
+                        }
                         // A broad NON-exempt dispatch that DROPS project implementors → Unknown, not
                         // silent-pure (an effectful body could be among the many we just dropped; exempt
                         // methods are conventionally pure / runtime-entry, so they drop to nothing without
@@ -3380,6 +3389,36 @@ public class Candor {
                 && closedAndVisible(internal, new HashSet<>());
         sealedClosedMemo.put(internal, r);
         return r;
+    }
+
+    // Memoized: does a SEALED type's transitive permit-closure name a subtype NOT on the classpath?
+    static final Map<String, Boolean> sealedUnseenMemo = new HashMap<>();
+
+    /** True iff {@code internal} is a SEALED type whose transitive permit-closure includes a subtype absent
+     *  from `byName`. Then candor KNOWS (from the `permits` attribute) a specific subtype exists that it
+     *  cannot analyze → a dispatch over it is PROVABLY incomplete and must disclose Unknown, EVEN ON THE
+     *  NARROW path (where the visible subset would otherwise read complete and silent-pure). This is the
+     *  provable-incompleteness case, distinct from an OPEN hierarchy (where an external subtype MIGHT exist
+     *  but candor can't prove it — the accepted bounded-CHA tradeoff). Fixes a pre-existing silent-pure the
+     *  sealed-CHA review surfaced. */
+    static boolean sealedHasUnseenPermit(String internal) {
+        Boolean memo = sealedUnseenMemo.get(internal);
+        if (memo != null) return memo;
+        ClassNode cn = byName.get(internal);
+        boolean r = cn != null && cn.permittedSubclasses != null && !cn.permittedSubclasses.isEmpty()
+                && permitClosureHasUnseen(internal, new HashSet<>());
+        sealedUnseenMemo.put(internal, r);
+        return r;
+    }
+
+    private static boolean permitClosureHasUnseen(String internal, Set<String> seen) {
+        if (!seen.add(internal)) return false;
+        ClassNode cn = byName.get(internal);
+        if (cn == null) return true;                                  // this permit itself is off-classpath
+        if (cn.permittedSubclasses == null) return false;            // a visible leaf
+        for (String p : cn.permittedSubclasses)
+            if (!byName.containsKey(p) || permitClosureHasUnseen(p, seen)) return true;
+        return false;
     }
 
     /** Walk a sealed type's permitted-subtype closure, requiring every permit be visible (in byName) AND

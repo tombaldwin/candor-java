@@ -47,7 +47,9 @@ public enum Effect {
         return this == UNKNOWN;
     }
 
-    /** A §6.1 boundary effect — one that should be contained in a dedicated layer. */
+    /** A §6.1 boundary effect — one that should be contained in a dedicated layer. Matches the spec's
+     *  §6.1 list exactly ({@code Db,Net,Exec,Fs,Ipc}). NOTE: {@code Clipboard} is in NEITHER this nor
+     *  {@link #isCrossCutting()} — §6.1's partition predates it (a tracked spec gap, see MODEL.md). */
     public boolean isBoundary() {
         return switch (this) {
             case DB, NET, EXEC, FS, IPC -> true;

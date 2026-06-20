@@ -35,4 +35,27 @@ public record Effector(
         List<String> hosts,
         List<String> cmds,
         List<String> paths,
-        List<String> tables) {}
+        List<String> tables) {
+
+    /**
+     * Defensive copy on construction so an {@code Effector} is a true value: its accessors can't be used
+     * to mutate it, and it never aliases the engine's live (mutable) {@link EffectSet}s / state maps
+     * (which {@code resetState()} clears between scans). Effect sets are snapshotted via {@link EffectSet#copy()};
+     * lists via {@link List#copyOf} (which also rejects nulls).
+     */
+    public Effector {
+        inferred = inferred.copy();
+        direct = direct.copy();
+        declared = declared.copy();
+        undeclared = undeclared.copy();
+        overdeclared = overdeclared.copy();
+        invisible = List.copyOf(invisible);
+        unknownWhy = List.copyOf(unknownWhy);
+        calls = List.copyOf(calls);
+        fs = List.copyOf(fs);
+        hosts = List.copyOf(hosts);
+        cmds = List.copyOf(cmds);
+        paths = List.copyOf(paths);
+        tables = List.copyOf(tables);
+    }
+}

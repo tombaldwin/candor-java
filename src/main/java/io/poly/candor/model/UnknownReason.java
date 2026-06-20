@@ -67,10 +67,13 @@ public record UnknownReason(String prefix, String detail) implements Comparable<
         return new UnknownReason(tag.substring(0, i), tag.substring(i + 1));
     }
 
-    /** Ordered by wire tag — matches the historical {@code TreeSet<String>} emission order. */
+    /** Ordered by (prefix, detail) — consistent with the record's {@code equals} (so a {@code TreeSet}
+     *  and a {@code HashSet} of reasons agree), and equal to wire-tag order whenever a detail has no
+     *  inner colon (always, for candor's owner.member details). */
     @Override
     public int compareTo(UnknownReason o) {
-        return format().compareTo(o.format());
+        int c = prefix.compareTo(o.prefix);
+        return c != 0 ? c : detail.compareTo(o.detail);
     }
 
     @Override

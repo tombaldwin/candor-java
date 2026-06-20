@@ -25,6 +25,12 @@ public final class ReportJson {
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
+    /** Pretty-print any value with the one shared Gson (used for the callgraph/hierarchy sidecars,
+     *  so every wire write goes through this class's serializer). */
+    public static String pretty(Object value) {
+        return GSON.toJson(value);
+    }
+
     /** Serialize a report to the §2 envelope JSON, byte-identical to the legacy hand-built form. */
     public static String serialize(Report report) {
         Map<String, Object> header = new LinkedHashMap<>();

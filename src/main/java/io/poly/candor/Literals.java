@@ -80,9 +80,9 @@ final class Literals {
         boolean changed = true;
         while (changed) {
             changed = false;
-            for (var caller : edges.keySet()) {
+            for (var caller : ctx.edges.keySet()) {
                 TreeSet<String> add = new TreeSet<>();
-                for (String c : edges.get(caller)) {
+                for (String c : ctx.edges.get(caller)) {
                     var ce = acc.get(c);
                     if (ce != null) add.addAll(ce);
                 }

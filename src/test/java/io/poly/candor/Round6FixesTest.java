@@ -68,9 +68,9 @@ class Round6FixesTest {
             "}")));
         try {
             Candor.runScan(cls);
-            TreeSet<String> exfilHosts = AnalysisState.hostsDirect.getOrDefault("F.exfil", new TreeSet<>());
+            TreeSet<String> exfilHosts = AnalysisState.ctx.hostsDirect.getOrDefault("F.exfil", new TreeSet<>());
             assertTrue(exfilHosts.isEmpty(), "a runtime host must capture NO literal, got " + exfilHosts);
-            assertTrue(AnalysisState.hostsDirect.getOrDefault("F.realLit", new TreeSet<>()).contains("api.stripe.com:443"),
+            assertTrue(AnalysisState.ctx.hostsDirect.getOrDefault("F.realLit", new TreeSet<>()).contains("api.stripe.com:443"),
                     "a genuine literal host must still be captured");
         } finally { rm(cls.getParent()); }
     }
@@ -140,8 +140,8 @@ class Round6FixesTest {
                 "}")));
         try {
             Candor.runScan(cls);
-            assertTrue(AnalysisState.entryPoints.contains("app.App.composed"), "composed @ApiEndpoint→@GetMapping must root");
-            assertFalse(AnalysisState.entryPoints.contains("app.App.decoy"), "unrelated @com.myapp.GetMapping must NOT root (no fabrication)");
+            assertTrue(AnalysisState.ctx.entryPoints.contains("app.App.composed"), "composed @ApiEndpoint→@GetMapping must root");
+            assertFalse(AnalysisState.ctx.entryPoints.contains("app.App.decoy"), "unrelated @com.myapp.GetMapping must NOT root (no fabrication)");
         } finally { rm(cls.getParent()); }
     }
 
@@ -159,7 +159,7 @@ class Round6FixesTest {
         try {
             Map<String, EffectSet> r = Candor.runScan(cls);
             assertTrue(eff(r, "F.viaInvoke").toNames().contains("Net"), "pool.invoke(new RT()) must reach compute()'s Net, got " + r.get("F.viaInvoke"));
-            assertTrue(AnalysisState.entryPoints.contains("F$RT.compute"), "RecursiveTask.compute must be rooted");
+            assertTrue(AnalysisState.ctx.entryPoints.contains("F$RT.compute"), "RecursiveTask.compute must be rooted");
         } finally { rm(cls.getParent()); }
     }
 
@@ -174,7 +174,7 @@ class Round6FixesTest {
                 + "[{\"fn\":\"dep.Lib.phone\",\"hash\":\"dep/Lib.phone()V\",\"inferred\":[\"Net\"]}]}");
             Candor.resetState();
             Loader.loadCrossDeps(dir.toString(), "any-own-version");
-            AnalysisState.DepFn de = AnalysisState.crossDeps.get("dep/Lib.phone()V");
+            DepFn de = AnalysisState.ctx.crossDeps.get("dep/Lib.phone()V");
             assertTrue(de != null && de.effects.contains(Effect.UNKNOWN),
                     "a null-version dep entry must inherit Unknown (not be dropped to pure), got " + (de == null ? "null" : de.effects));
         } finally { rm(dir); }

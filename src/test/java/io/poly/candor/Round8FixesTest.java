@@ -102,8 +102,8 @@ class Round8FixesTest {
         try {
             Candor.runScan(cls);
             for (String fn : List.of("app.Qz.execute", "app.Lam.handleRequest", "app.Rcv.onReceive"))
-                assertTrue(AnalysisState.entryPoints.contains(fn), fn + " must be rooted");
-            assertFalse(AnalysisState.entryPoints.contains("app.Decoy.execute"),
+                assertTrue(AnalysisState.ctx.entryPoints.contains(fn), fn + " must be rooted");
+            assertFalse(AnalysisState.ctx.entryPoints.contains("app.Decoy.execute"),
                     "a same-named non-implementor must NOT be rooted (no fabrication)");
         } finally { rm(cls.getParent()); }
     }

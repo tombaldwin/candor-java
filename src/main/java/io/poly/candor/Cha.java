@@ -129,9 +129,44 @@ final class Cha {
             ClassReader cr = new ClassReader(internal);
             if (cr.getSuperName() != null) out.add(cr.getSuperName());
             for (String i : cr.getInterfaces()) out.add(i);
-        } catch (Throwable t) { /* not on candor's classpath / unreadable → no supers (sound) */ }
+        } catch (Throwable t) {
+            // Can't read the .class bytes off the classpath. On the JVM this means a class not on
+            // candor's classpath (e.g. a project's third-party dep) → no supers (sound under-approx). In a
+            // GraalVM NATIVE IMAGE there are no .class files at all, so even JDK classes land here — fall
+            // back to the build-time JDK supertype index so JDK hierarchies still resolve (native == jar).
+            List<String> idx = JdkSupers.MAP.get(internal);
+            if (idx != null) out.addAll(idx);
+        }
         ctx().externalSupersCache.put(internal, out);
         return out;
+    }
+
+    /** The build-time JDK class -> direct super + interfaces index (gzipped resource), loaded once on
+     *  first use (lazily, via class-init). Process-global + immutable — it's the constant JDK hierarchy,
+     *  not per-scan state. On the JVM, {@link #externalSupers} reads JDK classes via {@code ClassReader}
+     *  and never consults this; it exists for the native image, where {@code ClassReader} can't read. */
+    private static final class JdkSupers {
+        static final Map<String, List<String>> MAP = load();
+
+        private static Map<String, List<String>> load() {
+            Map<String, List<String>> m = new HashMap<>();
+            try (var in = Cha.class.getResourceAsStream("/candor/jdk-supertypes.idx.gz")) {
+                if (in == null) return m;   // index not bundled (older build) → JVM path is unaffected
+                try (var br = new java.io.BufferedReader(new java.io.InputStreamReader(
+                        new java.util.zip.GZIPInputStream(in), java.nio.charset.StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        int sp = line.indexOf(' ');
+                        if (sp < 0) continue;
+                        m.put(line.substring(0, sp), List.of(line.substring(sp + 1).split(" ")));
+                    }
+                }
+            } catch (java.io.IOException e) {
+                // a corrupt/truncated index must not crash a scan — degrade to no-supers (the JVM path is
+                // unaffected since it uses ClassReader; native loses JDK resolution but stays sound).
+            }
+            return m;
+        }
     }
 
     /** Build the reverse-subtype index ONCE: owner -> loaded classes that are owner-or-a-subtype, in

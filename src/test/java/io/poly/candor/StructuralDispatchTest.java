@@ -1,5 +1,8 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+import io.poly.candor.model.EffectSet;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -24,7 +27,7 @@ import org.junit.jupiter.api.Test;
 class StructuralDispatchTest {
 
     /** Compile the given {name→source} set and scan the output dir; returns the inferred-effects map. */
-    private static Map<String, TreeSet<String>> compileAndScan(Map<String, String> sources) throws Exception {
+    private static Map<String, EffectSet> compileAndScan(Map<String, String> sources) throws Exception {
         javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
         Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
         Path dir = Files.createTempDirectory("candor-struct");
@@ -49,15 +52,15 @@ class StructuralDispatchTest {
         }
     }
 
-    private static TreeSet<String> eff(Map<String, TreeSet<String>> r, String fn) {
-        return r.getOrDefault(fn, new TreeSet<>());
+    private static EffectSet eff(Map<String, EffectSet> r, String fn) {
+        return r.getOrDefault(fn, EffectSet.empty());
     }
 
     /** #1 — a NAMED Runnable/Callable/Thread-subclass handed to an executor / Thread is rooted at its NEW
      *  site (its run()/call() reaches the scheduler); a non-task class is NOT attributed (no fabrication). */
     @Test
     void namedTaskTypeIsAttributedAtNew() throws Exception {
-        Map<String, TreeSet<String>> r = compileAndScan(Map.of("A.java", String.join("\n",
+        Map<String, EffectSet> r = compileAndScan(Map.of("A.java", String.join("\n",
             "import java.util.concurrent.*;",
             "class R implements Runnable { public void run(){ try { new java.net.Socket(\"h\",80);}catch(Exception e){} } }",
             "class MyThread extends Thread { public void run(){ try { new java.net.Socket(\"h\",80);}catch(Exception e){} } }",
@@ -70,12 +73,12 @@ class StructuralDispatchTest {
             "  void callable(ExecutorService es){ es.submit(new C()); }",
             "  void plain(){ new Plain(); }",
             "}")));
-        assertTrue(eff(r, "A.namedThread").contains("Net"), "new Thread(new R()).start() must reach R.run");
-        assertTrue(eff(r, "A.execSubmit").contains("Net"), "es.submit(new R()) must reach R.run");
-        assertTrue(eff(r, "A.subclass").contains("Net"), "new MyThread().start() must reach MyThread.run");
-        assertTrue(eff(r, "A.callable").contains("Net"), "es.submit(new C()) must reach C.call");
+        assertTrue(eff(r, "A.namedThread").toNames().contains("Net"), "new Thread(new R()).start() must reach R.run");
+        assertTrue(eff(r, "A.execSubmit").toNames().contains("Net"), "es.submit(new R()) must reach R.run");
+        assertTrue(eff(r, "A.subclass").toNames().contains("Net"), "new MyThread().start() must reach MyThread.run");
+        assertTrue(eff(r, "A.callable").toNames().contains("Net"), "es.submit(new C()) must reach C.call");
         // a fresh new-task hand-off must NOT also pick up the opaque-task Unknown (it's pinned)
-        assertEquals(new TreeSet<>(List.of("Net")), eff(r, "A.execSubmit"), "pinned new R() must be Net only, no Unknown");
+        assertEquals(EffectSet.of(Effect.NET), eff(r, "A.execSubmit"), "pinned new R() must be Net only, no Unknown");
         // Plain is not a task type → its run() must NOT be attributed to the constructor (no fabrication).
         // (runScan keeps pure methods with an EMPTY set; the JSON report is what omits them.)
         assertTrue(eff(r, "A.plain").isEmpty(), "constructing a non-task class must stay pure, got " + r.get("A.plain"));
@@ -86,7 +89,7 @@ class StructuralDispatchTest {
      *  new ArrayList().add() (pinned to the external type) must NOT pick up the override (no fabrication). */
     @Test
     void chaThroughExternalSuperclass() throws Exception {
-        Map<String, TreeSet<String>> r = compileAndScan(Map.of("Main.java", String.join("\n",
+        Map<String, EffectSet> r = compileAndScan(Map.of("Main.java", String.join("\n",
             "import java.util.*;",
             "class LoudList extends ArrayList<String> {",
             "  public boolean add(String s){ try { new java.net.Socket(\"h\",80);}catch(Exception e){} return super.add(s); } }",
@@ -94,8 +97,8 @@ class StructuralDispatchTest {
             "  void run(List<String> l){ l.add(\"x\"); }",
             "  void plainList(){ new ArrayList<String>().add(\"y\"); }",
             "}")));
-        TreeSet<String> run = eff(r, "Main.run");
-        assertTrue(run.contains("Net") || run.contains("Unknown"),
+        EffectSet run = eff(r, "Main.run");
+        assertTrue(run.toNames().contains("Net") || run.toNames().contains("Unknown"),
                 "unpinned List.add must reach the project override (Net) or Unknown, got " + run);
         assertTrue(eff(r, "Main.plainList").isEmpty(),
                 "pinned new ArrayList().add() must stay pure (no sibling-override fabrication), got " + r.get("Main.plainList"));
@@ -105,7 +108,7 @@ class StructuralDispatchTest {
      *  unknown); an inline pure lambda hand-off must NOT (its body is edged at the indy). */
     @Test
     void opaqueTaskHandoffReadsUnknown() throws Exception {
-        Map<String, TreeSet<String>> r = compileAndScan(Map.of("B.java", String.join("\n",
+        Map<String, EffectSet> r = compileAndScan(Map.of("B.java", String.join("\n",
             "import java.util.concurrent.*;",
             "public class B {",
             "  Runnable handler;",
@@ -113,8 +116,8 @@ class StructuralDispatchTest {
             "  void paramSubmit(ExecutorService es, Runnable rr){ es.submit(rr); }",
             "  void lambdaSubmit(ExecutorService es){ es.submit(() -> {}); }",
             "}")));
-        assertTrue(eff(r, "B.fieldSubmit").contains("Unknown"), "es.submit(field) must read Unknown");
-        assertTrue(eff(r, "B.paramSubmit").contains("Unknown"), "es.submit(param) must read Unknown");
+        assertTrue(eff(r, "B.fieldSubmit").toNames().contains("Unknown"), "es.submit(field) must read Unknown");
+        assertTrue(eff(r, "B.paramSubmit").toNames().contains("Unknown"), "es.submit(param) must read Unknown");
         assertTrue(eff(r, "B.lambdaSubmit").isEmpty(), "es.submit(pure lambda) must stay pure, got " + r.get("B.lambdaSubmit"));
     }
 
@@ -125,7 +128,7 @@ class StructuralDispatchTest {
      *  pure (no fabrication). Mirrors B.fieldSubmit/B.lambdaSubmit for the CF/Timer owners. */
     @Test
     void opaqueTaskHandoffToCompletableFutureAndTimerReadsUnknown() throws Exception {
-        Map<String, TreeSet<String>> r = compileAndScan(Map.of("CFT.java", String.join("\n",
+        Map<String, EffectSet> r = compileAndScan(Map.of("CFT.java", String.join("\n",
             "import java.util.concurrent.*;",
             "import java.util.function.*;",
             "import java.util.*;",
@@ -145,15 +148,15 @@ class StructuralDispatchTest {
             // no-fabrication: a pure inline lambda to runAsync stays pure
             "  void pureLambda(){ CompletableFuture.runAsync(() -> {}); }",
             "}")));
-        assertTrue(eff(r, "CFT.viaExecutor").contains("Unknown"), "es.submit(field) must read Unknown");
-        assertTrue(eff(r, "CFT.viaCF").contains("Unknown"), "CompletableFuture.runAsync(opaque) must read Unknown");
-        assertTrue(eff(r, "CFT.viaSupply").contains("Unknown"), "CompletableFuture.supplyAsync(opaque) must read Unknown");
-        assertTrue(eff(r, "CFT.viaTimer").contains("Unknown"), "Timer.schedule(opaque TimerTask) must read Unknown");
+        assertTrue(eff(r, "CFT.viaExecutor").toNames().contains("Unknown"), "es.submit(field) must read Unknown");
+        assertTrue(eff(r, "CFT.viaCF").toNames().contains("Unknown"), "CompletableFuture.runAsync(opaque) must read Unknown");
+        assertTrue(eff(r, "CFT.viaSupply").toNames().contains("Unknown"), "CompletableFuture.supplyAsync(opaque) must read Unknown");
+        assertTrue(eff(r, "CFT.viaTimer").toNames().contains("Unknown"), "Timer.schedule(opaque TimerTask) must read Unknown");
         // no-regression: the inline-lambda / new-task body's REAL effect is preserved, NOT downgraded.
-        assertTrue(eff(r, "CFT.inlineLambda").contains("Fs"), "runAsync(inline effect lambda) must keep Fs, got " + r.get("CFT.inlineLambda"));
-        assertTrue(!eff(r, "CFT.inlineLambda").contains("Unknown"), "runAsync(inline lambda) must NOT be downgraded to Unknown, got " + r.get("CFT.inlineLambda"));
-        assertTrue(eff(r, "CFT.newRunnable").contains("Fs"), "runAsync(new effect Runnable) must keep Fs, got " + r.get("CFT.newRunnable"));
-        assertTrue(!eff(r, "CFT.newRunnable").contains("Unknown"), "runAsync(new R()) must NOT be downgraded to Unknown, got " + r.get("CFT.newRunnable"));
+        assertTrue(eff(r, "CFT.inlineLambda").toNames().contains("Fs"), "runAsync(inline effect lambda) must keep Fs, got " + r.get("CFT.inlineLambda"));
+        assertTrue(!eff(r, "CFT.inlineLambda").toNames().contains("Unknown"), "runAsync(inline lambda) must NOT be downgraded to Unknown, got " + r.get("CFT.inlineLambda"));
+        assertTrue(eff(r, "CFT.newRunnable").toNames().contains("Fs"), "runAsync(new effect Runnable) must keep Fs, got " + r.get("CFT.newRunnable"));
+        assertTrue(!eff(r, "CFT.newRunnable").toNames().contains("Unknown"), "runAsync(new R()) must NOT be downgraded to Unknown, got " + r.get("CFT.newRunnable"));
         // no-fabrication: a genuinely pure inline lambda stays pure.
         assertTrue(eff(r, "CFT.pureLambda").isEmpty(), "runAsync(pure lambda) must stay pure, got " + r.get("CFT.pureLambda"));
     }

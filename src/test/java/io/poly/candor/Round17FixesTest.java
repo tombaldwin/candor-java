@@ -1,5 +1,8 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+import io.poly.candor.model.EffectSet;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -56,7 +59,7 @@ class Round17FixesTest {
                 "app compiles");
         Path out = dir.resolve("r.json");
         try {
-            Map<String, java.util.TreeSet<String>> inf = Candor.runScan(appCls);
+            Map<String, EffectSet> inf = Candor.runScan(appCls);
             ReportWriter.writeJson(inf, out.toString());
             Map<String, Object> report = new Gson().fromJson(Files.readString(out), Map.class);
             List<Map<String, Object>> fns = (List<Map<String, Object>>) report.get("functions");

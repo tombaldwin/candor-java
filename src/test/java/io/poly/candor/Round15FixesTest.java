@@ -1,5 +1,8 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+import io.poly.candor.model.EffectSet;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -59,11 +62,11 @@ class Round15FixesTest {
             "  void fs() throws Exception { new FileHandler(\"/etc/shadow.copy\").publish(null); }",
             "}")));
         try {
-            Map<String, TreeSet<String>> r = Candor.runScan(cls);
-            assertTrue(r.getOrDefault("app.A.net", new TreeSet<>()).contains("Net"), "SocketHandler is Net");
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(r.getOrDefault("app.A.net", EffectSet.empty()).toNames().contains("Net"), "SocketHandler is Net");
             assertTrue(AnalysisState.hostsDirect.getOrDefault("app.A.net", new TreeSet<>()).contains("evil.exfil.com:9000"),
                     "the SocketHandler host must be surfaced, got " + AnalysisState.hostsDirect.get("app.A.net"));
-            assertTrue(r.getOrDefault("app.A.fs", new TreeSet<>()).contains("Fs"), "FileHandler is Fs");
+            assertTrue(r.getOrDefault("app.A.fs", EffectSet.empty()).toNames().contains("Fs"), "FileHandler is Fs");
             assertTrue(AnalysisState.pathsDirect.getOrDefault("app.A.fs", new TreeSet<>()).contains("/etc/shadow.copy"),
                     "the FileHandler path must be surfaced, got " + AnalysisState.pathsDirect.get("app.A.fs"));
         } finally { rm(cls.getParent()); }
@@ -82,8 +85,8 @@ class Round15FixesTest {
             "  Supplier<String> use(){ return H::doNothing; }",   // ref triggers H.<clinit> (Net)
             "}")));
         try {
-            Map<String, TreeSet<String>> r = Candor.runScan(cls);
-            assertTrue(r.getOrDefault("app.A.use", new TreeSet<>()).contains("Net"),
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(r.getOrDefault("app.A.use", EffectSet.empty()).toNames().contains("Net"),
                     "a method-ref must trigger the class's <clinit> effect, got " + r.get("app.A.use"));
         } finally { rm(cls.getParent()); }
     }

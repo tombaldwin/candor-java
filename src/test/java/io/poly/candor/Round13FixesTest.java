@@ -1,5 +1,8 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+import io.poly.candor.model.EffectSet;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -59,8 +62,8 @@ class Round13FixesTest {
             "  void use(){ Sub.m(); }",   // loading Sub runs Base.<clinit> (Net)
             "}")));
         try {
-            Map<String, TreeSet<String>> r = Candor.runScan(cls);
-            assertTrue(r.getOrDefault("app.A.use", new TreeSet<>()).contains("Net"),
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(r.getOrDefault("app.A.use", EffectSet.empty()).toNames().contains("Net"),
                     "touching Sub must reach Base.<clinit>'s Net, got " + r.get("app.A.use"));
         } finally { rm(cls.getParent()); }
     }
@@ -79,8 +82,8 @@ class Round13FixesTest {
                 "  void run(org.jooq.DSLContext dsl){ dsl.execute(\"DELETE FROM accounts WHERE id=1\"); }",
                 "}"))));
         try {
-            Map<String, TreeSet<String>> r = Candor.runScan(cls);
-            assertTrue(r.getOrDefault("app.D.run", new TreeSet<>()).contains("Db"), "jOOQ execute is Db");
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(r.getOrDefault("app.D.run", EffectSet.empty()).toNames().contains("Db"), "jOOQ execute is Db");
             assertTrue(AnalysisState.tablesDirect.getOrDefault("app.D.run", new TreeSet<>()).contains("accounts"),
                     "the jOOQ SQL's table must reach the surface, got " + AnalysisState.tablesDirect.get("app.D.run"));
         } finally { rm(cls.getParent()); }

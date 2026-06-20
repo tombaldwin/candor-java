@@ -1,5 +1,8 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+import io.poly.candor.model.EffectSet;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -130,11 +133,11 @@ class Round11FixesTest {
         src.put("app/Big.java", impls.toString());
         Path cls = compile(src);
         try {
-            Map<String, TreeSet<String>> r = Candor.runScan(cls);
-            TreeSet<String> eff = r.getOrDefault("app.Big.call", new TreeSet<>());
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            EffectSet eff = r.getOrDefault("app.Big.call", EffectSet.empty());
             assertFalse(eff.isEmpty(),
                     "a broad unpinned FunctionN dispatch dropping NAMED impls must NOT be silent-pure");
-            assertTrue(eff.contains("Unknown") || eff.contains("Net"),
+            assertTrue(eff.toNames().contains("Unknown") || eff.toNames().contains("Net"),
                     "must be Unknown (or the effect) — the dropped named impl could do I/O, got " + eff);
         } finally { rm(cls.getParent()); }
     }

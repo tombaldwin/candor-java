@@ -1,5 +1,8 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+import io.poly.candor.model.EffectSet;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -132,8 +135,8 @@ class Round10FixesTest {
                 "  int count(ResultSet rs) throws Exception { int n=0; while(rs.next()) n++; return n; }",
                 "}"))));
         try {
-            Map<String, TreeSet<String>> r = Candor.runScan(cls);
-            assertTrue(r.getOrDefault("app.A.count", new TreeSet<>()).contains("Db"),
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(r.getOrDefault("app.A.count", EffectSet.empty()).toNames().contains("Db"),
                     "rs.next() row-fetch must be Db, got " + r.get("app.A.count"));
         } finally { rm(cls.getParent()); }
     }

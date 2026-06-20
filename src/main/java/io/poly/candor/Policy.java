@@ -28,12 +28,11 @@ final class Policy {
     static final List<PolicyRule.Forbid> forbidRules = new ArrayList<>();
 
     /** AS-EFF-004: flag direct use of ambient authority (route it through an injected collaborator). */
-    static int checkNoAmbient(Map<String, TreeSet<String>> inferred, String scope) {
+    static int checkNoAmbient(Map<String, EffectSet> inferred, String scope) {
         int v = 0;
         for (var e : new TreeMap<>(inferred).entrySet()) {
             if (!gateScopeCovers(scope, e.getKey())) continue;
-            List<String> ambient = direct.getOrDefault(e.getKey(), new TreeSet<>()).stream()
-                    .filter(AMBIENT::contains).sorted().collect(Collectors.toList());
+            List<String> ambient = direct.getOrDefault(e.getKey(), EffectSet.empty()).effects().stream()                    .filter(AMBIENT::contains).map(Effect::specName).sorted().collect(Collectors.toList());
             if (!ambient.isEmpty()) {
                 diag(DiagnosticCode.AS_EFF_004, "`%s` uses ambient authority { %s } directly; "
                         + "route it through an injected collaborator / capability",
@@ -51,13 +50,13 @@ final class Policy {
      * misses cross-method flow and over-flags a parameter that is actually validated. Mirrors the Rust
      * impl's syntactic taint nudge. Emits findings but never fails CI (returns the count for messaging only).
      */
-    static int checkTaint(Map<String, TreeSet<String>> inferred) {
+    static int checkTaint(Map<String, EffectSet> inferred) {
         int v = 0;
         for (var e : new TreeMap<>(tainted).entrySet()) {
             if (e.getValue().isEmpty()) continue;
             diag(DiagnosticCode.AS_EFF_007, "`%s` performs { %s } on caller-derived input (an injection "
                     + "surface — validate/sanitize it, or confirm the source is trusted); heuristic, may "
-                    + "over- or under-flag", e.getKey(), String.join(", ", e.getValue()));
+                    + "over- or under-flag", e.getKey(), String.join(", ", e.getValue().toNames()));
             v++;
         }
         return v;
@@ -65,7 +64,7 @@ final class Policy {
 
 
     /** AS-EFF-005: flag a function that gained an effect versus a saved baseline report. */
-    static int checkBaseline(Map<String, TreeSet<String>> inferred, String path) {
+    static int checkBaseline(Map<String, EffectSet> inferred, String path) {
         Map<String, Set<String>> base = loadBaseline(path);
         if (base == null) {
             System.err.println("candor-java: CANDOR_BASELINE set but " + path
@@ -76,7 +75,7 @@ final class Policy {
         for (var e : new TreeMap<>(inferred).entrySet()) {
             Set<String> prior = base.get(e.getKey());
             if (prior == null) continue; // new function — reviewed as new code, not a regression
-            List<String> gained = e.getValue().stream()
+            List<String> gained = e.getValue().toNames().stream()
                     .filter(x -> !prior.contains(x)).sorted().collect(Collectors.toList());
             if (!gained.isEmpty()) {
                 diag(DiagnosticCode.AS_EFF_005, "`%s` gained effect { %s } not present in the baseline",
@@ -94,7 +93,7 @@ final class Policy {
      *     Fs paths) it may reach, against the visible surface.
      *   - AS-EFF-009 `forbid <A> -> <B>` — WHO a layer may depend on (reachability over the call graph).
      *  A set-but-unreadable policy is LOUD (not silently passing). */
-    static int checkPolicy(Map<String, TreeSet<String>> inferred, String path) {
+    static int checkPolicy(Map<String, EffectSet> inferred, String path) {
         if (!parsePolicy(path)) {
             // A SET-but-unreadable policy FAILS the run (exit 2) — it must never gate-pass: a
             // typo'd CANDOR_POLICY path otherwise runs gateless and green (spec §6.2). Found by
@@ -111,8 +110,8 @@ final class Policy {
                 if (!scopeMatches(fn, r.scope())) continue;
                 List<String> denied = r.effects().toNames();
                 List<String> bad = r.effects().isEmpty()
-                        ? e.getValue().stream().filter(x -> !x.equals("Unknown")).sorted().collect(Collectors.toList())
-                        : e.getValue().stream().filter(denied::contains).sorted().collect(Collectors.toList());
+                        ? e.getValue().toNames().stream().filter(x -> !x.equals("Unknown")).sorted().collect(Collectors.toList())
+                        : e.getValue().toNames().stream().filter(denied::contains).sorted().collect(Collectors.toList());
                 if (!bad.isEmpty()) {
                     diag(DiagnosticCode.AS_EFF_006, "`%s` performs { %s }, forbidden by policy%s: `%s`",
                             fn, String.join(", ", bad),
@@ -156,13 +155,13 @@ final class Policy {
      *  (and the Rust gate checks per rule), so two half-covering rules don't pass by union. A method
      *  whose reached surface is EMPTY is a violation too — "a literal it cannot see" can't be
      *  certified (lits_e(f) = ∅ in the predicate). No matching `allow` rule ⇒ unchecked. */
-    static int checkAllowlist(Map<String, TreeSet<String>> inferred, String effect,
+    static int checkAllowlist(Map<String, EffectSet> inferred, String effect,
             Map<String, TreeSet<String>> reachedAcc, Map<String, TreeSet<String>> incompleteAcc,
             java.util.function.BiPredicate<Set<String>, String> covered) {
         int v = 0;
         for (var e : new TreeMap<>(inferred).entrySet()) {
             String fn = e.getKey();
-            if (!e.getValue().contains(effect)) continue;
+            if (!e.getValue().toNames().contains(effect)) continue;
             for (PolicyRule.Allow r : allowRules) {
                 if (!effect.equals(r.effect().specName()) || !scopeMatches(fn, r.scope())) continue;
                 TreeSet<String> reached = reachedAcc.getOrDefault(fn, new TreeSet<>());

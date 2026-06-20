@@ -18,7 +18,7 @@ import static io.poly.candor.Cha.*;
  *  the static imports. (Was {@code Report} before the domain-model work freed that name for the model
  *  envelope record.) See candor-spec/MODEL.md. */
 final class ReportWriter {
-    static void writeJson(Map<String, TreeSet<String>> inferred, String out) throws IOException {
+    static void writeJson(Map<String, EffectSet> inferred, String out) throws IOException {
         // Per-class conformance (same model as checkConformance, SPEC §5): declared = effects
         // the class's injected dependency types can supply; performed = union over its methods.
         // We attach declared/undeclared/overdeclared to each method entry so an agent can
@@ -34,7 +34,7 @@ final class ReportWriter {
                 String fn = methodId(dc, mn.name, mn.desc);
                 fnToClass.put(fn, dc);
                 var inf = inferred.get(fn);
-                if (inf != null) p.addAll(inf);
+                if (inf != null) p.addAll(inf.toNames());
             }
         }
         Map<String, TreeSet<String>> declaredByClass = new HashMap<>();
@@ -79,7 +79,7 @@ final class ReportWriter {
                 .sorted(Map.Entry.comparingByKey())
                 .forEach(e -> {
                     String fn = e.getKey();
-                    TreeSet<String> inf = e.getValue();
+                    EffectSet inf = e.getValue();
                     String dc = fnToClass.get(fn);
                     TreeSet<String> declared = dc == null ? new TreeSet<>()
                             : declaredByClass.getOrDefault(dc, new TreeSet<>());
@@ -87,7 +87,7 @@ final class ReportWriter {
                             : performed.getOrDefault(dc, new TreeSet<>());
                     // undeclared = inferred − declared (the AS-EFF-001 surface; Unknown excluded,
                     // it's handled by AS-EFF-003). overdeclared = class declares but never performs.
-                    List<String> undeclared = inf.stream()
+                    List<String> undeclared = inf.toNames().stream()
                             .filter(x -> !x.equals("Unknown") && !declared.contains(x))
                             .sorted().collect(Collectors.toList());
                     List<String> overdeclared = declared.stream()
@@ -101,7 +101,7 @@ final class ReportWriter {
                     // so a consumer can answer "who calls X?" from the report without re-analysis.
                     List<String> calls = edges.getOrDefault(fn, Set.of()).stream()
                             .filter(c -> {
-                                TreeSet<String> ce = inferred.get(c);
+                                EffectSet ce = inferred.get(c);
                                 return ce != null && !ce.isEmpty();
                             })
                             .sorted().collect(Collectors.toList());
@@ -109,22 +109,22 @@ final class ReportWriter {
                     // Empty when unknown, when the fn performs no Fs, or when reached cross-jar (FS_UNKNOWN).
                     List<String> fsKinds = List.of();
                     TreeSet<String> fk = fsAcc.get(fn);
-                    if (inf.contains("Fs") && fk != null && !fk.contains(FS_UNKNOWN))
+                    if (inf.contains(Effect.FS) && fk != null && !fk.contains(FS_UNKNOWN))
                         fsKinds = fk.stream().filter(x -> !x.equals(FS_UNKNOWN)).sorted()
                                 .collect(Collectors.toList());
                     // Literal Net/Exec/Fs/Db surfaces statically visible from this method (SPEC §2). Empty
                     // when none are visible (a runtime-computed value, or the effect absent).
                     TreeSet<String> hk = hostsAcc.get(fn);
-                    List<String> hosts = inf.contains("Net") && hk != null && !hk.isEmpty()
+                    List<String> hosts = inf.contains(Effect.NET) && hk != null && !hk.isEmpty()
                             ? new ArrayList<>(hk) : List.of();
                     TreeSet<String> ck = cmdsAcc.get(fn);
-                    List<String> cmds = inf.contains("Exec") && ck != null && !ck.isEmpty()
+                    List<String> cmds = inf.contains(Effect.EXEC) && ck != null && !ck.isEmpty()
                             ? new ArrayList<>(ck) : List.of();
                     TreeSet<String> pk = pathsAcc.get(fn);
-                    List<String> paths = inf.contains("Fs") && pk != null && !pk.isEmpty()
+                    List<String> paths = inf.contains(Effect.FS) && pk != null && !pk.isEmpty()
                             ? new ArrayList<>(pk) : List.of();
                     TreeSet<String> tk = tablesAcc.get(fn);
-                    List<String> tables = inf.contains("Db") && tk != null && !tk.isEmpty()
+                    List<String> tables = inf.contains(Effect.DB) && tk != null && !tk.isEmpty()
                             ? new ArrayList<>(tk) : List.of();
                     // Why Unknown was emitted HERE (not inherited): native:/reflect:/dispatch:/… tags.
                     TreeSet<String> uw = unknownWhy.get(fn);
@@ -136,14 +136,14 @@ final class ReportWriter {
                     effectors.add(new Effector(
                             fn,
                             loc.getOrDefault(fn, "?"),
-                            EffectSet.ofNames(inf),
+                            inf,
                             invisible,
-                            EffectSet.ofNames(direct.getOrDefault(fn, new TreeSet<>())),
+                            direct.getOrDefault(fn, EffectSet.empty()),
                             EffectSet.ofNames(declared),
                             EffectSet.ofNames(undeclared),
                             EffectSet.ofNames(overdeclared),
                             entryPoints.contains(fn),
-                            inf.contains("Unknown"), // trust contract (SPEC §4)
+                            inf.hasUnknown(), // trust contract (SPEC §4)
                             kind,
                             reasons,
                             hashOf.getOrDefault(fn, ""), // cross-jar join key (SPEC §2)

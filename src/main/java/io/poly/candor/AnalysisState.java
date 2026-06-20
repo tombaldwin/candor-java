@@ -2,6 +2,7 @@ package io.poly.candor;
 
 import java.util.*;
 import org.objectweb.asm.tree.*;
+import io.poly.candor.model.*;
 
 /** The engine's shared analysis state — the mutable accumulators a scan fills (effect/edge/literal
  *  maps, the call graph, the CHA/overload indices, the κ-ledger, the deferred-lambda + functional-param
@@ -11,16 +12,16 @@ import org.objectweb.asm.tree.*;
  *  static-global model is unchanged — it is now NAMED + centralized rather than declared inline in the
  *  6.5k-line monolith. Spec-vocabulary + Spring-marker CONSTANTS stay in Candor. See REFACTOR_PLAN.md. */
 final class AnalysisState {
-    static final Map<String, TreeSet<String>> direct = new HashMap<>();
+    static final Map<String, EffectSet> direct = new HashMap<>();
     static final Map<String, Set<String>> edges = new HashMap<>();
     static final Map<String, String> loc = new HashMap<>();
     static final Map<String, String> hashOf = new HashMap<>();           // fn -> stable method-ref hash (owner.name+desc)
-    static final Map<String, TreeSet<String>> viaCross = new HashMap<>();// fn -> effects inherited from a dependency report
+    static final Map<String, EffectSet> viaCross = new HashMap<>();// fn -> effects inherited from a dependency report
     /** One chained dependency function (CANDOR_DEPS): effects + the four literal surfaces — the
      *  spec (§2) says a consumer inherits BOTH (effects alone made every chained `allow Db` fail
      *  the new lits=∅ branch with an empty surface no rule could cover — /code-review). */
     static class DepFn {
-        List<String> effects = new ArrayList<>();
+        EffectSet effects = EffectSet.empty();
         List<String> hosts = new ArrayList<>(), cmds = new ArrayList<>(),
                 paths = new ArrayList<>(), tables = new ArrayList<>();
     }
@@ -59,7 +60,7 @@ final class AnalysisState {
     static final Set<String> classesWithClinit = new HashSet<>(); // project classes with a `<clinit>`
     static boolean taintEnabled = false;             // CANDOR_TAINT — run the intraprocedural taint pass
     // fn -> injection-class effects performed on a parameter-derived (caller-controlled) argument.
-    static final Map<String, TreeSet<String>> tainted = new HashMap<>();
+    static final Map<String, EffectSet> tainted = new HashMap<>();
     static final Map<String, TreeSet<String>> hostsDirect = new HashMap<>(); // fn -> literal Net endpoints
     static final Map<String, TreeSet<String>> cmdsDirect = new HashMap<>();  // fn -> literal Exec commands
     static final Map<String, TreeSet<String>> pathsDirect = new HashMap<>(); // fn -> literal Fs paths

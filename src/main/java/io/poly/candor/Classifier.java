@@ -2,6 +2,7 @@ package io.poly.candor;
 
 import java.util.*;
 import static io.poly.candor.Candor.*;
+import static io.poly.candor.AnalysisState.*;
 
 /** The κ effect-leaf classifier — (owner,method,desc)->effect (~1800 lines of per-library/JDK κ rules).
  *  EXTRACTED from Candor.java (refactor P1): pure, no shared-state coupling; helpers

@@ -192,8 +192,8 @@ class StructuralDispatchTest {
                 "import jakarta.validation.ConstraintValidator;",
                 "public class V implements ConstraintValidator<Object,String> {",
                 "  public boolean isValid(String v, Object ctx){ try { new java.net.Socket(\"h\",80);}catch(Exception e){} return true; } }"));
-        compileAndScan(src);  // populates Candor.entryPoints + inferred as a side effect
+        compileAndScan(src);  // populates AnalysisState.entryPoints + inferred as a side effect
         for (String fn : List.of("App.asyncTask", "App.restGet", "App.advice", "MyTask.run", "V.isValid"))
-            assertTrue(Candor.entryPoints.contains(fn), fn + " must be rooted as a framework entry point");
+            assertTrue(AnalysisState.entryPoints.contains(fn), fn + " must be rooted as a framework entry point");
     }
 }

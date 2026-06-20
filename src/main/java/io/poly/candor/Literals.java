@@ -4,6 +4,7 @@ import java.util.*;
 import org.objectweb.asm.*;
 import org.objectweb.asm.tree.*;
 import static io.poly.candor.Candor.*;
+import static io.poly.candor.AnalysisState.*;
 
 /** Literal extraction for the gate surface — host/cmd/path/table/url constants pulled from bytecode
  *  (the Net/Exec/Fs/Db endpoint literals candor surfaces + the masking/coverage checks). EXTRACTED

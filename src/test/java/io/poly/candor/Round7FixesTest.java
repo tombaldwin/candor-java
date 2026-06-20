@@ -78,8 +78,8 @@ class Round7FixesTest {
             Candor.runScan(cls);
             for (String fn : List.of("app.MyDeser.deserialize", "app.MyItc.intercept",
                     "app.MyApp2.append", "app.Greeter.sayHello"))
-                assertTrue(Candor.entryPoints.contains(fn), fn + " must be rooted as a framework entry point");
-            assertFalse(Candor.entryPoints.contains("app.Decoy.deserialize"),
+                assertTrue(AnalysisState.entryPoints.contains(fn), fn + " must be rooted as a framework entry point");
+            assertFalse(AnalysisState.entryPoints.contains("app.Decoy.deserialize"),
                     "a same-named non-implementor must NOT be rooted (no fabrication)");
         } finally { rm(cls.getParent()); }
     }

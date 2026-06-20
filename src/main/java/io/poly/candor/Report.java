@@ -7,6 +7,7 @@ import java.util.stream.*;
 import com.google.gson.*;
 import org.objectweb.asm.tree.*;
 import static io.poly.candor.Candor.*;
+import static io.poly.candor.AnalysisState.*;
 import static io.poly.candor.Literals.*;
 import static io.poly.candor.Cha.*;
 

@@ -48,7 +48,7 @@ class Round16FixesTest {
     }
 
     private static boolean netIncomplete(String fn) {
-        return Candor.surfaceIncomplete.getOrDefault(fn, new TreeSet<>()).contains("Net");
+        return AnalysisState.surfaceIncomplete.getOrDefault(fn, new TreeSet<>()).contains("Net");
     }
 
     @Test
@@ -96,7 +96,7 @@ class Round16FixesTest {
             Candor.runScan(cls);
             // surfaceIncomplete is the DIRECT map; the gate propagates via literalFixpoint. Assert the leaf is
             // flagged directly; the transitive propagation is exercised end-to-end by smoke.sh's masking case.
-            assertTrue(Candor.surfaceIncomplete.getOrDefault("app.B.leaf", new TreeSet<>()).contains("Net"),
+            assertTrue(AnalysisState.surfaceIncomplete.getOrDefault("app.B.leaf", new TreeSet<>()).contains("Net"),
                     "the runtime-host leaf is flagged incomplete");
         } finally { rm(cls.getParent()); }
     }

@@ -73,10 +73,10 @@ class Round10FixesTest {
                 "public class A {}"))));
         try {
             Candor.runScan(cls);
-            assertTrue(Candor.entryPoints.contains("app.Conv.convertToDatabaseColumn"), "AttributeConverter.convertToDatabaseColumn must be rooted");
-            assertTrue(Candor.entryPoints.contains("app.Cmd.run"), "HystrixCommand.run must be rooted");
-            assertTrue(Candor.entryPoints.contains("app.Health.health"), "HealthIndicator.health must be rooted");
-            assertFalse(Candor.entryPoints.contains("app.HealthIndicatorRegistry.health"),
+            assertTrue(AnalysisState.entryPoints.contains("app.Conv.convertToDatabaseColumn"), "AttributeConverter.convertToDatabaseColumn must be rooted");
+            assertTrue(AnalysisState.entryPoints.contains("app.Cmd.run"), "HystrixCommand.run must be rooted");
+            assertTrue(AnalysisState.entryPoints.contains("app.Health.health"), "HealthIndicator.health must be rooted");
+            assertFalse(AnalysisState.entryPoints.contains("app.HealthIndicatorRegistry.health"),
                     "a non-implementor merely named *HealthIndicator* must NOT be over-rooted");
         } finally { rm(cls.getParent()); }
     }
@@ -99,9 +99,9 @@ class Round10FixesTest {
                 "}"))));
         try {
             Candor.runScan(cls);
-            assertTrue(Candor.entryPoints.contains("app.A.onEvent"), "@Observes observer must be rooted (param annotation)");
-            assertTrue(Candor.entryPoints.contains("app.A.handle"), "@Subscribe handler must be rooted");
-            assertFalse(Candor.entryPoints.contains("app.A.plain"), "an unannotated method must NOT be rooted");
+            assertTrue(AnalysisState.entryPoints.contains("app.A.onEvent"), "@Observes observer must be rooted (param annotation)");
+            assertTrue(AnalysisState.entryPoints.contains("app.A.handle"), "@Subscribe handler must be rooted");
+            assertFalse(AnalysisState.entryPoints.contains("app.A.plain"), "an unannotated method must NOT be rooted");
         } finally { rm(cls.getParent()); }
     }
 
@@ -116,7 +116,7 @@ class Round10FixesTest {
                 "}"))));
         try {
             Candor.runScan(cls);
-            assertTrue(Candor.entryPoints.contains("app.A.actionPerformed"), "ActionListener.actionPerformed must be rooted");
+            assertTrue(AnalysisState.entryPoints.contains("app.A.actionPerformed"), "ActionListener.actionPerformed must be rooted");
         } finally { rm(cls.getParent()); }
     }
 

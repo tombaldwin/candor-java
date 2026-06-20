@@ -75,10 +75,10 @@ class Round12FixesTest {
                 "public class A {}"))));
         try {
             Candor.runScan(cls);
-            assertTrue(Candor.entryPoints.contains("app.L.onApplicationEvent"), "ApplicationListener must be rooted");
-            assertTrue(Candor.entryPoints.contains("app.M.onMessage"), "JMS MessageListener must be rooted");
-            assertTrue(Candor.entryPoints.contains("app.R.onPartitionsRevoked"), "ConsumerRebalanceListener must be rooted");
-            assertFalse(Candor.entryPoints.contains("app.NotAListener.onMessage"),
+            assertTrue(AnalysisState.entryPoints.contains("app.L.onApplicationEvent"), "ApplicationListener must be rooted");
+            assertTrue(AnalysisState.entryPoints.contains("app.M.onMessage"), "JMS MessageListener must be rooted");
+            assertTrue(AnalysisState.entryPoints.contains("app.R.onPartitionsRevoked"), "ConsumerRebalanceListener must be rooted");
+            assertFalse(AnalysisState.entryPoints.contains("app.NotAListener.onMessage"),
                     "a non-implementor with onMessage must NOT be over-rooted");
         } finally { rm(cls.getParent()); }
     }

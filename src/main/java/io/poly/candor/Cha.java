@@ -5,6 +5,7 @@ import java.util.stream.*;
 import org.objectweb.asm.*;
 import org.objectweb.asm.tree.*;
 import static io.poly.candor.Candor.*;
+import static io.poly.candor.AnalysisState.*;
 
 /** CHA / dispatch resolution. The bounded-CHA closed-hierarchy carve-out (enum + fully-closed-visible
  *  sealed families: isClosedHierarchy/isFullyClosedSealed/sealedHasUnseenPermit + the two private

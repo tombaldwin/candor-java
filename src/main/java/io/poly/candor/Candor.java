@@ -24,7 +24,7 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.stream.*;
 import static io.poly.candor.Literals.*;
-import static io.poly.candor.Report.*;
+import static io.poly.candor.ReportWriter.*;
 import static io.poly.candor.Cha.*;
 import static io.poly.candor.Interp.*;
 import static io.poly.candor.Policy.*;

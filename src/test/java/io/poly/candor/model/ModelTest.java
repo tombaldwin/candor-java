@@ -76,15 +76,20 @@ class ModelTest {
         assertEquals(UnknownReason.Kind.DISPATCH, UnknownReason.parse("dispatch:A.b").kind());
         // detail keeps everything after the FIRST colon (task-handoff prefix has no inner colon issue)
         assertEquals("e.Executor.submit", UnknownReason.parse("task-handoff:e.Executor.submit").detail());
-        // foreign / malformed → null (tolerant on read)
-        assertNull(UnknownReason.parse("bogus:x"));
+        // a foreign prefix is PRESERVED verbatim (round-trips), with kind() == null
+        UnknownReason foreign = UnknownReason.parse("bogus:x");
+        assertEquals("bogus:x", foreign.format());
+        assertNull(foreign.kind());
+        // no colon → not a tag
         assertNull(UnknownReason.parse("nocolon"));
+        // of(kind, detail) builds the same as parse
+        assertEquals("dispatch:A.b", UnknownReason.of(UnknownReason.Kind.DISPATCH, "A.b").format());
     }
 
     @Test
     void unknownReasonOrderingMatchesWireStringOrder() {
-        UnknownReason a = new UnknownReason(UnknownReason.Kind.DISPATCH, "A.a");
-        UnknownReason b = new UnknownReason(UnknownReason.Kind.NATIVE, "z");
+        UnknownReason a = UnknownReason.of(UnknownReason.Kind.DISPATCH, "A.a");
+        UnknownReason b = UnknownReason.of(UnknownReason.Kind.NATIVE, "z");
         // "dispatch:A.a" < "native:z" lexicographically — the TreeSet<String> order
         assertTrue(a.compareTo(b) < 0);
     }

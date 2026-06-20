@@ -57,7 +57,7 @@ class Round17FixesTest {
         Path out = dir.resolve("r.json");
         try {
             Map<String, java.util.TreeSet<String>> inf = Candor.runScan(appCls);
-            Report.writeJson(inf, out.toString());
+            ReportWriter.writeJson(inf, out.toString());
             Map<String, Object> report = new Gson().fromJson(Files.readString(out), Map.class);
             List<Map<String, Object>> fns = (List<Map<String, Object>>) report.get("functions");
             Map<String, List<String>> invisibleByFn = new java.util.HashMap<>();

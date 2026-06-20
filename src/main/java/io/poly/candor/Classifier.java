@@ -1,5 +1,7 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+
 import java.util.*;
 import static io.poly.candor.Candor.*;
 import static io.poly.candor.AnalysisState.*;
@@ -9,7 +11,7 @@ import static io.poly.candor.AnalysisState.*;
  *  (isConventionallyPure/isAwsPureClientGetter/isLogEmitVerb/isPureHandleAccessor) stay in Candor,
  *  reached via the static import. Sole caller: Candor.analyze(). See REFACTOR_PLAN.md. */
 final class Classifier {
-    static String classify(String owner, String method, String desc) {
+    static Effect classify(String owner, String method, String desc) {
         // A proven-pure accessor/factory/inert-ctor on an otherwise-effectful handle type is PURE — the
         // whole-owner rules below would fabricate the type's effect on it (the cardinal sin). Subtract
         // these explicitly; everything else on the type keeps its effect. (See isPureHandleAccessor.)
@@ -17,11 +19,11 @@ final class Classifier {
         // Reflection / dynamic invocation — could call ANYTHING; honestly `Unknown`, never assumed
         // pure (SPEC §4 trust contract). This is the JVM's defining opacity, and the foundation of
         // the framework magic (Spring proxies, DI) candor can't otherwise see through.
-        if (owner.equals("java.lang.reflect.Method") && method.equals("invoke")) return "Unknown";
-        if (owner.equals("java.lang.reflect.Constructor") && method.equals("newInstance")) return "Unknown";
+        if (owner.equals("java.lang.reflect.Method") && method.equals("invoke")) return Effect.UNKNOWN;
+        if (owner.equals("java.lang.reflect.Constructor") && method.equals("newInstance")) return Effect.UNKNOWN;
         if (owner.equals("java.lang.Class") && (method.equals("newInstance") || method.equals("forName")))
-            return "Unknown";
-        if (owner.equals("java.lang.reflect.Proxy") && method.equals("newProxyInstance")) return "Unknown";
+            return Effect.UNKNOWN;
+        if (owner.equals("java.lang.reflect.Proxy") && method.equals("newProxyInstance")) return Effect.UNKNOWN;
         // Groovy dynamic dispatch IS reflection: MetaClass/GroovyObject.invokeMethod resolves the target
         // at runtime through the metaclass registry and can call anything (the engine's own provenance
         // trace ran through ExpandoMetaClass.invokeMethod into ProcessGroovyMethods.execute). Honest
@@ -30,8 +32,8 @@ final class Classifier {
                 || owner.equals("groovy.lang.MetaObjectProtocol") || owner.equals("groovy.lang.GroovyShell")
                 || owner.equals("groovy.lang.Script"))
                 && (method.startsWith("invoke") || method.equals("run") || method.equals("evaluate")))
-            return "Unknown";
-        if (owner.equals("java.lang.invoke.MethodHandle") && method.startsWith("invoke")) return "Unknown";
+            return Effect.UNKNOWN;
+        if (owner.equals("java.lang.invoke.MethodHandle") && method.startsWith("invoke")) return Effect.UNKNOWN;
 
         // ── ARBITRARY-CODE-EXECUTION / OPAQUE sinks → Unknown (could perform ANY effect; same posture as
         // reflection/Method.invoke and candor-ts's `eval()`). These run a code/expression string, deserialize
@@ -41,50 +43,50 @@ final class Classifier {
         if ((owner.equals("javax.script.ScriptEngine") || owner.equals("javax.script.CompiledScript")
                 || owner.equals("javax.script.Invocable") || owner.equals("javax.script.Compilable"))
                 && (method.equals("eval") || method.startsWith("invoke") || method.equals("compile")))
-            return "Unknown";
-        if (owner.equals("org.springframework.expression.Expression") && method.startsWith("getValue")) return "Unknown";
-        if (owner.equals("ognl.Ognl") && (method.equals("getValue") || method.equals("setValue"))) return "Unknown";
-        if (owner.equals("org.mvel2.MVEL") && (method.equals("eval") || method.startsWith("execute"))) return "Unknown";
-        if (owner.equals("org.apache.commons.jexl3.JexlExpression") && method.equals("evaluate")) return "Unknown";
-        if (owner.startsWith("jakarta.el.") && method.equals("getValue")) return "Unknown";
-        if (owner.startsWith("javax.el.") && method.equals("getValue")) return "Unknown";
-        if (owner.equals("groovy.util.Eval") || owner.equals("groovy.lang.GroovyClassLoader")) return "Unknown";
-        if (owner.equals("bsh.Interpreter") && method.equals("eval")) return "Unknown";
-        if (owner.equals("org.jruby.embed.ScriptingContainer") && method.startsWith("runScriptlet")) return "Unknown";
-        if (owner.equals("org.python.util.PythonInterpreter") && (method.equals("exec") || method.equals("eval"))) return "Unknown";
-        if (owner.equals("clojure.lang.Compiler") && method.equals("eval")) return "Unknown";
-        if (owner.equals("javax.tools.JavaCompiler") && method.equals("run")) return "Unknown";
+            return Effect.UNKNOWN;
+        if (owner.equals("org.springframework.expression.Expression") && method.startsWith("getValue")) return Effect.UNKNOWN;
+        if (owner.equals("ognl.Ognl") && (method.equals("getValue") || method.equals("setValue"))) return Effect.UNKNOWN;
+        if (owner.equals("org.mvel2.MVEL") && (method.equals("eval") || method.startsWith("execute"))) return Effect.UNKNOWN;
+        if (owner.equals("org.apache.commons.jexl3.JexlExpression") && method.equals("evaluate")) return Effect.UNKNOWN;
+        if (owner.startsWith("jakarta.el.") && method.equals("getValue")) return Effect.UNKNOWN;
+        if (owner.startsWith("javax.el.") && method.equals("getValue")) return Effect.UNKNOWN;
+        if (owner.equals("groovy.util.Eval") || owner.equals("groovy.lang.GroovyClassLoader")) return Effect.UNKNOWN;
+        if (owner.equals("bsh.Interpreter") && method.equals("eval")) return Effect.UNKNOWN;
+        if (owner.equals("org.jruby.embed.ScriptingContainer") && method.startsWith("runScriptlet")) return Effect.UNKNOWN;
+        if (owner.equals("org.python.util.PythonInterpreter") && (method.equals("exec") || method.equals("eval"))) return Effect.UNKNOWN;
+        if (owner.equals("clojure.lang.Compiler") && method.equals("eval")) return Effect.UNKNOWN;
+        if (owner.equals("javax.tools.JavaCompiler") && method.equals("run")) return Effect.UNKNOWN;
         // com.sun.tools.javac.Main.compile — the javac entry point reads sources + writes .class files → Fs
         // (the com.sun.* analog of JavaCompiler.run; batch-20 FLOOR-dropped silent).
-        if (owner.equals("com.sun.tools.javac.Main") && method.equals("compile")) return "Fs";
+        if (owner.equals("com.sun.tools.javac.Main") && method.equals("compile")) return Effect.FS;
         // Untrusted deserialization (gadget-chain RCE) + XXE-able XML parsing → Unknown (the realized effect
         // depends on the payload/config a static pass can't see). ObjectInputStream.readObject is THE classic
         // Java RCE sink; candor roots a project class's readObject CALLBACK but the readObject CALL is the sink.
         if (owner.equals("java.io.ObjectInputStream") && (method.equals("readObject") || method.equals("readUnshared")))
-            return "Unknown";
-        if (owner.equals("java.beans.XMLDecoder") && method.equals("readObject")) return "Unknown";
+            return Effect.UNKNOWN;
+        if (owner.equals("java.beans.XMLDecoder") && method.equals("readObject")) return Effect.UNKNOWN;
         if ((owner.equals("javax.xml.parsers.DocumentBuilder") || owner.equals("javax.xml.parsers.SAXParser")
                 || owner.equals("org.xml.sax.XMLReader")) && method.equals("parse"))
-            return "Unknown";
-        if (owner.equals("javax.xml.transform.Transformer") && method.equals("transform")) return "Unknown";
+            return Effect.UNKNOWN;
+        if (owner.equals("javax.xml.transform.Transformer") && method.equals("transform")) return Effect.UNKNOWN;
         // FFI / native execution: a native call runs arbitrary machine code (opaque like a `native` body,
         // already Unknown). JNA Function.invoke* / Library-interface dispatch / Unsafe raw memory / Panama
         // symbol+upcall / Instrumentation rewrite → Unknown; load-a-native-lib / attach-to-another-JVM → Exec.
-        if (owner.equals("com.sun.jna.Function") && method.startsWith("invoke")) return "Unknown";
+        if (owner.equals("com.sun.jna.Function") && method.startsWith("invoke")) return Effect.UNKNOWN;
         if ((owner.equals("sun.misc.Unsafe") || owner.equals("jdk.internal.misc.Unsafe"))
                 && (method.endsWith("Memory") || method.startsWith("put") || method.startsWith("get")
                     || method.equals("defineClass") || method.equals("defineAnonymousClass")
                     || method.equals("allocateInstance")))
-            return "Unknown";
+            return Effect.UNKNOWN;
         if ((owner.equals("java.lang.foreign.SymbolLookup") && method.equals("find"))
                 || (owner.equals("java.lang.foreign.Linker") && method.equals("upcallStub")))
-            return "Unknown";
+            return Effect.UNKNOWN;
         if (owner.equals("java.lang.instrument.Instrumentation")
-                && (method.equals("redefineClasses") || method.equals("retransformClasses"))) return "Unknown";
-        if (owner.equals("com.sun.jna.Native") && method.equals("load")) return "Exec";  // loads + runs native lib init
+                && (method.equals("redefineClasses") || method.equals("retransformClasses"))) return Effect.UNKNOWN;
+        if (owner.equals("com.sun.jna.Native") && method.equals("load")) return Effect.EXEC;  // loads + runs native lib init
         if (owner.equals("com.sun.tools.attach.VirtualMachine")
                 && (method.equals("attach") || method.equals("loadAgent") || method.startsWith("loadAgent")))
-            return "Exec";  // attaches to + injects code into another process
+            return Effect.EXEC;  // attaches to + injects code into another process
 
         // Filesystem — classic java.io streams + NIO file channels (the channel's identity IS file I/O).
         if (owner.equals("java.nio.file.Files")
@@ -96,7 +98,7 @@ final class Classifier {
                 // Archive readers open and read a file from disk (the ctor opens it, entries/getInputStream
                 // read it); ZipEntry/JarEntry data types stay pure. (Found by a controlled JDK probe.)
                 || owner.equals("java.util.zip.ZipFile") || owner.equals("java.util.jar.JarFile"))
-            return "Fs";
+            return Effect.FS;
         // MappedByteBuffer is file-backed (returned only by FileChannel.map), so its get*/put*/force/load
         // touch the mapped file → Fs. VERB-GATED (was whole-owner): the inherited Buffer queries
         // capacity()/position()/limit()/remaining()/order()/hasArray()/isDirect()/duplicate()/slice() are
@@ -106,22 +108,22 @@ final class Classifier {
         if (owner.equals("java.nio.MappedByteBuffer")
                 && (method.startsWith("get") || method.startsWith("put")
                     || method.equals("force") || method.equals("load") || method.equals("isLoaded")))
-            return "Fs";
+            return Effect.FS;
         // FileStore disk-space/metadata stats (getTotalSpace/getUsableSpace/type/…) hit the filesystem;
         // FileDescriptor.sync is an fsync syscall. (Files.getFileStore — the open — is already Fs above.)
         if (owner.equals("java.nio.file.FileStore")
                 && (method.startsWith("get") || method.equals("type") || method.equals("isReadOnly")
                     || method.equals("supportsFileAttributeView")))
-            return "Fs";
-        if (owner.equals("java.io.FileDescriptor") && method.equals("sync")) return "Fs";
+            return Effect.FS;
+        if (owner.equals("java.io.FileDescriptor") && method.equals("sync")) return Effect.FS;
         // javax.imageio.ImageIO — the dominant image read/write API (analog of FileReader/Files). Gate to the
         // FILE-descriptor overloads: read(File)/write(…,File) do Fs; read(URL) does Net; the stream overloads
         // (read(InputStream)/write(…,OutputStream)) wrap a caller-supplied stream and stay pure (the Fs is on
         // the underlying FileInputStream, caught at its construction).
         if (owner.equals("javax.imageio.ImageIO")) {
-            if (method.equals("read") && desc.startsWith("(Ljava/io/File;")) return "Fs";
-            if (method.equals("read") && desc.startsWith("(Ljava/net/URL;")) return "Net";
-            if (method.equals("write") && desc.contains("Ljava/io/File;")) return "Fs";
+            if (method.equals("read") && desc.startsWith("(Ljava/io/File;")) return Effect.FS;
+            if (method.equals("read") && desc.startsWith("(Ljava/net/URL;")) return Effect.NET;
+            if (method.equals("write") && desc.contains("Ljava/io/File;")) return Effect.FS;
         }
         // commons-io FileUtils/IOUtils + guava Files/MoreFiles — the ubiquitous file-convenience libs (the
         // analog of the modeled java.nio.file.Files/FileInputStream/FileWriter). Verb-gated to the file
@@ -134,7 +136,7 @@ final class Classifier {
                     || method.startsWith("touch") || method.startsWith("cleanDirectory")
                     || method.startsWith("listFiles") || method.startsWith("openInputStream")
                     || method.startsWith("openOutputStream") || method.startsWith("iterateFiles")))
-            return "Fs";
+            return Effect.FS;
         if ((owner.equals("com.google.common.io.Files") || owner.equals("com.google.common.io.MoreFiles"))
                 // NB: asByteSource/asCharSource/asByteSink/asCharSink are LAZY FACTORIES — they return a
                 // Source/Sink VIEW and touch no file until a terminal read/write, so classifying them Fs
@@ -144,7 +146,7 @@ final class Classifier {
                     || method.startsWith("move") || method.startsWith("readLines")
                     || method.startsWith("createParentDirs") || method.startsWith("touch")
                     || method.startsWith("deleteRecursively") || method.startsWith("deleteDirectoryContents")))
-            return "Fs";
+            return Effect.FS;
         // Classpath RESOURCE reads (a file/jar entry off disk) — the ubiquitous config/i18n-loading idioms:
         // Class/ClassLoader.getResource*, ResourceBundle.getBundle, ServiceLoader (reads META-INF/services),
         // FileSystems.newFileSystem (mounts a jar/zip), LogManager/Preferences (OS prefs store). All Fs.
@@ -152,10 +154,10 @@ final class Classifier {
                 || owner.equals("java.lang.Module"))
                 && (method.equals("getResourceAsStream") || method.equals("getResource")
                     || method.equals("getResources") || method.equals("getSystemResourceAsStream")
-                    || method.equals("getSystemResource") || method.equals("getSystemResources"))) return "Fs";
-        if (owner.equals("java.util.ResourceBundle") && method.equals("getBundle")) return "Fs";
-        if (owner.equals("java.util.ServiceLoader") && method.equals("load")) return "Fs";
-        if (owner.equals("java.nio.file.FileSystems") && method.equals("newFileSystem")) return "Fs";
+                    || method.equals("getSystemResource") || method.equals("getSystemResources"))) return Effect.FS;
+        if (owner.equals("java.util.ResourceBundle") && method.equals("getBundle")) return Effect.FS;
+        if (owner.equals("java.util.ServiceLoader") && method.equals("load")) return Effect.FS;
+        if (owner.equals("java.nio.file.FileSystems") && method.equals("newFileSystem")) return Effect.FS;
         if (owner.equals("java.util.prefs.Preferences")
                 && (method.startsWith("get") || method.startsWith("put") || method.equals("remove")
                     || method.equals("flush") || method.equals("sync")
@@ -164,14 +166,14 @@ final class Classifier {
                     // κ-covered java.* prefix — a cardinal sin, not disclosed).
                     || method.equals("removeNode") || method.equals("clear")
                     || method.equals("exportNode") || method.equals("exportSubtree")
-                    || method.equals("importPreferences"))) return "Fs";
-        if (owner.equals("java.util.logging.LogManager") && method.equals("readConfiguration")) return "Fs";
+                    || method.equals("importPreferences"))) return Effect.FS;
+        if (owner.equals("java.util.logging.LogManager") && method.equals("readConfiguration")) return Effect.FS;
         // java.util.Scanner(File)/(Path) opens and reads a file. CTOR-DESCRIPTOR-GATED: Scanner(String) is
         // pure (a string source) and Scanner(InputStream/Readable) defers to its source's owner — so gate to
         // the File/Path ctor descriptors only (no fabrication on the pure ctors). (JDK Fs-deep probe.)
         if (owner.equals("java.util.Scanner") && method.equals("<init>") && desc != null
                 && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;")))
-            return "Fs";
+            return Effect.FS;
         // PrintStream/PrintWriter/Formatter open a file directly in their (String fileName)/(File) ctors (no
         // wrapped FileOutputStream to catch elsewhere) → Fs. CTOR-DESCRIPTOR-GATED to the file-opening forms:
         // the (OutputStream)/(Writer)/(Appendable) overloads defer to the wrapped sink and stay pure (so an
@@ -180,14 +182,14 @@ final class Classifier {
                 || owner.equals("java.util.Formatter"))
                 && method.equals("<init>") && desc != null
                 && (desc.startsWith("(Ljava/lang/String;") || desc.startsWith("(Ljava/io/File;")))
-            return "Fs";
+            return Effect.FS;
         // WatchService.take()/poll() block on filesystem change events. java.nio.file.Path is otherwise
         // pure path manipulation (resolve/getParent/normalize), so VERB-gate it: toRealPath resolves
         // symlinks against the live FS and register walks/stats the watched dir. (JDK Fs-deep probe.)
         if (owner.equals("java.nio.file.WatchService") && (method.equals("take") || method.equals("poll")))
-            return "Fs";
+            return Effect.FS;
         if (owner.equals("java.nio.file.Path") && (method.equals("toRealPath") || method.equals("register")))
-            return "Fs";
+            return Effect.FS;
         // Spring filesystem utilities — known-effectful members of a κ-COVERED namespace
         // (`org.springframework`), which the covered-prefix ledger otherwise can't distinguish from a pure
         // unmodeled Spring member, so they floored silently (sweep [2]: the real fix is to MODEL the member,
@@ -196,10 +198,10 @@ final class Classifier {
         // File-typed overloads (DESCRIPTOR-GATED on `Ljava/io/File;`): the InputStream/OutputStream/Reader/
         // Writer pumps defer to the stream's own owner and must stay pure (no fabrication on an in-memory copy).
         if (owner.equals("org.springframework.util.FileSystemUtils")
-                && (method.equals("deleteRecursively") || method.equals("copyRecursively"))) return "Fs";
+                && (method.equals("deleteRecursively") || method.equals("copyRecursively"))) return Effect.FS;
         if (owner.equals("org.springframework.util.FileCopyUtils")
                 && (method.equals("copy") || method.equals("copyToByteArray"))
-                && desc != null && desc.contains("Ljava/io/File;")) return "Fs";
+                && desc != null && desc.contains("Ljava/io/File;")) return Effect.FS;
         // Jackson (one of the most-used JVM libraries) — ObjectMapper/ObjectReader/ObjectWriter
         // (de)serialization is Fs/Net ONLY in the File/Path/URL overloads (DESCRIPTOR-GATED on the FIRST
         // arg): readValue/readTree(File|Path) and writeValue(File|Path) touch the filesystem; readValue/
@@ -217,8 +219,8 @@ final class Classifier {
                 || (owner.startsWith("com.fasterxml.jackson.dataformat.") && owner.endsWith("Mapper")))
                 && desc != null
                 && (method.equals("readValue") || method.equals("readTree") || method.equals("writeValue"))) {
-            if (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;")) return "Fs";
-            if (desc.startsWith("(Ljava/net/URL;")) return "Net";
+            if (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;")) return Effect.FS;
+            if (desc.startsWith("(Ljava/net/URL;")) return Effect.NET;
         }
         // jsoup PUBLIC API (the dogfood covered jsoup INTERNALS — HttpConnection/DataUtil — but not these
         // user-facing entry leaves; found silent-pure by the library κ-coverage probe). `org.jsoup.Connection`
@@ -226,33 +228,33 @@ final class Classifier {
         // TERMINAL get/post/execute do the round-trip → Net (verb-gated). `Jsoup.parse(File|Path,…)` reads the
         // file → Fs (descriptor-gated first arg); parse(String|InputStream,…) stays pure (in-memory / caller stream).
         if (owner.equals("org.jsoup.Connection")
-                && (method.equals("get") || method.equals("post") || method.equals("execute"))) return "Net";
+                && (method.equals("get") || method.equals("post") || method.equals("execute"))) return Effect.NET;
         if (owner.equals("org.jsoup.Jsoup") && method.equals("parse") && desc != null
-                && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;"))) return "Fs";
+                && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;"))) return Effect.FS;
         // Apache POI — WorkbookFactory.create(File) opens+reads the spreadsheet from disk → Fs.
         // DESCRIPTOR-GATED on the File arg (mirrors the jackson rule): the (InputStream)/(boolean) overloads
         // defer to a caller stream / in-memory and stay pure. Covers the format-specific factory subclasses.
         if ((owner.equals("org.apache.poi.ss.usermodel.WorkbookFactory")
                 || owner.equals("org.apache.poi.xssf.usermodel.XSSFWorkbookFactory")
                 || owner.equals("org.apache.poi.hssf.usermodel.HSSFWorkbookFactory"))
-                && method.equals("create") && desc != null && desc.startsWith("(Ljava/io/File;")) return "Fs";
+                && method.equals("create") && desc != null && desc.startsWith("(Ljava/io/File;")) return Effect.FS;
         // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 2) ──
         // Netty — the async network transport. VERB-gated (the config/accessor surface — group/channel/
         // handler/option/pipeline/alloc/id — stays pure). Bootstrap.connect / ServerBootstrap.bind open the
         // socket; the ChannelOutboundInvoker family (Channel/ChannelHandlerContext/ChannelPipeline) write/
         // connect/flush/bind to it.
-        if (owner.equals("io.netty.bootstrap.Bootstrap") && method.equals("connect")) return "Net";
-        if (owner.equals("io.netty.bootstrap.ServerBootstrap") && method.equals("bind")) return "Net";
+        if (owner.equals("io.netty.bootstrap.Bootstrap") && method.equals("connect")) return Effect.NET;
+        if (owner.equals("io.netty.bootstrap.ServerBootstrap") && method.equals("bind")) return Effect.NET;
         if ((owner.equals("io.netty.channel.Channel") || owner.equals("io.netty.channel.ChannelHandlerContext")
                 || owner.equals("io.netty.channel.ChannelOutboundInvoker")
                 || owner.equals("io.netty.channel.ChannelPipeline"))
                 && (method.equals("write") || method.equals("writeAndFlush") || method.equals("connect")
-                    || method.equals("flush") || method.equals("bind"))) return "Net";
+                    || method.equals("flush") || method.equals("bind"))) return Effect.NET;
         // gRPC low-level ClientCall (the generated stubs' blockingUnaryCall is already modeled; this closes
         // streaming / hand-rolled calls that drive ClientCall directly).
         if (owner.equals("io.grpc.ClientCall")
                 && (method.equals("sendMessage") || method.equals("halfClose") || method.equals("start")
-                    || method.equals("request"))) return "Net";
+                    || method.equals("request"))) return Effect.NET;
         // Apache Commons Net FTPClient — an intrinsic network client. VERB-gated to the wire actions; the
         // setX/getX config surface stays pure (no fabrication on setBufferSize/setControlEncoding).
         if (owner.equals("org.apache.commons.net.ftp.FTPClient")) {
@@ -263,7 +265,7 @@ final class Classifier {
                 case "listNames": case "deleteFile": case "makeDirectory": case "removeDirectory":
                 case "changeWorkingDirectory": case "rename": case "sendCommand": case "getReply":
                 case "completePendingCommand": case "abort":
-                    return "Net";
+                    return Effect.NET;
                 default: break;
             }
         }
@@ -273,71 +275,71 @@ final class Classifier {
         if (owner.equals("org.flywaydb.core.Flyway")
                 && (method.equals("migrate") || method.equals("clean") || method.equals("validate")
                     || method.equals("baseline") || method.equals("repair") || method.equals("info")))
-            return "Db";
+            return Effect.DB;
         if (owner.equals("liquibase.Liquibase")
                 && (method.equals("update") || method.equals("rollback") || method.equals("dropAll")
                     || method.equals("changeLogSync") || method.equals("forceReleaseLocks")))
-            return "Db";
+            return Effect.DB;
         // JGit Git.open(File|Path) opens an on-disk repository → Fs (descriptor-gated; the builder
         // cloneRepository() stays pure until its .call()).
         if (owner.equals("org.eclipse.jgit.api.Git") && method.equals("open") && desc != null
-                && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;"))) return "Fs";
+                && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;"))) return Effect.FS;
         // Apache Commons Compress archive readers — the File/Path CONSTRUCTORS open the archive → Fs
         // (descriptor-gated ctor; the SeekableByteChannel ctor is a caller-supplied handle → stays pure).
         if ((owner.equals("org.apache.commons.compress.archivers.zip.ZipFile")
                 || owner.equals("org.apache.commons.compress.archivers.sevenz.SevenZFile")
                 || owner.equals("org.apache.commons.compress.archivers.tar.TarFile"))
                 && method.equals("<init>") && desc != null
-                && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;"))) return "Fs";
+                && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;"))) return Effect.FS;
         // Apache Tika facade — parseToString(File|Path) reads the file → Fs, (URL) fetches → Net
         // (descriptor-gated; the InputStream overload is a caller stream → pure).
         if (owner.equals("org.apache.tika.Tika") && method.equals("parseToString") && desc != null) {
-            if (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;")) return "Fs";
-            if (desc.startsWith("(Ljava/net/URL;")) return "Net";
+            if (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;")) return Effect.FS;
+            if (desc.startsWith("(Ljava/net/URL;")) return Effect.NET;
         }
         // Apache PDFBox 3 Loader.loadPDF(File|Path) reads the PDF → Fs (descriptor-gated; the byte[] overload
         // is in-memory → pure).
         if (owner.equals("org.apache.pdfbox.Loader") && method.equals("loadPDF") && desc != null
-                && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;"))) return "Fs";
+                && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;"))) return Effect.FS;
         // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 3) ──
         // Spring Data repository BASE interfaces (CrudRepository/ListCrudRepository/PagingAndSortingRepository/
         // JpaRepository/Reactive*…) — a DIRECT call on the base interface (`CrudRepository<X,Y> r; r.save(x)`)
         // hits the datastore → Db. (The 1851 detection marks PROJECT sub-interfaces; this covers the base
         // interface call site itself.) Every declared method is a store op; exclude only the Object protocol.
         if (owner.startsWith("org.springframework.data.") && owner.endsWith("Repository")
-                && !isConventionallyPure(method)) return "Db";
+                && !isConventionallyPure(method)) return Effect.DB;
         // Lettuce — sync/async/reactive Redis command interfaces (RedisCommands and its RedisStringCommands/
         // RedisKeyCommands/… supers) are Redis-over-TCP → Net, mirroring Jedis. Whole command-interface
         // surface; the Object protocol stays pure.
         if (owner.startsWith("io.lettuce.core.api.") && owner.endsWith("Commands")
-                && !isConventionallyPure(method)) return "Net";
+                && !isConventionallyPure(method)) return Effect.NET;
         // OpenFeign — the SPI the generated @RequestLine proxy delegates the wire-send to (the user interface
         // has no body, so feign.Client.execute is the honest leaf). The Default/okhttp/httpclient adapters
         // all implement it.
-        if (owner.equals("feign.Client") && method.equals("execute")) return "Net";
+        if (owner.equals("feign.Client") && method.equals("execute")) return Effect.NET;
         // Apache Avro container files — DataFileReader ctor / DataFileWriter.create on a File open the file
         // off disk → Fs. desc CONTAINS java.io.File (create's File is the 2nd arg, after the Schema); the
         // SeekableInput/OutputStream overloads are caller-supplied → pure.
         if (owner.equals("org.apache.avro.file.DataFileReader") && method.equals("<init>")
-                && desc != null && desc.contains("Ljava/io/File;")) return "Fs";
+                && desc != null && desc.contains("Ljava/io/File;")) return Effect.FS;
         if (owner.equals("org.apache.avro.file.DataFileWriter") && method.equals("create")
-                && desc != null && desc.contains("Ljava/io/File;")) return "Fs";
+                && desc != null && desc.contains("Ljava/io/File;")) return Effect.FS;
         // Typesafe Config — parseFile(File) reads config off disk → Fs (verb-gated; parseString/parseReader
         // are in-memory/caller-stream → pure).
         if (owner.equals("com.typesafe.config.ConfigFactory")
-                && (method.equals("parseFile") || method.equals("parseFileAnySyntax"))) return "Fs";
+                && (method.equals("parseFile") || method.equals("parseFileAnySyntax"))) return Effect.FS;
         // Apache Commons Configuration2 fluent Configurations — every loader reads its source; ARG-gated:
         // a File arg → Fs, a URL arg → Net (the String/path-name overloads also read the FS → Fs).
         if (owner.equals("org.apache.commons.configuration2.builder.fluent.Configurations") && desc != null) {
-            if (desc.contains("Ljava/net/URL;")) return "Net";
-            if (desc.contains("Ljava/io/File;") || desc.contains("Ljava/lang/String;")) return "Fs";
+            if (desc.contains("Ljava/net/URL;")) return Effect.NET;
+            if (desc.contains("Ljava/io/File;") || desc.contains("Ljava/lang/String;")) return Effect.FS;
         }
         // javax.sound AudioSystem — getAudioInputStream(File) reads the audio file → Fs, (URL) fetches → Net
         // (descriptor-gated, like ImageIO; the InputStream overload is a caller stream → pure). Found by a
         // JDK-leaf probe.
         if (owner.equals("javax.sound.sampled.AudioSystem") && method.equals("getAudioInputStream") && desc != null) {
-            if (desc.startsWith("(Ljava/io/File;")) return "Fs";
-            if (desc.startsWith("(Ljava/net/URL;")) return "Net";
+            if (desc.startsWith("(Ljava/io/File;")) return Effect.FS;
+            if (desc.startsWith("(Ljava/net/URL;")) return Effect.NET;
         }
         // (XML parse(File) precision — the Fs that accompanies the XXE Unknown from the parse() rule above —
         //  is added in the call handler, NOT here: classify returns a single effect and that slot is already
@@ -347,11 +349,11 @@ final class Classifier {
         // gated ctor; the OutputStream/InputStream ctors are caller-supplied → pure).
         if ((owner.equals("com.itextpdf.kernel.pdf.PdfWriter") || owner.equals("com.itextpdf.kernel.pdf.PdfReader"))
                 && method.equals("<init>") && desc != null
-                && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/lang/String;"))) return "Fs";
+                && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/lang/String;"))) return Effect.FS;
         // Thumbnailator — Thumbnails.of(File...) reads the image off disk → Fs (the of(BufferedImage)/
         // (InputStream) overloads are in-memory/caller-stream → pure).
         if (owner.equals("net.coobird.thumbnailator.Thumbnails") && method.equals("of") && desc != null
-                && desc.startsWith("([Ljava/io/File;")) return "Fs";
+                && desc.startsWith("([Ljava/io/File;")) return Effect.FS;
         // Cloud object-store clients — entirely remote (every method is an HTTP round-trip to the store) →
         // whole-owner Net, like the modeled AWS S3. Object-protocol excluded.
         if ((owner.equals("io.minio.MinioClient") || owner.equals("io.minio.MinioAsyncClient")
@@ -359,32 +361,32 @@ final class Classifier {
                 || owner.equals("com.azure.storage.blob.BlobClient")
                 || owner.equals("com.azure.storage.blob.BlobClientBase")
                 || owner.equals("com.azure.storage.blob.BlobAsyncClient"))
-                && !isConventionallyPure(method)) return "Net";
+                && !isConventionallyPure(method)) return Effect.NET;
         // Spring mail — JavaMailSender/MailSender.send drives the SMTP round-trip (the raw jakarta.mail
         // Transport.send is already modeled; this is the Spring wrapper apps actually call). VERB-gated to
         // send/doSend so the JavaMailSenderImpl config setters (setHost/setPort/…) stay pure.
         if ((owner.equals("org.springframework.mail.MailSender")
                 || owner.equals("org.springframework.mail.javamail.JavaMailSender")
                 || owner.equals("org.springframework.mail.javamail.JavaMailSenderImpl"))
-                && (method.equals("send") || method.equals("doSend"))) return "Net";
+                && (method.equals("send") || method.equals("doSend"))) return Effect.NET;
         // Spring Data Redis operations — opsForValue()/opsForList()/… return *Operations whose terminal
         // get/set/… are Redis-over-TCP. Was silent-pure (ValueOperations.set). → Net, matching the Jedis/
         // Lettuce raw-client classification. (NB: RedisTemplate itself is classified Db elsewhere — a known
         // Db-vs-Net Redis labelling inconsistency, left for a deliberate reconciliation; this fixes the
         // silent-pure on the operations interfaces.) Whole-owner; Object protocol excluded.
         if (owner.startsWith("org.springframework.data.redis.core.") && owner.endsWith("Operations")
-                && !isConventionallyPure(method)) return "Net";
+                && !isConventionallyPure(method)) return Effect.NET;
         // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 5) ──
         // SSH/SFTP — JSch + SSHJ open/transfer over the SSH socket → Net (verb-gated; config setters pure).
-        if (owner.equals("com.jcraft.jsch.Session") && method.equals("connect")) return "Net";
-        if (owner.equals("com.jcraft.jsch.ChannelSftp") && (method.equals("get") || method.equals("put"))) return "Net";
+        if (owner.equals("com.jcraft.jsch.Session") && method.equals("connect")) return Effect.NET;
+        if (owner.equals("com.jcraft.jsch.ChannelSftp") && (method.equals("get") || method.equals("put"))) return Effect.NET;
         if ((owner.equals("net.schmizz.sshj.SSHClient") || owner.equals("net.schmizz.sshj.SocketClient"))
-                && method.equals("connect")) return "Net";
+                && method.equals("connect")) return Effect.NET;
         // Elasticsearch / OpenSearch low-level REST clients — performRequest is the HTTP round-trip → Net.
         if ((owner.equals("org.elasticsearch.client.RestClient") || owner.equals("org.opensearch.client.RestClient"))
-                && (method.equals("performRequest") || method.equals("performRequestAsync"))) return "Net";
+                && (method.equals("performRequest") || method.equals("performRequestAsync"))) return Effect.NET;
         // InfluxDB write API — line-protocol over HTTP → Net (write* verbs).
-        if (owner.equals("com.influxdb.client.WriteApi") && method.startsWith("write")) return "Net";
+        if (owner.equals("com.influxdb.client.WriteApi") && method.startsWith("write")) return Effect.NET;
         // Couchbase KV — Collection data verbs are cluster round-trips → Net (verb-gated; name/async/reactive
         // accessors stay pure).
         if (owner.equals("com.couchbase.client.java.Collection")) {
@@ -392,36 +394,36 @@ final class Classifier {
                 case "get": case "upsert": case "insert": case "replace": case "remove": case "exists":
                 case "getAndLock": case "getAndTouch": case "touch": case "unlock": case "mutateIn":
                 case "lookupIn": case "scan":
-                    return "Net";
+                    return Effect.NET;
                 default: break;
             }
         }
         // AsyncHttpClient — executeRequest fires the wire request → Net.
-        if (owner.equals("org.asynchttpclient.AsyncHttpClient") && method.equals("executeRequest")) return "Net";
+        if (owner.equals("org.asynchttpclient.AsyncHttpClient") && method.equals("executeRequest")) return Effect.NET;
         // FreeMarker / Velocity — getTemplate reads the template file off disk → Fs; Velocity mergeTemplate
         // reads the named template too. (The render process(model,Writer)/merge(ctx,Writer) is caller-stream
         // → pure.)
-        if (owner.equals("freemarker.template.Configuration") && method.equals("getTemplate")) return "Fs";
+        if (owner.equals("freemarker.template.Configuration") && method.equals("getTemplate")) return Effect.FS;
         if (owner.equals("org.apache.velocity.app.VelocityEngine")
-                && (method.equals("getTemplate") || method.equals("mergeTemplate"))) return "Fs";
+                && (method.equals("getTemplate") || method.equals("mergeTemplate"))) return Effect.FS;
         // Apache Commons VFS — FileContent.get{Input,Output}Stream opens the resource (local scheme → Fs;
         // ftp/http schemes would be Net but the scheme isn't statically known → Fs, the common case).
         if (owner.equals("org.apache.commons.vfs2.FileContent")
-                && (method.equals("getInputStream") || method.equals("getOutputStream"))) return "Fs";
+                && (method.equals("getInputStream") || method.equals("getOutputStream"))) return Effect.FS;
         // univocity parsers — parse(File) opens the file → Fs (descriptor-gated; parse(Reader)/(InputStream)
         // are caller-supplied → pure). Concrete parsers (CsvParser/TsvParser/FixedWidthParser) are the call
         // owners (parse is inherited from AbstractParser but emitted on the static type).
         if (owner.startsWith("com.univocity.parsers.") && owner.endsWith("Parser") && method.equals("parse")
-                && desc != null && desc.startsWith("(Ljava/io/File;")) return "Fs";
+                && desc != null && desc.startsWith("(Ljava/io/File;")) return Effect.FS;
         // dotenv-java — Dotenv.load reads the .env file → Fs.
         if ((owner.equals("io.github.cdimascio.dotenv.Dotenv")
-                || owner.equals("io.github.cdimascio.dotenv.DotenvBuilder")) && method.equals("load")) return "Fs";
+                || owner.equals("io.github.cdimascio.dotenv.DotenvBuilder")) && method.equals("load")) return Effect.FS;
         // Crypto KEY GENERATION draws entropy (from a SecureRandom) → Rand, like SecureRandom.nextBytes/
         // UUID.randomUUID. (JDK leaf, found by a crypto probe.) KeyFactory/SecretKeyFactory are deterministic
         // key derivation → stay pure; Cipher.doFinal is pure compute.
         if (owner.equals("java.security.KeyPairGenerator")
-                && (method.equals("generateKeyPair") || method.equals("genKeyPair"))) return "Rand";
-        if (owner.equals("javax.crypto.KeyGenerator") && method.equals("generateKey")) return "Rand";
+                && (method.equals("generateKeyPair") || method.equals("genKeyPair"))) return Effect.RAND;
+        if (owner.equals("javax.crypto.KeyGenerator") && method.equals("generateKey")) return Effect.RAND;
         // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 6) ──
         // RocksDB — embedded on-disk KV store (native JNI). No in-memory variant on this class → whole-owner
         // Fs for the I/O verbs (the open/get/put/write/merge/delete/iterator are all disk).
@@ -429,42 +431,42 @@ final class Classifier {
             switch (method) {
                 case "open": case "openReadOnly": case "get": case "put": case "write": case "merge":
                 case "delete": case "deleteRange": case "newIterator": case "multiGetAsList": case "flush":
-                    return "Fs";
+                    return Effect.FS;
                 default: break;
             }
         }
         // MapDB — model the FILE factory `DBMaker.fileDB(File|String)` as Fs (it configures a disk store).
         // NOT the shared `Maker.make()` terminal: `memoryDB().make()` reaches the same make() and must stay
         // pure (anchor mapdbMemoryMakePure).
-        if (owner.equals("org.mapdb.DBMaker") && method.equals("fileDB")) return "Fs";
+        if (owner.equals("org.mapdb.DBMaker") && method.equals("fileDB")) return Effect.FS;
         // Lucene — `FSDirectory.open(Path)` always opens an on-disk index dir → Fs (descriptor-clean). The
         // IndexWriter.addDocument / DirectoryReader.open(Directory) leaves are AMBIGUOUS-RECEIVER (the
         // Directory may be a RAM ByteBuffersDirectory), so modelling them whole-owner would fabricate on the
         // in-memory variant — left as accepted gaps (the FSDirectory.open factory is the safe disk signal).
-        if (owner.equals("org.apache.lucene.store.FSDirectory") && method.equals("open")) return "Fs";
+        if (owner.equals("org.apache.lucene.store.FSDirectory") && method.equals("open")) return Effect.FS;
         // Testcontainers — GenericContainer.start shells out to the Docker daemon → Exec.
-        if (owner.equals("org.testcontainers.containers.GenericContainer") && method.equals("start")) return "Exec";
+        if (owner.equals("org.testcontainers.containers.GenericContainer") && method.equals("start")) return Effect.EXEC;
         // Selenium — WebDriver.get drives a browser / talks to a remote WebDriver server over HTTP → Net.
         // OWNER-scoped (not a global `get` rule — that would collide with bean getters).
         if ((owner.equals("org.openqa.selenium.WebDriver") || owner.equals("org.openqa.selenium.remote.RemoteWebDriver"))
-                && method.equals("get")) return "Net";
+                && method.equals("get")) return Effect.NET;
         // Apache Camel — ProducerTemplate routes a body to an endpoint (usually remote) → Net.
         if (owner.equals("org.apache.camel.ProducerTemplate")
                 && (method.startsWith("sendBody") || method.startsWith("requestBody")
-                    || method.startsWith("asyncSendBody") || method.startsWith("asyncRequestBody"))) return "Net";
+                    || method.startsWith("asyncSendBody") || method.startsWith("asyncRequestBody"))) return Effect.NET;
         // JeroMQ (0MQ) — Socket.send/recv move bytes over the 0MQ socket → Net (TCP default).
         if (owner.equals("org.zeromq.ZMQ$Socket")
-                && (method.startsWith("send") || method.startsWith("recv"))) return "Net";
+                && (method.startsWith("send") || method.startsWith("recv"))) return Effect.NET;
         // Apache Thrift — the SOCKET transports do the RPC wire I/O → Net. Keyed to the socket types (NOT
         // abstract TTransport, whose TMemoryBuffer subclass is in-memory → would fabricate).
         if ((owner.equals("org.apache.thrift.transport.TSocket")
                 || owner.equals("org.apache.thrift.transport.TNonblockingSocket"))
                 && (method.equals("open") || method.equals("read") || method.equals("write")
-                    || method.equals("flush"))) return "Net";
+                    || method.equals("flush"))) return Effect.NET;
         // BouncyCastle low-level key-pair generators draw entropy → Rand (the jcajce KeyPairGenerator extends
         // java.security.KeyPairGenerator, already covered; this is the org.bouncycastle.crypto.generators.*
         // API). BC digest/cipher ops stay pure compute.
-        if (owner.startsWith("org.bouncycastle.crypto.generators.") && method.equals("generateKeyPair")) return "Rand";
+        if (owner.startsWith("org.bouncycastle.crypto.generators.") && method.equals("generateKeyPair")) return Effect.RAND;
         // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 7) ──
         // Distributed caches/data grids — get/put/etc. are CLUSTER round-trips → Net. OWNER-scoped to the
         // cache interfaces (Hazelcast IMap / Ignite IgniteCache / Infinispan BasicCache+Cache). IMap and
@@ -480,7 +482,7 @@ final class Classifier {
                 case "computeIfAbsent": case "computeIfPresent": case "containsKey": case "containsValue":
                 case "clear": case "loadAll": case "keySet": case "values": case "entrySet":
                 case "size": case "isEmpty":
-                    return "Net";
+                    return Effect.NET;
                 default: break;
             }
         }
@@ -488,13 +490,13 @@ final class Classifier {
         // modeled; this closes the uncovered SELECT side).
         if (owner.equals("org.jdbi.v3.core.Handle")
                 && (method.equals("createQuery") || method.equals("select") || method.equals("createUpdate")
-                    || method.equals("createCall") || method.equals("createScript"))) return "Db";
+                    || method.equals("createCall") || method.equals("createScript"))) return Effect.DB;
         // Spring Data Couchbase template → Db (sibling of the already-modeled Cassandra/Mongo templates).
         if (owner.equals("org.springframework.data.couchbase.core.CouchbaseTemplate")) {
             switch (method) {
                 case "save": case "insert": case "upsert": case "findById": case "findByQuery":
                 case "findByAnalytics": case "remove": case "removeById": case "existsById":
-                    return "Db";
+                    return Effect.DB;
                 default: break;
             }
         }
@@ -504,63 +506,63 @@ final class Classifier {
         if ((owner.startsWith("com.stripe.model.") || owner.startsWith("com.stripe.service."))
                 && (method.equals("create") || method.equals("retrieve") || method.equals("update")
                     || method.equals("list") || method.equals("delete") || method.equals("cancel")
-                    || method.equals("capture") || method.equals("confirm") || method.equals("search"))) return "Net";
+                    || method.equals("capture") || method.equals("confirm") || method.equals("search"))) return Effect.NET;
         if (owner.startsWith("com.twilio.")
                 && (owner.endsWith("Creator") || owner.endsWith("Updater") || owner.endsWith("Fetcher")
                     || owner.endsWith("Deleter") || owner.endsWith("Reader"))
                 && (method.equals("create") || method.equals("update") || method.equals("fetch")
-                    || method.equals("delete") || method.equals("read"))) return "Net";
+                    || method.equals("delete") || method.equals("read"))) return Effect.NET;
         if ((owner.equals("com.sendgrid.SendGrid") || owner.equals("com.sendgrid.BaseInterface"))
-                && (method.equals("api") || method.equals("makeCall"))) return "Net";
+                && (method.equals("api") || method.equals("makeCall"))) return Effect.NET;
         // Reactor Netty HttpClient response terminals → Net (the get()/post() request builders stay pure).
         if (owner.equals("reactor.netty.http.client.HttpClient$ResponseReceiver") && method.startsWith("response"))
-            return "Net";
+            return Effect.NET;
         // Apache Commons Email (legacy javax.mail) → Net; + the legacy javax.mail.Transport.send leaf that
         // candor's jakarta.mail rule doesn't match (commons-email 1.6 still uses javax.mail).
         if (owner.equals("org.apache.commons.mail.Email")
-                && (method.equals("send") || method.equals("sendMimeMessage"))) return "Net";
-        if (owner.equals("javax.mail.Transport") && method.equals("send")) return "Net";
+                && (method.equals("send") || method.equals("sendMimeMessage"))) return Effect.NET;
+        if (owner.equals("javax.mail.Transport") && method.equals("send")) return Effect.NET;
         // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 8) ──
         // Sentry — capture* sends to the Sentry transport → Net (async-queued; Net is sound).
-        if (owner.equals("io.sentry.Sentry") && method.startsWith("capture")) return "Net";
+        if (owner.equals("io.sentry.Sentry") && method.startsWith("capture")) return Effect.NET;
         // OpenTelemetry OTLP exporter — SpanExporter.export flushes spans over the wire → Net. (Span.end()
         // is DEFERRED to the batch processor — deliberately NOT modeled; would fabricate on every span.)
-        if (owner.equals("io.opentelemetry.sdk.trace.export.SpanExporter") && method.equals("export")) return "Net";
+        if (owner.equals("io.opentelemetry.sdk.trace.export.SpanExporter") && method.equals("export")) return Effect.NET;
         // im4java — *Cmd.run shells out to the ImageMagick binary (ProcessBuilder.start) → Exec.
         if (((owner.startsWith("org.im4java.core.") && owner.endsWith("Cmd"))
-                || owner.equals("org.im4java.process.ProcessStarter")) && method.equals("run")) return "Exec";
+                || owner.equals("org.im4java.process.ProcessStarter")) && method.equals("run")) return Effect.EXEC;
         // Tess4J — doOCR(File) reads the image off disk → Fs (descriptor-gated; doOCR(BufferedImage) is
         // in-memory → pure). The JNA-native OCR itself is in-process (not a subprocess), so Fs — the certain
         // file read — is the sound classification, not Exec.
         if ((owner.equals("net.sourceforge.tess4j.Tesseract") || owner.equals("net.sourceforge.tess4j.ITesseract"))
-                && method.equals("doOCR") && desc != null && desc.contains("Ljava/io/File;")) return "Fs";
+                && method.equals("doOCR") && desc != null && desc.contains("Ljava/io/File;")) return Effect.FS;
         // Eclipse Jetty client — GET / Request.send do the HTTP exchange → Net.
-        if (owner.equals("org.eclipse.jetty.client.HttpClient") && method.equals("GET")) return "Net";
-        if (owner.equals("org.eclipse.jetty.client.Request") && method.equals("send")) return "Net";
+        if (owner.equals("org.eclipse.jetty.client.HttpClient") && method.equals("GET")) return Effect.NET;
+        if (owner.equals("org.eclipse.jetty.client.Request") && method.equals("send")) return Effect.NET;
         // Unirest — the as* terminals execute the request → Net (asFile also writes a file, but Net covers
         // the wire effect).
         if (owner.startsWith("kong.unirest.")) {
             switch (method) {
                 case "asString": case "asJson": case "asObject": case "asBytes": case "asEmpty":
                 case "asFile": case "asPaged":
-                    return "Net";
+                    return Effect.NET;
                 default: break;
             }
         }
         // Artemis core client — ClientProducer.send writes to the broker → Net.
         if (owner.equals("org.apache.activemq.artemis.api.core.client.ClientProducer") && method.equals("send"))
-            return "Net";
+            return Effect.NET;
         // Google Tink — KeysetHandle.generateNew mints key material from SecureRandom → Rand.
-        if (owner.equals("com.google.crypto.tink.KeysetHandle") && method.equals("generateNew")) return "Rand";
+        if (owner.equals("com.google.crypto.tink.KeysetHandle") && method.equals("generateNew")) return Effect.RAND;
         // Jasypt PBE encryptors — the default RandomSaltGenerator draws a per-call salt from SecureRandom →
         // Rand (a fixed-salt config would be pure compute, but random is the default).
-        if (owner.startsWith("org.jasypt.encryption.pbe.") && method.equals("encrypt")) return "Rand";
+        if (owner.startsWith("org.jasypt.encryption.pbe.") && method.equals("encrypt")) return Effect.RAND;
         // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 9) ──
         // GCP services do NOT share a wire-namespace (unlike AWS) — each is its own owner. (GCS Storage
         // already modeled in an earlier batch.)
         if (owner.equals("com.google.cloud.bigquery.BigQuery")
                 && (method.equals("query") || method.equals("insertAll") || method.equals("listTableData")
-                    || method.equals("getQueryResults"))) return "Net";
+                    || method.equals("getQueryResults"))) return Effect.NET;
         // Firestore — the reference/query types do the fetch/write → Net (verb-gated; DocumentSnapshot.get,
         // which reads a field from an already-fetched snapshot, is a DIFFERENT owner → stays pure).
         if ((owner.equals("com.google.cloud.firestore.CollectionReference")
@@ -569,8 +571,8 @@ final class Classifier {
                 || owner.equals("com.google.cloud.firestore.CollectionGroup"))
                 && (method.equals("get") || method.equals("getAll") || method.equals("set")
                     || method.equals("update") || method.equals("delete") || method.equals("create")
-                    || method.equals("add") || method.equals("commit"))) return "Net";
-        if (owner.equals("com.google.cloud.pubsub.v1.Publisher") && method.equals("publish")) return "Net";
+                    || method.equals("add") || method.equals("commit"))) return Effect.NET;
+        if (owner.equals("com.google.cloud.pubsub.v1.Publisher") && method.equals("publish")) return Effect.NET;
         // Kubernetes (fabric8) — the DSL TERMINAL verbs hit the API server → Net (the withName/inNamespace
         // filter accessors are pure DSL views and not in the verb set).
         if (owner.startsWith("io.fabric8.kubernetes.client.dsl.")) {
@@ -578,14 +580,14 @@ final class Classifier {
                 case "list": case "create": case "get": case "delete": case "replace": case "update":
                 case "patch": case "edit": case "watch": case "createOrReplace": case "serverSideApply":
                 case "getLog": case "exec": case "getList":
-                    return "Net";
+                    return Effect.NET;
                 default: break;
             }
         }
         // docker-java — *Cmd.exec() talks to the Docker daemon → Net (the dockerClient.pingCmd() builders
         // are pure).
         if (owner.startsWith("com.github.dockerjava.api.command.") && owner.endsWith("Cmd")
-                && method.equals("exec")) return "Net";
+                && method.equals("exec")) return Effect.NET;
         // HashiCorp Vault — Spring VaultTemplate + vault-java-driver Logical do the secrets round-trip → Net.
         // (VaultTemplate is otherwise FLOOR-SUPPRESSED as an org.springframework.* κ-covered prefix —
         // modeling it explicitly here surfaces the real Net leaf the floor was hiding.)
@@ -593,7 +595,7 @@ final class Classifier {
                 || owner.equals("org.springframework.vault.core.VaultKeyValueOperations")
                 || owner.equals("io.github.jopenlibs.vault.api.Logical"))
                 && (method.equals("read") || method.equals("write") || method.equals("list")
-                    || method.equals("delete"))) return "Net";
+                    || method.equals("delete"))) return Effect.NET;
         // Redisson distributed objects (org.redisson.api.R*) — data verbs are Redis-over-TCP → Net.
         // OWNER-scoped to the R* family (RMap extends ConcurrentMap, so a java.util.Map-typed receiver is
         // NOT matched and stays pure). EXACT data verbs (getName/getCodec etc. stay pure).
@@ -602,93 +604,93 @@ final class Classifier {
                 case "get": case "set": case "getAndSet": case "put": case "putIfAbsent": case "remove":
                 case "add": case "contains": case "containsKey": case "isExists": case "delete":
                 case "trySet": case "compareAndSet": case "fastPut": case "fastRemove": case "expire":
-                    return "Net";
+                    return Effect.NET;
                 default: break;
             }
         }
         // etcd jetcd KV → Net.
         if (owner.equals("io.etcd.jetcd.KV")
                 && (method.equals("get") || method.equals("put") || method.equals("delete")
-                    || method.equals("txn"))) return "Net";
+                    || method.equals("txn"))) return Effect.NET;
         // Consul (orbitz) KeyValueClient → Net.
         if (owner.equals("com.orbitz.consul.KeyValueClient")
                 && (method.equals("getValue") || method.equals("getValues") || method.equals("getKeys")
-                    || method.equals("putValue") || method.equals("deleteKey"))) return "Net";
+                    || method.equals("putValue") || method.equals("deleteKey"))) return Effect.NET;
         // UnboundID LDAP → Net.
         if (owner.equals("com.unboundid.ldap.sdk.LDAPConnection")
                 && (method.equals("search") || method.equals("bind") || method.equals("connect")
                     || method.equals("modify") || method.equals("add") || method.equals("delete")
-                    || method.equals("compare") || method.equals("modifyDN"))) return "Net";
+                    || method.equals("compare") || method.equals("modifyDN"))) return Effect.NET;
         // Chronicle Queue — the builder's build() opens/creates the on-disk memory-mapped queue dir → Fs
         // (Chronicle Queue is always file-backed; no in-memory variant of this builder).
         if (owner.equals("net.openhft.chronicle.queue.impl.single.SingleChronicleQueueBuilder")
-                && method.equals("build")) return "Fs";
+                && method.equals("build")) return Effect.FS;
         // Sardine WebDAV → Net.
         if (owner.equals("com.github.sardine.Sardine")
                 && (method.equals("get") || method.equals("put") || method.equals("delete")
                     || method.equals("list") || method.equals("exists") || method.equals("move")
-                    || method.equals("copy"))) return "Net";
+                    || method.equals("copy"))) return Effect.NET;
         // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 10) ──
         // Apache Curator — the fluent *Builder.forPath terminal hits ZooKeeper → Net (the create()/getData()
         // builder accessors stay pure). forPath always does the ZK round-trip regardless of builder.
-        if (owner.startsWith("org.apache.curator.framework.api.") && method.equals("forPath")) return "Net";
+        if (owner.startsWith("org.apache.curator.framework.api.") && method.equals("forPath")) return Effect.NET;
         // Apache Solr — SolrClient query/add/commit/etc. do the HTTP request → Net (matches the modeled
         // Elasticsearch RestClient; search engines over HTTP).
         if (owner.equals("org.apache.solr.client.solrj.SolrClient")
                 && (method.equals("query") || method.equals("add") || method.equals("commit")
                     || method.equals("deleteById") || method.equals("deleteByQuery") || method.equals("request")
-                    || method.equals("getById") || method.equals("optimize"))) return "Net";
+                    || method.equals("getById") || method.equals("optimize"))) return Effect.NET;
         // GCP Spanner — ReadContext.executeQuery/read run the SQL query against Spanner → Db (the singleUse()/
         // readWriteTransaction() builder accessors stay pure).
         if (owner.equals("com.google.cloud.spanner.ReadContext")
                 && (method.equals("executeQuery") || method.equals("read") || method.equals("readRow")
-                    || method.equals("executeQueryAsync") || method.equals("readUsingIndex"))) return "Db";
+                    || method.equals("executeQueryAsync") || method.equals("readUsingIndex"))) return Effect.DB;
         // Azure CosmosDB — CosmosContainer item ops over HTTP → Net (matches Azure Blob / DynamoDB).
         if (owner.equals("com.azure.cosmos.CosmosContainer")
                 && (method.equals("readItem") || method.equals("createItem") || method.equals("upsertItem")
                     || method.equals("deleteItem") || method.equals("replaceItem") || method.equals("queryItems")
-                    || method.equals("patchItem"))) return "Net";
+                    || method.equals("patchItem"))) return Effect.NET;
         // Azure Service Bus — sender writes to the broker → Net.
         if (owner.equals("com.azure.messaging.servicebus.ServiceBusSenderClient")
                 && (method.equals("sendMessage") || method.equals("sendMessages")
-                    || method.equals("scheduleMessage") || method.equals("scheduleMessages"))) return "Net";
+                    || method.equals("scheduleMessage") || method.equals("scheduleMessages"))) return Effect.NET;
         // Azure Key Vault secrets → Net.
         if (owner.equals("com.azure.security.keyvault.secrets.SecretClient")
                 && (method.equals("getSecret") || method.equals("setSecret") || method.startsWith("beginDelete")
-                    || method.startsWith("listProperties") || method.equals("getDeletedSecret"))) return "Net";
+                    || method.startsWith("listProperties") || method.equals("getDeletedSecret"))) return Effect.NET;
         // GCP Secret Manager → Net (own owner; GCP has no shared wire-namespace).
         if (owner.equals("com.google.cloud.secretmanager.v1.SecretManagerServiceClient")
                 && (method.equals("accessSecretVersion") || method.equals("getSecret")
                     || method.equals("createSecret") || method.equals("addSecretVersion")
-                    || method.equals("listSecrets"))) return "Net";
+                    || method.equals("listSecrets"))) return Effect.NET;
         // RSocket reactive RPC → Net (returns Mono/Flux; wire deferred — Net is sound).
         if (owner.equals("io.rsocket.RSocket")
                 && (method.equals("requestResponse") || method.equals("fireAndForget")
                     || method.equals("requestStream") || method.equals("requestChannel")
-                    || method.equals("metadataPush"))) return "Net";
+                    || method.equals("metadataPush"))) return Effect.NET;
         // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 11) ──
         // AI/LLM clients — the model API is HTTP/gRPC inside the SDK, invisible at the user's call → Net.
         // theokanning OpenAI:
-        if (owner.equals("com.theokanning.openai.service.OpenAiService") && method.startsWith("create")) return "Net";
+        if (owner.equals("com.theokanning.openai.service.OpenAiService") && method.startsWith("create")) return Effect.NET;
         // Anthropic SDK service classes:
         if (owner.startsWith("com.anthropic.services.")
                 && (method.equals("create") || method.equals("createStreaming") || method.equals("retrieve")
-                    || method.equals("list"))) return "Net";
+                    || method.equals("list"))) return Effect.NET;
         // LangChain4j — CHAT models are always a remote API → generate/chat → Net. embed() is NOT keyed:
         // EmbeddingModel can be an in-process (onnx) model, so leave it ambiguous (no fabrication).
         if (owner.startsWith("dev.langchain4j.model.")
-                && (method.equals("generate") || method.equals("chat"))) return "Net";
+                && (method.equals("generate") || method.equals("chat"))) return Effect.NET;
         // Vector DBs — gRPC/HTTP data plane → Net (owner-scoped verb sets).
         if (owner.equals("io.pinecone.clients.Index")
                 && (method.equals("upsert") || method.equals("query") || method.equals("fetch")
                     || method.equals("update") || method.equals("deleteByIds") || method.equals("deleteAll")
-                    || method.equals("describeIndexStats") || method.equals("list"))) return "Net";
-        if (owner.equals("io.qdrant.client.QdrantClient") && method.endsWith("Async")) return "Net";
+                    || method.equals("describeIndexStats") || method.equals("list"))) return Effect.NET;
+        if (owner.equals("io.qdrant.client.QdrantClient") && method.endsWith("Async")) return Effect.NET;
         if (owner.equals("io.milvus.client.MilvusServiceClient")) {
             switch (method) {
                 case "search": case "insert": case "query": case "delete": case "upsert": case "get":
                 case "createCollection": case "dropCollection": case "loadCollection": case "flush":
-                    return "Net";
+                    return Effect.NET;
                 default: break;
             }
         }
@@ -696,28 +698,28 @@ final class Classifier {
         if (owner.equals("net.rubyeye.xmemcached.XMemcachedClient")
                 && (method.equals("get") || method.equals("set") || method.equals("delete")
                     || method.equals("add") || method.equals("replace") || method.equals("incr")
-                    || method.equals("decr") || method.equals("append") || method.equals("prepend"))) return "Net";
+                    || method.equals("decr") || method.equals("append") || method.equals("prepend"))) return Effect.NET;
         if (owner.equals("com.aerospike.client.AerospikeClient")) {
             switch (method) {
                 case "get": case "put": case "delete": case "exists": case "operate": case "query":
                 case "scanAll": case "add": case "append": case "prepend": case "execute": case "truncate":
-                    return "Net";
+                    return Effect.NET;
                 default: break;
             }
         }
         // Gremlin (TinkerPop) graph driver → Net.
         if (owner.equals("org.apache.tinkerpop.gremlin.driver.Client")
-                && (method.equals("submit") || method.equals("submitAsync"))) return "Net";
+                && (method.equals("submit") || method.equals("submitAsync"))) return Effect.NET;
         // web3j — Request.send/sendAsync is the JSON-RPC transport every web3j call bottoms out in → Net.
         if (owner.equals("org.web3j.protocol.core.Request")
-                && (method.equals("send") || method.equals("sendAsync"))) return "Net";
+                && (method.equals("send") || method.equals("sendAsync"))) return Effect.NET;
         // Azure Event Hubs producer + Table Storage client → Net.
         if (owner.equals("com.azure.messaging.eventhubs.EventHubProducerClient") && method.equals("send"))
-            return "Net";
+            return Effect.NET;
         if (owner.equals("com.azure.data.tables.TableClient")
                 && (method.equals("createEntity") || method.equals("getEntity") || method.equals("updateEntity")
                     || method.equals("deleteEntity") || method.equals("upsertEntity")
-                    || method.equals("listEntities"))) return "Net";
+                    || method.equals("listEntities"))) return Effect.NET;
         // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 12) ──
         // Spring AI — the chat model API is HTTP inside the SDK → Net. Both owners are org.springframework.*
         // so they were FLOOR-SUPPRESSED (dropped from the report, like Spring Vault); explicit rules surface
@@ -725,20 +727,20 @@ final class Classifier {
         // ChatModel.call(Prompt).
         if (owner.equals("org.springframework.ai.chat.client.ChatClient$CallResponseSpec")
                 && (method.equals("content") || method.equals("chatResponse") || method.equals("entity")
-                    || method.equals("responseEntity"))) return "Net";
+                    || method.equals("responseEntity"))) return Effect.NET;
         if (owner.startsWith("org.springframework.ai.") && owner.endsWith("ChatModel") && method.equals("call"))
-            return "Net";
-        if (owner.equals("org.springframework.ai.chat.model.ChatModel") && method.equals("call")) return "Net";
+            return Effect.NET;
+        if (owner.equals("org.springframework.ai.chat.model.ChatModel") && method.equals("call")) return Effect.NET;
         // Slack — MethodsClient is entirely Slack-API calls → whole-owner Net (Object protocol excluded).
-        if (owner.equals("com.slack.api.methods.MethodsClient") && !isConventionallyPure(method)) return "Net";
+        if (owner.equals("com.slack.api.methods.MethodsClient") && !isConventionallyPure(method)) return Effect.NET;
         // Discord JDA — RestAction.queue/complete/submit is the wire send; the restaction.* builder subtypes
         // inherit them, so key the requests package + the action verbs.
         if (owner.startsWith("net.dv8tion.jda.api.requests.")
                 && (method.equals("queue") || method.equals("complete") || method.equals("submit")
-                    || method.equals("queueAfter") || method.equals("submitAfter"))) return "Net";
+                    || method.equals("queueAfter") || method.equals("submitAfter"))) return Effect.NET;
         // Telegram Bots — AbsSender.execute sends to the Bot API → Net.
         if (owner.startsWith("org.telegram.telegrambots.") && owner.endsWith("AbsSender")
-                && method.equals("execute")) return "Net";
+                && method.equals("execute")) return Effect.NET;
         // Keycloak admin client — the JAX-RS resource proxies' ACTION verbs are admin-REST calls → Net
         // (the get(id)/sub-resource navigators that return another proxy stay pure — verb-gated to the
         // verbs that actually round-trip).
@@ -746,9 +748,9 @@ final class Classifier {
                 && (method.equals("create") || method.equals("search") || method.equals("update")
                     || method.equals("remove") || method.equals("count") || method.equals("list")
                     || method.equals("add") || method.equals("findAll") || method.equals("sendVerifyEmail")
-                    || method.equals("resetPassword") || method.equals("logout"))) return "Net";
+                    || method.equals("resetPassword") || method.equals("logout"))) return Effect.NET;
         // Okta SDK — ApiClient.invokeAPI is the generic wire leaf every Okta call bottoms out in → Net.
-        if (owner.equals("com.okta.sdk.resource.client.ApiClient") && method.equals("invokeAPI")) return "Net";
+        if (owner.equals("com.okta.sdk.resource.client.ApiClient") && method.equals("invokeAPI")) return Effect.NET;
         // Braintree payments — TransactionGateway (and the other *Gateway resources) do the wire calls → Net
         // (BraintreeGateway.transaction() is a pure navigator → returns the gateway).
         if (owner.startsWith("com.braintreegateway.") && owner.endsWith("Gateway")
@@ -756,35 +758,35 @@ final class Classifier {
                 && (method.equals("sale") || method.equals("create") || method.equals("find")
                     || method.equals("submitForSettlement") || method.equals("refund") || method.equals("void")
                     || method.equals("delete") || method.equals("update") || method.equals("search")
-                    || method.equals("cancel"))) return "Net";
+                    || method.equals("cancel"))) return Effect.NET;
         // Mailgun (sargue) → Net.
-        if (owner.equals("net.sargue.mailgun.Mail") && method.equals("send")) return "Net";
+        if (owner.equals("net.sargue.mailgun.Mail") && method.equals("send")) return Effect.NET;
         // Google Maps services — the *Request.await/awaitIgnoreError terminal does the HTTP call → Net
         // (geocode()/etc. return the request builder, pure until await).
         if (owner.startsWith("com.google.maps.") && owner.endsWith("Request")
-                && (method.equals("await") || method.equals("awaitIgnoreError"))) return "Net";
+                && (method.equals("await") || method.equals("awaitIgnoreError"))) return Effect.NET;
         // ClickHouse native client — execute/send run the query → Db (analytics DB, the Cassandra/Mongo/
         // Spanner family; not the HTTP-transport view).
         if (owner.equals("com.clickhouse.client.ClickHouseClient")
                 && (method.equals("execute") || method.equals("send") || method.equals("executeAndWait")))
-            return "Db";
+            return Effect.DB;
         // ── Spring-ecosystem FLOOR-SUPPRESSED leaves (batch 13) ──────────────────────────────────────────
         // candor treats org.springframework.* as a κ-covered prefix → an unmodeled Spring sub-library leaf is
         // DROPPED from the report entirely (worse than a disclosed Unknown). A systemic class: explicit rules
         // surface the real effect for each UNAMBIGUOUS Spring sub-lib. (The genuinely AMBIGUOUS ones —
         // MessagingTemplate→in-process DirectChannel, SessionRepository→in-memory MapSessionRepository — are
         // deliberately NOT modeled: a Net/Db rule would FABRICATE on the in-memory variant; left accepted.)
-        if (owner.equals("org.springframework.batch.core.launch.JobLauncher") && method.equals("run")) return "Db";
+        if (owner.equals("org.springframework.batch.core.launch.JobLauncher") && method.equals("run")) return Effect.DB;
         // Spring Cloud OpenFeign load-balanced client (the FeignBlockingLoadBalancerClient + retrying wrapper
         // implement feign.Client; the floor hides them even though feign.Client.execute is modeled).
-        if (owner.startsWith("org.springframework.cloud.openfeign.") && method.equals("execute")) return "Net";
+        if (owner.startsWith("org.springframework.cloud.openfeign.") && method.equals("execute")) return Effect.NET;
         // Spring Data Elasticsearch — ElasticsearchOperations is an ES cluster client (HTTP) → Net.
         if (owner.equals("org.springframework.data.elasticsearch.core.ElasticsearchOperations")) {
             switch (method) {
                 case "save": case "saveAll": case "search": case "searchForStream": case "get": case "multiGet":
                 case "delete": case "deleteAll": case "index": case "bulkIndex": case "bulkUpdate":
                 case "count": case "searchSimilar": case "update":
-                    return "Net";
+                    return Effect.NET;
                 default: break;
             }
         }
@@ -792,14 +794,14 @@ final class Classifier {
         if (owner.equals("org.springframework.data.neo4j.core.Neo4jTemplate")
                 && (method.equals("save") || method.equals("saveAll") || method.equals("findById")
                     || method.equals("findAll") || method.equals("delete") || method.equals("deleteById")
-                    || method.equals("deleteAll") || method.equals("count") || method.equals("existsById"))) return "Db";
+                    || method.equals("deleteAll") || method.equals("count") || method.equals("existsById"))) return Effect.DB;
         // Spring LDAP — LdapTemplate issues LDAP ops over the wire → Net.
         if (owner.equals("org.springframework.ldap.core.LdapTemplate")) {
             switch (method) {
                 case "search": case "lookup": case "bind": case "unbind": case "rebind": case "modifyAttributes":
                 case "lookupContext": case "searchForObject": case "searchForContext": case "authenticate":
                 case "list": case "listBindings": case "rename":
-                    return "Net";
+                    return Effect.NET;
                 default: break;
             }
         }
@@ -808,20 +810,20 @@ final class Classifier {
         if (owner.equals("com.orientechnologies.orient.core.db.ODatabaseSession")
                 && (method.equals("query") || method.equals("command") || method.equals("execute")
                     || method.equals("save") || method.equals("load") || method.equals("commit")
-                    || method.equals("begin") || method.equals("delete"))) return "Db";
+                    || method.equals("begin") || method.equals("delete"))) return Effect.DB;
         // ArangoDB database → Net (HTTP/VST; the collection()/graph() navigators stay pure).
         if (owner.equals("com.arangodb.ArangoDatabase")) {
             switch (method) {
                 case "query": case "getVersion": case "getInfo": case "createCollection": case "getCollections":
                 case "createGraph": case "getGraphs": case "drop": case "exists": case "create":
                 case "transaction": case "getDocument": case "insertDocument":
-                    return "Net";
+                    return Effect.NET;
                 default: break;
             }
         }
         // RethinkDB — ReqlExpr.run is the query terminal; Connection$Builder.connect opens the socket → Net.
-        if (owner.equals("com.rethinkdb.gen.ast.ReqlExpr") && method.equals("run")) return "Net";
-        if (owner.equals("com.rethinkdb.net.Connection$Builder") && method.equals("connect")) return "Net";
+        if (owner.equals("com.rethinkdb.gen.ast.ReqlExpr") && method.equals("run")) return Effect.NET;
+        if (owner.equals("com.rethinkdb.net.Connection$Builder") && method.equals("connect")) return Effect.NET;
         // ── More library effect leaves (batch 14 — precision: these were already INVISIBLE-DISCLOSED=sound;
         //    modeled to upgrade the disclosure to the concrete effect) ──────────────────────────────────
         // HTTP/stream SERVER frameworks — start()/init() binds a listening socket → Net (a different leaf
@@ -829,8 +831,8 @@ final class Classifier {
         if ((owner.equals("io.javalin.Javalin") || owner.equals("io.undertow.Undertow")
                 || owner.equals("org.eclipse.jetty.server.Server")
                 || owner.equals("org.apache.kafka.streams.KafkaStreams"))
-                && method.equals("start")) return "Net";
-        if (owner.equals("spark.Spark") && method.equals("init")) return "Net";
+                && method.equals("start")) return Effect.NET;
+        if (owner.equals("spark.Spark") && method.equals("init")) return Effect.NET;
         // Apache Geode/GemFire Region — distributed cache, cluster round-trips → Net. Region extends
         // ConcurrentMap, so OWNER-scoped (a java.util.Map receiver stays pure, like Hazelcast/Infinispan).
         if (owner.equals("org.apache.geode.cache.Region")) {
@@ -838,32 +840,32 @@ final class Classifier {
                 case "get": case "put": case "putAll": case "getAll": case "remove": case "removeAll":
                 case "create": case "invalidate": case "destroy": case "putIfAbsent": case "replace":
                 case "query": case "containsKey": case "containsValueForKey": case "keySetOnServer":
-                    return "Net";
+                    return Effect.NET;
                 default: break;
             }
         }
         // SimpleJavaMail → Net (SMTP send).
-        if (owner.equals("org.simplejavamail.api.mailer.Mailer") && method.equals("sendMail")) return "Net";
+        if (owner.equals("org.simplejavamail.api.mailer.Mailer") && method.equals("sendMail")) return Effect.NET;
         // docx4j — WordprocessingMLPackage/OpcPackage load/save on a File touch disk → Fs (descriptor-gated;
         // the InputStream/OutputStream overloads are caller-stream → pure).
         if (owner.startsWith("org.docx4j.openpackaging.packages.")
                 && (method.equals("load") || method.equals("save"))
-                && desc != null && desc.contains("Ljava/io/File;")) return "Fs";
+                && desc != null && desc.contains("Ljava/io/File;")) return Effect.FS;
         // Template engines — the file-loading verb reads the template off disk → Fs (the in-memory
         // compileInline / getLiteralTemplate / Reader overloads stay pure).
-        if (owner.equals("com.github.jknack.handlebars.Handlebars") && method.equals("compile")) return "Fs";
+        if (owner.equals("com.github.jknack.handlebars.Handlebars") && method.equals("compile")) return Effect.FS;
         if (owner.startsWith("com.github.mustachejava.") && method.equals("compile")
-                && desc != null && desc.startsWith("(Ljava/lang/String;)")) return "Fs";
-        if (owner.equals("io.pebbletemplates.pebble.PebbleEngine") && method.equals("getTemplate")) return "Fs";
+                && desc != null && desc.startsWith("(Ljava/lang/String;)")) return Effect.FS;
+        if (owner.equals("io.pebbletemplates.pebble.PebbleEngine") && method.equals("getTemplate")) return Effect.FS;
         // ffmpeg wrapper — *.run forks the ffmpeg/ffprobe binary → Exec.
-        if (owner.startsWith("net.bramp.ffmpeg.") && method.equals("run")) return "Exec";
+        if (owner.startsWith("net.bramp.ffmpeg.") && method.equals("run")) return Effect.EXEC;
         // ML — ONNX Runtime createSession(String|path) loads the model off disk → Fs (createSession(byte[])
         // is in-memory → pure); OrtSession.run is opaque native inference → Unknown (can't see into native).
         if (owner.equals("ai.onnxruntime.OrtEnvironment") && method.equals("createSession")
-                && desc != null && desc.startsWith("(Ljava/lang/String;")) return "Fs";
-        if (owner.equals("ai.onnxruntime.OrtSession") && method.equals("run")) return "Unknown";
+                && desc != null && desc.startsWith("(Ljava/lang/String;")) return Effect.FS;
+        if (owner.equals("ai.onnxruntime.OrtSession") && method.equals("run")) return Effect.UNKNOWN;
         // Stanford CoreNLP — the pipeline ctor loads serialized models off disk/classpath → Fs.
-        if (owner.equals("edu.stanford.nlp.pipeline.StanfordCoreNLP") && method.equals("<init>")) return "Fs";
+        if (owner.equals("edu.stanford.nlp.pipeline.StanfordCoreNLP") && method.equals("<init>")) return Effect.FS;
         // ── jakarta/javax EE WEB surfaces (batch 17) — κ-covered prefixes, so unmodeled = FLOOR-DROPPED
         //    silent. These are the most common server-side APIs in the JVM; a controller writing an HTTP
         //    response / a JAX-RS client call / a websocket push all read silent-pure without these rules. ──
@@ -875,7 +877,7 @@ final class Classifier {
                 || owner.equals("jakarta.servlet.http.HttpServletResponse")
                 || owner.equals("javax.servlet.http.HttpServletResponse"))
                 && (method.equals("sendError") || method.equals("sendRedirect") || method.equals("flushBuffer")
-                    || method.equals("getWriter") || method.equals("getOutputStream"))) return "Net";
+                    || method.equals("getWriter") || method.equals("getOutputStream"))) return Effect.NET;
         // JAX-RS client — the SyncInvoker terminal (get/post/put/delete/method) does the HTTP round-trip →
         // Net. PURE builders NOT touched: Client.target / WebTarget.request / WebTarget.path.
         if ((owner.equals("jakarta.ws.rs.client.SyncInvoker") || owner.equals("javax.ws.rs.client.SyncInvoker")
@@ -883,21 +885,21 @@ final class Classifier {
                 || owner.equals("javax.ws.rs.client.Invocation$Builder"))
                 && (method.equals("get") || method.equals("post") || method.equals("put")
                     || method.equals("delete") || method.equals("method") || method.equals("head")
-                    || method.equals("options") || method.equals("trace"))) return "Net";
+                    || method.equals("options") || method.equals("trace"))) return Effect.NET;
         // WebSocket RemoteEndpoint — send* pushes a frame over the socket → Net. PURE accessor NOT touched:
         // Session.getBasicRemote/getAsyncRemote (return the endpoint).
         if ((owner.equals("jakarta.websocket.RemoteEndpoint$Basic") || owner.equals("javax.websocket.RemoteEndpoint$Basic")
                 || owner.equals("jakarta.websocket.RemoteEndpoint$Async") || owner.equals("javax.websocket.RemoteEndpoint$Async"))
                 && (method.equals("sendText") || method.equals("sendBinary") || method.equals("sendObject")
-                    || method.equals("sendPing") || method.equals("sendPong"))) return "Net";
+                    || method.equals("sendPing") || method.equals("sendPong"))) return Effect.NET;
         // JAXB — Marshaller.marshal(File)/Unmarshaller.unmarshal(File) touch disk → Fs; unmarshal(URL) → Net
         // (descriptor-gated; the OutputStream/Writer/InputStream overloads are caller-stream → pure).
         if ((owner.equals("jakarta.xml.bind.Marshaller") || owner.equals("javax.xml.bind.Marshaller"))
-                && method.equals("marshal") && desc != null && desc.contains("Ljava/io/File;")) return "Fs";
+                && method.equals("marshal") && desc != null && desc.contains("Ljava/io/File;")) return Effect.FS;
         if ((owner.equals("jakarta.xml.bind.Unmarshaller") || owner.equals("javax.xml.bind.Unmarshaller"))
                 && method.equals("unmarshal") && desc != null) {
-            if (desc.startsWith("(Ljava/io/File;")) return "Fs";
-            if (desc.startsWith("(Ljava/net/URL;")) return "Net";
+            if (desc.startsWith("(Ljava/io/File;")) return Effect.FS;
+            if (desc.startsWith("(Ljava/net/URL;")) return Effect.NET;
         }
         // ── Remaining jakarta/javax EE (batch 18) — κ-covered, unmodeled = FLOOR-DROPPED silent ──
         // JTA transactions → Db — the @Transactional / app-server transaction BOUNDARY (begin opens, commit
@@ -906,29 +908,29 @@ final class Classifier {
         if ((owner.equals("jakarta.transaction.UserTransaction") || owner.equals("javax.transaction.UserTransaction")
                 || owner.equals("jakarta.transaction.Transaction") || owner.equals("javax.transaction.Transaction")
                 || owner.equals("jakarta.transaction.TransactionManager") || owner.equals("javax.transaction.TransactionManager"))
-                && (method.equals("begin") || method.equals("commit") || method.equals("rollback"))) return "Db";
+                && (method.equals("begin") || method.equals("commit") || method.equals("rollback"))) return Effect.DB;
         // JAX-WS — Dispatch.invoke* performs the SOAP wire send → Net. PURE NOT touched: Service.getPort
         // (returns a proxy), Service.createDispatch (builds the object).
         if ((owner.equals("jakarta.xml.ws.Dispatch") || owner.equals("javax.xml.ws.Dispatch"))
-                && method.startsWith("invoke")) return "Net";
+                && method.startsWith("invoke")) return Effect.NET;
         // jakarta.mail — Service.connect is the shared super of Store/Transport.connect (already Net) that
         // candor missed by keying only the subclasses; Folder.expunge removes \Deleted on the IMAP server.
         if ((owner.equals("jakarta.mail.Service") || owner.equals("javax.mail.Service")) && method.equals("connect"))
-            return "Net";
+            return Effect.NET;
         if ((owner.equals("jakarta.mail.Folder") || owner.equals("javax.mail.Folder")) && method.equals("expunge"))
-            return "Net";
+            return Effect.NET;
         // JBatch — JobOperator.start/restart/stop drive the job + write the (JDBC) JobRepository → Db. PURE
         // NOT touched: getJobNames/getJobInstanceCount (registry reads).
         if (owner.equals("jakarta.batch.operations.JobOperator")
                 && (method.equals("start") || method.equals("restart") || method.equals("stop")
-                    || method.equals("abandon"))) return "Db";
+                    || method.equals("abandon"))) return Effect.DB;
         // JMS lifecycle/browse → Net: Connection.start/stop (begin/halt broker delivery); QueueBrowser
         // .getEnumeration (browses the broker queue — a round-trip). PURE NOT touched: createSession,
         // QueueBrowser.getQueue.
         if ((owner.equals("jakarta.jms.Connection") || owner.equals("javax.jms.Connection"))
-                && (method.equals("start") || method.equals("stop"))) return "Net";
+                && (method.equals("start") || method.equals("stop"))) return Effect.NET;
         if ((owner.equals("jakarta.jms.QueueBrowser") || owner.equals("javax.jms.QueueBrowser"))
-                && method.equals("getEnumeration")) return "Net";
+                && method.equals("getEnumeration")) return Effect.NET;
         // ── JVM-language stdlibs + JSF (batch 19) — κ-covered prefixes, unmodeled = FLOOR-DROPPED silent ──
         // Groovy SQL — the high-level GDK groovy.sql.Sql is the API apps call (candor modeled only the
         // lower-level org.codehaus.groovy.runtime helpers). All its query verbs open a Connection + run a
@@ -937,7 +939,7 @@ final class Classifier {
             switch (method) {
                 case "execute": case "executeInsert": case "executeUpdate": case "rows": case "firstRow":
                 case "eachRow": case "query": case "call": case "callWithRows": case "withBatch":
-                    return "Db";
+                    return Effect.DB;
                 default: break;
             }
         }
@@ -947,8 +949,8 @@ final class Classifier {
                 || owner.equals("groovy.util.XmlSlurper") || owner.equals("groovy.util.XmlParser")
                 || owner.equals("groovy.json.JsonSlurper"))
                 && method.equals("parse") && desc != null) {
-            if (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;")) return "Fs";
-            if (desc.startsWith("(Ljava/net/URL;")) return "Net";
+            if (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;")) return Effect.FS;
+            if (desc.startsWith("(Ljava/net/URL;")) return Effect.NET;
         }
         // kotlinx-io filesystem — candor models kotlin.io/kotlin.io.path but NOT the newer kotlinx.io.files
         // .FileSystem. Its source/sink/delete/etc. hit the disk → Fs (resolve/Path-ctor are path algebra → pure).
@@ -956,14 +958,14 @@ final class Classifier {
             switch (method) {
                 case "source": case "sink": case "delete": case "createDirectories": case "atomicMove":
                 case "list": case "metadataOrNull":
-                    return "Fs";
+                    return Effect.FS;
                 default: break;
             }
         }
         // JSF — ExternalContext.redirect (HTTP 302) / dispatch (server forward) drive the servlet response →
         // Net. PURE NOT touched: encodeRedirectURL/encodeActionURL (string rewriting), the request-map getters.
         if ((owner.equals("jakarta.faces.context.ExternalContext") || owner.equals("javax.faces.context.ExternalContext"))
-                && (method.equals("redirect") || method.equals("dispatch"))) return "Net";
+                && (method.equals("redirect") || method.equals("dispatch"))) return Effect.NET;
         // ── Precision upgrades (batch 22): 3rd-party libs candor already DISCLOSED invisible (sound) —
         //    modeled to the CONCRETE effect (more actionable than invisible). NOT cardinal sins. ──
         // REST Assured — the HTTP verb terminals fire the request → Net (given()/when() builders stay pure).
@@ -972,7 +974,7 @@ final class Classifier {
                 || owner.equals("io.restassured.specification.RequestSpecification"))
                 && (method.equals("get") || method.equals("post") || method.equals("put")
                     || method.equals("delete") || method.equals("patch") || method.equals("head")
-                    || method.equals("options"))) return "Net";
+                    || method.equals("options"))) return Effect.NET;
         // Alibaba OSS + Tencent COS — regional cloud object stores over HTTP → Net (same shape as AWS S3).
         if ((owner.equals("com.aliyun.oss.OSS") || owner.equals("com.aliyun.oss.OSSClient")
                 || owner.equals("com.qcloud.cos.COS") || owner.equals("com.qcloud.cos.COSClient"))
@@ -981,75 +983,75 @@ final class Classifier {
                     || method.equals("doesObjectExist") || method.equals("getObjectMetadata")
                     || method.equals("appendObject") || method.equals("uploadPart")
                     || method.equals("initiateMultipartUpload") || method.equals("completeMultipartUpload")))
-            return "Net";
+            return Effect.NET;
         // metadata-extractor — ImageMetadataReader.readMetadata(File) opens the image off disk → Fs
         // (descriptor-gated; the InputStream overload is caller-stream → pure).
         if (owner.equals("com.drew.imaging.ImageMetadataReader") && method.equals("readMetadata")
-                && desc != null && desc.startsWith("(Ljava/io/File;")) return "Fs";
+                && desc != null && desc.startsWith("(Ljava/io/File;")) return Effect.FS;
         // ── Precision (batch 23): SaaS/payments/comms/cloud/search SDKs — invisible→concrete Net. All
         //    owner-scoped + verb-gated to keep in-memory builders/factories/JWT pure (anti-fab anchored). ──
         if (owner.startsWith("com.razorpay.") && owner.endsWith("Client")
                 && (method.equals("create") || method.equals("fetch") || method.equals("all")
                     || method.equals("edit") || method.equals("capture") || method.equals("refund")
-                    || method.equals("cancel"))) return "Net";  // payments
+                    || method.equals("cancel"))) return Effect.NET;  // payments
         if (owner.startsWith("com.adyen.service.") && owner.endsWith("Api") && !isConventionallyPure(method))
-            return "Net";  // payments (the *Api classes are entirely remote operations)
+            return Effect.NET;  // payments (the *Api classes are entirely remote operations)
         if (owner.startsWith("com.vonage.client.") && owner.endsWith("Client")
                 && (method.equals("submitMessage") || method.equals("sendMessage") || method.equals("send")))
-            return "Net";  // SMS/comms
+            return Effect.NET;  // SMS/comms
         if (owner.equals("com.backblaze.b2.client.B2StorageClient")
                 && (method.startsWith("upload") || method.startsWith("download") || method.equals("getFileInfo")
                     || method.startsWith("deleteFile") || method.startsWith("listFile") || method.startsWith("copy")))
-            return "Net";  // B2 object store
+            return Effect.NET;  // B2 object store
         if (owner.equals("com.cloudinary.Uploader")
                 && (method.startsWith("upload") || method.equals("destroy") || method.equals("rename")
-                    || method.equals("explicit"))) return "Net";  // media/cloud
+                    || method.equals("explicit"))) return Effect.NET;  // media/cloud
         if ((owner.equals("com.meilisearch.sdk.Index")
                 && (method.equals("search") || method.startsWith("addDocuments") || method.startsWith("updateDocuments")
                     || method.startsWith("deleteDocument") || method.startsWith("getDocument")))
                 || (owner.equals("com.meilisearch.sdk.Client")
                     && (method.equals("createIndex") || method.equals("deleteIndex") || method.equals("getIndexes"))))
-            return "Net";  // search SaaS (Client.index() navigator stays pure)
+            return Effect.NET;  // search SaaS (Client.index() navigator stays pure)
         if (owner.equals("com.mixpanel.mixpanelapi.MixpanelAPI")
-                && (method.equals("sendMessage") || method.equals("deliver"))) return "Net";  // analytics
+                && (method.equals("sendMessage") || method.equals("deliver"))) return Effect.NET;  // analytics
         if (owner.equals("com.algolia.api.SearchClient")
                 && (method.startsWith("save") || method.startsWith("search") || method.startsWith("delete")
                     || method.startsWith("getObject") || method.startsWith("partialUpdate")
-                    || method.startsWith("batch"))) return "Net";  // search SaaS
+                    || method.startsWith("batch"))) return Effect.NET;  // search SaaS
         if (owner.equals("com.contentful.java.cda.FetchQuery")
-                && (method.equals("all") || method.equals("one"))) return "Net";  // headless CMS terminal
+                && (method.equals("all") || method.equals("one"))) return Effect.NET;  // headless CMS terminal
         // ── Precision (batch 24) — last SaaS-Net pass (vein mined out). All body-confirmed wire calls. ──
         // Firebase Admin — FCM push + Auth admin → Net. NOT verifyIdToken (local cached-key JWT verify) or
         // createCustomToken (local JWT sign) — those are in-memory crypto, anchored pure.
         if (owner.equals("com.google.firebase.messaging.FirebaseMessaging")
                 && (method.startsWith("send") || method.equals("subscribeToTopic")
-                    || method.equals("unsubscribeFromTopic"))) return "Net";
+                    || method.equals("unsubscribeFromTopic"))) return Effect.NET;
         if ((owner.equals("com.google.firebase.auth.FirebaseAuth")
                 || owner.equals("com.google.firebase.auth.AbstractFirebaseAuth"))
                 && (method.equals("createUser") || method.equals("getUser") || method.equals("updateUser")
                     || method.equals("deleteUser") || method.startsWith("getUserBy") || method.equals("listUsers")
                     || method.equals("setCustomUserClaims") || method.equals("revokeRefreshTokens")
-                    || method.startsWith("generate") || method.equals("importUsers"))) return "Net";
+                    || method.startsWith("generate") || method.equals("importUsers"))) return Effect.NET;
         // Email SaaS — Postmark / Mailjet wire terminals → Net.
         if (owner.equals("com.postmarkapp.postmark.client.ApiClient") && method.equals("deliverMessage"))
-            return "Net";
+            return Effect.NET;
         if (owner.equals("com.mailjet.client.MailjetClient")
                 && (method.equals("post") || method.equals("get") || method.equals("put") || method.equals("delete")))
-            return "Net";
+            return Effect.NET;
         // SMS/comms — MessageBird / Plivo → Net (Plivo's Creator/Updater/... terminals, like Twilio).
-        if (owner.equals("com.messagebird.MessageBirdClient") && method.startsWith("send")) return "Net";
+        if (owner.equals("com.messagebird.MessageBirdClient") && method.startsWith("send")) return Effect.NET;
         if (owner.startsWith("com.plivo.api.models.")
                 && (method.equals("create") || method.equals("update") || method.equals("fetch")
-                    || method.equals("delete"))) return "Net";
+                    || method.equals("delete"))) return Effect.NET;
         // Realtime push — Pusher.trigger / Ably Channel.publish → Net.
         if ((owner.equals("com.pusher.rest.Pusher") || owner.equals("com.pusher.rest.PusherAbstract"))
-                && method.equals("trigger")) return "Net";
+                && method.equals("trigger")) return Effect.NET;
         if ((owner.equals("io.ably.lib.rest.Channel") || owner.equals("io.ably.lib.rest.ChannelBase"))
-                && method.equals("publish")) return "Net";
+                && method.equals("publish")) return Effect.NET;
         // Observability SaaS — New Relic *BatchSender.sendBatch (synchronous wire; TelemetryClient.sendBatch
         // is the deferred/buffered void variant → anchored pure).
         if (owner.startsWith("com.newrelic.telemetry.") && owner.endsWith("BatchSender")
-                && method.equals("sendBatch")) return "Net";
+                && method.equals("sendBatch")) return Effect.NET;
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation
@@ -1062,7 +1064,7 @@ final class Classifier {
             // A URL-receiver read (`URL.readText()/readBytes()` — TextStreamsKt) is NETWORK egress, not
             // filesystem: the verb-prefix below would mislabel it Fs (a wrong effect, worse than an
             // under-report). The descriptor's first parameter is the receiver. (Found by /code-review max.)
-            if (desc != null && desc.startsWith("(Ljava/net/URL;")) return "Net";
+            if (desc != null && desc.startsWith("(Ljava/net/URL;")) return Effect.NET;
             String base = method.endsWith("$default") ? method.substring(0, method.length() - 8) : method;
             if (base.startsWith("read") || base.startsWith("write") || base.startsWith("append")
                     || base.startsWith("copy") || base.startsWith("delete") || base.startsWith("create")
@@ -1075,14 +1077,14 @@ final class Classifier {
                     || base.equals("bufferedReader") || base.equals("bufferedWriter")
                     || base.equals("printWriter") || base.equals("getLastModifiedTime")
                     || base.equals("setLastModifiedTime"))
-                return "Fs";
+                return Effect.FS;
             return null; // Path()/div/name/relativeTo/normalize — pure path manipulation
         }
         // Kotlin stdlib entropy (kotlin.random.Random / Random.Default / top-level RandomKt) — Kotlin's
         // idiomatic randomness; whole-owner, mirroring the java.util.Random handling.
         if (owner.equals("kotlin.random.Random") || owner.equals("kotlin.random.Random$Default")
                 || owner.equals("kotlin.random.RandomKt"))
-            return "Rand";
+            return Effect.RAND;
         // Kotlin stdlib collection/range/array entropy verbs — `list.random()` / `(1..6).random()` /
         // `arr.random()` / `list.shuffled()` draw entropy inside the stdlib body (candor doesn't descend
         // into kotlin-stdlib), so the VERB must be classified, like kotlin.random.Random above. Verb-gated
@@ -1091,7 +1093,7 @@ final class Classifier {
                 || owner.equals("kotlin.collections.ArraysKt"))
                 && (method.equals("random") || method.equals("randomOrNull") || method.equals("shuffled")
                     || method.equals("shuffle")))
-            return "Rand";
+            return Effect.RAND;
         // Groovy GDK — the language's OWN stdlib I/O, which @CompileStatic compiles to direct static calls
         // (as fundamental to Groovy as java.io is to Java). ResourceGroovyMethods holds the File/URL
         // read/write extension methods (`f.text`/`f.bytes`/`f << s` → getText/getBytes/leftShift);
@@ -1099,7 +1101,7 @@ final class Classifier {
         // κ-"covered", so not even disclosed). Found by a JVM-dialect sweep. Verb-gated so the pure GDK
         // surface (path/string helpers) stays pure.
         if (owner.equals("org.codehaus.groovy.runtime.ResourceGroovyMethods")) {
-            if (desc != null && desc.startsWith("(Ljava/net/URL;")) return "Net"; // URL receiver = network egress
+            if (desc != null && desc.startsWith("(Ljava/net/URL;")) return Effect.NET; // URL receiver = network egress
             if (method.startsWith("get") || method.startsWith("read") || method.startsWith("set")
                     || method.startsWith("write") || method.startsWith("append") || method.equals("leftShift")
                     || method.startsWith("eachLine") || method.startsWith("eachByte")
@@ -1108,22 +1110,22 @@ final class Classifier {
                     || method.startsWith("withReader") || method.startsWith("withWriter")
                     || method.startsWith("withInputStream") || method.startsWith("withOutputStream")
                     || method.startsWith("filterLine") || method.startsWith("splitEachLine"))
-                return "Fs";
+                return Effect.FS;
             return null;
         }
         if (owner.equals("org.codehaus.groovy.runtime.ProcessGroovyMethods") && method.startsWith("execute"))
-            return "Exec";
+            return Effect.EXEC;
         // Scala stdlib I/O — the language's own stdlib. scala.io.Source file/URL reads; scala.sys.process
         // subprocess spawn (`cmd.!` / `.run` compile to $bang / run on the process owners).
         if (owner.equals("scala.io.Source$") || owner.equals("scala.io.Source")) {
-            if (method.equals("fromFile") || method.equals("fromPath") || method.equals("fromResource")) return "Fs";
-            if (method.equals("fromURL") || method.equals("fromURI")) return "Net";
+            if (method.equals("fromFile") || method.equals("fromPath") || method.equals("fromResource")) return Effect.FS;
+            if (method.equals("fromURL") || method.equals("fromURI")) return Effect.NET;
             return null;
         }
         if (owner.startsWith("scala.sys.process")
                 && (method.equals("run") || method.startsWith("$bang") || method.startsWith("lazyLines")
                     || method.startsWith("lineStream")))
-            return "Exec";
+            return Effect.EXEC;
         // Network — raw sockets, NIO socket channels (the channel type IS the network boundary; the
         // generic ReadableByteChannel/WritableByteChannel interfaces are NOT classified, they may wrap a
         // file or an in-memory buffer), java.net.http, and Spring's outbound HTTP clients. Without the NIO
@@ -1133,35 +1135,35 @@ final class Classifier {
         // network-I/O wait; verb-gated (open/keys/selectedKeys/wakeup/close stay pure). MulticastChannel.join
         // is IGMP group join (network egress, the NIO twin of MulticastSocket.joinGroup).
         if (owner.equals("java.nio.channels.Selector")
-                && (method.equals("select") || method.equals("selectNow"))) return "Net";
-        if (owner.equals("java.nio.channels.MulticastChannel") && method.equals("join")) return "Net";
+                && (method.equals("select") || method.equals("selectNow"))) return Effect.NET;
+        if (owner.equals("java.nio.channels.MulticastChannel") && method.equals("join")) return Effect.NET;
         // HTTP / cloud-storage clients — the CONCRETE-class ubiquitous ones (parallel to the already-modeled
         // RestTemplate/WebClient/Jedis; a pinned concrete receiver resolved to pure → silent-pure). Verb-gated
         // so request/URL BUILDERS stay pure (no fabrication).
         if ((owner.equals("okhttp3.Call") || owner.equals("okhttp3.RealCall"))
-                && (method.equals("execute") || method.equals("enqueue"))) return "Net";
+                && (method.equals("execute") || method.equals("enqueue"))) return Effect.NET;
         if ((owner.equals("org.apache.http.client.HttpClient")
                 || owner.equals("org.apache.http.impl.client.CloseableHttpClient")
                 || owner.equals("org.apache.hc.client5.http.classic.HttpClient")
                 || owner.equals("org.apache.hc.client5.http.impl.classic.CloseableHttpClient"))
-                && method.equals("execute")) return "Net";
-        if (owner.equals("retrofit2.Call") && (method.equals("execute") || method.equals("enqueue"))) return "Net";
-        if (owner.equals("com.google.api.client.http.HttpRequest") && method.equals("execute")) return "Net";
+                && method.equals("execute")) return Effect.NET;
+        if (owner.equals("retrofit2.Call") && (method.equals("execute") || method.equals("enqueue"))) return Effect.NET;
+        if (owner.equals("com.google.api.client.http.HttpRequest") && method.equals("execute")) return Effect.NET;
         // Apache HttpClient FLUENT facade — the same library as the modeled classic HttpClient.execute, via
         // the `Request.get(uri).execute()` one-liner entry class (hc4 + hc5).
         if ((owner.equals("org.apache.http.client.fluent.Request")
                 || owner.equals("org.apache.hc.client5.http.fluent.Request"))
-                && method.equals("execute")) return "Net";
+                && method.equals("execute")) return Effect.NET;
         // Apache HttpAsyncClient — the ASYNC sibling of the already-modeled classic HttpClient.execute (hc4
         // nio + hc5 async). execute kicks off the request.
         if ((owner.equals("org.apache.http.nio.client.HttpAsyncClient")
                 || owner.equals("org.apache.http.impl.nio.client.CloseableHttpAsyncClient")
                 || owner.equals("org.apache.hc.client5.http.impl.async.CloseableHttpAsyncClient")
                 || owner.equals("org.apache.hc.client5.http.async.HttpAsyncClient"))
-                && method.equals("execute")) return "Net";
+                && method.equals("execute")) return Effect.NET;
         // okhttp WebSocket — the wire verbs (Call.execute/enqueue above is the HTTP path; the WS path is
         // distinct and was silent-pure). send/close transmit; the factory opens the connection.
-        if (owner.equals("okhttp3.WebSocket") && (method.equals("send") || method.equals("close"))) return "Net";
+        if (owner.equals("okhttp3.WebSocket") && (method.equals("send") || method.equals("close"))) return Effect.NET;
         // okio — the I/O substrate okhttp routes ALL its socket + disk-cache traffic through (the coverage
         // differential's #1 disclosed package: 953 invisible okio calls in one okhttp scan). okio is MIXED
         // and must be modeled PRECISELY at the CONSTRUCTION BOUNDARY, not on the buffered read/write:
@@ -1180,10 +1182,10 @@ final class Classifier {
         //     `buffer(Source)`/`buffer(Sink)`/`blackhole()` are pure wrappers/no-ops → stay pure.
         if (owner.equals("okio.Okio") && desc != null) {
             if ((method.equals("source") || method.equals("sink") || method.equals("appendingSink"))
-                    && desc.startsWith("(Ljava/net/Socket;")) return "Net";
+                    && desc.startsWith("(Ljava/net/Socket;")) return Effect.NET;
             if ((method.equals("source") || method.equals("sink") || method.equals("appendingSink"))
                     && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;")))
-                return "Fs";
+                return Effect.FS;
             // buffer/blackhole and the (InputStream)/(OutputStream) overloads fall through → pure.
         }
         // okio.FileSystem — okio 3's filesystem abstraction (the multiplatform java.nio.file.Files analog).
@@ -1202,29 +1204,29 @@ final class Classifier {
                     || method.equals("metadataOrNull") || method.equals("exists") || method.equals("atomicMove")
                     || method.equals("copy") || method.equals("openReadOnly") || method.equals("openReadWrite")
                     || method.equals("createSymlink")))
-            return "Fs";
+            return Effect.FS;
         // gRPC CLIENT calls — candor roots the gRPC SERVER `*ImplBase` (StreamObserver) but the client path
         // was unmodeled. The blocking/async/future stub verbs funnel through io.grpc.stub.ClientCalls (the
         // generated stub's method calls these, so a typed-stub call propagates). Channel.newCall is NOT here
         // — it only CREATES a ClientCall object (no wire I/O until start/sendMessage), so it stays pure.
         if (owner.equals("io.grpc.stub.ClientCalls")
                 && (method.startsWith("blocking") || method.startsWith("async") || method.startsWith("futureUnary")))
-            return "Net";
+            return Effect.NET;
         // Micronaut HTTP client — exchange/retrieve EXECUTE the request (toBlocking() only adapts, stays pure).
         if ((owner.equals("io.micronaut.http.client.HttpClient")
                 || owner.equals("io.micronaut.http.client.BlockingHttpClient")
                 || owner.startsWith("io.micronaut.http.client.Reactive"))
-                && (method.equals("exchange") || method.equals("retrieve"))) return "Net";
+                && (method.equals("exchange") || method.equals("retrieve"))) return Effect.NET;
         // Vert.x — get/post on WebClient build an HttpRequest (pure); the TERMINAL `send*` transmits. For the
         // core client the terminal is HttpClientRequest.send/end. Gate to the terminals so builders stay pure.
-        if (owner.equals("io.vertx.ext.web.client.HttpRequest") && method.startsWith("send")) return "Net";
+        if (owner.equals("io.vertx.ext.web.client.HttpRequest") && method.startsWith("send")) return Effect.NET;
         if (owner.equals("io.vertx.core.http.HttpClientRequest")
-                && (method.equals("send") || method.equals("end"))) return "Net";
+                && (method.equals("send") || method.equals("end"))) return Effect.NET;
         // Reactor-Netty — get/post/put configure the client (immutable builder, pure); the `response*`
         // terminals execute and consume the wire.
         if (owner.equals("reactor.netty.http.client.HttpClient")
                 && (method.equals("response") || method.equals("responseContent") || method.equals("responseSingle")
-                    || method.equals("responseConnection"))) return "Net";
+                    || method.equals("responseConnection"))) return Effect.NET;
         if ((owner.startsWith("software.amazon.awssdk.services.") || owner.startsWith("com.amazonaws.services."))
                 && owner.endsWith("Client")   // the CLIENT classes only — not the model/request getters (v1 uses get*)
                 && (method.startsWith("get") || method.startsWith("put") || method.startsWith("list")
@@ -1244,7 +1246,7 @@ final class Classifier {
                 // v1 *model* getters fabricating, but the client's OWN config getters still matched get* →
                 // FABRICATED Net on a provably-pure accessor (cardinal sin, regression). Carve them out by
                 // exact name. getBucketRegionViaHeadRequest is NOT here → stays Net (it does a HEAD).
-                && !isAwsPureClientGetter(method)) return "Net";
+                && !isAwsPureClientGetter(method)) return Effect.NET;
         if (owner.equals("java.net.Socket") || owner.equals("java.net.ServerSocket")
                 || owner.equals("java.net.DatagramSocket")
                 // MulticastSocket extends DatagramSocket; a receiver TYPED as MulticastSocket emits
@@ -1365,7 +1367,7 @@ final class Classifier {
                 || (owner.equals("javax.management.remote.JMXConnectorFactory") && method.equals("connect"))
                 || (owner.equals("javax.management.remote.JMXConnector")
                     && (method.equals("connect") || method.equals("getMBeanServerConnection"))))
-            return "Net";
+            return Effect.NET;
         // Messaging (Net-family) — Spring templates + the RAW broker/mail clients (as ubiquitous as the
         // templates that were already modeled; each was silent-pure, not even Unknown, because a pinned
         // concrete receiver resolved to an unmodeled owner). Message BUILDERS (MimeMessage.setText,
@@ -1407,7 +1409,7 @@ final class Classifier {
                 || (owner.equals("org.apache.pulsar.client.api.Producer") && method.equals("send"))
                 // Spring WebSocket send (java.net.http.WebSocket.send* is already Net — parity)
                 || (owner.equals("org.springframework.web.socket.WebSocketSession") && method.equals("sendMessage")))
-            return "Net";
+            return Effect.NET;
         // Distributed caches / KV stores — RAW concrete clients (interface-typed Lettuce/Hazelcast/Ignite/
         // Ehcache/JCache correctly fall to the Unknown dispatch-floor; in-process Caffeine/Guava stay pure —
         // so this is ONLY the concrete remote clients that silently resolved to pure). Net (remote round-trip).
@@ -1423,30 +1425,30 @@ final class Classifier {
                      // isConnected/isBroken are pure predicate reads of the cached local socket-state flag —
                      // no command, no round-trip (sweep [21]; the whole-owner rule over-matched them).
                      || method.equals("isConnected") || method.equals("isBroken")))
-            return "Net";
+            return Effect.NET;
         // PKI revocation — CertPathValidator (OCSP/CRL fetch) + a network CertStore (LDAP/HTTP) make a remote
         // lookup hidden inside the JDK, the same shape as JNDI.lookup (already Net).
-        if (owner.equals("java.security.cert.CertPathValidator") && method.equals("validate")) return "Net";
+        if (owner.equals("java.security.cert.CertPathValidator") && method.equals("validate")) return Effect.NET;
         if (owner.equals("java.security.cert.CertStore")
-                && (method.equals("getCertificates") || method.equals("getCRLs"))) return "Net";
+                && (method.equals("getCertificates") || method.equals("getCRLs"))) return Effect.NET;
         // ── Android SDK (candor scans the pre-dex JVM bytecode) — the android.* effect surface was entirely
         // unmodeled (silent-pure, often not even Unknown for concrete owners). The high-frequency mappings:
         if (owner.equals("android.database.sqlite.SQLiteDatabase")    // local SQLite DB ops
                 && (method.equals("query") || method.equals("rawQuery") || method.equals("insert")
                     || method.equals("update") || method.equals("delete") || method.startsWith("execSQL")
                     || method.startsWith("insertOrThrow") || method.equals("replace")))
-            return "Db";
+            return Effect.DB;
         if (owner.equals("android.database.sqlite.SQLiteOpenHelper")
-                && (method.equals("getWritableDatabase") || method.equals("getReadableDatabase"))) return "Db";
+                && (method.equals("getWritableDatabase") || method.equals("getReadableDatabase"))) return Effect.DB;
         // ContentResolver is a Binder RPC to another app's ContentProvider → Ipc (cross-app data access).
         if (owner.equals("android.content.ContentResolver")
                 && (method.equals("query") || method.equals("insert") || method.equals("update")
                     || method.equals("delete") || method.startsWith("openInputStream")
                     || method.startsWith("openOutputStream") || method.startsWith("openFileDescriptor")
                     || method.equals("call") || method.startsWith("bulkInsert")))
-            return "Ipc";
+            return Effect.IPC;
         if (owner.equals("android.webkit.WebView")
-                && (method.equals("loadUrl") || method.equals("postUrl") || method.startsWith("loadData"))) return "Net";
+                && (method.equals("loadUrl") || method.equals("postUrl") || method.startsWith("loadData"))) return Effect.NET;
         // Settings.{System,Secure,Global}.getString/putString — ambient system settings / device-id reads.
         // EXACT owner + EXACT method (was startsWith, which fabricated Env on the NameValueCache inner
         // class's getStringHelper/getIntForCache — found by a fabrication sweep).
@@ -1454,22 +1456,22 @@ final class Classifier {
                 || owner.equals("android.provider.Settings$Global"))
                 && (method.equals("getString") || method.equals("putString") || method.equals("getInt")
                     || method.equals("putInt") || method.equals("getLong") || method.equals("putLong")
-                    || method.equals("getFloat") || method.equals("putFloat"))) return "Env";
+                    || method.equals("getFloat") || method.equals("putFloat"))) return Effect.ENV;
         if ((owner.equals("android.content.ClipboardManager") || owner.equals("android.text.ClipboardManager"))
                 && !isConventionallyPure(method))
-            return "Clipboard";
+            return Effect.CLIPBOARD;
         // SharedPreferences.Editor.commit/apply writes the prefs XML file; Context.openFile* opens app-private files.
         if (owner.equals("android.content.SharedPreferences$Editor")
-                && (method.equals("commit") || method.equals("apply"))) return "Fs";
+                && (method.equals("commit") || method.equals("apply"))) return Effect.FS;
         if (owner.equals("android.content.Context")
                 && (method.equals("openFileInput") || method.equals("openFileOutput")
                     || method.equals("getFilesDir") || method.equals("getCacheDir")
-                    || method.equals("deleteFile"))) return "Fs";
+                    || method.equals("deleteFile"))) return Effect.FS;
         // Context component-launch is Binder IPC to other app components.
         if (owner.equals("android.content.Context")
                 && (method.equals("startActivity") || method.equals("startService")
                     || method.equals("startForegroundService") || method.equals("sendBroadcast")
-                    || method.equals("bindService"))) return "Ipc";
+                    || method.equals("bindService"))) return Effect.IPC;
         // Database — JDBC, Spring JdbcTemplate, JPA EntityManager (Spring Data repos handled in analyze)
         if ((owner.equals("java.sql.Statement") || owner.equals("java.sql.PreparedStatement")
                 || owner.equals("java.sql.CallableStatement") || owner.equals("java.sql.Connection")
@@ -1507,10 +1509,10 @@ final class Classifier {
                     // (batch-17). (nativeSQL is spec-defined LOCAL string translation → left unmodeled, no
                     // fabrication on the common local case.)
                     || method.equals("setTransactionIsolation")))
-            return "Db";
+            return Effect.DB;
         // java.sql.Driver.connect opens the physical connection (the layer under DriverManager) — silent-pure
         // for code that bypasses DriverManager and calls a Driver directly (pool internals, custom routing).
-        if (owner.equals("java.sql.Driver") && method.equals("connect")) return "Db";
+        if (owner.equals("java.sql.Driver") && method.equals("connect")) return Effect.DB;
         // ResultSet is a LIVE DB CURSOR: cursor-movement verbs fetch rows from the server (a round-trip in
         // streaming/forward-only mode), updatable-set writes flush to the DB, and refreshRow re-reads. The
         // scalar getXxx reads of the CURRENT row are in-memory, so they stay pure (no fabrication — Db on a
@@ -1520,12 +1522,12 @@ final class Classifier {
                     || method.equals("last") || method.equals("absolute") || method.equals("relative")
                     || method.equals("refreshRow") || method.equals("insertRow") || method.equals("updateRow")
                     || method.equals("deleteRow")))
-            return "Db";
+            return Effect.DB;
         // RowSet.execute()/execute(Connection) runs the configured query against the DB → Db (a RowSet-only
         // verb; ResultSet has none). javax.sql.rowset.* (JdbcRowSet/CachedRowSet/…) was FLOOR-DROPPED silent
         // under the κ-covered javax.* prefix — batch-15 cardinal sin. (acceptChanges also flushes to the DB.)
         if (owner.startsWith("javax.sql.") && owner.endsWith("RowSet")
-                && (method.equals("execute") || method.equals("acceptChanges"))) return "Db";
+                && (method.equals("execute") || method.equals("acceptChanges"))) return Effect.DB;
         // DatabaseMetaData catalog queries round-trip to the server (getTables/getColumns/getPrimaryKeys/…
         // run a system-catalog SELECT). The whole-owner would FABRICATE on its many pure capability getters
         // (supportsX/getMaxX/getDatabaseProductName), so gate to the catalog-FETCH verbs only.
@@ -1541,7 +1543,7 @@ final class Classifier {
                     || method.equals("getAttributes") || method.equals("getProcedureColumns")
                     || method.equals("getFunctionColumns") || method.equals("getPseudoColumns")
                     || method.equals("getClientInfoProperties") || method.equals("getTableTypes")))
-            return "Db";
+            return Effect.DB;
         if (owner.equals("org.springframework.jdbc.core.JdbcTemplate")
                 || owner.equals("org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate")
                 // Reactive SQL (R2DBC) + the NoSQL store templates — the reactive/store analog of
@@ -1553,7 +1555,7 @@ final class Classifier {
                 || owner.equals("org.springframework.data.mongodb.core.ReactiveMongoTemplate")
                 || owner.equals("org.springframework.data.cassandra.core.CassandraTemplate")
                 || owner.equals("org.springframework.data.redis.core.RedisTemplate"))
-            return "Db";
+            return Effect.DB;
         // JPA EntityManager — the whole-owner rule FABRICATED Db on its pure surface: `createQuery`/
         // `createNamedQuery`/`createNativeQuery` BUILD a Query (no execution), and `clear`/`detach`/
         // `getCriteriaBuilder`/`contains` are in-memory persistence-context ops touching no DB (cardinal
@@ -1563,12 +1565,12 @@ final class Classifier {
                 && (method.equals("find") || method.equals("getReference") || method.equals("persist")
                     || method.equals("merge") || method.equals("remove") || method.equals("refresh")
                     || method.equals("flush") || method.equals("lock")))
-            return "Db";
+            return Effect.DB;
         // JPA EntityTransaction.commit FLUSHES the persistence context to the DB (the buffered INSERT/UPDATE/
         // DELETE + COMMIT) and rollback issues ROLLBACK — the transaction TERMINAL where writes durably land
         // (em.getTransaction().commit() is a ubiquitous idiom). Was FLOOR-suppressed silent (batch-16).
         if ((owner.equals("jakarta.persistence.EntityTransaction") || owner.equals("javax.persistence.EntityTransaction"))
-                && (method.equals("commit") || method.equals("rollback"))) return "Db";
+                && (method.equals("commit") || method.equals("rollback"))) return Effect.DB;
         // JPA query EXECUTION verbs — `em.createQuery(hql)` is a pure BUILDER (above), but the round-trip is
         // on the returned Query/TypedQuery/StoredProcedureQuery. Without classifying these, the whole JPA
         // query path (createQuery + getResultList in one method) read pure (Unknown if unpinned, fully
@@ -1580,7 +1582,7 @@ final class Classifier {
                 && (method.equals("getResultList") || method.equals("getSingleResult")
                     || method.equals("getResultStream") || method.equals("executeUpdate")
                     || method.equals("execute")))
-            return "Db";
+            return Effect.DB;
         // Hibernate Session — get/load fetch by id, the query factories execute via list/uniqueResult on the
         // returned org.hibernate.query.Query, persist/save/update/delete/saveOrUpdate are the unit-of-work DB
         // ops. createQuery/createNativeQuery stay pure builders (their execution is list/uniqueResult, below).
@@ -1589,12 +1591,12 @@ final class Classifier {
                     || method.equals("update") || method.equals("delete") || method.equals("persist")
                     || method.equals("saveOrUpdate") || method.equals("merge") || method.equals("refresh")
                     || method.equals("flush") || method.equals("byId")))
-            return "Db";
+            return Effect.DB;
         if ((owner.equals("org.hibernate.query.Query") || owner.equals("org.hibernate.Query"))
                 && (method.equals("list") || method.equals("uniqueResult") || method.equals("getResultList")
                     || method.equals("getSingleResult") || method.equals("executeUpdate")
                     || method.equals("scroll") || method.equals("stream")))
-            return "Db";
+            return Effect.DB;
         // ── Raw data-store DRIVERS (the layer UNDER the Spring templates already modeled above). A non-Spring
         // app — or Spring code typed to the driver — calls these directly; they were silent-pure though their
         // Spring-template analog (MongoTemplate/CassandraTemplate/RedisTemplate/R2dbc) IS modeled, an
@@ -1612,15 +1614,15 @@ final class Classifier {
                     || method.startsWith("createIndex") || method.startsWith("drop")
                     || method.startsWith("findOneAndUpdate") || method.startsWith("findOneAndReplace")
                     || method.startsWith("findOneAndDelete") || method.startsWith("mapReduce")))
-            return "Db";
+            return Effect.DB;
         // Datastax Cassandra driver (the dominant CqlSession).
         if (owner.equals("com.datastax.oss.driver.api.core.CqlSession")
-                && (method.startsWith("execute") || method.startsWith("prepare"))) return "Db";
+                && (method.startsWith("execute") || method.startsWith("prepare"))) return Effect.DB;
         // R2DBC reactive-SQL SPI — the reactive analog of JDBC. Connection.createStatement BUILDS (pure);
         // Statement.execute / Batch.execute / ConnectionFactory.create round-trip.
         if ((owner.equals("io.r2dbc.spi.Statement") || owner.equals("io.r2dbc.spi.Batch"))
-                && method.equals("execute")) return "Db";
-        if (owner.equals("io.r2dbc.spi.ConnectionFactory") && method.equals("create")) return "Db";
+                && method.equals("execute")) return Effect.DB;
+        if (owner.equals("io.r2dbc.spi.ConnectionFactory") && method.equals("create")) return Effect.DB;
         // jOOQ — ONLY the TERMINAL operators run the SQL. fetch*/execute on DSLContext (`dsl.fetch(sql)`)
         // and on Query/ResultQuery execute; the builder chain (selectFrom/insertInto/query/resultQuery —
         // all return query BUILDERS) stays pure (classifying them would FABRICATE Db on a pure builder).
@@ -1632,39 +1634,39 @@ final class Classifier {
                     // FABRICATED Db on the builder (round-12 cardinal sin); gate to the executing variants.
                     || method.equals("batchStore") || method.equals("batchInsert") || method.equals("batchUpdate")
                     || method.equals("batchDelete") || method.equals("batchMerge")
-                    || method.startsWith("transactionResult"))) return "Db";
+                    || method.startsWith("transactionResult"))) return Effect.DB;
         if ((owner.equals("org.jooq.Query") || owner.equals("org.jooq.ResultQuery"))
-                && (method.equals("execute") || method.startsWith("fetch"))) return "Db";
+                && (method.equals("execute") || method.startsWith("fetch"))) return Effect.DB;
         // MyBatis SqlSession.
         if (owner.equals("org.apache.ibatis.session.SqlSession")
                 && (method.startsWith("select") || method.startsWith("insert") || method.startsWith("update")
                     || method.startsWith("delete") || method.equals("commit") || method.equals("rollback")
-                    || method.equals("flushStatements"))) return "Db";
+                    || method.equals("flushStatements"))) return Effect.DB;
         // Neo4j official driver — Session.run / Transaction.run execute the Cypher; session() is a factory.
         if ((owner.equals("org.neo4j.driver.Session") || owner.equals("org.neo4j.driver.Transaction")
                 || owner.equals("org.neo4j.driver.reactive.RxSession")
                 || owner.equals("org.neo4j.driver.async.AsyncSession"))
                 && (method.equals("run") || method.startsWith("execute") || method.startsWith("read")
-                    || method.startsWith("write"))) return "Db";
+                    || method.startsWith("write"))) return Effect.DB;
         // jdbi3 — Handle/Jdbi terminal verbs run the SQL (createQuery/createUpdate return builders, stay pure).
         if ((owner.equals("org.jdbi.v3.core.Handle") || owner.equals("org.jdbi.v3.core.Jdbi"))
                 && (method.equals("execute") || method.startsWith("select") || method.equals("inTransaction")
                     || method.equals("useTransaction") || method.equals("withHandle") || method.equals("useHandle")))
-            return "Db";
+            return Effect.DB;
         // Spring Data JDBC aggregate template — the template sibling of the modeled JdbcTemplate/MongoTemplate
         // (the CrudRepository INTERFACE path is covered by repoTypes; this is the imperative template).
         if (owner.equals("org.springframework.data.jdbc.core.JdbcAggregateTemplate")
                 && (method.equals("save") || method.startsWith("insert") || method.equals("update")
                     || method.startsWith("delete") || method.startsWith("findBy") || method.startsWith("findAll")
                     || method.equals("findById") || method.equals("count") || method.equals("existsById")))
-            return "Db";
+            return Effect.DB;
         // Subprocess
         // ProcessBuilder.start() spawns one process; the static startPipeline(List) spawns a whole pipeline
         // of them (Java 9+) — same Exec, a distinct method name the `start`-only match missed (found by an
         // Exec-deep sweep).
         if (owner.equals("java.lang.ProcessBuilder")
-                && (method.equals("start") || method.equals("startPipeline"))) return "Exec";
-        if (owner.equals("java.lang.Runtime") && method.equals("exec")) return "Exec";
+                && (method.equals("start") || method.equals("startPipeline"))) return Effect.EXEC;
+        if (owner.equals("java.lang.Runtime") && method.equals("exec")) return Effect.EXEC;
         // java.awt.Desktop launches an EXTERNAL program (the OS default handler for a URI/file) → Exec, the
         // same capability as ProcessBuilder/Runtime.exec. VERB-gated to the launch verbs; the factory/query
         // surface (getDesktop/isDesktopSupported/isSupported/getSupportedActions/setX handlers) stays pure.
@@ -1672,14 +1674,14 @@ final class Classifier {
         if (owner.equals("java.awt.Desktop")
                 && (method.equals("browse") || method.equals("open") || method.equals("edit")
                     || method.equals("print") || method.equals("mail")
-                    || method.equals("browseFileDirectory") || method.equals("openHelpViewer"))) return "Exec";
+                    || method.equals("browseFileDirectory") || method.equals("openHelpViewer"))) return Effect.EXEC;
         // Subprocess convenience libs (the analog of the modeled ProcessBuilder.start/Runtime.exec):
         // Apache commons-exec DefaultExecutor.execute, zt-exec ProcessExecutor.execute. The setX config
         // setters stay pure (verb-gated).
-        if (owner.equals("org.apache.commons.exec.DefaultExecutor") && method.equals("execute")) return "Exec";
+        if (owner.equals("org.apache.commons.exec.DefaultExecutor") && method.equals("execute")) return Effect.EXEC;
         if (owner.equals("org.zeroturnaround.exec.ProcessExecutor")
                 && (method.equals("execute") || method.equals("executeNoTimeout") || method.equals("start")))
-            return "Exec";
+            return Effect.EXEC;
         // Driving an already-spawned subprocess is Exec too — getInputStream/getErrorStream read its
         // output, getOutputStream feeds its stdin (an unmonitored data channel), waitFor blocks on it.
         // Splitting spawn (start(), in one method) from drive (these, in another) lost the effect on the
@@ -1689,35 +1691,35 @@ final class Classifier {
                     || method.equals("getErrorStream") || method.equals("waitFor")
                     // destroy/destroyForcibly send SIGTERM/SIGKILL — subprocess CONTROL (spec §1 Exec =
                     // "spawning / controlling a subprocess"); were silent-pure.
-                    || method.equals("destroy") || method.equals("destroyForcibly"))) return "Exec";
+                    || method.equals("destroy") || method.equals("destroyForcibly"))) return Effect.EXEC;
         if (owner.equals("java.lang.ProcessHandle")
-                && (method.equals("destroy") || method.equals("destroyForcibly"))) return "Exec";
+                && (method.equals("destroy") || method.equals("destroyForcibly"))) return Effect.EXEC;
         // System.load/loadLibrary (and the Runtime twins) load a native image and RUN its JNI init
         // (JNI_OnLoad) — arbitrary native-code execution (candor already treats a `native` body as
         // Unknown; the call that loads+triggers it must not be invisible). The gateway to every native
         // effect → Exec.
         if ((owner.equals("java.lang.System") || owner.equals("java.lang.Runtime"))
-                && (method.equals("load") || method.equals("loadLibrary"))) return "Exec";
+                && (method.equals("load") || method.equals("loadLibrary"))) return Effect.EXEC;
         // Environment. `Env` is the OS process ENVIRONMENT (spec §1: "environment variables"),
         // i.e. System.getenv — NOT System.getProperty/setProperty, which read/write JVM system
         // PROPERTIES (os.name, line.separator, -D flags): JVM config, not the OS environment, and
         // read pervasively at class-init (lumping them flooded a scala-library scan with a spurious
         // 14k Env — and `getProperty("os.name")` is not an env read in any case). Properties are
         // low-signal config, left unclassified like console writes (§1).
-        if (owner.equals("java.lang.System") && method.equals("getenv")) return "Env";
+        if (owner.equals("java.lang.System") && method.equals("getenv")) return Effect.ENV;
         // ProcessBuilder.environment() returns the live child-process env map — reading it surfaces the
         // same OS environment as getenv (an Env disclosure), writing it sets a subprocess env var.
-        if (owner.equals("java.lang.ProcessBuilder") && method.equals("environment")) return "Env";
+        if (owner.equals("java.lang.ProcessBuilder") && method.equals("environment")) return Effect.ENV;
         // Spring's Environment.getProperty reads a MERGED source that includes the OS environment, so
         // it genuinely may surface an env var — a sound over-approximation, kept as Env.
-        if (owner.equals("org.springframework.core.env.Environment") && method.equals("getProperty")) return "Env";
+        if (owner.equals("org.springframework.core.env.Environment") && method.equals("getProperty")) return Effect.ENV;
         // commons-lang3 SystemUtils.getEnvironmentVariable — reads an OS env var (the analog of System.getenv).
         if (owner.equals("org.apache.commons.lang3.SystemUtils") && method.equals("getEnvironmentVariable"))
-            return "Env";
+            return Effect.ENV;
         // Clock
         if (owner.equals("java.lang.System") && (method.equals("currentTimeMillis") || method.equals("nanoTime")))
-            return "Clock";
-        if (owner.equals("java.time.Clock")) return "Clock";
+            return Effect.CLOCK;
+        if (owner.equals("java.time.Clock")) return Effect.CLOCK;
         if (method.equals("now")
                 && (owner.equals("java.time.Instant") || owner.equals("java.time.LocalDateTime")
                     || owner.equals("java.time.LocalDate") || owner.equals("java.time.ZonedDateTime")
@@ -1726,15 +1728,15 @@ final class Classifier {
                     || owner.equals("java.time.OffsetDateTime") || owner.equals("java.time.OffsetTime")
                     || owner.equals("java.time.LocalTime") || owner.equals("java.time.Year")
                     || owner.equals("java.time.YearMonth") || owner.equals("java.time.MonthDay")))
-            return "Clock";
+            return Effect.CLOCK;
         // Legacy date/time: the NO-ARG `new java.util.Date()` reads System.currentTimeMillis, and
         // `Calendar.getInstance()` / no-arg `new GregorianCalendar()` initialize to "now". ARITY-PRECISE:
         // `new Date(long)` / `new GregorianCalendar(y,m,d)` take a value and are pure (no clock read), so
         // gate the ctors to the no-arg descriptor to avoid fabricating Clock on the valued forms.
         if (method.equals("<init>") && "()V".equals(desc)
                 && (owner.equals("java.util.Date") || owner.equals("java.util.GregorianCalendar")))
-            return "Clock";
-        if (owner.equals("java.util.Calendar") && method.equals("getInstance")) return "Clock";
+            return Effect.CLOCK;
+        if (owner.equals("java.util.Calendar") && method.equals("getInstance")) return Effect.CLOCK;
         // Randomness — the concrete PRNG/CSPRNG classes (mirrors `new Random()` / `Math.random()`).
         // ThreadLocalRandom and SplittableRandom are the java.util(.concurrent) generators a probe found
         // unclassified despite Random being flagged — same effect category, added for consistency.
@@ -1750,11 +1752,11 @@ final class Classifier {
             // draw); the whole-owner rule fabricated Rand on it (sweep [22]). isConventionallyPure guards the
             // toString/equals/hashCode surface too. Every genuine draw (next*/ints/longs/doubles) stays Rand.
             if (!method.equals("isDeprecated") && !isConventionallyPure(method))
-                return "Rand";
+                return Effect.RAND;
         // UUID.randomUUID() draws a v4 UUID from a SecureRandom (genuine entropy) — Rand. METHOD-precise:
         // UUID's other members (fromString/nameUUIDFromBytes/getMostSignificantBits/toString/compareTo)
         // are pure value ops, so classifying the whole owner would fabricate Rand onto them.
-        if (owner.equals("java.util.UUID") && method.equals("randomUUID")) return "Rand";
+        if (owner.equals("java.util.UUID") && method.equals("randomUUID")) return Effect.RAND;
         // Logging — PRODUCING a log record. VERB-PRECISE within the slf4j / jul / log4j2 / logback
         // packages: only the genuine emit verbs are Log; every other method (Markers, Levels, Message
         // data types, ThreadContext maps, formatters, config/registry, util) falls through to its real
@@ -1780,16 +1782,16 @@ final class Classifier {
                         || owner.endsWith(".SocketAppender") || owner.endsWith(".SSLSocketAppender")
                         || owner.endsWith(".SyslogAppender") || owner.endsWith(".KafkaAppender")
                         || owner.endsWith(".SmtpAppender") || owner.endsWith(".HttpAppender"))
-                    return "Net";
+                    return Effect.NET;
                 if (owner.equals("java.util.logging.FileHandler")
                         || owner.endsWith(".FileAppender") || owner.endsWith(".RollingFileAppender")
                         || owner.endsWith(".RollingRandomAccessFileAppender") || owner.endsWith(".RandomAccessFileAppender"))
-                    return "Fs";
+                    return Effect.FS;
                 if (owner.endsWith(".DBAppender") || owner.endsWith(".JDBCAppender")
                         || owner.endsWith(".JPAAppender") || owner.endsWith(".CassandraAppender"))
-                    return "Db";
+                    return Effect.DB;
             }
-            if (isLogEmitVerb(method)) return "Log";
+            if (isLogEmitVerb(method)) return Effect.LOG;
             return null;
         }
         // Clipboard — system clipboard access (spec §1). Toolkit hands out the system clipboard/selection
@@ -1798,14 +1800,14 @@ final class Classifier {
         if ((owner.equals("java.awt.Toolkit")
                 && (method.equals("getSystemClipboard") || method.equals("getSystemSelection")))
                 || owner.equals("java.awt.datatransfer.Clipboard"))
-            return "Clipboard";
+            return Effect.CLIPBOARD;
         // JavaFX clipboard (the AWT successor) — getSystemClipboard hands out the handle; setContent/
         // getString/getContent/hasString read/write it. Verb-gated so the pure quartet stays pure.
         if (owner.equals("javafx.scene.input.Clipboard")
                 && !isConventionallyPure(method)
                 && (method.equals("getSystemClipboard") || method.startsWith("get") || method.startsWith("set")
                     || method.startsWith("has") || method.equals("clear")))
-            return "Clipboard";
+            return Effect.CLIPBOARD;
         return null;
     }
 }

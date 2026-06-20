@@ -1,5 +1,7 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -118,8 +120,8 @@ class HelpersTest {
      *  DataSource app uses — is Db; the java.sql-only list missed it. */
     @Test
     void dataSourceGetConnectionClassifiesAsDb() {
-        assertEquals("Db", Classifier.classify("javax.sql.DataSource", "getConnection", "()Ljava/sql/Connection;"));
-        assertEquals("Db", Classifier.classify("java.sql.Connection", "prepareStatement", "(Ljava/lang/String;)Ljava/sql/PreparedStatement;"));
+        assertEquals(Effect.DB, Classifier.classify("javax.sql.DataSource", "getConnection", "()Ljava/sql/Connection;"));
+        assertEquals(Effect.DB, Classifier.classify("java.sql.Connection", "prepareStatement", "(Ljava/lang/String;)Ljava/sql/PreparedStatement;"));
     }
 
     /** sweep [21]/[22]: whole-owner fabrication carve-outs — pure predicate/metadata reads stay pure. */
@@ -128,10 +130,10 @@ class HelpersTest {
         // Jedis isConnected/isBroken read the cached local socket-state flag — no command, no round-trip.
         assertNull(Classifier.classify("redis.clients.jedis.Jedis", "isConnected", "()Z"));
         assertNull(Classifier.classify("redis.clients.jedis.Jedis", "isBroken", "()Z"));
-        assertEquals("Net", Classifier.classify("redis.clients.jedis.Jedis", "get", "(Ljava/lang/String;)Ljava/lang/String;"));
+        assertEquals(Effect.NET, Classifier.classify("redis.clients.jedis.Jedis", "get", "(Ljava/lang/String;)Ljava/lang/String;"));
         // RandomGenerator.isDeprecated is a pure metadata default method; draws stay Rand.
         assertNull(Classifier.classify("java.util.random.RandomGenerator", "isDeprecated", "()Z"));
-        assertEquals("Rand", Classifier.classify("java.util.random.RandomGenerator", "nextInt", "()I"));
+        assertEquals(Effect.RAND, Classifier.classify("java.util.random.RandomGenerator", "nextInt", "()I"));
     }
 
     /** sweep [2] precision follow-up: known-effectful members of the κ-COVERED `org.springframework`
@@ -139,14 +141,14 @@ class HelpersTest {
     @Test
     void springFilesystemUtilitiesClassifyAsFs() {
         // FileSystemUtils is whole-owner Fs — both methods walk the live filesystem.
-        assertEquals("Fs", Classifier.classify("org.springframework.util.FileSystemUtils", "deleteRecursively",
+        assertEquals(Effect.FS, Classifier.classify("org.springframework.util.FileSystemUtils", "deleteRecursively",
                 "(Ljava/io/File;)Z"));
-        assertEquals("Fs", Classifier.classify("org.springframework.util.FileSystemUtils", "copyRecursively",
+        assertEquals(Effect.FS, Classifier.classify("org.springframework.util.FileSystemUtils", "copyRecursively",
                 "(Ljava/io/File;Ljava/io/File;)V"));
         // FileCopyUtils is Fs only in its File-typed overloads (the cited gap: copy(File,File) → Fs read+write).
-        assertEquals("Fs", Classifier.classify("org.springframework.util.FileCopyUtils", "copy",
+        assertEquals(Effect.FS, Classifier.classify("org.springframework.util.FileCopyUtils", "copy",
                 "(Ljava/io/File;Ljava/io/File;)I"));
-        assertEquals("Fs", Classifier.classify("org.springframework.util.FileCopyUtils", "copyToByteArray",
+        assertEquals(Effect.FS, Classifier.classify("org.springframework.util.FileCopyUtils", "copyToByteArray",
                 "(Ljava/io/File;)[B"));
         // ...but the InputStream/OutputStream pumps are NOT Fs — they defer to the stream's own owner, so
         // an in-memory copy never fabricates (the cardinal sin we avoid by descriptor-gating, not owner-gating).
@@ -164,12 +166,12 @@ class HelpersTest {
     @Test
     void okioConstructionBoundaryClassifiesPrecisely() {
         // Okio.source/sink/appendingSink(Socket) open socket I/O → Net.
-        assertEquals("Net", Classifier.classify("okio.Okio", "source", "(Ljava/net/Socket;)Lokio/Source;"));
-        assertEquals("Net", Classifier.classify("okio.Okio", "sink", "(Ljava/net/Socket;)Lokio/Sink;"));
+        assertEquals(Effect.NET, Classifier.classify("okio.Okio", "source", "(Ljava/net/Socket;)Lokio/Source;"));
+        assertEquals(Effect.NET, Classifier.classify("okio.Okio", "sink", "(Ljava/net/Socket;)Lokio/Sink;"));
         // Okio.source/sink/appendingSink(File|Path) open file I/O → Fs.
-        assertEquals("Fs", Classifier.classify("okio.Okio", "source", "(Ljava/io/File;)Lokio/Source;"));
-        assertEquals("Fs", Classifier.classify("okio.Okio", "appendingSink", "(Ljava/io/File;)Lokio/Sink;"));
-        assertEquals("Fs", Classifier.classify("okio.Okio", "sink", "(Ljava/nio/file/Path;[Ljava/nio/file/OpenOption;)Lokio/Sink;"));
+        assertEquals(Effect.FS, Classifier.classify("okio.Okio", "source", "(Ljava/io/File;)Lokio/Source;"));
+        assertEquals(Effect.FS, Classifier.classify("okio.Okio", "appendingSink", "(Ljava/io/File;)Lokio/Sink;"));
+        assertEquals(Effect.FS, Classifier.classify("okio.Okio", "sink", "(Ljava/nio/file/Path;[Ljava/nio/file/OpenOption;)Lokio/Sink;"));
         // PURE: the (InputStream)/(OutputStream) overloads wrap a caller stream (effect is on that
         // stream's own owner); buffer()/blackhole() are pure wrappers. NONE may fabricate an effect.
         assertNull(Classifier.classify("okio.Okio", "source", "(Ljava/io/InputStream;)Lokio/Source;"));
@@ -190,11 +192,11 @@ class HelpersTest {
         assertNull(Classifier.classify("okio.BufferedSource", "readByte", "()B"));
         // okio.FileSystem (okio 3's java.nio.file.Files analog) — the FS verbs hit disk → Fs; the concrete
         // JvmSystemFileSystem too. canonicalize is pure path math → stays pure.
-        assertEquals("Fs", Classifier.classify("okio.FileSystem", "read",
+        assertEquals(Effect.FS, Classifier.classify("okio.FileSystem", "read",
                 "(Lokio/Path;Lkotlin/jvm/functions/Function1;)Ljava/lang/Object;"));
-        assertEquals("Fs", Classifier.classify("okio.FileSystem", "delete", "(Lokio/Path;Z)V"));
-        assertEquals("Fs", Classifier.classify("okio.FileSystem", "list", "(Lokio/Path;)Ljava/util/List;"));
-        assertEquals("Fs", Classifier.classify("okio.JvmSystemFileSystem", "sink",
+        assertEquals(Effect.FS, Classifier.classify("okio.FileSystem", "delete", "(Lokio/Path;Z)V"));
+        assertEquals(Effect.FS, Classifier.classify("okio.FileSystem", "list", "(Lokio/Path;)Ljava/util/List;"));
+        assertEquals(Effect.FS, Classifier.classify("okio.JvmSystemFileSystem", "sink",
                 "(Lokio/Path;Z)Lokio/Sink;"));
         assertNull(Classifier.classify("okio.FileSystem", "canonicalize", "(Lokio/Path;)Lokio/Path;"));
     }
@@ -206,10 +208,10 @@ class HelpersTest {
      *  public surface; jgss rejected: initSecContext produces tokens, the wire I/O is on the app's socket). */
     @Test
     void conscryptTlsSocketIoClassifiesAsNet() {
-        assertEquals("Net", Classifier.classify("org.conscrypt.OpenSSLSocketImpl", "startHandshake", "()V"));
-        assertEquals("Net", Classifier.classify("org.conscrypt.ConscryptEngineSocket", "getInputStream",
+        assertEquals(Effect.NET, Classifier.classify("org.conscrypt.OpenSSLSocketImpl", "startHandshake", "()V"));
+        assertEquals(Effect.NET, Classifier.classify("org.conscrypt.ConscryptEngineSocket", "getInputStream",
                 "()Ljava/io/InputStream;"));
-        assertEquals("Net", Classifier.classify("org.conscrypt.ConscryptFileDescriptorSocket", "getOutputStream",
+        assertEquals(Effect.NET, Classifier.classify("org.conscrypt.ConscryptFileDescriptorSocket", "getOutputStream",
                 "()Ljava/io/OutputStream;"));
         // PURE config/probe surface stays pure (not fabricated) — these are what a real okhttp scan actually
         // calls in org.conscrypt (isAvailable / get-application-protocol), and they do no wire I/O.
@@ -226,19 +228,19 @@ class HelpersTest {
      *  ZonedDateTime; OffsetDateTime in particular is very common. The arithmetic ops stay pure. */
     @Test
     void javaTimeNowClassifiesAsClock() {
-        assertEquals("Clock", Classifier.classify("java.time.OffsetDateTime", "now", "()Ljava/time/OffsetDateTime;"));
-        assertEquals("Clock", Classifier.classify("java.time.LocalTime", "now", "()Ljava/time/LocalTime;"));
-        assertEquals("Clock", Classifier.classify("java.time.Year", "now", "()Ljava/time/Year;"));
+        assertEquals(Effect.CLOCK, Classifier.classify("java.time.OffsetDateTime", "now", "()Ljava/time/OffsetDateTime;"));
+        assertEquals(Effect.CLOCK, Classifier.classify("java.time.LocalTime", "now", "()Ljava/time/LocalTime;"));
+        assertEquals(Effect.CLOCK, Classifier.classify("java.time.Year", "now", "()Ljava/time/Year;"));
         assertNull(Classifier.classify("java.time.OffsetDateTime", "plusDays", "(J)Ljava/time/OffsetDateTime;"));
     }
 
     @Test
     void multicastSocketClassifiesAsNet() {
-        assertEquals("Net", Classifier.classify("java.net.MulticastSocket", "receive", "(Ljava/net/DatagramPacket;)V"));
-        assertEquals("Net", Classifier.classify("java.net.MulticastSocket", "send", "(Ljava/net/DatagramPacket;)V"));
-        assertEquals("Net", Classifier.classify("java.net.MulticastSocket", "joinGroup", "(Ljava/net/SocketAddress;Ljava/net/NetworkInterface;)V"));
+        assertEquals(Effect.NET, Classifier.classify("java.net.MulticastSocket", "receive", "(Ljava/net/DatagramPacket;)V"));
+        assertEquals(Effect.NET, Classifier.classify("java.net.MulticastSocket", "send", "(Ljava/net/DatagramPacket;)V"));
+        assertEquals(Effect.NET, Classifier.classify("java.net.MulticastSocket", "joinGroup", "(Ljava/net/SocketAddress;Ljava/net/NetworkInterface;)V"));
         // control: the DatagramSocket base it extends was already classified
-        assertEquals("Net", Classifier.classify("java.net.DatagramSocket", "receive", "(Ljava/net/DatagramPacket;)V"));
+        assertEquals(Effect.NET, Classifier.classify("java.net.DatagramSocket", "receive", "(Ljava/net/DatagramPacket;)V"));
     }
 
     /** java.net.http: only HttpClient.send/sendAsync transmit. The old blanket `java.net.http.` prefix
@@ -247,9 +249,9 @@ class HelpersTest {
     @Test
     void javaNetHttpIsVerbPreciseNoBuilderFabrication() {
         // the send verbs DO transmit → Net
-        assertEquals("Net", Classifier.classify("java.net.http.HttpClient", "send",
+        assertEquals(Effect.NET, Classifier.classify("java.net.http.HttpClient", "send",
                 "(Ljava/net/http/HttpRequest;Ljava/net/http/HttpResponse$BodyHandler;)Ljava/net/http/HttpResponse;"));
-        assertEquals("Net", Classifier.classify("java.net.http.HttpClient", "sendAsync",
+        assertEquals(Effect.NET, Classifier.classify("java.net.http.HttpClient", "sendAsync",
                 "(Ljava/net/http/HttpRequest;Ljava/net/http/HttpResponse$BodyHandler;)Ljava/util/concurrent/CompletableFuture;"));
         // the pure BUILDER/FACTORY surface must NOT fabricate Net (no transmission)
         assertNull(Classifier.classify("java.net.http.HttpRequest", "newBuilder", "()Ljava/net/http/HttpRequest$Builder;"));
@@ -257,10 +259,10 @@ class HelpersTest {
         assertNull(Classifier.classify("java.net.http.HttpRequest$Builder", "uri", "(Ljava/net/URI;)Ljava/net/http/HttpRequest$Builder;"));
         assertNull(Classifier.classify("java.net.http.HttpClient", "newBuilder", "()Ljava/net/http/HttpClient$Builder;"));
         // J-2: the wire verbs on a lazy URLConnection/HttpURLConnection DO transmit → Net
-        assertEquals("Net", Classifier.classify("java.net.HttpURLConnection", "getInputStream", "()Ljava/io/InputStream;"));
-        assertEquals("Net", Classifier.classify("java.net.HttpURLConnection", "getResponseCode", "()I"));
-        assertEquals("Net", Classifier.classify("java.net.URLConnection", "connect", "()V"));
-        assertEquals("Net", Classifier.classify("java.net.URLConnection", "getOutputStream", "()Ljava/io/OutputStream;"));
+        assertEquals(Effect.NET, Classifier.classify("java.net.HttpURLConnection", "getInputStream", "()Ljava/io/InputStream;"));
+        assertEquals(Effect.NET, Classifier.classify("java.net.HttpURLConnection", "getResponseCode", "()I"));
+        assertEquals(Effect.NET, Classifier.classify("java.net.URLConnection", "connect", "()V"));
+        assertEquals(Effect.NET, Classifier.classify("java.net.URLConnection", "getOutputStream", "()Ljava/io/OutputStream;"));
         // ...but the pure getters do not
         assertNull(Classifier.classify("java.net.HttpURLConnection", "getRequestMethod", "()Ljava/lang/String;"));
         assertNull(Classifier.classify("java.net.HttpURLConnection", "setRequestProperty", "(Ljava/lang/String;Ljava/lang/String;)V"));
@@ -269,24 +271,24 @@ class HelpersTest {
     /** ProcessBuilder spawns via start() AND the Java 9+ static startPipeline(List) — both are Exec. */
     @Test
     void processBuilderStartPipelineIsExec() {
-        assertEquals("Exec", Classifier.classify("java.lang.ProcessBuilder", "start", "()Ljava/lang/Process;"));
-        assertEquals("Exec", Classifier.classify("java.lang.ProcessBuilder", "startPipeline", "(Ljava/util/List;)Ljava/util/List;"));
+        assertEquals(Effect.EXEC, Classifier.classify("java.lang.ProcessBuilder", "start", "()Ljava/lang/Process;"));
+        assertEquals(Effect.EXEC, Classifier.classify("java.lang.ProcessBuilder", "startPipeline", "(Ljava/util/List;)Ljava/util/List;"));
     }
 
     /** java.net.http.WebSocket wire verbs + the SSLSocket/factory family are Net (the WebSocket case was a
      *  REGRESSION from the 0.5.15 java.net.http prefix narrowing; SSLSocket extends Socket like Multicast). */
     @Test
     void webSocketAndTlsSocketsAreNet() {
-        assertEquals("Net", Classifier.classify("java.net.http.WebSocket", "sendText", "(Ljava/lang/CharSequence;Z)Ljava/util/concurrent/CompletableFuture;"));
-        assertEquals("Net", Classifier.classify("java.net.http.WebSocket", "sendBinary", "(Ljava/nio/ByteBuffer;Z)Ljava/util/concurrent/CompletableFuture;"));
-        assertEquals("Net", Classifier.classify("java.net.http.WebSocket", "request", "(J)V"));
-        assertEquals("Net", Classifier.classify("java.net.http.WebSocket$Builder", "buildAsync", "(Ljava/net/URI;Ljava/net/http/WebSocket$Listener;)Ljava/util/concurrent/CompletableFuture;"));
+        assertEquals(Effect.NET, Classifier.classify("java.net.http.WebSocket", "sendText", "(Ljava/lang/CharSequence;Z)Ljava/util/concurrent/CompletableFuture;"));
+        assertEquals(Effect.NET, Classifier.classify("java.net.http.WebSocket", "sendBinary", "(Ljava/nio/ByteBuffer;Z)Ljava/util/concurrent/CompletableFuture;"));
+        assertEquals(Effect.NET, Classifier.classify("java.net.http.WebSocket", "request", "(J)V"));
+        assertEquals(Effect.NET, Classifier.classify("java.net.http.WebSocket$Builder", "buildAsync", "(Ljava/net/URI;Ljava/net/http/WebSocket$Listener;)Ljava/util/concurrent/CompletableFuture;"));
         // the factory that vends a builder stays pure
         assertNull(Classifier.classify("java.net.http.HttpClient", "newWebSocketBuilder", "()Ljava/net/http/WebSocket$Builder;"));
-        assertEquals("Net", Classifier.classify("javax.net.ssl.SSLSocket", "getInputStream", "()Ljava/io/InputStream;"));
-        assertEquals("Net", Classifier.classify("javax.net.ssl.SSLSocket", "startHandshake", "()V"));
-        assertEquals("Net", Classifier.classify("javax.net.ssl.SSLSocketFactory", "createSocket", "(Ljava/lang/String;I)Ljava/net/Socket;"));
-        assertEquals("Net", Classifier.classify("javax.net.SocketFactory", "createSocket", "(Ljava/lang/String;I)Ljava/net/Socket;"));
+        assertEquals(Effect.NET, Classifier.classify("javax.net.ssl.SSLSocket", "getInputStream", "()Ljava/io/InputStream;"));
+        assertEquals(Effect.NET, Classifier.classify("javax.net.ssl.SSLSocket", "startHandshake", "()V"));
+        assertEquals(Effect.NET, Classifier.classify("javax.net.ssl.SSLSocketFactory", "createSocket", "(Ljava/lang/String;I)Ljava/net/Socket;"));
+        assertEquals(Effect.NET, Classifier.classify("javax.net.SocketFactory", "createSocket", "(Ljava/lang/String;I)Ljava/net/Socket;"));
     }
 
     /** EntityManager whole-owner Db FABRICATED on its pure builder/cache surface; gate to the round-tripping
@@ -294,9 +296,9 @@ class HelpersTest {
     @Test
     void entityManagerDbIsMethodGatedNoBuilderFabrication() {
         // round-trips → Db
-        assertEquals("Db", Classifier.classify("jakarta.persistence.EntityManager", "find", "(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;"));
-        assertEquals("Db", Classifier.classify("jakarta.persistence.EntityManager", "persist", "(Ljava/lang/Object;)V"));
-        assertEquals("Db", Classifier.classify("jakarta.persistence.EntityManager", "flush", "()V"));
+        assertEquals(Effect.DB, Classifier.classify("jakarta.persistence.EntityManager", "find", "(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;"));
+        assertEquals(Effect.DB, Classifier.classify("jakarta.persistence.EntityManager", "persist", "(Ljava/lang/Object;)V"));
+        assertEquals(Effect.DB, Classifier.classify("jakarta.persistence.EntityManager", "flush", "()V"));
         // pure builders / persistence-context ops must NOT fabricate Db
         assertNull(Classifier.classify("jakarta.persistence.EntityManager", "createQuery", "(Ljava/lang/String;)Ljakarta/persistence/Query;"));
         assertNull(Classifier.classify("jakarta.persistence.EntityManager", "createNativeQuery", "(Ljava/lang/String;)Ljakarta/persistence/Query;"));
@@ -304,41 +306,41 @@ class HelpersTest {
         assertNull(Classifier.classify("jakarta.persistence.EntityManager", "detach", "(Ljava/lang/Object;)V"));
         assertNull(Classifier.classify("jakarta.persistence.EntityManager", "getCriteriaBuilder", "()Ljakarta/persistence/criteria/CriteriaBuilder;"));
         // Connection transaction control → Db
-        assertEquals("Db", Classifier.classify("java.sql.Connection", "commit", "()V"));
-        assertEquals("Db", Classifier.classify("java.sql.Connection", "rollback", "()V"));
-        assertEquals("Db", Classifier.classify("java.sql.Connection", "setAutoCommit", "(Z)V"));
+        assertEquals(Effect.DB, Classifier.classify("java.sql.Connection", "commit", "()V"));
+        assertEquals(Effect.DB, Classifier.classify("java.sql.Connection", "rollback", "()V"));
+        assertEquals(Effect.DB, Classifier.classify("java.sql.Connection", "setAutoCommit", "(Z)V"));
     }
 
     /** JPA/Hibernate query EXECUTION verbs are the round-trip (createQuery is a pure builder) — without
      *  these the whole JPA query path read pure. */
     @Test
     void jpaQueryExecutionVerbsAreDb() {
-        assertEquals("Db", Classifier.classify("jakarta.persistence.Query", "getResultList", "()Ljava/util/List;"));
-        assertEquals("Db", Classifier.classify("jakarta.persistence.TypedQuery", "getSingleResult", "()Ljava/lang/Object;"));
-        assertEquals("Db", Classifier.classify("jakarta.persistence.Query", "executeUpdate", "()I"));
-        assertEquals("Db", Classifier.classify("jakarta.persistence.StoredProcedureQuery", "execute", "()Z"));
-        assertEquals("Db", Classifier.classify("org.hibernate.Session", "get", "(Ljava/lang/Class;Ljava/io/Serializable;)Ljava/lang/Object;"));
-        assertEquals("Db", Classifier.classify("org.hibernate.query.Query", "list", "()Ljava/util/List;"));
+        assertEquals(Effect.DB, Classifier.classify("jakarta.persistence.Query", "getResultList", "()Ljava/util/List;"));
+        assertEquals(Effect.DB, Classifier.classify("jakarta.persistence.TypedQuery", "getSingleResult", "()Ljava/lang/Object;"));
+        assertEquals(Effect.DB, Classifier.classify("jakarta.persistence.Query", "executeUpdate", "()I"));
+        assertEquals(Effect.DB, Classifier.classify("jakarta.persistence.StoredProcedureQuery", "execute", "()Z"));
+        assertEquals(Effect.DB, Classifier.classify("org.hibernate.Session", "get", "(Ljava/lang/Class;Ljava/io/Serializable;)Ljava/lang/Object;"));
+        assertEquals(Effect.DB, Classifier.classify("org.hibernate.query.Query", "list", "()Ljava/util/List;"));
     }
 
     /** NIO Fs deep: memory-mapped file I/O (MappedByteBuffer), FileStore disk stats, FileDescriptor.sync. */
     @Test
     void nioMappedBufferAndFileStoreAreFs() {
-        assertEquals("Fs", Classifier.classify("java.nio.MappedByteBuffer", "put", "(IB)Ljava/nio/ByteBuffer;"));
-        assertEquals("Fs", Classifier.classify("java.nio.MappedByteBuffer", "force", "()Ljava/nio/MappedByteBuffer;"));
-        assertEquals("Fs", Classifier.classify("java.nio.file.FileStore", "getTotalSpace", "()J"));
-        assertEquals("Fs", Classifier.classify("java.io.FileDescriptor", "sync", "()V"));
+        assertEquals(Effect.FS, Classifier.classify("java.nio.MappedByteBuffer", "put", "(IB)Ljava/nio/ByteBuffer;"));
+        assertEquals(Effect.FS, Classifier.classify("java.nio.MappedByteBuffer", "force", "()Ljava/nio/MappedByteBuffer;"));
+        assertEquals(Effect.FS, Classifier.classify("java.nio.file.FileStore", "getTotalSpace", "()J"));
+        assertEquals(Effect.FS, Classifier.classify("java.io.FileDescriptor", "sync", "()V"));
     }
 
     /** Groovy GDK + Scala stdlib I/O — the dialects' OWN stdlib, as fundamental as java.io. Was silent-pure
      *  (no classify row + κ-"covered"). URL-receiver GDK reads are Net; the pure GDK surface stays pure. */
     @Test
     void groovyGdkAndScalaStdlibIo() {
-        assertEquals("Fs", Classifier.classify("org.codehaus.groovy.runtime.ResourceGroovyMethods", "getText", "(Ljava/io/File;)Ljava/lang/String;"));
-        assertEquals("Fs", Classifier.classify("org.codehaus.groovy.runtime.ResourceGroovyMethods", "leftShift", "(Ljava/io/File;Ljava/lang/Object;)Ljava/io/File;"));
-        assertEquals("Net", Classifier.classify("org.codehaus.groovy.runtime.ResourceGroovyMethods", "getText", "(Ljava/net/URL;)Ljava/lang/String;"));
-        assertEquals("Exec", Classifier.classify("org.codehaus.groovy.runtime.ProcessGroovyMethods", "execute", "(Ljava/lang/String;)Ljava/lang/Process;"));
-        assertEquals("Fs", Classifier.classify("scala.io.Source$", "fromFile", "(Ljava/lang/String;)Lscala/io/BufferedSource;"));
+        assertEquals(Effect.FS, Classifier.classify("org.codehaus.groovy.runtime.ResourceGroovyMethods", "getText", "(Ljava/io/File;)Ljava/lang/String;"));
+        assertEquals(Effect.FS, Classifier.classify("org.codehaus.groovy.runtime.ResourceGroovyMethods", "leftShift", "(Ljava/io/File;Ljava/lang/Object;)Ljava/io/File;"));
+        assertEquals(Effect.NET, Classifier.classify("org.codehaus.groovy.runtime.ResourceGroovyMethods", "getText", "(Ljava/net/URL;)Ljava/lang/String;"));
+        assertEquals(Effect.EXEC, Classifier.classify("org.codehaus.groovy.runtime.ProcessGroovyMethods", "execute", "(Ljava/lang/String;)Ljava/lang/Process;"));
+        assertEquals(Effect.FS, Classifier.classify("scala.io.Source$", "fromFile", "(Ljava/lang/String;)Lscala/io/BufferedSource;"));
         // the pure GDK surface (a non-I/O helper) must NOT be classified
         assertNull(Classifier.classify("org.codehaus.groovy.runtime.ResourceGroovyMethods", "size", "(Ljava/io/File;)J"));
     }
@@ -347,28 +349,28 @@ class HelpersTest {
      *  load → Exec), ProcessBuilder.environment (Env). Pure Process getters (toHandle/exitValue) stay pure. */
     @Test
     void processNativeAndEnvDeep() {
-        assertEquals("Exec", Classifier.classify("java.lang.Process", "getInputStream", "()Ljava/io/InputStream;"));
-        assertEquals("Exec", Classifier.classify("java.lang.Process", "getOutputStream", "()Ljava/io/OutputStream;"));
-        assertEquals("Exec", Classifier.classify("java.lang.Process", "waitFor", "()I"));
+        assertEquals(Effect.EXEC, Classifier.classify("java.lang.Process", "getInputStream", "()Ljava/io/InputStream;"));
+        assertEquals(Effect.EXEC, Classifier.classify("java.lang.Process", "getOutputStream", "()Ljava/io/OutputStream;"));
+        assertEquals(Effect.EXEC, Classifier.classify("java.lang.Process", "waitFor", "()I"));
         assertNull(Classifier.classify("java.lang.Process", "exitValue", "()I"));
         assertNull(Classifier.classify("java.lang.Process", "toHandle", "()Ljava/lang/ProcessHandle;"));
-        assertEquals("Exec", Classifier.classify("java.lang.System", "loadLibrary", "(Ljava/lang/String;)V"));
-        assertEquals("Exec", Classifier.classify("java.lang.System", "load", "(Ljava/lang/String;)V"));
-        assertEquals("Exec", Classifier.classify("java.lang.Runtime", "load", "(Ljava/lang/String;)V"));
-        assertEquals("Env", Classifier.classify("java.lang.ProcessBuilder", "environment", "()Ljava/util/Map;"));
+        assertEquals(Effect.EXEC, Classifier.classify("java.lang.System", "loadLibrary", "(Ljava/lang/String;)V"));
+        assertEquals(Effect.EXEC, Classifier.classify("java.lang.System", "load", "(Ljava/lang/String;)V"));
+        assertEquals(Effect.EXEC, Classifier.classify("java.lang.Runtime", "load", "(Ljava/lang/String;)V"));
+        assertEquals(Effect.ENV, Classifier.classify("java.lang.ProcessBuilder", "environment", "()Ljava/util/Map;"));
     }
 
     /** Fs deep: Scanner(File/Path) ctor, WatchService take/poll, Path.toRealPath/register. Scanner(String)
      *  and pure Path manipulation (getParent/normalize) must NOT fabricate Fs. */
     @Test
     void fsDeepScannerWatchPath() {
-        assertEquals("Fs", Classifier.classify("java.util.Scanner", "<init>", "(Ljava/io/File;)V"));
-        assertEquals("Fs", Classifier.classify("java.util.Scanner", "<init>", "(Ljava/nio/file/Path;)V"));
+        assertEquals(Effect.FS, Classifier.classify("java.util.Scanner", "<init>", "(Ljava/io/File;)V"));
+        assertEquals(Effect.FS, Classifier.classify("java.util.Scanner", "<init>", "(Ljava/nio/file/Path;)V"));
         assertNull(Classifier.classify("java.util.Scanner", "<init>", "(Ljava/lang/String;)V"));   // string source — pure
         assertNull(Classifier.classify("java.util.Scanner", "<init>", "(Ljava/io/InputStream;)V")); // source-deferred — pure
-        assertEquals("Fs", Classifier.classify("java.nio.file.WatchService", "take", "()Ljava/nio/file/WatchKey;"));
-        assertEquals("Fs", Classifier.classify("java.nio.file.Path", "toRealPath", "([Ljava/nio/file/LinkOption;)Ljava/nio/file/Path;"));
-        assertEquals("Fs", Classifier.classify("java.nio.file.Path", "register", "(Ljava/nio/file/WatchService;[Ljava/nio/file/WatchEvent$Kind;)Ljava/nio/file/WatchKey;"));
+        assertEquals(Effect.FS, Classifier.classify("java.nio.file.WatchService", "take", "()Ljava/nio/file/WatchKey;"));
+        assertEquals(Effect.FS, Classifier.classify("java.nio.file.Path", "toRealPath", "([Ljava/nio/file/LinkOption;)Ljava/nio/file/Path;"));
+        assertEquals(Effect.FS, Classifier.classify("java.nio.file.Path", "register", "(Ljava/nio/file/WatchService;[Ljava/nio/file/WatchEvent$Kind;)Ljava/nio/file/WatchKey;"));
         assertNull(Classifier.classify("java.nio.file.Path", "getParent", "()Ljava/nio/file/Path;"));      // pure path op
         assertNull(Classifier.classify("java.nio.file.Path", "normalize", "()Ljava/nio/file/Path;"));
         assertNull(Classifier.classify("java.nio.file.Path", "resolve", "(Ljava/nio/file/Path;)Ljava/nio/file/Path;"));
@@ -378,13 +380,13 @@ class HelpersTest {
      *  RandomGenerator (Java 17+ interface) draws entropy. Valued ctors stay pure (arity-precise, no fab). */
     @Test
     void clockRandCompleteness() {
-        assertEquals("Clock", Classifier.classify("java.util.Date", "<init>", "()V"));
-        assertEquals("Clock", Classifier.classify("java.util.GregorianCalendar", "<init>", "()V"));
-        assertEquals("Clock", Classifier.classify("java.util.Calendar", "getInstance", "()Ljava/util/Calendar;"));
+        assertEquals(Effect.CLOCK, Classifier.classify("java.util.Date", "<init>", "()V"));
+        assertEquals(Effect.CLOCK, Classifier.classify("java.util.GregorianCalendar", "<init>", "()V"));
+        assertEquals(Effect.CLOCK, Classifier.classify("java.util.Calendar", "getInstance", "()Ljava/util/Calendar;"));
         assertNull(Classifier.classify("java.util.Date", "<init>", "(J)V"));                  // value, not clock — pure
         assertNull(Classifier.classify("java.util.GregorianCalendar", "<init>", "(III)V"));   // pure
-        assertEquals("Rand", Classifier.classify("java.util.random.RandomGenerator", "nextInt", "()I"));
-        assertEquals("Rand", Classifier.classify("java.util.random.RandomGenerator", "nextLong", "()J"));
+        assertEquals(Effect.RAND, Classifier.classify("java.util.random.RandomGenerator", "nextInt", "()I"));
+        assertEquals(Effect.RAND, Classifier.classify("java.util.random.RandomGenerator", "nextLong", "()J"));
     }
 
     /** UUID.randomUUID() draws v4 entropy from SecureRandom → Rand; the rest of UUID is pure value ops
@@ -392,7 +394,7 @@ class HelpersTest {
      *  pins that a JDK functional-interface SAM is recognized for the unpinned-dispatch Unknown rule. */
     @Test
     void uuidRandomIsRandButUuidValueOpsArePure() {
-        assertEquals("Rand", Classifier.classify("java.util.UUID", "randomUUID", "()Ljava/util/UUID;"));
+        assertEquals(Effect.RAND, Classifier.classify("java.util.UUID", "randomUUID", "()Ljava/util/UUID;"));
         assertNull(Classifier.classify("java.util.UUID", "fromString", "(Ljava/lang/String;)Ljava/util/UUID;"));
         assertNull(Classifier.classify("java.util.UUID", "getMostSignificantBits", "()J"));
         assertTrue(Candor.isJdkFunctionalSam("java/lang/Runnable", "run"));
@@ -457,33 +459,33 @@ class HelpersTest {
     /** Arbitrary-code-execution / opaque security sinks → Unknown (eval / untrusted-deser RCE / XXE / FFI). */
     @Test
     void codeExecutionAndDeserSinksAreUnknown() {
-        assertEquals("Unknown", Classifier.classify("javax.script.ScriptEngine", "eval", "(Ljava/lang/String;)Ljava/lang/Object;"));
-        assertEquals("Unknown", Classifier.classify("org.springframework.expression.Expression", "getValue", "(Ljava/lang/Object;)Ljava/lang/Object;"));
-        assertEquals("Unknown", Classifier.classify("ognl.Ognl", "getValue", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"));
-        assertEquals("Unknown", Classifier.classify("org.mvel2.MVEL", "eval", "(Ljava/lang/String;)Ljava/lang/Object;"));
-        assertEquals("Unknown", Classifier.classify("java.io.ObjectInputStream", "readObject", "()Ljava/lang/Object;"));
-        assertEquals("Unknown", Classifier.classify("java.beans.XMLDecoder", "readObject", "()Ljava/lang/Object;"));
-        assertEquals("Unknown", Classifier.classify("javax.xml.parsers.DocumentBuilder", "parse", "(Ljava/io/InputStream;)Lorg/w3c/dom/Document;"));
-        assertEquals("Unknown", Classifier.classify("com.sun.jna.Function", "invoke", "(Ljava/lang/Class;[Ljava/lang/Object;)Ljava/lang/Object;"));
-        assertEquals("Exec", Classifier.classify("com.sun.jna.Native", "load", "(Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/Object;"));
-        assertEquals("Exec", Classifier.classify("com.sun.tools.attach.VirtualMachine", "loadAgent", "(Ljava/lang/String;)V"));
+        assertEquals(Effect.UNKNOWN, Classifier.classify("javax.script.ScriptEngine", "eval", "(Ljava/lang/String;)Ljava/lang/Object;"));
+        assertEquals(Effect.UNKNOWN, Classifier.classify("org.springframework.expression.Expression", "getValue", "(Ljava/lang/Object;)Ljava/lang/Object;"));
+        assertEquals(Effect.UNKNOWN, Classifier.classify("ognl.Ognl", "getValue", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"));
+        assertEquals(Effect.UNKNOWN, Classifier.classify("org.mvel2.MVEL", "eval", "(Ljava/lang/String;)Ljava/lang/Object;"));
+        assertEquals(Effect.UNKNOWN, Classifier.classify("java.io.ObjectInputStream", "readObject", "()Ljava/lang/Object;"));
+        assertEquals(Effect.UNKNOWN, Classifier.classify("java.beans.XMLDecoder", "readObject", "()Ljava/lang/Object;"));
+        assertEquals(Effect.UNKNOWN, Classifier.classify("javax.xml.parsers.DocumentBuilder", "parse", "(Ljava/io/InputStream;)Lorg/w3c/dom/Document;"));
+        assertEquals(Effect.UNKNOWN, Classifier.classify("com.sun.jna.Function", "invoke", "(Ljava/lang/Class;[Ljava/lang/Object;)Ljava/lang/Object;"));
+        assertEquals(Effect.EXEC, Classifier.classify("com.sun.jna.Native", "load", "(Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/Object;"));
+        assertEquals(Effect.EXEC, Classifier.classify("com.sun.tools.attach.VirtualMachine", "loadAgent", "(Ljava/lang/String;)V"));
     }
 
     /** Mail/MQ clients + raw cache clients → Net (the ubiquitous ones, parallel to the modeled templates);
      *  the message BUILDERS stay pure. PrintStream/Writer/Formatter file ctors → Fs; in-memory overloads pure. */
     @Test
     void messagingCacheNetAndFileStreamFs() {
-        assertEquals("Net", Classifier.classify("javax.mail.Transport", "send", "(Ljavax/mail/Message;)V"));
-        assertEquals("Net", Classifier.classify("org.apache.kafka.clients.producer.KafkaProducer", "send", "(Lorg/apache/kafka/clients/producer/ProducerRecord;)Ljava/util/concurrent/Future;"));
-        assertEquals("Net", Classifier.classify("com.rabbitmq.client.Channel", "basicPublish", "(Ljava/lang/String;Ljava/lang/String;Lcom/rabbitmq/client/AMQP$BasicProperties;[B)V"));
-        assertEquals("Net", Classifier.classify("redis.clients.jedis.Jedis", "get", "(Ljava/lang/String;)Ljava/lang/String;"));
-        assertEquals("Net", Classifier.classify("net.spy.memcached.MemcachedClient", "get", "(Ljava/lang/String;)Ljava/lang/Object;"));
+        assertEquals(Effect.NET, Classifier.classify("javax.mail.Transport", "send", "(Ljavax/mail/Message;)V"));
+        assertEquals(Effect.NET, Classifier.classify("org.apache.kafka.clients.producer.KafkaProducer", "send", "(Lorg/apache/kafka/clients/producer/ProducerRecord;)Ljava/util/concurrent/Future;"));
+        assertEquals(Effect.NET, Classifier.classify("com.rabbitmq.client.Channel", "basicPublish", "(Ljava/lang/String;Ljava/lang/String;Lcom/rabbitmq/client/AMQP$BasicProperties;[B)V"));
+        assertEquals(Effect.NET, Classifier.classify("redis.clients.jedis.Jedis", "get", "(Ljava/lang/String;)Ljava/lang/String;"));
+        assertEquals(Effect.NET, Classifier.classify("net.spy.memcached.MemcachedClient", "get", "(Ljava/lang/String;)Ljava/lang/Object;"));
         // a pure builder must NOT be Net
         assertNull(Classifier.classify("javax.mail.internet.MimeMessage", "setText", "(Ljava/lang/String;)V"));
         // file-opening Print*/Formatter ctors → Fs; the OutputStream/Writer overloads stay pure
-        assertEquals("Fs", Classifier.classify("java.io.PrintStream", "<init>", "(Ljava/lang/String;)V"));
-        assertEquals("Fs", Classifier.classify("java.io.PrintWriter", "<init>", "(Ljava/io/File;)V"));
-        assertEquals("Fs", Classifier.classify("java.util.Formatter", "<init>", "(Ljava/lang/String;)V"));
+        assertEquals(Effect.FS, Classifier.classify("java.io.PrintStream", "<init>", "(Ljava/lang/String;)V"));
+        assertEquals(Effect.FS, Classifier.classify("java.io.PrintWriter", "<init>", "(Ljava/io/File;)V"));
+        assertEquals(Effect.FS, Classifier.classify("java.util.Formatter", "<init>", "(Ljava/lang/String;)V"));
         assertNull(Classifier.classify("java.io.PrintStream", "<init>", "(Ljava/io/OutputStream;)V"));
         assertNull(Classifier.classify("java.io.PrintWriter", "<init>", "(Ljava/io/Writer;)V"));
     }
@@ -492,13 +494,13 @@ class HelpersTest {
      *  SharedPreferences.Editor→Fs. */
     @Test
     void androidSdkEffects() {
-        assertEquals("Db", Classifier.classify("android.database.sqlite.SQLiteDatabase", "rawQuery", "(Ljava/lang/String;[Ljava/lang/String;)Landroid/database/Cursor;"));
-        assertEquals("Ipc", Classifier.classify("android.content.ContentResolver", "query", "(Landroid/net/Uri;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;"));
-        assertEquals("Net", Classifier.classify("android.webkit.WebView", "loadUrl", "(Ljava/lang/String;)V"));
-        assertEquals("Env", Classifier.classify("android.provider.Settings$Secure", "getString", "(Landroid/content/ContentResolver;Ljava/lang/String;)Ljava/lang/String;"));
-        assertEquals("Clipboard", Classifier.classify("android.content.ClipboardManager", "setPrimaryClip", "(Landroid/content/ClipData;)V"));
-        assertEquals("Fs", Classifier.classify("android.content.SharedPreferences$Editor", "commit", "()Z"));
-        assertEquals("Ipc", Classifier.classify("android.content.Context", "startActivity", "(Landroid/content/Intent;)V"));
+        assertEquals(Effect.DB, Classifier.classify("android.database.sqlite.SQLiteDatabase", "rawQuery", "(Ljava/lang/String;[Ljava/lang/String;)Landroid/database/Cursor;"));
+        assertEquals(Effect.IPC, Classifier.classify("android.content.ContentResolver", "query", "(Landroid/net/Uri;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;"));
+        assertEquals(Effect.NET, Classifier.classify("android.webkit.WebView", "loadUrl", "(Ljava/lang/String;)V"));
+        assertEquals(Effect.ENV, Classifier.classify("android.provider.Settings$Secure", "getString", "(Landroid/content/ContentResolver;Ljava/lang/String;)Ljava/lang/String;"));
+        assertEquals(Effect.CLIPBOARD, Classifier.classify("android.content.ClipboardManager", "setPrimaryClip", "(Landroid/content/ClipData;)V"));
+        assertEquals(Effect.FS, Classifier.classify("android.content.SharedPreferences$Editor", "commit", "()Z"));
+        assertEquals(Effect.IPC, Classifier.classify("android.content.Context", "startActivity", "(Landroid/content/Intent;)V"));
     }
 
     /** Round-9 FABRICATION fixes — whole-owner rules must NOT fire on the conventionally-pure / config
@@ -506,23 +508,23 @@ class HelpersTest {
     @Test
     void wholeOwnerRulesDoNotFabricateOnPureMethods() {
         // MappedByteBuffer: get*/put*/force = Fs; capacity/position/limit (pure Buffer queries) = NOT Fs
-        assertEquals("Fs", Classifier.classify("java.nio.MappedByteBuffer", "force", "()Ljava/nio/MappedByteBuffer;"));
-        assertEquals("Fs", Classifier.classify("java.nio.MappedByteBuffer", "put", "(IB)Ljava/nio/ByteBuffer;"));
+        assertEquals(Effect.FS, Classifier.classify("java.nio.MappedByteBuffer", "force", "()Ljava/nio/MappedByteBuffer;"));
+        assertEquals(Effect.FS, Classifier.classify("java.nio.MappedByteBuffer", "put", "(IB)Ljava/nio/ByteBuffer;"));
         assertNull(Classifier.classify("java.nio.MappedByteBuffer", "capacity", "()I"));
         assertNull(Classifier.classify("java.nio.MappedByteBuffer", "position", "()I"));
         assertNull(Classifier.classify("java.nio.MappedByteBuffer", "order", "()Ljava/nio/ByteOrder;"));
         // Jedis: a command = Net; getDB/toString/equals = pure
-        assertEquals("Net", Classifier.classify("redis.clients.jedis.Jedis", "get", "(Ljava/lang/String;)Ljava/lang/String;"));
+        assertEquals(Effect.NET, Classifier.classify("redis.clients.jedis.Jedis", "get", "(Ljava/lang/String;)Ljava/lang/String;"));
         assertNull(Classifier.classify("redis.clients.jedis.Jedis", "getDB", "()I"));
         assertNull(Classifier.classify("redis.clients.jedis.Jedis", "toString", "()Ljava/lang/String;"));
         assertNull(Classifier.classify("org.apache.zookeeper.ZooKeeper", "getSessionId", "()J"));
         // SocketChannel config verbs = pure (not Net); read/write still Net
-        assertEquals("Net", Classifier.classify("java.nio.channels.SocketChannel", "read", "(Ljava/nio/ByteBuffer;)I"));
+        assertEquals(Effect.NET, Classifier.classify("java.nio.channels.SocketChannel", "read", "(Ljava/nio/ByteBuffer;)I"));
         assertNull(Classifier.classify("java.nio.channels.SocketChannel", "setOption", "(Ljava/net/SocketOption;Ljava/lang/Object;)Ljava/nio/channels/SocketChannel;"));
         assertNull(Classifier.classify("java.nio.channels.SocketChannel", "configureBlocking", "(Z)Ljava/nio/channels/SelectableChannel;"));
         assertNull(Classifier.classify("java.nio.channels.SocketChannel", "register", "(Ljava/nio/channels/Selector;I)Ljava/nio/channels/SelectionKey;"));
         // Settings: EXACT owner+method (the startsWith over-match fabricated on NameValueCache helpers)
-        assertEquals("Env", Classifier.classify("android.provider.Settings$Secure", "getString", "(Landroid/content/ContentResolver;Ljava/lang/String;)Ljava/lang/String;"));
+        assertEquals(Effect.ENV, Classifier.classify("android.provider.Settings$Secure", "getString", "(Landroid/content/ContentResolver;Ljava/lang/String;)Ljava/lang/String;"));
         assertNull(Classifier.classify("android.provider.Settings$NameValueCache", "getStringForUser", "(Ljava/lang/String;)Ljava/lang/String;"));
     }
 
@@ -530,17 +532,17 @@ class HelpersTest {
      *  Exec; Selector.select/MulticastChannel.join → Net; OkHttp/Apache/AWS clients → Net (builders pure). */
     @Test
     void round9SilentPureAdds() {
-        assertEquals("Fs", Classifier.classify("java.lang.Class", "getResourceAsStream", "(Ljava/lang/String;)Ljava/io/InputStream;"));
-        assertEquals("Fs", Classifier.classify("java.lang.ClassLoader", "getResource", "(Ljava/lang/String;)Ljava/net/URL;"));
-        assertEquals("Fs", Classifier.classify("java.util.ResourceBundle", "getBundle", "(Ljava/lang/String;)Ljava/util/ResourceBundle;"));
-        assertEquals("Fs", Classifier.classify("java.util.ServiceLoader", "load", "(Ljava/lang/Class;)Ljava/util/ServiceLoader;"));
-        assertEquals("Exec", Classifier.classify("java.lang.Process", "destroy", "()V"));
-        assertEquals("Exec", Classifier.classify("java.lang.ProcessHandle", "destroyForcibly", "()Z"));
-        assertEquals("Net", Classifier.classify("java.nio.channels.Selector", "select", "()I"));
-        assertEquals("Net", Classifier.classify("java.nio.channels.MulticastChannel", "join", "(Ljava/net/InetAddress;Ljava/nio/channels/MembershipKey;)Ljava/nio/channels/MembershipKey;"));
-        assertEquals("Net", Classifier.classify("okhttp3.Call", "execute", "()Lokhttp3/Response;"));
-        assertEquals("Net", Classifier.classify("org.apache.http.impl.client.CloseableHttpClient", "execute", "(Lorg/apache/http/client/methods/HttpUriRequest;)Lorg/apache/http/client/methods/CloseableHttpResponse;"));
-        assertEquals("Net", Classifier.classify("software.amazon.awssdk.services.s3.S3Client", "getObject", "(Lsoftware/amazon/awssdk/services/s3/model/GetObjectRequest;)Ljava/lang/Object;"));
+        assertEquals(Effect.FS, Classifier.classify("java.lang.Class", "getResourceAsStream", "(Ljava/lang/String;)Ljava/io/InputStream;"));
+        assertEquals(Effect.FS, Classifier.classify("java.lang.ClassLoader", "getResource", "(Ljava/lang/String;)Ljava/net/URL;"));
+        assertEquals(Effect.FS, Classifier.classify("java.util.ResourceBundle", "getBundle", "(Ljava/lang/String;)Ljava/util/ResourceBundle;"));
+        assertEquals(Effect.FS, Classifier.classify("java.util.ServiceLoader", "load", "(Ljava/lang/Class;)Ljava/util/ServiceLoader;"));
+        assertEquals(Effect.EXEC, Classifier.classify("java.lang.Process", "destroy", "()V"));
+        assertEquals(Effect.EXEC, Classifier.classify("java.lang.ProcessHandle", "destroyForcibly", "()Z"));
+        assertEquals(Effect.NET, Classifier.classify("java.nio.channels.Selector", "select", "()I"));
+        assertEquals(Effect.NET, Classifier.classify("java.nio.channels.MulticastChannel", "join", "(Ljava/net/InetAddress;Ljava/nio/channels/MembershipKey;)Ljava/nio/channels/MembershipKey;"));
+        assertEquals(Effect.NET, Classifier.classify("okhttp3.Call", "execute", "()Lokhttp3/Response;"));
+        assertEquals(Effect.NET, Classifier.classify("org.apache.http.impl.client.CloseableHttpClient", "execute", "(Lorg/apache/http/client/methods/HttpUriRequest;)Lorg/apache/http/client/methods/CloseableHttpResponse;"));
+        assertEquals(Effect.NET, Classifier.classify("software.amazon.awssdk.services.s3.S3Client", "getObject", "(Lsoftware/amazon/awssdk/services/s3/model/GetObjectRequest;)Ljava/lang/Object;"));
         // an AWS model getter (v1 get*) must NOT be Net (client-class gate)
         assertNull(Classifier.classify("com.amazonaws.services.s3.model.GetObjectRequest", "getBucketName", "()Ljava/lang/String;"));
     }
@@ -570,8 +572,8 @@ class HelpersTest {
         assertNull(Classifier.classify("com.amazonaws.services.s3.AmazonS3Client", "getCachedResponseMetadata", "(Lcom/amazonaws/AmazonWebServiceRequest;)Ljava/lang/Object;"));
         assertNull(Classifier.classify("com.amazonaws.services.s3.AmazonS3Client", "getResourceUrl", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"));
         // real ops stay Net
-        assertEquals("Net", Classifier.classify("com.amazonaws.services.s3.AmazonS3Client", "getObject", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Object;"));
-        assertEquals("Net", Classifier.classify("com.amazonaws.services.s3.AmazonS3Client", "getBucketRegionViaHeadRequest", "(Ljava/lang/String;)Ljava/lang/String;"));
+        assertEquals(Effect.NET, Classifier.classify("com.amazonaws.services.s3.AmazonS3Client", "getObject", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Object;"));
+        assertEquals(Effect.NET, Classifier.classify("com.amazonaws.services.s3.AmazonS3Client", "getBucketRegionViaHeadRequest", "(Ljava/lang/String;)Ljava/lang/String;"));
     }
 
     /** Round-11: the AWS carve-out was INCOMPLETE — the pure config getters inherited from
@@ -592,11 +594,11 @@ class HelpersTest {
     void round11JdbcCompleteness() {
         for (String q : new String[] {"getColumnPrivileges", "getTablePrivileges", "getUDTs",
                 "getCrossReference", "getTypeInfo", "getSuperTables", "getAttributes", "getProcedureColumns"})
-            assertEquals("Db", Classifier.classify("java.sql.DatabaseMetaData", q, "()Ljava/sql/ResultSet;"),
+            assertEquals(Effect.DB, Classifier.classify("java.sql.DatabaseMetaData", q, "()Ljava/sql/ResultSet;"),
                     q + " runs a catalog SELECT");
         assertNull(Classifier.classify("java.sql.DatabaseMetaData", "supportsTransactions", "()Z")); // capability flag pure
-        assertEquals("Db", Classifier.classify("com.alibaba.druid.pool.DruidDataSource", "getConnection", "()Ljava/sql/Connection;"));
-        assertEquals("Db", Classifier.classify("org.postgresql.ds.PGSimpleDataSource", "getConnection", "()Ljava/sql/Connection;"));
+        assertEquals(Effect.DB, Classifier.classify("com.alibaba.druid.pool.DruidDataSource", "getConnection", "()Ljava/sql/Connection;"));
+        assertEquals(Effect.DB, Classifier.classify("org.postgresql.ds.PGSimpleDataSource", "getConnection", "()Ljava/sql/Connection;"));
     }
 
     /** Round-12: raw data-store DRIVERS (under the already-modeled Spring templates) — Mongo/Cassandra/
@@ -605,19 +607,19 @@ class HelpersTest {
     @Test
     void round12RawDriverClassifier() {
         // Db drivers — the operation verbs
-        assertEquals("Db", Classifier.classify("com.mongodb.client.MongoCollection", "insertOne", "(Ljava/lang/Object;)Lcom/mongodb/client/result/InsertOneResult;"));
-        assertEquals("Db", Classifier.classify("com.mongodb.client.MongoCollection", "find", "()Lcom/mongodb/client/FindIterable;"));
-        assertEquals("Db", Classifier.classify("com.datastax.oss.driver.api.core.CqlSession", "execute", "(Ljava/lang/String;)Lcom/datastax/oss/driver/api/core/cql/ResultSet;"));
-        assertEquals("Db", Classifier.classify("io.r2dbc.spi.Statement", "execute", "()Lorg/reactivestreams/Publisher;"));
-        assertEquals("Db", Classifier.classify("org.jooq.DSLContext", "fetch", "(Ljava/lang/String;)Lorg/jooq/Result;"));
-        assertEquals("Db", Classifier.classify("org.apache.ibatis.session.SqlSession", "selectList", "(Ljava/lang/String;)Ljava/util/List;"));
-        assertEquals("Db", Classifier.classify("org.neo4j.driver.Session", "run", "(Ljava/lang/String;)Lorg/neo4j/driver/Result;"));
+        assertEquals(Effect.DB, Classifier.classify("com.mongodb.client.MongoCollection", "insertOne", "(Ljava/lang/Object;)Lcom/mongodb/client/result/InsertOneResult;"));
+        assertEquals(Effect.DB, Classifier.classify("com.mongodb.client.MongoCollection", "find", "()Lcom/mongodb/client/FindIterable;"));
+        assertEquals(Effect.DB, Classifier.classify("com.datastax.oss.driver.api.core.CqlSession", "execute", "(Ljava/lang/String;)Lcom/datastax/oss/driver/api/core/cql/ResultSet;"));
+        assertEquals(Effect.DB, Classifier.classify("io.r2dbc.spi.Statement", "execute", "()Lorg/reactivestreams/Publisher;"));
+        assertEquals(Effect.DB, Classifier.classify("org.jooq.DSLContext", "fetch", "(Ljava/lang/String;)Lorg/jooq/Result;"));
+        assertEquals(Effect.DB, Classifier.classify("org.apache.ibatis.session.SqlSession", "selectList", "(Ljava/lang/String;)Ljava/util/List;"));
+        assertEquals(Effect.DB, Classifier.classify("org.neo4j.driver.Session", "run", "(Ljava/lang/String;)Lorg/neo4j/driver/Result;"));
         // Net clients
-        assertEquals("Net", Classifier.classify("io.grpc.stub.ClientCalls", "blockingUnaryCall", "(Lio/grpc/Channel;Lio/grpc/MethodDescriptor;Lio/grpc/CallOptions;Ljava/lang/Object;)Ljava/lang/Object;"));
-        assertEquals("Net", Classifier.classify("okhttp3.WebSocket", "send", "(Ljava/lang/String;)Z"));
-        assertEquals("Net", Classifier.classify("io.vertx.ext.web.client.HttpRequest", "send", "()Lio/vertx/core/Future;")); // terminal, not the get/post builder
-        assertEquals("Net", Classifier.classify("reactor.netty.http.client.HttpClient", "response", "()Lreactor/core/publisher/Mono;"));
-        assertEquals("Net", Classifier.classify("io.micronaut.http.client.HttpClient", "retrieve", "(Lio/micronaut/http/HttpRequest;)Lorg/reactivestreams/Publisher;"));
+        assertEquals(Effect.NET, Classifier.classify("io.grpc.stub.ClientCalls", "blockingUnaryCall", "(Lio/grpc/Channel;Lio/grpc/MethodDescriptor;Lio/grpc/CallOptions;Ljava/lang/Object;)Ljava/lang/Object;"));
+        assertEquals(Effect.NET, Classifier.classify("okhttp3.WebSocket", "send", "(Ljava/lang/String;)Z"));
+        assertEquals(Effect.NET, Classifier.classify("io.vertx.ext.web.client.HttpRequest", "send", "()Lio/vertx/core/Future;")); // terminal, not the get/post builder
+        assertEquals(Effect.NET, Classifier.classify("reactor.netty.http.client.HttpClient", "response", "()Lreactor/core/publisher/Mono;"));
+        assertEquals(Effect.NET, Classifier.classify("io.micronaut.http.client.HttpClient", "retrieve", "(Lio/micronaut/http/HttpRequest;)Lorg/reactivestreams/Publisher;"));
         // FABRICATION-avoidance: builders / metadata getters of these drivers stay pure (verb-gated)
         assertNull(Classifier.classify("com.mongodb.client.MongoCollection", "getNamespace", "()Lcom/mongodb/MongoNamespace;"));
         assertNull(Classifier.classify("com.mongodb.client.MongoCollection", "withReadPreference", "(Lcom/mongodb/ReadPreference;)Lcom/mongodb/client/MongoCollection;"));
@@ -638,17 +640,17 @@ class HelpersTest {
     void round12FixesAndCompleteness() {
         // jOOQ batch: builder pure, executor variants Db
         assertNull(Classifier.classify("org.jooq.DSLContext", "batch", "(Lorg/jooq/Query;)Lorg/jooq/Batch;")); // builder
-        assertEquals("Db", Classifier.classify("org.jooq.DSLContext", "batchStore", "(Ljava/util/Collection;)[I"));
+        assertEquals(Effect.DB, Classifier.classify("org.jooq.DSLContext", "batchStore", "(Ljava/util/Collection;)[I"));
         // completeness
-        assertEquals("Fs", Classifier.classify("org.apache.commons.io.FileUtils", "readFileToString", "(Ljava/io/File;)Ljava/lang/String;"));
-        assertEquals("Fs", Classifier.classify("org.apache.commons.io.FileUtils", "writeStringToFile", "(Ljava/io/File;Ljava/lang/String;)V"));
-        assertEquals("Fs", Classifier.classify("com.google.common.io.Files", "toByteArray", "(Ljava/io/File;)[B"));
-        assertEquals("Exec", Classifier.classify("org.apache.commons.exec.DefaultExecutor", "execute", "(Lorg/apache/commons/exec/CommandLine;)I"));
-        assertEquals("Exec", Classifier.classify("org.zeroturnaround.exec.ProcessExecutor", "execute", "()Lorg/zeroturnaround/exec/ProcessResult;"));
-        assertEquals("Db", Classifier.classify("org.jdbi.v3.core.Handle", "execute", "(Ljava/lang/String;)I"));
-        assertEquals("Db", Classifier.classify("org.springframework.data.jdbc.core.JdbcAggregateTemplate", "save", "(Ljava/lang/Object;)Ljava/lang/Object;"));
-        assertEquals("Net", Classifier.classify("org.apache.hc.client5.http.impl.async.CloseableHttpAsyncClient", "execute", "(Lorg/apache/hc/core5/http/nio/AsyncRequestProducer;Lorg/apache/hc/core5/http/nio/AsyncResponseConsumer;Lorg/apache/hc/core5/concurrent/FutureCallback;)Ljava/util/concurrent/Future;"));
-        assertEquals("Env", Classifier.classify("org.apache.commons.lang3.SystemUtils", "getEnvironmentVariable", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"));
+        assertEquals(Effect.FS, Classifier.classify("org.apache.commons.io.FileUtils", "readFileToString", "(Ljava/io/File;)Ljava/lang/String;"));
+        assertEquals(Effect.FS, Classifier.classify("org.apache.commons.io.FileUtils", "writeStringToFile", "(Ljava/io/File;Ljava/lang/String;)V"));
+        assertEquals(Effect.FS, Classifier.classify("com.google.common.io.Files", "toByteArray", "(Ljava/io/File;)[B"));
+        assertEquals(Effect.EXEC, Classifier.classify("org.apache.commons.exec.DefaultExecutor", "execute", "(Lorg/apache/commons/exec/CommandLine;)I"));
+        assertEquals(Effect.EXEC, Classifier.classify("org.zeroturnaround.exec.ProcessExecutor", "execute", "()Lorg/zeroturnaround/exec/ProcessResult;"));
+        assertEquals(Effect.DB, Classifier.classify("org.jdbi.v3.core.Handle", "execute", "(Ljava/lang/String;)I"));
+        assertEquals(Effect.DB, Classifier.classify("org.springframework.data.jdbc.core.JdbcAggregateTemplate", "save", "(Ljava/lang/Object;)Ljava/lang/Object;"));
+        assertEquals(Effect.NET, Classifier.classify("org.apache.hc.client5.http.impl.async.CloseableHttpAsyncClient", "execute", "(Lorg/apache/hc/core5/http/nio/AsyncRequestProducer;Lorg/apache/hc/core5/http/nio/AsyncResponseConsumer;Lorg/apache/hc/core5/concurrent/FutureCallback;)Ljava/util/concurrent/Future;"));
+        assertEquals(Effect.ENV, Classifier.classify("org.apache.commons.lang3.SystemUtils", "getEnvironmentVariable", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"));
         // fabrication-avoidance: config setters / builders of these owners stay pure
         assertNull(Classifier.classify("org.zeroturnaround.exec.ProcessExecutor", "directory", "(Ljava/io/File;)Lorg/zeroturnaround/exec/ProcessExecutor;"));
         assertNull(Classifier.classify("org.apache.commons.io.FileUtils", "getTempDirectory", "()Ljava/io/File;")); // returns a path, no I/O
@@ -662,14 +664,14 @@ class HelpersTest {
         assertNull(Classifier.classify("com.google.common.io.Files", "asByteSource", "(Ljava/io/File;)Lcom/google/common/io/ByteSource;"));
         assertNull(Classifier.classify("com.google.common.io.Files", "asCharSink", "(Ljava/io/File;Ljava/nio/charset/Charset;)Lcom/google/common/io/CharSink;"));
         // but the eager verbs stay Fs
-        assertEquals("Fs", Classifier.classify("com.google.common.io.Files", "write", "([BLjava/io/File;)V"));
+        assertEquals(Effect.FS, Classifier.classify("com.google.common.io.Files", "write", "([BLjava/io/File;)V"));
         // ImageIO: File → Fs, URL → Net, write(File) → Fs; stream overloads pure
-        assertEquals("Fs", Classifier.classify("javax.imageio.ImageIO", "read", "(Ljava/io/File;)Ljava/awt/image/BufferedImage;"));
-        assertEquals("Net", Classifier.classify("javax.imageio.ImageIO", "read", "(Ljava/net/URL;)Ljava/awt/image/BufferedImage;"));
-        assertEquals("Fs", Classifier.classify("javax.imageio.ImageIO", "write", "(Ljava/awt/image/RenderedImage;Ljava/lang/String;Ljava/io/File;)Z"));
+        assertEquals(Effect.FS, Classifier.classify("javax.imageio.ImageIO", "read", "(Ljava/io/File;)Ljava/awt/image/BufferedImage;"));
+        assertEquals(Effect.NET, Classifier.classify("javax.imageio.ImageIO", "read", "(Ljava/net/URL;)Ljava/awt/image/BufferedImage;"));
+        assertEquals(Effect.FS, Classifier.classify("javax.imageio.ImageIO", "write", "(Ljava/awt/image/RenderedImage;Ljava/lang/String;Ljava/io/File;)Z"));
         assertNull(Classifier.classify("javax.imageio.ImageIO", "read", "(Ljava/io/InputStream;)Ljava/awt/image/BufferedImage;")); // stream overload pure
         // JMX remote
-        assertEquals("Net", Classifier.classify("javax.management.remote.JMXConnectorFactory", "connect", "(Ljavax/management/remote/JMXServiceURL;)Ljavax/management/remote/JMXConnector;"));
+        assertEquals(Effect.NET, Classifier.classify("javax.management.remote.JMXConnectorFactory", "connect", "(Ljavax/management/remote/JMXServiceURL;)Ljavax/management/remote/JMXConnector;"));
         // the new SQL-bearing owners (so their table literals reach the gate)
         assertTrue(Candor.isSqlBearingOwner("org/jooq/DSLContext"));
         assertTrue(Candor.isSqlBearingOwner("org/jdbi/v3/core/Handle"));
@@ -682,22 +684,22 @@ class HelpersTest {
     @Test
     void round14Completeness() {
         // logging resource handlers — the ctor opens a socket/file/DB
-        assertEquals("Net", Classifier.classify("java.util.logging.SocketHandler", "<init>", "(Ljava/lang/String;I)V"));
-        assertEquals("Fs", Classifier.classify("java.util.logging.FileHandler", "<init>", "(Ljava/lang/String;)V"));
-        assertEquals("Net", Classifier.classify("ch.qos.logback.classic.net.SocketAppender", "start", "()V"));
-        assertEquals("Fs", Classifier.classify("ch.qos.logback.core.FileAppender", "openFile", "(Ljava/lang/String;)V"));
-        assertEquals("Db", Classifier.classify("org.apache.logging.log4j.core.appender.db.jdbc.JDBCAppender", "append", "(Lorg/apache/logging/log4j/core/LogEvent;)V"));
+        assertEquals(Effect.NET, Classifier.classify("java.util.logging.SocketHandler", "<init>", "(Ljava/lang/String;I)V"));
+        assertEquals(Effect.FS, Classifier.classify("java.util.logging.FileHandler", "<init>", "(Ljava/lang/String;)V"));
+        assertEquals(Effect.NET, Classifier.classify("ch.qos.logback.classic.net.SocketAppender", "start", "()V"));
+        assertEquals(Effect.FS, Classifier.classify("ch.qos.logback.core.FileAppender", "openFile", "(Ljava/lang/String;)V"));
+        assertEquals(Effect.DB, Classifier.classify("org.apache.logging.log4j.core.appender.db.jdbc.JDBCAppender", "append", "(Lorg/apache/logging/log4j/core/LogEvent;)V"));
         // config getter of a handler stays pure (verb-gated, not whole-owner)
         assertNull(Classifier.classify("java.util.logging.SocketHandler", "getLevel", "()Ljava/util/logging/Level;"));
         // a plain Logger emit is still Log (not swallowed)
-        assertEquals("Log", Classifier.classify("java.util.logging.Logger", "info", "(Ljava/lang/String;)V"));
+        assertEquals(Effect.LOG, Classifier.classify("java.util.logging.Logger", "info", "(Ljava/lang/String;)V"));
         // JavaFX clipboard
-        assertEquals("Clipboard", Classifier.classify("javafx.scene.input.Clipboard", "setContent", "(Ljavafx/scene/input/ClipboardContent;)Z"));
-        assertEquals("Clipboard", Classifier.classify("javafx.scene.input.Clipboard", "getString", "()Ljava/lang/String;"));
+        assertEquals(Effect.CLIPBOARD, Classifier.classify("javafx.scene.input.Clipboard", "setContent", "(Ljavafx/scene/input/ClipboardContent;)Z"));
+        assertEquals(Effect.CLIPBOARD, Classifier.classify("javafx.scene.input.Clipboard", "getString", "()Ljava/lang/String;"));
         assertNull(Classifier.classify("javafx.scene.input.Clipboard", "toString", "()Ljava/lang/String;")); // §4 pure
         // Kotlin collection entropy
-        assertEquals("Rand", Classifier.classify("kotlin.collections.CollectionsKt", "random", "(Ljava/util/Collection;Lkotlin/random/Random;)Ljava/lang/Object;"));
-        assertEquals("Rand", Classifier.classify("kotlin.ranges.RangesKt", "random", "(Lkotlin/ranges/IntRange;Lkotlin/random/Random;)I"));
+        assertEquals(Effect.RAND, Classifier.classify("kotlin.collections.CollectionsKt", "random", "(Ljava/util/Collection;Lkotlin/random/Random;)Ljava/lang/Object;"));
+        assertEquals(Effect.RAND, Classifier.classify("kotlin.ranges.RangesKt", "random", "(Lkotlin/ranges/IntRange;Lkotlin/random/Random;)I"));
         assertNull(Classifier.classify("kotlin.collections.CollectionsKt", "first", "(Ljava/util/List;)Ljava/lang/Object;")); // pure verb stays pure
     }
 
@@ -714,11 +716,11 @@ class HelpersTest {
         assertNull(Classifier.classify("javax.net.ssl.SSLSocket", "setEnabledCipherSuites", "([Ljava/lang/String;)V"));
         assertNull(Classifier.classify("javax.net.ssl.SSLSocket", "setUseClientMode", "(Z)V"));
         // but the real I/O on these types stays Net
-        assertEquals("Net", Classifier.classify("java.net.MulticastSocket", "send", "(Ljava/net/DatagramPacket;)V"));
-        assertEquals("Net", Classifier.classify("javax.net.ssl.SSLSocket", "startHandshake", "()V"));
-        assertEquals("Net", Classifier.classify("javax.net.ssl.SSLSocket", "getOutputStream", "()Ljava/io/OutputStream;"));
+        assertEquals(Effect.NET, Classifier.classify("java.net.MulticastSocket", "send", "(Ljava/net/DatagramPacket;)V"));
+        assertEquals(Effect.NET, Classifier.classify("javax.net.ssl.SSLSocket", "startHandshake", "()V"));
+        assertEquals(Effect.NET, Classifier.classify("javax.net.ssl.SSLSocket", "getOutputStream", "()Ljava/io/OutputStream;"));
         // Apache fluent facade
-        assertEquals("Net", Classifier.classify("org.apache.hc.client5.http.fluent.Request", "execute", "()Lorg/apache/hc/client5/http/fluent/Response;"));
+        assertEquals(Effect.NET, Classifier.classify("org.apache.hc.client5.http.fluent.Request", "execute", "()Lorg/apache/hc/client5/http/fluent/Response;"));
     }
 
     /** Round-10 JDBC silent-pure adds: ResultSet cursor moves, Connection.isValid, Driver.connect,
@@ -726,14 +728,14 @@ class HelpersTest {
      *  getters stay pure (no fabrication). */
     @Test
     void round10JdbcSilentPureAdds() {
-        assertEquals("Db", Classifier.classify("java.sql.ResultSet", "next", "()Z"));
-        assertEquals("Db", Classifier.classify("java.sql.ResultSet", "refreshRow", "()V"));
+        assertEquals(Effect.DB, Classifier.classify("java.sql.ResultSet", "next", "()Z"));
+        assertEquals(Effect.DB, Classifier.classify("java.sql.ResultSet", "refreshRow", "()V"));
         assertNull(Classifier.classify("java.sql.ResultSet", "getString", "(I)Ljava/lang/String;"));   // in-memory row read
-        assertEquals("Db", Classifier.classify("java.sql.Connection", "isValid", "(I)Z"));
-        assertEquals("Db", Classifier.classify("java.sql.Driver", "connect", "(Ljava/lang/String;Ljava/util/Properties;)Ljava/sql/Connection;"));
-        assertEquals("Db", Classifier.classify("java.sql.DatabaseMetaData", "getTables", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;)Ljava/sql/ResultSet;"));
+        assertEquals(Effect.DB, Classifier.classify("java.sql.Connection", "isValid", "(I)Z"));
+        assertEquals(Effect.DB, Classifier.classify("java.sql.Driver", "connect", "(Ljava/lang/String;Ljava/util/Properties;)Ljava/sql/Connection;"));
+        assertEquals(Effect.DB, Classifier.classify("java.sql.DatabaseMetaData", "getTables", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;)Ljava/sql/ResultSet;"));
         assertNull(Classifier.classify("java.sql.DatabaseMetaData", "getDatabaseProductName", "()Ljava/lang/String;")); // capability getter pure
-        assertEquals("Db", Classifier.classify("com.zaxxer.hikari.HikariDataSource", "getConnection", "()Ljava/sql/Connection;"));
+        assertEquals(Effect.DB, Classifier.classify("com.zaxxer.hikari.HikariDataSource", "getConnection", "()Ljava/sql/Connection;"));
     }
 
     /** Round-10 IPv6 hostPart gate-evasion: a naive first-colon split collapsed `2001:db8::1` to `2001`, so

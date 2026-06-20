@@ -670,8 +670,8 @@ public class Candor {
             for (AbstractInsnNode insn : mn.instructions) {
                 if (insn instanceof MethodInsnNode min) {
                     String owner = min.owner.replace('/', '.');
-                    String effect = Classifier.classify(owner, min.name, min.desc);
-                    if (effect != null) dir.add(effect);
+                    Effect effect = Classifier.classify(owner, min.name, min.desc);
+                    if (effect != null) dir.add(effect.specName());
                     // Executor hand-off: `es.submit(task)`/`execute`/`schedule*` and `new Thread(task)` invoke
                     // the task's run()/call() OUTSIDE project code. A fresh `new R()` (the NEW-site edge
                     // attributes R.run) or an inline lambda (edged at its indy) is already captured; an OPAQUE
@@ -818,13 +818,13 @@ public class Candor {
                         }
                     }
                     // An injection-class effect on a caller-derived argument is an injection surface.
-                    if (taintFrames != null && effect != null && INJECTION.contains(effect)
+                    if (taintFrames != null && effect != null && INJECTION.contains(effect.specName())
                             && argsTainted(taintFrames[mn.instructions.indexOf(min)], min))
-                        tainted.computeIfAbsent(id, k -> new TreeSet<>()).add(effect);
-                    if ("Unknown".equals(effect)) // reflection / dynamic invoke (classify §)
+                        tainted.computeIfAbsent(id, k -> new TreeSet<>()).add(effect.specName());
+                    if (effect == Effect.UNKNOWN) // reflection / dynamic invoke (classify §)
                         unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                                 .add("reflect:" + owner + "." + min.name);
-                    if ("Fs".equals(effect)) { // non-breaking read/write refinement of Fs
+                    if (effect == Effect.FS) { // non-breaking read/write refinement of Fs
                         List<String> k = fsKind(owner, min.name);
                         if (!k.isEmpty()) fsDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(k);
                     }
@@ -926,7 +926,7 @@ public class Candor {
                     //      formerly a value-flow backlog). FAIL-CLOSED unless the host is cheaply attributable
                     //      to the terminal's receiver — inline `new URL("lit").openStream()` or a const-URL
                     //      local — so the common inline-literal-URL case still certifies (urlTerminalHost).
-                    if ("Net".equals(effect)) {
+                    if (effect == Effect.NET) {
                         boolean hostLessOwner = !isHostBearingOwner(min.owner);
                         boolean runtimeStringHost = isHostBearingOwner(min.owner)
                                 && min.desc.startsWith("(Ljava/lang/String;") && !capturedHostHere;
@@ -1282,8 +1282,8 @@ public class Candor {
                                 // call (`f.delete()`) classifies; the ref (`removeIf(File::delete)`) did not —
                                 // a silent-pure hole found by a streams/method-ref sweep. A pure target →
                                 // null → nothing added (no fabrication).
-                                String eff = Classifier.classify(h.getOwner().replace('/', '.'), h.getName(), h.getDesc());
-                                if (eff != null) dir.add(eff);
+                                Effect eff = Classifier.classify(h.getOwner().replace('/', '.'), h.getName(), h.getDesc());
+                                if (eff != null) dir.add(eff.specName());
                             }
                         }
                     }

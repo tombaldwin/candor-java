@@ -38,10 +38,6 @@ final class Cha {
         return isClosedEnumOwner(internal) || isFullyClosedSealed(internal);
     }
 
-    // Memoized verdict of the (transitive) sealed-closure walk — called in the per-instruction hot loop.
-    // CLEARED in resetState (a stale verdict across scans would be the prior-review "state riding a
-    // different-lifecycle structure" bug — the conformance harness drives several scans in one JVM).
-
     /** True iff {@code internal} is a SEALED type whose ENTIRE transitive permitted-subtype closure is (a)
      *  fully VISIBLE (every permit in `byName` — else candor can't analyze its effect → silent-pure) and (b)
      *  fully CLOSED (every permit is `final`/record OR itself a closed sealed type — a `non-sealed` permit
@@ -57,8 +53,6 @@ final class Cha {
         ctx.sealedClosedMemo.put(internal, r);
         return r;
     }
-
-    // Memoized: does a SEALED type's transitive permit-closure name a subtype NOT on the classpath?
 
     /** True iff {@code internal} is a SEALED type whose transitive permit-closure includes a subtype absent
      *  from `byName`. Then candor KNOWS (from the `permits` attribute) a specific subtype exists that it

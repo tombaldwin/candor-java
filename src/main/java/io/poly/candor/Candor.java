@@ -122,7 +122,9 @@ public class Candor {
      *  state lives in static collections (an analysis cache the binary fills once per run, not a
      *  singleton the process owns); without this a SECOND in-process scan would double-count edges
      *  and inherit the prior run's repo/entity/clinit/rule sets — fabricating effects from leftover
-     *  state. Resetting here makes {@link #runScan} REENTRANT (the audit's highest structural risk).
+     *  state. Resetting here makes {@link #runScan} re-entrant for SEQUENTIAL in-process scans (the
+     *  audit's highest structural risk). It is NOT thread-safe: {@code ctx} is a process-global handle,
+     *  so concurrent scans would clobber each other — LB-1b threads the context per scan to fix that.
      *  The immutable Set.of(...) markers (REPO_MARKERS, AMBIENT, KNOWN_EFFECTS, INJECTION,
      *  PATH_CTOR_OWNERS) are constants, not state, and are deliberately left untouched. */
     static void resetState() {
@@ -131,7 +133,8 @@ public class Candor {
         ctx = new AnalysisContext();
     }
 
-    /** The analysis core, factored out of {@link #main} so it is REENTRANT (resets first) and free of
+    /** The analysis core, factored out of {@link #main} so it is re-entrant for sequential reuse (resets
+     *  first; not thread-safe — see {@link #resetState}) and free of
      *  System.exit (so it is unit-testable in-process): reset state, load the target, index overloads
      *  + CHA subtypes, compute Spring types, chain CANDOR_DEPS, run per-method analysis, resolve
      *  literal-reflection edges, then return the inferred per-method effect sets from the fixpoint. */
@@ -324,8 +327,11 @@ public class Candor {
             return; // unreachable — exit(2) above; satisfies the definite-assignment of `inferred`
         }
 
-        // JSON output is orthogonal — write first so `--json` can snapshot a baseline.
-        if (jsonOut != null) { writeJson(inferred, jsonOut); writeCallgraph(jsonOut); writeHierarchy(jsonOut); }
+        // JSON output is orthogonal — write first so `--json` can snapshot a baseline. The report needs
+        // the all-classes ClassConformance; compute it once here so the gate below can reuse it rather
+        // than recompute (the §5 two-pass walk) on a --json + CANDOR_STRICT run.
+        ClassConformance ccFull = (jsonOut != null) ? classConformance(inferred) : null;
+        if (jsonOut != null) { writeJson(inferred, jsonOut, ccFull); writeCallgraph(jsonOut); writeHierarchy(jsonOut); }
 
         // The κ-coverage disclosure (mirrors the Rust/TS receipts): external packages the bytecode
         // demonstrably calls where the classifier never fired — invisible, not Unknown. Per-scan
@@ -373,7 +379,9 @@ public class Candor {
         }
 
         int violations = 0;
-        if (strict != null) violations += checkConformance(inferred, strict);
+        if (strict != null) violations += (ccFull != null)
+                ? checkConformance(ccFull, strict)        // reuse the report's full conformance
+                : checkConformance(inferred, strict);     // gate-only: scope-filtered declared
         if (noAmbient != null) violations += checkNoAmbient(inferred, noAmbient);
         if (baseline != null) violations += checkBaseline(inferred, baseline);
         if (policy != null) violations += checkPolicy(inferred, policy);
@@ -398,10 +406,14 @@ public class Candor {
     }
 
     static int checkConformance(Map<String, EffectSet> inferred, String scope) {
-        // performed/declared per class (candor-spec §5), computed the ONE shared way. The gate reads only
-        // in-scope classes (the gateScopeCovers skip below), so `declared` is built only for those — on a
-        // narrow CANDOR_STRICT scope over a large jar that avoids a whole-jar field/type walk.
-        ClassConformance cc = classConformance(inferred, scope);
+        // Gate-only path: build performed/declared (candor-spec §5) the ONE shared way, with `declared`
+        // scoped to in-scope classes (the gateScopeCovers skip below reads only those) — on a narrow
+        // CANDOR_STRICT scope over a large jar that avoids a whole-jar field/type walk. When --json is also
+        // set, main passes the full ClassConformance it already built for the report (checkConformance(cc,…)).
+        return checkConformance(classConformance(inferred, scope), scope);
+    }
+
+    static int checkConformance(ClassConformance cc, String scope) {
         int v = 0;
         for (ClassNode cn : ctx.ALL) {
             String dc = cn.name.replace('/', '.');

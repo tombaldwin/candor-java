@@ -19,11 +19,17 @@ import static io.poly.candor.Cha.*;
  *  envelope record.) See candor-spec/MODEL.md. */
 final class ReportWriter {
     static void writeJson(Map<String, EffectSet> inferred, String out) throws IOException {
+        writeJson(inferred, out, classConformance(inferred));
+    }
+
+    /** As {@link #writeJson(Map, String)} but reusing a precomputed {@link ClassConformance}. The report
+     *  needs the all-classes form; {@link Candor#main} computes it once and shares it with the gate so the
+     *  two-pass class/method/field walk isn't repeated on a {@code --json} + {@code CANDOR_STRICT} run. */
+    static void writeJson(Map<String, EffectSet> inferred, String out, ClassConformance cc) throws IOException {
         // Per-class conformance (candor-spec §5), computed the ONE shared way (see classConformance):
         // declared = effects the class's injected dependency types can supply; performed = union over
         // its methods. We attach declared/undeclared/overdeclared to each method entry so an agent can
         // consume conformance from the JSON, not just the AS-EFF diagnostics.
-        ClassConformance cc = classConformance(inferred);
         Map<String, EffectSet> performed = cc.performed();
         Map<String, EffectSet> declaredByClass = cc.declared();
         Map<String, String> fnToClass = cc.fnToClass();

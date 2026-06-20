@@ -105,13 +105,14 @@ final class Policy {
             for (PolicyRule.Deny r : ctx.denyRules) {
                 if (!scopeMatches(fn, r.scope())) continue;
                 // pure rule (empty effects) ⇒ any effect except Unknown (handled by AS-EFF-003);
-                // deny rule ⇒ the inferred effects that intersect the denied set.
-                List<String> bad = r.effects().isEmpty()
-                        ? e.getValue().without(Effect.UNKNOWN).toNames()
-                        : e.getValue().intersect(r.effects()).toNames();
+                // deny rule ⇒ the inferred effects that intersect the denied set. Test the EnumSet
+                // directly; only materialize the sorted names on an actual violation (rare).
+                EffectSet bad = r.effects().isEmpty()
+                        ? e.getValue().without(Effect.UNKNOWN)
+                        : e.getValue().intersect(r.effects());
                 if (!bad.isEmpty()) {
                     diag(DiagnosticCode.AS_EFF_006, "`%s` performs { %s }, forbidden by policy%s: `%s`",
-                            fn, String.join(", ", bad),
+                            fn, String.join(", ", bad.toNames()),
                             r.scope().isEmpty() ? "" : " (scope `" + r.scope() + "`)", r.src());
                     v++;
                 }

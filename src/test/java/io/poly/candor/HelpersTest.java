@@ -445,13 +445,13 @@ class HelpersTest {
         registerClass("p/Lonely", "java/lang/Object");                   // declares nothing
 
         // a `new Base` dispatch resolves to Base.compute itself
-        assertEquals("p.Base.compute", Candor.monomorphicTarget("p/Base", "compute", "()I"));
+        assertEquals("p.Base.compute", Cha.monomorphicTarget("p/Base", "compute", "()I"));
         // a `new Dirty` dispatch resolves to Dirty's OWN override, never the pure sibling Base
-        assertEquals("p.Dirty.compute", Candor.monomorphicTarget("p/Dirty", "compute", "()I"));
+        assertEquals("p.Dirty.compute", Cha.monomorphicTarget("p/Dirty", "compute", "()I"));
         // a `new Plain` (no override) resolves UP to the nearest concrete super that declares it
-        assertEquals("p.Base.compute", Candor.monomorphicTarget("p/Plain", "compute", "()I"));
+        assertEquals("p.Base.compute", Cha.monomorphicTarget("p/Plain", "compute", "()I"));
         // no project impl anywhere in the chain → null, so the caller keeps the CHA (sound fall-through)
-        assertNull(Candor.monomorphicTarget("p/Lonely", "compute", "()I"));
+        assertNull(Cha.monomorphicTarget("p/Lonely", "compute", "()I"));
     }
 
     /** Arbitrary-code-execution / opaque security sinks → Unknown (eval / untrusted-deser RCE / XXE / FFI). */

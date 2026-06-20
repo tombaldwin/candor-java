@@ -8,6 +8,7 @@ import com.google.gson.*;
 import org.objectweb.asm.tree.*;
 import static io.poly.candor.Candor.*;
 import static io.poly.candor.Literals.*;
+import static io.poly.candor.Cha.*;
 
 /** Report output — writeJson/writeCallgraph/writeHierarchy/writeAtomic + reportUnknownSources +
  *  provenance/release (the build-id header). EXTRACTED from Candor.java (refactor P5-Report); reads the

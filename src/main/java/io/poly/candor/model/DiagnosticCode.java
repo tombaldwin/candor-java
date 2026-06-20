@@ -1,8 +1,9 @@
 package io.poly.candor.model;
 
 /**
- * A candor diagnostic code (candor-spec §6, the {@code AS-EFF-00x} family). candor-java emits 001–009;
- * AS-EFF-010 (containment regression) is defined by the spec but not implemented here.
+ * A candor diagnostic code (candor-spec §6, the {@code AS-EFF-00x} family). The full vocabulary is
+ * modelled (001–010); candor-java currently emits 001–009 — AS-EFF-010 (containment regression) is
+ * defined for completeness but not yet emitted by this engine.
  *
  * <ul>
  *   <li>001 performs an undeclared effect · 002 declares an unused capability · 003 unresolved calls
@@ -23,7 +24,8 @@ public enum DiagnosticCode {
     AS_EFF_006,
     AS_EFF_007,
     AS_EFF_008,
-    AS_EFF_009;
+    AS_EFF_009,
+    AS_EFF_010;
 
     /** The spec code string, e.g. {@code "AS-EFF-006"}. */
     public String code() {

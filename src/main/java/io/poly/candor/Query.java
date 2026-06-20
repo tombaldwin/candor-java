@@ -188,12 +188,12 @@ public final class Query {
                 if (!f.fs().isEmpty()) m.put("fs", f.fs());
                 // The engine resolves Net endpoints (hosts) per method; show MUST surface them like the
                 // Rust engine (SPEC §3.1 `hosts?`) — the Effector record previously never parsed the field.
-                if (f.hosts() != null && !f.hosts().isEmpty()) m.put("hosts", f.hosts());
+                if (!f.hosts().isEmpty()) m.put("hosts", f.hosts());
                 // Literal effect surfaces (tables/paths/cmds) mirror fs/hosts — the Rust engine's show
                 // surfaces them too; omitting them hid e.g. a Db fn's `tables`. Omit when empty.
-                if (f.tables() != null && !f.tables().isEmpty()) m.put("tables", f.tables());
-                if (f.paths() != null && !f.paths().isEmpty()) m.put("paths", f.paths());
-                if (f.cmds() != null && !f.cmds().isEmpty()) m.put("cmds", f.cmds());
+                if (!f.tables().isEmpty()) m.put("tables", f.tables());
+                if (!f.paths().isEmpty()) m.put("paths", f.paths());
+                if (!f.cmds().isEmpty()) m.put("cmds", f.cmds());
                 m.put("unresolved", f.unresolved());
                 out.add(m);
             }
@@ -616,7 +616,7 @@ public final class Query {
             int dot = f.fn().lastIndexOf('.');
             String mod = dot > 0 ? f.fn().substring(0, dot) : f.fn(); // declaring class
             mods.computeIfAbsent(mod, k -> new TreeSet<>())
-                    .addAll(f.inferred().toNames().stream().filter(x -> !x.equals("Unknown")).toList());
+                    .addAll(f.inferred().without(Effect.UNKNOWN).toNames());
             counts.merge(mod, 1, Integer::sum);
         }
         if (json) {
@@ -797,7 +797,7 @@ public final class Query {
     static int blindspots(List<Effector> fns, boolean json) {
         Map<String, List<String>> rev = new HashMap<>();
         for (Effector f : fns) for (String c : f.calls()) rev.computeIfAbsent(c, k -> new ArrayList<>()).add(f.fn());
-        int totalUnknown = (int) fns.stream().filter(f -> f.inferred().toNames().contains("Unknown")).count();
+        int totalUnknown = (int) fns.stream().filter(f -> f.inferred().hasUnknown()).count();
         List<Map<String, Object>> sources = new ArrayList<>();
         for (Effector f : fns) {
             if (f.unknownWhy() == null || f.unknownWhy().isEmpty()) continue; // a SOURCE carries its own why
@@ -1037,7 +1037,7 @@ public final class Query {
             if (who.size() > 3) examples += ", …";
             System.out.printf("  %-10s %3d  (%s)%s%n", e, who.size(), examples, tag);
         }
-        long pure = entries.stream().filter(f -> f.inferred().toNames().isEmpty()).count();
+        long pure = entries.stream().filter(f -> f.inferred().isEmpty()).count();
         System.out.println("\n  " + entries.size() + " entry point" + (entries.size() == 1 ? "" : "s")
                 + "; " + pure + " perform no effect (pure roots).");
         return 0;

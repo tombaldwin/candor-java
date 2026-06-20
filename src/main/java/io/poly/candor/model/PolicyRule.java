@@ -1,6 +1,6 @@
 package io.poly.candor.model;
 
-import java.util.Set;
+import java.util.SortedSet;
 
 /**
  * An architecture-as-code policy rule (candor-spec §6.2). The three rule kinds of the DSL, as a
@@ -15,13 +15,14 @@ import java.util.Set;
  * </ul>
  *
  * The JVM realization of the spec's policy rule kinds (Rust's {@code PolicyRule}/{@code AllowRule}/
- * {@code LayerRule}). {@code values} on {@link Allow} is kept in sorted order (the wire surface).
+ * {@code LayerRule}). {@code values} on {@link Allow} is a {@link SortedSet} — the wire surface order is
+ * encoded in the type, not just promised in prose.
  */
 public sealed interface PolicyRule permits PolicyRule.Deny, PolicyRule.Allow, PolicyRule.Forbid {
 
     record Deny(EffectSet effects, String scope, String src) implements PolicyRule {}
 
-    record Allow(Effect effect, String scope, Set<String> values, String src) implements PolicyRule {}
+    record Allow(Effect effect, String scope, SortedSet<String> values, String src) implements PolicyRule {}
 
     record Forbid(String from, String to) implements PolicyRule {}
 }

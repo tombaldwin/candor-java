@@ -19,35 +19,14 @@ import static io.poly.candor.Cha.*;
  *  envelope record.) See candor-spec/MODEL.md. */
 final class ReportWriter {
     static void writeJson(Map<String, EffectSet> inferred, String out) throws IOException {
-        // Per-class conformance (same model as checkConformance, SPEC §5): declared = effects
-        // the class's injected dependency types can supply; performed = union over its methods.
-        // We attach declared/undeclared/overdeclared to each method entry so an agent can
-        // consume conformance from the JSON, not just the AS-EFF diagnostics. The unit of
-        // declaration in the DI idiom is the class, projected onto each of its methods.
-        Map<String, TreeSet<String>> performed = new HashMap<>();
-        Map<String, String> fnToClass = new HashMap<>();
-        for (ClassNode cn : ALL) {
-            String dc = cn.name.replace('/', '.');
-            TreeSet<String> p = performed.computeIfAbsent(dc, k -> new TreeSet<>());
-            for (MethodNode mn : cn.methods) {
-                if (mn.name.startsWith("<")) continue;
-                String fn = methodId(dc, mn.name, mn.desc);
-                fnToClass.put(fn, dc);
-                var inf = inferred.get(fn);
-                if (inf != null) p.addAll(inf.toNames());
-            }
-        }
-        Map<String, TreeSet<String>> declaredByClass = new HashMap<>();
-        for (ClassNode cn : ALL) {
-            String dc = cn.name.replace('/', '.');
-            TreeSet<String> declared = new TreeSet<>();
-            if (cn.fields != null)
-                for (FieldNode f : cn.fields) {
-                    String t = fieldTypeInternal(f.desc);
-                    if (t != null) declared.addAll(typeEffects(t, performed));
-                }
-            declaredByClass.put(dc, declared);
-        }
+        // Per-class conformance (candor-spec §5), computed the ONE shared way (see classConformance):
+        // declared = effects the class's injected dependency types can supply; performed = union over
+        // its methods. We attach declared/undeclared/overdeclared to each method entry so an agent can
+        // consume conformance from the JSON, not just the AS-EFF diagnostics.
+        ClassConformance cc = classConformance(inferred);
+        Map<String, EffectSet> performed = cc.performed();
+        Map<String, EffectSet> declaredByClass = cc.declared();
+        Map<String, String> fnToClass = cc.fnToClass();
 
         Map<String, TreeSet<String>> fsAcc = fsFixpoint();
         Map<String, TreeSet<String>> hostsAcc = literalFixpoint(hostsDirect);
@@ -74,24 +53,21 @@ final class ReportWriter {
                     if (blindAcc.getOrDefault(e.getKey(), new TreeSet<>()).stream().anyMatch(globalBlind::contains))
                         return true;
                     String dc = fnToClass.get(e.getKey());
-                    return dc != null && !declaredByClass.getOrDefault(dc, new TreeSet<>()).isEmpty();
+                    return dc != null && !declaredByClass.getOrDefault(dc, EffectSet.empty()).isEmpty();
                 })
                 .sorted(Map.Entry.comparingByKey())
                 .forEach(e -> {
                     String fn = e.getKey();
                     EffectSet inf = e.getValue();
                     String dc = fnToClass.get(fn);
-                    TreeSet<String> declared = dc == null ? new TreeSet<>()
-                            : declaredByClass.getOrDefault(dc, new TreeSet<>());
-                    TreeSet<String> perf = dc == null ? new TreeSet<>()
-                            : performed.getOrDefault(dc, new TreeSet<>());
+                    EffectSet declared = dc == null ? EffectSet.empty()
+                            : declaredByClass.getOrDefault(dc, EffectSet.empty());
+                    EffectSet perf = dc == null ? EffectSet.empty()
+                            : performed.getOrDefault(dc, EffectSet.empty());
                     // undeclared = inferred − declared (the AS-EFF-001 surface; Unknown excluded,
                     // it's handled by AS-EFF-003). overdeclared = class declares but never performs.
-                    List<String> undeclared = inf.toNames().stream()
-                            .filter(x -> !x.equals("Unknown") && !declared.contains(x))
-                            .sorted().collect(Collectors.toList());
-                    List<String> overdeclared = declared.stream()
-                            .filter(x -> !perf.contains(x)).sorted().collect(Collectors.toList());
+                    EffectSet undeclared = inf.minus(declared).without(Effect.UNKNOWN);
+                    EffectSet overdeclared = declared.minus(perf);
                     // HONESTY: the external packages this method transitively reaches that candor could NOT
                     // analyse (κ floored them, never classified anywhere) — effects through them are NOT in
                     // `inferred`. So `inferred` is never read as a completeness claim. Omitted when none.
@@ -137,9 +113,9 @@ final class ReportWriter {
                             inf,
                             invisible,
                             direct.getOrDefault(fn, EffectSet.empty()),
-                            EffectSet.ofNames(declared),
-                            EffectSet.ofNames(undeclared),
-                            EffectSet.ofNames(overdeclared),
+                            declared,
+                            undeclared,
+                            overdeclared,
                             entryPoints.contains(fn),
                             inf.hasUnknown(), // trust contract (SPEC §4)
                             kind,
@@ -182,7 +158,7 @@ final class ReportWriter {
         for (var e : edges.entrySet()) {
             cg.put(e.getKey(), new ArrayList<>(new TreeSet<>(e.getValue())));
         }
-        writeAtomic(Path.of(cgOut), new GsonBuilder().setPrettyPrinting().create().toJson(cg));
+        writeAtomic(Path.of(cgOut), ReportJson.pretty(cg));
     }
 
     /** Write the type-hierarchy sidecar (`<report-stem>.hierarchy.json`) ⟨0.7⟩: each PROJECT type →
@@ -203,7 +179,7 @@ final class ReportWriter {
             if (cn.interfaces != null) for (String i : cn.interfaces) sup.add(i.replace('/', '.'));
             if (!sup.isEmpty()) h.put(cn.name.replace('/', '.'), new ArrayList<>(sup));
         }
-        writeAtomic(Path.of(hOut), new GsonBuilder().setPrettyPrinting().create().toJson(h));
+        writeAtomic(Path.of(hOut), ReportJson.pretty(h));
     }
 
     /** Write a report file ATOMICALLY: serialize to a sibling temp file, then move it into place. A

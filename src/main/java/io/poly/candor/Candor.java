@@ -93,7 +93,7 @@ public class Candor {
     // The effect vocabulary candor-java emits — spec §1. KNOWN_EFFECTS stays a NAME set: it validates
     // raw policy/query TOKEN strings (parsePolicy, Query.whatif), not effect-set membership.
     static final Set<String> KNOWN_EFFECTS =
-            Set.of("Net", "Fs", "Db", "Exec", "Env", "Clock", "Rand", "Log", "Ipc", "Clipboard");
+            Effect.KNOWN.stream().map(Effect::specName).collect(Collectors.toUnmodifiableSet());
     // AS-EFF-007 (CANDOR_TAINT): the injection-class effects whose argument, if caller-derived, is an
     // injection surface (path traversal / command / SQL / SSRF). Clock/Rand/Log/Clipboard aren't injectable.
     static final Set<Effect> INJECTION = Effect.INJECTION;
@@ -411,36 +411,20 @@ public class Candor {
     }
 
     static int checkConformance(Map<String, EffectSet> inferred, String scope) {
-        // performed(class) = union of inferred over the class's own methods.
-        Map<String, TreeSet<String>> performed = new HashMap<>();
-        for (ClassNode cn : ALL) {
-            String dc = cn.name.replace('/', '.');
-            TreeSet<String> p = performed.computeIfAbsent(dc, k -> new TreeSet<>());
-            for (MethodNode mn : cn.methods) {
-                if (mn.name.startsWith("<")) continue;
-                var inf = inferred.get(methodId(dc, mn.name, mn.desc));
-                if (inf != null) p.addAll(inf.toNames());
-            }
-        }
+        // performed/declared per class (candor-spec §5), computed the ONE shared way.
+        ClassConformance cc = classConformance(inferred);
         int v = 0;
         for (ClassNode cn : ALL) {
             String dc = cn.name.replace('/', '.');
             if (!gateScopeCovers(scope, dc)) continue;
-            TreeSet<String> declared = new TreeSet<>();
-            if (cn.fields != null)
-                for (FieldNode f : cn.fields) {
-                    String t = fieldTypeInternal(f.desc);
-                    if (t != null) declared.addAll(typeEffects(t, performed));
-                }
-            TreeSet<String> perf = performed.getOrDefault(dc, new TreeSet<>());
-            boolean hasUnknown = perf.contains("Unknown");
-            List<String> undeclared = perf.stream()
-                    .filter(x -> !x.equals("Unknown") && !declared.contains(x)).sorted().collect(Collectors.toList());
-            List<String> unused = declared.stream()
-                    .filter(x -> !perf.contains(x)).sorted().collect(Collectors.toList());
+            EffectSet declared = cc.declared().getOrDefault(dc, EffectSet.empty());
+            EffectSet perf = cc.performed().getOrDefault(dc, EffectSet.empty());
+            boolean hasUnknown = perf.hasUnknown();
+            List<String> undeclared = perf.minus(declared).without(Effect.UNKNOWN).toNames();
+            List<String> unused = declared.minus(perf).toNames();
             if (!undeclared.isEmpty()) {
                 String have = declared.isEmpty() ? "no injected capability"
-                        : "only { " + String.join(", ", declared) + " }";
+                        : "only { " + String.join(", ", declared.toNames()) + " }";
                 diag(DiagnosticCode.AS_EFF_001, "class `%s` performs { %s } but holds %s; "
                         + "inject a collaborator that provides it (don't reach for ambient authority)",
                         dc, String.join(", ", undeclared), have);
@@ -461,30 +445,65 @@ public class Candor {
     }
 
     /** Effects a field of type `internal` can supply (Spring repo/template, or a project collaborator). */
-    static Set<String> typeEffects(String internal, Map<String, TreeSet<String>> performed) {
-        if (repoTypes.contains(internal)) return Set.of("Db");
-        if (feignTypes.contains(internal)) return Set.of("Net");
+    static EffectSet typeEffects(String internal, Map<String, EffectSet> performed) {
+        if (repoTypes.contains(internal)) return EffectSet.of(Effect.DB);
+        if (feignTypes.contains(internal)) return EffectSet.of(Effect.NET);
         String dotted = internal.replace('/', '.');
-        Set<String> lib = classifyType(dotted);
+        EffectSet lib = classifyType(dotted);
         if (!lib.isEmpty()) return lib;
-        if (byName.containsKey(internal)) return performed.getOrDefault(dotted, new TreeSet<>());
-        return Set.of();
+        if (byName.containsKey(internal)) return performed.getOrDefault(dotted, EffectSet.empty());
+        return EffectSet.empty();
     }
 
     /** Type-level classification of a collaborator (mirrors the call-level classify, by owner type). */
-    static Set<String> classifyType(String dotted) {
+    static EffectSet classifyType(String dotted) {
         if (dotted.equals("org.springframework.web.client.RestTemplate")
                 || dotted.equals("org.springframework.web.client.RestClient")
                 || dotted.startsWith("org.springframework.web.reactive.function.client.")
                 || dotted.equals("org.springframework.jms.core.JmsTemplate")
                 || dotted.equals("org.springframework.kafka.core.KafkaTemplate"))
-            return Set.of("Net");
+            return EffectSet.of(Effect.NET);
         if (dotted.equals("org.springframework.jdbc.core.JdbcTemplate")
                 || dotted.equals("org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate")
                 || dotted.equals("jakarta.persistence.EntityManager")
                 || dotted.equals("javax.persistence.EntityManager"))
-            return Set.of("Db");
-        return Set.of();
+            return EffectSet.of(Effect.DB);
+        return EffectSet.empty();
+    }
+
+    /** Per-class conformance inputs (candor-spec §5), shared by the JSON report and the AS-EFF gate so
+     *  the model is computed ONE way: {@code performed} = union of inferred over each class's own
+     *  methods; {@code declared} = effects the class's injected-dependency field types can supply
+     *  ({@link #typeEffects}); {@code fnToClass} maps a method id to its declaring class. */
+    record ClassConformance(Map<String, EffectSet> performed, Map<String, EffectSet> declared,
+            Map<String, String> fnToClass) {}
+
+    static ClassConformance classConformance(Map<String, EffectSet> inferred) {
+        Map<String, EffectSet> performed = new HashMap<>();
+        Map<String, String> fnToClass = new HashMap<>();
+        for (ClassNode cn : ALL) {
+            String dc = cn.name.replace('/', '.');
+            EffectSet p = performed.computeIfAbsent(dc, k -> EffectSet.empty());
+            for (MethodNode mn : cn.methods) {
+                if (mn.name.startsWith("<")) continue;
+                String fn = methodId(dc, mn.name, mn.desc);
+                fnToClass.put(fn, dc);
+                EffectSet inf = inferred.get(fn);
+                if (inf != null) p.addAll(inf);
+            }
+        }
+        Map<String, EffectSet> declared = new HashMap<>();
+        for (ClassNode cn : ALL) {
+            String dc = cn.name.replace('/', '.');
+            EffectSet d = EffectSet.empty();
+            if (cn.fields != null)
+                for (FieldNode f : cn.fields) {
+                    String t = fieldTypeInternal(f.desc);
+                    if (t != null) d.addAll(typeEffects(t, performed));
+                }
+            declared.put(dc, d);
+        }
+        return new ClassConformance(performed, declared, fnToClass);
     }
 
     /** Object type internal name from a field descriptor (`Lcom/x/Foo;` -> `com/x/Foo`); null if primitive. */

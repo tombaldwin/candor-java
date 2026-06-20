@@ -13,10 +13,16 @@ import java.util.stream.Collectors;
  * in the fixpoint hot path; the value candor attributes to an {@link Effector}'s {@code inferred} /
  * {@code direct} fields.
  *
- * <p>{@link #toNames()} is the single wire-serialization path and always emits in spec-name
- * alphabetical order — identical to the historical {@code TreeSet<String>} order. That, plus union
- * being order-independent, is what keeps the typed representation byte-identical to the strings it
- * replaces.
+ * <p>The byte-identity invariant is enforced by {@link #toNames()} sorting by spec name — NOT by the
+ * enum's declaration order (declaring {@link Effect} in spec-name order is merely a nicety). Every
+ * effect→wire path goes through {@code toNames()}, and union is order-independent, so the internal
+ * representation stays free of the wire.
+ *
+ * <p>Ownership note: this class has BOTH mutating ({@link #add}/{@link #addAll}, used for in-place
+ * accumulation in the fixpoint) and functional ({@link #join}/{@link #minus}/{@link #copy}) operations.
+ * A stored {@code EffectSet} (e.g. inside an {@link Effector}) is defensively copied so it cannot be
+ * mutated through an accessor. {@link #equals} is {@code EffectSet}-only by design — an {@code EffectSet}
+ * is intentionally not interchangeable with a raw {@code Set<Effect>} for equality.
  */
 public final class EffectSet {
 
@@ -87,6 +93,27 @@ public final class EffectSet {
 
     public EffectSet copy() {
         return new EffectSet(EnumSet.copyOf(set));
+    }
+
+    /** Non-mutating intersection {@code this ∩ other}. */
+    public EffectSet intersect(EffectSet other) {
+        EnumSet<Effect> s = EnumSet.copyOf(set);
+        s.retainAll(other.set);
+        return new EffectSet(s);
+    }
+
+    /** Non-mutating set difference {@code this \ other}. */
+    public EffectSet minus(EffectSet other) {
+        EnumSet<Effect> s = EnumSet.copyOf(set);
+        s.removeAll(other.set);
+        return new EffectSet(s);
+    }
+
+    /** Non-mutating: this without a single effect (e.g. drop {@code Unknown} for the AS-EFF-001 surface). */
+    public EffectSet without(Effect e) {
+        EnumSet<Effect> s = EnumSet.copyOf(set);
+        s.remove(e);
+        return new EffectSet(s);
     }
 
     /** {@code Unknown} ∈ this — i.e. the effect set is not provably complete (sets {@code unresolved}). */

@@ -5,8 +5,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.TreeSet;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 
 /** Unit tests for the candor-java domain model — pins the byte-identity-critical invariants
@@ -101,6 +105,60 @@ class ModelTest {
         assertEquals(EffectorKind.INITIALIZER, EffectorKind.fromWire("initializer"));
         assertEquals(EffectorKind.FUNCTION, EffectorKind.fromWire(null));
         assertEquals(EffectorKind.FUNCTION, EffectorKind.fromWire("somethingNew")); // tolerant
+    }
+
+    @Test
+    void boundaryCrossCuttingPartition() {
+        Set<Effect> boundary = Arrays.stream(Effect.values()).filter(Effect::isBoundary).collect(Collectors.toSet());
+        Set<Effect> cross = Arrays.stream(Effect.values()).filter(Effect::isCrossCutting).collect(Collectors.toSet());
+        assertEquals(Set.of(Effect.DB, Effect.NET, Effect.EXEC, Effect.FS, Effect.IPC), boundary);
+        assertEquals(Set.of(Effect.LOG, Effect.CLOCK, Effect.RAND, Effect.ENV), cross);
+        assertTrue(Collections.disjoint(boundary, cross), "boundary and cross-cutting are disjoint");
+        // §6.1 gap (tracked, MODEL.md): Clipboard is in NEITHER partition — pinned so it can't change silently.
+        assertFalse(Effect.CLIPBOARD.isBoundary());
+        assertFalse(Effect.CLIPBOARD.isCrossCutting());
+    }
+
+    @Test
+    void effectSetAlgebra() {
+        EffectSet a = EffectSet.of(Effect.NET, Effect.DB, Effect.UNKNOWN);
+        EffectSet b = EffectSet.of(Effect.DB, Effect.FS);
+        assertEquals(EffectSet.of(Effect.NET, Effect.UNKNOWN), a.minus(b));
+        assertEquals(EffectSet.of(Effect.DB), a.intersect(b));
+        assertEquals(EffectSet.of(Effect.NET, Effect.DB), a.without(Effect.UNKNOWN));
+        assertTrue(a.contains(Effect.NET) && a.size() == 3); // non-mutating: a unchanged
+    }
+
+    @Test
+    void effectorIsADefensiveValue() {
+        EffectSet live = EffectSet.of(Effect.NET);
+        java.util.List<String> liveCalls = new java.util.ArrayList<>(List.of("a.b"));
+        Effector e = new Effector("x.y", "", live, List.of(), EffectSet.empty(), EffectSet.empty(),
+                EffectSet.empty(), EffectSet.empty(), false, false, EffectorKind.FUNCTION, List.of(), "",
+                liveCalls, List.of(), List.of(), List.of(), List.of(), List.of());
+        // mutating the sources after construction must NOT change the Effector (defensive copy)
+        live.add(Effect.DB);
+        liveCalls.add("c.d");
+        assertEquals(List.of("Net"), e.inferred().toNames());
+        assertEquals(List.of("a.b"), e.calls());
+        // an accessor-returned list is immutable
+        try {
+            e.calls().add("z");
+            org.junit.jupiter.api.Assertions.fail("Effector.calls() must be unmodifiable");
+        } catch (UnsupportedOperationException expected) {
+        }
+    }
+
+    @Test
+    void unknownReasonCompareToConsistentWithEquals() {
+        UnknownReason a = UnknownReason.of(UnknownReason.Kind.DISPATCH, "A.a");
+        UnknownReason a2 = UnknownReason.of(UnknownReason.Kind.DISPATCH, "A.a");
+        UnknownReason b = UnknownReason.of(UnknownReason.Kind.DISPATCH, "A.b");
+        assertEquals(0, a.compareTo(a2));
+        assertEquals(a, a2);
+        assertTrue(a.compareTo(b) < 0);
+        // sign of compareTo agrees with (in)equality
+        assertTrue((a.compareTo(b) == 0) == a.equals(b));
     }
 
     @Test

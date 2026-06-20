@@ -65,7 +65,7 @@ final class Policy {
 
     /** AS-EFF-005: flag a function that gained an effect versus a saved baseline report. */
     static int checkBaseline(Map<String, EffectSet> inferred, String path) {
-        Map<String, Set<String>> base = loadBaseline(path);
+        Map<String, EffectSet> base = loadBaseline(path);
         if (base == null) {
             System.err.println("candor-java: CANDOR_BASELINE set but " + path
                     + " could not be loaded — the regression guard is NOT active");
@@ -73,10 +73,9 @@ final class Policy {
         }
         int v = 0;
         for (var e : new TreeMap<>(inferred).entrySet()) {
-            Set<String> prior = base.get(e.getKey());
+            EffectSet prior = base.get(e.getKey());
             if (prior == null) continue; // new function — reviewed as new code, not a regression
-            List<String> gained = e.getValue().toNames().stream()
-                    .filter(x -> !prior.contains(x)).sorted().collect(Collectors.toList());
+            List<String> gained = e.getValue().minus(prior).toNames();
             if (!gained.isEmpty()) {
                 diag(DiagnosticCode.AS_EFF_005, "`%s` gained effect { %s } not present in the baseline",
                         e.getKey(), String.join(", ", gained));
@@ -108,10 +107,11 @@ final class Policy {
             String fn = e.getKey();
             for (PolicyRule.Deny r : denyRules) {
                 if (!scopeMatches(fn, r.scope())) continue;
-                List<String> denied = r.effects().toNames();
+                // pure rule (empty effects) ⇒ any effect except Unknown (handled by AS-EFF-003);
+                // deny rule ⇒ the inferred effects that intersect the denied set.
                 List<String> bad = r.effects().isEmpty()
-                        ? e.getValue().toNames().stream().filter(x -> !x.equals("Unknown")).sorted().collect(Collectors.toList())
-                        : e.getValue().toNames().stream().filter(denied::contains).sorted().collect(Collectors.toList());
+                        ? e.getValue().without(Effect.UNKNOWN).toNames()
+                        : e.getValue().intersect(r.effects()).toNames();
                 if (!bad.isEmpty()) {
                     diag(DiagnosticCode.AS_EFF_006, "`%s` performs { %s }, forbidden by policy%s: `%s`",
                             fn, String.join(", ", bad),
@@ -161,7 +161,7 @@ final class Policy {
         int v = 0;
         for (var e : new TreeMap<>(inferred).entrySet()) {
             String fn = e.getKey();
-            if (!e.getValue().toNames().contains(effect)) continue;
+            if (!e.getValue().contains(Effect.fromSpecName(effect))) continue;
             for (PolicyRule.Allow r : allowRules) {
                 if (!effect.equals(r.effect().specName()) || !scopeMatches(fn, r.scope())) continue;
                 TreeSet<String> reached = reachedAcc.getOrDefault(fn, new TreeSet<>());
@@ -318,21 +318,20 @@ final class Policy {
         return null;
     }
 
-    static class BaseEntry { String fn; List<String> inferred; }
-
-    static Map<String, Set<String>> loadBaseline(String path) {
+    static Map<String, EffectSet> loadBaseline(String path) {
         try {
             String text = Files.readString(Path.of(path));
             // Accept BOTH the v0.2 self-describing envelope `{ candor, functions:[...] }` and the legacy
-            // v0.1 bare array `[...]` — the migration contract (candor-spec §2: readers MUST accept both).
+            // v0.1 bare array `[...]` (candor-spec §2: readers MUST accept both). One read path: route it
+            // through ReportJson.parseEntries (the single deserializer) and read each Effector's inferred.
             JsonElement root = JsonParser.parseString(text);
             JsonArray arr = root.isJsonObject()
                     ? root.getAsJsonObject().getAsJsonArray("functions")
                     : (root.isJsonArray() ? root.getAsJsonArray() : null);
             if (arr == null) return null;
-            List<BaseEntry> entries = new Gson().fromJson(arr, new TypeToken<List<BaseEntry>>() {}.getType());
-            Map<String, Set<String>> m = new HashMap<>();
-            for (BaseEntry e : entries) if (e.fn != null) m.put(e.fn, new HashSet<>(e.inferred == null ? List.of() : e.inferred));
+            Map<String, EffectSet> m = new HashMap<>();
+            for (Effector e : ReportJson.parseEntries(arr))
+                if (e.fn() != null && !e.fn().isEmpty()) m.put(e.fn(), e.inferred());
             return m;
         } catch (Exception ex) {
             return null;

@@ -22,6 +22,7 @@ import org.objectweb.asm.tree.analysis.Value;
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.*;
 import java.util.stream.*;
 import io.poly.candor.model.*;
 import static io.poly.candor.Literals.*;
@@ -254,6 +255,60 @@ public class Candor {
         if (args[0].equals("--version")) {
             System.out.println("candor-java " + release() + " (spec " + SPEC_VERSION + ")");
             System.out.println("upgrade: jbang --fresh candor@tombaldwin/candor-java");
+            System.exit(0);
+        }
+        // `--parallel <out-dir> <target>...` — scan many jars/dirs CONCURRENTLY, one report each, into
+        // <out-dir>/<name>.json (+ .callgraph.json / .hierarchy.json sidecars). Each scan runs on its own
+        // thread with its OWN thread-local AnalysisContext (LB-1b), so they never clobber each other; this
+        // amortizes one JVM start across N targets (a multi-module build, or a CI sweep over several
+        // artifacts). Each report is byte-identical to a standalone `candor <target> --json` of that target.
+        if (args[0].equals("--parallel")) {
+            if (args.length < 3) {
+                System.err.println("usage: candor --parallel <out-dir> <target>...");
+                System.exit(2);
+            }
+            Path outDir = Path.of(args[1]);
+            try {
+                Files.createDirectories(outDir);
+            } catch (IOException e) {
+                System.err.println("candor: cannot create out-dir " + outDir + ": " + e.getMessage());
+                System.exit(2);
+            }
+            List<Path> targets = new ArrayList<>();
+            for (int i = 2; i < args.length; i++) targets.add(Path.of(args[i]));
+            int threads = Math.max(1, Math.min(targets.size(), Runtime.getRuntime().availableProcessors()));
+            ExecutorService pool = Executors.newFixedThreadPool(threads);
+            List<String> failures = new CopyOnWriteArrayList<>();
+            for (Path t : targets) {
+                pool.submit(() -> {
+                    // basename without a trailing archive extension; a directory keeps its name.
+                    String base = t.getFileName().toString().replaceFirst("(?i)\\.(jar|zip)$", "");
+                    Path out = outDir.resolve(base + ".json");
+                    try {
+                        if (!Files.exists(t)) { failures.add(t + " (no such path)"); return; }
+                        var inf = runScan(t);                 // own thread → own ctx() (LB-1b)
+                        writeJson(inf, out.toString());       // reads this thread's ctx()
+                        writeCallgraph(out.toString());
+                        writeHierarchy(out.toString());
+                        System.out.println("  " + t + " -> " + out);
+                    } catch (IOException | java.nio.file.ProviderNotFoundException e) {
+                        failures.add(t + " (" + e.getClass().getSimpleName() + ": " + e.getMessage() + ")");
+                    }
+                });
+            }
+            pool.shutdown();
+            try {
+                if (!pool.awaitTermination(1, TimeUnit.HOURS)) pool.shutdownNow();
+            } catch (InterruptedException e) {
+                pool.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+            if (!failures.isEmpty()) {
+                System.err.println("candor: " + failures.size() + " of " + targets.size() + " target(s) failed:");
+                for (String f : failures) System.err.println("  " + f);
+                System.exit(1);
+            }
+            System.out.println("candor: scanned " + targets.size() + " target(s) into " + outDir);
             System.exit(0);
         }
         // `parsepolicy <file>` — dump the parsed CANDOR_POLICY as canonical JSON. Not a user workflow;

@@ -1652,6 +1652,64 @@ EFFECT_CASES = [
     ("jmsConnStop",         "Net", "jakarta.jms.Connection c", 'c.stop()'),
     ("jmsBrowserGetEnum",   "Net", "jakarta.jms.QueueBrowser b", 'java.util.Enumeration<?> e = b.getEnumeration()'),
     ("jmsConsumerReceive",  "Net", "jakarta.jms.MessageConsumer c", 'jakarta.jms.Message m = c.receive()'),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 19) ======================
+    # JVM-LANGUAGE STDLIBS that are κ-COVERED PREFIXES (scala.*/groovy.*/kotlinx.*) — an UNMODELED effectful
+    # member there is FLOOR-DROPPED silent (absent, NO `invisible` disclosure) = the cardinal sin (worse than a
+    # 3rd-party silent-pure, which would at least surface `invisible:[pkg]`). candor already models scala.io.Source
+    # / scala.sys.process / groovy ResourceGroovyMethods+ProcessGroovyMethods / kotlin.io — so the targets here
+    # are the JVM-stdlib I/O candor does NOT yet model. Each leaf is Java-callable via its compiled JVM class.
+    #
+    # --- Scala stdlib (scala.* covered) — VERIFY the already-modeled scala.io.Source / scala.sys.process leaves
+    #     classify (regression anchors), and probe a sibling that may be a gap. ---
+    #   scala.io.Source$.fromFile reads a file -> Fs (modeled). The entry from Java is the singleton MODULE$.
+    ("scalaSourceFromFile", "Fs", "java.io.File f",
+        'scala.io.BufferedSource s = scala.io.Source$.MODULE$.fromFile(f, "UTF-8")'),
+    #   scala.io.Source$.fromURL reads over the network -> Net (modeled).
+    ("scalaSourceFromUrl",  "Net", "",
+        'scala.io.BufferedSource s = scala.io.Source$.MODULE$.fromURL("http://h/", "UTF-8")'),
+    #   scala.sys.process.ProcessBuilder.run / `!!` ($bang$bang) fork a process -> Exec (modeled via the
+    #     scala.sys.process prefix + $bang/run verb gate). `!!` returns the captured stdout.
+    ("scalaProcessBangBang", "Exec", "scala.sys.process.ProcessBuilder pb", 'String out = pb.$bang$bang()'),
+    ("scalaProcessRun",      "Exec", "scala.sys.process.ProcessBuilder pb", 'scala.sys.process.Process p = pb.run()'),
+    #   scala.io.Source$.fromString builds an in-memory source from a String -> PURE (anchored in PURE_CASES).
+    #
+    # --- Groovy (groovy.* covered; NB Groovy-4 ARTIFACT is org.apache.groovy:* but the CLASSES are in the
+    #     groovy.* package, which the κ FLOOR keys on — so they ARE floor-covered). candor models the
+    #     org.codehaus.groovy.runtime GDK helpers (ResourceGroovyMethods/ProcessGroovyMethods) but NOT the
+    #     user-facing groovy.sql / groovy.xml / groovy.json APIs an app actually calls. ---
+    #   groovy.sql.Sql.execute / rows / eachRow / firstRow run SQL against the DB -> Db.
+    ("groovySqlExecute",  "Db", "groovy.sql.Sql s", 'boolean b = s.execute("update t set x=1")'),
+    ("groovySqlRows",     "Db", "groovy.sql.Sql s", 'java.util.List<?> r = s.rows("select 1")'),
+    ("groovySqlFirstRow", "Db", "groovy.sql.Sql s", 'groovy.sql.GroovyRowResult r = s.firstRow("select 1")'),
+    ("groovySqlExecInsert","Db", "groovy.sql.Sql s",
+        'java.util.List<java.util.List<Object>> k = s.executeInsert("insert into t values(1)")'),
+    #   groovy.xml.XmlSlurper.parse(File) / groovy.xml.XmlParser.parse(File) read XML off disk -> Fs.
+    ("groovyXmlSlurperParseFile", "Fs", "groovy.xml.XmlSlurper x, java.io.File f",
+        'groovy.xml.slurpersupport.GPathResult g = x.parse(f)'),
+    ("groovyXmlParserParseFile",  "Fs", "groovy.xml.XmlParser x, java.io.File f", 'groovy.util.Node n = x.parse(f)'),
+    #   groovy.json.JsonSlurper.parse(File) reads JSON off disk -> Fs; parse(URL) is Net.
+    ("groovyJsonSlurperParseFile", "Fs",  "groovy.json.JsonSlurper j, java.io.File f", 'Object o = j.parse(f)'),
+    ("groovyJsonSlurperParseUrl",  "Net", "groovy.json.JsonSlurper j, java.net.URL u", 'Object o = j.parse(u)'),
+    #   groovy.xml.XmlSlurper.parseText(String) / JsonSlurper.parseText(String) parse an in-memory String ->
+    #     PURE (anchored in PURE_CASES — must NOT be Fs).
+    #
+    # --- kotlinx-io (kotlinx.* covered; candor models kotlin.io / kotlin.io.path but NOT kotlinx.io) ---
+    #   kotlinx.io.files.FileSystem.source/sink/delete/createDirectories/atomicMove/list all hit the disk -> Fs.
+    #     All are plain Java-callable interface methods taking kotlinx.io.files.Path.
+    ("kotlinxIoSource",  "Fs", "kotlinx.io.files.FileSystem fs, kotlinx.io.files.Path p", 'kotlinx.io.RawSource s = fs.source(p)'),
+    ("kotlinxIoSink",    "Fs", "kotlinx.io.files.FileSystem fs, kotlinx.io.files.Path p", 'kotlinx.io.RawSink s = fs.sink(p, false)'),
+    ("kotlinxIoDelete",  "Fs", "kotlinx.io.files.FileSystem fs, kotlinx.io.files.Path p", 'fs.delete(p, true)'),
+    ("kotlinxIoMkdirs",  "Fs", "kotlinx.io.files.FileSystem fs, kotlinx.io.files.Path p", 'fs.createDirectories(p, true)'),
+    ("kotlinxIoMove",    "Fs", "kotlinx.io.files.FileSystem fs, kotlinx.io.files.Path a, kotlinx.io.files.Path b", 'fs.atomicMove(a, b)'),
+    ("kotlinxIoList",    "Fs", "kotlinx.io.files.FileSystem fs, kotlinx.io.files.Path p", 'java.util.Collection<kotlinx.io.files.Path> c = fs.list(p)'),
+    #   kotlinx.io.files.Path constructor / FileSystem.resolve are in-memory path algebra -> PURE (anchored).
+    #
+    # --- JSF (jakarta.faces, jakarta.* covered) -> Net. ExternalContext.redirect sends an HTTP 302 to the
+    #     client; dispatch forwards the request (server-side, still drives the servlet response over the wire).
+    #     Both are the canonical JSF navigation egress. getRequestParameterMap etc. are pure reads (not tested). ---
+    ("jsfRedirect", "Net", "jakarta.faces.context.ExternalContext ec", 'ec.redirect("http://h/")'),
+    ("jsfDispatch", "Net", "jakarta.faces.context.ExternalContext ec", 'ec.dispatch("/page.xhtml")'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -2085,6 +2143,20 @@ PURE_CASES = [
     #   the wire leaves are start/stop/send/commit. (createSession not modeled; absent==pure for jakarta.* but
     #   it's a covered prefix so it would read FLOOR if it were effectful — it is not, documented pure.)
     ("jmsCreateSessionPure", "jakarta.jms.Session s = c.createSession()", "jakarta.jms.Connection c"),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 19) — PURE anchors ======================
+    # In-memory siblings of the JVM-stdlib I/O leaves above — a future κ widening to model the effect leaves
+    # must NOT fabricate on these (they touch no file/socket/DB). Owners are the SAME covered prefixes.
+    #   scala.io.Source$.fromString builds an in-memory Source from a literal — no file.
+    ("scalaSourceFromStringPure", "scala.io.Source s = scala.io.Source$.MODULE$.fromString(\"abc\")", ""),
+    #   groovy.json.JsonSlurper.parseText / groovy.xml.XmlSlurper.parseText parse an in-memory String — no Fs.
+    ("groovyJsonParseTextPure", "Object o = j.parseText(\"{}\")", "groovy.json.JsonSlurper j"),
+    ("groovyXmlSlurperParseTextPure", "groovy.xml.slurpersupport.GPathResult g = x.parseText(\"<a/>\")", "groovy.xml.XmlSlurper x"),
+    #   kotlinx.io.files.FileSystem.resolve is in-memory path algebra (no disk touch); Path() is a value ctor.
+    ("kotlinxIoResolvePure", "kotlinx.io.files.Path r = fs.resolve(p)", "kotlinx.io.files.FileSystem fs, kotlinx.io.files.Path p"),
+    ("kotlinxIoPathCtorPure", "kotlinx.io.files.Path p = kotlinx.io.files.PathsKt.Path(\"/tmp/x\")", ""),
+    #   JSF ExternalContext.encodeRedirectURL is pure URL-string rewriting (no wire) — the redirect VERB is Net.
+    ("jsfEncodeRedirectUrlPure", "String u = ec.encodeRedirectURL(\"http://h/\", null)", "jakarta.faces.context.ExternalContext ec"),
 ]
 
 
@@ -2525,6 +2597,31 @@ JARS = {
     "jakarta.json.bind-api-3.0.0.jar": f"{_MVN}/jakarta/json/bind/jakarta.json.bind-api/3.0.0/jakarta.json.bind-api-3.0.0.jar",
     "jakarta.json-api-2.1.3.jar": f"{_MVN}/jakarta/json/jakarta.json-api/2.1.3/jakarta.json-api-2.1.3.jar",
     "jakarta.batch-api-2.1.1.jar": f"{_MVN}/jakarta/batch/jakarta.batch-api/2.1.1/jakarta.batch-api-2.1.1.jar",
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 19) ======================
+    # JVM-LANGUAGE STDLIBS that are κ-COVERED PREFIXES (scala.*/groovy.*/kotlinx.*) — where an UNMODELED
+    #   effectful member is FLOOR-DROPPED silent (the cardinal sin), strictly worse than a normal silent-pure.
+    #   Plus jakarta.faces (JSF, jakarta.* covered). All Java-callable via compiled JVM class names (FQN).
+    #   Scala stdlib (scala.* covered) — scala.io.Source file/URL reads, scala.sys.process subprocess spawn.
+    "scala-library-2.13.14.jar": f"{_MVN}/org/scala-lang/scala-library/2.13.14/scala-library-2.13.14.jar",
+    #   Groovy GDK (groovy.* covered) — groovy.sql.Sql (Db), groovy.xml.XmlSlurper/XmlParser (Fs),
+    #   groovy.json.JsonSlurper (Fs/Net). NB Groovy 4 = org.apache.groovy:* artifacts BUT the CLASSES are
+    #   still in the groovy.* package (groovy.sql.Sql, groovy.xml.XmlSlurper) — so the κ FLOOR (keyed on the
+    #   `groovy` PACKAGE prefix) DOES cover them; the org.apache.groovy ARTIFACT name is irrelevant to κ.
+    "groovy-4.0.22.jar": f"{_MVN}/org/apache/groovy/groovy/4.0.22/groovy-4.0.22.jar",
+    "groovy-sql-4.0.22.jar": f"{_MVN}/org/apache/groovy/groovy-sql/4.0.22/groovy-sql-4.0.22.jar",
+    "groovy-xml-4.0.22.jar": f"{_MVN}/org/apache/groovy/groovy-xml/4.0.22/groovy-xml-4.0.22.jar",
+    "groovy-json-4.0.22.jar": f"{_MVN}/org/apache/groovy/groovy-json/4.0.22/groovy-json-4.0.22.jar",
+    #   kotlinx-io (kotlinx.* covered) — kotlinx.io.files.FileSystem source/sink/delete/createDirectories/
+    #   atomicMove/list (Fs). All plain Java-callable interface methods taking kotlinx.io.files.Path.
+    "kotlinx-io-core-jvm-0.4.0.jar": f"{_MVN}/org/jetbrains/kotlinx/kotlinx-io-core-jvm/0.4.0/kotlinx-io-core-jvm-0.4.0.jar",
+    #   JSF (jakarta.faces, jakarta.* covered) — ExternalContext.redirect/dispatch send an HTTP redirect/forward.
+    "jakarta.faces-api-4.0.1.jar": f"{_MVN}/jakarta/faces/jakarta.faces-api/4.0.1/jakarta.faces-api-4.0.1.jar",
+    # SKIPPED (noted in the report): Ktor client (io.ktor.client.HttpClient) — every request leaf is a Kotlin
+    #   `suspend` fn taking a kotlin.coroutines.Continuation (execute$ktor_client_core(builder, Continuation);
+    #   the public request/get builders are also suspend extension fns). NOT cleanly Java-callable — exercising
+    #   Ktor's wire path needs Kotlin coroutines. io.ktor.* IS a covered prefix (would FLOOR if reached), but a
+    #   Java fixture cannot reach the wire leaf, so Ktor is left to a Kotlin probe. kotlinx-coroutines is
+    #   likewise suspend-only (no Java-callable I/O leaf); not added.
 }
 
 
@@ -2610,7 +2707,12 @@ def main():
     # are the others. A leaf is FLOOR-SUPPRESSED iff it is ABSENT from the report AND its call-site owner is a
     # covered prefix. (Genuinely-pure functions are ALSO absent, but a covered-prefix leaf that really does I/O
     # being absent == the floor hid a real effect; a NON-covered package would surface `invisible:[pkg]` instead.)
-    COVERED = ("org.springframework", "java.", "javax.", "jakarta.", "kotlin.")
+    # Mirror candor's Candor.java KAPPA_COVERED_PREFIXES exactly (the namespaces whose `invisible` disclosure
+    # candor SUPPRESSES, so an unmodeled effectful member there is FLOOR-DROPPED silent — the cardinal sin).
+    # Matched against the case params/body TEXT, so the entries are dotted owner prefixes as they appear in FQNs.
+    COVERED = ("org.springframework", "java.", "javax.", "jakarta.", "jdk.", "sun.", "com.sun.",
+               "kotlin.", "kotlinx.", "scala.", "groovy.", "org.codehaus.groovy.", "org.jetbrains.",
+               "io.ktor.", "org.slf4j.", "org.apache.logging.", "ch.qos.logback.")
 
     def covered_owner(params, body):
         text = params + " " + body

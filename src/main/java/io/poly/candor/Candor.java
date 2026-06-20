@@ -4398,6 +4398,9 @@ public class Candor {
         if (owner.equals("org.python.util.PythonInterpreter") && (method.equals("exec") || method.equals("eval"))) return "Unknown";
         if (owner.equals("clojure.lang.Compiler") && method.equals("eval")) return "Unknown";
         if (owner.equals("javax.tools.JavaCompiler") && method.equals("run")) return "Unknown";
+        // com.sun.tools.javac.Main.compile — the javac entry point reads sources + writes .class files → Fs
+        // (the com.sun.* analog of JavaCompiler.run; batch-20 FLOOR-dropped silent).
+        if (owner.equals("com.sun.tools.javac.Main") && method.equals("compile")) return "Fs";
         // Untrusted deserialization (gadget-chain RCE) + XXE-able XML parsing → Unknown (the realized effect
         // depends on the payload/config a static pass can't see). ObjectInputStream.readObject is THE classic
         // Java RCE sink; candor roots a project class's readObject CALLBACK but the readObject CALL is the sink.
@@ -5606,6 +5609,15 @@ public class Candor {
                 // The JDK's built-in HTTP server binds a listening socket (create/bind) and serves it.
                 || (owner.equals("com.sun.net.httpserver.HttpServer")
                     && (method.equals("create") || method.equals("bind") || method.equals("start")))
+                // The per-request HttpExchange I/O surface (batch-20 — FLOOR-dropped silent under com.sun.*):
+                // sendResponseHeaders writes to the client socket; get{Request,Response}Body obtain the
+                // socket-backed streams (the only attachable point, like servletGetWriter). PURE NOT touched:
+                // getRequestHeaders/getRequestURI (in-memory parsed request).
+                || (owner.equals("com.sun.net.httpserver.HttpExchange")
+                    && (method.equals("sendResponseHeaders") || method.equals("getResponseBody")
+                        || method.equals("getRequestBody")))
+                // SimpleFileServer.createFileServer binds the server socket (+ serves files off disk).
+                || (owner.equals("com.sun.net.httpserver.SimpleFileServer") && method.equals("createFileServer"))
                 // JMX remote — JMXConnectorFactory.connect opens a remote management channel (RMI/JMXMP);
                 // JMXConnector.getMBeanServerConnection materializes it. Same remote-channel shape as RMI/JNDI.
                 || (owner.equals("javax.management.remote.JMXConnectorFactory") && method.equals("connect"))

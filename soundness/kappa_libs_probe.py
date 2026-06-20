@@ -1710,6 +1710,47 @@ EFFECT_CASES = [
     #     Both are the canonical JSF navigation egress. getRequestParameterMap etc. are pure reads (not tested). ---
     ("jsfRedirect", "Net", "jakarta.faces.context.ExternalContext ec", 'ec.redirect("http://h/")'),
     ("jsfDispatch", "Net", "jakarta.faces.context.ExternalContext ec", 'ec.dispatch("/page.xhtml")'),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 20) ======================
+    # JDK-INTERNAL κ-COVERED PREFIXES (com.sun.*/sun.*/jdk.*) — never swept before. These namespaces are in
+    # KAPPA_COVERED_PREFIXES, so candor SUPPRESSES the `invisible:[pkg]` disclosure for them: an UNMODELED
+    # effectful member is FLOOR-DROPPED silent (absent, no effect, no invisible, no unknownWhy) = the cardinal
+    # sin (worse than a 3rd-party silent-pure, which would at least surface invisible). All FULLY-QUALIFIED in
+    # the bodies (no wildcard imports) — the FQN also makes covered_owner() match the com.sun.* prefix.
+    #
+    # --- com.sun.net.httpserver — the JDK's BUILT-IN HTTP server (jdk.httpserver module, EXPORTED/public API,
+    #     compiles WITHOUT --add-exports; common in tests/lightweight services). HttpServer.create/bind/start
+    #     ARE modeled Net (verified ok below as regression anchors). The GAP is the HttpExchange request/response
+    #     surface — the per-request socket I/O an app actually calls inside its HttpHandler. ---
+    #   HttpServer.create()/bind()/start() — already modeled Net (bind/start open the listening ServerSocket).
+    #     Anchors confirming the modeled side; FQN bodies so the owner is unambiguous.
+    ("jdkHttpServerCreate", "Net", "", 'com.sun.net.httpserver.HttpServer s = com.sun.net.httpserver.HttpServer.create()'),
+    ("jdkHttpServerBind",   "Net", "com.sun.net.httpserver.HttpServer s, java.net.InetSocketAddress a", 's.bind(a, 0)'),
+    ("jdkHttpServerStart",  "Net", "com.sun.net.httpserver.HttpServer s", 's.start()'),
+    #   HttpExchange.sendResponseHeaders(int,long) — WRITES the status line + headers to the client socket
+    #     (javap -c sun.net.httpserver.ExchangeImpl.sendResponseHeaders: BufferedOutputStream over the response
+    #     OutputStream `ros`, then OutputStream.write([B,I,I)) -> a genuine Net write. Was FLOOR-DROPPED silent.
+    ("jdkHttpExchangeSendHeaders", "Net", "com.sun.net.httpserver.HttpExchange e", 'e.sendResponseHeaders(200, 0)'),
+    #   HttpExchange.getResponseBody() OBTAINS the socket-backed response OutputStream; getRequestBody() obtains
+    #     the socket-backed request InputStream (the actual byte transfer is on the returned stream — the
+    #     obtain-vs-transfer ambiguity, like servletGetWriter; Net OR Unknown both PASS). Both were FLOOR-DROPPED.
+    ("jdkHttpExchangeGetResponseBody", "Net", "com.sun.net.httpserver.HttpExchange e",
+        'java.io.OutputStream o = e.getResponseBody()'),
+    ("jdkHttpExchangeGetRequestBody",  "Net", "com.sun.net.httpserver.HttpExchange e",
+        'java.io.InputStream i = e.getRequestBody()'),
+    #
+    # --- com.sun.net.httpserver.SimpleFileServer (JDK 18+, exported) — createFileServer BINDS a listening
+    #     socket (delegates to HttpServer.create with an InetSocketAddress, javap -c) AND serves files from the
+    #     given Path via FileServerHandler (reads the directory off disk). So Fs+Net; Fs|Net|Unknown all PASS.
+    #     Was FLOOR-DROPPED silent. ---
+    ("jdkSimpleFileServerCreate", "Net", "java.net.InetSocketAddress a, java.nio.file.Path p",
+        'com.sun.net.httpserver.HttpServer s = com.sun.net.httpserver.SimpleFileServer.createFileServer('
+        'a, p, com.sun.net.httpserver.SimpleFileServer.OutputLevel.NONE)'),
+    #
+    # --- com.sun.tools.javac.Main.compile (jdk.compiler, exported) — the javac entry point: READS source
+    #     files and WRITES .class files off disk -> Fs. The com.sun.* analog of javax.tools.JavaCompiler.run
+    #     (already modeled Unknown). Niche (programmatic compilation) but a real FLOOR-DROPPED Fs. Fs|Unknown PASS.
+    ("jdkJavacMainCompile", "Fs", "String[] args", 'int rc = com.sun.tools.javac.Main.compile(args)'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -2157,6 +2198,25 @@ PURE_CASES = [
     ("kotlinxIoPathCtorPure", "kotlinx.io.files.Path p = kotlinx.io.files.PathsKt.Path(\"/tmp/x\")", ""),
     #   JSF ExternalContext.encodeRedirectURL is pure URL-string rewriting (no wire) — the redirect VERB is Net.
     ("jsfEncodeRedirectUrlPure", "String u = ec.encodeRedirectURL(\"http://h/\", null)", "jakarta.faces.context.ExternalContext ec"),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 20) — PURE anchors ======================
+    # JDK-INTERNAL com.sun.* config/in-memory siblings of the batch-20 effect leaves — a future κ widening to
+    # model HttpExchange/SimpleFileServer must NOT fabricate on these (no socket/file touch). Owners are the
+    # SAME com.sun.* covered prefix, so a fabricated effect would surface here.
+    #   HttpServer.createContext registers a handler (in-memory map insert); setExecutor sets a field. Pure config.
+    ("jdkHttpServerCreateContextPure", "com.sun.net.httpserver.HttpContext c = s.createContext(\"/\", h)",
+        "com.sun.net.httpserver.HttpServer s, com.sun.net.httpserver.HttpHandler h"),
+    ("jdkHttpServerSetExecutorPure", "s.setExecutor(e)",
+        "com.sun.net.httpserver.HttpServer s, java.util.concurrent.Executor e"),
+    #   HttpExchange.getRequestHeaders returns the already-parsed in-memory Headers map; getRequestURI returns
+    #     the parsed URI object — both read in-memory request state, no socket. Pure (the BODY streams are Net).
+    ("jdkHttpExchangeGetRequestHeadersPure", "com.sun.net.httpserver.Headers h = e.getRequestHeaders()",
+        "com.sun.net.httpserver.HttpExchange e"),
+    ("jdkHttpExchangeGetRequestUriPure", "java.net.URI u = e.getRequestURI()",
+        "com.sun.net.httpserver.HttpExchange e"),
+    #   com.sun.management.OperatingSystemMXBean.getProcessCpuLoad is a LOCAL native metric read (no Net/Fs),
+    #     consistent with java.lang.management.ManagementFactory staying pure — a documented pure, NOT a gap.
+    ("jdkOsMxBeanCpuLoadPure", "double d = b.getProcessCpuLoad()", "com.sun.management.OperatingSystemMXBean b"),
 ]
 
 

@@ -7,6 +7,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.reflect.TypeToken;
+import io.poly.candor.model.*;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -34,24 +35,7 @@ public final class Query {
     static final List<String> CONTAINED = List.of("Db", "Net", "Exec", "Fs", "Ipc");
     static final List<String> AMBIENT = List.of("Log", "Clock", "Rand", "Env");
 
-    /** One report entry (only the fields the queries read; gson ignores the rest). */
-    static final class Fn {
-        String fn = "";
-        String loc = "";
-        List<String> inferred = List.of();
-        List<String> direct = List.of();
-        List<String> calls = List.of();
-        List<String> fs = List.of();
-        List<String> hosts = List.of();
-        List<String> tables = List.of();
-        List<String> paths = List.of();
-        List<String> cmds = List.of();
-        List<String> unknownWhy = List.of();   // ⟨0.6⟩ present on a DIRECT Unknown source; used by `blindspots`
-        boolean unresolved;
-        boolean entryPoint;
-    }
-
-    static List<Fn> load(String path) throws Exception {
+    static List<Effector> load(String path) throws Exception {
         JsonElement root = JsonParser.parseString(Files.readString(Path.of(path)));
         // v0.2 self-describing envelope { candor, functions:[...] } OR legacy v0.1 bare array [...].
         // A parsable JSON that is NEITHER (an object with no `functions`, a scalar) is NOT a candor
@@ -69,30 +53,19 @@ public final class Query {
             throw new IllegalArgumentException("not a candor report: expected an envelope object or a bare array");
         }
         if (arr == null) throw new IllegalArgumentException("candor report 'functions' is not an array");
-        List<Fn> fns = new Gson().fromJson(arr, new TypeToken<List<Fn>>() {}.getType());
+        // ReportJson.parseEntries normalizes absent fields to empty/default (never null), so the
+        // per-field normalization the old gson-into-Effector path needed is gone.
+        List<Effector> fns = new ArrayList<>(io.poly.candor.model.ReportJson.parseEntries(arr));
         // An entry with no `fn` key, `fn: null`, or a blank `fn` is not addressable — every query keys,
-        // sorts, and formats by `f.fn`, so a null there NPEs (map's lastIndexOf, the sort below) and a
-        // blank one throws a MissingFormatWidthException (`%-0s`). Such an entry can't be named, queried,
-        // or pathed; drop it loudly rather than crash. (gson leaves an absent String at its `""` default,
-        // so a missing key surfaces as blank, not null.) A foreign file with NO valid entries is still
-        // caught by the not-a-report branches above.
+        // sorts, and formats by `fn()`, so a null there NPEs and a blank one throws a
+        // MissingFormatWidthException (`%-0s`). Such an entry can't be named, queried, or pathed; drop it
+        // loudly rather than crash. A foreign file with NO valid entries is still caught above.
         int beforeFilter = fns.size();
-        fns.removeIf(f -> f.fn == null || f.fn.isEmpty());
+        fns.removeIf(f -> f.fn() == null || f.fn().isEmpty());
         if (fns.size() < beforeFilter)
             System.err.println("candor: skipping " + (beforeFilter - fns.size())
                     + " report entr" + (beforeFilter - fns.size() == 1 ? "y" : "ies") + " with no 'fn'");
-        for (Fn f : fns) { // gson leaves absent optional arrays null — normalize
-            if (f.inferred == null) f.inferred = List.of();
-            if (f.direct == null) f.direct = List.of();
-            if (f.calls == null) f.calls = List.of();
-            if (f.fs == null) f.fs = List.of();
-            if (f.hosts == null) f.hosts = List.of();
-            if (f.tables == null) f.tables = List.of();
-            if (f.paths == null) f.paths = List.of();
-            if (f.cmds == null) f.cmds = List.of();
-            if (f.loc == null) f.loc = "";
-        }
-        fns.sort(Comparator.comparing(f -> f.fn));
+        fns.sort(Comparator.comparing(Effector::fn));
         return fns;
     }
 
@@ -115,7 +88,7 @@ public final class Query {
             System.err.println("usage: candor " + cmd + " <report.json> [arg] [--json]");
             return 2;
         }
-        List<Fn> fns;
+        List<Effector> fns;
         try {
             fns = load(pos.get(0));
         } catch (Exception e) {
@@ -200,28 +173,28 @@ public final class Query {
     }
 
     /** A function's effects, instant — `*` marks an effect performed in its own body. */
-    static int show(List<Fn> fns, String q, boolean json) {
+    static int show(List<Effector> fns, String q, boolean json) {
         if (q == null) return usage("show <report.json> <function-substring> [--json]");
-        int tier = bestTier(fns.stream().map(f -> f.fn), q);
-        List<Fn> hits = tier == 0 ? List.of()
-                : fns.stream().filter(f -> matchTier(f.fn, q) >= tier).collect(Collectors.toList());
+        int tier = bestTier(fns.stream().map(f -> f.fn()), q);
+        List<Effector> hits = tier == 0 ? List.of()
+                : fns.stream().filter(f -> matchTier(f.fn(), q) >= tier).collect(Collectors.toList());
         if (json) {
             List<Map<String, Object>> out = new ArrayList<>();
-            for (Fn f : hits) {
+            for (Effector f : hits) {
                 Map<String, Object> m = new LinkedHashMap<>();
-                m.put("fn", f.fn);
-                m.put("inferred", sorted(f.inferred));
-                m.put("direct", sorted(f.direct));
-                if (!f.fs.isEmpty()) m.put("fs", f.fs);
+                m.put("fn", f.fn());
+                m.put("inferred", sorted(f.inferred().toNames()));
+                m.put("direct", sorted(f.direct().toNames()));
+                if (!f.fs().isEmpty()) m.put("fs", f.fs());
                 // The engine resolves Net endpoints (hosts) per method; show MUST surface them like the
-                // Rust engine (SPEC §3.1 `hosts?`) — the Fn record previously never parsed the field.
-                if (f.hosts != null && !f.hosts.isEmpty()) m.put("hosts", f.hosts);
+                // Rust engine (SPEC §3.1 `hosts?`) — the Effector record previously never parsed the field.
+                if (f.hosts() != null && !f.hosts().isEmpty()) m.put("hosts", f.hosts());
                 // Literal effect surfaces (tables/paths/cmds) mirror fs/hosts — the Rust engine's show
                 // surfaces them too; omitting them hid e.g. a Db fn's `tables`. Omit when empty.
-                if (f.tables != null && !f.tables.isEmpty()) m.put("tables", f.tables);
-                if (f.paths != null && !f.paths.isEmpty()) m.put("paths", f.paths);
-                if (f.cmds != null && !f.cmds.isEmpty()) m.put("cmds", f.cmds);
-                m.put("unresolved", f.unresolved);
+                if (f.tables() != null && !f.tables().isEmpty()) m.put("tables", f.tables());
+                if (f.paths() != null && !f.paths().isEmpty()) m.put("paths", f.paths());
+                if (f.cmds() != null && !f.cmds().isEmpty()) m.put("cmds", f.cmds());
+                m.put("unresolved", f.unresolved());
                 out.add(m);
             }
             emit(out);
@@ -231,20 +204,20 @@ public final class Query {
             System.out.println("candor: no effectful function matching `" + q + "` (pure functions are omitted).");
             return 0;
         }
-        int w = Math.max(1, hits.stream().mapToInt(f -> f.fn.length()).max().orElse(0)); // never %-0s (an empty fn → MissingFormatWidthException)
+        int w = Math.max(1, hits.stream().mapToInt(f -> f.fn().length()).max().orElse(0)); // never %-0s (an empty fn → MissingFormatWidthException)
         boolean anyStar = false;
-        for (Fn f : hits) {
-            Set<String> direct = new HashSet<>(f.direct);
-            anyStar |= f.inferred.stream().anyMatch(direct::contains);
-            String parts = sorted(f.inferred).stream()
+        for (Effector f : hits) {
+            Set<String> direct = new HashSet<>(f.direct().toNames());
+            anyStar |= f.inferred().toNames().stream().anyMatch(direct::contains);
+            String parts = sorted(f.inferred().toNames()).stream()
                     .map(x -> {
                         String star = direct.contains(x) ? "*" : "";
-                        if (x.equals("Fs") && !f.fs.isEmpty()) return "Fs" + star + "(" + String.join(",", f.fs) + ")";
+                        if (x.equals("Fs") && !f.fs().isEmpty()) return "Fs" + star + "(" + String.join(",", f.fs()) + ")";
                         return x + star;
                     })
                     .collect(Collectors.joining(" "));
-            String unk = f.unresolved ? "  ⚠ unresolved (set may be incomplete)" : "";
-            System.out.printf("  %-" + w + "s  { %s }%s%n", f.fn, parts, unk);
+            String unk = f.unresolved() ? "  ⚠ unresolved (set may be incomplete)" : "";
+            System.out.printf("  %-" + w + "s  { %s }%s%n", f.fn(), parts, unk);
         }
         // Only explain the `*` when one was actually printed (every effect inherited => no marker).
         if (anyStar) System.out.println("  (* = performed in the function's own body; unmarked = via a callee)");
@@ -252,11 +225,11 @@ public final class Query {
     }
 
     /** Which functions perform an effect — direct sources split from inheritors. */
-    static int where(List<Fn> fns, String eff, boolean json) {
+    static int where(List<Effector> fns, String eff, boolean json) {
         if (eff == null) return usage("where <report.json> <Effect> [--json]");
-        List<String> direct = fns.stream().filter(f -> f.direct.contains(eff)).map(f -> f.fn).sorted().toList();
+        List<String> direct = fns.stream().filter(f -> f.direct().toNames().contains(eff)).map(f -> f.fn()).sorted().toList();
         List<String> inherit = fns.stream()
-                .filter(f -> f.inferred.contains(eff) && !f.direct.contains(eff)).map(f -> f.fn).sorted().toList();
+                .filter(f -> f.inferred().toNames().contains(eff) && !f.direct().toNames().contains(eff)).map(f -> f.fn()).sorted().toList();
         if (json) {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("effect", eff);
@@ -282,7 +255,7 @@ public final class Query {
     }
 
     /** Who calls a function — inverts the report's `calls` effect graph (no re-analysis). */
-    static int callers(List<Fn> fns, String reportPath, String q, boolean json, boolean includeUnknown) {
+    static int callers(List<Effector> fns, String reportPath, String q, boolean json, boolean includeUnknown) {
         if (q == null) return usage("callers <report.json> <function-substring> [--json] [--include-unknown]");
         // Prefer the full call-graph sidecar (written beside the report): it records EVERY function's
         // callees, including pure ones, so we can answer "who TRANSITIVELY calls X" for any function —
@@ -296,7 +269,7 @@ public final class Query {
         // necessarily incomplete here (only effectful edges), which the sidecar exists to fix.
         if (cg == null || cg.isEmpty()) {
             cg = new LinkedHashMap<>();
-            for (Fn f : fns) cg.put(f.fn, new ArrayList<>(f.calls));
+            for (Effector f : fns) cg.put(f.fn(), new ArrayList<>(f.calls()));
         }
         // --include-unknown ⟨0.7⟩: the transitive `callers` set is candor's CONFIRMED reachers — it
         // cannot include a function that reaches `q` only through a dispatch candor declined to resolve
@@ -311,11 +284,11 @@ public final class Query {
         Map<String, List<String>> hier = null;
         if (includeUnknown) {
             broadByFn = new LinkedHashMap<>();
-            for (Fn f : fns) {
-                for (String why : f.unknownWhy) {
-                    if (why.startsWith("dispatch:")) {
-                        String key = why.substring(why.indexOf(':') + 1); // OWNER.M (dotted)
-                        if (!key.isEmpty()) broadByFn.computeIfAbsent(f.fn, k -> new TreeSet<>()).add(key);
+            for (Effector f : fns) {
+                for (UnknownReason why : f.unknownWhy()) {
+                    if (why.kind() == UnknownReason.Kind.DISPATCH) {
+                        String key = why.detail(); // OWNER.M (dotted)
+                        if (!key.isEmpty()) broadByFn.computeIfAbsent(f.fn(), k -> new TreeSet<>()).add(key);
                     }
                 }
             }
@@ -636,14 +609,14 @@ public final class Query {
     }
 
     /** A class -> effects overview of the whole report, most-effectful first. */
-    static int map(List<Fn> fns, boolean json) {
+    static int map(List<Effector> fns, boolean json) {
         Map<String, TreeSet<String>> mods = new HashMap<>();
         Map<String, Integer> counts = new HashMap<>();
-        for (Fn f : fns) {
-            int dot = f.fn.lastIndexOf('.');
-            String mod = dot > 0 ? f.fn.substring(0, dot) : f.fn; // declaring class
+        for (Effector f : fns) {
+            int dot = f.fn().lastIndexOf('.');
+            String mod = dot > 0 ? f.fn().substring(0, dot) : f.fn(); // declaring class
             mods.computeIfAbsent(mod, k -> new TreeSet<>())
-                    .addAll(f.inferred.stream().filter(x -> !x.equals("Unknown")).toList());
+                    .addAll(f.inferred().toNames().stream().filter(x -> !x.equals("Unknown")).toList());
             counts.merge(mod, 1, Integer::sum);
         }
         if (json) {
@@ -675,18 +648,18 @@ public final class Query {
     }
 
     /** Per-function effect delta vs a baseline report (+gained / -lost). */
-    static int diff(List<Fn> cur, String basePath, boolean json) {
+    static int diff(List<Effector> cur, String basePath, boolean json) {
         if (basePath == null) return usage("diff <report.json> <baseline.json> [--json]");
-        List<Fn> base;
+        List<Effector> base;
         try {
             base = load(basePath);
         } catch (Exception e) {
             System.out.println("candor: cannot read baseline " + basePath);
             return 2;
         }
-        Map<String, Set<String>> b = unionByFn(base, f -> f.inferred);
-        Map<String, Set<String>> c = unionByFn(cur, f -> f.inferred);
-        Map<String, Set<String>> cd = unionByFn(cur, f -> f.direct);
+        Map<String, Set<String>> b = unionByFn(base, f -> f.inferred().toNames());
+        Map<String, Set<String>> c = unionByFn(cur, f -> f.inferred().toNames());
+        Map<String, Set<String>> cd = unionByFn(cur, f -> f.direct().toNames());
         TreeSet<String> all = new TreeSet<>();
         all.addAll(b.keySet());
         all.addAll(c.keySet());
@@ -740,26 +713,26 @@ public final class Query {
      *  fn — keep-first would then DROP a row's effects and make diff/gains FABRICATE a phantom gain (or
      *  MISS a real one). Unioning is the safe direction: it never drops an effect. Mirrors candor-rust
      *  `load_fninfo` (union-at-load) and candor-ts `effectsByFn`. */
-    static Map<String, Set<String>> unionByFn(List<Fn> fns, java.util.function.Function<Fn, Collection<String>> pick) {
+    static Map<String, Set<String>> unionByFn(List<Effector> fns, java.util.function.Function<Effector, Collection<String>> pick) {
         Map<String, Set<String>> m = new HashMap<>();
-        for (Fn f : fns) m.computeIfAbsent(f.fn, k -> new HashSet<>()).addAll(pick.apply(f));
+        for (Effector f : fns) m.computeIfAbsent(f.fn(), k -> new HashSet<>()).addAll(pick.apply(f));
         return m;
     }
 
     /** gains — the package-level SUPPLY-CHAIN alarm (SPEC §5.1): the UNION of effects the surface gained
      *  between two reports (base -> cur), with per-function detail. A dependency that grew a Net/Exec reach
      *  between releases. {gained:[Effect], byFunction:[{fn,effect}]} — the cross-engine machine-readable form. */
-    static int gains(List<Fn> cur, String basePath, boolean json) {
+    static int gains(List<Effector> cur, String basePath, boolean json) {
         if (basePath == null) return usage("gains <report.json> <baseline.json> [--json]");
-        List<Fn> base;
+        List<Effector> base;
         try {
             base = load(basePath);
         } catch (Exception e) {
             System.out.println("candor: cannot read baseline " + basePath);
             return 2;
         }
-        Map<String, Set<String>> b = unionByFn(base, f -> f.inferred);
-        Map<String, Set<String>> c = unionByFn(cur, f -> f.inferred); // union cur too: no dup double-count
+        Map<String, Set<String>> b = unionByFn(base, f -> f.inferred().toNames());
+        Map<String, Set<String>> c = unionByFn(cur, f -> f.inferred().toNames()); // union cur too: no dup double-count
         TreeSet<String> gained = new TreeSet<>();
         List<Map<String, Object>> byFunction = new ArrayList<>();
         for (String fn : new TreeSet<>(c.keySet())) {
@@ -788,10 +761,10 @@ public final class Query {
     /** The longest dotted-segment prefix shared by EVERY function name — the codebase root, so the next
      *  segment is the architectural "layer" (`com.uflexi.nems` → `model`/`dao`/`actions`). Adapts to any
      *  package root without configuration. */
-    static String[] commonPrefix(List<Fn> fns) {
+    static String[] commonPrefix(List<Effector> fns) {
         String[] best = null;
-        for (Fn f : fns) {
-            String[] segs = f.fn.split("\\.");
+        for (Effector f : fns) {
+            String[] segs = f.fn().split("\\.");
             if (best == null) { best = segs; continue; }
             int n = Math.min(best.length, segs.length), i = 0;
             while (i < n && best[i].equals(segs[i])) i++;
@@ -821,26 +794,26 @@ public final class Query {
      *  read 60% Unknown from a handful of root causes — this names them, ranked, to declare/resolve/accept.
      *  Reverse-BFS over the report's effect-relevant `calls` edges (the channel Unknown propagates along),
      *  the same graph `impact` uses. */
-    static int blindspots(List<Fn> fns, boolean json) {
+    static int blindspots(List<Effector> fns, boolean json) {
         Map<String, List<String>> rev = new HashMap<>();
-        for (Fn f : fns) for (String c : f.calls) rev.computeIfAbsent(c, k -> new ArrayList<>()).add(f.fn);
-        int totalUnknown = (int) fns.stream().filter(f -> f.inferred.contains("Unknown")).count();
+        for (Effector f : fns) for (String c : f.calls()) rev.computeIfAbsent(c, k -> new ArrayList<>()).add(f.fn());
+        int totalUnknown = (int) fns.stream().filter(f -> f.inferred().toNames().contains("Unknown")).count();
         List<Map<String, Object>> sources = new ArrayList<>();
-        for (Fn f : fns) {
-            if (f.unknownWhy == null || f.unknownWhy.isEmpty()) continue; // a SOURCE carries its own why
+        for (Effector f : fns) {
+            if (f.unknownWhy() == null || f.unknownWhy().isEmpty()) continue; // a SOURCE carries its own why
             Set<String> affected = new TreeSet<>();
             Deque<String> q = new ArrayDeque<>();
             Set<String> seen = new HashSet<>();
-            q.add(f.fn);
-            seen.add(f.fn);
+            q.add(f.fn());
+            seen.add(f.fn());
             while (!q.isEmpty()) {
                 String cur = q.poll();
                 for (String caller : rev.getOrDefault(cur, List.of()))
                     if (seen.add(caller)) { affected.add(caller); q.add(caller); }
             }
             Map<String, Object> s = new LinkedHashMap<>();
-            s.put("fn", f.fn);
-            s.put("why", f.unknownWhy);
+            s.put("fn", f.fn());
+            s.put("why", f.unknownWhy().stream().map(UnknownReason::format).collect(Collectors.toList()));
             s.put("reaches", affected.size());
             s.put("affected", new ArrayList<>(affected)); // sorted (TreeSet): stable cross-engine shape
             sources.add(s);
@@ -865,24 +838,24 @@ public final class Query {
         return 0;
     }
 
-    static int impact(List<Fn> fns, String fnArg, boolean json) {
+    static int impact(List<Effector> fns, String fnArg, boolean json) {
         if (fnArg == null) return usage("impact <report.json> <fn-substring> [--json]");
-        Map<String, Fn> byName = new HashMap<>();
-        for (Fn f : fns) byName.putIfAbsent(f.fn, f);
-        Fn target = fns.stream().filter(f -> f.fn.equals(fnArg)).findFirst()
-                .orElseGet(() -> fns.stream().filter(f -> f.fn.contains(fnArg)).findFirst().orElse(null));
+        Map<String, Effector> byName = new HashMap<>();
+        for (Effector f : fns) byName.putIfAbsent(f.fn(), f);
+        Effector target = fns.stream().filter(f -> f.fn().equals(fnArg)).findFirst()
+                .orElseGet(() -> fns.stream().filter(f -> f.fn().contains(fnArg)).findFirst().orElse(null));
         if (target == null) {
             System.err.println("candor impact: no function matching '" + fnArg + "'");
             return 2;
         }
         // Reverse the effect-relevant call graph: callee -> [callers], then BFS backward from the target.
         Map<String, List<String>> rev = new HashMap<>();
-        for (Fn f : fns) for (String c : f.calls) rev.computeIfAbsent(c, k -> new ArrayList<>()).add(f.fn);
+        for (Effector f : fns) for (String c : f.calls()) rev.computeIfAbsent(c, k -> new ArrayList<>()).add(f.fn());
         Set<String> affected = new LinkedHashSet<>();
         Deque<String> q = new ArrayDeque<>();
         Set<String> seen = new HashSet<>();
-        q.add(target.fn);
-        seen.add(target.fn);
+        q.add(target.fn());
+        seen.add(target.fn());
         while (!q.isEmpty()) {
             String cur = q.poll();
             for (String caller : rev.getOrDefault(cur, List.of()))
@@ -890,28 +863,28 @@ public final class Query {
         }
         // Entry points downstream — the runtime roots a change here surfaces through (target included if it
         // is itself a root).
-        List<Fn> roots = new ArrayList<>();
-        if (target.entryPoint) roots.add(target);
-        affected.stream().map(byName::get).filter(f -> f != null && f.entryPoint)
-                .sorted(Comparator.comparing(f -> f.fn)).forEach(roots::add);
+        List<Effector> roots = new ArrayList<>();
+        if (target.entryPoint()) roots.add(target);
+        affected.stream().map(byName::get).filter(f -> f != null && f.entryPoint())
+                .sorted(Comparator.comparing(f -> f.fn())).forEach(roots::add);
 
         if (json) {
             Map<String, Object> out = new LinkedHashMap<>();
-            out.put("fn", target.fn);
+            out.put("fn", target.fn());
             out.put("affectedCount", affected.size());
             out.put("affected", new ArrayList<>(new TreeSet<>(affected))); // sorted: stable cross-engine shape
             List<Map<String, Object>> rs = new ArrayList<>();
-            for (Fn r : roots) {
+            for (Effector r : roots) {
                 Map<String, Object> m = new LinkedHashMap<>();
-                m.put("fn", r.fn);
-                m.put("inferred", r.inferred);
+                m.put("fn", r.fn());
+                m.put("inferred", r.inferred().toNames());
                 rs.add(m);
             }
             out.put("entryPoints", rs);
             emit(out);
             return 0;
         }
-        System.out.println("candor impact — what changing `" + target.fn + "` affects:\n");
+        System.out.println("candor impact — what changing `" + target.fn() + "` affects:\n");
         System.out.println("  " + affected.size() + " effectful function"
                 + (affected.size() == 1 ? "" : "s") + " transitively call it.");
         if (roots.isEmpty()) {
@@ -921,8 +894,8 @@ public final class Query {
         }
         System.out.println("  " + roots.size() + " entry point" + (roots.size() == 1 ? "" : "s")
                 + " downstream (a change here surfaces at runtime via):");
-        for (Fn r : roots)
-            System.out.println("    " + r.fn + "   { " + String.join(", ", r.inferred) + " }");
+        for (Effector r : roots)
+            System.out.println("    " + r.fn() + "   { " + String.join(", ", r.inferred().toNames()) + " }");
         return 0;
     }
 
@@ -930,39 +903,39 @@ public final class Query {
      *  effect-relevant `calls` graph from <fn> to the nearest method that performs <effect> DIRECTLY (the
      *  source). Answers "this method touches Net — through WHAT?", the chain `where` (who performs it) and
      *  `callers` (who calls X) describe the ends of but never connect. Read-only over the report. */
-    static int path(List<Fn> fns, String fnArg, String effect, boolean json) {
+    static int path(List<Effector> fns, String fnArg, String effect, boolean json) {
         if (fnArg == null || effect == null)
             return usage("path <report.json> <fn-substring> <Effect> [--json]");
-        Map<String, Fn> byName = new HashMap<>();
-        for (Fn f : fns) byName.putIfAbsent(f.fn, f);
-        Fn start = fns.stream().filter(f -> f.fn.equals(fnArg)).findFirst()
-                .orElseGet(() -> fns.stream().filter(f -> f.fn.contains(fnArg)).findFirst().orElse(null));
+        Map<String, Effector> byName = new HashMap<>();
+        for (Effector f : fns) byName.putIfAbsent(f.fn(), f);
+        Effector start = fns.stream().filter(f -> f.fn().equals(fnArg)).findFirst()
+                .orElseGet(() -> fns.stream().filter(f -> f.fn().contains(fnArg)).findFirst().orElse(null));
         if (start == null) {
             System.err.println("candor path: no function matching '" + fnArg + "'");
             return 2;
         }
-        if (!start.inferred.contains(effect)) {
+        if (!start.inferred().toNames().contains(effect)) {
             // In --json mode stdout must be JSON-only (a jq/MCP consumer parses it); send the human note
             // to stderr so it doesn't precede the JSON object on stdout.
-            (json ? System.err : System.out).println(start.fn + " does not perform " + effect
-                    + "  (inferred: " + start.inferred + ")");
-            if (json) emit(Map.of("fn", start.fn, "effect", effect, "path", List.of()));
+            (json ? System.err : System.out).println(start.fn() + " does not perform " + effect
+                    + "  (inferred: " + start.inferred().toNames() + ")");
+            if (json) emit(Map.of("fn", start.fn(), "effect", effect, "path", List.of()));
             return 0;
         }
         // BFS following `calls`, only through callees that carry the effect, to the first DIRECT source.
         Map<String, String> prev = new HashMap<>();
         Deque<String> q = new ArrayDeque<>();
-        q.add(start.fn);
-        prev.put(start.fn, null);
+        q.add(start.fn());
+        prev.put(start.fn(), null);
         String source = null;
         while (!q.isEmpty()) {
             String cur = q.poll();
-            Fn f = byName.get(cur);
+            Effector f = byName.get(cur);
             if (f == null) continue;
-            if (f.direct.contains(effect)) { source = cur; break; }
-            for (String c : f.calls) {
-                Fn cf = byName.get(c);
-                if (cf != null && cf.inferred.contains(effect) && !prev.containsKey(c)) {
+            if (f.direct().toNames().contains(effect)) { source = cur; break; }
+            for (String c : f.calls()) {
+                Effector cf = byName.get(c);
+                if (cf != null && cf.inferred().toNames().contains(effect) && !prev.containsKey(c)) {
                     prev.put(c, cur);
                     q.add(c);
                 }
@@ -971,12 +944,12 @@ public final class Query {
         if (source == null) {
             // Inferred but no LOCAL direct source on a `calls` path — reached cross-jar, via a
             // Spring-synthesized callee (repo/Feign), or through an Unknown. Honest: not locally traceable.
-            String msg = start.fn + " performs " + effect
+            String msg = start.fn() + " performs " + effect
                     + " but its source is not a local method (cross-jar, framework-synthesized, or via Unknown) "
                     + "— not statically traceable.";
             // --json: stdout JSON-only, the human note goes to stderr (see the no-effect branch above).
             (json ? System.err : System.out).println(msg);
-            if (json) emit(Map.of("fn", start.fn, "effect", effect, "path", List.of(),
+            if (json) emit(Map.of("fn", start.fn(), "effect", effect, "path", List.of(),
                     "note", "source not locally traceable"));
             return 0;
         }
@@ -987,24 +960,24 @@ public final class Query {
         if (json) {
             List<Map<String, Object>> steps = new ArrayList<>();
             for (int i = 0; i < chain.size(); i++) {
-                Fn f = byName.get(chain.get(i));
+                Effector f = byName.get(chain.get(i));
                 Map<String, Object> m = new LinkedHashMap<>();
                 m.put("fn", chain.get(i));
-                m.put("loc", f != null ? f.loc : "");
+                m.put("loc", f != null ? f.loc() : "");
                 m.put("source", i == chain.size() - 1);
                 steps.add(m);
             }
-            emit(Map.of("fn", start.fn, "effect", effect, "path", steps));
+            emit(Map.of("fn", start.fn(), "effect", effect, "path", steps));
             return 0;
         }
-        System.out.println("candor path — how `" + start.fn + "` comes to perform " + effect + ":\n");
+        System.out.println("candor path — how `" + start.fn() + "` comes to perform " + effect + ":\n");
         for (int i = 0; i < chain.size(); i++) {
-            Fn f = byName.get(chain.get(i));
+            Effector f = byName.get(chain.get(i));
             String indent = "  ".repeat(i + 1);
             String arrow = i == 0 ? "" : "→ ";
             boolean isSource = i == chain.size() - 1;
             String tag = isSource
-                    ? "   [" + effect + " source" + (f != null && !f.loc.isEmpty() ? " @ " + f.loc : "") + "]"
+                    ? "   [" + effect + " source" + (f != null && !f.loc().isEmpty() ? " @ " + f.loc() : "") + "]"
                     : "";
             System.out.println(indent + arrow + chain.get(i) + tag);
         }
@@ -1018,12 +991,12 @@ public final class Query {
      *  per-method dump can't, since most effectful methods are never called by project code directly.
      *  Lists each effect with how many entry points reach it (+ a few examples); Unknown flagged as the
      *  visibility caveat it is. No entry points → says so (nothing is marked runtime-invoked). */
-    static int reachable(List<Fn> fns, boolean json) {
-        List<Fn> entries = fns.stream().filter(f -> f.entryPoint)
-                .sorted(Comparator.comparing(f -> f.fn)).toList();
+    static int reachable(List<Effector> fns, boolean json) {
+        List<Effector> entries = fns.stream().filter(f -> f.entryPoint())
+                .sorted(Comparator.comparing(f -> f.fn())).toList();
         TreeMap<String, List<String>> byEffect = new TreeMap<>();
-        for (Fn f : entries)
-            for (String e : f.inferred) byEffect.computeIfAbsent(e, k -> new ArrayList<>()).add(f.fn);
+        for (Effector f : entries)
+            for (String e : f.inferred().toNames()) byEffect.computeIfAbsent(e, k -> new ArrayList<>()).add(f.fn());
 
         if (json) {
             Map<String, Object> out = new LinkedHashMap<>();
@@ -1064,7 +1037,7 @@ public final class Query {
             if (who.size() > 3) examples += ", …";
             System.out.printf("  %-10s %3d  (%s)%s%n", e, who.size(), examples, tag);
         }
-        long pure = entries.stream().filter(f -> f.inferred.isEmpty()).count();
+        long pure = entries.stream().filter(f -> f.inferred().toNames().isEmpty()).count();
         System.out.println("\n  " + entries.size() + " entry point" + (entries.size() == 1 ? "" : "s")
                 + "; " + pure + " perform no effect (pure roots).");
         return 0;
@@ -1082,26 +1055,26 @@ public final class Query {
      *  effect appears in a layer it wasn't in before — "DB must not leak into a new module". Ambient
      *  effects (Log/Clock/…) are reported but not scored (cross-cutting is expected). This is a
      *  diagnostic + ratchet, deliberately NOT a single gameable "score". */
-    static int containment(List<Fn> fns, String basePath, boolean json) {
+    static int containment(List<Effector> fns, String basePath, boolean json) {
         String[] prefix = commonPrefix(fns);
         int pl = prefix.length;
         // effect -> (layer -> count of methods performing it DIRECTLY)
         Map<String, TreeMap<String, Integer>> byEff = new LinkedHashMap<>();
-        for (Fn f : fns)
-            for (String eff : f.direct)
-                byEff.computeIfAbsent(eff, k -> new TreeMap<>()).merge(layerOf(f.fn, pl), 1, Integer::sum);
+        for (Effector f : fns)
+            for (String eff : f.direct().toNames())
+                byEff.computeIfAbsent(eff, k -> new TreeMap<>()).merge(layerOf(f.fn(), pl), 1, Integer::sum);
 
         // RATCHET mode: a baseline report was given — flag any NEW (contained-effect, layer) pair.
         if (basePath != null) {
-            List<Fn> base;
+            List<Effector> base;
             try { base = load(basePath); } catch (Exception e) {
                 System.out.println("candor: cannot read baseline " + basePath); return 2;
             }
             int bpl = commonPrefix(base).length;
             Map<String, Set<String>> baseLayers = new HashMap<>();
-            for (Fn f : base)
-                for (String eff : f.direct)
-                    baseLayers.computeIfAbsent(eff, k -> new HashSet<>()).add(layerOf(f.fn, bpl));
+            for (Effector f : base)
+                for (String eff : f.direct().toNames())
+                    baseLayers.computeIfAbsent(eff, k -> new HashSet<>()).add(layerOf(f.fn(), bpl));
             List<String> leaks = new ArrayList<>();    // regression: a contained effect entered a NEW layer
             List<String> cleanups = new ArrayList<>(); // improvement: a contained effect LEFT a layer
             for (String eff : CONTAINED) {

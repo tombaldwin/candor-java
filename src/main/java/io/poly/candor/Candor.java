@@ -5240,6 +5240,36 @@ public class Candor {
             if (desc.startsWith("(Ljava/io/File;")) return "Fs";
             if (desc.startsWith("(Ljava/net/URL;")) return "Net";
         }
+        // ── Remaining jakarta/javax EE (batch 18) — κ-covered, unmodeled = FLOOR-DROPPED silent ──
+        // JTA transactions → Db — the @Transactional / app-server transaction BOUNDARY (begin opens, commit
+        // flushes+COMMITs the enlisted resources, rollback issues ROLLBACK). PURE siblings NOT touched:
+        // getStatus/setRollbackOnly/setTransactionTimeout (local txn state, no resource-manager round-trip).
+        if ((owner.equals("jakarta.transaction.UserTransaction") || owner.equals("javax.transaction.UserTransaction")
+                || owner.equals("jakarta.transaction.Transaction") || owner.equals("javax.transaction.Transaction")
+                || owner.equals("jakarta.transaction.TransactionManager") || owner.equals("javax.transaction.TransactionManager"))
+                && (method.equals("begin") || method.equals("commit") || method.equals("rollback"))) return "Db";
+        // JAX-WS — Dispatch.invoke* performs the SOAP wire send → Net. PURE NOT touched: Service.getPort
+        // (returns a proxy), Service.createDispatch (builds the object).
+        if ((owner.equals("jakarta.xml.ws.Dispatch") || owner.equals("javax.xml.ws.Dispatch"))
+                && method.startsWith("invoke")) return "Net";
+        // jakarta.mail — Service.connect is the shared super of Store/Transport.connect (already Net) that
+        // candor missed by keying only the subclasses; Folder.expunge removes \Deleted on the IMAP server.
+        if ((owner.equals("jakarta.mail.Service") || owner.equals("javax.mail.Service")) && method.equals("connect"))
+            return "Net";
+        if ((owner.equals("jakarta.mail.Folder") || owner.equals("javax.mail.Folder")) && method.equals("expunge"))
+            return "Net";
+        // JBatch — JobOperator.start/restart/stop drive the job + write the (JDBC) JobRepository → Db. PURE
+        // NOT touched: getJobNames/getJobInstanceCount (registry reads).
+        if (owner.equals("jakarta.batch.operations.JobOperator")
+                && (method.equals("start") || method.equals("restart") || method.equals("stop")
+                    || method.equals("abandon"))) return "Db";
+        // JMS lifecycle/browse → Net: Connection.start/stop (begin/halt broker delivery); QueueBrowser
+        // .getEnumeration (browses the broker queue — a round-trip). PURE NOT touched: createSession,
+        // QueueBrowser.getQueue.
+        if ((owner.equals("jakarta.jms.Connection") || owner.equals("javax.jms.Connection"))
+                && (method.equals("start") || method.equals("stop"))) return "Net";
+        if ((owner.equals("jakarta.jms.QueueBrowser") || owner.equals("javax.jms.QueueBrowser"))
+                && method.equals("getEnumeration")) return "Net";
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation

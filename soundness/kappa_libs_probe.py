@@ -1582,6 +1582,76 @@ EFFECT_CASES = [
     # java.lang.Process.waitFor/destroy — manages a spawned native process → Exec. (VERIFY modeled.)
     ("processWaitFor", "Exec", "Process p", 'int rc = p.waitFor()'),
     ("processDestroy", "Exec", "Process p", 'p.destroy()'),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 18) ======================
+    # REMAINING jakarta/javax EE surfaces: JTA transactions, JAX-WS SOAP, JSON-B/JSON-P, jakarta.mail IMAP
+    # store/folder, JPA Query terminals, JBatch, JMS extras. All κ-COVERED prefixes (jakarta.*/javax.*), so
+    # an UNMODELED effectful member is FLOOR-DROPPED silent (absent, no `invisible` disclosure) = cardinal sin.
+    # PURE siblings (proxy returns, builders, caller-stream JSON-B/JSON-P, getStatus) are anchored in PURE_CASES.
+    # --- JTA transactions → Db. UserTransaction/Transaction/TransactionManager commit/rollback/begin drive the
+    #     2PC against the resource manager(s) — the @Transactional / app-server transaction boundary. The
+    #     commit FLUSHES + COMMITs the enlisted DB connection(s); rollback issues ROLLBACK; begin opens the txn.
+    #     getStatus/setRollbackOnly/setTransactionTimeout are local state (pure anchors below). Db|Unknown PASS.
+    ("jtaUserTxBegin",    "Db", "jakarta.transaction.UserTransaction t", 't.begin()'),
+    ("jtaUserTxCommit",   "Db", "jakarta.transaction.UserTransaction t", 't.commit()'),
+    ("jtaUserTxRollback", "Db", "jakarta.transaction.UserTransaction t", 't.rollback()'),
+    ("jtaTxCommit",       "Db", "jakarta.transaction.Transaction t", 't.commit()'),
+    ("jtaTxRollback",     "Db", "jakarta.transaction.Transaction t", 't.rollback()'),
+    ("jtaTmCommit",       "Db", "jakarta.transaction.TransactionManager t", 't.commit()'),
+    ("jtaTmRollback",     "Db", "jakarta.transaction.TransactionManager t", 't.rollback()'),
+    ("jtaTmBegin",        "Db", "jakarta.transaction.TransactionManager t", 't.begin()'),
+    # legacy javax.transaction (older app servers / Spring < 6) — same Db leaves, javax.* covered prefix.
+    ("javaxJtaUserTxCommit",   "Db", "javax.transaction.UserTransaction t", 't.commit()'),
+    ("javaxJtaUserTxRollback", "Db", "javax.transaction.UserTransaction t", 't.rollback()'),
+    ("javaxJtaUserTxBegin",    "Db", "javax.transaction.UserTransaction t", 't.begin()'),
+
+    # --- JAX-WS SOAP → Net. Dispatch.invoke/invokeOneWay/invokeAsync send the SOAP request over the wire.
+    #     Service.getPort returns a generated PROXY (no wire until a port method is called) — pure anchor below.
+    ("jaxwsDispatchInvoke",     "Net", "jakarta.xml.ws.Dispatch<Object> d, Object req", 'Object r = d.invoke(req)'),
+    ("jaxwsDispatchInvokeOneWay","Net", "jakarta.xml.ws.Dispatch<Object> d, Object req", 'd.invokeOneWay(req)'),
+
+    # --- JSON-B → caller-stream/String only (NO File overload exists in 3.0). toJson/fromJson over a Writer/
+    #     Reader/OutputStream/InputStream/String are PURE (the file open is the caller's) — anchored below. No
+    #     EFFECT leaf in JSON-B. (Confirmed via javap: every toJson/fromJson takes String or a caller stream.)
+
+    # --- jakarta.mail IMAP/POP fetch → Net (beyond Transport.send, already modeled). Store.connect opens the
+    #     IMAP/POP socket; Folder.open/getMessages/getMessage/fetch/expunge round-trip to the server. Service
+    #     .connect is the shared superclass connect. Transport.connect opens the SMTP socket. Net|Unknown PASS.
+    ("mailStoreConnect",   "Net", "jakarta.mail.Store s", 's.connect("h", "u", "p")'),
+    ("mailStoreConnectNoArg","Net", "jakarta.mail.Store s", 's.connect()'),
+    ("mailServiceConnect", "Net", "jakarta.mail.Service s", 's.connect()'),
+    ("mailTransportConnect","Net", "jakarta.mail.Transport t", 't.connect()'),
+    ("mailFolderOpen",     "Net", "jakarta.mail.Folder f", 'f.open(1)'),
+    ("mailFolderGetMessages","Net", "jakarta.mail.Folder f", 'jakarta.mail.Message[] m = f.getMessages()'),
+    ("mailFolderGetMessage","Net", "jakarta.mail.Folder f", 'jakarta.mail.Message m = f.getMessage(1)'),
+    ("mailFolderFetch",    "Net", "jakarta.mail.Folder f, jakarta.mail.Message[] m, jakarta.mail.FetchProfile fp", 'f.fetch(m, fp)'),
+    ("mailFolderExpunge",  "Net", "jakarta.mail.Folder f", 'jakarta.mail.Message[] m = f.expunge()'),
+
+    # --- JPA Query terminals not yet modeled → Db. batch-7 modeled getResultList/executeUpdate; these siblings
+    #     run the SAME SQL against the DB: Query.getSingleResult/getResultStream, TypedQuery.getSingleResult/
+    #     getResultStream, StoredProcedureQuery.execute/getResultList. createNativeQuery/createQuery are pure
+    #     BUILDERS (anchored below); getTransaction returns the txn (pure anchor). Db|Unknown PASS.
+    ("jpaGetSingleResult",   "Db", "jakarta.persistence.Query q", 'Object o = q.getSingleResult()'),
+    ("jpaGetResultStream",   "Db", "jakarta.persistence.Query q", 'java.util.stream.Stream<?> s = q.getResultStream()'),
+    ("jpaTypedSingleResult", "Db", "jakarta.persistence.TypedQuery<String> q", 'String o = q.getSingleResult()'),
+    ("jpaTypedResultStream", "Db", "jakarta.persistence.TypedQuery<String> q", 'java.util.stream.Stream<String> s = q.getResultStream()'),
+    ("jpaSpExecute",         "Db", "jakarta.persistence.StoredProcedureQuery q", 'boolean b = q.execute()'),
+    ("jpaSpGetResultList",   "Db", "jakarta.persistence.StoredProcedureQuery q", 'java.util.List<?> r = q.getResultList()'),
+
+    # --- JBatch → Db. JobOperator.start/restart/stop write the JobRepository (the batch metadata store, a DB
+    #     in any real deployment) and drive the job. getJobNames reads it (pure-ish, not tested as a hard leaf).
+    #     Db|Unknown PASS (the repository is JDBC-backed in production; an in-memory repo is the documented pure).
+    ("jbatchStart",   "Db", "jakarta.batch.operations.JobOperator op, java.util.Properties p", 'long id = op.start("job", p)'),
+    ("jbatchRestart", "Db", "jakarta.batch.operations.JobOperator op, java.util.Properties p", 'long id = op.restart(1L, p)'),
+    ("jbatchStop",    "Db", "jakarta.batch.operations.JobOperator op", 'op.stop(1L)'),
+
+    # --- jakarta.jms extras → Net. Connection.start/stop begins/halts delivery over the broker link;
+    #     QueueBrowser.getEnumeration browses the broker queue (a round-trip). MessageConsumer.receive blocks
+    #     on the broker for a message. (MessageProducer.send/Session.commit already modeled in batches 16/17.)
+    ("jmsConnStart",        "Net", "jakarta.jms.Connection c", 'c.start()'),
+    ("jmsConnStop",         "Net", "jakarta.jms.Connection c", 'c.stop()'),
+    ("jmsBrowserGetEnum",   "Net", "jakarta.jms.QueueBrowser b", 'java.util.Enumeration<?> e = b.getEnumeration()'),
+    ("jmsConsumerReceive",  "Net", "jakarta.jms.MessageConsumer c", 'jakarta.jms.Message m = c.receive()'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -1963,6 +2033,58 @@ PURE_CASES = [
     ("jaxbMarshalStreamPure", "m.marshal(o, os)", "jakarta.xml.bind.Marshaller m, Object o, OutputStream os"),
     ("jaxbMarshalWriterPure", "m.marshal(o, w)",  "jakarta.xml.bind.Marshaller m, Object o, Writer w"),
     ("jaxbUnmarshalStreamPure", "Object o = u.unmarshal(in)", "jakarta.xml.bind.Unmarshaller u, InputStream in"),
+
+    # ====================== ADDED (2026-06-20 batch 18) PURE ANCHORS ======================
+    # --- JTA local-state verbs: getStatus reads the txn status int, setRollbackOnly marks the in-memory txn,
+    #     setTransactionTimeout sets a local timeout — none touch the resource manager. Must stay pure when
+    #     the commit/rollback Db leaves get modeled (they sit right next to these — fabrication risk).
+    ("jtaGetStatusPure",        "int s = t.getStatus()",        "jakarta.transaction.UserTransaction t"),
+    ("jtaSetRollbackOnlyPure",  "t.setRollbackOnly()",          "jakarta.transaction.UserTransaction t"),
+    ("jtaSetTimeoutPure",       "t.setTransactionTimeout(5)",   "jakarta.transaction.UserTransaction t"),
+    ("jtaTmGetStatusPure",      "int s = t.getStatus()",        "jakarta.transaction.TransactionManager t"),
+
+    # --- JAX-WS Service.getPort returns a generated client PROXY; no wire until a port method is invoked. The
+    #     proxy construction is local. Must stay pure (modeling getPort as Net would fabricate on every port
+    #     lookup). createDispatch likewise just builds the Dispatch object — pure.
+    ("jaxwsGetPortPure",        "Runnable p = svc.getPort(Runnable.class)",  "jakarta.xml.ws.Service svc"),
+    ("jaxwsCreateDispatchPure", "jakarta.xml.ws.Dispatch<Object> d = svc.createDispatch(new javax.xml.namespace.QName(\"x\"), Object.class, jakarta.xml.ws.Service.Mode.PAYLOAD)", "jakarta.xml.ws.Service svc"),
+
+    # --- JSON-B: ALL toJson/fromJson overloads are caller-stream (Writer/Reader/OutputStream/InputStream) or
+    #     pure String — the file/socket open is the caller's. No File overload exists. Must stay pure (same
+    #     ambiguous/caller-stream class as SnakeYAML/Kryo). These pin that a future JSON-B κ rule must not fab.
+    ("jsonbToJsonStringPure",   "String s = j.toJson(new Object())",         "jakarta.json.bind.Jsonb j"),
+    ("jsonbToJsonWriterPure",   "j.toJson(new Object(), w)",                 "jakarta.json.bind.Jsonb j, Writer w"),
+    ("jsonbToJsonStreamPure",   "j.toJson(new Object(), os)",                "jakarta.json.bind.Jsonb j, OutputStream os"),
+    ("jsonbFromJsonStringPure", "String r = j.fromJson(\"{}\", String.class)","jakarta.json.bind.Jsonb j"),
+    ("jsonbFromJsonReaderPure", "String r = j.fromJson(rd, String.class)",   "jakarta.json.bind.Jsonb j, Reader rd"),
+    ("jsonbFromJsonStreamPure", "String r = j.fromJson(in, String.class)",   "jakarta.json.bind.Jsonb j, InputStream in"),
+
+    # --- JSON-P (jakarta.json.Json) factory leaves are ALL caller-stream: createReader/createParser(Reader|
+    #     InputStream), createWriter/createGenerator(Writer|OutputStream). The reader/writer wraps the caller's
+    #     stream; the file open is the caller's. Must stay pure (no Fs/Net fab).
+    ("jsonpCreateReaderPure",   "jakarta.json.JsonReader r = jakarta.json.Json.createReader(rd)",          "Reader rd"),
+    ("jsonpCreateParserPure",   "jakarta.json.stream.JsonParser p = jakarta.json.Json.createParser(in)",   "InputStream in"),
+    ("jsonpCreateWriterPure",   "jakarta.json.JsonWriter w2 = jakarta.json.Json.createWriter(w)",          "Writer w"),
+    ("jsonpCreateGeneratorPure","jakarta.json.stream.JsonGenerator g = jakarta.json.Json.createGenerator(os)","OutputStream os"),
+
+    # --- JPA pure BUILDERS: createQuery(String)/createNativeQuery(String) compile/prepare a Query object
+    #     locally (no DB round-trip until a terminal getResultList/getSingleResult/executeUpdate). getTransaction
+    #     returns the EntityTransaction object (pure accessor). Must stay pure (the terminals are the Db leaves).
+    ("jpaCreateQueryPure",       "jakarta.persistence.Query q = em.createQuery(\"from X\")",       "jakarta.persistence.EntityManager em"),
+    ("jpaCreateNativeQueryPure", "jakarta.persistence.Query q = em.createNativeQuery(\"select 1\")","jakarta.persistence.EntityManager em"),
+    ("jpaGetTransactionPure",    "jakarta.persistence.EntityTransaction t = em.getTransaction()",  "jakarta.persistence.EntityManager em"),
+
+    # --- JBatch JobOperator.getJobNames reads the (in-memory or DB) repository registry — a local read of
+    #     already-loaded job names; not the job-driving Db write. Kept pure (start/restart/stop are the leaves).
+    ("jbatchGetJobNamesPure", "java.util.Set<String> n = op.getJobNames()", "jakarta.batch.operations.JobOperator op"),
+
+    # --- JMS QueueBrowser.getQueue returns the Queue destination object (a local handle, no wire). The wire
+    #     leaf is getEnumeration (browses the broker). Must stay pure.
+    ("jmsBrowserGetQueuePure", "jakarta.jms.Queue q = b.getQueue()", "jakarta.jms.QueueBrowser b"),
+    # JMS Connection.createSession builds a Session object locally (the session opens lazily); kept pure here —
+    #   the wire leaves are start/stop/send/commit. (createSession not modeled; absent==pure for jakarta.* but
+    #   it's a covered prefix so it would read FLOOR if it were effectful — it is not, documented pure.)
+    ("jmsCreateSessionPure", "jakarta.jms.Session s = c.createSession()", "jakarta.jms.Connection c"),
 ]
 
 
@@ -2394,6 +2516,15 @@ JARS = {
     "stanford-corenlp-4.5.7.jar": f"{_MVN}/edu/stanford/nlp/stanford-corenlp/4.5.7/stanford-corenlp-4.5.7.jar",
     # SKIPPED: Apache FOP — only testable leaf is FopFactory.newFop(mime, OutputStream) = a caller-stream pure
     #   anchor (redundant) and it needs xmlgraphics-commons; noted, not added. Ratpack / DJL skipped (heavy trees).
+    # --- added 2026-06-20 batch 18 (remaining jakarta/javax EE: JTA, JAX-WS, JSON-B/JSON-P, mail IMAP, JPA
+    #     Query terminals, JBatch, JMS extras — all small API jars, gitignored) ---
+    "jakarta.transaction-api-2.0.1.jar": f"{_MVN}/jakarta/transaction/jakarta.transaction-api/2.0.1/jakarta.transaction-api-2.0.1.jar",
+    "javax.transaction-api-1.3.jar": f"{_MVN}/javax/transaction/javax.transaction-api/1.3/javax.transaction-api-1.3.jar",
+    "jakarta.xml.ws-api-4.0.1.jar": f"{_MVN}/jakarta/xml/ws/jakarta.xml.ws-api/4.0.1/jakarta.xml.ws-api-4.0.1.jar",
+    "jakarta.xml.soap-api-3.0.1.jar": f"{_MVN}/jakarta/xml/soap/jakarta.xml.soap-api/3.0.1/jakarta.xml.soap-api-3.0.1.jar",
+    "jakarta.json.bind-api-3.0.0.jar": f"{_MVN}/jakarta/json/bind/jakarta.json.bind-api/3.0.0/jakarta.json.bind-api-3.0.0.jar",
+    "jakarta.json-api-2.1.3.jar": f"{_MVN}/jakarta/json/jakarta.json-api/2.1.3/jakarta.json-api-2.1.3.jar",
+    "jakarta.batch-api-2.1.1.jar": f"{_MVN}/jakarta/batch/jakarta.batch-api/2.1.1/jakarta.batch-api-2.1.1.jar",
 }
 
 

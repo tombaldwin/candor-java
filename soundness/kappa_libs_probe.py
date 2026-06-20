@@ -1869,6 +1869,91 @@ EFFECT_CASES = [
     #      on the wire (the async variants take a CDACallback) -> Net; Unknown also PASS.) ----
     ("contentfulFetchAll", "Net", "com.contentful.java.cda.FetchQuery<com.contentful.java.cda.CDAEntry> q",
         'com.contentful.java.cda.CDAArray a = q.all()'),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 22) — SaaS-Net SDK PRECISION ==============
+    # FOCUS (same vein as batches 20/21): 3rd-party NON-κ-covered SaaS/cloud SDK leaves currently disclosed
+    #   INVISIBLE that can be UPGRADED to concrete Net. EACH leaf VERIFIED via javap -c to do the wire call
+    #   (not merely declaring a checked exception — the Meilisearch Client.index trap from the prior batch).
+    #
+    # ---- Net (Firebase Admin FCM — FirebaseMessaging.send(Message) builds a CallableOperation via sendOp and
+    #      calls CallableOperation.call() (javap -c) which dispatches the FCM HTTP send through
+    #      FirebaseMessagingClientImpl; throws FirebaseMessagingException wrapping the HTTP. sendMulticast/sendEach
+    #      same shape. Owner com.google.firebase.messaging.FirebaseMessaging. Message.builder() is a PURE anchor.) ----
+    ("firebaseSend", "Net", "com.google.firebase.messaging.FirebaseMessaging m, com.google.firebase.messaging.Message msg",
+        'String id = m.send(msg)'),
+    ("firebaseSendMulticast", "Net",
+        "com.google.firebase.messaging.FirebaseMessaging m, com.google.firebase.messaging.MulticastMessage msg",
+        'com.google.firebase.messaging.BatchResponse r = m.sendMulticast(msg)'),
+    # ---- Net (Firebase Admin Auth — createUser/getUser build a CallableOperation (createUserOp/getUserOp) and
+    #      call .call() (javap -c verifyIdTokenOp/createUserOp/getUserOp all return CallableOperation), the admin
+    #      REST round-trip to identitytoolkit.googleapis.com; throws FirebaseAuthException. Owner is the inherited
+    #      com.google.firebase.auth.AbstractFirebaseAuth (the call-site owner with a FirebaseAuth receiver is
+    #      FirebaseAuth, which extends AbstractFirebaseAuth — model both owners to be safe).
+    #      NB verifyIdToken is DELIBERATELY NOT modeled here — its default checkRevoked=false path is a LOCAL JWT
+    #      signature verify against Google's PUBLIC CERTS which the GooglePublicKeysManager CACHES; only a cold
+    #      cache (or checkRevoked=true) does a wire fetch, so it is the ambiguous-receiver class — modeling Net
+    #      would fabricate on the common warm-cache local-verify. Left disclosed-INVISIBLE (see PURE_CASES note). ----
+    ("firebaseCreateUser", "Net",
+        "com.google.firebase.auth.FirebaseAuth a, com.google.firebase.auth.UserRecord.CreateRequest req",
+        'com.google.firebase.auth.UserRecord u = a.createUser(req)'),
+    ("firebaseGetUser", "Net", "com.google.firebase.auth.FirebaseAuth a",
+        'com.google.firebase.auth.UserRecord u = a.getUser("uid")'),
+
+    # ---- Net (Postmark — ApiClient.deliverMessage(Message) calls BaseApiClient.execute(...) which bottoms out
+    #      in HttpClient.execute (Apache HttpClient5, javap -c) POSTing to api.postmarkapp.com; throws IOException.
+    #      Owner com.postmarkapp.postmark.client.ApiClient. The Message DTO ctor is a PURE anchor.) ----
+    ("postmarkDeliverMessage", "Net",
+        "com.postmarkapp.postmark.client.ApiClient c, com.postmarkapp.postmark.client.data.model.message.Message m",
+        'com.postmarkapp.postmark.client.data.model.message.MessageResponse r = c.deliverMessage(m)'),
+
+    # ---- Net (Mailjet — MailjetClient.post/get/put/delete call getPostCall(...) -> okhttp3.Call.execute()
+    #      (javap -c shows the direct okhttp3/Call.execute invokeinterface) to api.mailjet.com; throws
+    #      MailjetException. Owner com.mailjet.client.MailjetClient.) ----
+    ("mailjetPost", "Net", "com.mailjet.client.MailjetClient c, com.mailjet.client.MailjetRequest req",
+        'com.mailjet.client.MailjetResponse r = c.post(req)'),
+    ("mailjetGet", "Net", "com.mailjet.client.MailjetClient c, com.mailjet.client.MailjetRequest req",
+        'com.mailjet.client.MailjetResponse r = c.get(req)'),
+
+    # ---- Net (MessageBird — MessageBirdClient.sendMessage(Message) delegates to MessageBirdService.sendPayLoad,
+    #      whose impl (MessageBirdServiceImpl) opens an HttpURLConnection and reads getInputStream() (javap -c) —
+    #      a real wire POST to rest.messagebird.com; throws UnauthorizedException/GeneralException. Owner
+    #      com.messagebird.MessageBirdClient.) ----
+    ("messagebirdSendMessage", "Net", "com.messagebird.MessageBirdClient c, com.messagebird.objects.Message m",
+        'com.messagebird.objects.MessageResponse r = c.sendMessage(m)'),
+
+    # ---- Net (Plivo — the *Creator/*Getter terminal create()/get() is declared on com.plivo.api.models.base
+    #      .Creator/.Getter and calls retrofit2.Call.execute() (javap -c) to api.plivo.com; throws IOException.
+    #      The call-site owner of msgCreator.create() is the concrete MessageCreator (extends Creator) OR Creator.
+    #      Same wrapper-over-Retrofit shape as Feign — Retrofit's Call.execute is modeled but the call-site owner
+    #      here is the Plivo Creator, so it reads invisible until modeled. Message.creator(...) is a PURE factory.) ----
+    ("plivoMessageCreate", "Net", "com.plivo.api.models.message.MessageCreator c",
+        'com.plivo.api.models.message.MessageCreateResponse r = c.create()'),
+
+    # ---- Net (Pusher — Pusher.trigger(channel,event,data) -> doPost -> httpCall which does
+    #      CloseableHttpClient.execute (Apache HttpClient 4, javap -c) to the Pusher API. trigger/get/post are
+    #      declared on com.pusher.rest.PusherAbstract; the call-site owner with a Pusher receiver is
+    #      com.pusher.rest.Pusher (extends PusherAbstract) — model both owners. The Pusher ctor is a PURE anchor.) ----
+    ("pusherTrigger", "Net", "com.pusher.rest.Pusher p",
+        'com.pusher.rest.data.Result r = p.trigger("ch", "ev", new Object())'),
+
+    # ---- Net (Ably REST — ChannelBase.publish(name,data) -> publishImpl -> io.ably.lib.http.Http$Request.sync()
+    #      (javap -c) the synchronous HTTP publish to rest.ably.io; throws AblyException. The call-site owner with
+    #      a Channel receiver is io.ably.lib.rest.Channel (extends ChannelBase) — model both. history() same shape.) ----
+    ("ablyPublish", "Net", "io.ably.lib.rest.Channel ch", 'ch.publish("name", new Object())'),
+
+    # ---- Net (New Relic telemetry — MetricBatchSender.sendBatch / EventBatchSender.sendBatch SYNCHRONOUSLY
+    #      send the batch: sendBatch -> BatchDataSender.send -> HttpPoster (javap -c), returns a Response and
+    #      throws ResponseException wrapping the HTTP POST to metric-api.newrelic.com. Owners
+    #      com.newrelic.telemetry.metrics.MetricBatchSender / events.EventBatchSender. NB TelemetryClient.sendBatch
+    #      is the BUFFERED/scheduled variant (returns void, queues + background flush) — the synchronous wire leaf
+    #      is the *BatchSender.sendBatch, so that is what is modeled (TelemetryClient.sendBatch left as the
+    #      deferred-class accepted pure, like OTel Span.end / Micrometer Counter.increment).) ----
+    ("newrelicMetricSendBatch", "Net",
+        "com.newrelic.telemetry.metrics.MetricBatchSender s, com.newrelic.telemetry.metrics.MetricBatch b",
+        'com.newrelic.telemetry.Response r = s.sendBatch(b)'),
+    ("newrelicEventSendBatch", "Net",
+        "com.newrelic.telemetry.events.EventBatchSender s, com.newrelic.telemetry.events.EventBatch b",
+        'com.newrelic.telemetry.Response r = s.sendBatch(b)'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -2404,6 +2489,39 @@ PURE_CASES = [
     # (NO wire), despite declaring `throws MeilisearchException`. The real Net leaf is Client.createIndex /
     # Index.search/addDocuments. (Lesson: a declared exception != an effect — javap the BODY, not the signature.)
     ("meiliClientIndexPure", "com.meilisearch.sdk.Index ix = cl.index(\"movies\")", "com.meilisearch.sdk.Client cl"),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 22) — PURE anchors =======================
+    # Anti-fabrication anchors for the SaaS-Net leaves above: builders / DTOs / factories / local-crypto verify
+    # that a future κ widening must keep PURE (they touch no socket).
+    #   Firebase Message.builder() is a pure in-memory builder (no wire until FirebaseMessaging.send).
+    ("firebaseMessageBuilderPure",
+        "com.google.firebase.messaging.Message.Builder b = com.google.firebase.messaging.Message.builder()", ""),
+    #   Firebase verifyIdToken (default checkRevoked=false) is a LOCAL JWT signature verify against Google's
+    #   public certs which GooglePublicKeysManager CACHES — only a cold cache does a wire fetch (ambiguous-receiver
+    #   class, like the CharSource.read boundary). Modeling Net would fabricate on the common warm-cache verify;
+    #   left disclosed-INVISIBLE. Anchored here so a future widening of FirebaseAuth.* does NOT flood it as Net.
+    ("firebaseVerifyIdTokenLocalPure",
+        "com.google.firebase.auth.FirebaseToken t = a.verifyIdToken(\"jwt\")", "com.google.firebase.auth.FirebaseAuth a"),
+    #   Postmark Message DTO ctor — a plain value object (no wire). The wire leaf is ApiClient.deliverMessage.
+    ("postmarkMessageDtoPure",
+        "com.postmarkapp.postmark.client.data.model.message.Message m = "
+        "new com.postmarkapp.postmark.client.data.model.message.Message(\"f@x\", \"t@x\", \"s\", \"b\")", ""),
+    #   Pusher ctor — stores app-id/key/secret (no wire until trigger). Must stay pure.
+    ("pusherCtorPure", "com.pusher.rest.Pusher p = new com.pusher.rest.Pusher(\"id\", \"k\", \"s\")", ""),
+    #   MessageBirdClient ctor — wraps the service (no wire). The wire leaf is sendMessage.
+    ("messagebirdClientCtorPure",
+        "com.messagebird.MessageBirdClient c = new com.messagebird.MessageBirdClient(svc)",
+        "com.messagebird.MessageBirdService svc"),
+    #   Plivo Message.creator(...) is a pure static factory (returns a MessageCreator builder, no wire until
+    #   create()). Must stay pure (fluent-builder-pure-until-terminal anchor).
+    ("plivoMessageCreatorFactoryPure",
+        "com.plivo.api.models.message.MessageCreator mc = com.plivo.api.models.message.Message.creator(\"src\", \"dst\", \"txt\")", ""),
+    #   New Relic TelemetryClient.sendBatch is the BUFFERED/scheduled variant (returns void, queues + background
+    #   flush) — no synchronous wire at the call site. The synchronous wire leaf is *BatchSender.sendBatch
+    #   (modeled Net above). Accepted pure (deferred class, like OTel Span.end / Micrometer Counter.increment).
+    ("newrelicTelemetryClientSendBatchPure",
+        "tc.sendBatch(mb)",
+        "com.newrelic.telemetry.TelemetryClient tc, com.newrelic.telemetry.metrics.MetricBatch mb"),
 ]
 
 
@@ -2904,6 +3022,24 @@ JARS = {
     "contentful-java-sdk-10.6.0.jar": f"{_MVN}/com/contentful/java/java-sdk/10.6.0/java-sdk-10.6.0.jar",
     # Auth/JWT — PURE anchor jar (local sign/verify, NOT Net)
     "java-jwt-4.4.0.jar": f"{_MVN}/com/auth0/java-jwt/4.4.0/java-jwt-4.4.0.jar",
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 22) — SaaS-Net SDK PRECISION sweep =========
+    # The "last targeted pass of the vertical-SaaS-Net vein": FCM push, comms/SMS, email SaaS, realtime
+    # push, observability SaaS. Each leaf VERIFIED via javap -c to do the wire call (okhttp/HttpURLConnection/
+    # Apache-HttpClient/CallableOperation.call/retrofit2.Call.execute) — NOT just "declares an exception".
+    # Self-contained for type resolution (κ is name-based — no transitive runtime deps needed at scan time).
+    # Firebase Admin → Net (FCM push + Auth admin; CallableOperation.call() dispatches the HTTP send)
+    "firebase-admin-9.3.0.jar": f"{_MVN}/com/google/firebase/firebase-admin/9.3.0/firebase-admin-9.3.0.jar",
+    # Email SaaS → Net
+    "postmark-1.10.2.jar": f"{_MVN}/com/postmarkapp/postmark/1.10.2/postmark-1.10.2.jar",
+    "mailjet-client-5.2.5.jar": f"{_MVN}/com/mailjet/mailjet-client/5.2.5/mailjet-client-5.2.5.jar",
+    # Comms / SMS → Net
+    "messagebird-api-6.2.5.jar": f"{_MVN}/com/messagebird/messagebird-api/6.2.5/messagebird-api-6.2.5.jar",
+    "plivo-java-5.46.0.jar": f"{_MVN}/com/plivo/plivo-java/5.46.0/plivo-java-5.46.0.jar",
+    # Realtime push → Net
+    "pusher-http-java-1.3.3.jar": f"{_MVN}/com/pusher/pusher-http-java/1.3.3/pusher-http-java-1.3.3.jar",
+    "ably-java-1.2.40.jar": f"{_MVN}/io/ably/ably-java/1.2.40/ably-java-1.2.40.jar",
+    # Observability SaaS → Net (New Relic telemetry — the *BatchSender.sendBatch synchronous wire send)
+    "telemetry-core-0.16.0.jar": f"{_MVN}/com/newrelic/telemetry/telemetry-core/0.16.0/telemetry-core-0.16.0.jar",
 }
 
 

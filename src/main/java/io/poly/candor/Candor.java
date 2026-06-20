@@ -2148,6 +2148,22 @@ public class Candor {
                             // per-method blind spot. Post-filtered to packages κ never classified ANYWHERE
                             // (so a known package's pure method isn't disclosed) and propagated to callers.
                             else blindDirect.computeIfAbsent(id, k -> new TreeSet<>()).add(pkg);
+                        } else if (!pkg.isEmpty() && effect == null
+                                && pkg.startsWith("org.springframework")
+                                && isSpringIoOwner(min.owner) && !isConventionallyPure(min.name)) {
+                            // STRUCTURAL SPRING-FLOOR FIX: org.springframework.* is a κ-covered prefix, so an
+                            // UNMODELED Spring sub-library leaf would otherwise be SILENTLY DROPPED (worse than
+                            // a disclosed Unknown — the floor exists so pure Spring utils like StringUtils aren't
+                            // disclosed blind). But an unmodeled member of a Spring I/O-CONVENTION type
+                            // (*Template/*Operations/*Repository/*Gateway — Spring's "this class does I/O"
+                            // naming) is very likely a real effect candor just hasn't modeled (Spring Integration
+                            // MessagingTemplate, Spring Batch, the next Spring sub-project…). Disclose Unknown
+                            // (the SAFE direction — never a fabricated concrete effect) instead of dropping it.
+                            // The modeled Spring templates' I/O methods return effect!=null so never reach here;
+                            // only a genuinely-unmodeled member (or a rare pure accessor → harmless Unknown) does.
+                            dir.add("Unknown");
+                            unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                                    .add("dispatch:" + owner + "." + min.name);
                         }
                     }
                     // An injection-class effect on a caller-derived argument is an injection surface.
@@ -4150,6 +4166,21 @@ public class Candor {
             if (pkg.equals(p) || (pkg.length() > p.length() && pkg.charAt(p.length()) == '.' && pkg.startsWith(p))) return true;
         }
         return false;
+    }
+
+    /** A Spring type whose NAME follows the framework's "this class performs I/O" convention — the *Template
+     *  (JdbcTemplate/RestTemplate/RedisTemplate/MessagingTemplate/…), *Operations (ValueOperations/
+     *  ElasticsearchOperations/…), *Repository (Spring Data), *Gateway (integration) families. Used by the
+     *  structural Spring-floor fix to DISCLOSE Unknown on an unmodeled member of such a type instead of
+     *  silently dropping it. Pure Spring utility classes (StringUtils/ObjectUtils/Assert/ClassUtils/…) do NOT
+     *  match these suffixes, so they stay floored (no disclosure flood). `internalOwner` is the slash-form. */
+    static boolean isSpringIoOwner(String internalOwner) {
+        int slash = internalOwner.lastIndexOf('/');
+        String simple = slash >= 0 ? internalOwner.substring(slash + 1) : internalOwner;
+        int dollar = simple.lastIndexOf('$');           // a nested type — use its own simple name
+        if (dollar >= 0) simple = simple.substring(dollar + 1);
+        return simple.endsWith("Template") || simple.endsWith("Operations")
+                || simple.endsWith("Repository") || simple.endsWith("Gateway");
     }
 
     /** Proven-PURE accessors/factories/inert ctors on owners whose effect is otherwise whole-owner

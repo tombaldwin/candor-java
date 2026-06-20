@@ -1751,6 +1751,43 @@ EFFECT_CASES = [
     #     files and WRITES .class files off disk -> Fs. The com.sun.* analog of javax.tools.JavaCompiler.run
     #     (already modeled Unknown). Niche (programmatic compilation) but a real FLOOR-DROPPED Fs. Fs|Unknown PASS.
     ("jdkJavacMainCompile", "Fs", "String[] args", 'int rc = com.sun.tools.javac.Main.compile(args)'),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 20) — PRECISION sweep ======================
+    # FOCUS: 3rd-party NON-κ-covered leaves currently disclosed INVISIBLE (sound: inferred=[] + invisible:[pkg])
+    #   that can be UPGRADED to a CONCRETE effect. These are NOT cardinal sins (candor is already honest via the
+    #   per-fn invisible disclosure) — this is precision/usability (concrete > invisible). Verified each leaf
+    #   actually does the effect (declares IOException / is a wire op) via javap before listing it. Genuinely
+    #   pure / caller-stream / in-memory siblings are anchored in PURE_CASES (NOT modeled — fabrication risk).
+    #
+    # ---- Net (REST Assured — RestAssured.get/post(String) are STATIC leaves that fire the HTTP request and
+    #      block for the Response. Owner io.rest_assured / io.restassured.RestAssured. The fluent given()/when()
+    #      are pure builders (anchored). NB the package is io.restassured (no underscore in the FQN).) ----
+    ("restAssuredGet", "Net", "",
+        'io.restassured.response.Response r = io.restassured.RestAssured.get("http://h/")'),
+    ("restAssuredPost", "Net", "",
+        'io.restassured.response.Response r = io.restassured.RestAssured.post("http://h/")'),
+
+    # ---- Net (Alibaba Cloud OSS — OSS.getObject/putObject hit the object store over HTTP. Owner com.aliyun
+    #      .oss.OSS (the interface; OSSClient is the impl, both carry the call-site owner). The (String,String)
+    #      overloads are the canonical wire leaves; the File overloads ALSO do Net (an object store upload/
+    #      download is fundamentally a Net op — the local file is incidental), so Net is the unambiguous layer.) ----
+    ("ossGetObject", "Net", "com.aliyun.oss.OSS c",
+        'com.aliyun.oss.model.OSSObject o = c.getObject("bucket", "key")'),
+    ("ossPutObject", "Net", "com.aliyun.oss.OSS c, InputStream in",
+        'com.aliyun.oss.model.PutObjectResult r = c.putObject("bucket", "key", in)'),
+
+    # ---- Net (Tencent Cloud COS — COS.getObject/putObject hit the object store over HTTP. Owner com.qcloud
+    #      .cos.COS (the interface; COSClient is the impl). Same shape as OSS/S3 — a wire object store.) ----
+    ("cosGetObject", "Net", "com.qcloud.cos.COS c",
+        'com.qcloud.cos.model.COSObject o = c.getObject("bucket", "key")'),
+    ("cosPutObject", "Net", "com.qcloud.cos.COS c, com.qcloud.cos.model.PutObjectRequest req",
+        'com.qcloud.cos.model.PutObjectResult r = c.putObject(req)'),
+
+    # ---- Fs (metadata-extractor — ImageMetadataReader.readMetadata(File) opens+reads the image file off disk
+    #      (declares java.io.IOException). Owner com.drew.imaging.ImageMetadataReader. The readMetadata(InputStream)
+    #      overload is caller-stream -> PURE anchor below.) ----
+    ("metadataExtractorReadFile", "Fs", "File f",
+        'com.drew.metadata.Metadata m = com.drew.imaging.ImageMetadataReader.readMetadata(f)'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -2217,6 +2254,45 @@ PURE_CASES = [
     #   com.sun.management.OperatingSystemMXBean.getProcessCpuLoad is a LOCAL native metric read (no Net/Fs),
     #     consistent with java.lang.management.ManagementFactory staying pure — a documented pure, NOT a gap.
     ("jdkOsMxBeanCpuLoadPure", "double d = b.getProcessCpuLoad()", "com.sun.management.OperatingSystemMXBean b"),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 20) — PRECISION sweep anchors ============
+    # Anti-fabrication anchors for the precision sweep: caller-stream / in-memory / operator / builder siblings
+    # of the concrete leaves above. A future κ widening that models the effect leaves must keep these PURE.
+    #
+    # REST Assured given()/when() are fluent BUILDERS (no wire until a terminal get/post) — must stay pure.
+    ("restAssuredGivenPure", "io.restassured.specification.RequestSpecification s = io.restassured.RestAssured.given()", ""),
+    # metadata-extractor readMetadata(InputStream) — the caller supplies the stream (its file open is the
+    #   caller's `new FileInputStream`); the read itself is caller-stream -> pure (readMetadata(File) is the Fs leaf).
+    ("metadataExtractorReadStreamPure",
+        "com.drew.metadata.Metadata m = com.drew.imaging.ImageMetadataReader.readMetadata(in)", "InputStream in"),
+    # fastexcel has NO File overload anywhere — Workbook(OutputStream,..) is caller-stream and finish()/close()
+    #   write to that CALLER stream (the file open is the caller's `new FileOutputStream`). So the whole fastexcel
+    #   write surface is caller-stream -> pure. Modeling Fs here would FABRICATE on a ByteArrayOutputStream sink.
+    ("fastexcelWorkbookCtorPure",
+        "org.dhatim.fastexcel.Workbook wb = new org.dhatim.fastexcel.Workbook(os, \"app\", \"1.0\")", "OutputStream os"),
+    ("fastexcelFinishPure", "wb.finish()", "org.dhatim.fastexcel.Workbook wb"),
+    # XZ / Zstd decompressors wrap a CALLER-supplied InputStream (caller-stream class, like SnakeYAML) — the file
+    #   open is the caller's; the (de)compression is pure CPU over the wrapped stream. Must NOT read Fs.
+    ("xzInputStreamPure",
+        "org.tukaani.xz.XZInputStream z = new org.tukaani.xz.XZInputStream(in)", "InputStream in"),
+    ("zstdInputStreamPure",
+        "com.github.luben.zstd.ZstdInputStream z = new com.github.luben.zstd.ZstdInputStream(in)", "InputStream in"),
+    # LZ4 compress(byte[]..) is in-memory byte-array compute — pure (no I/O at all).
+    ("lz4CompressPure",
+        "int n = c.compress(new byte[16], 0, 16, new byte[64], 0, 64)", "net.jpountz.lz4.LZ4Compressor c"),
+    # graphql-java GraphQL.execute(String) is the IN-MEMORY query engine orchestrator — it returns an
+    #   ExecutionResult and declares no checked exception; the DataFetchers do the I/O, NOT execute itself.
+    #   Modeling Net/Db here would fabricate on every GraphQL call (the engine is pure orchestration).
+    ("graphqlExecutePure", "graphql.ExecutionResult r = g.execute(\"{ x }\")", "graphql.GraphQL g"),
+    # Reactive OPERATORS are pure transformations (the wire is in the source, applied lazily at subscribe).
+    #   RxJava Observable.map / Reactor Flux.map / Mono.map — must NOT fabricate an effect.
+    ("rxjavaMapPure",
+        "io.reactivex.rxjava3.core.Observable<String> r = o.map(x -> x)",
+        "io.reactivex.rxjava3.core.Observable<String> o"),
+    ("reactorFluxMapPure",
+        "reactor.core.publisher.Flux<String> r = f.map(x -> x)", "reactor.core.publisher.Flux<String> f"),
+    ("reactorMonoMapPure",
+        "reactor.core.publisher.Mono<String> r = m.map(x -> x)", "reactor.core.publisher.Mono<String> m"),
 ]
 
 
@@ -2682,6 +2758,20 @@ JARS = {
     #   Ktor's wire path needs Kotlin coroutines. io.ktor.* IS a covered prefix (would FLOOR if reached), but a
     #   Java fixture cannot reach the wire leaf, so Ktor is left to a Kotlin probe. kotlinx-coroutines is
     #   likewise suspend-only (no Java-callable I/O leaf); not added.
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 20) — PRECISION sweep ======================
+    # Self-contained jars (the fixture only needs type resolution; κ is name-based, no transitive deps needed).
+    "rest-assured-5.4.0.jar": f"{_MVN}/io/rest-assured/rest-assured/5.4.0/rest-assured-5.4.0.jar",
+    "aliyun-sdk-oss-3.17.4.jar": f"{_MVN}/com/aliyun/oss/aliyun-sdk-oss/3.17.4/aliyun-sdk-oss-3.17.4.jar",
+    "cos_api-5.6.227.jar": f"{_MVN}/com/qcloud/cos_api/5.6.227/cos_api-5.6.227.jar",
+    "metadata-extractor-2.19.0.jar": f"{_MVN}/com/drewnoakes/metadata-extractor/2.19.0/metadata-extractor-2.19.0.jar",
+    # PURE-anchor jars: fastexcel (caller-stream, no File overload), XZ/Zstd (caller-stream decompressors),
+    #   LZ4 (in-memory compute), graphql-java (in-memory engine), RxJava (operators; reactor-core already present).
+    "fastexcel-0.18.4.jar": f"{_MVN}/org/dhatim/fastexcel/0.18.4/fastexcel-0.18.4.jar",
+    "xz-1.9.jar": f"{_MVN}/org/tukaani/xz/1.9/xz-1.9.jar",
+    "zstd-jni-1.5.6-3.jar": f"{_MVN}/com/github/luben/zstd-jni/1.5.6-3/zstd-jni-1.5.6-3.jar",
+    "lz4-java-1.8.0.jar": f"{_MVN}/org/lz4/lz4-java/1.8.0/lz4-java-1.8.0.jar",
+    "graphql-java-22.1.jar": f"{_MVN}/com/graphql-java/graphql-java/22.1/graphql-java-22.1.jar",
+    "rxjava-3.1.8.jar": f"{_MVN}/io/reactivex/rxjava3/rxjava/3.1.8/rxjava-3.1.8.jar",
 }
 
 

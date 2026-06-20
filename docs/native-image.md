@@ -58,8 +58,16 @@ arm64/x64, Linux x64/arm64), built in CI on release (`.github/workflows/native.y
 GitHub release. Pick the binary when startup latency matters (CI gate, agent loops); use the jar when you
 want one portable artifact.
 
-## Caveat — verify behaviour parity
+## Parity is gated, not just hoped
 
-A native image is a different runtime. After any change that touches reflection/resources/serialization,
-run the byte-identity oracle **against the native binary** (the same pc/jsoup/gson `functions[]` compare),
-not just the jar, before trusting it. The reports must be byte-identical to the jar's.
+The index fallback in `Cha.externalSupers` is **gated to native only** (`IN_NATIVE_IMAGE`, read from the
+`org.graalvm.nativeimage.imagecode` property): on the JVM the only behavior is `ClassReader`-or-empty, so
+the index can't make the JVM's output host-dependent and isn't even loaded there. In native, the fallback
+resolves JDK supers from the bundled index (generated with the *same* ASM `ClassReader` the JVM path uses,
+so super/interface semantics match exactly).
+
+Because native and jar still resolve from different *sources*, `native.yml` runs a **parity gate**: it
+builds both, scans candor's own classes with each, and fails the build if `functions[]` differ. After any
+change touching reflection/resources/serialization/the index, that gate (or a local
+`./build/native/nativeCompile/candor <target> --json` vs the jar) must stay green before the binary is
+trusted — reports must be byte-identical to the jar's.

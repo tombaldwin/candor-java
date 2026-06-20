@@ -265,6 +265,8 @@ public class Candor {
         if (args[0].equals("--parallel")) {
             if (args.length < 3) {
                 System.err.println("usage: candor --parallel <out-dir> <target>...");
+                System.err.println("  report-generation only — writes one report per target. GATING still");
+                System.err.println("  needs a per-jar `candor <jar>` run with CANDOR_STRICT/POLICY/BASELINE.");
                 System.exit(2);
             }
             Path outDir = Path.of(args[1]);
@@ -276,23 +278,38 @@ public class Candor {
             }
             List<Path> targets = new ArrayList<>();
             for (int i = 2; i < args.length; i++) targets.add(Path.of(args[i]));
+            // basename without a trailing archive extension; a directory keeps its name.
+            java.util.function.Function<Path, String> baseOf =
+                    t -> t.getFileName().toString().replaceFirst("(?i)\\.(jar|zip)$", "");
+            // FAIL-FAST on output-name collisions: two targets with the same basename (moduleA/app.jar +
+            // moduleB/app.jar, or foo.jar + foo.zip) would both write <out-dir>/<base>.json and silently
+            // clobber each other. A silently-dropped report reads as a false PASS downstream — refuse.
+            Map<String, Path> seen = new HashMap<>();
+            for (Path t : targets) {
+                Path prev = seen.putIfAbsent(baseOf.apply(t), t);
+                if (prev != null) {
+                    System.err.println("candor: --parallel output collision — `" + t + "` and `" + prev
+                            + "` both map to " + baseOf.apply(t) + ".json; give them distinct names or scan separately");
+                    System.exit(2);
+                }
+            }
             int threads = Math.max(1, Math.min(targets.size(), Runtime.getRuntime().availableProcessors()));
             ExecutorService pool = Executors.newFixedThreadPool(threads);
             List<String> failures = new CopyOnWriteArrayList<>();
             for (Path t : targets) {
                 pool.submit(() -> {
-                    // basename without a trailing archive extension; a directory keeps its name.
-                    String base = t.getFileName().toString().replaceFirst("(?i)\\.(jar|zip)$", "");
-                    Path out = outDir.resolve(base + ".json");
+                    Path out = outDir.resolve(baseOf.apply(t) + ".json");
                     try {
                         if (!Files.exists(t)) { failures.add(t + " (no such path)"); return; }
-                        var inf = runScan(t);                 // own thread → own ctx() (LB-1b)
-                        writeJson(inf, out.toString());       // reads this thread's ctx()
-                        writeCallgraph(out.toString());
-                        writeHierarchy(out.toString());
+                        writeReport(runScan(t), out.toString(), null);   // own thread → own ctx() (LB-1b)
                         System.out.println("  " + t + " -> " + out);
-                    } catch (IOException | java.nio.file.ProviderNotFoundException e) {
+                    } catch (Throwable e) {
+                        // Record ANY failure — incl. a RuntimeException/Error from a phase outside runScan's
+                        // per-class fail-soft — so a crashing target can't silently vanish with a green
+                        // exit. The single-target path crashes loudly; --parallel must be no less honest.
                         failures.add(t + " (" + e.getClass().getSimpleName() + ": " + e.getMessage() + ")");
+                    } finally {
+                        AnalysisState.remove();   // don't pin this scan's context on the pooled thread
                     }
                 });
             }
@@ -335,7 +352,7 @@ public class Candor {
             }
             runScan(Path.of(args[1]));                       // dirty the statics
             var inferred = runScan(Path.of(args[2]));        // real scan must be independent of the above
-            writeJson(inferred, rj); writeCallgraph(rj); writeHierarchy(rj);
+            writeReport(inferred, rj, null);
             System.exit(0);
         }
         // The first arg is the scan target (a dir/jar) — a flag there is a typo or a newer-doc flag
@@ -381,7 +398,7 @@ public class Candor {
         // the all-classes ClassConformance; compute it once here so the gate below can reuse it rather
         // than recompute (the §5 two-pass walk) on a --json + CANDOR_STRICT run.
         ClassConformance ccFull = (jsonOut != null) ? classConformance(inferred) : null;
-        if (jsonOut != null) { writeJson(inferred, jsonOut, ccFull); writeCallgraph(jsonOut); writeHierarchy(jsonOut); }
+        if (jsonOut != null) writeReport(inferred, jsonOut, ccFull);
 
         // The κ-coverage disclosure (mirrors the Rust/TS receipts): external packages the bytecode
         // demonstrably calls where the classifier never fired — invisible, not Unknown. Per-scan
@@ -2245,12 +2262,13 @@ public class Candor {
      *  walking ArrayList's own supers, `LoudList` is never filed under `List`, so a base-typed dispatch on
      *  the grandparent interface (`l.add()` where `l: List`) finds no project subtype and goes silent-pure. */
     static Set<String> transSupers(String internal) {
-        Set<String> cached = ctx().transSupersCache.get(internal);
+        AnalysisContext c = ctx();   // hoist the ThreadLocal lookup — this is a hot, recursive, per-dispatch path
+        Set<String> cached = c.transSupersCache.get(internal);
         if (cached != null) return cached;
         Set<String> r = new HashSet<>();
-        ctx().transSupersCache.put(internal, r); // seed first to break cycles
+        c.transSupersCache.put(internal, r); // seed first to break cycles
         List<String> sup = new ArrayList<>();
-        ClassNode cn = ctx().byName.get(internal);
+        ClassNode cn = c.byName.get(internal);
         if (cn != null) {
             if (cn.superName != null) sup.add(cn.superName);
             if (cn.interfaces != null) sup.addAll(cn.interfaces);

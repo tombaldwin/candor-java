@@ -241,6 +241,7 @@ public class Candor {
         entityTables.clear(); repoTables.clear(); feignTypes.clear();
         ALL = List.of();
         byName.clear(); transSupersCache.clear(); subtypeIndex.clear(); annoMetaCache.clear();
+        sealedClosedMemo.clear();
         overloadDescs.clear(); classesWithClinit.clear();
         taintEnabled = false; tainted.clear();
         denyRules.clear(); allowRules.clear(); forbidRules.clear();
@@ -2387,7 +2388,7 @@ public class Candor {
                         // Without this, an enum state machine (process/read over 26/68 constants) drops past
                         // the limit to a CIRCULAR Unknown (each state dispatches to the others) that smears
                         // across its whole transitive caller set — the dominant Unknown driver on real OO.
-                        boolean broad = cha.size() > CHA_FANOUT_LIMIT && !isClosedEnumOwner(min.owner);
+                        boolean broad = cha.size() > CHA_FANOUT_LIMIT && !isClosedHierarchy(min.owner);
                         // A NARROW java.util container-iteration dispatch (Iterator.next / Iterable etc.)
                         // DOES fan out: skipping it under-reported a custom Iterable's effect at the loop
                         // site (`for (x : customBag)` came back pure) — the §7.13 fuzzer's for-each form
@@ -3349,6 +3350,52 @@ public class Candor {
     static boolean isClosedEnumOwner(String internal) {
         ClassNode cn = byName.get(internal);
         return cn != null && ((cn.access & Opcodes.ACC_ENUM) != 0 || "java/lang/Enum".equals(cn.superName));
+    }
+
+    /** A dispatch owner whose implementor set is PROVABLY COMPLETE + finite + fully visible — so resolving
+     *  ALL of `chaTargets` past CHA_FANOUT_LIMIT is sound + EXACT (no open-hierarchy smear). Two cases:
+     *  (1) a closed ENUM (constants are the whole target set), or (2) a fully-closed, fully-visible SEALED
+     *  type (Java 17+ — its `permits` list is the complete subtype set). The sealed case generalizes the enum
+     *  carve-out to the modern sealed+record ADT pattern. See SEALED_CHA_PLAN.md. */
+    static boolean isClosedHierarchy(String internal) {
+        return isClosedEnumOwner(internal) || isFullyClosedSealed(internal);
+    }
+
+    // Memoized verdict of the (transitive) sealed-closure walk — called in the per-instruction hot loop.
+    // CLEARED in resetState (a stale verdict across scans would be the prior-review "state riding a
+    // different-lifecycle structure" bug — the conformance harness drives several scans in one JVM).
+    static final Map<String, Boolean> sealedClosedMemo = new HashMap<>();
+
+    /** True iff {@code internal} is a SEALED type whose ENTIRE transitive permitted-subtype closure is (a)
+     *  fully VISIBLE (every permit in `byName` — else candor can't analyze its effect → silent-pure) and (b)
+     *  fully CLOSED (every permit is `final`/record OR itself a closed sealed type — a `non-sealed` permit
+     *  re-opens the hierarchy to unseen external subtypes). Either gate failing → false → the dispatch stays
+     *  bounded (honest Unknown). Memoized + cycle-guarded (a sealed cycle is impossible in valid bytecode but
+     *  cheap to guard against malformed input). */
+    static boolean isFullyClosedSealed(String internal) {
+        Boolean memo = sealedClosedMemo.get(internal);
+        if (memo != null) return memo;
+        ClassNode cn = byName.get(internal);
+        boolean r = cn != null && cn.permittedSubclasses != null && !cn.permittedSubclasses.isEmpty()
+                && closedAndVisible(internal, new HashSet<>());
+        sealedClosedMemo.put(internal, r);
+        return r;
+    }
+
+    /** Walk a sealed type's permitted-subtype closure, requiring every permit be visible (in byName) AND
+     *  closed (final/record, or a sealed type that is itself closedAndVisible). `seen` guards cycles. */
+    private static boolean closedAndVisible(String internal, Set<String> seen) {
+        if (!seen.add(internal)) return true;   // already on the walk path (cycle) — don't re-fail it
+        ClassNode cn = byName.get(internal);
+        if (cn == null) return false;           // gate 2: an unseen type can't be analyzed
+        if (cn.permittedSubclasses == null || cn.permittedSubclasses.isEmpty())
+            // a leaf: must be final (incl. records, which are ACC_FINAL) — else it is `non-sealed` (open).
+            return (cn.access & Opcodes.ACC_FINAL) != 0;
+        for (String p : cn.permittedSubclasses) {
+            if (!byName.containsKey(p)) return false;        // gate 2: a permit not on the classpath
+            if (!closedAndVisible(p, seen)) return false;    // gate 1+2 recursively
+        }
+        return true;
     }
 
     static boolean isChaExemptMethod(String owner, String name, String desc) {

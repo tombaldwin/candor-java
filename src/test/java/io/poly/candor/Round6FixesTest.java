@@ -170,7 +170,7 @@ class Round6FixesTest {
                 "{\"candor\":{\"version\":null,\"spec\":\"0.5\"},\"functions\":"
                 + "[{\"fn\":\"dep.Lib.phone\",\"hash\":\"dep/Lib.phone()V\",\"inferred\":[\"Net\"]}]}");
             Candor.resetState();
-            Candor.loadCrossDeps(dir.toString(), "any-own-version");
+            Loader.loadCrossDeps(dir.toString(), "any-own-version");
             Candor.DepFn de = Candor.crossDeps.get("dep/Lib.phone()V");
             assertTrue(de != null && de.effects.contains("Unknown"),
                     "a null-version dep entry must inherit Unknown (not be dropped to pure), got " + (de == null ? "null" : de.effects));

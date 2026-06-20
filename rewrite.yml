@@ -1,0 +1,21 @@
+# OpenRewrite recipes for candor-java.
+#
+# Declarative recipes compose OpenRewrite's type-attributed primitives (ChangeType, ChangeMethodName,
+# ChangeMethodInvocation, …). List the recipe name(s) you want to run under `rewrite { activeRecipe(...) }`
+# in build.gradle.kts, then `./gradlew rewriteDryRun` (preview) or `rewriteRun` (apply). After applying,
+# ALWAYS re-run the full gate battery (byte-identity oracle + soundness + conformance) — see docs/openrewrite.md.
+#
+# Example custom recipe (commented; a template for the next mechanical refactor). This one is illustrative
+# only — uncomment + add to activeRecipe when there's a real change to make.
+#
+# ---
+# type: specs.openrewrite.org/v1beta/recipe
+# name: io.poly.candor.ExampleRename
+# displayName: Example — rename a method across the codebase (type-aware)
+# description: >
+#   Demonstrates a semantic, type-attributed rename — unlike regex, this only rewrites calls whose
+#   receiver is actually the named type, never a same-named method on another class or a string literal.
+# recipeList:
+#   - org.openrewrite.java.ChangeMethodName:
+#       methodPattern: io.poly.candor.SomeType oldName(..)
+#       newMethodName: newName

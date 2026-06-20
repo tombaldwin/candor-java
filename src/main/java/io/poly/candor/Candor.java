@@ -5022,6 +5022,56 @@ public class Candor {
                 && (method.equals("createEntity") || method.equals("getEntity") || method.equals("updateEntity")
                     || method.equals("deleteEntity") || method.equals("upsertEntity")
                     || method.equals("listEntities"))) return "Net";
+        // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 12) ──
+        // Spring AI — the chat model API is HTTP inside the SDK → Net. Both owners are org.springframework.*
+        // so they were FLOOR-SUPPRESSED (dropped from the report, like Spring Vault); explicit rules surface
+        // them. The wire happens at the CallResponseSpec terminal (content/chatResponse/entity) and at
+        // ChatModel.call(Prompt).
+        if (owner.equals("org.springframework.ai.chat.client.ChatClient$CallResponseSpec")
+                && (method.equals("content") || method.equals("chatResponse") || method.equals("entity")
+                    || method.equals("responseEntity"))) return "Net";
+        if (owner.startsWith("org.springframework.ai.") && owner.endsWith("ChatModel") && method.equals("call"))
+            return "Net";
+        if (owner.equals("org.springframework.ai.chat.model.ChatModel") && method.equals("call")) return "Net";
+        // Slack — MethodsClient is entirely Slack-API calls → whole-owner Net (Object protocol excluded).
+        if (owner.equals("com.slack.api.methods.MethodsClient") && !isConventionallyPure(method)) return "Net";
+        // Discord JDA — RestAction.queue/complete/submit is the wire send; the restaction.* builder subtypes
+        // inherit them, so key the requests package + the action verbs.
+        if (owner.startsWith("net.dv8tion.jda.api.requests.")
+                && (method.equals("queue") || method.equals("complete") || method.equals("submit")
+                    || method.equals("queueAfter") || method.equals("submitAfter"))) return "Net";
+        // Telegram Bots — AbsSender.execute sends to the Bot API → Net.
+        if (owner.startsWith("org.telegram.telegrambots.") && owner.endsWith("AbsSender")
+                && method.equals("execute")) return "Net";
+        // Keycloak admin client — the JAX-RS resource proxies' ACTION verbs are admin-REST calls → Net
+        // (the get(id)/sub-resource navigators that return another proxy stay pure — verb-gated to the
+        // verbs that actually round-trip).
+        if (owner.startsWith("org.keycloak.admin.client.resource.")
+                && (method.equals("create") || method.equals("search") || method.equals("update")
+                    || method.equals("remove") || method.equals("count") || method.equals("list")
+                    || method.equals("add") || method.equals("findAll") || method.equals("sendVerifyEmail")
+                    || method.equals("resetPassword") || method.equals("logout"))) return "Net";
+        // Okta SDK — ApiClient.invokeAPI is the generic wire leaf every Okta call bottoms out in → Net.
+        if (owner.equals("com.okta.sdk.resource.client.ApiClient") && method.equals("invokeAPI")) return "Net";
+        // Braintree payments — TransactionGateway (and the other *Gateway resources) do the wire calls → Net
+        // (BraintreeGateway.transaction() is a pure navigator → returns the gateway).
+        if (owner.startsWith("com.braintreegateway.") && owner.endsWith("Gateway")
+                && !owner.equals("com.braintreegateway.BraintreeGateway")
+                && (method.equals("sale") || method.equals("create") || method.equals("find")
+                    || method.equals("submitForSettlement") || method.equals("refund") || method.equals("void")
+                    || method.equals("delete") || method.equals("update") || method.equals("search")
+                    || method.equals("cancel"))) return "Net";
+        // Mailgun (sargue) → Net.
+        if (owner.equals("net.sargue.mailgun.Mail") && method.equals("send")) return "Net";
+        // Google Maps services — the *Request.await/awaitIgnoreError terminal does the HTTP call → Net
+        // (geocode()/etc. return the request builder, pure until await).
+        if (owner.startsWith("com.google.maps.") && owner.endsWith("Request")
+                && (method.equals("await") || method.equals("awaitIgnoreError"))) return "Net";
+        // ClickHouse native client — execute/send run the query → Db (analytics DB, the Cassandra/Mongo/
+        // Spanner family; not the HTTP-transport view).
+        if (owner.equals("com.clickhouse.client.ClickHouseClient")
+                && (method.equals("execute") || method.equals("send") || method.equals("executeAndWait")))
+            return "Db";
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation

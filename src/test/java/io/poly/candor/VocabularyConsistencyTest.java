@@ -10,8 +10,9 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Ties the engine's string-keyed vocabulary lists back to the {@link Effect} enum, so adding an effect
- * in ONE place (the enum) can't silently leave a gate/containment list stale. The lists keep their own
- * (spec §6.1 display) ORDER; this only pins their MEMBERSHIP to the enum predicates.
+ * in ONE place (the enum) can't silently leave a gate/containment list stale. {@code Query.CONTAINED}/
+ * {@code AMBIENT} are now DERIVED from the enum predicates; this pins that membership so a future
+ * hand-edit (or a predicate change) stays consistent.
  */
 class VocabularyConsistencyTest {
 

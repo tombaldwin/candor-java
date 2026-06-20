@@ -111,11 +111,11 @@ class ModelTest {
     void boundaryCrossCuttingPartition() {
         Set<Effect> boundary = Arrays.stream(Effect.values()).filter(Effect::isBoundary).collect(Collectors.toSet());
         Set<Effect> cross = Arrays.stream(Effect.values()).filter(Effect::isCrossCutting).collect(Collectors.toSet());
-        assertEquals(Set.of(Effect.DB, Effect.NET, Effect.EXEC, Effect.FS, Effect.IPC), boundary);
+        assertEquals(Set.of(Effect.DB, Effect.NET, Effect.EXEC, Effect.FS, Effect.IPC, Effect.CLIPBOARD), boundary);
         assertEquals(Set.of(Effect.LOG, Effect.CLOCK, Effect.RAND, Effect.ENV), cross);
         assertTrue(Collections.disjoint(boundary, cross), "boundary and cross-cutting are disjoint");
-        // §6.1 gap (tracked, MODEL.md): Clipboard is in NEITHER partition — pinned so it can't change silently.
-        assertFalse(Effect.CLIPBOARD.isBoundary());
+        // Clipboard is a §6.1 boundary effect (external-resource I/O), so it is contained/scored, not ambient.
+        assertTrue(Effect.CLIPBOARD.isBoundary());
         assertFalse(Effect.CLIPBOARD.isCrossCutting());
     }
 

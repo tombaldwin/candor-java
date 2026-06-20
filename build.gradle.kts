@@ -1,10 +1,17 @@
 import net.ltgt.gradle.errorprone.errorprone
-import java.io.ByteArrayInputStream
-import java.io.DataInputStream
 import java.net.URI
 import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.util.zip.GZIPOutputStream
+import org.objectweb.asm.ClassReader
+
+// ASM on the build-script classpath so the JDK-supertype-index generator (generateJdkSupertypes) reads
+// supers with the SAME library the runtime consumer (Cha.externalSupers) uses — no hand-rolled class-file
+// parsing to drift on a future class-file format.
+buildscript {
+    repositories { mavenCentral() }
+    dependencies { classpath("org.ow2.asm:asm:9.8") }
+}
 
 plugins {
     application
@@ -160,39 +167,9 @@ tasks.named("processResources") { dependsOn(generateBuildInfo) }
 // JDK supertype index (for GraalVM native-image): candor resolves JDK/external class hierarchies by
 // reading their .class bytes off its runtime classpath (Cha.externalSupers via ASM ClassReader). A
 // native image carries no .class files, so that read fails and candor would UNDER-report. We capture the
-// build JDK's direct super+interfaces for every class here and bundle it (gzipped); externalSupers falls
-// back to it only when ClassReader can't read the bytes — so the JVM/jar path is unchanged and the native
-// image resolves the same JDK hierarchies. Pure constant-pool parse (no ASM on the build-script classpath).
-fun parseSupers(bytes: ByteArray): Triple<String, String?, List<String>>? {
-    val din = DataInputStream(ByteArrayInputStream(bytes))
-    if (din.readInt() != -0x35014542) return null            // 0xCAFEBABE
-    din.readUnsignedShort(); din.readUnsignedShort()         // minor, major
-    val cpCount = din.readUnsignedShort()
-    val classNameIdx = IntArray(cpCount)                     // CONSTANT_Class index -> name (Utf8) index
-    val utf8 = arrayOfNulls<String>(cpCount)
-    var i = 1
-    while (i < cpCount) {
-        when (din.readUnsignedByte()) {
-            1 -> utf8[i] = din.readUTF()                     // Utf8 (u2 len + modified-UTF8 == readUTF)
-            7 -> classNameIdx[i] = din.readUnsignedShort()  // Class
-            8, 16, 19, 20 -> din.readUnsignedShort()        // String/MethodType/Module/Package (u2)
-            15 -> { din.readUnsignedByte(); din.readUnsignedShort() }   // MethodHandle (u1+u2)
-            3, 4, 9, 10, 11, 12, 17, 18 -> din.readInt()    // 4-byte constants
-            5, 6 -> { din.readLong(); i++ }                 // Long/Double occupy two cp slots
-            else -> return null
-        }
-        i++
-    }
-    din.readUnsignedShort()                                  // access_flags
-    val thisClass = din.readUnsignedShort()
-    val superClass = din.readUnsignedShort()
-    val ifaceCount = din.readUnsignedShort()
-    val ifaces = (0 until ifaceCount).map { din.readUnsignedShort() }
-    fun nm(cpIdx: Int): String? = if (cpIdx == 0) null else utf8[classNameIdx[cpIdx]]
-    val thisName = nm(thisClass) ?: return null
-    return Triple(thisName, nm(superClass), ifaces.mapNotNull { nm(it) })
-}
-
+// build JDK's direct super+interfaces for every class here, with the SAME ASM ClassReader the runtime
+// consumer uses (so super/interfaces semantics match exactly — incl. interface super_class = Object), and
+// bundle it (gzipped); Cha.externalSupers consults it ONLY in a native image.
 val jdkSupersDir = layout.buildDirectory.dir("generated/candor-jdksupers")
 val generateJdkSupertypes by tasks.registering {
     val out = jdkSupersDir.map { it.file("candor/jdk-supertypes.idx.gz") }
@@ -206,9 +183,9 @@ val generateJdkSupertypes by tasks.registering {
             stream.filter {
                 val s = it.toString(); s.endsWith(".class") && !s.endsWith("module-info.class")
             }.forEach { p ->
-                val t = parseSupers(Files.readAllBytes(p)) ?: return@forEach
-                val supers = (listOfNotNull(t.second) + t.third)
-                if (supers.isNotEmpty()) { sb.append(t.first).append(' ').append(supers.joinToString(" ")).append('\n'); n++ }
+                val cr = try { ClassReader(Files.readAllBytes(p)) } catch (e: Exception) { return@forEach }
+                val supers = (listOfNotNull(cr.superName) + cr.interfaces.toList())
+                if (supers.isNotEmpty()) { sb.append(cr.className).append(' ').append(supers.joinToString(" ")).append('\n'); n++ }
             }
         }
         val f = out.get().asFile.apply { parentFile.mkdirs() }

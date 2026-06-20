@@ -23,4 +23,13 @@ final class AnalysisState {
     static void newContext() {
         TL.set(new AnalysisContext());
     }
+
+    /** Release the current thread's context once a scan's outputs are fully written. A {@link ThreadLocal}
+     *  that is only ever {@code set} pins the last scan's whole state (call graph + every ClassNode) for
+     *  the thread's lifetime — a retention leak on a pooled/long-lived thread (the {@code --parallel} pool,
+     *  or candor embedded behind a request-per-thread server). Callers that own the thread should call this
+     *  in a {@code finally} after the report is written. */
+    static void remove() {
+        TL.remove();
+    }
 }

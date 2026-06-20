@@ -134,17 +134,27 @@ final class Cha {
             // candor's classpath (e.g. a project's third-party dep) → no supers (sound under-approx). In a
             // GraalVM NATIVE IMAGE there are no .class files at all, so even JDK classes land here — fall
             // back to the build-time JDK supertype index so JDK hierarchies still resolve (native == jar).
-            List<String> idx = JdkSupers.MAP.get(internal);
-            if (idx != null) out.addAll(idx);
+            // Gate to NATIVE only: on the JVM the only behavior is ClassReader-or-empty (host-independent,
+            // and the ~270KB index is never loaded); the index can't make the JVM's output host-dependent.
+            if (IN_NATIVE_IMAGE) {
+                List<String> idx = JdkSupers.MAP.get(internal);
+                if (idx != null) out.addAll(idx);
+            }
         }
         ctx().externalSupersCache.put(internal, out);
         return out;
     }
 
+    /** True iff running as a GraalVM native image. The {@code org.graalvm.nativeimage.imagecode} property
+     *  is {@code "buildtime"}/{@code "runtime"} in an image and absent on a normal JVM — read directly so
+     *  no graal-sdk dependency is needed. Gates the JDK supertype-index fallback to native only. */
+    private static final boolean IN_NATIVE_IMAGE =
+            System.getProperty("org.graalvm.nativeimage.imagecode") != null;
+
     /** The build-time JDK class -> direct super + interfaces index (gzipped resource), loaded once on
      *  first use (lazily, via class-init). Process-global + immutable — it's the constant JDK hierarchy,
-     *  not per-scan state. On the JVM, {@link #externalSupers} reads JDK classes via {@code ClassReader}
-     *  and never consults this; it exists for the native image, where {@code ClassReader} can't read. */
+     *  not per-scan state. Consulted ONLY in a native image (see {@link #IN_NATIVE_IMAGE}); on the JVM
+     *  {@link #externalSupers} reads JDK classes via {@code ClassReader}, so this class is never loaded. */
     private static final class JdkSupers {
         static final Map<String, List<String>> MAP = load();
 
@@ -189,16 +199,17 @@ final class Cha {
 
     /** CHA: project subtypes-or-self of `owner` that provide a concrete (name,desc) impl. */
     static List<String> chaTargets(String owner, String name, String desc) {
+        AnalysisContext c = ctx();   // hoist the ThreadLocal lookup out of the per-subtype loop below
         Set<String> out = new LinkedHashSet<>();
         // O(subtypes-of-owner) via the precomputed reverse index instead of scanning ALL classes. The
         // candidate set + its order are identical to the old `for (ClassNode c : ALL) if (c.name==owner
         // || transSupers(c.name).contains(owner))` filter (see buildSubtypeIndex), so `out` — and thus
         // cha.size(), the ≤CHA_FANOUT_LIMIT cap, the Unknown-on-overflow, and the edge set — are byte-
         // for-byte unchanged.
-        for (String cName : ctx().subtypeIndex.getOrDefault(owner, List.of())) {
-            ClassNode c = ctx().byName.get(cName);
-            if (declaresConcrete(c, name, desc)) {
-                out.add(methodId(c.name.replace('/', '.'), name, desc));
+        for (String cName : c.subtypeIndex.getOrDefault(owner, List.of())) {
+            ClassNode cn = c.byName.get(cName);
+            if (declaresConcrete(cn, name, desc)) {
+                out.add(methodId(cn.name.replace('/', '.'), name, desc));
             } else {
                 // c is owner-or-a-subtype that INHERITS the impl from its OWN superchain — a concrete
                 // GRANDPARENT (the ubiquitous `Foo` / `Foo$AbstractBase` library pattern, where the impl
@@ -207,7 +218,7 @@ final class Cha {
                 // owner to c then UP c's chain. Resolve it so the dispatch isn't a false Unknown. (Found
                 // by the gradle-cache sweep: byte-buddy `MethodList.filter`/`getOnly` were 600+ false
                 // Unknowns inside byte-buddy's own jar — pure methods, so precision, not soundness.)
-                String impl = nearestConcreteSuper(c.name, name, desc);
+                String impl = nearestConcreteSuper(cn.name, name, desc);
                 if (impl != null) out.add(impl);
             }
         }
@@ -235,8 +246,9 @@ final class Cha {
     /** The concrete `(name, desc)` declaration `internal` would invoke via inheritance: the first one
      *  found walking its supertype chain (excludes `internal` itself — the caller checks that). */
     static String nearestConcreteSuper(String internal, String name, String desc) {
+        AnalysisContext cx = ctx();   // hoist the ThreadLocal lookup out of the per-super loop
         for (String sup : transSupers(internal)) {
-            ClassNode c = ctx().byName.get(sup);
+            ClassNode c = cx.byName.get(sup);
             if (c != null && declaresConcrete(c, name, desc)) return methodId(sup.replace('/', '.'), name, desc);
         }
         return null;

@@ -18,6 +18,17 @@ import static io.poly.candor.Cha.*;
  *  the static imports. (Was {@code Report} before the domain-model work freed that name for the model
  *  envelope record.) See candor-spec/MODEL.md. */
 final class ReportWriter {
+    /** Write the full report set for one scan — the JSON report (+ its §5 conformance), then the callgraph
+     *  and hierarchy sidecars — all reading the CURRENT thread's context. {@code cc} may be null (computed
+     *  if so; {@link Candor#main} passes the one it already built when {@code --json}+gate share it). The
+     *  single shared sequence used by the normal scan, selftest-reentrant, and {@code --parallel}, so the
+     *  three can't drift (the three were previously copy-pasted). */
+    static void writeReport(Map<String, EffectSet> inferred, String out, ClassConformance cc) throws IOException {
+        if (cc != null) writeJson(inferred, out, cc); else writeJson(inferred, out);
+        writeCallgraph(out);
+        writeHierarchy(out);
+    }
+
     static void writeJson(Map<String, EffectSet> inferred, String out) throws IOException {
         writeJson(inferred, out, classConformance(inferred));
     }

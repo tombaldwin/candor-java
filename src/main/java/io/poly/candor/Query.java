@@ -31,12 +31,22 @@ public final class Query {
     // Boundary effects SHOULD live in a dedicated layer — their dispersion is the architecture signal
     // (NOT raw counts, which are domain-dependent). Ambient effects are expected to be cross-cutting
     // (logging/timestamps everywhere is fine), so they're reported but not scored. Unknown is excluded
-    // (it's a visibility metric, not an effect). Both are DERIVED from the §6.1 partition on the Effect
-    // enum (spec-name order) — the single source of truth, so adding an effect can't leave these stale.
-    static final List<String> CONTAINED =
-            Arrays.stream(Effect.values()).filter(Effect::isBoundary).map(Effect::specName).toList();
-    static final List<String> AMBIENT =
-            Arrays.stream(Effect.values()).filter(Effect::isCrossCutting).map(Effect::specName).toList();
+    // (it's a visibility metric, not an effect). MEMBERSHIP is DERIVED from the §6.1 partition on the
+    // Effect enum (the single source of truth, so adding an effect can't leave these stale); ORDER follows
+    // the historical §6.1 display priority below (so the `containment` output stays stable), with any
+    // effect beyond that list trailing alphabetically.
+    private static final List<String> DISPLAY_ORDER =
+            List.of("Db", "Net", "Exec", "Fs", "Ipc", "Log", "Clock", "Rand", "Env");
+    private static List<String> derive(java.util.function.Predicate<Effect> p) {
+        return Arrays.stream(Effect.values()).filter(p).map(Effect::specName)
+                .sorted(Comparator.comparingInt(n -> {
+                    int i = DISPLAY_ORDER.indexOf(n);
+                    return i < 0 ? Integer.MAX_VALUE : i;
+                }))
+                .toList();
+    }
+    static final List<String> CONTAINED = derive(Effect::isBoundary);
+    static final List<String> AMBIENT = derive(Effect::isCrossCutting);
 
     static List<Effector> load(String path) throws Exception {
         JsonElement root = JsonParser.parseString(Files.readString(Path.of(path)));

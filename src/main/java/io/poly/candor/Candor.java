@@ -386,13 +386,6 @@ public class Candor {
         if (violations > 0) System.exit(1); // fail CI
     }
 
-    /**
-     * Conformance via dependency injection: a class's fields are the capabilities it holds, so its
-     * effects must be covered by what those collaborators provide. An effect performed beyond them
-     * means reaching for ambient authority instead of receiving it (AS-EFF-001). This is candor's
-     * capability-token model in Java's idiom — "a bean's signature (its dependencies) tells you its
-     * effect surface."
-     */
     /** Emit one AS-EFF diagnostic line (candor-spec §6) through the typed {@link DiagnosticCode}, so the
      *  code vocabulary is first-class rather than an inline string literal. {@code format} is the
      *  message body (no code prefix, no trailing newline); render() prepends {@code "[AS-EFF-00x] "}. */
@@ -400,6 +393,10 @@ public class Candor {
         System.out.println(new Diagnostic(code, String.format(format, args)).render());
     }
 
+    /** Conformance via dependency injection: a class's fields are the capabilities it holds, so its effects
+     *  must be covered by what those collaborators provide. An effect performed beyond them means reaching
+     *  for ambient authority instead of receiving it (AS-EFF-001) — candor's capability-token model in
+     *  Java's idiom: a bean's signature (its dependencies) tells you its effect surface. */
     static int checkConformance(Map<String, EffectSet> inferred, String scope) {
         // Gate-only path: build performed/declared (candor-spec §5) the ONE shared way, with `declared`
         // scoped to in-scope classes (the gateScopeCovers skip below reads only those) — on a narrow
@@ -521,19 +518,6 @@ public class Candor {
     }
 
 
-    /** The network endpoint a string literal names — `host[:port]`, scheme/path/userinfo stripped — or
-     *  null if the string isn't UNAMBIGUOUSLY an endpoint. Real code is full of dotted strings that are
-     *  NOT hosts — property keys (`os.name`), message keys (`terms.agency`), filenames (`page.html`),
-     *  format strings (`"status":"`) — so a bare dotted name is rejected: it's indistinguishable from a
-     *  property key without seeing the call it feeds. Accepted: a scheme URL (`https://…`), a
-     *  `host:port` with a NUMERIC port, or a bare IPv4. The cost is UNDER-extraction (a bare-hostname
-     *  `new Socket("api.example.com", 443)` isn't seen) — the sound direction for a visible-surface
-     *  allowlist (a missed host can't certify, but never silently PASSES a forbidden one); modern HTTP
-     *  clients use full URLs, which are caught. (Validated against a 2257-class Spring app, which had
-     *  ~14 false dotted "hosts" under the old loose filter.) */
-
-
-
     /** Whether a CANDOR_* gate scope covers a dotted method/class name. The `1`/empty value is the
      *  whole-project flag; any other value is a real scope, matched through {@link #scopeMatches} so the
      *  gate scopes are SEGMENT- and `::`-aware exactly like the §6.2 policy gate. The old raw `startsWith`
@@ -614,7 +598,7 @@ public class Candor {
             // are arbitrary) and the generated base isn't on candor's classpath (transSupers can't see
             // `BindableService`), so key on the `*ImplBase` direct super + the StreamObserver-param signature
             // — both gRPC-specific, so no fabrication.
-            if (cn.superName != null && cn.superName.toLowerCase().contains("grpc")
+            if (cn.superName != null && cn.superName.toLowerCase(Locale.ROOT).contains("grpc")
                     && cn.superName.endsWith("ImplBase")
                     && mn.desc.contains("Lio/grpc/stub/StreamObserver;")
                     && (mn.access & (Opcodes.ACC_STATIC | Opcodes.ACC_ABSTRACT)) == 0)
@@ -1557,11 +1541,6 @@ public class Candor {
             "persistence/PostUpdate", "persistence/PreRemove", "persistence/PostRemove",
             "persistence/PostLoad");
 
-    /** Runtime-invoked override methods: when a class's supertype chain contains `iface` and it declares
-     *  `(name, desc)`, that method is an ENTRY POINT — the runtime (executor, thread scheduler, servlet
-     *  container, Spring lifecycle) invokes it with NO project call site, so its I/O would otherwise be
-     *  orphaned from every reachability root (the same shape as finalize). `iface` is a SUBSTRING of the
-     *  internal supertype name, so a single entry covers `javax/` and `jakarta/` variants. */
     /** The canonical Java serialization callback signatures (the Serializable/Externalizable contract).
      *  Their stream-typed descriptors are the giveaway; the runtime invokes them reflectively with no
      *  in-project call site, so without this their I/O is orphaned from every reachability root. */
@@ -1827,10 +1806,6 @@ public class Candor {
      *  this and are dropped (their bodies stay reachable via the RUNTIME_OVERRIDES entry points). */
     static final int CHA_FANOUT_LIMIT = 12;
 
-    /** Whether a method's CHA dispatch is exempt from BROAD fan-out (SPEC §4 conventionally-pure +
-     *  runtime-dispatched verbs). Declarative + unit-tested so a new dialect is a row, not another `||`
-     *  buried in the bytecode loop. Narrow dispatch over these is still attributed precisely; only the
-     *  library-scale smear is dropped (see CHA_FANOUT_LIMIT). */
     /** The single-ABSTRACT-method names of java.util.function.* (Function/BiFunction/operators → apply*;
      *  Consumer → accept; Predicate → test; Supplier → get*). Matched by NAME so the package's pure DEFAULT
      *  methods (andThen/compose/and/or/negate — known JDK plumbing that wraps the receiver into a new
@@ -1967,6 +1942,10 @@ public class Candor {
      *  reassignment) yields a distinct instance, so the receiver is NOT {@code ==} the param and the SAM is
      *  correctly left as an honest Unknown. This is what stops a `more[0].accept()` / field-handler call in
      *  an otherwise-forwardable method from being silently suppressed. */
+    // ReferenceEquality is INTENTIONAL: this asks whether the call's receiver is the SAME dataflow value
+    // object as the parameter (object identity in the prov frame), not value-equality — that identity is
+    // exactly the "the SAM is the param itself" signal. .equals() would be wrong here.
+    @SuppressWarnings("ReferenceEquality")
     static boolean samIsOnParam(MethodNode mn, MethodInsnNode min, Frame<ProvValue>[] provFrames, int argIndex) {
         if (provFrames == null || provFrames.length == 0) return false;
         ProvValue recv = receiverProv(provFrames[mn.instructions.indexOf(min)], min);
@@ -2023,14 +2002,6 @@ public class Candor {
 
 
 
-    /** Whether an internal supertype name matches a RUNTIME_OVERRIDES row's substring at a SEGMENT boundary.
-     *  The old raw `contains` over-rooted: a project `com/acme/JsonDeserializerMetrics` matched the
-     *  `JsonDeserializer` row (infix), and a coincidental `com/co/batch/item/ItemReader` matched the Spring
-     *  Batch row. Anchor it: exact, or a `/`-delimited suffix (the type name + optional package tail). The
-     *  ONE exception is the FunctionN convention (kotlin `Function0..22`, scala `Function0..N`) where the row
-     *  is a PREFIX of the leaf type — detected by the row ending in "Function". */
-    /** The §4 conventionally-pure object protocol — never an effect, even on an effect-bearing owner.
-     *  Used to subtract fabrications from whole-owner classify rules. */
     /** Owners whose string ARG is genuinely a network HOST/endpoint (so a host-literal extraction is
      *  meaningful). Excludes KV/messaging clients (Jedis/Kafka/Rabbit/Mqtt/…) whose string args are
      *  keys/topics/routing-keys, not hosts — gating the literal sweep on this prevents fabricating a host
@@ -2280,8 +2251,6 @@ public class Candor {
     static final String C_TOSTRING = "toString", C_EQUALS = "equals", C_HASHCODE = "hashCode", C_COMPARETO = "compareTo";
     static final String C_APPEND = "append", C_WRITE = "write";   // the WRITER side (R16): Appendable.append / Writer/OutputStream.write
 
-    /** toString-reentry sinks: a JDK method that stringifies its Object argument(s) by calling toString.
-     *  Returns the contract method, or null if not a toString sink. */
     /** If `min` constructs a JDK formatting facade WRAPPING a sink, the writer-side reentry contract for that
      *  sink (C_APPEND / C_WRITE); else null. `new Formatter(Appendable)` drives append; `new PrintWriter(
      *  Writer|OutputStream)` / `new PrintStream(OutputStream)` drive write. The File/String ctor overloads are
@@ -2559,7 +2528,6 @@ public class Candor {
         return eff;
     }
 
-    /** Classify a resolved call by target class + method — match the I/O boundary, not the package. */
     /** For a call ALREADY classified `Fs`, the read/write direction its verb implies: ["read"],
      *  ["write"], ["read","write"] (e.g. Files.copy), or [] when the verb doesn't say (so we make no
      *  claim). Keyed off the java.io / java.nio.file vocabulary — a syntactic refinement of an effect

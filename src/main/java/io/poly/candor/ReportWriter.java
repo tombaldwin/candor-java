@@ -248,6 +248,7 @@ final class ReportWriter {
                 toolchain = p.getProperty("toolchain", toolchain);
             }
         } catch (IOException ignored) {
+            // best-effort provenance: a missing/unreadable build-info resource falls back to the defaults
         }
         return new String[] {version, toolchain};
     }
@@ -263,6 +264,7 @@ final class ReportWriter {
                 return p.getProperty("release", "unknown");
             }
         } catch (IOException ignored) {
+            // best-effort: an unreadable build-info resource falls back to "unknown"
         }
         return "unknown";
     }

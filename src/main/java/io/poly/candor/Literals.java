@@ -410,7 +410,7 @@ final class Literals {
      *  schema. Strict on qualification (an allowed `entries` does NOT cover `ledger.entries`).
      *  Mirrors the Rust `db_table_covered`. */
     static boolean tableCovered(String a, String r) {
-        a = a.toLowerCase(); r = r.toLowerCase();
+        a = a.toLowerCase(Locale.ROOT); r = r.toLowerCase(Locale.ROOT);
         if (a.endsWith(".*")) {
             String schema = a.substring(0, a.length() - 2);
             return r.startsWith(schema + ".");
@@ -435,7 +435,7 @@ final class Literals {
                 "nowait", "of", "from", "join", "into", "update", "delete", "insert");
         // `,` survives as its OWN token: it lets `FROM t1, t2` continue the table list without
         // fabricating from other comma-ridden positions (column lists, ON clauses).
-        String cleaned = sql.toLowerCase().replaceAll("[();]", " ").replace(",", " , ");
+        String cleaned = sql.toLowerCase(Locale.ROOT).replaceAll("[();]", " ").replace(",", " , ");
         // "\\s+" (regex any-whitespace), NOT "\s+" — the latter is the Java 15 *space escape*, which
         // splits on literal spaces only and glues tokens across the newlines of formatted SQL.
         String[] toks = cleaned.trim().split("\\s+");

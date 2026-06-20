@@ -189,14 +189,14 @@ final class Policy {
         return v;
     }
 
-    /** Parse a CANDOR_POLICY file into deny/forbid rules. One rule per line; `#` comments + blanks
-     *  ignored. Returns false if the file can't be read (so the caller can fail loud). */
     /** SPEC §6.2: a malformed/unknown policy line is "ignored with a WARNING" — never silently
      *  reinterpreted (a security gate must not). Mirrors the Rust parser's eprintln warnings. */
     static void warnPolicy(String line, String reason) {
         System.err.println("candor: ignoring policy rule (" + reason + "): " + line);
     }
 
+    /** Parse a CANDOR_POLICY file into deny/forbid rules. One rule per line; `#` comments + blanks
+     *  ignored. Returns false if the file can't be read (so the caller can fail loud). */
     static boolean parsePolicy(String path) {
         List<String> lines;
         try {

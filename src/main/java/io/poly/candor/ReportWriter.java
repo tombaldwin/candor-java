@@ -35,19 +35,19 @@ final class ReportWriter {
         Map<String, String> fnToClass = cc.fnToClass();
 
         Map<String, TreeSet<String>> fsAcc = fsFixpoint();
-        Map<String, TreeSet<String>> hostsAcc = literalFixpoint(ctx.hostsDirect);
-        Map<String, TreeSet<String>> cmdsAcc = literalFixpoint(ctx.cmdsDirect);
-        Map<String, TreeSet<String>> pathsAcc = literalFixpoint(ctx.pathsDirect);
-        Map<String, TreeSet<String>> tablesAcc = literalFixpoint(ctx.tablesDirect);
+        Map<String, TreeSet<String>> hostsAcc = literalFixpoint(ctx().hostsDirect);
+        Map<String, TreeSet<String>> cmdsAcc = literalFixpoint(ctx().cmdsDirect);
+        Map<String, TreeSet<String>> pathsAcc = literalFixpoint(ctx().pathsDirect);
+        Map<String, TreeSet<String>> tablesAcc = literalFixpoint(ctx().tablesDirect);
         // Per-method BLIND SPOTS (honesty disclosure): the external packages a method transitively reaches
         // where the classifier was floored AND κ never classified the package ANYWHERE (a genuine blind spot,
         // not a known-pure stdlib op). Propagated along the call graph like the literal surfaces, then
         // intersected with the global-blind set — so `inferred` is never an unqualified claim: a `pure`
         // method that reaches an unanalyzable package carries it in `invisible`.
-        Set<String> globalBlind = ctx.kappaSeen.keySet().stream()
-                .filter(p -> !ctx.kappaClassified.contains(p) && !ctx.depCoveredPkgs.contains(p))
+        Set<String> globalBlind = ctx().kappaSeen.keySet().stream()
+                .filter(p -> !ctx().kappaClassified.contains(p) && !ctx().depCoveredPkgs.contains(p))
                 .collect(Collectors.toSet());
-        Map<String, TreeSet<String>> blindAcc = literalFixpoint(ctx.blindDirect);
+        Map<String, TreeSet<String>> blindAcc = literalFixpoint(ctx().blindDirect);
         List<Effector> effectors = new ArrayList<>();
         inferred.entrySet().stream()
                 // Keep a method if it has effects, is an entry point, has a BLIND SPOT (an unanalyzable
@@ -55,7 +55,7 @@ final class ReportWriter {
                 // declares a capability (an injects-but-never-uses class stays visible, overdeclared /
                 // AS-EFF-002).
                 .filter(e -> {
-                    if (!e.getValue().isEmpty() || ctx.entryPoints.contains(e.getKey())) return true;
+                    if (!e.getValue().isEmpty() || ctx().entryPoints.contains(e.getKey())) return true;
                     if (blindAcc.getOrDefault(e.getKey(), new TreeSet<>()).stream().anyMatch(globalBlind::contains))
                         return true;
                     String dc = fnToClass.get(e.getKey());
@@ -81,7 +81,7 @@ final class ReportWriter {
                             .filter(globalBlind::contains).sorted().collect(Collectors.toList());
                     // Effect-relevant local call graph (SPEC §2 `calls`): the EFFECTFUL local callees,
                     // so a consumer can answer "who calls X?" from the report without re-analysis.
-                    List<String> calls = ctx.edges.getOrDefault(fn, Set.of()).stream()
+                    List<String> calls = ctx().edges.getOrDefault(fn, Set.of()).stream()
                             .filter(c -> {
                                 EffectSet ce = inferred.get(c);
                                 return ce != null && !ce.isEmpty();
@@ -109,24 +109,24 @@ final class ReportWriter {
                     List<String> tables = inf.contains(Effect.DB) && tk != null && !tk.isEmpty()
                             ? new ArrayList<>(tk) : List.of();
                     // Why Unknown was emitted HERE (not inherited): native:/reflect:/dispatch:/… tags.
-                    TreeSet<UnknownReason> uw = ctx.unknownWhy.get(fn);
+                    TreeSet<UnknownReason> uw = ctx().unknownWhy.get(fn);
                     List<UnknownReason> reasons = uw == null ? List.of() : new ArrayList<>(uw);
                     // spec ⟨0.5⟩ unitKind: a static initializer is a UNIT, not a method anyone calls.
                     EffectorKind kind = fn.endsWith(".<clinit>") ? EffectorKind.INITIALIZER : EffectorKind.FUNCTION;
                     effectors.add(new Effector(
                             fn,
-                            ctx.loc.getOrDefault(fn, "?"),
+                            ctx().loc.getOrDefault(fn, "?"),
                             inf,
                             invisible,
-                            ctx.direct.getOrDefault(fn, EffectSet.empty()),
+                            ctx().direct.getOrDefault(fn, EffectSet.empty()),
                             declared,
                             undeclared,
                             overdeclared,
-                            ctx.entryPoints.contains(fn),
+                            ctx().entryPoints.contains(fn),
                             inf.hasUnknown(), // trust contract (SPEC §4)
                             kind,
                             reasons,
-                            ctx.hashOf.getOrDefault(fn, ""), // cross-jar join key (SPEC §2)
+                            ctx().hashOf.getOrDefault(fn, ""), // cross-jar join key (SPEC §2)
                             calls,
                             fsKinds, hosts, cmds, paths, tables));
                 });
@@ -136,7 +136,7 @@ final class ReportWriter {
         // The packages this report COVERS — exact, from the analyzed class names. Lets a consumer
         // chaining this report register coverage even when `functions` is empty (SPEC §2 rule 3).
         TreeSet<String> pkgs = new TreeSet<>();
-        for (ClassNode cn : ctx.ALL) {
+        for (ClassNode cn : ctx().ALL) {
             int slash = cn.name.lastIndexOf('/');
             if (slash > 0) pkgs.add(cn.name.substring(0, slash).replace('/', '.'));
         }
@@ -161,7 +161,7 @@ final class ReportWriter {
         // SPEC §2.2: EVERY analyzed method is a key — a LEAF with no project callees gets an empty
         // list (was skipped, which made an uncalled leaf invisible to whatif/callers and conflated
         // "no callers" with "no such function"; mirrors the same fix in candor-scan + the lint).
-        for (var e : ctx.edges.entrySet()) {
+        for (var e : ctx().edges.entrySet()) {
             cg.put(e.getKey(), new ArrayList<>(new TreeSet<>(e.getValue())));
         }
         writeAtomic(Path.of(cgOut), ReportJson.pretty(cg));
@@ -178,8 +178,8 @@ final class ReportWriter {
         String hOut = out.endsWith(".json") ? out.substring(0, out.length() - 5) + ".hierarchy.json"
                                             : out + ".hierarchy.json";
         Map<String, List<String>> h = new TreeMap<>();
-        for (ClassNode cn : ctx.ALL) {
-            if (!ctx.projectClasses.contains(cn.name)) continue; // key on the project types we resolve overrides for
+        for (ClassNode cn : ctx().ALL) {
+            if (!ctx().projectClasses.contains(cn.name)) continue; // key on the project types we resolve overrides for
             TreeSet<String> sup = new TreeSet<>();
             if (cn.superName != null && !cn.superName.equals("java/lang/Object")) sup.add(cn.superName.replace('/', '.'));
             if (cn.interfaces != null) for (String i : cn.interfaces) sup.add(i.replace('/', '.'));
@@ -217,15 +217,15 @@ final class ReportWriter {
      *  impl wasn't on the analyzed classpath). Printed to stderr so a maintainer can see which
      *  opacity is worth chasing (widen the classpath) vs accept (honest Unknown, SPEC §4). */
     static void reportUnknownSources() {
-        if (ctx.unknownWhy.isEmpty()) return;
+        if (ctx().unknownWhy.isEmpty()) return;
         var byCategory = new java.util.TreeMap<String, Integer>();   // native|reflect|dispatch -> count
         var byTarget = new java.util.TreeMap<String, Integer>();     // specific owner/method -> count
-        for (TreeSet<UnknownReason> reasons : ctx.unknownWhy.values())
+        for (TreeSet<UnknownReason> reasons : ctx().unknownWhy.values())
             for (UnknownReason r : reasons) {
                 byCategory.merge(r.prefix(), 1, Integer::sum);
                 byTarget.merge(r.format(), 1, Integer::sum);
             }
-        System.err.println("\ncandor-java: Unknown sources (direct) — " + ctx.unknownWhy.size() + " methods");
+        System.err.println("\ncandor-java: Unknown sources (direct) — " + ctx().unknownWhy.size() + " methods");
         byCategory.forEach((c, n) -> System.err.println(String.format("  %-9s %4d", c, n)));
         System.err.println("  top targets (dispatch: = improvable by widening the analyzed classpath):");
         byTarget.entrySet().stream()

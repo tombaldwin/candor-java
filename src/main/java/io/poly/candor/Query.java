@@ -162,13 +162,13 @@ public final class Query {
      *  Rules are sorted so the comparison is order-independent. */
     static String policyJson() {
         List<Map<String, Object>> deny = new ArrayList<>();
-        for (var r : AnalysisState.ctx.denyRules)
+        for (var r : AnalysisState.ctx().denyRules)
             deny.add(Map.of("effects", r.effects().toNames(), "scope", r.scope()));
         List<Map<String, Object>> allow = new ArrayList<>();
-        for (var r : AnalysisState.ctx.allowRules)
+        for (var r : AnalysisState.ctx().allowRules)
             allow.add(Map.of("effect", r.effect().specName(), "scope", r.scope(), "values", new ArrayList<>(r.values())));
         List<Map<String, Object>> forbid = new ArrayList<>();
-        for (var r : AnalysisState.ctx.forbidRules)
+        for (var r : AnalysisState.ctx().forbidRules)
             forbid.add(Map.of("from", r.from(), "to", r.to()));
         Comparator<Map<String, Object>> byJson = Comparator.comparing(JSON::toJson);
         deny.sort(byJson); allow.sort(byJson); forbid.sort(byJson);
@@ -511,7 +511,7 @@ public final class Query {
         if (policyPath == null) policyPath = System.getenv("CANDOR_POLICY");
         List<String[]> violations = new ArrayList<>(); // {fn, rule-desc}
         if (policyPath != null) {
-            AnalysisState.ctx.denyRules.clear();
+            AnalysisState.ctx().denyRules.clear();
             // A SPECIFIED-but-unreadable policy must FAIL LOUD, not silently yield ok:true — a typo'd
             // CANDOR_POLICY path otherwise reads as "no violations" and an agent proceeds with a
             // forbidden edit believing the boundary was checked (/code-review; mirrors the gate's own
@@ -521,7 +521,7 @@ public final class Query {
                 return 2;
             }
             for (String f : affected) {
-                for (var r : AnalysisState.ctx.denyRules) {
+                for (var r : AnalysisState.ctx().denyRules) {
                     boolean denies = r.effects().isEmpty() || r.effects().toNames().contains(effect);
                     if (denies && Policy.scopeMatches(f, r.scope())) {
                         String desc = r.effects().isEmpty()

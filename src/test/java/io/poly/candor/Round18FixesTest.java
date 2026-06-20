@@ -71,13 +71,13 @@ class Round18FixesTest {
             "}")));
         try {
             Candor.runScan(cls);
-            assertTrue(AnalysisState.ctx.surfaceIncomplete.getOrDefault("app.M.maskExec", new TreeSet<>()).contains("Exec"),
+            assertTrue(AnalysisState.ctx().surfaceIncomplete.getOrDefault("app.M.maskExec", new TreeSet<>()).contains("Exec"),
                     "runtime Exec command must mark the surface incomplete");
-            assertFalse(AnalysisState.ctx.surfaceIncomplete.getOrDefault("app.M.cleanExec", new TreeSet<>()).contains("Exec"),
+            assertFalse(AnalysisState.ctx().surfaceIncomplete.getOrDefault("app.M.cleanExec", new TreeSet<>()).contains("Exec"),
                     "a benign literal command must NOT be incomplete");
-            assertTrue(AnalysisState.ctx.surfaceIncomplete.getOrDefault("app.M.maskFs", new TreeSet<>()).contains("Fs"),
+            assertTrue(AnalysisState.ctx().surfaceIncomplete.getOrDefault("app.M.maskFs", new TreeSet<>()).contains("Fs"),
                     "runtime Fs path must mark the surface incomplete");
-            assertFalse(AnalysisState.ctx.surfaceIncomplete.getOrDefault("app.M.cleanFs", new TreeSet<>()).contains("Fs"),
+            assertFalse(AnalysisState.ctx().surfaceIncomplete.getOrDefault("app.M.cleanFs", new TreeSet<>()).contains("Fs"),
                     "a benign literal path must NOT be incomplete");
         } finally { rm(cls.getParent()); }
     }

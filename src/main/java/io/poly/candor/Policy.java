@@ -29,7 +29,8 @@ final class Policy {
         int v = 0;
         for (var e : new TreeMap<>(inferred).entrySet()) {
             if (!gateScopeCovers(scope, e.getKey())) continue;
-            List<String> ambient = ctx.direct.getOrDefault(e.getKey(), EffectSet.empty()).effects().stream()                    .filter(AMBIENT::contains).map(Effect::specName).sorted().collect(Collectors.toList());
+            List<String> ambient = ctx().direct.getOrDefault(e.getKey(), EffectSet.empty()).effects().stream()
+                    .filter(AMBIENT::contains).map(Effect::specName).sorted().collect(Collectors.toList());
             if (!ambient.isEmpty()) {
                 diag(DiagnosticCode.AS_EFF_004, "`%s` uses ambient authority { %s } directly; "
                         + "route it through an injected collaborator / capability",
@@ -49,7 +50,7 @@ final class Policy {
      */
     static int checkTaint(Map<String, EffectSet> inferred) {
         int v = 0;
-        for (var e : new TreeMap<>(ctx.tainted).entrySet()) {
+        for (var e : new TreeMap<>(ctx().tainted).entrySet()) {
             if (e.getValue().isEmpty()) continue;
             diag(DiagnosticCode.AS_EFF_007, "`%s` performs { %s } on caller-derived input (an injection "
                     + "surface — validate/sanitize it, or confirm the source is trusted); heuristic, may "
@@ -102,7 +103,7 @@ final class Policy {
         // AS-EFF-006: a method in scope must not perform (transitively) a denied effect.
         for (var e : new TreeMap<>(inferred).entrySet()) {
             String fn = e.getKey();
-            for (PolicyRule.Deny r : ctx.denyRules) {
+            for (PolicyRule.Deny r : ctx().denyRules) {
                 if (!scopeMatches(fn, r.scope())) continue;
                 // pure rule (empty effects) ⇒ any effect except Unknown (handled by AS-EFF-003);
                 // deny rule ⇒ the inferred effects that intersect the denied set. Test the EnumSet
@@ -123,18 +124,18 @@ final class Policy {
         // Certifies the VISIBLE literal surface (propagated transitively). A method whose surface is empty OR
         // INCOMPLETE (a structurally-invisible reach — see surfaceIncomplete) can't be certified: fail-closed,
         // so a benign visible literal can't MASK an invisible forbidden endpoint.
-        Map<String, TreeSet<String>> incomplete = literalFixpoint(ctx.surfaceIncomplete);
-        v += checkAllowlist(inferred, "Net", literalFixpoint(ctx.hostsDirect), incomplete,
+        Map<String, TreeSet<String>> incomplete = literalFixpoint(ctx().surfaceIncomplete);
+        v += checkAllowlist(inferred, "Net", literalFixpoint(ctx().hostsDirect), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> hostPart(a).equals(hostPart(reached))));
-        v += checkAllowlist(inferred, "Exec", literalFixpoint(ctx.cmdsDirect), incomplete,
+        v += checkAllowlist(inferred, "Exec", literalFixpoint(ctx().cmdsDirect), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> cmdBase(a).equals(cmdBase(reached))));
-        v += checkAllowlist(inferred, "Fs", literalFixpoint(ctx.pathsDirect), incomplete,
+        v += checkAllowlist(inferred, "Fs", literalFixpoint(ctx().pathsDirect), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> pathCovered(a, reached)));
-        v += checkAllowlist(inferred, "Db", literalFixpoint(ctx.tablesDirect), incomplete,
+        v += checkAllowlist(inferred, "Db", literalFixpoint(ctx().tablesDirect), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> tableCovered(a, reached)));
         // AS-EFF-009: a method in scope A must not transitively reach into scope B (over the call graph).
-        for (PolicyRule.Forbid r : ctx.forbidRules) {
-            for (String fn : new TreeSet<>(ctx.edges.keySet())) {
+        for (PolicyRule.Forbid r : ctx().forbidRules) {
+            for (String fn : new TreeSet<>(ctx().edges.keySet())) {
                 if (!scopeMatches(fn, r.from())) continue;
                 String hit = reachesScope(fn, r.to());
                 if (hit != null) {
@@ -160,7 +161,7 @@ final class Policy {
         for (var e : new TreeMap<>(inferred).entrySet()) {
             String fn = e.getKey();
             if (!e.getValue().contains(Effect.fromSpecName(effect))) continue;
-            for (PolicyRule.Allow r : ctx.allowRules) {
+            for (PolicyRule.Allow r : ctx().allowRules) {
                 if (!effect.equals(r.effect().specName()) || !scopeMatches(fn, r.scope())) continue;
                 TreeSet<String> reached = reachedAcc.getOrDefault(fn, new TreeSet<>());
                 // Empty surface OR an INCOMPLETE one (a structurally-invisible reach — a host-less Net owner
@@ -225,19 +226,19 @@ final class Policy {
                         else { scope = t[i]; break; }
                     }
                     if (effNames.isEmpty()) { warnPolicy(line, "names no known effect"); break; }
-                    ctx.denyRules.add(new PolicyRule.Deny(EffectSet.ofNames(effNames), scope, line));
+                    ctx().denyRules.add(new PolicyRule.Deny(EffectSet.ofNames(effNames), scope, line));
                     break;
                 }
                 case "pure": {
                     // empty effects = ANY effect forbidden
-                    ctx.denyRules.add(new PolicyRule.Deny(EffectSet.empty(), t.length > 1 ? t[1] : "", line));
+                    ctx().denyRules.add(new PolicyRule.Deny(EffectSet.empty(), t.length > 1 ? t[1] : "", line));
                     break;
                 }
                 case "forbid": {
                     // SPEC §6.2: `forbid <A> -> <B>` — two scopes separated by a literal `->` TOKEN
                     // (so `forbid a->b` without surrounding spaces is malformed and dropped).
                     if (t.length >= 4 && t[2].equals("->")) {
-                        ctx.forbidRules.add(new PolicyRule.Forbid(t[1], t[3]));
+                        ctx().forbidRules.add(new PolicyRule.Forbid(t[1], t[3]));
                     } else {
                         warnPolicy(line, "want `forbid <scope> -> <scope>`");
                     }
@@ -260,7 +261,7 @@ final class Policy {
                     TreeSet<String> values = new TreeSet<>(); // sorted: the wire surface order
                     for (int i = vi; i < t.length; i++) values.add(t[i]);
                     if (values.isEmpty()) { warnPolicy(line, "allow names no values"); break; }
-                    ctx.allowRules.add(new PolicyRule.Allow(Effect.fromSpecName(t[1]), scope, values, line));
+                    ctx().allowRules.add(new PolicyRule.Allow(Effect.fromSpecName(t[1]), scope, values, line));
                     break;
                 }
                 default:
@@ -305,13 +306,13 @@ final class Policy {
      *  whose name matches `scope` (seeded from `start`'s direct callees, so `start` itself isn't a hit),
      *  or null. Used for AS-EFF-009 layering. */
     static String reachesScope(String start, String scope) {
-        Deque<String> stack = new ArrayDeque<>(ctx.edges.getOrDefault(start, Set.of()));
+        Deque<String> stack = new ArrayDeque<>(ctx().edges.getOrDefault(start, Set.of()));
         Set<String> seen = new HashSet<>();
         while (!stack.isEmpty()) {
             String n = stack.pop();
             if (!seen.add(n)) continue;
             if (scopeMatches(n, scope)) return n;
-            for (String c : ctx.edges.getOrDefault(n, Set.of())) if (!seen.contains(c)) stack.push(c);
+            for (String c : ctx().edges.getOrDefault(n, Set.of())) if (!seen.contains(c)) stack.push(c);
         }
         return null;
     }

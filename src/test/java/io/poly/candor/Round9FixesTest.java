@@ -67,9 +67,9 @@ class Round9FixesTest {
         try {
             Map<String, EffectSet> r = Candor.runScan(cls);
             assertTrue(r.getOrDefault("app.A.redis", EffectSet.empty()).toNames().contains("Net"), "the Jedis call is still Net");
-            assertTrue(AnalysisState.ctx.hostsDirect.getOrDefault("app.A.redis", new TreeSet<>()).isEmpty(),
-                    "a Redis key must NOT be captured as a host, got " + AnalysisState.ctx.hostsDirect.get("app.A.redis"));
-            assertTrue(AnalysisState.ctx.hostsDirect.getOrDefault("app.A.real", new TreeSet<>()).contains("api.x.com:443"),
+            assertTrue(AnalysisState.ctx().hostsDirect.getOrDefault("app.A.redis", new TreeSet<>()).isEmpty(),
+                    "a Redis key must NOT be captured as a host, got " + AnalysisState.ctx().hostsDirect.get("app.A.redis"));
+            assertTrue(AnalysisState.ctx().hostsDirect.getOrDefault("app.A.real", new TreeSet<>()).contains("api.x.com:443"),
                     "a genuine Socket host must still be captured");
         } finally { rm(cls.getParent()); }
     }
@@ -95,9 +95,9 @@ class Round9FixesTest {
                 "public class A {}"))));
         try {
             Candor.runScan(cls);
-            assertTrue(AnalysisState.ctx.entryPoints.contains("app.Sub.onNext"), "Subscriber.onNext must be rooted");
-            assertTrue(AnalysisState.ctx.entryPoints.contains("app.Handler.completed"), "CompletionHandler.completed must be rooted");
-            assertFalse(AnalysisState.ctx.entryPoints.contains("app.JsonDeserializerMetrics.deserialize"),
+            assertTrue(AnalysisState.ctx().entryPoints.contains("app.Sub.onNext"), "Subscriber.onNext must be rooted");
+            assertTrue(AnalysisState.ctx().entryPoints.contains("app.Handler.completed"), "CompletionHandler.completed must be rooted");
+            assertFalse(AnalysisState.ctx().entryPoints.contains("app.JsonDeserializerMetrics.deserialize"),
                     "a class merely CONTAINING 'JsonDeserializer' must NOT be over-rooted");
         } finally { rm(cls.getParent()); }
     }

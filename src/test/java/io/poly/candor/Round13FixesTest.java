@@ -84,8 +84,8 @@ class Round13FixesTest {
         try {
             Map<String, EffectSet> r = Candor.runScan(cls);
             assertTrue(r.getOrDefault("app.D.run", EffectSet.empty()).toNames().contains("Db"), "jOOQ execute is Db");
-            assertTrue(AnalysisState.ctx.tablesDirect.getOrDefault("app.D.run", new TreeSet<>()).contains("accounts"),
-                    "the jOOQ SQL's table must reach the surface, got " + AnalysisState.ctx.tablesDirect.get("app.D.run"));
+            assertTrue(AnalysisState.ctx().tablesDirect.getOrDefault("app.D.run", new TreeSet<>()).contains("accounts"),
+                    "the jOOQ SQL's table must reach the surface, got " + AnalysisState.ctx().tablesDirect.get("app.D.run"));
         } finally { rm(cls.getParent()); }
     }
 
@@ -120,12 +120,12 @@ class Round13FixesTest {
                 "public class A {}"))));
         try {
             Candor.runScan(cls);
-            assertTrue(AnalysisState.ctx.entryPoints.contains("app.Uds.loadUserByUsername"), "UserDetailsService must be rooted");
-            assertTrue(AnalysisState.ctx.entryPoints.contains("app.Aware.setApplicationContext"), "*Aware setter must be rooted");
-            assertTrue(AnalysisState.ctx.entryPoints.contains("app.Obs.onNext"), "RxJava Observer must be rooted");
-            assertTrue(AnalysisState.ctx.entryPoints.contains("app.Filt.filter"), "ContainerRequestFilter must be rooted");
-            assertTrue(AnalysisState.ctx.entryPoints.contains("app.Ws.onMsg"), "@OnMessage must be rooted");
-            assertFalse(AnalysisState.ctx.entryPoints.contains("app.NotAware.setApplicationContext"),
+            assertTrue(AnalysisState.ctx().entryPoints.contains("app.Uds.loadUserByUsername"), "UserDetailsService must be rooted");
+            assertTrue(AnalysisState.ctx().entryPoints.contains("app.Aware.setApplicationContext"), "*Aware setter must be rooted");
+            assertTrue(AnalysisState.ctx().entryPoints.contains("app.Obs.onNext"), "RxJava Observer must be rooted");
+            assertTrue(AnalysisState.ctx().entryPoints.contains("app.Filt.filter"), "ContainerRequestFilter must be rooted");
+            assertTrue(AnalysisState.ctx().entryPoints.contains("app.Ws.onMsg"), "@OnMessage must be rooted");
+            assertFalse(AnalysisState.ctx().entryPoints.contains("app.NotAware.setApplicationContext"),
                     "a non-implementor setApplicationContext must NOT be over-rooted");
         } finally { rm(cls.getParent()); }
     }

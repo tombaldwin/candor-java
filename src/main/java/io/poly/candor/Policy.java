@@ -6,6 +6,7 @@ import java.util.*;
 import java.util.stream.*;
 import com.google.gson.*;
 import com.google.gson.reflect.*;
+import io.poly.candor.model.*;
 import static io.poly.candor.Candor.*;
 import static io.poly.candor.AnalysisState.*;
 import static io.poly.candor.Cha.*;
@@ -19,21 +20,12 @@ import static io.poly.candor.Literals.*;
  *  `import static io.poly.candor.Policy.*`; reads shared state via the Candor/Cha/Literals static
  *  imports. KNOWN_EFFECTS + rejectUnknownFlag stay in Candor. See REFACTOR_PLAN.md. */
 final class Policy {
-    /** A `deny <Effect…> [scope]` or `pure <scope>` rule. `effects` empty ⇒ a `pure` rule (ANY effect is
-     *  forbidden). `scope` empty ⇒ the whole project. */
-    static class DenyRule { TreeSet<String> effects = new TreeSet<>(); String scope = ""; String src; }
-    /** An `allow <Effect> [in <scope>] <value…>` rule: a method in scope performing that effect may reach
-     *  ONLY the listed values (Net hosts today). `scope` empty ⇒ whole project. */
-    static class AllowRule { String effect; String scope = ""; TreeSet<String> values = new TreeSet<>(); String src; }
-    /** A `forbid <A> -> <B>` rule: a method in scope A must not transitively reach into scope B. */
-    static class ForbidRule { String from, to; }
-
-    // CANDOR_POLICY rules (architecture-as-code, candor-spec §5). `deny`/`pure` = AS-EFF-006 (what a
-    // layer may do); `allow … in …` = AS-EFF-008 (which endpoints); `forbid A -> B` = AS-EFF-009 (who
-    // a layer may depend on).
-    static final List<DenyRule> denyRules = new ArrayList<>();
-    static final List<AllowRule> allowRules = new ArrayList<>();
-    static final List<ForbidRule> forbidRules = new ArrayList<>();
+    // CANDOR_POLICY rules (architecture-as-code, candor-spec §6.2), the typed sealed model.PolicyRule
+    // family. `deny`/`pure` (Deny) = AS-EFF-006 (what a layer may do); `allow … in …` (Allow) =
+    // AS-EFF-008 (which endpoints); `forbid A -> B` (Forbid) = AS-EFF-009 (who a layer may depend on).
+    static final List<PolicyRule.Deny> denyRules = new ArrayList<>();
+    static final List<PolicyRule.Allow> allowRules = new ArrayList<>();
+    static final List<PolicyRule.Forbid> forbidRules = new ArrayList<>();
 
     /** AS-EFF-004: flag direct use of ambient authority (route it through an injected collaborator). */
     static int checkNoAmbient(Map<String, TreeSet<String>> inferred, String scope) {
@@ -115,15 +107,16 @@ final class Policy {
         // AS-EFF-006: a method in scope must not perform (transitively) a denied effect.
         for (var e : new TreeMap<>(inferred).entrySet()) {
             String fn = e.getKey();
-            for (DenyRule r : denyRules) {
-                if (!scopeMatches(fn, r.scope)) continue;
-                List<String> bad = r.effects.isEmpty()
+            for (PolicyRule.Deny r : denyRules) {
+                if (!scopeMatches(fn, r.scope())) continue;
+                List<String> denied = r.effects().toNames();
+                List<String> bad = r.effects().isEmpty()
                         ? e.getValue().stream().filter(x -> !x.equals("Unknown")).sorted().collect(Collectors.toList())
-                        : e.getValue().stream().filter(r.effects::contains).sorted().collect(Collectors.toList());
+                        : e.getValue().stream().filter(denied::contains).sorted().collect(Collectors.toList());
                 if (!bad.isEmpty()) {
                     System.out.printf("[AS-EFF-006] `%s` performs { %s }, forbidden by policy%s: `%s`%n",
                             fn, String.join(", ", bad),
-                            r.scope.isEmpty() ? "" : " (scope `" + r.scope + "`)", r.src);
+                            r.scope().isEmpty() ? "" : " (scope `" + r.scope() + "`)", r.src());
                     v++;
                 }
             }
@@ -143,13 +136,13 @@ final class Policy {
         v += checkAllowlist(inferred, "Db", literalFixpoint(tablesDirect), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> tableCovered(a, reached)));
         // AS-EFF-009: a method in scope A must not transitively reach into scope B (over the call graph).
-        for (ForbidRule r : forbidRules) {
+        for (PolicyRule.Forbid r : forbidRules) {
             for (String fn : new TreeSet<>(edges.keySet())) {
-                if (!scopeMatches(fn, r.from)) continue;
-                String hit = reachesScope(fn, r.to);
+                if (!scopeMatches(fn, r.from())) continue;
+                String hit = reachesScope(fn, r.to());
                 if (hit != null) {
                     System.out.printf("[AS-EFF-009] `%s` reaches into a forbidden layer (via `%s`), "
-                            + "violating policy: `forbid %s -> %s`%n", fn, hit, r.from, r.to);
+                            + "violating policy: `forbid %s -> %s`%n", fn, hit, r.from(), r.to());
                     v++;
                 }
             }
@@ -170,8 +163,8 @@ final class Policy {
         for (var e : new TreeMap<>(inferred).entrySet()) {
             String fn = e.getKey();
             if (!e.getValue().contains(effect)) continue;
-            for (AllowRule r : allowRules) {
-                if (!effect.equals(r.effect) || !scopeMatches(fn, r.scope)) continue;
+            for (PolicyRule.Allow r : allowRules) {
+                if (!effect.equals(r.effect().specName()) || !scopeMatches(fn, r.scope())) continue;
                 TreeSet<String> reached = reachedAcc.getOrDefault(fn, new TreeSet<>());
                 // Empty surface OR an INCOMPLETE one (a structurally-invisible reach — a host-less Net owner
                 // or a runtime-host call) can't be certified: fail-closed. Without the incompleteness gate a
@@ -179,18 +172,18 @@ final class Policy {
                 if (reached.isEmpty() || incompleteAcc.getOrDefault(fn, new TreeSet<>()).contains(effect)) {
                     System.out.printf("[AS-EFF-008] `%s` performs %s with no visible literal — the "
                             + "surface cannot be certified: `allow %s%s %s`%n", fn, effect, effect,
-                            r.scope.isEmpty() ? "" : " in " + r.scope,
-                            String.join(" ", r.values));
+                            r.scope().isEmpty() ? "" : " in " + r.scope(),
+                            String.join(" ", r.values()));
                     v++;
                     continue;
                 }
                 List<String> bad = reached.stream()
-                        .filter(x -> !covered.test(r.values, x)).sorted().collect(Collectors.toList());
+                        .filter(x -> !covered.test(r.values(), x)).sorted().collect(Collectors.toList());
                 if (!bad.isEmpty()) {
                     System.out.printf("[AS-EFF-008] `%s` reaches { %s } outside the allowlist, forbidden by "
                             + "policy%s: `allow %s … %s`%n", fn, String.join(", ", bad),
-                            r.scope.isEmpty() ? "" : " (scope `" + r.scope + "`)", effect,
-                            String.join(" ", r.values));
+                            r.scope().isEmpty() ? "" : " (scope `" + r.scope() + "`)", effect,
+                            String.join(" ", r.values()));
                     v++;
                 }
             }
@@ -228,31 +221,26 @@ final class Policy {
                     // naming no known effect is DROPPED — it is NOT a `pure` rule (that distinction is
                     // load-bearing: an empty-effect rule would forbid EVERYTHING). `Unknown` is denyable
                     // so `deny Unknown <scope>` can forbid the unverifiable case (AS-EFF-008's companion).
-                    DenyRule r = new DenyRule();
-                    r.src = line;
+                    List<String> effNames = new ArrayList<>();
+                    String scope = "";
                     for (int i = 1; i < t.length; i++) {
-                        if (KNOWN_EFFECTS.contains(t[i]) || "Unknown".equals(t[i])) r.effects.add(t[i]);
-                        else { r.scope = t[i]; break; }
+                        if (KNOWN_EFFECTS.contains(t[i]) || "Unknown".equals(t[i])) effNames.add(t[i]);
+                        else { scope = t[i]; break; }
                     }
-                    if (r.effects.isEmpty()) { warnPolicy(line, "names no known effect"); break; }
-                    denyRules.add(r);
+                    if (effNames.isEmpty()) { warnPolicy(line, "names no known effect"); break; }
+                    denyRules.add(new PolicyRule.Deny(EffectSet.ofNames(effNames), scope, line));
                     break;
                 }
                 case "pure": {
-                    DenyRule r = new DenyRule(); // empty effects = ANY effect forbidden
-                    r.src = line;
-                    if (t.length > 1) r.scope = t[1];
-                    denyRules.add(r);
+                    // empty effects = ANY effect forbidden
+                    denyRules.add(new PolicyRule.Deny(EffectSet.empty(), t.length > 1 ? t[1] : "", line));
                     break;
                 }
                 case "forbid": {
                     // SPEC §6.2: `forbid <A> -> <B>` — two scopes separated by a literal `->` TOKEN
                     // (so `forbid a->b` without surrounding spaces is malformed and dropped).
                     if (t.length >= 4 && t[2].equals("->")) {
-                        ForbidRule r = new ForbidRule();
-                        r.from = t[1];
-                        r.to = t[3];
-                        forbidRules.add(r);
+                        forbidRules.add(new PolicyRule.Forbid(t[1], t[3]));
                     } else {
                         warnPolicy(line, "want `forbid <scope> -> <scope>`");
                     }
@@ -266,17 +254,16 @@ final class Policy {
                         warnPolicy(line, "allow supports only Net hosts / Exec commands / Fs paths / Db tables");
                         break;
                     }
-                    AllowRule r = new AllowRule();
-                    r.src = line;
-                    r.effect = t[1];
+                    String scope = "";
                     // optional `in <scope>` prefix; `in` ENDS the keyword even with no scope/value after
                     // (`allow Net in` → no values → dropped), matching the Rust parser. A bare
                     // `t.length > 3` guard let a value-less `allow Net in` keep "in" as an allowed value.
                     int vi = 2;
-                    if (t[2].equals("in")) { r.scope = t.length > 3 ? t[3] : ""; vi = 4; }
-                    for (int i = vi; i < t.length; i++) r.values.add(t[i]);
-                    if (r.values.isEmpty()) { warnPolicy(line, "allow names no values"); break; }
-                    allowRules.add(r);
+                    if (t[2].equals("in")) { scope = t.length > 3 ? t[3] : ""; vi = 4; }
+                    TreeSet<String> values = new TreeSet<>(); // sorted: the wire surface order
+                    for (int i = vi; i < t.length; i++) values.add(t[i]);
+                    if (values.isEmpty()) { warnPolicy(line, "allow names no values"); break; }
+                    allowRules.add(new PolicyRule.Allow(Effect.fromSpecName(t[1]), scope, values, line));
                     break;
                 }
                 default:

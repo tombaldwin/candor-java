@@ -160,13 +160,13 @@ public final class Query {
     static String policyJson() {
         List<Map<String, Object>> deny = new ArrayList<>();
         for (var r : Policy.denyRules)
-            deny.add(Map.of("effects", new ArrayList<>(r.effects), "scope", r.scope));
+            deny.add(Map.of("effects", r.effects().toNames(), "scope", r.scope()));
         List<Map<String, Object>> allow = new ArrayList<>();
         for (var r : Policy.allowRules)
-            allow.add(Map.of("effect", r.effect, "scope", r.scope, "values", new ArrayList<>(r.values)));
+            allow.add(Map.of("effect", r.effect().specName(), "scope", r.scope(), "values", new ArrayList<>(r.values())));
         List<Map<String, Object>> forbid = new ArrayList<>();
         for (var r : Policy.forbidRules)
-            forbid.add(Map.of("from", r.from, "to", r.to));
+            forbid.add(Map.of("from", r.from(), "to", r.to()));
         Comparator<Map<String, Object>> byJson = Comparator.comparing(JSON::toJson);
         deny.sort(byJson); allow.sort(byJson); forbid.sort(byJson);
         return JSON.toJson(Map.of("deny", deny, "allow", allow, "forbid", forbid));
@@ -519,11 +519,11 @@ public final class Query {
             }
             for (String f : affected) {
                 for (var r : Policy.denyRules) {
-                    boolean denies = r.effects.isEmpty() || r.effects.contains(effect);
-                    if (denies && Policy.scopeMatches(f, r.scope)) {
-                        String desc = r.effects.isEmpty()
-                                ? "pure" + (r.scope.isEmpty() ? "" : " " + r.scope)
-                                : "deny " + effect + (r.scope.isEmpty() ? "" : " " + r.scope);
+                    boolean denies = r.effects().isEmpty() || r.effects().toNames().contains(effect);
+                    if (denies && Policy.scopeMatches(f, r.scope())) {
+                        String desc = r.effects().isEmpty()
+                                ? "pure" + (r.scope().isEmpty() ? "" : " " + r.scope())
+                                : "deny " + effect + (r.scope().isEmpty() ? "" : " " + r.scope());
                         violations.add(new String[]{f, desc});
                         break;
                     }

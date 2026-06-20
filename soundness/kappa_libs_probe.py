@@ -235,6 +235,44 @@ IMPORTS = (
     # PURE anchors: Curator create()/getData() fluent intermediates; Spanner singleUse() accessor; Cosmos
     #   getContainer() accessor; any DSL builder pure-until-terminal.
     # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2..9.
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 11) ======================
+    # AI/LLM clients, vector DBs, more caches/datastores, graph, blockchain, more cloud.
+    # AI/LLM -> Net (the generate/chat call is an HTTP round-trip to the model API):
+    #   theokanning OpenAI (com.theokanning.openai.service.OpenAiService.createChatCompletion — the SDK leaf;
+    #     OkHttp/Retrofit run under the hood but the call-site owner is OpenAiService, so it's silent unless
+    #     candor models the SDK terminal). LangChain4j (dev.langchain4j.model.chat.ChatLanguageModel.generate —
+    #     the abstract wire method; the concrete OpenAiChatModel.generate is the impl, both worth modelling;
+    #     NB generate(String) is a default that delegates to generate(List), so test the List overload too).
+    #     Anthropic Java SDK (com.anthropic.services.blocking.MessageService.create(MessageCreateParams) — the
+    #     blocking message create; the SDK is Kotlin, the real classes are in anthropic-java-CORE, not the
+    #     305-byte anthropic-java aggregator stub). All return eagerly (blocking) -> Net; Unknown also PASS.
+    # Vector DBs -> Net (query/upsert/search hit the vector store over gRPC/HTTP):
+    #   Pinecone (io.pinecone.clients.Index.upsert/query — the gRPC data-plane terminal; Pinecone the top-level
+    #     client is a control-plane builder). Qdrant (io.qdrant.client.QdrantClient.upsertAsync/searchAsync —
+    #     returns a guava ListenableFuture (async) -> Net|Unknown PASS). Milvus (io.milvus.client
+    #     .MilvusServiceClient.search/insert — returns io.milvus.param.R wrapper; the gRPC call is eager).
+    #   Weaviate SKIPPED: its wire terminal is buried in a fluent DSL (client.data().creator()....run()); the
+    #     run() owner is a per-builder type, not WeaviateClient — same deep-DSL shape as the k8s/curator terminals
+    #     already characterized, and the builder set is large; skipped to keep the vector set lean (Pinecone/
+    #     Qdrant/Milvus already characterize the gRPC-vector-DB gap).
+    # Caches/KV -> Net (get/set hit a remote memcached/aerospike node over TCP):
+    #   Spymemcached (net.spy.memcached.MemcachedClient.get/set). Xmemcached (net.rubyeye.xmemcached
+    #     .XMemcachedClient.get/set). Aerospike (com.aerospike.client.AerospikeClient.get/put — the get/put take
+    #     a Policy+Key, NOT a String, so they can't be confused with java.util.Map verbs). NB MemcachedClient is
+    #     NOT a java.util.Map (no inheritance), so an owner-scoped rule is fabrication-safe; the java.util.Map
+    #     PURE anchors from batch 7 still guard the JDK Map.
+    # Graph -> Net: Apache TinkerPop Gremlin driver (org.apache.tinkerpop.gremlin.driver.Client.submit — submits
+    #   a Gremlin query to the remote server over the wire; returns a ResultSet, eager submit).
+    # Blockchain -> Net: web3j (org.web3j.protocol.core.Request.send() — the JSON-RPC round-trip to the Ethereum
+    #   node; Request<T,R>.send() is the generic terminal every web3j call (ethBlockNumber, ethGetBalance, …)
+    #   bottoms out in, so modelling Request.send covers the whole web3j surface in one rule).
+    # More cloud -> Net: Azure Event Hubs (com.azure.messaging.eventhubs.EventHubProducerClient.send — AMQP send
+    #   to the hub). Azure Table Storage (com.azure.data.tables.TableClient.createEntity/getEntity — HTTP to the
+    #   Table endpoint).
+    # PURE anchors: OpenAiService construction (a builder/factory, no wire); MilvusServiceClient construction
+    #   (factory); an in-memory java.util.List vector (computed locally, no wire). Plus the existing batch-7
+    #   java.util.Map anchors continue to guard against cache rules flooding the JDK Map.
+    # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2..10.
 )
 
 # (method, expected effect, params, body) — PASS iff candor reports the effect OR a disclosed Unknown.
@@ -994,6 +1032,101 @@ EFFECT_CASES = [
     # ---- Net (Micronaut — BlockingHttpClient.exchange(String) is the blocking HTTP round-trip.) ----
     ("micronautExchange", "Net", "io.micronaut.http.client.BlockingHttpClient c",
         'io.micronaut.http.HttpResponse<String> r = c.exchange("http://h/", String.class)'),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 11) ======================
+    # ---- Net (theokanning OpenAI — OpenAiService.createChatCompletion does the HTTP round-trip to the OpenAI
+    #      API. The owner is com.theokanning.openai.service.OpenAiService; OkHttp/Retrofit run under the hood.) ----
+    ("openaiChatCompletion", "Net",
+        "com.theokanning.openai.service.OpenAiService s, com.theokanning.openai.completion.chat.ChatCompletionRequest r",
+        'com.theokanning.openai.completion.chat.ChatCompletionResult x = s.createChatCompletion(r)'),
+    ("openaiCompletion", "Net",
+        "com.theokanning.openai.service.OpenAiService s, com.theokanning.openai.completion.CompletionRequest r",
+        'com.theokanning.openai.completion.CompletionResult x = s.createCompletion(r)'),
+
+    # ---- Net (LangChain4j — ChatLanguageModel.generate(List) is the abstract wire method; OpenAiChatModel
+    #      .generate is the concrete impl. generate(String) is a default delegating to the List overload, so
+    #      the List overload is the canonical leaf candor must model. Owner = the model type.) ----
+    ("lc4jChatGenerate", "Net",
+        "dev.langchain4j.model.chat.ChatLanguageModel m, java.util.List<dev.langchain4j.data.message.ChatMessage> ms",
+        'dev.langchain4j.model.output.Response<dev.langchain4j.data.message.AiMessage> r = m.generate(ms)'),
+    ("lc4jChatGenerateString", "Net", "dev.langchain4j.model.chat.ChatLanguageModel m",
+        'String s = m.generate("hi")'),
+    ("lc4jOpenAiGenerate", "Net",
+        "dev.langchain4j.model.openai.OpenAiChatModel m, java.util.List<dev.langchain4j.data.message.ChatMessage> ms",
+        'dev.langchain4j.model.output.Response<dev.langchain4j.data.message.AiMessage> r = m.generate(ms)'),
+
+    # ---- Net (Anthropic Java SDK — MessageService.create(MessageCreateParams) is the blocking message create
+    #      (HTTP to the Anthropic API). Owner com.anthropic.services.blocking.MessageService; the real classes
+    #      are in anthropic-java-CORE (the anthropic-java jar is a 305-byte aggregator stub).) ----
+    ("anthropicMessageCreate", "Net",
+        "com.anthropic.services.blocking.MessageService svc, com.anthropic.models.messages.MessageCreateParams p",
+        'com.anthropic.models.messages.Message m = svc.create(p)'),
+
+    # ---- Net (Pinecone — Index.upsert/query are the gRPC data-plane terminals to the Pinecone index. Owner
+    #      io.pinecone.clients.Index; the top-level Pinecone client is a control-plane builder.) ----
+    ("pineconeUpsert", "Net", "io.pinecone.clients.Index idx",
+        'io.pinecone.proto.UpsertResponse r = idx.upsert("id", java.util.Arrays.asList(1.0f))'),
+    ("pineconeQuery", "Net", "io.pinecone.clients.Index idx",
+        'Object r = idx.query(1, java.util.Arrays.asList(1.0f), null, null, "ns", null, null, false, false)'),
+
+    # ---- Net (Qdrant — QdrantClient.upsertAsync/searchAsync hit the Qdrant server over gRPC. Returns a guava
+    #      ListenableFuture (async) -> Net|Unknown PASS. Owner io.qdrant.client.QdrantClient.) ----
+    ("qdrantUpsert", "Net", "io.qdrant.client.QdrantClient c, io.qdrant.client.grpc.Points.UpsertPoints p",
+        'com.google.common.util.concurrent.ListenableFuture<io.qdrant.client.grpc.Points.UpdateResult> f = c.upsertAsync(p)'),
+    ("qdrantSearch", "Net", "io.qdrant.client.QdrantClient c, io.qdrant.client.grpc.Points.SearchPoints p",
+        'com.google.common.util.concurrent.ListenableFuture<java.util.List<io.qdrant.client.grpc.Points.ScoredPoint>> f = c.searchAsync(p)'),
+
+    # ---- Net (Milvus — MilvusServiceClient.search/insert do gRPC round-trips to the Milvus cluster. Owner
+    #      io.milvus.client.MilvusServiceClient; the result is wrapped in io.milvus.param.R (the call is eager).) ----
+    ("milvusSearch", "Net", "io.milvus.client.MilvusServiceClient c, io.milvus.param.dml.SearchParam p",
+        'io.milvus.param.R<io.milvus.grpc.SearchResults> r = c.search(p)'),
+    ("milvusInsert", "Net", "io.milvus.client.MilvusServiceClient c, io.milvus.param.dml.InsertParam p",
+        'io.milvus.param.R<io.milvus.grpc.MutationResult> r = c.insert(p)'),
+
+    # ---- Net (Spymemcached — MemcachedClient.get/set hit the remote memcached node over TCP. Owner
+    #      net.spy.memcached.MemcachedClient (NOT a java.util.Map — no inheritance).) ----
+    ("spymemGet", "Net", "net.spy.memcached.MemcachedClient c", 'Object o = c.get("k")'),
+    ("spymemSet", "Net", "net.spy.memcached.MemcachedClient c",
+        'net.spy.memcached.internal.OperationFuture<Boolean> f = c.set("k", 0, "v")'),
+
+    # ---- Net (Xmemcached — XMemcachedClient.get/set hit the remote memcached node over TCP. Owner
+    #      net.rubyeye.xmemcached.XMemcachedClient.) ----
+    ("xmemGet", "Net", "net.rubyeye.xmemcached.XMemcachedClient c", 'Object o = c.get("k")'),
+    ("xmemSet", "Net", "net.rubyeye.xmemcached.XMemcachedClient c", 'boolean b = c.set("k", 0, "v")'),
+
+    # ---- Net (Aerospike — AerospikeClient.get/put hit the remote Aerospike node over TCP. The get/put take a
+    #      Policy+Key (NOT a String), so they cannot be confused with java.util.Map verbs. Owner
+    #      com.aerospike.client.AerospikeClient.) ----
+    ("aerospikeGet", "Net",
+        "com.aerospike.client.AerospikeClient c, com.aerospike.client.policy.Policy p, com.aerospike.client.Key k",
+        'com.aerospike.client.Record r = c.get(p, k)'),
+    ("aerospikePut", "Net",
+        "com.aerospike.client.AerospikeClient c, com.aerospike.client.policy.WritePolicy p, com.aerospike.client.Key k, com.aerospike.client.Bin b",
+        'c.put(p, k, b)'),
+
+    # ---- Net (Apache TinkerPop Gremlin driver — Client.submit submits a Gremlin query to the remote server
+    #      over the wire (eager submit, returns a ResultSet). Owner org.apache.tinkerpop.gremlin.driver.Client.) ----
+    ("gremlinSubmit", "Net", "org.apache.tinkerpop.gremlin.driver.Client c",
+        'org.apache.tinkerpop.gremlin.driver.ResultSet r = c.submit("g.V()")'),
+
+    # ---- Net (web3j — Request<T,R>.send() is the JSON-RPC round-trip to the Ethereum node; the generic terminal
+    #      every web3j call bottoms out in. Owner org.web3j.protocol.core.Request.) ----
+    ("web3jRequestSend", "Net",
+        "org.web3j.protocol.core.Request<?,? extends org.web3j.protocol.core.Response> req",
+        'org.web3j.protocol.core.Response r = req.send()'),
+
+    # ---- Net (Azure Event Hubs — EventHubProducerClient.send does an AMQP send to the hub. Owner
+    #      com.azure.messaging.eventhubs.EventHubProducerClient.) ----
+    ("azureEventHubSend", "Net",
+        "com.azure.messaging.eventhubs.EventHubProducerClient p, com.azure.messaging.eventhubs.EventDataBatch b",
+        'p.send(b)'),
+
+    # ---- Net (Azure Table Storage — TableClient.createEntity/getEntity are HTTP round-trips to the Table
+    #      endpoint. Owner com.azure.data.tables.TableClient.) ----
+    ("azureTableCreate", "Net",
+        "com.azure.data.tables.TableClient c, com.azure.data.tables.models.TableEntity e", 'c.createEntity(e)'),
+    ("azureTableGet", "Net", "com.azure.data.tables.TableClient c",
+        'com.azure.data.tables.models.TableEntity e = c.getEntity("p", "r")'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -1226,6 +1359,22 @@ PURE_CASES = [
     ("temporalServiceStubsPure",
         "io.temporal.serviceclient.WorkflowServiceStubs s = io.temporal.serviceclient.WorkflowServiceStubs.newServiceStubs(opts)",
         "io.temporal.serviceclient.WorkflowServiceStubsOptions opts"),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 11) — pure anchors ===============
+    # theokanning OpenAiService.builder() is a FACTORY/builder — constructing the client touches no wire (the
+    #   wire leaf is createChatCompletion, modeled Net above). Must stay pure (factory-pure anchor).
+    ("openaiServiceBuilderPure",
+        "com.theokanning.openai.service.OpenAiService s = new com.theokanning.openai.service.OpenAiService(\"key\")", ""),
+    # MilvusServiceClient(ConnectParam) construction is a FACTORY — the gRPC channel connects lazily; the wire
+    #   leaf is search/insert (modeled Net above). The constructor itself must stay pure.
+    ("milvusClientCtorPure",
+        "io.milvus.client.MilvusServiceClient c = new io.milvus.client.MilvusServiceClient(p)",
+        "io.milvus.param.ConnectParam p"),
+    # An in-memory vector (a java.util.List<Float> built locally, e.g. an embedding computed in-process) touches
+    #   no wire — must stay pure even after the vector-DB upsert/query leaves are modeled Net. The owner here is
+    #   java.util.List (a JDK type), so it must be silent-pure (anti-flooding anchor for the vector batch).
+    ("inMemoryVectorPure",
+        "java.util.List<Float> v = new java.util.ArrayList<>(); v.add(1.0f); float x = v.get(0)", ""),
 ]
 
 
@@ -1531,6 +1680,39 @@ JARS = {
     "micronaut-http-client-core-4.5.1.jar": f"{_MVN}/io/micronaut/micronaut-http-client-core/4.5.1/micronaut-http-client-core-4.5.1.jar",
     "micronaut-http-4.5.1.jar": f"{_MVN}/io/micronaut/micronaut-http/4.5.1/micronaut-http-4.5.1.jar",
     "micronaut-core-4.5.1.jar": f"{_MVN}/io/micronaut/micronaut-core/4.5.1/micronaut-core-4.5.1.jar",  # io.micronaut.core.type.Argument
+    # --- added 2026-06-20 batch 11 ---
+    # AI/LLM clients. theokanning OpenAI (service carries OpenAiService; api carries the request/result types).
+    "openai-service-0.18.2.jar": f"{_MVN}/com/theokanning/openai-gpt3-java/service/0.18.2/service-0.18.2.jar",
+    "openai-api-0.18.2.jar": f"{_MVN}/com/theokanning/openai-gpt3-java/api/0.18.2/api-0.18.2.jar",
+    "openai-client-0.18.2.jar": f"{_MVN}/com/theokanning/openai-gpt3-java/client/0.18.2/client-0.18.2.jar",
+    # LangChain4j (core carries ChatLanguageModel + data/message/output types; open-ai carries OpenAiChatModel)
+    "langchain4j-core-0.33.0.jar": f"{_MVN}/dev/langchain4j/langchain4j-core/0.33.0/langchain4j-core-0.33.0.jar",
+    "langchain4j-open-ai-0.33.0.jar": f"{_MVN}/dev/langchain4j/langchain4j-open-ai/0.33.0/langchain4j-open-ai-0.33.0.jar",
+    # Anthropic Java SDK — anthropic-java-CORE carries the real classes (the anthropic-java jar is a 305-byte
+    #   aggregator stub with no .class files; the -core artifact is the one to compile against).
+    "anthropic-java-core-0.8.0.jar": f"{_MVN}/com/anthropic/anthropic-java-core/0.8.0/anthropic-java-core-0.8.0.jar",
+    # Vector DBs — Pinecone / Qdrant / Milvus (all carry their own client + proto/grpc types; guava already present
+    #   supplies qdrant's ListenableFuture; protobuf-java already present supplies the *Response proto bases).
+    "pinecone-client-2.0.0.jar": f"{_MVN}/io/pinecone/pinecone-client/2.0.0/pinecone-client-2.0.0.jar",
+    "qdrant-client-1.9.1.jar": f"{_MVN}/io/qdrant/client/1.9.1/client-1.9.1.jar",
+    "milvus-sdk-java-2.4.1.jar": f"{_MVN}/io/milvus/milvus-sdk-java/2.4.1/milvus-sdk-java-2.4.1.jar",
+    # Caches/KV — Spymemcached / Xmemcached / Aerospike
+    "spymemcached-2.12.3.jar": f"{_MVN}/net/spy/spymemcached/2.12.3/spymemcached-2.12.3.jar",
+    "xmemcached-2.4.8.jar": f"{_MVN}/com/googlecode/xmemcached/xmemcached/2.4.8/xmemcached-2.4.8.jar",
+    "aerospike-client-7.2.0.jar": f"{_MVN}/com/aerospike/aerospike-client/7.2.0/aerospike-client-7.2.0.jar",
+    # Graph — Apache TinkerPop Gremlin driver (+ gremlin-core for the Traversal/Bytecode types in submit overloads)
+    "gremlin-driver-3.7.2.jar": f"{_MVN}/org/apache/tinkerpop/gremlin-driver/3.7.2/gremlin-driver-3.7.2.jar",
+    "gremlin-core-3.7.2.jar": f"{_MVN}/org/apache/tinkerpop/gremlin-core/3.7.2/gremlin-core-3.7.2.jar",
+    # Blockchain — web3j core (carries org.web3j.protocol.core.Request/Response)
+    "web3j-core-4.12.0.jar": f"{_MVN}/org/web3j/core/4.12.0/core-4.12.0.jar",
+    # More cloud — Azure Event Hubs / Azure Table Storage (azure-core already present supplies BinaryData/etc.)
+    "azure-messaging-eventhubs-5.18.4.jar": f"{_MVN}/com/azure/azure-messaging-eventhubs/5.18.4/azure-messaging-eventhubs-5.18.4.jar",
+    "azure-data-tables-12.4.4.jar": f"{_MVN}/com/azure/azure-data-tables/12.4.4/azure-data-tables-12.4.4.jar",
+    # SKIPPED: Weaviate (io.weaviate.client) — its wire terminal is a deep fluent DSL (data().creator()...run()),
+    #   the run() owner is a per-builder type not WeaviateClient; same deep-DSL shape already characterized by the
+    #   k8s/curator terminals. Skipped to keep the vector set lean (Pinecone/Qdrant/Milvus cover the gRPC gap).
+    # SKIPPED: Anthropic-java aggregator (com.anthropic:anthropic-java:0.8.0) — 305-byte stub, no classes; use
+    #   anthropic-java-core above instead.
 }
 
 

@@ -69,7 +69,7 @@ final class Loader {
 
     /** Identify Spring Data repositories (effect: Db) and @FeignClient interfaces (Net). */
     static void computeSpringTypes(List<ClassNode> classes) {
-        for (ClassNode cn : classes) if (annoPresent(cn.visibleAnnotations, FEIGN)) feignTypes.add(cn.name);
+        for (ClassNode cn : classes) if (annoPresent(cn.visibleAnnotations, FEIGN)) ctx.feignTypes.add(cn.name);
         // JPA entity tables: the literal @Table(name="…") (javax or jakarta persistence).
         for (ClassNode cn : classes) {
             if (cn.visibleAnnotations == null) continue;
@@ -77,17 +77,17 @@ final class Loader {
                 if (a.desc == null || !a.desc.contains("persistence/Table") || a.values == null) continue;
                 for (int i = 0; i + 1 < a.values.size(); i += 2)
                     if ("name".equals(a.values.get(i)) && a.values.get(i + 1) instanceof String t && !t.isBlank())
-                        entityTables.put(cn.name, t);
+                        ctx.entityTables.put(cn.name, t);
             }
         }
         boolean changed = true;
         while (changed) {
             changed = false;
             for (ClassNode cn : classes) {
-                if (repoTypes.contains(cn.name) || cn.interfaces == null) continue;
+                if (ctx.repoTypes.contains(cn.name) || cn.interfaces == null) continue;
                 for (String itf : cn.interfaces) {
-                    if (REPO_MARKERS.contains(itf) || repoTypes.contains(itf) || isSpringDataRepoBase(itf)) {
-                        repoTypes.add(cn.name);
+                    if (REPO_MARKERS.contains(itf) || ctx.repoTypes.contains(itf) || isSpringDataRepoBase(itf)) {
+                        ctx.repoTypes.add(cn.name);
                         changed = true;
                         break;
                     }
@@ -97,11 +97,11 @@ final class Loader {
         // A repository's entity is its FIRST generic argument (`extends CrudRepository<User, Long>`):
         // read it from the interface's generic signature and join with the entity's declared table.
         for (ClassNode cn : classes) {
-            if (!repoTypes.contains(cn.name) || cn.signature == null) continue;
+            if (!ctx.repoTypes.contains(cn.name) || cn.signature == null) continue;
             java.util.regex.Matcher m = java.util.regex.Pattern.compile("<L([^;<]+);").matcher(cn.signature);
             if (m.find()) {
-                String table = entityTables.get(m.group(1));
-                if (table != null) repoTables.put(cn.name, table);
+                String table = ctx.entityTables.get(m.group(1));
+                if (table != null) ctx.repoTables.put(cn.name, table);
             }
         }
     }
@@ -157,10 +157,10 @@ final class Loader {
                     // all-pure spec-form report was ignored and its package falsely named a blind spot.
                     if (obj != null) {
                         if (obj.has("package") && obj.get("package").isJsonPrimitive())
-                            depCoveredPkgs.add(obj.get("package").getAsString());
+                            ctx.depCoveredPkgs.add(obj.get("package").getAsString());
                         if (obj.has("packages") && obj.get("packages").isJsonArray())
                             for (JsonElement x : obj.getAsJsonArray("packages"))
-                                depCoveredPkgs.add(x.getAsString());
+                                ctx.depCoveredPkgs.add(x.getAsString());
                     }
                     for (JsonElement el : fns) {
                         if (!el.isJsonObject()) continue;                 // a non-object entry → skip (not pure-able)
@@ -193,17 +193,17 @@ final class Loader {
                                     for (JsonElement x : m.getAsJsonArray(pair.getKey()))
                                         pair.getValue().add(x.getAsString());
                         }
-                        if (!de.effects.isEmpty()) crossDeps.put(h, de);
+                        if (!de.effects.isEmpty()) ctx.crossDeps.put(h, de);
                         // Entry-level coverage fallback (reports with no package field): the hash's
                         // package prefix gives the EXACT package. The spec join key is `pkg#qual`
                         // (Rust/TS) — take what's before `#`; this engine's own hash is the
                         // slash-form `owner/Class.method(desc)`, so fall back to the last `/`.
                         int hashSep = h.indexOf('#');
                         if (hashSep > 0) {
-                            depCoveredPkgs.add(h.substring(0, hashSep));
+                            ctx.depCoveredPkgs.add(h.substring(0, hashSep));
                         } else {
                             int slash = h.lastIndexOf('/');
-                            if (slash > 0) depCoveredPkgs.add(h.substring(0, slash).replace('/', '.'));
+                            if (slash > 0) ctx.depCoveredPkgs.add(h.substring(0, slash).replace('/', '.'));
                         }
                     }
                 } catch (Exception ex) {

@@ -82,7 +82,7 @@ class UrlSplitMaskingTest {
             "}")));
         try {
             Candor.runScan(cls);
-            Map<String, TreeSet<String>> inc = Literals.literalFixpoint(AnalysisState.surfaceIncomplete);
+            Map<String, TreeSet<String>> inc = Literals.literalFixpoint(AnalysisState.ctx.surfaceIncomplete);
 
             // The mixed evasion method is incomplete (the runtime host masks behind the benign literal).
             assertTrue(inc.getOrDefault("app.Clean.evil", new TreeSet<>()).contains("Net"),
@@ -91,13 +91,13 @@ class UrlSplitMaskingTest {
             // The COMMON inline-literal-URL case is NOT over-flagged — it still certifies.
             assertFalse(inc.getOrDefault("app.Clean.inline", new TreeSet<>()).contains("Net"),
                     "an inline literal URL must NOT be incomplete (must still certify)");
-            assertTrue(AnalysisState.hostsDirect.getOrDefault("app.Clean.inline", new TreeSet<>()).contains("good.com"),
+            assertTrue(AnalysisState.ctx.hostsDirect.getOrDefault("app.Clean.inline", new TreeSet<>()).contains("good.com"),
                     "an inline literal URL host must be captured");
 
             // A split-but-literal URL through a const local still attributes its host.
             assertFalse(inc.getOrDefault("app.Clean.splitLiteral", new TreeSet<>()).contains("Net"),
                     "a const-URL-local split with a literal host must NOT be incomplete");
-            assertTrue(AnalysisState.hostsDirect.getOrDefault("app.Clean.splitLiteral", new TreeSet<>()).contains("good.com"),
+            assertTrue(AnalysisState.ctx.hostsDirect.getOrDefault("app.Clean.splitLiteral", new TreeSet<>()).contains("good.com"),
                     "a const-URL-local split must capture its literal host");
 
             // A runtime URL through a local fails closed.

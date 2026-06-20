@@ -32,7 +32,7 @@ final class Policy {
         int v = 0;
         for (var e : new TreeMap<>(inferred).entrySet()) {
             if (!gateScopeCovers(scope, e.getKey())) continue;
-            List<String> ambient = direct.getOrDefault(e.getKey(), EffectSet.empty()).effects().stream()                    .filter(AMBIENT::contains).map(Effect::specName).sorted().collect(Collectors.toList());
+            List<String> ambient = ctx.direct.getOrDefault(e.getKey(), EffectSet.empty()).effects().stream()                    .filter(AMBIENT::contains).map(Effect::specName).sorted().collect(Collectors.toList());
             if (!ambient.isEmpty()) {
                 diag(DiagnosticCode.AS_EFF_004, "`%s` uses ambient authority { %s } directly; "
                         + "route it through an injected collaborator / capability",
@@ -52,7 +52,7 @@ final class Policy {
      */
     static int checkTaint(Map<String, EffectSet> inferred) {
         int v = 0;
-        for (var e : new TreeMap<>(tainted).entrySet()) {
+        for (var e : new TreeMap<>(ctx.tainted).entrySet()) {
             if (e.getValue().isEmpty()) continue;
             diag(DiagnosticCode.AS_EFF_007, "`%s` performs { %s } on caller-derived input (an injection "
                     + "surface — validate/sanitize it, or confirm the source is trusted); heuristic, may "
@@ -125,18 +125,18 @@ final class Policy {
         // Certifies the VISIBLE literal surface (propagated transitively). A method whose surface is empty OR
         // INCOMPLETE (a structurally-invisible reach — see surfaceIncomplete) can't be certified: fail-closed,
         // so a benign visible literal can't MASK an invisible forbidden endpoint.
-        Map<String, TreeSet<String>> incomplete = literalFixpoint(surfaceIncomplete);
-        v += checkAllowlist(inferred, "Net", literalFixpoint(hostsDirect), incomplete,
+        Map<String, TreeSet<String>> incomplete = literalFixpoint(ctx.surfaceIncomplete);
+        v += checkAllowlist(inferred, "Net", literalFixpoint(ctx.hostsDirect), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> hostPart(a).equals(hostPart(reached))));
-        v += checkAllowlist(inferred, "Exec", literalFixpoint(cmdsDirect), incomplete,
+        v += checkAllowlist(inferred, "Exec", literalFixpoint(ctx.cmdsDirect), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> cmdBase(a).equals(cmdBase(reached))));
-        v += checkAllowlist(inferred, "Fs", literalFixpoint(pathsDirect), incomplete,
+        v += checkAllowlist(inferred, "Fs", literalFixpoint(ctx.pathsDirect), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> pathCovered(a, reached)));
-        v += checkAllowlist(inferred, "Db", literalFixpoint(tablesDirect), incomplete,
+        v += checkAllowlist(inferred, "Db", literalFixpoint(ctx.tablesDirect), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> tableCovered(a, reached)));
         // AS-EFF-009: a method in scope A must not transitively reach into scope B (over the call graph).
         for (PolicyRule.Forbid r : forbidRules) {
-            for (String fn : new TreeSet<>(edges.keySet())) {
+            for (String fn : new TreeSet<>(ctx.edges.keySet())) {
                 if (!scopeMatches(fn, r.from())) continue;
                 String hit = reachesScope(fn, r.to());
                 if (hit != null) {
@@ -307,13 +307,13 @@ final class Policy {
      *  whose name matches `scope` (seeded from `start`'s direct callees, so `start` itself isn't a hit),
      *  or null. Used for AS-EFF-009 layering. */
     static String reachesScope(String start, String scope) {
-        Deque<String> stack = new ArrayDeque<>(edges.getOrDefault(start, Set.of()));
+        Deque<String> stack = new ArrayDeque<>(ctx.edges.getOrDefault(start, Set.of()));
         Set<String> seen = new HashSet<>();
         while (!stack.isEmpty()) {
             String n = stack.pop();
             if (!seen.add(n)) continue;
             if (scopeMatches(n, scope)) return n;
-            for (String c : edges.getOrDefault(n, Set.of())) if (!seen.contains(c)) stack.push(c);
+            for (String c : ctx.edges.getOrDefault(n, Set.of())) if (!seen.contains(c)) stack.push(c);
         }
         return null;
     }

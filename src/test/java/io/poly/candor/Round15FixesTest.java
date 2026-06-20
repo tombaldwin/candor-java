@@ -64,11 +64,11 @@ class Round15FixesTest {
         try {
             Map<String, EffectSet> r = Candor.runScan(cls);
             assertTrue(r.getOrDefault("app.A.net", EffectSet.empty()).toNames().contains("Net"), "SocketHandler is Net");
-            assertTrue(AnalysisState.hostsDirect.getOrDefault("app.A.net", new TreeSet<>()).contains("evil.exfil.com:9000"),
-                    "the SocketHandler host must be surfaced, got " + AnalysisState.hostsDirect.get("app.A.net"));
+            assertTrue(AnalysisState.ctx.hostsDirect.getOrDefault("app.A.net", new TreeSet<>()).contains("evil.exfil.com:9000"),
+                    "the SocketHandler host must be surfaced, got " + AnalysisState.ctx.hostsDirect.get("app.A.net"));
             assertTrue(r.getOrDefault("app.A.fs", EffectSet.empty()).toNames().contains("Fs"), "FileHandler is Fs");
-            assertTrue(AnalysisState.pathsDirect.getOrDefault("app.A.fs", new TreeSet<>()).contains("/etc/shadow.copy"),
-                    "the FileHandler path must be surfaced, got " + AnalysisState.pathsDirect.get("app.A.fs"));
+            assertTrue(AnalysisState.ctx.pathsDirect.getOrDefault("app.A.fs", new TreeSet<>()).contains("/etc/shadow.copy"),
+                    "the FileHandler path must be surfaced, got " + AnalysisState.ctx.pathsDirect.get("app.A.fs"));
         } finally { rm(cls.getParent()); }
     }
 
@@ -111,9 +111,9 @@ class Round15FixesTest {
                 "public class A {}"))));
         try {
             Candor.runScan(cls);
-            assertTrue(AnalysisState.entryPoints.contains("app.F.doFilterInternal"), "OncePerRequestFilter must be rooted");
-            assertTrue(AnalysisState.entryPoints.contains("app.Fn.service"), "GCP HttpFunction must be rooted");
-            assertFalse(AnalysisState.entryPoints.contains("app.NotAFilter.doFilterInternal"),
+            assertTrue(AnalysisState.ctx.entryPoints.contains("app.F.doFilterInternal"), "OncePerRequestFilter must be rooted");
+            assertTrue(AnalysisState.ctx.entryPoints.contains("app.Fn.service"), "GCP HttpFunction must be rooted");
+            assertFalse(AnalysisState.ctx.entryPoints.contains("app.NotAFilter.doFilterInternal"),
                     "a non-implementor doFilterInternal must NOT be over-rooted");
         } finally { rm(cls.getParent()); }
     }

@@ -51,11 +51,11 @@ class HelpersTest {
 
     @Test
     void looksLikeIpv4IsStrict() {
-        assertTrue(Candor.looksLikeIpv4("127.0.0.1"));
-        assertTrue(Candor.looksLikeIpv4("10.0.0.255"));
-        assertFalse(Candor.looksLikeIpv4("256.0.0.1"));           // octet > 255
-        assertFalse(Candor.looksLikeIpv4("1.2.3"));               // not four parts
-        assertFalse(Candor.looksLikeIpv4("a.b.c.d"));             // non-numeric
+        assertTrue(Literals.looksLikeIpv4("127.0.0.1"));
+        assertTrue(Literals.looksLikeIpv4("10.0.0.255"));
+        assertFalse(Literals.looksLikeIpv4("256.0.0.1"));           // octet > 255
+        assertFalse(Literals.looksLikeIpv4("1.2.3"));               // not four parts
+        assertFalse(Literals.looksLikeIpv4("a.b.c.d"));             // non-numeric
     }
 
     @Test
@@ -64,31 +64,31 @@ class HelpersTest {
         // or a trailing :port. It does NOT strip scheme/userinfo/path — that's netHostLiteral's job at
         // EXTRACTION (the reached host is already clean). Stripping them here diverged from rust and
         // silently WIDENED a policy author's allow literal (`build@github.com` → `github.com`).
-        assertEquals("host.com", Candor.hostPart("host.com"));
-        assertEquals("host.com", Candor.hostPart("host.com:443"));
+        assertEquals("host.com", Literals.hostPart("host.com"));
+        assertEquals("host.com", Literals.hostPart("host.com:443"));
         // a URL/userinfo-form allow literal is taken VERBATIM (no auto-clean) — as rust does
-        assertEquals("https://user@host.com:8080/path", Candor.hostPart("https://user@host.com:8080/path"));
-        assertEquals("build@github.com", Candor.hostPart("build@github.com"));
+        assertEquals("https://user@host.com:8080/path", Literals.hostPart("https://user@host.com:8080/path"));
+        assertEquals("build@github.com", Literals.hostPart("build@github.com"));
     }
 
     @Test
     void netHostLiteralAcceptsOnlyUnambiguousHosts() {
-        assertEquals("api.example.com", Candor.netHostLiteral("https://api.example.com/v1"));
-        assertEquals("api.example.com:8080", Candor.netHostLiteral("api.example.com:8080")); // dotted host + numeric port
-        assertEquals("127.0.0.1", Candor.netHostLiteral("127.0.0.1"));                       // a bare literal IPv4
-        assertNull(Candor.netHostLiteral("localhost"));   // a bare non-IP token is ambiguous → no claim
-        assertNull(Candor.netHostLiteral("some sentence")); // whitespace → not a host literal
-        assertNull(Candor.netHostLiteral(""));
-        assertNull(Candor.netHostLiteral(null));
+        assertEquals("api.example.com", Literals.netHostLiteral("https://api.example.com/v1"));
+        assertEquals("api.example.com:8080", Literals.netHostLiteral("api.example.com:8080")); // dotted host + numeric port
+        assertEquals("127.0.0.1", Literals.netHostLiteral("127.0.0.1"));                       // a bare literal IPv4
+        assertNull(Literals.netHostLiteral("localhost"));   // a bare non-IP token is ambiguous → no claim
+        assertNull(Literals.netHostLiteral("some sentence")); // whitespace → not a host literal
+        assertNull(Literals.netHostLiteral(""));
+        assertNull(Literals.netHostLiteral(null));
     }
 
     @Test
     void pathArgIsSingleStringDetectsLeadingStringArg() {
-        assertTrue(Candor.pathArgIsSingleString("(Ljava/lang/String;)V"));        // (String)
-        assertTrue(Candor.pathArgIsSingleString("(Ljava/lang/String;[B)V"));      // (String, byte[])
-        assertFalse(Candor.pathArgIsSingleString("(Ljava/lang/String;Ljava/lang/String;)V")); // (String, String)
-        assertFalse(Candor.pathArgIsSingleString("(I)V"));                        // not String-first
-        assertFalse(Candor.pathArgIsSingleString("()V"));                         // no arg
+        assertTrue(Literals.pathArgIsSingleString("(Ljava/lang/String;)V"));        // (String)
+        assertTrue(Literals.pathArgIsSingleString("(Ljava/lang/String;[B)V"));      // (String, byte[])
+        assertFalse(Literals.pathArgIsSingleString("(Ljava/lang/String;Ljava/lang/String;)V")); // (String, String)
+        assertFalse(Literals.pathArgIsSingleString("(I)V"));                        // not String-first
+        assertFalse(Literals.pathArgIsSingleString("()V"));                         // no arg
     }
 
     @Test
@@ -103,11 +103,11 @@ class HelpersTest {
 
     @Test
     void pathCoveredIsPrefixAndTraversalSafe() {
-        assertTrue(Candor.pathCovered("/etc", "/etc/passwd"));
-        assertTrue(Candor.pathCovered("/etc", "/etc"));
-        assertFalse(Candor.pathCovered("/etc", "/var/log"));
-        assertFalse(Candor.pathCovered("/a", "/a/../b"));  // `..` in the reached path never covers
-        assertFalse(Candor.pathCovered("etc", "/etc"));    // relative allow vs absolute reach
+        assertTrue(Literals.pathCovered("/etc", "/etc/passwd"));
+        assertTrue(Literals.pathCovered("/etc", "/etc"));
+        assertFalse(Literals.pathCovered("/etc", "/var/log"));
+        assertFalse(Literals.pathCovered("/a", "/a/../b"));  // `..` in the reached path never covers
+        assertFalse(Literals.pathCovered("etc", "/etc"));    // relative allow vs absolute reach
     }
 
     /** The Net classifier matches socket owners by exact type. MulticastSocket extends DatagramSocket;
@@ -410,10 +410,10 @@ class HelpersTest {
 
     @Test
     void tableCoveredIsExactOrSchemaWildcard() {
-        assertTrue(Candor.tableCovered("users", "USERS"));         // case-insensitive
-        assertTrue(Candor.tableCovered("public.*", "public.orders")); // schema wildcard
-        assertFalse(Candor.tableCovered("users", "orders"));
-        assertFalse(Candor.tableCovered("public.*", "private.orders"));
+        assertTrue(Literals.tableCovered("users", "USERS"));         // case-insensitive
+        assertTrue(Literals.tableCovered("public.*", "public.orders")); // schema wildcard
+        assertFalse(Literals.tableCovered("users", "orders"));
+        assertFalse(Literals.tableCovered("public.*", "private.orders"));
     }
 
     /** Helper: register a project class (name, super) declaring the given concrete methods, mirroring
@@ -740,16 +740,16 @@ class HelpersTest {
      *  one allowed IPv6 covered the whole block. Bracketed and bare IPv6 are now handled; host:port splits. */
     @Test
     void hostPartIsIpv6Aware() {
-        assertEquals("api.stripe.com", Candor.hostPart("api.stripe.com:443"));
-        assertEquals("10.0.0.1", Candor.hostPart("10.0.0.1:6379"));
+        assertEquals("api.stripe.com", Literals.hostPart("api.stripe.com:443"));
+        assertEquals("10.0.0.1", Literals.hostPart("10.0.0.1:6379"));
         // NB: a raw URL never reaches hostPart — netHostLiteral cleans the reached host to a bare authority
         // at extraction, and a policy author writes a bare host. (A URL has >1 colon so the bare-IPv6 guard
         // returns it verbatim, which is harmless — it simply won't match a clean reached host.)
         // bracketed IPv6 with/without port → the bracketed host
-        assertEquals("2001:db8::1", Candor.hostPart("[2001:db8::1]:443"));
-        assertEquals("2001:db8::1", Candor.hostPart("[2001:db8::1]"));
+        assertEquals("2001:db8::1", Literals.hostPart("[2001:db8::1]:443"));
+        assertEquals("2001:db8::1", Literals.hostPart("[2001:db8::1]"));
         // bare IPv6 (no brackets, >1 colon) → returned whole, NOT collapsed to "2001"
-        assertEquals("2001:db8::1", Candor.hostPart("2001:db8::1"));
-        assertEquals("::1", Candor.hostPart("::1"));
+        assertEquals("2001:db8::1", Literals.hostPart("2001:db8::1"));
+        assertEquals("::1", Literals.hostPart("::1"));
     }
 }

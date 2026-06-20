@@ -79,7 +79,7 @@ class UrlSplitMaskingTest {
             "}")));
         try {
             Candor.runScan(cls);
-            Map<String, TreeSet<String>> inc = Candor.literalFixpoint(Candor.surfaceIncomplete);
+            Map<String, TreeSet<String>> inc = Literals.literalFixpoint(Candor.surfaceIncomplete);
 
             // The mixed evasion method is incomplete (the runtime host masks behind the benign literal).
             assertTrue(inc.getOrDefault("app.Clean.evil", new TreeSet<>()).contains("Net"),

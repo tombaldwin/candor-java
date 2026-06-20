@@ -342,6 +342,50 @@ IMPORTS = (
     #     RethinkDB ReqlExpr.run / connection().connect() -> Net; H2 native MVStore.open/openMap -> Fs
     #     (on-disk MVStore file; openMap on an already-open store is the in-memory map view — anchor).
     # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2..12.
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 14) ======================
+    # HTTP SERVER frameworks, streaming, datastores/caches, document/media, templating, email, ML/native.
+    # FOCUS this batch = NON-Spring libraries (0.7.8's STRUCTURAL Spring-floor fix already auto-discloses
+    #   Unknown for any org.springframework.* *Template/*Operations/*Repository/*Gateway type).
+    # HTTP SERVER frameworks -> Net (the server .start()/.init() BINDS a listening socket = the clearest leaf):
+    #   Javalin (io.javalin.Javalin.start(int) -> Net binds the port). Spark Java (spark.Spark.init() -> Net
+    #     binds; NB Spark.get(path,Route) is a LAZY route REGISTRATION that delegates to Service.get and does
+    #     NOT bind until init() — so init() is the clean Net leaf, get() is pure route setup). Undertow
+    #     (io.undertow.Undertow.start() -> Net). Eclipse Jetty SERVER (org.eclipse.jetty.server.Server.start()
+    #     -> Net; start() is declared on the LifeCycle interface but the invokevirtual call-site owner with a
+    #     Server-typed receiver is org.eclipse.jetty.server.Server). Javalin Context.result(String) is BUFFERED
+    #     (wraps the body into a ByteArrayInputStream, verified by javap -c — no synchronous socket write) ->
+    #     PURE anchor. Ratpack SKIPPED (heavy netty/guice/reactor tree; the server vein is covered by 4 others).
+    # Streaming -> Net: Kafka Streams (org.apache.kafka.streams.KafkaStreams.start() -> binds/consumes over the
+    #   broker socket).
+    # Datastores/caches -> Net: Apache Geode (org.apache.geode.cache.Region.get/put -> hits a remote partition
+    #   over the wire). CRITICAL nuance (same as batch 7 Hazelcast/Infinispan): Region<K,V> EXTENDS
+    #   java.util.concurrent.ConcurrentMap, so get/put are inherited Map verbs — but the invoke call-site owner
+    #   with a Region-typed receiver is org.apache.geode.cache.Region, NOT java.util.Map, so an owner-scoped κ
+    #   rule keyed on Region is fabrication-safe; the batch-7 java.util.Map pure anchors still guard the JDK Map.
+    #   ScyllaDB uses the Cassandra driver (already covered — NOTED, not re-added). Couchbase already done.
+    # Document/media -> Fs/Exec: docx4j (org.docx4j.openpackaging.packages.WordprocessingMLPackage.load(File)
+    #   /save(File) -> Fs, descriptor-gated; load(InputStream)/save(OutputStream) are caller-stream PURE anchors).
+    #   ffmpeg wrapper net.bramp.ffmpeg.FFmpeg.run(FFmpegBuilder) -> Exec (forks the ffmpeg binary). ZXing
+    #   MultiFormatWriter.encode / MultiFormatReader.decode -> PURE (in-memory barcode image math). Apache FOP
+    #   SKIPPED: its only testable leaf is FopFactory.newFop(mime, OutputStream) = a CALLER-STREAM pure anchor
+    #   (redundant with the many existing caller-stream anchors) AND it needs xmlgraphics-commons; noted.
+    # Templating -> Fs (loads a template FILE via the loader) / pure (in-memory string template):
+    #   Handlebars (com.github.jknack.handlebars.Handlebars.compile(String) -> Fs (loads via the TemplateLoader);
+    #     .compileInline(String) is in-memory -> PURE anchor). mustache.java
+    #     (com.github.mustachejava.DefaultMustacheFactory.compile(String) -> Fs (loads the named template file);
+    #     compile(Reader,name) is caller-stream -> PURE anchor). Pebble
+    #     (io.pebbletemplates.pebble.PebbleEngine.getTemplate(String) -> Fs; getLiteralTemplate(String) is
+    #     in-memory -> PURE anchor). JMustache (com.samskivert.mustache.Mustache$Compiler.compile(String) takes
+    #     a template TEXT string, NOT a filename -> PURE anchor — JMustache has no file-loading leaf).
+    # Email -> Net: SimpleJavaMail (org.simplejavamail.api.mailer.Mailer.sendMail(Email) -> opens an SMTP
+    #   transport; returns CompletableFuture (async) so Net|Unknown both PASS. The api.* types live in the
+    #   simplejavamail CORE-MODULE jar, not the impl jar.).
+    # ML/native -> Fs/Exec: ONNX Runtime (ai.onnxruntime.OrtEnvironment.createSession(String) -> Fs (loads the
+    #   model file off disk; createSession(byte[]) is in-memory -> PURE anchor); ai.onnxruntime.OrtSession.run
+    #   (Map) -> native inference, Exec|Unknown acceptable). Stanford CoreNLP (new
+    #   edu.stanford.nlp.pipeline.StanfordCoreNLP(String) -> Fs (loads serialized models off disk/classpath)).
+    #   DJL SKIPPED (heavy native engine tree).
+    # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2..13.
 )
 
 # (method, expected effect, params, body) — PASS iff candor reports the effect OR a disclosed Unknown.
@@ -1345,6 +1389,64 @@ EFFECT_CASES = [
     #   (String) descriptor can't be soundly gated to Fs (would fabricate on the in-memory case). Candor
     #   already discloses it INVISIBLE (the org.h2.mvstore package is κ-unknown → sound soft gap), so it is
     #   left accepted, not modeled.
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 14) ======================
+    # ---- Net (HTTP SERVER frameworks — .start()/.init() BINDS a listening socket = the clearest Net leaf) ----
+    # Javalin — start(int) binds the port.
+    ("javalinStart", "Net", "io.javalin.Javalin a", 'a.start(7000)'),
+    # Spark Java — init() binds the embedded Jetty server. (Spark.get is lazy route registration — pure anchor.)
+    ("sparkInit", "Net", "", 'spark.Spark.init()'),
+    # Undertow — start() binds the listeners.
+    ("undertowStart", "Net", "io.undertow.Undertow u", 'u.start()'),
+    # Eclipse Jetty SERVER — start() binds the connectors (call-site owner = org.eclipse.jetty.server.Server).
+    ("jettyServerStart", "Net", "org.eclipse.jetty.server.Server s", 's.start()'),
+
+    # ---- Net (Streaming — Kafka Streams start() consumes/produces over the broker socket) ----
+    ("kafkaStreamsStart", "Net", "org.apache.kafka.streams.KafkaStreams ks", 'ks.start()'),
+
+    # ---- Net (Apache Geode — Region.get/put hit a remote partition over the wire. Region<K,V> EXTENDS
+    #      ConcurrentMap, but the call-site owner with a Region-typed receiver is org.apache.geode.cache.Region,
+    #      so an owner-scoped rule is fabrication-safe; the batch-7 java.util.Map anchors still guard the JDK Map.) ----
+    ("geodeRegionGet", "Net", "org.apache.geode.cache.Region<String,String> r", 'String v = r.get("k")'),
+    ("geodeRegionPut", "Net", "org.apache.geode.cache.Region<String,String> r", 'String v = r.put("k","v")'),
+
+    # ---- Fs (docx4j — WordprocessingMLPackage.load(File) reads the .docx off disk; save(File) writes it.
+    #      The InputStream/OutputStream overloads are caller-stream PURE anchors below.) ----
+    ("docx4jLoadFile", "Fs", "File f",
+        'org.docx4j.openpackaging.packages.WordprocessingMLPackage p = org.docx4j.openpackaging.packages.WordprocessingMLPackage.load(f)'),
+    ("docx4jSaveFile", "Fs", "org.docx4j.openpackaging.packages.WordprocessingMLPackage p, File f", 'p.save(f)'),
+
+    # ---- Exec (ffmpeg wrapper — FFmpeg.run(FFmpegBuilder) forks the ffmpeg binary; Exec|Unknown both PASS) ----
+    ("ffmpegRun", "Exec", "net.bramp.ffmpeg.FFmpeg ff, net.bramp.ffmpeg.builder.FFmpegBuilder b", 'ff.run(b)'),
+
+    # ---- Fs (Templating — load a template FILE via the loader. The in-memory/caller-stream overloads are
+    #      PURE anchors below.) ----
+    # Handlebars compile(String) loads the named template via the TemplateLoader. (compileInline = in-memory anchor.)
+    ("handlebarsCompile", "Fs", "com.github.jknack.handlebars.Handlebars h",
+        'com.github.jknack.handlebars.Template t = h.compile("tmpl")'),
+    # mustache.java DefaultMustacheFactory.compile(String) loads the named template file. (compile(Reader,n)=anchor.)
+    ("mustacheCompile", "Fs", "com.github.mustachejava.DefaultMustacheFactory f",
+        'com.github.mustachejava.Mustache m = f.compile("t.mustache")'),
+    # Pebble getTemplate(String) loads+reads the template file. (getLiteralTemplate(String) = in-memory anchor.)
+    ("pebbleGetTemplate", "Fs", "io.pebbletemplates.pebble.PebbleEngine e",
+        'io.pebbletemplates.pebble.template.PebbleTemplate t = e.getTemplate("t.peb")'),
+
+    # ---- Net (SimpleJavaMail — Mailer.sendMail(Email) opens an SMTP transport; returns a CompletableFuture
+    #      (async) so Net|Unknown both PASS. Owner org.simplejavamail.api.mailer.Mailer.) ----
+    ("simpleJavaMailSend", "Net",
+        "org.simplejavamail.api.mailer.Mailer m, org.simplejavamail.api.email.Email e", 'm.sendMail(e)'),
+
+    # ---- Fs/Exec (ML/native) ----
+    # ONNX Runtime — OrtEnvironment.createSession(String) loads the model file off disk (Fs). createSession(byte[])
+    #   is in-memory -> PURE anchor below.
+    ("onnxCreateSessionFile", "Fs", "ai.onnxruntime.OrtEnvironment env, String path",
+        'ai.onnxruntime.OrtSession s = env.createSession(path)'),
+    # ONNX Runtime — OrtSession.run(Map) is native inference (JNI). Exec|Unknown acceptable; must NOT read pure.
+    ("onnxSessionRun", "Exec", "ai.onnxruntime.OrtSession s, java.util.Map<String,? extends ai.onnxruntime.OnnxTensorLike> in",
+        'ai.onnxruntime.OrtSession.Result r = s.run(in)'),
+    # Stanford CoreNLP — new StanfordCoreNLP(String) loads serialized models off disk/classpath -> Fs.
+    ("corenlpNew", "Fs", "",
+        'edu.stanford.nlp.pipeline.StanfordCoreNLP p = new edu.stanford.nlp.pipeline.StanfordCoreNLP("props")'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -1623,6 +1725,53 @@ PURE_CASES = [
     #   `invisible:[org.h2.mvstore]` here rather than fabricating — which reads pure (got==[]) for the anchor.
     ("mvstoreOpenMapPure",
         'org.h2.mvstore.MVMap<String,String> m = s.openMap("d")', "org.h2.mvstore.MVStore s"),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 14) — pure anchors ===============
+    # Javalin Context.result(String) is BUFFERED — it wraps the body into a ByteArrayInputStream (verified by
+    #   javap -c), no synchronous socket write. Must stay pure even after the server .start() leaves are modeled
+    #   Net (the wire happens in the request loop, not at result()).
+    ("javalinResultPure", 'c.result("hi")', "io.javalin.http.Context c"),
+    # Spark.get(path, Route) is LAZY route REGISTRATION (delegates to Service.get; the port binds at init(),
+    #   modeled Net above). The registration itself does no wire — must stay pure.
+    ("sparkGetPure", 'spark.Spark.get("/p", r)', "spark.Route r"),
+    # ZXing barcode encode/decode is in-memory image MATH — no I/O. Must stay pure.
+    ("zxingEncodePure",
+        'com.google.zxing.common.BitMatrix m = new com.google.zxing.MultiFormatWriter().encode("x", com.google.zxing.BarcodeFormat.QR_CODE, 100, 100)',
+        ""),
+    ("zxingDecodePure",
+        'com.google.zxing.Result res = new com.google.zxing.MultiFormatReader().decode(b)',
+        "com.google.zxing.BinaryBitmap b"),
+    # Handlebars compileInline(String) is in-memory (the template TEXT is the argument, no loader) — pure
+    #   (compile(String) above is the Fs leaf that loads via the TemplateLoader).
+    ("handlebarsCompileInlinePure",
+        'com.github.jknack.handlebars.Template t = h.compileInline("{{x}}")',
+        "com.github.jknack.handlebars.Handlebars h"),
+    # JMustache Compiler.compile(String) takes a template TEXT string (NOT a filename) — JMustache has no
+    #   file-loading leaf, so the compile is pure in-memory parsing. Must stay pure.
+    ("jmustacheCompilePure",
+        'com.samskivert.mustache.Template t = c.compile("Hello {{name}}")',
+        "com.samskivert.mustache.Mustache.Compiler c"),
+    # mustache.java compile(Reader, name) is CALLER-STREAM — the Reader's file open is the caller's `new
+    #   FileReader` (compile(String) above loads the file by name = the Fs leaf). Must stay pure.
+    ("mustacheCompileReaderPure",
+        'com.github.mustachejava.Mustache m = f.compile(rd, "name")',
+        "com.github.mustachejava.DefaultMustacheFactory f, Reader rd"),
+    # Pebble getLiteralTemplate(String) compiles the template TEXT in-memory (no loader read) — pure
+    #   (getTemplate(String) above is the Fs leaf).
+    ("pebbleLiteralTemplatePure",
+        'io.pebbletemplates.pebble.template.PebbleTemplate t = e.getLiteralTemplate("{{x}}")',
+        "io.pebbletemplates.pebble.PebbleEngine e"),
+    # docx4j load(InputStream)/save(OutputStream) are CALLER-STREAM — the file open is the caller's (load(File)
+    #   /save(File) above are the Fs leaves). Must stay pure.
+    ("docx4jLoadStreamPure",
+        'org.docx4j.openpackaging.packages.WordprocessingMLPackage p = org.docx4j.openpackaging.packages.WordprocessingMLPackage.load(in)',
+        "InputStream in"),
+    ("docx4jSaveStreamPure",
+        'p.save(os)', "org.docx4j.openpackaging.packages.WordprocessingMLPackage p, OutputStream os"),
+    # ONNX Runtime createSession(byte[]) loads the model from IN-MEMORY bytes — no disk read (createSession(String)
+    #   above is the Fs leaf). Must stay pure.
+    ("onnxCreateSessionBytesPure",
+        'ai.onnxruntime.OrtSession s = env.createSession(new byte[1])', "ai.onnxruntime.OrtEnvironment env"),
 ]
 
 
@@ -2016,6 +2165,37 @@ JARS = {
     "arangodb-core-7.7.1.jar": f"{_MVN}/com/arangodb/core/7.7.1/core-7.7.1.jar",
     # H2 (org.h2.mvstore.MVStore lives in the main h2 jar — native MVStore engine; JDBC is java.sql-covered).
     "h2-2.2.224.jar": f"{_MVN}/com/h2database/h2/2.2.224/h2-2.2.224.jar",
+    # --- added 2026-06-20 batch 14 ---
+    # HTTP SERVER frameworks (each self-contained for the .start()/.init() leaf — verified to compile against
+    #   their own + already-present deps; slf4j already present).
+    "javalin-6.1.6.jar": f"{_MVN}/io/javalin/javalin/6.1.6/javalin-6.1.6.jar",
+    "spark-core-2.9.4.jar": f"{_MVN}/com/sparkjava/spark-core/2.9.4/spark-core-2.9.4.jar",
+    "undertow-core-2.3.13.Final.jar": f"{_MVN}/io/undertow/undertow-core/2.3.13.Final/undertow-core-2.3.13.Final.jar",
+    # Eclipse Jetty SERVER (jetty-util/http/io already present from the batch-8 jetty-client).
+    "jetty-server-12.0.10.jar": f"{_MVN}/org/eclipse/jetty/jetty-server/12.0.10/jetty-server-12.0.10.jar",
+    # Streaming — Kafka Streams (kafka-clients already present).
+    "kafka-streams-3.7.1.jar": f"{_MVN}/org/apache/kafka/kafka-streams/3.7.1/kafka-streams-3.7.1.jar",
+    # Datastore/cache — Apache Geode (Region extends ConcurrentMap; owner-scoped rule fabrication-safe).
+    "geode-core-1.15.1.jar": f"{_MVN}/org/apache/geode/geode-core/1.15.1/geode-core-1.15.1.jar",
+    # Document — docx4j (core is self-contained for WordprocessingMLPackage.load/save).
+    "docx4j-core-11.4.11.jar": f"{_MVN}/org/docx4j/docx4j-core/11.4.11/docx4j-core-11.4.11.jar",
+    # Media — ffmpeg wrapper (commons-lang3 + gson already present supply its compile deps).
+    "ffmpeg-0.8.0.jar": f"{_MVN}/net/bramp/ffmpeg/ffmpeg/0.8.0/ffmpeg-0.8.0.jar",
+    # Media — ZXing core (in-memory barcode math = pure anchors).
+    "zxing-core-3.5.3.jar": f"{_MVN}/com/google/zxing/core/3.5.3/core-3.5.3.jar",
+    # Templating — Handlebars / mustache.java / Pebble / JMustache (slf4j already present).
+    "handlebars-4.4.0.jar": f"{_MVN}/com/github/jknack/handlebars/4.4.0/handlebars-4.4.0.jar",
+    "mustache-compiler-0.9.14.jar": f"{_MVN}/com/github/spullara/mustache/java/compiler/0.9.14/compiler-0.9.14.jar",
+    "pebble-3.2.2.jar": f"{_MVN}/io/pebbletemplates/pebble/3.2.2/pebble-3.2.2.jar",
+    "jmustache-1.16.jar": f"{_MVN}/com/samskivert/jmustache/1.16/jmustache-1.16.jar",
+    # Email — SimpleJavaMail (the api.* types live in the CORE-MODULE jar, not the impl jar).
+    "simplejavamail-core-module-8.11.3.jar": f"{_MVN}/org/simplejavamail/core-module/8.11.3/core-module-8.11.3.jar",
+    # ML/native — ONNX Runtime (94 MB single self-contained jar; native libs bundled — see report note) +
+    #   Stanford CoreNLP (8.5 MB, self-contained for the StanfordCoreNLP(String) model-loading ctor).
+    "onnxruntime-1.18.0.jar": f"{_MVN}/com/microsoft/onnxruntime/onnxruntime/1.18.0/onnxruntime-1.18.0.jar",
+    "stanford-corenlp-4.5.7.jar": f"{_MVN}/edu/stanford/nlp/stanford-corenlp/4.5.7/stanford-corenlp-4.5.7.jar",
+    # SKIPPED: Apache FOP — only testable leaf is FopFactory.newFop(mime, OutputStream) = a caller-stream pure
+    #   anchor (redundant) and it needs xmlgraphics-commons; noted, not added. Ratpack / DJL skipped (heavy trees).
 }
 
 

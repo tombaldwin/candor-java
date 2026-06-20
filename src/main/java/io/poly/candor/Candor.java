@@ -5205,6 +5205,41 @@ public class Candor {
         if (owner.equals("ai.onnxruntime.OrtSession") && method.equals("run")) return "Unknown";
         // Stanford CoreNLP — the pipeline ctor loads serialized models off disk/classpath → Fs.
         if (owner.equals("edu.stanford.nlp.pipeline.StanfordCoreNLP") && method.equals("<init>")) return "Fs";
+        // ── jakarta/javax EE WEB surfaces (batch 17) — κ-covered prefixes, so unmodeled = FLOOR-DROPPED
+        //    silent. These are the most common server-side APIs in the JVM; a controller writing an HTTP
+        //    response / a JAX-RS client call / a websocket push all read silent-pure without these rules. ──
+        // Servlet response → Net (sends bytes to the client). sendError/sendRedirect/flushBuffer commit the
+        // response; getWriter/getOutputStream obtain the client sink (the only attachable point — the writes
+        // go through generic java.io the engine can't pin to Net). PURE siblings NOT touched: setStatus/
+        // setHeader/addHeader/setContentType (in-memory header buffer), ServletRequest.getParameter.
+        if ((owner.equals("jakarta.servlet.ServletResponse") || owner.equals("javax.servlet.ServletResponse")
+                || owner.equals("jakarta.servlet.http.HttpServletResponse")
+                || owner.equals("javax.servlet.http.HttpServletResponse"))
+                && (method.equals("sendError") || method.equals("sendRedirect") || method.equals("flushBuffer")
+                    || method.equals("getWriter") || method.equals("getOutputStream"))) return "Net";
+        // JAX-RS client — the SyncInvoker terminal (get/post/put/delete/method) does the HTTP round-trip →
+        // Net. PURE builders NOT touched: Client.target / WebTarget.request / WebTarget.path.
+        if ((owner.equals("jakarta.ws.rs.client.SyncInvoker") || owner.equals("javax.ws.rs.client.SyncInvoker")
+                || owner.equals("jakarta.ws.rs.client.Invocation$Builder")
+                || owner.equals("javax.ws.rs.client.Invocation$Builder"))
+                && (method.equals("get") || method.equals("post") || method.equals("put")
+                    || method.equals("delete") || method.equals("method") || method.equals("head")
+                    || method.equals("options") || method.equals("trace"))) return "Net";
+        // WebSocket RemoteEndpoint — send* pushes a frame over the socket → Net. PURE accessor NOT touched:
+        // Session.getBasicRemote/getAsyncRemote (return the endpoint).
+        if ((owner.equals("jakarta.websocket.RemoteEndpoint$Basic") || owner.equals("javax.websocket.RemoteEndpoint$Basic")
+                || owner.equals("jakarta.websocket.RemoteEndpoint$Async") || owner.equals("javax.websocket.RemoteEndpoint$Async"))
+                && (method.equals("sendText") || method.equals("sendBinary") || method.equals("sendObject")
+                    || method.equals("sendPing") || method.equals("sendPong"))) return "Net";
+        // JAXB — Marshaller.marshal(File)/Unmarshaller.unmarshal(File) touch disk → Fs; unmarshal(URL) → Net
+        // (descriptor-gated; the OutputStream/Writer/InputStream overloads are caller-stream → pure).
+        if ((owner.equals("jakarta.xml.bind.Marshaller") || owner.equals("javax.xml.bind.Marshaller"))
+                && method.equals("marshal") && desc != null && desc.contains("Ljava/io/File;")) return "Fs";
+        if ((owner.equals("jakarta.xml.bind.Unmarshaller") || owner.equals("javax.xml.bind.Unmarshaller"))
+                && method.equals("unmarshal") && desc != null) {
+            if (desc.startsWith("(Ljava/io/File;")) return "Fs";
+            if (desc.startsWith("(Ljava/net/URL;")) return "Net";
+        }
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation
@@ -5648,7 +5683,11 @@ public class Candor {
                     || method.equals("commit") || method.equals("rollback") || method.equals("setAutoCommit")
                     // setSavepoint/releaseSavepoint issue a real server command (SAVEPOINT/RELEASE), the
                     // same transaction-control round-trip as commit — batch-16 FLOOR-suppressed silent.
-                    || method.equals("setSavepoint") || method.equals("releaseSavepoint")))
+                    || method.equals("setSavepoint") || method.equals("releaseSavepoint")
+                    // setTransactionIsolation commonly issues SET TRANSACTION ISOLATION LEVEL at the server
+                    // (batch-17). (nativeSQL is spec-defined LOCAL string translation → left unmodeled, no
+                    // fabrication on the common local case.)
+                    || method.equals("setTransactionIsolation")))
             return "Db";
         // java.sql.Driver.connect opens the physical connection (the layer under DriverManager) — silent-pure
         // for code that bypasses DriverManager and calls a Driver directly (pool internals, custom routing).

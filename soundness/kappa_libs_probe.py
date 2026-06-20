@@ -1517,6 +1517,71 @@ EFFECT_CASES = [
     ("jmsSessionCommit",   "Net", "jakarta.jms.Session s", 's.commit()'),
     ("jmsSessionRollback", "Net", "jakarta.jms.Session s", 's.rollback()'),
     ("jmsCtxCommit",       "Net", "jakarta.jms.JMSContext c", 'c.commit()'),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 17) ======================
+    # JAKARTA/JAVAX EE WEB SURFACES (servlet, JAX-RS client, websocket) + JAXB + JDK residual tails.
+    # These are κ-COVERED prefixes (jakarta.*/javax.*/java.*), so an UNMODELED effectful member is
+    # FLOOR-DROPPED silent (absent from the report, no `invisible` disclosure) = the cardinal sin.
+    # These are the MOST COMMON server-side EE surfaces, so a floor-suppressed leaf here is high-value.
+    # --- jakarta.servlet HttpServletResponse → Net: the server writes an HTTP response to the client
+    #     socket. sendError/sendRedirect/flushBuffer are the CLEAR Net leaves (they commit bytes to the
+    #     socket). getWriter/getOutputStream just OBTAIN the sink (the write happens on the returned
+    #     PrintWriter/ServletOutputStream — tested separately as obtain-leaves; OUTSIDE-stream class).
+    ("servletSendError",    "Net", "jakarta.servlet.http.HttpServletResponse r", 'r.sendError(500)'),
+    ("servletSendErrorMsg", "Net", "jakarta.servlet.http.HttpServletResponse r", 'r.sendError(404, "x")'),
+    ("servletSendRedirect", "Net", "jakarta.servlet.http.HttpServletResponse r", 'r.sendRedirect("/x")'),
+    ("servletFlushBuffer",  "Net", "jakarta.servlet.ServletResponse r", 'r.flushBuffer()'),
+    # getWriter/getOutputStream OBTAIN the socket sink (lazy — the write is on the returned object). Net or
+    # Unknown both PASS; if pure it is documented (obtain-vs-write ambiguity, like the abstract-Reader class).
+    ("servletGetWriter",       "Net", "jakarta.servlet.ServletResponse r", 'java.io.PrintWriter w = r.getWriter()'),
+    ("servletGetOutputStream", "Net", "jakarta.servlet.ServletResponse r", 'jakarta.servlet.ServletOutputStream o = r.getOutputStream()'),
+    # legacy javax.servlet (Tomcat 9 / older Spring) — same Net leaves, javax.* covered prefix.
+    ("javaxServletSendError",    "Net", "javax.servlet.http.HttpServletResponse r", 'r.sendError(500)'),
+    ("javaxServletSendRedirect", "Net", "javax.servlet.http.HttpServletResponse r", 'r.sendRedirect("/x")'),
+    ("javaxServletFlushBuffer",  "Net", "javax.servlet.ServletResponse r", 'r.flushBuffer()'),
+
+    # --- jakarta.ws.rs.client JAX-RS SyncInvoker → Net: the terminal HTTP call. get/post/put/delete on
+    #     Invocation.Builder (which extends SyncInvoker) do the round-trip. Client.target()/WebTarget.request()
+    #     are pure builders (anchored below). Owner of the call instruction is the static receiver type.
+    ("jaxrsGet",    "Net", "jakarta.ws.rs.client.Invocation.Builder b", 'jakarta.ws.rs.core.Response r = b.get()'),
+    ("jaxrsPost",   "Net", "jakarta.ws.rs.client.Invocation.Builder b, jakarta.ws.rs.client.Entity<?> e", 'jakarta.ws.rs.core.Response r = b.post(e)'),
+    ("jaxrsDelete", "Net", "jakarta.ws.rs.client.Invocation.Builder b", 'jakarta.ws.rs.core.Response r = b.delete()'),
+    # the full fluent chain client.target(..).request().get() — the get() owner is Invocation$Builder.
+    ("jaxrsTargetRequestGet", "Net", "jakarta.ws.rs.client.Client c",
+        'jakarta.ws.rs.core.Response r = c.target("http://h/").request().get()'),
+
+    # --- jakarta.websocket RemoteEndpoint → Net: sends a frame over the websocket TCP connection.
+    #     Basic.sendText/sendBinary/sendObject (blocking) and Async.sendText (returns Future) all hit the wire.
+    ("wsBasicSendText",   "Net", "jakarta.websocket.RemoteEndpoint.Basic e", 'e.sendText("x")'),
+    ("wsBasicSendBinary", "Net", "jakarta.websocket.RemoteEndpoint.Basic e, java.nio.ByteBuffer b", 'e.sendBinary(b)'),
+    ("wsBasicSendObject", "Net", "jakarta.websocket.RemoteEndpoint.Basic e, Object o", 'e.sendObject(o)'),
+    ("wsAsyncSendText",   "Net", "jakarta.websocket.RemoteEndpoint.Async e",
+        'java.util.concurrent.Future<Void> f = e.sendText("x")'),
+    # the Session.getBasicRemote().sendText(..) chain — sendText owner is RemoteEndpoint$Basic.
+    ("wsSessionSendText", "Net", "jakarta.websocket.Session s", 's.getBasicRemote().sendText("x")'),
+
+    # --- jakarta.xml.bind JAXB → Fs (descriptor-gated File overload reads/writes a file off disk). The
+    #     OutputStream/Writer/Result overloads are caller-stream PURE anchors (below).
+    ("jaxbMarshalFile",   "Fs", "jakarta.xml.bind.Marshaller m, Object o, File f", 'm.marshal(o, f)'),
+    ("jaxbUnmarshalFile", "Fs", "jakarta.xml.bind.Unmarshaller u, File f", 'Object o = u.unmarshal(f)'),
+    # Unmarshaller.unmarshal(URL) fetches over the network → Net.
+    ("jaxbUnmarshalUrl",  "Net", "jakarta.xml.bind.Unmarshaller u, java.net.URL url", 'Object o = u.unmarshal(url)'),
+
+    # --- JDK residual tails (low-value, complete the surface) ---
+    # java.sql.Connection.setTransactionIsolation commonly issues SET TRANSACTION ISOLATION LEVEL at the
+    #   server → Db (modeled batch-17). NOTE: Connection.nativeSQL is spec-defined LOCAL string translation
+    #   (JDBC: "Converts the given SQL statement into the system's native SQL grammar") so it is left
+    #   UNMODELED/accepted-floored — modeling Db would fabricate on the common local-translation case.
+    ("connSetTxIsolation",   "Db", "java.sql.Connection c", 'c.setTransactionIsolation(2)'),
+    # java.net.Socket.connect/bind opens/binds a TCP socket → Net. (VERIFY modeled — likely is.)
+    ("socketConnect", "Net", "java.net.Socket s, java.net.SocketAddress a", 's.connect(a)'),
+    ("socketBind",    "Net", "java.net.Socket s, java.net.SocketAddress a", 's.bind(a)'),
+    # java.net.DatagramSocket.connect/send → Net (UDP datagrams over the wire).
+    ("datagramConnect", "Net", "java.net.DatagramSocket s, java.net.SocketAddress a", 's.connect(a)'),
+    ("datagramSend",    "Net", "java.net.DatagramSocket s, java.net.DatagramPacket p", 's.send(p)'),
+    # java.lang.Process.waitFor/destroy — manages a spawned native process → Exec. (VERIFY modeled.)
+    ("processWaitFor", "Exec", "Process p", 'int rc = p.waitFor()'),
+    ("processDestroy", "Exec", "Process p", 'p.destroy()'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -1868,6 +1933,36 @@ PURE_CASES = [
     # java.net.URLClassLoader constructor just STORES the URL[] (no I/O until a findClass/findResource); pure.
     ("urlClassLoaderCtorPure",
         "java.net.URLClassLoader cl = new java.net.URLClassLoader(u)", "java.net.URL[] u"),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 17) — pure anchors ===============
+    # --- jakarta.servlet PURE config setters: setStatus/setHeader/addHeader/setContentType only mutate the
+    #     in-memory response HEADER buffer (they do NOT commit to the socket until flush/write). Must NOT be
+    #     fabricated Net when sendError/sendRedirect/flushBuffer get modeled. (HIGH fabrication risk — these
+    #     are extremely common and sit right next to the Net leaves.)
+    ("servletSetStatusPure",      "r.setStatus(200)",                  "jakarta.servlet.http.HttpServletResponse r"),
+    ("servletSetHeaderPure",      "r.setHeader(\"X\", \"y\")",          "jakarta.servlet.http.HttpServletResponse r"),
+    ("servletAddHeaderPure",      "r.addHeader(\"X\", \"y\")",          "jakarta.servlet.http.HttpServletResponse r"),
+    ("servletSetContentTypePure", "r.setContentType(\"text/plain\")",  "jakarta.servlet.ServletResponse r"),
+    # ServletRequest.getParameter reads an ALREADY-PARSED query/form param from memory (the body was read by
+    #   the container before the handler ran) — no socket read at this call. Must stay pure (no Net fab).
+    ("servletGetParameterPure",   "String s = r.getParameter(\"q\")",  "jakarta.servlet.ServletRequest r"),
+
+    # --- JAX-RS PURE builders: Client.target() and WebTarget.request()/path() are fluent builders — they
+    #     construct the request locally, no wire until the SyncInvoker get/post terminal. Must stay pure.
+    ("jaxrsTargetPure",  "jakarta.ws.rs.client.WebTarget t = c.target(\"http://h/\")", "jakarta.ws.rs.client.Client c"),
+    ("jaxrsRequestPure", "jakarta.ws.rs.client.Invocation.Builder b = t.request()",    "jakarta.ws.rs.client.WebTarget t"),
+    ("jaxrsPathPure",    "jakarta.ws.rs.client.WebTarget t2 = t.path(\"x\")",          "jakarta.ws.rs.client.WebTarget t"),
+
+    # --- websocket Session.getBasicRemote()/getAsyncRemote() are pure ACCESSORS (return the endpoint object;
+    #     the wire send is on the returned RemoteEndpoint). Must stay pure.
+    ("wsGetBasicRemotePure", "jakarta.websocket.RemoteEndpoint.Basic e = s.getBasicRemote()", "jakarta.websocket.Session s"),
+
+    # --- JAXB caller-stream overloads: marshal(obj, OutputStream)/marshal(obj, Writer) write to a
+    #     caller-supplied sink (the file open is the caller's) — pure, like the SnakeYAML/Kryo stream anchors.
+    #     (The File overload above is the Fs leaf.) JAXBContext.newInstance is also a pure factory.
+    ("jaxbMarshalStreamPure", "m.marshal(o, os)", "jakarta.xml.bind.Marshaller m, Object o, OutputStream os"),
+    ("jaxbMarshalWriterPure", "m.marshal(o, w)",  "jakarta.xml.bind.Marshaller m, Object o, Writer w"),
+    ("jaxbUnmarshalStreamPure", "Object o = u.unmarshal(in)", "jakarta.xml.bind.Unmarshaller u, InputStream in"),
 ]
 
 
@@ -1897,6 +1992,13 @@ JARS = {
     "poi-5.2.5.jar": f"{_MVN}/org/apache/poi/poi/5.2.5/poi-5.2.5.jar",
     "poi-ooxml-5.2.5.jar": f"{_MVN}/org/apache/poi/poi-ooxml/5.2.5/poi-ooxml-5.2.5.jar",
     "jakarta.persistence-api-3.1.0.jar": f"{_MVN}/jakarta/persistence/jakarta.persistence-api/3.1.0/jakarta.persistence-api-3.1.0.jar",
+    # --- added 2026-06-20 batch 17: jakarta/javax EE web surfaces + JAXB ---
+    "jakarta.servlet-api-6.0.0.jar": f"{_MVN}/jakarta/servlet/jakarta.servlet-api/6.0.0/jakarta.servlet-api-6.0.0.jar",
+    "javax.servlet-api-4.0.1.jar": f"{_MVN}/javax/servlet/javax.servlet-api/4.0.1/javax.servlet-api-4.0.1.jar",
+    # jakarta.ws.rs-api-3.1.0.jar already declared below (Keycloak/Mailgun batches) — reused here.
+    "jakarta.websocket-api-2.1.0.jar": f"{_MVN}/jakarta/websocket/jakarta.websocket-api/2.1.0/jakarta.websocket-api-2.1.0.jar",
+    "jakarta.websocket-client-api-2.1.0.jar": f"{_MVN}/jakarta/websocket/jakarta.websocket-client-api/2.1.0/jakarta.websocket-client-api-2.1.0.jar",
+    "jakarta.xml.bind-api-4.0.2.jar": f"{_MVN}/jakarta/xml/bind/jakarta.xml.bind-api/4.0.2/jakarta.xml.bind-api-4.0.2.jar",
     "mongodb-driver-sync-5.1.1.jar": f"{_MVN}/org/mongodb/mongodb-driver-sync/5.1.1/mongodb-driver-sync-5.1.1.jar",
     "mongodb-driver-core-5.1.1.jar": f"{_MVN}/org/mongodb/mongodb-driver-core/5.1.1/mongodb-driver-core-5.1.1.jar",
     "bson-5.1.1.jar": f"{_MVN}/org/mongodb/bson/5.1.1/bson-5.1.1.jar",

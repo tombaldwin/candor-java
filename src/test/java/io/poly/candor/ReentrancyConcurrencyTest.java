@@ -107,4 +107,49 @@ class ReentrancyConcurrencyTest {
         rm(pure);
         assertTrue(failures.isEmpty(), "concurrent scans clobbered each other:\n  " + String.join("\n  ", failures));
     }
+
+    /** The `--parallel` path: scanning targets concurrently (each runScan + writeJson on its own thread)
+     *  must produce reports byte-identical to a sequential standalone scan of each. */
+    @Test
+    void parallelScansWriteReportsIdenticalToSequential() throws Exception {
+        Path net = compile(Map.of("app/Netter.java",
+                "package app; public class Netter { public void hit(){ try { new java.net.Socket(\"h\",80).close(); }"
+                        + " catch(Exception e){} } }"));
+        Path fs = compile(Map.of("app/Filer.java",
+                "package app; import java.io.*; public class Filer { public void w() throws IOException {"
+                        + " new FileOutputStream(\"/tmp/x\").close(); } }"));
+        Path dir = Files.createTempDirectory("candor-par");
+
+        // Sequential baseline (on this thread), each its own report.
+        ReportWriter.writeJson(Candor.runScan(net), dir.resolve("seq-net.json").toString());
+        ReportWriter.writeJson(Candor.runScan(fs), dir.resolve("seq-fs.json").toString());
+
+        // Concurrent: each target runScan + writeJson on its own worker thread (own thread-local context).
+        List<String> failures = new CopyOnWriteArrayList<>();
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch start = new CountDownLatch(1);
+        for (var e : Map.of(net, "par-net.json", fs, "par-fs.json").entrySet()) {
+            pool.submit(() -> {
+                try {
+                    start.await();
+                    ReportWriter.writeJson(Candor.runScan(e.getKey()), dir.resolve(e.getValue()).toString());
+                } catch (Throwable t) {
+                    failures.add(e.getValue() + ": " + t);
+                }
+            });
+        }
+        start.countDown();
+        pool.shutdown();
+        assertTrue(pool.awaitTermination(60, TimeUnit.SECONDS), "parallel scans did not finish");
+        assertTrue(failures.isEmpty(), "parallel scan failed:\n  " + String.join("\n  ", failures));
+
+        assertEquals(Files.readString(dir.resolve("seq-net.json")), Files.readString(dir.resolve("par-net.json")),
+                "parallel net report must be byte-identical to sequential");
+        assertEquals(Files.readString(dir.resolve("seq-fs.json")), Files.readString(dir.resolve("par-fs.json")),
+                "parallel fs report must be byte-identical to sequential");
+
+        rm(net);
+        rm(fs);
+        rm(dir);
+    }
 }

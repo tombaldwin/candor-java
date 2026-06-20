@@ -5536,6 +5536,11 @@ public class Candor {
                     && method.equals("send"))
                 || ((owner.equals("javax.jms.MessageConsumer") || owner.equals("jakarta.jms.MessageConsumer"))
                     && (method.equals("receive") || method.startsWith("receive")))
+                // JMS transacted-session commit/rollback flush produced msgs + ack consumed ones to the
+                // broker (a wire round-trip); recover redelivers. The transaction TERMINAL (batch-16 silent).
+                || ((owner.equals("javax.jms.Session") || owner.equals("jakarta.jms.Session")
+                        || owner.equals("javax.jms.JMSContext") || owner.equals("jakarta.jms.JMSContext"))
+                    && (method.equals("commit") || method.equals("rollback") || method.equals("recover")))
                 // RabbitMQ AMQP wire
                 || (owner.equals("com.rabbitmq.client.Channel")
                     && (method.equals("basicPublish") || method.equals("basicGet") || method.equals("basicConsume")))
@@ -5640,7 +5645,10 @@ public class Candor {
                     || method.equals("isValid")
                     // commit/rollback finalize the transaction at the server (a real round-trip);
                     // setAutoCommit(false) begins one — all DB I/O the execute*-only gate missed.
-                    || method.equals("commit") || method.equals("rollback") || method.equals("setAutoCommit")))
+                    || method.equals("commit") || method.equals("rollback") || method.equals("setAutoCommit")
+                    // setSavepoint/releaseSavepoint issue a real server command (SAVEPOINT/RELEASE), the
+                    // same transaction-control round-trip as commit — batch-16 FLOOR-suppressed silent.
+                    || method.equals("setSavepoint") || method.equals("releaseSavepoint")))
             return "Db";
         // java.sql.Driver.connect opens the physical connection (the layer under DriverManager) — silent-pure
         // for code that bypasses DriverManager and calls a Driver directly (pool internals, custom routing).
@@ -5698,6 +5706,11 @@ public class Candor {
                     || method.equals("merge") || method.equals("remove") || method.equals("refresh")
                     || method.equals("flush") || method.equals("lock")))
             return "Db";
+        // JPA EntityTransaction.commit FLUSHES the persistence context to the DB (the buffered INSERT/UPDATE/
+        // DELETE + COMMIT) and rollback issues ROLLBACK — the transaction TERMINAL where writes durably land
+        // (em.getTransaction().commit() is a ubiquitous idiom). Was FLOOR-suppressed silent (batch-16).
+        if ((owner.equals("jakarta.persistence.EntityTransaction") || owner.equals("javax.persistence.EntityTransaction"))
+                && (method.equals("commit") || method.equals("rollback"))) return "Db";
         // JPA query EXECUTION verbs — `em.createQuery(hql)` is a pure BUILDER (above), but the round-trip is
         // on the returned Query/TypedQuery/StoredProcedureQuery. Without classifying these, the whole JPA
         // query path (createQuery + getResultList in one method) read pure (Unknown if unpinned, fully

@@ -1788,6 +1788,87 @@ EFFECT_CASES = [
     #      overload is caller-stream -> PURE anchor below.) ----
     ("metadataExtractorReadFile", "Fs", "File f",
         'com.drew.metadata.Metadata m = com.drew.imaging.ImageMetadataReader.readMetadata(f)'),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 21) — SaaS/cloud SDK PRECISION ============
+    # FOCUS (same vein as batch 20): 3rd-party NON-κ-covered SaaS/cloud SDK leaves currently disclosed
+    #   INVISIBLE (sound: inferred=[] + invisible:[pkg]) that can be UPGRADED to a concrete effect — almost
+    #   all Net (the OSS/COS/Stripe archetype: a wire object-store / REST API terminal). NOT cardinal sins
+    #   (candor is already honest via the per-fn `invisible` disclosure); this is precision/usability. Each
+    #   leaf VERIFIED via javap to actually do the wire op (declares IOException / a per-SDK *Exception that
+    #   wraps the HTTP, or returns an okhttp3.Response). Fluent builders / factories / in-memory crypto are
+    #   anchored PURE in PURE_CASES (NOT modeled — fabrication risk).
+    #
+    # ---- Net (Razorpay — the *Client.create/fetch verbs extend com.razorpay.ApiClient and bottom out in
+    #      ApiClient.get/post (which throw RazorpayException and POST via ApiUtils->OkHttp). Owner is the
+    #      concrete client (OrderClient/PaymentClient). org.json.JSONObject is the request param type — the
+    #      org.json jar is on the classpath only for compile.) ----
+    ("razorpayOrderCreate", "Net", "com.razorpay.OrderClient c, org.json.JSONObject req",
+        'com.razorpay.Order o = c.create(req)'),
+    ("razorpayPaymentFetch", "Net", "com.razorpay.PaymentClient c",
+        'com.razorpay.Payment p = c.fetch("pay_x")'),
+
+    # ---- Net (Adyen — PaymentsApi.payments(PaymentRequest) declares ApiException AND java.io.IOException;
+    #      it POSTs to the Adyen Checkout API. Owner com.adyen.service.checkout.PaymentsApi.) ----
+    ("adyenPayments", "Net", "com.adyen.service.checkout.PaymentsApi api, com.adyen.model.checkout.PaymentRequest req",
+        'com.adyen.model.checkout.PaymentResponse r = api.payments(req)'),
+
+    # ---- Net (Vonage — SmsClient.submitMessage / MessagesClient.sendMessage POST to the Vonage API; they
+    #      throw VonageClientException/VonageResponseParseException, which wrap the HTTP round-trip. Owners
+    #      com.vonage.client.sms.SmsClient / com.vonage.client.messages.MessagesClient.) ----
+    ("vonageSmsSubmit", "Net", "com.vonage.client.sms.SmsClient c, com.vonage.client.sms.messages.Message m",
+        'com.vonage.client.sms.SmsSubmissionResponse r = c.submitMessage(m)'),
+    ("vonageMessageSend", "Net",
+        "com.vonage.client.messages.MessagesClient c, com.vonage.client.messages.MessageRequest req",
+        'com.vonage.client.messages.MessageResponse r = c.sendMessage(req)'),
+
+    # ---- Net (Backblaze B2 — B2StorageClient.uploadSmallFile/downloadById/getFileInfo throw B2Exception
+    #      and round-trip to the B2 object store over HTTP. Owner com.backblaze.b2.client.B2StorageClient.
+    #      Object-store I/O is fundamentally Net (the local file is incidental), like S3/OSS/COS.) ----
+    ("b2UploadSmallFile", "Net",
+        "com.backblaze.b2.client.B2StorageClient c, com.backblaze.b2.client.structures.B2UploadFileRequest req",
+        'com.backblaze.b2.client.structures.B2FileVersion v = c.uploadSmallFile(req)'),
+    ("b2DownloadById", "Net",
+        "com.backblaze.b2.client.B2StorageClient c, com.backblaze.b2.client.contentHandlers.B2ContentSink sink",
+        'c.downloadById("file-id", sink)'),
+
+    # ---- Net (Cloudinary — Uploader.upload(Object, Map) throws java.io.IOException; it POSTs the asset to
+    #      the Cloudinary API (a wire object store). Owner com.cloudinary.Uploader. cloudinary.uploader()
+    #      and the Cloudinary ctor are PURE factory/config anchors.) ----
+    ("cloudinaryUpload", "Net", "com.cloudinary.Uploader up, java.util.Map opts",
+        'java.util.Map r = up.upload("http://h/x.png", opts)'),
+
+    # ---- Net (Meilisearch — Index.search/addDocuments + Client.index throw MeilisearchException; each is an
+    #      HTTP round-trip to the Meilisearch server. Owners com.meilisearch.sdk.Index / Client.) ----
+    ("meiliSearch", "Net", "com.meilisearch.sdk.Index ix",
+        'com.meilisearch.sdk.model.SearchResult r = ix.search("q")'),
+    ("meiliAddDocuments", "Net", "com.meilisearch.sdk.Index ix",
+        'com.meilisearch.sdk.model.TaskInfo t = ix.addDocuments("[]")'),
+
+    # ---- Net (Mixpanel — MixpanelAPI.sendMessage/deliver declare java.io.IOException; they POST the event
+    #      batch to the Mixpanel ingestion endpoint. Owner com.mixpanel.mixpanelapi.MixpanelAPI. The ctor and
+    #      MessageBuilder event construction are PURE anchors (in-memory JSON build).) ----
+    ("mixpanelSendMessage", "Net", "com.mixpanel.mixpanelapi.MixpanelAPI api, org.json.JSONObject msg",
+        'api.sendMessage(msg)'),
+    ("mixpanelDeliver", "Net",
+        "com.mixpanel.mixpanelapi.MixpanelAPI api, com.mixpanel.mixpanelapi.ClientDelivery d",
+        'api.deliver(d)'),
+
+    # ---- Net (Algolia v4 — SearchClient.saveObject/searchSingleIndex hit the Algolia API over HTTP. They
+    #      throw AlgoliaRuntimeException (unchecked) but unambiguously do the wire op — the sibling
+    #      *WithHTTPInfo verbs return okhttp3.Response, confirming the OkHttp round-trip. Owner
+    #      com.algolia.api.SearchClient.) ----
+    ("algoliaSaveObject", "Net", "com.algolia.api.SearchClient c",
+        'com.algolia.model.search.SaveObjectResponse r = c.saveObject("idx", new Object())'),
+    ("algoliaSearchSingleIndex", "Net",
+        "com.algolia.api.SearchClient c, com.algolia.model.search.SearchParams p",
+        'com.algolia.model.search.SearchResponse<Object> r = c.searchSingleIndex("idx", p, Object.class)'),
+
+    # ---- Net (Contentful — the FLUENT terminal `client.fetch(T.class).all()` / `.one(id)` does the
+    #      synchronous HTTP fetch from the Contentful CDA. The call-site owner of all()/one() is
+    #      com.contentful.java.cda.FetchQuery (fetch() itself is a pure DSL accessor -> anchor). all() blocks
+    #      on the wire (the async variants take a CDACallback) -> Net; Unknown also PASS.) ----
+    ("contentfulFetchAll", "Net", "com.contentful.java.cda.FetchQuery<com.contentful.java.cda.CDAEntry> q",
+        'com.contentful.java.cda.CDAArray a = q.all()'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -2293,6 +2374,36 @@ PURE_CASES = [
         "reactor.core.publisher.Flux<String> r = f.map(x -> x)", "reactor.core.publisher.Flux<String> f"),
     ("reactorMonoMapPure",
         "reactor.core.publisher.Mono<String> r = m.map(x -> x)", "reactor.core.publisher.Mono<String> m"),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 21) — pure anchors ===============
+    # java-jwt (com.auth0.jwt) is LOCAL crypto — JWT.create()/decode() and Builder.sign(Algorithm) sign/verify
+    #   in memory (HMAC/RSA over byte arrays); they touch NO socket. decode throws only JWTDecodeException;
+    #   sign throws only IllegalArgumentException/JWTCreationException — NO IOException. Modeling Net here would
+    #   fabricate on every token op. These pin them PURE (a future κ widening for auth0.* must keep them pure).
+    ("jwtCreatePure", "com.auth0.jwt.JWTCreator.Builder b = com.auth0.jwt.JWT.create()", ""),
+    ("jwtDecodePure", "com.auth0.jwt.interfaces.DecodedJWT d = com.auth0.jwt.JWT.decode(\"a.b.c\")", ""),
+    ("jwtSignPure", "String s = b.sign(alg)",
+        "com.auth0.jwt.JWTCreator.Builder b, com.auth0.jwt.algorithms.Algorithm alg"),
+    # Cloudinary factory/config — cloudinary.uploader() returns the Uploader (no wire) and the Cloudinary ctor
+    #   just parses the config URL (no network). The wire leaf is Uploader.upload (modeled Net above).
+    ("cloudinaryUploaderPure", "com.cloudinary.Uploader up = c.uploader()", "com.cloudinary.Cloudinary c"),
+    ("cloudinaryCtorPure", "com.cloudinary.Cloudinary c = new com.cloudinary.Cloudinary(\"cloudinary://k:s@cloud\")", ""),
+    # Mixpanel MessageBuilder.event(...) builds an in-memory JSONObject (no I/O); the MixpanelAPI ctor sets up
+    #   endpoints (no wire). The wire leaf is MixpanelAPI.sendMessage/deliver (modeled Net above).
+    ("mixpanelEventBuildPure",
+        "org.json.JSONObject ev = mb.event(\"id\", \"Signup\", new org.json.JSONObject())",
+        "com.mixpanel.mixpanelapi.MessageBuilder mb"),
+    ("mixpanelApiCtorPure",
+        "com.mixpanel.mixpanelapi.MixpanelAPI api = new com.mixpanel.mixpanelapi.MixpanelAPI()", ""),
+    # Contentful client.fetch(T.class) is a pure DSL accessor — it returns a FetchQuery builder, no wire until
+    #   the .all()/.one() terminal (modeled Net above). Must stay pure.
+    ("contentfulFetchAccessorPure",
+        "com.contentful.java.cda.FetchQuery<com.contentful.java.cda.CDAEntry> q = c.fetch(com.contentful.java.cda.CDAEntry.class)",
+        "com.contentful.java.cda.CDAClient c"),
+    # Meilisearch Client.index(uid) is a PURE navigator — javap of the SDK body shows `new Index(); setConfig`
+    # (NO wire), despite declaring `throws MeilisearchException`. The real Net leaf is Client.createIndex /
+    # Index.search/addDocuments. (Lesson: a declared exception != an effect — javap the BODY, not the signature.)
+    ("meiliClientIndexPure", "com.meilisearch.sdk.Index ix = cl.index(\"movies\")", "com.meilisearch.sdk.Client cl"),
 ]
 
 
@@ -2772,6 +2883,27 @@ JARS = {
     "lz4-java-1.8.0.jar": f"{_MVN}/org/lz4/lz4-java/1.8.0/lz4-java-1.8.0.jar",
     "graphql-java-22.1.jar": f"{_MVN}/com/graphql-java/graphql-java/22.1/graphql-java-22.1.jar",
     "rxjava-3.1.8.jar": f"{_MVN}/io/reactivex/rxjava3/rxjava/3.1.8/rxjava-3.1.8.jar",
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 21) — SaaS/cloud SDK PRECISION sweep ======
+    # SaaS payments / comms / regional-cloud-storage / search-analytics SDKs currently disclosed INVISIBLE.
+    # Self-contained for type resolution (κ is name-based — no transitive runtime deps needed). org.json is
+    # the one shared compile dep (razorpay/mixpanel reference org.json.JSONObject in their public signatures).
+    "json-20240303.jar": f"{_MVN}/org/json/json/20240303/json-20240303.jar",
+    # Payments
+    "razorpay-java-1.4.8.jar": f"{_MVN}/com/razorpay/razorpay-java/1.4.8/razorpay-java-1.4.8.jar",
+    "adyen-java-api-library-28.3.0.jar": f"{_MVN}/com/adyen/adyen-java-api-library/28.3.0/adyen-java-api-library-28.3.0.jar",
+    # Comms / SMS / push
+    "vonage-server-sdk-8.9.0.jar": f"{_MVN}/com/vonage/server-sdk/8.9.0/server-sdk-8.9.0.jar",
+    "mixpanel-java-1.5.2.jar": f"{_MVN}/com/mixpanel/mixpanel-java/1.5.2/mixpanel-java-1.5.2.jar",
+    # Regional / niche cloud storage
+    "b2-sdk-core-6.2.0.jar": f"{_MVN}/com/backblaze/b2/b2-sdk-core/6.2.0/b2-sdk-core-6.2.0.jar",
+    "cloudinary-core-1.39.0.jar": f"{_MVN}/com/cloudinary/cloudinary-core/1.39.0/cloudinary-core-1.39.0.jar",
+    # Search / analytics SaaS
+    "meilisearch-java-0.13.0.jar": f"{_MVN}/com/meilisearch/sdk/meilisearch-java/0.13.0/meilisearch-java-0.13.0.jar",
+    "algoliasearch-4.41.0.jar": f"{_MVN}/com/algolia/algoliasearch/4.41.0/algoliasearch-4.41.0.jar",
+    # CMS / headless (drags rxjava3 [present] + retrofit [present])
+    "contentful-java-sdk-10.6.0.jar": f"{_MVN}/com/contentful/java/java-sdk/10.6.0/java-sdk-10.6.0.jar",
+    # Auth/JWT — PURE anchor jar (local sign/verify, NOT Net)
+    "java-jwt-4.4.0.jar": f"{_MVN}/com/auth0/java-jwt/4.4.0/java-jwt-4.4.0.jar",
 }
 
 

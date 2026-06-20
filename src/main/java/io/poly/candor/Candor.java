@@ -5330,6 +5330,38 @@ public class Candor {
         // (descriptor-gated; the InputStream overload is caller-stream → pure).
         if (owner.equals("com.drew.imaging.ImageMetadataReader") && method.equals("readMetadata")
                 && desc != null && desc.startsWith("(Ljava/io/File;")) return "Fs";
+        // ── Precision (batch 23): SaaS/payments/comms/cloud/search SDKs — invisible→concrete Net. All
+        //    owner-scoped + verb-gated to keep in-memory builders/factories/JWT pure (anti-fab anchored). ──
+        if (owner.startsWith("com.razorpay.") && owner.endsWith("Client")
+                && (method.equals("create") || method.equals("fetch") || method.equals("all")
+                    || method.equals("edit") || method.equals("capture") || method.equals("refund")
+                    || method.equals("cancel"))) return "Net";  // payments
+        if (owner.startsWith("com.adyen.service.") && owner.endsWith("Api") && !isConventionallyPure(method))
+            return "Net";  // payments (the *Api classes are entirely remote operations)
+        if (owner.startsWith("com.vonage.client.") && owner.endsWith("Client")
+                && (method.equals("submitMessage") || method.equals("sendMessage") || method.equals("send")))
+            return "Net";  // SMS/comms
+        if (owner.equals("com.backblaze.b2.client.B2StorageClient")
+                && (method.startsWith("upload") || method.startsWith("download") || method.equals("getFileInfo")
+                    || method.startsWith("deleteFile") || method.startsWith("listFile") || method.startsWith("copy")))
+            return "Net";  // B2 object store
+        if (owner.equals("com.cloudinary.Uploader")
+                && (method.startsWith("upload") || method.equals("destroy") || method.equals("rename")
+                    || method.equals("explicit"))) return "Net";  // media/cloud
+        if ((owner.equals("com.meilisearch.sdk.Index")
+                && (method.equals("search") || method.startsWith("addDocuments") || method.startsWith("updateDocuments")
+                    || method.startsWith("deleteDocument") || method.startsWith("getDocument")))
+                || (owner.equals("com.meilisearch.sdk.Client")
+                    && (method.equals("createIndex") || method.equals("deleteIndex") || method.equals("getIndexes"))))
+            return "Net";  // search SaaS (Client.index() navigator stays pure)
+        if (owner.equals("com.mixpanel.mixpanelapi.MixpanelAPI")
+                && (method.equals("sendMessage") || method.equals("deliver"))) return "Net";  // analytics
+        if (owner.equals("com.algolia.api.SearchClient")
+                && (method.startsWith("save") || method.startsWith("search") || method.startsWith("delete")
+                    || method.startsWith("getObject") || method.startsWith("partialUpdate")
+                    || method.startsWith("batch"))) return "Net";  // search SaaS
+        if (owner.equals("com.contentful.java.cda.FetchQuery")
+                && (method.equals("all") || method.equals("one"))) return "Net";  // headless CMS terminal
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation

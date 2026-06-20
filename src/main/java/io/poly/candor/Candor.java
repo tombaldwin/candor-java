@@ -175,7 +175,7 @@ public class Candor {
         // Cross-jar inheritance (candor-spec §2): load dependency reports named by CANDOR_DEPS BEFORE
         // analyze, so a call into an already-analyzed dependency inherits its effects (vs assumed-pure).
         loadCrossDeps(System.getenv("CANDOR_DEPS"), provenance()[0]);
-        taintEnabled = System.getenv("CANDOR_TAINT") != null; // read before analyze (the pass runs per method)
+        taintEnabled = System.getenv(Mode.TAINT.envVar()) != null; // read before analyze (the pass runs per method)
         // Per-class fail-soft: an exotic/malformed class that throws ANYWHERE in analyze (e.g. a malformed
         // method descriptor that ASM validates only lazily in Type.getArgumentTypes — the 0.5.6 crash class,
         // re-surfaced via an overloaded-name path the desc.startsWith("(") guard doesn't catch) must NOT
@@ -360,12 +360,12 @@ public class Candor {
                     unlisted.size() == 1 ? "it" : "them", shown, more);
         }
 
-        // Modes: CANDOR_STRICT (conformance via DI), CANDOR_BASELINE (regression guard),
-        // CANDOR_NO_AMBIENT (enforcement).
-        String strict = System.getenv("CANDOR_STRICT");
-        String baseline = System.getenv("CANDOR_BASELINE");
-        String noAmbient = System.getenv("CANDOR_NO_AMBIENT");
-        String policy = System.getenv("CANDOR_POLICY");
+        // Gate modes (candor-spec §3), each selected by its Mode's env var: CANDOR_STRICT (conformance
+        // via DI), CANDOR_BASELINE (regression guard), CANDOR_NO_AMBIENT, CANDOR_POLICY.
+        String strict = System.getenv(Mode.CONFORMANCE.envVar());
+        String baseline = System.getenv(Mode.BASELINE.envVar());
+        String noAmbient = System.getenv(Mode.NO_AMBIENT.envVar());
+        String policy = System.getenv(Mode.POLICY.envVar());
         boolean enforce = baseline != null || noAmbient != null || strict != null || policy != null
                 || taintEnabled;
 

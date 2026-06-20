@@ -398,8 +398,10 @@ public class Candor {
     }
 
     static int checkConformance(Map<String, EffectSet> inferred, String scope) {
-        // performed/declared per class (candor-spec §5), computed the ONE shared way.
-        ClassConformance cc = classConformance(inferred);
+        // performed/declared per class (candor-spec §5), computed the ONE shared way. The gate reads only
+        // in-scope classes (the gateScopeCovers skip below), so `declared` is built only for those — on a
+        // narrow CANDOR_STRICT scope over a large jar that avoids a whole-jar field/type walk.
+        ClassConformance cc = classConformance(inferred, scope);
         int v = 0;
         for (ClassNode cn : ctx.ALL) {
             String dc = cn.name.replace('/', '.');
@@ -465,7 +467,17 @@ public class Candor {
     record ClassConformance(Map<String, EffectSet> performed, Map<String, EffectSet> declared,
             Map<String, String> fnToClass) {}
 
+    /** The report path needs {@code declared} for every class. */
     static ClassConformance classConformance(Map<String, EffectSet> inferred) {
+        return classConformance(inferred, null);
+    }
+
+    /** {@code performed} is ALWAYS project-wide (typeEffects resolves a project collaborator through it,
+     *  so a narrowed map would mis-derive declared). {@code declared} is built only for classes
+     *  {@code declaredScope} covers ({@code null} = all) — the gate reads only its in-scope classes, and a
+     *  class's declared set depends only on {@code performed}, never on another class's declared, so
+     *  scoping it changes nothing the gate reads. */
+    static ClassConformance classConformance(Map<String, EffectSet> inferred, String declaredScope) {
         Map<String, EffectSet> performed = new HashMap<>();
         Map<String, String> fnToClass = new HashMap<>();
         for (ClassNode cn : ctx.ALL) {
@@ -482,6 +494,7 @@ public class Candor {
         Map<String, EffectSet> declared = new HashMap<>();
         for (ClassNode cn : ctx.ALL) {
             String dc = cn.name.replace('/', '.');
+            if (declaredScope != null && !gateScopeCovers(declaredScope, dc)) continue;
             EffectSet d = EffectSet.empty();
             if (cn.fields != null)
                 for (FieldNode f : cn.fields) {

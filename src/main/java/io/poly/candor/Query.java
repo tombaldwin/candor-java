@@ -31,9 +31,12 @@ public final class Query {
     // Boundary effects SHOULD live in a dedicated layer — their dispersion is the architecture signal
     // (NOT raw counts, which are domain-dependent). Ambient effects are expected to be cross-cutting
     // (logging/timestamps everywhere is fine), so they're reported but not scored. Unknown is excluded
-    // (it's a visibility metric, not an effect).
-    static final List<String> CONTAINED = List.of("Db", "Net", "Exec", "Fs", "Ipc");
-    static final List<String> AMBIENT = List.of("Log", "Clock", "Rand", "Env");
+    // (it's a visibility metric, not an effect). Both are DERIVED from the §6.1 partition on the Effect
+    // enum (spec-name order) — the single source of truth, so adding an effect can't leave these stale.
+    static final List<String> CONTAINED =
+            Arrays.stream(Effect.values()).filter(Effect::isBoundary).map(Effect::specName).toList();
+    static final List<String> AMBIENT =
+            Arrays.stream(Effect.values()).filter(Effect::isCrossCutting).map(Effect::specName).toList();
 
     static List<Effector> load(String path) throws Exception {
         JsonElement root = JsonParser.parseString(Files.readString(Path.of(path)));
@@ -1020,13 +1023,11 @@ public final class Query {
             return 0;
         }
         // Boundary effects first (the ones that matter for a capability budget), then ambient, then the
-        // Unknown caveat. Anything else (shouldn't occur) trails alphabetically.
-        // Boundary effects first, then ambient, then Clipboard (a peripheral capability in neither
-        // set), then the Unknown caveat. Anything else trails.
+        // Unknown caveat. Anything else (shouldn't occur) trails. Clipboard is a boundary effect, so it
+        // rides in CONTAINED.
         List<String> order = new ArrayList<>();
         order.addAll(CONTAINED);
         order.addAll(AMBIENT);
-        order.add("Clipboard");
         order.add("Unknown");
         List<String> seen = new ArrayList<>(byEffect.keySet());
         seen.sort(Comparator.comparingInt(e -> { int i = order.indexOf(e); return i < 0 ? order.size() : i; }));

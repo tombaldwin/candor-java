@@ -72,7 +72,15 @@ tasks.withType<JavaCompile>().configureEach {
     if (!errorproneOn) args.add("-Werror")
     options.compilerArgs.addAll(args)
     options.errorprone.enabled.set(errorproneOn)
-    if (errorproneOn) options.errorprone.allErrorsAsWarnings.set(true)
+    if (errorproneOn) {
+        options.errorprone.allErrorsAsWarnings.set(true)
+        // Triaged + cleaned (the soundness cluster) — promote to ERROR so a regression fails the
+        // `-Perrorprone` run. Intentional exceptions carry @SuppressWarnings with a why. Everything else
+        // (StringSplitter — all sites guarded; style checks) stays an advisory warning for now.
+        options.errorprone.error(
+            "StringCaseLocaleUsage", "ReferenceEquality", "EmptyCatch", "NotJavadoc",
+        )
+    }
 }
 
 // Provenance (candor-spec §2.1): bake the engine build id (git short hash) + toolchain into a resource

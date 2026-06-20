@@ -785,12 +785,6 @@ public final class Query {
         return prefixLen + 2 < segs.length ? segs[prefixLen] : "(root)";
     }
 
-    /** impact — the blast radius of a function: every effectful method that TRANSITIVELY calls it, and
-     *  which ENTRY POINTS (runtime roots) are downstream — "if I change this, what surfaces at runtime?".
-     *  The backward dual of `path`; the transitive, entry-point-scoped version of `callers`. Read-only,
-     *  reversing the report's effect-relevant `calls` graph. Scoped to effectful targets (the report's
-     *  `calls` only records effect-carrying edges, so a pure fn — omitted from the report — has no blast
-     *  radius to trace; that's the honest limit of working from the report). */
     /** blindspots (SPEC §3.1 ⟨0.6⟩) — the Unknown SOURCES: units whose OWN body has an unresolvable call
      *  (so they carry `unknownWhy`), each ranked by its Unknown blast radius (the transitive callers that
      *  inherit `Unknown` through it). The actionable inverse of a widely-propagated `Unknown`: a report can
@@ -841,6 +835,12 @@ public final class Query {
         return 0;
     }
 
+    /** impact — the blast radius of a function: every effectful method that TRANSITIVELY calls it, and
+     *  which ENTRY POINTS (runtime roots) are downstream — "if I change this, what surfaces at runtime?".
+     *  The backward dual of `path`; the transitive, entry-point-scoped version of `callers`. Read-only,
+     *  reversing the report's effect-relevant `calls` graph. Scoped to effectful targets (the report's
+     *  `calls` only records effect-carrying edges, so a pure fn — omitted from the report — has no blast
+     *  radius to trace; that's the honest limit of working from the report). */
     static int impact(List<Effector> fns, String fnArg, boolean json) {
         if (fnArg == null) return usage("impact <report.json> <fn-substring> [--json]");
         Map<String, Effector> byName = new HashMap<>();

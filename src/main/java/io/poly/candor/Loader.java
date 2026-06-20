@@ -27,7 +27,7 @@ final class Loader {
         // file itself (no `.class` entries), so the loader silently returned ZERO classes from a jar —
         // despite the usage advertising `<dir-or-jar-of-classes>`. Mount it as a zip filesystem and walk
         // its entries, so analysing a built jar / a dependency actually works.
-        String name = root.toString().toLowerCase();
+        String name = root.toString().toLowerCase(Locale.ROOT);
         if (Files.isRegularFile(root) && (name.endsWith(".jar") || name.endsWith(".zip"))) {
             try (FileSystem fs = FileSystems.newFileSystem(root)) {
                 for (Path r : fs.getRootDirectories()) collectClasses(r, out);

@@ -1,5 +1,8 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+import io.poly.candor.model.EffectSet;
+
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -48,12 +51,12 @@ class IndyDispatchTest {
         return cw.toByteArray();
     }
 
-    private static TreeSet<String> scanSingleClass(byte[] cls) throws Exception {
+    private static EffectSet scanSingleClass(byte[] cls) throws Exception {
         Path dir = Files.createTempDirectory("candor-indy");
         try {
             Files.write(dir.resolve("G.class"), cls);
-            Map<String, TreeSet<String>> r = Candor.runScan(dir);
-            return r.getOrDefault("G.doWork", new TreeSet<>());
+            Map<String, EffectSet> r = Candor.runScan(dir);
+            return r.getOrDefault("G.doWork", EffectSet.empty());
         } finally {
             try (Stream<Path> s = Files.walk(dir)) {
                 s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
@@ -64,16 +67,16 @@ class IndyDispatchTest {
     @Test
     void dynamicLanguageIndyReadsUnknown() throws Exception {
         // Groovy's dynamic-dispatch bootstrap → opaque → Unknown (was silent-pure: empty effect set).
-        TreeSet<String> eff = scanSingleClass(classWithIndy("org/codehaus/groovy/vmplugin/v8/IndyInterface"));
-        assertTrue(eff.contains("Unknown"),
+        EffectSet eff = scanSingleClass(classWithIndy("org/codehaus/groovy/vmplugin/v8/IndyInterface"));
+        assertTrue(eff.toNames().contains("Unknown"),
                 "a dynamic-language invokedynamic must read Unknown, got " + eff);
     }
 
     @Test
     void structuralIndyDoesNotFabricateUnknown() throws Exception {
         // A JVM structural factory bootstrap (string concat here) is precise/pure → no Unknown fabricated.
-        TreeSet<String> eff = scanSingleClass(classWithIndy("java/lang/invoke/StringConcatFactory"));
-        assertFalse(eff.contains("Unknown"),
+        EffectSet eff = scanSingleClass(classWithIndy("java/lang/invoke/StringConcatFactory"));
+        assertFalse(eff.toNames().contains("Unknown"),
                 "a structural-factory invokedynamic must NOT fabricate Unknown, got " + eff);
     }
 
@@ -101,10 +104,10 @@ class IndyDispatchTest {
             Files.createDirectories(out);
             int rc = jc.run(null, null, null, "-d", out.toString(), src.toString());
             org.junit.jupiter.api.Assertions.assertEquals(0, rc, "fixture must compile");
-            Map<String, TreeSet<String>> r = Candor.runScan(out);
-            assertTrue(r.getOrDefault("M.refDelete", new TreeSet<>()).contains("Fs"),
+            Map<String, EffectSet> r = Candor.runScan(out);
+            assertTrue(r.getOrDefault("M.refDelete", EffectSet.empty()).toNames().contains("Fs"),
                     "removeIf(File::delete) must read Fs, got " + r.get("M.refDelete"));
-            assertTrue(r.getOrDefault("M.refGetenv", new TreeSet<>()).contains("Env"),
+            assertTrue(r.getOrDefault("M.refGetenv", EffectSet.empty()).toNames().contains("Env"),
                     "map(System::getenv) must read Env, got " + r.get("M.refGetenv"));
         } finally {
             try (Stream<Path> s = Files.walk(dir)) {

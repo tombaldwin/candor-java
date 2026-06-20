@@ -1,5 +1,8 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+import io.poly.candor.model.EffectSet;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -73,8 +76,8 @@ class Round8FixesTest {
                  .forEach(p -> { try { Files.copy(p, dir.resolve("Good.class")); } catch (Exception e) { throw new RuntimeException(e); } });
             }
             rm(good.getParent());
-            Map<String, TreeSet<String>> r = Candor.runScan(dir);   // must NOT throw
-            assertTrue(r.getOrDefault("Good.io", new TreeSet<>()).contains("Net"),
+            Map<String, EffectSet> r = Candor.runScan(dir);   // must NOT throw
+            assertTrue(r.getOrDefault("Good.io", EffectSet.empty()).toNames().contains("Net"),
                     "the good class must still be analyzed despite the malformed-overload class");
         } finally { rm(dir); }
     }

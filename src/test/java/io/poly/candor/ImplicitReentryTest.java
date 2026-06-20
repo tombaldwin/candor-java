@@ -1,5 +1,8 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+import io.poly.candor.model.EffectSet;
+
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -52,8 +55,8 @@ class ImplicitReentryTest {
         }
     }
 
-    private static boolean fs(Map<String, TreeSet<String>> r, String m) {
-        return r.getOrDefault(m, new TreeSet<>()).contains("Fs");
+    private static boolean fs(Map<String, EffectSet> r, String m) {
+        return r.getOrDefault(m, EffectSet.empty()).toNames().contains("Fs");
     }
 
     // ---- toString reentry: each sink carries the effectful override's Fs --------------------------------
@@ -183,7 +186,7 @@ class ImplicitReentryTest {
     @Test void writerSideCustomSinkCarriesEffect() throws Exception {
         Path cls = compileWriter();
         try {
-            Map<String, TreeSet<String>> r = Candor.runScan(cls);
+            Map<String, EffectSet> r = Candor.runScan(cls);
             assertTrue(fs(r, "app.W.viaFormatter"), "new Formatter(customAppendable).format must carry the sink's append Fs");
             assertTrue(fs(r, "app.W.viaPrintWriter"), "new PrintWriter(customWriter).printf must carry the sink's write Fs");
             assertFalse(fs(r, "app.W.viaStringBuilder"), "a std StringBuilder sink must stay pure (no fabrication)");

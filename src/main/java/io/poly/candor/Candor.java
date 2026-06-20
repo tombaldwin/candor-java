@@ -88,16 +88,15 @@ public class Candor {
     // (SEMANTICS.md §, every effect except cross-cutting Log; Unknown is not an authority). Was missing
     // Ipc + Clipboard, so direct Unix-socket/clipboard reaches slipped the no-ambient check (the Rust
     // reference flags them).
-    static final Set<String> AMBIENT =
-            Set.of("Net", "Fs", "Db", "Exec", "Env", "Clock", "Rand", "Ipc", "Clipboard");
-    // The effect vocabulary candor-java emits — spec §1: 𝔼 = {Net,Fs,Db,Exec,Env,Clock,Ipc,Log,Rand,
-    // Clipboard}. Used to split a `deny <Effect…> [scope]` rule's effects from its trailing scope token,
-    // so a missing entry (Clipboard was absent) would mis-parse `deny Clipboard …` as a scope.
+    // AS-EFF-004 ambient authority = 𝔼 \ {Log} (the model's spec-defined set).
+    static final Set<Effect> AMBIENT = Effect.AMBIENT_AUTHORITY;
+    // The effect vocabulary candor-java emits — spec §1. KNOWN_EFFECTS stays a NAME set: it validates
+    // raw policy/query TOKEN strings (parsePolicy, Query.whatif), not effect-set membership.
     static final Set<String> KNOWN_EFFECTS =
             Set.of("Net", "Fs", "Db", "Exec", "Env", "Clock", "Rand", "Log", "Ipc", "Clipboard");
     // AS-EFF-007 (CANDOR_TAINT): the injection-class effects whose argument, if caller-derived, is an
     // injection surface (path traversal / command / SQL / SSRF). Clock/Rand/Log/Clipboard aren't injectable.
-    static final Set<String> INJECTION = Set.of("Fs", "Exec", "Db", "Net", "Env", "Ipc");
+    static final Set<Effect> INJECTION = Effect.INJECTION;
     // java.io types whose <init> takes a file PATH as its first String arg (for AS-EFF-008 `paths`).
     static final Set<String> PATH_CTOR_OWNERS = Set.of("java.io.File", "java.io.FileInputStream",
             "java.io.FileOutputStream", "java.io.FileReader", "java.io.FileWriter", "java.io.RandomAccessFile",
@@ -149,7 +148,7 @@ public class Candor {
      *  System.exit (so it is unit-testable in-process): reset state, load the target, index overloads
      *  + CHA subtypes, compute Spring types, chain CANDOR_DEPS, run per-method analysis, resolve
      *  literal-reflection edges, then return the inferred per-method effect sets from the fixpoint. */
-    static Map<String, TreeSet<String>> runScan(Path target) throws IOException {
+    static Map<String, EffectSet> runScan(Path target) throws IOException {
         resetState();
         List<ClassNode> classes = load(target);
         ALL = classes;
@@ -226,7 +225,7 @@ public class Candor {
             if (!fwdSinkOpaque.contains(sink) && lambdas != null && !lambdas.isEmpty()) {
                 edges.computeIfAbsent(sink, k -> new HashSet<>()).addAll(lambdas);
             } else {
-                direct.computeIfAbsent(sink, k -> new TreeSet<>()).add("Unknown");
+                direct.computeIfAbsent(sink, k -> EffectSet.empty()).add(Effect.UNKNOWN);
                 String[] why = fwdSinkPendingWhy.get(sink);
                 if (why != null) unknownWhy.computeIfAbsent(sink, k -> new TreeSet<>()).add(why[0]);
             }
@@ -325,7 +324,7 @@ public class Candor {
             System.err.println("candor: no such path: " + args[0]);
             System.exit(2);
         }
-        Map<String, TreeSet<String>> inferred;
+        Map<String, EffectSet> inferred;
         try {
             inferred = runScan(scanTarget);
         } catch (IOException | java.nio.file.ProviderNotFoundException e) {
@@ -375,8 +374,8 @@ public class Candor {
                     .filter(e -> !e.getValue().isEmpty())
                     .sorted(Map.Entry.comparingByKey())
                     .forEach(e -> {
-                        var d = direct.getOrDefault(e.getKey(), new TreeSet<>());
-                        String set = e.getValue().stream()
+                        var d = direct.getOrDefault(e.getKey(), EffectSet.empty()).toNames();
+                        String set = e.getValue().toNames().stream()
                                 .map(x -> d.contains(x) ? x : x + "*")
                                 .collect(Collectors.joining(", "));
                         String tag = entryPoints.contains(e.getKey()) ? "  [entry]" : "";
@@ -411,7 +410,7 @@ public class Candor {
         System.out.println(new Diagnostic(code, String.format(format, args)).render());
     }
 
-    static int checkConformance(Map<String, TreeSet<String>> inferred, String scope) {
+    static int checkConformance(Map<String, EffectSet> inferred, String scope) {
         // performed(class) = union of inferred over the class's own methods.
         Map<String, TreeSet<String>> performed = new HashMap<>();
         for (ClassNode cn : ALL) {
@@ -420,7 +419,7 @@ public class Candor {
             for (MethodNode mn : cn.methods) {
                 if (mn.name.startsWith("<")) continue;
                 var inf = inferred.get(methodId(dc, mn.name, mn.desc));
-                if (inf != null) p.addAll(inf);
+                if (inf != null) p.addAll(inf.toNames());
             }
         }
         int v = 0;
@@ -546,7 +545,7 @@ public class Candor {
             // edges to `X.<clinit>` (see below), so an effectful constructor OR static initializer
             // propagates to its use site instead of being silently pure.
             String id = methodId(dottedClass, mn.name, mn.desc);
-            var dir = direct.computeIfAbsent(id, k -> new TreeSet<>());
+            var dir = direct.computeIfAbsent(id, k -> EffectSet.empty());
             edges.computeIfAbsent(id, k -> new HashSet<>());
             loc.putIfAbsent(id, cn.sourceFile + ":" + firstLine(mn));
             // Stable, descriptor-bearing cross-jar identity (candor-spec §2 `hash`): the exact ref a
@@ -564,12 +563,12 @@ public class Candor {
             // exactly the opacity reflection has. Honest `Unknown`, never silent-pure (SPEC §4); else a
             // call into a project-declared native binding would look like a no-op.
             if ((mn.access & Opcodes.ACC_NATIVE) != 0) {
-                dir.add("Unknown");
+                dir.add(Effect.UNKNOWN);
                 unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add("native:" + mn.name);
             }
 
             // Spring annotations on this method (the effect Spring's proxy/generated code performs).
-            if (classTx || annoPresent(mn.visibleAnnotations, TX)) dir.add("Db");
+            if (classTx || annoPresent(mn.visibleAnnotations, TX)) dir.add(Effect.DB);
             // META-ANNOTATION aware: a method carrying a COMPOSED annotation (Spring's stereotype idiom —
             // `@GetMapping` is itself `@RequestMapping`; a team's `@ApiEndpoint`/`@NightlyJob` wraps a known
             // marker) was NOT rooted by a direct-annotation-only check, orphaning a framework-invoked method
@@ -671,7 +670,7 @@ public class Candor {
                 if (insn instanceof MethodInsnNode min) {
                     String owner = min.owner.replace('/', '.');
                     Effect effect = Classifier.classify(owner, min.name, min.desc);
-                    if (effect != null) dir.add(effect.specName());
+                    if (effect != null) dir.add(effect);
                     // Executor hand-off: `es.submit(task)`/`execute`/`schedule*` and `new Thread(task)` invoke
                     // the task's run()/call() OUTSIDE project code. A fresh `new R()` (the NEW-site edge
                     // attributes R.run) or an inline lambda (edged at its indy) is already captured; an OPAQUE
@@ -680,7 +679,7 @@ public class Candor {
                     if (isExecutorHandoff(min.owner, min.name, min.desc) && provFrames != null) {
                         ProvValue task = handoffTaskArg(provFrames[mn.instructions.indexOf(min)], min);
                         if (task != null && !task.fromIndy && task.newType == null) {
-                            dir.add("Unknown");
+                            dir.add(Effect.UNKNOWN);
                             unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                                     .add("task-handoff:" + owner + "." + min.name);
                         }
@@ -716,7 +715,7 @@ public class Candor {
                     // get no Fs. Added in the call handler because classify()'s single slot is the Unknown.
                     if ((min.owner.equals("javax/xml/parsers/DocumentBuilder")
                             || min.owner.equals("javax/xml/parsers/SAXParser"))
-                            && min.name.equals("parse") && min.desc.startsWith("(Ljava/io/File;")) dir.add("Fs");
+                            && min.name.equals("parse") && min.desc.startsWith("(Ljava/io/File;")) dir.add(Effect.FS);
                     // IMPLICIT-CONTRACT-REENTRY: a JDK sink that re-enters user code via the JVM contract
                     // (toString/equals/hashCode/compareTo) — modelled pure by candor, so an EFFECTFUL override
                     // of the argument's type read silent-pure. CHA the contract method over the ARGUMENT's
@@ -812,15 +811,15 @@ public class Candor {
                             // (the SAFE direction — never a fabricated concrete effect) instead of dropping it.
                             // The modeled Spring templates' I/O methods return effect!=null so never reach here;
                             // only a genuinely-unmodeled member (or a rare pure accessor → harmless Unknown) does.
-                            dir.add("Unknown");
+                            dir.add(Effect.UNKNOWN);
                             unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                                     .add("dispatch:" + owner + "." + min.name);
                         }
                     }
                     // An injection-class effect on a caller-derived argument is an injection surface.
-                    if (taintFrames != null && effect != null && INJECTION.contains(effect.specName())
+                    if (taintFrames != null && effect != null && INJECTION.contains(effect)
                             && argsTainted(taintFrames[mn.instructions.indexOf(min)], min))
-                        tainted.computeIfAbsent(id, k -> new TreeSet<>()).add(effect.specName());
+                        tainted.computeIfAbsent(id, k -> EffectSet.empty()).add(effect);
                     if (effect == Effect.UNKNOWN) // reflection / dynamic invoke (classify §)
                         unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                                 .add("reflect:" + owner + "." + min.name);
@@ -844,7 +843,7 @@ public class Candor {
                         String head = programHeadLiteral(min);
                         if (head != null) {
                             cmdsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(head);
-                            dir.addAll(commandHeadEffects(head));
+                            dir.addAll(EffectSet.ofNames(commandHeadEffects(head)));
                         } else {
                             // a program-NAMING Exec call with a RUNTIME head (no literal) — the command is
                             // invisible to the gate, so a benign sibling literal must not mask it (sweep [0],
@@ -961,11 +960,11 @@ public class Candor {
                     // callee has no body candor can see (Spring synthesizes the impl at runtime).
                     boolean springTyped = repoTypes.contains(min.owner) || feignTypes.contains(min.owner);
                     if (repoTypes.contains(min.owner)) {
-                        dir.add("Db");
+                        dir.add(Effect.DB);
                         String tbl = repoTables.get(min.owner); // the declarative `tables` surface
                         if (tbl != null) tablesDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(tbl);
                     }
-                    if (feignTypes.contains(min.owner)) dir.add("Net");
+                    if (feignTypes.contains(min.owner)) dir.add(Effect.NET);
 
                     int op = min.getOpcode();
                     // A static call triggers the owner's class-load → its `<clinit>` runs.
@@ -1052,7 +1051,7 @@ public class Candor {
                         // above still carry their real effects; this adds the honest "+ an unseen permit").
                         // Only matters on the narrow path; a broad sealed-unseen already drops to Unknown below.
                         if (!broad && sealedHasUnseenPermit(min.owner)) {
-                            dir.add("Unknown");
+                            dir.add(Effect.UNKNOWN);
                             unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add("dispatch:" + owner + "." + min.name);
                         }
                         // A broad NON-exempt dispatch that DROPS project implementors → Unknown, not
@@ -1086,7 +1085,7 @@ public class Candor {
                         // at each lambda's own rooted invoke() entry (the kotlin/Function RUNTIME_OVERRIDES row).
                         if (broad && !isObjectProtocolExempt(min.name, min.desc) && effect == null && !springTyped
                                 && (isProjectIfaceOrAbstract(min.owner) || !cha.isEmpty())) {
-                            dir.add("Unknown");
+                            dir.add(Effect.UNKNOWN);
                             // Canonical `unknownWhy` vocabulary (SPEC §4, ⟨0.7⟩): a bounded-CHA broad
                             // dispatch is an unresolved virtual dispatch → `dispatch:owner.member`. The
                             // former `dispatch-broad:`/`dispatch-broad-ext:` (project vs external owner)
@@ -1108,7 +1107,7 @@ public class Candor {
                         if (!broad && targets.isEmpty() && !dispatchExempt && effect == null && !springTyped
                                 && isProjectIfaceOrAbstract(min.owner)
                                 && projectDeclaresMethod(min.owner, min.name, min.desc)) {
-                            dir.add("Unknown");
+                            dir.add(Effect.UNKNOWN);
                             unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                                     .add("dispatch:" + owner + "." + min.name);
                         }
@@ -1144,7 +1143,7 @@ public class Candor {
                                 fwdSinkPending.add(id);
                                 fwdSinkPendingWhy.put(id, new String[] { why });
                             } else {
-                                dir.add("Unknown");
+                                dir.add(Effect.UNKNOWN);
                                 unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(why);
                             }
                         }
@@ -1179,7 +1178,7 @@ public class Candor {
                                 inh = crossDeps.get(cRecv + "." + min.name + min.desc);
                         }
                         if (inh != null) {
-                            viaCross.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.effects);
+                            viaCross.computeIfAbsent(id, k -> EffectSet.empty()).addAll(inh.effects);
                             if (!inh.hosts.isEmpty()) hostsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.hosts);
                             if (!inh.cmds.isEmpty()) cmdsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.cmds);
                             if (!inh.paths.isEmpty()) pathsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.paths);
@@ -1283,7 +1282,7 @@ public class Candor {
                                 // a silent-pure hole found by a streams/method-ref sweep. A pure target →
                                 // null → nothing added (no fabrication).
                                 Effect eff = Classifier.classify(h.getOwner().replace('/', '.'), h.getName(), h.getDesc());
-                                if (eff != null) dir.add(eff.specName());
+                                if (eff != null) dir.add(eff);
                             }
                         }
                     }
@@ -1296,7 +1295,7 @@ public class Candor {
                     // dropped EVERY call — Fs/Exec/Net all silent-pure. Honest Unknown (SPEC §4), never
                     // silent-pure. (Found by a JVM-dialect sweep on compiled Groovy.)
                     if (idin.bsm != null && !STRUCTURAL_INDY_BSM.contains(idin.bsm.getOwner())) {
-                        dir.add("Unknown");
+                        dir.add(Effect.UNKNOWN);
                         unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                                 .add("indy:" + idin.bsm.getOwner().replace('/', '.'));
                     }
@@ -2473,7 +2472,7 @@ public class Candor {
         Map<String, TreeSet<String>> fs = new HashMap<>();
         for (var e : fsDirect.entrySet()) fs.put(e.getKey(), new TreeSet<>(e.getValue()));
         for (var e : viaCross.entrySet())
-            if (e.getValue().contains("Fs")) fs.computeIfAbsent(e.getKey(), k -> new TreeSet<>()).add(FS_UNKNOWN);
+            if (e.getValue().contains(Effect.FS)) fs.computeIfAbsent(e.getKey(), k -> new TreeSet<>()).add(FS_UNKNOWN);
         boolean changed = true;
         while (changed) {
             changed = false;
@@ -2493,7 +2492,7 @@ public class Candor {
         return fs;
     }
 
-    static Map<String, TreeSet<String>> fixpoint() {
+    static Map<String, EffectSet> fixpoint() {
         return computeFixpoint(direct, edges, viaCross);
     }
 
@@ -2502,20 +2501,20 @@ public class Candor {
      *  unit-testable with synthetic graphs. {@code direct} = each fn's own-body effects;
      *  {@code edges} = caller → callees; {@code viaCross} = effects inherited from a CANDOR_DEPS
      *  sibling report. Result: each fn's transitive (inferred) effect set. */
-    static Map<String, TreeSet<String>> computeFixpoint(
-            Map<String, TreeSet<String>> direct,
+    static Map<String, EffectSet> computeFixpoint(
+            Map<String, EffectSet> direct,
             Map<String, Set<String>> edges,
-            Map<String, TreeSet<String>> viaCross) {
-        Map<String, TreeSet<String>> eff = new HashMap<>();
-        for (var k : direct.keySet()) eff.put(k, new TreeSet<>(direct.get(k)));
+            Map<String, EffectSet> viaCross) {
+        Map<String, EffectSet> eff = new HashMap<>();
+        for (var k : direct.keySet()) eff.put(k, direct.get(k).copy());
         // Seed in effects inherited via cross-jar calls (kept out of `direct` — they're not in this
         // method's own body; they appear in `inferred` and propagate transitively, like the Rust impl).
-        for (var e : viaCross.entrySet()) eff.computeIfAbsent(e.getKey(), k -> new TreeSet<>()).addAll(e.getValue());
+        for (var e : viaCross.entrySet()) eff.computeIfAbsent(e.getKey(), k -> EffectSet.empty()).addAll(e.getValue());
         boolean changed = true;
         while (changed) {
             changed = false;
             for (var caller : edges.keySet()) {
-                var set = eff.computeIfAbsent(caller, k -> new TreeSet<>());
+                var set = eff.computeIfAbsent(caller, k -> EffectSet.empty());
                 int before = set.size();
                 for (String callee : edges.get(caller)) {
                     // A class-load TRIGGER edge propagates the `<clinit>`'s FULL transitive effects (spec §5:

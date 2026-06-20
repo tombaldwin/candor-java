@@ -1,5 +1,8 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+import io.poly.candor.model.EffectSet;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -25,7 +28,7 @@ import org.junit.jupiter.api.Test;
  */
 class SoundnessSweepTest {
 
-    private static Map<String, TreeSet<String>> scan(String src) throws Exception {
+    private static Map<String, EffectSet> scan(String src) throws Exception {
         javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
         Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
         Path dir = Files.createTempDirectory("candor-sweep");
@@ -45,7 +48,7 @@ class SoundnessSweepTest {
 
     /** Compile {@code src}, DELETE {@code deleteClass}.class (simulate an off-classpath type), then scan —
      *  for the sealed-unseen-permit gate (a permit named in `permits` but absent from the analysis classpath). */
-    private static Map<String, TreeSet<String>> scanDeleting(String src, String deleteClass) throws Exception {
+    private static Map<String, EffectSet> scanDeleting(String src, String deleteClass) throws Exception {
         javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
         Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
         Path dir = Files.createTempDirectory("candor-sweep");
@@ -64,19 +67,19 @@ class SoundnessSweepTest {
         }
     }
 
-    private static TreeSet<String> eff(Map<String, TreeSet<String>> r, String fn) {
-        return r.getOrDefault(fn, new TreeSet<>());
+    private static EffectSet eff(Map<String, EffectSet> r, String fn) {
+        return r.getOrDefault(fn, EffectSet.empty());
     }
 
     /** Asserts {@code fn} surfaces {@code want} (the precise effect) — a silent-pure here is the cardinal sin. */
-    private static void mustHave(Map<String, TreeSet<String>> r, String fn, String want) {
-        assertTrue(eff(r, fn).contains(want), fn + " must surface " + want + " (cardinal sin if pure), got " + eff(r, fn));
+    private static void mustHave(Map<String, EffectSet> r, String fn, String want) {
+        assertTrue(eff(r, fn).toNames().contains(want), fn + " must surface " + want + " (cardinal sin if pure), got " + eff(r, fn));
     }
 
     /** Asserts {@code fn} is at least DISCLOSED (the precise effect or {@code Unknown}) — never silent-pure. */
-    private static void mustNotBePure(Map<String, TreeSet<String>> r, String fn, String want) {
-        TreeSet<String> got = eff(r, fn);
-        assertTrue(got.contains(want) || got.contains("Unknown"),
+    private static void mustNotBePure(Map<String, EffectSet> r, String fn, String want) {
+        EffectSet got = eff(r, fn);
+        assertTrue(got.toNames().contains(want) || got.toNames().contains("Unknown"),
                 fn + " must surface " + want + " or Unknown (never silent pure), got " + got);
     }
 
@@ -174,7 +177,7 @@ class SoundnessSweepTest {
     void reflectionIsUnknownNotPure() throws Exception {
         var r = scan("import java.lang.reflect.*;\n"
                 + "public class A { public void use(Method m, Object o) throws Exception { m.invoke(o); } }");
-        assertTrue(eff(r, "A.use").contains("Unknown"), "reflection must read Unknown, got " + eff(r, "A.use"));
+        assertTrue(eff(r, "A.use").toNames().contains("Unknown"), "reflection must read Unknown, got " + eff(r, "A.use"));
     }
 
     /** Deferred-execution containers (ThreadLocal.withInitial, Kotlin {@code by lazy}) stow a lambda that
@@ -191,10 +194,10 @@ class SoundnessSweepTest {
                 + "  public static void touchesClass(){ fs(); }\n"
                 + "  public static String force(){ return TL.get(); }\n"
                 + "}");
-        assertFalse(eff(r, "A.touchesClass").contains("Net"),
+        assertFalse(eff(r, "A.touchesClass").toNames().contains("Net"),
                 "deferred-lambda effect must not smear via <clinit> onto an unrelated method, got " + eff(r, "A.touchesClass"));
-        assertTrue(eff(r, "A.touchesClass").contains("Fs"), "its own Fs must remain, got " + eff(r, "A.touchesClass"));
-        assertTrue(eff(r, "A.force").contains("Net"),
+        assertTrue(eff(r, "A.touchesClass").toNames().contains("Fs"), "its own Fs must remain, got " + eff(r, "A.touchesClass"));
+        assertTrue(eff(r, "A.force").toNames().contains("Net"),
                 "the force site must still attribute the deferred lambda's Net, got " + eff(r, "A.force"));
     }
 
@@ -211,9 +214,9 @@ class SoundnessSweepTest {
                 + "  public static void clean(){ fs(); }\n"
                 + "  public static void runIt(){ R.run(); }\n"
                 + "}");
-        assertFalse(eff(r, "A.clean").contains("Net"),
+        assertFalse(eff(r, "A.clean").toNames().contains("Net"),
                 "a field-stored lambda's effect must not smear via <clinit> onto a neighbour, got " + eff(r, "A.clean"));
-        assertTrue(eff(r, "A.clean").contains("Fs"), "its own Fs must remain, got " + eff(r, "A.clean"));
+        assertTrue(eff(r, "A.clean").toNames().contains("Fs"), "its own Fs must remain, got " + eff(r, "A.clean"));
         assertFalse(eff(r, "A.runIt").isEmpty(),
                 "the field-SAM invocation must disclose (Unknown), never silent-pure, got " + eff(r, "A.runIt"));
     }
@@ -233,9 +236,9 @@ class SoundnessSweepTest {
                 + "  public static void clean(){ fs(); }\n"
                 + "  public static String invoke(Map<String,String> m, String k){ return m.computeIfAbsent(k, x -> { net(); return x; }); }\n"
                 + "}");
-        assertFalse(eff(r, "A.clean").contains("Net"),
+        assertFalse(eff(r, "A.clean").toNames().contains("Net"),
                 "a map-stored lambda must not smear via <clinit>, got " + eff(r, "A.clean"));
-        assertTrue(eff(r, "A.invoke").contains("Net"),
+        assertTrue(eff(r, "A.invoke").toNames().contains("Net"),
                 "an INVOKING container HOF (computeIfAbsent) must still attribute the lambda's effect, got " + eff(r, "A.invoke"));
     }
 
@@ -252,9 +255,9 @@ class SoundnessSweepTest {
                 + "  static void fs(){ " + FS + " }\n"
                 + "  public static void clean(){ fs(); }\n"
                 + "}");
-        assertFalse(eff(r, "A.makeHandler").contains("Net"),
+        assertFalse(eff(r, "A.makeHandler").toNames().contains("Net"),
                 "a factory that returns (does not run) a lambda must not be attributed its effect, got " + eff(r, "A.makeHandler"));
-        assertFalse(eff(r, "A.clean").contains("Net"),
+        assertFalse(eff(r, "A.clean").toNames().contains("Net"),
                 "the returned-lambda effect must not smear via <clinit>, got " + eff(r, "A.clean"));
     }
 
@@ -264,7 +267,7 @@ class SoundnessSweepTest {
     void lambdaPassedToInvokerIsStillAttributed() throws Exception {
         var r = scan("import java.util.*; import java.util.stream.*;\n"
                 + "public class A { public void use(List<String> l){ l.forEach(s -> { " + NET + " }); } }");
-        assertTrue(eff(r, "A.use").contains("Net"),
+        assertTrue(eff(r, "A.use").toNames().contains("Net"),
                 "a lambda passed to an invoking consumer (forEach) must still attribute its effect, got " + eff(r, "A.use"));
     }
 
@@ -274,8 +277,8 @@ class SoundnessSweepTest {
         var r = scan("class Base { void foo(){} }\n"
                 + "class Clean extends Base { void foo(){ int x = 1; } }\n"
                 + "public class A { public void use(){ Base b = new Clean(); b.foo(); } }");
-        assertFalse(eff(r, "A.use").contains("Net"), "must not fabricate Net, got " + eff(r, "A.use"));
-        assertFalse(eff(r, "A.use").contains("Fs"), "must not fabricate Fs, got " + eff(r, "A.use"));
+        assertFalse(eff(r, "A.use").toNames().contains("Net"), "must not fabricate Net, got " + eff(r, "A.use"));
+        assertFalse(eff(r, "A.use").toNames().contains("Fs"), "must not fabricate Fs, got " + eff(r, "A.use"));
     }
 
     /** A NAMED class implementing a JDK functional interface, handed to an EXTERNAL HOF that invokes its
@@ -302,7 +305,7 @@ class SoundnessSweepTest {
                 + "  static class Eff implements Consumer<String> { public void accept(String s){ " + FS + " } }\n"
                 + "  public void use(){ List<Consumer<String>> b = new ArrayList<>(); b.add(new Eff()); }\n"
                 + "}");
-        assertFalse(eff(r, "A.use").contains("Fs"),
+        assertFalse(eff(r, "A.use").toNames().contains("Fs"),
                 "stored-not-invoked must not fabricate Fs, got " + eff(r, "A.use"));
     }
 
@@ -320,9 +323,9 @@ class SoundnessSweepTest {
                 + "  public void wrap(){ Optional.ofNullable(new Eff()); }\n"
                 + "  public void treeCtor(){ Map<String,Integer> m = new TreeMap<>(new Cmp()); }\n"
                 + "}");
-        assertFalse(eff(r, "A.nullCheck").contains("Fs"), "requireNonNull must not fabricate, got " + eff(r, "A.nullCheck"));
-        assertFalse(eff(r, "A.wrap").contains("Fs"), "Optional.ofNullable must not fabricate, got " + eff(r, "A.wrap"));
-        assertFalse(eff(r, "A.treeCtor").contains("Fs"), "TreeMap ctor must not fabricate, got " + eff(r, "A.treeCtor"));
+        assertFalse(eff(r, "A.nullCheck").toNames().contains("Fs"), "requireNonNull must not fabricate, got " + eff(r, "A.nullCheck"));
+        assertFalse(eff(r, "A.wrap").toNames().contains("Fs"), "Optional.ofNullable must not fabricate, got " + eff(r, "A.wrap"));
+        assertFalse(eff(r, "A.treeCtor").toNames().contains("Fs"), "TreeMap ctor must not fabricate, got " + eff(r, "A.treeCtor"));
     }
 
     /** SEALED closed-hierarchy carve-out: a sealed type with >CHA_FANOUT_LIMIT(12) FINAL permits, one
@@ -355,7 +358,7 @@ class SoundnessSweepTest {
                 + "final class V4 implements Sb { public void op(){} }\n"
                 + "public class A { public void use(Sb s){ s.op(); } }";
         var r = scanDeleting(src, "Ghost");
-        assertTrue(eff(r, "A.use").contains("Unknown"),
+        assertTrue(eff(r, "A.use").toNames().contains("Unknown"),
                 "sealed type with an unseen effectful permit must disclose Unknown (not silent-pure), got " + eff(r, "A.use"));
     }
 
@@ -368,8 +371,8 @@ class SoundnessSweepTest {
                 + "final class U2 implements Sv { public void op(){ " + FS + " } }\n"
                 + "final class U3 implements Sv { public void op(){} }\n"
                 + "public class A { public void use(Sv s){ s.op(); } }");
-        assertTrue(eff(r, "A.use").contains("Fs"), "must resolve, got " + eff(r, "A.use"));
-        assertFalse(eff(r, "A.use").contains("Unknown"),
+        assertTrue(eff(r, "A.use").toNames().contains("Fs"), "must resolve, got " + eff(r, "A.use"));
+        assertFalse(eff(r, "A.use").toNames().contains("Unknown"),
                 "fully-visible sealed must NOT be over-disclosed Unknown, got " + eff(r, "A.use"));
     }
 
@@ -383,7 +386,7 @@ class SoundnessSweepTest {
               .append(i == 6 ? FS : "").append(" } }\n");
         sb.append("public class A { public void use(O o){ o.op(); } }");
         var r = scan(sb.toString());
-        assertTrue(eff(r, "A.use").contains("Unknown"),
+        assertTrue(eff(r, "A.use").toNames().contains("Unknown"),
                 "open >12 hierarchy must stay disclosed-Unknown (not resolved, not silent), got " + eff(r, "A.use"));
     }
 
@@ -398,8 +401,8 @@ class SoundnessSweepTest {
             sb.append("final class Z").append(i).append(" implements Sp { public void op(){ int x=1; } }\n");
         sb.append("public class A { public void use(Sp s){ s.op(); } }");
         var r = scan(sb.toString());
-        assertFalse(eff(r, "A.use").contains("Fs"), "pure sealed must not fabricate, got " + eff(r, "A.use"));
-        assertFalse(eff(r, "A.use").contains("Unknown"), "pure sealed must resolve (not Unknown), got " + eff(r, "A.use"));
+        assertFalse(eff(r, "A.use").toNames().contains("Fs"), "pure sealed must not fabricate, got " + eff(r, "A.use"));
+        assertFalse(eff(r, "A.use").toNames().contains("Unknown"), "pure sealed must resolve (not Unknown), got " + eff(r, "A.use"));
     }
 
     /** A named `java.util.Comparator` with an effectful `compare`, handed to a library sort API

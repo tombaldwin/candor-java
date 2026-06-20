@@ -1,5 +1,8 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+import io.poly.candor.model.EffectSet;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -101,11 +104,11 @@ class Round12FixesTest {
         write(out.resolve("app/Lam13.class"), syntheticNetFn("app/Lam13"));
         write(out.resolve("app/Big.class"), bigCaller());
         try {
-            Map<String, TreeSet<String>> r = Candor.runScan(out);
-            TreeSet<String> eff = r.getOrDefault("app.Big.call", new TreeSet<>());
+            Map<String, EffectSet> r = Candor.runScan(out);
+            EffectSet eff = r.getOrDefault("app.Big.call", EffectSet.empty());
             assertFalse(eff.isEmpty(),
                     "a broad dispatch dropping a synthetic lambda whose invoke() does I/O must NOT be silent-pure");
-            assertTrue(eff.contains("Unknown") || eff.contains("Net"),
+            assertTrue(eff.toNames().contains("Unknown") || eff.toNames().contains("Net"),
                     "broad lambda dispatch must reach Unknown (or the effect), got " + eff);
         } finally { rm(dir); }
     }

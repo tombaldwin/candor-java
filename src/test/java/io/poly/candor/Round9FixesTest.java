@@ -1,5 +1,8 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+import io.poly.candor.model.EffectSet;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -62,8 +65,8 @@ class Round9FixesTest {
                 "  void real() throws Exception { new java.net.Socket(\"api.x.com\", 443).close(); }",
                 "}"))));
         try {
-            Map<String, TreeSet<String>> r = Candor.runScan(cls);
-            assertTrue(r.getOrDefault("app.A.redis", new TreeSet<>()).contains("Net"), "the Jedis call is still Net");
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(r.getOrDefault("app.A.redis", EffectSet.empty()).toNames().contains("Net"), "the Jedis call is still Net");
             assertTrue(AnalysisState.hostsDirect.getOrDefault("app.A.redis", new TreeSet<>()).isEmpty(),
                     "a Redis key must NOT be captured as a host, got " + AnalysisState.hostsDirect.get("app.A.redis"));
             assertTrue(AnalysisState.hostsDirect.getOrDefault("app.A.real", new TreeSet<>()).contains("api.x.com:443"),

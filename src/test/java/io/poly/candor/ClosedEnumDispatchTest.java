@@ -1,5 +1,8 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+import io.poly.candor.model.EffectSet;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -28,7 +31,7 @@ import org.junit.jupiter.api.Test;
  */
 class ClosedEnumDispatchTest {
 
-    private static Map<String, TreeSet<String>> compileAndScan(Map<String, String> sources) throws Exception {
+    private static Map<String, EffectSet> compileAndScan(Map<String, String> sources) throws Exception {
         javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
         Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
         Path dir = Files.createTempDirectory("candor-enum");
@@ -53,8 +56,8 @@ class ClosedEnumDispatchTest {
         }
     }
 
-    private static TreeSet<String> eff(Map<String, TreeSet<String>> r, String fn) {
-        return r.getOrDefault(fn, new TreeSet<>());
+    private static EffectSet eff(Map<String, EffectSet> r, String fn) {
+        return r.getOrDefault(fn, EffectSet.empty());
     }
 
     /** Build an enum with {@code n} per-constant bodies (each compiles to a synthetic subclass, so the
@@ -73,15 +76,15 @@ class ClosedEnumDispatchTest {
     void effectfulConstantSurfacesThroughBroadEnumDispatch() throws Exception {
         // 14 constants (> CHA_FANOUT_LIMIT = 12), the last opens a Socket.
         String e = enumWith("Eff", 14, "try { new java.net.Socket(\"h\",80); } catch(Exception ex){}");
-        Map<String, TreeSet<String>> r = compileAndScan(Map.of("Main.java", String.join("\n",
+        Map<String, EffectSet> r = compileAndScan(Map.of("Main.java", String.join("\n",
             e,
             "public class Main {",
             "  void run(Eff x){ x.act(); }",   // polymorphic receiver → CHA over all 14 constants
             "}")));
-        TreeSet<String> run = eff(r, "Main.run");
-        assertTrue(run.contains("Net"),
+        EffectSet run = eff(r, "Main.run");
+        assertTrue(run.toNames().contains("Net"),
                 "a >12-constant enum dispatch must surface the effectful constant's Net, got " + run);
-        assertFalse(run.contains("Unknown"),
+        assertFalse(run.toNames().contains("Unknown"),
                 "a closed enum is fully resolved — it must NOT read Unknown, got " + run);
     }
 
@@ -90,7 +93,7 @@ class ClosedEnumDispatchTest {
     @Test
     void pureBroadEnumDispatchIsPureNotUnknown() throws Exception {
         String e = enumWith("Pure", 16, "/* pure */");
-        Map<String, TreeSet<String>> r = compileAndScan(Map.of("Main.java", String.join("\n",
+        Map<String, EffectSet> r = compileAndScan(Map.of("Main.java", String.join("\n",
             e,
             "public class Main {",
             "  void run(Pure x){ x.act(); }",
@@ -108,8 +111,8 @@ class ClosedEnumDispatchTest {
         for (int i = 0; i < 14; i++)  // 14 > 12 concrete subclasses, all pure
             src.append("class Sub").append(i).append(" extends Base { void act(){} }\n");
         src.append("public class Main { void run(Base b){ b.act(); } }\n");
-        Map<String, TreeSet<String>> r = compileAndScan(Map.of("Main.java", src.toString()));
-        assertTrue(eff(r, "Main.run").contains("Unknown"),
+        Map<String, EffectSet> r = compileAndScan(Map.of("Main.java", src.toString()));
+        assertTrue(eff(r, "Main.run").toNames().contains("Unknown"),
                 "a >12 OPEN abstract hierarchy must stay Unknown (bound guards external subtypes), got " + r.get("Main.run"));
     }
 }

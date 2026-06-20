@@ -1,5 +1,8 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+import io.poly.candor.model.EffectSet;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -48,8 +51,8 @@ class Round6FixesTest {
         }
     }
 
-    private static TreeSet<String> eff(Map<String, TreeSet<String>> r, String fn) {
-        return r.getOrDefault(fn, new TreeSet<>());
+    private static EffectSet eff(Map<String, EffectSet> r, String fn) {
+        return r.getOrDefault(fn, EffectSet.empty());
     }
 
     /** #1 — the Net HOST literal must come from the call's OWN argument, never a prior statement's string.
@@ -87,8 +90,8 @@ class Round6FixesTest {
                 "  static void callPure() { f(new b.User()); }",
                 "}")));
         try {
-            Map<String, TreeSet<String>> r = Candor.runScan(cls);
-            assertTrue(eff(r, "G.callEff").contains("Fs"), "the effectful overload's caller must read Fs");
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(eff(r, "G.callEff").toNames().contains("Fs"), "the effectful overload's caller must read Fs");
             assertTrue(eff(r, "G.callPure").isEmpty(),
                     "the pure overload's caller must stay pure (no simple-name-collision fabrication), got " + r.get("G.callPure"));
         } finally { rm(cls.getParent()); }
@@ -109,8 +112,8 @@ class Round6FixesTest {
                 "public class App { final DocRepo repo; App(DocRepo r){this.repo=r;}",
                 "  public Object loadAll(){ return repo.findAll(); } }")));
         try {
-            Map<String, TreeSet<String>> r = Candor.runScan(cls);
-            assertTrue(eff(r, "app.App.loadAll").contains("Db"), "reactive repo inherited findAll must be Db, got " + r.get("app.App.loadAll"));
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(eff(r, "app.App.loadAll").toNames().contains("Db"), "reactive repo inherited findAll must be Db, got " + r.get("app.App.loadAll"));
         } finally { rm(cls.getParent()); }
     }
 
@@ -154,8 +157,8 @@ class Round6FixesTest {
             "  int viaInvoke(ForkJoinPool p){ return p.invoke(new RT()); }",
             "}")));
         try {
-            Map<String, TreeSet<String>> r = Candor.runScan(cls);
-            assertTrue(eff(r, "F.viaInvoke").contains("Net"), "pool.invoke(new RT()) must reach compute()'s Net, got " + r.get("F.viaInvoke"));
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(eff(r, "F.viaInvoke").toNames().contains("Net"), "pool.invoke(new RT()) must reach compute()'s Net, got " + r.get("F.viaInvoke"));
             assertTrue(AnalysisState.entryPoints.contains("F$RT.compute"), "RecursiveTask.compute must be rooted");
         } finally { rm(cls.getParent()); }
     }
@@ -172,7 +175,7 @@ class Round6FixesTest {
             Candor.resetState();
             Loader.loadCrossDeps(dir.toString(), "any-own-version");
             AnalysisState.DepFn de = AnalysisState.crossDeps.get("dep/Lib.phone()V");
-            assertTrue(de != null && de.effects.contains("Unknown"),
+            assertTrue(de != null && de.effects.contains(Effect.UNKNOWN),
                     "a null-version dep entry must inherit Unknown (not be dropped to pure), got " + (de == null ? "null" : de.effects));
         } finally { rm(dir); }
     }

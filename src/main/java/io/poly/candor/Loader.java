@@ -6,6 +6,7 @@ import java.util.*;
 import java.util.stream.*;
 import org.objectweb.asm.*;
 import org.objectweb.asm.tree.*;
+import io.poly.candor.model.*;
 import com.google.gson.*;
 import static io.poly.candor.Candor.*;
 import static io.poly.candor.AnalysisState.*;
@@ -169,7 +170,7 @@ final class Loader {
                         if (h.isBlank()) continue;
                         DepFn de = new DepFn();
                         if (stale) {
-                            de.effects.add("Unknown");
+                            de.effects.add(Effect.UNKNOWN);
                         } else {
                             // `inferred` present but MALFORMED (JsonNull / a string / an object, or a
                             // non-string element) is an untrustworthy claim → Unknown, never silently dropped
@@ -177,12 +178,14 @@ final class Loader {
                             // strings reads its effects; a genuinely ABSENT inferred field stays pure.
                             if (m.has("inferred") && m.get("inferred").isJsonArray()) {
                                 for (JsonElement x : m.getAsJsonArray("inferred"))
-                                    if (x.isJsonPrimitive()) de.effects.add(x.getAsString());
-                                    else de.effects.add("Unknown");
+                                    if (x.isJsonPrimitive()) {
+                                        Effect e = Effect.fromSpecName(x.getAsString());
+                                        de.effects.add(e != null ? e : Effect.UNKNOWN); // foreign name → Unknown, never dropped
+                                    } else de.effects.add(Effect.UNKNOWN);
                             } else if (m.has("inferred") && !m.get("inferred").isJsonNull()) {
-                                de.effects.add("Unknown");
+                                de.effects.add(Effect.UNKNOWN);
                             } else if (m.has("inferred")) {
-                                de.effects.add("Unknown"); // inferred: null → untrusted
+                                de.effects.add(Effect.UNKNOWN); // inferred: null → untrusted
                             }
                             for (var pair : List.of(Map.entry("hosts", de.hosts), Map.entry("cmds", de.cmds),
                                     Map.entry("paths", de.paths), Map.entry("tables", de.tables)))

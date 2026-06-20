@@ -1,5 +1,8 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+import io.poly.candor.model.EffectSet;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.util.List;
@@ -16,12 +19,12 @@ import org.junit.jupiter.api.Test;
  */
 class FixpointTest {
 
-    private static TreeSet<String> set(String... xs) {
-        return new TreeSet<>(List.of(xs));
+    private static EffectSet set(String... xs) {
+        return EffectSet.ofNames(List.of(xs));
     }
 
-    private static TreeSet<String> inferred(Map<String, TreeSet<String>> r, String fn) {
-        return r.getOrDefault(fn, new TreeSet<>());
+    private static EffectSet inferred(Map<String, EffectSet> r, String fn) {
+        return r.getOrDefault(fn, EffectSet.empty());
     }
 
     @Test
@@ -83,6 +86,6 @@ class FixpointTest {
     void aPureLeafStaysEmpty() {
         var edges = Map.of("a", Set.of("b"));
         var r = Candor.computeFixpoint(Map.of(), edges, Map.of());
-        assertEquals(new TreeSet<>(), inferred(r, "a")); // nothing reachable carries an effect
+        assertEquals(EffectSet.empty(), inferred(r, "a")); // nothing reachable carries an effect
     }
 }

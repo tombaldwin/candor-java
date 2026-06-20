@@ -1,5 +1,8 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+import io.poly.candor.model.EffectSet;
+
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -70,8 +73,8 @@ class DeferredForwardingTest {
             "}",
             "class TiReader { int read(Ti t) { return t.tl.get(); } }")));
         try {
-            Map<String, TreeSet<String>> r = Candor.runScan(cls);
-            assertTrue(r.getOrDefault("app.TiReader.read", new TreeSet<>()).contains("Fs"),
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(r.getOrDefault("app.TiReader.read", EffectSet.empty()).toNames().contains("Fs"),
                     "cross-class ThreadLocal.get force site must carry the stored Supplier's Fs — got "
                             + r.get("app.TiReader.read"));
         } finally { rm(cls.getParent()); }
@@ -86,8 +89,8 @@ class DeferredForwardingTest {
             "class P { final ThreadLocal<Integer> tl = ThreadLocal.withInitial(() -> 1 + 1); }",
             "class R { int read(P p) { return p.tl.get(); } }")));
         try {
-            Map<String, TreeSet<String>> r = Candor.runScan(cls);
-            assertTrue(r.getOrDefault("app.R.read", new TreeSet<>()).isEmpty(),
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(r.getOrDefault("app.R.read", EffectSet.empty()).isEmpty(),
                     "a pure-init container's reader must stay pure (no fabrication) — got " + r.get("app.R.read"));
         } finally { rm(cls.getParent()); }
     }
@@ -109,10 +112,10 @@ class DeferredForwardingTest {
             "  int readEff()  { return eff.get(); }",
             "}")));
         try {
-            Map<String, TreeSet<String>> r = Candor.runScan(cls);
-            assertTrue(r.getOrDefault("app.M.readEff", new TreeSet<>()).contains("Fs"),
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(r.getOrDefault("app.M.readEff", EffectSet.empty()).toNames().contains("Fs"),
                     "the effectful field's reader must carry Fs — got " + r.get("app.M.readEff"));
-            assertFalse(r.getOrDefault("app.M.readPure", new TreeSet<>()).contains("Fs"),
+            assertFalse(r.getOrDefault("app.M.readPure", EffectSet.empty()).toNames().contains("Fs"),
                     "the pure field's reader must NOT inherit the sibling effectful field's Fs (field-scoping) — got "
                             + r.get("app.M.readPure"));
         } finally { rm(cls.getParent()); }

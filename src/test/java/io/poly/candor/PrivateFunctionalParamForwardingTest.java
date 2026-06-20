@@ -1,5 +1,8 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+import io.poly.candor.model.EffectSet;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -30,7 +33,7 @@ import org.junit.jupiter.api.Test;
  */
 class PrivateFunctionalParamForwardingTest {
 
-    private static Map<String, TreeSet<String>> compileAndScan(Map<String, String> sources) throws Exception {
+    private static Map<String, EffectSet> compileAndScan(Map<String, String> sources) throws Exception {
         javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
         Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
         Path dir = Files.createTempDirectory("candor-fwd");
@@ -55,22 +58,22 @@ class PrivateFunctionalParamForwardingTest {
         }
     }
 
-    private static TreeSet<String> eff(Map<String, TreeSet<String>> r, String fn) {
-        return r.getOrDefault(fn, new TreeSet<>());
+    private static EffectSet eff(Map<String, EffectSet> r, String fn) {
+        return r.getOrDefault(fn, EffectSet.empty());
     }
 
     /** The win + no-fabrication anchor: a private Consumer-sink invoked only with PURE inline lambdas is
      *  pure (no callback Unknown), and so are its callers — the smear is gone, nothing fabricated. */
     @Test
     void pureLambdasThroughPrivateSinkStayPure() throws Exception {
-        Map<String, TreeSet<String>> r = compileAndScan(Map.of("A.java", String.join("\n",
+        Map<String, EffectSet> r = compileAndScan(Map.of("A.java", String.join("\n",
             "import java.util.function.Consumer;",
             "public class A {",
             "  private static void each(String[] xs, Consumer<String> c){ for (String x : xs) c.accept(x); }",
             "  static int n;",
             "  void use(){ each(new String[]{\"a\"}, s -> { n++; }); }",  // pure lambda (field write on a static int is not an effect)
             "}")));
-        assertFalse(eff(r, "A.each").contains("Unknown"),
+        assertFalse(eff(r, "A.each").toNames().contains("Unknown"),
                 "a private Consumer-sink called only with project lambdas must NOT read callback Unknown, got " + r.get("A.each"));
         assertTrue(eff(r, "A.each").isEmpty(), "pure lambdas → the sink is pure, got " + r.get("A.each"));
         assertTrue(eff(r, "A.use").isEmpty(), "the caller stays pure, got " + r.get("A.use"));
@@ -80,23 +83,23 @@ class PrivateFunctionalParamForwardingTest {
      *  the sink (Net), not Unknown — the lambda body is resolved through the closed call site. */
     @Test
     void effectfulLambdaThroughPrivateSinkSurfaces() throws Exception {
-        Map<String, TreeSet<String>> r = compileAndScan(Map.of("B.java", String.join("\n",
+        Map<String, EffectSet> r = compileAndScan(Map.of("B.java", String.join("\n",
             "import java.util.function.Consumer;",
             "public class B {",
             "  private static void each(String[] xs, Consumer<String> c){ for (String x : xs) c.accept(x); }",
             "  void use(){ each(new String[]{\"h\"}, s -> { try { new java.net.Socket(s,80); } catch(Exception e){} }); }",
             "}")));
-        assertTrue(eff(r, "B.each").contains("Net"),
+        assertTrue(eff(r, "B.each").toNames().contains("Net"),
                 "the effectful lambda's Net must surface on the resolved sink, got " + r.get("B.each"));
-        assertFalse(eff(r, "B.each").contains("Unknown"), "the sink is resolved — no Unknown, got " + r.get("B.each"));
-        assertTrue(eff(r, "B.use").contains("Net"), "the caller performs the lambda's Net, got " + r.get("B.use"));
+        assertFalse(eff(r, "B.each").toNames().contains("Unknown"), "the sink is resolved — no Unknown, got " + r.get("B.each"));
+        assertTrue(eff(r, "B.use").toNames().contains("Net"), "the caller performs the lambda's Net, got " + r.get("B.use"));
     }
 
     /** Bail #1 — an OPAQUE call site: the same private sink is also called with a field-stored handler whose
      *  body candor cannot see, so the param could be anything → the sink keeps its honest callback Unknown. */
     @Test
     void opaqueCallSiteKeepsUnknown() throws Exception {
-        Map<String, TreeSet<String>> r = compileAndScan(Map.of("C.java", String.join("\n",
+        Map<String, EffectSet> r = compileAndScan(Map.of("C.java", String.join("\n",
             "import java.util.function.Consumer;",
             "public class C {",
             "  Consumer<String> handler;",   // NOTE: a field of the functional type alone also bails (#3)
@@ -104,7 +107,7 @@ class PrivateFunctionalParamForwardingTest {
             "  void lambdaUse(){ each(new String[]{\"a\"}, s -> {}); }",
             "  void opaqueUse(){ each(new String[]{\"a\"}, handler); }",  // opaque arg — unresolvable
             "}")));
-        assertTrue(eff(r, "C.each").contains("Unknown"),
+        assertTrue(eff(r, "C.each").toNames().contains("Unknown"),
                 "a sink with an opaque call site must keep callback Unknown (no silent pure), got " + r.get("C.each"));
     }
 
@@ -112,13 +115,13 @@ class PrivateFunctionalParamForwardingTest {
      *  pass any handler), so it must keep the honest Unknown even when every visible call site is a lambda. */
     @Test
     void publicSinkKeepsUnknown() throws Exception {
-        Map<String, TreeSet<String>> r = compileAndScan(Map.of("D.java", String.join("\n",
+        Map<String, EffectSet> r = compileAndScan(Map.of("D.java", String.join("\n",
             "import java.util.function.Consumer;",
             "public class D {",
             "  public static void each(String[] xs, Consumer<String> c){ for (String x : xs) c.accept(x); }",
             "  void use(){ each(new String[]{\"a\"}, s -> {}); }",
             "}")));
-        assertTrue(eff(r, "D.each").contains("Unknown"),
+        assertTrue(eff(r, "D.each").toNames().contains("Unknown"),
                 "a public functional-param sink must keep Unknown (external callers unknown), got " + r.get("D.each"));
     }
 
@@ -128,14 +131,14 @@ class PrivateFunctionalParamForwardingTest {
      *  Caught by an adversarial soundness sweep (the receiver-identity gate, {@link Candor#samIsOnParam}). */
     @Test
     void arrayElementSamIsNotSuppressedByParamForwarding() throws Exception {
-        Map<String, TreeSet<String>> r = compileAndScan(Map.of("E.java", String.join("\n",
+        Map<String, EffectSet> r = compileAndScan(Map.of("E.java", String.join("\n",
             "import java.util.function.Consumer;",
             "public class E {",
             // `c` is the forwardable param; `more[0]` is an opaque array element — its SAM must stay Unknown
             "  private static void sink(Consumer<String> c, Consumer<String>[] more){ c.accept(\"x\"); more[0].accept(\"y\"); }",
             "  void use(Consumer<String>[] arr){ sink(s -> {}, arr); }",
             "}")));
-        assertTrue(eff(r, "E.sink").contains("Unknown"),
+        assertTrue(eff(r, "E.sink").toNames().contains("Unknown"),
                 "the opaque array-element SAM must keep Unknown (not be masked by the param's pure lambda), got " + r.get("E.sink"));
     }
 
@@ -143,13 +146,13 @@ class PrivateFunctionalParamForwardingTest {
      *  never invoked), the sink must read Unknown, not silently pure. */
     @Test
     void samOnlyOnNonParamValueKeepsUnknown() throws Exception {
-        Map<String, TreeSet<String>> r = compileAndScan(Map.of("G.java", String.join("\n",
+        Map<String, EffectSet> r = compileAndScan(Map.of("G.java", String.join("\n",
             "import java.util.function.Consumer;",
             "public class G {",
             "  private static void sink(Consumer<String> c, Consumer<String>[] more){ more[0].accept(\"y\"); }",
             "  void use(Consumer<String>[] arr){ sink(s -> {}, arr); }",
             "}")));
-        assertTrue(eff(r, "G.sink").contains("Unknown"),
+        assertTrue(eff(r, "G.sink").toNames().contains("Unknown"),
                 "a SAM on a non-param F value must keep Unknown, got " + r.get("G.sink"));
     }
 }

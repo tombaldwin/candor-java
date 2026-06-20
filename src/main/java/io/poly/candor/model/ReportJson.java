@@ -2,10 +2,14 @@ package io.poly.candor.model;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
@@ -61,5 +65,63 @@ public final class ReportJson {
         if (!e.paths().isEmpty()) m.put("paths", e.paths());
         if (!e.tables().isEmpty()) m.put("tables", e.tables());
         return m;
+    }
+
+    // ---- read side -----------------------------------------------------------------------------
+
+    /**
+     * Parse a {@code functions} array into {@link Effector}s, tolerantly: missing fields take their
+     * empty/default value (never null), unknown {@code unitKind}/effect names are tolerated (spec §2
+     * forward compatibility), and a foreign {@code unknownWhy} prefix is preserved verbatim. No
+     * filtering or sorting — the caller (Query) drops un-named entries and sorts, as before.
+     */
+    public static List<Effector> parseEntries(JsonArray arr) {
+        List<Effector> out = new ArrayList<>();
+        for (JsonElement el : arr) {
+            if (!el.isJsonObject()) continue;
+            JsonObject o = el.getAsJsonObject();
+            out.add(new Effector(
+                    str(o, "fn"),
+                    str(o, "loc"),
+                    EffectSet.ofNames(strList(o, "inferred")),
+                    strList(o, "invisible"),
+                    EffectSet.ofNames(strList(o, "direct")),
+                    EffectSet.ofNames(strList(o, "declared")),
+                    EffectSet.ofNames(strList(o, "undeclared")),
+                    EffectSet.ofNames(strList(o, "overdeclared")),
+                    bool(o, "entryPoint"),
+                    bool(o, "unresolved"),
+                    EffectorKind.fromWire(has(o, "unitKind") ? str(o, "unitKind") : null),
+                    strList(o, "unknownWhy").stream().map(UnknownReason::parse)
+                            .filter(Objects::nonNull).collect(Collectors.toList()),
+                    str(o, "hash"),
+                    strList(o, "calls"),
+                    strList(o, "fs"),
+                    strList(o, "hosts"),
+                    strList(o, "cmds"),
+                    strList(o, "paths"),
+                    strList(o, "tables")));
+        }
+        return out;
+    }
+
+    private static boolean has(JsonObject o, String k) {
+        return o.has(k) && !o.get(k).isJsonNull();
+    }
+
+    private static String str(JsonObject o, String k) {
+        return has(o, k) && o.get(k).isJsonPrimitive() ? o.get(k).getAsString() : "";
+    }
+
+    private static boolean bool(JsonObject o, String k) {
+        return has(o, k) && o.get(k).isJsonPrimitive() && o.get(k).getAsBoolean();
+    }
+
+    private static List<String> strList(JsonObject o, String k) {
+        List<String> r = new ArrayList<>();
+        if (has(o, k) && o.get(k).isJsonArray())
+            for (JsonElement e : o.getAsJsonArray(k))
+                if (e.isJsonPrimitive()) r.add(e.getAsString());
+        return r;
     }
 }

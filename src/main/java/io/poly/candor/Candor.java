@@ -5308,6 +5308,28 @@ public class Candor {
         // Net. PURE NOT touched: encodeRedirectURL/encodeActionURL (string rewriting), the request-map getters.
         if ((owner.equals("jakarta.faces.context.ExternalContext") || owner.equals("javax.faces.context.ExternalContext"))
                 && (method.equals("redirect") || method.equals("dispatch"))) return "Net";
+        // ── Precision upgrades (batch 22): 3rd-party libs candor already DISCLOSED invisible (sound) —
+        //    modeled to the CONCRETE effect (more actionable than invisible). NOT cardinal sins. ──
+        // REST Assured — the HTTP verb terminals fire the request → Net (given()/when() builders stay pure).
+        if ((owner.equals("io.restassured.RestAssured")
+                || owner.equals("io.restassured.specification.RequestSender")
+                || owner.equals("io.restassured.specification.RequestSpecification"))
+                && (method.equals("get") || method.equals("post") || method.equals("put")
+                    || method.equals("delete") || method.equals("patch") || method.equals("head")
+                    || method.equals("options"))) return "Net";
+        // Alibaba OSS + Tencent COS — regional cloud object stores over HTTP → Net (same shape as AWS S3).
+        if ((owner.equals("com.aliyun.oss.OSS") || owner.equals("com.aliyun.oss.OSSClient")
+                || owner.equals("com.qcloud.cos.COS") || owner.equals("com.qcloud.cos.COSClient"))
+                && (method.equals("getObject") || method.equals("putObject") || method.equals("deleteObject")
+                    || method.equals("deleteObjects") || method.equals("listObjects") || method.equals("copyObject")
+                    || method.equals("doesObjectExist") || method.equals("getObjectMetadata")
+                    || method.equals("appendObject") || method.equals("uploadPart")
+                    || method.equals("initiateMultipartUpload") || method.equals("completeMultipartUpload")))
+            return "Net";
+        // metadata-extractor — ImageMetadataReader.readMetadata(File) opens the image off disk → Fs
+        // (descriptor-gated; the InputStream overload is caller-stream → pure).
+        if (owner.equals("com.drew.imaging.ImageMetadataReader") && method.equals("readMetadata")
+                && desc != null && desc.startsWith("(Ljava/io/File;")) return "Fs";
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation

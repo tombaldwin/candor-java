@@ -273,6 +273,37 @@ IMPORTS = (
     #   (factory); an in-memory java.util.List vector (computed locally, no wire). Plus the existing batch-7
     #   java.util.Map anchors continue to guard against cache rules flooding the JDK Map.
     # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2..10.
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 12) ======================
+    # Spring AI, chat/comms SDKs, identity, payments, maps, more DB. RESULT: a strong gap-rich batch — the
+    # vein is NOT dry for vertical SaaS SDKs. (See the batch-12 report.)
+    # Spring AI -> Net (FLOOR-SUPPRESSED — note like Spring Vault): the wire terminal is the ChatClient
+    #   fluent chain `cc.prompt().user(..).call().content()` (owner of content()/chatResponse() is
+    #   org.springframework.ai.chat.client.ChatClient$CallResponseSpec) and OpenAiChatModel.call(Prompt)
+    #   (owner org.springframework.ai.openai.OpenAiChatModel). BOTH owners are org.springframework.*, so
+    #   candor DROPS these functions from the report ENTIRELY (Spring floor-suppression — same accepted
+    #   tradeoff as Spring Vault VaultTemplate; the probe records absence as the documented floor-suppress
+    #   outcome, NOT a hard gap, since modelling would require narrowing the org.springframework.* floor).
+    # Chat/comms -> Net: Slack (com.slack.api.methods.MethodsClient.chatPostMessage — the impl holds a
+    #   SlackHttpClient and POSTs to slack.com). Discord JDA (net.dv8tion.jda.api.requests.RestAction.queue
+    #   /complete — the REST terminal; queue() enqueues the wire call, complete() blocks on it). Telegram
+    #   (org.telegram.telegrambots.meta.bots.AbsSender.execute(BotApiMethod) — the synchronous Bot-API send;
+    #   the meta jar carries AbsSender, no heavy longpolling client needed).
+    # Identity -> Net: Keycloak admin (org.keycloak.admin.client.resource.UsersResource.create / .search —
+    #   JAX-RS proxy methods that round-trip to the Keycloak admin REST API). Okta (com.okta.sdk.resource
+    #   .client.ApiClient.invokeAPI — the generic Swagger-generated wire leaf every Okta call bottoms out in).
+    # Payments -> Net: Braintree (com.braintreegateway.TransactionGateway.sale — the gateway holds a
+    #   com.braintreegateway.util.Http and POSTs to the Braintree API; reached via gateway.transaction().sale()).
+    # Comms/email -> Net: Mailgun (net.sargue.mailgun.Mail.send — calls jakarta.ws.rs Invocation$Builder.post
+    #   to the Mailgun messages endpoint).
+    # Maps/geo -> Net: Google Maps services (com.google.maps.PendingResult.await — the fluent terminal of
+    #   `GeocodingApi.geocode(ctx, q).await()`; await() blocks on the OkHttp request to the Maps API. The
+    #   call-site owner of await() is com.google.maps.PendingResult — the per-API *Request types implement it).
+    # DB -> Net/Db: ClickHouse native client (com.clickhouse.client.ClickHouseClient.execute(ClickHouseRequest)
+    #   — async, returns CompletableFuture, Net|Db|Unknown PASS; and the STATIC ClickHouseClient.send(node,sql)
+    #   one-shot). NB JDBC (com.clickhouse.jdbc) is already covered via java.sql, so only the NATIVE client tested.
+    # PURE anchors: Braintree gateway construction (new BraintreeGateway(env,m,k,s) — holds the Http but does no
+    #   wire); Spring AI prompt builder (cc.prompt().user(..) — the fluent builder before .call(), no wire).
+    # All FULLY-QUALIFIED in the bodies (no wildcard imports) — same clash discipline as batches 2..11.
 )
 
 # (method, expected effect, params, body) — PASS iff candor reports the effect OR a disclosed Unknown.
@@ -1127,6 +1158,66 @@ EFFECT_CASES = [
         "com.azure.data.tables.TableClient c, com.azure.data.tables.models.TableEntity e", 'c.createEntity(e)'),
     ("azureTableGet", "Net", "com.azure.data.tables.TableClient c",
         'com.azure.data.tables.models.TableEntity e = c.getEntity("p", "r")'),
+
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 12) ======================
+    # NB: the Spring AI leaves (ChatClient/OpenAiModel) were FLOOR-SUPPRESSED (org.springframework.*
+    # dropped, like Spring Vault) until candor-java 0.7.8 modeled them explicitly; they now surface Net
+    # and are gated as normal EFFECT_CASES below.
+
+    # ---- Net (Slack — MethodsClient.chatPostMessage POSTs to slack.com via SlackHttpClient) ----
+    ("slackChatPostMessage", "Net",
+        "com.slack.api.methods.MethodsClient c, com.slack.api.methods.request.chat.ChatPostMessageRequest r",
+        'com.slack.api.methods.response.chat.ChatPostMessageResponse resp = c.chatPostMessage(r)'),
+
+    # ---- Net (Discord JDA — RestAction.queue enqueues / complete blocks on the Discord REST call) ----
+    ("jdaQueue", "Net", "net.dv8tion.jda.api.requests.RestAction<?> a", 'a.queue()'),
+    ("jdaComplete", "Net", "net.dv8tion.jda.api.requests.RestAction<?> a", 'Object o = a.complete()'),
+
+    # ---- Net (Telegram — AbsSender.execute(BotApiMethod) is the synchronous Bot-API send) ----
+    ("telegramExecute", "Net",
+        "org.telegram.telegrambots.meta.bots.AbsSender s, org.telegram.telegrambots.meta.api.methods.send.SendMessage m",
+        'org.telegram.telegrambots.meta.api.objects.Message r = s.execute(m)'),
+
+    # ---- Net (Keycloak admin — UsersResource.create/search are JAX-RS proxy round-trips to the admin REST API) ----
+    ("keycloakUsersCreate", "Net",
+        "org.keycloak.admin.client.resource.UsersResource u, org.keycloak.representations.idm.UserRepresentation rep",
+        'jakarta.ws.rs.core.Response r = u.create(rep)'),
+    ("keycloakUsersSearch", "Net", "org.keycloak.admin.client.resource.UsersResource u",
+        'java.util.List<org.keycloak.representations.idm.UserRepresentation> r = u.search("a")'),
+
+    # ---- Net (Okta — ApiClient.invokeAPI is the generic wire leaf every Okta SDK call bottoms out in) ----
+    ("oktaInvokeApi", "Net", "com.okta.sdk.resource.client.ApiClient c",
+        'Object o = c.invokeAPI("/p","GET",null,null,null,null,null,null,null,null,null,null,null)'),
+
+    # ---- Net (Braintree — TransactionGateway.sale POSTs to the Braintree API; reached via gateway.transaction()) ----
+    ("braintreeSale", "Net",
+        "com.braintreegateway.BraintreeGateway g, com.braintreegateway.TransactionRequest r",
+        'com.braintreegateway.Result<com.braintreegateway.Transaction> res = g.transaction().sale(r)'),
+
+    # ---- Net (Mailgun — Mail.send calls jakarta.ws.rs Invocation$Builder.post to the Mailgun endpoint) ----
+    ("mailgunSend", "Net", "net.sargue.mailgun.Mail m", 'net.sargue.mailgun.Response r = m.send()'),
+
+    # ---- Net (Google Maps — PendingResult.await() blocks on the OkHttp request; terminal of geocode(..).await()) ----
+    ("mapsAwait", "Net", "com.google.maps.GeoApiContext ctx",
+        'com.google.maps.model.GeocodingResult[] r = com.google.maps.GeocodingApi.geocode(ctx, "x").await()'),
+
+    # ---- Net/Db (ClickHouse NATIVE client — execute(request) async + static send(node,sql). JDBC is java.sql-covered.) ----
+    ("clickhouseExecute", "Db",
+        "com.clickhouse.client.ClickHouseClient c, com.clickhouse.client.ClickHouseRequest<?> req",
+        'java.util.concurrent.CompletableFuture<com.clickhouse.client.ClickHouseResponse> f = c.execute(req)'),
+    ("clickhouseSend", "Db", "com.clickhouse.client.ClickHouseNode n",
+        'java.util.concurrent.CompletableFuture<java.util.List<com.clickhouse.client.ClickHouseResponseSummary>> f = '
+        'com.clickhouse.client.ClickHouseClient.send(n, "select 1")'),
+    # Spring AI — was FLOOR-SUPPRESSED (org.springframework.* dropped, like Spring Vault); now modeled
+    # explicitly (CallResponseSpec terminal + ChatModel.call) so it surfaces Net. The fluent
+    # cc.prompt().user(..).call().content() terminal owner is ChatClient$CallResponseSpec.content.
+    ("springAiChatClientContent", "Net", "org.springframework.ai.chat.client.ChatClient cc",
+        'String s = cc.prompt().user("hi").call().content()'),
+    ("springAiChatClientResponse", "Net", "org.springframework.ai.chat.client.ChatClient cc",
+        'org.springframework.ai.chat.model.ChatResponse cr = cc.prompt().user("hi").call().chatResponse()'),
+    ("springAiOpenAiModelCall", "Net",
+        "org.springframework.ai.openai.OpenAiChatModel m, org.springframework.ai.chat.prompt.Prompt p",
+        'org.springframework.ai.chat.model.ChatResponse cr = m.call(p)'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -1375,6 +1466,17 @@ PURE_CASES = [
     #   java.util.List (a JDK type), so it must be silent-pure (anti-flooding anchor for the vector batch).
     ("inMemoryVectorPure",
         "java.util.List<Float> v = new java.util.ArrayList<>(); v.add(1.0f); float x = v.get(0)", ""),
+    # ====================== ADDED LIBRARIES (2026-06-20 batch 12) — pure anchors ===============
+    # Braintree gateway construction holds a com.braintreegateway.util.Http but does NO wire — the wire leaf
+    #   is transaction().sale() (modeled Net above). Must stay pure (factory/ctor-pure anchor).
+    ("braintreeGatewayCtorPure",
+        'com.braintreegateway.BraintreeGateway g = new com.braintreegateway.BraintreeGateway('
+        'com.braintreegateway.Environment.SANDBOX, "m", "k", "s")', ""),
+    # Spring AI prompt builder (cc.prompt().user("hi")) is the fluent builder BEFORE the .call() wire terminal
+    #   — no wire. NB Spring AI is org.springframework.* so this owner is also floor-suppressed (absent from the
+    #   report); absence == pure for the anchor (got == []), so it correctly reads pure here either way.
+    ("springAiPromptBuilderPure",
+        'var s = cc.prompt().user("hi")', "org.springframework.ai.chat.client.ChatClient cc"),
 ]
 
 
@@ -1713,6 +1815,34 @@ JARS = {
     #   k8s/curator terminals. Skipped to keep the vector set lean (Pinecone/Qdrant/Milvus cover the gRPC gap).
     # SKIPPED: Anthropic-java aggregator (com.anthropic:anthropic-java:0.8.0) — 305-byte stub, no classes; use
     #   anthropic-java-core above instead.
+    # --- added 2026-06-20 batch 12 ---
+    # Spring AI (client-chat carries ChatClient/CallResponseSpec; openai carries OpenAiChatModel; model+commons
+    #   supply Prompt/ChatResponse/ModelRequest base types). NB all FLOOR-SUPPRESSED at scan time (org.springframework.*).
+    "spring-ai-client-chat-1.0.0.jar": f"{_MVN}/org/springframework/ai/spring-ai-client-chat/1.0.0/spring-ai-client-chat-1.0.0.jar",
+    "spring-ai-openai-1.0.0.jar": f"{_MVN}/org/springframework/ai/spring-ai-openai/1.0.0/spring-ai-openai-1.0.0.jar",
+    "spring-ai-model-1.0.0.jar": f"{_MVN}/org/springframework/ai/spring-ai-model/1.0.0/spring-ai-model-1.0.0.jar",
+    "spring-ai-commons-1.0.0.jar": f"{_MVN}/org/springframework/ai/spring-ai-commons/1.0.0/spring-ai-commons-1.0.0.jar",
+    # Slack (client carries MethodsClient; model carries the request/response types)
+    "slack-api-client-1.40.3.jar": f"{_MVN}/com/slack/api/slack-api-client/1.40.3/slack-api-client-1.40.3.jar",
+    "slack-api-model-1.40.3.jar": f"{_MVN}/com/slack/api/slack-api-model/1.40.3/slack-api-model-1.40.3.jar",
+    # Discord JDA (self-contained for RestAction; okhttp already present supplies the http client)
+    "JDA-5.0.0-beta.24.jar": f"{_MVN}/net/dv8tion/JDA/5.0.0-beta.24/JDA-5.0.0-beta.24.jar",
+    # Telegram bots — the META jar carries AbsSender + SendMessage (the synchronous Bot-API send terminal)
+    "telegrambots-meta-6.9.7.1.jar": f"{_MVN}/org/telegram/telegrambots-meta/6.9.7.1/telegrambots-meta-6.9.7.1.jar",
+    # Keycloak admin client + keycloak-core (UserRepresentation) + jakarta.ws.rs-api (Response on create())
+    "keycloak-admin-client-24.0.5.jar": f"{_MVN}/org/keycloak/keycloak-admin-client/24.0.5/keycloak-admin-client-24.0.5.jar",
+    "keycloak-core-24.0.5.jar": f"{_MVN}/org/keycloak/keycloak-core/24.0.5/keycloak-core-24.0.5.jar",
+    "jakarta.ws.rs-api-3.1.0.jar": f"{_MVN}/jakarta/ws/rs/jakarta.ws.rs-api/3.1.0/jakarta.ws.rs-api-3.1.0.jar",
+    # Okta SDK api (carries com.okta.sdk.resource.client.ApiClient — the generic invokeAPI wire leaf)
+    "okta-sdk-api-15.0.0.jar": f"{_MVN}/com/okta/sdk/okta-sdk-api/15.0.0/okta-sdk-api-15.0.0.jar",
+    # Braintree (self-contained — carries BraintreeGateway/TransactionGateway/util.Http)
+    "braintree-java-3.25.0.jar": f"{_MVN}/com/braintreepayments/gateway/braintree-java/3.25.0/braintree-java-3.25.0.jar",
+    # Mailgun (net.sargue fork — Mail.send over jakarta.ws.rs; jakarta.ws.rs-api above supplies the client types)
+    "mailgun-2.0.0.jar": f"{_MVN}/net/sargue/mailgun/2.0.0/mailgun-2.0.0.jar",
+    # Google Maps services (carries GeoApiContext/GeocodingApi/PendingResult; okhttp+gson under the hood)
+    "google-maps-services-2.2.0.jar": f"{_MVN}/com/google/maps/google-maps-services/2.2.0/google-maps-services-2.2.0.jar",
+    # ClickHouse native client (carries ClickHouseClient/ClickHouseRequest/ClickHouseNode). JDBC is java.sql-covered.
+    "clickhouse-client-0.6.0.jar": f"{_MVN}/com/clickhouse/clickhouse-client/0.6.0/clickhouse-client-0.6.0.jar",
 }
 
 
@@ -1779,6 +1909,7 @@ def main():
         report = json.load(open(out))
         fns = report.get("functions", []) if isinstance(report, dict) else report
         inferred = {e["fn"].split("(")[0]: e.get("inferred", []) for e in fns if isinstance(e, dict)}
+        present = set(inferred.keys())
 
     rows, gaps, fabs = [], [], []
     for name, eff, _p, body in EFFECT_CASES:

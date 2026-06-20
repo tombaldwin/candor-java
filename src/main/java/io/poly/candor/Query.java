@@ -186,13 +186,13 @@ public final class Query {
      *  Rules are sorted so the comparison is order-independent. */
     static String policyJson() {
         List<Map<String, Object>> deny = new ArrayList<>();
-        for (var r : Candor.denyRules)
+        for (var r : Policy.denyRules)
             deny.add(Map.of("effects", new ArrayList<>(r.effects), "scope", r.scope));
         List<Map<String, Object>> allow = new ArrayList<>();
-        for (var r : Candor.allowRules)
+        for (var r : Policy.allowRules)
             allow.add(Map.of("effect", r.effect, "scope", r.scope, "values", new ArrayList<>(r.values)));
         List<Map<String, Object>> forbid = new ArrayList<>();
-        for (var r : Candor.forbidRules)
+        for (var r : Policy.forbidRules)
             forbid.add(Map.of("from", r.from, "to", r.to));
         Comparator<Map<String, Object>> byJson = Comparator.comparing(JSON::toJson);
         deny.sort(byJson); allow.sort(byJson); forbid.sort(byJson);
@@ -497,7 +497,7 @@ public final class Query {
      *  blast radius of introducing `effect` into `fn` (the fn + every transitive caller, all of which would
      *  gain it), then — given a policy — reports which of them would VIOLATE a `deny <Effect>`/`pure`
      *  boundary. Answers "if I add a network call here, what propagates and is it allowed?" BEFORE the edit.
-     *  Reuses Candor.parsePolicy/scopeMatches so the verdict matches what the real gate would do. */
+     *  Reuses Policy.parsePolicy/scopeMatches so the verdict matches what the real gate would do. */
     static int whatif(String reportPath, String fn, String effect, String policyPath, boolean json) {
         if (fn == null || effect == null) return usage("whatif <report.json> <fn> <Effect> [policy] [--json]");
         // Validate the effect against the vocabulary: a typo'd/lowercase effect (`net`) matches no deny
@@ -535,19 +535,19 @@ public final class Query {
         if (policyPath == null) policyPath = System.getenv("CANDOR_POLICY");
         List<String[]> violations = new ArrayList<>(); // {fn, rule-desc}
         if (policyPath != null) {
-            Candor.denyRules.clear();
+            Policy.denyRules.clear();
             // A SPECIFIED-but-unreadable policy must FAIL LOUD, not silently yield ok:true — a typo'd
             // CANDOR_POLICY path otherwise reads as "no violations" and an agent proceeds with a
             // forbidden edit believing the boundary was checked (/code-review; mirrors the gate's own
             // loud-on-unreadable contract and the diff/rewire path checks).
-            if (!Candor.parsePolicy(policyPath)) {
+            if (!Policy.parsePolicy(policyPath)) {
                 System.err.println("candor: policy `" + policyPath + "` could not be read — verdict NOT computed.");
                 return 2;
             }
             for (String f : affected) {
-                for (var r : Candor.denyRules) {
+                for (var r : Policy.denyRules) {
                     boolean denies = r.effects.isEmpty() || r.effects.contains(effect);
-                    if (denies && Candor.scopeMatches(f, r.scope)) {
+                    if (denies && Policy.scopeMatches(f, r.scope)) {
                         String desc = r.effects.isEmpty()
                                 ? "pure" + (r.scope.isEmpty() ? "" : " " + r.scope)
                                 : "deny " + effect + (r.scope.isEmpty() ? "" : " " + r.scope);

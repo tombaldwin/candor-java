@@ -5,6 +5,8 @@ The `io.poly.candor.model` package: the spec's nouns as types (candor-spec [SPEC
 Produced by `ReportWriter` (analyzer) and consumed by `Query` — the same types on both sides, via one
 `ReportJson` (de)serializer.
 
+> Rendered: [model-uml.svg](model-uml.svg) (open raw for a crisp, zoomable view). Mermaid source below.
+
 ```mermaid
 classDiagram
     direction LR

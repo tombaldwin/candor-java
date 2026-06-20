@@ -23,6 +23,7 @@ import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
 import java.util.stream.*;
+import io.poly.candor.model.*;
 import static io.poly.candor.Literals.*;
 import static io.poly.candor.ReportWriter.*;
 import static io.poly.candor.Cha.*;
@@ -403,6 +404,13 @@ public class Candor {
      * capability-token model in Java's idiom — "a bean's signature (its dependencies) tells you its
      * effect surface."
      */
+    /** Emit one AS-EFF diagnostic line (candor-spec §6) through the typed {@link DiagnosticCode}, so the
+     *  code vocabulary is first-class rather than an inline string literal. {@code format} is the
+     *  message body (no code prefix, no trailing newline); render() prepends {@code "[AS-EFF-00x] "}. */
+    static void diag(DiagnosticCode code, String format, Object... args) {
+        System.out.println(new Diagnostic(code, String.format(format, args)).render());
+    }
+
     static int checkConformance(Map<String, TreeSet<String>> inferred, String scope) {
         // performed(class) = union of inferred over the class's own methods.
         Map<String, TreeSet<String>> performed = new HashMap<>();
@@ -434,18 +442,18 @@ public class Candor {
             if (!undeclared.isEmpty()) {
                 String have = declared.isEmpty() ? "no injected capability"
                         : "only { " + String.join(", ", declared) + " }";
-                System.out.printf("[AS-EFF-001] class `%s` performs { %s } but holds %s; "
-                        + "inject a collaborator that provides it (don't reach for ambient authority)%n",
+                diag(DiagnosticCode.AS_EFF_001, "class `%s` performs { %s } but holds %s; "
+                        + "inject a collaborator that provides it (don't reach for ambient authority)",
                         dc, String.join(", ", undeclared), have);
                 v++;
             }
             if (hasUnknown) {
-                System.out.printf("[AS-EFF-003] class `%s` makes calls candor cannot resolve "
-                        + "(reflection / unresolved dispatch); effect set not provably complete%n", dc);
+                diag(DiagnosticCode.AS_EFF_003, "class `%s` makes calls candor cannot resolve "
+                        + "(reflection / unresolved dispatch); effect set not provably complete", dc);
                 v++;
             }
             if (!unused.isEmpty()) {
-                System.out.printf("[AS-EFF-002] class `%s` injects { %s } but never uses it%n",
+                diag(DiagnosticCode.AS_EFF_002, "class `%s` injects { %s } but never uses it",
                         dc, String.join(", ", unused));
                 v++;
             }

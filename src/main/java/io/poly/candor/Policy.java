@@ -35,8 +35,8 @@ final class Policy {
             List<String> ambient = direct.getOrDefault(e.getKey(), new TreeSet<>()).stream()
                     .filter(AMBIENT::contains).sorted().collect(Collectors.toList());
             if (!ambient.isEmpty()) {
-                System.out.printf("[AS-EFF-004] `%s` uses ambient authority { %s } directly; "
-                        + "route it through an injected collaborator / capability%n",
+                diag(DiagnosticCode.AS_EFF_004, "`%s` uses ambient authority { %s } directly; "
+                        + "route it through an injected collaborator / capability",
                         e.getKey(), String.join(", ", ambient));
                 v++;
             }
@@ -55,9 +55,9 @@ final class Policy {
         int v = 0;
         for (var e : new TreeMap<>(tainted).entrySet()) {
             if (e.getValue().isEmpty()) continue;
-            System.out.printf("[AS-EFF-007] `%s` performs { %s } on caller-derived input (an injection "
+            diag(DiagnosticCode.AS_EFF_007, "`%s` performs { %s } on caller-derived input (an injection "
                     + "surface — validate/sanitize it, or confirm the source is trusted); heuristic, may "
-                    + "over- or under-flag%n", e.getKey(), String.join(", ", e.getValue()));
+                    + "over- or under-flag", e.getKey(), String.join(", ", e.getValue()));
             v++;
         }
         return v;
@@ -79,7 +79,7 @@ final class Policy {
             List<String> gained = e.getValue().stream()
                     .filter(x -> !prior.contains(x)).sorted().collect(Collectors.toList());
             if (!gained.isEmpty()) {
-                System.out.printf("[AS-EFF-005] `%s` gained effect { %s } not present in the baseline%n",
+                diag(DiagnosticCode.AS_EFF_005, "`%s` gained effect { %s } not present in the baseline",
                         e.getKey(), String.join(", ", gained));
                 v++;
             }
@@ -114,7 +114,7 @@ final class Policy {
                         ? e.getValue().stream().filter(x -> !x.equals("Unknown")).sorted().collect(Collectors.toList())
                         : e.getValue().stream().filter(denied::contains).sorted().collect(Collectors.toList());
                 if (!bad.isEmpty()) {
-                    System.out.printf("[AS-EFF-006] `%s` performs { %s }, forbidden by policy%s: `%s`%n",
+                    diag(DiagnosticCode.AS_EFF_006, "`%s` performs { %s }, forbidden by policy%s: `%s`",
                             fn, String.join(", ", bad),
                             r.scope().isEmpty() ? "" : " (scope `" + r.scope() + "`)", r.src());
                     v++;
@@ -141,8 +141,8 @@ final class Policy {
                 if (!scopeMatches(fn, r.from())) continue;
                 String hit = reachesScope(fn, r.to());
                 if (hit != null) {
-                    System.out.printf("[AS-EFF-009] `%s` reaches into a forbidden layer (via `%s`), "
-                            + "violating policy: `forbid %s -> %s`%n", fn, hit, r.from(), r.to());
+                    diag(DiagnosticCode.AS_EFF_009, "`%s` reaches into a forbidden layer (via `%s`), "
+                            + "violating policy: `forbid %s -> %s`", fn, hit, r.from(), r.to());
                     v++;
                 }
             }
@@ -170,8 +170,8 @@ final class Policy {
                 // or a runtime-host call) can't be certified: fail-closed. Without the incompleteness gate a
                 // benign visible literal would MASK the invisible forbidden endpoint (the gate EVASION).
                 if (reached.isEmpty() || incompleteAcc.getOrDefault(fn, new TreeSet<>()).contains(effect)) {
-                    System.out.printf("[AS-EFF-008] `%s` performs %s with no visible literal — the "
-                            + "surface cannot be certified: `allow %s%s %s`%n", fn, effect, effect,
+                    diag(DiagnosticCode.AS_EFF_008, "`%s` performs %s with no visible literal — the "
+                            + "surface cannot be certified: `allow %s%s %s`", fn, effect, effect,
                             r.scope().isEmpty() ? "" : " in " + r.scope(),
                             String.join(" ", r.values()));
                     v++;
@@ -180,8 +180,8 @@ final class Policy {
                 List<String> bad = reached.stream()
                         .filter(x -> !covered.test(r.values(), x)).sorted().collect(Collectors.toList());
                 if (!bad.isEmpty()) {
-                    System.out.printf("[AS-EFF-008] `%s` reaches { %s } outside the allowlist, forbidden by "
-                            + "policy%s: `allow %s … %s`%n", fn, String.join(", ", bad),
+                    diag(DiagnosticCode.AS_EFF_008, "`%s` reaches { %s } outside the allowlist, forbidden by "
+                            + "policy%s: `allow %s … %s`", fn, String.join(", ", bad),
                             r.scope().isEmpty() ? "" : " (scope `" + r.scope() + "`)", effect,
                             String.join(" ", r.values()));
                     v++;

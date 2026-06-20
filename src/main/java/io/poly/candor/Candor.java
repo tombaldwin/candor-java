@@ -5270,6 +5270,41 @@ public class Candor {
                 && (method.equals("start") || method.equals("stop"))) return "Net";
         if ((owner.equals("jakarta.jms.QueueBrowser") || owner.equals("javax.jms.QueueBrowser"))
                 && method.equals("getEnumeration")) return "Net";
+        // ── JVM-language stdlibs + JSF (batch 19) — κ-covered prefixes, unmodeled = FLOOR-DROPPED silent ──
+        // Groovy SQL — the high-level GDK groovy.sql.Sql is the API apps call (candor modeled only the
+        // lower-level org.codehaus.groovy.runtime helpers). All its query verbs open a Connection + run a
+        // Statement → Db.
+        if (owner.equals("groovy.sql.Sql")) {
+            switch (method) {
+                case "execute": case "executeInsert": case "executeUpdate": case "rows": case "firstRow":
+                case "eachRow": case "query": case "call": case "callWithRows": case "withBatch":
+                    return "Db";
+                default: break;
+            }
+        }
+        // Groovy XML/JSON slurpers — parse(File|Path) opens the file → Fs, parse(URL) fetches → Net
+        // (descriptor-gated; parseText/parse(Reader|InputStream|byte[]) are in-memory/caller-stream → pure).
+        if ((owner.equals("groovy.xml.XmlSlurper") || owner.equals("groovy.xml.XmlParser")
+                || owner.equals("groovy.util.XmlSlurper") || owner.equals("groovy.util.XmlParser")
+                || owner.equals("groovy.json.JsonSlurper"))
+                && method.equals("parse") && desc != null) {
+            if (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;")) return "Fs";
+            if (desc.startsWith("(Ljava/net/URL;")) return "Net";
+        }
+        // kotlinx-io filesystem — candor models kotlin.io/kotlin.io.path but NOT the newer kotlinx.io.files
+        // .FileSystem. Its source/sink/delete/etc. hit the disk → Fs (resolve/Path-ctor are path algebra → pure).
+        if (owner.equals("kotlinx.io.files.FileSystem")) {
+            switch (method) {
+                case "source": case "sink": case "delete": case "createDirectories": case "atomicMove":
+                case "list": case "metadataOrNull":
+                    return "Fs";
+                default: break;
+            }
+        }
+        // JSF — ExternalContext.redirect (HTTP 302) / dispatch (server forward) drive the servlet response →
+        // Net. PURE NOT touched: encodeRedirectURL/encodeActionURL (string rewriting), the request-map getters.
+        if ((owner.equals("jakarta.faces.context.ExternalContext") || owner.equals("javax.faces.context.ExternalContext"))
+                && (method.equals("redirect") || method.equals("dispatch"))) return "Net";
         // Kotlin stdlib file API (kotlin.io FilesKt extensions on java.io.File; kotlin.io.path PathsKt
         // on java.nio.file.Path) — Kotlin's IDIOMATIC filesystem surface, compiled to static calls on
         // these owners. VERB-level, not owner-level: both classes also hold pure path manipulation

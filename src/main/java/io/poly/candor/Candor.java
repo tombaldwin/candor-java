@@ -78,6 +78,15 @@ public class Candor {
     static boolean isSpringDataRepoBase(String internal) {
         return internal.startsWith("org/springframework/data/") && internal.endsWith("Repository");
     }
+    /** Any Jakarta Data repository BASE interface — under `jakarta/data/repository/` and ending in
+     *  `Repository` (DataRepository/BasicRepository/CrudRepository/PageableRepository). The Hibernate-6-era
+     *  analog of {@link #isSpringDataRepoBase}: a project interface `extends CrudRepository<Fruit,Integer>`
+     *  is the persistence boundary, but its CRUD methods are inherited from a framework base NOT in the
+     *  scanned classes (so the marker chain breaks there → silent-pure inherited CRUD). Detecting the base
+     *  promotes such project interfaces into repoTypes, exactly as for Spring Data. */
+    static boolean isJakartaDataRepoBase(String internal) {
+        return internal.startsWith("jakarta/data/repository/") && internal.endsWith("Repository");
+    }
     static final String TX = "springframework/transaction/annotation/Transactional";
     static final String SCHEDULED = "springframework/scheduling/annotation/Scheduled";
     // Jackson invokes a @JsonCreator-annotated constructor/factory REFLECTIVELY during deserialization,

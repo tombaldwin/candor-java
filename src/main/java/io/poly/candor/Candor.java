@@ -146,6 +146,27 @@ public class Candor {
     // on construction) is orphaned from every root, the serialization-callback shape. Root it.
     static final String JSON_CREATOR = "JsonCreator";
     static final String FEIGN = "openfeign/FeignClient";
+    // Declarative HTTP-client interfaces — the proxy makes the wire call, the user interface has no body, so a
+    // call to such an interface is Net (the OpenFeign analog for the rest of the ecosystem; turns the honest
+    // `Unknown` these read into precise Net so `deny Net <layer>` catches them). TYPE-annotated families +
+    // METHOD-annotated ones (Retrofit verbs, Spring HTTP-interface `@*Exchange`).
+    static final List<String> HTTP_CLIENT_TYPE_ANNOS = List.of(
+            "micronaut/http/client/annotation/Client",                 // Micronaut @Client
+            "microprofile/rest/client/inject/RegisterRestClient",      // MicroProfile Rest Client
+            "springframework/web/service/annotation/HttpExchange");    // Spring 6 HTTP interface (on the type)
+    static final List<String> HTTP_CLIENT_METHOD_ANNOS = List.of(
+            "retrofit2/http/",                                         // Retrofit @GET/@POST/@PUT/@DELETE/@HTTP/…
+            "springframework/web/service/annotation/");               // Spring @GetExchange/@PostExchange/…
+    /** A declarative HTTP-client interface: a recognized client TYPE annotation, or any method carrying a
+     *  client METHOD annotation (Retrofit verb / Spring `@*Exchange`). Server-side annotations live in other
+     *  packages (`web/bind/annotation` for Spring MVC, JAX-RS `@Path` resources), so no false positives. */
+    static boolean isHttpClientType(ClassNode cn) {
+        if (annoPresentAny(cn.visibleAnnotations, HTTP_CLIENT_TYPE_ANNOS)) return true;
+        if (cn.methods != null)
+            for (MethodNode mn : cn.methods)
+                if (annoPresentAny(mn.visibleAnnotations, HTTP_CLIENT_METHOD_ANNOS)) return true;
+        return false;
+    }
     // Ambient authorities for AS-EFF-004 / CANDOR_NO_AMBIENT — the spec's `Ambient = 𝔼 \ {Log}`
     // (SEMANTICS.md §, every effect except cross-cutting Log; Unknown is not an authority). Was missing
     // Ipc + Clipboard, so direct Unix-socket/clipboard reaches slipped the no-ambient check (the Rust
@@ -573,7 +594,7 @@ public class Candor {
     /** Effects a field of type `internal` can supply (Spring repo/template, or a project collaborator). */
     static EffectSet typeEffects(String internal, Map<String, EffectSet> performed) {
         if (ctx().repoTypes.contains(internal)) return EffectSet.of(Effect.DB);
-        if (ctx().feignTypes.contains(internal)) return EffectSet.of(Effect.NET);
+        if (ctx().feignTypes.contains(internal) || ctx().httpClientTypes.contains(internal)) return EffectSet.of(Effect.NET);
         String dotted = internal.replace('/', '.');
         EffectSet lib = classifyType(dotted);
         if (!lib.isEmpty()) return lib;
@@ -1135,7 +1156,8 @@ public class Candor {
                     }
                     // Calls to a Spring Data repository / Feign client are I/O even though the
                     // callee has no body candor can see (Spring synthesizes the impl at runtime).
-                    boolean springTyped = ctx().repoTypes.contains(min.owner) || ctx().feignTypes.contains(min.owner);
+                    boolean springTyped = ctx().repoTypes.contains(min.owner) || ctx().feignTypes.contains(min.owner)
+                            || ctx().httpClientTypes.contains(min.owner);
                     if (ctx().repoTypes.contains(min.owner)) {
                         // The blanket Db is for the repository's GENERATED CRUD methods — abstract, no body
                         // candor can see (Spring/Jakarta Data synthesize the impl at runtime). A `default`
@@ -1153,6 +1175,9 @@ public class Candor {
                         }
                     }
                     if (ctx().feignTypes.contains(min.owner)) dir.add(Effect.NET);
+                    // A declarative HTTP-client interface call is a wire call → Net (Object-protocol excluded so
+                    // a client's toString()/equals() doesn't fabricate Net).
+                    if (ctx().httpClientTypes.contains(min.owner) && !isConventionallyPure(min.name)) dir.add(Effect.NET);
                     // Quarkus Panache ACTIVE-RECORD: a project class extends PanacheEntity[Base], so its
                     // persist/delete/flush + inherited static finders (listAll/find/findById/count/…) are DB
                     // ops — but the call-site owner is the PROJECT entity (`Fruit.listAll()`), not the external

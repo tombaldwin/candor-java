@@ -317,10 +317,11 @@ final class Classifier {
         if (owner.startsWith("jakarta.data.repository.") && owner.endsWith("Repository")
                 && !isConventionallyPure(method)) return Effect.DB;
         // Lettuce — sync/async/reactive Redis command interfaces (RedisCommands and its RedisStringCommands/
-        // RedisKeyCommands/… supers) are Redis-over-TCP → Net, mirroring Jedis. Whole command-interface
-        // surface; the Object protocol stays pure.
+        // RedisKeyCommands/… supers). Redis is a datastore → Db (the deliberate Redis labelling
+        // reconciliation: all Redis clients carry Db, matching RedisTemplate + candor-ts's redis→Db, like
+        // JDBC-over-TCP is Db not Net). Whole command-interface surface; the Object protocol stays pure.
         if (owner.startsWith("io.lettuce.core.api.") && owner.endsWith("Commands")
-                && !isConventionallyPure(method)) return Effect.NET;
+                && !isConventionallyPure(method)) return Effect.DB;
         // OpenFeign — the SPI the generated @RequestLine proxy delegates the wire-send to (the user interface
         // has no body, so feign.Client.execute is the honest leaf). The Default/okhttp/httpclient adapters
         // all implement it.
@@ -378,12 +379,12 @@ final class Classifier {
                 || owner.equals("org.springframework.mail.javamail.JavaMailSenderImpl"))
                 && (method.equals("send") || method.equals("doSend"))) return Effect.NET;
         // Spring Data Redis operations — opsForValue()/opsForList()/… return *Operations whose terminal
-        // get/set/… are Redis-over-TCP. Was silent-pure (ValueOperations.set). → Net, matching the Jedis/
-        // Lettuce raw-client classification. (NB: RedisTemplate itself is classified Db elsewhere — a known
-        // Db-vs-Net Redis labelling inconsistency, left for a deliberate reconciliation; this fixes the
-        // silent-pure on the operations interfaces.) Whole-owner; Object protocol excluded.
+        // get/set/… hit Redis → Db. This is the deliberate Redis labelling RECONCILIATION: every Redis
+        // client now carries Db (RedisTemplate already did; Jedis/Lettuce/Redisson/these Operations were
+        // Net) — Redis is a datastore, so its semantic boundary effect is Db (like JDBC-over-TCP is Db, not
+        // Net). Cross-engine-consistent with candor-ts's redis→Db. Whole-owner; Object protocol excluded.
         if (owner.startsWith("org.springframework.data.redis.core.") && owner.endsWith("Operations")
-                && !isConventionallyPure(method)) return Effect.NET;
+                && !isConventionallyPure(method)) return Effect.DB;
         // ── More library effect leaves (found silent-pure by the library κ-coverage probe, batch 5) ──
         // SSH/SFTP — JSch + SSHJ open/transfer over the SSH socket → Net (verb-gated; config setters pure).
         if (owner.equals("com.jcraft.jsch.Session") && method.equals("connect")) return Effect.NET;
@@ -606,15 +607,16 @@ final class Classifier {
                 || owner.equals("io.github.jopenlibs.vault.api.Logical"))
                 && (method.equals("read") || method.equals("write") || method.equals("list")
                     || method.equals("delete"))) return Effect.NET;
-        // Redisson distributed objects (org.redisson.api.R*) — data verbs are Redis-over-TCP → Net.
-        // OWNER-scoped to the R* family (RMap extends ConcurrentMap, so a java.util.Map-typed receiver is
-        // NOT matched and stays pure). EXACT data verbs (getName/getCodec etc. stay pure).
+        // Redisson distributed objects (org.redisson.api.R*) — data verbs hit Redis → Db (the Redis
+        // labelling reconciliation; all Redis clients carry Db). OWNER-scoped to the R* family (RMap extends
+        // ConcurrentMap, so a java.util.Map-typed receiver is NOT matched and stays pure). EXACT data verbs
+        // (getName/getCodec etc. stay pure).
         if (owner.startsWith("org.redisson.api.R")) {
             switch (method) {
                 case "get": case "set": case "getAndSet": case "put": case "putIfAbsent": case "remove":
                 case "add": case "contains": case "containsKey": case "isExists": case "delete":
                 case "trySet": case "compareAndSet": case "fastPut": case "fastRemove": case "expire":
-                    return Effect.NET;
+                    return Effect.DB;
                 default: break;
             }
         }
@@ -1422,20 +1424,22 @@ final class Classifier {
             return Effect.NET;
         // Distributed caches / KV stores — RAW concrete clients (interface-typed Lettuce/Hazelcast/Ignite/
         // Ehcache/JCache correctly fall to the Unknown dispatch-floor; in-process Caffeine/Guava stay pure —
-        // so this is ONLY the concrete remote clients that silently resolved to pure). Net (remote round-trip).
-        if ((owner.equals("redis.clients.jedis.Jedis") || owner.equals("redis.clients.jedis.JedisCluster")
-                || owner.equals("net.spy.memcached.MemcachedClient")
-                || owner.equals("org.apache.zookeeper.ZooKeeper"))
-                // EXEMPT the conventionally-pure surface from the whole-owner Net rule (else a fabrication on
-                // toString/hashCode/equals and the cached field-reads getDB/getSessionId/getState/
-                // getSessionTimeout — found by a fabrication sweep). The remaining methods are commands.
-                && !isConventionallyPure(method)
-                && !(method.equals("getDB") || method.equals("getSessionId") || method.equals("getState")
-                     || method.equals("getSessionTimeout")
-                     // isConnected/isBroken are pure predicate reads of the cached local socket-state flag —
-                     // no command, no round-trip (sweep [21]; the whole-owner rule over-matched them).
-                     || method.equals("isConnected") || method.equals("isBroken")))
-            return Effect.NET;
+        // so this is ONLY the concrete remote clients that silently resolved to pure).
+        // Shared pure-surface exemption (else a fabrication on toString/hashCode/equals and the cached
+        // field-reads getDB/getSessionId/getState/getSessionTimeout/isConnected/isBroken — fabrication
+        // sweeps; these touch no command, no round-trip). The remaining methods are commands.
+        boolean kvPure = isConventionallyPure(method)
+                || method.equals("getDB") || method.equals("getSessionId") || method.equals("getState")
+                || method.equals("getSessionTimeout") || method.equals("isConnected") || method.equals("isBroken");
+        // Jedis/JedisCluster ARE Redis → Db (the Redis labelling reconciliation; all Redis clients carry Db,
+        // matching RedisTemplate + Lettuce/Redisson/Spring-Data-Redis above + candor-ts's redis→Db).
+        if ((owner.equals("redis.clients.jedis.Jedis") || owner.equals("redis.clients.jedis.JedisCluster"))
+                && !kvPure) return Effect.DB;
+        // Memcached (a remote cache) + ZooKeeper (a coordination service) are NOT Redis and NOT part of the
+        // Redis decision → Net (remote round-trip), as before. (Whether a remote KV cache should be Db is a
+        // separate labelling question, left as-is.)
+        if ((owner.equals("net.spy.memcached.MemcachedClient") || owner.equals("org.apache.zookeeper.ZooKeeper"))
+                && !kvPure) return Effect.NET;
         // PKI revocation — CertPathValidator (OCSP/CRL fetch) + a network CertStore (LDAP/HTTP) make a remote
         // lookup hidden inside the JDK, the same shape as JNDI.lookup (already Net).
         if (owner.equals("java.security.cert.CertPathValidator") && method.equals("validate")) return Effect.NET;

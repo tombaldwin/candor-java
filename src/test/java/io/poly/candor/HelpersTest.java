@@ -130,7 +130,7 @@ class HelpersTest {
         // Jedis isConnected/isBroken read the cached local socket-state flag — no command, no round-trip.
         assertNull(Classifier.classify("redis.clients.jedis.Jedis", "isConnected", "()Z"));
         assertNull(Classifier.classify("redis.clients.jedis.Jedis", "isBroken", "()Z"));
-        assertEquals(Effect.NET, Classifier.classify("redis.clients.jedis.Jedis", "get", "(Ljava/lang/String;)Ljava/lang/String;"));
+        assertEquals(Effect.DB, Classifier.classify("redis.clients.jedis.Jedis", "get", "(Ljava/lang/String;)Ljava/lang/String;"));
         // RandomGenerator.isDeprecated is a pure metadata default method; draws stay Rand.
         assertNull(Classifier.classify("java.util.random.RandomGenerator", "isDeprecated", "()Z"));
         assertEquals(Effect.RAND, Classifier.classify("java.util.random.RandomGenerator", "nextInt", "()I"));
@@ -478,7 +478,7 @@ class HelpersTest {
         assertEquals(Effect.NET, Classifier.classify("javax.mail.Transport", "send", "(Ljavax/mail/Message;)V"));
         assertEquals(Effect.NET, Classifier.classify("org.apache.kafka.clients.producer.KafkaProducer", "send", "(Lorg/apache/kafka/clients/producer/ProducerRecord;)Ljava/util/concurrent/Future;"));
         assertEquals(Effect.NET, Classifier.classify("com.rabbitmq.client.Channel", "basicPublish", "(Ljava/lang/String;Ljava/lang/String;Lcom/rabbitmq/client/AMQP$BasicProperties;[B)V"));
-        assertEquals(Effect.NET, Classifier.classify("redis.clients.jedis.Jedis", "get", "(Ljava/lang/String;)Ljava/lang/String;"));
+        assertEquals(Effect.DB, Classifier.classify("redis.clients.jedis.Jedis", "get", "(Ljava/lang/String;)Ljava/lang/String;"));
         assertEquals(Effect.NET, Classifier.classify("net.spy.memcached.MemcachedClient", "get", "(Ljava/lang/String;)Ljava/lang/Object;"));
         // a pure builder must NOT be Net
         assertNull(Classifier.classify("javax.mail.internet.MimeMessage", "setText", "(Ljava/lang/String;)V"));
@@ -513,10 +513,19 @@ class HelpersTest {
         assertNull(Classifier.classify("java.nio.MappedByteBuffer", "capacity", "()I"));
         assertNull(Classifier.classify("java.nio.MappedByteBuffer", "position", "()I"));
         assertNull(Classifier.classify("java.nio.MappedByteBuffer", "order", "()Ljava/nio/ByteOrder;"));
-        // Jedis: a command = Net; getDB/toString/equals = pure
-        assertEquals(Effect.NET, Classifier.classify("redis.clients.jedis.Jedis", "get", "(Ljava/lang/String;)Ljava/lang/String;"));
+        // Jedis: a command = Db (Redis is a datastore — the reconciliation); getDB/toString/equals = pure
+        assertEquals(Effect.DB, Classifier.classify("redis.clients.jedis.Jedis", "get", "(Ljava/lang/String;)Ljava/lang/String;"));
         assertNull(Classifier.classify("redis.clients.jedis.Jedis", "getDB", "()I"));
         assertNull(Classifier.classify("redis.clients.jedis.Jedis", "toString", "()Ljava/lang/String;"));
+        // The Redis labelling RECONCILIATION: ALL raw Redis clients carry Db (matching RedisTemplate, which
+        // was already Db) — Lettuce command interfaces, Spring Data Redis *Operations, Redisson R* objects.
+        assertEquals(Effect.DB, Classifier.classify("io.lettuce.core.api.sync.RedisCommands", "set", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/String;"));
+        assertEquals(Effect.DB, Classifier.classify("org.springframework.data.redis.core.ValueOperations", "set", "(Ljava/lang/Object;Ljava/lang/Object;)V"));
+        assertEquals(Effect.DB, Classifier.classify("org.redisson.api.RBucket", "get", "()Ljava/lang/Object;"));
+        // Memcached + ZooKeeper are NOT Redis (a cache / a coordination service) → stay Net, not part of the
+        // Redis decision; ZooKeeper's cached session reads stay pure.
+        assertEquals(Effect.NET, Classifier.classify("net.spy.memcached.MemcachedClient", "get", "(Ljava/lang/String;)Ljava/lang/Object;"));
+        assertEquals(Effect.NET, Classifier.classify("org.apache.zookeeper.ZooKeeper", "getData", "(Ljava/lang/String;ZLorg/apache/zookeeper/data/Stat;)[B"));
         assertNull(Classifier.classify("org.apache.zookeeper.ZooKeeper", "getSessionId", "()J"));
         // SocketChannel config verbs = pure (not Net); read/write still Net
         assertEquals(Effect.NET, Classifier.classify("java.nio.channels.SocketChannel", "read", "(Ljava/nio/ByteBuffer;)I"));

@@ -69,3 +69,17 @@ jobs:
         uses: fwilhe2/setup-kotlin@7163c92e0f906bdf586bd76b14143aa61d6b49e4 # v1.8
       - name: Soundness (kotlin forms)
         run: bash soundness/run_kotlin.sh
+
+      # Dynamic oracle — the STRONGEST evidence tier (runtime ground truth, catches even a shared blind
+      # spot the static engines all miss). Runs real programs under JDK Flight Recorder (Fs/Net via
+      # jdk.{File,Socket}{Read,Write}) and a leaf-instrumenting -javaagent (Exec/Db/Env/Clock/Rand/Log),
+      # then diffs the RUNTIME-observed per-method effects against candor's STATIC report. An effect that
+      # really ran but candor's report neither predicts nor discloses (Unknown) is a confirmed model-gap
+      # under-report; corpus.sh exits nonzero. This makes the runtime oracle a STANDING gate (was a manual
+      # discovery tool). Reuses the shadowJar built by the self-gate step; builds the agent (pure javac,
+      # ASM vendored in soundness/dynamic/agent/lib). Needs python3 + the `jfr` tool — both provided by
+      # the ubuntu runner + setup-java.
+      - name: Dynamic oracle (runtime ground truth — JFR + bytecode agent)
+        run: |
+          (cd soundness/dynamic/agent && bash build.sh)
+          bash soundness/dynamic/corpus.sh

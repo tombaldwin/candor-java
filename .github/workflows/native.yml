@@ -1,0 +1,80 @@
+name: native
+
+# Build per-platform native `candor` binaries and attach them to the GitHub release.
+# The jar (jbang) stays the primary artifact; these are for fast-startup CLI use (CI gates, agent loops).
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest      # Linux x64
+            asset: candor-linux-x64
+          - os: macos-latest       # macOS arm64
+            asset: candor-macos-arm64
+          - os: macos-13           # macOS x64
+            asset: candor-macos-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up GraalVM (JDK 21)
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '21'
+          distribution: 'graalvm-community'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: 'true'
+
+      - name: Build native image
+        run: ./gradlew --no-daemon nativeCompile
+
+      # SOUNDNESS GATE: the native binary resolves JDK supertypes from a bundled index, the jar from
+      # ClassReader off the classpath — verify they produce IDENTICAL reports (functions[]) on a real
+      # target (candor's own compiled classes, always present in CI). A divergence = the native binary
+      # under/over-reports vs the jar; fail the build rather than ship it.
+      - name: Build jar (for parity check)
+        run: ./gradlew --no-daemon shadowJar
+
+      - name: Parity — native report == jar report
+        run: |
+          set -euo pipefail
+          JAR=$(ls build/libs/*-all.jar)
+          TARGET=build/classes/java/main
+          ./build/native/nativeCompile/candor "$TARGET" --json /tmp/native.json
+          java -jar "$JAR" "$TARGET" --json /tmp/jar.json
+          python3 - <<'PY'
+          import json, sys
+          a = json.load(open('/tmp/jar.json'))['functions']
+          b = json.load(open('/tmp/native.json'))['functions']
+          if a != b:
+              print('PARITY FAILED: native functions[] differ from jar', file=sys.stderr)
+              sys.exit(1)
+          print(f'parity OK: native functions[] == jar ({len(a)} functions)')
+          PY
+
+      - name: Stage binary
+        run: |
+          mkdir -p dist
+          cp build/native/nativeCompile/candor "dist/${{ matrix.asset }}"
+
+      - name: Smoke-test the binary
+        run: ./dist/${{ matrix.asset }} --version
+
+      - name: Upload to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.asset }}
+
+      - name: Upload as workflow artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}

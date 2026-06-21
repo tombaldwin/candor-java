@@ -489,8 +489,8 @@ EFFECT_CASES = [
     ("mongoFind",      "Db", "MongoCollection<Document> c", 'FindIterable<Document> it = c.find()'),
 
     # ---- Net (Jedis — get/set; candor models the Jedis socket as Net, a datastore over TCP) ----
-    ("jedisGet", "Net", "redis.clients.jedis.Jedis j", 'String v = j.get("k")'),
-    ("jedisSet", "Net", "redis.clients.jedis.Jedis j", 'String v = j.set("k", "v")'),
+    ("jedisGet", "Db", "redis.clients.jedis.Jedis j", 'String v = j.get("k")'),
+    ("jedisSet", "Db", "redis.clients.jedis.Jedis j", 'String v = j.set("k", "v")'),
 
     # ---- Net (Kafka — producer.send / consumer.poll) ----
     ("kafkaSend", "Net", "KafkaProducer<String,String> p, ProducerRecord<String,String> rec",
@@ -608,8 +608,8 @@ EFFECT_CASES = [
         'repo.delete(e)'),
 
     # ---- Net (Lettuce sync RedisCommands — get/set over the Redis socket) ----
-    ("lettuceGet", "Net", "io.lettuce.core.api.sync.RedisCommands<String,String> c", 'String v = c.get("k")'),
-    ("lettuceSet", "Net", "io.lettuce.core.api.sync.RedisCommands<String,String> c", 'String v = c.set("k","v")'),
+    ("lettuceGet", "Db", "io.lettuce.core.api.sync.RedisCommands<String,String> c", 'String v = c.get("k")'),
+    ("lettuceSet", "Db", "io.lettuce.core.api.sync.RedisCommands<String,String> c", 'String v = c.set("k","v")'),
 
     # ---- Net (RabbitMQ Channel — basicPublish / basicConsume over the AMQP socket) ----
     ("rabbitPublish", "Net", "com.rabbitmq.client.Channel ch",
@@ -734,9 +734,9 @@ EFFECT_CASES = [
         'Object r = t.insert(o)'),
     # Spring Data Redis — RedisTemplate.opsForValue() is a factory; the terminal get/set on ValueOperations
     #   is the wire leaf (Redis over TCP → Net, same as Jedis/Lettuce).
-    ("redisTemplateOpsGet", "Net", "org.springframework.data.redis.core.RedisTemplate<String,String> t",
+    ("redisTemplateOpsGet", "Db", "org.springframework.data.redis.core.RedisTemplate<String,String> t",
         'String v = t.opsForValue().get("k")'),
-    ("redisValueOpsSet", "Net", "org.springframework.data.redis.core.ValueOperations<String,String> ops",
+    ("redisValueOpsSet", "Db", "org.springframework.data.redis.core.ValueOperations<String,String> ops",
         'ops.set("k", "v")'),
 
     # ---- Net (Messaging) ----
@@ -1076,8 +1076,8 @@ EFFECT_CASES = [
 
     # ---- Net (Redisson — RBucket.get/set do KV round-trips to Redis over TCP. Owner org.redisson.api.RBucket;
     #      RedissonClient.getBucket is a pure factory -> anchor below.) ----
-    ("redissonBucketGet", "Net", "org.redisson.api.RBucket<String> b", 'String v = b.get()'),
-    ("redissonBucketSet", "Net", "org.redisson.api.RBucket<String> b", 'b.set("v")'),
+    ("redissonBucketGet", "Db", "org.redisson.api.RBucket<String> b", 'String v = b.get()'),
+    ("redissonBucketSet", "Db", "org.redisson.api.RBucket<String> b", 'b.set("v")'),
 
     # ---- Net (etcd jetcd — KV.get/put hit the etcd cluster over gRPC. Owner io.etcd.jetcd.KV; returns
     #      CompletableFuture (async) -> Net|Unknown PASS.) ----

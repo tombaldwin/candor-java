@@ -66,7 +66,7 @@ class Round9FixesTest {
                 "}"))));
         try {
             Map<String, EffectSet> r = Candor.runScan(cls);
-            assertTrue(r.getOrDefault("app.A.redis", EffectSet.empty()).toNames().contains("Net"), "the Jedis call is still Net");
+            assertTrue(r.getOrDefault("app.A.redis", EffectSet.empty()).toNames().contains("Db"), "the Jedis call is Db (Redis is a datastore — the reconciliation)");
             assertTrue(AnalysisState.ctx().hostsDirect.getOrDefault("app.A.redis", new TreeSet<>()).isEmpty(),
                     "a Redis key must NOT be captured as a host, got " + AnalysisState.ctx().hostsDirect.get("app.A.redis"));
             assertTrue(AnalysisState.ctx().hostsDirect.getOrDefault("app.A.real", new TreeSet<>()).contains("api.x.com:443"),

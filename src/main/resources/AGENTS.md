@@ -113,6 +113,13 @@ Name queries resolve exact > segment-suffix (`Svc.save` matches `com.example.Svc
   method (lambdas + anonymous/local classes are edged at their creation site).
 - **Multi-module**: set `CANDOR_DEPS=dep-report.json:…` so calls into separately-analyzed modules
   inherit their effects instead of reading pure; or analyze app + deps on one classpath for full CHA.
+- **Whole-app precision**: set `CANDOR_CLOSED_WORLD=1` to assert the scanned classes are the COMPLETE
+  world — a broad (>12-impl) dispatch over a *project-defined* type then resolves to the exact union of
+  its impls instead of dropping to `Unknown` (e.g. a 40-enum `IdentifiableEnum::getId` → pure, not a
+  smeared Unknown). Off by default (sound/conservative); only assert it for an app you fully scan, never
+  for a library whose interfaces consumers extend. External/library interfaces stay bounded regardless.
+  Caveat (same limit as narrow CHA): a project impl that INHERITS its body from an UNSCANNED external base
+  still isn't resolved — pair with `CANDOR_DEPS` for those.
 - **The pure-exempt dispatch set** (toString/equals/hashCode/compareTo; Kotlin/Scala/Groovy
   function-interface dispatch; Runnable/Callable on the external interface) is documented in
   [README](README.md) — an effectful override of those is not attributed at the dispatch site.

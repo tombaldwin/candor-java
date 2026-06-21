@@ -10,11 +10,20 @@ falls back to `Unknown` rather than guess which impl runs. Refine that fallback:
 effect (or all are pure). If so, use that shared effect instead of `Unknown`. candor has already
 analysed those impls; it just discards them at the fan-out limit.
 
-**Why it's sound:** the fallback to `Unknown` exists for *precision/perf* (bounding fan-out work), not
-soundness — when every candidate impl agrees, the dispatch's effect is determined regardless of which
-one runs, so using it is sound. This layers a precision refinement *on top of* the §4 soundness floor
-(broad-fan-out → Unknown, hardened in 0.5.4), it does not weaken it: a heterogeneous fan-out still goes
-`Unknown`.
+**Why it's sound — WITH A CLOSED-WORLD CAVEAT (important, established 2026-06-21).** When every candidate
+impl agrees, the dispatch's effect is determined *for the impls candor can see*. The catch: collapsing a
+>12-impl **open** interface to **pure** assumes the visible set is COMPLETE — a future/external impl with
+an effect would then read silent-pure (the cardinal sin). So the sound version must gate on a CLOSED world:
+a `sealed` interface/class, a package-private type, or all impls being a closed enum set. The closed-ENUM
+subset is ALREADY shipped (the 0.7.1 `isClosedEnumOwner` carve-out + the 0.7.0 sealed-CHA resolution); this
+item is the GENERALISATION to other closed hierarchies. A heterogeneous fan-out always stays `Unknown`;
+collapsing to a non-pure shared effect is safe regardless (over-approx), only collapse-to-pure needs the
+closed-world gate.
+
+**Scope — this is an APP lever, not a library one (measured 2026-06-21).** On real LIBRARIES (jsoup/gson/
+HikariCP) the dominant Unknown is `reflect:`/`task-handoff:` — genuinely irreducible, this lever doesn't
+help. On APPS (the architecture-gate's primary target) it's a homogeneous-pure interface accessor — see
+below. So pursue it for app-precision, knowing libraries stay Unknown by nature.
 
 **Measured impact (uFlexi, 8287 fns):** Unknown is **35%** of effect incidences and touches 57% of
 functions — but it traces almost entirely to ONE root. `IdentifiableEnum::getId` (a method reference in
@@ -60,3 +69,19 @@ every `List`/`Map`/`Iterator` stdlib interface call, so it must be gated to inte
 actually covers — again needing the report to name its interfaces). Both touch the report envelope, so
 this is a cross-engine spec item, not a local patch. Repro: the `viaParam` fixture in the audit
 (interface param, no visible `new`) — absent from the report under `--deps`.
+
+## Done (recent — for context)
+
+- **κ persistence coverage, batches 24–27 (0.7.9 / 0.7.10).** Closed the inherited-into-project silent-pure
+  vein CLASS across all major JVM persistence: Hibernate-6 / Jakarta Data (StatelessSession/SelectionQuery/
+  MutationQuery + `jakarta.data` repos), Quarkus Panache (active-record + repository + PanacheQuery),
+  Micronaut Data, Ebean, ActiveJDBC, jOOQ DAO, and the GENERAL "subclass a classify-modeled external
+  effectful type" fix (re-classify inherited calls against the external supertype). Verified NOT a shared
+  cross-engine blind spot (candor-ts/scan disclose Unknown; SOUNDNESS.md §8.3).
+- **Repo pure-`default`-method `Db` fabrication fix** — the repoTypes blanket Db now skips a method with a
+  visible (non-abstract) body, so a default helper stays pure.
+- **Declarative HTTP-client interfaces → Net** (Retrofit / Micronaut `@Client` / MicroProfile
+  `@RegisterRestClient` / Spring `@*Exchange`) — the OpenFeign analog; Unknown → precise Net.
+- **`containment` in the cross-engine conformance differential** (candor-spec PART 11, Java vs candor-query).
+- **Test coverage**: KappaBatch24/25, InheritedPersistenceVeins, InheritedModeledBase, HttpClientNet,
+  ContainmentRatchet, PolicyParser, PolicyGate, LayerOf (the policy gate + κ rules were under-tested).

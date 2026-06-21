@@ -816,6 +816,22 @@ public class Candor {
                 if (insn instanceof MethodInsnNode min) {
                     String owner = min.owner.replace('/', '.');
                     Effect effect = Classifier.classify(owner, min.name, min.desc);
+                    // A project class that SUBCLASSES a classify-modeled external effectful type (extends a
+                    // Testcontainers GenericContainer, a java.io stream, …) and calls an INHERITED method:
+                    // classify sees the PROJECT owner (no rule) and the real body lives in the external base
+                    // (unscanned) → silent-pure. Re-run classify against the external supertype the JVM
+                    // dispatches to. Gated: only when the project owner has NO concrete body of its own for the
+                    // method (not overridden — else that analysed body wins) and no PROJECT super provides one.
+                    // Orthogonal to the persistence registries (which cover bases classify does NOT model).
+                    if (effect == null && ctx().byName.containsKey(min.owner)
+                            && !declaresConcrete(ctx().byName.get(min.owner), min.name, min.desc)
+                            && nearestConcreteSuper(min.owner, min.name, min.desc) == null) {
+                        for (String sup : transSupers(min.owner)) {
+                            if (ctx().byName.containsKey(sup)) continue;   // external supers only
+                            Effect se = Classifier.classify(sup.replace('/', '.'), min.name, min.desc);
+                            if (se != null) { effect = se; break; }
+                        }
+                    }
                     if (effect != null) dir.add(effect);
                     // Executor hand-off: `es.submit(task)`/`execute`/`schedule*` and `new Thread(task)` invoke
                     // the task's run()/call() OUTSIDE project code. A fresh `new R()` (the NEW-site edge

@@ -111,6 +111,34 @@ public class Candor {
             "persist", "delete", "flush", "persistAndFlush", "update",
             "listAll", "list", "findAll", "find", "findById", "findByIdOptional",
             "count", "deleteAll", "deleteById", "stream", "streamAll");
+    /** A Micronaut Data repository BASE interface — `io.micronaut.data.repository.**Repository` (incl. the
+     *  reactive sub-package). Mirrors {@link #isSpringDataRepoBase}: a project sub-interface is promoted into
+     *  repoTypes so its inherited CRUD attributes Db instead of reading silent-pure. */
+    static boolean isMicronautDataRepoBase(String internal) {
+        return internal.startsWith("io/micronaut/data/repository/") && internal.endsWith("Repository");
+    }
+    /** Active-record / DAO base CLASSES whose persistence verbs, INHERITED into a project subtype, are Db: the
+     *  call-site owner is the PROJECT class (`customer.save()`), so neither classify (keyed on the base) nor
+     *  repoTypes fires, and the inherited body lives in the framework (unscanned) → silent-pure (the same shape
+     *  as Panache active-record). Keyed by the base's internal name → its DB verb set, so a verb valid for one
+     *  base doesn't fire for another. Found by a dogfood probe (Ebean/ActiveJDBC/jOOQ DAO read silent-pure). */
+    static final Map<String, Set<String>> AR_DB_BASES = Map.of(
+            "io/ebean/Model", Set.of("save", "delete", "update", "insert", "refresh", "deletePermanent", "markAsDirty"),
+            "org/javalite/activejdbc/Model", Set.of("save", "saveIt", "insert", "delete", "deleteCascade",
+                    "deleteAll", "findAll", "findById", "where", "count", "first", "findFirst", "findBySQL"),
+            "org/jooq/impl/DAOImpl", Set.of("insert", "update", "delete", "merge", "findById", "findAll",
+                    "fetch", "fetchOne", "fetchOptional", "fetchRange", "exists", "count"));
+    /** Does this call inherit a Db persistence verb from an active-record/DAO base (AR_DB_BASES)? Checks the
+     *  owner itself and its supertypes; per-base verb gating avoids cross-base false positives. */
+    static boolean inheritsArDbVerb(String internalOwner, String method) {
+        Set<String> v = AR_DB_BASES.get(internalOwner);
+        if (v != null && v.contains(method)) return true;
+        for (String s : transSupers(internalOwner)) {
+            Set<String> sv = AR_DB_BASES.get(s);
+            if (sv != null && sv.contains(method)) return true;
+        }
+        return false;
+    }
     static final String TX = "springframework/transaction/annotation/Transactional";
     static final String SCHEDULED = "springframework/scheduling/annotation/Scheduled";
     // Jackson invokes a @JsonCreator-annotated constructor/factory REFLECTIVELY during deserialization,
@@ -1121,6 +1149,16 @@ public class Candor {
                     if (PANACHE_ENTITY_VERBS.contains(min.name) && extendsPanacheEntity(min.owner)) {
                         ClassNode eo = ctx().byName.get(min.owner);
                         boolean ownBody = (eo != null && declaresConcrete(eo, min.name, min.desc))
+                                || nearestConcreteSuper(min.owner, min.name, min.desc) != null;
+                        if (!ownBody) dir.add(Effect.DB);
+                    }
+                    // Active-record / DAO base classes (Ebean io.ebean.Model, ActiveJDBC Model, jOOQ DAOImpl) —
+                    // the SAME silent-pure shape as Panache: a persistence verb inherited into a project subtype,
+                    // called via the project owner. Verb+hierarchy-gated, skipped when the subtype overrides it
+                    // (that body's effects are attributed via the CHA edge — no fabrication).
+                    if (inheritsArDbVerb(min.owner, min.name)) {
+                        ClassNode ao = ctx().byName.get(min.owner);
+                        boolean ownBody = (ao != null && declaresConcrete(ao, min.name, min.desc))
                                 || nearestConcreteSuper(min.owner, min.name, min.desc) != null;
                         if (!ownBody) dir.add(Effect.DB);
                     }

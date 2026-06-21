@@ -88,7 +88,7 @@ final class Loader {
                 for (String itf : cn.interfaces) {
                     if (REPO_MARKERS.contains(itf) || ctx().repoTypes.contains(itf)
                             || isSpringDataRepoBase(itf) || isJakartaDataRepoBase(itf)
-                            || isPanacheRepoBase(itf)) {
+                            || isPanacheRepoBase(itf) || isMicronautDataRepoBase(itf)) {
                         ctx().repoTypes.add(cn.name);
                         changed = true;
                         break;

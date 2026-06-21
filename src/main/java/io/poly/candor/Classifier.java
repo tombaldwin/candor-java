@@ -1631,6 +1631,19 @@ final class Classifier {
             return Effect.DB;
         if (owner.equals("org.hibernate.query.MutationQuery") && method.equals("executeUpdate"))
             return Effect.DB;
+        // Quarkus Panache PanacheQuery — the query object returned by an entity/repository `find(…)`. Only the
+        // TERMINAL result verbs execute; page/range/withLock/project/filter are pure builders. (The entity-side
+        // active-record `find`/`list`/… are handled at the call site in Candor.analyze via extendsPanacheEntity;
+        // this closes a PanacheQuery terminated in a DIFFERENT method than the find.) Covers the hibernate-orm,
+        // reactive, and mongodb Panache variants (all name the type PanacheQuery under a .panache. package).
+        if (owner.contains(".panache.") && owner.endsWith("PanacheQuery")) {
+            switch (method) {
+                case "list": case "stream": case "firstResult": case "firstResultOptional":
+                case "singleResult": case "singleResultOptional": case "count":
+                    return Effect.DB;
+                default: break;
+            }
+        }
         // ── Raw data-store DRIVERS (the layer UNDER the Spring templates already modeled above). A non-Spring
         // app — or Spring code typed to the driver — calls these directly; they were silent-pure though their
         // Spring-template analog (MongoTemplate/CassandraTemplate/RedisTemplate/R2dbc) IS modeled, an

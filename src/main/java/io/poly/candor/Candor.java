@@ -87,6 +87,30 @@ public class Candor {
     static boolean isJakartaDataRepoBase(String internal) {
         return internal.startsWith("jakarta/data/repository/") && internal.endsWith("Repository");
     }
+    /** A Quarkus Panache REPOSITORY base — `io.quarkus.*.panache.*Repository[Base]` (hibernate-orm,
+     *  reactive, and mongodb variants). A project interface extending one is promoted into repoTypes (like
+     *  Spring/Jakarta Data), so its inherited CRUD calls attribute Db instead of reading silent-pure. */
+    static boolean isPanacheRepoBase(String internal) {
+        return internal.contains("/panache/")
+                && (internal.endsWith("Repository") || internal.endsWith("RepositoryBase"));
+    }
+    /** A Quarkus Panache ENTITY base — `io.quarkus.*.panache.*Entity[Base]` (active-record). */
+    static boolean isPanacheEntityType(String internal) {
+        return internal.contains("/panache/")
+                && (internal.endsWith("Entity") || internal.endsWith("EntityBase"));
+    }
+    /** Owner's type hierarchy includes a Panache entity base (or IS one) — the active-record marker. */
+    static boolean extendsPanacheEntity(String internalOwner) {
+        if (isPanacheEntityType(internalOwner)) return true;
+        for (String s : transSupers(internalOwner)) if (isPanacheEntityType(s)) return true;
+        return false;
+    }
+    /** Panache ACTIVE-RECORD persistence + finder verbs (inherited from the entity base). Gated by
+     *  {@link #extendsPanacheEntity}, so a project method merely named `find`/`persist` is untouched. */
+    static final Set<String> PANACHE_ENTITY_VERBS = Set.of(
+            "persist", "delete", "flush", "persistAndFlush", "update",
+            "listAll", "list", "findAll", "find", "findById", "findByIdOptional",
+            "count", "deleteAll", "deleteById", "stream", "streamAll");
     static final String TX = "springframework/transaction/annotation/Transactional";
     static final String SCHEDULED = "springframework/scheduling/annotation/Scheduled";
     // Jackson invokes a @JsonCreator-annotated constructor/factory REFLECTIVELY during deserialization,
@@ -1085,6 +1109,21 @@ public class Candor {
                         }
                     }
                     if (ctx().feignTypes.contains(min.owner)) dir.add(Effect.NET);
+                    // Quarkus Panache ACTIVE-RECORD: a project class extends PanacheEntity[Base], so its
+                    // persist/delete/flush + inherited static finders (listAll/find/findById/count/…) are DB
+                    // ops — but the call-site owner is the PROJECT entity (`Fruit.listAll()`), not the external
+                    // base, so neither classify (keyed on the base) nor the repoTypes path fires; the inherited
+                    // body lives in Panache (unscanned) → silent-pure, a cardinal sin on the dominant Quarkus
+                    // persistence. Verb-gated AND hierarchy-gated (only fires when the owner extends a Panache
+                    // entity base), and skipped when the entity OVERRIDES the verb with its own body (that
+                    // body's effects are already attributed via the CHA edge — no fabrication, mirroring the
+                    // repoTypes default-method guard).
+                    if (PANACHE_ENTITY_VERBS.contains(min.name) && extendsPanacheEntity(min.owner)) {
+                        ClassNode eo = ctx().byName.get(min.owner);
+                        boolean ownBody = (eo != null && declaresConcrete(eo, min.name, min.desc))
+                                || nearestConcreteSuper(min.owner, min.name, min.desc) != null;
+                        if (!ownBody) dir.add(Effect.DB);
+                    }
 
                     int op = min.getOpcode();
                     // A static call triggers the owner's class-load → its `<clinit>` runs.

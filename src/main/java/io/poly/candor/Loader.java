@@ -69,7 +69,10 @@ final class Loader {
 
     /** Identify Spring Data repositories (effect: Db) and @FeignClient interfaces (Net). */
     static void computeSpringTypes(List<ClassNode> classes) {
-        for (ClassNode cn : classes) if (annoPresent(cn.visibleAnnotations, FEIGN)) ctx().feignTypes.add(cn.name);
+        for (ClassNode cn : classes) {
+            if (annoPresent(cn.visibleAnnotations, FEIGN)) ctx().feignTypes.add(cn.name);
+            else if (isHttpClientType(cn)) ctx().httpClientTypes.add(cn.name);  // Retrofit/Micronaut/MP/Spring HTTP clients -> Net
+        }
         // JPA entity tables: the literal @Table(name="…") (javax or jakarta persistence).
         for (ClassNode cn : classes) {
             if (cn.visibleAnnotations == null) continue;

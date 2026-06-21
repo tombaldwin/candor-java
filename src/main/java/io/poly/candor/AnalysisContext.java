@@ -31,6 +31,7 @@ final class AnalysisContext {
     final Map<String, String> entityTables = new HashMap<>();      // entity internal name -> table
     final Map<String, String> repoTables = new HashMap<>();        // repository internal name -> table
     final Set<String> feignTypes = new HashSet<>();                // @FeignClient interfaces (internal names)
+    final Set<String> httpClientTypes = new HashSet<>();           // declarative HTTP-client interfaces -> Net
     List<ClassNode> ALL = List.of();                               // all loaded classes (for CHA)
     final Map<String, ClassNode> byName = new HashMap<>();         // internal name -> node
     final Map<String, Set<String>> transSupersCache = new HashMap<>();

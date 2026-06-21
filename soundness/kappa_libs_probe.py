@@ -391,9 +391,11 @@ IMPORTS = (
     #   precision gaps. Batch 14 found 0 silent-pure (all invisible-disclosed). KEY INSIGHT for where the real
     #   cardinal sins still hide: candor's `invisible:[pkg]` disclosure fires PER-PACKAGE at the call site even
     #   when OTHER members of the same 3rd-party owner ARE modeled — VERIFIED here: okhttp3.Cache.evictAll (a
-    #   sibling of the modeled okhttp3.Call.execute) reports invisible:[okhttp3], NOT silent-pure; Hibernate
-    #   StatelessSession.get/insert report invisible:[org.hibernate]; Mongo GridFSBucket.downloadToStream reports
-    #   invisible:[com.mongodb.client.gridfs]. So "partially-modeled 3rd-party package" does NOT yield silent-pure
+    #   sibling of the modeled okhttp3.Call.execute) reports invisible:[okhttp3], NOT silent-pure; Mongo
+    #   GridFSBucket.downloadToStream reports invisible:[com.mongodb.client.gridfs].
+    #   (NB: Hibernate StatelessSession.get/insert were this example at batch 15 — invisible:[org.hibernate] —
+    #    but are now MODELED → Db as of batch 24; see the hibernateStatelessGet/Insert anchors.)
+    #   So "partially-modeled 3rd-party package" does NOT yield silent-pure
     #   — candor falls back to the honest package-level disclosure. The ONLY place an unmodeled effectful member
     #   reads SILENT (no effect, no invisible, no unknownWhy) is a κ-COVERED JDK prefix (java.*/javax.*/jakarta.*):
     #   there candor suppresses the invisible disclosure (it "knows" the JDK), so an unmodeled member is
@@ -567,6 +569,15 @@ EFFECT_CASES = [
     ("hibernatePersist", "Db", "org.hibernate.Session s, Object o", 's.persist(o)'),
     ("hibernateQueryList", "Db", "org.hibernate.Session s",
         'java.util.List<?> r = s.createQuery("from X", Object.class).list()'),
+    # Hibernate 6 / Jakarta Data API (batch 24) — the StatelessSession + split SelectionQuery/MutationQuery
+    # the Jakarta Data generated repositories drive. The CRUD/result/execute TERMINALS round-trip → Db; their
+    # builders (createSelectionQuery/getCriteriaBuilder/setMaxResults) stay pure (anti-fab anchor below).
+    ("hibernateStatelessInsert", "Db", "org.hibernate.StatelessSession s, Object o", 'Object id = s.insert(o)'),
+    ("hibernateStatelessGet", "Db", "org.hibernate.StatelessSession s",
+        'String r = s.get(String.class, Integer.valueOf(1))'),
+    ("hibernateSelectionQueryList", "Db", "org.hibernate.query.SelectionQuery<?> q",
+        'java.util.List<?> r = q.getResultList()'),
+    ("hibernateMutationExecuteUpdate", "Db", "org.hibernate.query.MutationQuery q", 'int n = q.executeUpdate()'),
 
     # ====================== ADDED LIBRARIES (2026-06-19 batch 3) ======================
     # ---- Db (Cassandra java-driver — CqlSession.execute(String); inherited default from SyncCqlSession,
@@ -2375,6 +2386,10 @@ PURE_CASES = [
     ("jpaCreateQueryPure",       "jakarta.persistence.Query q = em.createQuery(\"from X\")",       "jakarta.persistence.EntityManager em"),
     ("jpaCreateNativeQueryPure", "jakarta.persistence.Query q = em.createNativeQuery(\"select 1\")","jakarta.persistence.EntityManager em"),
     ("jpaGetTransactionPure",    "jakarta.persistence.EntityTransaction t = em.getTransaction()",  "jakarta.persistence.EntityManager em"),
+    # Hibernate 6 SelectionQuery.setMaxResults is a pure fluent BUILDER (returns the query) — no DB round-trip
+    #   until the getResultList/getResultCount terminal (the Db leaves above). Must stay pure (anti-fab anchor
+    #   guarding the batch-24 StatelessSession/SelectionQuery/MutationQuery terminal rules from over-reaching).
+    ("hibernateSelectionSetMaxResultsPure", "org.hibernate.query.SelectionQuery<?> r = q.setMaxResults(10)", "org.hibernate.query.SelectionQuery<?> q"),
 
     # --- JBatch JobOperator.getJobNames reads the (in-memory or DB) repository registry — a local read of
     #     already-loaded job names; not the job-driving Db write. Kept pure (start/restart/stop are the leaves).

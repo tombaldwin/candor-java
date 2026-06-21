@@ -308,6 +308,14 @@ final class Classifier {
         // interface call site itself.) Every declared method is a store op; exclude only the Object protocol.
         if (owner.startsWith("org.springframework.data.") && owner.endsWith("Repository")
                 && !isConventionallyPure(method)) return Effect.DB;
+        // Jakarta Data repository BASE interfaces (DataRepository/BasicRepository/CrudRepository/
+        // PageableRepository) — the Hibernate-6/Jakarta-Data analog of the Spring Data rule above. A call
+        // typed to the base (`CrudRepository<Fruit,Integer> r; r.save(x)`) hits the datastore → Db; project
+        // sub-interfaces are promoted into repoTypes by isJakartaDataRepoBase (Loader). Every declared method
+        // is a store op; exclude only the Object protocol. (jakarta.data.* value types — Sort/Order/Limit/Page
+        // — are NOT under jakarta.data.repository and don't end in "Repository", so they stay pure.)
+        if (owner.startsWith("jakarta.data.repository.") && owner.endsWith("Repository")
+                && !isConventionallyPure(method)) return Effect.DB;
         // Lettuce — sync/async/reactive Redis command interfaces (RedisCommands and its RedisStringCommands/
         // RedisKeyCommands/… supers) are Redis-over-TCP → Net, mirroring Jedis. Whole command-interface
         // surface; the Object protocol stays pure.
@@ -1596,6 +1604,32 @@ final class Classifier {
                 && (method.equals("list") || method.equals("uniqueResult") || method.equals("getResultList")
                     || method.equals("getSingleResult") || method.equals("executeUpdate")
                     || method.equals("scroll") || method.equals("stream")))
+            return Effect.DB;
+        // Hibernate 6 StatelessSession — the no-persistence-context session the Jakarta Data generated
+        // repositories drive. Its CRUD verbs each issue their own SQL immediately (no unit-of-work buffering):
+        // insert/update/upsert/delete (+ *Multiple batch forms), get/getIdentifier fetch, refresh/fetch.
+        // The query/criteria FACTORIES (getCriteriaBuilder/createSelectionQuery/createMutationQuery/
+        // createQuery/createNativeQuery) are pure BUILDERS — their execution is on the returned
+        // Selection/MutationQuery (below), so excluding them avoids fabricating Db on a builder.
+        if (owner.equals("org.hibernate.StatelessSession")) {
+            switch (method) {
+                case "insert": case "insertMultiple": case "update": case "updateMultiple":
+                case "upsert": case "upsertMultiple": case "delete": case "deleteMultiple":
+                case "get": case "getMultiple": case "getIdentifier": case "refresh": case "fetch":
+                    return Effect.DB;
+                default: break;
+            }
+        }
+        // Hibernate 6 SelectionQuery / MutationQuery — the split successors of org.hibernate.query.Query that
+        // the Jakarta Data impls and HibernateCriteriaBuilder.createQuery(...) return. ONLY the TERMINAL
+        // result/execute verbs round-trip; setParameter/setMaxResults/setFirstResult/etc. are pure builders.
+        if (owner.equals("org.hibernate.query.SelectionQuery")
+                && (method.equals("getResultList") || method.equals("getSingleResult")
+                    || method.equals("getSingleResultOrNull") || method.equals("getResultCount")
+                    || method.equals("getResultStream") || method.equals("list") || method.equals("uniqueResult")
+                    || method.equals("uniqueResultOptional") || method.equals("stream") || method.equals("scroll")))
+            return Effect.DB;
+        if (owner.equals("org.hibernate.query.MutationQuery") && method.equals("executeUpdate"))
             return Effect.DB;
         // ── Raw data-store DRIVERS (the layer UNDER the Spring templates already modeled above). A non-Spring
         // app — or Spring code typed to the driver — calls these directly; they were silent-pure though their

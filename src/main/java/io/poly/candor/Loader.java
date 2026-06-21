@@ -86,7 +86,8 @@ final class Loader {
             for (ClassNode cn : classes) {
                 if (ctx().repoTypes.contains(cn.name) || cn.interfaces == null) continue;
                 for (String itf : cn.interfaces) {
-                    if (REPO_MARKERS.contains(itf) || ctx().repoTypes.contains(itf) || isSpringDataRepoBase(itf)) {
+                    if (REPO_MARKERS.contains(itf) || ctx().repoTypes.contains(itf)
+                            || isSpringDataRepoBase(itf) || isJakartaDataRepoBase(itf)) {
                         ctx().repoTypes.add(cn.name);
                         changed = true;
                         break;

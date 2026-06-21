@@ -56,13 +56,20 @@ class PanachePersistenceTest {
                 "app/Plain.java",
                 "package app;\n"
                     + "public class Plain { public void persist() {} public static long count() { return 0; } }",
+                // a PROJECT class in a `/panache/`-named package, named *Entity, NOT extending the real base —
+                // the lexical self-match the fabrication fix guards against (it must NOT get Db).
+                "app/panache/LookalikeEntity.java",
+                "package app.panache;\n"
+                    + "public class LookalikeEntity { public void persist() {} public static java.util.List listAll(){ return null; } }",
                 "app/Svc.java",
                 "package app;\n"
+                    + "import app.panache.LookalikeEntity;\n"
                     + "public class Svc {\n"
                     + "  public static void save(Fruit f) { f.persist(); }\n"          // active-record instance
                     + "  public static java.util.List all() { return Fruit.listAll(); }\n" // active-record static finder
                     + "  public static void viaRepo(FruitRepo r, Fruit f) { r.persist(f); }\n" // repository
-                    + "  public static void plain(Plain p) { p.persist(); Plain.count(); } }")); // lookalike → pure
+                    + "  public static void plain(Plain p) { p.persist(); Plain.count(); }\n" // lookalike → pure
+                    + "  public static void pkgLookalike(LookalikeEntity e) { e.persist(); LookalikeEntity.listAll(); } }")); // /panache/ pkg → pure
         try {
             Map<String, EffectSet> r = Candor.runScan(app);
             assertTrue(eff(r, "app.Svc.save").contains(Effect.DB),
@@ -73,6 +80,8 @@ class PanachePersistenceTest {
                 "Panache repository persist() must be Db, got " + r.get("app.Svc.viaRepo"));
             assertTrue(eff(r, "app.Svc.plain").isEmpty(),
                 "a non-Panache class with persist()/count() must stay pure (no fabrication), got " + r.get("app.Svc.plain"));
+            assertTrue(eff(r, "app.Svc.pkgLookalike").isEmpty(),
+                "a project class in a /panache/ package not extending the real base must stay pure (no self-match fabrication), got " + r.get("app.Svc.pkgLookalike"));
         } finally { rm(app.getParent()); }
     }
 

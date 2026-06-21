@@ -91,25 +91,32 @@ public class Candor {
      *  reactive, and mongodb variants). A project interface extending one is promoted into repoTypes (like
      *  Spring/Jakarta Data), so its inherited CRUD calls attribute Db instead of reading silent-pure. */
     static boolean isPanacheRepoBase(String internal) {
-        return internal.contains("/panache/")
+        // EXTERNAL only (`!byName`): the `/panache/` substring is loose, so without this a project's OWN
+        // interface in a `…/panache/…Repository` package would be promoted into repoTypes → fabricated Db.
+        // The framework's real base is a dependency (never scanned), so it's correctly external. (code-review)
+        return !ctx().byName.containsKey(internal) && internal.contains("/panache/")
                 && (internal.endsWith("Repository") || internal.endsWith("RepositoryBase"));
     }
-    /** A Quarkus Panache ENTITY base — `io.quarkus.*.panache.*Entity[Base]` (active-record). */
-    static boolean isPanacheEntityType(String internal) {
-        return internal.contains("/panache/")
+    /** An EXTERNAL Quarkus Panache ENTITY base — `io.quarkus.*.panache.*Entity[Base]` (active-record). The
+     *  `!byName` gate stops a project's own `…/panache/…Entity` class from self-matching the loose substring
+     *  and fabricating Db; the real base is always an unscanned dependency. */
+    static boolean isPanacheEntityBase(String internal) {
+        return !ctx().byName.containsKey(internal) && internal.contains("/panache/")
                 && (internal.endsWith("Entity") || internal.endsWith("EntityBase"));
     }
-    /** Owner's type hierarchy includes a Panache entity base (or IS one) — the active-record marker. */
+    /** Owner's type hierarchy includes an external Panache entity base (or IS one) — the active-record marker. */
     static boolean extendsPanacheEntity(String internalOwner) {
-        if (isPanacheEntityType(internalOwner)) return true;
-        for (String s : transSupers(internalOwner)) if (isPanacheEntityType(s)) return true;
+        if (isPanacheEntityBase(internalOwner)) return true;
+        for (String s : transSupers(internalOwner)) if (isPanacheEntityBase(s)) return true;
         return false;
     }
-    /** Panache ACTIVE-RECORD persistence + finder verbs (inherited from the entity base). Gated by
-     *  {@link #extendsPanacheEntity}, so a project method merely named `find`/`persist` is untouched. */
+    /** Panache ACTIVE-RECORD persistence + finder verbs that EXECUTE, inherited from the entity base. Gated by
+     *  {@link #extendsPanacheEntity}, so a project method merely named `persist`/`list` is untouched. NB `find`
+     *  is excluded — it's a LAZY builder returning a PanacheQuery (no DB until a terminal); the PanacheQuery
+     *  terminal classify rule attributes the actual round-trip, so listing `find` here over-reported a pure call. */
     static final Set<String> PANACHE_ENTITY_VERBS = Set.of(
             "persist", "delete", "flush", "persistAndFlush", "update",
-            "listAll", "list", "findAll", "find", "findById", "findByIdOptional",
+            "listAll", "list", "findAll", "findById", "findByIdOptional",
             "count", "deleteAll", "deleteById", "stream", "streamAll");
     /** A Micronaut Data repository BASE interface — `io.micronaut.data.repository.**Repository` (incl. the
      *  reactive sub-package). Mirrors {@link #isSpringDataRepoBase}: a project sub-interface is promoted into
@@ -855,7 +862,11 @@ public class Candor {
                         for (String sup : transSupers(min.owner)) {
                             if (ctx().byName.containsKey(sup)) continue;   // external supers only
                             Effect se = Classifier.classify(sup.replace('/', '.'), min.name, min.desc);
-                            if (se != null) { effect = se; break; }
+                            // UNION every matching external super, not first-wins: transSupers is a HashSet, so
+                            // a `break` made the chosen effect order-dependent (nondeterministic) when two
+                            // modeled supers declare the same method with different effects. dir is a set →
+                            // union is deterministic + sound (it's the over-approx of the possible dispatches).
+                            if (se != null) { dir.add(se); effect = se; }
                         }
                     }
                     if (effect != null) dir.add(effect);

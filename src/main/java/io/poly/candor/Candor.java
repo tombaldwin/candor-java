@@ -216,6 +216,10 @@ public class Candor {
      *  System.exit (so it is unit-testable in-process): reset state, load the target, index overloads
      *  + CHA subtypes, compute Spring types, chain CANDOR_DEPS, run per-method analysis, resolve
      *  literal-reflection edges, then return the inferred per-method effect sets from the fixpoint. */
+    /** Programmatic override for CANDOR_CLOSED_WORLD (set by a test, or a future `--closed-world` flag),
+     *  OR'd with the env var at scan setup. Default false → the env is the only source. */
+    static boolean forceClosedWorld = false;
+
     static Map<String, EffectSet> runScan(Path target) throws IOException {
         resetState();
         List<ClassNode> classes = load(target);
@@ -243,6 +247,7 @@ public class Candor {
         // analyze, so a call into an already-analyzed dependency inherits its effects (vs assumed-pure).
         loadCrossDeps(System.getenv("CANDOR_DEPS"), provenance()[0]);
         ctx().taintEnabled = System.getenv(Mode.TAINT.envVar()) != null; // read before analyze (the pass runs per method)
+        ctx().closedWorld = forceClosedWorld || System.getenv("CANDOR_CLOSED_WORLD") != null; // opt-in: scanned set is complete
         // Per-class fail-soft: an exotic/malformed class that throws ANYWHERE in analyze (e.g. a malformed
         // method descriptor that ASM validates only lazily in Type.getArgumentTypes — the 0.5.6 crash class,
         // re-surfaced via an overloaded-name path the desc.startsWith("(") guard doesn't catch) must NOT
@@ -1275,7 +1280,16 @@ public class Candor {
                         // Without this, an enum state machine (process/read over 26/68 constants) drops past
                         // the limit to a CIRCULAR Unknown (each state dispatches to the others) that smears
                         // across its whole transitive caller set — the dominant Unknown driver on real OO.
-                        boolean broad = cha.size() > CHA_FANOUT_LIMIT && !isClosedHierarchy(min.owner);
+                        // CANDOR_CLOSED_WORLD: the user asserts the scanned classes are the complete world, so a
+                        // broad dispatch over a PROJECT-DEFINED type (in byName) is NOT indeterminate — its visible
+                        // impls ARE all the impls. Resolve it like a narrow dispatch (edge to every impl → the
+                        // fixpoint unions their effects, exact). Sound ONLY under the assertion + gated to project
+                        // types (an EXTERNAL interface — Comparator, a Kotlin FunctionN — keeps the bound: candor
+                        // can't enumerate its library impls even in a closed world, and those are the perf-
+                        // pathological hierarchies the limit exists for). Off by default → byte-identical.
+                        boolean closedWorldResolvable = ctx().closedWorld && ctx().byName.containsKey(min.owner);
+                        boolean broad = cha.size() > CHA_FANOUT_LIMIT && !isClosedHierarchy(min.owner)
+                                && !closedWorldResolvable;
                         // A NARROW java.util container-iteration dispatch (Iterator.next / Iterable etc.)
                         // DOES fan out: skipping it under-reported a custom Iterable's effect at the loop
                         // site (`for (x : customBag)` came back pure) — the §7.13 fuzzer's for-each form

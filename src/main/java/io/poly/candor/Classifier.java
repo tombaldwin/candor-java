@@ -452,8 +452,10 @@ final class Classifier {
         // Directory may be a RAM ByteBuffersDirectory), so modelling them whole-owner would fabricate on the
         // in-memory variant — left as accepted gaps (the FSDirectory.open factory is the safe disk signal).
         if (owner.equals("org.apache.lucene.store.FSDirectory") && method.equals("open")) return Effect.FS;
-        // Testcontainers — GenericContainer.start shells out to the Docker daemon → Exec.
-        if (owner.equals("org.testcontainers.containers.GenericContainer") && method.equals("start")) return Effect.EXEC;
+        // Testcontainers — GenericContainer.start shells out to the Docker daemon → Exec; execInContainer
+        // runs a command INSIDE the running container → Exec too (was silent even for direct use).
+        if (owner.equals("org.testcontainers.containers.GenericContainer")
+                && (method.equals("start") || method.equals("execInContainer"))) return Effect.EXEC;
         // Selenium — WebDriver.get drives a browser / talks to a remote WebDriver server over HTTP → Net.
         // OWNER-scoped (not a global `get` rule — that would collide with bean getters).
         if ((owner.equals("org.openqa.selenium.WebDriver") || owner.equals("org.openqa.selenium.remote.RemoteWebDriver"))

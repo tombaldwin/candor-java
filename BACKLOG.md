@@ -4,6 +4,21 @@
 
 ### Homogeneous broad-dispatch collapse (reduce Unknown from polymorphic pure accessors)
 
+**SHIPPED 2026-06-21 as the sound opt-in `CANDOR_CLOSED_WORLD` (Option B).** Under the flag, a broad
+(>`CHA_FANOUT_LIMIT`) dispatch over a **project-defined** type (in `byName`) is treated as not-broad and
+resolves to the EXACT UNION of its impls via the fixpoint — more precise than the homogeneous-only
+collapse this item proposed (it resolves heterogeneous fan-outs too: `getId` over 40 pure enums → pure;
+a mixed interface → the union of its impls' effects, e.g. `{Fs}`, never silent-pure). OFF by default
+(byte-identical to before — PetClinic/jsoup/gson unchanged); gated to project types, so an EXTERNAL/
+library broad hierarchy (Comparator, a Kotlin FunctionN — the perf-pathological ones the bound exists for)
+stays bounded even under the flag. The user asserts "the scanned classes are the complete world"; a library
+author doesn't set it and stays sound. Sealed/enum closed hierarchies already resolve UNconditionally
+(0.7.0/0.7.1) — those self-verify completeness and need no flag. Tests: `ClosedWorldTest` (default → Unknown;
+flag → pure for the all-pure interface and `{Fs}` for the heterogeneous one). Decision rationale (Option B
+over the automatic Option A) recorded in the session: A would plant a silent-pure bug in SPI/plugin code
+where candor can't tell app from library; B keeps the floor honest by default. The analysis below is kept
+for context.
+
 **What:** when a virtual/interface call's CHA fan-out exceeds `CHA_FANOUT_LIMIT` (12), candor soundly
 falls back to `Unknown` rather than guess which impl runs. Refine that fallback: before raising
 `Unknown`, check whether the candidate impl set is **homogeneous** — every resolved impl shares the same

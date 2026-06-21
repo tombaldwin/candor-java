@@ -43,6 +43,10 @@ final class AnalysisContext {
     final Map<String, Set<String>> overloadDescs = new HashMap<>();
     final Set<String> classesWithClinit = new HashSet<>();         // project classes with a `<clinit>`
     boolean taintEnabled = false;                                  // CANDOR_TAINT — run the intraprocedural taint pass
+    boolean closedWorld = false;                                   // CANDOR_CLOSED_WORLD — the scanned classes ARE the
+                                                                   // complete world: a broad (>CHA_FANOUT_LIMIT) dispatch
+                                                                   // over a PROJECT-defined type resolves to all its
+                                                                   // impls (exact union) instead of dropping to Unknown
     final Map<String, EffectSet> tainted = new HashMap<>();        // fn -> injection-class effects on caller-derived args
     final Map<String, TreeSet<String>> hostsDirect = new HashMap<>();  // fn -> literal Net endpoints
     final Map<String, TreeSet<String>> cmdsDirect = new HashMap<>();   // fn -> literal Exec commands

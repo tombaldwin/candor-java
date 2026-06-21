@@ -1069,9 +1069,20 @@ public class Candor {
                     // callee has no body candor can see (Spring synthesizes the impl at runtime).
                     boolean springTyped = ctx().repoTypes.contains(min.owner) || ctx().feignTypes.contains(min.owner);
                     if (ctx().repoTypes.contains(min.owner)) {
-                        dir.add(Effect.DB);
-                        String tbl = ctx().repoTables.get(min.owner); // the declarative `tables` surface
-                        if (tbl != null) ctx().tablesDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(tbl);
+                        // The blanket Db is for the repository's GENERATED CRUD methods — abstract, no body
+                        // candor can see (Spring/Jakarta Data synthesize the impl at runtime). A `default`
+                        // method on the interface (or an inherited concrete one) DOES have a body whose
+                        // effects the CHA edge already attributes, so synthesizing Db there FABRICATES Db on
+                        // a pure default helper (a soundness sweep found `repo.greet()` → {Db} for a default
+                        // returning a constant). Only synthesize when the call resolves to NO visible body.
+                        ClassNode ro = ctx().byName.get(min.owner);
+                        boolean visibleBody = (ro != null && declaresConcrete(ro, min.name, min.desc))
+                                || nearestConcreteSuper(min.owner, min.name, min.desc) != null;
+                        if (!visibleBody) {
+                            dir.add(Effect.DB);
+                            String tbl = ctx().repoTables.get(min.owner); // the declarative `tables` surface
+                            if (tbl != null) ctx().tablesDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(tbl);
+                        }
                     }
                     if (ctx().feignTypes.contains(min.owner)) dir.add(Effect.NET);
 

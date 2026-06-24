@@ -10,7 +10,7 @@ the JVM-specific production + query surface.
 > can describe a different candor-java than the one you are running.
 
 A static initializer (`Type.<clinit>`) is its own unit and carries `unitKind: "initializer"`
-(spec 0.5 draft, informative) — it runs at class load, with no call site; ordinary methods omit
+(spec 0.7, informative) — it runs at class load, with no call site; ordinary methods omit
 the field.
 
 ## Produce a report
@@ -41,7 +41,7 @@ If this project already has candor-java (a `.candor/` report directory, or the f
 `jbang candor@tombaldwin/candor-java` available), do this **first**, before scanning:
 
 1. **Tell the user which version they're on.** Run the offline version flag and state it plainly —
-   e.g. *"This project is on candor-java 0.5.2 (spec 0.5)."*
+   e.g. *"This project is on candor-java 0.7.2 (spec 0.7)."*
    ```sh
    candor --version        # i.e. java -jar candor-java-*-all.jar --version — offline, no network
    ```
@@ -53,10 +53,10 @@ If this project already has candor-java (a `.candor/` report directory, or the f
    ```sh
    curl -s -H 'User-Agent: candor-version-check' \
      https://api.github.com/repos/tombaldwin/candor-java/releases/latest \
-     | grep -o '"tag_name": *"[^"]*"'                                    # latest -> "tag_name":"v0.5.0" (compact)
+     | grep -o '"tag_name": *"[^"]*"'                                    # latest -> "tag_name":"v0.7.0" (compact)
    ```
-3. **If it's behind, *ask* before upgrading.** Say e.g. *"candor-java 0.5.3 is available (you're on
-   0.5.2) — upgrade before I scan?"* and run `jbang --fresh candor@tombaldwin/candor-java` only if the
+3. **If it's behind, *ask* before upgrading.** Say e.g. *"candor-java 0.7.3 is available (you're on
+   0.7.2) — upgrade before I scan?"* and run `jbang --fresh candor@tombaldwin/candor-java` only if the
    user agrees. Never upgrade silently: an analysis tool's version is part of its result's provenance,
    so the user decides when it changes.
 
@@ -66,7 +66,7 @@ skip this and install per *Produce a report* above.
 `candor --version` prints the clean RELEASE semver `<ver>` (the GitHub-tag / jar-filename axis) and the
 contract `<spec>`, then `upgrade: jbang --fresh candor@tombaldwin/candor-java`. (The report envelope's
 `.candor.version` is still the engine **build hash** — a git short-hash for provenance, not a semver —
-while `.candor.spec` is the contract version, `0.5`.)
+while `.candor.spec` is the contract version, `0.7`.)
 
 `jbang candor@tombaldwin/candor-java` resolves the jar from this repo's `jbang-catalog.json`, which
 pins a release tag — so you get whatever that catalog points at. To pick up a newer release, run

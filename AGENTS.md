@@ -17,19 +17,20 @@ the field.
 
 ```sh
 # zero-install (the fat jar). No jbang? curl -Ls https://sh.jbang.dev | bash -s - app setup
-jbang candor@tombaldwin/candor-java <classes-dir-or-jar> --json /tmp/report.json
-# or: java -jar candor-java-<ver>-all.jar <classes-dir-or-jar> --json /tmp/report.json
+mkdir -p .candor
+jbang candor@tombaldwin/candor-java <classes-dir-or-jar> --json .candor/report.json
+# or: java -jar candor-java-<ver>-all.jar <classes-dir-or-jar> --json .candor/report.json
 ```
 
 Point it at **compiled output** (`build/classes/java/main`, a jar) — build first. If the build
 won't cooperate (toolchain demands, broken snapshot), candor analyzes **any** compiled classes or
 jar — a release jar fetched from Maven Central is a fine substitute for building the repo. Analyze
 `main`, not test, classes (test code describes the harness). `--json` writes the report **and**
-`/tmp/report.callgraph.json` (every method's direct callees, pure ones included — the blast-radius
+`.candor/report.callgraph.json` (every method's direct callees, pure ones included — the blast-radius
 input). Method names are dot-separated: `com.example.Svc.save`.
 
 **Report shape:** entries live in `.functions[]`, keyed **`fn`** (the method name — e.g.
-`jq -r '.functions[] | select(.unresolved) | .fn' /tmp/report.json`), with `inferred` / `direct` /
+`jq -r '.functions[] | select(.unresolved) | .fn' .candor/report.json`), with `inferred` / `direct` /
 `unresolved` / `unknownWhy` / `entryPoint` alongside. **Only effectful-or-unresolved methods appear
 in the report; pure methods are omitted** — a method present in the callgraph sidecar but absent
 from `.functions[]` is pure (as far as the engine resolved). In *neither* file = never analyzed;
@@ -80,12 +81,12 @@ The jbang alias works for every query too — `jbang candor@tombaldwin/candor-ja
 never need the jar's path:
 
 ```sh
-java -jar candor.jar show     /tmp/report.json <method> [--json]   # a method's effects
-java -jar candor.jar where    /tmp/report.json Db [--json]         # direct sources vs inheritors
-java -jar candor.jar callers  /tmp/report.json <method> [--json] [--include-unknown]  # the BLAST RADIUS (works for pure methods)
-java -jar candor.jar whatif   /tmp/report.json <method> Net [policy] [--json]  # pre-edit gate verdict
-java -jar candor.jar diff     /tmp/report.json baseline.json [--json]
-java -jar candor.jar map|containment|reachable|path|impact /tmp/report.json …
+java -jar candor.jar show     .candor/report.json <method> [--json]   # a method's effects
+java -jar candor.jar where    .candor/report.json Db [--json]         # direct sources vs inheritors
+java -jar candor.jar callers  .candor/report.json <method> [--json] [--include-unknown]  # the BLAST RADIUS (works for pure methods)
+java -jar candor.jar whatif   .candor/report.json <method> Net [policy] [--json]  # pre-edit gate verdict
+java -jar candor.jar diff     .candor/report.json baseline.json [--json]
+java -jar candor.jar map|containment|reachable|path|impact .candor/report.json …
 ```
 
 Name queries resolve exact > segment-suffix (`Svc.save` matches `com.example.Svc.save`, never

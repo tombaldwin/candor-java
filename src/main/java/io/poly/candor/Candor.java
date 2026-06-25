@@ -523,19 +523,49 @@ public class Candor {
                 || ctx().taintEnabled;
 
         if (!enforce) {
-            System.out.println("candor-java — effect audit (Spring-aware; Unknown for reflection/dispatch)\n");
-            inferred.entrySet().stream()
-                    .filter(e -> !e.getValue().isEmpty())
-                    .sorted(Map.Entry.comparingByKey())
-                    .forEach(e -> {
-                        var d = ctx().direct.getOrDefault(e.getKey(), EffectSet.empty()).toNames();
-                        String set = e.getValue().toNames().stream()
-                                .map(x -> d.contains(x) ? x : x + "*")
-                                .collect(Collectors.joining(", "));
-                        String tag = ctx().entryPoints.contains(e.getKey()) ? "  [entry]" : "";
-                        System.out.printf("  %-52s { %s }%s%n", e.getKey(), set, tag);
-                    });
-            System.out.println("\n(* = via callee, [entry] = framework-invoked entry point)");
+            // First-run summary — totals by effect + Unknown, printed ALWAYS so the result is visible at a
+            // glance (the deterministic payoff AGENTS.md §1a asks the agent for, now guaranteed by the engine).
+            var effectful = inferred.entrySet().stream()
+                    .filter(e -> !e.getValue().isEmpty()).collect(Collectors.toList());
+            Map<String, Integer> counts = new HashMap<>();
+            Set<String> classes = new HashSet<>();
+            for (var e : effectful) {
+                for (String x : e.getValue().toNames()) counts.merge(x, 1, Integer::sum);
+                int dot = e.getKey().lastIndexOf('.');
+                classes.add(dot > 0 ? e.getKey().substring(0, dot) : e.getKey());
+            }
+            int unknown = counts.getOrDefault("Unknown", 0);
+            String breakdown = Stream.of("Net", "Fs", "Db", "Exec", "Ipc", "Env", "Clipboard", "Clock", "Log", "Rand")
+                    .filter(k -> counts.getOrDefault(k, 0) > 0)
+                    .map(k -> k + " " + counts.get(k)).collect(Collectors.joining(" · "));
+            System.out.printf("candor — %,d function%s reach effects, across %,d class%s (pure functions omitted)%n",
+                    effectful.size(), effectful.size() == 1 ? "" : "s", classes.size(), classes.size() == 1 ? "" : "es");
+            if (!breakdown.isEmpty() || unknown > 0) {
+                System.out.println("  " + breakdown
+                        + (unknown > 0 ? (breakdown.isEmpty() ? "" : "   ·   ") + "Unknown " + unknown + " (disclosed)" : ""));
+            }
+            if (jsonOut != null) {
+                System.out.println("  full map in " + jsonOut + " — query it: candor-query callers <fn> / where <Effect>");
+            }
+            System.out.println();
+
+            // Per-method detail only when NOT writing a report file (the file already holds it) — keeps the
+            // agent's --json run concise (summary only), while a human's bare scan still gets the full audit.
+            if (jsonOut == null) {
+                System.out.println("candor-java — effect audit (Spring-aware; Unknown for reflection/dispatch)\n");
+                inferred.entrySet().stream()
+                        .filter(e -> !e.getValue().isEmpty())
+                        .sorted(Map.Entry.comparingByKey())
+                        .forEach(e -> {
+                            var d = ctx().direct.getOrDefault(e.getKey(), EffectSet.empty()).toNames();
+                            String set = e.getValue().toNames().stream()
+                                    .map(x -> d.contains(x) ? x : x + "*")
+                                    .collect(Collectors.joining(", "));
+                            String tag = ctx().entryPoints.contains(e.getKey()) ? "  [entry]" : "";
+                            System.out.printf("  %-52s { %s }%s%n", e.getKey(), set, tag);
+                        });
+                System.out.println("\n(* = via callee, [entry] = framework-invoked entry point)");
+            }
             return;
         }
 

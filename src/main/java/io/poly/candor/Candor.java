@@ -473,6 +473,8 @@ public class Candor {
         Path scanTarget = Path.of(args[0]);
         if (!Files.exists(scanTarget)) {
             System.err.println("candor: no such path: " + args[0]);
+            System.err.println("        point candor at COMPILED classes (target/classes · build/classes/java/main) or a built .jar.");
+            System.err.println("        no build yet? run `mvn -q compile` or `./gradlew classes` first.");
             System.exit(2);
         }
         Map<String, EffectSet> inferred;
@@ -486,6 +488,18 @@ public class Candor {
             System.err.println("candor: cannot read scan target " + args[0] + ": " + e.getMessage());
             System.exit(2);
             return; // unreachable — exit(2) above; satisfies the definite-assignment of `inferred`
+        }
+
+        // Fail loud on an EMPTY scan: a path that exists but holds no .class files (a source dir, an
+        // unbuilt module, or a failed build) would otherwise report "0 functions reach effects" — which
+        // reads as a clean, pure project rather than "nothing was analyzed", and would let a gate pass
+        // trivially on a build that never produced bytecode. candor reads bytecode, not source.
+        if (ctx().ALL.isEmpty()) {
+            System.err.println("candor: no .class files found under " + args[0] + " — nothing to analyze.");
+            System.err.println("        candor reads BYTECODE, not source — point it at COMPILED output");
+            System.err.println("        (target/classes · build/classes/java/main) or a built .jar.");
+            System.err.println("        no build yet? run `mvn -q compile` or `./gradlew classes` first.");
+            System.exit(2);
         }
 
         // JSON output is orthogonal — write first so `--json` can snapshot a baseline. The report needs

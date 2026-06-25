@@ -1,3 +1,4 @@
+<!-- MAINTAINERS: this is the canonical doc. After editing it, re-sync the embedded jar copy in the SAME commit or CI's drift gate (test/smoke.sh) fails: cp AGENTS.md src/main/resources/AGENTS.md -->
 # Using candor-java (instructions for an AI coding agent)
 
 candor-java reports, for every method in a JVM codebase (Java, Kotlin, Scala, Groovy — it reads

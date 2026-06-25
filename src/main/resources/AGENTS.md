@@ -10,26 +10,27 @@ the JVM-specific production + query surface.
 > can describe a different candor-java than the one you are running.
 
 A static initializer (`Type.<clinit>`) is its own unit and carries `unitKind: "initializer"`
-(spec 0.5 draft, informative) — it runs at class load, with no call site; ordinary methods omit
+(spec 0.7, informative) — it runs at class load, with no call site; ordinary methods omit
 the field.
 
 ## Produce a report
 
 ```sh
 # zero-install (the fat jar). No jbang? curl -Ls https://sh.jbang.dev | bash -s - app setup
-jbang candor@tombaldwin/candor-java <classes-dir-or-jar> --json /tmp/report.json
-# or: java -jar candor-java-<ver>-all.jar <classes-dir-or-jar> --json /tmp/report.json
+mkdir -p .candor
+jbang candor@tombaldwin/candor-java <classes-dir-or-jar> --json .candor/report.json
+# or: java -jar candor-java-<ver>-all.jar <classes-dir-or-jar> --json .candor/report.json
 ```
 
 Point it at **compiled output** (`build/classes/java/main`, a jar) — build first. If the build
 won't cooperate (toolchain demands, broken snapshot), candor analyzes **any** compiled classes or
 jar — a release jar fetched from Maven Central is a fine substitute for building the repo. Analyze
 `main`, not test, classes (test code describes the harness). `--json` writes the report **and**
-`/tmp/report.callgraph.json` (every method's direct callees, pure ones included — the blast-radius
+`.candor/report.callgraph.json` (every method's direct callees, pure ones included — the blast-radius
 input). Method names are dot-separated: `com.example.Svc.save`.
 
 **Report shape:** entries live in `.functions[]`, keyed **`fn`** (the method name — e.g.
-`jq -r '.functions[] | select(.unresolved) | .fn' /tmp/report.json`), with `inferred` / `direct` /
+`jq -r '.functions[] | select(.unresolved) | .fn' .candor/report.json`), with `inferred` / `direct` /
 `unresolved` / `unknownWhy` / `entryPoint` alongside. **Only effectful-or-unresolved methods appear
 in the report; pure methods are omitted** — a method present in the callgraph sidecar but absent
 from `.functions[]` is pure (as far as the engine resolved). In *neither* file = never analyzed;
@@ -41,7 +42,7 @@ If this project already has candor-java (a `.candor/` report directory, or the f
 `jbang candor@tombaldwin/candor-java` available), do this **first**, before scanning:
 
 1. **Tell the user which version they're on.** Run the offline version flag and state it plainly —
-   e.g. *"This project is on candor-java 0.5.2 (spec 0.5)."*
+   e.g. *"This project is on candor-java 0.7.2 (spec 0.7)."*
    ```sh
    candor --version        # i.e. java -jar candor-java-*-all.jar --version — offline, no network
    ```
@@ -53,10 +54,10 @@ If this project already has candor-java (a `.candor/` report directory, or the f
    ```sh
    curl -s -H 'User-Agent: candor-version-check' \
      https://api.github.com/repos/tombaldwin/candor-java/releases/latest \
-     | grep -o '"tag_name": *"[^"]*"'                                    # latest -> "tag_name":"v0.5.0" (compact)
+     | grep -o '"tag_name": *"[^"]*"'                                    # latest -> "tag_name":"v0.7.0" (compact)
    ```
-3. **If it's behind, *ask* before upgrading.** Say e.g. *"candor-java 0.5.3 is available (you're on
-   0.5.2) — upgrade before I scan?"* and run `jbang --fresh candor@tombaldwin/candor-java` only if the
+3. **If it's behind, *ask* before upgrading.** Say e.g. *"candor-java 0.7.3 is available (you're on
+   0.7.2) — upgrade before I scan?"* and run `jbang --fresh candor@tombaldwin/candor-java` only if the
    user agrees. Never upgrade silently: an analysis tool's version is part of its result's provenance,
    so the user decides when it changes.
 
@@ -66,7 +67,7 @@ skip this and install per *Produce a report* above.
 `candor --version` prints the clean RELEASE semver `<ver>` (the GitHub-tag / jar-filename axis) and the
 contract `<spec>`, then `upgrade: jbang --fresh candor@tombaldwin/candor-java`. (The report envelope's
 `.candor.version` is still the engine **build hash** — a git short-hash for provenance, not a semver —
-while `.candor.spec` is the contract version, `0.5`.)
+while `.candor.spec` is the contract version, `0.7`.)
 
 `jbang candor@tombaldwin/candor-java` resolves the jar from this repo's `jbang-catalog.json`, which
 pins a release tag — so you get whatever that catalog points at. To pick up a newer release, run
@@ -80,12 +81,12 @@ The jbang alias works for every query too — `jbang candor@tombaldwin/candor-ja
 never need the jar's path:
 
 ```sh
-java -jar candor.jar show     /tmp/report.json <method> [--json]   # a method's effects
-java -jar candor.jar where    /tmp/report.json Db [--json]         # direct sources vs inheritors
-java -jar candor.jar callers  /tmp/report.json <method> [--json] [--include-unknown]  # the BLAST RADIUS (works for pure methods)
-java -jar candor.jar whatif   /tmp/report.json <method> Net [policy] [--json]  # pre-edit gate verdict
-java -jar candor.jar diff     /tmp/report.json baseline.json [--json]
-java -jar candor.jar map|containment|reachable|path|impact /tmp/report.json …
+java -jar candor.jar show     .candor/report.json <method> [--json]   # a method's effects
+java -jar candor.jar where    .candor/report.json Db [--json]         # direct sources vs inheritors
+java -jar candor.jar callers  .candor/report.json <method> [--json] [--include-unknown]  # the BLAST RADIUS (works for pure methods)
+java -jar candor.jar whatif   .candor/report.json <method> Net [policy] [--json]  # pre-edit gate verdict
+java -jar candor.jar diff     .candor/report.json baseline.json [--json]
+java -jar candor.jar map|containment|reachable|path|impact .candor/report.json …
 ```
 
 Name queries resolve exact > segment-suffix (`Svc.save` matches `com.example.Svc.save`, never

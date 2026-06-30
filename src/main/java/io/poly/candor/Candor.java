@@ -62,6 +62,13 @@ public class Candor {
 
     static final String FS_UNKNOWN = "?";   // Fs reached with no recorded kind (cross-jar) -> make no read/write claim
 
+    /** Where human-readable GATE output (AS-EFF diagnostics + the "no violations" line) is written. Defaults
+     *  to stdout, but main() flips it to stderr in `--json` stdout mode so `candor <classes> --json --policy p
+     *  | jq` sees PURE JSON on stdout (the report already went there). Mirrors the `sum` PrintStream pattern
+     *  used for the first-run summary; routing the decision through one field keeps every diag()/no-violations
+     *  call site honest without threading a stream through every gate checker's signature. */
+    static PrintStream diagOut = System.out;
+
     // --- Spring markers (internal names / annotation-desc substrings) ---
     static final Set<String> REPO_MARKERS = Set.of(
             "org/springframework/data/repository/Repository",
@@ -203,7 +210,10 @@ public class Candor {
      *  never be silently ignored nor read as a positional path — the same gateless-green class as an
      *  unreadable policy file. Shared by main() and Query.run so the binary has ONE posture. */
     static void rejectUnknownFlag(String arg, java.util.Set<String> known, String usage) {
-        if (arg.startsWith("--") && !known.contains(arg)) {
+        // A `--`-prefixed token OR a bare `-` (candor reads no stdin, so `-` is never a valid positional) that
+        // isn't a known flag is a typo/newer-flag — FAIL with exit 2 rather than silently drop it or read it as
+        // a path. The bare-`-` case was previously ignored, slipping past the strict unknown-flag posture.
+        if ((arg.startsWith("--") || arg.equals("-")) && !known.contains(arg)) {
             System.err.println("candor: unknown flag " + arg + " (usage: " + usage + ")");
             System.exit(2);
         }
@@ -565,6 +575,14 @@ public class Candor {
         boolean enforce = baseline != null || noAmbient != null || strict != null || policy != null
                 || ctx().taintEnabled;
 
+        // In --json-stdout mode stdout MUST stay pure JSON (the report already streamed there) — route ALL
+        // human GATE output to stderr too: the AS-EFF diagnostics (via diag()) and the "no violations" line.
+        // The earlier --json fix only redirected the !enforce first-run summary (`sum`); the gate path below
+        // was missed, so `candor <classes> --json --policy p | jq` saw a violation/no-violations line bleed
+        // into stdout and produced malformed JSON. (Exit codes are unaffected.)
+        PrintStream gate = "-".equals(jsonOut) ? System.err : System.out;
+        diagOut = gate;
+
         if (!enforce) {
             // First-run summary — totals by effect + Unknown, printed ALWAYS so the result is visible at a
             // glance (the deterministic payoff AGENTS.md §1a asks the agent for, now guaranteed by the engine).
@@ -625,7 +643,7 @@ public class Candor {
         if (policy != null) violations += checkPolicy(inferred, policy);
         // AS-EFF-007 is a heuristic ADVISORY (spec §6): emit findings but never fail CI on its own.
         int advisories = ctx().taintEnabled ? checkTaint(inferred) : 0;
-        if (violations == 0 && advisories == 0) System.out.println("candor-java: no violations");
+        if (violations == 0 && advisories == 0) gate.println("candor-java: no violations");
         if (violations > 0) System.exit(1); // fail CI
     }
 
@@ -633,7 +651,7 @@ public class Candor {
      *  code vocabulary is first-class rather than an inline string literal. {@code format} is the
      *  message body (no code prefix, no trailing newline); render() prepends {@code "[AS-EFF-00x] "}. */
     static void diag(DiagnosticCode code, String format, Object... args) {
-        System.out.println(new Diagnostic(code, String.format(format, args)).render());
+        diagOut.println(new Diagnostic(code, String.format(format, args)).render());
     }
 
     /** Conformance via dependency injection: a class's fields are the capabilities it holds, so its effects

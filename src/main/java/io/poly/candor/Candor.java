@@ -20,6 +20,7 @@ import org.objectweb.asm.tree.analysis.Interpreter;
 import org.objectweb.asm.tree.analysis.Value;
 
 import java.io.IOException;
+import java.io.PrintStream;
 import java.nio.file.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -338,11 +339,13 @@ public class Candor {
                            candor parsepolicy <policy-file> | candor --agents | candor --version
 
                       <dir-or-jar>      compiled classes to scan (target/classes · build/classes/java/main, or a .jar)
-                      --json <file>     write the candor JSON report (the form an agent / MCP server consumes)
+                      --json [<file>]   write the candor JSON report to <file> (the form an agent / MCP server
+                                        consumes); bare --json prints the report to stdout instead (pipeable —
+                                        `candor <classes> --json | jq .`; report envelope only, no sidecars)
                       --policy <file>   enforce a policy file (deny/pure/allow/forbid, candor-spec §6.2) — exit 1 on a
                                         violation, 2 if unreadable; honours $CANDOR_POLICY when the flag is absent
                       --agents          print the agent contract embedded in this build (AGENTS.md)
-                      --version         print the build and spec version (offline)
+                      -V, --version     print the build and spec version (offline)
                       -h, --help        show this help
 
                     See https://github.com/tombaldwin/candor""".formatted(release(), SPEC_VERSION));
@@ -365,7 +368,7 @@ public class Candor {
         // upgrade line. No network: candor analyzes for the `Net` effect and must not perform it, so it
         // never phones home. Staying current is the AGENT's job — it reads this, then (it has network)
         // compares against GitHub releases and upgrades.
-        if (args[0].equals("--version")) {
+        if (args[0].equals("--version") || args[0].equals("-V")) {
             System.out.println("candor-java " + release() + " (spec " + SPEC_VERSION + ")");
             System.out.println("upgrade: jbang --fresh candor@tombaldwin/candor-java");
             System.exit(0);
@@ -475,11 +478,12 @@ public class Candor {
         String jsonOut = null, policyArg = null;
         for (int i = 1; i < args.length; i++) {
             if (args[i].equals("--json")) {
-                if (i + 1 >= args.length) { // a trailing --json with no value must FAIL, not be
-                    System.err.println("candor: --json requires a value"); // silently dropped (a
-                    System.exit(2);                                        // CI gate then diffs a
-                }                                                          // stale baseline ungated)
-                jsonOut = args[++i];
+                // `--json <file>` (a following non-flag arg) writes the report file + sidecars; bare
+                // `--json` (last arg, or the next arg is a flag) streams the report ENVELOPE to stdout
+                // (the "-" sentinel; no callgraph/hierarchy sidecars), matching the Rust reference. The
+                // valueless form is no longer an error — it's the pipe form (`candor <classes> --json | jq`).
+                if (i + 1 < args.length && !args[i + 1].startsWith("-")) jsonOut = args[++i];
+                else jsonOut = "-";
             } else if (args[i].equals("--policy")) {
                 if (i + 1 >= args.length) { // same posture as --json: a valueless gate flag must FAIL,
                     System.err.println("candor: --policy requires a value"); // never silently run gateless
@@ -577,16 +581,20 @@ public class Candor {
             String breakdown = Stream.of("Net", "Fs", "Db", "Exec", "Ipc", "Env", "Clipboard", "Clock", "Log", "Rand")
                     .filter(k -> counts.getOrDefault(k, 0) > 0)
                     .map(k -> k + " " + counts.get(k)).collect(Collectors.joining(" · "));
-            System.out.printf("candor — %,d function%s reach effects, across %,d class%s (pure functions omitted)%n",
+            // In --json-stdout mode stdout MUST be pure JSON (the report already went there) — route this
+            // human effect summary to stderr so `candor <classes> --json | jq .` parses.
+            PrintStream sum = "-".equals(jsonOut) ? System.err : System.out;
+            sum.printf("candor — %,d function%s reach effects, across %,d class%s (pure functions omitted)%n",
                     effectful.size(), effectful.size() == 1 ? "" : "s", classes.size(), classes.size() == 1 ? "" : "es");
             if (!breakdown.isEmpty() || unknown > 0) {
-                System.out.println("  " + breakdown
+                sum.println("  " + breakdown
                         + (unknown > 0 ? (breakdown.isEmpty() ? "" : "   ·   ") + "Unknown " + unknown + " (disclosed)" : ""));
             }
-            if (jsonOut != null) {
-                System.out.println("  full map in " + jsonOut + " — query it: candor-query callers <fn> / where <Effect>");
+            // The "full map in <file>" pointer only makes sense for a written file — skip it in stdout mode.
+            if (jsonOut != null && !"-".equals(jsonOut)) {
+                sum.println("  full map in " + jsonOut + " — query it: candor-query callers <fn> / where <Effect>");
             }
-            System.out.println();
+            sum.println();
 
             // Per-method detail only when NOT writing a report file (the file already holds it) — keeps the
             // agent's --json run concise (summary only), while a human's bare scan still gets the full audit.

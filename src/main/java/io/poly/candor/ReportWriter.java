@@ -25,6 +25,10 @@ final class ReportWriter {
      *  three can't drift (the three were previously copy-pasted). */
     static void writeReport(Map<String, EffectSet> inferred, String out, ClassConformance cc) throws IOException {
         if (cc != null) writeJson(inferred, out, cc); else writeJson(inferred, out);
+        // The "-" sentinel is the --json-stdout pipe form: report ENVELOPE only, NO sidecars (matching
+        // the Rust reference) — there's nowhere on stdout to put a second/third document, and a piped
+        // `| jq .` wants exactly one. The callgraph/hierarchy are a file-mode affordance for queries.
+        if ("-".equals(out)) return;
         writeCallgraph(out);
         writeHierarchy(out);
     }
@@ -155,8 +159,15 @@ final class ReportWriter {
                 new Provenance(prov[0], prov[1], SPEC_VERSION), // §2.1 — contract version distinct from build id
                 new ArrayList<>(pkgs),
                 effectors);
-        writeAtomic(Path.of(out), ReportJson.serialize(report));
-        System.err.println("candor-java: wrote " + effectors.size() + " entries (@" + prov[0] + ") to " + out);
+        // "-" is the --json-stdout pipe form: emit the report JSON to stdout (pure — `| jq .` parses it)
+        // rather than writing a file. The progress line stays on stderr so stdout carries ONLY the report.
+        if ("-".equals(out)) {
+            System.out.println(ReportJson.serialize(report));
+            System.err.println("candor-java: wrote " + effectors.size() + " entries (@" + prov[0] + ") to stdout");
+        } else {
+            writeAtomic(Path.of(out), ReportJson.serialize(report));
+            System.err.println("candor-java: wrote " + effectors.size() + " entries (@" + prov[0] + ") to " + out);
+        }
         reportUnknownSources();
     }
 

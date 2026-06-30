@@ -288,10 +288,10 @@ quality gate. Pair it with `cargo candor snapshot`-style baselines in CI.
 | **regression guard** | `CANDOR_BASELINE=<saved.json> gradle run --args="<classes>"` | `AS-EFF-005` + **exit 1** if any function gained an effect vs the snapshot |
 | **no-ambient** | `CANDOR_NO_AMBIENT=1` (or a name prefix) | `AS-EFF-004` for direct ambient-authority use (route it through an injected collaborator) |
 | **conformance** | `CANDOR_STRICT=1` (or a class-name prefix) | `AS-EFF-001/002/003` — a class performs an effect no injected dependency provides (or injects one it never uses) |
-| **policy** | `CANDOR_POLICY=<file> gradle run --args="<classes>"` | `AS-EFF-006/008/009` + **exit 1** — architecture-as-code: a method violates a `deny`/`pure`/`allow`/`forbid` boundary (transitively) |
+| **policy** | add `--policy <file>` (or `CANDOR_POLICY=<file>`) | `AS-EFF-006/008/009` + **exit 1** — architecture-as-code: a method violates a `deny`/`pure`/`allow`/`forbid` boundary (transitively) |
 | **taint** (advisory) | `CANDOR_TAINT=1` | `AS-EFF-007` — an injection-class effect (`Exec`/`Fs`/`Db`/`Net`/`Env`/`Ipc`) on a **caller-derived** argument (command/path/SQL injection, SSRF). Intraprocedural taint dataflow; heuristic, never fails CI |
 
-### Policy: architecture-as-code (`CANDOR_POLICY`)
+### Policy: architecture-as-code (`--policy` / `CANDOR_POLICY`)
 
 The enforcement that earns its keep as models get better at local reasoning: a model advises, but only
 a tool holding the whole effect graph *blocks the PR*. A policy file declares invariants; candor-java

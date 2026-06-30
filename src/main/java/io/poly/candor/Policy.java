@@ -95,7 +95,7 @@ final class Policy {
             // A SET-but-unreadable policy FAILS the run (exit 2) — it must never gate-pass: a
             // typo'd CANDOR_POLICY path otherwise runs gateless and green (spec §6.2). Found by
             // the spec review: this engine printed loudly but returned clean; the siblings exit 2.
-            System.err.println("candor-java: CANDOR_POLICY=" + path
+            System.err.println("candor-java: policy file " + path
                     + " could not be read — failing (exit 2), policy NOT evaluated");
             System.exit(2);
         }

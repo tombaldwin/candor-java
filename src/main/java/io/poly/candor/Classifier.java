@@ -87,6 +87,24 @@ final class Classifier {
         if (owner.equals("com.sun.tools.attach.VirtualMachine")
                 && (method.equals("attach") || method.equals("loadAgent") || method.startsWith("loadAgent")))
             return Effect.EXEC;  // attaches to + injects code into another process
+        // Non-JDK deserialization / object-graph sinks — the SAME opacity class as ObjectInputStream.readObject
+        // (gadget-chain RCE; the realized effect rides the payload a static pass can't see) → Unknown. Today a
+        // `deny Unknown`/`deny Net` gate would PASS code that loads & runs an attacker's object graph. The
+        // ubiquitous third-party offenders: SnakeYAML (load/loadAs — RCE-by-default pre-2.0), commons-lang3
+        // SerializationUtils, XStream.fromXML, Kryo, Hessian.
+        if (owner.equals("org.yaml.snakeyaml.Yaml") && (method.equals("load") || method.equals("loadAs"))) return Effect.UNKNOWN;
+        if (owner.equals("org.apache.commons.lang3.SerializationUtils") && method.equals("deserialize")) return Effect.UNKNOWN;
+        if (owner.equals("com.thoughtworks.xstream.XStream") && method.equals("fromXML")) return Effect.UNKNOWN;
+        if ((owner.equals("com.esotericsoftware.kryo.Kryo") || owner.equals("com.esotericsoftware.kryo.kryo5.Kryo"))
+                && (method.equals("readObject") || method.equals("readClassAndObject"))) return Effect.UNKNOWN;
+        if (owner.equals("com.caucho.hessian.io.HessianInput") && method.equals("readObject")) return Effect.UNKNOWN;
+        // Dynamic class loading / definition — loadClass can run a static initializer (arbitrary code on first
+        // touch) and defineClass materializes attacker-controlled bytecode → Unknown, same opacity as eval.
+        // ClassLoader (and the URLClassLoader subclass — its ctor takes the search URLs, loadClass resolves
+        // off them) + MethodHandles.Lookup.defineClass (the modern hidden-class definer).
+        if (owner.equals("java.lang.ClassLoader") && (method.equals("loadClass") || method.equals("defineClass"))) return Effect.UNKNOWN;
+        if (owner.equals("java.net.URLClassLoader") && (method.equals("<init>") || method.equals("loadClass"))) return Effect.UNKNOWN;
+        if (owner.equals("java.lang.invoke.MethodHandles$Lookup") && method.equals("defineClass")) return Effect.UNKNOWN;
 
         // Filesystem — classic java.io streams + NIO file channels (the channel's identity IS file I/O).
         if (owner.equals("java.nio.file.Files")
@@ -337,9 +355,15 @@ final class Classifier {
         // are in-memory/caller-stream → pure).
         if (owner.equals("com.typesafe.config.ConfigFactory")
                 && (method.equals("parseFile") || method.equals("parseFileAnySyntax"))) return Effect.FS;
-        // Apache Commons Configuration2 fluent Configurations — every loader reads its source; ARG-gated:
-        // a File arg → Fs, a URL arg → Net (the String/path-name overloads also read the FS → Fs).
-        if (owner.equals("org.apache.commons.configuration2.builder.fluent.Configurations") && desc != null) {
+        // Apache Commons Configuration2 fluent Configurations — the loader verbs read their source; ARG-gated:
+        // a File arg → Fs, a URL arg → Net, a String arg (a path/file-name overload) → Fs. VERB-GATED (was
+        // any-method): a whole-owner String-arg rule fabricated Fs on the pure builder/factory calls whose
+        // String is a property-name or encoding, not a path — same precision the java.nio.file.Files family
+        // already gets. The loaders are properties/xml/ini/fileBased/combined (+ their string/file/url
+        // overloads); the *Builder() factories return a builder that touches no source until built → pure.
+        if (owner.equals("org.apache.commons.configuration2.builder.fluent.Configurations") && desc != null
+                && (method.equals("properties") || method.equals("xml") || method.equals("ini")
+                    || method.equals("fileBased") || method.equals("combined"))) {
             if (desc.contains("Ljava/net/URL;")) return Effect.NET;
             if (desc.contains("Ljava/io/File;") || desc.contains("Ljava/lang/String;")) return Effect.FS;
         }

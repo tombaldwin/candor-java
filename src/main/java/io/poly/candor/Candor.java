@@ -316,7 +316,7 @@ public class Candor {
 
     public static void main(String[] args) throws IOException {
         if (args.length < 1) {
-            System.err.println("usage: candor <dir-or-jar-of-classes> [--json <file>]");
+            System.err.println("usage: candor <dir-or-jar-of-classes> [--json <file>] [--policy <file>]");
             System.err.println(
                     "       candor <show|where|callers|map|diff|containment|reachable|path|impact|gains|whatif|rewire> <report.json> [arg]");
             System.err.println("       candor parsepolicy <policy-file>");
@@ -451,9 +451,9 @@ public class Candor {
         }
         // The first arg is the scan target (a dir/jar) — a flag there is a typo or a newer-doc flag
         // an older jar doesn't know; fail loudly rather than scan a path named after it.
-        var scanFlags = java.util.Set.of("--json"); // --agents handled above; the rest are unknown here
-        rejectUnknownFlag(args[0], java.util.Set.of(), "candor <dir-or-jar> [--json <file>] | candor --agents");
-        String jsonOut = null;
+        var scanFlags = java.util.Set.of("--json", "--policy"); // --agents handled above; the rest are unknown here
+        rejectUnknownFlag(args[0], java.util.Set.of(), "candor <dir-or-jar> [--json <file>] [--policy <file>] | candor --agents");
+        String jsonOut = null, policyArg = null;
         for (int i = 1; i < args.length; i++) {
             if (args[i].equals("--json")) {
                 if (i + 1 >= args.length) { // a trailing --json with no value must FAIL, not be
@@ -461,8 +461,14 @@ public class Candor {
                     System.exit(2);                                        // CI gate then diffs a
                 }                                                          // stale baseline ungated)
                 jsonOut = args[++i];
+            } else if (args[i].equals("--policy")) {
+                if (i + 1 >= args.length) { // same posture as --json: a valueless gate flag must FAIL,
+                    System.err.println("candor: --policy requires a value"); // never silently run gateless
+                    System.exit(2);
+                }
+                policyArg = args[++i];
             } else {
-                rejectUnknownFlag(args[i], scanFlags, "candor <dir-or-jar> [--json <file>]");
+                rejectUnknownFlag(args[i], scanFlags, "candor <dir-or-jar> [--json <file>] [--policy <file>]");
             }
         }
 
@@ -532,7 +538,7 @@ public class Candor {
         String strict = System.getenv(Mode.CONFORMANCE.envVar());
         String baseline = System.getenv(Mode.BASELINE.envVar());
         String noAmbient = System.getenv(Mode.NO_AMBIENT.envVar());
-        String policy = System.getenv(Mode.POLICY.envVar());
+        String policy = policyArg != null ? policyArg : System.getenv(Mode.POLICY.envVar()); // --policy <file> takes precedence over CANDOR_POLICY
         boolean enforce = baseline != null || noAmbient != null || strict != null || policy != null
                 || ctx().taintEnabled;
 

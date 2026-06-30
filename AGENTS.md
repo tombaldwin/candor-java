@@ -101,7 +101,7 @@ Name queries resolve exact > segment-suffix (`Svc.save` matches `com.example.Svc
   dispatched method); a lower-bound disclosure, labelled "cannot confirm", never asserted.
 - **Decide BEFORE you edit** → `whatif <method> <Effect> [policy]` — every transitive caller gains the
   effect; crossed with `CANDOR_POLICY` it returns which functions would violate.
-- **Enforce in CI** → `CANDOR_POLICY` (candor-spec §6.2: `deny`/`pure`/`allow`/`forbid`) +
+- **Enforce in CI** → `--policy <file>` (or `CANDOR_POLICY`) (candor-spec §6.2: `deny`/`pure`/`allow`/`forbid`) +
   `CANDOR_BASELINE` (regression guard). Deterministic — not an LLM opinion.
 
 ## JVM-specific things to know

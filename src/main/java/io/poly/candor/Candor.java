@@ -320,7 +320,7 @@ public class Candor {
             System.err.println(
                     "       candor <show|where|callers|map|diff|containment|reachable|path|impact|gains|whatif|rewire> <report.json> [arg]");
             System.err.println("       candor parsepolicy <policy-file>");
-            System.err.println("       candor --version | --agents");
+            System.err.println("       candor --version | --agents | --help");
             System.exit(2);
         }
         // Read-only queries over a written report (no re-analysis) — the sibling of candor-query.
@@ -329,6 +329,25 @@ public class Candor {
         }
         // The agent contract for THE INSTALLED BUILD, baked into the jar as a resource — doc and
         // engine cannot drift (the §2.1 version-trust rule applied to documentation).
+        if (args[0].equals("-h") || args[0].equals("--help")) {
+            System.out.println("""
+                    candor-java %s — per-method effect audit for JVM bytecode (candor-spec %s)
+
+                    USAGE: candor <dir-or-jar-of-classes> [--json <file>] [--policy <file>]
+                           candor <show|where|callers|map|diff|...> <report.json> [arg]   (read-only queries)
+                           candor parsepolicy <policy-file> | candor --agents | candor --version
+
+                      <dir-or-jar>      compiled classes to scan (target/classes · build/classes/java/main, or a .jar)
+                      --json <file>     write the candor JSON report (the form an agent / MCP server consumes)
+                      --policy <file>   enforce a policy file (deny/pure/allow/forbid, candor-spec §6.2) — exit 1 on a
+                                        violation, 2 if unreadable; honours $CANDOR_POLICY when the flag is absent
+                      --agents          print the agent contract embedded in this build (AGENTS.md)
+                      --version         print the build and spec version (offline)
+                      -h, --help        show this help
+
+                    See https://github.com/tombaldwin/candor""".formatted(release(), SPEC_VERSION));
+            System.exit(0);
+        }
         if (args[0].equals("--agents")) {
             try (var in = Candor.class.getResourceAsStream("/AGENTS.md")) {
                 if (in == null) {

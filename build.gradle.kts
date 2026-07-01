@@ -99,6 +99,10 @@ graalvmNative {
     }
 }
 java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
+// Build WITH the JDK 21 toolchain but emit Java 17 bytecode so the tool RUNS on any Java 17+ runtime —
+// candor is a bytecode analyzer, not an app; requiring Java 21 to run it needlessly excludes 17-LTS CI
+// (the adopt GitHub Action hit exactly this: UnsupportedClassVersionError on a Java-17 runner).
+tasks.withType<JavaCompile>().configureEach { options.release.set(17) }
 application { mainClass = "io.poly.candor.Candor" }
 tasks.named<Test>("test") { useJUnitPlatform() }
 

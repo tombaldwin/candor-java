@@ -93,6 +93,22 @@ class GateJsonTest {
     }
 
     @Test
+    void thePlainDiagFormRecordsEmptyEffects() throws Exception {
+        // The effect-LESS codes (AS-EFF-009 layer-flow, AS-EFF-003 unresolved) go through the plain diag()
+        // overload → effects MUST be [] (not omitted, not the fn's effects). The reporter relies on an
+        // explicit [] to NOT invent an effect for a layer-flow.
+        Candor.gateCapture = true;
+        Candor.diag(io.poly.candor.model.DiagnosticCode.AS_EFF_009,
+            "`%s` reaches into a forbidden layer (via `%s`), violating policy: `forbid %s -> %s`",
+            "web.Ctl.handle", "repo.find", "web", "repo");
+        assertEquals(1, Candor.gateViolations.size());
+        var e = Candor.gateViolations.get(0);
+        assertEquals("AS-EFF-009", e.get("rule"));
+        assertEquals("web.Ctl.handle", e.get("fn"));
+        assertEquals(java.util.List.of(), e.get("effects"), "an effect-less code records []");
+    }
+
+    @Test
     void capturesNothingWhenGateCaptureIsOff() throws Exception {
         // The default (no --gate-json): the checker still runs + prints, but records NOTHING — this is what
         // keeps the report/console byte-identical when the flag is absent.

@@ -311,4 +311,50 @@ class CliBehaviourTest {
         assertEquals(2, r.exit(), "a dir with no .class files must FAIL (exit 2)\nSTDERR:\n" + r.stderr());
         assertNoStackTrace(r);
     }
+
+    // ── --gate-json (spec 0.8): the structured gate verdict, end-to-end through the real CLI ────────────
+
+    @Test
+    void gateJsonWritesTheVerdictWithEffectsAndFailsClosed() throws Exception {
+        // The whole flag path: parse --gate-json, run the gate, write { spec, ok, violations[] } — and the
+        // file MUST agree with the exit code (a violation ⇒ ok:false ⇒ exit 1). Covers writeGateJson + the
+        // envelope + the denied `effects`, which the unit-level GateJsonTest (checkPolicy only) can't reach.
+        Path classes = compileNetFixture();
+        Path pol = scratch.resolve("p.policy");
+        Files.writeString(pol, "deny Net app\n");
+        Path out = scratch.resolve("gate.json");
+        Run r = runCli(classes.toString(), "--policy", pol.toString(), "--gate-json", out.toString());
+        assertEquals(1, r.exit(), "a violation fails the gate\nSTDERR:\n" + r.stderr());
+        assertTrue(Files.exists(out), "the verdict file is written (before exit)");
+        var v = JsonParser.parseString(Files.readString(out)).getAsJsonObject();
+        assertEquals(Candor.SPEC_VERSION, v.get("spec").getAsString(), "verdict declares the spec version");
+        assertFalse(v.get("ok").getAsBoolean(), "ok:false on a failing gate");
+        var viol = v.getAsJsonArray("violations");
+        assertEquals(1, viol.size(), "one violation");
+        var e = viol.get(0).getAsJsonObject();
+        assertEquals("AS-EFF-006", e.get("rule").getAsString());
+        assertEquals("app.Svc.fetch", e.get("fn").getAsString());
+        assertEquals(1, e.getAsJsonArray("effects").size());
+        assertEquals("Net", e.getAsJsonArray("effects").get(0).getAsString(), "effects = the denied set");
+        assertTrue(e.get("detail").getAsString().contains("forbidden by policy"), "detail carries the message");
+    }
+
+    @Test
+    void gateJsonOnACleanRunWritesOkTrueEmpty() throws Exception {
+        // No gate configured + --gate-json ⇒ the clean verdict, exit 0. (The `enforce` path must still emit.)
+        Path out = scratch.resolve("gate.json");
+        Run r = runCli(comparePureFixture().toString(), "--gate-json", out.toString());
+        assertEquals(0, r.exit(), "a clean run passes\nSTDERR:\n" + r.stderr());
+        var v = JsonParser.parseString(Files.readString(out)).getAsJsonObject();
+        assertTrue(v.get("ok").getAsBoolean(), "ok:true on a clean run");
+        assertEquals(0, v.getAsJsonArray("violations").size(), "no violations");
+    }
+
+    @Test
+    void gateJsonValuelessFailsClosed() throws Exception {
+        // A valueless gate flag must FAIL (exit 2), never silently run without emitting — like --policy/--json.
+        Run r = runCli(comparePureFixture().toString(), "--gate-json");
+        assertEquals(2, r.exit(), "a valueless --gate-json must fail (exit 2)\nSTDERR:\n" + r.stderr());
+        assertNoStackTrace(r);
+    }
 }

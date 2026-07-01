@@ -43,7 +43,7 @@ If this project already has candor-java (a `.candor/` report directory, or the f
 `jbang candor@tombaldwin/candor-java` available), do this **first**, before scanning:
 
 1. **Tell the user which version they're on.** Run the offline version flag and state it plainly —
-   e.g. *"This project is on candor-java 0.7.2 (spec 0.7)."*
+   e.g. *"This project is on candor-java 0.8.0 (spec 0.8)."*
    ```sh
    candor --version        # i.e. java -jar candor-java-*-all.jar --version — offline, no network
    ```
@@ -55,10 +55,10 @@ If this project already has candor-java (a `.candor/` report directory, or the f
    ```sh
    curl -s -H 'User-Agent: candor-version-check' \
      https://api.github.com/repos/tombaldwin/candor-java/releases/latest \
-     | grep -o '"tag_name": *"[^"]*"'                                    # latest -> "tag_name":"v0.7.0" (compact)
+     | grep -o '"tag_name": *"[^"]*"'                                    # latest -> "tag_name":"v0.8.0" (compact)
    ```
-3. **If it's behind, *ask* before upgrading.** Say e.g. *"candor-java 0.7.3 is available (you're on
-   0.7.2) — upgrade before I scan?"* and run `jbang --fresh candor@tombaldwin/candor-java` only if the
+3. **If it's behind, *ask* before upgrading.** Say e.g. *"candor-java 0.8.1 is available (you're on
+   0.8.0) — upgrade before I scan?"* and run `jbang --fresh candor@tombaldwin/candor-java` only if the
    user agrees. Never upgrade silently: an analysis tool's version is part of its result's provenance,
    so the user decides when it changes.
 

@@ -32,7 +32,7 @@ final class Policy {
             List<String> ambient = ctx().direct.getOrDefault(e.getKey(), EffectSet.empty()).effects().stream()
                     .filter(AMBIENT::contains).map(Effect::specName).sorted().collect(Collectors.toList());
             if (!ambient.isEmpty()) {
-                diag(DiagnosticCode.AS_EFF_004, "`%s` uses ambient authority { %s } directly; "
+                diag(DiagnosticCode.AS_EFF_004, ambient, "`%s` uses ambient authority { %s } directly; "
                         + "route it through an injected collaborator / capability",
                         e.getKey(), String.join(", ", ambient));
                 v++;
@@ -52,9 +52,10 @@ final class Policy {
         int v = 0;
         for (var e : new TreeMap<>(ctx().tainted).entrySet()) {
             if (e.getValue().isEmpty()) continue;
-            diag(DiagnosticCode.AS_EFF_007, "`%s` performs { %s } on caller-derived input (an injection "
+            List<String> te = e.getValue().toNames();
+            diag(DiagnosticCode.AS_EFF_007, te, "`%s` performs { %s } on caller-derived input (an injection "
                     + "surface — validate/sanitize it, or confirm the source is trusted); heuristic, may "
-                    + "over- or under-flag", e.getKey(), String.join(", ", e.getValue().toNames()));
+                    + "over- or under-flag", e.getKey(), String.join(", ", te));
             v++;
         }
         return v;
@@ -75,7 +76,7 @@ final class Policy {
             if (prior == null) continue; // new function — reviewed as new code, not a regression
             List<String> gained = e.getValue().minus(prior).toNames();
             if (!gained.isEmpty()) {
-                diag(DiagnosticCode.AS_EFF_005, "`%s` gained effect { %s } not present in the baseline",
+                diag(DiagnosticCode.AS_EFF_005, gained, "`%s` gained effect { %s } not present in the baseline",
                         e.getKey(), String.join(", ", gained));
                 v++;
             }
@@ -112,8 +113,9 @@ final class Policy {
                         ? e.getValue().without(Effect.UNKNOWN)
                         : e.getValue().intersect(r.effects());
                 if (!bad.isEmpty()) {
-                    diag(DiagnosticCode.AS_EFF_006, "`%s` performs { %s }, forbidden by policy%s: `%s`",
-                            fn, String.join(", ", bad.toNames()),
+                    List<String> bn = bad.toNames();
+                    diag(DiagnosticCode.AS_EFF_006, bn, "`%s` performs { %s }, forbidden by policy%s: `%s`",
+                            fn, String.join(", ", bn),
                             r.scope().isEmpty() ? "" : " (scope `" + r.scope() + "`)", r.src());
                     v++;
                 }
@@ -168,8 +170,8 @@ final class Policy {
                 // or a runtime-host call) can't be certified: fail-closed. Without the incompleteness gate a
                 // benign visible literal would MASK the invisible forbidden endpoint (the gate EVASION).
                 if (reached.isEmpty() || incompleteAcc.getOrDefault(fn, new TreeSet<>()).contains(effect)) {
-                    diag(DiagnosticCode.AS_EFF_008, "`%s` performs %s with no visible literal — the "
-                            + "surface cannot be certified: `allow %s%s %s`", fn, effect, effect,
+                    diag(DiagnosticCode.AS_EFF_008, List.of(effect), "`%s` performs %s with no visible literal "
+                            + "— the surface cannot be certified: `allow %s%s %s`", fn, effect, effect,
                             r.scope().isEmpty() ? "" : " in " + r.scope(),
                             String.join(" ", r.values()));
                     v++;
@@ -178,8 +180,8 @@ final class Policy {
                 List<String> bad = reached.stream()
                         .filter(x -> !covered.test(r.values(), x)).sorted().collect(Collectors.toList());
                 if (!bad.isEmpty()) {
-                    diag(DiagnosticCode.AS_EFF_008, "`%s` reaches { %s } outside the allowlist, forbidden by "
-                            + "policy%s: `allow %s … %s`", fn, String.join(", ", bad),
+                    diag(DiagnosticCode.AS_EFF_008, List.of(effect), "`%s` reaches { %s } outside the allowlist, "
+                            + "forbidden by policy%s: `allow %s … %s`", fn, String.join(", ", bad),
                             r.scope().isEmpty() ? "" : " (scope `" + r.scope() + "`)", effect,
                             String.join(" ", r.values()));
                     v++;

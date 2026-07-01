@@ -689,16 +689,30 @@ public class Candor {
      *  code vocabulary is first-class rather than an inline string literal. {@code format} is the
      *  message body (no code prefix, no trailing newline); render() prepends {@code "[AS-EFF-00x] "}. */
     static void diag(DiagnosticCode code, String format, Object... args) {
+        diagCapture(code, java.util.List.of(), format, args);
+    }
+
+    /** As {@link #diag(DiagnosticCode, String, Object...)}, but records the specific effect(s) the violation
+     *  concerns — the DENIED/gained/undeclared set (the intersection of what the entity does and what the
+     *  rule forbids), which a consumer cannot reconstruct from the report's per-fn `direct` set. Used by the
+     *  effect-bearing codes; a layer-flow (009) / unresolved (003) code carries no effect and uses the plain
+     *  form. */
+    static void diag(DiagnosticCode code, java.util.List<String> effects, String format, Object... args) {
+        diagCapture(code, effects, format, args);
+    }
+
+    private static void diagCapture(DiagnosticCode code, java.util.List<String> effects, String format, Object... args) {
         String body = String.format(format, args);
         diagOut.println(new Diagnostic(code, body).render());
         // --gate-json capture: EVERY AS-EFF site passes the offending entity (a fn, or a class for the
-        // conformance codes) as args[0], so we record it structurally here — one site, all codes, no
-        // per-checker drift and no console-line parsing. `detail` is the message body (code prefix omitted;
-        // the ruleId already carries it). Consumers join `loc`/effects from the report envelope by `fn`.
+        // conformance codes) as args[0], recorded structurally here — one site, all codes, no console
+        // parsing. `effects` is the specific effect set the violation is about (empty for a layer-flow /
+        // unresolved code); `detail` is the message body. Consumers join `loc` from the report by `fn`.
         if (gateCapture && args.length > 0 && args[0] instanceof String fn) {
             var m = new java.util.LinkedHashMap<String, Object>();
             m.put("rule", code.code());
             m.put("fn", fn);
+            m.put("effects", effects);
             m.put("detail", body);
             gateViolations.add(m);
         }
@@ -729,7 +743,7 @@ public class Candor {
             if (!undeclared.isEmpty()) {
                 String have = declared.isEmpty() ? "no injected capability"
                         : "only { " + String.join(", ", declared.toNames()) + " }";
-                diag(DiagnosticCode.AS_EFF_001, "class `%s` performs { %s } but holds %s; "
+                diag(DiagnosticCode.AS_EFF_001, undeclared, "class `%s` performs { %s } but holds %s; "
                         + "inject a collaborator that provides it (don't reach for ambient authority)",
                         dc, String.join(", ", undeclared), have);
                 v++;
@@ -740,7 +754,7 @@ public class Candor {
                 v++;
             }
             if (!unused.isEmpty()) {
-                diag(DiagnosticCode.AS_EFF_002, "class `%s` injects { %s } but never uses it",
+                diag(DiagnosticCode.AS_EFF_002, unused, "class `%s` injects { %s } but never uses it",
                         dc, String.join(", ", unused));
                 v++;
             }

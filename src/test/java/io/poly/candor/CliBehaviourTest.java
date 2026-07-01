@@ -357,4 +357,29 @@ class CliBehaviourTest {
         assertEquals(2, r.exit(), "a valueless --gate-json must fail (exit 2)\nSTDERR:\n" + r.stderr());
         assertNoStackTrace(r);
     }
+
+    @Test
+    void gateJsonDashWritesTheVerdictToStdout() throws Exception {
+        // `--gate-json -` streams the verdict to stdout (the pipe form, like `--json`).
+        Path classes = compileNetFixture();
+        Path pol = scratch.resolve("p.policy");
+        Files.writeString(pol, "deny Net app\n");
+        Run r = runCli(classes.toString(), "--policy", pol.toString(), "--gate-json", "-");
+        assertEquals(1, r.exit());
+        assertTrue(r.stdout().contains("\"violations\"") && r.stdout().contains("\"ok\""),
+                "the verdict JSON is on stdout\nSTDOUT:\n" + r.stdout());
+    }
+
+    @Test
+    void gateJsonUnwritablePathDoesNotCrashTheGate() throws Exception {
+        // A bad --gate-json path must be a clean diagnostic, never a crash — and MUST NOT change the gate
+        // verdict (the exit code is the source of truth; the verdict file is a surfacing side-output).
+        Path classes = compileNetFixture();
+        Path pol = scratch.resolve("p.policy");
+        Files.writeString(pol, "deny Net app\n");
+        Run r = runCli(classes.toString(), "--policy", pol.toString(),
+                "--gate-json", scratch.resolve("no/such/dir/gate.json").toString());
+        assertEquals(1, r.exit(), "the gate still fails on the violation despite the unwritable verdict path");
+        assertNoStackTrace(r);
+    }
 }

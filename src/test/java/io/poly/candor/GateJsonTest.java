@@ -55,10 +55,26 @@ class GateJsonTest {
         var e = Candor.gateViolations.get(0);
         assertEquals("AS-EFF-006", e.get("rule"));
         assertEquals("app.domain.Order.audit", e.get("fn"), "fn is the diagnostic subject (args[0])");
+        assertEquals(java.util.List.of("Fs"), e.get("effects"),
+            "effects is the DENIED set (what the fn does ∩ what the rule forbids), not the fn's full direct set");
         assertTrue(((String) e.get("detail")).contains("forbidden by policy"),
             "detail carries the engine's own message (the SARIF message body)");
         // the detail is the message BODY, without the bracketed code prefix (the ruleId carries the code).
         assertFalse(((String) e.get("detail")).startsWith("[AS-EFF"), "no code prefix in detail");
+    }
+
+    @Test
+    void effectsIsTheDeniedSubsetNotTheFullEffectSet() throws Exception {
+        // The reason `effects` can't be reconstructed from the report: a fn that does { Clock, Fs } under
+        // `deny Fs` violates on Fs ONLY. The report's direct set is { Clock, Fs }; the verdict's effects is
+        // { Fs } — the intersection a consumer needs for a precise message / codeFlow.
+        Candor.gateCapture = true;
+        Path pol = policy("deny Fs app.domain");
+        var inferred = Map.of("app.domain.Order.audit", EffectSet.of(Effect.CLOCK, Effect.FS));
+        Policy.checkPolicy(inferred, pol.toString());
+        assertEquals(1, Candor.gateViolations.size());
+        assertEquals(java.util.List.of("Fs"), Candor.gateViolations.get(0).get("effects"),
+            "effects is the DENIED intersection { Fs }, not the fn's full { Clock, Fs }");
     }
 
     @Test

@@ -69,6 +69,13 @@ public class Candor {
      *  call site honest without threading a stream through every gate checker's signature. */
     static PrintStream diagOut = System.out;
 
+    /** `--gate-json <file>`: when on, every AS-EFF diagnostic is ALSO captured structurally (below) so the
+     *  gate verdict can be re-emitted as machine JSON — the same source of truth the console + exit code use,
+     *  never a re-derivation. Off by default (zero cost, byte-identical output). Single-run CLI state; the
+     *  `--parallel`/reentrant paths don't set it. */
+    static boolean gateCapture = false;
+    static final java.util.List<java.util.Map<String, Object>> gateViolations = new java.util.ArrayList<>();
+
     // --- Spring markers (internal names / annotation-desc substrings) ---
     static final Set<String> REPO_MARKERS = Set.of(
             "org/springframework/data/repository/Repository",
@@ -227,6 +234,8 @@ public class Candor {
      *  KNOWN_EFFECTS, INJECTION, PATH_CTOR_OWNERS) are constants, not state, and are left untouched. */
     static void resetState() {
         newContext();
+        gateViolations.clear();   // fresh per scan (runScan calls this); gateCapture is the CLI flag, set
+                                  // before runScan — do NOT reset it here or --gate-json capture would be lost.
     }
 
     /** The analysis core, factored out of {@link #main} so it is re-entrant (resets the thread's context
@@ -483,11 +492,18 @@ public class Candor {
         }
         // The first arg is the scan target (a dir/jar) — a flag there is a typo or a newer-doc flag
         // an older jar doesn't know; fail loudly rather than scan a path named after it.
-        var scanFlags = java.util.Set.of("--json", "--policy"); // --agents handled above; the rest are unknown here
+        var scanFlags = java.util.Set.of("--json", "--policy", "--gate-json"); // --agents handled above; the rest are unknown here
         rejectUnknownFlag(args[0], java.util.Set.of(), "candor <dir-or-jar> [--json <file>] [--policy <file>] | candor --agents");
-        String jsonOut = null, policyArg = null;
+        String jsonOut = null, policyArg = null, gateJson = null;
         for (int i = 1; i < args.length; i++) {
-            if (args[i].equals("--json")) {
+            if (args[i].equals("--gate-json")) {
+                // Re-emit the gate verdict as machine JSON (the structured analog of the AS-EFF console
+                // lines) → `{ spec, ok, violations:[{rule,fn,detail}] }`. Powers the PR-native SARIF
+                // reporter (integrations/github). A valueless form FAILS like --policy/--json.
+                if (i + 1 >= args.length) { System.err.println("candor: --gate-json requires a value"); System.exit(2); }
+                gateJson = args[++i];
+                gateCapture = true;
+            } else if (args[i].equals("--json")) {
                 // `--json <file>` (a following non-flag arg) writes the report file + sidecars; bare
                 // `--json` (last arg, or the next arg is a flag) streams the report ENVELOPE to stdout
                 // (the "-" sentinel; no callgraph/hierarchy sidecars), matching the Rust reference. The
@@ -573,7 +589,7 @@ public class Candor {
         String noAmbient = System.getenv(Mode.NO_AMBIENT.envVar());
         String policy = policyArg != null ? policyArg : System.getenv(Mode.POLICY.envVar()); // --policy <file> takes precedence over CANDOR_POLICY
         boolean enforce = baseline != null || noAmbient != null || strict != null || policy != null
-                || ctx().taintEnabled;
+                || ctx().taintEnabled || gateJson != null;   // --gate-json always emits its verdict (ok:true,[] when nothing to gate)
 
         // In --json-stdout mode stdout MUST stay pure JSON (the report already streamed there) — route ALL
         // human GATE output to stderr too: the AS-EFF diagnostics (via diag()) and the "no violations" line.
@@ -644,14 +660,46 @@ public class Candor {
         // AS-EFF-007 is a heuristic ADVISORY (spec §6): emit findings but never fail CI on its own.
         int advisories = ctx().taintEnabled ? checkTaint(inferred) : 0;
         if (violations == 0 && advisories == 0) gate.println("candor-java: no violations");
+        writeGateJson(gateJson, violations);   // machine verdict (before exit) — clean run writes ok:true,[]
         if (violations > 0) System.exit(1); // fail CI
+    }
+
+    /** `--gate-json`: write the structured gate verdict `{ spec, ok, violations:[{rule,fn,detail}] }` — the
+     *  machine analog of the AS-EFF console lines, from the SAME diagnostics (captured in {@link #diag}), so
+     *  it can never disagree with the exit code. `ok` is the CI verdict (advisory AS-EFF-007 lines appear in
+     *  the list but do NOT clear `ok`). Consumed by the PR-native SARIF reporter (integrations/github). */
+    static void writeGateJson(String path, int violations) {
+        if (path == null) return;
+        var out = new java.util.LinkedHashMap<String, Object>();
+        out.put("spec", SPEC_VERSION);
+        out.put("ok", violations == 0);
+        out.put("violations", gateViolations);
+        try {
+            String json = io.poly.candor.model.ReportJson.pretty(out);
+            if (path.equals("-")) System.out.println(json);
+            else Files.writeString(Path.of(path), json + "\n");
+        } catch (IOException e) {
+            System.err.println("candor: could not write --gate-json " + path + ": " + e.getMessage());
+        }
     }
 
     /** Emit one AS-EFF diagnostic line (candor-spec §6) through the typed {@link DiagnosticCode}, so the
      *  code vocabulary is first-class rather than an inline string literal. {@code format} is the
      *  message body (no code prefix, no trailing newline); render() prepends {@code "[AS-EFF-00x] "}. */
     static void diag(DiagnosticCode code, String format, Object... args) {
-        diagOut.println(new Diagnostic(code, String.format(format, args)).render());
+        String body = String.format(format, args);
+        diagOut.println(new Diagnostic(code, body).render());
+        // --gate-json capture: EVERY AS-EFF site passes the offending entity (a fn, or a class for the
+        // conformance codes) as args[0], so we record it structurally here — one site, all codes, no
+        // per-checker drift and no console-line parsing. `detail` is the message body (code prefix omitted;
+        // the ruleId already carries it). Consumers join `loc`/effects from the report envelope by `fn`.
+        if (gateCapture && args.length > 0 && args[0] instanceof String fn) {
+            var m = new java.util.LinkedHashMap<String, Object>();
+            m.put("rule", code.code());
+            m.put("fn", fn);
+            m.put("detail", body);
+            gateViolations.add(m);
+        }
     }
 
     /** Conformance via dependency injection: a class's fields are the capabilities it holds, so its effects

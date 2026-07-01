@@ -56,9 +56,11 @@ import static io.poly.candor.AnalysisState.*;
 public class Candor {
     /** The candor-spec contract version this build implements (the report SCHEMA + AS-EFF codes),
      *  distinct from the engine build id (the report's `version`). Emitted as the envelope's `spec` so a
-     *  consumer can see which contract a report conforms to; MUST match the Rust impl's
-     *  `candor_report::SPEC_VERSION` and candor-spec's stated version (§2.1). */
-    static final String SPEC_VERSION = "0.7";
+     *  consumer can see which contract a report conforms to. candor-java is the REFERENCE engine and MAY
+     *  lead a minor rung (candor-spec §"Versioning policy" — the version ladder): it declares `0.8` (the
+     *  `--gate-json` structured verdict, §3.3) while the other engines remain on the released `0.7` floor
+     *  and raise to `0.8` as they implement it. Additive-only, so a `0.7` consumer is unaffected. */
+    static final String SPEC_VERSION = "0.8";
 
     static final String FS_UNKNOWN = "?";   // Fs reached with no recorded kind (cross-jar) -> make no read/write claim
 

@@ -236,8 +236,6 @@ public class Candor {
      *  KNOWN_EFFECTS, INJECTION, PATH_CTOR_OWNERS) are constants, not state, and are left untouched. */
     static void resetState() {
         newContext();
-        gateViolations.clear();   // fresh per scan (runScan calls this); gateCapture is the CLI flag, set
-                                  // before runScan — do NOT reset it here or --gate-json capture would be lost.
     }
 
     /** The analysis core, factored out of {@link #main} so it is re-entrant (resets the thread's context
@@ -505,6 +503,8 @@ public class Candor {
                 if (i + 1 >= args.length) { System.err.println("candor: --gate-json requires a value"); System.exit(2); }
                 gateJson = args[++i];
                 gateCapture = true;
+                gateViolations.clear();   // clear HERE (single-threaded, before runScan) — not in resetState,
+                                          // which --parallel calls concurrently across a thread pool.
             } else if (args[i].equals("--json")) {
                 // `--json <file>` (a following non-flag arg) writes the report file + sidecars; bare
                 // `--json` (last arg, or the next arg is a flag) streams the report ENVELOPE to stdout

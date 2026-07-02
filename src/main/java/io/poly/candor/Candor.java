@@ -340,7 +340,7 @@ public class Candor {
 
     public static void main(String[] args) throws IOException {
         if (args.length < 1) {
-            System.err.println("usage: candor <dir-or-jar-of-classes> [--json <file>] [--policy <file>]");
+            System.err.println("usage: candor <dir-or-jar-of-classes> [--json <file>] [--policy <file>] [--gate-json <file>]");
             System.err.println(
                     "       candor <show|where|callers|map|diff|containment|reachable|path|impact|gains|whatif|rewire> <report.json> [arg]");
             System.err.println("       candor parsepolicy <policy-file>");
@@ -357,7 +357,7 @@ public class Candor {
             System.out.println("""
                     candor-java %s — per-method effect audit for JVM bytecode (candor-spec %s)
 
-                    USAGE: candor <dir-or-jar-of-classes> [--json <file>] [--policy <file>]
+                    USAGE: candor <dir-or-jar-of-classes> [--json <file>] [--policy <file>] [--gate-json <file>]
                            candor <show|where|callers|map|diff|...> <report.json> [arg]   (read-only queries)
                            candor parsepolicy <policy-file> | candor --agents | candor --version
 
@@ -367,6 +367,8 @@ public class Candor {
                                         `candor <classes> --json | jq .`; report envelope only, no sidecars)
                       --policy <file>   enforce a policy file (deny/pure/allow/forbid, candor-spec §6.2) — exit 1 on a
                                         violation, 2 if unreadable; honours $CANDOR_POLICY when the flag is absent
+                      --gate-json <f>   write the structured gate verdict { spec, ok, violations } as JSON
+                                        (candor-spec §3.3); `-` streams it to stdout
                       --agents          print the agent contract embedded in this build (AGENTS.md)
                       -V, --version     print the build and spec version (offline)
                       -h, --help        show this help
@@ -497,12 +499,12 @@ public class Candor {
         // The first arg is the scan target (a dir/jar) — a flag there is a typo or a newer-doc flag
         // an older jar doesn't know; fail loudly rather than scan a path named after it.
         var scanFlags = java.util.Set.of("--json", "--policy", "--gate-json"); // --agents handled above; the rest are unknown here
-        rejectUnknownFlag(args[0], java.util.Set.of(), "candor <dir-or-jar> [--json <file>] [--policy <file>] | candor --agents");
+        rejectUnknownFlag(args[0], java.util.Set.of(), "candor <dir-or-jar> [--json <file>] [--policy <file>] [--gate-json <file>] | candor --agents");
         String jsonOut = null, policyArg = null, gateJson = null;
         for (int i = 1; i < args.length; i++) {
             if (args[i].equals("--gate-json")) {
                 // Re-emit the gate verdict as machine JSON (the structured analog of the AS-EFF console
-                // lines) → `{ spec, ok, violations:[{rule,fn,detail}] }`. Powers the PR-native SARIF
+                // lines) → `{ spec, ok, violations:[{rule,fn,effects,detail}] }`. Powers the PR-native SARIF
                 // reporter (integrations/github). A valueless OR flag-shaped value FAILS (exit 2): without
                 // the dash-check, `--gate-json --policy arch.policy` swallowed `--policy` as the verdict
                 // path and the displaced bare `arch.policy` was silently dropped — a GATELESS green run,
@@ -527,7 +529,7 @@ public class Candor {
                 }
                 policyArg = args[++i];
             } else {
-                rejectUnknownFlag(args[i], scanFlags, "candor <dir-or-jar> [--json <file>] [--policy <file>]");
+                rejectUnknownFlag(args[i], scanFlags, "candor <dir-or-jar> [--json <file>] [--policy <file>] [--gate-json <file>]");
                 // A BARE unexpected token is the same failure class as an unknown flag: candor's scan
                 // grammar has exactly ONE positional (args[0], the target), so a stray bare token here is
                 // a displaced value (a flag above swallowed its neighbour) or a typo — silently dropping
@@ -687,7 +689,7 @@ public class Candor {
         if (violations > 0) System.exit(1); // fail CI
     }
 
-    /** `--gate-json`: write the structured gate verdict `{ spec, ok, violations:[{rule,fn,detail}] }` — the
+    /** `--gate-json`: write the structured gate verdict `{ spec, ok, violations:[{rule,fn,effects,detail}] }` — the
      *  machine analog of the AS-EFF console lines, from the SAME diagnostics (captured in {@link #diag}), so
      *  it can never disagree with the exit code. `ok` is the CI verdict (advisory AS-EFF-007 lines appear in
      *  the list but do NOT clear `ok`). Consumed by the PR-native SARIF reporter (integrations/github). */

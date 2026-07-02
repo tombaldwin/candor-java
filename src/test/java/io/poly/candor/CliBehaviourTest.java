@@ -380,14 +380,69 @@ class CliBehaviourTest {
 
     @Test
     void gateJsonDashWritesTheVerdictToStdout() throws Exception {
-        // `--gate-json -` streams the verdict to stdout (the pipe form, like `--json`).
+        // `--gate-json -` streams the verdict to stdout (the pipe form, like `--json`) — and stdout MUST
+        // be PURE JSON: the AS-EFF lines / "no violations" go to stderr, else the piped verdict is
+        // unparseable (`… --gate-json - | candor-sarif` was the broken consumer).
         Path classes = compileNetFixture();
         Path pol = scratch.resolve("p.policy");
         Files.writeString(pol, "deny Net app\n");
         Run r = runCli(classes.toString(), "--policy", pol.toString(), "--gate-json", "-");
         assertEquals(1, r.exit());
-        assertTrue(r.stdout().contains("\"violations\"") && r.stdout().contains("\"ok\""),
-                "the verdict JSON is on stdout\nSTDOUT:\n" + r.stdout());
+        var v = JsonParser.parseString(r.stdout()).getAsJsonObject();   // parses ⇔ stdout is pure JSON
+        assertFalse(v.get("ok").getAsBoolean());
+        assertTrue(r.stderr().contains("[AS-EFF-006]"),
+                "the human AS-EFF line goes to stderr in --gate-json - mode\nSTDERR:\n" + r.stderr());
+    }
+
+    @Test
+    void gateJsonRejectsAFlagShapedValue() throws Exception {
+        // `--gate-json --policy arch.policy` must FAIL (exit 2) — without the dash-check it swallowed
+        // `--policy` as the verdict path and the displaced `arch.policy` was silently dropped: a GATELESS
+        // green run (found by the max review against the released 0.8.0 jar).
+        Path classes = compileNetFixture();
+        Path pol = scratch.resolve("arch.policy");
+        Files.writeString(pol, "deny Net app\n");
+        Run r = runCli(classes.toString(), "--gate-json", "--policy", pol.toString());
+        assertEquals(2, r.exit(), "a flag-shaped --gate-json value must fail closed\nSTDERR:\n" + r.stderr());
+        assertNoStackTrace(r);
+    }
+
+    @Test
+    void unexpectedBarePositionalFailsClosed() throws Exception {
+        // The scan grammar has exactly ONE positional (the target): a stray bare token is a displaced
+        // value or a typo, and silently ignoring it is the other half of the gateless-green chain.
+        Run r = runCli(comparePureFixture().toString(), "stray.policy");
+        assertEquals(2, r.exit(), "an unexpected bare argument must fail (exit 2)\nSTDERR:\n" + r.stderr());
+        assertNoStackTrace(r);
+    }
+
+    @Test
+    void candorConfigTypoFailsClosed() throws Exception {
+        // CANDOR_CONFIG set to a missing path must FAIL (exit 2) — a configured gate source silently
+        // ignored is the §6.2 gateless-green class (the config may carry the policy).
+        String javaBin = System.getProperty("java.home") + "/bin/java";
+        String cp = System.getProperty("java.class.path");
+        ProcessBuilder pb = new ProcessBuilder(javaBin, "-cp", cp, "io.poly.candor.Candor",
+                comparePureFixture().toString());
+        pb.environment().put("CANDOR_CONFIG", scratch.resolve("no-such-config").toString());
+        Process p = pb.start();
+        String err = drain(p.getErrorStream());
+        assertEquals(2, p.waitFor(), "a typo'd CANDOR_CONFIG must fail closed\nSTDERR:\n" + err);
+    }
+
+    @Test
+    void candorConfigIsDiscoveredFromTheScanTarget() throws Exception {
+        // The checked-in config is anchored to the SCAN TARGET (walk up from <repo>/classes to
+        // <repo>/.candor/config), NOT the process CWD — the test JVM's CWD is the gradle project, which
+        // has no .candor/config, so a pass here proves target-anchored discovery.
+        Path classes = compileNetFixture();                       // <scratch>/net
+        Path pol = scratch.resolve("arch.policy");
+        Files.writeString(pol, "deny Net app\n");
+        Files.createDirectories(scratch.resolve(".candor"));
+        Files.writeString(scratch.resolve(".candor/config"), "policy " + pol + "\n");
+        Run r = runCli(classes.toString());                       // absolute target; CWD elsewhere
+        assertEquals(1, r.exit(), "the repo's .candor/config (found via the target's ancestors) must gate\n"
+                + "STDERR:\n" + r.stderr() + "\nSTDOUT:\n" + r.stdout());
     }
 
     @Test

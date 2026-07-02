@@ -503,8 +503,12 @@ public class Candor {
             if (args[i].equals("--gate-json")) {
                 // Re-emit the gate verdict as machine JSON (the structured analog of the AS-EFF console
                 // lines) → `{ spec, ok, violations:[{rule,fn,detail}] }`. Powers the PR-native SARIF
-                // reporter (integrations/github). A valueless form FAILS like --policy/--json.
-                if (i + 1 >= args.length) { System.err.println("candor: --gate-json requires a value"); System.exit(2); }
+                // reporter (integrations/github). A valueless OR flag-shaped value FAILS (exit 2): without
+                // the dash-check, `--gate-json --policy arch.policy` swallowed `--policy` as the verdict
+                // path and the displaced bare `arch.policy` was silently dropped — a GATELESS green run,
+                // the exact state this whole surface exists to prevent. `-` (stdout) stays valid.
+                boolean ok = i + 1 < args.length && (args[i + 1].equals("-") || !args[i + 1].startsWith("-"));
+                if (!ok) { System.err.println("candor: --gate-json requires a value"); System.exit(2); }
                 gateJson = args[++i];
                 gateCapture = true;
                 gateViolations.clear();   // clear HERE (single-threaded, before runScan) — not in resetState,
@@ -524,19 +528,26 @@ public class Candor {
                 policyArg = args[++i];
             } else {
                 rejectUnknownFlag(args[i], scanFlags, "candor <dir-or-jar> [--json <file>] [--policy <file>]");
+                // A BARE unexpected token is the same failure class as an unknown flag: candor's scan
+                // grammar has exactly ONE positional (args[0], the target), so a stray bare token here is
+                // a displaced value (a flag above swallowed its neighbour) or a typo — silently dropping
+                // it is how `--gate-json --policy arch.policy` ran gateless. FAIL, never ignore.
+                System.err.println("candor: unexpected argument " + args[i]
+                        + " (usage: candor <dir-or-jar> [--json <file>] [--policy <file>] [--gate-json <file>])");
+                System.exit(2);
             }
         }
-
-        // Load `.candor/config` for this run (scan mode only — queries dispatched + returned above). The
-        // config layer sits UNDER the env vars (which sit under the CLI flags), so a checked-in config is
-        // the default and an env var / flag still overrides it for a one-off run.
-        config = Config.load();
 
         // CRASH-SAFETY: a nonexistent path, or a corrupt/truncated/empty/uppercase-ext "jar", must not
         // dump a stack trace and exit 1 — the archive layer throws raw NoSuchFileException / ZipException
         // / ProviderNotFoundException (a RuntimeException, not IOException). Match the unreadable-policy
         // posture: a clean one-line diagnostic and exit 2.
         Path scanTarget = Path.of(args[0]);
+        // Load `.candor/config` for this run, ANCHORED TO THE SCAN TARGET (walk up from target/classes to
+        // the repo root's .candor/config) — never to the process CWD, which would make the "config travels
+        // with the code" promise depend on where the command was launched from. The layer sits UNDER the
+        // env vars (which sit under the CLI flags); configured-but-unreadable fails loud (exit 2).
+        config = Config.forTarget(scanTarget);
         if (!Files.exists(scanTarget)) {
             System.err.println("candor: no such path: " + args[0]);
             System.err.println("        point candor at COMPILED classes (target/classes · build/classes/java/main) or a built .jar.");
@@ -603,12 +614,12 @@ public class Candor {
         boolean enforce = baseline != null || noAmbient != null || strict != null || policy != null
                 || ctx().taintEnabled || gateJson != null;   // --gate-json always emits its verdict (ok:true,[] when nothing to gate)
 
-        // In --json-stdout mode stdout MUST stay pure JSON (the report already streamed there) — route ALL
-        // human GATE output to stderr too: the AS-EFF diagnostics (via diag()) and the "no violations" line.
-        // The earlier --json fix only redirected the !enforce first-run summary (`sum`); the gate path below
-        // was missed, so `candor <classes> --json --policy p | jq` saw a violation/no-violations line bleed
-        // into stdout and produced malformed JSON. (Exit codes are unaffected.)
-        PrintStream gate = "-".equals(jsonOut) ? System.err : System.out;
+        // When stdout carries a JSON document — the report (`--json -`) OR the gate verdict
+        // (`--gate-json -`) — it MUST stay pure JSON: route ALL human GATE output to stderr (the AS-EFF
+        // diagnostics via diag() and the "no violations" line). The earlier --json fix missed the gate
+        // path; the --gate-json - case was found by review: the AS-EFF lines interleaved the streamed
+        // verdict, so `… --gate-json - | candor-sarif` got unparseable stdout. (Exit codes unaffected.)
+        PrintStream gate = "-".equals(jsonOut) || "-".equals(gateJson) ? System.err : System.out;
         diagOut = gate;
 
         if (!enforce) {

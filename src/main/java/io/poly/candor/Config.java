@@ -35,6 +35,11 @@ import java.util.Map;
  * {@code strict}/{@code no-ambient}); it is never silently dropped.
  */
 public final class Config {
+    /** The shared §config key vocabulary (cross-engine). A key OUTSIDE it warns — typo protection: a
+     *  misspelt {@code policy} must not silently drop the gate. candor-java implements all seven. */
+    private static final java.util.Set<String> KNOWN_KEYS = java.util.Set.of(
+            "policy", "baseline", "strict", "no-ambient", "closed-world", "taint", "deps");
+
     private final Map<String, String> values;
 
     private Config(Map<String, String> values) {
@@ -95,6 +100,10 @@ public final class Config {
                 if (line.isEmpty()) continue;
                 String[] kv = line.split("\\s+", 2);
                 String key = kv[0].toLowerCase(Locale.ROOT);    // ROOT: 'I'→'i' even under a Turkish locale
+                if (!KNOWN_KEYS.contains(key)) {
+                    System.err.println("candor: ignoring unknown config key '" + key + "' in " + path);
+                    continue;
+                }
                 String val = kv.length > 1 ? kv[1].strip() : "";
                 if ("deps".equals(key) && !val.isEmpty()) {
                     val = String.join(File.pathSeparator, val.split("\\s+"));  // a path LIST → the DEPS form

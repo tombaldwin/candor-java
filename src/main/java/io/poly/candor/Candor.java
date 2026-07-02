@@ -78,6 +78,10 @@ public class Candor {
     static boolean gateCapture = false;
     static final java.util.List<java.util.Map<String, Object>> gateViolations = new java.util.ArrayList<>();
 
+    /** The `.candor/config` layer (declarative alternative to the CANDOR_* env vars; env overrides it).
+     *  Loaded in scan mode; an empty default so a direct runScan (tests, --parallel) reads no config file. */
+    static Config config = Config.empty();
+
     // --- Spring markers (internal names / annotation-desc substrings) ---
     static final Set<String> REPO_MARKERS = Set.of(
             "org/springframework/data/repository/Repository",
@@ -272,9 +276,9 @@ public class Candor {
         computeSpringTypes(classes);
         // Cross-jar inheritance (candor-spec §2): load dependency reports named by CANDOR_DEPS BEFORE
         // analyze, so a call into an already-analyzed dependency inherits its effects (vs assumed-pure).
-        loadCrossDeps(System.getenv("CANDOR_DEPS"), provenance()[0]);
-        ctx().taintEnabled = System.getenv(Mode.TAINT.envVar()) != null; // read before analyze (the pass runs per method)
-        ctx().closedWorld = forceClosedWorld || System.getenv("CANDOR_CLOSED_WORLD") != null; // opt-in: scanned set is complete
+        loadCrossDeps(config.value("deps", "CANDOR_DEPS"), provenance()[0]);
+        ctx().taintEnabled = config.flag("taint", Mode.TAINT.envVar()); // read before analyze (the pass runs per method)
+        ctx().closedWorld = forceClosedWorld || config.flag("closed-world", "CANDOR_CLOSED_WORLD"); // opt-in: scanned set is complete
         // Per-class fail-soft: an exotic/malformed class that throws ANYWHERE in analyze (e.g. a malformed
         // method descriptor that ASM validates only lazily in Type.getArgumentTypes — the 0.5.6 crash class,
         // re-surfaced via an overloaded-name path the desc.startsWith("(") guard doesn't catch) must NOT
@@ -523,6 +527,11 @@ public class Candor {
             }
         }
 
+        // Load `.candor/config` for this run (scan mode only — queries dispatched + returned above). The
+        // config layer sits UNDER the env vars (which sit under the CLI flags), so a checked-in config is
+        // the default and an env var / flag still overrides it for a one-off run.
+        config = Config.load();
+
         // CRASH-SAFETY: a nonexistent path, or a corrupt/truncated/empty/uppercase-ext "jar", must not
         // dump a stack trace and exit 1 — the archive layer throws raw NoSuchFileException / ZipException
         // / ProviderNotFoundException (a RuntimeException, not IOException). Match the unreadable-policy
@@ -586,10 +595,11 @@ public class Candor {
 
         // Gate modes (candor-spec §3), each selected by its Mode's env var: CANDOR_STRICT (conformance
         // via DI), CANDOR_BASELINE (regression guard), CANDOR_NO_AMBIENT, CANDOR_POLICY.
-        String strict = System.getenv(Mode.CONFORMANCE.envVar());
-        String baseline = System.getenv(Mode.BASELINE.envVar());
-        String noAmbient = System.getenv(Mode.NO_AMBIENT.envVar());
-        String policy = policyArg != null ? policyArg : System.getenv(Mode.POLICY.envVar()); // --policy <file> takes precedence over CANDOR_POLICY
+        // Gate modes resolve through the config layer: CLI flag → CANDOR_* env → .candor/config → default.
+        String strict = config.value("strict", Mode.CONFORMANCE.envVar());
+        String baseline = config.value("baseline", Mode.BASELINE.envVar());
+        String noAmbient = config.value("no-ambient", Mode.NO_AMBIENT.envVar());
+        String policy = policyArg != null ? policyArg : config.value("policy", Mode.POLICY.envVar()); // --policy takes precedence
         boolean enforce = baseline != null || noAmbient != null || strict != null || policy != null
                 || ctx().taintEnabled || gateJson != null;   // --gate-json always emits its verdict (ok:true,[] when nothing to gate)
 

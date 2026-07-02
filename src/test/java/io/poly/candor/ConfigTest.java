@@ -48,6 +48,15 @@ class ConfigTest {
     }
 
     @Test
+    void anUnknownKeyIsWarnedAndIgnoredNeverConsumed() throws Exception {
+        // Typo protection (the cross-engine §config rule): `polcy arch.policy` must not silently become
+        // a dropped gate — the key is warned about and never enters the map.
+        Config c = write("polcy arch.policy\npolicy real.policy\n");
+        assertNull(c.value("polcy", UNSET), "the unknown key never enters the map");
+        assertEquals("real.policy", c.value("policy", UNSET), "the valid line still parses");
+    }
+
+    @Test
     void aBareValueKeyIsEnabledWithTheEmptyValue() throws Exception {
         // A lone `strict` line means "enabled, empty value" — the set-but-empty env analog (whole-unit
         // scope). Mapping it to null silently DISABLED the gate the user just configured (review find).

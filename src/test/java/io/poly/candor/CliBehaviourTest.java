@@ -351,6 +351,26 @@ class CliBehaviourTest {
     }
 
     @Test
+    void candorConfigDrivesTheGate() throws Exception {
+        // .candor/config (via CANDOR_CONFIG) supplies the policy — NO --policy flag, NO CANDOR_POLICY. The
+        // config layer must reach main()'s gate resolution end to end (exit 1 on the Net violation).
+        Path classes = compileNetFixture();
+        Path pol = scratch.resolve("p.policy");
+        Files.writeString(pol, "deny Net app\n");
+        Path cfg = scratch.resolve("config");
+        Files.writeString(cfg, "# checked-in\npolicy " + pol + "\n");
+
+        String javaBin = System.getProperty("java.home") + "/bin/java";
+        String cp = System.getProperty("java.class.path");
+        ProcessBuilder pb = new ProcessBuilder(javaBin, "-cp", cp, "io.poly.candor.Candor", classes.toString());
+        pb.environment().put("CANDOR_CONFIG", cfg.toString());
+        Process p = pb.start();
+        String err = drain(p.getErrorStream());
+        int code = p.waitFor();
+        assertEquals(1, code, ".candor/config's policy must gate the run (exit 1 on the Net violation)\nSTDERR:\n" + err);
+    }
+
+    @Test
     void gateJsonValuelessFailsClosed() throws Exception {
         // A valueless gate flag must FAIL (exit 2), never silently run without emitting — like --policy/--json.
         Run r = runCli(comparePureFixture().toString(), "--gate-json");

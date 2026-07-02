@@ -48,6 +48,15 @@ class ConfigTest {
     }
 
     @Test
+    void aBareValueKeyIsEnabledWithTheEmptyValue() throws Exception {
+        // A lone `strict` line means "enabled, empty value" — the set-but-empty env analog (whole-unit
+        // scope). Mapping it to null silently DISABLED the gate the user just configured (review find).
+        assertEquals("", write("strict\n").value("strict", UNSET), "bare key → \"\" (enabled), never null");
+        assertEquals("", write("no-ambient   # whole repo\n").value("no-ambient", UNSET));
+        assertNull(write("policy p\n").value("strict", UNSET), "absent stays null — the distinction is load-bearing");
+    }
+
+    @Test
     void booleanFlagsAreTruthyOrBareKey() throws Exception {
         assertTrue(write("closed-world true\n").flag("closed-world", UNSET));
         assertTrue(write("closed-world\n").flag("closed-world", UNSET), "a bare key (no value) means on");

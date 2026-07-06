@@ -1882,6 +1882,43 @@ final class Classifier {
                 && (method.equals("getInputStream") || method.equals("getFileData")
                     || method.equals("destroy"))) return Effect.FS;
 
+        // ── κ batch 29 — the next ledger tier (same inventory method as batch 28: a real app's complete
+        //    68-member frontier, triaged member-by-member). commons-validator / beanutils / displaytag /
+        //    w3c.dom carry NO effectful members (pure predicates, bean plumbing, DOM value ops) — coverage
+        //    only. The four below have precise effectful surfaces: ──
+        // threeten-extra — java.time extensions: now() reads the clock (like Joda); Interval/value ops pure.
+        if (owner.startsWith("org.threeten.extra")) {
+            if (method.equals("now")) return Effect.CLOCK;
+            return null;
+        }
+        // jjwt — building/signing/verifying is pure CPU, but the parse* family VALIDATES exp/nbf against
+        // the system clock → Clock (a token that parses fine now can fail in an hour — that is clock
+        // dependence, exactly what the effect names). Key GENERATION draws entropy → Rand.
+        if (owner.startsWith("io.jsonwebtoken")) {
+            if (owner.equals("io.jsonwebtoken.security.Keys")
+                    && (method.startsWith("secretKeyFor") || method.startsWith("keyPairFor")
+                        || method.startsWith("password"))) return Effect.RAND;
+            if (method.startsWith("parse")) return Effect.CLOCK;
+            return null;
+        }
+        // JDOM2 — the document MODEL is pure value work; the INPUT boundary is effectful by source:
+        // build(File)/build(String systemId) reads the filesystem → Fs, build(URL) → Net. The
+        // stream/reader overloads consume a CALLER-OPENED source — the open carried the effect (the
+        // same relative-purity stance as the XMLOutputter stream sinks), so they fall through.
+        if ((owner.equals("org.jdom2.input.SAXBuilder") || owner.equals("org.jdom2.input.StAXStreamBuilder"))
+                && method.equals("build")) {
+            if (desc.contains("Ljava/net/URL;")) return Effect.NET;
+            if (desc.contains("Ljava/io/File;") || desc.contains("Ljava/lang/String;")) return Effect.FS;
+            return null;
+        }
+        // Ehcache — in-memory caching is pure-relative (heap tiers, Cache.get/put, config builders). The
+        // effectful ACQUISITION points are precise: persistence(dir) names the disk directory → Fs (so a
+        // later build/init is vouched — the config carried it; heap-only apps never fabricate Fs), and a
+        // clustered cluster(URI) names the cache server → Net.
+        if (owner.equals("org.ehcache.config.builders.CacheManagerBuilder") && method.equals("persistence"))
+            return Effect.FS;
+        if (owner.startsWith("org.ehcache.clustered") && method.equals("cluster")) return Effect.NET;
+
         // Logging — PRODUCING a log record. VERB-PRECISE within the slf4j / jul / log4j2 / logback
         // packages: only the genuine emit verbs are Log; every other method (Markers, Levels, Message
         // data types, ThreadContext maps, formatters, config/registry, util) falls through to its real

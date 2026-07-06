@@ -3060,7 +3060,15 @@ public class Candor {
             // four with their effectful members classified (threeten now→Clock, jjwt parse→Clock +
             // Keys→Rand, jdom2 input by source, ehcache persistence→Fs / clustered→Net).
             "org.apache.commons.validator", "org.apache.commons.beanutils", "org.threeten.extra",
-            "io.jsonwebtoken", "org.jdom2", "org.displaytag", "org.ehcache", "org.w3c.dom" };
+            "io.jsonwebtoken", "org.jdom2", "org.displaytag", "org.ehcache", "org.w3c.dom",
+            // κ batch 30: Jackson — ONE descriptor-driven rule classifies its whole effectful surface
+            // (File/Path → Fs, URL → Net, uniform across the stack); the rest is pure or pure-relative.
+            "com.fasterxml.jackson",
+            // κ batch 30b: the AWS v1 SDK — the request-making surface (Client classes + the service
+            // INTERFACES + TransferManager) is classified verb-precisely; the remainder (model beans,
+            // builders, util) is pure plumbing. Coverage granted only after the interface-owner gap
+            // (AmazonS3.copyObject silent-invisible) was fixed.
+            "com.amazonaws" };
 
     static boolean kappaCovers(String pkg) {
         for (String p : KAPPA_COVERED_PREFIXES) {

@@ -11,6 +11,12 @@ import static io.poly.candor.AnalysisState.*;
  *  (isConventionallyPure/isAwsPureClientGetter/isLogEmitVerb/isPureHandleAccessor) stay in Candor,
  *  reached via the static import. Sole caller: Candor.analyze(). See REFACTOR_PLAN.md. */
 final class Classifier {
+    /** The simple class name of a dotted owner (`com.amazonaws.services.s3.AmazonS3` → `AmazonS3`). */
+    static String simpleName(String owner) {
+        int dot = owner.lastIndexOf('.');
+        return dot >= 0 ? owner.substring(dot + 1) : owner;
+    }
+
     static Effect classify(String owner, String method, String desc) {
         // A proven-pure accessor/factory/inert-ctor on an otherwise-effectful handle type is PURE — the
         // whole-owner rules below would fabricate the type's effect on it (the cardinal sin). Subtract
@@ -1263,8 +1269,17 @@ final class Classifier {
         if (owner.equals("reactor.netty.http.client.HttpClient")
                 && (method.equals("response") || method.equals("responseContent") || method.equals("responseSingle")
                     || method.equals("responseConnection"))) return Effect.NET;
+        // The v1 SDK's request-making types are the *Client classes AND the service INTERFACES
+        // (AmazonS3/AmazonSQS/AWSLambda — the recommended way to type a client variable; a call through
+        // the interface emits the interface owner, which the Client-suffix gate MISSED: a real
+        // `AmazonS3.copyObject` read silent-invisible — found live, uflexi dogfood). Interfaces are the
+        // Amazon*/AWS* simple names OUTSIDE .model./.builder types; TransferManager is the S3 high-level
+        // I/O front (upload/download/copy do the transfers).
         if ((owner.startsWith("software.amazon.awssdk.services.") || owner.startsWith("com.amazonaws.services."))
-                && owner.endsWith("Client")   // the CLIENT classes only — not the model/request getters (v1 uses get*)
+                && (owner.endsWith("Client")
+                    || owner.endsWith(".transfer.TransferManager")
+                    || (!owner.contains(".model.") && !owner.endsWith("Builder")
+                        && (simpleName(owner).startsWith("Amazon") || simpleName(owner).startsWith("AWS"))))
                 && (method.startsWith("get") || method.startsWith("put") || method.startsWith("list")
                     || method.startsWith("create") || method.startsWith("delete") || method.startsWith("send")
                     || method.startsWith("query") || method.startsWith("scan") || method.startsWith("update")
@@ -1274,6 +1289,9 @@ final class Classifier {
                     // (batch-6: KmsClient.encrypt read silent-pure). decrypt/sign/verify/reEncrypt/generate*.
                     || method.startsWith("encrypt") || method.startsWith("decrypt") || method.startsWith("sign")
                     || method.startsWith("verify") || method.startsWith("reEncrypt")
+                    // copy* — S3 copyObject/copyPart make server-side-copy requests; missed by the
+                    // original verb list (found live: the uflexi dogfood's S3 archival path).
+                    || method.startsWith("copy")
                     || method.startsWith("generate"))
                 && !isConventionallyPure(method)
                 // AWS v1 CLIENT classes themselves carry pure config getters that match `get*` but make
@@ -1918,6 +1936,20 @@ final class Classifier {
         if (owner.equals("org.ehcache.config.builders.CacheManagerBuilder") && method.equals("persistence"))
             return Effect.FS;
         if (owner.startsWith("org.ehcache.clustered") && method.equals("cluster")) return Effect.NET;
+
+        // ── κ batch 30 — Jackson (com.fasterxml.jackson: core/databind/annotation/datatype/…), the
+        //    ubiquitous JSON stack. The API is uniformly shaped: every read/write ENTRY POINT that names
+        //    its own source/sink does so via a File / Path / URL parameter (readValue(File), readTree(URL),
+        //    writeValue(File), createParser(File), …) — so ONE descriptor-driven rule classifies the whole
+        //    surface without enumerating classes: a File/Path parameter is a filesystem source or sink →
+        //    Fs; a URL parameter is fetched → Net. Everything else (String/bytes/Reader/InputStream/
+        //    DataOutput overloads, writeValueAsString, generators writing fields, config, annotations) is
+        //    pure or pure-RELATIVE — the caller-opened source/sink carried the effect (the JDOM2 stance). ──
+        if (owner.startsWith("com.fasterxml.jackson")) {
+            if (desc.contains("Ljava/net/URL;")) return Effect.NET;
+            if (desc.contains("Ljava/io/File;") || desc.contains("Ljava/nio/file/Path;")) return Effect.FS;
+            return null;
+        }
 
         // Logging — PRODUCING a log record. VERB-PRECISE within the slf4j / jul / log4j2 / logback
         // packages: only the genuine emit verbs are Log; every other method (Markers, Levels, Message

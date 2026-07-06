@@ -3054,7 +3054,13 @@ public class Candor {
             // Struts 1.x (TagUtils→Net + FormFile→Fs classified; the rest is bean plumbing — verified
             // against a real app's complete 169-member frontier).
             "org.apache.commons.logging", "org.apache.commons.lang3", "org.joda.time",
-            "org.hibernate.criterion", "org.apache.struts" };
+            "org.hibernate.criterion", "org.apache.struts",
+            // κ batch 29 (the next tier, same inventory discipline): pure predicate/bean/DOM/decorator
+            // surfaces (validator, beanutils, displaytag, w3c.dom — a JDK namespace missing above) +
+            // four with their effectful members classified (threeten now→Clock, jjwt parse→Clock +
+            // Keys→Rand, jdom2 input by source, ehcache persistence→Fs / clustered→Net).
+            "org.apache.commons.validator", "org.apache.commons.beanutils", "org.threeten.extra",
+            "io.jsonwebtoken", "org.jdom2", "org.displaytag", "org.ehcache", "org.w3c.dom" };
 
     static boolean kappaCovers(String pkg) {
         for (String p : KAPPA_COVERED_PREFIXES) {

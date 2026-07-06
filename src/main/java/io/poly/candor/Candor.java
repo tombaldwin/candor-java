@@ -3046,7 +3046,15 @@ public class Candor {
     // the real fix is to MODEL that specific member (precision), not to drop the namespace's coverage.)
     static final String[] KAPPA_COVERED_PREFIXES = { "java", "javax", "jakarta", "jdk", "sun", "com.sun",
             "kotlin", "kotlinx", "scala", "groovy", "org.codehaus.groovy", "org.jetbrains",
-            "org.springframework", "io.ktor", "org.slf4j", "org.apache.logging", "ch.qos.logback" };
+            "org.springframework", "io.ktor", "org.slf4j", "org.apache.logging", "ch.qos.logback",
+            // κ batch 28 (the legacy-enterprise frontier; effectful members classified — see Classifier):
+            // JCL, commons-lang3 (Rand/Env classified), Joda (Clock classified), the LEGACY Hibernate
+            // Criteria BUILDER package (execution lives on the classified Session/Criteria terminals;
+            // org.hibernate broadly stays LEDGERED — its unclassified surface is not vouched for), and
+            // Struts 1.x (TagUtils→Net + FormFile→Fs classified; the rest is bean plumbing — verified
+            // against a real app's complete 169-member frontier).
+            "org.apache.commons.logging", "org.apache.commons.lang3", "org.joda.time",
+            "org.hibernate.criterion", "org.apache.struts" };
 
     static boolean kappaCovers(String pkg) {
         for (String p : KAPPA_COVERED_PREFIXES) {

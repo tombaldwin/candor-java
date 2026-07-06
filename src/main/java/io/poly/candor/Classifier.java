@@ -1834,12 +1834,65 @@ final class Classifier {
         // UUID's other members (fromString/nameUUIDFromBytes/getMostSignificantBits/toString/compareTo)
         // are pure value ops, so classifying the whole owner would fabricate Rand onto them.
         if (owner.equals("java.util.UUID") && method.equals("randomUUID")) return Effect.RAND;
+        // ── κ batch 28 — the LEGACY-ENTERPRISE frontier (inventory-driven: a real 2,257-class Struts
+        //    app's complete 169-member call surface into these packages; see the uflexi dogfood). Each
+        //    package's effectful members are classified verb-precisely HERE, and the namespaces join
+        //    KAPPA_COVERED_PREFIXES so the (verified-pure) remainder floors silently instead of
+        //    flooding the ledger. ──
+        // Joda-Time — the pre-java.time standard. Reading the CURRENT instant is Clock: the static
+        // now() on any joda type, the NO-ARG constructors of the instant-carrying types (new DateTime()
+        // == DateTime.now()), and DateTimeUtils.currentTimeMillis. Everything else (parsing, value
+        // arithmetic, formatters — incl. PeriodFormatter.print, which returns a String) is pure value
+        // work and falls through. Descriptor-gated: new DateTime(long) is a pure value ctor.
+        if (owner.startsWith("org.joda.time")) {
+            if (method.equals("now")) return Effect.CLOCK;
+            if (owner.equals("org.joda.time.DateTimeUtils") && method.startsWith("current")) return Effect.CLOCK;
+            if (method.equals("<init>") && desc.equals("()V")
+                    && (owner.equals("org.joda.time.DateTime") || owner.equals("org.joda.time.MutableDateTime")
+                        || owner.equals("org.joda.time.LocalDate") || owner.equals("org.joda.time.LocalTime")
+                        || owner.equals("org.joda.time.LocalDateTime") || owner.equals("org.joda.time.DateMidnight")
+                        || owner.equals("org.joda.time.Instant") || owner.equals("org.joda.time.YearMonth")
+                        || owner.equals("org.joda.time.MonthDay"))) return Effect.CLOCK;
+            return null;
+        }
+        // commons-lang3 — a pure utility library EXCEPT the entropy pair (RandomStringUtils/RandomUtils:
+        // every generator draws — whole-owner minus the conventionally-pure surface) and SystemProperties
+        // (every getter reads the process environment → Env). StringUtils/builders/ArrayUtils/etc. are
+        // pure and fall through under coverage.
+        if (owner.equals("org.apache.commons.lang3.RandomStringUtils")
+                || owner.equals("org.apache.commons.lang3.RandomUtils")) {
+            if (!isConventionallyPure(method) && !method.equals("insecure") && !method.equals("secure")
+                    && !method.equals("secureStrong")) return Effect.RAND;
+            return null;
+        }
+        if (owner.equals("org.apache.commons.lang3.SystemProperties")) {
+            if (method.startsWith("get")) return Effect.ENV;
+            return null;
+        }
+        if (owner.equals("org.apache.commons.lang3.SystemUtils") && method.startsWith("get")) return Effect.ENV;
+        // Struts 1.x — the classic enterprise web framework; almost entirely pure bean plumbing
+        // (ActionForm/ActionForward/ActionMapping/ActionMessages/DynaActionForm get/set/find/add). The
+        // two effectful surfaces the inventory found: TagUtils.write/print writes tag output to the JSP
+        // response → Net (the same stance as ServletResponse.getWriter — bytes to the client socket),
+        // and FormFile (a multipart upload, spooled to a temp file by commons-fileupload) — reading its
+        // content is Fs; the size/name accessors are pure.
+        if (owner.equals("org.apache.struts.taglib.TagUtils")
+                && (method.equals("write") || method.equals("print"))) return Effect.NET;
+        if (owner.equals("org.apache.struts.upload.FormFile")
+                && (method.equals("getInputStream") || method.equals("getFileData")
+                    || method.equals("destroy"))) return Effect.FS;
+
         // Logging — PRODUCING a log record. VERB-PRECISE within the slf4j / jul / log4j2 / logback
         // packages: only the genuine emit verbs are Log; every other method (Markers, Levels, Message
         // data types, ThreadContext maps, formatters, config/registry, util) falls through to its real
         // transitively-analysed effect, never a fabricated Log. (See isLogEmitVerb.)
         if (owner.startsWith("org.slf4j.") || owner.startsWith("java.util.logging.")
                 || owner.startsWith("org.apache.logging.log4j.") || owner.startsWith("ch.qos.logback.")
+                // commons-logging (JCL) — the 5th facade, still everywhere in legacy enterprise code
+                // (a real 2,257-class Struts app: 791 JCL calls). Emit verbs are the shared six
+                // (trace/debug/info/warn/error/fatal — already in isLogEmitVerb); LogFactory.getLog and
+                // Log.isXxxEnabled fall through to pure. (κ batch 28.)
+                || owner.startsWith("org.apache.commons.logging.")
                 // java.lang.System.Logger — the JDK 9+ platform logging facade (libraries use it to avoid a
                 // logging-framework dep). Was absent → a `System.Logger.log(...)` read silent-pure while the
                 // SAME call via java.util.logging was Log (a κ-coverage inconsistency, not by design). The

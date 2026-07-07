@@ -3068,7 +3068,21 @@ public class Candor {
             // INTERFACES + TransferManager) is classified verb-precisely; the remainder (model beans,
             // builders, util) is pure plumbing. Coverage granted only after the interface-owner gap
             // (AmazonS3.copyObject silent-invisible) was fixed.
-            "com.amazonaws" };
+            "com.amazonaws",
+            // κ batch 31 (the long-tail sweep; effectful members classified — see Classifier): CSV stacks
+            // (pure-relative over caller sources; javacsv path-ctors → Fs), codecs (pure CPU), commons-io
+            // (the jackson descriptor stance), commons-lang v2 (Rand/Env/StopWatch→Clock), OSCache +
+            // Guava base/math + maps.model + Xerces serialize + SAX + naming (pure/pure-relative),
+            // Twilio (REST terminals + lazy paging → Net), Redisson (R* handles → Db), DbUnit
+            // (execute → Db), hibernate's internal jdbc pkg (execution → Db, logger → Log, formatter
+            // pure), awspring SES (send → Net), v2 credentials (resolve → Env).
+            "com.csvreader", "org.supercsv", "org.apache.commons.codec", "org.apache.commons.io",
+            "org.apache.commons.lang", "org.apache.commons.csv", "com.opensymphony.oscache",
+            "com.google.common.base", "com.google.common.math", "com.google.maps.model",
+            "org.apache.xml.serialize", "org.xml.sax", "org.aopalliance",
+            "com.twilio", "org.redisson", "org.dbunit", "org.hibernate.engine.jdbc.internal",
+            "org.hibernate.boot.model.naming", "org.hibernate.jpa", "io.awspring.cloud.ses",
+            "software.amazon.awssdk.auth.credentials", "org.postgresql.util" };
 
     static boolean kappaCovers(String pkg) {
         for (String p : KAPPA_COVERED_PREFIXES) {

@@ -11,6 +11,15 @@ import static io.poly.candor.AnalysisState.*;
  *  (isConventionallyPure/isAwsPureClientGetter/isLogEmitVerb/isPureHandleAccessor) stay in Candor,
  *  reached via the static import. Sole caller: Candor.analyze(). See REFACTOR_PLAN.md. */
 final class Classifier {
+    /** The PARAMETER segment of a method descriptor — `(Ljava/io/File;)Ljava/io/File;` → `Ljava/io/File;`.
+     *  The source/sink descriptor rules (jackson/commons-io/dbunit/…) must match parameters ONLY: a pure
+     *  method RETURNING a File (FileUtils.getTempDirectory) must never classify (caught by round-12's
+     *  anti-fabrication pin when batch 31 first used whole-descriptor contains). */
+    static String paramsOf(String desc) {
+        int close = desc.indexOf(')');
+        return close > 0 ? desc.substring(1, close) : desc;
+    }
+
     /** The simple class name of a dotted owner (`com.amazonaws.services.s3.AmazonS3` → `AmazonS3`). */
     static String simpleName(String owner) {
         int dot = owner.lastIndexOf('.');
@@ -1925,8 +1934,9 @@ final class Classifier {
         // same relative-purity stance as the XMLOutputter stream sinks), so they fall through.
         if ((owner.equals("org.jdom2.input.SAXBuilder") || owner.equals("org.jdom2.input.StAXStreamBuilder"))
                 && method.equals("build")) {
-            if (desc.contains("Ljava/net/URL;")) return Effect.NET;
-            if (desc.contains("Ljava/io/File;") || desc.contains("Ljava/lang/String;")) return Effect.FS;
+            String params = paramsOf(desc);
+            if (params.contains("Ljava/net/URL;")) return Effect.NET;
+            if (params.contains("Ljava/io/File;") || params.contains("Ljava/lang/String;")) return Effect.FS;
             return null;
         }
         // Ehcache — in-memory caching is pure-relative (heap tiers, Cache.get/put, config builders). The
@@ -1946,10 +1956,92 @@ final class Classifier {
         //    DataOutput overloads, writeValueAsString, generators writing fields, config, annotations) is
         //    pure or pure-RELATIVE — the caller-opened source/sink carried the effect (the JDOM2 stance). ──
         if (owner.startsWith("com.fasterxml.jackson")) {
-            if (desc.contains("Ljava/net/URL;")) return Effect.NET;
-            if (desc.contains("Ljava/io/File;") || desc.contains("Ljava/nio/file/Path;")) return Effect.FS;
+            String params = paramsOf(desc);
+            if (params.contains("Ljava/net/URL;")) return Effect.NET;
+            if (params.contains("Ljava/io/File;") || params.contains("Ljava/nio/file/Path;")) return Effect.FS;
             return null;
         }
+
+        // ── κ batch 31 — the ledger long tail, swept (same inventory discipline; 111 members triaged).
+        //    Pure-surface coverage rides KAPPA_COVERED_PREFIXES; the effectful members below. Also fixes
+        //    a batch-28 GAP the sweep exposed: StopWatch (both commons-lang generations) reads the clock
+        //    but went silent-pure under lang3's coverage. ──
+        if ((owner.equals("org.apache.commons.lang3.time.StopWatch") || owner.equals("org.apache.commons.lang.time.StopWatch"))
+                && !isConventionallyPure(method)) return Effect.CLOCK;
+        // commons-lang v2 — same shape as lang3 (batch 28): the entropy + env surfaces.
+        if (owner.equals("org.apache.commons.lang.RandomStringUtils")
+                || owner.equals("org.apache.commons.lang.math.RandomUtils")
+                || owner.equals("org.apache.commons.lang.math.JVMRandom")) {
+            if (!isConventionallyPure(method)) return Effect.RAND;
+            return null;
+        }
+        if (owner.equals("org.apache.commons.lang.SystemUtils") && method.startsWith("get")) return Effect.ENV;
+        // commons-io — the jackson stance: an entry point that names its own source/sink does so via
+        // File/Path (→ Fs) or URL/URI (→ Net); stream/reader/writer overloads are pure-relative.
+        if (owner.startsWith("org.apache.commons.io")) {
+            String params = paramsOf(desc);
+            if (params.contains("Ljava/net/URL;") || params.contains("Ljava/net/URI;")) return Effect.NET;
+            if (params.contains("Ljava/io/File;") || params.contains("Ljava/nio/file/Path;")) return Effect.FS;
+            return null;
+        }
+        // Twilio — the SDK's uniform terminal pattern: Creator/Reader/Fetcher/Updater/Deleter execute the
+        // REST call via create/read/fetch/update/delete (sync + async); ResourceSet ITERATION lazily
+        // fetches further pages (a wire call hiding in a for-loop). The rest is value beans + config.
+        if (owner.startsWith("com.twilio")) {
+            if ((owner.endsWith("Creator") || owner.endsWith("Reader") || owner.endsWith("Fetcher")
+                    || owner.endsWith("Updater") || owner.endsWith("Deleter"))
+                    && (method.equals("create") || method.equals("read") || method.equals("fetch")
+                        || method.equals("update") || method.equals("delete")
+                        || method.equals("createAsync") || method.equals("readAsync") || method.equals("fetchAsync")
+                        || method.equals("updateAsync") || method.equals("deleteAsync"))) return Effect.NET;
+            if (owner.equals("com.twilio.base.ResourceSet") && (method.equals("iterator") || method.equals("getPage")))
+                return Effect.NET;
+            if (owner.equals("com.twilio.http.TwilioRestClient") && method.equals("request")) return Effect.NET;
+            return null;
+        }
+        // Redisson — a Redis client: the R* handles (RMap/RLock/RBucket/…) are REMOTE data structures by
+        // design — their operations are wire round-trips (→ Db, the family's Redis stance); creating a
+        // client connects. Config/serialization is pure.
+        if (owner.startsWith("org.redisson")) {
+            if (owner.startsWith("org.redisson.config")) return null;
+            if (owner.equals("org.redisson.Redisson") && method.startsWith("create")) return Effect.DB;
+            if ((owner.startsWith("org.redisson.api.R") || owner.equals("org.redisson.api.RedissonClient"))
+                    && !isConventionallyPure(method) && !method.startsWith("getName")) return Effect.DB;
+            return null;
+        }
+        // DbUnit — DatabaseOperation.execute runs the setup/teardown SQL → Db; datasets built FROM a
+        // File read it → Fs; wrapping an existing java.sql.Connection is pure-relative (the open carried
+        // Db); in-memory dataset manipulation is pure.
+        if (owner.startsWith("org.dbunit")) {
+            if (owner.contains("Operation") && method.equals("execute")) return Effect.DB;
+            if (paramsOf(desc).contains("Ljava/io/File;")) return Effect.FS;
+            return null;
+        }
+        // Hibernate's internal JDBC package — apps reach it for ONE pure member (BasicFormatterImpl, the
+        // SQL pretty-printer, reachable from toString/log helpers everywhere — 685 fns of invisible noise
+        // on the dogfood app). Covering the package obliges classifying its GENUINELY effectful internals:
+        // statement execution/extraction → Db, the statement logger's emit → Log.
+        if (owner.equals("org.hibernate.engine.jdbc.internal.ResultSetReturnImpl")
+                && (method.startsWith("execute") || method.startsWith("extract"))) return Effect.DB;
+        if (owner.equals("org.hibernate.engine.jdbc.internal.SqlStatementLogger")
+                && method.startsWith("log")) return Effect.LOG;
+        // AOP Alliance — proceed() EXECUTES the intercepted target (the next interceptor / the real
+        // method): the reflection stance applies — disclosed Unknown, never silent-pure (coverage of the
+        // namespace would otherwise silence a call that can do anything). Accessors stay pure.
+        if (owner.startsWith("org.aopalliance.intercept") && method.equals("proceed")) return Effect.UNKNOWN;
+        // org.hibernate.jpa — TypedParameterValue et al. are pure value wrappers; the one effectful
+        // member is the persistence PROVIDER's bootstrap (opens the persistence unit → connections).
+        if (owner.equals("org.hibernate.jpa.HibernatePersistenceProvider")
+                && (method.startsWith("createEntityManagerFactory") || method.startsWith("createContainerEntityManagerFactory")
+                    || method.startsWith("generateSchema"))) return Effect.DB;
+        // Spring Cloud AWS SES — the mail sender's send is the SES call.
+        if (owner.startsWith("io.awspring.cloud.ses") && method.startsWith("send")) return Effect.NET;
+        // AWS v2 credentials — RESOLUTION reads the environment/profile chain; factories are pure.
+        if (owner.startsWith("software.amazon.awssdk.auth.credentials")
+                && method.startsWith("resolveCredentials")) return Effect.ENV;
+        // javacsv — the path-taking constructors open the file; Reader/Writer-based ones are pure-relative.
+        if ((owner.equals("com.csvreader.CsvReader") || owner.equals("com.csvreader.CsvWriter"))
+                && method.equals("<init>") && desc.startsWith("(Ljava/lang/String;")) return Effect.FS;
 
         // Logging — PRODUCING a log record. VERB-PRECISE within the slf4j / jul / log4j2 / logback
         // packages: only the genuine emit verbs are Log; every other method (Markers, Levels, Message

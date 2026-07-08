@@ -103,12 +103,13 @@ Name queries resolve exact > segment-suffix (`Svc.save` matches `com.example.Svc
   effect; crossed with `CANDOR_POLICY` it returns which functions would violate.
 - **Enforce in CI** → `--policy <file>` (or `CANDOR_POLICY`) (candor-spec §6.2: `deny`/`pure`/`allow`/`forbid`) +
   `CANDOR_BASELINE` (regression guard). Deterministic — not an LLM opinion.
-- **An engine swap is baseline-invalidating.** Coverage batches change what the engine sees (a κ batch
-  can unmask hundreds of previously-invisible effects), so a baseline is comparable only to reports from
-  its own producing build (spec §2.1) — the guard prints a loud NOTE when the builds differ. After
-  upgrading candor: expect an AS-EFF-005 wave, read it as *newly-visible reality* unless a function's gain
-  is suspicious, then regenerate the baseline with the new build. Never carry a baseline across builds
-  silently — a real regression could hide inside the unmasking wave.
+- **An engine swap is baseline-invalidating — and the guard fails closed on it.** Coverage batches
+  change what the engine sees (a κ batch can unmask hundreds of previously-invisible effects), so a
+  baseline is comparable only to reports from its own producing build (spec §2.1). When the builds
+  differ the guard does NOT evaluate (a stale comparison is semi-garbage in both directions) and fails
+  the run (exit 2, the unreadable-policy class) with the one-command fix. After upgrading candor:
+  regenerate the baseline with the new build in the same change — review the effect delta while you do
+  (`diff` shows it, with a provenance warning) rather than waving it through.
 
 ## JVM-specific things to know
 

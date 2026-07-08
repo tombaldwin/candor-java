@@ -85,34 +85,21 @@ class PolicyGateTest {
     }
 
     @Test
-    void baselineVersionMismatchIsDisclosedNotSuppressed() throws Exception {
-        // §2.1: a baseline is comparable only to its own producing version. An engine swap (a κ coverage
-        // batch) makes "gained" effects ambiguous — unmasking vs regression — so the guard DISCLOSES the
-        // mismatch loudly and still reports the drift (never suppresses: a real regression may be inside).
-        Path other = file("bver", "{\"candor\":{\"version\":\"aaaaaaa\"},\"functions\":[{\"fn\":\"a.B.c\",\"inferred\":[\"Fs\"]}]}");
-        assertEquals("aaaaaaa", Policy.baselineVersion(other.toString()), "the producing build is read from the envelope");
-        Map<String, EffectSet> inferred = new HashMap<>();
-        inferred.put("a.B.c", EffectSet.of(Effect.FS, Effect.NET));
-        var errBuf = new java.io.ByteArrayOutputStream();
-        var oldErr = System.err;
-        System.setErr(new java.io.PrintStream(errBuf));
-        try {
-            assertEquals(1, Policy.checkBaseline(inferred, other.toString()),
-                "the drift is still reported — disclosure, not suppression");
-        } finally {
-            System.setErr(oldErr);
-        }
-        String err = errBuf.toString();
-        assertTrue(err.contains("baseline-invalidating") && err.contains("aaaaaaa"),
-                "the mismatch note names the baseline's producing build and advises regeneration: " + err);
-        // a legacy bare-array baseline has NO provenance → nothing concrete to compare → no note
+    void baselineVersionIsReadFromTheEnvelope() throws Exception {
+        // The stale-baseline POSTURE (mismatch/no-provenance → exit 2, no evaluation) exits the JVM, so
+        // it is pinned at the CLI level (CliBehaviourTest.staleBaselineFailsClosedWithoutEvaluating);
+        // here: the version parse both ways.
+        Path env = file("bver", "{\"candor\":{\"version\":\"aaaaaaa\"},\"functions\":[]}");
+        assertEquals("aaaaaaa", Policy.baselineVersion(env.toString()));
         Path bare = file("bvbare", "[{\"fn\":\"a.B.c\",\"inferred\":[\"Fs\"]}]");
-        assertNull(Policy.baselineVersion(bare.toString()));
+        assertNull(Policy.baselineVersion(bare.toString()), "a bare array has no provenance");
     }
 
     @Test
     void baselineFlagsAGainedEffectButNotNewCode() throws Exception {
-        Path base = file("base", "{\"functions\":[{\"fn\":\"a.B.c\",\"inferred\":[\"Fs\"]}]}");
+        // the fixture must carry THIS build's provenance — a stale/absent version now fails closed (exit 2)
+        String v = ReportWriter.provenance()[0];
+        Path base = file("base", "{\"candor\":{\"version\":\"" + v + "\"},\"functions\":[{\"fn\":\"a.B.c\",\"inferred\":[\"Fs\"]}]}");
         // a.B.c gained Net vs the baseline → AS-EFF-005; a.B.NEW isn't in the baseline → reviewed as new code
         Map<String, EffectSet> inferred = new HashMap<>();
         inferred.put("a.B.c", EffectSet.of(Effect.FS, Effect.NET));

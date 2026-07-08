@@ -395,6 +395,22 @@ class CliBehaviourTest {
     }
 
     @Test
+    void corruptBaselineFailsClosedNotOpen() throws Exception {
+        // A present-but-unparseable baseline is invalid gate input → exit 2, not a fail-open note.
+        Path classes = compileNetFixture();
+        Path base = scratch.resolve("corrupt-baseline.json");
+        Files.writeString(base, "<<<<<<< HEAD\n{\"functions\":[]}\n=======  garbage");
+        String javaBin = System.getProperty("java.home") + "/bin/java";
+        String cp = System.getProperty("java.class.path");
+        ProcessBuilder pb = new ProcessBuilder(javaBin, "-cp", cp, "io.poly.candor.Candor", classes.toString());
+        pb.environment().put("CANDOR_BASELINE", base.toString());
+        Process p = pb.start();
+        String err = drain(p.getErrorStream());
+        assertEquals(2, p.waitFor(), "a corrupt baseline must fail closed\nSTDERR:\n" + err);
+        assertTrue(err.contains("could not be parsed"), err);
+    }
+
+    @Test
     void staleBaselineFailsClosedWithoutEvaluating() throws Exception {
         // The aligned family posture: a baseline from another engine build is INVALID GATE INPUT — the
         // unreadable-policy class. No AS-EFF-005 wave (evaluation would be semi-garbage), no silent skip

@@ -66,9 +66,20 @@ final class Policy {
     static int checkBaseline(Map<String, EffectSet> inferred, String path) {
         Map<String, EffectSet> base = loadBaseline(path);
         if (base == null) {
-            System.err.println("candor-java: CANDOR_BASELINE set but " + path
-                    + " could not be loaded — the regression guard is NOT active");
-            return 0;
+            // Distinguish ABSENT (ratchet not adopted — a note, exit 0) from PRESENT-BUT-UNLOADABLE
+            // (corrupt/truncated/merge-conflict-markers — INVALID gate input, fail closed exit 2). The
+            // old code conflated both into a fail-OPEN note, so a corrupt baseline silently disabled the
+            // guard while a versionless one failed closed — inverted severity (review §2.1 gap).
+            if (!java.nio.file.Files.exists(java.nio.file.Path.of(path))) {
+                System.err.println("candor-java: CANDOR_BASELINE " + path + " does not exist — the "
+                        + "regression guard is not active (record one: candor <target> --json " + path + ").");
+                return 0;
+            }
+            System.err.println("candor-java: CANDOR_BASELINE " + path + " exists but could not be parsed "
+                    + "(corrupt/truncated?) — failing (exit 2); the guard must not silently pass on an "
+                    + "unreadable baseline (the unreadable-policy class, §6.2). Regenerate it: candor "
+                    + "<target> --json " + path);
+            System.exit(2);
         }
         // §2.1: a baseline is comparable only to its OWN producing version — a stale baseline is INVALID
         // GATE INPUT, the unreadable-policy class (§6.2). Evaluating it produces semi-garbage in both

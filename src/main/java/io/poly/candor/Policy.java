@@ -70,6 +70,20 @@ final class Policy {
                     + " could not be loaded — the regression guard is NOT active");
             return 0;
         }
+        // §2.1: a baseline is comparable only to its OWN producing version. Coverage batches change what
+        // the engine sees, so after an engine swap a wave of "gained" effects is usually UNMASKING (newly
+        // visible reality), not regression — and conversely a real regression could hide inside the wave.
+        // Disclose LOUDLY and advise regeneration; never silently suppress (a regression may be real) and
+        // never fail (upgrades are routine). Raised by a user hitting exactly this after κ batches 28–31.
+        String baseVersion = baselineVersion(path);
+        String current = ReportWriter.provenance()[0];
+        if (baseVersion != null && !baseVersion.equals(current)) {
+            System.err.println("candor-java: NOTE — the baseline was produced by engine build " + baseVersion
+                    + " but this is build " + current + ". Coverage batches change reports, so treat an engine"
+                    + " swap as baseline-invalidating: any AS-EFF-005 below may be newly-VISIBLE effects"
+                    + " (unmasking), not regressions. Review them, then regenerate the baseline with this"
+                    + " build (candor <target> --json " + path + ").");
+        }
         int v = 0;
         for (var e : new TreeMap<>(inferred).entrySet()) {
             EffectSet prior = base.get(e.getKey());
@@ -334,6 +348,23 @@ final class Policy {
             for (Effector e : ReportJson.parseEntries(arr))
                 if (e.fn() != null && !e.fn().isEmpty()) m.put(e.fn(), e.inferred());
             return m;
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    /** The baseline's PRODUCING engine build (the §2.1 envelope `candor.version`) — null for the legacy
+     *  v0.1 bare array or an unreadable header (then no version comparison is possible: absent provenance
+     *  is already the §2.1 "as unverifiable as a mismatch" case, and the guard note stays silent only
+     *  because there is nothing concrete to compare). */
+    static String baselineVersion(String path) {
+        try {
+            JsonElement root = JsonParser.parseString(Files.readString(Path.of(path)));
+            if (!root.isJsonObject()) return null;
+            JsonElement c = root.getAsJsonObject().get("candor");
+            if (c == null || !c.isJsonObject()) return null;
+            JsonElement ver = c.getAsJsonObject().get("version");
+            return ver != null && ver.isJsonPrimitive() ? ver.getAsString() : null;
         } catch (Exception ex) {
             return null;
         }

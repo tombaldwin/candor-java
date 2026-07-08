@@ -395,6 +395,28 @@ class CliBehaviourTest {
     }
 
     @Test
+    void staleBaselineFailsClosedWithoutEvaluating() throws Exception {
+        // The aligned family posture: a baseline from another engine build is INVALID GATE INPUT — the
+        // unreadable-policy class. No AS-EFF-005 wave (evaluation would be semi-garbage), no silent skip
+        // (an unbounded fail-open window): one clear message, exit 2.
+        Path classes = compileNetFixture();
+        Path base = scratch.resolve("stale-baseline.json");
+        Files.writeString(base, "{\"candor\":{\"version\":\"aaaaaaa\"},\"functions\":[]}");
+        String javaBin = System.getProperty("java.home") + "/bin/java";
+        String cp = System.getProperty("java.class.path");
+        ProcessBuilder pb = new ProcessBuilder(javaBin, "-cp", cp, "io.poly.candor.Candor", classes.toString());
+        pb.environment().put("CANDOR_BASELINE", base.toString());
+        Process p = pb.start();
+        String err = drain(p.getErrorStream());
+        String out = drain(p.getInputStream());
+        assertEquals(2, p.waitFor(), "a stale baseline fails closed\nSTDERR:\n" + err);
+        assertTrue(err.contains("baseline-invalidating") && err.contains("aaaaaaa"),
+                "the message names the posture and the stale build: " + err);
+        assertFalse(out.contains("AS-EFF-005") || err.contains("[AS-EFF-005]"),
+                "no bogus 005 wave — the gate refuses to evaluate stale input");
+    }
+
+    @Test
     void gateJsonRejectsAFlagShapedValue() throws Exception {
         // `--gate-json --policy arch.policy` must FAIL (exit 2) — without the dash-check it swallowed
         // `--policy` as the verdict path and the displaced `arch.policy` was silently dropped: a GATELESS

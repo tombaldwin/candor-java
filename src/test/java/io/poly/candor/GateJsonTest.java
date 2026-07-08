@@ -109,7 +109,10 @@ class GateJsonTest {
         // AS-EFF-005 (checkBaseline): effects is the GAINED set, not the fn's full effects.
         Candor.gateCapture = true;
         Path base = Files.createTempFile("base", ".json");
-        Files.writeString(base, "{\"functions\":[{\"fn\":\"a.B.c\",\"inferred\":[\"Fs\"]}]}");
+        // stamped with THIS build's provenance — a stale/absent version fails closed (exit 2) since the
+        // baseline-posture alignment, which would kill the test JVM here.
+        Files.writeString(base, "{\"candor\":{\"version\":\"" + ReportWriter.provenance()[0]
+                + "\"},\"functions\":[{\"fn\":\"a.B.c\",\"inferred\":[\"Fs\"]}]}");
         base.toFile().deleteOnExit();
         Policy.checkBaseline(Map.of("a.B.c", EffectSet.of(Effect.FS, Effect.NET)), base.toString());
         assertEquals(1, Candor.gateViolations.size());

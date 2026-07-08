@@ -70,19 +70,29 @@ final class Policy {
                     + " could not be loaded — the regression guard is NOT active");
             return 0;
         }
-        // §2.1: a baseline is comparable only to its OWN producing version. Coverage batches change what
-        // the engine sees, so after an engine swap a wave of "gained" effects is usually UNMASKING (newly
-        // visible reality), not regression — and conversely a real regression could hide inside the wave.
-        // Disclose LOUDLY and advise regeneration; never silently suppress (a regression may be real) and
-        // never fail (upgrades are routine). Raised by a user hitting exactly this after κ batches 28–31.
+        // §2.1: a baseline is comparable only to its OWN producing version — a stale baseline is INVALID
+        // GATE INPUT, the unreadable-policy class (§6.2). Evaluating it produces semi-garbage in both
+        // directions (unmasking noise that trains people to dismiss AS-EFF-005, with any real regression
+        // hidden inside the wave), and silently skipping is an unbounded fail-open window. So: do NOT
+        // evaluate, say it once clearly, exit 2. The aligned family posture (cargo-candor guard matches);
+        // read-only diff/gains QUERIES disclose instead of failing — a comparison the user explicitly
+        // asked for should inform. A missing baseline FILE stays a note (ratchet not yet adopted — the
+        // adopt workflow sets CANDOR_BASELINE unconditionally by contract).
         String baseVersion = baselineVersion(path);
         String current = ReportWriter.provenance()[0];
-        if (baseVersion != null && !baseVersion.equals(current)) {
-            System.err.println("candor-java: NOTE — the baseline was produced by engine build " + baseVersion
-                    + " but this is build " + current + ". Coverage batches change reports, so treat an engine"
-                    + " swap as baseline-invalidating: any AS-EFF-005 below may be newly-VISIBLE effects"
-                    + " (unmasking), not regressions. Review them, then regenerate the baseline with this"
-                    + " build (candor <target> --json " + path + ").");
+        if (baseVersion == null) {
+            System.err.println("candor-java: the baseline " + path + " has no provenance header (a legacy/"
+                    + "bare-array report) — a baseline is comparable only to its producing build (§2.1)."
+                    + " Failing (exit 2); regenerate it with this build: candor <target> --json " + path);
+            System.exit(2);
+        }
+        if (!baseVersion.equals(current)) {
+            System.err.println("candor-java: the baseline " + path + " was produced by engine build "
+                    + baseVersion + " but this is build " + current + " — coverage batches change reports,"
+                    + " so an engine swap is baseline-invalidating and the gate cannot evaluate (exit 2,"
+                    + " the unreadable-policy class; never a silent skip, never a bogus AS-EFF-005 wave)."
+                    + " Regenerate deliberately with this build: candor <target> --json " + path);
+            System.exit(2);
         }
         int v = 0;
         for (var e : new TreeMap<>(inferred).entrySet()) {

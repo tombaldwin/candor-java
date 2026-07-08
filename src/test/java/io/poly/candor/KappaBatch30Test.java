@@ -1,6 +1,7 @@
 package io.poly.candor;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -36,23 +37,28 @@ class KappaBatch30Test {
         assertTrue(Candor.kappaCovers("com.fasterxml.jackson.databind.node"), "the whole stack is covered");
     }
 
-    // ── 30b: the AWS v1 INTERFACE gap (found live — AmazonS3.copyObject read silent-invisible) ──────
+    // ── 30b REVERTED (review 0.8.3): the Amazon*/AWS* interface-owner widening fabricated Net on pure
+    //    value types (AmazonS3URI) and, paired with a com.amazonaws coverage grant, silenced unmodeled
+    //    facades (DynamoDBMapper). The *Client rule stands; interface-typed requests disclose invisible. ──
     @Test
-    void awsV1InterfaceCallsAreNetLikeTheClientClasses() {
-        assertEquals(Effect.NET, Classifier.classify("com.amazonaws.services.s3.AmazonS3", "copyObject", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Lcom/amazonaws/services/s3/model/CopyObjectResult;"),
-                "a call through the v1 service INTERFACE is a request — the Client-suffix gate missed it");
-        assertEquals(Effect.NET, Classifier.classify("com.amazonaws.services.s3.AmazonS3", "getObject", "(Ljava/lang/String;Ljava/lang/String;)Lcom/amazonaws/services/s3/model/S3Object;"));
-        assertEquals(Effect.NET, Classifier.classify("com.amazonaws.services.simpleemail.AmazonSimpleEmailService", "sendEmail", "(Lcom/amazonaws/services/simpleemail/model/SendEmailRequest;)Lcom/amazonaws/services/simpleemail/model/SendEmailResult;"));
-        assertEquals(Effect.NET, Classifier.classify("com.amazonaws.services.s3.transfer.TransferManager", "upload", "(Ljava/lang/String;Ljava/lang/String;Ljava/io/File;)Lcom/amazonaws/services/s3/transfer/Upload;"));
+    void awsClientClassesAreNetInterfacesDiscloseInvisibleNotFabricatedNotSilent() {
+        // the concrete *Client classes are still Net (the sound pre-30b rule + the copy* verb kept)
+        assertEquals(Effect.NET, Classifier.classify("com.amazonaws.services.s3.AmazonS3Client", "copyObject", "(Lcom/amazonaws/services/s3/model/CopyObjectRequest;)Lcom/amazonaws/services/s3/model/CopyObjectResult;"));
+        // an interface-typed request is NOT classified here → discloses `invisible` (com.amazonaws is NOT
+        // κ-covered), the honest floor — never fabrication, never silent-pure.
+        assertNull(Classifier.classify("com.amazonaws.services.s3.AmazonS3", "copyObject", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Lcom/amazonaws/services/s3/model/CopyObjectResult;"));
+        assertFalse(Candor.kappaCovers("com.amazonaws.services.dynamodbv2.datamodeling"),
+                "com.amazonaws is NOT ledger-covered — an unmodeled facade (DynamoDBMapper.save) discloses invisible, never silent-pure");
     }
 
     @Test
-    void awsV1PurePlumbingFabricatesNothing() {
-        assertNull(Classifier.classify("com.amazonaws.services.s3.AmazonS3ClientBuilder", "withRegion", "(Ljava/lang/String;)Lcom/amazonaws/client/builder/AwsClientBuilder;"),
-                "builders are pure config");
-        assertNull(Classifier.classify("com.amazonaws.services.s3.model.S3Object", "getObjectContent", "()Lcom/amazonaws/services/s3/model/S3ObjectInputStream;"),
-                "model accessors are pure — the GET request carried the Net");
-        assertNull(Classifier.classify("com.amazonaws.util.StringUtils", "isNullOrEmpty", "(Ljava/lang/String;)Z"));
-        assertTrue(Candor.kappaCovers("com.amazonaws.services.s3.model"));
+    void awsNamedValueTypesAreNotFabricated() {
+        // AmazonS3URI is a pure s3:// URI parser whose simple name starts with "Amazon" — the reverted
+        // interface heuristic fabricated Net on its accessors.
+        assertNull(Classifier.classify("com.amazonaws.services.s3.AmazonS3URI", "getBucket", "()Ljava/lang/String;"),
+                "a URI parser makes no request — the Amazon*-name heuristic used to fabricate Net here");
+        assertNull(Classifier.classify("com.amazonaws.services.s3.AmazonS3URI", "getKey", "()Ljava/lang/String;"));
+        assertNull(Classifier.classify("com.amazonaws.services.s3.transfer.TransferManager", "getConfiguration", "()Lcom/amazonaws/services/s3/transfer/TransferManagerConfiguration;"),
+                "a config accessor on TransferManager is pure");
     }
 }

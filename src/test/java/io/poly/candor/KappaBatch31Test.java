@@ -16,6 +16,9 @@ class KappaBatch31Test {
                 "the batch-28 gap: StopWatch went silent-pure under lang3 coverage");
         assertEquals(Effect.CLOCK, Classifier.classify("org.apache.commons.lang.time.StopWatch", "getTime", "()J"));
         assertEquals(Effect.RAND, Classifier.classify("org.apache.commons.lang.RandomStringUtils", "randomNumeric", "(I)Ljava/lang/String;"));
+        assertNull(Classifier.classify("org.apache.commons.lang3.time.StopWatch", "create", "()Lorg/apache/commons/lang3/time/StopWatch;"),
+                "review 0.8.3: create() returns an UNSTARTED stopwatch — reads no clock");
+        assertNull(Classifier.classify("org.apache.commons.lang3.time.StopWatch", "isStarted", "()Z"));
     }
 
     @Test
@@ -30,11 +33,18 @@ class KappaBatch31Test {
     }
 
     @Test
-    void redissonHandlesAreRemoteByDesign() {
+    void redissonDataVerbsAndConnectAreDbPlumbingIsPure() {
+        // the R* data verbs are Db via the pre-existing exact-verb rule; Redisson.create connects.
         assertEquals(Effect.DB, Classifier.classify("org.redisson.api.RMap", "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"));
-        assertEquals(Effect.DB, Classifier.classify("org.redisson.api.RedissonClient", "shutdown", "()V"));
         assertEquals(Effect.DB, Classifier.classify("org.redisson.Redisson", "create", "(Lorg/redisson/config/Config;)Lorg/redisson/api/RedissonClient;"));
         assertNull(Classifier.classify("org.redisson.config.Config", "useSingleServer", "()Lorg/redisson/config/SingleServerConfig;"), "config is pure");
+        // review 0.8.3: the broad "any R* method → Db" fabricated on pure members — these must be null:
+        assertNull(Classifier.classify("org.redisson.api.RBucket", "getCodec", "()Lorg/redisson/client/codec/Codec;"),
+                "getCodec is a stored-field accessor — the exact-verb rule keeps it pure");
+        assertNull(Classifier.classify("org.redisson.api.RemoteInvocationOptions", "defaults", "()Lorg/redisson/api/RemoteInvocationOptions;"),
+                "a pure options builder that happens to start with R");
+        assertNull(Classifier.classify("org.redisson.api.RFuture", "isDone", "()Z"),
+                "local future plumbing after the wire call already happened");
     }
 
     @Test
@@ -47,6 +57,15 @@ class KappaBatch31Test {
                 "filename STRING work is pure — the String-path rule deliberately does not exist here");
         assertNull(Classifier.classify("org.apache.commons.io.FileUtils", "getTempDirectory", "()Ljava/io/File;"),
                 "a File RETURN type is not a File parameter — the source/sink rules match params only");
+        // review 0.8.3: descriptor matching fabricated on pure param-taking members — carved out:
+        assertNull(Classifier.classify("org.apache.commons.io.FileUtils", "toFile", "(Ljava/net/URL;)Ljava/io/File;"),
+                "toFile is a pure file:-URL → File decode, not a network fetch");
+        assertNull(Classifier.classify("org.apache.commons.io.FileUtils", "getFile", "(Ljava/io/File;[Ljava/lang/String;)Ljava/io/File;"),
+                "getFile is pure path arithmetic");
+        assertNull(Classifier.classify("org.apache.commons.io.filefilter.NameFileFilter", "accept", "(Ljava/io/File;)Z"),
+                "a name-only filter predicate compares strings — no I/O");
+        assertEquals(Effect.NET, Classifier.classify("org.apache.commons.io.IOUtils", "toString", "(Ljava/net/URL;Ljava/nio/charset/Charset;)Ljava/lang/String;"),
+                "a genuine URL fetch is NOT carved out");
     }
 
     @Test

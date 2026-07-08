@@ -1284,11 +1284,14 @@ final class Classifier {
         // `AmazonS3.copyObject` read silent-invisible — found live, uflexi dogfood). Interfaces are the
         // Amazon*/AWS* simple names OUTSIDE .model./.builder types; TransferManager is the S3 high-level
         // I/O front (upload/download/copy do the transfers).
+        // OWNER GATE: the *Client classes only. Batch 30b widened this to the Amazon*/AWS*-named service
+        // interfaces + TransferManager to catch interface-typed calls (AmazonS3.copyObject) — but that
+        // FABRICATED Net on same-named PURE value types (AmazonS3URI.getBucket, a URI parser) and, paired
+        // with a com.amazonaws coverage grant, SILENCED unmodeled facades (DynamoDBMapper.save). Reverted:
+        // an interface-typed AWS request that this rule misses discloses `invisible` (com.amazonaws is NOT
+        // κ-covered), the honest floor — never fabrication, never silent-pure. (review 0.8.3 regression.)
         if ((owner.startsWith("software.amazon.awssdk.services.") || owner.startsWith("com.amazonaws.services."))
-                && (owner.endsWith("Client")
-                    || owner.endsWith(".transfer.TransferManager")
-                    || (!owner.contains(".model.") && !owner.endsWith("Builder")
-                        && (simpleName(owner).startsWith("Amazon") || simpleName(owner).startsWith("AWS"))))
+                && owner.endsWith("Client")
                 && (method.startsWith("get") || method.startsWith("put") || method.startsWith("list")
                     || method.startsWith("create") || method.startsWith("delete") || method.startsWith("send")
                     || method.startsWith("query") || method.startsWith("scan") || method.startsWith("update")
@@ -1925,7 +1928,9 @@ final class Classifier {
             if (owner.equals("io.jsonwebtoken.security.Keys")
                     && (method.startsWith("secretKeyFor") || method.startsWith("keyPairFor")
                         || method.startsWith("password"))) return Effect.RAND;
-            if (method.startsWith("parse")) return Effect.CLOCK;
+            // parse* validates exp/nbf → Clock, but ONLY when it actually parses a token (takes the token
+            // arg). Jwts.parser()/parserBuilder() are no-arg factories that read no clock (review fix).
+            if (method.startsWith("parse") && !paramsOf(desc).isEmpty()) return Effect.CLOCK;
             return null;
         }
         // JDOM2 — the document MODEL is pure value work; the INPUT boundary is effectful by source:
@@ -1966,8 +1971,13 @@ final class Classifier {
         //    Pure-surface coverage rides KAPPA_COVERED_PREFIXES; the effectful members below. Also fixes
         //    a batch-28 GAP the sweep exposed: StopWatch (both commons-lang generations) reads the clock
         //    but went silent-pure under lang3's coverage. ──
+        // StopWatch reads the wall clock on start/stop/split/get*Time/createStarted → Clock, but create()
+        // (an UNSTARTED stopwatch) and the format*/is* accessors read nothing (review fix — create() was
+        // fabricated Clock).
         if ((owner.equals("org.apache.commons.lang3.time.StopWatch") || owner.equals("org.apache.commons.lang.time.StopWatch"))
-                && !isConventionallyPure(method)) return Effect.CLOCK;
+                && !isConventionallyPure(method)
+                && !method.equals("create") && !method.startsWith("format") && !method.startsWith("is"))
+            return Effect.CLOCK;
         // commons-lang v2 — same shape as lang3 (batch 28): the entropy + env surfaces.
         if (owner.equals("org.apache.commons.lang.RandomStringUtils")
                 || owner.equals("org.apache.commons.lang.math.RandomUtils")
@@ -1976,9 +1986,20 @@ final class Classifier {
             return null;
         }
         if (owner.equals("org.apache.commons.lang.SystemUtils") && method.startsWith("get")) return Effect.ENV;
-        // commons-io — the jackson stance: an entry point that names its own source/sink does so via
-        // File/Path (→ Fs) or URL/URI (→ Net); stream/reader/writer overloads are pure-relative.
+        // commons-io — the jackson source/sink stance (File/Path param → Fs, URL/URI param → Net), BUT
+        // commons-io is full of PURE helpers that also take File/URL params: path arithmetic (getFile,
+        // toURLs, normalize, concat, getName/getExtension/getBaseName/getPath), the file:-URL decode
+        // (toFile), and the name-only file-filter predicates (accept). Carve those out first — descriptor
+        // matching alone fabricated Fs/Net on them (review 0.8.3 regression). IOUtils.toString(URL) etc.
+        // are NOT carved, so real fetches still classify.
         if (owner.startsWith("org.apache.commons.io")) {
+            if (method.equals("toFile") || method.equals("toURLs") || method.equals("getFile")
+                    || method.equals("accept") || method.startsWith("normalize") || method.startsWith("concat")
+                    || method.startsWith("getName") || method.startsWith("getExtension") || method.startsWith("getBaseName")
+                    || method.startsWith("getPath") || method.startsWith("getFullPath") || method.startsWith("getPrefix")
+                    || method.startsWith("removeExtension") || method.startsWith("separatorsTo")
+                    || method.startsWith("isExtension") || method.startsWith("indexOf") || method.startsWith("equals"))
+                return null;
             String params = paramsOf(desc);
             if (params.contains("Ljava/net/URL;") || params.contains("Ljava/net/URI;")) return Effect.NET;
             if (params.contains("Ljava/io/File;") || params.contains("Ljava/nio/file/Path;")) return Effect.FS;
@@ -2003,10 +2024,11 @@ final class Classifier {
         // design — their operations are wire round-trips (→ Db, the family's Redis stance); creating a
         // client connects. Config/serialization is pure.
         if (owner.startsWith("org.redisson")) {
-            if (owner.startsWith("org.redisson.config")) return null;
+            // Redisson.create connects → Db. The R* data verbs are classified PRECISELY by the exact-verb
+            // rule earlier in classify() (get/put/set/remove/…); a broad "any R* method → Db" here
+            // FABRICATED Db on pure members (getCodec, RemoteInvocationOptions builders, RFuture plumbing),
+            // so everything else falls through to pure. (review 0.8.3 regression.)
             if (owner.equals("org.redisson.Redisson") && method.startsWith("create")) return Effect.DB;
-            if ((owner.startsWith("org.redisson.api.R") || owner.equals("org.redisson.api.RedissonClient"))
-                    && !isConventionallyPure(method) && !method.startsWith("getName")) return Effect.DB;
             return null;
         }
         // DbUnit — DatabaseOperation.execute runs the setup/teardown SQL → Db; datasets built FROM a

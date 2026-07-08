@@ -3064,19 +3064,17 @@ public class Candor {
             // κ batch 30: Jackson — ONE descriptor-driven rule classifies its whole effectful surface
             // (File/Path → Fs, URL → Net, uniform across the stack); the rest is pure or pure-relative.
             "com.fasterxml.jackson",
-            // κ batch 30b: the AWS v1 SDK — the request-making surface (Client classes + the service
-            // INTERFACES + TransferManager) is classified verb-precisely; the remainder (model beans,
-            // builders, util) is pure plumbing. Coverage granted only after the interface-owner gap
-            // (AmazonS3.copyObject silent-invisible) was fixed.
-            "com.amazonaws",
+            // NB com.amazonaws and org.apache.commons.io are CLASSIFIED (see Classifier) but deliberately
+            // NOT ledger-covered: both are dominated by pure helpers that a blanket grant would silence,
+            // and batch 30b's com.amazonaws grant induced a DynamoDBMapper silent-pure (reverted, review
+            // 0.8.3). An unmodeled member of either discloses `invisible` — the honest floor.
             // κ batch 31 (the long-tail sweep; effectful members classified — see Classifier): CSV stacks
-            // (pure-relative over caller sources; javacsv path-ctors → Fs), codecs (pure CPU), commons-io
-            // (the jackson descriptor stance), commons-lang v2 (Rand/Env/StopWatch→Clock), OSCache +
-            // Guava base/math + maps.model + Xerces serialize + SAX + naming (pure/pure-relative),
-            // Twilio (REST terminals + lazy paging → Net), Redisson (R* handles → Db), DbUnit
-            // (execute → Db), hibernate's internal jdbc pkg (execution → Db, logger → Log, formatter
-            // pure), awspring SES (send → Net), v2 credentials (resolve → Env).
-            "com.csvreader", "org.supercsv", "org.apache.commons.codec", "org.apache.commons.io",
+            // (pure-relative over caller sources; javacsv path-ctors → Fs), codecs (pure CPU),
+            // commons-lang v2 (Rand/Env/StopWatch→Clock), OSCache + Guava base/math + maps.model +
+            // Xerces serialize + SAX + naming (pure/pure-relative), Twilio (REST terminals + lazy paging →
+            // Net), Redisson (create → Db), DbUnit (execute → Db), hibernate's internal jdbc pkg
+            // (execution → Db, logger → Log, formatter pure), awspring SES (send → Net), v2 creds → Env.
+            "com.csvreader", "org.supercsv", "org.apache.commons.codec",
             "org.apache.commons.lang", "org.apache.commons.csv", "com.opensymphony.oscache",
             "com.google.common.base", "com.google.common.math", "com.google.maps.model",
             "org.apache.xml.serialize", "org.xml.sax", "org.aopalliance",

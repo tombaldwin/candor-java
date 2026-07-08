@@ -28,6 +28,9 @@ class KappaBatch29Test {
         assertEquals(Effect.CLOCK, Classifier.classify("io.jsonwebtoken.JwtParser", "parseClaimsJws", "(Ljava/lang/String;)Lio/jsonwebtoken/Jws;"),
                 "parsing VALIDATES exp/nbf against the system clock");
         assertEquals(Effect.RAND, Classifier.classify("io.jsonwebtoken.security.Keys", "secretKeyFor", "(Lio/jsonwebtoken/SignatureAlgorithm;)Ljavax/crypto/SecretKey;"));
+        assertNull(Classifier.classify("io.jsonwebtoken.Jwts", "parser", "()Lio/jsonwebtoken/JwtParser;"),
+                "review 0.8.3: the no-arg parser() factory reads no clock — only parsing a token (a parse* method that TAKES the token) does");
+        assertNull(Classifier.classify("io.jsonwebtoken.Jwts", "parserBuilder", "()Lio/jsonwebtoken/JwtParserBuilder;"));
         assertNull(Classifier.classify("io.jsonwebtoken.JwtBuilder", "compact", "()Ljava/lang/String;"),
                 "signing is pure CPU — no fabricated effect");
         assertNull(Classifier.classify("io.jsonwebtoken.Jwts", "builder", "()Lio/jsonwebtoken/JwtBuilder;"));

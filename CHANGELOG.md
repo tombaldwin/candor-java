@@ -1,0 +1,58 @@
+# Changelog
+
+All notable changes to candor-java are recorded here. Format loosely follows
+[Keep a Changelog](https://keepachangelog.com/); candor-java is pre-1.0, so minor versions may
+include behavioural changes (always in the soundness-increasing direction — the §4 trust contract).
+**⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
+after upgrading; review policies and regenerate baselines with the new build.
+
+## [0.8.6] — 2026-07-09
+
+- ⚠ **Policy scope segments now split on the `$` nested-type boundary** (the family §6.2 ruling,
+  matching the query name ladder): `deny Net client` / `forbid app -> repo` now bite JVM nested
+  classes (`Outer$client`). A scope name that previously matched only packages may now match
+  nested types — review policies on upgrade.
+- ⚠ **`CANDOR_STRICT` gate fix (AS-EFF-001/002/003)**: `checkConformance` lacked SPEC §6's
+  program-entry-point exemption, so AS-EFF-001 fired on the composition root (`main` legitimately
+  mints the capability bundle). Found by the first-ever coverage measurement — the gate had zero
+  test coverage in any harness; it now has 12 JUnit pins + a smoke section.
+- ⚠ **`diff`/`gains` exit parity**: `diff` exits 1 on a gained effect when baseline/engine
+  producing versions match (a mismatch discloses and exits 0), matching candor-ts.
+- **Structural — byte-identical** (996-file corpus-proven, *not* verdict-affecting): `analyze()`
+  decomposed into per-instruction-kind handlers with explicit context threading; rule tables in
+  `Rules.java`; one `TestCompiler`; review-round test files renamed by feature; dead code removed.
+- Coverage-wave pins: taint at control-flow joins, ~500 classifier table rows with
+  anti-fabrication twins, `--help`/`--version`, stdout report purity, hostile dep-report shapes.
+
+## [0.8.5] — 2026-07-09
+
+- ⚠ **Fail-closed sweep** — previously-green failure paths now exit 2 (intentional): an unwritable
+  `--gate-json` verdict path fails the run; a `CANDOR_DEPS` entry naming no readable file, an
+  unwalkable deps dir, or an unparseable dep report fails the run (was: every call into the dep
+  silently read pure); an unwritable `--json` report path prints one diagnostic line and exits 2.
+- **Performance**: the classifier's single ~27KB method exceeded HotSpot's JIT limit, so the
+  hottest path in every scan ran interpreted; now a per-package dispatch — verified
+  **byte-identical** by a 19.5M-triple differential oracle plus a 330-jar corpus; ~16% faster
+  full-corpus scans.
+- **Spec §2.1 / §3.4 parity**: `diff`/`gains` disclose a producing-version mismatch
+  (`baseline_version`/`engine_version` + a stderr warning) and still answer; relative
+  `.candor/config` values resolve against the config's home directory, never the CWD; the CWD
+  discovery fallback is gone.
+- Tests/CI: `--parallel` smoke coverage; report/verdict schema-shape tests; the kappa_libs +
+  mutation probes run weekly (the mutation probe had rotted to 3/14 — re-anchored, 14/14).
+  Conformance: all 16 cross-engine parts MATCH.
+
+## [0.8.4] — 2026-07-08
+
+- ⚠ **Soundness patch — six cardinal-sin regressions in 0.8.3's κ batches 28–31** (found by a
+  high-effort code review; 0.8.3 users should upgrade). Fabrications removed (false effect on pure
+  code): AWS `AmazonS3URI` accessors, Redisson pure members, commons-io pure path helpers, jjwt
+  no-arg `parser()` factories, `StopWatch.create()`. Silent-pure removed: the blanket
+  `com.amazonaws` coverage grant silenced unmodeled v1 facades (`DynamoDBMapper.save` read pure) —
+  unmodeled AWS/commons-io members now disclose `invisible`.
+- ⚠ **Baseline guard fail-closed**: a corrupt/unparseable baseline now fails the run (exit 2)
+  instead of silently disabling the guard.
+- Every fix has an anti-fabrication test twin; jsoup/gson reports byte-identical to 0.8.3 (the
+  carve-outs only move the buggy members).
+
+Older releases: see [GitHub releases](https://github.com/tombaldwin/candor-java/releases).

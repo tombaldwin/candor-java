@@ -58,6 +58,9 @@ a runtime ground-truth oracle (JFR + bytecode agent), and a mutation probe over 
 themselves. Beta because the classifier and the framework surface keep growing — the trust
 contract (§4: never silently pure) is not where the immaturity lives.
 
+Release history: [CHANGELOG.md](CHANGELOG.md) — **⚠ marks a verdict-affecting change** (review
+policies / regenerate baselines on upgrade).
+
 **Works:** audit mode — resolves each call, classifies it against the effect table (matching the I/O
 boundary, not the package), and propagates transitively to a fixpoint over the call graph. Emits the
 **v0.2 self-describing report** — a `{ candor, functions }` envelope whose header carries the engine

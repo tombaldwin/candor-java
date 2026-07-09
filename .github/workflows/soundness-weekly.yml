@@ -1,0 +1,59 @@
+# The two heavyweight soundness lanes that are too slow for every push but too valuable to stay
+# manual-only (they were: both found real κ gaps, then silently stopped running):
+#   - kappa_libs_probe: ~440 REAL third-party effect leaves compiled against the actual jars — the
+#     direct κ-coverage gate for the library risk surface (a silent-pure leaf is the cardinal sin).
+#   - mutation_probe: META-soundness — injects curated known-bug mutations into the engine and asserts
+#     the probe suite CATCHES each one (a suite that only ever passes proves nothing).
+# Both FAIL the workflow on regression (probe exit codes are load-bearing). The jar corpus is cached;
+# on a cold cache the probe fetches what it needs from Maven Central itself.
+name: soundness-weekly
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'   # Mondays 06:17 UTC (off the :00 rush)
+  workflow_dispatch:        # runnable on demand (e.g. after a κ batch)
+
+jobs:
+  kappa-libs-and-mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+
+      # The library-jar corpus (~hundreds of MB from Maven Central). Keyed on the probe itself: a new
+      # anchor batch usually adds jars, so the key rolls and the probe tops the cache up incrementally
+      # (restore-keys serves the old set; the probe fetches only what's missing).
+      - name: Cache the library-jar corpus
+        uses: actions/cache@v4
+        with:
+          path: soundness/lib
+          key: ${{ runner.os }}-kappa-libs-${{ hashFiles('soundness/kappa_libs_probe.py') }}
+          restore-keys: |
+            ${{ runner.os }}-kappa-libs-
+
+      - name: Build
+        run: ./gradlew --no-daemon -q installDist
+
+      # ~440 real library effect leaves + ~160 anti-fabrication pure neighbours. Exit 1 = a κ coverage
+      # regression (a silent-pure library leaf) or a fabrication — fail the workflow.
+      - name: κ library-leaf probe (kappa_libs_probe)
+        run: CJ=build/install/candor-java/bin/candor-java python3 soundness/kappa_libs_probe.py
+
+      # Inject each curated known-soundness-bug into the engine, rebuild, and require the paired probe
+      # to go red. Exit 1 = a MISSED mutation (a blind spot in our own gates) — fail the workflow.
+      - name: Mutation probe (do our gates still have teeth?)
+        run: bash soundness/mutation_probe.sh

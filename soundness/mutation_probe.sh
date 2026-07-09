@@ -19,18 +19,23 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# Two mutable targets: the analysis hooks live in Candor.java; the κ classify rules were EXTRACTED to
+# Classifier.java (refactor P1) and are now typed (`return Effect.FS`, not `return "Fs"`) — the anchors
+# below track that. Each mutation names its target via TGT before apply_patch (default: Candor.java).
 SRC="src/main/java/io/poly/candor/Candor.java"
-ORIG="$(mktemp)"
-cp "$SRC" "$ORIG"
-restore() { cp "$ORIG" "$SRC"; }
-trap 'restore; rm -f "$ORIG"' EXIT
+CLS="src/main/java/io/poly/candor/Classifier.java"
+ORIG="$(mktemp)"; ORIGCLS="$(mktemp)"
+cp "$SRC" "$ORIG"; cp "$CLS" "$ORIGCLS"
+restore() { cp "$ORIG" "$SRC"; cp "$ORIGCLS" "$CLS"; }
+trap 'restore; rm -f "$ORIG" "$ORIGCLS"' EXIT
+TGT="$SRC"
 
 GRADLE="./gradlew"; [ -x "$GRADLE" ] || GRADLE="gradle"
 CJ="$ROOT/build/install/candor-java/bin/candor-java"
 
 # ---- patch helper: apply a unique-anchor replacement, asserting the anchor exists exactly once ----
-apply_patch() {  # $1 = OLD, $2 = NEW
-  OLD="$1" NEW="$2" python3 - "$SRC" <<'PY'
+apply_patch() {  # $1 = OLD, $2 = NEW (applied to $TGT — set per mutation, reset each loop)
+  OLD="$1" NEW="$2" python3 - "$TGT" <<'PY'
 import os, sys
 p = sys.argv[1]
 old = os.environ["OLD"]; new = os.environ["NEW"]
@@ -78,6 +83,7 @@ add sanity_noop  run_kappa       silent "no-op comment insertion (control: probe
 patch_for() {
   case "$1" in
   net_dns)
+    TGT="$CLS"
     apply_patch \
 '|| (owner.equals("java.net.InetAddress")
                     && (method.equals("getByName") || method.equals("getAllByName")
@@ -85,43 +91,65 @@ patch_for() {
 '|| (owner.equals("java.net.InetAddress")
                     && (method.equals("__MUTANT_never__")))' ;;
   net_socket)
+    TGT="$CLS"
     apply_patch \
 '                || (owner.equals("javax.management.remote.JMXConnector")
                     && (method.equals("connect") || method.equals("getMBeanServerConnection"))))
-            return "Net";' \
+            return Effect.NET;' \
 '                || (owner.equals("javax.management.remote.JMXConnector")
                     && (method.equals("connect") || method.equals("getMBeanServerConnection"))))
-            return null; // MUTANT (was "Net")' ;;
+            return null; // MUTANT (was Effect.NET)' ;;
   fs_files)
+    TGT="$CLS"
     apply_patch \
 '                || owner.equals("java.util.zip.ZipFile") || owner.equals("java.util.jar.JarFile"))
-            return "Fs";' \
+            return Effect.FS;' \
 '                || owner.equals("java.util.zip.ZipFile") || owner.equals("java.util.jar.JarFile"))
-            return null; // MUTANT (was "Fs")' ;;
+            return null; // MUTANT (was Effect.FS)' ;;
   exec_pb)
+    TGT="$CLS"
     apply_patch \
 'if (owner.equals("java.lang.ProcessBuilder")
-                && (method.equals("start") || method.equals("startPipeline"))) return "Exec";' \
+                && (method.equals("start") || method.equals("startPipeline"))) return Effect.EXEC;' \
 'if (owner.equals("java.lang.ProcessBuilder")
                 && (method.equals("start") || method.equals("startPipeline"))) return null; // MUTANT' ;;
   log_syslogger)
+    TGT="$CLS"
     apply_patch \
-'|| owner.equals("java.lang.System$Logger")) {' \
-'|| owner.equals("java.lang.System$__MUTANT_never__")) {' ;;
+'|| owner.equals("java.lang.System$Logger");' \
+'|| owner.equals("java.lang.System$__MUTANT_never__");' ;;
   env_getenv)
+    TGT="$CLS"
     apply_patch \
-'if (owner.equals("java.lang.System") && method.equals("getenv")) return "Env";' \
+'if (owner.equals("java.lang.System") && method.equals("getenv")) return Effect.ENV;' \
 'if (owner.equals("java.lang.System") && method.equals("getenv")) return null; // MUTANT' ;;
   rand_uuid)
+    TGT="$CLS"
     apply_patch \
-'if (owner.equals("java.util.UUID") && method.equals("randomUUID")) return "Rand";' \
+'if (owner.equals("java.util.UUID") && method.equals("randomUUID")) return Effect.RAND;' \
 'if (owner.equals("java.util.UUID") && method.equals("randomUUID")) return null; // MUTANT' ;;
   jackson_file)
+    # TWO rules cover the jackson File/URL surface (the old readValue/readTree/writeValue-specific rule
+    # + κ batch 30's whole-package descriptor rule, which subsumes it) — each masks a mutation of the
+    # other, so a real "jackson File-κ gone" mutation must disable BOTH.
+    TGT="$CLS"
     apply_patch \
-'            if (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;")) return "Fs";
-            if (desc.startsWith("(Ljava/net/URL;")) return "Net";' \
-'            if (false) return "Fs"; // MUTANT
-            if (false) return "Net"; // MUTANT' ;;
+'                && (method.equals("readValue") || method.equals("readTree") || method.equals("writeValue"))) {
+            if (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;")) return Effect.FS;
+            if (desc.startsWith("(Ljava/net/URL;")) return Effect.NET;' \
+'                && (method.equals("readValue") || method.equals("readTree") || method.equals("writeValue"))) {
+            if (false) return Effect.FS; // MUTANT
+            if (false) return Effect.NET; // MUTANT' \
+    && apply_patch \
+'        if (owner.startsWith("com.fasterxml.jackson")) {
+            String params = paramsOf(desc);
+            if (params.contains("Ljava/net/URL;")) return Effect.NET;
+            if (params.contains("Ljava/io/File;") || params.contains("Ljava/nio/file/Path;")) return Effect.FS;
+            return null;
+        }' \
+'        if (owner.startsWith("com.fasterxml.jackson")) {
+            return null; // MUTANT (batch-30 descriptor rule disabled)
+        }' ;;
   named_sam)
     apply_patch \
 'static Set<String> functionalSamSurface(String classInternal) {' \
@@ -130,9 +158,9 @@ patch_for() {
   cha_edges)
     apply_patch \
 '                        List<String> targets = broad ? List.of() : cha;
-                        edges.get(id).addAll(targets);' \
+                        ctx().edges.get(id).addAll(targets);' \
 '                        List<String> targets = broad ? List.of() : cha;
-                        // MUTANT: edges.get(id).addAll(targets);' ;;
+                        // MUTANT: ctx().edges.get(id).addAll(targets);' ;;
   cb_unknown)
     apply_patch \
 'if (!broad && targets.isEmpty() && !dispatchExempt && effect == null && !springTyped
@@ -146,15 +174,17 @@ patch_for() {
 '            if (false && (mn.name.equals("<init>") || mn.name.equals("<clinit>")))
                 bindDeferredFields(cn, mn); // MUTANT' ;;
   clock_now)
+    TGT="$CLS"
     apply_patch \
 '        if (method.equals("now")
                 && (owner.equals("java.time.Instant") || owner.equals("java.time.LocalDateTime")' \
 '        if (false && method.equals("now")
                 && (owner.equals("java.time.Instant") || owner.equals("java.time.LocalDateTime")' ;;
   sanity_noop)
+    TGT="$CLS"
     apply_patch \
-'    static String classify(String owner, String method, String desc) {' \
-'    static String classify(String owner, String method, String desc) { /* MUTANT: harmless no-op */' ;;
+'    static Effect classify(String owner, String method, String desc) {' \
+'    static Effect classify(String owner, String method, String desc) { /* MUTANT: harmless no-op */' ;;
   *) echo "unknown mutation: $1" >&2; return 9 ;;
   esac
 }
@@ -172,9 +202,10 @@ for i in "${!NAMES[@]}"; do
   printf '[%2d/%d] %-14s ' "$total" "${#NAMES[@]}" "$name"
 
   restore
+  TGT="$SRC"   # default target; a classify-rule mutation resets it to $CLS in its case arm
   if ! patch_for "$name"; then
     echo "PATCH-ERROR (anchor moved?) — investigate"
-    RESULTS+=("$name|${probe#run_}|$expect|PATCH-ERROR|$desc"); continue
+    RESULTS+=("$name|${probe#run_}|$expect|PATCH-ERROR|$desc"); restore; continue
   fi
   if ! rebuild; then
     echo "BUILD-FAIL (mutation didn't compile) — see /tmp/mut_build.log"

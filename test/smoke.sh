@@ -476,6 +476,33 @@ gj="$("$CJ" gains "$W/gcur_dup.json" "$W/gbase1.json" --json)"
 want   "gains: a genuine new effect is still reported"   "$gj" '"Db"'
 want   "gains: dup cur rows do not double-count byFunction" "$(printf '%s' "$gj" | grep -c '"effect"')" '1'
 
+echo "== diff/gains: §2.1 stale-baseline DISCLOSURE (queries answer + warn; only the GUARD fails closed) =="
+# a baseline from a DIFFERENT producing build: the delta may be the ENGINE reclassifying, not the code.
+# candor-ts is the reference: unconditional baseline_version/engine_version JSON fields ("" when unknown),
+# one stderr ⚠ line ONLY when both versions are known and differ — and the query still answers.
+python3 - "$W/r.json" "$W/qstale.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); d['candor']['version']='deadbee'
+json.dump(d,open(sys.argv[2],'w'))
+PY
+dv="$("$CJ" diff "$W/r.json" "$W/qstale.json" --json 2>"$W/dverr")"
+want   "diff json carries the baseline build"        "$dv" '"baseline_version": "deadbee"'
+want   "diff json carries the engine build"          "$dv" '"engine_version"'
+want   "diff still answers (changes present)"        "$dv" '"changes"'
+want   "diff warns on the version mismatch (stderr)" "$(cat "$W/dverr")" '⚠ baseline @deadbee ≠ engine @'
+want   "…and names the consequence"                  "$(cat "$W/dverr")" 'baseline-invalidating'
+dm="$("$CJ" diff "$W/r.json" "$W/r.json" --json 2>"$W/dmerr")"
+want   "matched pair: fields still present (unconditional)" "$dm" '"baseline_version"'
+absent "matched pair: no ⚠ warning"                  "$(cat "$W/dmerr")" '⚠'
+gv2="$("$CJ" gains "$W/r.json" "$W/qstale.json" --json 2>"$W/gverr")"
+want   "gains json carries the provenance fields"    "$gv2" '"baseline_version": "deadbee"'
+want   "gains warns with the reclassification caveat" "$(cat "$W/gverr")" 'may be the engine reclassifying'
+# a legacy bare-array baseline has NO version header: fields are "" and no warning (nothing to compare)
+printf '[{"fn":"Fx.reads","inferred":["Fs"]}]\n' > "$W/qbare.json"
+db="$("$CJ" diff "$W/r.json" "$W/qbare.json" --json 2>"$W/dberr")"
+want   "versionless baseline: empty provenance field, still answers" "$db" '"baseline_version": ""'
+absent "versionless baseline: no ⚠ (nothing to compare)" "$(cat "$W/dberr")" '⚠'
+
 echo "== query loader: a malformed-shape report FAILS LOUD, never silently 'all pure' =="
 # An object with no `functions` key (a half-written / foreign file) was read as List.of() → silent
 # under-report (show said 'no effects', gains alarmed on everything). Now it fails loud (exit 2).

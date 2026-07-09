@@ -118,13 +118,13 @@ public final class Query {
             case "where" -> where(fns, arg, json);
             case "callers" -> callers(fns, pos.get(0), arg, json, includeUnknown);
             case "map" -> map(fns, json);
-            case "diff" -> diff(fns, arg, json);
+            case "diff" -> diff(fns, pos.get(0), arg, json);
             case "containment" -> containment(fns, arg, json);
             case "reachable" -> reachable(fns, json);
             case "path" -> path(fns, arg, arg2, json);
             case "impact" -> impact(fns, arg, json);
             case "blindspots" -> blindspots(fns, json);
-            case "gains" -> gains(fns, arg, json);
+            case "gains" -> gains(fns, pos.get(0), arg, json);
             case "whatif" -> whatif(pos.get(0), arg, arg2, pos.size() > 3 ? pos.get(3) : null, json);
             case "rewire" -> rewire(pos.get(0), arg, json);
             default -> 2;
@@ -664,7 +664,39 @@ public final class Query {
     }
 
     /** Per-function effect delta vs a baseline report (+gained / -lost). */
-    static int diff(List<Effector> cur, String basePath, boolean json) {
+    /** The producing build of the report at {@code path} — its {@code candor.version} header (SPEC §2.1
+     *  provenance), or null when unreadable/absent (a legacy bare-array report). Tolerant by design: the
+     *  comparison QUERIES below only DISCLOSE provenance; the fail-closed reading of a bad report already
+     *  happened in {@link #load}. */
+    static String reportVersion(String path) {
+        try {
+            JsonElement root = JsonParser.parseString(Files.readString(Path.of(path)));
+            if (!root.isJsonObject()) return null;
+            JsonObject obj = root.getAsJsonObject();
+            if (!obj.has("candor") || !obj.get("candor").isJsonObject()) return null;
+            JsonElement v = obj.getAsJsonObject("candor").get("version");
+            return v != null && v.isJsonPrimitive() ? v.getAsString() : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** §2.1 stale-baseline DISCLOSURE for the read-only comparison queries (`diff`/`gains`): a baseline is
+     *  comparable only to reports from its own producing build, so a version mismatch means the delta may
+     *  be the ENGINE reclassifying (a κ batch unmasking effects), not the code changing. Unlike the
+     *  baseline GUARD (fail-closed, exit 2, no evaluation), a query still ANSWERS — it discloses: one
+     *  stderr ⚠ line (when the two versions are both known and differ) + unconditional
+     *  {@code baseline_version}/{@code engine_version} provenance fields in the JSON envelope (empty when
+     *  unknown). Mirrors candor-ts query.mjs / candor-query DiffJson exactly (cross-engine parity). */
+    private static boolean discloseVersionMismatch(String engineV, String baseV, String consequence) {
+        boolean mismatch = engineV != null && !engineV.isEmpty() && baseV != null && !baseV.isEmpty()
+                && !engineV.equals(baseV);
+        if (mismatch)
+            System.err.println("candor-java: ⚠ baseline @" + baseV + " ≠ engine @" + engineV + " — " + consequence);
+        return mismatch;
+    }
+
+    static int diff(List<Effector> cur, String curPath, String basePath, boolean json) {
         if (basePath == null) return usage("diff <report.json> <baseline.json> [--json]");
         List<Effector> base;
         try {
@@ -673,6 +705,10 @@ public final class Query {
             System.out.println("candor: cannot read baseline " + basePath);
             return 2;
         }
+        String engineV = reportVersion(curPath), baseV = reportVersion(basePath);
+        discloseVersionMismatch(engineV, baseV,
+                "some changes may be the engine reclassifying, not your code. Treat an engine swap as"
+                + " baseline-invalidating: review, then regenerate the baseline.");
         Map<String, Set<String>> b = unionByFn(base, f -> f.inferred().toNames());
         Map<String, Set<String>> c = unionByFn(cur, f -> f.inferred().toNames());
         Map<String, Set<String>> cd = unionByFn(cur, f -> f.direct().toNames());
@@ -699,10 +735,15 @@ public final class Query {
             changes.add(m);
         }
         if (json) {
-            // The cross-language shape (SPEC §3.1): an envelope with `changes`, matching candor-query
-            // (whose envelope also carries baseline/engine provenance — optional fields a consumer
-            // must tolerate). A bare array here used to diverge from the Rust engine.
-            emit(Map.of("changes", changes));
+            // The cross-language shape (SPEC §3.1): an envelope with baseline_version/engine_version
+            // provenance (unconditional, "" when unknown — the candor-ts/candor-query field set) then
+            // `changes`. A bare array here used to diverge from the Rust engine; then the provenance
+            // fields were missing while ts/rust carried them (cross-engine parity, conformance PART 15).
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("baseline_version", baseV == null ? "" : baseV);
+            out.put("engine_version", engineV == null ? "" : engineV);
+            out.put("changes", changes);
+            emit(out);
             return 0;
         }
         if (changes.isEmpty()) {
@@ -738,7 +779,7 @@ public final class Query {
     /** gains — the package-level SUPPLY-CHAIN alarm (SPEC §5.1): the UNION of effects the surface gained
      *  between two reports (base -> cur), with per-function detail. A dependency that grew a Net/Exec reach
      *  between releases. {gained:[Effect], byFunction:[{fn,effect}]} — the cross-engine machine-readable form. */
-    static int gains(List<Effector> cur, String basePath, boolean json) {
+    static int gains(List<Effector> cur, String curPath, String basePath, boolean json) {
         if (basePath == null) return usage("gains <report.json> <baseline.json> [--json]");
         List<Effector> base;
         try {
@@ -747,6 +788,10 @@ public final class Query {
             System.out.println("candor: cannot read baseline " + basePath);
             return 2;
         }
+        String engineV = reportVersion(curPath), baseV = reportVersion(basePath);
+        discloseVersionMismatch(engineV, baseV,
+                "a \"gained capability\" may be the engine reclassifying, not the dependency changing."
+                + " Regenerate both reports with one build to compare releases.");
         Map<String, Set<String>> b = unionByFn(base, f -> f.inferred().toNames());
         Map<String, Set<String>> c = unionByFn(cur, f -> f.inferred().toNames()); // union cur too: no dup double-count
         TreeSet<String> gained = new TreeSet<>();
@@ -765,6 +810,9 @@ public final class Query {
         }
         if (json) {
             Map<String, Object> out = new LinkedHashMap<>();
+            // provenance first (unconditional, "" when unknown), then the gains — the candor-ts order.
+            out.put("baseline_version", baseV == null ? "" : baseV);
+            out.put("engine_version", engineV == null ? "" : engineV);
             out.put("gained", new ArrayList<>(gained));
             out.put("byFunction", byFunction);
             emit(out);

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Fabrication probe for candor-java — a precision regression guard (sibling of the soundness fuzzer).
 
-candor's CARDINAL SIN is FABRICATION: classifying a PURE method as effectful. The whole-owner rules in
+candor's cardinal sin is the SILENT UNDER-REPORT (guarded by the fuzzer and the κ probes); this probe
+guards the OPPOSITE direction: FABRICATION — a minted effect on a PURE method, the precision failure
+that poisons report trust (a spurious `deny` violation on innocent code). The whole-owner rules in
 `classify()` (File→Fs, Socket→Net, Clock, Random→Rand, ZipFile→Fs, Clipboard, the NIO channels) paint an
 effect onto EVERY method of an owner type — including its pure accessors/factories/inert ctors, which
 perform no I/O / read no entropy / read no clock. `isPureHandleAccessor` is the per-type allowlist that
@@ -233,7 +235,7 @@ CASES = [
 
     # ---- java.net.MulticastSocket (extends DatagramSocket) — a receiver typed as the SUBCLASS emits
     # owner=MulticastSocket for the INHERITED pure accessors, which sailed past the Socket carve-out and got
-    # fabricated Net by the whole-owner rule. (The 14-round-old cardinal sin, fixed in 0.5.28 — gated here.) ----
+    # fabricated Net by the whole-owner rule. (The 14-round-old fabrication find, fixed in 0.5.28 — gated here.) ----
     ("MulticastSocket", "import java.net.*;", "MulticastSocket s, DatagramPacket p",
      [
         ("s.getPort()",        "cached remote-port field"),

@@ -37,3 +37,23 @@ explicit `invoke*` instruction, so there is no operator-overload / `?` / `.await
 a call. The remaining surface is dispatch (CHA), the synthesized forms (lambdas, anon classes), and the
 implicit bodies (`<init>`, `<clinit>`, `native`) — which this fuzzer (and the smoke suite, for
 `native`) covers.
+
+## Probe inventory (the full soundness battery in this directory)
+
+The fuzzer above is one instrument of several. Direction key: **under-report** = a real effect reads
+silent-pure (candor's cardinal sin); **over-report** = a pure member is minted effectful (fabrication —
+the opposite, precision failure); **meta** = does the battery itself still have teeth.
+
+| probe | direction guarded | CI cadence |
+|---|---|---|
+| `gen.py` + `check.py` (chain fuzzer, via `run.sh`) | under-report: a known effect threaded through the JVM call forms must read effect-or-`Unknown`, never pure | every push/PR (`ci.yml`, 40 seeds) |
+| `fabrication_probe.py` | over-report: pure accessors/factories of effect-bearing owners must stay pure (+ LOST-CONTROL twin: the effectful member must stay effectful) | every push/PR (inside `run.sh`) |
+| `entrypoint_probe.sh` | under-report from the root walk: runtime-invoked callbacks (`readObject`/`finalize`/…) must be rooted `entryPoint:true` (+ no-fabrication twin on unrelated classes) | every push/PR (inside `run.sh`) |
+| `functional_sam_probe.sh` | under-report: lambda-only SAM dispatch must read `Unknown`, never pure (+ no-flood twin: `List.size` stays pure) | every push/PR (inside `run.sh`) |
+| `smear_probe.py` | over-report: an escaped-uninvoked lambda's effect must not smear via `<clinit>` onto unrelated methods | every push/PR (inside `run.sh`) |
+| `kappa_probe.py` | under-report at the leaf: the common JDK effect leaves classify, all 10 effects | every push/PR (inside `run.sh`) |
+| `kappa_libs_probe.py` | under-report at the leaf, third-party: ~440 real library effect leaves + ~160 anti-fabrication pure anchors | weekly (`soundness-weekly.yml`) |
+| `mutation_probe.sh` | meta: 14 injected known soundness bugs must each turn a probe red (a suite that only passes proves nothing) | weekly (`soundness-weekly.yml`) |
+| `dynamic/` (JFR oracle + bytecode agent + `corpus.sh`) | shared blindness: a runtime-observed effect candor neither predicts nor discloses fails the run — ground truth, catches what all static probes share | every push/PR (`ci.yml` dynamic-oracle job) |
+| `reentrancy.sh` | over-report: static analysis state leaking across in-process scans (a dirty first scan must not shift the second's report) | every push/PR (`ci.yml`) |
+| `run_kotlin.sh` (+ `KotlinProbe.kt`) | under-report via Kotlin bytecode shapes: suspend/CPS state machines, invokedynamic lambdas, companion `<clinit>`, inline fns | every push/PR (`ci.yml` kotlin job) |

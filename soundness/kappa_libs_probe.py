@@ -1965,6 +1965,17 @@ EFFECT_CASES = [
     ("newrelicEventSendBatch", "Net",
         "com.newrelic.telemetry.events.EventBatchSender s, com.newrelic.telemetry.events.EventBatch b",
         'com.newrelic.telemetry.Response r = s.sendBatch(b)'),
+
+    # ---- Deliberate OPAQUE-SINK disclosures (the RCE-sink batch): these were PURE anchors from before the
+    #      sink rules landed — stale expectations that made the probe red on the engine's own deliberate
+    #      classification. Untrusted deserialization (SnakeYAML load — RCE-by-default pre-2.0, the gadget
+    #      chain rides the payload) and URLClassLoader construction (the search URLs feed loadClass —
+    #      arbitrary code on first touch) are DISCLOSED Unknown, the ObjectInputStream.readObject posture.
+    ("yamlLoadStream", "Unknown", "InputStream in", 'Object o = new Yaml().load(in)'),
+    ("yamlLoadReader", "Unknown", "Reader rd", 'Object o = new Yaml().load(rd)'),
+    ("yamlLoadString", "Unknown", "", 'Object o = new Yaml().load("a: 1")'),
+    ("urlClassLoaderCtor", "Unknown", "java.net.URL[] u",
+        'java.net.URLClassLoader cl = new java.net.URLClassLoader(u)'),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -1977,12 +1988,10 @@ PURE_CASES = [
     ("jacksonReadStringPure", "Object o = m.readValue(\"{}\", Object.class)", "ObjectMapper m"),
     ("jacksonWriteStringPure", "String s = m.writeValueAsString(new Object())", "ObjectMapper m"),
 
-    # ---- SnakeYAML: every load/dump overload takes a CALLER-SUPPLIED stream/string (no File overload
-    #      exists in 2.x). The file open is the caller's `new FileInputStream` — the Yaml leaf is pure.
-    #      These pin that: candor must NOT fabricate Fs on the parse itself (ambiguous-receiver class).
-    ("yamlLoadStreamPure", "Object o = new Yaml().load(in)", "InputStream in"),
-    ("yamlLoadReaderPure", "Object o = new Yaml().load(rd)", "Reader rd"),
-    ("yamlLoadStringPure", "Object o = new Yaml().load(\"a: 1\")", ""),
+    # ---- SnakeYAML dump: caller-supplied Writer, no I/O of its own — must stay pure (no Fs fabrication).
+    #      (Yaml.load/loadAs moved to the EFFECT anchors: the RCE-sink batch deliberately classifies
+    #      untrusted deserialization as disclosed Unknown — the gadget-chain opacity, like
+    #      ObjectInputStream.readObject — so "pure" is a STALE expectation for them, not a fabrication.)
     ("yamlDumpWriterPure", "new Yaml().dump(new Object(), w)", "Writer w"),
 
     # ---- POI: the InputStream overload is caller-supplied — pure (the File overload is the Fs leaf above).
@@ -2313,9 +2322,8 @@ PURE_CASES = [
     # jakarta.persistence.EntityManager.detach EVICTS an entity from the in-memory persistence context — a
     #   purely local op, NO DB round-trip (unlike flush/refresh/lock/remove which ARE modeled Db). Must stay pure.
     ("emDetachPure", "em.detach(o)", "jakarta.persistence.EntityManager em, Object o"),
-    # java.net.URLClassLoader constructor just STORES the URL[] (no I/O until a findClass/findResource); pure.
-    ("urlClassLoaderCtorPure",
-        "java.net.URLClassLoader cl = new java.net.URLClassLoader(u)", "java.net.URL[] u"),
+    # (urlClassLoaderCtorPure moved to the EFFECT anchors: the dynamic-classloading sink batch deliberately
+    #  classifies the ctor as disclosed Unknown — the search URLs feed loadClass, arbitrary code on first touch.)
 
     # ====================== ADDED LIBRARIES (2026-06-20 batch 17) — pure anchors ===============
     # --- jakarta.servlet PURE config setters: setStatus/setHeader/addHeader/setContentType only mutate the

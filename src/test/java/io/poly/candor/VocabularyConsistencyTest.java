@@ -22,7 +22,7 @@ class VocabularyConsistencyTest {
 
     @Test
     void knownEffectsMatchTheEnum() {
-        assertEquals(names(e -> e != Effect.UNKNOWN), Candor.KNOWN_EFFECTS);
+        assertEquals(names(e -> e != Effect.UNKNOWN), Rules.KNOWN_EFFECTS);
     }
 
     @Test

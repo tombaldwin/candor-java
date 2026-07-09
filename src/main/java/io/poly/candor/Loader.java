@@ -9,6 +9,7 @@ import org.objectweb.asm.tree.*;
 import io.poly.candor.model.*;
 import com.google.gson.*;
 import static io.poly.candor.Candor.*;
+import static io.poly.candor.Rules.*;
 import static io.poly.candor.AnalysisState.*;
 import static io.poly.candor.Cha.*;
 import static io.poly.candor.Literals.*;

@@ -7,8 +7,18 @@ can trust.** candor-java reads compiled bytecode via [ASM](https://asm.ow2.io/) 
 reach the network, filesystem, a database, a subprocess, the environment — *transitively* — then turns
 invariants like *"the domain layer does no I/O"* or *"domain must not depend on infra"* into a
 `CANDOR_POLICY` that **fails the build** when an edit breaks them (`deny`/`pure`/`allow`/`forbid`, AS-EFF-006/008/009).
-A [candor-spec](https://github.com/tombaldwin/candor-spec) implementation; sibling of the Rust reference
-[candor](https://github.com/tombaldwin/candor-rust) — same classifier ideas, the JVM's grain (bytecode + Spring).
+The family's **reference engine** for [candor-spec](https://github.com/tombaldwin/candor-spec); sibling of
+[candor-rust](https://github.com/tombaldwin/candor-rust) — the deep Rust engine + the stable syntactic
+floor — same classifier ideas, the JVM's grain (bytecode + Spring).
+
+**Install & run** (details in [Build & run](#build--run) below):
+
+```sh
+# zero-install via jbang (https://www.jbang.dev) — no clone, no Gradle:
+jbang candor@tombaldwin/candor-java build/classes/java/main --json .candor/report.json  # scan → report
+jbang candor@tombaldwin/candor-java build/classes/java/main --policy .candor/policy \
+  --gate-json verdict.json     # CI gate: exit 1 on a violation, 2 if the gate could not run
+```
 
 **Site:** [candor.poly.io](https://candor.poly.io) — the measured case in five minutes: the
 exhibits, the pre-registered evals, and the prove-it-on-your-own-repo path.
@@ -21,7 +31,7 @@ jars). **Kotlin, Scala and Groovy are validated on real bytecode:** Kotlin (okht
 kotlinx-coroutines) detects the network I/O and flags `Runnable`-based dispatchers as entry points;
 Scala (scala-library, cats) and Groovy (groovy runtime, groovy-json) parse without crashing, attribute
 real effects to their genuine sources (`scala.sys.process` → Exec, `Source.fromURL` → Net), and land
-the dynamic surface (Scala's broad collection dispatch, Groovy's MOP/metaclass) in honest `Unknown`
+the dynamic surface (Scala's broad collection dispatch, Groovy's MOP/metaclass) in disclosed `Unknown`
 rather than silently passing. *(That validation pass fixed two real engine bugs — `System.getProperty`
 was miscounted as `Env`, and CHA over a deep hierarchy fanned out unbounded; both now correct, with
 the bounded-CHA `≤12`-or-`Unknown` discipline applied to all dispatch.)* Caveat: an interface-heavy
@@ -141,7 +151,7 @@ no class hierarchy). For full resolution across a boundary, analyze the app **an
 (one classpath) — then local CHA sees through the dispatch. `CANDOR_DEPS` is the mode for when you only
 have a dependency's *report*, not its bytecode.
 
-**Not yet (deferred honestly — PRINCIPLES #7):**
+**Not yet (known gaps, disclosed — PRINCIPLES #7):**
 - dispatch over **non-project (JDK/library) types** that the classifier doesn't recognise is assumed
   pure rather than `Unknown` — otherwise every `list.add()` floods the report (the calibration the
   Rust impl learned). Known-effectful libraries are caught by the classifier; the rest is a
@@ -331,7 +341,7 @@ forbid domain -> infra          # the domain layer must not depend on the infras
   ("billing may only touch `ledger.*`", by qualified table name from SQL string literals). Certifies the *visible*
   surface only — a literal is read from the call that carries it (the `ProcessBuilder`/`exec` program,
   the `Path.of`/`File`/stream-ctor path, a scheme-URL/`host:port`/IP host); a runtime-computed value is
-  honestly invisible, never over-claimed (validated on a real Spring app — the extractor takes the
+  disclosed as invisible, never over-claimed (validated on a real Spring app — the extractor takes the
   *first* arg, so a `ProcessBuilder("git","clone")` is `git` and a `RandomAccessFile(path,"r")` mode is
   never mistaken for a path).
 - **`forbid <A> -> <B>`** (`AS-EFF-009`) — *who* a layer may depend on. A method in scope A must not

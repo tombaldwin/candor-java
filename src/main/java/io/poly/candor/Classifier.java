@@ -20,12 +20,6 @@ final class Classifier {
         return close > 0 ? desc.substring(1, close) : desc;
     }
 
-    /** The simple class name of a dotted owner (`com.amazonaws.services.s3.AmazonS3` → `AmazonS3`). */
-    static String simpleName(String owner) {
-        int dot = owner.lastIndexOf('.');
-        return dot >= 0 ? owner.substring(dot + 1) : owner;
-    }
-
     /** κ dispatch: one bucket per leading owner package segment (java/javax/jakarta/org/com/io,
      *  everything else in classifyOther), so every bucket stays under HotSpot's
      *  DontCompileHugeMethods limit (8KB of bytecode) — the old single ~27KB cascade ran

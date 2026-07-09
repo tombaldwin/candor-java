@@ -8,6 +8,7 @@ import com.google.gson.*;
 import com.google.gson.reflect.*;
 import io.poly.candor.model.*;
 import static io.poly.candor.Candor.*;
+import static io.poly.candor.Rules.*;
 import static io.poly.candor.AnalysisState.*;
 import static io.poly.candor.Cha.*;
 import static io.poly.candor.Literals.*;

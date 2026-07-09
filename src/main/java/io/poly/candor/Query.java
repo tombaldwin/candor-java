@@ -492,9 +492,9 @@ public final class Query {
         // Validate the effect against the vocabulary: a typo'd/lowercase effect (`net`) matches no deny
         // rule and would print an authoritative-looking clean verdict — a false green light for the very
         // edit the policy forbids (/code-review). Reject it as a usage error, not a pass.
-        if (!Candor.KNOWN_EFFECTS.contains(effect) && !effect.equals("Unknown")) {
+        if (!Rules.KNOWN_EFFECTS.contains(effect) && !effect.equals("Unknown")) {
             System.err.println("candor: unknown effect `" + effect + "` (expected one of "
-                    + Candor.KNOWN_EFFECTS + " or Unknown)");
+                    + Rules.KNOWN_EFFECTS + " or Unknown)");
             return 2;
         }
         Map<String, List<String>> cg = loadCallgraph(reportPath);

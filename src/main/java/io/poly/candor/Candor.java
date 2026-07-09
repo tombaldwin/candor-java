@@ -893,7 +893,15 @@ public class Candor {
     }
 
 
+    /** The per-method scan: registers each method's node, marks its runtime-invoked entry-point
+     *  status, runs the per-method dataflow passes (taint, receiver provenance, const-string/URL
+     *  locals), then walks the instructions dispatching to the per-instruction-kind handlers
+     *  ({@link #handleMethodInsn}, {@link #handleNewInsn}, {@link #handleInvokeDynamic} — a static
+     *  field access inlines to {@link #clinitEdge}). The shared per-method state travels as one
+     *  {@link MethodScan}; the handlers run in the original inline-loop order (P7 decomposition —
+     *  pure code motion, byte-identical output). */
     static void analyze(ClassNode cn) {
+        AnalysisContext ctx = ctx();
         String dottedClass = cn.name.replace('/', '.');
         boolean classTx = annoPresent(cn.visibleAnnotations, TX);
         // Runtime-invoked overrides this class is eligible for: the RUNTIME_OVERRIDES rows whose
@@ -920,116 +928,8 @@ public class Candor {
             // edges to `X.<clinit>` (see below), so an effectful constructor OR static initializer
             // propagates to its use site instead of being silently pure.
             String id = methodId(dottedClass, mn.name, mn.desc);
-            var dir = ctx().direct.computeIfAbsent(id, k -> EffectSet.empty());
-            ctx().edges.computeIfAbsent(id, k -> new HashSet<>());
-            ctx().loc.putIfAbsent(id, cn.sourceFile + ":" + firstLine(mn));
-            // Stable, descriptor-bearing cross-jar identity (candor-spec §2 `hash`): the exact ref a
-            // call site in a dependent jar uses, so that jar can inherit this method's effects.
-            ctx().hashOf.putIfAbsent(id, cn.name + "." + mn.name + mn.desc);
-
-            // TRUE-FORWARDING bindings: in a constructor / static initializer, find each PUTFIELD/PUTSTATIC
-            // whose stored value came from a recognised deferred-execution container construction
-            // (`LazyKt.lazy(λ)`, `ThreadLocal.withInitial(λ)`, or a `new …LazyImpl(λ)`) whose argument is a
-            // lambda/method-ref. Bind the field to that lambda body so a later FORCE of the field edges to it.
-            if (mn.name.equals("<init>") || mn.name.equals("<clinit>"))
-                bindDeferredFields(cn, mn);
-
-            // A `native` method has no bytecode body — its JNI implementation could perform ANY effect,
-            // exactly the opacity reflection has. Honest `Unknown`, never silent-pure (SPEC §4); else a
-            // call into a project-declared native binding would look like a no-op.
-            if ((mn.access & Opcodes.ACC_NATIVE) != 0) {
-                dir.add(Effect.UNKNOWN);
-                ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(UnknownReason.Kind.NATIVE, mn.name));
-            }
-
-            // Spring annotations on this method (the effect Spring's proxy/generated code performs).
-            if (classTx || annoPresent(mn.visibleAnnotations, TX)) dir.add(Effect.DB);
-            // META-ANNOTATION aware: a method carrying a COMPOSED annotation (Spring's stereotype idiom —
-            // `@GetMapping` is itself `@RequestMapping`; a team's `@ApiEndpoint`/`@NightlyJob` wraps a known
-            // marker) was NOT rooted by a direct-annotation-only check, orphaning a framework-invoked method
-            // from every reachability root (silent-pure for a blast-radius / --agents walk). Resolve the
-            // annotation type's own meta-annotations recursively.
-            if (annoOrMetaMatches(mn.visibleAnnotations, ROOT_ANNOTATIONS))
-                ctx().entryPoints.add(id);
-            // CDI observer method: `void onX(@Observes Event e)` is invoked by the CDI container when the
-            // event fires, with NO project call site (the @EventListener shape). Unlike the mappings the
-            // marker is a PARAMETER annotation, so the method-annotation path above misses it — scan the
-            // per-parameter annotation lists. Covers javax/ + jakarta/ enterprise.event.Observes(Async).
-            if (anyParamAnnoMatches(mn, PARAM_ROOT_ANNOTATIONS))
-                ctx().entryPoints.add(id);
-            // gRPC service handler: a project class extends a generated `*ImplBase` and overrides an RPC
-            // method whose signature carries an `io.grpc.stub.StreamObserver` — invoked by the gRPC server
-            // runtime with no in-project call site. RUNTIME_OVERRIDES can't key on it (the RPC method names
-            // are arbitrary) and the generated base isn't on candor's classpath (transSupers can't see
-            // `BindableService`), so key on the `*ImplBase` direct super + the StreamObserver-param signature
-            // — both gRPC-specific, so no fabrication.
-            if (cn.superName != null && cn.superName.toLowerCase(Locale.ROOT).contains("grpc")
-                    && cn.superName.endsWith("ImplBase")
-                    && mn.desc.contains("Lio/grpc/stub/StreamObserver;")
-                    && (mn.access & (Opcodes.ACC_STATIC | Opcodes.ACC_ABSTRACT)) == 0)
-                ctx().entryPoints.add(id);
-            // A `finalize()` override is run by the GC's finalizer thread — NOT by any bytecode call.
-            // It's the JVM analog of Rust's implicit-Drop hole: an effect (a socket/file opened on
-            // collection) that otherwise sits in finalize's own entry but is unreachable from any root,
-            // so a "what does this program perform" walk from entry points silently misses it. Unlike
-            // Rust we can't attribute it to a drop SITE (finalization is non-deterministic and runs on a
-            // detached thread), so the honest model is the runtime-invoked entry point it actually is.
-            if (mn.name.equals("finalize") && mn.desc.equals("()V") && (mn.access & Opcodes.ACC_STATIC) == 0)
-                ctx().entryPoints.add(id);
-            // Serialization callbacks (readObject/writeObject/readExternal/writeExternal/readResolve/
-            // writeReplace/readObjectNoData) are invoked REFLECTIVELY by ObjectInput/OutputStream during
-            // (de)serialization — no project call site, so an effect (custom read/write doing I/O, a
-            // resource opened on resolve, decryption) is orphaned from every reachability root: the
-            // finalize shape. Mark them as runtime-invoked entry points, GATED on the class being
-            // Serializable/Externalizable so a same-named method on an unrelated class isn't fabricated.
-            if ((mn.access & Opcodes.ACC_STATIC) == 0
-                    && (supers.contains("java/io/Serializable") || supers.contains("java/io/Externalizable"))
-                    && isSerializationCallback(mn.name, mn.desc))
-                ctx().entryPoints.add(id);
-            // The program entry `public static void main(String[])` — the JVM invokes it to start the app,
-            // the root of a CLI tool's reachability (candor-spec §2, like the Rust impl's `fn main`).
-            if (mn.name.equals("main") && mn.desc.equals("([Ljava/lang/String;)V")
-                    && (mn.access & Opcodes.ACC_STATIC) != 0)
-                ctx().entryPoints.add(id);
-            // A runtime-invoked override (Runnable/Thread/Callable task body, Spring lifecycle hook,
-            // servlet/filter/listener) — invoked by the runtime with NO project call site, so its I/O
-            // would otherwise be orphaned from every reachability root (the finalize shape). A null
-            // descriptor matches by method name alone (servlet methods carry javax/jakarta param types).
-            for (String[] r : runtimeRows)
-                if (mn.name.equals(r[1]) && (r[2] == null || mn.desc.equals(r[2]))) {
-                    ctx().entryPoints.add(id);
-                    break;
-                }
-            // The Ktor handler's BODY is `invokeSuspend` (the suspend-lambda's state machine); `invoke` is
-            // the bridge that drives it. Mark the body so its effects become a reachability root.
-            if (ktorHandler && (mn.name.equals("invokeSuspend") || mn.name.equals("invoke")))
-                ctx().entryPoints.add(id);
-
-            // AS-EFF-007 taint pass (CANDOR_TAINT): a per-method dataflow whose frames tell us, at each
-            // effect call below, whether an argument is parameter-derived. Skipped without the mode, and on
-            // bodiless or malformed methods — taint is advisory, so a failed analysis must never crash.
-            Frame<TaintValue>[] taintFrames = null;
-            if (ctx().taintEnabled && mn.instructions.size() > 0
-                    && (mn.access & (Opcodes.ACC_NATIVE | Opcodes.ACC_ABSTRACT)) == 0) {
-                try {
-                    taintFrames = new Analyzer<>(new TaintInterpreter(paramSlots(mn))).analyze(cn.name, mn);
-                } catch (Throwable t) { taintFrames = null; }
-            }
-
-            // Receiver-provenance pass (SOUNDNESS, always-on): tells us at each invokevirtual below whether
-            // the receiver is PROVABLY a single `new T`. If so, the dispatch narrows to the one method T
-            // resolves — no CHA sibling fan-out (the monomorphic-fabrication fix). Anything else (param,
-            // field, return, branch-merged type → genuinely polymorphic) keeps the full CHA over-
-            // approximation. Like the taint pass it is fail-soft: a bodiless/native/abstract method, or any
-            // analyzer failure, leaves `provFrames` null and the dispatch keeps the CHA exactly as before.
-            Frame<ProvValue>[] provFrames = null;
-            if (mn.instructions.size() > 0
-                    && (mn.access & (Opcodes.ACC_NATIVE | Opcodes.ACC_ABSTRACT)) == 0) {
-                try {
-                    provFrames = new Analyzer<>(new ProvInterpreter()).analyze(cn.name, mn);
-                } catch (Throwable t) { provFrames = null; }
-            }
-
+            EffectSet dir = registerMethod(ctx, cn, mn, id);
+            markEntryPoints(ctx, cn, mn, id, dir, classTx, supers, runtimeRows, ktorHandler);
             // Host/table literals are extracted PER host/SQL-bearing CALL (from each call's own argument
             // window — see literalArgsInWindow at the call sites below), not by a method-wide LDC sweep.
             // The per-call attribution mirrors candor-rust's `str_arg` and kills the AS-EFF-008 evasion
@@ -1043,726 +943,1044 @@ public class Candor {
             Map<Integer, String> urlLocals = constUrlLocals(mn, constLocals);
             // This method's entry-point status is settled before the loop (entry detection above) and `id`
             // is fixed, so hoist it out of the per-instruction loop (used by the R17 gate below).
-            boolean isEntry = ctx().entryPoints.contains(id);
+            MethodScan s = new MethodScan(mn, id, dir, taintFrames(ctx, cn, mn), provFrames(cn, mn),
+                    constLocals, urlLocals, ctx.entryPoints.contains(id));
             for (AbstractInsnNode insn : mn.instructions) {
                 if (insn instanceof MethodInsnNode min) {
-                    String owner = min.owner.replace('/', '.');
-                    Effect effect = Classifier.classify(owner, min.name, min.desc);
-                    // A project class that SUBCLASSES a classify-modeled external effectful type (extends a
-                    // Testcontainers GenericContainer, a java.io stream, …) and calls an INHERITED method:
-                    // classify sees the PROJECT owner (no rule) and the real body lives in the external base
-                    // (unscanned) → silent-pure. Re-run classify against the external supertype the JVM
-                    // dispatches to. Gated: only when the project owner has NO concrete body of its own for the
-                    // method (not overridden — else that analysed body wins) and no PROJECT super provides one.
-                    // Orthogonal to the persistence registries (which cover bases classify does NOT model).
-                    if (effect == null && ctx().byName.containsKey(min.owner)
-                            && !declaresConcrete(ctx().byName.get(min.owner), min.name, min.desc)
-                            && nearestConcreteSuper(min.owner, min.name, min.desc) == null) {
-                        for (String sup : transSupers(min.owner)) {
-                            if (ctx().byName.containsKey(sup)) continue;   // external supers only
-                            Effect se = Classifier.classify(sup.replace('/', '.'), min.name, min.desc);
-                            // UNION every matching external super, not first-wins: transSupers is a HashSet, so
-                            // a `break` made the chosen effect order-dependent (nondeterministic) when two
-                            // modeled supers declare the same method with different effects. dir is a set →
-                            // union is deterministic + sound (it's the over-approx of the possible dispatches).
-                            if (se != null) { dir.add(se); effect = se; }
-                        }
-                    }
-                    if (effect != null) dir.add(effect);
-                    // Executor hand-off: `es.submit(task)`/`execute`/`schedule*` and `new Thread(task)` invoke
-                    // the task's run()/call() OUTSIDE project code. A fresh `new R()` (the NEW-site edge
-                    // attributes R.run) or an inline lambda (edged at its indy) is already captured; an OPAQUE
-                    // task — a field, a param, a factory return — has an unknown body, so the handing-off
-                    // method must read Unknown (parallel to an unpinned `task.run()`), else it is silent-pure.
-                    if (isExecutorHandoff(min.owner, min.name, min.desc) && provFrames != null) {
-                        ProvValue task = handoffTaskArg(provFrames[mn.instructions.indexOf(min)], min);
-                        if (task != null && !task.fromIndy && task.newType == null) {
-                            dir.add(Effect.UNKNOWN);
-                            ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
-                                    .add(UnknownReason.of(UnknownReason.Kind.TASK_HANDOFF, owner + "." + min.name));
-                        }
-                    }
-                    // NAMED FUNCTIONAL-INTERFACE INSTANCE handed to a known-INVOKING library HOF. A
-                    // `new EffCons()` (a project class implementing java.util.function.*/Comparator/FileFilter)
-                    // passed to a library method that INVOKES its SAM outside project code (`Stream.forEach`,
-                    // `List.sort`, `File.listFiles`) reads SILENT-PURE: there is no invokedynamic (so the
-                    // lambda creation-edge never fires) and no in-project SAM invoke (the `.accept()` is inside
-                    // the unanalysed JDK body). A lambda/method-ref in the SAME position IS sound (edged at its
-                    // indy), so this was an INTERNAL asymmetry. Edge the instance's SAM surface here — GATED on
-                    // an explicit ALLOWLIST of known-INVOKING HOF method names (isInvokingHof). The earlier
-                    // `!isStoringContainerCall` gate was UNSOUND (a code review found it FABRICATED: it fired
-                    // for ANY external non-store, so `Objects.requireNonNull(c)` / `Optional.ofNullable(c)` /
-                    // `map.getOrDefault(k,c)` / `Stream.of(c)` / `new TreeMap<>(cmp)` — which merely RECEIVE
-                    // or STORE the instance, never invoke it — edged the SAM = a phantom effect). The allowlist
-                    // never fabricates on a non-invoking sink; a genuinely-invoking HOF not on the list is a
-                    // sound UNDER-report (no edge), never a fabrication. Restricted to a freshly-constructed
-                    // (`newType`) project functional impl and EXTERNAL callees (a project callee's body is
-                    // analysed directly).
-                    if (provFrames != null && !ctx().projectClasses.contains(min.owner)
-                            && isInvokingHof(min.name)) {
-                        for (ProvValue a : callArgs(provFrames[mn.instructions.indexOf(min)], min)) {
-                            if (a == null || a.newType == null) continue;
-                            ctx().edges.get(id).addAll(functionalSamSurface(a.newType));
-                        }
-                    }
-                    // XML parse(File) PRECISION: the parser's `parse` already classifies as the XXE/external-
-                    // entity Unknown (security disclosure, see classify ~4367). The File overload ALSO
-                    // DEFINITELY reads the file — add Fs here so the effect set is the precise {Fs, Unknown}
-                    // (reads this file for sure; may resolve external entities). The InputStream/InputSource
-                    // overloads (caller stream) and the (String systemId) overload (path-vs-URL ambiguous)
-                    // get no Fs. Added in the call handler because classify()'s single slot is the Unknown.
-                    if ((min.owner.equals("javax/xml/parsers/DocumentBuilder")
-                            || min.owner.equals("javax/xml/parsers/SAXParser"))
-                            && min.name.equals("parse") && min.desc.startsWith("(Ljava/io/File;")) dir.add(Effect.FS);
-                    // R17 — a rooted ENTRY POINT reading an externally-provided ABSTRACT java.io stream: the
-                    // receiver is the entry point's OWN parameter (framework-injected), its concrete impl is
-                    // unresolvable, and the read/write on the abstract base classifies pure. The I/O is real
-                    // but of unknown kind (Fs/Net per the concrete) → disclose Unknown, not silent-pure.
-                    // Gated to entry points so an internal helper reading a PASSED stream — whose in-project
-                    // caller HAS the concrete (effect already attributed at the creation site) — doesn't
-                    // flood. SOUNDNESS.md R17 (the abstract-java.io-stream boundary).
-                    if (effect == null && isEntry && provFrames != null && isAbstractStreamIo(min.owner, min.name)) {
-                        ProvValue recv = receiverProv(provFrames[mn.instructions.indexOf(min)], min);
-                        if (isOwnParam(mn, recv, provFrames[0])) {
-                            dir.add(Effect.UNKNOWN);
-                            ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
-                                    .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
-                        }
-                    }
-                    // IMPLICIT-CONTRACT-REENTRY: a JDK sink that re-enters user code via the JVM contract
-                    // (toString/equals/hashCode/compareTo) — modelled pure by candor, so an EFFECTFUL override
-                    // of the argument's type read silent-pure. CHA the contract method over the ARGUMENT's
-                    // DECLARED type and edge to its LOCAL override(s); an external/Object-default/pure override
-                    // yields no local body (or no effect) → contributes nothing (no flood, no fabrication).
-                    if (provFrames != null) {
-                        Frame<ProvValue> rf = provFrames[mn.instructions.indexOf(min)];
-                        if (isToStringSink(min.owner, min.name, min.desc)) {
-                            if (min.owner.equals("java/lang/String") && min.name.equals("format")) {
-                                // format(...) packs `%s` operands into an Object[] varargs — the element types
-                                // are erased on the stack, so resolve them from the array-fill AASTOREs.
-                                reentryFormatVarargs(id, mn, min, provFrames);
-                            } else {
-                                // valueOf/Objects.toString/append(Object)/print(Object): the lone Object arg.
-                                for (ProvValue a : callArgs(rf, min)) reentryEdge(id, a, C_TOSTRING);
-                            }
-                        }
-                        if (isEqualsHashSink(min.owner, min.name)) {
-                            // The KEY/element argument — for Map.* it is the FIRST arg (the key); for the
-                            // collection verbs it is the lone element arg. Reenter both equals AND hashCode.
-                            ProvValue key = callArg(rf, min, 0);
-                            reentryEdge(id, key, C_EQUALS);
-                            reentryEdge(id, key, C_HASHCODE);
-                        }
-                        if (isCompareToSink(min.owner, min.name)) {
-                            // The element whose compareTo orders the collection. For the COLLECTION-typed sinks
-                            // (Collections.sort(List)/list.sort/Arrays.sort(Object[])/TreeSet.add) the element
-                            // type is hidden inside the container generic (erased) — NOT recoverable from the
-                            // declType of the List/array argument. So we resolve over the ARGUMENT's declType
-                            // when it is itself the compared element (TreeSet.add(E)/TreeSet.contains/
-                            // TreeMap.get/put/containsKey take the element/key DIRECTLY). For sort over a
-                            // container we cannot see the element type — left as an honest residual (the
-                            // container's element override is still attributed at any explicit compareTo call,
-                            // and a `new TreeSet().add(localComparable)` IS caught here via the direct arg).
-                            ProvValue elem = callArg(rf, min, 0);
-                            reentryEdge(id, elem, C_COMPARETO);
-                        }
-                        // WRITER side (R16): constructing a JDK formatting facade over a CUSTOM sink drives
-                        // the sink's append/write when it formats. `new Formatter(Appendable)` → append;
-                        // `new PrintWriter(Writer|OutputStream)` / `new PrintStream(OutputStream)` → write.
-                        // The sink's method is reached only THROUGH the non-local facade, so otherwise it was
-                        // silent — the write-fmt writer-side blind spot (cf. the rust/swift engines). The sink
-                        // is the ctor's first arg; resolve-or-skip over its declType (a std StringBuilder /
-                        // FileOutputStream has no LOCAL append/write override → contributes nothing).
-                        String sinkContract = formatterSinkCtor(min.owner, min.name, min.desc);
-                        if (sinkContract != null) reentryEdge(id, callArg(rf, min, 0), sinkContract);
-                    }
-                    // TRUE-FORWARDING force site: a known container-forcing call (`Lazy.getValue` /
-                    // `ThreadLocal.get`) on a receiver that is a GET* of a tracked deferred field — possibly
-                    // a field of ANOTHER class (`t.tl.get()`). Bind, per the SPECIFIC field, a deferred edge
-                    // resolved after all classes are analysed (the binding side may be in any class). The
-                    // receiver is the GET* immediately producing the container value; we require its field
-                    // descriptor to be a container type so an unrelated `.get()` never matches.
-                    if (isDeferredForce(min.owner, min.name)) {
-                        String fieldKey = forcedFieldKey(mn, min);
-                        if (fieldKey != null) ctx().deferredForcePairs.add(new String[] { id, fieldKey });
-                    }
-                    if (owner.equals("java.lang.Class")
-                            && (min.name.equals("getMethod") || min.name.equals("getDeclaredMethod"))) {
-                        // Capture the literal method NAME (nearest String, not an unrelated earlier
-                        // constant) AND the RECEIVER class (the `X.class` literal). The edge is only
-                        // formed in resolution when the receiver is a project class — never a global
-                        // leaf-name match that fabricates an edge to an unrelated same-named method.
-                        String lit = nearestLiteralArg(mn, min);
-                        String recv = reflectReceiver(mn, min);
-                        if (lit != null) ctx().reflectPairs.add(new String[] { id, lit, recv == null ? "" : recv });
-                    }
-                    // κ ledger: key external owners by their EXACT package (the slash-form owner
-                    // up to the class segment — no uppercase heuristic, which mangled lowercase/
-                    // obfuscated classes); array owners ([Ljava/lang/String; — every enum's
-                    // values() clone) are types, not packages, and stay out. A package with zero
-                    // classifications anywhere in the scan is a named blind spot.
-                    if (!ctx().projectClasses.contains(min.owner) && min.owner.charAt(0) != '[') {
-                        int slash = min.owner.lastIndexOf('/');
-                        String pkg = slash > 0 ? min.owner.substring(0, slash).replace('/', '.') : "";
-                        if (!pkg.isEmpty() && !kappaCovers(pkg)) {
-                            ctx().kappaSeen.merge(pkg, 1, Integer::sum);
-                            if (effect != null) ctx().kappaClassified.add(pkg);
-                            // A FLOORED call (classifier returned pure) into an external package is a candidate
-                            // per-method blind spot. Post-filtered to packages κ never classified ANYWHERE
-                            // (so a known package's pure method isn't disclosed) and propagated to callers.
-                            else ctx().blindDirect.computeIfAbsent(id, k -> new TreeSet<>()).add(pkg);
-                        } else if (!pkg.isEmpty() && effect == null
-                                && pkg.startsWith("org.springframework")
-                                && isSpringIoOwner(min.owner) && !isConventionallyPure(min.name)) {
-                            // STRUCTURAL SPRING-FLOOR FIX: org.springframework.* is a κ-covered prefix, so an
-                            // UNMODELED Spring sub-library leaf would otherwise be SILENTLY DROPPED (worse than
-                            // a disclosed Unknown — the floor exists so pure Spring utils like StringUtils aren't
-                            // disclosed blind). But an unmodeled member of a Spring I/O-CONVENTION type
-                            // (*Template/*Operations/*Repository/*Gateway — Spring's "this class does I/O"
-                            // naming) is very likely a real effect candor just hasn't modeled (Spring Integration
-                            // MessagingTemplate, Spring Batch, the next Spring sub-project…). Disclose Unknown
-                            // (the SAFE direction — never a fabricated concrete effect) instead of dropping it.
-                            // The modeled Spring templates' I/O methods return effect!=null so never reach here;
-                            // only a genuinely-unmodeled member (or a rare pure accessor → harmless Unknown) does.
-                            dir.add(Effect.UNKNOWN);
-                            ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
-                                    .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
-                        }
-                    }
-                    // An injection-class effect on a caller-derived argument is an injection surface.
-                    if (taintFrames != null && effect != null && INJECTION.contains(effect)
-                            && argsTainted(taintFrames[mn.instructions.indexOf(min)], min))
-                        ctx().tainted.computeIfAbsent(id, k -> EffectSet.empty()).add(effect);
-                    if (effect == Effect.UNKNOWN) // reflection / dynamic invoke (classify §)
-                        ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
-                                .add(UnknownReason.of(UnknownReason.Kind.REFLECT, owner + "." + min.name));
-                    if (effect == Effect.FS) { // non-breaking read/write refinement of Fs
-                        List<String> k = fsKind(owner, min.name);
-                        if (!k.isEmpty()) ctx().fsDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(k);
-                    }
-                    // AS-EFF-008 literal surfaces (SPEC §2 `cmds`/`paths`): the subprocess program and the
-                    // file path, read from the FIRST string-literal arg of the call that carries it — the
-                    // ProcessBuilder/Runtime.exec command, the Path.of / File / file-stream ctor path.
-                    if ((owner.equals("java.lang.ProcessBuilder") && min.name.equals("<init>"))
-                            || (owner.equals("java.lang.Runtime") && min.name.equals("exec"))) {
-                        // Only the program HEAD (argv[0]) names the command — a later argument is DATA
-                        // (§4; mirrors candor-rust's is_cmd_naming_method). `programHeadLiteral` reads
-                        // argv[0] specifically; the loose `firstLiteralArg` would grab a trailing literal
-                        // (`new ProcessBuilder(toolVar, "curl")` → "curl"), fabricating a `cmds` head and
-                        // letting `allow Exec curl` spuriously pass on a DYNAMIC head. Both the literal
-                        // capture AND the cliff refinement (spec §4 ⟨0.5⟩: `curl`→Net, `candor`→Fs/Env)
-                        // therefore key off argv[0]; a dynamic head keeps the bare Exec cliff with no
-                        // `cmds`. Exec itself is emitted unconditionally below — only the literal tightens.
-                        String head = programHeadLiteral(min);
-                        if (head != null) {
-                            ctx().cmdsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(head);
-                            dir.addAll(EffectSet.ofNames(commandHeadEffects(head)));
-                        } else {
-                            // a program-NAMING Exec call with a RUNTIME head (no literal) — the command is
-                            // invisible to the gate, so a benign sibling literal must not mask it (sweep [0],
-                            // the masking guard generalized from Net to Exec/Fs/Db).
-                            ctx().surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Exec");
-                        }
-                    }
-                    // …only the overload whose path is a SINGLE leading String arg (descriptor
-                    // `(Ljava/lang/String;)` or `(Ljava/lang/String;[…` for Path.of's varargs). A
-                    // two-String ctor — `RandomAccessFile(String,String)`, `File(String,String)` — can
-                    // have a NON-path literal as its only constant (a `"r"`/`"rw"` mode, a child name)
-                    // when the path itself is runtime-computed, which firstLiteralArg would then grab.
-                    if (((owner.equals("java.nio.file.Path") && min.name.equals("of"))
-                            || (owner.equals("java.nio.file.Paths") && min.name.equals("get"))
-                            || (PATH_CTOR_OWNERS.contains(owner) && min.name.equals("<init>")))
-                            && pathArgIsSingleString(min.desc)) {
-                        String p = firstLiteralArg(mn, min);
-                        if (p != null) ctx().pathsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(p);
-                        // a path-establishing call with a RUNTIME path (single-String arg, no literal) — the
-                        // path is invisible to the gate (masking guard generalized to Fs, sweep [0]).
-                        else ctx().surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Fs");
-                    }
-                    // A bare-hostname Net endpoint: `new Socket("api.stripe.com", 443)` /
-                    // `new InetSocketAddress("api.stripe.com", 443)` names the host as a STRING argv[0]
-                    // with a numeric port — but as a bare hostname (no scheme/`:port`) netHostLiteral
-                    // rejects it (deliberately, to avoid the ~14 false dotted "hosts" a loose filter
-                    // produced). Here the CALL SITE disambiguates: a `(String host, int port)` ctor's
-                    // first String literal IS a host, so extract it without loosening netHostLiteral.
-                    // Gated to the `(Ljava/lang/String;I…` shape, so the `(InetAddress,int)` and
-                    // `(String,int,InetAddress,int)`-with-computed-host overloads add nothing.
-                    boolean capturedHostHere = false;
-                    if ((owner.equals("java.net.Socket") || owner.equals("java.net.InetSocketAddress")
-                            // java.util.logging.SocketHandler(String host, int port) opens a log socket to that
-                            // host — same `(String,int)` shape. Its host must reach the AS-EFF-008 surface, else
-                            // a forbidden exfil host (e.g. evil.exfil.com) is invisible and a benign co-located
-                            // Net literal MASKS it (the 0.5.27 SocketHandler Net rule without surfacing → a gate
-                            // EVASION found by a security sweep).
-                            || owner.equals("java.util.logging.SocketHandler"))
-                            && min.name.equals("<init>") && min.desc.startsWith("(Ljava/lang/String;I")) {
-                        String h = firstLiteralArg(mn, min);
-                        // The host must look like a host (a dotted name / IPv4), not e.g. a "localhost"
-                        // bareword that could equally be anything — reuse hostPart's shape via a dot test,
-                        // matching netHostLiteral's "contains a dot" gate for bare host:port.
-                        if (h != null && h.contains(".") && !h.contains("/") && !h.contains(" ")) {
-                            // Append the literal int port for `host:port` (SPEC §2) — so a two-arg
-                            // Socket("h", 443) matches the URL form's `h:port` and candor-scan, instead of
-                            // dropping the statically-known port (adversarial coverage-gap review, GAP2).
-                            String port = intLiteralBefore(min);
-                            ctx().hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(port != null ? h + ":" + port : h);
-                            capturedHostHere = true;
-                        }
-                    }
-                    // Host literal from THIS host-bearing call's OWN argument (a URL/URI string, a Spring/
-                    // ktor request URL) — per-call attribution mirroring candor-rust's `str_arg`. Replaces
-                    // the old method-wide LDC sweep, which captured any host-shaped string in a host-bearing
-                    // method and so let a benign URL literal certify a runtime-computed host (AS-EFF-008
-                    // evasion) / a never-contacted host poison the allowlist. netHostLiteral rejects
-                    // non-hosts, so a benign non-URL arg adds nothing; the bare `Socket(host,port)` case is
-                    // handled above (netHostLiteral rejects a scheme-less bare host by design).
-                    if (isHostBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;"))
-                        for (String lit : literalArgsInWindow(min, constLocals)) {
-                            String hl = netHostLiteral(lit);
-                            if (hl != null) { ctx().hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(hl); capturedHostHere = true; }
-                        }
-                    // AS-EFF-008 surface COMPLETENESS (the masking fix): a Net reach whose host is structurally
-                    // invisible makes the method's host surface incomplete, so the gate must NOT certify it just
-                    // because OTHER (benign) hosts are visible. THREE structurally-invisible shapes:
-                    //  (1) a Net call on a host-LESS owner (gRPC ClientCalls, okhttp WebSocket, the reactive-HTTP
-                    //      terminals, a logging SocketAppender) — the host lives in a builder/config candor
-                    //      can't see;
-                    //  (2) a host-establishing Net call whose host is a RUNTIME string (a host-bearing owner,
-                    //      a leading `String` host arg, but no literal captured — `restTemplate.getForObject(
-                    //      runtimeUrl,…)`, `new Socket(runtimeHost,port)`, `InetAddress.getByName(runtimeHost)`).
-                    //  (3) a URL/URI Net TERMINAL (`openStream`/`openConnection`/`getContent`) whose host was
-                    //      fixed at a SEPARATE `new URL(String)` CONSTRUCTION (no Net effect, no String arg on
-                    //      the terminal). The split construct-then-use idiom: `new URL(getenv).openStream()`
-                    //      reaches a fully runtime-controlled host while a benign sibling `new URL("good").
-                    //      openStream()` populated hostsDirect and MASKED it (the AS-EFF-008 URL gate EVASION,
-                    //      formerly a value-flow backlog). FAIL-CLOSED unless the host is cheaply attributable
-                    //      to the terminal's receiver — inline `new URL("lit").openStream()` or a const-URL
-                    //      local — so the common inline-literal-URL case still certifies (urlTerminalHost).
-                    if (effect == Effect.NET) {
-                        boolean hostLessOwner = !isHostBearingOwner(min.owner);
-                        boolean runtimeStringHost = isHostBearingOwner(min.owner)
-                                && min.desc.startsWith("(Ljava/lang/String;") && !capturedHostHere;
-                        boolean urlTerminal = isUrlValueOwner(min.owner) && !min.desc.startsWith("(Ljava/lang/String;")
-                                && (min.name.equals("openStream") || min.name.equals("openConnection")
-                                        || min.name.equals("getContent"));
-                        if (urlTerminal) {
-                            String h = urlTerminalHost(min, urlLocals, constLocals);
-                            if (h != null) ctx().hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(h);
-                            else ctx().surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
-                        }
-                        if (hostLessOwner || runtimeStringHost)
-                            ctx().surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
-                    }
-                    // Table literals from THIS SQL-bearing call's OWN argument (the executed/prepared SQL) —
-                    // same per-call attribution. tablesInSql needs a leading SQL keyword so a non-SQL arg
-                    // yields nothing; a SQL-shaped log line in another statement is no longer mis-attributed.
-                    if (isSqlBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;")) {
-                        boolean anySqlLiteral = false;
-                        for (String lit : literalArgsInWindow(min, constLocals)) {
-                            anySqlLiteral = true;
-                            List<String> tl = tablesInSql(lit);
-                            if (!tl.isEmpty()) ctx().tablesDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(tl);
-                        }
-                        // a SQL-establishing call with a RUNTIME query (String arg, no literal) — the table is
-                        // invisible to the gate (masking guard generalized to Db, sweep [0]). A literal SQL
-                        // with no table (`SELECT 1`) is visible-but-tableless, NOT incomplete.
-                        if (!anySqlLiteral)
-                            ctx().surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Db");
-                    }
-                    // Calls to a Spring Data repository / Feign client are I/O even though the
-                    // callee has no body candor can see (Spring synthesizes the impl at runtime).
-                    boolean springTyped = ctx().repoTypes.contains(min.owner) || ctx().feignTypes.contains(min.owner)
-                            || ctx().httpClientTypes.contains(min.owner);
-                    if (ctx().repoTypes.contains(min.owner)) {
-                        // The blanket Db is for the repository's GENERATED CRUD methods — abstract, no body
-                        // candor can see (Spring/Jakarta Data synthesize the impl at runtime). A `default`
-                        // method on the interface (or an inherited concrete one) DOES have a body whose
-                        // effects the CHA edge already attributes, so synthesizing Db there FABRICATES Db on
-                        // a pure default helper (a soundness sweep found `repo.greet()` → {Db} for a default
-                        // returning a constant). Only synthesize when the call resolves to NO visible body.
-                        ClassNode ro = ctx().byName.get(min.owner);
-                        boolean visibleBody = (ro != null && declaresConcrete(ro, min.name, min.desc))
-                                || nearestConcreteSuper(min.owner, min.name, min.desc) != null;
-                        if (!visibleBody) {
-                            dir.add(Effect.DB);
-                            String tbl = ctx().repoTables.get(min.owner); // the declarative `tables` surface
-                            if (tbl != null) ctx().tablesDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(tbl);
-                        }
-                    }
-                    if (ctx().feignTypes.contains(min.owner)) dir.add(Effect.NET);
-                    // A declarative HTTP-client interface call is a wire call → Net (Object-protocol excluded so
-                    // a client's toString()/equals() doesn't fabricate Net).
-                    if (ctx().httpClientTypes.contains(min.owner) && !isConventionallyPure(min.name)) dir.add(Effect.NET);
-                    // Quarkus Panache ACTIVE-RECORD: a project class extends PanacheEntity[Base], so its
-                    // persist/delete/flush + inherited static finders (listAll/find/findById/count/…) are DB
-                    // ops — but the call-site owner is the PROJECT entity (`Fruit.listAll()`), not the external
-                    // base, so neither classify (keyed on the base) nor the repoTypes path fires; the inherited
-                    // body lives in Panache (unscanned) → silent-pure, a cardinal sin on the dominant Quarkus
-                    // persistence. Verb-gated AND hierarchy-gated (only fires when the owner extends a Panache
-                    // entity base), and skipped when the entity OVERRIDES the verb with its own body (that
-                    // body's effects are already attributed via the CHA edge — no fabrication, mirroring the
-                    // repoTypes default-method guard).
-                    if (PANACHE_ENTITY_VERBS.contains(min.name) && extendsPanacheEntity(min.owner)) {
-                        ClassNode eo = ctx().byName.get(min.owner);
-                        boolean ownBody = (eo != null && declaresConcrete(eo, min.name, min.desc))
-                                || nearestConcreteSuper(min.owner, min.name, min.desc) != null;
-                        if (!ownBody) dir.add(Effect.DB);
-                    }
-                    // Active-record / DAO base classes (Ebean io.ebean.Model, ActiveJDBC Model, jOOQ DAOImpl) —
-                    // the SAME silent-pure shape as Panache: a persistence verb inherited into a project subtype,
-                    // called via the project owner. Verb+hierarchy-gated, skipped when the subtype overrides it
-                    // (that body's effects are attributed via the CHA edge — no fabrication).
-                    if (inheritsArDbVerb(min.owner, min.name)) {
-                        ClassNode ao = ctx().byName.get(min.owner);
-                        boolean ownBody = (ao != null && declaresConcrete(ao, min.name, min.desc))
-                                || nearestConcreteSuper(min.owner, min.name, min.desc) != null;
-                        if (!ownBody) dir.add(Effect.DB);
-                    }
-
-                    int op = min.getOpcode();
-                    // A static call triggers the owner's class-load → its `<clinit>` runs.
-                    if (op == Opcodes.INVOKESTATIC) clinitEdge(id, min.owner);
-                    if (op == Opcodes.INVOKEVIRTUAL || op == Opcodes.INVOKEINTERFACE) {
-                        // EXEMPT (SPEC §4): dispatch on the conventionally-pure java.lang.Object
-                        // surface — toString/hashCode/equals (+ erased Comparable.compareTo) — is NOT
-                        // CHA-fanned-out. Over `Object`, EVERY project class is a subtype, so one
-                        // `x.toString()` would edge every override in the jar; Kotlin emits exactly
-                        // that (`Any.toString` in string templates), which made kotlinx-coroutines
-                        // attribute one ServiceLoader-touching toString to 2160 methods (87% of the
-                        // jar). Same C2 trade as the Rust engine's dyn-Display/Error exemption — and
-                        // the documented caveat: an override of these that performs real I/O (that
-                        // kotlinx toString DOES reach a service load) is deliberately not attributed
-                        // at the dispatch site.
-                        // Class Hierarchy Analysis: dispatch reaches any project subtype's override.
-                        // BOUNDED for a CHA-EXEMPT method (the conventionally-pure Object protocol +
-                        // the function-interface / task-dispatch verbs every lambda/closure/Runnable
-                        // implements): attribute when the receiver resolves to FEW impls (a concrete
-                        // project type, an app's handful of Runnables — precise), but DROP the fan-out
-                        // when it's broad (a library's hundreds of FunctionN/Closure impls — the
-                        // kotlinx/scala/groovy smear that connected ~87% of a jar to one source). The
-                        // runtime-invoked verbs' bodies stay reachable via RUNTIME_OVERRIDES entry
-                        // points (incl. the function-interface rows) so a named implementor isn't
-                        // orphaned. (The smear, plus the four soundness holes an UNCONDITIONAL skip
-                        // opened — concrete-receiver toString, named-implementor orphaning, synchronous
-                        // Runnable.run, all caller-attribution — were found by /code-review max.)
-                        boolean dispatchExempt = isChaExemptMethod(min.owner, min.name, min.desc);
-                        // SOUNDNESS — monomorphic-receiver narrowing: if the receiver is PROVABLY a single
-                        // `new T` (the provenance pass above), this dispatch resolves to exactly the one
-                        // method T invokes — NOT its CHA siblings. `b = new Base(); b.compute()` must read
-                        // Base.compute alone, never the sibling Dirty.compute's Net. We narrow ONLY when the
-                        // receiver is provably a single new-type AND that type resolves a concrete impl in
-                        // its own chain; ANY other receiver (param/field/return/branch-merged → genuinely
-                        // polymorphic) falls through to the unchanged CHA over-approximation below, so a real
-                        // polymorphic effect is never lost. INVOKEINTERFACE is included: a provable `new T`
-                        // under an interface call still dispatches to T's concrete impl.
-                        String monoRecv = monomorphicReceiver(provFrames == null ? null
-                                : provFrames[mn.instructions.indexOf(min)], min);
-                        if (monoRecv != null && ctx().byName.containsKey(monoRecv)) {
-                            // A provably-monomorphic PROJECT receiver (`new T`) has NO polymorphic siblings,
-                            // so this resolves to exactly T's method — never its CHA subtypes. `b = new
-                            // Base(); b.compute()` must read Base.compute alone, not the sibling Dirty's Net.
-                            // No concrete impl in T's own chain (impl in an unloaded super) → an ordinary
-                            // external call (no edge). Either way: resolved locally, so skip CHA, the Unknown
-                            // branches, AND cross-dep (a project call traces locally, never inherits a dep).
-                            String monoTarget = monomorphicTarget(monoRecv, min.name, min.desc);
-                            if (monoTarget != null) ctx().edges.get(id).add(monoTarget);
-                            continue;
-                        }
-                        // CHA runs ONLY for a genuinely POLYMORPHIC receiver (monoRecv == null). An EXTERNAL
-                        // monoRecv (`new java.util.ArrayList<>()`) is PROVABLY that exact type, never a
-                        // project subtype, so CHA fan-out would FABRICATE: once transSupers files a `class
-                        // LoudList extends ArrayList { add(){…io…} }` under ArrayList, an unguarded fan-out
-                        // smears LoudList's effect onto every plain `new ArrayList().add()`. Skip CHA for it
-                        // — but DON'T `continue`: fall through to the cross-jar inheritance block below, since
-                        // the call is into an external/dependency method that may carry recorded effects.
-                        if (monoRecv == null) {
-                        List<String> cha = chaTargets(min.owner, min.name, min.desc);
-                        // BOUNDED CHA (SPEC §4): a dispatch over a local abstraction resolves to its
-                        // implementors only when the fan-out is NARROW (≤ CHA_FANOUT_LIMIT); a broad
-                        // fan-out is honest indeterminacy. Previously only EXEMPT methods (the pure
-                        // Object protocol) were bounded, so a non-exempt collection method (`isEmpty`/
-                        // `size`/`next`) over a deep hierarchy (scala-library: hundreds of impls) edged
-                        // to EVERY override and connected ~everything to a few effect sources — a
-                        // ThreadLocalRandom in one TrieMap.computeSize flooded 13k functions with Rand.
-                        // A CLOSED ENUM owner is exempt from the bound: its constant bodies are the WHOLE
-                        // visible+possible target set (no external subtype can exist), so resolving all of
-                        // them is exact, not the open-hierarchy over-approximation the limit guards against.
-                        // Without this, an enum state machine (process/read over 26/68 constants) drops past
-                        // the limit to a CIRCULAR Unknown (each state dispatches to the others) that smears
-                        // across its whole transitive caller set — the dominant Unknown driver on real OO.
-                        // CANDOR_CLOSED_WORLD: the user asserts the scanned classes are the complete world, so a
-                        // broad dispatch over a PROJECT-DEFINED type (in byName) is NOT indeterminate — its visible
-                        // impls ARE all the impls. Resolve it like a narrow dispatch (edge to every impl → the
-                        // fixpoint unions their effects, exact). Sound ONLY under the assertion + gated to project
-                        // types (an EXTERNAL interface — Comparator, a Kotlin FunctionN — keeps the bound: candor
-                        // can't enumerate its library impls even in a closed world, and those are the perf-
-                        // pathological hierarchies the limit exists for). Off by default → byte-identical.
-                        boolean closedWorldResolvable = ctx().closedWorld && ctx().byName.containsKey(min.owner);
-                        boolean broad = cha.size() > CHA_FANOUT_LIMIT && !isClosedHierarchy(min.owner)
-                                && !closedWorldResolvable;
-                        // A NARROW java.util container-iteration dispatch (Iterator.next / Iterable etc.)
-                        // DOES fan out: skipping it under-reported a custom Iterable's effect at the loop
-                        // site (`for (x : customBag)` came back pure) — the §7.13 fuzzer's for-each form
-                        // catches it. The jts Rand "smear" the skip avoided is sound over-approximation, not
-                        // a reason to drop a real reachable effect; a broad fan-out still drops to Unknown.
-                        List<String> targets = broad ? List.of() : cha;
-                        ctx().edges.get(id).addAll(targets);
-                        // PROVABLE-INCOMPLETENESS: a sealed type whose permit-closure names an off-classpath
-                        // subtype is KNOWN-incomplete — the narrow path resolves only the visible permits and
-                        // would read silent-pure on the unseen one. Disclose Unknown (the visible impls' edges
-                        // above still carry their real effects; this adds the honest "+ an unseen permit").
-                        // Only matters on the narrow path; a broad sealed-unseen already drops to Unknown below.
-                        if (!broad && sealedHasUnseenPermit(min.owner)) {
-                            dir.add(Effect.UNKNOWN);
-                            ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
-                        }
-                        // A broad NON-exempt dispatch that DROPS project implementors → Unknown, not
-                        // silent-pure (an effectful body could be among the many we just dropped; exempt
-                        // methods are conventionally pure / runtime-entry, so they drop to nothing without
-                        // Unknown). The discriminator is "are we dropping PROJECT impls whose effects we'd
-                        // otherwise have propagated" — i.e. `cha` is non-empty — NOT "is the OWNER a project
-                        // type". `chaTargets` only ever returns project-defined CONCRETE bodies (it scans
-                        // byName, which holds project classes alone), so a non-empty `cha` IS that signal.
-                        // The owner can be an EXTERNAL interface (java.util.function.Supplier, Runnable,
-                        // Callable, java.util.List…) the project has ≥13 implementors of: bounded CHA drops
-                        // the whole fan-out, and the old `isProjectIfaceOrAbstract(min.owner)` gate was
-                        // FALSE for the external owner, so the caller went silently pure even though one of
-                        // the dropped project bodies wrote a file (the cardinal soundness sin). We preserve
-                        // the curated-κ posture for UBIQUITOUS stdlib dispatch (List.add / Iterator.next on
-                        // stdlib-only impls): there `cha` is EMPTY (no project class declares the body), so
-                        // no Unknown floods — they contribute nothing. (Found by /code-review max: 13+
-                        // project Suppliers, one effectful, over a single dispatch site.)
-                        // The exemption that suppresses this Unknown is ONLY the Object-protocol subset
-                        // (toString/hashCode/equals/compareTo — §4 pure even when overridden). The
-                        // function-object exemptions (Kotlin/Scala/Groovy invoke/apply/call) do NOT suppress
-                        // it: when the broad fan-out DROPS NAMED project impls (`!cha.isEmpty()`), one of
-                        // them can do real I/O, so honest Unknown — not silent-pure (the round-11 hole). This
-                        // INCLUDES a broad fan-out over synthetic Kotlin/Scala/Groovy LAMBDA classes: their
-                        // invoke()/apply() body is reachable ONLY through this dispatch edge (a `new Lam()`
-                        // edges <init>, NOT invoke — unlike a Java indy lambda whose body is edged at the indy
-                        // site), so suppressing the Unknown here AND dropping the edge made an effectful lambda
-                        // SILENT-PURE (a round-12 chaImplsAllSynthetic regression — reverted). A >12-lambda
-                        // higher-order site reporting Unknown is the SOUND over-approximation (the dispatcher
-                        // invokes an unresolvable function), not a bug; the precise effects are still captured
-                        // at each lambda's own rooted invoke() entry (the kotlin/Function RUNTIME_OVERRIDES row).
-                        if (broad && !isObjectProtocolExempt(min.name, min.desc) && effect == null && !springTyped
-                                && (isProjectIfaceOrAbstract(min.owner) || !cha.isEmpty())) {
-                            dir.add(Effect.UNKNOWN);
-                            // Canonical `unknownWhy` vocabulary (SPEC §4, ⟨0.7⟩): a bounded-CHA broad
-                            // dispatch is an unresolved virtual dispatch → `dispatch:owner.member`. The
-                            // former `dispatch-broad:`/`dispatch-broad-ext:` (project vs external owner)
-                            // distinction is folded away — it is still an unresolved dispatch, resolved
-                            // identically by the frontier; the owner type carries the project/external info.
-                            ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
-                        }
-                        // Genuine unresolved dispatch: a PROJECT interface/abstract type that DECLARES
-                        // this method, with no visible concrete impl (DI-wired, external, or strategy)
-                        // → honest Unknown (SPEC §4). The `projectDeclaresMethod` gate is essential:
-                        // without it, a FRAMEWORK method merely INHERITED by a project abstract class
-                        // (Struts `Action.getServletContext`/`saveMessages`/`isTokenValid`, called on a
-                        // NEMsAction receiver) has no project override either, and would be mislabelled
-                        // Unknown — when it actually resolves to a superclass candor never loaded, i.e.
-                        // an ordinary external call (effect-free unless modelled, like every other lib
-                        // call). Only a method the project ITSELF declares is a real missing-impl. An
-                        // exempt method never raises Unknown (it's conventionally pure, or its body is a
-                        // runtime-invoked entry point).
-                        if (!broad && targets.isEmpty() && !dispatchExempt && effect == null && !springTyped
-                                && isProjectIfaceOrAbstract(min.owner)
-                                && projectDeclaresMethod(min.owner, min.name, min.desc)) {
-                            dir.add(Effect.UNKNOWN);
-                            ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
-                                    .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
-                        }
-                        // A JDK FUNCTIONAL-INTERFACE SAM (`Runnable.run`, `Callable.call`,
-                        // `java.util.function.*`) invoked on an UNPINNED receiver with EMPTY CHA — the only
-                        // implementors are lambdas/method-refs whose bodies aren't reachable from THIS call
-                        // site (a field-stored handler `this.cb.run()`, a passed-in callback `h.run()`).
-                        // Both gates above miss it: empty CHA is never "broad" (so the broad-ext gate skips),
-                        // and the external functional-interface owner isn't a project iface (so the
-                        // missing-impl gate skips) — leaving the caller SILENTLY PURE though the lambda can
-                        // perform any effect (the 0.5.5 task_unpinned fuzzer used NAMED types, so it was
-                        // blind to the lambda-only case). Honest Unknown. Stdlib non-functional dispatch
-                        // (`list.size()`, `map.get()`) is unaffected — those owners aren't functional SAMs.
-                        if (!broad && targets.isEmpty() && !dispatchExempt && effect == null && !springTyped
-                                && isJdkFunctionalSam(min.owner, min.name)) {
-                            // Canonical vocabulary (SPEC §4, ⟨0.7⟩): a JDK functional-SAM invoked on an
-                            // unpinned receiver (a field/param-stored handler `this.cb.run()`) is a
-                            // higher-order call on a function VALUE → `callback:`, not `dispatch:` (it does
-                            // not resolve to a class-hierarchy override, so it is correctly NOT a frontier source).
-                            String why = "callback:" + owner + "." + min.name;
-                            // PRIVATE FUNCTIONAL-PARAM FORWARDING: DEFER this Unknown only when (a) `mn` is
-                            // private (its call sites are nestmate-only → the values reaching the param are
-                            // fully enumerable) and (b) THIS SAM is provably invoked on that param itself
-                            // (samIsOnParam — receiver-identity, NOT a field/array-element/other F value).
-                            // runScan then resolves it to the lambdas the call sites pass, or restores this
-                            // Unknown if any was opaque. Otherwise emit the honest Unknown now.
-                            int pi = singleFunctionalParamIndex(mn);
-                            boolean forwardable = pi >= 0
-                                    && (mn.access & Opcodes.ACC_PRIVATE) != 0
-                                    && Type.getArgumentTypes(mn.desc)[pi].getInternalName().equals(min.owner)
-                                    && samIsOnParam(mn, min, provFrames, pi);
-                            if (forwardable) {
-                                ctx().fwdSinkPending.add(id);
-                                ctx().fwdSinkPendingWhy.put(id, new String[] { why });
-                            } else {
-                                dir.add(Effect.UNKNOWN);
-                                ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.parse(why));
-                            }
-                        }
-                        } // end CHA block (monoRecv == null)
-                    } else if (ctx().projectClasses.contains(min.owner)) {
-                        // static / special (super, private, ctor) — the exact target (descriptor known,
-                        // so an overloaded callee resolves to the right overload's node).
-                        ctx().edges.get(id).add(methodId(owner, min.name, min.desc));
-                        // PRIVATE FUNCTIONAL-PARAM FORWARDING (collect): record the lambda this site passes
-                        // to a private functional-param sink (or mark it opaque) — resolved in runScan.
-                        collectForwardingArg(owner, min, provFrames == null ? null : provFrames[mn.instructions.indexOf(min)]);
-                    }
-                    // Cross-jar inheritance (candor-spec §2): a call into a DEPENDENCY analyzed
-                    // separately — inherit its recorded effects via the stable method-ref hash. Only
-                    // for external, non-built-in, non-Spring calls (project calls trace locally;
-                    // reflection is already Unknown via classify).
-                    if (effect == null && !springTyped && !ctx().projectClasses.contains(min.owner)) {
-                        DepFn inh = ctx().crossDeps.get(min.owner + "." + min.name + min.desc);
-                        // INTERFACE/SUPERTYPE-typed dep call: `Store s = new FileStore(); s.save()`
-                        // compiles to INVOKEINTERFACE on `lib/Store`, but the dep report keys the body
-                        // by its CONCRETE owner (`lib/FileStore.save`). The static call-site owner misses
-                        // it, so the caller read SILENTLY PURE though the dep writes a file. When the
-                        // receiver is provably a single `new T` (the monomorphic receiver) and T is NOT a
-                        // project class (a dep type — a project T would have traced locally above), retry
-                        // the join on the concrete impl's hash. Sound: it is the EXACT runtime type, so
-                        // this is the one body the JVM dispatches to — never a CHA over-approximation.
-                        int xop = min.getOpcode();
-                        if (inh == null && (xop == Opcodes.INVOKEVIRTUAL || xop == Opcodes.INVOKEINTERFACE)) {
-                            String cRecv = monomorphicReceiver(provFrames == null ? null
-                                    : provFrames[mn.instructions.indexOf(min)], min);
-                            if (cRecv != null && !ctx().byName.containsKey(cRecv) && !cRecv.equals(min.owner))
-                                inh = ctx().crossDeps.get(cRecv + "." + min.name + min.desc);
-                        }
-                        if (inh != null) {
-                            ctx().viaCross.computeIfAbsent(id, k -> EffectSet.empty()).addAll(inh.effects);
-                            if (!inh.hosts.isEmpty()) ctx().hostsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.hosts);
-                            if (!inh.cmds.isEmpty()) ctx().cmdsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.cmds);
-                            if (!inh.paths.isEmpty()) ctx().pathsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.paths);
-                            if (!inh.tables.isEmpty()) ctx().tablesDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.tables);
-                        }
-                    }
+                    handleMethodInsn(ctx, s, min);
                 } else if (insn instanceof TypeInsnNode tin && tin.getOpcode() == Opcodes.NEW) {
-                    // `new C` triggers C's class-load → its `<clinit>` runs (the `<init>` edge is added
-                    // separately by the INVOKESPECIAL above).
-                    clinitEdge(id, tin.desc);
-                    // ANONYMOUS/LOCAL class: it exists ONLY to be used via its supertype — typically
-                    // handed to a runtime executor (`new Thread(new Runnable(){…}).start()`) that
-                    // invokes run() OUTSIDE project code, so no in-project call site ever edges its
-                    // body. Edge the INSTANTIATION to its declared methods, mirroring how a lambda's
-                    // synthetic body is edged at its invokedynamic creation site (SEMANTICS §2's
-                    // closure-attribution rule — the Rust engines attribute thread::spawn closures to
-                    // the spawner; the scheduling method must inherit, not read pure). Gated on
-                    // outerMethod != null (set exactly for anonymous + local classes), so named
-                    // top-level/member classes are untouched. Found by the soundness fuzzer's
-                    // `thread_anon` form.
-                    ClassNode anonCn = ctx().byName.get(tin.desc);
-                    if (anonCn != null && anonCn.outerMethod != null) {
-                        for (MethodNode am : anonCn.methods)
-                            // Edge to the framework-INVOKABLE surface only: a PRIVATE method can't be an
-                            // override a runtime executor calls — it is reachable solely via an in-class
-                            // call from a live method (a normal edge), so a DEAD private helper must not
-                            // inherit at the instantiation site (it fabricated the helper's effect — e.g.
-                            // a never-called private `exec(..)` → a phantom Exec + command literal on the
-                            // spawner). A live private helper is still reached transitively via its caller.
-                            if (!am.name.startsWith("<") && (am.access & Opcodes.ACC_PRIVATE) == 0)
-                                ctx().edges.get(id).add(methodId(tin.desc.replace('/', '.'), am.name, am.desc));
-                    } else if (anonCn != null && isTaskType(tin.desc)) {
-                        // A NAMED class that is a TASK TYPE (implements Runnable/Callable or extends Thread)
-                        // instantiated here is almost always handed to a runtime — `new Thread(new R()).start()`,
-                        // `es.submit(new R())`, `new MyThread().start()` — which invokes its run()/call()
-                        // OUTSIDE project code, so no in-project call site edges the body. Edge the
-                        // instantiation to the task SAM only (run/call — not every method; a named task can
-                        // have unrelated helpers), mirroring the anon case. The anon branch above is gated on
-                        // outerMethod, which is null for named top-level/member classes — this is the named
-                        // analog. RUNTIME_OVERRIDES also roots run/call; this attributes it to the spawner so
-                        // a blast-radius walk from the scheduler isn't pure. (Found by an async/threading sweep.)
-                        for (MethodNode am : anonCn.methods)
-                            if ((am.name.equals("run") || am.name.equals("call") || am.name.equals("compute"))
-                                    && (am.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC)) == 0)
-                                ctx().edges.get(id).add(methodId(tin.desc.replace('/', '.'), am.name, am.desc));
-                    }
+                    handleNewInsn(ctx, s, tin);
                 } else if (insn instanceof FieldInsnNode fin
                         && (fin.getOpcode() == Opcodes.GETSTATIC || fin.getOpcode() == Opcodes.PUTSTATIC)) {
                     // A static field access triggers the owner's class-load → its `<clinit>` runs.
                     clinitEdge(id, fin.owner);
                 } else if (insn instanceof InvokeDynamicInsnNode idin) {
-                    // STRING-CONCAT REENTRY (`"x" + obj`): javac compiles `+` over a non-String operand to a
-                    // makeConcatWithConstants/makeConcat invokedynamic whose StringConcatFactory bootstrap
-                    // calls each Object operand's toString. candor models the indy as pure, so an effectful
-                    // toString override read silent-pure. The operands are the indy's STACK args (their types
-                    // are idin.desc's parameter types); reenter toString on each whose declared type is a
-                    // LOCAL class with an effectful override (a String/Integer/external operand → no edge).
-                    if (provFrames != null && idin.bsm != null
-                            && idin.bsm.getOwner().equals("java/lang/invoke/StringConcatFactory")) {
-                        Frame<ProvValue> cf = provFrames[mn.instructions.indexOf(idin)];
-                        for (ProvValue a : indyArgs(cf, idin)) reentryEdge(id, a, C_TOSTRING);
-                    }
-                    // Lambdas & method refs: the functional-interface factory's impl method (a project
-                    // `lambda$…` synthetic, or a referenced method) carries the body's effects. Edge to
-                    // it so they propagate here — else passing an effectful lambda looks pure.
-                    for (Object a : idin.bsmArgs) {
-                        // Only METHOD-kind handles (tags H_INVOKEVIRTUAL..H_INVOKEINTERFACE, i.e. >= 5)
-                        // are call targets carrying effects. FIELD-kind handles (H_GETFIELD..H_PUTSTATIC,
-                        // tags 1-4) also appear in bsmArgs — e.g. a `record`'s java.lang.runtime.ObjectMethods
-                        // bootstrap for equals/hashCode/toString passes an H_GETFIELD handle per component.
-                        // Their `desc` is a FIELD descriptor (no `()`), and a field read/write is pure, so
-                        // skip them: passing one to methodId would feed a field descriptor to
-                        // Type.getArgumentTypes and crash the whole scan.
-                        if (a instanceof Handle h && h.getTag() >= Opcodes.H_INVOKEVIRTUAL) {
-                            // A lambda that does NOT run at this creation site must not be edged here, else its
-                            // effect is misattributed to this method and (via the <clinit>/<init> + class-init
-                            // amplifier) SMEARED onto every method touching the class — a fabrication found by
-                            // the Kotlin/field sweep. Two shapes: (a) stowed into a deferred container
-                            // (`by lazy`, ThreadLocal.withInitial — attributed at the force site by
-                            // isDeferredForce); (b) escapes uninvoked — returned, or stored into a field/
-                            // collection, then run later via an unpinned SAM that discloses Unknown. A lambda
-                            // passed to a CALL that runs it (executor/stream/forEach/a forwarding sink) is NOT
-                            // matched, so its effect still propagates.
-                            boolean deferred = feedsDeferredFactory(idin) || lambdaEscapesUninvoked(idin);
-                            if (ctx().projectClasses.contains(h.getOwner())) {
-                                if (!deferred)
-                                    ctx().edges.get(id).add(methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc()));
-                                // A static method-ref / ctor-ref (`H::staticM`, `H::new`) TRIGGERS H's class
-                                // load → its <clinit> runs (JVMS §5.5), exactly like a static call / NEW /
-                                // static-field access. The other three triggers call clinitEdge; this one
-                                // didn't, so a ref to a pure body on a class with an effectful <clinit> read
-                                // silently pure (round-15 hole, the analog of the §5.5 superclass fix).
-                                clinitEdge(id, h.getOwner());
-                            }
-                            else {
-                                // A method REFERENCE to a NON-project method (`File::delete`,
-                                // `System::getenv`) handed to a stream stage / functional API IS invoked by
-                                // that stage — but it has no project node to edge to, so classify the target
-                                // the same way the direct-call path does, else its effect is lost. The direct
-                                // call (`f.delete()`) classifies; the ref (`removeIf(File::delete)`) did not —
-                                // a silent-pure hole found by a streams/method-ref sweep. A pure target →
-                                // null → nothing added (no fabrication).
-                                Effect eff = Classifier.classify(h.getOwner().replace('/', '.'), h.getName(), h.getDesc());
-                                if (eff != null) dir.add(eff);
-                            }
-                        }
-                    }
-                    // A bootstrap that is NOT one of the JVM's STRUCTURAL indy factories (lambda/method-ref
-                    // creation, string concat, record ObjectMethods, pattern-switch, constant-dynamic) is a
-                    // DYNAMIC-LANGUAGE dispatch bootstrap — Groovy's `IndyInterface.bootstrap`, JRuby, etc.
-                    // Its bsmArgs carry only a call-NAME string (no resolvable target handle), so the
-                    // dispatch is opaque exactly like reflection: it could reach any method and perform any
-                    // effect. Without this, compiled dynamic Groovy (the default, non-@CompileStatic mode)
-                    // dropped EVERY call — Fs/Exec/Net all silent-pure. Honest Unknown (SPEC §4), never
-                    // silent-pure. (Found by a JVM-dialect sweep on compiled Groovy.)
-                    if (idin.bsm != null && !STRUCTURAL_INDY_BSM.contains(idin.bsm.getOwner())) {
-                        dir.add(Effect.UNKNOWN);
-                        ctx().unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
-                                .add(UnknownReason.of(UnknownReason.Kind.INDY, idin.bsm.getOwner().replace('/', '.')));
-                    }
+                    handleInvokeDynamic(ctx, s, idin);
                 }
             }
+        }
+    }
+
+    /** Per-METHOD scan state shared by the per-instruction handlers — exactly what the original
+     *  inline instruction loop closed over. One instance per analyzed method; the handlers unpack
+     *  the fields they use under the original local names, so their bodies read (and diff) as the
+     *  pre-split code. */
+    static final class MethodScan {
+        final MethodNode mn;
+        final String id;                         // this method's node id (methodId)
+        final EffectSet dir;                     // = ctx.direct.get(id), the direct-effect accumulator
+        final Frame<TaintValue>[] taintFrames;   // AS-EFF-007 taint frames (null unless CANDOR_TAINT + analyzable)
+        final Frame<ProvValue>[] provFrames;     // receiver-provenance frames (null on bodiless/failed)
+        final Map<Integer, String> constLocals;  // local slot -> const String (the literal-window resolver)
+        final Map<Integer, String> urlLocals;    // local slot -> URL/URI value with a literal host
+        final boolean isEntry;                   // entry-point status, settled before the loop (R17 gate)
+        MethodScan(MethodNode mn, String id, EffectSet dir, Frame<TaintValue>[] taintFrames,
+                Frame<ProvValue>[] provFrames, Map<Integer, String> constLocals,
+                Map<Integer, String> urlLocals, boolean isEntry) {
+            this.mn = mn;
+            this.id = id;
+            this.dir = dir;
+            this.taintFrames = taintFrames;
+            this.provFrames = provFrames;
+            this.constLocals = constLocals;
+            this.urlLocals = urlLocals;
+            this.isEntry = isEntry;
+        }
+    }
+
+    /** Registers a method's node (effect set, edge set, source loc, cross-jar hash), binds any
+     *  deferred-container fields its ctor/clinit stores, and marks a `native` body Unknown. */
+    static EffectSet registerMethod(AnalysisContext ctx, ClassNode cn, MethodNode mn, String id) {
+        var dir = ctx.direct.computeIfAbsent(id, k -> EffectSet.empty());
+        ctx.edges.computeIfAbsent(id, k -> new HashSet<>());
+        ctx.loc.putIfAbsent(id, cn.sourceFile + ":" + firstLine(mn));
+        // Stable, descriptor-bearing cross-jar identity (candor-spec §2 `hash`): the exact ref a
+        // call site in a dependent jar uses, so that jar can inherit this method's effects.
+        ctx.hashOf.putIfAbsent(id, cn.name + "." + mn.name + mn.desc);
+
+        // TRUE-FORWARDING bindings: in a constructor / static initializer, find each PUTFIELD/PUTSTATIC
+        // whose stored value came from a recognised deferred-execution container construction
+        // (`LazyKt.lazy(λ)`, `ThreadLocal.withInitial(λ)`, or a `new …LazyImpl(λ)`) whose argument is a
+        // lambda/method-ref. Bind the field to that lambda body so a later FORCE of the field edges to it.
+        if (mn.name.equals("<init>") || mn.name.equals("<clinit>"))
+            bindDeferredFields(cn, mn);
+
+        // A `native` method has no bytecode body — its JNI implementation could perform ANY effect,
+        // exactly the opacity reflection has. Honest `Unknown`, never silent-pure (SPEC §4); else a
+        // call into a project-declared native binding would look like a no-op.
+        if ((mn.access & Opcodes.ACC_NATIVE) != 0) {
+            dir.add(Effect.UNKNOWN);
+            ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(UnknownReason.Kind.NATIVE, mn.name));
+        }
+        return dir;
+    }
+
+    /** Entry-point detection for one method — every runtime-invoked root: Spring/composed
+     *  annotations, CDI observers, gRPC handlers, `finalize`, serialization callbacks, `main`,
+     *  the RUNTIME_OVERRIDES rows, and Ktor handler bodies. Also the declarative @Transactional
+     *  → Db effect (kept first: original block order). */
+    static void markEntryPoints(AnalysisContext ctx, ClassNode cn, MethodNode mn, String id, EffectSet dir,
+            boolean classTx, Set<String> supers, List<String[]> runtimeRows, boolean ktorHandler) {
+        // Spring annotations on this method (the effect Spring's proxy/generated code performs).
+        if (classTx || annoPresent(mn.visibleAnnotations, TX)) dir.add(Effect.DB);
+        // META-ANNOTATION aware: a method carrying a COMPOSED annotation (Spring's stereotype idiom —
+        // `@GetMapping` is itself `@RequestMapping`; a team's `@ApiEndpoint`/`@NightlyJob` wraps a known
+        // marker) was NOT rooted by a direct-annotation-only check, orphaning a framework-invoked method
+        // from every reachability root (silent-pure for a blast-radius / --agents walk). Resolve the
+        // annotation type's own meta-annotations recursively.
+        if (annoOrMetaMatches(mn.visibleAnnotations, ROOT_ANNOTATIONS))
+            ctx.entryPoints.add(id);
+        // CDI observer method: `void onX(@Observes Event e)` is invoked by the CDI container when the
+        // event fires, with NO project call site (the @EventListener shape). Unlike the mappings the
+        // marker is a PARAMETER annotation, so the method-annotation path above misses it — scan the
+        // per-parameter annotation lists. Covers javax/ + jakarta/ enterprise.event.Observes(Async).
+        if (anyParamAnnoMatches(mn, PARAM_ROOT_ANNOTATIONS))
+            ctx.entryPoints.add(id);
+        // gRPC service handler: a project class extends a generated `*ImplBase` and overrides an RPC
+        // method whose signature carries an `io.grpc.stub.StreamObserver` — invoked by the gRPC server
+        // runtime with no in-project call site. RUNTIME_OVERRIDES can't key on it (the RPC method names
+        // are arbitrary) and the generated base isn't on candor's classpath (transSupers can't see
+        // `BindableService`), so key on the `*ImplBase` direct super + the StreamObserver-param signature
+        // — both gRPC-specific, so no fabrication.
+        if (cn.superName != null && cn.superName.toLowerCase(Locale.ROOT).contains("grpc")
+                && cn.superName.endsWith("ImplBase")
+                && mn.desc.contains("Lio/grpc/stub/StreamObserver;")
+                && (mn.access & (Opcodes.ACC_STATIC | Opcodes.ACC_ABSTRACT)) == 0)
+            ctx.entryPoints.add(id);
+        // A `finalize()` override is run by the GC's finalizer thread — NOT by any bytecode call.
+        // It's the JVM analog of Rust's implicit-Drop hole: an effect (a socket/file opened on
+        // collection) that otherwise sits in finalize's own entry but is unreachable from any root,
+        // so a "what does this program perform" walk from entry points silently misses it. Unlike
+        // Rust we can't attribute it to a drop SITE (finalization is non-deterministic and runs on a
+        // detached thread), so the honest model is the runtime-invoked entry point it actually is.
+        if (mn.name.equals("finalize") && mn.desc.equals("()V") && (mn.access & Opcodes.ACC_STATIC) == 0)
+            ctx.entryPoints.add(id);
+        // Serialization callbacks (readObject/writeObject/readExternal/writeExternal/readResolve/
+        // writeReplace/readObjectNoData) are invoked REFLECTIVELY by ObjectInput/OutputStream during
+        // (de)serialization — no project call site, so an effect (custom read/write doing I/O, a
+        // resource opened on resolve, decryption) is orphaned from every reachability root: the
+        // finalize shape. Mark them as runtime-invoked entry points, GATED on the class being
+        // Serializable/Externalizable so a same-named method on an unrelated class isn't fabricated.
+        if ((mn.access & Opcodes.ACC_STATIC) == 0
+                && (supers.contains("java/io/Serializable") || supers.contains("java/io/Externalizable"))
+                && isSerializationCallback(mn.name, mn.desc))
+            ctx.entryPoints.add(id);
+        // The program entry `public static void main(String[])` — the JVM invokes it to start the app,
+        // the root of a CLI tool's reachability (candor-spec §2, like the Rust impl's `fn main`).
+        if (mn.name.equals("main") && mn.desc.equals("([Ljava/lang/String;)V")
+                && (mn.access & Opcodes.ACC_STATIC) != 0)
+            ctx.entryPoints.add(id);
+        // A runtime-invoked override (Runnable/Thread/Callable task body, Spring lifecycle hook,
+        // servlet/filter/listener) — invoked by the runtime with NO project call site, so its I/O
+        // would otherwise be orphaned from every reachability root (the finalize shape). A null
+        // descriptor matches by method name alone (servlet methods carry javax/jakarta param types).
+        for (String[] r : runtimeRows)
+            if (mn.name.equals(r[1]) && (r[2] == null || mn.desc.equals(r[2]))) {
+                ctx.entryPoints.add(id);
+                break;
+            }
+        // The Ktor handler's BODY is `invokeSuspend` (the suspend-lambda's state machine); `invoke` is
+        // the bridge that drives it. Mark the body so its effects become a reachability root.
+        if (ktorHandler && (mn.name.equals("invokeSuspend") || mn.name.equals("invoke")))
+            ctx.entryPoints.add(id);
+    }
+
+    /** The AS-EFF-007 taint dataflow frames for one method (null when disabled or unanalyzable). */
+    static Frame<TaintValue>[] taintFrames(AnalysisContext ctx, ClassNode cn, MethodNode mn) {
+        // AS-EFF-007 taint pass (CANDOR_TAINT): a per-method dataflow whose frames tell us, at each
+        // effect call below, whether an argument is parameter-derived. Skipped without the mode, and on
+        // bodiless or malformed methods — taint is advisory, so a failed analysis must never crash.
+        Frame<TaintValue>[] taintFrames = null;
+        if (ctx.taintEnabled && mn.instructions.size() > 0
+                && (mn.access & (Opcodes.ACC_NATIVE | Opcodes.ACC_ABSTRACT)) == 0) {
+            try {
+                taintFrames = new Analyzer<>(new TaintInterpreter(paramSlots(mn))).analyze(cn.name, mn);
+            } catch (Throwable t) { taintFrames = null; }
+        }
+        return taintFrames;
+    }
+
+    /** The receiver-provenance frames for one method (null on bodiless/failed — fail-soft). */
+    static Frame<ProvValue>[] provFrames(ClassNode cn, MethodNode mn) {
+        // Receiver-provenance pass (SOUNDNESS, always-on): tells us at each invokevirtual below whether
+        // the receiver is PROVABLY a single `new T`. If so, the dispatch narrows to the one method T
+        // resolves — no CHA sibling fan-out (the monomorphic-fabrication fix). Anything else (param,
+        // field, return, branch-merged type → genuinely polymorphic) keeps the full CHA over-
+        // approximation. Like the taint pass it is fail-soft: a bodiless/native/abstract method, or any
+        // analyzer failure, leaves `provFrames` null and the dispatch keeps the CHA exactly as before.
+        Frame<ProvValue>[] provFrames = null;
+        if (mn.instructions.size() > 0
+                && (mn.access & (Opcodes.ACC_NATIVE | Opcodes.ACC_ABSTRACT)) == 0) {
+            try {
+                provFrames = new Analyzer<>(new ProvInterpreter()).analyze(cn.name, mn);
+            } catch (Throwable t) { provFrames = null; }
+        }
+        return provFrames;
+    }
+
+    /** One MethodInsnNode call site — the engine's core: classification (+ inherited-external-base
+     *  re-classification), then the ordered concern units exactly as the original inline block ran
+     *  them, then the dispatch edges (static/special exact, virtual/interface via
+     *  {@link #virtualDispatch}) and the cross-dep join. ORDER-SENSITIVE: do not reorder the calls. */
+    static void handleMethodInsn(AnalysisContext ctx, MethodScan s, MethodInsnNode min) {
+        MethodNode mn = s.mn;
+        String id = s.id;
+        EffectSet dir = s.dir;
+        Frame<ProvValue>[] provFrames = s.provFrames;
+        String owner = min.owner.replace('/', '.');
+        Effect effect = Classifier.classify(owner, min.name, min.desc);
+        // A project class that SUBCLASSES a classify-modeled external effectful type (extends a
+        // Testcontainers GenericContainer, a java.io stream, …) and calls an INHERITED method:
+        // classify sees the PROJECT owner (no rule) and the real body lives in the external base
+        // (unscanned) → silent-pure. Re-run classify against the external supertype the JVM
+        // dispatches to. Gated: only when the project owner has NO concrete body of its own for the
+        // method (not overridden — else that analysed body wins) and no PROJECT super provides one.
+        // Orthogonal to the persistence registries (which cover bases classify does NOT model).
+        if (effect == null && ctx.byName.containsKey(min.owner)
+                && !declaresConcrete(ctx.byName.get(min.owner), min.name, min.desc)
+                && nearestConcreteSuper(min.owner, min.name, min.desc) == null) {
+            for (String sup : transSupers(min.owner)) {
+                if (ctx.byName.containsKey(sup)) continue;   // external supers only
+                Effect se = Classifier.classify(sup.replace('/', '.'), min.name, min.desc);
+                // UNION every matching external super, not first-wins: transSupers is a HashSet, so
+                // a `break` made the chosen effect order-dependent (nondeterministic) when two
+                // modeled supers declare the same method with different effects. dir is a set →
+                // union is deterministic + sound (it's the over-approx of the possible dispatches).
+                if (se != null) { dir.add(se); effect = se; }
+            }
+        }
+        if (effect != null) dir.add(effect);
+        opaqueTaskHandoff(ctx, s, min, owner);
+        namedFunctionalToHof(ctx, s, min);
+        xmlParseFilePrecision(s, min);
+        entryAbstractStream(ctx, s, min, owner, effect);
+        contractReentry(s, min);
+        deferredForce(ctx, s, min);
+        reflectionPair(ctx, s, min, owner);
+        kappaLedger(ctx, s, min, owner, effect);
+        effectMetadata(ctx, s, min, owner, effect);
+        extractLiteralSurfaces(ctx, s, min, owner, effect);
+        boolean springTyped = declarativeIoRules(ctx, s, min);
+
+        int op = min.getOpcode();
+        // A static call triggers the owner's class-load → its `<clinit>` runs.
+        if (op == Opcodes.INVOKESTATIC) clinitEdge(id, min.owner);
+        if (op == Opcodes.INVOKEVIRTUAL || op == Opcodes.INVOKEINTERFACE) {
+            // mono-receiver resolved locally → the original `continue`: skip cross-dep too.
+            if (virtualDispatch(ctx, s, min, owner, effect, springTyped)) return;
+        } else if (ctx.projectClasses.contains(min.owner)) {
+            // static / special (super, private, ctor) — the exact target (descriptor known,
+            // so an overloaded callee resolves to the right overload's node).
+            ctx.edges.get(id).add(methodId(owner, min.name, min.desc));
+            // PRIVATE FUNCTIONAL-PARAM FORWARDING (collect): record the lambda this site passes
+            // to a private functional-param sink (or mark it opaque) — resolved in runScan.
+            collectForwardingArg(owner, min, provFrames == null ? null : provFrames[mn.instructions.indexOf(min)]);
+        }
+        crossDepJoin(ctx, s, min, effect, springTyped);
+    }
+
+    /** Executor hand-off: an OPAQUE task (field/param/factory return) submitted to an executor runs
+     *  outside project code → Unknown, never silent-pure. */
+    static void opaqueTaskHandoff(AnalysisContext ctx, MethodScan s, MethodInsnNode min, String owner) {
+        MethodNode mn = s.mn;
+        String id = s.id;
+        EffectSet dir = s.dir;
+        Frame<ProvValue>[] provFrames = s.provFrames;
+        // Executor hand-off: `es.submit(task)`/`execute`/`schedule*` and `new Thread(task)` invoke
+        // the task's run()/call() OUTSIDE project code. A fresh `new R()` (the NEW-site edge
+        // attributes R.run) or an inline lambda (edged at its indy) is already captured; an OPAQUE
+        // task — a field, a param, a factory return — has an unknown body, so the handing-off
+        // method must read Unknown (parallel to an unpinned `task.run()`), else it is silent-pure.
+        if (isExecutorHandoff(min.owner, min.name, min.desc) && provFrames != null) {
+            ProvValue task = handoffTaskArg(provFrames[mn.instructions.indexOf(min)], min);
+            if (task != null && !task.fromIndy && task.newType == null) {
+                dir.add(Effect.UNKNOWN);
+                ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                        .add(UnknownReason.of(UnknownReason.Kind.TASK_HANDOFF, owner + "." + min.name));
+            }
+        }
+    }
+
+    /** A freshly-constructed NAMED functional-interface instance handed to a known-INVOKING library
+     *  HOF: edge its SAM surface (the lambda-parity fix, allowlist-gated). */
+    static void namedFunctionalToHof(AnalysisContext ctx, MethodScan s, MethodInsnNode min) {
+        MethodNode mn = s.mn;
+        String id = s.id;
+        Frame<ProvValue>[] provFrames = s.provFrames;
+        // NAMED FUNCTIONAL-INTERFACE INSTANCE handed to a known-INVOKING library HOF. A
+        // `new EffCons()` (a project class implementing java.util.function.*/Comparator/FileFilter)
+        // passed to a library method that INVOKES its SAM outside project code (`Stream.forEach`,
+        // `List.sort`, `File.listFiles`) reads SILENT-PURE: there is no invokedynamic (so the
+        // lambda creation-edge never fires) and no in-project SAM invoke (the `.accept()` is inside
+        // the unanalysed JDK body). A lambda/method-ref in the SAME position IS sound (edged at its
+        // indy), so this was an INTERNAL asymmetry. Edge the instance's SAM surface here — GATED on
+        // an explicit ALLOWLIST of known-INVOKING HOF method names (isInvokingHof). The earlier
+        // `!isStoringContainerCall` gate was UNSOUND (a code review found it FABRICATED: it fired
+        // for ANY external non-store, so `Objects.requireNonNull(c)` / `Optional.ofNullable(c)` /
+        // `map.getOrDefault(k,c)` / `Stream.of(c)` / `new TreeMap<>(cmp)` — which merely RECEIVE
+        // or STORE the instance, never invoke it — edged the SAM = a phantom effect). The allowlist
+        // never fabricates on a non-invoking sink; a genuinely-invoking HOF not on the list is a
+        // sound UNDER-report (no edge), never a fabrication. Restricted to a freshly-constructed
+        // (`newType`) project functional impl and EXTERNAL callees (a project callee's body is
+        // analysed directly).
+        if (provFrames != null && !ctx.projectClasses.contains(min.owner)
+                && isInvokingHof(min.name)) {
+            for (ProvValue a : callArgs(provFrames[mn.instructions.indexOf(min)], min)) {
+                if (a == null || a.newType == null) continue;
+                ctx.edges.get(id).addAll(functionalSamSurface(a.newType));
+            }
+        }
+    }
+
+    /** XML parse(File) precision: the File overload definitely reads the file — add Fs beside the
+     *  XXE Unknown classify() already yields. */
+    static void xmlParseFilePrecision(MethodScan s, MethodInsnNode min) {
+        EffectSet dir = s.dir;
+        // XML parse(File) PRECISION: the parser's `parse` already classifies as the XXE/external-
+        // entity Unknown (security disclosure, see classify ~4367). The File overload ALSO
+        // DEFINITELY reads the file — add Fs here so the effect set is the precise {Fs, Unknown}
+        // (reads this file for sure; may resolve external entities). The InputStream/InputSource
+        // overloads (caller stream) and the (String systemId) overload (path-vs-URL ambiguous)
+        // get no Fs. Added in the call handler because classify()'s single slot is the Unknown.
+        if ((min.owner.equals("javax/xml/parsers/DocumentBuilder")
+                || min.owner.equals("javax/xml/parsers/SAXParser"))
+                && min.name.equals("parse") && min.desc.startsWith("(Ljava/io/File;")) dir.add(Effect.FS);
+    }
+
+    /** R17: a rooted entry point reading an externally-provided ABSTRACT java.io stream — real I/O of
+     *  unknown kind → Unknown (SOUNDNESS.md R17). */
+    static void entryAbstractStream(AnalysisContext ctx, MethodScan s, MethodInsnNode min, String owner, Effect effect) {
+        MethodNode mn = s.mn;
+        String id = s.id;
+        EffectSet dir = s.dir;
+        Frame<ProvValue>[] provFrames = s.provFrames;
+        boolean isEntry = s.isEntry;
+        // R17 — a rooted ENTRY POINT reading an externally-provided ABSTRACT java.io stream: the
+        // receiver is the entry point's OWN parameter (framework-injected), its concrete impl is
+        // unresolvable, and the read/write on the abstract base classifies pure. The I/O is real
+        // but of unknown kind (Fs/Net per the concrete) → disclose Unknown, not silent-pure.
+        // Gated to entry points so an internal helper reading a PASSED stream — whose in-project
+        // caller HAS the concrete (effect already attributed at the creation site) — doesn't
+        // flood. SOUNDNESS.md R17 (the abstract-java.io-stream boundary).
+        if (effect == null && isEntry && provFrames != null && isAbstractStreamIo(min.owner, min.name)) {
+            ProvValue recv = receiverProv(provFrames[mn.instructions.indexOf(min)], min);
+            if (isOwnParam(mn, recv, provFrames[0])) {
+                dir.add(Effect.UNKNOWN);
+                ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                        .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
+            }
+        }
+    }
+
+    /** Implicit-contract reentry: JDK sinks that re-enter user code via toString/equals/hashCode/
+     *  compareTo, plus the writer-side formatting facades (R16). */
+    static void contractReentry(MethodScan s, MethodInsnNode min) {
+        MethodNode mn = s.mn;
+        String id = s.id;
+        Frame<ProvValue>[] provFrames = s.provFrames;
+        // IMPLICIT-CONTRACT-REENTRY: a JDK sink that re-enters user code via the JVM contract
+        // (toString/equals/hashCode/compareTo) — modelled pure by candor, so an EFFECTFUL override
+        // of the argument's type read silent-pure. CHA the contract method over the ARGUMENT's
+        // DECLARED type and edge to its LOCAL override(s); an external/Object-default/pure override
+        // yields no local body (or no effect) → contributes nothing (no flood, no fabrication).
+        if (provFrames != null) {
+            Frame<ProvValue> rf = provFrames[mn.instructions.indexOf(min)];
+            if (isToStringSink(min.owner, min.name, min.desc)) {
+                if (min.owner.equals("java/lang/String") && min.name.equals("format")) {
+                    // format(...) packs `%s` operands into an Object[] varargs — the element types
+                    // are erased on the stack, so resolve them from the array-fill AASTOREs.
+                    reentryFormatVarargs(id, mn, min, provFrames);
+                } else {
+                    // valueOf/Objects.toString/append(Object)/print(Object): the lone Object arg.
+                    for (ProvValue a : callArgs(rf, min)) reentryEdge(id, a, C_TOSTRING);
+                }
+            }
+            if (isEqualsHashSink(min.owner, min.name)) {
+                // The KEY/element argument — for Map.* it is the FIRST arg (the key); for the
+                // collection verbs it is the lone element arg. Reenter both equals AND hashCode.
+                ProvValue key = callArg(rf, min, 0);
+                reentryEdge(id, key, C_EQUALS);
+                reentryEdge(id, key, C_HASHCODE);
+            }
+            if (isCompareToSink(min.owner, min.name)) {
+                // The element whose compareTo orders the collection. For the COLLECTION-typed sinks
+                // (Collections.sort(List)/list.sort/Arrays.sort(Object[])/TreeSet.add) the element
+                // type is hidden inside the container generic (erased) — NOT recoverable from the
+                // declType of the List/array argument. So we resolve over the ARGUMENT's declType
+                // when it is itself the compared element (TreeSet.add(E)/TreeSet.contains/
+                // TreeMap.get/put/containsKey take the element/key DIRECTLY). For sort over a
+                // container we cannot see the element type — left as an honest residual (the
+                // container's element override is still attributed at any explicit compareTo call,
+                // and a `new TreeSet().add(localComparable)` IS caught here via the direct arg).
+                ProvValue elem = callArg(rf, min, 0);
+                reentryEdge(id, elem, C_COMPARETO);
+            }
+            // WRITER side (R16): constructing a JDK formatting facade over a CUSTOM sink drives
+            // the sink's append/write when it formats. `new Formatter(Appendable)` → append;
+            // `new PrintWriter(Writer|OutputStream)` / `new PrintStream(OutputStream)` → write.
+            // The sink's method is reached only THROUGH the non-local facade, so otherwise it was
+            // silent — the write-fmt writer-side blind spot (cf. the rust/swift engines). The sink
+            // is the ctor's first arg; resolve-or-skip over its declType (a std StringBuilder /
+            // FileOutputStream has no LOCAL append/write override → contributes nothing).
+            String sinkContract = formatterSinkCtor(min.owner, min.name, min.desc);
+            if (sinkContract != null) reentryEdge(id, callArg(rf, min, 0), sinkContract);
+        }
+    }
+
+    /** True-forwarding force site: a container-forcing call on a tracked deferred field binds a
+     *  deferred edge, resolved after all classes are analyzed. */
+    static void deferredForce(AnalysisContext ctx, MethodScan s, MethodInsnNode min) {
+        MethodNode mn = s.mn;
+        String id = s.id;
+        // TRUE-FORWARDING force site: a known container-forcing call (`Lazy.getValue` /
+        // `ThreadLocal.get`) on a receiver that is a GET* of a tracked deferred field — possibly
+        // a field of ANOTHER class (`t.tl.get()`). Bind, per the SPECIFIC field, a deferred edge
+        // resolved after all classes are analysed (the binding side may be in any class). The
+        // receiver is the GET* immediately producing the container value; we require its field
+        // descriptor to be a container type so an unrelated `.get()` never matches.
+        if (isDeferredForce(min.owner, min.name)) {
+            String fieldKey = forcedFieldKey(mn, min);
+            if (fieldKey != null) ctx.deferredForcePairs.add(new String[] { id, fieldKey });
+        }
+    }
+
+    /** Reflection pair capture: Class.getMethod/getDeclaredMethod with a literal name (+ receiver
+     *  class) — the edge forms in resolution only against a project receiver. */
+    static void reflectionPair(AnalysisContext ctx, MethodScan s, MethodInsnNode min, String owner) {
+        MethodNode mn = s.mn;
+        String id = s.id;
+        if (owner.equals("java.lang.Class")
+                && (min.name.equals("getMethod") || min.name.equals("getDeclaredMethod"))) {
+            // Capture the literal method NAME (nearest String, not an unrelated earlier
+            // constant) AND the RECEIVER class (the `X.class` literal). The edge is only
+            // formed in resolution when the receiver is a project class — never a global
+            // leaf-name match that fabricates an edge to an unrelated same-named method.
+            String lit = nearestLiteralArg(mn, min);
+            String recv = reflectReceiver(mn, min);
+            if (lit != null) ctx.reflectPairs.add(new String[] { id, lit, recv == null ? "" : recv });
+        }
+    }
+
+    /** The κ-coverage ledger (external packages seen/classified/blind) + the structural Spring
+     *  κ-floor (unmodeled Spring I/O-convention member → disclosed Unknown, not silently dropped). */
+    static void kappaLedger(AnalysisContext ctx, MethodScan s, MethodInsnNode min, String owner, Effect effect) {
+        String id = s.id;
+        EffectSet dir = s.dir;
+        // κ ledger: key external owners by their EXACT package (the slash-form owner
+        // up to the class segment — no uppercase heuristic, which mangled lowercase/
+        // obfuscated classes); array owners ([Ljava/lang/String; — every enum's
+        // values() clone) are types, not packages, and stay out. A package with zero
+        // classifications anywhere in the scan is a named blind spot.
+        if (!ctx.projectClasses.contains(min.owner) && min.owner.charAt(0) != '[') {
+            int slash = min.owner.lastIndexOf('/');
+            String pkg = slash > 0 ? min.owner.substring(0, slash).replace('/', '.') : "";
+            if (!pkg.isEmpty() && !kappaCovers(pkg)) {
+                ctx.kappaSeen.merge(pkg, 1, Integer::sum);
+                if (effect != null) ctx.kappaClassified.add(pkg);
+                // A FLOORED call (classifier returned pure) into an external package is a candidate
+                // per-method blind spot. Post-filtered to packages κ never classified ANYWHERE
+                // (so a known package's pure method isn't disclosed) and propagated to callers.
+                else ctx.blindDirect.computeIfAbsent(id, k -> new TreeSet<>()).add(pkg);
+            } else if (!pkg.isEmpty() && effect == null
+                    && pkg.startsWith("org.springframework")
+                    && isSpringIoOwner(min.owner) && !isConventionallyPure(min.name)) {
+                // STRUCTURAL SPRING-FLOOR FIX: org.springframework.* is a κ-covered prefix, so an
+                // UNMODELED Spring sub-library leaf would otherwise be SILENTLY DROPPED (worse than
+                // a disclosed Unknown — the floor exists so pure Spring utils like StringUtils aren't
+                // disclosed blind). But an unmodeled member of a Spring I/O-CONVENTION type
+                // (*Template/*Operations/*Repository/*Gateway — Spring's "this class does I/O"
+                // naming) is very likely a real effect candor just hasn't modeled (Spring Integration
+                // MessagingTemplate, Spring Batch, the next Spring sub-project…). Disclose Unknown
+                // (the SAFE direction — never a fabricated concrete effect) instead of dropping it.
+                // The modeled Spring templates' I/O methods return effect!=null so never reach here;
+                // only a genuinely-unmodeled member (or a rare pure accessor → harmless Unknown) does.
+                dir.add(Effect.UNKNOWN);
+                ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                        .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
+            }
+        }
+    }
+
+    /** Per-effect metadata for a classified call: the AS-EFF-007 taint surface, the reflect
+     *  unknownWhy, and the Fs read/write kind refinement. */
+    static void effectMetadata(AnalysisContext ctx, MethodScan s, MethodInsnNode min, String owner, Effect effect) {
+        MethodNode mn = s.mn;
+        String id = s.id;
+        Frame<TaintValue>[] taintFrames = s.taintFrames;
+        // An injection-class effect on a caller-derived argument is an injection surface.
+        if (taintFrames != null && effect != null && INJECTION.contains(effect)
+                && argsTainted(taintFrames[mn.instructions.indexOf(min)], min))
+            ctx.tainted.computeIfAbsent(id, k -> EffectSet.empty()).add(effect);
+        if (effect == Effect.UNKNOWN) // reflection / dynamic invoke (classify §)
+            ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                    .add(UnknownReason.of(UnknownReason.Kind.REFLECT, owner + "." + min.name));
+        if (effect == Effect.FS) { // non-breaking read/write refinement of Fs
+            List<String> k = fsKind(owner, min.name);
+            if (!k.isEmpty()) ctx.fsDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(k);
+        }
+    }
+
+    /** The AS-EFF-008 literal surfaces (SPEC §2 `cmds`/`paths`/`hosts`/`tables`), grouped: the Exec
+     *  program head, the Fs path, the Net host (bare `(String,int)` ctors + the per-call literal
+     *  window + the URL-terminal attribution) and the Db tables — each with its fail-closed
+     *  surface-incompleteness (masking) guard. `capturedHostHere` feeds the Net completeness check,
+     *  which is why the four surfaces live in ONE unit. */
+    static void extractLiteralSurfaces(AnalysisContext ctx, MethodScan s, MethodInsnNode min, String owner, Effect effect) {
+        MethodNode mn = s.mn;
+        String id = s.id;
+        EffectSet dir = s.dir;
+        Map<Integer, String> constLocals = s.constLocals;
+        Map<Integer, String> urlLocals = s.urlLocals;
+        // AS-EFF-008 literal surfaces (SPEC §2 `cmds`/`paths`): the subprocess program and the
+        // file path, read from the FIRST string-literal arg of the call that carries it — the
+        // ProcessBuilder/Runtime.exec command, the Path.of / File / file-stream ctor path.
+        if ((owner.equals("java.lang.ProcessBuilder") && min.name.equals("<init>"))
+                || (owner.equals("java.lang.Runtime") && min.name.equals("exec"))) {
+            // Only the program HEAD (argv[0]) names the command — a later argument is DATA
+            // (§4; mirrors candor-rust's is_cmd_naming_method). `programHeadLiteral` reads
+            // argv[0] specifically; the loose `firstLiteralArg` would grab a trailing literal
+            // (`new ProcessBuilder(toolVar, "curl")` → "curl"), fabricating a `cmds` head and
+            // letting `allow Exec curl` spuriously pass on a DYNAMIC head. Both the literal
+            // capture AND the cliff refinement (spec §4 ⟨0.5⟩: `curl`→Net, `candor`→Fs/Env)
+            // therefore key off argv[0]; a dynamic head keeps the bare Exec cliff with no
+            // `cmds`. Exec itself is emitted unconditionally below — only the literal tightens.
+            String head = programHeadLiteral(min);
+            if (head != null) {
+                ctx.cmdsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(head);
+                dir.addAll(EffectSet.ofNames(commandHeadEffects(head)));
+            } else {
+                // a program-NAMING Exec call with a RUNTIME head (no literal) — the command is
+                // invisible to the gate, so a benign sibling literal must not mask it (sweep [0],
+                // the masking guard generalized from Net to Exec/Fs/Db).
+                ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Exec");
+            }
+        }
+        // …only the overload whose path is a SINGLE leading String arg (descriptor
+        // `(Ljava/lang/String;)` or `(Ljava/lang/String;[…` for Path.of's varargs). A
+        // two-String ctor — `RandomAccessFile(String,String)`, `File(String,String)` — can
+        // have a NON-path literal as its only constant (a `"r"`/`"rw"` mode, a child name)
+        // when the path itself is runtime-computed, which firstLiteralArg would then grab.
+        if (((owner.equals("java.nio.file.Path") && min.name.equals("of"))
+                || (owner.equals("java.nio.file.Paths") && min.name.equals("get"))
+                || (PATH_CTOR_OWNERS.contains(owner) && min.name.equals("<init>")))
+                && pathArgIsSingleString(min.desc)) {
+            String p = firstLiteralArg(mn, min);
+            if (p != null) ctx.pathsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(p);
+            // a path-establishing call with a RUNTIME path (single-String arg, no literal) — the
+            // path is invisible to the gate (masking guard generalized to Fs, sweep [0]).
+            else ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Fs");
+        }
+        // A bare-hostname Net endpoint: `new Socket("api.stripe.com", 443)` /
+        // `new InetSocketAddress("api.stripe.com", 443)` names the host as a STRING argv[0]
+        // with a numeric port — but as a bare hostname (no scheme/`:port`) netHostLiteral
+        // rejects it (deliberately, to avoid the ~14 false dotted "hosts" a loose filter
+        // produced). Here the CALL SITE disambiguates: a `(String host, int port)` ctor's
+        // first String literal IS a host, so extract it without loosening netHostLiteral.
+        // Gated to the `(Ljava/lang/String;I…` shape, so the `(InetAddress,int)` and
+        // `(String,int,InetAddress,int)`-with-computed-host overloads add nothing.
+        boolean capturedHostHere = false;
+        if ((owner.equals("java.net.Socket") || owner.equals("java.net.InetSocketAddress")
+                // java.util.logging.SocketHandler(String host, int port) opens a log socket to that
+                // host — same `(String,int)` shape. Its host must reach the AS-EFF-008 surface, else
+                // a forbidden exfil host (e.g. evil.exfil.com) is invisible and a benign co-located
+                // Net literal MASKS it (the 0.5.27 SocketHandler Net rule without surfacing → a gate
+                // EVASION found by a security sweep).
+                || owner.equals("java.util.logging.SocketHandler"))
+                && min.name.equals("<init>") && min.desc.startsWith("(Ljava/lang/String;I")) {
+            String h = firstLiteralArg(mn, min);
+            // The host must look like a host (a dotted name / IPv4), not e.g. a "localhost"
+            // bareword that could equally be anything — reuse hostPart's shape via a dot test,
+            // matching netHostLiteral's "contains a dot" gate for bare host:port.
+            if (h != null && h.contains(".") && !h.contains("/") && !h.contains(" ")) {
+                // Append the literal int port for `host:port` (SPEC §2) — so a two-arg
+                // Socket("h", 443) matches the URL form's `h:port` and candor-scan, instead of
+                // dropping the statically-known port (adversarial coverage-gap review, GAP2).
+                String port = intLiteralBefore(min);
+                ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(port != null ? h + ":" + port : h);
+                capturedHostHere = true;
+            }
+        }
+        // Host literal from THIS host-bearing call's OWN argument (a URL/URI string, a Spring/
+        // ktor request URL) — per-call attribution mirroring candor-rust's `str_arg`. Replaces
+        // the old method-wide LDC sweep, which captured any host-shaped string in a host-bearing
+        // method and so let a benign URL literal certify a runtime-computed host (AS-EFF-008
+        // evasion) / a never-contacted host poison the allowlist. netHostLiteral rejects
+        // non-hosts, so a benign non-URL arg adds nothing; the bare `Socket(host,port)` case is
+        // handled above (netHostLiteral rejects a scheme-less bare host by design).
+        if (isHostBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;"))
+            for (String lit : literalArgsInWindow(min, constLocals)) {
+                String hl = netHostLiteral(lit);
+                if (hl != null) { ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(hl); capturedHostHere = true; }
+            }
+        // AS-EFF-008 surface COMPLETENESS (the masking fix): a Net reach whose host is structurally
+        // invisible makes the method's host surface incomplete, so the gate must NOT certify it just
+        // because OTHER (benign) hosts are visible. THREE structurally-invisible shapes:
+        //  (1) a Net call on a host-LESS owner (gRPC ClientCalls, okhttp WebSocket, the reactive-HTTP
+        //      terminals, a logging SocketAppender) — the host lives in a builder/config candor
+        //      can't see;
+        //  (2) a host-establishing Net call whose host is a RUNTIME string (a host-bearing owner,
+        //      a leading `String` host arg, but no literal captured — `restTemplate.getForObject(
+        //      runtimeUrl,…)`, `new Socket(runtimeHost,port)`, `InetAddress.getByName(runtimeHost)`).
+        //  (3) a URL/URI Net TERMINAL (`openStream`/`openConnection`/`getContent`) whose host was
+        //      fixed at a SEPARATE `new URL(String)` CONSTRUCTION (no Net effect, no String arg on
+        //      the terminal). The split construct-then-use idiom: `new URL(getenv).openStream()`
+        //      reaches a fully runtime-controlled host while a benign sibling `new URL("good").
+        //      openStream()` populated hostsDirect and MASKED it (the AS-EFF-008 URL gate EVASION,
+        //      formerly a value-flow backlog). FAIL-CLOSED unless the host is cheaply attributable
+        //      to the terminal's receiver — inline `new URL("lit").openStream()` or a const-URL
+        //      local — so the common inline-literal-URL case still certifies (urlTerminalHost).
+        if (effect == Effect.NET) {
+            boolean hostLessOwner = !isHostBearingOwner(min.owner);
+            boolean runtimeStringHost = isHostBearingOwner(min.owner)
+                    && min.desc.startsWith("(Ljava/lang/String;") && !capturedHostHere;
+            boolean urlTerminal = isUrlValueOwner(min.owner) && !min.desc.startsWith("(Ljava/lang/String;")
+                    && (min.name.equals("openStream") || min.name.equals("openConnection")
+                            || min.name.equals("getContent"));
+            if (urlTerminal) {
+                String h = urlTerminalHost(min, urlLocals, constLocals);
+                if (h != null) ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(h);
+                else ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
+            }
+            if (hostLessOwner || runtimeStringHost)
+                ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
+        }
+        // Table literals from THIS SQL-bearing call's OWN argument (the executed/prepared SQL) —
+        // same per-call attribution. tablesInSql needs a leading SQL keyword so a non-SQL arg
+        // yields nothing; a SQL-shaped log line in another statement is no longer mis-attributed.
+        if (isSqlBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;")) {
+            boolean anySqlLiteral = false;
+            for (String lit : literalArgsInWindow(min, constLocals)) {
+                anySqlLiteral = true;
+                List<String> tl = tablesInSql(lit);
+                if (!tl.isEmpty()) ctx.tablesDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(tl);
+            }
+            // a SQL-establishing call with a RUNTIME query (String arg, no literal) — the table is
+            // invisible to the gate (masking guard generalized to Db, sweep [0]). A literal SQL
+            // with no table (`SELECT 1`) is visible-but-tableless, NOT incomplete.
+            if (!anySqlLiteral)
+                ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Db");
+        }
+    }
+
+    /** Declarative-I/O call rules: Spring-Data/Jakarta repos (generated CRUD → Db), Feign +
+     *  declarative HTTP clients (→ Net), Panache active-record and the AR/DAO base registries
+     *  (inherited persistence verbs → Db). Returns whether the owner is one of those declarative
+     *  types (`springTyped`), which the dispatch/cross-dep steps consult. */
+    static boolean declarativeIoRules(AnalysisContext ctx, MethodScan s, MethodInsnNode min) {
+        String id = s.id;
+        EffectSet dir = s.dir;
+        // Calls to a Spring Data repository / Feign client are I/O even though the
+        // callee has no body candor can see (Spring synthesizes the impl at runtime).
+        boolean springTyped = ctx.repoTypes.contains(min.owner) || ctx.feignTypes.contains(min.owner)
+                || ctx.httpClientTypes.contains(min.owner);
+        if (ctx.repoTypes.contains(min.owner)) {
+            // The blanket Db is for the repository's GENERATED CRUD methods — abstract, no body
+            // candor can see (Spring/Jakarta Data synthesize the impl at runtime). A `default`
+            // method on the interface (or an inherited concrete one) DOES have a body whose
+            // effects the CHA edge already attributes, so synthesizing Db there FABRICATES Db on
+            // a pure default helper (a soundness sweep found `repo.greet()` → {Db} for a default
+            // returning a constant). Only synthesize when the call resolves to NO visible body.
+            ClassNode ro = ctx.byName.get(min.owner);
+            boolean visibleBody = (ro != null && declaresConcrete(ro, min.name, min.desc))
+                    || nearestConcreteSuper(min.owner, min.name, min.desc) != null;
+            if (!visibleBody) {
+                dir.add(Effect.DB);
+                String tbl = ctx.repoTables.get(min.owner); // the declarative `tables` surface
+                if (tbl != null) ctx.tablesDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(tbl);
+            }
+        }
+        if (ctx.feignTypes.contains(min.owner)) dir.add(Effect.NET);
+        // A declarative HTTP-client interface call is a wire call → Net (Object-protocol excluded so
+        // a client's toString()/equals() doesn't fabricate Net).
+        if (ctx.httpClientTypes.contains(min.owner) && !isConventionallyPure(min.name)) dir.add(Effect.NET);
+        // Quarkus Panache ACTIVE-RECORD: a project class extends PanacheEntity[Base], so its
+        // persist/delete/flush + inherited static finders (listAll/find/findById/count/…) are DB
+        // ops — but the call-site owner is the PROJECT entity (`Fruit.listAll()`), not the external
+        // base, so neither classify (keyed on the base) nor the repoTypes path fires; the inherited
+        // body lives in Panache (unscanned) → silent-pure, a cardinal sin on the dominant Quarkus
+        // persistence. Verb-gated AND hierarchy-gated (only fires when the owner extends a Panache
+        // entity base), and skipped when the entity OVERRIDES the verb with its own body (that
+        // body's effects are already attributed via the CHA edge — no fabrication, mirroring the
+        // repoTypes default-method guard).
+        if (PANACHE_ENTITY_VERBS.contains(min.name) && extendsPanacheEntity(min.owner)) {
+            ClassNode eo = ctx.byName.get(min.owner);
+            boolean ownBody = (eo != null && declaresConcrete(eo, min.name, min.desc))
+                    || nearestConcreteSuper(min.owner, min.name, min.desc) != null;
+            if (!ownBody) dir.add(Effect.DB);
+        }
+        // Active-record / DAO base classes (Ebean io.ebean.Model, ActiveJDBC Model, jOOQ DAOImpl) —
+        // the SAME silent-pure shape as Panache: a persistence verb inherited into a project subtype,
+        // called via the project owner. Verb+hierarchy-gated, skipped when the subtype overrides it
+        // (that body's effects are attributed via the CHA edge — no fabrication).
+        if (inheritsArDbVerb(min.owner, min.name)) {
+            ClassNode ao = ctx.byName.get(min.owner);
+            boolean ownBody = (ao != null && declaresConcrete(ao, min.name, min.desc))
+                    || nearestConcreteSuper(min.owner, min.name, min.desc) != null;
+            if (!ownBody) dir.add(Effect.DB);
+        }
+        return springTyped;
+    }
+
+    /** An INVOKEVIRTUAL/INVOKEINTERFACE dispatch: the CHA-exempt surface, monomorphic-receiver
+     *  narrowing, bounded CHA with the closed-enum/sealed/closed-world refinements, and the honest
+     *  Unknown branches (broad drop, missing project impl, unpinned JDK functional SAM). Returns true
+     *  when the mono-receiver path resolved the call locally — the caller then skips the cross-dep
+     *  join, exactly like the original `continue`. */
+    static boolean virtualDispatch(AnalysisContext ctx, MethodScan s, MethodInsnNode min, String owner,
+            Effect effect, boolean springTyped) {
+        MethodNode mn = s.mn;
+        String id = s.id;
+        EffectSet dir = s.dir;
+        Frame<ProvValue>[] provFrames = s.provFrames;
+            // EXEMPT (SPEC §4): dispatch on the conventionally-pure java.lang.Object
+            // surface — toString/hashCode/equals (+ erased Comparable.compareTo) — is NOT
+            // CHA-fanned-out. Over `Object`, EVERY project class is a subtype, so one
+            // `x.toString()` would edge every override in the jar; Kotlin emits exactly
+            // that (`Any.toString` in string templates), which made kotlinx-coroutines
+            // attribute one ServiceLoader-touching toString to 2160 methods (87% of the
+            // jar). Same C2 trade as the Rust engine's dyn-Display/Error exemption — and
+            // the documented caveat: an override of these that performs real I/O (that
+            // kotlinx toString DOES reach a service load) is deliberately not attributed
+            // at the dispatch site.
+            // Class Hierarchy Analysis: dispatch reaches any project subtype's override.
+            // BOUNDED for a CHA-EXEMPT method (the conventionally-pure Object protocol +
+            // the function-interface / task-dispatch verbs every lambda/closure/Runnable
+            // implements): attribute when the receiver resolves to FEW impls (a concrete
+            // project type, an app's handful of Runnables — precise), but DROP the fan-out
+            // when it's broad (a library's hundreds of FunctionN/Closure impls — the
+            // kotlinx/scala/groovy smear that connected ~87% of a jar to one source). The
+            // runtime-invoked verbs' bodies stay reachable via RUNTIME_OVERRIDES entry
+            // points (incl. the function-interface rows) so a named implementor isn't
+            // orphaned. (The smear, plus the four soundness holes an UNCONDITIONAL skip
+            // opened — concrete-receiver toString, named-implementor orphaning, synchronous
+            // Runnable.run, all caller-attribution — were found by /code-review max.)
+            boolean dispatchExempt = isChaExemptMethod(min.owner, min.name, min.desc);
+            // SOUNDNESS — monomorphic-receiver narrowing: if the receiver is PROVABLY a single
+            // `new T` (the provenance pass above), this dispatch resolves to exactly the one
+            // method T invokes — NOT its CHA siblings. `b = new Base(); b.compute()` must read
+            // Base.compute alone, never the sibling Dirty.compute's Net. We narrow ONLY when the
+            // receiver is provably a single new-type AND that type resolves a concrete impl in
+            // its own chain; ANY other receiver (param/field/return/branch-merged → genuinely
+            // polymorphic) falls through to the unchanged CHA over-approximation below, so a real
+            // polymorphic effect is never lost. INVOKEINTERFACE is included: a provable `new T`
+            // under an interface call still dispatches to T's concrete impl.
+            String monoRecv = monomorphicReceiver(provFrames == null ? null
+                    : provFrames[mn.instructions.indexOf(min)], min);
+            if (monoRecv != null && ctx.byName.containsKey(monoRecv)) {
+                // A provably-monomorphic PROJECT receiver (`new T`) has NO polymorphic siblings,
+                // so this resolves to exactly T's method — never its CHA subtypes. `b = new
+                // Base(); b.compute()` must read Base.compute alone, not the sibling Dirty's Net.
+                // No concrete impl in T's own chain (impl in an unloaded super) → an ordinary
+                // external call (no edge). Either way: resolved locally, so skip CHA, the Unknown
+                // branches, AND cross-dep (a project call traces locally, never inherits a dep).
+                String monoTarget = monomorphicTarget(monoRecv, min.name, min.desc);
+                if (monoTarget != null) ctx.edges.get(id).add(monoTarget);
+                return true;   // the original `continue`: resolved locally, skip the Unknown branches AND cross-dep
+            }
+            // CHA runs ONLY for a genuinely POLYMORPHIC receiver (monoRecv == null). An EXTERNAL
+            // monoRecv (`new java.util.ArrayList<>()`) is PROVABLY that exact type, never a
+            // project subtype, so CHA fan-out would FABRICATE: once transSupers files a `class
+            // LoudList extends ArrayList { add(){…io…} }` under ArrayList, an unguarded fan-out
+            // smears LoudList's effect onto every plain `new ArrayList().add()`. Skip CHA for it
+            // — but DON'T `continue`: fall through to the cross-jar inheritance block below, since
+            // the call is into an external/dependency method that may carry recorded effects.
+            if (monoRecv == null) {
+            List<String> cha = chaTargets(min.owner, min.name, min.desc);
+            // BOUNDED CHA (SPEC §4): a dispatch over a local abstraction resolves to its
+            // implementors only when the fan-out is NARROW (≤ CHA_FANOUT_LIMIT); a broad
+            // fan-out is honest indeterminacy. Previously only EXEMPT methods (the pure
+            // Object protocol) were bounded, so a non-exempt collection method (`isEmpty`/
+            // `size`/`next`) over a deep hierarchy (scala-library: hundreds of impls) edged
+            // to EVERY override and connected ~everything to a few effect sources — a
+            // ThreadLocalRandom in one TrieMap.computeSize flooded 13k functions with Rand.
+            // A CLOSED ENUM owner is exempt from the bound: its constant bodies are the WHOLE
+            // visible+possible target set (no external subtype can exist), so resolving all of
+            // them is exact, not the open-hierarchy over-approximation the limit guards against.
+            // Without this, an enum state machine (process/read over 26/68 constants) drops past
+            // the limit to a CIRCULAR Unknown (each state dispatches to the others) that smears
+            // across its whole transitive caller set — the dominant Unknown driver on real OO.
+            // CANDOR_CLOSED_WORLD: the user asserts the scanned classes are the complete world, so a
+            // broad dispatch over a PROJECT-DEFINED type (in byName) is NOT indeterminate — its visible
+            // impls ARE all the impls. Resolve it like a narrow dispatch (edge to every impl → the
+            // fixpoint unions their effects, exact). Sound ONLY under the assertion + gated to project
+            // types (an EXTERNAL interface — Comparator, a Kotlin FunctionN — keeps the bound: candor
+            // can't enumerate its library impls even in a closed world, and those are the perf-
+            // pathological hierarchies the limit exists for). Off by default → byte-identical.
+            boolean closedWorldResolvable = ctx.closedWorld && ctx.byName.containsKey(min.owner);
+            boolean broad = cha.size() > CHA_FANOUT_LIMIT && !isClosedHierarchy(min.owner)
+                    && !closedWorldResolvable;
+            // A NARROW java.util container-iteration dispatch (Iterator.next / Iterable etc.)
+            // DOES fan out: skipping it under-reported a custom Iterable's effect at the loop
+            // site (`for (x : customBag)` came back pure) — the §7.13 fuzzer's for-each form
+            // catches it. The jts Rand "smear" the skip avoided is sound over-approximation, not
+            // a reason to drop a real reachable effect; a broad fan-out still drops to Unknown.
+            List<String> targets = broad ? List.of() : cha;
+            ctx.edges.get(id).addAll(targets);
+            // PROVABLE-INCOMPLETENESS: a sealed type whose permit-closure names an off-classpath
+            // subtype is KNOWN-incomplete — the narrow path resolves only the visible permits and
+            // would read silent-pure on the unseen one. Disclose Unknown (the visible impls' edges
+            // above still carry their real effects; this adds the honest "+ an unseen permit").
+            // Only matters on the narrow path; a broad sealed-unseen already drops to Unknown below.
+            if (!broad && sealedHasUnseenPermit(min.owner)) {
+                dir.add(Effect.UNKNOWN);
+                ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
+            }
+            // A broad NON-exempt dispatch that DROPS project implementors → Unknown, not
+            // silent-pure (an effectful body could be among the many we just dropped; exempt
+            // methods are conventionally pure / runtime-entry, so they drop to nothing without
+            // Unknown). The discriminator is "are we dropping PROJECT impls whose effects we'd
+            // otherwise have propagated" — i.e. `cha` is non-empty — NOT "is the OWNER a project
+            // type". `chaTargets` only ever returns project-defined CONCRETE bodies (it scans
+            // byName, which holds project classes alone), so a non-empty `cha` IS that signal.
+            // The owner can be an EXTERNAL interface (java.util.function.Supplier, Runnable,
+            // Callable, java.util.List…) the project has ≥13 implementors of: bounded CHA drops
+            // the whole fan-out, and the old `isProjectIfaceOrAbstract(min.owner)` gate was
+            // FALSE for the external owner, so the caller went silently pure even though one of
+            // the dropped project bodies wrote a file (the cardinal soundness sin). We preserve
+            // the curated-κ posture for UBIQUITOUS stdlib dispatch (List.add / Iterator.next on
+            // stdlib-only impls): there `cha` is EMPTY (no project class declares the body), so
+            // no Unknown floods — they contribute nothing. (Found by /code-review max: 13+
+            // project Suppliers, one effectful, over a single dispatch site.)
+            // The exemption that suppresses this Unknown is ONLY the Object-protocol subset
+            // (toString/hashCode/equals/compareTo — §4 pure even when overridden). The
+            // function-object exemptions (Kotlin/Scala/Groovy invoke/apply/call) do NOT suppress
+            // it: when the broad fan-out DROPS NAMED project impls (`!cha.isEmpty()`), one of
+            // them can do real I/O, so honest Unknown — not silent-pure (the round-11 hole). This
+            // INCLUDES a broad fan-out over synthetic Kotlin/Scala/Groovy LAMBDA classes: their
+            // invoke()/apply() body is reachable ONLY through this dispatch edge (a `new Lam()`
+            // edges <init>, NOT invoke — unlike a Java indy lambda whose body is edged at the indy
+            // site), so suppressing the Unknown here AND dropping the edge made an effectful lambda
+            // SILENT-PURE (a round-12 chaImplsAllSynthetic regression — reverted). A >12-lambda
+            // higher-order site reporting Unknown is the SOUND over-approximation (the dispatcher
+            // invokes an unresolvable function), not a bug; the precise effects are still captured
+            // at each lambda's own rooted invoke() entry (the kotlin/Function RUNTIME_OVERRIDES row).
+            if (broad && !isObjectProtocolExempt(min.name, min.desc) && effect == null && !springTyped
+                    && (isProjectIfaceOrAbstract(min.owner) || !cha.isEmpty())) {
+                dir.add(Effect.UNKNOWN);
+                // Canonical `unknownWhy` vocabulary (SPEC §4, ⟨0.7⟩): a bounded-CHA broad
+                // dispatch is an unresolved virtual dispatch → `dispatch:owner.member`. The
+                // former `dispatch-broad:`/`dispatch-broad-ext:` (project vs external owner)
+                // distinction is folded away — it is still an unresolved dispatch, resolved
+                // identically by the frontier; the owner type carries the project/external info.
+                ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
+            }
+            // Genuine unresolved dispatch: a PROJECT interface/abstract type that DECLARES
+            // this method, with no visible concrete impl (DI-wired, external, or strategy)
+            // → honest Unknown (SPEC §4). The `projectDeclaresMethod` gate is essential:
+            // without it, a FRAMEWORK method merely INHERITED by a project abstract class
+            // (Struts `Action.getServletContext`/`saveMessages`/`isTokenValid`, called on a
+            // NEMsAction receiver) has no project override either, and would be mislabelled
+            // Unknown — when it actually resolves to a superclass candor never loaded, i.e.
+            // an ordinary external call (effect-free unless modelled, like every other lib
+            // call). Only a method the project ITSELF declares is a real missing-impl. An
+            // exempt method never raises Unknown (it's conventionally pure, or its body is a
+            // runtime-invoked entry point).
+            if (!broad && targets.isEmpty() && !dispatchExempt && effect == null && !springTyped
+                    && isProjectIfaceOrAbstract(min.owner)
+                    && projectDeclaresMethod(min.owner, min.name, min.desc)) {
+                dir.add(Effect.UNKNOWN);
+                ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                        .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
+            }
+            // A JDK FUNCTIONAL-INTERFACE SAM (`Runnable.run`, `Callable.call`,
+            // `java.util.function.*`) invoked on an UNPINNED receiver with EMPTY CHA — the only
+            // implementors are lambdas/method-refs whose bodies aren't reachable from THIS call
+            // site (a field-stored handler `this.cb.run()`, a passed-in callback `h.run()`).
+            // Both gates above miss it: empty CHA is never "broad" (so the broad-ext gate skips),
+            // and the external functional-interface owner isn't a project iface (so the
+            // missing-impl gate skips) — leaving the caller SILENTLY PURE though the lambda can
+            // perform any effect (the 0.5.5 task_unpinned fuzzer used NAMED types, so it was
+            // blind to the lambda-only case). Honest Unknown. Stdlib non-functional dispatch
+            // (`list.size()`, `map.get()`) is unaffected — those owners aren't functional SAMs.
+            if (!broad && targets.isEmpty() && !dispatchExempt && effect == null && !springTyped
+                    && isJdkFunctionalSam(min.owner, min.name)) {
+                // Canonical vocabulary (SPEC §4, ⟨0.7⟩): a JDK functional-SAM invoked on an
+                // unpinned receiver (a field/param-stored handler `this.cb.run()`) is a
+                // higher-order call on a function VALUE → `callback:`, not `dispatch:` (it does
+                // not resolve to a class-hierarchy override, so it is correctly NOT a frontier source).
+                String why = "callback:" + owner + "." + min.name;
+                // PRIVATE FUNCTIONAL-PARAM FORWARDING: DEFER this Unknown only when (a) `mn` is
+                // private (its call sites are nestmate-only → the values reaching the param are
+                // fully enumerable) and (b) THIS SAM is provably invoked on that param itself
+                // (samIsOnParam — receiver-identity, NOT a field/array-element/other F value).
+                // runScan then resolves it to the lambdas the call sites pass, or restores this
+                // Unknown if any was opaque. Otherwise emit the honest Unknown now.
+                int pi = singleFunctionalParamIndex(mn);
+                boolean forwardable = pi >= 0
+                        && (mn.access & Opcodes.ACC_PRIVATE) != 0
+                        && Type.getArgumentTypes(mn.desc)[pi].getInternalName().equals(min.owner)
+                        && samIsOnParam(mn, min, provFrames, pi);
+                if (forwardable) {
+                    ctx.fwdSinkPending.add(id);
+                    ctx.fwdSinkPendingWhy.put(id, new String[] { why });
+                } else {
+                    dir.add(Effect.UNKNOWN);
+                    ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.parse(why));
+                }
+            }
+            } // end CHA block (monoRecv == null)
+        return false;
+    }
+
+    /** Cross-jar inheritance (candor-spec §2): a call into a separately-analyzed dependency inherits
+     *  its recorded effects (+ literal surfaces) via the stable method-ref hash, retrying on the
+     *  provably-concrete receiver for supertype-typed calls. */
+    static void crossDepJoin(AnalysisContext ctx, MethodScan s, MethodInsnNode min, Effect effect, boolean springTyped) {
+        MethodNode mn = s.mn;
+        String id = s.id;
+        Frame<ProvValue>[] provFrames = s.provFrames;
+        // Cross-jar inheritance (candor-spec §2): a call into a DEPENDENCY analyzed
+        // separately — inherit its recorded effects via the stable method-ref hash. Only
+        // for external, non-built-in, non-Spring calls (project calls trace locally;
+        // reflection is already Unknown via classify).
+        if (effect == null && !springTyped && !ctx.projectClasses.contains(min.owner)) {
+            DepFn inh = ctx.crossDeps.get(min.owner + "." + min.name + min.desc);
+            // INTERFACE/SUPERTYPE-typed dep call: `Store s = new FileStore(); s.save()`
+            // compiles to INVOKEINTERFACE on `lib/Store`, but the dep report keys the body
+            // by its CONCRETE owner (`lib/FileStore.save`). The static call-site owner misses
+            // it, so the caller read SILENTLY PURE though the dep writes a file. When the
+            // receiver is provably a single `new T` (the monomorphic receiver) and T is NOT a
+            // project class (a dep type — a project T would have traced locally above), retry
+            // the join on the concrete impl's hash. Sound: it is the EXACT runtime type, so
+            // this is the one body the JVM dispatches to — never a CHA over-approximation.
+            int xop = min.getOpcode();
+            if (inh == null && (xop == Opcodes.INVOKEVIRTUAL || xop == Opcodes.INVOKEINTERFACE)) {
+                String cRecv = monomorphicReceiver(provFrames == null ? null
+                        : provFrames[mn.instructions.indexOf(min)], min);
+                if (cRecv != null && !ctx.byName.containsKey(cRecv) && !cRecv.equals(min.owner))
+                    inh = ctx.crossDeps.get(cRecv + "." + min.name + min.desc);
+            }
+            if (inh != null) {
+                ctx.viaCross.computeIfAbsent(id, k -> EffectSet.empty()).addAll(inh.effects);
+                if (!inh.hosts.isEmpty()) ctx.hostsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.hosts);
+                if (!inh.cmds.isEmpty()) ctx.cmdsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.cmds);
+                if (!inh.paths.isEmpty()) ctx.pathsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.paths);
+                if (!inh.tables.isEmpty()) ctx.tablesDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.tables);
+            }
+        }
+    }
+
+    /** A `NEW C` site: the class-load `<clinit>` edge, plus the anonymous/local-class and named
+     *  task-type instantiation edges (the spawner inherits the body it hands to the runtime). */
+    static void handleNewInsn(AnalysisContext ctx, MethodScan s, TypeInsnNode tin) {
+        String id = s.id;
+        // `new C` triggers C's class-load → its `<clinit>` runs (the `<init>` edge is added
+        // separately by the INVOKESPECIAL above).
+        clinitEdge(id, tin.desc);
+        // ANONYMOUS/LOCAL class: it exists ONLY to be used via its supertype — typically
+        // handed to a runtime executor (`new Thread(new Runnable(){…}).start()`) that
+        // invokes run() OUTSIDE project code, so no in-project call site ever edges its
+        // body. Edge the INSTANTIATION to its declared methods, mirroring how a lambda's
+        // synthetic body is edged at its invokedynamic creation site (SEMANTICS §2's
+        // closure-attribution rule — the Rust engines attribute thread::spawn closures to
+        // the spawner; the scheduling method must inherit, not read pure). Gated on
+        // outerMethod != null (set exactly for anonymous + local classes), so named
+        // top-level/member classes are untouched. Found by the soundness fuzzer's
+        // `thread_anon` form.
+        ClassNode anonCn = ctx.byName.get(tin.desc);
+        if (anonCn != null && anonCn.outerMethod != null) {
+            for (MethodNode am : anonCn.methods)
+                // Edge to the framework-INVOKABLE surface only: a PRIVATE method can't be an
+                // override a runtime executor calls — it is reachable solely via an in-class
+                // call from a live method (a normal edge), so a DEAD private helper must not
+                // inherit at the instantiation site (it fabricated the helper's effect — e.g.
+                // a never-called private `exec(..)` → a phantom Exec + command literal on the
+                // spawner). A live private helper is still reached transitively via its caller.
+                if (!am.name.startsWith("<") && (am.access & Opcodes.ACC_PRIVATE) == 0)
+                    ctx.edges.get(id).add(methodId(tin.desc.replace('/', '.'), am.name, am.desc));
+        } else if (anonCn != null && isTaskType(tin.desc)) {
+            // A NAMED class that is a TASK TYPE (implements Runnable/Callable or extends Thread)
+            // instantiated here is almost always handed to a runtime — `new Thread(new R()).start()`,
+            // `es.submit(new R())`, `new MyThread().start()` — which invokes its run()/call()
+            // OUTSIDE project code, so no in-project call site edges the body. Edge the
+            // instantiation to the task SAM only (run/call — not every method; a named task can
+            // have unrelated helpers), mirroring the anon case. The anon branch above is gated on
+            // outerMethod, which is null for named top-level/member classes — this is the named
+            // analog. RUNTIME_OVERRIDES also roots run/call; this attributes it to the spawner so
+            // a blast-radius walk from the scheduler isn't pure. (Found by an async/threading sweep.)
+            for (MethodNode am : anonCn.methods)
+                if ((am.name.equals("run") || am.name.equals("call") || am.name.equals("compute"))
+                        && (am.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC)) == 0)
+                    ctx.edges.get(id).add(methodId(tin.desc.replace('/', '.'), am.name, am.desc));
+        }
+    }
+
+    /** An invokedynamic site: string-concat toString reentry, lambda/method-ref creation edges
+     *  (with the deferred/escape guards), external method-ref classification, and the
+     *  dynamic-language bootstrap → Unknown. */
+    static void handleInvokeDynamic(AnalysisContext ctx, MethodScan s, InvokeDynamicInsnNode idin) {
+        MethodNode mn = s.mn;
+        String id = s.id;
+        EffectSet dir = s.dir;
+        Frame<ProvValue>[] provFrames = s.provFrames;
+        // STRING-CONCAT REENTRY (`"x" + obj`): javac compiles `+` over a non-String operand to a
+        // makeConcatWithConstants/makeConcat invokedynamic whose StringConcatFactory bootstrap
+        // calls each Object operand's toString. candor models the indy as pure, so an effectful
+        // toString override read silent-pure. The operands are the indy's STACK args (their types
+        // are idin.desc's parameter types); reenter toString on each whose declared type is a
+        // LOCAL class with an effectful override (a String/Integer/external operand → no edge).
+        if (provFrames != null && idin.bsm != null
+                && idin.bsm.getOwner().equals("java/lang/invoke/StringConcatFactory")) {
+            Frame<ProvValue> cf = provFrames[mn.instructions.indexOf(idin)];
+            for (ProvValue a : indyArgs(cf, idin)) reentryEdge(id, a, C_TOSTRING);
+        }
+        // Lambdas & method refs: the functional-interface factory's impl method (a project
+        // `lambda$…` synthetic, or a referenced method) carries the body's effects. Edge to
+        // it so they propagate here — else passing an effectful lambda looks pure.
+        for (Object a : idin.bsmArgs) {
+            // Only METHOD-kind handles (tags H_INVOKEVIRTUAL..H_INVOKEINTERFACE, i.e. >= 5)
+            // are call targets carrying effects. FIELD-kind handles (H_GETFIELD..H_PUTSTATIC,
+            // tags 1-4) also appear in bsmArgs — e.g. a `record`'s java.lang.runtime.ObjectMethods
+            // bootstrap for equals/hashCode/toString passes an H_GETFIELD handle per component.
+            // Their `desc` is a FIELD descriptor (no `()`), and a field read/write is pure, so
+            // skip them: passing one to methodId would feed a field descriptor to
+            // Type.getArgumentTypes and crash the whole scan.
+            if (a instanceof Handle h && h.getTag() >= Opcodes.H_INVOKEVIRTUAL) {
+                // A lambda that does NOT run at this creation site must not be edged here, else its
+                // effect is misattributed to this method and (via the <clinit>/<init> + class-init
+                // amplifier) SMEARED onto every method touching the class — a fabrication found by
+                // the Kotlin/field sweep. Two shapes: (a) stowed into a deferred container
+                // (`by lazy`, ThreadLocal.withInitial — attributed at the force site by
+                // isDeferredForce); (b) escapes uninvoked — returned, or stored into a field/
+                // collection, then run later via an unpinned SAM that discloses Unknown. A lambda
+                // passed to a CALL that runs it (executor/stream/forEach/a forwarding sink) is NOT
+                // matched, so its effect still propagates.
+                boolean deferred = feedsDeferredFactory(idin) || lambdaEscapesUninvoked(idin);
+                if (ctx.projectClasses.contains(h.getOwner())) {
+                    if (!deferred)
+                        ctx.edges.get(id).add(methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc()));
+                    // A static method-ref / ctor-ref (`H::staticM`, `H::new`) TRIGGERS H's class
+                    // load → its <clinit> runs (JVMS §5.5), exactly like a static call / NEW /
+                    // static-field access. The other three triggers call clinitEdge; this one
+                    // didn't, so a ref to a pure body on a class with an effectful <clinit> read
+                    // silently pure (round-15 hole, the analog of the §5.5 superclass fix).
+                    clinitEdge(id, h.getOwner());
+                }
+                else {
+                    // A method REFERENCE to a NON-project method (`File::delete`,
+                    // `System::getenv`) handed to a stream stage / functional API IS invoked by
+                    // that stage — but it has no project node to edge to, so classify the target
+                    // the same way the direct-call path does, else its effect is lost. The direct
+                    // call (`f.delete()`) classifies; the ref (`removeIf(File::delete)`) did not —
+                    // a silent-pure hole found by a streams/method-ref sweep. A pure target →
+                    // null → nothing added (no fabrication).
+                    Effect eff = Classifier.classify(h.getOwner().replace('/', '.'), h.getName(), h.getDesc());
+                    if (eff != null) dir.add(eff);
+                }
+            }
+        }
+        // A bootstrap that is NOT one of the JVM's STRUCTURAL indy factories (lambda/method-ref
+        // creation, string concat, record ObjectMethods, pattern-switch, constant-dynamic) is a
+        // DYNAMIC-LANGUAGE dispatch bootstrap — Groovy's `IndyInterface.bootstrap`, JRuby, etc.
+        // Its bsmArgs carry only a call-NAME string (no resolvable target handle), so the
+        // dispatch is opaque exactly like reflection: it could reach any method and perform any
+        // effect. Without this, compiled dynamic Groovy (the default, non-@CompileStatic mode)
+        // dropped EVERY call — Fs/Exec/Net all silent-pure. Honest Unknown (SPEC §4), never
+        // silent-pure. (Found by a JVM-dialect sweep on compiled Groovy.)
+        if (idin.bsm != null && !STRUCTURAL_INDY_BSM.contains(idin.bsm.getOwner())) {
+            dir.add(Effect.UNKNOWN);
+            ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                    .add(UnknownReason.of(UnknownReason.Kind.INDY, idin.bsm.getOwner().replace('/', '.')));
         }
     }
 

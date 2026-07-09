@@ -620,6 +620,39 @@ want "uppercase non-zip .JAR → clean message"                   "$nz" 'cannot 
 if [ "$nzc" -eq 2 ]; then echo "  ok   uppercase non-zip .JAR exits 2"; pass=$((pass+1));
 else echo "  FAIL uppercase non-zip .JAR — got exit $nzc"; fail=$((fail+1)); fi
 
+echo "== fail-closed outputs + deps: unwritable --json/--gate-json and a typo'd CANDOR_DEPS exit 2 =="
+# an unwritable --json report path: one-line diagnostic + exit 2 (was: raw stack trace, exit 1)
+uw="$("$CJ" "$W/cls" --json "$W/no-such-dir-xyz/r.json" 2>&1)"; uwc=$?
+want   "unwritable --json → clean 'cannot write report'"        "$uw" 'cannot write report'
+absent "unwritable --json dumps no stack trace"                 "$uw" 'at io.poly.candor'
+if [ "$uwc" -eq 2 ]; then echo "  ok   unwritable --json exits 2"; pass=$((pass+1));
+else echo "  FAIL unwritable --json — got exit $uwc"; fail=$((fail+1)); fi
+# an unwritable --gate-json verdict on a CLEAN gate: the CI consumer reads the verdict FILE — exit 0
+# with no file written is a gateless green (the SARIF reporter sees nothing and passes). Exit 2.
+gw="$("$CJ" "$W/cls" --gate-json "$W/no-such-dir-xyz/gate.json" 2>&1)"; gwc=$?
+want "unwritable --gate-json is loud"                           "$gw" 'could not write --gate-json'
+if [ "$gwc" -eq 2 ]; then echo "  ok   unwritable --gate-json (clean gate) exits 2"; pass=$((pass+1));
+else echo "  FAIL unwritable --gate-json (clean gate) — got exit $gwc"; fail=$((fail+1)); fi
+# …but a REAL violation still outranks the write failure: exit 1 (CI stays red on the violation).
+gv="$(CANDOR_POLICY="$W/pol-deny" "$CJ" "$W/cls" --gate-json "$W/no-such-dir-xyz/gate.json" 2>&1)"; gvc=$?
+want "write failure stays loud alongside a violation"           "$gv" 'could not write --gate-json'
+if [ "$gvc" -eq 1 ]; then echo "  ok   a violation outranks the write failure (exit 1)"; pass=$((pass+1));
+else echo "  FAIL violation + unwritable --gate-json — got exit $gvc (want 1)"; fail=$((fail+1)); fi
+# a typo'd CANDOR_DEPS token: every call into that dep would read PURE — exit 2, the CANDOR_CONFIG posture
+dt="$(CANDOR_DEPS="$W/no-such-deps.json" "$CJ" "$W/cls" 2>&1)"; dtc=$?
+want "typo'd CANDOR_DEPS names the bad token"                   "$dt" 'not a readable file or directory'
+if [ "$dtc" -eq 2 ]; then echo "  ok   typo'd CANDOR_DEPS exits 2"; pass=$((pass+1));
+else echo "  FAIL typo'd CANDOR_DEPS — got exit $dtc"; fail=$((fail+1)); fi
+# a corrupt (unparseable) dep report: the §2.1 'corrupt report ≠ pure' rule, enforced at the file level
+printf '{ not json' > "$W/corrupt-dep.json"
+dc="$(CANDOR_DEPS="$W/corrupt-dep.json" "$CJ" "$W/cls" 2>&1)"; dcc=$?
+want "corrupt dep report is named"                              "$dc" 'unreadable or not valid JSON'
+if [ "$dcc" -eq 2 ]; then echo "  ok   corrupt dep report exits 2"; pass=$((pass+1));
+else echo "  FAIL corrupt dep report — got exit $dcc"; fail=$((fail+1)); fi
+# the query loader's precise failure reason is RELAYED ("cannot read report <path> (<why>)"), not discarded
+qd="$("$CJ" show "$W/no-such-report.json" x 2>&1)"
+want "query relays the load-failure reason in parens"           "$qd" "($W/no-such-report.json)"
+
 echo "== policy: layering forbid A -> B (AS-EFF-009) =="
 mkdir -p "$W/lsrc/app/domain" "$W/lsrc/app/infra"
 cat > "$W/lsrc/app/infra/Repo.java" <<'J'

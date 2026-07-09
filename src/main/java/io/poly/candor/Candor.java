@@ -585,7 +585,18 @@ public class Candor {
         // the all-classes ClassConformance; compute it once here so the gate below can reuse it rather
         // than recompute (the §5 two-pass walk) on a --json + CANDOR_STRICT run.
         ClassConformance ccFull = (jsonOut != null) ? classConformance(inferred) : null;
-        if (jsonOut != null) writeReport(inferred, jsonOut, ccFull);
+        if (jsonOut != null) {
+            try {
+                writeReport(inferred, jsonOut, ccFull);
+            } catch (IOException e) {
+                // Same one-line-diagnostic + exit 2 posture as an unreadable scan target above: an
+                // unwritable report path (a missing directory, a permission wall) is a misconfiguration,
+                // not an engine crash — never a raw stack trace, and never exit 1 (that reads as a gate
+                // violation to CI).
+                System.err.println("candor: cannot write report " + jsonOut + ": " + e.getMessage());
+                System.exit(2);
+            }
+        }
 
         // The κ-coverage disclosure (mirrors the Rust/TS receipts): external packages the bytecode
         // demonstrably calls where the classifier never fired — invisible, not Unknown. Per-scan
@@ -704,7 +715,13 @@ public class Candor {
             if (path.equals("-")) System.out.println(json);
             else Files.writeString(Path.of(path), json + "\n");
         } catch (IOException e) {
+            // FAIL-CLOSED: the verdict file is what a CI consumer (the SARIF reporter) reads — a clean
+            // gate whose verdict could not be WRITTEN must not exit 0, or the pipeline reads "green, no
+            // verdict" as a pass (the gateless-green class, same posture as an unreadable policy). With
+            // violations pending the caller's exit 1 still wins (a real violation outranks the I/O error),
+            // but the failure is loud either way.
             System.err.println("candor: could not write --gate-json " + path + ": " + e.getMessage());
+            if (violations == 0) System.exit(2);
         }
     }
 

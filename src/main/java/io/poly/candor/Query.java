@@ -105,7 +105,10 @@ public final class Query {
         try {
             fns = load(pos.get(0));
         } catch (Exception e) {
-            System.err.println("candor: cannot read report " + pos.get(0));
+            // load() throws PRECISE reasons ("not a candor report: object has no 'functions' array",
+            // NoSuchFileException, a JSON syntax error) — relay them, don't discard the diagnostic.
+            String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            System.err.println("candor: cannot read report " + pos.get(0) + " (" + why + ")");
             return 2;
         }
         String arg = pos.size() > 1 ? pos.get(1) : null;

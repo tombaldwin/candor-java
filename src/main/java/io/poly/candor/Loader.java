@@ -115,7 +115,13 @@ final class Loader {
      *  directory is scanned for *.json) into a `method-ref hash -> inferred effects` map, so a call
      *  into an already-analyzed dependency inherits its effects (candor-spec §2). Version-aware trust
      *  (§2.1): effects from a report produced by a DIFFERENT engine version are downgraded to Unknown
-     *  rather than silently trusted. Unreadable/legacy-v0.1 (no hash) entries are skipped. */
+     *  rather than silently trusted. Legacy-v0.1 (no hash) entries are skipped.
+     *
+     *  <p><b>Fail-closed (the CANDOR_CONFIG posture):</b> CANDOR_DEPS is a configured effect SOURCE —
+     *  a token that resolves to no readable file (a typo'd path), an unwalkable deps directory, or an
+     *  unreadable/unparseable dep report FAILS the run (exit 2). Silently skipping any of these made
+     *  every call into that dep read PURE — the §2.1 "corrupt report ≠ pure" care taken inside the
+     *  parser, undone one level up. */
     static void loadCrossDeps(String spec, String ownVersion) {
         if (spec == null || spec.isBlank()) return;
         for (String tok : spec.split("[\\s:,]+")) {
@@ -129,9 +135,15 @@ final class Loader {
                     }
                 } else if (Files.isRegularFile(p)) {
                     files.add(p);
+                } else {
+                    System.err.println("candor: CANDOR_DEPS names " + p + " but it is not a readable file or"
+                            + " directory — failing (exit 2), a configured dep must not silently read pure");
+                    System.exit(2);
                 }
             } catch (IOException e) {
-                continue;
+                System.err.println("candor: CANDOR_DEPS cannot read " + p + " (" + e.getMessage()
+                        + ") — failing (exit 2), a configured dep must not silently read pure");
+                System.exit(2);
             }
             for (Path f : files) {
                 try {
@@ -212,7 +224,12 @@ final class Loader {
                         }
                     }
                 } catch (Exception ex) {
-                    // skip unreadable / unparseable dependency reports (like the Rust impl)
+                    // FAIL-CLOSED: an unreadable/unparseable dep report swallowed here meant every call
+                    // into that dep read pure (the field-level care above never ran). A corrupt configured
+                    // report is a misconfiguration, not background noise — exit 2, like CANDOR_CONFIG.
+                    System.err.println("candor: CANDOR_DEPS report " + f + " is unreadable or not valid JSON ("
+                            + ex.getMessage() + ") — failing (exit 2), a corrupt dep report must not read pure");
+                    System.exit(2);
                 }
             }
         }

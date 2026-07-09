@@ -1580,6 +1580,75 @@ want "the advisory names the injection surface"                    "$tn" 'caller
 if [ "$tnrc" -eq 0 ]; then echo "  ok   AS-EFF-007 is advisory — findings never fail CI (exit 0)"; pass=$((pass+1));
 else echo "  FAIL CANDOR_TAINT advisory exit $tnrc (want 0)"; fail=$((fail+1)); fi
 
+# ── CLI surface: --help / --version / bare --json stdout purity / the empty-scan advice ──────────
+echo "== CLI surface: --help, --version, bare --json, empty scan =="
+hp="$("$CJ" --help 2>&1)"; hprc=$?
+want "--help shows usage"                          "$hp" 'USAGE: candor'
+want "--help names the gate flag"                  "$hp" '--gate-json'
+want "--help states the spec contract"             "$hp" 'candor-spec 0.8'
+if [ "$hprc" -eq 0 ]; then echo "  ok   --help exits 0"; pass=$((pass+1));
+else echo "  FAIL --help exit $hprc (want 0)"; fail=$((fail+1)); fi
+hs="$("$CJ" -h 2>&1)"
+want "-h is the same surface"                      "$hs" 'USAGE: candor'
+vv="$("$CJ" --version 2>&1)"; vvrc=$?
+want    "--version prints the release + spec"      "$vv" '(spec 0.8)'
+want    "--version prints the upgrade line"        "$vv" 'jbang --fresh'
+wantnot "--version release is baked (not the 'unknown' fallback)" "$vv" 'candor-java unknown'
+if [ "$vvrc" -eq 0 ]; then echo "  ok   --version exits 0"; pass=$((pass+1));
+else echo "  FAIL --version exit $vvrc (want 0)"; fail=$((fail+1)); fi
+vshort="$("$CJ" -V 2>&1)"
+if [ "$vshort" = "$vv" ]; then echo "  ok   -V and --version agree byte-for-byte"; pass=$((pass+1));
+else echo "  FAIL -V and --version disagree"; fail=$((fail+1)); fi
+# bare --json (no file value): the report ENVELOPE streams to stdout as PURE JSON; every human line
+# (the progress line, the effect summary) goes to stderr; no sidecar files are written.
+mkdir -p "$W/jsonstdout" && cd "$W/jsonstdout"
+"$CJ" "$W/cls" --json > "$W/js.out" 2> "$W/js.err"; jsrc=$?
+cd "$ROOT"
+want "bare --json stdout is a whole JSON report envelope" \
+     "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("ENVELOPE" if "candor" in d and "functions" in d else "BAD")' "$W/js.out" 2>/dev/null)" 'ENVELOPE'
+want    "the progress line goes to stderr"          "$(cat "$W/js.err")" 'to stdout'
+want    "the human effect summary goes to stderr"   "$(cat "$W/js.err")" 'reach effects'
+wantnot "no human text pollutes stdout"             "$(cat "$W/js.out")" 'reach effects'
+sidecars="$(ls "$W/jsonstdout" 2>/dev/null)"
+if [ -z "$sidecars" ]; then echo "  ok   bare --json writes no sidecar files"; pass=$((pass+1));
+else echo "  FAIL bare --json left files behind: $sidecars"; fail=$((fail+1)); fi
+if [ "$jsrc" -eq 0 ]; then echo "  ok   bare --json exits 0"; pass=$((pass+1));
+else echo "  FAIL bare --json exit $jsrc (want 0)"; fail=$((fail+1)); fi
+# an existing path with NO .class files: fail loud with the build advice (a source dir must never
+# read as "clean, pure project"), exit 2
+mkdir -p "$W/emptydir"
+es="$("$CJ" "$W/emptydir" 2>&1)"; esrc=$?
+want "an empty scan says no .class files were found" "$es" 'no .class files found'
+want "…and points at compiled output"                "$es" 'reads BYTECODE'
+if [ "$esrc" -eq 2 ]; then echo "  ok   an empty scan exits 2 (never a trivially-green gate)"; pass=$((pass+1));
+else echo "  FAIL empty scan exit $esrc (want 2)"; fail=$((fail+1)); fi
+
+# ── fail-closed residuals: unreadable deps DIRECTORY walk + exists-but-unreadable config ─────────
+echo "== fail-closed residuals: unreadable deps dir, unreadable config =="
+if [ "$(id -u)" -eq 0 ]; then
+  echo "  SKIP (loud): running as root — chmod-000 stays readable, the two unreadable-path pins cannot run"
+else
+  # CANDOR_DEPS names a directory that exists but cannot be WALKED (the Files.walk IOException arm —
+  # distinct from the not-a-file token arm already pinned above): exit 2, never silently-pure deps.
+  mkdir -p "$W/depsdir-noread"; : > "$W/depsdir-noread/lib.json"; chmod 000 "$W/depsdir-noread"
+  dw="$(CANDOR_DEPS="$W/depsdir-noread" "$CJ" "$W/cls" 2>&1)"; dwrc=$?
+  chmod 755 "$W/depsdir-noread"
+  want "an unwalkable CANDOR_DEPS dir is named" "$dw" 'CANDOR_DEPS cannot read'
+  if [ "$dwrc" -eq 2 ]; then echo "  ok   unwalkable deps dir exits 2"; pass=$((pass+1));
+  else echo "  FAIL unwalkable deps dir exit $dwrc (want 2)"; fail=$((fail+1)); fi
+  # a DISCOVERED .candor/config that exists but cannot be read: the file may carry the policy —
+  # a silently-dropped config is a silently-dropped gate. Exit 2 (spec §3.4 fail-closed).
+  mkdir -p "$W/cfgnoread/.candor"
+  printf 'policy .candor/arch.policy\n' > "$W/cfgnoread/.candor/config"
+  cp -r "$W/cls" "$W/cfgnoread/build-cls"
+  chmod 000 "$W/cfgnoread/.candor/config"
+  cn="$("$CJ" "$W/cfgnoread/build-cls" 2>&1)"; cnrc=$?
+  chmod 644 "$W/cfgnoread/.candor/config"
+  want "an unreadable discovered config is named" "$cn" 'exists but could not be read'
+  if [ "$cnrc" -eq 2 ]; then echo "  ok   exists-but-unreadable config exits 2"; pass=$((pass+1));
+  else echo "  FAIL unreadable config exit $cnrc (want 2)"; fail=$((fail+1)); fi
+fi
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

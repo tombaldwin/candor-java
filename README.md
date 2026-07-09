@@ -39,13 +39,14 @@ you can act on it.
 **It maps, too** — a per-method effect audit and instant `show`/`where`/`callers`/`map`/`diff`/
 `containment`/`reachable`/`path`/`impact` queries over the report, for an agent or a human navigating unfamiliar code.
 
-## Status: alpha (v0.5.x)
+## Status: beta (v0.8.x, spec 0.8 — the family's reference engine)
 
 Validated on a real 2,257-class Spring application and on real Kotlin/Scala/Groovy bytecode; holds
 the spec's cross-engine conformance suite (same fixtures and expected effect sets as the Rust
-engine, in CI); guarded by an adversarial soundness fuzzer. Alpha because the classifier and the
-Spring surface keep growing — the trust contract (§4: never silently pure) is not where the
-immaturity lives.
+engine, in CI); guarded by an adversarial soundness fuzzer, a ~446-anchor real-library leaf probe,
+a runtime ground-truth oracle (JFR + bytecode agent), and a mutation probe over the gates
+themselves. Beta because the classifier and the framework surface keep growing — the trust
+contract (§4: never silently pure) is not where the immaturity lives.
 
 **Works:** audit mode — resolves each call, classifies it against the effect table (matching the I/O
 boundary, not the package), and propagates transitively to a fixpoint over the call graph. Emits the

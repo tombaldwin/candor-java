@@ -503,6 +503,32 @@ db="$("$CJ" diff "$W/r.json" "$W/qbare.json" --json 2>"$W/dberr")"
 want   "versionless baseline: empty provenance field, still answers" "$db" '"baseline_version": ""'
 absent "versionless baseline: no ⚠ (nothing to compare)" "$(cat "$W/dberr")" '⚠'
 
+echo "== diff exit parity (candor-ts query.mjs): exit 1 on a gain ONLY when the builds match =="
+# The same-build ratchet convenience: a gained effect exits 1 iff the baseline came from THIS engine
+# build. Under a version mismatch the "gain" may be the engine reclassifying (unmasking, not
+# regression) — that signal is bogus as a CI failure, so exit 0 and the stderr ⚠ informs instead.
+printf '{"candor":{"version":"vX"},"functions":[{"fn":"A.foo","inferred":["Net","Db"]}]}\n' > "$W/xcur.json"
+printf '{"candor":{"version":"vX"},"functions":[{"fn":"A.foo","inferred":["Net"]}]}\n' > "$W/xbase_same.json"
+printf '{"candor":{"version":"vY"},"functions":[{"fn":"A.foo","inferred":["Net"]}]}\n' > "$W/xbase_other.json"
+"$CJ" diff "$W/xcur.json" "$W/xbase_same.json" --json >/dev/null 2>&1; rc=$?
+want   "diff: gain + matched builds → exit 1 (the same-build ratchet)" "$rc" '1'
+"$CJ" diff "$W/xcur.json" "$W/xbase_other.json" --json >/dev/null 2>"$W/xdoerr"; rc=$?
+want   "diff: gain + MISmatched builds → exit 0 (unmasking, not regression)" "$rc" '0'
+want   "…and the ⚠ disclosure names the mismatched baseline" "$(cat "$W/xdoerr")" '⚠ baseline @vY'
+"$CJ" diff "$W/xcur.json" "$W/xcur.json" --json >/dev/null 2>&1; rc=$?
+want   "diff: no gain → exit 0" "$rc" '0'
+# the contract rides the verdict, not the output format
+"$CJ" diff "$W/xcur.json" "$W/xbase_same.json" >/dev/null 2>&1; rc=$?
+want   "diff: text mode exits 1 on a matched-build gain too" "$rc" '1'
+# a LOST-only delta is not a gain
+printf '{"candor":{"version":"vX"},"functions":[{"fn":"A.foo","inferred":["Net"]}]}\n' > "$W/xcur_lost.json"
+printf '{"candor":{"version":"vX"},"functions":[{"fn":"A.foo","inferred":["Net","Db"]}]}\n' > "$W/xbase_more.json"
+"$CJ" diff "$W/xcur_lost.json" "$W/xbase_more.json" --json >/dev/null 2>&1; rc=$?
+want   "diff: lost-only delta → exit 0" "$rc" '0'
+# gains ALWAYS exits 0 — in candor-ts the exit-1 contract belongs to diff alone (pure disclosure here)
+"$CJ" gains "$W/xcur.json" "$W/xbase_same.json" --json >/dev/null 2>&1; rc=$?
+want   "gains: a gained effect still exits 0 (disclosure, not a gate)" "$rc" '0'
+
 echo "== query loader: a malformed-shape report FAILS LOUD, never silently 'all pure' =="
 # An object with no `functions` key (a half-written / foreign file) was read as List.of() → silent
 # under-report (show said 'no effects', gains alarmed on everything). Now it fails loud (exit 2).

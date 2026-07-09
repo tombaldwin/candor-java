@@ -152,4 +152,34 @@ class FabricationAndDepGuardsTest {
                     "a null-version dep entry must inherit Unknown (not be dropped to pure), got " + (de == null ? "null" : de.effects));
         } finally { rm(dir); }
     }
+
+    /** #8b — the `inferred` field-trust edges on a SAME-version report (never executed before): a JSON-null
+     *  `inferred`, a non-array `inferred`, and a foreign effect NAME are each an untrustworthy claim →
+     *  Unknown, never silently dropped (§2.1 "corrupt report ≠ pure"); a genuinely ABSENT `inferred` is the
+     *  dep's purity claim — accepted (no crossDeps entry), with its package still registered as covered. */
+    @Test
+    void inferredFieldTrustEdgesDowngradeToUnknownNeverPure() throws Exception {
+        Path dir = Files.createTempDirectory("candor-deps");
+        try {
+            Files.writeString(dir.resolve("lib.json"),
+                "{\"candor\":{\"version\":\"vSAME\",\"spec\":\"0.8\"},\"functions\":["
+                + "{\"fn\":\"dep.Lib.nul\",\"hash\":\"dep/Lib.nul()V\",\"inferred\":null},"
+                + "{\"fn\":\"dep.Lib.str\",\"hash\":\"dep/Lib.str()V\",\"inferred\":\"Net\"},"
+                + "{\"fn\":\"dep.Lib.foreign\",\"hash\":\"dep/Lib.foreign()V\",\"inferred\":[\"Teleport\"]},"
+                + "{\"fn\":\"dep.Lib.pure\",\"hash\":\"dep/Lib.pure()V\"}]}");
+            Candor.resetState();
+            Loader.loadCrossDeps(dir.toString(), "vSAME");
+            var deps = AnalysisState.ctx().crossDeps;
+            assertTrue(deps.get("dep/Lib.nul()V") != null && deps.get("dep/Lib.nul()V").effects.contains(Effect.UNKNOWN),
+                    "inferred: null → Unknown (untrusted claim)");
+            assertTrue(deps.get("dep/Lib.str()V") != null && deps.get("dep/Lib.str()V").effects.contains(Effect.UNKNOWN),
+                    "a non-array inferred → Unknown");
+            assertTrue(deps.get("dep/Lib.foreign()V") != null && deps.get("dep/Lib.foreign()V").effects.contains(Effect.UNKNOWN),
+                    "an unrecognized effect name → Unknown (never dropped)");
+            assertFalse(deps.containsKey("dep/Lib.pure()V"),
+                    "an ABSENT inferred field is the dep's purity claim — accepted, no Unknown fabricated");
+            assertTrue(AnalysisState.ctx().depCoveredPkgs.contains("dep"),
+                    "the entries' package registers as dep-covered (κ ledger) even for the pure claim");
+        } finally { rm(dir); }
+    }
 }

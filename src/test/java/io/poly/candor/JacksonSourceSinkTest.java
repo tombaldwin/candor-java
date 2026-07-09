@@ -9,11 +9,14 @@ import io.poly.candor.model.Effect;
 import org.junit.jupiter.api.Test;
 
 /**
- * κ batch 30 — Jackson. The stack's API shape allows one descriptor-driven rule: an entry point that
- * names its own source/sink does so via File/Path (→ Fs) or URL (→ Net); the String/bytes/stream
- * overloads are pure-RELATIVE (the caller-opened source carried the effect — the JDOM2 stance).
+ * Jackson, classified by source/sink. The stack's API shape allows one descriptor-driven rule: an
+ * entry point that names its own source/sink does so via File/Path (→ Fs) or URL (→ Net); the
+ * String/bytes/stream overloads are pure-RELATIVE (the caller-opened source carried the effect —
+ * the JDOM2 stance).
+ *
+ * <p>Provenance: κ batch 30, 2026-07-06.
  */
-class KappaBatch30Test {
+class JacksonSourceSinkTest {
 
     @Test
     void fileAndUrlEntryPointsAreClassifiedBySource() {

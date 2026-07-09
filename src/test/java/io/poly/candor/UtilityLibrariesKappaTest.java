@@ -9,12 +9,15 @@ import io.poly.candor.model.Effect;
 import org.junit.jupiter.api.Test;
 
 /**
- * κ batch 29 — the next ledger tier after batch 28, same inventory discipline (a real app's complete
- * 68-member frontier into these packages, triaged member-by-member): commons-validator / beanutils /
- * displaytag / w3c.dom are pure-surface coverage; threeten-extra / jjwt / jdom2 / ehcache carry precise
- * effectful members. Anti-fabrication twins pin the pure siblings throughout.
+ * The utility-library ledger tier, same inventory discipline as {@link LegacyEnterpriseKappaTest}
+ * (a real app's complete 68-member frontier into these packages, triaged member-by-member):
+ * commons-validator / beanutils / displaytag / w3c.dom are pure-surface coverage; threeten-extra /
+ * jjwt / jdom2 / ehcache carry precise effectful members. Anti-fabrication twins pin the pure
+ * siblings throughout.
+ *
+ * <p>Provenance: κ batch 29, 2026-07-06.
  */
-class KappaBatch29Test {
+class UtilityLibrariesKappaTest {
 
     @Test
     void threetenNowIsClockValueOpsArePure() {

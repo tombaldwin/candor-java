@@ -7,8 +7,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import io.poly.candor.model.Effect;
 import org.junit.jupiter.api.Test;
 
-/** κ batch 31 — the long-tail sweep (111 members triaged), plus the StopWatch gap batch 28 missed. */
-class KappaBatch31Test {
+/**
+ * The classifier long-tail sweep (111 members triaged — Twilio, Redisson, commons-io, dbunit, AOP
+ * {@code proceed}, SAX, csvreader, AWS credentials …), plus the StopWatch gap the legacy-enterprise
+ * frontier ({@link LegacyEnterpriseKappaTest}) missed.
+ *
+ * <p>Provenance: κ batch 31, 2026-07-07.
+ */
+class ClassifierLongTailTest {
 
     @Test
     void stopWatchReadsTheClockBothGenerations() {

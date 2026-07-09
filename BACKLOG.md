@@ -98,5 +98,5 @@ this is a cross-engine spec item, not a local patch. Repro: the `viaParam` fixtu
 - **Declarative HTTP-client interfaces → Net** (Retrofit / Micronaut `@Client` / MicroProfile
   `@RegisterRestClient` / Spring `@*Exchange`) — the OpenFeign analog; Unknown → precise Net.
 - **`containment` in the cross-engine conformance differential** (candor-spec PART 11, Java vs candor-query).
-- **Test coverage**: KappaBatch24/25, InheritedPersistenceVeins, InheritedModeledBase, HttpClientNet,
+- **Test coverage**: HibernateJakartaPersistence (κ batch 24), Panache, InheritedPersistenceVeins, InheritedModeledBase, HttpClientNet,
   ContainmentRatchet, PolicyParser, PolicyGate, LayerOf (the policy gate + κ rules were under-tested).

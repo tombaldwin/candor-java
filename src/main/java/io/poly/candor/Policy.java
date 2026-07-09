@@ -313,7 +313,11 @@ final class Policy {
     /** A policy scope matches a method by dotted SEGMENT (so `domain` matches `app.domain.Svc.handle`
      *  and the `domain_logic` package, but not `subdomain`). Mirrors the Rust impl's `scope_matches`:
      *  a contiguous run of segments — intermediate segments exact, the LAST a prefix. Empty scope ⇒
-     *  whole project (matches everything). */
+     *  whole project (matches everything). FAMILY RULING (§6.2 ↔ §3.1): scope segments split on the
+     *  same boundaries as the query name ladder — for the JVM that INCLUDES the `$` nested-type
+     *  boundary (the ladder already pins `Svc.act` matching `Cases$Svc.act`), so `deny Net client` /
+     *  `forbid app -> repo` bite on a function in a nested class (`q.L$app.entry`) exactly as a rust
+     *  module or swift enum-namespace member matches. */
     static boolean scopeMatches(String name, String scope) {
         if (scope.isEmpty()) return true;
         String[] segs = nameSegments(name);
@@ -329,14 +333,18 @@ final class Policy {
         return false;
     }
 
-    /** Split a name OR a policy scope into segments on BOTH `.` and `::`, dropping empties. candor-java
-     *  node ids are dotted (`com.foo.A.m`), but spec §6.2 + the conformance battery write scopes with `::`
-     *  (`app::db`, `forbid app::web -> app::db`) and a Rust report names fns with `::` — so a `::`-written
-     *  policy scope must still match a dotted name (it silently never did: the gate was a dead rule →
-     *  a real violation passed). Mirrors the Rust impl's `name_segments` (splits on `.` and `:`). */
+    /** Split a name OR a policy scope into segments on `.`, `::` AND the JVM's `$` nested-type boundary,
+     *  dropping empties. candor-java node ids are dotted (`com.foo.A.m`), but spec §6.2 + the conformance
+     *  battery write scopes with `::` (`app::db`, `forbid app::web -> app::db`) and a Rust report names
+     *  fns with `::` — so a `::`-written policy scope must still match a dotted name (it silently never
+     *  did: the gate was a dead rule → a real violation passed). `$` is a segment boundary too (family
+     *  ruling): javac compiles a nested type to `Outer$Inner`, so without it a scope naming the nested
+     *  class (`deny Net client` vs `q.L$client.entry`) was silently inert on the JVM while the same
+     *  policy bit on the rust/swift engines. Mirrors the Rust impl's `name_segments` (splits on `.`/`:`),
+     *  extended with the JVM-only boundary. */
     static String[] nameSegments(String s) {
         List<String> out = new ArrayList<>();
-        for (String seg : s.split("[.:]")) if (!seg.isEmpty()) out.add(seg);
+        for (String seg : s.split("[.:$]")) if (!seg.isEmpty()) out.add(seg);
         return out.toArray(new String[0]);
     }
 

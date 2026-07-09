@@ -1492,6 +1492,74 @@ else echo "  FAIL parallel partial failure — exit $pmissrc (want 1)"; fail=$((
 if [ "$purc" -eq 2 ]; then echo "  ok   parallel usage error exits 2"; pass=$((pass+1));
 else echo "  FAIL parallel usage — exit $purc (want 2)"; fail=$((fail+1)); fi
 
+# ── CANDOR_STRICT conformance gate (AS-EFF-001/002/003, SEMANTICS §6 through the DI reading) ─────
+# The gate that shipped for months with zero coverage in ANY harness (TESTING.md §2 pin 1): a class's
+# injected-collaborator fields are its declared capabilities; performing beyond them fires 001, an
+# unused capability fires 002, an unresolvable call fires 003. Exit codes exact: violation 1, clean 0.
+echo "== CANDOR_STRICT conformance gate =="
+mkdir -p "$W/strict/app"
+cat > "$W/strict/app/FsWorker.java" <<'J'
+package app;
+import java.nio.file.*;
+public class FsWorker { public void doIt() { try { Files.readAllBytes(Path.of("/tmp/x")); } catch (Exception e) {} } }
+J
+cat > "$W/strict/app/Svc.java" <<'J'
+package app;
+public class Svc {
+  private final FsWorker w = new FsWorker();
+  public void run() { w.doIt(); }
+}
+J
+cat > "$W/strict/app/Holder.java" <<'J'
+package app;
+public class Holder {
+  private FsWorker w;   // injected, never used
+  public int idle() { return 1; }
+}
+J
+cat > "$W/strict/app/Refl.java" <<'J'
+package app;
+public class Refl {
+  public Object go(String n) throws Exception { return Class.forName(n).getDeclaredConstructor().newInstance(); }
+}
+J
+javac -d "$W/strictcls" "$W/strict/app"/*.java
+# whole-unit: the leaf FsWorker reaches for ambient Fs with no injected capability → AS-EFF-001, exit 1
+sv="$(CANDOR_STRICT=1 "$CJ" "$W/strictcls" 2>&1)"; svrc=$?
+want "whole-unit CANDOR_STRICT fires AS-EFF-001 on the capability-less leaf" "$sv" '[AS-EFF-001]'
+want "the AS-EFF-001 diagnostic names the class"                             "$sv" 'app.FsWorker'
+if [ "$svrc" -eq 1 ]; then echo "  ok   a conformance violation exits 1"; pass=$((pass+1));
+else echo "  FAIL strict violation exit $svrc (want 1)"; fail=$((fail+1)); fi
+# scoped to the conformant consumer: its collaborator covers the Fs it performs → clean, exit 0
+sc="$(CANDOR_STRICT=app.Svc "$CJ" "$W/strictcls" 2>&1)"; scrc=$?
+want    "scoped CANDOR_STRICT passes the conformant class" "$sc" 'no violations'
+wantnot "the out-of-scope violation is not evaluated"      "$sc" 'AS-EFF-001'
+if [ "$scrc" -eq 0 ]; then echo "  ok   a clean scoped gate exits 0"; pass=$((pass+1));
+else echo "  FAIL clean strict exit $scrc (want 0)"; fail=$((fail+1)); fi
+# an injected-but-unused capability → AS-EFF-002, exit 1
+h="$(CANDOR_STRICT=app.Holder "$CJ" "$W/strictcls" 2>&1)"; hrc=$?
+want "an unused injected capability fires AS-EFF-002" "$h" '[AS-EFF-002]'
+if [ "$hrc" -eq 1 ]; then echo "  ok   AS-EFF-002 exits 1"; pass=$((pass+1));
+else echo "  FAIL AS-EFF-002 exit $hrc (want 1)"; fail=$((fail+1)); fi
+# an unresolvable (reflective) call → AS-EFF-003 (not provably complete), exit 1; never a 001
+rl="$(CANDOR_STRICT=app.Refl "$CJ" "$W/strictcls" 2>&1)"; rlrc=$?
+want    "an unresolved call fires AS-EFF-003"                       "$rl" '[AS-EFF-003]'
+wantnot "Unknown never reads as an AS-EFF-001 undeclared effect"    "$rl" 'AS-EFF-001'
+if [ "$rlrc" -eq 1 ]; then echo "  ok   AS-EFF-003 exits 1"; pass=$((pass+1));
+else echo "  FAIL AS-EFF-003 exit $rlrc (want 1)"; fail=$((fail+1)); fi
+# SPEC §6: the program entry point (psvm main) is exempt from AS-EFF-001 — it mints the bundle
+mkdir -p "$W/strictmain/app"
+cat > "$W/strictmain/app/Main.java" <<'J'
+package app;
+import java.nio.file.*;
+public class Main { public static void main(String[] a) throws Exception { Files.writeString(Path.of("/tmp/x"), "y"); } }
+J
+javac -d "$W/strictmaincls" "$W/strictmain/app/Main.java"
+em="$(CANDOR_STRICT=1 "$CJ" "$W/strictmaincls" 2>&1)"; emrc=$?
+want "the psvm entry class is exempt from AS-EFF-001 (SPEC §6)" "$em" 'no violations'
+if [ "$emrc" -eq 0 ]; then echo "  ok   entry-point exemption exits 0"; pass=$((pass+1));
+else echo "  FAIL entry-exemption exit $emrc (want 0)"; fail=$((fail+1)); fi
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

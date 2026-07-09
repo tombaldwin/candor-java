@@ -1560,6 +1560,26 @@ want "the psvm entry class is exempt from AS-EFF-001 (SPEC §6)" "$em" 'no viola
 if [ "$emrc" -eq 0 ]; then echo "  ok   entry-point exemption exits 0"; pass=$((pass+1));
 else echo "  FAIL entry-exemption exit $emrc (want 0)"; fail=$((fail+1)); fi
 
+# ── CANDOR_TAINT (AS-EFF-007): heuristic ADVISORY — findings print, CI never fails on them ───────
+echo "== CANDOR_TAINT advisory =="
+mkdir -p "$W/taint/app"
+cat > "$W/taint/app/Tnt.java" <<'J'
+package app;
+public class Tnt {
+  public void go(String p, boolean c) {
+    String x = "safe";
+    if (c) x = p;   // tainted on one branch only — the control-flow-join rule
+    try { Runtime.getRuntime().exec(x); } catch (Exception e) {}
+  }
+}
+J
+javac -d "$W/taintcls" "$W/taint/app/Tnt.java"
+tn="$(CANDOR_TAINT=1 "$CJ" "$W/taintcls" 2>&1)"; tnrc=$?
+want "a branch-join tainted arg at an Exec sink prints AS-EFF-007" "$tn" '[AS-EFF-007]'
+want "the advisory names the injection surface"                    "$tn" 'caller-derived input'
+if [ "$tnrc" -eq 0 ]; then echo "  ok   AS-EFF-007 is advisory — findings never fail CI (exit 0)"; pass=$((pass+1));
+else echo "  FAIL CANDOR_TAINT advisory exit $tnrc (want 0)"; fail=$((fail+1)); fi
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

@@ -42,12 +42,6 @@ public final class EffectSet {
         return new EffectSet(s);
     }
 
-    public static EffectSet copyOf(Collection<Effect> effects) {
-        EnumSet<Effect> s = EnumSet.noneOf(Effect.class);
-        s.addAll(effects);
-        return new EffectSet(s);
-    }
-
     /**
      * Build from spec-name strings. Names outside the §1 vocabulary (a hypothetical language-specific
      * effect on a foreign report) are skipped — candor-java only ever produces the standard vocabulary,

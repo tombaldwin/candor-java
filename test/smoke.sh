@@ -1686,6 +1686,15 @@ else
   echo "  FAIL the jar resource drifted from AGENTS.md — re-copy: cp AGENTS.md src/main/resources/AGENTS.md"; fail=$((fail+1))
 fi
 
+# ── family identity phrases (drift gate): the claims that have actually drifted before ───────────
+echo "== family identity phrases =="
+README_TXT="$(cat "$ROOT/README.md")"; AGENTS_TXT="$(cat "$ROOT/AGENTS.md")"
+want    "README names candor-java the family's reference engine" "$README_TXT" "the family's reference engine"
+want    "README pins the spec floor (spec 0.8)"                  "$README_TXT" "spec 0.8"
+wantnot "README does not call Rust the reference"                "$README_TXT" "Rust reference"
+want    "AGENTS names candor-java the reference engine"          "$AGENTS_TXT" "reference engine"
+want    "AGENTS pins the spec floor (spec 0.8)"                  "$AGENTS_TXT" "spec 0.8"
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

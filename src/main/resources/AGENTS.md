@@ -103,6 +103,18 @@ Name queries resolve exact > segment-suffix (`Svc.save` matches `com.example.Svc
   effect; crossed with `CANDOR_POLICY` it returns which functions would violate.
 - **Enforce in CI** → `--policy <file>` (or `CANDOR_POLICY`) (candor-spec §6.2: `deny`/`pure`/`allow`/`forbid`) +
   `CANDOR_BASELINE` (regression guard). Deterministic — not an LLM opinion.
+- **Machine verdict** → add `--gate-json <file|->` (candor-spec §3.3): the structured verdict
+  `{ spec, ok, violations:[{rule,fn,effects,detail}] }` from the same check that sets the exit code —
+  what the PR-native SARIF Action consumes (`--gate-json - | candor-sarif`; with `-` the human gate
+  lines move to stderr, stdout stays pure JSON). Exit semantics: violation → 1 (verdict written);
+  a gate that could not run (unreadable policy/config, unwritable verdict path) → **2 with NO verdict
+  file** — never read a missing verdict as green. A clean run writes `ok: true, violations: []`.
+- **Check the wiring in** → `.candor/config` (candor-spec §3.4), one `key value` line each:
+  `policy` / `baseline` / `deps` / `strict` / `no-ambient` / `closed-world` / `taint` (all seven
+  implemented; keys map 1:1 to the `CANDOR_*` env vars; precedence CLI flag → env → config).
+  Discovered by walking UP from the scan target (`CANDOR_CONFIG` overrides; no CWD fallback);
+  relative paths resolve against the config's home directory — the one containing `.candor/` —
+  never the CWD. Fail-closed: an unusable config exits 2; unknown keys warn.
 - **An engine swap is baseline-invalidating — and the guard fails closed on it.** Coverage batches
   change what the engine sees (a κ batch can unmask hundreds of previously-invisible effects), so a
   baseline is comparable only to reports from its own producing build (spec §2.1). When the builds

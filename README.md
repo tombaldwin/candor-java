@@ -300,6 +300,7 @@ quality gate. Pair it with `cargo candor snapshot`-style baselines in CI.
 | **no-ambient** | `CANDOR_NO_AMBIENT=1` (or a name prefix) | `AS-EFF-004` for direct ambient-authority use (route it through an injected collaborator) |
 | **conformance** | `CANDOR_STRICT=1` (or a class-name prefix) | `AS-EFF-001/002/003` — a class performs an effect no injected dependency provides (or injects one it never uses) |
 | **policy** | add `--policy <file>` (or `CANDOR_POLICY=<file>`) | `AS-EFF-006/008/009` + **exit 1** — architecture-as-code: a method violates a `deny`/`pure`/`allow`/`forbid` boundary (transitively) |
+| **gate verdict** | add `--gate-json <file>` (or `-` for stdout) | the structured verdict `{ spec, ok, violations:[{rule,fn,effects,detail}] }` from the *same* check that sets the exit code — the input to CI annotations and the [SARIF reporter](https://github.com/tombaldwin/candor/tree/main/integrations/github) |
 | **taint** (advisory) | `CANDOR_TAINT=1` | `AS-EFF-007` — an injection-class effect (`Exec`/`Fs`/`Db`/`Net`/`Env`/`Ipc`) on a **caller-derived** argument (command/path/SQL injection, SSRF). Intraprocedural taint dataflow; heuristic, never fails CI |
 
 ### Policy: architecture-as-code (`--policy` / `CANDOR_POLICY`)
@@ -350,6 +351,46 @@ forbid domain -> infra          # the domain layer must not depend on the infras
 Scopes match by dotted **segment** (so `domain` matches `app.domain.Svc.handle` and the `domain_logic`
 package, but not `subdomain`) — the same rule as the Rust impl's `scope_matches`. A set-but-unreadable
 policy fails **loud** ("policy NOT enforced"), never silently green.
+
+### Machine-readable verdict — `--gate-json` (candor-spec §3.3)
+
+The gate's verdict as JSON, from the *same* check that sets the exit code, for CI annotations and
+the PR-native SARIF pipeline
+([candor/integrations/github](https://github.com/tombaldwin/candor/tree/main/integrations/github) —
+`candor … --gate-json - | candor-sarif` turns violations into PR-inline annotations):
+
+```sh
+./candor build/classes/java/main --policy .candor/policy --gate-json verdict.json
+# → { "spec": "0.8", "ok": false, "violations": [ { "rule": "AS-EFF-006", "fn": "…", "effects": ["Db"], "detail": "…" } ] }
+```
+
+`-` streams the verdict to stdout (the human gate lines move to stderr so the stream stays pure JSON).
+A clean run still writes `ok: true, violations: []`. **Exit semantics are pinned:** violation → `1`
+(verdict written); a gate that could not run to completion — unreadable policy, unusable config,
+unwritable verdict path — → `2` with **no** verdict file, so a pipeline can never read a stale or
+clean-looking verdict as a pass. (`0` = evaluated, clean; `1` = evaluated, violations; `2` = **not
+evaluated**, fail-closed.)
+
+### `.candor/config` — check in the configuration
+
+One checked-in file replaces the `CANDOR_*` env wiring (candor-spec §3.4), so CI is "point at the
+repo" and the configuration travels with the code. Discovered by walking **up from the scan target**
+(`CANDOR_CONFIG` overrides discovery); precedence, highest first: CLI flag → the matching `CANDOR_*`
+env var → config → default:
+
+```text
+# .candor/config
+policy   .candor/policy         # → CANDOR_POLICY  (the §6.2 gate)
+baseline .candor/baseline.json  # → CANDOR_BASELINE (the regression guard)
+deps     .candor/deps           # → CANDOR_DEPS (whitespace-separated paths, or a directory)
+strict   1                      # → CANDOR_STRICT; likewise: no-ambient, closed-world, taint
+```
+
+candor-java implements all seven keys (`policy` / `baseline` / `deps` / `strict` / `no-ambient` /
+`closed-world` / `taint`). A relative path value resolves against the config's **home directory** —
+the one containing `.candor/` — never your shell's CWD. Fail-closed: an unusable config, or a
+`policy` line with no value, exits `2` (a silently dropped config could be a silently dropped gate);
+unknown keys warn (typo protection), never silently ignored.
 
 ### Conformance: dependency injection *is* a capability system
 

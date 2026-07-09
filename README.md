@@ -251,6 +251,12 @@ gradle run --args="rewire report.json <baseline-report.json>"  # DE-WIRING: whic
                                                         #   baseline — catch a 'fix' that games the gate by disconnecting
 ```
 
+`diff` doubles as a same-build ratchet: it exits **1** when a function *gained* an effect and the two
+reports' producing versions match; on a version mismatch it **discloses** (`baseline_version`/
+`engine_version` in the JSON + a stderr warning) and exits 0 — a cross-build comparison is
+half-garbage in both directions, so it is never silently enforced. (`gains` always exits 0; the
+exit-1 contract belongs to `diff` alone — candor-ts parity.)
+
 > A green effect-gate is not a green feature — it can be satisfied by *disconnecting* functionality. Run
 > `rewire` alongside the policy gate: a passing gate **plus** a clean `rewire` means the boundary was
 > respected *without* gutting the feature. (See candor's `eval/whatif-behavior` for the eval that found this.)
@@ -328,7 +334,10 @@ forbid domain -> infra          # the domain layer must not depend on the infras
 ```
 
 - **`deny` / `pure`** (`AS-EFF-006`) — *what* a layer may do. A method need not perform the effect
-  directly; candor flags it reaching the effect through any callee. `pure` forbids every effect.
+  directly; candor flags it reaching the effect through any callee. `pure` forbids every effect —
+  and `Unknown` (the §4 trust marker) is not an effect, so an Unknown-only method does not trip
+  `pure` (or `deny Net`); where a boundary must also exclude uncertainty, `deny Unknown <scope>`
+  is the explicit knob.
 - **`allow <Effect> in <scope> <value…>`** (`AS-EFF-008`) — *which literals* an effect may reach, across
   the **transitive** surface (the literal often lives in a deep callee). For `Db` tables the surface is
   fed two ways: table-position identifiers in SQL string literals, **and JPA's declarations** — a
@@ -349,8 +358,10 @@ forbid domain -> infra          # the domain layer must not depend on the infras
   *transitively* reach a method in scope B (reverse-reachability over the call graph).
 
 Scopes match by dotted **segment** (so `domain` matches `app.domain.Svc.handle` and the `domain_logic`
-package, but not `subdomain`) — the same rule as the Rust impl's `scope_matches`. A set-but-unreadable
-policy fails **loud** ("policy NOT enforced"), never silently green.
+package, but not `subdomain`) — the same rule as the Rust impl's `scope_matches`. A JVM **nested type**
+is a scope segment too: segments also split on the `$` nested-type boundary (the family §6.2 ruling,
+matching the query name ladder), so `deny Net client` bites `com.app.Outer$client.fetch`. A
+set-but-unreadable policy fails **loud** ("policy NOT enforced"), never silently green.
 
 ### Machine-readable verdict — `--gate-json` (candor-spec §3.3)
 

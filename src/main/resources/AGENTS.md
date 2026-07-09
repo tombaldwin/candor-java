@@ -103,6 +103,13 @@ Name queries resolve exact > segment-suffix (`Svc.save` matches `com.example.Svc
   effect; crossed with `CANDOR_POLICY` it returns which functions would violate.
 - **Enforce in CI** → `--policy <file>` (or `CANDOR_POLICY`) (candor-spec §6.2: `deny`/`pure`/`allow`/`forbid`) +
   `CANDOR_BASELINE` (regression guard). Deterministic — not an LLM opinion.
+- **Gate semantics to know**: scopes match by dotted segment, and the `$` nested-type boundary is a
+  segment split too — a JVM nested class is a scope segment, so `deny Net client` bites
+  `Outer$client` (the family §6.2 ruling). `pure` forbids every *effect*; `Unknown` (the §4 trust
+  marker) is not an effect, so an Unknown-only method trips neither `pure` nor `deny Net` —
+  `deny Unknown <scope>` is the explicit strictness knob. `diff` exits 1 on a gained effect when the
+  baseline and engine producing versions match; a mismatch is disclosed (`baseline_version`/
+  `engine_version` + a stderr warning) with exit 0 (`gains` always exits 0).
 - **Machine verdict** → add `--gate-json <file|->` (candor-spec §3.3): the structured verdict
   `{ spec, ok, violations:[{rule,fn,effects,detail}] }` from the same check that sets the exit code —
   what the PR-native SARIF Action consumes (`--gate-json - | candor-sarif`; with `-` the human gate

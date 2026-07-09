@@ -57,7 +57,8 @@ echo "soundness: $pass passed, $fail failed"
 
 # Fabrication probe — the precision counterpart to the soundness fuzzer above. The fuzzer guards against
 # UNDER-reporting (a reachable effect going silent-pure); this guards against OVER-reporting (a PURE
-# accessor/factory of an effect-bearing owner being fabricated effectful — candor's cardinal sin). It
+# accessor/factory of an effect-bearing owner being fabricated effectful — the precision failure, the
+# opposite direction from candor's cardinal sin, the silent under-report). It
 # reuses the launcher we just built. A failure here gates the run exactly like a soundness failure.
 echo
 echo "soundness: running fabrication probe…"

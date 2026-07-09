@@ -1424,6 +1424,48 @@ absent "external-receiver reflection does NOT fabricate Fs onto the caller" "$("
 absent "runtime-receiver reflection does NOT fabricate an edge"             "$("$CJ" "$W/refl2cls" 2>/dev/null | grep 'F.dynRecv')"  "Fs\*"
 absent "nearest-literal: an unrelated prior constant never fabricates Exec" "$("$CJ" "$W/refl2cls" 2>/dev/null | grep 'F.wrongLit')" "Exec\*"
 
+echo "== --parallel: one JVM, N targets — collision refusal + per-target failure honesty =="
+# happy path: two targets, one report each (byte-identical to standalone runs is gated by the LB-1b
+# reentrancy suite; here we pin the CLI contract: files land, exit 0)
+mkdir -p "$W/par"
+jar cf "$W/par/fx.jar" -C "$W/cls" . 2>/dev/null
+jar cf "$W/par/app.jar" -C "$W/acls" . 2>/dev/null
+pout="$("$CJ" --parallel "$W/par/out" "$W/par/fx.jar" "$W/par/app.jar" 2>&1)"; prc=$?
+want "parallel: scans both targets"                    "$pout" 'scanned 2 target(s)'
+if [ "$prc" -eq 0 ]; then echo "  ok   parallel happy path exits 0"; pass=$((pass+1));
+else echo "  FAIL parallel happy path — exit $prc"; fail=$((fail+1)); fi
+[ -s "$W/par/out/fx.json" ] && [ -s "$W/par/out/app.json" ] \
+  && { echo "  ok   parallel: one report per target"; pass=$((pass+1)); } \
+  || { echo "  FAIL parallel: missing fx.json/app.json"; fail=$((fail+1)); }
+want "parallel report is a real report"                "$(cat "$W/par/out/fx.json")" '"Fx.reads"'
+# basename COLLISION: moduleA/app.jar + moduleB/app.jar would both write app.json — silently clobbering
+# one report reads as a false PASS downstream. Refuse up front (exit 2), name both paths.
+mkdir -p "$W/par/modA" "$W/par/modB"
+cp "$W/par/app.jar" "$W/par/modA/app.jar"; cp "$W/par/fx.jar" "$W/par/modB/app.jar"
+pcol="$("$CJ" --parallel "$W/par/out2" "$W/par/modA/app.jar" "$W/par/modB/app.jar" 2>&1)"; pcolrc=$?
+want "parallel: collision refusal names the clash"     "$pcol" 'output collision'
+if [ "$pcolrc" -eq 2 ]; then echo "  ok   parallel collision exits 2 (refused up front)"; pass=$((pass+1));
+else echo "  FAIL parallel collision — exit $pcolrc (want 2)"; fail=$((fail+1)); fi
+# a jar.zip pair collides too (the extension is stripped from the output basename)
+cp "$W/par/fx.jar" "$W/par/fx.zip"
+pzip="$("$CJ" --parallel "$W/par/out3" "$W/par/fx.jar" "$W/par/fx.zip" 2>&1)"; pziprc=$?
+if [ "$pziprc" -eq 2 ]; then echo "  ok   parallel: fx.jar + fx.zip collide on fx.json (exit 2)"; pass=$((pass+1));
+else echo "  FAIL parallel jar/zip collision — exit $pziprc (want 2)"; fail=$((fail+1)); fi
+# one missing target of three: the run FAILS (exit 1) and names it, but the good reports still land —
+# a crashing target must never vanish under a green exit, and the healthy work isn't thrown away.
+pmiss="$("$CJ" --parallel "$W/par/out4" "$W/par/fx.jar" "$W/no-such.jar" "$W/par/app.jar" 2>&1)"; pmissrc=$?
+want "parallel: the missing target is named"           "$pmiss" 'no-such.jar (no such path)'
+want "parallel: failure count over total"              "$pmiss" '1 of 3 target(s) failed'
+if [ "$pmissrc" -eq 1 ]; then echo "  ok   parallel partial failure exits 1"; pass=$((pass+1));
+else echo "  FAIL parallel partial failure — exit $pmissrc (want 1)"; fail=$((fail+1)); fi
+[ -s "$W/par/out4/fx.json" ] && [ -s "$W/par/out4/app.json" ] \
+  && { echo "  ok   parallel: the good reports still written"; pass=$((pass+1)); } \
+  || { echo "  FAIL parallel: good reports missing after partial failure"; fail=$((fail+1)); }
+# usage guard: fewer than 2 args after the flag is a misuse, not a silent no-op
+"$CJ" --parallel "$W/par/only-outdir" >/dev/null 2>&1; purc=$?
+if [ "$purc" -eq 2 ]; then echo "  ok   parallel usage error exits 2"; pass=$((pass+1));
+else echo "  FAIL parallel usage — exit $purc (want 2)"; fail=$((fail+1)); fi
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

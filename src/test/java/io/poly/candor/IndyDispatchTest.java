@@ -1,6 +1,5 @@
 package io.poly.candor;
 
-import io.poly.candor.model.Effect;
 import io.poly.candor.model.EffectSet;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -10,7 +9,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
 import java.util.Map;
-import java.util.TreeSet;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.objectweb.asm.ClassWriter;
@@ -86,33 +84,23 @@ class IndyDispatchTest {
      *  for project owners and never classified. Compile a real fixture (javac emits the real indy) and scan. */
     @Test
     void methodRefToJdkEffectIsClassified() throws Exception {
-        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
-        org.junit.jupiter.api.Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
-        Path dir = Files.createTempDirectory("candor-mref");
+        Path out = TestCompiler.compile(Map.of("M.java", String.join("\n",
+            "import java.io.File;",
+            "import java.util.List;",
+            "import java.util.stream.Collectors;",
+            "public class M {",
+            "  void refDelete(List<File> fs) { fs.removeIf(File::delete); }",          // Fs
+            "  Object refGetenv(List<String> ks) {",
+            "    return ks.stream().map(System::getenv).collect(Collectors.toList()); }", // Env
+            "}")));
         try {
-            Path src = dir.resolve("M.java");
-            Files.writeString(src, String.join("\n",
-                "import java.io.File;",
-                "import java.util.List;",
-                "import java.util.stream.Collectors;",
-                "public class M {",
-                "  void refDelete(List<File> fs) { fs.removeIf(File::delete); }",          // Fs
-                "  Object refGetenv(List<String> ks) {",
-                "    return ks.stream().map(System::getenv).collect(Collectors.toList()); }", // Env
-                "}"));
-            Path out = dir.resolve("cls");
-            Files.createDirectories(out);
-            int rc = jc.run(null, null, null, "-d", out.toString(), src.toString());
-            org.junit.jupiter.api.Assertions.assertEquals(0, rc, "fixture must compile");
             Map<String, EffectSet> r = Candor.runScan(out);
             assertTrue(r.getOrDefault("M.refDelete", EffectSet.empty()).toNames().contains("Fs"),
                     "removeIf(File::delete) must read Fs, got " + r.get("M.refDelete"));
             assertTrue(r.getOrDefault("M.refGetenv", EffectSet.empty()).toNames().contains("Env"),
                     "map(System::getenv) must read Env, got " + r.get("M.refGetenv"));
         } finally {
-            try (Stream<Path> s = Files.walk(dir)) {
-                s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
-            }
+            TestCompiler.rm(out.getParent());
         }
     }
 }

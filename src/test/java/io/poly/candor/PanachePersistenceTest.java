@@ -4,17 +4,13 @@ import io.poly.candor.model.Effect;
 import io.poly.candor.model.EffectSet;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static io.poly.candor.TestCompiler.compileApp;
+import static io.poly.candor.TestCompiler.rm;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Stream;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -96,40 +92,8 @@ class PanachePersistenceTest {
 
     // ── two-phase harness: lib → classpath (not scanned), app → scanned ─────────────────────────────
 
-    private static Path compileApp(Map<String, String> lib, Map<String, String> app) throws Exception {
-        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
-        Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
-        Path base = Files.createTempDirectory("candor-panache");
-        Path libOut = compileTo(jc, base.resolve("src-lib"), lib, base.resolve("lib"), null);
-        compileTo(jc, base.resolve("src-app"), app, base.resolve("app"), libOut);
-        return base.resolve("app");
-    }
-
-    private static Path compileTo(javax.tools.JavaCompiler jc, Path src, Map<String, String> sources,
-            Path out, Path classpath) throws Exception {
-        List<String> files = new ArrayList<>();
-        for (Map.Entry<String, String> e : sources.entrySet()) {
-            Path p = src.resolve(e.getKey());
-            Files.createDirectories(p.getParent());
-            Files.writeString(p, e.getValue());
-            files.add(p.toString());
-        }
-        Files.createDirectories(out);
-        List<String> args = new ArrayList<>(List.of("-d", out.toString()));
-        if (classpath != null) { args.add("-cp"); args.add(classpath.toString()); }
-        args.addAll(files);
-        assertEquals(0, jc.run(null, null, null, args.toArray(new String[0])), "javac");
-        return out;
-    }
-
     private static EffectSet eff(Map<String, EffectSet> r, String fn) {
         return r.getOrDefault(fn, EffectSet.empty());
     }
 
-    private static void rm(Path dir) throws Exception {
-        if (dir == null || !Files.exists(dir)) return;
-        try (Stream<Path> s = Files.walk(dir)) {
-            s.sorted(Comparator.reverseOrder()).forEach(p -> { try { Files.delete(p); } catch (Exception ignored) {} });
-        }
-    }
 }

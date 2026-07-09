@@ -9,12 +9,16 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * `commonPrefix` + `layerOf` — the package-layer attribution that underpins the `containment` diagnostic and
  * its AS-EFF-010 ratchet. An off-by-one here silently misattributes every method's layer, corrupting the gate.
  */
 class LayerOfTest {
+
+    @TempDir
+    Path tmp;
 
     /** The layer is the PACKAGE segment after the common prefix — only when a `Class.method` pair (2 segments)
      *  follows it; a class in the root (no package layer left) buckets into `(root)`. */
@@ -32,13 +36,12 @@ class LayerOfTest {
     /** commonPrefix is the shared leading dotted segments across all functions. */
     @Test
     void commonPrefixIsSharedLeadingSegments() throws Exception {
-        Path rep = Files.createTempFile("cp", ".json");
+        Path rep = Files.createTempFile(tmp, "cp", ".json");
         Files.writeString(rep, """
             {"functions":[
               {"fn":"app.web.Ctl.handle","direct":["Db"]},
               {"fn":"app.repo.Dao.find","direct":["Db"]}
             ]}""");
-        rep.toFile().deleteOnExit();
         List<Effector> fns = Query.load(rep.toString());
         assertArrayEquals(new String[] {"app"}, Query.commonPrefix(fns));
         // and the layer attribution composes: each function's layer is its package under that prefix

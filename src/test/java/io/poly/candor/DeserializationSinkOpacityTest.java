@@ -18,8 +18,10 @@ import org.junit.jupiter.api.Test;
  *  - [#3] commons-configuration2's String-arg → Fs rule was whole-method (any descriptor containing a
  *    String), fabricating Fs on pure builder/factory calls whose String is a property name or encoding.
  *    Verb-gate it to the actual loader methods, mirroring java.nio.file.Files.
+ *
+ * <p>Originally review round 19 (Round19FixesTest).
  */
-class Round19FixesTest {
+class DeserializationSinkOpacityTest {
 
     // ── [#2] non-JDK RCE / deserialization sinks → Unknown ───────────────────────────────────────────
 

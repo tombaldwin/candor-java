@@ -645,7 +645,16 @@ public class Candor {
             boolean hasUnknown = perf.hasUnknown();
             List<String> undeclared = perf.minus(declared).without(Effect.UNKNOWN).toNames();
             List<String> unused = declared.minus(perf).toNames();
-            if (!undeclared.isEmpty()) {
+            // SPEC §6: the PROGRAM entry point is exempt from AS-EFF-001 — it legitimately mints/holds
+            // the whole capability bundle (the Rust reference exempts tcx.entry_fn). At this gate's class
+            // granularity that is the class declaring `public static void main(String[])`, the composition
+            // root. The exemption is 001-ONLY: an unused injected capability (002) and an unresolvable
+            // call (003) are entry-point sins too. Framework roots (@GetMapping etc.) are NOT exempt —
+            // the spec exempts the program entry, and a controller reaching past its beans is exactly
+            // what this gate exists to catch. (Was missing entirely — found by the never-tested-surface
+            // sweep; StrictConformanceGateTest pins it red-then-green.)
+            boolean entryClass = cn.methods.stream().anyMatch(Candor::isProgramEntry);
+            if (!undeclared.isEmpty() && !entryClass) {
                 String have = declared.isEmpty() ? "no injected capability"
                         : "only { " + String.join(", ", declared.toNames()) + " }";
                 diag(DiagnosticCode.AS_EFF_001, undeclared, "class `%s` performs { %s } but holds %s; "
@@ -880,6 +889,14 @@ public class Candor {
         return dir;
     }
 
+    /** The JVM program entry point, `static void main(String[])` — the ONE method the launcher invokes
+     *  (SPEC §2 reachability root; SPEC §6 AS-EFF-001 exemption). Shape-exact: an instance `main`, or a
+     *  static `main` with any other descriptor, is an ordinary method (the lookalike twin stays gated). */
+    static boolean isProgramEntry(MethodNode mn) {
+        return mn.name.equals("main") && mn.desc.equals("([Ljava/lang/String;)V")
+                && (mn.access & Opcodes.ACC_STATIC) != 0;
+    }
+
     /** Entry-point detection for one method — every runtime-invoked root: Spring/composed
      *  annotations, CDI observers, gRPC handlers, `finalize`, serialization callbacks, `main`,
      *  the RUNTIME_OVERRIDES rows, and Ktor handler bodies. Also the declarative @Transactional
@@ -932,8 +949,7 @@ public class Candor {
             ctx.entryPoints.add(id);
         // The program entry `public static void main(String[])` — the JVM invokes it to start the app,
         // the root of a CLI tool's reachability (candor-spec §2, like the Rust impl's `fn main`).
-        if (mn.name.equals("main") && mn.desc.equals("([Ljava/lang/String;)V")
-                && (mn.access & Opcodes.ACC_STATIC) != 0)
+        if (isProgramEntry(mn))
             ctx.entryPoints.add(id);
         // A runtime-invoked override (Runnable/Thread/Callable task body, Spring lifecycle hook,
         // servlet/filter/listener) — invoked by the runtime with NO project call site, so its I/O

@@ -620,6 +620,19 @@ want "uppercase non-zip .JAR → clean message"                   "$nz" 'cannot 
 if [ "$nzc" -eq 2 ]; then echo "  ok   uppercase non-zip .JAR exits 2"; pass=$((pass+1));
 else echo "  FAIL uppercase non-zip .JAR — got exit $nzc"; fail=$((fail+1)); fi
 
+echo "== classify() stays JIT-compilable: no Classifier method at/over HotSpot's huge-method limit =="
+# The κ cascade is split into per-package-segment buckets precisely so the hottest path of every scan
+# compiles (DontCompileHugeMethods = 8000 bytes). A new rule batch that pushes a bucket over the limit
+# silently returns the whole scan to interpreted classify — gate it (7500 = headroom below 8000).
+CLSF="$ROOT/build/classes/java/main/io/poly/candor/Classifier.class"
+if [ -f "$CLSF" ] && python3 "$ROOT/test/method_code_sizes.py" "$CLSF" 7500 >/dev/null; then
+  echo "  ok   every Classifier method is under 7500 bytes of bytecode"; pass=$((pass+1))
+else
+  echo "  FAIL a Classifier method is at/over 7500 bytes (runs interpreted at 8000) — re-chunk the bucket:"
+  python3 "$ROOT/test/method_code_sizes.py" "$CLSF" 7500 2>/dev/null | head -3 | sed 's/^/        /'
+  fail=$((fail+1))
+fi
+
 echo "== fail-closed outputs + deps: unwritable --json/--gate-json and a typo'd CANDOR_DEPS exit 2 =="
 # an unwritable --json report path: one-line diagnostic + exit 2 (was: raw stack trace, exit 1)
 uw="$("$CJ" "$W/cls" --json "$W/no-such-dir-xyz/r.json" 2>&1)"; uwc=$?

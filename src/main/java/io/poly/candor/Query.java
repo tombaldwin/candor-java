@@ -706,7 +706,7 @@ public final class Query {
             return 2;
         }
         String engineV = reportVersion(curPath), baseV = reportVersion(basePath);
-        discloseVersionMismatch(engineV, baseV,
+        boolean versionMismatch = discloseVersionMismatch(engineV, baseV,
                 "some changes may be the engine reclassifying, not your code. Treat an engine swap as"
                 + " baseline-invalidating: review, then regenerate the baseline.");
         Map<String, Set<String>> b = unionByFn(base, f -> f.inferred().toNames());
@@ -734,6 +734,15 @@ public final class Query {
             m.put("status", !c.containsKey(fn) ? "removed" : (!b.containsKey(fn) ? "new" : "changed"));
             changes.add(m);
         }
+        // Exit parity with candor-ts (query.mjs `diff`): diff DISCLOSES (it is not a gate), but its
+        // gained-effect exit 1 is the same-build ratchet convenience — exit 1 iff SOME function gained
+        // an effect AND the baseline came from this engine build. Under a version mismatch that signal
+        // is BOGUS (the "gain" may be the engine reclassifying after a coverage batch — unmasking, not
+        // regression), so exit 0 and let the stderr ⚠ inform: never deliver the unmasking wave as a CI
+        // failure (§2.1: guards fail closed, queries disclose). `gains` deliberately keeps exit 0
+        // always — in candor-ts the exit-1 contract belongs to diff alone.
+        boolean gain = !versionMismatch
+                && changes.stream().anyMatch(m -> !((List<?>) m.get("gained")).isEmpty());
         if (json) {
             // The cross-language shape (SPEC §3.1): an envelope with baseline_version/engine_version
             // provenance (unconditional, "" when unknown — the candor-ts/candor-query field set) then
@@ -744,7 +753,7 @@ public final class Query {
             out.put("engine_version", engineV == null ? "" : engineV);
             out.put("changes", changes);
             emit(out);
-            return 0;
+            return gain ? 1 : 0;
         }
         if (changes.isEmpty()) {
             System.out.println("candor: no effect changes vs " + basePath + ".");
@@ -762,7 +771,7 @@ public final class Query {
             String tag = st.equals("removed") ? "  (removed fn)" : (st.equals("new") ? "  (new fn)" : "");
             System.out.println("  " + m.get("fn") + tag + "   { " + String.join(" ", parts) + " }");
         }
-        return 0;
+        return gain ? 1 : 0;
     }
 
     /** Effects indexed by function name, UNION-merging rows that share a name. A report built by a
@@ -778,7 +787,9 @@ public final class Query {
 
     /** gains — the package-level SUPPLY-CHAIN alarm (SPEC §5.1): the UNION of effects the surface gained
      *  between two reports (base -> cur), with per-function detail. A dependency that grew a Net/Exec reach
-     *  between releases. {gained:[Effect], byFunction:[{fn,effect}]} — the cross-engine machine-readable form. */
+     *  between releases. {gained:[Effect], byFunction:[{fn,effect}]} — the cross-engine machine-readable form.
+     *  Always exit 0 (candor-ts parity: the gained-effect exit-1 contract belongs to `diff` alone; gains is
+     *  a pure disclosure whose consumers read the JSON, not the exit code). */
     static int gains(List<Effector> cur, String curPath, String basePath, boolean json) {
         if (basePath == null) return usage("gains <report.json> <baseline.json> [--json]");
         List<Effector> base;

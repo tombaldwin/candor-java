@@ -693,6 +693,28 @@ else echo "  FAIL corrupt dep report — got exit $dcc"; fail=$((fail+1)); fi
 qd="$("$CJ" show "$W/no-such-report.json" x 2>&1)"
 want "query relays the load-failure reason in parens"           "$qd" "($W/no-such-report.json)"
 
+echo "== .candor/config: target-anchored discovery + config-anchored relative paths (spec §3.4) =="
+# a checked-in config with a RELATIVE policy path, scanned from a foreign CWD: discovery walks UP from
+# the TARGET, and the relative `policy .candor/arch.policy` resolves against the repo root holding
+# .candor/ — never against the launch directory.
+mkdir -p "$W/cfgrepo/.candor" "$W/elsewhere"
+cp -r "$W/cls" "$W/cfgrepo/build-cls"
+printf 'policy .candor/arch.policy\n' > "$W/cfgrepo/.candor/config"
+printf 'deny Fs Fx\n' > "$W/cfgrepo/.candor/arch.policy"
+cfg="$(cd "$W/elsewhere" && "$CJ" "$W/cfgrepo/build-cls" 2>&1)"; cfgrc=$?
+want "config discovered from the TARGET's tree, run from elsewhere" "$cfg" '[AS-EFF-006]'
+if [ "$cfgrc" -eq 1 ]; then echo "  ok   the checked-in gate bites (exit 1) regardless of CWD"; pass=$((pass+1));
+else echo "  FAIL config gate from foreign CWD — got exit $cfgrc (want 1)"; fail=$((fail+1)); fi
+# NO CWD FALLBACK (the family's spec-§3.4 fix): a .candor/config in the LAUNCH directory must not
+# apply to a scan of an unrelated target — that applied a foreign repo's gates to this scan.
+mkdir -p "$W/foreignwd/.candor"
+printf 'policy .candor/deny-all.policy\n' > "$W/foreignwd/.candor/config"
+printf 'pure Fx\n' > "$W/foreignwd/.candor/deny-all.policy"
+fwd="$(cd "$W/foreignwd" && "$CJ" "$W/cls" 2>&1)"; fwdrc=$?
+absent "the CWD's unrelated config does NOT apply to the scan"   "$fwd" 'AS-EFF-006'
+if [ "$fwdrc" -eq 0 ]; then echo "  ok   no CWD fallback (exit 0 — target has no config)"; pass=$((pass+1));
+else echo "  FAIL CWD-fallback still applies a foreign config — exit $fwdrc"; fail=$((fail+1)); fi
+
 echo "== policy: layering forbid A -> B (AS-EFF-009) =="
 mkdir -p "$W/lsrc/app/domain" "$W/lsrc/app/infra"
 cat > "$W/lsrc/app/infra/Repo.java" <<'J'

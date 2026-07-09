@@ -33,12 +33,23 @@ import java.util.Map;
  * joined with the OS path separator internally). A BARE value key (e.g. a lone {@code strict} line) means
  * "enabled with the empty value" — exactly what the set-but-empty env var means (whole-unit scope for
  * {@code strict}/{@code no-ambient}); it is never silently dropped.
+ *
+ * <p><b>Relative paths are anchored to the config, not the CWD</b> (the family rule — swift/ts/agents
+ * match): a relative {@code policy}/{@code baseline}/{@code deps} value resolves against the directory
+ * CONTAINING the {@code .candor/} directory — the repo root the config travels with — so
+ * {@code policy .candor/gate.pol} in {@code <root>/.candor/config} is {@code <root>/.candor/gate.pol}
+ * wherever the process launched. (For an out-of-tree {@code CANDOR_CONFIG} override file, the anchor is
+ * simply the file's own directory.) An env-var value is a one-off CLI-side override and still resolves
+ * against the CWD, like a flag.
  */
 public final class Config {
     /** The shared §config key vocabulary (cross-engine). A key OUTSIDE it warns — typo protection: a
      *  misspelt {@code policy} must not silently drop the gate. candor-java implements all seven. */
     private static final java.util.Set<String> KNOWN_KEYS = java.util.Set.of(
             "policy", "baseline", "strict", "no-ambient", "closed-world", "taint", "deps");
+
+    /** The keys whose value is a PATH (list) — the ones anchor-resolution applies to. */
+    private static final java.util.Set<String> PATH_KEYS = java.util.Set.of("policy", "baseline", "deps");
 
     private final Map<String, String> values;
 
@@ -50,9 +61,29 @@ public final class Config {
         return new Config(new LinkedHashMap<>());
     }
 
+    /** The resolution base for a relative path VALUE in the config at {@code cfg}: the directory holding
+     *  the {@code .candor/} directory (step the trailing {@code .candor} segment out), else the file's own
+     *  directory (an out-of-tree CANDOR_CONFIG override). Absolute, so the resolved values are launch-dir
+     *  independent — the whole point of a checked-in config. */
+    static Path anchorFor(Path cfg) {
+        Path dir = cfg.toAbsolutePath().normalize().getParent();
+        if (dir != null && dir.getFileName() != null && dir.getFileName().toString().equals(".candor")) {
+            Path up = dir.getParent();
+            if (up != null) return up;
+        }
+        return dir;
+    }
+
+    /** Resolve one relative path against the anchor; an absolute path is untouched. */
+    private static String resolveAgainst(Path anchor, String val) {
+        if (val.isEmpty() || anchor == null) return val;
+        Path p = Path.of(val);
+        return p.isAbsolute() ? val : anchor.resolve(p).normalize().toString();
+    }
+
     /** Locate + load the config for a scan of {@code scanTarget}: {@code $CANDOR_CONFIG} if set (its path
      *  MUST be usable — fail-closed), else the nearest {@code .candor/config} walking UP from the target,
-     *  else the CWD's (the pre-discovery behaviour, kept for compatibility), else empty. */
+     *  else empty. */
     static Config forTarget(Path scanTarget) {
         String override = System.getenv("CANDOR_CONFIG");
         if (override != null) {
@@ -70,8 +101,10 @@ public final class Config {
     }
 
     /** The nearest {@code .candor/config} walking UP from the scan target (a classes dir, a jar, a source
-     *  dir), so the checked-in config applies wherever the process is launched from; falls back to the
-     *  CWD's, else null. */
+     *  dir), so the checked-in config applies wherever the process is launched from; else null. NO CWD
+     *  fallback (the spec-§3.4 contradiction the family deleted): it fired only when the CWD was OUTSIDE
+     *  the target's ancestry — i.e. it applied an UNRELATED repo's config (and its policy/gates) to the
+     *  scan. Discovery is target-anchored only; {@code CANDOR_CONFIG} is the only override. */
     private static Path discover(Path scanTarget) {
         try {
             Path p = scanTarget.toAbsolutePath().normalize();
@@ -83,8 +116,7 @@ public final class Config {
         } catch (RuntimeException ignored) {
             // an unresolvable target path — the scan itself will fail loudly on it; no config to find
         }
-        Path cwd = Path.of(".candor/config");
-        return Files.exists(cwd) ? cwd : null;
+        return null;
     }
 
     /** Parse a config file at an explicit path. The file EXISTS by the time we're here (discovery or an
@@ -94,6 +126,7 @@ public final class Config {
     static Config load(Path path, boolean failClosed) {
         if (!Files.exists(path)) return empty();
         Map<String, String> m = new LinkedHashMap<>();
+        Path anchor = anchorFor(path);
         try {
             for (String raw : Files.readAllLines(path)) {
                 String line = raw.split("#", 2)[0].strip();     // strip an inline comment (§6.2 lexical)
@@ -106,7 +139,12 @@ public final class Config {
                 }
                 String val = kv.length > 1 ? kv[1].strip() : "";
                 if ("deps".equals(key) && !val.isEmpty()) {
-                    val = String.join(File.pathSeparator, val.split("\\s+"));  // a path LIST → the DEPS form
+                    // a path LIST → the DEPS form, each element anchor-resolved
+                    val = java.util.Arrays.stream(val.split("\\s+"))
+                            .map(v -> resolveAgainst(anchor, v))
+                            .collect(java.util.stream.Collectors.joining(File.pathSeparator));
+                } else if (PATH_KEYS.contains(key)) {
+                    val = resolveAgainst(anchor, val);
                 }
                 m.put(key, val);
             }

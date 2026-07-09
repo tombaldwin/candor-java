@@ -10,11 +10,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
-import java.util.stream.Stream;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -50,11 +48,7 @@ class JsonStdoutGateTest {
 
     /** Compile a Net-performing class (opens a URL connection) into a temp dir; return the classes dir. */
     private static Path compileNetFixture() throws Exception {
-        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
-        Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
-        Path dir = Files.createTempDirectory("candor-jsongate");
-        Path f = dir.resolve("Svc.java");
-        Files.writeString(f, """
+        return TestCompiler.compile(Map.of("Svc.java", """
             package app;
             import java.net.URL;
             public class Svc {
@@ -62,20 +56,13 @@ class JsonStdoutGateTest {
                     new URL("http://example.com").openConnection().getInputStream();
                 }
             }
-            """);
-        Path out = dir.resolve("cls");
-        Files.createDirectories(out);
-        assertEquals(0, jc.run(null, null, null, "-d", out.toString(), f.toString()), "fixture must compile");
-        return out;
+            """));
     }
 
-    private static void deleteTree(Path root) throws Exception {
-        if (root == null || !Files.exists(root)) return;
-        // walk up from the classes dir to the temp root created by createTempDirectory
-        Path top = root.getParent() != null ? root.getParent() : root;
-        try (Stream<Path> s = Files.walk(top)) {
-            s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
-        }
+    private static void deleteTree(Path root) {
+        if (root == null) return;
+        // walk up from the classes dir to the temp root created by the compile harness
+        TestCompiler.rm(root.getParent() != null ? root.getParent() : root);
     }
 
     @Test

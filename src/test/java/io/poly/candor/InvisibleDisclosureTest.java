@@ -1,21 +1,17 @@
 package io.poly.candor;
 
-import io.poly.candor.model.Effect;
 import io.poly.candor.model.EffectSet;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static io.poly.candor.TestCompiler.compileApp;
+import static io.poly.candor.TestCompiler.rm;
 
 import com.google.gson.Gson;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Stream;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -23,40 +19,26 @@ import org.junit.jupiter.api.Test;
  * package candor cannot analyse must carry that package in `invisible`, so `inferred` is never an unqualified
  * completeness claim. The blind lib is compiled to a SEPARATE dir (off the scan path) so it's genuinely
  * external; a method with no blind reach carries no `invisible`.
+ *
+ * <p>Originally review round 17 (Round17FixesTest).
  */
-class Round17FixesTest {
-
-    private static void rm(Path dir) throws Exception {
-        try (Stream<Path> s = Files.walk(dir)) {
-            s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
-        }
-    }
+class InvisibleDisclosureTest {
 
     @SuppressWarnings("unchecked")
     @Test
     void pureMethodDisclosesUnanalysablePackages() throws Exception {
-        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
-        Assumptions.assumeTrue(jc != null, "no system Java compiler — skip");
-        Path dir = Files.createTempDirectory("candor-blind");
-        // (1) the external "blind" library — compiled to libcls, NEVER on the scan path
-        Path libSrc = dir.resolve("Widget.java");
-        Files.writeString(libSrc, "package com.obscure.lib; public class Widget { public void doStuff(){} }");
-        Path libCls = dir.resolve("libcls");
-        Files.createDirectories(libCls);
-        assertEquals(0, jc.run(null, null, null, "-d", libCls.toString(), libSrc.toString()), "lib compiles");
-        // (2) the app — uses the blind lib (on classpath) but is scanned alone
-        Path appSrc = dir.resolve("A.java");
-        Files.writeString(appSrc, String.join("\n",
-            "package app;",
-            "public class A {",
-            "  public void looksPure(com.obscure.lib.Widget w){ w.doStuff(); }",  // blind reach → invisible
-            "  public void caller(com.obscure.lib.Widget w){ looksPure(w); }",    // transitive
-            "  public void trulyPure(int x){ int y = x + 1; }",                   // no blind reach
-            "}"));
-        Path appCls = dir.resolve("appcls");
-        Files.createDirectories(appCls);
-        assertEquals(0, jc.run(null, null, null, "-cp", libCls.toString(), "-d", appCls.toString(), appSrc.toString()),
-                "app compiles");
+        // the external "blind" library goes on the classpath but NEVER on the scan path; the app —
+        // which uses it — is scanned alone (the two-phase harness).
+        Path appCls = compileApp(
+            Map.of("Widget.java", "package com.obscure.lib; public class Widget { public void doStuff(){} }"),
+            Map.of("A.java", String.join("\n",
+                "package app;",
+                "public class A {",
+                "  public void looksPure(com.obscure.lib.Widget w){ w.doStuff(); }",  // blind reach → invisible
+                "  public void caller(com.obscure.lib.Widget w){ looksPure(w); }",    // transitive
+                "  public void trulyPure(int x){ int y = x + 1; }",                   // no blind reach
+                "}")));
+        Path dir = appCls.getParent();
         Path out = dir.resolve("r.json");
         try {
             Map<String, EffectSet> inf = Candor.runScan(appCls);

@@ -9,6 +9,7 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * `.candor/config` — the checked-in alternative to the CANDOR_* env vars. Covers the §6.2-style line
@@ -18,14 +19,16 @@ import org.junit.jupiter.api.Test;
  */
 class ConfigTest {
 
+    @TempDir
+    Path tmp;
+
     private static final String UNSET = "CANDOR_DEFINITELY_UNSET_ENV_ZZZ";
 
     private static Path lastConfigPath;
 
-    private static Config write(String body) throws Exception {
-        Path p = Files.createTempFile("candor-config", "");
+    private Config write(String body) throws Exception {
+        Path p = Files.createTempFile(tmp, "candor-config", "");
         Files.writeString(p, body);
-        p.toFile().deleteOnExit();
         lastConfigPath = p;
         return Config.load(p);
     }
@@ -57,7 +60,7 @@ class ConfigTest {
         // relative values at <root> — the repo root the config travels with — so `policy .candor/gate.pol`
         // is <root>/.candor/gate.pol and `baseline arch/base.json` is <root>/arch/base.json, wherever the
         // process was launched. An absolute value is untouched.
-        Path root = Files.createTempDirectory("candor-anchor");
+        Path root = Files.createTempDirectory(tmp, "candor-anchor");
         Path cfg = Files.createDirectories(root.resolve(".candor")).resolve("config");
         Files.writeString(cfg, "policy .candor/gate.pol\nbaseline arch/base.json\n");
         Config c = Config.load(cfg);
@@ -73,7 +76,7 @@ class ConfigTest {
     @Test
     void outOfTreeConfigAnchorsToItsOwnDirectory() throws Exception {
         // A CANDOR_CONFIG override file living anywhere (not inside a .candor/) anchors at its own dir.
-        Path dir = Files.createTempDirectory("candor-oot");
+        Path dir = Files.createTempDirectory(tmp, "candor-oot");
         Path cfg = dir.resolve("shared.config");
         Files.writeString(cfg, "policy gate.pol\n");
         assertEquals(dir.toRealPath(), Config.anchorFor(cfg).toRealPath());

@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * The `containment` AS-EFF-010 ratchet — the architecture-drift gate's exit-code contract: 1 when a boundary
@@ -13,6 +14,9 @@ import org.junit.jupiter.api.Test;
  * fast in-engine guard on the gate verdict that fails CI.)
  */
 class ContainmentRatchetTest {
+
+    @TempDir
+    Path tmp;
 
     // base: Fs lives only in `repo`; svc does Net. (Both effects present so the common layer prefix is `c`.)
     private static final String BASE = """
@@ -31,9 +35,8 @@ class ContainmentRatchetTest {
         ]}""";
 
     private Path write(String name, String json) throws Exception {
-        Path p = Files.createTempFile(name, ".json");
+        Path p = Files.createTempFile(tmp, name, ".json");
         Files.writeString(p, json);
-        p.toFile().deleteOnExit();
         return p;
     }
 

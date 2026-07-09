@@ -1,21 +1,14 @@
 package io.poly.candor;
 
-import io.poly.candor.model.Effect;
-import io.poly.candor.model.EffectSet;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static io.poly.candor.TestCompiler.compile;
+import static io.poly.candor.TestCompiler.rm;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
-import java.util.stream.Stream;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -28,31 +21,6 @@ import org.junit.jupiter.api.Test;
  * certifying the common inline-literal-URL form (and the const-URL-local split).
  */
 class UrlSplitMaskingTest {
-
-    private static Path compile(Map<String, String> sources) throws Exception {
-        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
-        Assumptions.assumeTrue(jc != null, "no system Java compiler — skip");
-        Path dir = Files.createTempDirectory("candor-url");
-        List<String> files = new ArrayList<>();
-        for (Map.Entry<String, String> e : sources.entrySet()) {
-            Path p = dir.resolve(e.getKey());
-            Files.createDirectories(p.getParent());
-            Files.writeString(p, e.getValue());
-            files.add(p.toString());
-        }
-        Path out = dir.resolve("cls");
-        Files.createDirectories(out);
-        List<String> args = new ArrayList<>(List.of("-d", out.toString()));
-        args.addAll(files);
-        assertEquals(0, jc.run(null, null, null, args.toArray(new String[0])), "fixture must compile");
-        return out;
-    }
-
-    private static void rm(Path dir) throws Exception {
-        try (Stream<Path> s = Files.walk(dir)) {
-            s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
-        }
-    }
 
     @Test
     void urlSplitConstructUseFailsClosed() throws Exception {

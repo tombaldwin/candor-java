@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.TreeSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * The policy GATE checkers — each returns its violation count, the contract the CI exit code rides on. Only
@@ -23,22 +24,23 @@ import org.junit.jupiter.api.Test;
  */
 class PolicyGateTest {
 
+    @TempDir
+    Path tmp;
+
     @BeforeEach
     void fresh() {
         Candor.resetState();
     }
 
-    private static Path file(String name, String body) throws Exception {
-        Path p = Files.createTempFile(name, ".json");
+    private Path file(String name, String body) throws Exception {
+        Path p = Files.createTempFile(tmp, name, ".json");
         Files.writeString(p, body);
-        p.toFile().deleteOnExit();
         return p;
     }
 
-    private static Path policy(String body) throws Exception {
-        Path p = Files.createTempFile("pol", ".policy");
+    private Path policy(String body) throws Exception {
+        Path p = Files.createTempFile(tmp, "pol", ".policy");
         Files.writeString(p, body);
-        p.toFile().deleteOnExit();
         return p;
     }
 

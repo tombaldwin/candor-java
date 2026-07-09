@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * FAMILY RULING (§6.2 ↔ §3.1): policy-scope segments split on the same boundaries as the query name
@@ -26,15 +27,17 @@ import org.junit.jupiter.api.Test;
  */
 class PolicyScopeNestedTypeTest {
 
+    @TempDir
+    Path tmp;
+
     @BeforeEach
     void fresh() {
         Candor.resetState();
     }
 
-    private static Path policy(String body) throws Exception {
-        Path p = Files.createTempFile("pol", ".policy");
+    private Path policy(String body) throws Exception {
+        Path p = Files.createTempFile(tmp, "pol", ".policy");
         Files.writeString(p, body);
-        p.toFile().deleteOnExit();
         return p;
     }
 

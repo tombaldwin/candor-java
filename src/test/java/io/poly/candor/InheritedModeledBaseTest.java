@@ -5,15 +5,12 @@ import io.poly.candor.model.EffectSet;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static io.poly.candor.TestCompiler.compile;
+import static io.poly.candor.TestCompiler.rm;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
 import java.util.Map;
-import java.util.stream.Stream;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -71,33 +68,8 @@ class InheritedModeledBaseTest {
 
     // ── harness ─────────────────────────────────────────────────────────────────────────────────────
 
-    private static Path compile(Map<String, String> sources) throws Exception {
-        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
-        Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
-        Path dir = Files.createTempDirectory("candor-imb");
-        List<String> files = new ArrayList<>();
-        for (Map.Entry<String, String> e : sources.entrySet()) {
-            Path p = dir.resolve(e.getKey());
-            Files.createDirectories(p.getParent());
-            Files.writeString(p, e.getValue());
-            files.add(p.toString());
-        }
-        Path out = dir.resolve("cls");
-        Files.createDirectories(out);
-        List<String> args = new ArrayList<>(List.of("-d", out.toString()));
-        args.addAll(files);
-        assertEquals(0, jc.run(null, null, null, args.toArray(new String[0])), "javac");
-        return out;
-    }
-
     private static EffectSet eff(Map<String, EffectSet> r, String fn) {
         return r.getOrDefault(fn, EffectSet.empty());
     }
 
-    private static void rm(Path dir) throws Exception {
-        if (dir == null || !Files.exists(dir)) return;
-        try (Stream<Path> s = Files.walk(dir)) {
-            s.sorted(Comparator.reverseOrder()).forEach(p -> { try { Files.delete(p); } catch (Exception ignored) {} });
-        }
-    }
 }

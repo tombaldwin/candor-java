@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * The CANDOR_POLICY grammar parser (SPEC §6.2) — each case below pins a real anti-regression the parser
@@ -20,15 +21,17 @@ import org.junit.jupiter.api.Test;
  */
 class PolicyParserTest {
 
+    @TempDir
+    Path tmp;
+
     @BeforeEach
     void fresh() {
         Candor.resetState(); // a clean ctx() so denyRules/allowRules/forbidRules start empty
     }
 
-    private static String parse(String body) throws Exception {
-        Path p = Files.createTempFile("pol", ".policy");
+    private String parse(String body) throws Exception {
+        Path p = Files.createTempFile(tmp, "pol", ".policy");
         Files.writeString(p, body);
-        p.toFile().deleteOnExit();
         assertTrue(Policy.parsePolicy(p.toString()), "a readable policy file must parse");
         return p.toString();
     }

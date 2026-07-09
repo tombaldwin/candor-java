@@ -3,7 +3,6 @@ package io.poly.candor;
 import io.poly.candor.model.Effect;
 import io.poly.candor.model.EffectSet;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -13,9 +12,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.TreeSet;
 import java.util.stream.Stream;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -29,41 +26,23 @@ import org.junit.jupiter.api.Test;
 class SoundnessSweepTest {
 
     private static Map<String, EffectSet> scan(String src) throws Exception {
-        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
-        Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
-        Path dir = Files.createTempDirectory("candor-sweep");
+        Path out = TestCompiler.compile(Map.of("A.java", src));
         try {
-            Path f = dir.resolve("A.java");
-            Files.writeString(f, src);
-            Path out = dir.resolve("cls");
-            Files.createDirectories(out);
-            assertEquals(0, jc.run(null, null, null, "-d", out.toString(), f.toString()), "fixture must compile");
             return Candor.runScan(out);
         } finally {
-            try (Stream<Path> s = Files.walk(dir)) {
-                s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
-            }
+            TestCompiler.rm(out.getParent());
         }
     }
 
     /** Compile {@code src}, DELETE {@code deleteClass}.class (simulate an off-classpath type), then scan —
      *  for the sealed-unseen-permit gate (a permit named in `permits` but absent from the analysis classpath). */
     private static Map<String, EffectSet> scanDeleting(String src, String deleteClass) throws Exception {
-        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
-        Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
-        Path dir = Files.createTempDirectory("candor-sweep");
+        Path out = TestCompiler.compile(Map.of("A.java", src));
         try {
-            Path f = dir.resolve("A.java");
-            Files.writeString(f, src);
-            Path out = dir.resolve("cls");
-            Files.createDirectories(out);
-            assertEquals(0, jc.run(null, null, null, "-d", out.toString(), f.toString()), "fixture must compile");
             Files.deleteIfExists(out.resolve(deleteClass + ".class"));
             return Candor.runScan(out);
         } finally {
-            try (Stream<Path> s = Files.walk(dir)) {
-                s.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
-            }
+            TestCompiler.rm(out.getParent());
         }
     }
 

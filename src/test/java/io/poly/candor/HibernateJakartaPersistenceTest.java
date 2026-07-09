@@ -17,12 +17,14 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 
 /**
- * κ batch 24 — Hibernate-6 / Jakarta Data persistence → Db (the session's new effect-leaf rules), plus the
- * soundness fix for the repository default-method Db fabrication. Classify-level tests pin the leaves; the
- * integration tests drive a full scan and assert generated CRUD gets Db while a pure `default` helper does
- * NOT (and an effectful default keeps its real effect).
+ * Hibernate-6 / Jakarta Data persistence → Db (the effect-leaf rules), plus the soundness fix for the
+ * repository default-method Db fabrication. Classify-level tests pin the leaves; the integration tests
+ * drive a full scan and assert generated CRUD gets Db while a pure `default` helper does NOT (and an
+ * effectful default keeps its real effect).
+ *
+ * <p>Provenance: κ batch 24, 2026-06-21.
  */
-class KappaBatch24Test {
+class HibernateJakartaPersistenceTest {
 
     // ── classify-level: the new Hibernate-6 leaves ───────────────────────────────────────────────────
 

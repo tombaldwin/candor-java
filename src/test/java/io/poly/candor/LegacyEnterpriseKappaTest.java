@@ -9,12 +9,14 @@ import io.poly.candor.model.Effect;
 import org.junit.jupiter.api.Test;
 
 /**
- * κ batch 28 — the legacy-enterprise frontier (commons-logging / Joda-Time / commons-lang3 /
- * hibernate.criterion / Struts 1.x), inventory-driven from a real 2,257-class Struts app's complete
- * 169-member call surface (the uflexi dogfood: 81 ledgered packages, struts alone 5,502 calls).
- * Every classification is verb-precise; the anti-fabrication twins pin the pure siblings.
+ * The legacy-enterprise frontier (commons-logging / Joda-Time / commons-lang3 / hibernate.criterion /
+ * Struts 1.x), inventory-driven from a real 2,257-class Struts app's complete 169-member call surface
+ * (the uflexi dogfood: 81 ledgered packages, struts alone 5,502 calls). Every classification is
+ * verb-precise; the anti-fabrication twins pin the pure siblings.
+ *
+ * <p>Provenance: κ batch 28, 2026-07-06.
  */
-class KappaBatch28Test {
+class LegacyEnterpriseKappaTest {
 
     // ── commons-logging (JCL): the 5th log facade ────────────────────────────────────────────────────
     @Test

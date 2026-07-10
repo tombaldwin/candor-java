@@ -6,6 +6,20 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## [0.8.7] — 2026-07-10
+
+Documentation-and-identity release; no report-byte or verdict changes.
+
+- The embedded agent contract (AGENTS.md, served by `--agents`) now documents `--gate-json`,
+  `.candor/config`, the $-scope-segment rule, pure-vs-Unknown, and the diff/gains exit contract;
+  version examples became placeholders so they cannot drift.
+- README: candor-java correctly self-identifies as the family's reference engine (the header
+  wrongly deferred to a "Rust reference"); install block hoisted to the first screen; smoke gains
+  five identity drift-gates (incl. a ban on the string "Rust reference").
+- Tests renamed by feature (KappaBatch24/28-31 → Hibernate/LegacyEnterprise/Utility/Jackson/LongTail
+  — provenance kept in javadocs); the fabrication probe's header follows the family cardinal-sin
+  ruling (the silent under-report owns the term).
+
 ## [0.8.6] — 2026-07-09
 
 - ⚠ **Policy scope segments now split on the `$` nested-type boundary** (the family §6.2 ruling,

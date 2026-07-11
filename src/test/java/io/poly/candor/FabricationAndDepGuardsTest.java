@@ -162,7 +162,7 @@ class FabricationAndDepGuardsTest {
         Path dir = Files.createTempDirectory("candor-deps");
         try {
             Files.writeString(dir.resolve("lib.json"),
-                "{\"candor\":{\"version\":\"vSAME\",\"spec\":\"0.8\"},\"functions\":["
+                "{\"candor\":{\"version\":\"vSAME\",\"spec\":\"0.9\"},\"functions\":["
                 + "{\"fn\":\"dep.Lib.nul\",\"hash\":\"dep/Lib.nul()V\",\"inferred\":null},"
                 + "{\"fn\":\"dep.Lib.str\",\"hash\":\"dep/Lib.str()V\",\"inferred\":\"Net\"},"
                 + "{\"fn\":\"dep.Lib.foreign\",\"hash\":\"dep/Lib.foreign()V\",\"inferred\":[\"Teleport\"]},"

@@ -6,6 +6,27 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## [0.8.8] — 2026-07-11
+
+### ✨ `fix` / `fix-gate` — the boundary fix reaches the JVM reference engine (FIX-SPEC P3)
+
+The remedial capability shipped in candor-query (candor fix) now has a native candor-java port — the
+reference engine, where the layer model is richest. When a method performs an effect its architecture layer
+forbids, `fix <report> <method> <Effect> [policy]` computes the *architectural remedy*: the direct call site
+to hoist, the forbidden-layer methods that become pure and thread the value, and the nearest allowed-layer
+caller to perform the effect — plus the policy-relax alternative. `fix-gate <report> [policy]` does it for
+every deny/`pure` (AS-EFF-006) crossing at once, collapsing the inheritors of one root cause to a single
+plan. Text or `--json`. Byte-for-byte the same remedy shape as candor-query, verified on real JVM bytecode.
+
+The cut is **site-anchored**: it walks *up* from the direct effect site through the denied layer, so the
+pure span is the same regardless of which inheriting method triggered it (root-independent) — the two domain
+methods of a crossing collapse to one identical remedy. `integrations/claude-code/candor-review.sh` (the JVM
+edit-time loop) now folds the plan into the block message: on an AS-EFF gate failure with a policy set, it
+calls `$CANDOR fix-gate` and appends the remedy under the finding, so the agent self-corrects toward the
+right architecture. Read-only, no report-byte or verdict change; advisory (the gate re-scan stays the ground
+truth). Six tests in `FixGateTest` pin the collapse, the single-method cut, the clean case, and the
+fail-loud policy contracts.
+
 ## [0.8.7] — 2026-07-10
 
 Documentation-and-identity release; no report-byte or verdict changes.

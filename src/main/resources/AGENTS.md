@@ -86,6 +86,8 @@ java -jar candor.jar show     .candor/report.json <method> [--json]   # a method
 java -jar candor.jar where    .candor/report.json Db [--json]         # direct sources vs inheritors
 java -jar candor.jar callers  .candor/report.json <method> [--json] [--include-unknown]  # the BLAST RADIUS (works for pure methods)
 java -jar candor.jar whatif   .candor/report.json <method> Net [policy] [--json]  # pre-edit gate verdict
+java -jar candor.jar fix      .candor/report.json <method> Net [policy] [--json]  # the boundary FIX: where the effect belongs + the hoist refactor
+java -jar candor.jar fix-gate .candor/report.json [policy] [--json]               # a fix for EVERY boundary crossing (the loop's block-message remedy)
 java -jar candor.jar diff     .candor/report.json baseline.json [--json]
 java -jar candor.jar map|containment|reachable|path|impact .candor/report.json …
 ```
@@ -101,6 +103,12 @@ Name queries resolve exact > segment-suffix (`Svc.save` matches `com.example.Svc
   dispatched method); a lower-bound disclosure, labelled "cannot confirm", never asserted.
 - **Decide BEFORE you edit** → `whatif <method> <Effect> [policy]` — every transitive caller gains the
   effect; crossed with `CANDOR_POLICY` it returns which functions would violate.
+- **Fix a boundary crossing** → `fix <method> <Effect> [policy]` — the remedial inverse of `whatif`: when a
+  method performs an effect its layer forbids, candor computes *where the effect belongs* (hoist it to the
+  nearest allowed-layer caller) and which methods become pure and thread the value, plus the policy-relax
+  alternative. `fix-gate [policy]` does the same for every crossing at once — the shape the edit-time loop
+  folds into its block message. Advisory: candor names the structure, you write the code; the gate re-scan
+  verifies. Needs a policy (the fix is defined relative to the boundary it crosses).
 - **Enforce in CI** → `--policy <file>` (or `CANDOR_POLICY`) (candor-spec §6.2: `deny`/`pure`/`allow`/`forbid`) +
   `CANDOR_BASELINE` (regression guard). Deterministic — not an LLM opinion.
 - **Gate semantics to know**: scopes match by dotted segment, and the `$` nested-type boundary is a

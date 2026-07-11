@@ -695,7 +695,10 @@ public final class Query {
             String cur = up.poll();
             for (String caller : rev.getOrDefault(cur, List.of())) {
                 Effector ce = byName.get(caller);
-                if (ce != null && !ce.inferred().toNames().contains(effect)) continue; // doesn't route the effect
+                // skip a caller that doesn't route the effect — INCLUDING one absent from the report (a pure
+                // callgraph-only node never carries the effect). Skipping the absent case matches candor-swift
+                // and avoids naming a pure node as a hoist target. (/code-review — was `ce != null && !…`.)
+                if (ce == null || !ce.inferred().toNames().contains(effect)) continue;
                 if (deniedLayer(caller, effect) != null) {
                     if (deniedSpan.add(caller)) up.add(caller); // denied → part of the span; keep climbing
                 } else {
@@ -748,6 +751,19 @@ public final class Query {
         return rev;
     }
 
+    /** The graph the cut walks: the `.callgraph.json` sidecar if present, else the report entries' inline
+     *  `calls` (so a sidecar-less report — a `--json -` stdout dump, a hand-authored report, or one whose
+     *  sidecar was cleaned — still gets the real cut, not a degenerate empty-graph remedy). Mirrors
+     *  candor-query (which never reads the sidecar) and candor-swift's fallback; the `callers` command falls
+     *  back the same way. (/code-review — Java/TS previously emitted `no clean hoist` here.) */
+    static Map<String, List<String>> fixGraph(String reportPath, List<Effector> fns) {
+        Map<String, List<String>> cg = loadCallgraph(reportPath);
+        if (cg != null && !cg.isEmpty()) return cg;
+        Map<String, List<String>> inline = new LinkedHashMap<>();
+        for (Effector f : fns) inline.put(f.fn(), f.calls());
+        return inline;
+    }
+
     /** fix <report> <fn> <Effect> [policy] — the BOUNDARY FIX (integrations/FIX-SPEC.md, the remedial inverse
      *  of whatif). When `fn` performs `effect` in a layer the policy forbids, compute where the effect belongs
      *  (hoist to the nearest allowed-layer caller) and which functions become pure and thread the value.
@@ -762,15 +778,17 @@ public final class Query {
 
         Map<String, Effector> byName = new HashMap<>();
         for (Effector f : fns) byName.put(f.fn(), f);
-        Map<String, List<String>> cg = loadCallgraph(reportPath);
-        if (cg == null) cg = Map.of();
+        Map<String, List<String>> cg = fixGraph(reportPath, fns);
         Map<String, List<String>> rev = reverseGraph(cg);
 
+        // Resolve `fn` among the best-tier matches, PREFERRING one that performs the effect (so a bare leaf
+        // resolves to the violating fn, not a same-named pure sibling). Must match candor-query/ts/swift — a
+        // divergence flips a real remedy into a false "nothing to hoist". (/code-review.)
         int tier = bestTier(fns.stream().map(Effector::fn), fn);
-        String start = null;
-        for (Effector f : fns) if (f.fn().equals(fn)) { start = f.fn(); break; }
-        if (start == null)
-            for (Effector f : fns) if (tier > 0 && matchTier(f.fn(), fn) >= tier) { start = f.fn(); break; }
+        List<Effector> tierMatches = new ArrayList<>();
+        for (Effector f : fns) if (tier > 0 && matchTier(f.fn(), fn) >= tier) tierMatches.add(f);
+        String start = tierMatches.stream().filter(f -> f.inferred().toNames().contains(effect)).findFirst()
+                .map(Effector::fn).orElse(tierMatches.isEmpty() ? null : tierMatches.get(0).fn());
         if (start == null) {
             System.err.println("candor fix: no function matching `" + fn + "`.");
             return 2;
@@ -807,8 +825,7 @@ public final class Query {
 
         Map<String, Effector> byName = new HashMap<>();
         for (Effector f : fns) byName.put(f.fn(), f);
-        Map<String, List<String>> cg = loadCallgraph(reportPath);
-        if (cg == null) cg = Map.of();
+        Map<String, List<String>> cg = fixGraph(reportPath, fns);
         Map<String, List<String>> rev = reverseGraph(cg);
 
         Map<String, Remedy> plans = new TreeMap<>();

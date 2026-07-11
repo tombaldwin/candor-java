@@ -25,7 +25,7 @@ import java.util.stream.Collectors;
 public final class Query {
     static final Set<String> COMMANDS =
             Set.of("show", "where", "callers", "map", "diff", "containment", "reachable", "path", "impact",
-                    "blindspots", "gains", "whatif", "fix", "fix-gate", "rewire");
+                    "blindspots", "gains", "whatif", "fix", "fix-gate", "unverified", "rewire");
     static final Gson JSON = new GsonBuilder().setPrettyPrinting().create();
 
     // Boundary effects SHOULD live in a dedicated layer — their dispersion is the architecture signal
@@ -86,14 +86,16 @@ public final class Query {
         String cmd = args[0];
         boolean json = false;
         boolean includeUnknown = false; // `callers --include-unknown`: also disclose the unresolved-dispatch frontier
+        boolean strict = false;         // `unverified --strict`: exit 1 on an unverified-purity hole
         List<String> pos = new ArrayList<>();
         for (int i = 1; i < args.length; i++) {
             if (args[i].equals("--json")) json = true;
             else if (args[i].equals("--include-unknown")) includeUnknown = true;
+            else if (args[i].equals("--strict")) strict = true;
             else {
                 // an unknown --flag must FAIL, not be swallowed as a query positional (a typo'd
                 // --jsno otherwise returns prose to a wrapper expecting JSON) — same posture as main()
-                Candor.rejectUnknownFlag(args[i], java.util.Set.of("--json", "--include-unknown"), "candor " + cmd + " <report.json> [arg] [--json] [--include-unknown]");
+                Candor.rejectUnknownFlag(args[i], java.util.Set.of("--json", "--include-unknown", "--strict"), "candor " + cmd + " <report.json> [arg] [--json] [--include-unknown] [--strict]");
                 pos.add(args[i]);
             }
         }
@@ -128,6 +130,7 @@ public final class Query {
             case "whatif" -> whatif(pos.get(0), arg, arg2, pos.size() > 3 ? pos.get(3) : null, json);
             case "fix" -> fix(fns, pos.get(0), arg, arg2, pos.size() > 3 ? pos.get(3) : null, json);
             case "fix-gate" -> fixGate(fns, pos.get(0), arg, json);
+            case "unverified" -> unverified(fns, arg, json, strict);
             case "rewire" -> rewire(pos.get(0), arg, json);
             default -> 2;
         };
@@ -888,6 +891,74 @@ public final class Query {
         }
         System.out.println("\n  (Advisory: candor names the shape, you write the code; the gate re-scan verifies each fix.)");
         return 0;
+    }
+
+    /** unverified <report> [policy] — the PROVABLE-PURITY disclosure (eval/fixloop/DISPATCH-NOTE.md, mirrors
+     *  candor-query). A `pure`/`deny E` layer PASSES a function that carries none of its forbidden effects —
+     *  but if that function is Unknown (an unresolvable call), the pass is UNVERIFIED: the Unknown could hide
+     *  the very effect the rule forbids (the fn/closure-port hole). Names each such function + the
+     *  `deny E Unknown <scope>` upgrade. Advisory (exit 0); `--strict` → exit 1. The gate verdict is untouched. */
+    static int unverified(List<Effector> fns, String policyPath, boolean json, boolean strict) {
+        if (!loadPolicyOrFail(policyPath, "unverified")) return 2;
+        List<PolicyRule.Deny> deny = AnalysisState.ctx().denyRules;
+        record Hole(Effector fn, PolicyRule.Deny rule) {}
+        List<Hole> holes = new ArrayList<>();
+        for (Effector e : fns) {
+            if (!e.inferred().toNames().contains("Unknown")) continue;
+            for (PolicyRule.Deny r : deny) {
+                if (!Policy.scopeMatches(e.fn(), r.scope())) continue;
+                boolean violates = r.effects().isEmpty()
+                        ? !e.inferred().without(Effect.UNKNOWN).isEmpty()   // pure: any real effect is a violation
+                        : !e.inferred().intersect(r.effects()).isEmpty();    // deny: a named effect is a violation
+                if (violates) continue;                                      // gate handles a real violation
+                holes.add(new Hole(e, r));
+                break;
+            }
+        }
+        java.util.function.Function<PolicyRule.Deny, String[]> ruleUpgrade = r -> {
+            String scopeSuffix = r.scope().isEmpty() ? "" : " " + r.scope();
+            if (r.effects().isEmpty())
+                return new String[]{"pure" + scopeSuffix, "deny Unknown" + scopeSuffix};
+            String effs = String.join(" ", r.effects().toNames());
+            return new String[]{"deny " + effs + scopeSuffix, "deny " + effs + " Unknown" + scopeSuffix};
+        };
+        if (json) {
+            List<Map<String, Object>> items = new ArrayList<>();
+            for (Hole h : holes) {
+                String[] ru = ruleUpgrade.apply(h.rule());
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("fn", h.fn().fn());
+                m.put("rule", ru[0]);
+                m.put("unknownWhy", h.fn().unknownWhy().stream().sorted().map(UnknownReason::format).toList());
+                m.put("upgrade", ru[1]);
+                items.add(m);
+            }
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("ok", holes.isEmpty());
+            out.put("unverified", items);
+            emit(out);
+            return strict && !holes.isEmpty() ? 1 : 0;
+        }
+        if (holes.isEmpty()) {
+            System.out.println("candor unverified: every function in a pure/deny layer is PROVABLY clean (no Unknown holes) ✓");
+            return 0;
+        }
+        System.out.println("candor unverified — " + holes.size() + " function(s) PASS their policy but aren't PROVABLY clean:\n");
+        TreeSet<String> upgrades = new TreeSet<>();
+        for (Hole h : holes) {
+            String[] ru = ruleUpgrade.apply(h.rule());
+            upgrades.add(ru[1]);
+            String why = h.fn().unknownWhy().isEmpty() ? "an unresolvable call"
+                    : h.fn().unknownWhy().stream().sorted().map(UnknownReason::format).collect(Collectors.joining(", "));
+            System.out.println("  `" + h.fn().fn() + "`  (in `" + ru[0] + "`)");
+            System.out.println("     is Unknown (" + why + ") — candor can't confirm it's free of the forbidden effect(s);");
+            System.out.println("     the Unknown could hide the very effect the rule forbids (e.g. a fn/closure-injected port).");
+            System.out.println("     → make it provable:  add  `" + ru[1] + "`");
+            System.out.println();
+        }
+        System.out.println("  The gate still PASSES — this is advisory. To REQUIRE provable purity, add:");
+        for (String u : upgrades) System.out.println("      " + u);
+        return strict ? 1 : 0;
     }
 
     /** rewire <cur-report> <baseline-report> — the de-wiring detector (mirrors candor-query). Diffs the

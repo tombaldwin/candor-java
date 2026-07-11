@@ -6,6 +6,17 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## [0.8.11] — 2026-07-11
+
+### `fix`: the sandwiched-layer case is now handled (last correctness gap closed)
+
+When an ALLOWED layer is CALLED BY a forbidden one (`D1 → A → D2 → site`, deny on the D layer), hoisting the
+effect to the nearest allowed frontier `A` would leave `D1` still inheriting it. `cleanHoist` is now `false`
+in that case (a forbidden fn calls into the frontier), with a message that names the sandwich and offers the
+port/relax options — instead of a misleading "hoist to A". Detected in the same upward climb that gathers
+`hoistHigher`; identical across all four engines, pinned four-way by conformance PART 12b's sandwiched
+sub-check. Read-only; additive.
+
 ## [0.8.10] — 2026-07-11
 
 ### `fix`: cross-engine parity fixes (from a high-effort /code-review)

@@ -645,8 +645,16 @@ public final class Query {
                    .append(effect).append(", it's a policy bug,\n");
                 out.append("  not a code one: relax the boundary with  `").append(allowEdit).append("`.\n");
             } else {
-                out.append("  NO CLEAN HOIST — every caller up to the entry points is also in a ")
-                   .append(effect).append("-forbidding layer.\n");
+                if (!hoistTo.isEmpty()) { // SANDWICHED: a frontier exists but a forbidden layer calls into it
+                    out.append("  NO CLEAN HOIST — the nearest allowed layer (")
+                       .append(hoistTo.stream().map(x -> "`" + x + "`").collect(Collectors.joining(", ")))
+                       .append(") is itself CALLED BY a ").append(effect).append("-forbidding layer,\n");
+                    out.append("  so hoisting ").append(effect)
+                       .append(" there would leave that caller violating (a forbidden layer sandwiching an allowed one).\n");
+                } else {
+                    out.append("  NO CLEAN HOIST — every caller up to the entry points is also in a ")
+                       .append(effect).append("-forbidding layer.\n");
+                }
                 out.append("  Two honest options:\n");
                 out.append("    (a) Introduce a PORT: have the domain take an interface parameter (a Java interface)\n");
                 out.append("        it receives, implemented by an adapter in an allowed layer that performs ")
@@ -709,22 +717,29 @@ public final class Query {
         // higher hoist options: allowed-layer transitive callers of the minimal frontier that also route the
         // effect — hoisting higher keeps the frontier pure too, at the cost of threading through more
         // signatures (FIX-SPEC: the trade-off, disclosed not hidden).
+        // The SANDWICHED-layer check (/code-review): a hoist is CLEAN only if no forbidden fn sits ABOVE the
+        // frontier. If a denied fn calls into a hoist target, hoisting the effect there leaves that caller
+        // violating. Detected in the same climb that gathers `higher` (the allowed ancestors).
         TreeSet<String> higher = new TreeSet<>();
+        boolean sandwiched = false;
         TreeSet<String> hseen = new TreeSet<>(hoist);
         Deque<String> hq = new ArrayDeque<>(hoist);
         while (!hq.isEmpty()) {
             String cur = hq.poll();
             for (String caller : rev.getOrDefault(cur, List.of())) {
                 Effector ce = byName.get(caller);
-                if (ce != null && ce.inferred().toNames().contains(effect)
-                        && deniedLayer(caller, effect) == null && hseen.add(caller)) {
+                if (ce == null || !ce.inferred().toNames().contains(effect)) continue;
+                if (deniedLayer(caller, effect) != null) {
+                    sandwiched = true;
+                } else if (hseen.add(caller)) {
                     higher.add(caller);
                     hq.add(caller);
                 }
             }
         }
+        boolean cleanHoist = !hoist.isEmpty() && !sandwiched;
         String allowEdit = layer.isEmpty() ? "allow " + effect : "allow " + effect + " " + layer;
-        return new Remedy(start, effect, layer, !hoist.isEmpty(),
+        return new Remedy(start, effect, layer, cleanHoist,
                 new ArrayList<>(sites), new ArrayList<>(deniedSpan), new ArrayList<>(hoist), new ArrayList<>(higher), allowEdit);
     }
 

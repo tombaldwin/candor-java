@@ -174,6 +174,25 @@ class FixGateTest {
         if (System.getenv("CANDOR_POLICY") == null) assertEquals(2, rc, "no policy must exit 2");
     }
 
+    @Test void unverifiedFlagsAnUnknownInScope(@TempDir Path dir) throws Exception {
+        // domain.price is Unknown (a fn-value call) → `pure domain` PASSES it, but its purity is unverified.
+        // `unverified` flags it + names the `deny Unknown domain` upgrade; the provably-pure domain.calc isn't.
+        List<Effector> fns = List.of(
+                eff("domain.price", EffectSet.of(Effect.UNKNOWN), EffectSet.empty(), List.of()),
+                eff("domain.calc", EffectSet.empty(), EffectSet.empty(), List.of()));
+        Path pol = dir.resolve("p.policy");
+        Files.writeString(pol, "pure domain\n");
+        String out = capture(() -> Query.unverified(fns, pol.toString(), true, false));
+        JsonObject o = JsonParser.parseString(out).getAsJsonObject();
+        assertFalse(o.get("ok").getAsBoolean());
+        JsonArray items = o.getAsJsonArray("unverified");
+        assertEquals(1, items.size(), "only the Unknown fn is flagged");
+        assertEquals("domain.price", items.get(0).getAsJsonObject().get("fn").getAsString());
+        assertEquals("deny Unknown domain", items.get(0).getAsJsonObject().get("upgrade").getAsString());
+        // --strict → exit 1
+        assertEquals(1, Query.unverified(fns, pol.toString(), false, true));
+    }
+
     private static Effector eff(String fn, EffectSet inferred, EffectSet direct, List<String> calls) {
         return new Effector(fn, "", inferred, List.of(), direct, EffectSet.empty(),
                 EffectSet.empty(), EffectSet.empty(), false, inferred.hasUnknown(), EffectorKind.FUNCTION,

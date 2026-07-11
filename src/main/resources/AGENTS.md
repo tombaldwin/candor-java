@@ -88,6 +88,7 @@ java -jar candor.jar callers  .candor/report.json <method> [--json] [--include-u
 java -jar candor.jar whatif   .candor/report.json <method> Net [policy] [--json]  # pre-edit gate verdict
 java -jar candor.jar fix      .candor/report.json <method> Net [policy] [--json]  # the boundary FIX: where the effect belongs + the hoist refactor
 java -jar candor.jar fix-gate .candor/report.json [policy] [--json]               # a fix for EVERY boundary crossing (the loop's block-message remedy)
+java -jar candor.jar unverified .candor/report.json [policy] [--strict] [--json]  # pure/deny layers that PASS but are Unknown (not PROVABLY clean)
 java -jar candor.jar diff     .candor/report.json baseline.json [--json]
 java -jar candor.jar map|containment|reachable|path|impact .candor/report.json …
 ```

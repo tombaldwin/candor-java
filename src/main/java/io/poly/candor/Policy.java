@@ -162,20 +162,9 @@ final class Policy {
         // fn/closure-injected port). Surfaces the gap automatically (eval/fixloop/DISPATCH-NOTE.md).
         List<String[]> holes = new ArrayList<>();
         for (var e : new TreeMap<>(inferred).entrySet()) {
-            String fn = e.getKey();
-            if (!e.getValue().toNames().contains("Unknown")) continue;
-            for (PolicyRule.Deny r : ctx().denyRules) {
-                if (!scopeMatches(fn, r.scope())) continue;
-                boolean violates = r.effects().isEmpty()
-                        ? !e.getValue().without(Effect.UNKNOWN).isEmpty()
-                        : !e.getValue().intersect(r.effects()).isEmpty();
-                if (violates) continue;
-                String suffix = r.scope().isEmpty() ? "" : " " + r.scope();
-                String upgrade = r.effects().isEmpty() ? "deny Unknown" + suffix
-                        : "deny " + String.join(" ", r.effects().toNames()) + " Unknown" + suffix;
-                holes.add(new String[]{fn, upgrade});
-                break;
-            }
+            // Same predicate + upgrade reconstruction as `candor unverified` (Query) — one source of truth.
+            PolicyRule.Deny r = unverifiedHoleRule(e.getKey(), e.getValue(), ctx().denyRules);
+            if (r != null) holes.add(new String[]{e.getKey(), ruleUpgrade(r)[1]});
         }
         if (!holes.isEmpty()) {
             System.err.println("candor-java: note — " + holes.size()
@@ -357,6 +346,36 @@ final class Policy {
             if (ok && segs[i + parts.length - 1].startsWith(last)) return true;
         }
         return false;
+    }
+
+    /** The single predicate for a provable-purity hole (eval/fixloop/DISPATCH-NOTE.md): a method that is
+     *  Unknown, sits in a pure/deny scope, and PASSES that rule (carries none of its forbidden real effects)
+     *  — so its compliance is asserted but not verified (the Unknown could hide the very effect the rule
+     *  forbids; the classic case is a fn/closure-injected port). A *real* violation is the gate's job, not
+     *  this. Returns the first governing rule under which the method is such a hole, or null. Shared by the
+     *  gate note ({@link #checkPolicy}) and `candor unverified` (Query) so "what a hole is" has ONE
+     *  definition — the two disclosure paths cannot drift (conformance PART 12d pins their agreement). */
+    static PolicyRule.Deny unverifiedHoleRule(String fn, EffectSet inferred, List<PolicyRule.Deny> deny) {
+        if (!inferred.toNames().contains("Unknown")) return null;
+        for (PolicyRule.Deny r : deny) {
+            if (!scopeMatches(fn, r.scope())) continue;
+            boolean violates = r.effects().isEmpty()
+                    ? !inferred.without(Effect.UNKNOWN).isEmpty()   // pure: any real effect is a violation
+                    : !inferred.intersect(r.effects()).isEmpty();    // deny: a named effect is a violation
+            if (!violates) return r;
+        }
+        return null;
+    }
+
+    /** Reconstruct a rule's source form and its `Unknown`-forbidding upgrade: `{source, upgrade}`. `pure
+     *  <scope>` → {"pure <scope>", "deny Unknown <scope>"}; `deny <E…> <scope>` → {"deny <E…> <scope>",
+     *  "deny <E…> Unknown <scope>"}. Shared so the gate note and `unverified` name the identical upgrade. */
+    static String[] ruleUpgrade(PolicyRule.Deny r) {
+        String suffix = r.scope().isEmpty() ? "" : " " + r.scope();
+        if (r.effects().isEmpty())
+            return new String[]{"pure" + suffix, "deny Unknown" + suffix};
+        String effs = String.join(" ", r.effects().toNames());
+        return new String[]{"deny " + effs + suffix, "deny " + effs + " Unknown" + suffix};
     }
 
     /** Split a name OR a policy scope into segments on `.`, `::` AND the JVM's `$` nested-type boundary,

@@ -17,6 +17,8 @@ that makes the layer PROVABLY clean. Closes the discovery gap — an author lear
 *provably* pure without knowing the `unverified` command exists. **Advisory only**: a note, never a violation,
 so the exit code, gate verdict, and `--gate-json` are untouched. Emitted from `Policy.checkPolicy` after the
 AS-EFF-006 loop. Mirrors candor-scan/ts/swift (four-engine parity). Existing gate/smoke tests unchanged.
+The gate note and `unverified` share ONE predicate (`Policy.unverifiedHoleRule` + `Policy.ruleUpgrade`) — a
+single definition of a hole, so the two disclosure paths cannot drift (PART 12d pins it).
 
 ## [0.8.14] — 2026-07-11
 

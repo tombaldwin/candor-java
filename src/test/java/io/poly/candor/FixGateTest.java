@@ -127,6 +127,25 @@ class FixGateTest {
         assertEquals("Repo.save", o.get("fn").getAsString(), "must resolve to the effectful, denied match");
     }
 
+    @Test void fixSandwichedLayerIsNotACleanHoist(@TempDir Path dir) throws Exception {
+        // domain.top → api.mid → domain.inner → infra.fetch, `deny Net domain`. api.mid is the nearest allowed
+        // frontier, but domain.top CALLS it → hoisting Net there leaves top violating → NOT a clean hoist.
+        String cg = "{\"domain.Dom.top\":[\"api.Api.mid\"],\"api.Api.mid\":[\"domain.Dom.inner\"],"
+                + "\"domain.Dom.inner\":[\"infra.Infra.fetch\"],\"infra.Infra.fetch\":[]}";
+        Files.writeString(dir.resolve("r.callgraph.json"), cg);
+        String report = dir.resolve("r.json").toString();
+        List<Effector> fns = List.of(
+                eff("domain.Dom.top", EffectSet.of(Effect.NET), EffectSet.empty(), List.of("api.Api.mid")),
+                eff("api.Api.mid", EffectSet.of(Effect.NET), EffectSet.empty(), List.of("domain.Dom.inner")),
+                eff("domain.Dom.inner", EffectSet.of(Effect.NET), EffectSet.empty(), List.of("infra.Infra.fetch")),
+                eff("infra.Infra.fetch", EffectSet.of(Effect.NET), EffectSet.of(Effect.NET), List.of()));
+        Path pol = dir.resolve("arch.policy");
+        Files.writeString(pol, "deny Net domain\n");
+        String out = capture(() -> Query.fix(fns, report, "inner", "Net", pol.toString(), true));
+        JsonObject o = JsonParser.parseString(out).getAsJsonObject();
+        assertEquals(false, o.get("cleanHoist").getAsBoolean(), "a sandwiched frontier is NOT a clean hoist");
+    }
+
     @Test void fixGateCleanReportIsOk(@TempDir Path dir) throws Exception {
         // A scope pattern that matches no function → ok:true, empty remedies.
         String report = orderflowGraph(dir);

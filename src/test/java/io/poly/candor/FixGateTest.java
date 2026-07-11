@@ -86,6 +86,32 @@ class FixGateTest {
         assertEquals("of.api.Api.getQuote", o.getAsJsonArray("hoistTo").get(0).getAsString());
     }
 
+    @Test void fixSurfacesHigherHoistTradeoff(@TempDir Path dir) throws Exception {
+        // With an allowed-layer entry point ABOVE the minimal frontier, candor surfaces the trade-off: the
+        // minimal hoist is still api.getQuote, but Main.run (which calls it, also allowed) is a higher option.
+        String cg = "{"
+                + "\"Main.run\":[\"of.api.Api.getQuote\"],"
+                + "\"of.api.Api.getQuote\":[\"of.domain.Pricing.quoteBulk\"],"
+                + "\"of.domain.Pricing.quoteBulk\":[\"of.domain.Pricing.priceQuote\"],"
+                + "\"of.domain.Pricing.priceQuote\":[\"of.infra.Rates.fetchRate\"],"
+                + "\"of.infra.Rates.fetchRate\":[]}";
+        Files.writeString(dir.resolve("r.callgraph.json"), cg);
+        String report = dir.resolve("r.json").toString();
+        List<Effector> fns = List.of(
+                eff("Main.run", EffectSet.of(Effect.NET), EffectSet.empty(), List.of("of.api.Api.getQuote")),
+                eff("of.api.Api.getQuote", EffectSet.of(Effect.NET), EffectSet.empty(), List.of("of.domain.Pricing.quoteBulk")),
+                eff("of.domain.Pricing.quoteBulk", EffectSet.of(Effect.NET), EffectSet.empty(), List.of("of.domain.Pricing.priceQuote")),
+                eff("of.domain.Pricing.priceQuote", EffectSet.of(Effect.NET), EffectSet.empty(), List.of("of.infra.Rates.fetchRate")),
+                eff("of.infra.Rates.fetchRate", EffectSet.of(Effect.NET), EffectSet.of(Effect.NET), List.of()));
+        Path pol = dir.resolve("arch.policy");
+        Files.writeString(pol, "deny Net domain\n");
+
+        String out = capture(() -> Query.fix(fns, report, "priceQuote", "Net", pol.toString(), true));
+        JsonObject o = JsonParser.parseString(out).getAsJsonObject();
+        assertEquals("of.api.Api.getQuote", o.getAsJsonArray("hoistTo").get(0).getAsString(), "minimal frontier unchanged");
+        assertEquals("Main.run", o.getAsJsonArray("hoistHigher").get(0).getAsString(), "Main.run is the higher option");
+    }
+
     @Test void fixGateCleanReportIsOk(@TempDir Path dir) throws Exception {
         // A scope pattern that matches no function → ok:true, empty remedies.
         String report = orderflowGraph(dir);

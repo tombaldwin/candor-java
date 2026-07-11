@@ -6,7 +6,16 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
-## [0.8.15] — 2026-07-11
+## [0.9.0] — 2026-07-11
+
+### spec 0.9 — the remedial-loop rung
+
+candor-java now declares **spec `0.9`** (`SPEC_VERSION`; the envelope + `--gate-json` verdict carry it).
+0.9 is a **tier-2 (pinned-tool-surface) rung** (candor-spec §"Conformance tiers"): no report-schema or
+verdict change — a 0.8 report/verdict is byte-identical under 0.9 — but the remedial loop (`fix`/`fix-gate`,
+`unverified`, and the gate auto-disclosure below) is now the pinned §3.1/§3.3 contract, required of a
+0.9-conformant engine. Reference engine: candor-java leads the rung. **⚠ the `spec` string changed** —
+a consumer pinning `spec == "0.8"` must accept `0.9`; report/verdict bytes are otherwise unchanged.
 
 ### ✨ Gate scans auto-disclose the provable-purity gap (no need to know to run `unverified`)
 

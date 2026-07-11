@@ -655,12 +655,20 @@ public final class Query {
                     out.append("  NO CLEAN HOIST — every caller up to the entry points is also in a ")
                        .append(effect).append("-forbidding layer.\n");
                 }
-                out.append("  Two honest options:\n");
-                out.append("    (a) Introduce a PORT: have the domain take an interface parameter (a Java interface)\n");
-                out.append("        it receives, implemented by an adapter in an allowed layer that performs ")
-                   .append(effect).append(" and\n");
-                out.append("        injects the result (dependency inversion) — the domain depends on the abstraction, not the I/O.\n");
-                out.append("    (b) If the domain legitimately needs ").append(effect)
+                out.append("  Three ways to fix it:\n");
+                out.append("    (a) HOIST TO A NEW ENTRY POINT — add a thin method ABOVE the ").append(layerLabel)
+                   .append(" layer that performs ").append(effect).append("\n");
+                out.append("        and passes the result DOWN as a plain value; the ").append(layerLabel)
+                   .append(" methods take it as a parameter and stay pure.\n");
+                out.append("        (candor says \"no clean hoist\" only because no allowed caller EXISTS yet — you can add one; simplest fix.)\n");
+                out.append("    (b) INJECT IT (dependency inversion) — give the ").append(layerLabel)
+                   .append(" layer a FUNCTION parameter (e.g. a Supplier/functional interface) that\n");
+                out.append("        supplies the value, provided by an adapter in an allowed layer. Use a functional value, NOT a\n");
+                out.append("        resolvable interface impl: candor reads a call through a function value as Unknown (so `deny ")
+                   .append(effect).append("`\n");
+                out.append("        clears), but RESOLVES an interface dispatch back to its implementor — a port whose impl performs ")
+                   .append(effect).append(" still trips the gate.\n");
+                out.append("    (c) If the ").append(layerLabel).append(" layer legitimately needs ").append(effect)
                    .append(", relax the boundary:  `").append(allowEdit).append("`.\n");
             }
         }

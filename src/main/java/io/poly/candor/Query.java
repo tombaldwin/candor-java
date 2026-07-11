@@ -25,7 +25,7 @@ import java.util.stream.Collectors;
 public final class Query {
     static final Set<String> COMMANDS =
             Set.of("show", "where", "callers", "map", "diff", "containment", "reachable", "path", "impact",
-                    "blindspots", "gains", "whatif", "rewire");
+                    "blindspots", "gains", "whatif", "fix", "fix-gate", "rewire");
     static final Gson JSON = new GsonBuilder().setPrettyPrinting().create();
 
     // Boundary effects SHOULD live in a dedicated layer — their dispersion is the architecture signal
@@ -126,6 +126,8 @@ public final class Query {
             case "blindspots" -> blindspots(fns, json);
             case "gains" -> gains(fns, pos.get(0), arg, json);
             case "whatif" -> whatif(pos.get(0), arg, arg2, pos.size() > 3 ? pos.get(3) : null, json);
+            case "fix" -> fix(fns, pos.get(0), arg, arg2, pos.size() > 3 ? pos.get(3) : null, json);
+            case "fix-gate" -> fixGate(fns, pos.get(0), arg, json);
             case "rewire" -> rewire(pos.get(0), arg, json);
             default -> 2;
         };
@@ -573,6 +575,249 @@ public final class Query {
         System.out.println("  ⚠ WOULD VIOLATE policy (" + violations.size() + ") — run BEFORE the edit:");
         for (String[] v : violations) System.out.println("      [AS-EFF-006] `" + v[0] + "`  (rule: `" + v[1] + "`)");
         return 1;
+    }
+
+    /** The deny/`pure` scope (the "layer") that forbids `effect` at `fn`, or null if performing it there is
+     *  allowed. Mirrors the gate's own AS-EFF-006 predicate (Policy.checkPolicy): a `deny` fires when it
+     *  names the effect; a `pure` rule (empty effects) forbids every real effect but not Unknown. Reads the
+     *  parsed deny rules from the thread-local context (the caller must have parsed a policy first). */
+    static String deniedLayer(String fn, String effect) {
+        for (var r : AnalysisState.ctx().denyRules) {
+            boolean denies = r.effects().isEmpty() ? !effect.equals("Unknown") : r.effects().toNames().contains(effect);
+            if (denies && Policy.scopeMatches(fn, r.scope())) return r.scope();
+        }
+        return null;
+    }
+
+    /** A computed boundary remedy (integrations/FIX-SPEC.md) — the deterministic cut between "must stay
+     *  pure" (`deniedSpan`) and "may perform the effect" (`hoistTo`). The Java mirror of candor-query's
+     *  RemedyPlan. */
+    private record Remedy(String fn, String effect, String layer, boolean cleanHoist,
+                          List<String> sites, List<String> deniedSpan, List<String> hoistTo, String allowEdit) {
+        Map<String, Object> toJson() {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("fn", fn);
+            m.put("effect", effect);
+            m.put("layer", layer);
+            m.put("cleanHoist", cleanHoist);
+            m.put("site", sites);
+            m.put("deniedSpan", deniedSpan);
+            m.put("hoistTo", hoistTo);
+            m.put("policyAlternative", allowEdit);
+            return m;
+        }
+        /** Folds the many inheritors of one root cause to a single remedy: the plan is fixed by its effect,
+         *  layer, site and hoist target — not by which inheriting function tripped the gate. */
+        String dedupKey() { return effect + "|" + layer + "|" + sites + "|" + hoistTo; }
+        void renderText(StringBuilder out) {
+            String layerLabel = layer.isEmpty() ? "this" : "`" + layer + "`";
+            String siteList = sites.isEmpty()
+                    ? "(not a local source — a cross-jar or Unknown effect)"
+                    : sites.stream().map(x -> "`" + x + "`").collect(Collectors.joining(", "));
+            out.append("candor fix — hoist ").append(effect).append(" out of the ").append(layerLabel).append(" boundary\n\n");
+            out.append("  The violation: `").append(fn).append("` performs ").append(effect)
+               .append(", which the ").append(layerLabel).append(" layer forbids.\n");
+            out.append("  Performed directly at: ").append(siteList).append("\n");
+            String span = deniedSpan.stream().limit(6).map(x -> "`" + x + "`").collect(Collectors.joining(", "))
+                    + (deniedSpan.size() > 6 ? ", …" : "");
+            out.append("  Forbidden across ").append(deniedSpan.size())
+               .append(" function(s) in the layer (they inherited it): ").append(span).append("\n\n");
+            if (cleanHoist) {
+                out.append("  THE FIX — hoist the effect to the boundary:\n");
+                out.append("    · Perform ").append(effect).append(" at: ")
+                   .append(hoistTo.stream().map(x -> "`" + x + "`").collect(Collectors.joining(", ")))
+                   .append("  (an allowed layer that already calls into the domain).\n");
+                out.append("    · Pass the result down as a parameter; the ").append(deniedSpan.size())
+                   .append(" function(s) above then stay pure.\n");
+                out.append("    · Re-run the gate — the ").append(layerLabel).append(" blast radius for ")
+                   .append(effect).append(" should be empty.\n\n");
+                out.append("  ALTERNATIVE — if the ").append(layerLabel).append(" layer is MEANT to perform ")
+                   .append(effect).append(", it's a policy bug,\n");
+                out.append("  not a code one: relax the boundary with  `").append(allowEdit).append("`.\n");
+            } else {
+                out.append("  NO CLEAN HOIST — every caller up to the entry points is also in a ")
+                   .append(effect).append("-forbidding layer.\n");
+                out.append("  Two honest options:\n");
+                out.append("    (a) Introduce a PORT: have the domain take an interface parameter (a Java interface)\n");
+                out.append("        it receives, implemented by an adapter in an allowed layer that performs ")
+                   .append(effect).append(" and\n");
+                out.append("        injects the result (dependency inversion) — the domain depends on the abstraction, not the I/O.\n");
+                out.append("    (b) If the domain legitimately needs ").append(effect)
+                   .append(", relax the boundary:  `").append(allowEdit).append("`.\n");
+            }
+        }
+    }
+
+    /** The cut itself — pure over the report graph. `start` performs `effect` and sits in the deny-`effect`
+     *  layer `layer`; `cg` is caller→callees (the sidecar), `rev` its inverse, `byName` the effector index.
+     *  Returns the direct site(s), the denied span, and the hoist frontier. Shared by `fix` and `fix-gate`. */
+    static Remedy computeRemedy(String start, String effect, String layer,
+                                Map<String, List<String>> cg, Map<String, List<String>> rev,
+                                Map<String, Effector> byName) {
+        // direct site(s) S: forward BFS from `start` through effect-carrying callees to the DIRECT source(s).
+        TreeSet<String> sites = new TreeSet<>();
+        TreeSet<String> fseen = new TreeSet<>();
+        Deque<String> fq = new ArrayDeque<>();
+        fq.add(start);
+        fseen.add(start);
+        while (!fq.isEmpty()) {
+            String cur = fq.poll();
+            Effector fe = byName.get(cur);
+            if (fe != null && fe.direct().toNames().contains(effect)) sites.add(cur);
+            for (String c : cg.getOrDefault(cur, List.of())) {
+                Effector ce = byName.get(c);
+                if (ce != null && ce.inferred().toNames().contains(effect) && fseen.add(c)) fq.add(c);
+            }
+        }
+        // ANCHOR on the site(s) (fall back to `start` for a cross-jar/Unknown source with no local site) and
+        // walk UP: denied-layer effect-carriers are the pure span; the allowed-layer callers where the climb
+        // stops are the hoist frontier. Site-anchored so the span is the SAME whichever inheriting function
+        // triggered it (root-independent) — the two domain functions collapse to one identical remedy.
+        Set<String> anchors = sites.isEmpty() ? Set.of(start) : sites;
+        TreeSet<String> deniedSpan = new TreeSet<>();
+        TreeSet<String> hoist = new TreeSet<>();
+        Deque<String> up = new ArrayDeque<>();
+        for (String a : anchors) {
+            if (deniedLayer(a, effect) != null) deniedSpan.add(a); // a site that is itself in the denied layer
+            up.add(a);
+        }
+        while (!up.isEmpty()) {
+            String cur = up.poll();
+            for (String caller : rev.getOrDefault(cur, List.of())) {
+                Effector ce = byName.get(caller);
+                if (ce != null && !ce.inferred().toNames().contains(effect)) continue; // doesn't route the effect
+                if (deniedLayer(caller, effect) != null) {
+                    if (deniedSpan.add(caller)) up.add(caller); // denied → part of the span; keep climbing
+                } else {
+                    hoist.add(caller); // allowed → the boundary; the effect should originate here
+                }
+            }
+        }
+        String allowEdit = layer.isEmpty() ? "allow " + effect : "allow " + effect + " " + layer;
+        return new Remedy(start, effect, layer, !hoist.isEmpty(),
+                new ArrayList<>(sites), new ArrayList<>(deniedSpan), new ArrayList<>(hoist), allowEdit);
+    }
+
+    /** Load a policy into the thread-local deny rules, fail-loud (exit 2) on an unreadable path — the same
+     *  contract as `whatif`. Returns true on success; on failure prints the reason and the caller returns 2. */
+    private static boolean loadPolicyOrFail(String policyPath, String who) {
+        if (policyPath == null) policyPath = System.getenv("CANDOR_POLICY");
+        if (policyPath == null) {
+            System.err.println("candor " + who + ": a policy is required (pass a policy file or set CANDOR_POLICY) — the fix is the refactor that restores the boundary the edit crossed.");
+            return false;
+        }
+        AnalysisState.ctx().denyRules.clear();
+        if (!Policy.parsePolicy(policyPath)) {
+            System.err.println("candor: policy `" + policyPath + "` could not be read — no fix computed.");
+            return false;
+        }
+        return true;
+    }
+
+    private static Map<String, List<String>> reverseGraph(Map<String, List<String>> cg) {
+        Map<String, List<String>> rev = new TreeMap<>(); // callee -> direct callers
+        for (var e : cg.entrySet())
+            for (String c : e.getValue()) rev.computeIfAbsent(c, k -> new ArrayList<>()).add(e.getKey());
+        return rev;
+    }
+
+    /** fix <report> <fn> <Effect> [policy] — the BOUNDARY FIX (integrations/FIX-SPEC.md, the remedial inverse
+     *  of whatif). When `fn` performs `effect` in a layer the policy forbids, compute where the effect belongs
+     *  (hoist to the nearest allowed-layer caller) and which functions become pure and thread the value.
+     *  Advisory: candor names the structure, you write the code; the gate re-scan stays the ground truth. */
+    static int fix(List<Effector> fns, String reportPath, String fn, String effect, String policyPath, boolean json) {
+        if (fn == null || effect == null) return usage("fix <report.json> <fn> <Effect> [policy] [--json]");
+        if (!Rules.KNOWN_EFFECTS.contains(effect) && !effect.equals("Unknown")) {
+            System.err.println("candor: unknown effect `" + effect + "` (expected one of " + Rules.KNOWN_EFFECTS + " or Unknown)");
+            return 2;
+        }
+        if (!loadPolicyOrFail(policyPath, "fix")) return 2;
+
+        Map<String, Effector> byName = new HashMap<>();
+        for (Effector f : fns) byName.put(f.fn(), f);
+        Map<String, List<String>> cg = loadCallgraph(reportPath);
+        if (cg == null) cg = Map.of();
+        Map<String, List<String>> rev = reverseGraph(cg);
+
+        int tier = bestTier(fns.stream().map(Effector::fn), fn);
+        String start = null;
+        for (Effector f : fns) if (f.fn().equals(fn)) { start = f.fn(); break; }
+        if (start == null)
+            for (Effector f : fns) if (tier > 0 && matchTier(f.fn(), fn) >= tier) { start = f.fn(); break; }
+        if (start == null) {
+            System.err.println("candor fix: no function matching `" + fn + "`.");
+            return 2;
+        }
+        Effector se = byName.get(start);
+        if (se == null || !se.inferred().toNames().contains(effect)) {
+            System.out.println("candor fix: `" + start + "` does not perform " + effect + " — nothing to hoist.");
+            return 0;
+        }
+        String layer = deniedLayer(start, effect);
+        if (layer == null) {
+            System.out.println("candor fix: `" + start + "` performs " + effect
+                    + ", but no policy forbids it there — the boundary isn't crossed, nothing to fix.");
+            return 0;
+        }
+        Remedy plan = computeRemedy(start, effect, layer, cg, rev, byName);
+        if (json) {
+            emit(plan.toJson());
+            return 0;
+        }
+        StringBuilder sb = new StringBuilder();
+        plan.renderText(sb);
+        System.out.print(sb);
+        System.out.println("\n  (Advisory: candor names the shape, you write the code; the gate re-scan verifies the fix.)");
+        return 0;
+    }
+
+    /** fix-gate <report> [policy] — a remedy for EVERY deny/`pure` (AS-EFF-006) boundary crossing in the
+     *  report, collapsing the inheritors of one root cause to a single plan. The edit-time loop folds this
+     *  into the block message so the agent gets the FIX, not just the finding. Scope is AS-EFF-006 only —
+     *  the one refactor candor can compute; allowlist/layering findings are a different shape. */
+    static int fixGate(List<Effector> fns, String reportPath, String policyPath, boolean json) {
+        if (!loadPolicyOrFail(policyPath, "fix-gate")) return 2;
+
+        Map<String, Effector> byName = new HashMap<>();
+        for (Effector f : fns) byName.put(f.fn(), f);
+        Map<String, List<String>> cg = loadCallgraph(reportPath);
+        if (cg == null) cg = Map.of();
+        Map<String, List<String>> rev = reverseGraph(cg);
+
+        Map<String, Remedy> plans = new TreeMap<>();
+        for (Effector f : fns) {
+            for (String effect : f.inferred().toNames()) {
+                String layer = deniedLayer(f.fn(), effect);
+                if (layer != null) {
+                    Remedy p = computeRemedy(f.fn(), effect, layer, cg, rev, byName);
+                    plans.putIfAbsent(p.dedupKey(), p);
+                }
+            }
+        }
+        if (json) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("ok", plans.isEmpty());
+            List<Map<String, Object>> rem = new ArrayList<>();
+            for (Remedy p : plans.values()) rem.add(p.toJson());
+            out.put("remedies", rem);
+            emit(out);
+            return 0;
+        }
+        if (plans.isEmpty()) {
+            System.out.println("candor fix-gate: no deny/pure boundary crossings in this report ✓");
+            return 0;
+        }
+        int n = plans.size();
+        System.out.println("candor fix — " + n + " boundary " + (n == 1 ? "remedy" : "remedies") + " for this change:\n");
+        int i = 0;
+        for (Remedy p : plans.values()) {
+            if (i++ > 0) System.out.println("  ────────────────────────────────────────");
+            StringBuilder sb = new StringBuilder();
+            p.renderText(sb);
+            System.out.print(sb);
+        }
+        System.out.println("\n  (Advisory: candor names the shape, you write the code; the gate re-scan verifies each fix.)");
+        return 0;
     }
 
     /** rewire <cur-report> <baseline-report> — the de-wiring detector (mirrors candor-query). Diffs the

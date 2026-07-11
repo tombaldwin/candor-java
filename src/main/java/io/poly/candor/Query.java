@@ -904,28 +904,14 @@ public final class Query {
         record Hole(Effector fn, PolicyRule.Deny rule) {}
         List<Hole> holes = new ArrayList<>();
         for (Effector e : fns) {
-            if (!e.inferred().toNames().contains("Unknown")) continue;
-            for (PolicyRule.Deny r : deny) {
-                if (!Policy.scopeMatches(e.fn(), r.scope())) continue;
-                boolean violates = r.effects().isEmpty()
-                        ? !e.inferred().without(Effect.UNKNOWN).isEmpty()   // pure: any real effect is a violation
-                        : !e.inferred().intersect(r.effects()).isEmpty();    // deny: a named effect is a violation
-                if (violates) continue;                                      // gate handles a real violation
-                holes.add(new Hole(e, r));
-                break;
-            }
+            // Same predicate as the gate note (Policy.unverifiedHoleRule) — one definition of a hole.
+            PolicyRule.Deny r = Policy.unverifiedHoleRule(e.fn(), e.inferred(), deny);
+            if (r != null) holes.add(new Hole(e, r));
         }
-        java.util.function.Function<PolicyRule.Deny, String[]> ruleUpgrade = r -> {
-            String scopeSuffix = r.scope().isEmpty() ? "" : " " + r.scope();
-            if (r.effects().isEmpty())
-                return new String[]{"pure" + scopeSuffix, "deny Unknown" + scopeSuffix};
-            String effs = String.join(" ", r.effects().toNames());
-            return new String[]{"deny " + effs + scopeSuffix, "deny " + effs + " Unknown" + scopeSuffix};
-        };
         if (json) {
             List<Map<String, Object>> items = new ArrayList<>();
             for (Hole h : holes) {
-                String[] ru = ruleUpgrade.apply(h.rule());
+                String[] ru = Policy.ruleUpgrade(h.rule());
                 Map<String, Object> m = new LinkedHashMap<>();
                 m.put("fn", h.fn().fn());
                 m.put("rule", ru[0]);
@@ -946,7 +932,7 @@ public final class Query {
         System.out.println("candor unverified — " + holes.size() + " function(s) PASS their policy but aren't PROVABLY clean:\n");
         TreeSet<String> upgrades = new TreeSet<>();
         for (Hole h : holes) {
-            String[] ru = ruleUpgrade.apply(h.rule());
+            String[] ru = Policy.ruleUpgrade(h.rule());
             upgrades.add(ru[1]);
             String why = h.fn().unknownWhy().isEmpty() ? "an unresolvable call"
                     : h.fn().unknownWhy().stream().sorted().map(UnknownReason::format).collect(Collectors.joining(", "));

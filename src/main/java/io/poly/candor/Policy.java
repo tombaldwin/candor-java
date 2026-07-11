@@ -157,6 +157,32 @@ final class Policy {
                 }
             }
         }
+        // Provable-purity DISCLOSURE (advisory — NEVER a violation, so `v`/exit are untouched): methods in a
+        // pure/deny scope that PASS but are Unknown (the Unknown could hide the forbidden effect — a
+        // fn/closure-injected port). Surfaces the gap automatically (eval/fixloop/DISPATCH-NOTE.md).
+        List<String[]> holes = new ArrayList<>();
+        for (var e : new TreeMap<>(inferred).entrySet()) {
+            String fn = e.getKey();
+            if (!e.getValue().toNames().contains("Unknown")) continue;
+            for (PolicyRule.Deny r : ctx().denyRules) {
+                if (!scopeMatches(fn, r.scope())) continue;
+                boolean violates = r.effects().isEmpty()
+                        ? !e.getValue().without(Effect.UNKNOWN).isEmpty()
+                        : !e.getValue().intersect(r.effects()).isEmpty();
+                if (violates) continue;
+                String suffix = r.scope().isEmpty() ? "" : " " + r.scope();
+                String upgrade = r.effects().isEmpty() ? "deny Unknown" + suffix
+                        : "deny " + String.join(" ", r.effects().toNames()) + " Unknown" + suffix;
+                holes.add(new String[]{fn, upgrade});
+                break;
+            }
+        }
+        if (!holes.isEmpty()) {
+            System.err.println("candor-java: note — " + holes.size()
+                    + " method(s) PASS the policy but are Unknown (purity NOT verified — the Unknown could hide a forbidden effect):");
+            for (String[] h : holes) System.err.println("    `" + h[0] + "`  → add  `" + h[1] + "`");
+            System.err.println("  (advisory; add the upgrade(s) to REQUIRE provable purity, or run `candor unverified` for detail — the gate verdict is unchanged)");
+        }
         // AS-EFF-008: a method in an allow-listed scope may reach ONLY the listed literals — Net hosts
         // (matched by hostname), Exec commands (by basename), Fs paths (by path-prefix at a boundary).
         // Certifies the VISIBLE literal surface (propagated transitively). A method whose surface is empty OR

@@ -6,6 +6,18 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## [0.8.15] — 2026-07-11
+
+### ✨ Gate scans auto-disclose the provable-purity gap (no need to know to run `unverified`)
+
+A policy scan now emits the `unverified` disclosure automatically as a stderr note: after the gate verdict,
+any method in a `pure`/`deny <E>` scope that PASSES but is `Unknown` (an unresolvable call — the classic
+fn/closure-injected "port", e.g. a `LongSupplier` domain) is named, with the `deny <E> Unknown <scope>` upgrade
+that makes the layer PROVABLY clean. Closes the discovery gap — an author learns their "pure" layer isn't
+*provably* pure without knowing the `unverified` command exists. **Advisory only**: a note, never a violation,
+so the exit code, gate verdict, and `--gate-json` are untouched. Emitted from `Policy.checkPolicy` after the
+AS-EFF-006 loop. Mirrors candor-scan/ts/swift (four-engine parity). Existing gate/smoke tests unchanged.
+
 ## [0.8.14] — 2026-07-11
 
 ### ✨ `unverified` — the provable-purity disclosure ported here (four-engine parity)

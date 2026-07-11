@@ -6,6 +6,16 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## [0.8.9] — 2026-07-11
+
+### `fix`/`fix-gate`: the higher-hoist trade-off (FIX-SPEC's last refinement)
+
+Each remedy gains `hoistHigher` beside `hoistTo`: the allowed-layer transitive callers of the minimal
+frontier that also route the effect — the places you could originate it *further up*. The text surfaces the
+trade-off (hoisting higher keeps the frontier pure too, threading through more signatures). `hoistTo` (the
+minimal fix) is unchanged. Byte-for-byte identical to candor-query/ts/swift, pinned by conformance PART 12b.
+Read-only, additive; no report/verdict change.
+
 ## [0.8.8] — 2026-07-11
 
 ### ✨ `fix` / `fix-gate` — the boundary fix reaches the JVM reference engine (FIX-SPEC P3)

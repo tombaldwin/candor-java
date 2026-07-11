@@ -593,7 +593,8 @@ public final class Query {
      *  pure" (`deniedSpan`) and "may perform the effect" (`hoistTo`). The Java mirror of candor-query's
      *  RemedyPlan. */
     private record Remedy(String fn, String effect, String layer, boolean cleanHoist,
-                          List<String> sites, List<String> deniedSpan, List<String> hoistTo, String allowEdit) {
+                          List<String> sites, List<String> deniedSpan, List<String> hoistTo,
+                          List<String> hoistHigher, String allowEdit) {
         Map<String, Object> toJson() {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("fn", fn);
@@ -603,6 +604,7 @@ public final class Query {
             m.put("site", sites);
             m.put("deniedSpan", deniedSpan);
             m.put("hoistTo", hoistTo);
+            m.put("hoistHigher", hoistHigher);
             m.put("policyAlternative", allowEdit);
             return m;
         }
@@ -630,7 +632,15 @@ public final class Query {
                 out.append("    · Pass the result down as a parameter; the ").append(deniedSpan.size())
                    .append(" function(s) above then stay pure.\n");
                 out.append("    · Re-run the gate — the ").append(layerLabel).append(" blast radius for ")
-                   .append(effect).append(" should be empty.\n\n");
+                   .append(effect).append(" should be empty.\n");
+                if (!hoistHigher.isEmpty()) {
+                    String tops = hoistHigher.stream().limit(4).map(x -> "`" + x + "`").collect(Collectors.joining(", "))
+                            + (hoistHigher.size() > 4 ? ", …" : "");
+                    out.append("    · TRADE-OFF — or hoist higher (up to ").append(tops).append("): the effect then originates further up,\n");
+                    out.append("      keeping the ").append(hoistHigher.size())
+                       .append(" intervening allowed-layer function(s) pure too, at the cost of threading it through more signatures.\n");
+                }
+                out.append("\n");
                 out.append("  ALTERNATIVE — if the ").append(layerLabel).append(" layer is MEANT to perform ")
                    .append(effect).append(", it's a policy bug,\n");
                 out.append("  not a code one: relax the boundary with  `").append(allowEdit).append("`.\n");
@@ -693,9 +703,26 @@ public final class Query {
                 }
             }
         }
+        // higher hoist options: allowed-layer transitive callers of the minimal frontier that also route the
+        // effect — hoisting higher keeps the frontier pure too, at the cost of threading through more
+        // signatures (FIX-SPEC: the trade-off, disclosed not hidden).
+        TreeSet<String> higher = new TreeSet<>();
+        TreeSet<String> hseen = new TreeSet<>(hoist);
+        Deque<String> hq = new ArrayDeque<>(hoist);
+        while (!hq.isEmpty()) {
+            String cur = hq.poll();
+            for (String caller : rev.getOrDefault(cur, List.of())) {
+                Effector ce = byName.get(caller);
+                if (ce != null && ce.inferred().toNames().contains(effect)
+                        && deniedLayer(caller, effect) == null && hseen.add(caller)) {
+                    higher.add(caller);
+                    hq.add(caller);
+                }
+            }
+        }
         String allowEdit = layer.isEmpty() ? "allow " + effect : "allow " + effect + " " + layer;
         return new Remedy(start, effect, layer, !hoist.isEmpty(),
-                new ArrayList<>(sites), new ArrayList<>(deniedSpan), new ArrayList<>(hoist), allowEdit);
+                new ArrayList<>(sites), new ArrayList<>(deniedSpan), new ArrayList<>(hoist), new ArrayList<>(higher), allowEdit);
     }
 
     /** Load a policy into the thread-local deny rules, fail-loud (exit 2) on an unreadable path — the same

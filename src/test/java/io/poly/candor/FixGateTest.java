@@ -112,6 +112,21 @@ class FixGateTest {
         assertEquals("Main.run", o.getAsJsonArray("hoistHigher").get(0).getAsString(), "Main.run is the higher option");
     }
 
+    @Test void fixPrefersTheEffectPerformingMatch(@TempDir Path dir) throws Exception {
+        // A bare leaf `save` matches BOTH a pure `Cache.save` and the effectful, denied `Repo.save`.
+        // Resolution must prefer the effect-performing match — else `fix save Net` gives a false all-clear.
+        Files.writeString(dir.resolve("r.callgraph.json"), "{\"Cache.save\":[],\"Repo.save\":[]}");
+        String report = dir.resolve("r.json").toString();
+        List<Effector> fns = List.of(
+                eff("Cache.save", EffectSet.empty(), EffectSet.empty(), List.of()),
+                eff("Repo.save", EffectSet.of(Effect.NET), EffectSet.of(Effect.NET), List.of()));
+        Path pol = dir.resolve("arch.policy");
+        Files.writeString(pol, "deny Net Repo\n");
+        String out = capture(() -> Query.fix(fns, report, "save", "Net", pol.toString(), true));
+        JsonObject o = JsonParser.parseString(out).getAsJsonObject();
+        assertEquals("Repo.save", o.get("fn").getAsString(), "must resolve to the effectful, denied match");
+    }
+
     @Test void fixGateCleanReportIsOk(@TempDir Path dir) throws Exception {
         // A scope pattern that matches no function → ok:true, empty remedies.
         String report = orderflowGraph(dir);

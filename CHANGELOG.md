@@ -6,6 +6,20 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## [0.8.10] — 2026-07-11
+
+### `fix`: cross-engine parity fixes (from a high-effort /code-review)
+
+- **Start resolution** now prefers a name match that PERFORMS the effect (so `fix save Net` resolves to the
+  effectful `Repo.save`, not a pure `Cache.save`) — matching the other engines; previously a false "nothing
+  to hoist" all-clear was possible.
+- **Inline-`calls` fallback**: when the `.callgraph.json` sidecar is absent (stdout report, hand-authored,
+  cleaned), `fix`/`fix-gate` now fall back to the report entries' inline `calls` (via the new `fixGraph`
+  helper) instead of computing over an empty graph and emitting a degenerate "no clean hoist" — matching
+  candor-query/swift and the sibling `callers` command.
+- **`byName`-absent caller** in the up-walk is now skipped (a pure callgraph-only node never routes the
+  effect), matching candor-swift.
+
 ## [0.8.9] — 2026-07-11
 
 ### `fix`/`fix-gate`: the higher-hoist trade-off (FIX-SPEC's last refinement)

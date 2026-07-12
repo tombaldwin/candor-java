@@ -531,6 +531,16 @@ public class Candor {
             }
             sum.println();
 
+            // The cold-repo hook: after the effect summary + the κ-coverage ledger, emit ONE more stderr
+            // line — the single most SURPRISING transitive reach (a benign-named function inheriting a
+            // boundary effect a few hops away) + a ready-to-run `candor path` command, or the honest
+            // "nothing hidden" fallback. Deterministic, NO LLM — the EXACT port of the Rust reference's
+            // surface.rs, so every engine surfaces the SAME reach on a shared fixture. Marker is `candor:`
+            // (the brand voice, not `candor-java:`) and the suggested command is `candor path …` —
+            // identical across engines. Only on an interactive (non-gating) run — a machine-parsed gate
+            // never wants the prose opener (we are already inside `if (!enforce)`).
+            Surface.emit(inferred, ctx().direct, ctx().edges, ctx().loc, System.err);
+
             // Per-method detail only when NOT writing a report file (the file already holds it) — keeps the
             // agent's --json run concise (summary only), while a human's bare scan still gets the full audit.
             if (jsonOut == null) {

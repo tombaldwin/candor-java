@@ -25,7 +25,7 @@ import java.util.stream.Collectors;
 public final class Query {
     static final Set<String> COMMANDS =
             Set.of("show", "where", "callers", "map", "diff", "containment", "reachable", "path", "impact",
-                    "blindspots", "gains", "whatif", "fix", "fix-gate", "unverified", "rewire");
+                    "blindspots", "tour", "gains", "whatif", "fix", "fix-gate", "unverified", "rewire");
     static final Gson JSON = new GsonBuilder().setPrettyPrinting().create();
 
     // Boundary effects SHOULD live in a dedicated layer — their dispersion is the architecture signal
@@ -99,7 +99,7 @@ public final class Query {
     static int canonicalArity(String cmd) {
         return switch (cmd) {
             case "path", "whatif", "fix" -> 2;              // <fn> <Effect>
-            case "show", "where", "callers", "impact", "containment" -> 1; // one own-arg ([<baseline>] for containment)
+            case "show", "where", "callers", "impact", "containment", "tour" -> 1; // one own-arg ([<baseline>] for containment; [<N>] for tour)
             default -> 0;                                    // map/reachable/blindspots/fix-gate/unverified
         };
     }
@@ -342,6 +342,7 @@ public final class Query {
             case "path" -> path(fns, a0, a1, json);
             case "impact" -> impact(fns, a0, json);
             case "blindspots" -> blindspots(fns, json);
+            case "tour" -> tour(fns, report, a0, json);
             case "gains" -> gains2(a0, a1, json);
             case "whatif" -> whatif(report, a0, a1, policyFlag, json);
             case "fix" -> fix(fns, report, a0, a1, policyFlag, json);
@@ -1537,6 +1538,94 @@ public final class Query {
         for (Map<String, Object> s : sources)
             System.out.printf("  %-52s reaches %4d  %s%n", leaf((String) s.get("fn")),
                     (Integer) s.get("reaches"), s.get("why"));
+        return 0;
+    }
+
+    /** tour [<N>] (SURFACE-BEST-FIND-DESIGN.md, P2) — the N (default 10) most SURPRISING transitive reaches
+     *  in the report's crate, each with a ready-to-run {@code candor path <fn> <effect>}. The on-demand,
+     *  top-N version of the scan-time note: it delegates to the SHARED {@link Surface#bestFinds} (the same
+     *  heuristic the scan note uses, so the ranking can't drift), reading the report entries + the callgraph
+     *  sidecar the scan already wrote. Read-only, no re-scan. The EXACT port of candor-query's {@code tour}.
+     *
+     *  <p>{@code arg} is the optional positional N; a non-integer is a usage error (exit 2). {@code report}
+     *  is the resolved report path (its {@code .callgraph.json} sidecar drives the transitive walk). */
+    static int tour(List<Effector> fns, String reportPath, String arg, boolean json) {
+        // The lone optional positional is N (how many to list); default 10. A non-integer is a usage error.
+        int n = 10;
+        if (arg != null) {
+            try {
+                n = Integer.parseInt(arg);
+                if (n < 0) throw new NumberFormatException();
+            } catch (NumberFormatException ex) {
+                System.err.println("usage: candor tour [<N>] [--report <locator>] [--json]   (N is a positive integer)");
+                return 2;
+            }
+        }
+
+        // Build the maps the heuristic wants from the report entries + the callgraph sidecar. `inferred`/
+        // `direct` come from the report; `calls` prefers the full callgraph sidecar (records EVERY edge —
+        // like the scan held in memory) and falls back to the report's effect-relevant `calls`. `loc` maps a
+        // function to its "file:line" for the source callout.
+        Map<String, EffectSet> inferred = new HashMap<>();
+        Map<String, EffectSet> direct = new HashMap<>();
+        Map<String, String> loc = new HashMap<>();
+        for (Effector e : fns) {
+            inferred.put(e.fn(), e.inferred());
+            if (!e.direct().toNames().isEmpty()) direct.put(e.fn(), e.direct());
+            if (!e.loc().isEmpty()) loc.put(e.fn(), e.loc());
+        }
+        Map<String, Set<String>> calls = new HashMap<>();
+        Map<String, List<String>> cg = loadCallgraph(reportPath);
+        if (cg == null || cg.isEmpty()) {
+            for (Effector e : fns) if (!e.calls().isEmpty()) calls.put(e.fn(), new HashSet<>(e.calls()));
+        } else {
+            for (var e : cg.entrySet()) calls.put(e.getKey(), new HashSet<>(e.getValue()));
+        }
+
+        List<Surface.Find> finds = Surface.bestFinds(inferred, direct, calls, loc, n);
+
+        // <crate> is the basename of the report locator — matches the Rust reference's prefix_base(pre) for
+        // the `--report <file.json>` locator the conformance PART drives (byte-identical human header).
+        String crateName = Path.of(reportPath).getFileName() != null
+                ? Path.of(reportPath).getFileName().toString() : reportPath;
+
+        if (json) {
+            List<Map<String, Object>> reaches = new ArrayList<>();
+            for (Surface.Find f : finds) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("fn", f.func);
+                m.put("effect", f.effect);
+                m.put("hops", f.hops);
+                m.put("source", f.source);
+                m.put("loc", f.sourceLoc);
+                m.put("score", f.score);
+                reaches.add(m);
+            }
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("reaches", reaches);
+            // Pure JSON to stdout, compact (no pretty-printing) — matches the Rust reference's
+            // serde_json::to_string. The shared JSON serializer here pretty-prints, so build a compact one.
+            System.out.println(new GsonBuilder().create().toJson(out));
+            return 0;
+        }
+
+        if (finds.isEmpty()) {
+            // Effectful-but-nothing-surprising vs genuinely-pure both land here; either way the honest line
+            // is the useful answer (never a manufactured surprise) — mirrors the scan-note fallback.
+            System.out.println("candor: nothing hidden — every effect sits where its name says it should.");
+            return 0;
+        }
+        System.out.println("candor tour — the " + finds.size() + " most surprising reach"
+                + (finds.size() == 1 ? "" : "es") + " in " + crateName + ":");
+        int i = 1;
+        for (Surface.Find f : finds) {
+            String hopWord = f.hops == 1 ? "hop" : "hops";
+            String whereS = f.sourceLoc.isEmpty() ? "" : " (" + f.sourceLoc + ")";
+            System.out.println("  " + i + ". `" + f.func + "` performs " + f.effect + ", " + f.hops
+                    + " " + hopWord + " away via `" + f.source + "`" + whereS);
+            System.out.println("     →  candor path " + f.func + " " + f.effect);
+            i++;
+        }
         return 0;
     }
 

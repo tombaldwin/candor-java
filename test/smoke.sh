@@ -1334,7 +1334,7 @@ J
 javac -d "$W/kap/dep" "$W/kap/src/com/thirdparty/json/Mapper.java" 2>/dev/null
 javac -cp "$W/kap/dep" -d "$W/kap/app" "$W/kap/src/org/acme/App.java" 2>/dev/null
 KAP=$("$CJ" "$W/kap/app" 2>&1)
-want   "unlisted external package named in the receipt" "$KAP" "κ doesn't know 1 package"
+want   "unlisted external package named in the receipt" "$KAP" "classifier doesn't cover 1 package"
 want   "with its grouped name and call count"           "$KAP" "com.thirdparty.json (2 calls)"
 absent "the JDK frontier stays out of the ledger"       "$KAP" "java.nio"
 
@@ -1367,13 +1367,13 @@ absent "without CANDOR_DEPS the dep call is invisible"      "$DJC_PLAIN" "App2.r
 want   "…and the κ ledger names the blind spot"             "$DJC_PLAIN" "com.thirdparty.io"
 DJC_CHAIN=$(CANDOR_DEPS="$W/djc/dep.json" "$CJ" "$W/djc/app" 2>&1)
 want   "with CANDOR_DEPS the app inherits the jar's effect" "$(echo "$DJC_CHAIN" | grep App2.run)" '{ Fs* }'
-absent "…and the chained package leaves the κ ledger"       "$DJC_CHAIN" "κ doesn't know"
+absent "…and the chained package leaves the coverage ledger" "$DJC_CHAIN" "classifier doesn't cover"
 # An ALL-PURE dep's EMPTY report in SPEC singular-`package` form must register coverage (SPEC §2
 # rule 3) — reading only `packages[]` (the JVM's own plural) ignored it and falsely named the
 # package a blind spot. (/code-review max: the spec + the Rust/TS producers emit singular `package`.)
 printf '{"candor":{"version":"x","spec":"0.4"},"package":"com.thirdparty.io","functions":[]}' > "$W/djc/empty-pkg.json"
 DJC_EMPTY=$(CANDOR_DEPS="$W/djc/empty-pkg.json" "$CJ" "$W/djc/app" 2>&1)
-absent "a singular-`package` empty report covers its package (no false blind spot)" "$DJC_EMPTY" "κ doesn't know"
+absent "a singular-`package` empty report covers its package (no false blind spot)" "$DJC_EMPTY" "classifier doesn't cover"
 
 # ── chained LITERAL SURFACES + empty-report coverage + array owners (/code-review fixes) ─────────
 echo "== chained surfaces, empty-report coverage, array owners =="
@@ -1419,7 +1419,7 @@ mkdir -p "$W/sj/arr/org/arr"
 printf 'package org.arr;\npublic class A { public static String[] dup(String[] xs) { return xs.clone(); } }\n' > "$W/sj/arr/org/arr/A.java"
 javac -d "$W/sj/arrcls" "$W/sj/arr/org/arr/A.java" 2>/dev/null
 SJ_ARR=$("$CJ" "$W/sj/arrcls" 2>&1)
-absent "array owners stay out of the ledger"                "$SJ_ARR" "κ doesn't know"
+absent "array owners stay out of the ledger"                "$SJ_ARR" "classifier doesn't cover"
 
 # ── literal-getMethod reflection: the named target's effects flow; Unknown stays ─────────────────
 echo "== literal-getMethod reflection =="

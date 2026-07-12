@@ -20,6 +20,17 @@ pinned §3.3.1 contract, required of a 0.10-conformant engine and cross-checked 
 Reference engine: candor-java leads the rung. **⚠ the `spec` string changed** — a consumer pinning
 `spec == "0.9"` must accept `0.10`; report/verdict bytes are otherwise unchanged.
 
+### Changed
+
+- **Coverage-ledger disclosure reworded — no more Greek `κ` in user/agent-facing output.** The per-scan
+  stderr line that names uncovered external packages now reads
+  `candor-java: candor's classifier doesn't cover N packages this code calls into — their effects are
+  INVISIBLE to the scan (absent from the report, NOT a claim they're pure): …`. The shared machine marker
+  is now **`classifier doesn't cover`** (the other engines emit the same marker); the old `κ doesn't know`
+  wording is gone from stderr, README, and AGENTS.md. `κ` remains only as internal maintainer vocabulary
+  (code identifiers, `soundness/kappa_probe.py`, and this changelog's history). No report/verdict bytes
+  change — scan-tooling that grepped the old line must switch to the new marker.
+
 ## [0.9.0] — 2026-07-11
 
 ### spec 0.9 — the remedial-loop rung

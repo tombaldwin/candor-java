@@ -132,7 +132,7 @@ Name queries resolve exact > segment-suffix (`Svc.save` matches `com.example.Svc
   relative paths resolve against the config's home directory — the one containing `.candor/` —
   never the CWD. Fail-closed: an unusable config exits 2; unknown keys warn.
 - **An engine swap is baseline-invalidating — and the guard fails closed on it.** Coverage batches
-  change what the engine sees (a κ batch can unmask hundreds of previously-invisible effects), so a
+  change what the engine sees (a coverage batch can unmask hundreds of previously-invisible effects), so a
   baseline is comparable only to reports from its own producing build (spec §2.1). When the builds
   differ the guard does NOT evaluate (a stale comparison is semi-garbage in both directions) and fails
   the run (exit 2, the unreadable-policy class) with the one-command fix. After upgrading candor:
@@ -177,4 +177,5 @@ external packages a method (transitively) calls into where candor's classifier c
 through them are NOT in `inferred`. So `inferred: []` with a non-empty `invisible` means **"pure as far
 as candor could analyse, but it could not see through these packages"** — not "pure". Treat an effect
 claim on any method carrying `invisible` as a lower bound, and read the source (or model those packages)
-before relying on it. The per-scan κ line on stderr is the same disclosure aggregated.
+before relying on it. The per-scan coverage-ledger line on stderr (marker: `classifier doesn't cover`)
+is the same disclosure aggregated.

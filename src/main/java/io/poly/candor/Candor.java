@@ -477,10 +477,9 @@ public class Candor {
                     .map(e -> e.getKey() + " (" + e.getValue() + " call" + (e.getValue() == 1 ? "" : "s") + ")")
                     .collect(Collectors.joining(", "));
             String more = unlisted.size() > 8 ? " + " + (unlisted.size() - 8) + " more" : "";
-            System.err.printf("candor-java: κ doesn't know %d package%s this code calls into — effects through "
-                    + "%s are INVISIBLE (not Unknown): %s%s%n",
-                    unlisted.size(), unlisted.size() == 1 ? "" : "s",
-                    unlisted.size() == 1 ? "it" : "them", shown, more);
+            System.err.printf("candor-java: candor's classifier doesn't cover %d package%s this code calls into — "
+                    + "their effects are INVISIBLE to the scan (absent from the report, NOT a claim they're pure): %s%s%n",
+                    unlisted.size(), unlisted.size() == 1 ? "" : "s", shown, more);
         }
 
         // Gate modes (candor-spec §3), each selected by its Mode's env var: CANDOR_STRICT (conformance

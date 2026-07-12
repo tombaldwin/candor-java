@@ -6,6 +6,20 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## [0.10.0] — 2026-07-12
+
+### spec 0.10 — the §3.3.1 canonical query grammar (current floor)
+
+candor-java now declares **spec `0.10`** (`SPEC_VERSION`; the envelope + `--gate-json` verdict carry it).
+The family floor ratchets to 0.10 with the landing of the candor-spec **§3.3.1 canonical query grammar**:
+report discovery + the `--report`, `--json`, and `--policy` flags are the pinned invocation surface; the
+old positional report/policy forms are **deprecated-but-accepted** (still parsed, no behaviour change).
+0.10 is a **tier-2 (pinned-tool-surface) rung** (candor-spec §"Conformance tiers"): no report-schema or
+verdict change — a 0.9 report/verdict is byte-identical under 0.10 — but the query grammar is now the
+pinned §3.3.1 contract, required of a 0.10-conformant engine and cross-checked by conformance **PART 17**.
+Reference engine: candor-java leads the rung. **⚠ the `spec` string changed** — a consumer pinning
+`spec == "0.9"` must accept `0.10`; report/verdict bytes are otherwise unchanged.
+
 ## [0.9.0] — 2026-07-11
 
 ### spec 0.9 — the remedial-loop rung

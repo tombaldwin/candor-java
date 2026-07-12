@@ -62,7 +62,7 @@ public class Candor {
      *  0.9 tier-2 rung promotes the remedial `fix`/`unverified` surface into the pinned §3.1/§3.3 contract)
      *  while a sibling may remain on the released `0.8` floor and raise as it implements it. Additive-only,
      *  so an older consumer is unaffected. */
-    static final String SPEC_VERSION = "0.9";
+    static final String SPEC_VERSION = "0.10";
 
     static final String FS_UNKNOWN = "?";   // Fs reached with no recorded kind (cross-jar) -> make no read/write claim
 

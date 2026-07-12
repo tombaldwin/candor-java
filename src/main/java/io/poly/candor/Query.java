@@ -90,6 +90,20 @@ public final class Query {
     /** The verbs that honour `--policy` (SPEC §3.3.1): whatif/fix/fix-gate/unverified. */
     static final Set<String> POLICY_VERBS = Set.of("whatif", "fix", "fix-gate", "unverified");
 
+    /** Each verb's CANONICAL positional arity (SPEC §3.3.1 verb-args), the count of its OWN args — NOT the
+     *  report (a flag, never a positional). This is the ARITY GATE for the deprecated leading-report /
+     *  trailing-policy peels: an alias is claimed only from a SURPLUS positional (count &gt; arity), never
+     *  from one the canonical form needs. `containment [<baseline>]` has arity 1 (its lone positional is the
+     *  baseline, discovered report), so a single bare positional is never re-read as the report. The
+     *  two-positional comparatives (diff/gains/rewire) are handled separately and not in this map. */
+    static int canonicalArity(String cmd) {
+        return switch (cmd) {
+            case "path", "whatif", "fix" -> 2;              // <fn> <Effect>
+            case "show", "where", "callers", "impact", "containment" -> 1; // one own-arg ([<baseline>] for containment)
+            default -> 0;                                    // map/reachable/blindspots/fix-gate/unverified
+        };
+    }
+
     /** Resolve a `--report <locator>` to a full report `.json` path, by the ONE §3.3.1 rule:
      *  a DIRECTORY → the `<dir>/.candor/report` prefix inside it; a path ending `.json` → that FULL path;
      *  otherwise a PREFIX (`<prefix>.<crate>.<backend>.json`). A dir/prefix is expanded to the single
@@ -115,20 +129,32 @@ public final class Query {
         Path dir = pp.getParent() != null ? pp.getParent() : Path.of(".");
         String base = pp.getFileName() != null ? pp.getFileName().toString() : prefix;
         String dot = base + ".";
-        List<String> hits = new ArrayList<>();
+        // Dedup by NORMALIZED path so the same file discovered two ways is ONE hit — the glob below yields
+        // `dir/report.json` while the exact-file check builds `report.json` from the bare prefix; unnormalized
+        // these are distinct strings and a lone `report.json` reported as "matches 2 reports" (a false
+        // ambiguity disclosure — /code-review). The map keeps the FIRST-seen display string per identity.
+        java.util.LinkedHashMap<String, String> hitsByKey = new java.util.LinkedHashMap<>();
+        java.util.function.Consumer<Path> addHit = f -> {
+            String key;
+            try { key = f.toRealPath().toString(); }               // canonical identity when the file exists
+            catch (Exception e) { key = f.toAbsolutePath().normalize().toString(); } // fallback: lexical
+            hitsByKey.putIfAbsent(key, f.toString());
+        };
         try (var s = Files.list(dir)) {
             s.forEach(f -> {
                 String name = f.getFileName().toString();
                 if (!name.startsWith(dot) || !name.endsWith(".json")) return;
                 if (name.endsWith(".callgraph.json") || name.endsWith(".hierarchy.json")) return; // sidecars aren't reports
-                hits.add(f.toString());
+                addHit.accept(f);
             });
         } catch (Exception e) {
             // dir unreadable/absent — fall through to the not-found message below
         }
-        // An exact `<prefix>.json` (the Java engine's own single-file form) also counts as a match.
+        // An exact `<prefix>.json` (the Java engine's own single-file form) also counts as a match — deduped
+        // against the glob above by real-path identity, so it never double-counts a file the glob already saw.
         Path exact = Path.of(prefix + ".json");
-        if (Files.isRegularFile(exact) && !hits.contains(exact.toString())) hits.add(exact.toString());
+        if (Files.isRegularFile(exact)) addHit.accept(exact);
+        List<String> hits = new ArrayList<>(hitsByKey.values());
         if (hits.isEmpty()) {
             System.err.println("candor: no report found for locator `" + original + "` (looked for "
                     + dot + "*.json under " + dir + ")");
@@ -172,6 +198,19 @@ public final class Query {
             return Files.isRegularFile(p.resolve(".candor").resolve("report"))  // unlikely, but honour an exact file
                     || quietPrefixMatches(p.resolve(".candor").resolve("report").toString());
         return quietPrefixMatches(tok);
+    }
+
+    /** Does `tok` have the SHAPE of an EXPLICIT report locator the user clearly MEANT as a report — a path
+     *  ending `.json`, or an existing directory (both §3.3.1 locator forms that resolve to a specific file),
+     *  as opposed to a bare fn/effect substring? Used so a SURPLUS leading positional of that shape which
+     *  names NOTHING fails LOUD naming it (cardinal-sin guard), instead of being left as a verb arg and
+     *  silently falling through to discovery: `show <missing>.json foo` must error on the missing report,
+     *  not answer "no function matching `<missing>.json`" at exit 0. A bare prefix (`report`) is deliberately
+     *  NOT of this shape — it is indistinguishable from a fn substring, so it only peels when it actually
+     *  {@link #looksLikeReport}. */
+    static boolean explicitLocatorShape(String tok) {
+        if (tok == null) return false;
+        return tok.endsWith(".json") || Files.isDirectory(Path.of(tok));
     }
 
     /** True iff a report file matches the prefix, WITHOUT the stderr chatter of {@link #expandPrefix}. */
@@ -227,19 +266,32 @@ public final class Query {
         // ── DEPRECATED-ALIAS DETECTION (back-compat, §3.3.1) ────────────────────────────────────────────
         // The old form put the report as a LEADING POSITIONAL (a full `.json` path/dir/prefix), and — for
         // the policy verbs — the policy as a trailing positional. Detect them so the pre-0.10 invocations
-        // the conformance suite drives (`candor where <report.json> Net --json`) stay green. Only triggers
-        // when `--report` was NOT used and the first positional actually resolves to a report; a canonical
-        // first-positional (an Effect / a fn) is left in place.
+        // the conformance suite drives (`candor where <report.json> Net --json`) stay green.
+        //
+        // ARITY-GATED (§3.3.1): the leading-report peel fires ONLY from a SURPLUS positional — the count must
+        // EXCEED the verb's canonical arity ({@link #canonicalArity}). At count == arity every positional is
+        // a verb arg the canonical form needs, so it is NEVER probed as a report: `where Net` is the effect
+        // `Net` even when a stray `Net.app.jvm.json` sits in the CWD, and `containment <baseline>` (one
+        // positional) is the baseline, discovered report — never re-read as the report (a silent gate-off).
+        // CONTENT-GATED: of that surplus first positional, we peel it as the report when it actually
+        // {@link #looksLikeReport}; a surplus first positional of EXPLICIT-LOCATOR SHAPE that names nothing
+        // (`show <missing>.json foo`) is still consumed AS the report so the missing file fails LOUD naming
+        // it — never silently dropped to discovery (the cardinal sin). Aligns with the candor-swift peel.
         String report = null;
+        boolean explicitReportGiven = false; // did the user name a report (via --report or a leading locator)?
         if (TWO_REPORT.contains(cmd)) {
             // diff/gains/rewire: two positional locators <current> <baseline>. No discovery, no --report.
             if (reportFlag != null)
                 System.err.println("candor: --report is ignored for `" + cmd + "` — it takes two positional report locators <current> <baseline>.");
         } else if (reportFlag != null) {
+            explicitReportGiven = true;
             report = resolveReportLocator(reportFlag);
             if (report == null) return 2;
-        } else if (!pos.isEmpty() && looksLikeReport(pos.get(0))) {
-            // DEPRECATED: a leading-positional report. Consume it, warn, resolve it the same 3 ways.
+        } else if (pos.size() > canonicalArity(cmd)
+                && (looksLikeReport(pos.get(0)) || explicitLocatorShape(pos.get(0)))) {
+            // DEPRECATED: a leading-positional report (surplus + report-shaped). Consume it, warn, resolve it
+            // the same 3 ways. When it names nothing, load() below fails loud with the locator in parens.
+            explicitReportGiven = true;
             System.err.println("candor: the leading-positional report is deprecated — use `--report " + pos.get(0)
                     + "` (report discovery + --report is the canonical §3.3.1 grammar). Still accepted for now.");
             report = resolveReportLocator(pos.remove(0));

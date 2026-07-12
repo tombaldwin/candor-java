@@ -58,10 +58,10 @@ public class Candor {
     /** The candor-spec contract version this build implements (the report SCHEMA + AS-EFF codes),
      *  distinct from the engine build id (the report's `version`). Emitted as the envelope's `spec` so a
      *  consumer can see which contract a report conforms to. candor-java is the REFERENCE engine and MAY
-     *  lead a minor rung (candor-spec §"Versioning policy" — the version ladder): it declares `0.9` (the
-     *  0.9 tier-2 rung promotes the remedial `fix`/`unverified` surface into the pinned §3.1/§3.3 contract)
-     *  while a sibling may remain on the released `0.8` floor and raise as it implements it. Additive-only,
-     *  so an older consumer is unaffected. */
+     *  lead a minor rung (candor-spec §"Versioning policy" — the version ladder): it declares `0.10` (the
+     *  0.10 tier-2 rung promotes the §3.3.1 canonical query grammar into the pinned §3.3 contract) while a
+     *  sibling may remain on an earlier floor and raise as it implements it. Additive-only, so an older
+     *  consumer is unaffected. */
     static final String SPEC_VERSION = "0.10";
 
     static final String FS_UNKNOWN = "?";   // Fs reached with no recorded kind (cross-jar) -> make no read/write claim

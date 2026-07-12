@@ -90,6 +90,41 @@ want "map: class overview"                     "$("$CJ" map "$W/r.json")"       
 want "queries emit --json (agent/MCP form)"    "$("$CJ" show "$W/r.json" both --json)" '"inferred"'
 want "where --json: structured result"         "$("$CJ" where "$W/r.json" Fs --json)"  '"directly"'
 
+echo "== tour: the top-N surprising reaches (SURFACE-BEST-FIND-DESIGN P2) =="
+# `both` inherits Fs 1 hop down via `reads` — a valid inherited reach for the tour to surface.
+tj="$("$CJ" tour --report "$W/r.json" 2>&1)"
+want   "tour lists the surprising reaches"       "$tj" 'most surprising reach'
+want   "tour names a ready-to-run path command"  "$tj" 'candor path'
+# --json emits reach objects with ALPHABETICAL keys (effect,fn,hops,loc,score,source) — Rust/Swift parity.
+tjs="$("$CJ" tour --report "$W/r.json" --json 2>&1)"
+want   "tour --json emits a reaches array"        "$tjs" '"reaches"'
+want   "tour --json keys are alphabetical (effect before fn)" "$tjs" '"effect":'
+# GRAMMAR: N must be a positive integer ≥ 1. `tour 0` must NEVER print the false all-clear "nothing hidden"
+# over an effectful crate (the §4 cardinal sin) — it's a usage error, exit 2.
+t0="$("$CJ" tour 0 --report "$W/r.json" 2>&1)"; t0c=$?
+want   "tour 0 → usage error, not a false all-clear"  "$t0" 'positive integer'
+absent "tour 0 does NOT print the 'nothing hidden' all-clear" "$t0" 'nothing hidden'
+if [ "$t0c" -eq 2 ]; then echo "  ok   tour 0 exits 2"; pass=$((pass+1));
+else echo "  FAIL tour 0 — got exit $t0c"; fail=$((fail+1)); fi
+tneg="$("$CJ" tour -1 --report "$W/r.json" 2>&1)"; [ "$?" -eq 2 ] && { echo "  ok   tour -1 exits 2"; pass=$((pass+1)); } || { echo "  FAIL tour -1 did not exit 2"; fail=$((fail+1)); }
+tnan="$("$CJ" tour abc --report "$W/r.json" 2>&1)"; [ "$?" -eq 2 ] && { echo "  ok   tour <non-int> exits 2"; pass=$((pass+1)); } || { echo "  FAIL tour abc did not exit 2"; fail=$((fail+1)); }
+
+echo "== corrupt call-graph sidecar is DISCLOSED, never silently dropped (§4) =="
+# A sidecar that EXISTS but fails to parse (corrupt/truncated) → the fallback graph is strictly smaller,
+# so a silent drop would let a verdict under-report. Disclose on stderr before falling back. (A genuinely
+# MISSING sidecar stays silent — falling back to the report's inline `calls` is correct.)
+cp "$W/r.json" "$W/corrupt.json"; cp "$W/r.callgraph.json" "$W/corrupt.callgraph.json"
+printf 'this is not json {' > "$W/corrupt.callgraph.json"
+cdis="$("$CJ" tour --report "$W/corrupt.json" 2>&1 1>/dev/null)"; cdc=$?
+want   "corrupt sidecar prints a disclosure line"     "$cdis" 'call graph may be incomplete'
+want   "corrupt sidecar names the falling-back path"  "$cdis" 'falling back'
+if [ "$cdc" -eq 0 ]; then echo "  ok   tour still succeeds (exit 0) on the inline fallback"; pass=$((pass+1));
+else echo "  FAIL tour on corrupt sidecar — got exit $cdc"; fail=$((fail+1)); fi
+# A MISSING sidecar (no file) stays SILENT — falling back to inline `calls` is correct, no warning.
+cp "$W/r.json" "$W/nosidecar.json"  # deliberately no .callgraph.json beside it
+nodis="$("$CJ" tour --report "$W/nosidecar.json" 2>&1 1>/dev/null)"
+absent "a MISSING sidecar prints NO disclosure (silent fallback is correct)" "$nodis" 'call graph may be incomplete'
+
 echo "== baseline guard (AS-EFF-005) =="
 # a baseline where reads had no Fs → guard must flag the gain
 python3 - "$W/r.json" "$W/base.json" <<'PY'

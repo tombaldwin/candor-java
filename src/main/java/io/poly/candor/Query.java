@@ -634,13 +634,17 @@ public final class Query {
         return false;
     }
 
-    /** Load the call-graph sidecar (`<report-minus-.json>.callgraph.json`), or null if absent/unreadable. */
+    /** Load the call-graph sidecar (`<report-minus-.json>.callgraph.json`), or null if absent/unreadable.
+     *  A genuinely MISSING sidecar returns null SILENTLY — falling back to the report's inline `calls` is
+     *  correct. But a sidecar that EXISTS yet fails to read/parse (corrupt/truncated) is disclosed on
+     *  stderr before we return null: the fallback graph is strictly smaller, so a silent drop would let a
+     *  gate verdict under-report (the §4 cardinal sin). Never silently drop graph edges a verdict depends on. */
     static Map<String, List<String>> loadCallgraph(String reportPath) {
+        String cgPath = reportPath.endsWith(".json")
+                ? reportPath.substring(0, reportPath.length() - 5) + ".callgraph.json"
+                : reportPath + ".callgraph.json";
+        if (!Files.exists(Path.of(cgPath))) return null; // no sidecar — silent fallback is correct
         try {
-            String cgPath = reportPath.endsWith(".json")
-                    ? reportPath.substring(0, reportPath.length() - 5) + ".callgraph.json"
-                    : reportPath + ".callgraph.json";
-            if (!Files.exists(Path.of(cgPath))) return null;
             var o = JsonParser.parseString(Files.readString(Path.of(cgPath))).getAsJsonObject();
             Map<String, List<String>> cg = new LinkedHashMap<>();
             for (var e : o.entrySet()) {
@@ -649,6 +653,25 @@ public final class Query {
                 cg.put(e.getKey(), callees);
             }
             return cg;
+        } catch (Exception e) {
+            System.err.println("candor: call-graph sidecar " + cgPath
+                    + " is unreadable (" + e.getClass().getSimpleName()
+                    + ") — the call graph may be incomplete; falling back to the report's inline edges.");
+            return null;
+        }
+    }
+
+    /** The report's `package` name (the §2 envelope field, singular string — what candor-report/candor-ts
+     *  write), or null if absent/blank/unreadable. The `tour` header prefers it (meaningful, locator-
+     *  independent) over the prefix basename — mirrors the Rust reference's report_package(prefix). */
+    static String reportPackage(String reportPath) {
+        try {
+            JsonElement root = JsonParser.parseString(Files.readString(Path.of(reportPath)));
+            if (!root.isJsonObject()) return null;
+            JsonObject obj = root.getAsJsonObject();
+            if (!obj.has("package") || !obj.get("package").isJsonPrimitive()) return null;
+            String pkg = obj.get("package").getAsString();
+            return pkg.isEmpty() ? null : pkg;
         } catch (Exception e) {
             return null;
         }
@@ -1550,14 +1573,16 @@ public final class Query {
      *  <p>{@code arg} is the optional positional N; a non-integer is a usage error (exit 2). {@code report}
      *  is the resolved report path (its {@code .callgraph.json} sidecar drives the transitive walk). */
     static int tour(List<Effector> fns, String reportPath, String arg, boolean json) {
-        // The lone optional positional is N (how many to list); default 10. A non-integer is a usage error.
+        // The lone optional positional is N (how many to list); default 10. It MUST be a positive integer —
+        // a non-integer OR zero is a usage error (exit 2). `tour 0` must never print the honest-sounding
+        // "nothing hidden" over an effectful crate: that would be a false all-clear (the §4 cardinal sin).
         int n = 10;
         if (arg != null) {
             try {
                 n = Integer.parseInt(arg);
-                if (n < 0) throw new NumberFormatException();
+                if (n < 1) throw new NumberFormatException();
             } catch (NumberFormatException ex) {
-                System.err.println("usage: candor tour [<N>] [--report <locator>] [--json]   (N is a positive integer)");
+                System.err.println("usage: candor tour [<N>] [--report <locator>] [--json]   (N is a positive integer ≥ 1)");
                 return 2;
             }
         }
@@ -1584,15 +1609,20 @@ public final class Query {
 
         List<Surface.Find> finds = Surface.bestFinds(inferred, direct, calls, loc, n);
 
-        // <crate> is the basename of the report locator — matches the Rust reference's prefix_base(pre) for
-        // the `--report <file.json>` locator the conformance PART drives (byte-identical human header).
-        String crateName = Path.of(reportPath).getFileName() != null
+        // The header names the report's PACKAGE (from the §2 envelope) — meaningful and locator-independent,
+        // so every engine and every --report form print the same crate. Falls back to the report/prefix
+        // basename (matches the Rust reference's report_package(pre).unwrap_or_else(prefix_base)).
+        String basename = Path.of(reportPath).getFileName() != null
                 ? Path.of(reportPath).getFileName().toString() : reportPath;
+        String pkg = reportPackage(reportPath);
+        String crateName = pkg != null ? pkg : basename;
 
         if (json) {
             List<Map<String, Object>> reaches = new ArrayList<>();
             for (Surface.Find f : finds) {
-                Map<String, Object> m = new LinkedHashMap<>();
+                // Alphabetical key order (effect, fn, hops, loc, score, source) — matches the Rust + Swift
+                // reference's serde field-name sort. A TreeMap emits keys in sorted order.
+                Map<String, Object> m = new TreeMap<>();
                 m.put("fn", f.func);
                 m.put("effect", f.effect);
                 m.put("hops", f.hops);

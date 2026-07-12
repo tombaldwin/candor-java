@@ -75,7 +75,10 @@ final class Surface {
                 cur.setLength(0);
             }
             cur.append(Character.toLowerCase(ch));
-            prevLower = Character.isLowerCase(ch) || Character.isDigit(ch);
+            // ASCII-only digit check to match the Rust reference (is_ascii_digit); the uppercase check
+            // above stays Unicode-aware (Rust uses is_uppercase). A non-ASCII decimal digit adjacent to an
+            // uppercase letter must split tokens the same way in every engine.
+            prevLower = Character.isLowerCase(ch) || (ch >= '0' && ch <= '9');
         }
         if (cur.length() > 0) {
             out.add(cur.toString());
@@ -120,9 +123,17 @@ final class Surface {
         return 1; // >=7 (hops is always >=1 for an inherited reach)
     }
 
-    /** Skip test code: the Rust reference skips {@code ::tests::}/{@code ::test::}; the dotted analogue. */
+    /** Skip test code: any MODULE segment (every {@code .}-segment except the final leaf) that is, case-
+     *  insensitively, {@code test}/{@code tests}, or (original case) ends {@code Test}/{@code Tests} (an
+     *  XCTest-style {@code *Tests} type). Never the leaf, so a production {@code Foo.testConnection} is kept.
+     *  Mirrors the Rust reference's segment rule. */
     static boolean isTest(String qual) {
-        return qual.contains(".tests.") || qual.contains(".test.");
+        String[] segs = qual.split("\\.");
+        for (int i = 0; i < segs.length - 1; i++) { // exclude the leaf (last segment)
+            String s = segs[i], l = s.toLowerCase();
+            if (l.equals("test") || l.equals("tests") || s.endsWith("Test") || s.endsWith("Tests")) return true;
+        }
+        return false;
     }
 
     /** A scored candidate reach. */

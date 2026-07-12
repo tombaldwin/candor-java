@@ -90,7 +90,8 @@ java -jar candor.jar fix      .candor/report.json <method> Net [policy] [--json]
 java -jar candor.jar fix-gate .candor/report.json [policy] [--json]               # a fix for EVERY boundary crossing (the loop's block-message remedy)
 java -jar candor.jar unverified .candor/report.json [policy] [--strict] [--json]  # pure/deny layers that PASS but are Unknown (not PROVABLY clean)
 java -jar candor.jar diff     .candor/report.json baseline.json [--json]
-java -jar candor.jar map|containment|reachable|path|impact .candor/report.json …
+java -jar candor.jar tour     .candor/report.json [N] [--json]                    # the N most surprising transitive reaches (default 10)
+java -jar candor.jar map|containment|reachable|path|impact|blindspots .candor/report.json …
 ```
 
 Name queries resolve exact > segment-suffix (`Svc.save` matches `com.example.Svc.save`, never

@@ -4,6 +4,7 @@ import java.io.PrintStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -130,14 +131,17 @@ final class Surface {
         final String effect;
         final int hops;
         final String source;
+        /** "file:line" of the effect SOURCE, resolved from the caller's {@code loc} map ("" when absent). */
+        final String sourceLoc;
         final String benignToken; // "" when the leaf has no benign token
         final long score;
 
-        Find(String func, String effect, int hops, String source, String benignToken, long score) {
+        Find(String func, String effect, int hops, String source, String sourceLoc, String benignToken, long score) {
             this.func = func;
             this.effect = effect;
             this.hops = hops;
             this.source = source;
+            this.sourceLoc = sourceLoc;
             this.benignToken = benignToken;
             this.score = score;
         }
@@ -192,27 +196,36 @@ final class Surface {
         static Result winner(Find f) { return new Result(State.WINNER, f); }
     }
 
-    /** Compute the single most surprising reach. {@code NONE} when there are ZERO effectful functions;
-     *  {@code FALLBACK} when there were effectful functions but none cleared the bar; {@code WINNER}
-     *  otherwise. Mirrors the Rust reference's {@code Option<Option<Find>>}. */
-    static Result bestFind(Map<String, EffectSet> inferred, Map<String, EffectSet> direct,
-            Map<String, Set<String>> calls) {
-        // Any function carrying a real (non-Unknown) effect makes the code "effectful" — governs whether we
-        // emit the fallback vs nothing.
-        boolean anyEffectful = false;
+    /** Is the code EFFECTFUL — does ANY function carry a real (non-Unknown) effect? Governs whether the
+     *  caller emits the honest "nothing hidden" fallback (effectful, but nothing clears the bar) vs nothing
+     *  at all (a genuinely effect-free crate). Mirrors the Rust reference's {@code any_effectful}. */
+    static boolean anyEffectful(Map<String, EffectSet> inferred) {
+        for (EffectSet s : inferred.values())
+            for (Effect e : s.effects())
+                if (e != Effect.UNKNOWN) return true;
+        return false;
+    }
 
+    /** Compute the top-{@code topN} most surprising reaches, most-surprising first. DEDUPED by function —
+     *  each function appears at most once (its single highest-scoring reach). The list is empty when nothing
+     *  clears the bar (the caller decides fallback vs nothing, via {@link #anyEffectful}). {@code loc} maps a
+     *  function to its "file:line" for the source callout ("" when absent).
+     *
+     *  <p>Ranking (the tie-break, applied to the whole candidate pool before the per-function dedup + take):
+     *  score DESC → hops ASC → qualified name ASC. With {@code topN == 1} the result is BYTE-IDENTICAL to the
+     *  old scan-time {@code bestFind} winner (the scan note + conformance PART 4f pin this). The EXACT port of
+     *  the Rust reference {@code candor_classify::surface::best_finds}. */
+    static List<Find> bestFinds(Map<String, EffectSet> inferred, Map<String, EffectSet> direct,
+            Map<String, Set<String>> calls, Map<String, String> loc, int topN) {
         // Deterministic iteration: sort quals ascending so the tie-break (qual ascending) is stable and
         // HashMap order never leaks into the result.
         List<String> quals = new ArrayList<>(inferred.keySet());
         quals.sort(null);
 
-        Find best = null;
+        List<Find> cands = new ArrayList<>();
 
         for (String f : quals) {
             EffectSet inf = inferred.get(f);
-            for (Effect ef : inf.effects()) {
-                if (ef != Effect.UNKNOWN) { anyEffectful = true; break; }
-            }
             if (isTest(f)) {
                 continue;
             }
@@ -251,27 +264,48 @@ final class Surface {
                 if (score == 0) {
                     continue;
                 }
-                Find cand = new Find(f, e, hops, s, benign != null ? benign : "", score);
-                // Tie-break: higher score, then fewer hops, then qual ascending. Quals are iterated
-                // ascending and effects ascending, so a strict > keeps the first (smallest qual) winner.
-                boolean better;
-                if (best == null) {
-                    better = true;
-                } else {
-                    better = cand.score > best.score
-                            || (cand.score == best.score && cand.hops < best.hops);
-                    // equal score & hops: earlier qual already seen (ascending iteration) → keep it.
-                }
-                if (better) {
-                    best = cand;
-                }
+                String sourceLoc = loc.getOrDefault(s, "");
+                cands.add(new Find(f, e, hops, s, sourceLoc, benign != null ? benign : "", score));
             }
         }
 
-        if (!anyEffectful) {
-            return Result.NONE;
+        // Rank the whole pool: score DESC, hops ASC, qual ASC. Quals were iterated ascending and effects
+        // ascending, so on a full tie the first-pushed (smallest qual) candidate sorts first — matching the
+        // old bestFind's "keep the earliest winner on an exact tie". A stable sort preserves that order.
+        cands.sort((a, b) -> {
+            int c = Long.compare(b.score, a.score);
+            if (c != 0) return c;
+            c = Integer.compare(a.hops, b.hops);
+            if (c != 0) return c;
+            return a.func.compareTo(b.func);
+        });
+
+        // DEDUP by function — each function appears at most once (its single highest-scoring reach, the first
+        // seen in ranked order). Then take up to topN distinct functions.
+        Set<String> seenFns = new HashSet<>();
+        List<Find> out = new ArrayList<>();
+        for (Find cand : cands) {
+            if (out.size() >= topN) break;
+            if (seenFns.add(cand.func)) out.add(cand);
         }
-        return best == null ? Result.FALLBACK : Result.winner(best);
+        return out;
+    }
+
+    /** Compute the single most surprising reach. {@code NONE} when there are ZERO effectful functions;
+     *  {@code FALLBACK} when there were effectful functions but none cleared the bar; {@code WINNER}
+     *  otherwise. Delegates to {@link #bestFinds} with {@code topN == 1} so the ranking CANNOT drift from
+     *  {@code tour}; the winner is byte-identical to the pre-refactor scan note. Mirrors the Rust reference's
+     *  {@code Option<Option<Find>>}. */
+    static Result bestFind(Map<String, EffectSet> inferred, Map<String, EffectSet> direct,
+            Map<String, Set<String>> calls) {
+        // The single top find uses the SAME heuristic as tour (topN == 1). The scan note resolves the source
+        // loc itself (with a "?" fallback) from its own map, so pass an empty loc map here — the Find's
+        // sourceLoc is unused on the scan-note path, keeping that output byte-identical.
+        List<Find> top = bestFinds(inferred, direct, calls, Map.of(), 1);
+        if (top.isEmpty()) {
+            return anyEffectful(inferred) ? Result.FALLBACK : Result.NONE;
+        }
+        return Result.winner(top.get(0));
     }
 
     /** Emit the surface note to {@code err}, after the coverage-ledger line. {@code loc} maps qual →

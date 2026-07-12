@@ -208,7 +208,7 @@ public class Candor {
         if (args.length < 1) {
             System.err.println("usage: candor <dir-or-jar-of-classes> [--json <file>] [--policy <file>] [--gate-json <file>]");
             System.err.println(
-                    "       candor <show|where|callers|map|diff|containment|reachable|path|impact|gains|whatif|rewire> <report.json> [arg]");
+                    "       candor <show|where|callers|map|diff|containment|reachable|path|impact|blindspots|tour|gains|whatif|rewire> <report.json> [arg]");
             System.err.println("       candor parsepolicy <policy-file>");
             System.err.println("       candor --version | --agents | --help");
             System.exit(2);

@@ -47,7 +47,7 @@ rep="$(cat "$W/r.json")"
 want "report is the v0.2 envelope"            "$rep" '"candor"'
 want "envelope carries a version"             "$rep" '"version"'
 want "envelope carries a toolchain"           "$rep" '"toolchain"'
-want "envelope declares the spec contract 0.9" "$rep" '"spec": "0.9"'
+want "envelope declares the spec contract 0.10" "$rep" '"spec": "0.10"'
 want "functions array present"               "$rep" '"functions"'
 want "reads performs Fs"                      "$rep" '"Fx.reads"'
 want "dyn is Unknown (reflection, trust §4)"  "$rep" '"Unknown"'
@@ -878,7 +878,9 @@ public class Order { public void save() throws Exception { java.sql.DriverManage
 J
 javac -d "$W/ccls" $(find "$W/csrc" -name '*.java') 2>/dev/null
 "$CJ" "$W/ccls" --json "$W/c.json" >/dev/null 2>&1
-cont="$("$CJ" containment "$W/c.json" 2>&1)"
+# §3.3.1: containment's single positional is the BASELINE (ratchet), never the report — the report-mode
+# diagnostic takes the report via --report (a bare `containment <report.json>` now discovers + ratchets).
+cont="$("$CJ" containment --report "$W/c.json" 2>&1)"
 want   "containment reports Db across 2 layers"   "$cont" 'Db'
 want   "containment names the leaked-into layer"  "$cont" 'model:1'
 # ratchet: a baseline where Db lived only in dao → current (dao+model) is a regression
@@ -1585,13 +1587,13 @@ echo "== CLI surface: --help, --version, bare --json, empty scan =="
 hp="$("$CJ" --help 2>&1)"; hprc=$?
 want "--help shows usage"                          "$hp" 'USAGE: candor'
 want "--help names the gate flag"                  "$hp" '--gate-json'
-want "--help states the spec contract"             "$hp" 'candor-spec 0.9'
+want "--help states the spec contract"             "$hp" 'candor-spec 0.10'
 if [ "$hprc" -eq 0 ]; then echo "  ok   --help exits 0"; pass=$((pass+1));
 else echo "  FAIL --help exit $hprc (want 0)"; fail=$((fail+1)); fi
 hs="$("$CJ" -h 2>&1)"
 want "-h is the same surface"                      "$hs" 'USAGE: candor'
 vv="$("$CJ" --version 2>&1)"; vvrc=$?
-want    "--version prints the release + spec"      "$vv" '(spec 0.9)'
+want    "--version prints the release + spec"      "$vv" '(spec 0.10)'
 want    "--version prints the upgrade line"        "$vv" 'jbang --fresh'
 wantnot "--version release is baked (not the 'unknown' fallback)" "$vv" 'candor-java unknown'
 if [ "$vvrc" -eq 0 ]; then echo "  ok   --version exits 0"; pass=$((pass+1));
@@ -1690,10 +1692,10 @@ fi
 echo "== family identity phrases =="
 README_TXT="$(cat "$ROOT/README.md")"; AGENTS_TXT="$(cat "$ROOT/AGENTS.md")"
 want    "README names candor-java the family's reference engine" "$README_TXT" "the family's reference engine"
-want    "README pins the spec floor (spec 0.9)"                  "$README_TXT" "spec 0.9"
+want    "README pins the spec floor (spec 0.10)"                  "$README_TXT" "spec 0.10"
 wantnot "README does not call Rust the reference"                "$README_TXT" "Rust reference"
 want    "AGENTS names candor-java the reference engine"          "$AGENTS_TXT" "reference engine"
-want    "AGENTS pins the spec floor (spec 0.9)"                  "$AGENTS_TXT" "spec 0.9"
+want    "AGENTS pins the spec floor (spec 0.10)"                  "$AGENTS_TXT" "spec 0.10"
 
 echo
 echo "smoke: $pass passed, $fail failed"

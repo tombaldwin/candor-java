@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# candor-java — a thin qualified launcher for the JVM engine, so the umbrella `candor` dispatcher (and users)
+# can invoke it by name. Locates the shadow jar: $CANDOR_JAVA_JAR, else this repo's build, else ~/.candor.
+set -e
+jar="${CANDOR_JAVA_JAR:-}"
+[ -n "$jar" ] || jar="$(ls "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/build/libs/"*-all.jar 2>/dev/null | head -1)"
+[ -n "$jar" ] || jar="$(ls "$HOME"/.candor/candor-java*-all.jar 2>/dev/null | head -1)"
+[ -n "$jar" ] && [ -f "$jar" ] || { echo "candor-java: no jar — build with ./gradlew shadowJar or set CANDOR_JAVA_JAR" >&2; exit 2; }
+exec java -jar "$jar" "$@"

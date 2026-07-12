@@ -82,58 +82,267 @@ public final class Query {
         return fns;
     }
 
+    /** The two-positional comparative verbs (SPEC §3.3.1): `diff`/`gains`/`rewire` take `<current>
+     *  <baseline>` — two explicit report locators, in that order — so report discovery does NOT apply to
+     *  them (they compare two named reports). Every other verb takes at most one report, discovered or
+     *  `--report`-supplied. */
+    static final Set<String> TWO_REPORT = Set.of("diff", "gains", "rewire");
+    /** The verbs that honour `--policy` (SPEC §3.3.1): whatif/fix/fix-gate/unverified. */
+    static final Set<String> POLICY_VERBS = Set.of("whatif", "fix", "fix-gate", "unverified");
+
+    /** Resolve a `--report <locator>` to a full report `.json` path, by the ONE §3.3.1 rule:
+     *  a DIRECTORY → the `<dir>/.candor/report` prefix inside it; a path ending `.json` → that FULL path;
+     *  otherwise a PREFIX (`<prefix>.<crate>.<backend>.json`). A dir/prefix is expanded to the single
+     *  matching report file (sidecars — `.callgraph.json`/`.hierarchy.json` — are excluded). Returns null
+     *  (with a stderr reason) when a dir/prefix names no report file. */
+    static String resolveReportLocator(String locator) {
+        Path p = Path.of(locator);
+        if (locator.endsWith(".json")) return locator;              // rule 2: a full report path, verbatim
+        if (Files.isDirectory(p))                                    // rule 1: a directory → its .candor/report prefix
+            return expandPrefix(p.resolve(".candor").resolve("report").toString(), locator);
+        return expandPrefix(locator, locator);                      // rule 3: a bare prefix
+    }
+
+    /** Expand a report PREFIX (`<dir>/report`) to the single report file `<prefix>.<crate>.<backend>.json`
+     *  beside it — the §3.3.1/§3.4 form the other engines write. A `.callgraph.json`/`.hierarchy.json`
+     *  sidecar is NOT a report (it has a 3rd dotted segment before `.json`, or its middle segment is a
+     *  sidecar tag). When exactly one report matches, use it; when several do, take the lexicographically
+     *  first (deterministic — the Java engine loads ONE report, unlike the Rust lint's multi-crate union),
+     *  and disclose the choice. `original` is the user-typed locator, for the error message. Returns null
+     *  when nothing matches. */
+    static String expandPrefix(String prefix, String original) {
+        Path pp = Path.of(prefix);
+        Path dir = pp.getParent() != null ? pp.getParent() : Path.of(".");
+        String base = pp.getFileName() != null ? pp.getFileName().toString() : prefix;
+        String dot = base + ".";
+        List<String> hits = new ArrayList<>();
+        try (var s = Files.list(dir)) {
+            s.forEach(f -> {
+                String name = f.getFileName().toString();
+                if (!name.startsWith(dot) || !name.endsWith(".json")) return;
+                if (name.endsWith(".callgraph.json") || name.endsWith(".hierarchy.json")) return; // sidecars aren't reports
+                hits.add(f.toString());
+            });
+        } catch (Exception e) {
+            // dir unreadable/absent — fall through to the not-found message below
+        }
+        // An exact `<prefix>.json` (the Java engine's own single-file form) also counts as a match.
+        Path exact = Path.of(prefix + ".json");
+        if (Files.isRegularFile(exact) && !hits.contains(exact.toString())) hits.add(exact.toString());
+        if (hits.isEmpty()) {
+            System.err.println("candor: no report found for locator `" + original + "` (looked for "
+                    + dot + "*.json under " + dir + ")");
+            return null;
+        }
+        Collections.sort(hits);
+        if (hits.size() > 1)
+            System.err.println("candor: locator `" + original + "` matches " + hits.size()
+                    + " reports; using " + hits.get(0));
+        return hits.get(0);
+    }
+
+    /** DISCOVER the report when no `--report` was given (SPEC §3.3.1): a `CANDOR_REPORT` env var overrides;
+     *  else walk UP from the CWD for a `.candor/` directory and use its `report` prefix (the §3.4 config
+     *  discovery mechanism, applied to the report). Returns the resolved report path, or null (with a
+     *  stderr reason) when no `.candor/` is found or the prefix names no report. */
+    static String discoverReport() {
+        String override = System.getenv("CANDOR_REPORT");
+        if (override != null && !override.isEmpty()) return resolveReportLocator(override);
+        Path p = Path.of("").toAbsolutePath();
+        for (; p != null; p = p.getParent()) {
+            Path candor = p.resolve(".candor");
+            if (Files.isDirectory(candor))
+                return expandPrefix(candor.resolve("report").toString(), candor.resolve("report").toString());
+        }
+        System.err.println("candor: no report given and no `.candor/` directory found walking up from the CWD "
+                + "— pass --report <locator> or set CANDOR_REPORT.");
+        return null;
+    }
+
+    /** Does `tok` resolve to an existing report (a `.json` file, or a dir/prefix with a matching report)?
+     *  Used ONLY to detect the DEPRECATED leading-positional report form — so `where <report.json> Net`
+     *  (old) is told apart from `where Net` (canonical, discovered). A quiet probe: it must NOT print the
+     *  not-found chatter {@link #resolveReportLocator} does, so a canonical first-positional (an Effect / a
+     *  fn substring) simply reads as "not a report". */
+    static boolean looksLikeReport(String tok) {
+        if (tok == null) return false;
+        Path p = Path.of(tok);
+        if (tok.endsWith(".json")) return Files.isRegularFile(p);
+        if (Files.isDirectory(p))
+            return Files.isRegularFile(p.resolve(".candor").resolve("report"))  // unlikely, but honour an exact file
+                    || quietPrefixMatches(p.resolve(".candor").resolve("report").toString());
+        return quietPrefixMatches(tok);
+    }
+
+    /** True iff a report file matches the prefix, WITHOUT the stderr chatter of {@link #expandPrefix}. */
+    static boolean quietPrefixMatches(String prefix) {
+        Path pp = Path.of(prefix);
+        Path dir = pp.getParent() != null ? pp.getParent() : Path.of(".");
+        String base = pp.getFileName() != null ? pp.getFileName().toString() : prefix;
+        String dot = base + ".";
+        if (Files.isRegularFile(Path.of(prefix + ".json"))) return true;
+        try (var s = Files.list(dir)) {
+            return s.anyMatch(f -> {
+                String n = f.getFileName().toString();
+                return n.startsWith(dot) && n.endsWith(".json")
+                        && !n.endsWith(".callgraph.json") && !n.endsWith(".hierarchy.json");
+            });
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     static int run(String[] args) {
         String cmd = args[0];
         boolean json = false;
         boolean includeUnknown = false; // `callers --include-unknown`: also disclose the unresolved-dispatch frontier
         boolean strict = false;         // `unverified --strict`: exit 1 on an unverified-purity hole
+        String reportFlag = null;       // --report <locator> (canonical §3.3.1)
+        String policyFlag = null;       // --policy <file> (canonical §3.3.1)
         List<String> pos = new ArrayList<>();
+        Set<String> known = java.util.Set.of("--json", "--include-unknown", "--strict", "--report", "--policy");
+        String usage = "candor " + cmd + " <verb-args…> [--report <locator>] [--policy <file>] [--json] [--strict] [--include-unknown]";
         for (int i = 1; i < args.length; i++) {
-            if (args[i].equals("--json")) json = true;
-            else if (args[i].equals("--include-unknown")) includeUnknown = true;
-            else if (args[i].equals("--strict")) strict = true;
-            else {
-                // an unknown --flag must FAIL, not be swallowed as a query positional (a typo'd
-                // --jsno otherwise returns prose to a wrapper expecting JSON) — same posture as main()
-                Candor.rejectUnknownFlag(args[i], java.util.Set.of("--json", "--include-unknown", "--strict"), "candor " + cmd + " <report.json> [arg] [--json] [--include-unknown] [--strict]");
-                pos.add(args[i]);
+            switch (args[i]) {
+                case "--json" -> json = true;
+                case "--include-unknown" -> includeUnknown = true;
+                case "--strict" -> strict = true;
+                case "--report" -> {
+                    if (i + 1 >= args.length) { System.err.println("candor: --report needs a <locator> (usage: " + usage + ")"); return 2; }
+                    reportFlag = args[++i];
+                }
+                case "--policy" -> {
+                    if (i + 1 >= args.length) { System.err.println("candor: --policy needs a <file> (usage: " + usage + ")"); return 2; }
+                    policyFlag = args[++i];
+                }
+                default -> {
+                    // an unknown --flag must FAIL, not be swallowed as a query positional (a typo'd
+                    // --jsno otherwise returns prose to a wrapper expecting JSON) — same posture as main()
+                    Candor.rejectUnknownFlag(args[i], known, usage);
+                    pos.add(args[i]);
+                }
             }
         }
-        if (pos.isEmpty()) {
-            System.err.println("usage: candor " + cmd + " <report.json> [arg] [--json]");
-            return 2;
+
+        // ── DEPRECATED-ALIAS DETECTION (back-compat, §3.3.1) ────────────────────────────────────────────
+        // The old form put the report as a LEADING POSITIONAL (a full `.json` path/dir/prefix), and — for
+        // the policy verbs — the policy as a trailing positional. Detect them so the pre-0.10 invocations
+        // the conformance suite drives (`candor where <report.json> Net --json`) stay green. Only triggers
+        // when `--report` was NOT used and the first positional actually resolves to a report; a canonical
+        // first-positional (an Effect / a fn) is left in place.
+        String report = null;
+        if (TWO_REPORT.contains(cmd)) {
+            // diff/gains/rewire: two positional locators <current> <baseline>. No discovery, no --report.
+            if (reportFlag != null)
+                System.err.println("candor: --report is ignored for `" + cmd + "` — it takes two positional report locators <current> <baseline>.");
+        } else if (reportFlag != null) {
+            report = resolveReportLocator(reportFlag);
+            if (report == null) return 2;
+        } else if (!pos.isEmpty() && looksLikeReport(pos.get(0))) {
+            // DEPRECATED: a leading-positional report. Consume it, warn, resolve it the same 3 ways.
+            System.err.println("candor: the leading-positional report is deprecated — use `--report " + pos.get(0)
+                    + "` (report discovery + --report is the canonical §3.3.1 grammar). Still accepted for now.");
+            report = resolveReportLocator(pos.remove(0));
+            if (report == null) return 2;
+        } else {
+            // canonical: discover the report (walk up for .candor/, or CANDOR_REPORT).
+            report = discoverReport();
+            if (report == null) return 2;
         }
-        List<Effector> fns;
-        try {
-            fns = load(pos.get(0));
-        } catch (Exception e) {
-            // load() throws PRECISE reasons ("not a candor report: object has no 'functions' array",
-            // NoSuchFileException, a JSON syntax error) — relay them, don't discard the diagnostic.
-            String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-            System.err.println("candor: cannot read report " + pos.get(0) + " (" + why + ")");
-            return 2;
+
+        // DEPRECATED: a trailing POSITIONAL policy on the policy verbs, when --policy wasn't given. whatif
+        // takes <fn> <Effect> [policy] (index 2); fix <fn> <Effect> [policy] (index 2); fix-gate [policy]
+        // (index 0); unverified [policy] (index 0). Only claim it as a policy when --policy is absent AND
+        // there's an extra positional beyond the verb's fixed args.
+        if (policyFlag == null && POLICY_VERBS.contains(cmd)) {
+            int fixedArgs = switch (cmd) { case "whatif", "fix" -> 2; default -> 0; }; // <fn> <Effect> vs none
+            if (pos.size() > fixedArgs) {
+                policyFlag = pos.remove(fixedArgs);
+                System.err.println("candor: the positional policy is deprecated — use `--policy " + policyFlag
+                        + "`. Still accepted for now.");
+            }
         }
-        String arg = pos.size() > 1 ? pos.get(1) : null;
-        String arg2 = pos.size() > 2 ? pos.get(2) : null;
+
+        // The comparative verbs load their reports themselves (two positionals); the rest load `report`.
+        List<Effector> fns = List.of();
+        if (!TWO_REPORT.contains(cmd)) {
+            try {
+                fns = load(report);
+            } catch (Exception e) {
+                // load() throws PRECISE reasons ("not a candor report: object has no 'functions' array",
+                // NoSuchFileException, a JSON syntax error) — relay them, don't discard the diagnostic.
+                String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                System.err.println("candor: cannot read report " + report + " (" + why + ")");
+                return 2;
+            }
+        }
+
+        String a0 = pos.size() > 0 ? pos.get(0) : null; // first verb arg
+        String a1 = pos.size() > 1 ? pos.get(1) : null; // second verb arg
         return switch (cmd) {
-            case "show" -> show(fns, arg, json);
-            case "where" -> where(fns, arg, json);
-            case "callers" -> callers(fns, pos.get(0), arg, json, includeUnknown);
+            case "show" -> show(fns, a0, json);
+            case "where" -> where(fns, a0, json);
+            case "callers" -> callers(fns, report, a0, json, includeUnknown);
             case "map" -> map(fns, json);
-            case "diff" -> diff(fns, pos.get(0), arg, json);
-            case "containment" -> containment(fns, arg, json);
+            case "diff" -> diff2(a0, a1, json);
+            case "containment" -> containment(fns, a0, json);
             case "reachable" -> reachable(fns, json);
-            case "path" -> path(fns, arg, arg2, json);
-            case "impact" -> impact(fns, arg, json);
+            case "path" -> path(fns, a0, a1, json);
+            case "impact" -> impact(fns, a0, json);
             case "blindspots" -> blindspots(fns, json);
-            case "gains" -> gains(fns, pos.get(0), arg, json);
-            case "whatif" -> whatif(pos.get(0), arg, arg2, pos.size() > 3 ? pos.get(3) : null, json);
-            case "fix" -> fix(fns, pos.get(0), arg, arg2, pos.size() > 3 ? pos.get(3) : null, json);
-            case "fix-gate" -> fixGate(fns, pos.get(0), arg, json);
-            case "unverified" -> unverified(fns, arg, json, strict);
-            case "rewire" -> rewire(pos.get(0), arg, json);
+            case "gains" -> gains2(a0, a1, json);
+            case "whatif" -> whatif(report, a0, a1, policyFlag, json);
+            case "fix" -> fix(fns, report, a0, a1, policyFlag, json);
+            case "fix-gate" -> fixGate(fns, report, policyFlag, json);
+            case "unverified" -> unverified(fns, policyFlag, json, strict);
+            case "rewire" -> rewire2(a0, a1, json);
             default -> 2;
         };
+    }
+
+    /** `rewire <current> <baseline>` (§3.3.1 two-positional): resolve each locator to a report path (so its
+     *  `.callgraph.json` sidecar can be derived) and delegate to {@link #rewire}. */
+    static int rewire2(String curLoc, String baseLoc, boolean json) {
+        if (baseLoc == null) return usage("rewire <current> <baseline> [--json]");
+        String cur = resolveReportLocator(curLoc);
+        String base = resolveReportLocator(baseLoc);
+        if (cur == null || base == null) return 2;
+        return rewire(cur, base, json);
+    }
+
+    /** `diff <current> <baseline>` (§3.3.1 two-positional): resolve each locator, load the current report,
+     *  delegate to {@link #diff}. */
+    static int diff2(String curLoc, String baseLoc, boolean json) {
+        if (curLoc == null) return usage("diff <current> <baseline> [--json]");
+        String cur = resolveReportLocator(curLoc);
+        if (cur == null) return 2;
+        List<Effector> curFns;
+        try { curFns = load(cur); }
+        catch (Exception e) {
+            String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            System.err.println("candor: cannot read report " + cur + " (" + why + ")");
+            return 2;
+        }
+        String base = baseLoc == null ? null : resolveReportLocator(baseLoc);
+        if (baseLoc != null && base == null) return 2;
+        return diff(curFns, cur, base, json);
+    }
+
+    /** `gains <current> <baseline>` (§3.3.1 two-positional): as {@link #diff2}, for the supply-chain gain. */
+    static int gains2(String curLoc, String baseLoc, boolean json) {
+        if (curLoc == null) return usage("gains <current> <baseline> [--json]");
+        String cur = resolveReportLocator(curLoc);
+        if (cur == null) return 2;
+        List<Effector> curFns;
+        try { curFns = load(cur); }
+        catch (Exception e) {
+            String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            System.err.println("candor: cannot read report " + cur + " (" + why + ")");
+            return 2;
+        }
+        String base = baseLoc == null ? null : resolveReportLocator(baseLoc);
+        if (baseLoc != null && base == null) return 2;
+        return gains(curFns, cur, base, json);
     }
 
     static int usage(String u) {

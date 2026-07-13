@@ -677,12 +677,41 @@ public final class Query {
             JsonElement root = JsonParser.parseString(Files.readString(Path.of(reportPath)));
             if (!root.isJsonObject()) return null;
             JsonObject obj = root.getAsJsonObject();
-            if (!obj.has("package") || !obj.get("package").isJsonPrimitive()) return null;
-            String pkg = obj.get("package").getAsString();
-            return pkg.isEmpty() ? null : pkg;
+            if (obj.has("package") && obj.get("package").isJsonPrimitive()) {
+                String pkg = obj.get("package").getAsString();
+                if (!pkg.isEmpty()) return pkg;
+            }
+            // The `packages` PLURAL envelope — the JVM shape (SPEC §2), which THIS engine's own scan
+            // emits: one entry names it verbatim; several name their longest common dotted prefix
+            // (`com.uflexi.actions` + `com.uflexi.dao` → `com.uflexi`); none shared → null (basename).
+            if (obj.has("packages") && obj.get("packages").isJsonArray()) {
+                List<String> pkgs = new ArrayList<>();
+                for (JsonElement e : obj.getAsJsonArray("packages"))
+                    if (e.isJsonPrimitive() && !e.getAsString().isEmpty()) pkgs.add(e.getAsString());
+                return packagesLabel(pkgs);
+            }
+            return null;
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /** The longest common dot-separated prefix of a plural `packages` list — whole segments only
+     *  (`com.ab` + `com.ac` share `com`, not `com.a`); null when nothing is shared. Mirrors the Rust
+     *  reference's packages_label (tour.rs). */
+    static String packagesLabel(List<String> pkgs) {
+        if (pkgs.isEmpty()) return null;
+        if (pkgs.size() == 1) return pkgs.get(0);
+        String[] first = pkgs.get(0).split("\\.");
+        int n = first.length;
+        for (String p : pkgs.subList(1, pkgs.size())) {
+            String[] segs = p.split("\\.");
+            int i = 0;
+            while (i < Math.min(n, segs.length) && segs[i].equals(first[i])) i++;
+            n = i;
+            if (n == 0) return null; // nothing shared — the basename fallback is more honest
+        }
+        return String.join(".", Arrays.copyOfRange(first, 0, n));
     }
 
     /** "Who reaches `q`?" over the full call graph: the DIRECT callers and the full TRANSITIVE set (the

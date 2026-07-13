@@ -78,6 +78,14 @@ public final class Query {
         if (fns.size() < beforeFilter)
             System.err.println("candor: skipping " + (beforeFilter - fns.size())
                     + " report entr" + (beforeFilter - fns.size() == 1 ? "y" : "ies") + " with no 'fn'");
+        // A report array that had elements but yielded ZERO usable functions (every entry was malformed —
+        // e.g. a bare `[1,2,3]`) is corruption, NOT an effect-free crate: returning [] would let `tour`
+        // print "nothing hidden" and a policy `map`/gate PASS — the §4 cardinal-sin false all-clear. Fail
+        // loud (the caller relays this as exit 2). A CLEAN-empty report (arr is []) stays a valid pure
+        // report — parity with the rust/ts/swift engines, which also exit 0 only on a well-formed empty.
+        if (!arr.isEmpty() && fns.isEmpty())
+            throw new IllegalArgumentException(
+                    "no usable functions — every report entry was malformed (corrupt report); re-run the scan");
         fns.sort(Comparator.comparing(Effector::fn));
         return fns;
     }

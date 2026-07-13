@@ -1481,9 +1481,9 @@ public final class Query {
 
     /** gains — the package-level SUPPLY-CHAIN alarm (SPEC §5.1): the UNION of effects the surface gained
      *  between two reports (base -> cur), with per-function detail. A dependency that grew a Net/Exec reach
-     *  between releases. {gained:[Effect], byFunction:[{fn,effect}]} — the cross-engine machine-readable form.
-     *  Always exit 0 (candor-ts parity: the gained-effect exit-1 contract belongs to `diff` alone; gains is
-     *  a pure disclosure whose consumers read the JSON, not the exit code). */
+     *  between releases. {gained:[Effect], byFunction:[{effect,fn,origin}]} — the cross-engine
+     *  machine-readable form. Always exit 0 (candor-ts parity: the gained-effect exit-1 contract belongs to
+     *  `diff` alone; gains is a pure disclosure whose consumers read the JSON, not the exit code). */
     static int gains(List<Effector> cur, String curPath, String basePath, boolean json) {
         if (basePath == null) return usage("gains <report.json> <baseline.json> [--json]");
         List<Effector> base;
@@ -1506,7 +1506,7 @@ public final class Query {
             for (String e : new TreeSet<>(c.get(fn))) {
                 if (!bi.contains(e)) {
                     gained.add(e);
-                    Map<String, Object> m = new LinkedHashMap<>();
+                    Map<String, Object> m = new TreeMap<>(); // alphabetical keys: effect, fn, origin
                     m.put("fn", fn);
                     m.put("effect", e);
                     byFunction.add(m);
@@ -1514,6 +1514,31 @@ public final class Query {
             }
         }
         if (json) {
+            // ⟨spec 0.12 staged⟩ each byFunction entry carries `origin` — the candor-gains prototype's
+            // key finding promoted into the open query. A gain on a fn that EXISTED at the baseline
+            // (shipped pure, now does Net — the supply-chain attack signal) is a different alarm from a
+            // NEW fn that does Net (a feature). Reports OMIT pure functions (SPEC §2), so existence is
+            // keyed on the baseline CALLGRAPH sidecar (a baseline-pure fn is a graph node with no report
+            // entry):
+            //   "existing" — in the baseline report, or a baseline-callgraph node (caller or callee);
+            //   "new"      — in neither (the fn did not exist at the baseline);
+            //   "unknown"  — absent from the baseline report AND no baseline callgraph sidecar was
+            //                found (empty graph): existence is undecidable — DISCLOSED, never guessed.
+            // JSON-only: the human `fn\teffect` TSV is a pinned consumer surface (line-matched by
+            // callers' seen-file dedup) and stays byte-stable. Mirrors candor-rust cmd_gains.
+            Map<String, List<String>> baseCg = loadCallgraph(basePath);
+            Set<String> baseCgNodes = new HashSet<>();
+            if (baseCg != null)
+                for (var e : baseCg.entrySet()) {
+                    baseCgNodes.add(e.getKey());
+                    baseCgNodes.addAll(e.getValue());
+                }
+            for (Map<String, Object> m : byFunction) {
+                String fn = (String) m.get("fn");
+                m.put("origin", b.containsKey(fn) ? "existing"
+                        : baseCgNodes.isEmpty() ? "unknown"
+                        : baseCgNodes.contains(fn) ? "existing" : "new");
+            }
             Map<String, Object> out = new LinkedHashMap<>();
             // provenance first (unconditional, "" when unknown), then the gains — the candor-ts order.
             out.put("baseline_version", baseV == null ? "" : baseV);

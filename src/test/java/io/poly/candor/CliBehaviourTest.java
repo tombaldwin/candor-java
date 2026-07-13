@@ -484,6 +484,54 @@ class CliBehaviourTest {
     }
 
     @Test
+    void gainsCorruptBaselineDisclosesOnStderrAndKeepsStdoutEmpty() throws Exception {
+        // `gains --json` stdout is a MACHINE channel: a corrupt baseline must be exit 2 with the
+        // disclosure on STDERR and NOTHING on stdout — the old handler printed the diagnostic on
+        // stdout (garbage to a JSON consumer) and left stderr empty where the corrupt-report
+        // loudness rule wants it.
+        Path cur = scratch.resolve("cur.json");
+        Files.writeString(cur, "{\"candor\":{},\"functions\":[{\"fn\":\"app.Svc.fetch\",\"inferred\":[\"Net\"]}]}");
+        Path base = scratch.resolve("base.json");
+        Files.writeString(base, "[1,2,3]"); // parses as JSON; every entry malformed — a corrupt report
+        Run r = runCli("gains", cur.toString(), base.toString(), "--json");
+        assertEquals(2, r.exit(), "a corrupt gains baseline is exit 2\nSTDERR:\n" + r.stderr());
+        assertEquals("", r.stdout(), "the --json stdout channel stays EMPTY on a corrupt baseline");
+        assertTrue(r.stderr().contains("cannot read baseline"),
+                "stderr carries the disclosure\nSTDERR:\n" + r.stderr());
+        assertNoStackTrace(r);
+    }
+
+    @Test
+    void gainsPartialBaselineCallgraphYieldsUnknownOriginNotNew() throws Exception {
+        // A PARTIAL baseline callgraph (a matched sidecar existed but is corrupt) must label a fn known
+        // only to the dropped sidecar "unknown", never "new" — "new" downgrades the supply-chain attack
+        // signal (existing fn gained an effect) to a feature. Two reports under one prefix; sidecar `a`
+        // is readable, sidecar `b` is corrupt.
+        Files.writeString(scratch.resolve("base.a.jvm.json"),
+                "{\"candor\":{},\"functions\":[{\"fn\":\"app.F.f\",\"inferred\":[\"Fs\"]}]}");
+        Files.writeString(scratch.resolve("base.a.jvm.callgraph.json"), "{\"app.H.h\":[]}");
+        Files.writeString(scratch.resolve("base.b.jvm.json"), "{\"candor\":{},\"functions\":[]}");
+        Files.writeString(scratch.resolve("base.b.jvm.callgraph.json"), "{corrupt"); // exists, unreadable
+        Path cur = scratch.resolve("cur.json");
+        Files.writeString(cur, "{\"candor\":{},\"functions\":["
+                + "{\"fn\":\"app.F.f\",\"inferred\":[\"Fs\",\"Net\"]},"   // baseline-report hit → existing
+                + "{\"fn\":\"app.G.g\",\"inferred\":[\"Net\"]},"          // only in the CORRUPT sidecar → unknown
+                + "{\"fn\":\"app.H.h\",\"inferred\":[\"Net\"]}]}");        // readable sidecar node → existing
+        Run r = runCli("gains", cur.toString(), scratch.resolve("base").toString(), "--json");
+        assertEquals(0, r.exit(), "gains discloses, exit 0\nSTDERR:\n" + r.stderr());
+        var byFn = new java.util.HashMap<String, String>();
+        for (var e : JsonParser.parseString(r.stdout()).getAsJsonObject().getAsJsonArray("byFunction"))
+            byFn.put(e.getAsJsonObject().get("fn").getAsString(),
+                     e.getAsJsonObject().get("origin").getAsString());
+        assertEquals("existing", byFn.get("app.F.f"), "a baseline-report hit is existing");
+        assertEquals("existing", byFn.get("app.H.h"), "a readable-sidecar node is existing");
+        assertEquals("unknown", byFn.get("app.G.g"),
+                "a fn evidenced only by the DROPPED sidecar is unknown, not new\nSTDERR:\n" + r.stderr());
+        assertTrue(r.stderr().contains("unreadable"),
+                "the corrupt sidecar is disclosed on stderr\nSTDERR:\n" + r.stderr());
+    }
+
+    @Test
     void gateJsonUnwritablePathDoesNotCrashTheGate() throws Exception {
         // A bad --gate-json path must be a clean diagnostic, never a crash — and MUST NOT change the gate
         // verdict (the exit code is the source of truth; the verdict file is a surfacing side-output).

@@ -133,6 +133,24 @@ public final class Query {
      *  and disclose the choice. `original` is the user-typed locator, for the error message. Returns null
      *  when nothing matches. */
     static String expandPrefix(String prefix, String original) {
+        List<String> hits = prefixHits(prefix);
+        if (hits.isEmpty()) {
+            Path pp = Path.of(prefix);
+            Path dir = pp.getParent() != null ? pp.getParent() : Path.of(".");
+            String base = pp.getFileName() != null ? pp.getFileName().toString() : prefix;
+            System.err.println("candor: no report found for locator `" + original + "` (looked for "
+                    + base + ".*.json under " + dir + ")");
+            return null;
+        }
+        if (hits.size() > 1)
+            System.err.println("candor: locator `" + original + "` matches " + hits.size()
+                    + " reports; using " + hits.get(0));
+        return hits.get(0);
+    }
+
+    /** ALL report files matching a PREFIX, sorted — the glob {@link #expandPrefix} chooses from, without
+     *  the choosing (or its stderr chatter). Empty when nothing matches. */
+    static List<String> prefixHits(String prefix) {
         Path pp = Path.of(prefix);
         Path dir = pp.getParent() != null ? pp.getParent() : Path.of(".");
         String base = pp.getFileName() != null ? pp.getFileName().toString() : prefix;
@@ -163,16 +181,20 @@ public final class Query {
         Path exact = Path.of(prefix + ".json");
         if (Files.isRegularFile(exact)) addHit.accept(exact);
         List<String> hits = new ArrayList<>(hitsByKey.values());
-        if (hits.isEmpty()) {
-            System.err.println("candor: no report found for locator `" + original + "` (looked for "
-                    + dot + "*.json under " + dir + ")");
-            return null;
-        }
         Collections.sort(hits);
-        if (hits.size() > 1)
-            System.err.println("candor: locator `" + original + "` matches " + hits.size()
-                    + " reports; using " + hits.get(0));
-        return hits.get(0);
+        return hits;
+    }
+
+    /** ALL report paths a locator names, by the same §3.3.1 rule as {@link #resolveReportLocator} — but
+     *  where that resolver picks ONE (lexicographically first, disclosed), this returns the full match
+     *  list, QUIETLY (the caller has already resolved-and-disclosed; this is for consumers that must see
+     *  every matched report, e.g. gains' baseline-callgraph union). A `.json` locator is itself the list. */
+    static List<String> resolveReportLocatorAll(String locator) {
+        Path p = Path.of(locator);
+        if (locator.endsWith(".json")) return List.of(locator);
+        if (Files.isDirectory(p))
+            return prefixHits(p.resolve(".candor").resolve("report").toString());
+        return prefixHits(locator);
     }
 
     /** DISCOVER the report when no `--report` was given (SPEC §3.3.1): a `CANDOR_REPORT` env var overrides;
@@ -403,7 +425,12 @@ public final class Query {
         }
         String base = baseLoc == null ? null : resolveReportLocator(baseLoc);
         if (baseLoc != null && base == null) return 2;
-        return gains(curFns, cur, base, json);
+        // The ORIGIN graph must see EVERY report the baseline locator matched: the report load above
+        // deliberately picks one (disclosed), but existence-at-the-baseline is evidenced by ANY matched
+        // report's callgraph sidecar — keying origin on just the chosen one would mislabel a fn from a
+        // sibling report's graph as "new".
+        List<String> baseReports = baseLoc == null ? List.of() : resolveReportLocatorAll(baseLoc);
+        return gains(curFns, cur, base, baseReports, json);
     }
 
     static int usage(String u) {
@@ -648,10 +675,21 @@ public final class Query {
      *  stderr before we return null: the fallback graph is strictly smaller, so a silent drop would let a
      *  gate verdict under-report (the §4 cardinal sin). Never silently drop graph edges a verdict depends on. */
     static Map<String, List<String>> loadCallgraph(String reportPath) {
+        return loadCallgraphSignalled(reportPath).graph();
+    }
+
+    /** A signalled call-graph load: the graph (null when absent/unreadable) PLUS whether the load was
+     *  PARTIAL — true iff the matched sidecar EXISTED but failed to read/parse (its edges were dropped,
+     *  disclosed on stderr). An ABSENT sidecar is NOT partial: absence is a known state (empty graph),
+     *  not dropped evidence. Consumers whose VERDICT depends on graph completeness (gains' `origin`)
+     *  must read the flag — a dropped-edge graph proves absence of nothing. */
+    record CallgraphLoad(Map<String, List<String>> graph, boolean partial) {}
+
+    static CallgraphLoad loadCallgraphSignalled(String reportPath) {
         String cgPath = reportPath.endsWith(".json")
                 ? reportPath.substring(0, reportPath.length() - 5) + ".callgraph.json"
                 : reportPath + ".callgraph.json";
-        if (!Files.exists(Path.of(cgPath))) return null; // no sidecar — silent fallback is correct
+        if (!Files.exists(Path.of(cgPath))) return new CallgraphLoad(null, false); // no sidecar — silent fallback is correct
         try {
             var o = JsonParser.parseString(Files.readString(Path.of(cgPath))).getAsJsonObject();
             Map<String, List<String>> cg = new LinkedHashMap<>();
@@ -660,12 +698,12 @@ public final class Query {
                 for (JsonElement v : e.getValue().getAsJsonArray()) callees.add(v.getAsString());
                 cg.put(e.getKey(), callees);
             }
-            return cg;
+            return new CallgraphLoad(cg, false);
         } catch (Exception e) {
             System.err.println("candor: call-graph sidecar " + cgPath
                     + " is unreadable (" + e.getClass().getSimpleName()
                     + ") — the call graph may be incomplete; falling back to the report's inline edges.");
-            return null;
+            return new CallgraphLoad(null, true); // existed yet dropped — a PARTIAL graph, never a silent one
         }
     }
 
@@ -1396,7 +1434,12 @@ public final class Query {
         try {
             base = load(basePath);
         } catch (Exception e) {
-            System.out.println("candor: cannot read baseline " + basePath);
+            // Diagnostics go to STDERR (mirrors the load() relay in run()): under --json a consumer
+            // parses stdout as JSON, so a prose line there is garbage on the machine channel — and the
+            // corrupt-report loudness rule wants the disclosure where diagnostics live. Relay load()'s
+            // precise reason, exit 2, NOTHING on stdout.
+            String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            System.err.println("candor: cannot read baseline " + basePath + " (" + why + ")");
             return 2;
         }
         String engineV = reportVersion(curPath), baseV = reportVersion(basePath);
@@ -1484,13 +1527,17 @@ public final class Query {
      *  between releases. {gained:[Effect], byFunction:[{effect,fn,origin}]} — the cross-engine
      *  machine-readable form. Always exit 0 (candor-ts parity: the gained-effect exit-1 contract belongs to
      *  `diff` alone; gains is a pure disclosure whose consumers read the JSON, not the exit code). */
-    static int gains(List<Effector> cur, String curPath, String basePath, boolean json) {
+    static int gains(List<Effector> cur, String curPath, String basePath, List<String> baseReports, boolean json) {
         if (basePath == null) return usage("gains <report.json> <baseline.json> [--json]");
+        if (baseReports == null || baseReports.isEmpty()) baseReports = List.of(basePath);
         List<Effector> base;
         try {
             base = load(basePath);
         } catch (Exception e) {
-            System.out.println("candor: cannot read baseline " + basePath);
+            // STDERR + exit 2, stdout untouched — same rationale as diff's handler above: `gains --json`
+            // stdout is a machine channel, and the corrupt-baseline disclosure belongs on stderr.
+            String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            System.err.println("candor: cannot read baseline " + basePath + " (" + why + ")");
             return 2;
         }
         String engineV = reportVersion(curPath), baseV = reportVersion(basePath);
@@ -1518,26 +1565,34 @@ public final class Query {
             // key finding promoted into the open query. A gain on a fn that EXISTED at the baseline
             // (shipped pure, now does Net — the supply-chain attack signal) is a different alarm from a
             // NEW fn that does Net (a feature). Reports OMIT pure functions (SPEC §2), so existence is
-            // keyed on the baseline CALLGRAPH sidecar (a baseline-pure fn is a graph node with no report
-            // entry):
+            // keyed on the baseline CALLGRAPH sidecars — every report the baseline locator matched (a
+            // baseline-pure fn is a graph node with no report entry). The ladder:
             //   "existing" — in the baseline report, or a baseline-callgraph node (caller or callee);
-            //   "new"      — in neither (the fn did not exist at the baseline);
-            //   "unknown"  — absent from the baseline report AND no baseline callgraph sidecar was
-            //                found (empty graph): existence is undecidable — DISCLOSED, never guessed.
+            //   "unknown"  — absent from the baseline report AND the graph is EMPTY (no sidecar found)
+            //                OR PARTIAL (a matched sidecar existed but failed to read/parse — its
+            //                dropped nodes prove nothing): existence is undecidable — DISCLOSED, never
+            //                guessed. A partial graph must never downgrade the supply-chain attack
+            //                signal ("existing fn gained an effect") to a feature ("new fn").
+            //   "new"      — in neither, under a COMPLETE graph (the fn did not exist at the baseline).
             // JSON-only: the human `fn\teffect` TSV is a pinned consumer surface (line-matched by
             // callers' seen-file dedup) and stays byte-stable. Mirrors candor-rust cmd_gains.
-            Map<String, List<String>> baseCg = loadCallgraph(basePath);
             Set<String> baseCgNodes = new HashSet<>();
-            if (baseCg != null)
-                for (var e : baseCg.entrySet()) {
-                    baseCgNodes.add(e.getKey());
-                    baseCgNodes.addAll(e.getValue());
-                }
+            boolean cgPartial = false;
+            for (String rp : baseReports) {
+                CallgraphLoad l = loadCallgraphSignalled(rp); // discloses a corrupt sidecar on stderr
+                cgPartial |= l.partial();
+                if (l.graph() != null)
+                    for (var e : l.graph().entrySet()) {
+                        baseCgNodes.add(e.getKey());
+                        baseCgNodes.addAll(e.getValue());
+                    }
+            }
             for (Map<String, Object> m : byFunction) {
                 String fn = (String) m.get("fn");
                 m.put("origin", b.containsKey(fn) ? "existing"
-                        : baseCgNodes.isEmpty() ? "unknown"
-                        : baseCgNodes.contains(fn) ? "existing" : "new");
+                        : baseCgNodes.contains(fn) ? "existing"
+                        : (baseCgNodes.isEmpty() || cgPartial) ? "unknown"
+                        : "new");
             }
             Map<String, Object> out = new LinkedHashMap<>();
             // provenance first (unconditional, "" when unknown), then the gains — the candor-ts order.
@@ -1955,7 +2010,10 @@ public final class Query {
         if (basePath != null) {
             List<Effector> base;
             try { base = load(basePath); } catch (Exception e) {
-                System.out.println("candor: cannot read baseline " + basePath); return 2;
+                // stderr, not stdout: --json consumers parse stdout (same contract as diff/gains).
+                String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                System.err.println("candor: cannot read baseline " + basePath + " (" + why + ")");
+                return 2;
             }
             int bpl = commonPrefix(base).length;
             Map<String, Set<String>> baseLayers = new HashMap<>();

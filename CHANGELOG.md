@@ -6,9 +6,42 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## [0.11.0] — 2026-07-13
+
+### spec 0.11 — the surprising-reach opener rung (current floor)
+
+candor-java now declares **spec `0.11`** (`SPEC_VERSION`; the envelope + `--gate-json` verdict carry it).
+0.11 is a **tier-2 (pinned-tool-surface) rung** (candor-spec §"Conformance tiers"): no report-schema or
+verdict change — a 0.10 report/verdict is byte-identical under 0.11 — but the **surprising-reach surface**
+is now pinned contract: the scan-time opener (the single most surprising transitive reach — a benign-named
+function inheriting a boundary effect a few hops away — with a ready-to-run `candor path`), the
+`candor tour [N]` verb (the top-N ranked list over a saved report, human + `--json`), the shared salience
+floor (Clock/Log/Rand never surface as "surprising"; boundary Net/Exec/Db/Ipc rank above Fs/Env), and
+test-code exclusion by the shared module-segment rule (never drops a production `test_connection`, always
+drops `*Tests`). Deterministic — same lexicons, scoring, and tie-breaks as the Rust reference, so a
+parallel fixture yields the same opener in every language; pinned four-way by conformance PARTs 4f–4j.
+**⚠ the `spec` string changed** — a consumer pinning `spec == "0.10"` must accept `0.11`.
+
+### Changed
+
+- **⚠ A corrupt report fails loud, never "nothing hidden".** A bare junk array (`[1,2,3]` — valid JSON,
+  wrong shape) used to be parsed as a legacy report, every entry dropped for a missing `fn`, and the empty
+  result read as an all-clear at exit 0. `load()` now throws (→ exit 2) whenever a NON-EMPTY report array
+  yields zero usable functions, and an unparseable report was already loud. A well-formed empty report
+  (`[]` / `"functions": []`) stays a valid pure report at exit 0. Parity with rust/ts/swift; gated
+  four-way by conformance PART 4k.
+- **`tour` header honours the plural `packages` envelope this engine's own scan emits.** `tour` on a
+  candor-java report printed the raw filename in the header because it read only the singular `package`
+  key. The plural list now labels the header: one entry verbatim, several by their longest common dotted
+  prefix, none shared → basename. Pinned by the conformance 4g addendum.
+- **The coverage-ledger marker ships: `classifier doesn't cover`.** The de-κ rewording of the per-scan
+  ledger line (documented under 0.10.0 below) landed after the v0.10.0 tag was cut, so this is the first
+  release whose binary emits the new marker. Scan-tooling grepping the old `κ doesn't know` line must
+  switch.
+
 ## [0.10.0] — 2026-07-12
 
-### spec 0.10 — the §3.3.1 canonical query grammar (current floor)
+### spec 0.10 — the §3.3.1 canonical query grammar
 
 candor-java now declares **spec `0.10`** (`SPEC_VERSION`; the envelope + `--gate-json` verdict carry it).
 The family floor ratchets to 0.10 with the landing of the candor-spec **§3.3.1 canonical query grammar**:

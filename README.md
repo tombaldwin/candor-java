@@ -49,7 +49,7 @@ you can act on it.
 **It maps, too** — a per-method effect audit and instant `show`/`where`/`callers`/`map`/`diff`/
 `containment`/`reachable`/`path`/`impact` queries over the report, for an agent or a human navigating unfamiliar code.
 
-## Status: beta (v0.10.x, spec 0.10 — the family's reference engine)
+## Status: beta (v0.11.x, spec 0.11 — the family's reference engine)
 
 Validated on a real 2,257-class Spring application and on real Kotlin/Scala/Groovy bytecode; holds
 the spec's cross-engine conformance suite (same fixtures and expected effect sets as the Rust
@@ -375,7 +375,7 @@ the PR-native SARIF pipeline
 
 ```sh
 ./candor build/classes/java/main --policy .candor/policy --gate-json verdict.json
-# → { "spec": "0.10", "ok": false, "violations": [ { "rule": "AS-EFF-006", "fn": "…", "effects": ["Db"], "detail": "…" } ] }
+# → { "spec": "0.11", "ok": false, "violations": [ { "rule": "AS-EFF-006", "fn": "…", "effects": ["Db"], "detail": "…" } ] }
 ```
 
 `-` streams the verdict to stdout (the human gate lines move to stderr so the stream stays pure JSON).

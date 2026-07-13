@@ -106,12 +106,14 @@ final class Surface {
         return null;
     }
 
-    /** Salience of an effect — boundary/security-relevant effects a reviewer cares about score higher. */
+    /** Salience of an effect — only boundary/security-relevant effects are ever surfaced as "surprising":
+     *  Net/Exec/Db/Ipc (sharpest), Fs/Env (medium). Clock/Log/Rand — and anything else — score 0, so a
+     *  mundane clock/log reach is never the opener (a repo whose only reaches are mundane says "nothing
+     *  hidden"). Matches the Rust reference. */
     static long salience(String effect) {
         switch (effect) {
             case "Net": case "Exec": case "Db": case "Ipc": return 5;
             case "Fs": case "Env": return 3;
-            case "Clock": case "Log": case "Rand": return 1;
             default: return 0;
         }
     }

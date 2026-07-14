@@ -386,6 +386,50 @@ final class Literals {
         }
     }
 
+    /** Known machine-learning MODEL-provider hosts — the SPEC §1 ⟨0.13⟩ `Llm` host-literal refinement:
+     *  a statically-known Net request to one of these classifies `Llm` IN ADDITION to `Net` (Net is never
+     *  dropped — a model call IS network I/O, exactly as an Exec-refined subprocess keeps Exec), just as a
+     *  jdbc URL classifies `Db`. Matched by host, case-insensitive; a SUBDOMAIN of a listed host counts.
+     *  The four reference engines share this table VERBATIM so the `Net` boundary refines to `Llm`
+     *  identically (the analog of {@link #commandHeadEffects}). An UNKNOWN host stays bare `Net` — never
+     *  guessed. Curated STARTER set; the §7 coverage ledger discloses an uncovered provider like any other. */
+    static final Set<String> MODEL_HOSTS = Set.of(
+            "api.openai.com",
+            "api.anthropic.com",
+            "generativelanguage.googleapis.com",
+            "api.mistral.ai",
+            "api.cohere.ai", "api.cohere.com",
+            "api.groq.com",
+            "api.together.xyz",
+            "api.perplexity.ai",
+            "openrouter.ai");
+
+    /** Whether an endpoint HOST literal is a known model provider (case-insensitive; a subdomain of a
+     *  {@link #MODEL_HOSTS} entry counts). Strips a `:port` suffix first. Two special forms carry their own
+     *  rule: any host whose port is 11434 is a local Ollama endpoint (`localhost:11434`,
+     *  `127.0.0.1:11434`); and an AWS Bedrock runtime host `bedrock*-runtime.<region>.amazonaws.com` (the
+     *  `*.bedrock*.amazonaws.com` shape). */
+    static boolean isModelHost(String hostLiteral) {
+        if (hostLiteral == null) return false;
+        // Ollama: a `:11434` port anywhere is the local model endpoint (keep it simple, per SPEC §1).
+        int colon = hostLiteral.lastIndexOf(':');
+        if (colon >= 0 && hostLiteral.substring(colon + 1).equals("11434")) return true;
+        String host = hostPart(hostLiteral).toLowerCase(Locale.ROOT);
+        if (MODEL_HOSTS.contains(host)) return true;
+        for (String m : MODEL_HOSTS)
+            if (host.endsWith("." + m)) return true; // a subdomain of a known model host counts
+        // *.bedrock*.amazonaws.com — the AWS Bedrock runtime endpoint (bedrock-runtime.<region>.amazonaws.com).
+        if (host.endsWith(".amazonaws.com") && host.contains("bedrock")) return true;
+        return false;
+    }
+
+    /** The effects a model-host literal implies: {@code {"Llm"}} for a known model host, else {@code {}}.
+     *  Shared with the sibling engines like {@link #commandHeadEffects}; `Net` is added by the caller (the
+     *  host was captured on a Net-bearing call), so this returns ONLY the refinement. */
+    static Set<String> modelHostEffects(String hostLiteral) {
+        return isModelHost(hostLiteral) ? Set.of("Llm") : Set.of();
+    }
+
     /** Whether an allowed dir `a` covers the reached path `r` at a COMPONENT boundary (so `/etc/app`
      *  covers `/etc/app/cfg` but not `/etc/apppwned`); a `..` in the reached path is never covered.
      *  Mirrors the Rust `fs_path_covered`, including the absolute-vs-relative rootedness check. */

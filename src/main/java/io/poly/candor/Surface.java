@@ -107,12 +107,13 @@ final class Surface {
     }
 
     /** Salience of an effect — only boundary/security-relevant effects are ever surfaced as "surprising":
-     *  Net/Exec/Db/Ipc (sharpest), Fs/Env (medium). Clock/Log/Rand — and anything else — score 0, so a
+     *  Net/Llm/Exec/Db/Ipc (sharpest), Fs/Env (medium). Clock/Log/Rand — and anything else — score 0, so a
      *  mundane clock/log reach is never the opener (a repo whose only reaches are mundane says "nothing
-     *  hidden"). Matches the Rust reference. */
+     *  hidden"). Matches the Rust reference. `Llm` ⟨0.13⟩ joins the sharpest set — a model-provider reach
+     *  is a high-salience supply-chain surface. */
     static long salience(String effect) {
         switch (effect) {
-            case "Net": case "Exec": case "Db": case "Ipc": return 5;
+            case "Net": case "Llm": case "Exec": case "Db": case "Ipc": return 5;
             case "Fs": case "Env": return 3;
             default: return 0;
         }

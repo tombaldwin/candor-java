@@ -26,6 +26,7 @@ public enum Effect {
     EXEC("Exec"),
     FS("Fs"),
     IPC("Ipc"),
+    LLM("Llm"),
     LOG("Log"),
     NET("Net"),
     RAND("Rand"),
@@ -48,12 +49,13 @@ public enum Effect {
     }
 
     /** A §6.1 boundary effect — one that should be contained in a dedicated layer (its dispersion is the
-     *  architecture signal). The spec's §6.1 boundary set: {@code Db,Net,Exec,Fs,Ipc,Clipboard}.
+     *  architecture signal). The spec's §6.1 boundary set: {@code Db,Net,Llm,Exec,Fs,Ipc,Clipboard}.
      *  {@code Clipboard} is external-resource I/O — a boundary capability, so it is scored by containment
-     *  (a peripheral class can no longer reach the system clipboard invisibly to the ratchet). */
+     *  (a peripheral class can no longer reach the system clipboard invisibly to the ratchet). {@code Llm}
+     *  ⟨0.13⟩ refines {@code Net} the way {@code Db} does — a model-provider call is a boundary. */
     public boolean isBoundary() {
         return switch (this) {
-            case DB, NET, EXEC, FS, IPC, CLIPBOARD -> true;
+            case DB, NET, LLM, EXEC, FS, IPC, CLIPBOARD -> true;
             default -> false;
         };
     }
@@ -77,15 +79,18 @@ public enum Effect {
         return BY_NAME.get(name);
     }
 
-    /** The §1 effect vocabulary — the ten effects, excluding the {@code Unknown} trust marker. */
+    /** The §1 effect vocabulary — the eleven effects, excluding the {@code Unknown} trust marker. */
     public static final Set<Effect> KNOWN =
             Collections.unmodifiableSet(EnumSet.complementOf(EnumSet.of(UNKNOWN)));
 
-    /** AS-EFF-004 ambient authority — {@code 𝔼 \ {Log}} (§6, SEMANTICS §6). */
+    /** AS-EFF-004 ambient authority — {@code 𝔼 \ {Log}} (§6, SEMANTICS §6). {@code Llm} ⟨0.13⟩ is a real
+     *  boundary authority like {@code Net}/{@code Db}. */
     public static final Set<Effect> AMBIENT_AUTHORITY = Collections.unmodifiableSet(
-            EnumSet.of(NET, FS, DB, EXEC, ENV, CLOCK, RAND, IPC, CLIPBOARD));
+            EnumSet.of(NET, LLM, FS, DB, EXEC, ENV, CLOCK, RAND, IPC, CLIPBOARD));
 
-    /** AS-EFF-007 injection-class effects — those whose caller-derived argument is an injection surface. */
+    /** AS-EFF-007 injection-class effects — those whose caller-derived argument is an injection surface.
+     *  {@code Llm} ⟨0.13⟩ joins: a caller-derived prompt is an injection/exfiltration surface, exactly
+     *  like {@code Net}/{@code Db} args (whatever reaches the prompt leaves the process). */
     public static final Set<Effect> INJECTION =
-            Collections.unmodifiableSet(EnumSet.of(FS, EXEC, DB, NET, ENV, IPC));
+            Collections.unmodifiableSet(EnumSet.of(FS, EXEC, DB, NET, LLM, ENV, IPC));
 }

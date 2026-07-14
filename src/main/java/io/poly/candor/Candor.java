@@ -513,7 +513,7 @@ public class Candor {
                 classes.add(dot > 0 ? e.getKey().substring(0, dot) : e.getKey());
             }
             int unknown = counts.getOrDefault("Unknown", 0);
-            String breakdown = Stream.of("Net", "Fs", "Db", "Exec", "Ipc", "Env", "Clipboard", "Clock", "Log", "Rand")
+            String breakdown = Stream.of("Net", "Llm", "Fs", "Db", "Exec", "Ipc", "Env", "Clipboard", "Clock", "Log", "Rand")
                     .filter(k -> counts.getOrDefault(k, 0) > 0)
                     .map(k -> k + " " + counts.get(k)).collect(Collectors.joining(" · "));
             // In --json-stdout mode stdout MUST be pure JSON (the report already went there) — route this
@@ -1041,6 +1041,15 @@ public class Candor {
             }
         }
         if (effect != null) dir.add(effect);
+        // SPEC §1 ⟨0.13⟩ `Llm` model-SDK surface (Rules.MODEL_SDK_PACKAGES): a call into a curated
+        // model-provider client dispatches a request → Llm + Net (Net is never dropped — a model call IS
+        // network I/O). Set `effect` to LLM so the injection-taint surface (a caller-derived prompt) fires,
+        // exactly as it does for a Net/Db arg. Additive to whatever classify already found.
+        if (isModelSdkOwner(owner)) {
+            dir.add(Effect.LLM);
+            dir.add(Effect.NET);
+            if (effect == null) effect = Effect.LLM;
+        }
         opaqueTaskHandoff(ctx, s, min, owner);
         namedFunctionalToHof(ctx, s, min);
         xmlParseFilePrecision(s, min);
@@ -1387,8 +1396,17 @@ public class Candor {
                 // Socket("h", 443) matches the URL form's `h:port` and candor-scan, instead of
                 // dropping the statically-known port (adversarial coverage-gap review, GAP2).
                 String port = intLiteralBefore(min);
-                ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(port != null ? h + ":" + port : h);
+                String hostLit = port != null ? h + ":" + port : h;
+                ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(hostLit);
+                dir.addAll(EffectSet.ofNames(modelHostEffects(hostLit))); // §1 ⟨0.13⟩ Llm host-literal refinement
                 capturedHostHere = true;
+            } else if (h != null && !h.contains("/") && !h.contains(" ")) {
+                // §1 ⟨0.13⟩ Ollama: a LOCAL model endpoint names a bare host (`localhost`/`127.0.0.1`)
+                // that the dotted-host gate above rejects — the model signal is the `:11434` PORT. Refine
+                // to Llm on that port WITHOUT capturing the host as a Net literal (the dotless-host gate
+                // stays intact; this only adds the effect).
+                String port = intLiteralBefore(min);
+                if ("11434".equals(port)) dir.add(Effect.LLM);
             }
         }
         // Host literal from THIS host-bearing call's OWN argument (a URL/URI string, a Spring/
@@ -1401,7 +1419,11 @@ public class Candor {
         if (isHostBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;"))
             for (String lit : literalArgsInWindow(min, constLocals)) {
                 String hl = netHostLiteral(lit);
-                if (hl != null) { ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(hl); capturedHostHere = true; }
+                if (hl != null) {
+                    ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(hl);
+                    dir.addAll(EffectSet.ofNames(modelHostEffects(hl))); // §1 ⟨0.13⟩ Llm host-literal refinement
+                    capturedHostHere = true;
+                }
             }
         // AS-EFF-008 surface COMPLETENESS (the masking fix): a Net reach whose host is structurally
         // invisible makes the method's host surface incomplete, so the gate must NOT certify it just
@@ -1429,8 +1451,10 @@ public class Candor {
                             || min.name.equals("getContent"));
             if (urlTerminal) {
                 String h = urlTerminalHost(min, urlLocals, constLocals);
-                if (h != null) ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(h);
-                else ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
+                if (h != null) {
+                    ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(h);
+                    dir.addAll(EffectSet.ofNames(modelHostEffects(h))); // §1 ⟨0.13⟩ Llm host-literal refinement
+                } else ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
             }
             if (hostLessOwner || runtimeStringHost)
                 ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");

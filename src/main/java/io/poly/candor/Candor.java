@@ -1418,15 +1418,30 @@ public class Candor {
         // evasion) / a never-contacted host poison the allowlist. netHostLiteral rejects
         // non-hosts, so a benign non-URL arg adds nothing; the bare `Socket(host,port)` case is
         // handled above (netHostLiteral rejects a scheme-less bare host by design).
-        if (isHostBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;"))
+        if (isHostBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;")) {
+            boolean hostCaptured = false;
             for (String lit : literalArgsInWindow(min, constLocals)) {
                 String hl = netHostLiteral(lit);
                 if (hl != null) {
                     ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(hl);
                     dir.addAll(EffectSet.ofNames(modelHostEffects(hl))); // §1 ⟨0.13⟩ Llm host-literal refinement
                     capturedHostHere = true;
+                    hostCaptured = true;
                 }
             }
+            // LITERAL-HEAD of a runtime CONCAT arg (`getForObject("https://api.openai.com/v1/" + p, …)`):
+            // the authority is fully present in the literal prefix → statically known (SPEC §1). Only when
+            // no plain literal host was already captured, and only when the receiver-producing insn just
+            // before this call is the concat (concatArgHost returns null otherwise — safe under-report).
+            if (!hostCaptured) {
+                String h = Literals.concatArgHost(min);
+                if (h != null) {
+                    ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(h);
+                    dir.addAll(EffectSet.ofNames(modelHostEffects(h))); // §1 ⟨0.13⟩ Llm host-literal refinement
+                    capturedHostHere = true;
+                }
+            }
+        }
         // AS-EFF-008 surface COMPLETENESS (the masking fix): a Net reach whose host is structurally
         // invisible makes the method's host surface incomplete, so the gate must NOT certify it just
         // because OTHER (benign) hosts are visible. THREE structurally-invisible shapes:

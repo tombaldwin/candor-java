@@ -6,9 +6,46 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## [0.13.0] — 2026-07-14
+
+### spec 0.13 — the `Llm` effect (current floor)
+
+candor-java now declares **spec `0.13`** (`SPEC_VERSION`; the envelope + `--gate-json` verdict carry it).
+0.13 is a **tier-2 (pinned-tool-surface) rung** (candor-spec §"Conformance tiers"), and this is the
+**REFERENCE implementation of the `Llm` effect** — the reference engine leads the rung; the family floor
+rises as the siblings land it. `Llm` is a **§6.1 boundary effect that refines `Net`** the way `Db` does: a
+model-provider call IS network I/O, so it keeps `Net` and adds `Llm` on top — it contains (via
+`isBoundary`), scores in the effect breakdown and salience (the sharp 5-set), and takes policy verbs like
+any boundary. Two classification sources feed it:
+
+- **A shared model-host table (`Literals`).** A `Net` call whose host is a known model endpoint is refined
+  to `Llm+Net`. The table is hooked into all three host-capture points; it includes the major hosted
+  providers and Ollama on loopback `:11434` (a model host on `localhost`/`127.0.0.1`/`::1` only — a plain
+  host on that port is not assumed to be a model). Host-predicate rules are first-label matched, not
+  substring (e.g. Bedrock matches the `bedrock-runtime`/`bedrock-agent-runtime` inference services, not an
+  unrelated host that merely contains the string `bedrock`).
+- **A curated JVM model-SDK surface (`Rules`).** The client entry points of the mainstream JVM model SDKs
+  — AWS Bedrock runtime (v1 + v2), langchain4j, openai-java, Spring AI, and Vertex AI / GenAI — classify to
+  `Llm+Net` at the call.
+
+The policy grammar gains `Llm` as a first-class token: **deny `Llm`** gates a layer off model access,
+**allow `Llm`** certifies it against the host literal, and a **masked / non-literal model host fails
+closed** (AS-EFF-008) — a model call reached through an opaque host cannot certify. New `LlmEffectTest`
+plus `ModelTest` count bumps; the effect enum, containment, salience, and policy paths are all covered.
+**⚠ the `spec` string changed** — a consumer pinning `spec == "0.12"` must accept `0.13`. The report
+schema is otherwise unchanged: a codebase with no model calls produces a byte-identical report under 0.13.
+
+### Changed
+
+- **The `gains` baseline union is engine-owned.** `resolveReportLocatorAll` now filters sibling expansion
+  to `.jvm.json` (plus the exact `<prefix>.json` single-file form), so a FOREIGN engine's callgraph sidecar
+  can no longer serve as existence evidence and mint `origin: "new"` where `"unknown"` is correct (a
+  foreign engine's quals are systematically absent from a JVM graph). The empty-union fallback that could
+  have resurrected a foreign base path is gone.
+
 ## [0.12.0] — 2026-07-14
 
-### spec 0.12 — the gains `origin` rung (current floor)
+### spec 0.12 — the gains `origin` rung
 
 candor-java now declares **spec `0.12`** (`SPEC_VERSION`; the envelope + `--gate-json` verdict carry it).
 0.12 is a **tier-2 (pinned-tool-surface) rung** (candor-spec §"Conformance tiers"): no report-schema or

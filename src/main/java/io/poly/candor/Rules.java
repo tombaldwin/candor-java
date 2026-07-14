@@ -104,6 +104,32 @@ final class Rules {
         }
         return false;
     }
+    /** Curated JVM model-provider SDK packages — the SPEC §1 ⟨0.13⟩ `Llm` model-SDK surface. A call
+     *  resolving into one of these packages' request-dispatch surfaces classifies `Llm` + `Net` (the
+     *  client dispatches a request → it IS network I/O, exactly as {@link Literals#modelHostEffects}
+     *  keeps Net on a model-host literal). DOTTED package prefixes (the owner is dotted at the call site).
+     *  A curated STARTER list — the §7 coverage ledger discloses an uncovered provider package like any
+     *  other; the sibling engines share the same starter set. Mirrors the AR_DB_BASES / declarative-HTTP
+     *  approach: package-prefix → boundary effect, no method-name gating (any call into these clients is a
+     *  model dispatch; the clients are single-purpose). */
+    static final List<String> MODEL_SDK_PACKAGES = List.of(
+            "software.amazon.awssdk.services.bedrockruntime.",   // AWS Bedrock runtime (v2 SDK)
+            "com.amazonaws.services.bedrockruntime.",            // AWS Bedrock runtime (v1 SDK)
+            "dev.langchain4j.model.",                            // langchain4j chat/embedding model invoke surfaces
+            "com.openai.",                                       // openai-java (official)
+            "com.theokanning.openai.",                          // openai-java (theokanning community client)
+            "org.springframework.ai.",                           // Spring AI ChatClient/EmbeddingClient
+            "com.google.cloud.vertexai.",                        // Google Vertex AI
+            "com.google.genai.");                                // Google GenAI SDK
+
+    /** Whether a resolved call OWNER (dotted) is a curated model-provider SDK surface (MODEL_SDK_PACKAGES)
+     *  → the SPEC §1 ⟨0.13⟩ `Llm` model-SDK classification (the caller also gets `Net`). */
+    static boolean isModelSdkOwner(String dottedOwner) {
+        for (String p : MODEL_SDK_PACKAGES)
+            if (dottedOwner.startsWith(p)) return true;
+        return false;
+    }
+
     static final String TX = "springframework/transaction/annotation/Transactional";
     static final String SCHEDULED = "springframework/scheduling/annotation/Scheduled";
     // Jackson invokes a @JsonCreator-annotated constructor/factory REFLECTIVELY during deserialization,

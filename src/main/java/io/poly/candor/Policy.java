@@ -178,7 +178,15 @@ final class Policy {
         // INCOMPLETE (a structurally-invisible reach — see surfaceIncomplete) can't be certified: fail-closed,
         // so a benign visible literal can't MASK an invisible forbidden endpoint.
         Map<String, TreeSet<String>> incomplete = literalFixpoint(ctx().surfaceIncomplete);
-        v += checkAllowlist(inferred, "Net", literalFixpoint(ctx().hostsDirect), incomplete,
+        Map<String, TreeSet<String>> hostFixpoint = literalFixpoint(ctx().hostsDirect);
+        v += checkAllowlist(inferred, "Net", hostFixpoint, incomplete,
+                (allowed, reached) -> allowed.stream().anyMatch(a -> hostPart(a).equals(hostPart(reached))));
+        // `Llm` ⟨0.13⟩ rides Net's host literal (SPEC §1) — `allow Llm <host…>` restricts which MODEL
+        // hosts a scope may reach, matched by hostname like Net. The reached surface is the SAME hostsDirect
+        // (an Llm host WAS captured as a Net host literal); the incompleteness gate keys off "Net" (a
+        // runtime/masked host marks the Net surface incomplete → `allow Llm` fails closed too, so a benign
+        // visible model host can't MASK an invisible forbidden one).
+        v += checkAllowlist(inferred, "Llm", hostFixpoint, incompleteAsLlm(incomplete),
                 (allowed, reached) -> allowed.stream().anyMatch(a -> hostPart(a).equals(hostPart(reached))));
         v += checkAllowlist(inferred, "Exec", literalFixpoint(ctx().cmdsDirect), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> cmdBase(a).equals(cmdBase(reached))));
@@ -199,6 +207,17 @@ final class Policy {
             }
         }
         return v;
+    }
+
+    /** Re-key the surface-incompleteness map so an incomplete "Net" surface ALSO reads incomplete for
+     *  "Llm" — `Llm` rides the Net host literal (SPEC §1 ⟨0.13⟩), so a runtime/masked host that makes the
+     *  Net surface incomplete must fail-close `allow Llm …` identically (a benign visible model host must
+     *  not certify a scope that also reaches a hidden one). */
+    static Map<String, TreeSet<String>> incompleteAsLlm(Map<String, TreeSet<String>> incomplete) {
+        Map<String, TreeSet<String>> out = new HashMap<>();
+        for (var e : incomplete.entrySet())
+            if (e.getValue().contains("Net")) out.put(e.getKey(), new TreeSet<>(Set.of("Llm")));
+        return out;
     }
 
     /** AS-EFF-008 for one effect: for EACH `allow <effect> …` rule whose scope matches, the method
@@ -301,8 +320,11 @@ final class Policy {
                     // SPEC §6.2: `allow <Effect> [in <scope>] <value…>` — the effect MUST be one of the
                     // three that carry a literal surface; an `allow` for any other effect is dropped.
                     if (t.length < 3) { warnPolicy(line, "allow names no values"); break; }
-                    if (!t[1].equals("Net") && !t[1].equals("Exec") && !t[1].equals("Fs") && !t[1].equals("Db")) {
-                        warnPolicy(line, "allow supports only Net hosts / Exec commands / Fs paths / Db tables");
+                    if (!t[1].equals("Net") && !t[1].equals("Exec") && !t[1].equals("Fs")
+                            && !t[1].equals("Db") && !t[1].equals("Llm")) {
+                        // `Llm` ⟨0.13⟩ carries a literal surface — it rides Net's host literal, so a masked
+                        // model host can't evade `allow Llm host` (the AS-EFF-008 fail-closed treatment).
+                        warnPolicy(line, "allow supports only Net hosts / Llm hosts / Exec commands / Fs paths / Db tables");
                         break;
                     }
                     String scope = "";

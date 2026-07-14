@@ -36,7 +36,7 @@ public final class Query {
     // the historical §6.1 display priority below (so the `containment` output stays stable), with any
     // effect beyond that list trailing alphabetically.
     private static final List<String> DISPLAY_ORDER =
-            List.of("Db", "Net", "Exec", "Fs", "Ipc", "Log", "Clock", "Rand", "Env");
+            List.of("Db", "Net", "Llm", "Exec", "Fs", "Ipc", "Log", "Clock", "Rand", "Env");
     private static List<String> derive(java.util.function.Predicate<Effect> p) {
         return Arrays.stream(Effect.values()).filter(p).map(Effect::specName)
                 .sorted(Comparator.comparingInt(n -> {

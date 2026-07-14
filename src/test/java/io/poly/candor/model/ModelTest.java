@@ -32,14 +32,16 @@ class ModelTest {
 
     @Test
     void effectVocabularySets() {
-        assertEquals(10, Effect.KNOWN.size());
+        assertEquals(11, Effect.KNOWN.size()); // + Llm ⟨0.13⟩
         assertFalse(Effect.KNOWN.contains(Effect.UNKNOWN));
         // AS-EFF-004 ambient authority = 𝔼 \ {Log}
-        assertEquals(9, Effect.AMBIENT_AUTHORITY.size());
+        assertEquals(10, Effect.AMBIENT_AUTHORITY.size()); // + Llm ⟨0.13⟩
         assertFalse(Effect.AMBIENT_AUTHORITY.contains(Effect.LOG));
         assertFalse(Effect.AMBIENT_AUTHORITY.contains(Effect.UNKNOWN));
         assertTrue(Effect.AMBIENT_AUTHORITY.contains(Effect.NET));
-        assertEquals(6, Effect.INJECTION.size());
+        assertTrue(Effect.AMBIENT_AUTHORITY.contains(Effect.LLM));
+        assertEquals(7, Effect.INJECTION.size()); // + Llm ⟨0.13⟩ (a caller-derived prompt is an injection surface)
+        assertTrue(Effect.INJECTION.contains(Effect.LLM));
         assertFalse(Effect.INJECTION.contains(Effect.CLOCK));
     }
 
@@ -111,7 +113,7 @@ class ModelTest {
     void boundaryCrossCuttingPartition() {
         Set<Effect> boundary = Arrays.stream(Effect.values()).filter(Effect::isBoundary).collect(Collectors.toSet());
         Set<Effect> cross = Arrays.stream(Effect.values()).filter(Effect::isCrossCutting).collect(Collectors.toSet());
-        assertEquals(Set.of(Effect.DB, Effect.NET, Effect.EXEC, Effect.FS, Effect.IPC, Effect.CLIPBOARD), boundary);
+        assertEquals(Set.of(Effect.DB, Effect.NET, Effect.LLM, Effect.EXEC, Effect.FS, Effect.IPC, Effect.CLIPBOARD), boundary);
         assertEquals(Set.of(Effect.LOG, Effect.CLOCK, Effect.RAND, Effect.ENV), cross);
         assertTrue(Collections.disjoint(boundary, cross), "boundary and cross-cutting are disjoint");
         // Clipboard is a §6.1 boundary effect (external-resource I/O), so it is contained/scored, not ambient.

@@ -6,9 +6,24 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## [0.14.0] — 2026-07-14
+
+### spec 0.14 — floor alignment (the top-level-initializer rung)
+
+candor-java now declares **spec `0.14`** (`SPEC_VERSION`; the envelope + `--gate-json` verdict carry it).
+This is a **floor-alignment-only** bump — **no engine behaviour change**. The ⟨0.14⟩ rung is a
+cardinal-sin fix in the ts/swift engines: a module's **top-level / static-initializer effects were
+silently dropped as false-pure**. candor-java is the **REFERENCE** for this rung and is already sound —
+it attributes a static initializer's effects to a `<clinit>` unit (and constructor effects to `<init>`)
+with `unitKind: "initializer"`, which is exactly the fixture behaviour candor-spec's conformance PART 4p
+pins. So candor-java needs no code change; it raises its declared `spec` string to keep the family floor
+uniform. **Reports and `--gate-json` verdicts are byte-identical to 0.13** — only the `spec` field reads
+`0.14`. See the candor-spec `0.14` entry for the rung. **⚠ the `spec` string changed** — a consumer
+pinning `spec == "0.13"` must accept `0.14`.
+
 ## [0.13.0] — 2026-07-14
 
-### spec 0.13 — the `Llm` effect (current floor)
+### spec 0.13 — the `Llm` effect
 
 candor-java now declares **spec `0.13`** (`SPEC_VERSION`; the envelope + `--gate-json` verdict carry it).
 0.13 is a **tier-2 (pinned-tool-surface) rung** (candor-spec §"Conformance tiers"), and this is the

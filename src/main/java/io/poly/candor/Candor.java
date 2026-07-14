@@ -58,11 +58,13 @@ public class Candor {
     /** The candor-spec contract version this build implements (the report SCHEMA + AS-EFF codes),
      *  distinct from the engine build id (the report's `version`). Emitted as the envelope's `spec` so a
      *  consumer can see which contract a report conforms to. candor-java is the REFERENCE engine and MAY
-     *  lead a minor rung (candor-spec §"Versioning policy" — the version ladder): it declares `0.13` (the
-     *  0.13 tier-2 rung promotes the `Llm` effect — a boundary effect refining Net, the shared model-host
-     *  table + a curated JVM model-SDK surface — into the pinned contract) while a sibling may remain on an
-     *  earlier floor and raise as it implements it. Additive-only, so an older consumer is unaffected. */
-    static final String SPEC_VERSION = "0.13";
+     *  lead a minor rung (candor-spec §"Versioning policy" — the version ladder): it declares `0.14` (the
+     *  0.14 rung is the top-level/static-initializer fix — a module's top-level effects, silently dropped as
+     *  false-pure in the ts/swift engines; candor-java is the REFERENCE here, already attributing static-init
+     *  effects to a `<clinit>` unit, so this is a floor-alignment-only bump, no behaviour change) while a
+     *  sibling may remain on an earlier floor and raise as it implements it. Additive-only, so an older
+     *  consumer is unaffected. */
+    static final String SPEC_VERSION = "0.14";
 
     static final String FS_UNKNOWN = "?";   // Fs reached with no recorded kind (cross-jar) -> make no read/write claim
 

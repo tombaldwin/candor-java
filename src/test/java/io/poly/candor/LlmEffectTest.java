@@ -67,6 +67,46 @@ class LlmEffectTest {
         } finally { rm(app.getParent()); }
     }
 
+    // ── host-predicate PRECISION: no substring / any-port over-match fabricates Llm ───────────────────
+
+    @Test
+    void bedrockRuntimeIsLlm_butControlPlaneAndS3SubstringAreNot() {
+        // A model-inference runtime host → Llm.
+        assertTrue(Literals.isModelHost("bedrock-runtime.us-east-1.amazonaws.com"),
+            "bedrock-runtime is the model-inference endpoint");
+        assertTrue(Literals.isModelHost("bedrock-agent-runtime.us-west-2.amazonaws.com"),
+            "bedrock-agent-runtime is the agent model-inference endpoint");
+        assertTrue(Literals.isModelHost("bedrock-runtime.eu-central-1.amazonaws.com:443"),
+            "the runtime host with an explicit :port still refines (port stripped)");
+        // FINDING 8: a non-model amazonaws host that merely CONTAINS the "bedrock" substring is NOT Llm.
+        assertFalse(Literals.isModelHost("bedrock-backups.s3.amazonaws.com"),
+            "an S3 bucket whose name contains 'bedrock' is NOT the model runtime");
+        // The control plane manages models but runs none → NOT model inference.
+        assertFalse(Literals.isModelHost("bedrock.us-east-1.amazonaws.com"),
+            "the Bedrock control plane is not model inference");
+    }
+
+    @Test
+    void ollamaPortIsLlmOnlyOnALocalHost() {
+        // Local Ollama endpoint → Llm.
+        assertTrue(Literals.isModelHost("localhost:11434"), "localhost:11434 is the local Ollama endpoint");
+        assertTrue(Literals.isModelHost("127.0.0.1:11434"), "127.0.0.1:11434 is the local Ollama endpoint");
+        assertTrue(Literals.isModelHost("[::1]:11434"), "[::1]:11434 is the local Ollama endpoint");
+        // FINDING 11: an arbitrary REMOTE host on :11434 is some other service, NOT an Ollama model call.
+        assertFalse(Literals.isModelHost("some-service.example.com:11434"),
+            "a remote host on port 11434 is not an Ollama model call");
+        assertFalse(Literals.isModelHost("10.0.0.5:11434"),
+            "an arbitrary internal host on port 11434 is not an Ollama model call");
+    }
+
+    @Test
+    void plainKnownProviderHostStillLlm() {
+        assertTrue(Literals.isModelHost("api.anthropic.com"), "a plain known model host still refines to Llm");
+        assertTrue(Literals.isModelHost("api.anthropic.com:443"),
+            "a known model host with an explicit :port still refines (port stripped)");
+        assertFalse(Literals.isModelHost("example.com"), "an unknown host is never Llm");
+    }
+
     // ── (b) model-SDK surface (stub client on the classpath, not scanned) ─────────────────────────────
 
     @Test

@@ -188,13 +188,27 @@ public final class Query {
     /** ALL report paths a locator names, by the same §3.3.1 rule as {@link #resolveReportLocator} — but
      *  where that resolver picks ONE (lexicographically first, disclosed), this returns the full match
      *  list, QUIETLY (the caller has already resolved-and-disclosed; this is for consumers that must see
-     *  every matched report, e.g. gains' baseline-callgraph union). A `.json` locator is itself the list. */
+     *  every matched report, e.g. gains' baseline-callgraph union). A `.json` locator is itself the list
+     *  (the user named that file; it is honoured verbatim). The prefix/dir EXPANSION, though, is
+     *  ENGINE-OWNED: only THIS engine's report shapes — `<base>.<module>.jvm.json` (what ReportWriter
+     *  emits) and the exact `<prefix>.json` single-file form — join the list. A FOREIGN engine's report
+     *  (`report.mycrate.scan.json`) sitting beside ours must NOT contribute its sidecar to a union
+     *  consumer: its qual naming (`m::f`) can never contain JVM quals (`m.f`), so its "evidence" is
+     *  systematically absent and gains' origin would read "new" where the truth is "unknown". */
     static List<String> resolveReportLocatorAll(String locator) {
         Path p = Path.of(locator);
         if (locator.endsWith(".json")) return List.of(locator);
-        if (Files.isDirectory(p))
-            return prefixHits(p.resolve(".candor").resolve("report").toString());
-        return prefixHits(locator);
+        String prefix = Files.isDirectory(p)
+                ? p.resolve(".candor").resolve("report").toString()
+                : locator;
+        Path pp = Path.of(prefix);
+        String base = pp.getFileName() != null ? pp.getFileName().toString() : prefix;
+        List<String> own = new ArrayList<>();
+        for (String h : prefixHits(prefix)) {
+            String name = Path.of(h).getFileName().toString();
+            if (name.endsWith(".jvm.json") || name.equals(base + ".json")) own.add(h);
+        }
+        return own;
     }
 
     /** DISCOVER the report when no `--report` was given (SPEC §3.3.1): a `CANDOR_REPORT` env var overrides;
@@ -428,7 +442,8 @@ public final class Query {
         // The ORIGIN graph must see EVERY report the baseline locator matched: the report load above
         // deliberately picks one (disclosed), but existence-at-the-baseline is evidenced by ANY matched
         // report's callgraph sidecar — keying origin on just the chosen one would mislabel a fn from a
-        // sibling report's graph as "new".
+        // sibling report's graph as "new". ENGINE-OWNED matches only (resolveReportLocatorAll): a foreign
+        // engine's sidecar beside ours is non-evidence, and an empty union means the graph is ABSENT.
         List<String> baseReports = baseLoc == null ? List.of() : resolveReportLocatorAll(baseLoc);
         return gains(curFns, cur, base, baseReports, json);
     }
@@ -1529,7 +1544,11 @@ public final class Query {
      *  `diff` alone; gains is a pure disclosure whose consumers read the JSON, not the exit code). */
     static int gains(List<Effector> cur, String curPath, String basePath, List<String> baseReports, boolean json) {
         if (basePath == null) return usage("gains <report.json> <baseline.json> [--json]");
-        if (baseReports == null || baseReports.isEmpty()) baseReports = List.of(basePath);
+        // An EMPTY union is meaningful, not a gap to paper over: the locator expanded to no ENGINE-OWNED
+        // report (e.g. only a foreign engine's report matched the prefix), so the baseline graph is
+        // ABSENT and origin resolves "unknown". Falling back to basePath here would resurrect the
+        // foreign sidecar the union just excluded. A null list is a direct-caller convenience only.
+        if (baseReports == null) baseReports = List.of();
         List<Effector> base;
         try {
             base = load(basePath);
@@ -1565,8 +1584,9 @@ public final class Query {
             // key finding promoted into the open query. A gain on a fn that EXISTED at the baseline
             // (shipped pure, now does Net — the supply-chain attack signal) is a different alarm from a
             // NEW fn that does Net (a feature). Reports OMIT pure functions (SPEC §2), so existence is
-            // keyed on the baseline CALLGRAPH sidecars — every report the baseline locator matched (a
-            // baseline-pure fn is a graph node with no report entry). The ladder:
+            // keyed on the baseline CALLGRAPH sidecars — every ENGINE-OWNED report the baseline locator
+            // matched (a baseline-pure fn is a graph node with no report entry; a FOREIGN engine's
+            // sidecar is excluded — its `m::f` quals never evidence a JVM fn). The ladder:
             //   "existing" — in the baseline report, or a baseline-callgraph node (caller or callee);
             //   "unknown"  — absent from the baseline report AND the graph is EMPTY (no sidecar found)
             //                OR PARTIAL (a matched sidecar existed but failed to read/parse — its

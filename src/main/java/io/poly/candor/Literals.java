@@ -404,22 +404,48 @@ final class Literals {
             "api.perplexity.ai",
             "openrouter.ai");
 
+    /** The exact first-label (subdomain) set of the AWS Bedrock MODEL-INFERENCE services. Only these dispatch
+     *  a model: `bedrock-runtime.<region>.amazonaws.com` (InvokeModel) and
+     *  `bedrock-agent-runtime.<region>.amazonaws.com` (agent InvokeAgent). The control-plane
+     *  `bedrock.<region>.amazonaws.com` manages models but runs none, so it is NOT Llm; and a non-Bedrock
+     *  amazonaws host that merely CONTAINS the substring "bedrock" (e.g. an S3 bucket
+     *  `bedrock-backups.s3.amazonaws.com`) is not a model runtime at all — matching by first-label EXACTLY
+     *  refuses both, killing the substring/any-port over-match that fabricated Llm on a non-model host. */
+    static final Set<String> BEDROCK_RUNTIME_LABELS = Set.of("bedrock-runtime", "bedrock-agent-runtime");
+
+    /** The exact local hosts an Ollama endpoint (`:11434`) may bind — Ollama is a LOCAL inference server, so
+     *  only the loopback host is a model call. A remote `some-service.example.com:11434` is some other service
+     *  that happens to share the port, NOT an Ollama model dispatch. */
+    static final Set<String> LOCAL_HOSTS = Set.of("localhost", "127.0.0.1", "::1", "[::1]");
+
     /** Whether an endpoint HOST literal is a known model provider (case-insensitive; a subdomain of a
      *  {@link #MODEL_HOSTS} entry counts). Strips a `:port` suffix first. Two special forms carry their own
-     *  rule: any host whose port is 11434 is a local Ollama endpoint (`localhost:11434`,
-     *  `127.0.0.1:11434`); and an AWS Bedrock runtime host `bedrock*-runtime.<region>.amazonaws.com` (the
-     *  `*.bedrock*.amazonaws.com` shape). */
+     *  PRECISE rule — a host predicate must never substring/any-port over-match and fabricate `Llm` on a
+     *  non-model host: (a) Ollama is a LOCAL endpoint, so `:11434` is a model call ONLY when the host is
+     *  loopback (`localhost`/`127.0.0.1`/`[::1]`); (b) AWS Bedrock is a model runtime ONLY when the host's
+     *  first label is exactly `bedrock-runtime` or `bedrock-agent-runtime` under `.amazonaws.com` (the
+     *  control-plane `bedrock.<region>.amazonaws.com` and unrelated `bedrock*`-substring amazonaws hosts are
+     *  NOT model inference). */
     static boolean isModelHost(String hostLiteral) {
         if (hostLiteral == null) return false;
-        // Ollama: a `:11434` port anywhere is the local model endpoint (keep it simple, per SPEC §1).
+        // Ollama: port 11434 is a model endpoint ONLY on a LOCAL host — Ollama is a local inference server.
+        // A remote host on 11434 is some other service, not a model call (no substring/any-host over-match).
         int colon = hostLiteral.lastIndexOf(':');
-        if (colon >= 0 && hostLiteral.substring(colon + 1).equals("11434")) return true;
+        if (colon >= 0 && hostLiteral.substring(colon + 1).equals("11434")) {
+            String h = hostPart(hostLiteral).toLowerCase(Locale.ROOT);
+            return LOCAL_HOSTS.contains(h);
+        }
         String host = hostPart(hostLiteral).toLowerCase(Locale.ROOT);
         if (MODEL_HOSTS.contains(host)) return true;
         for (String m : MODEL_HOSTS)
             if (host.endsWith("." + m)) return true; // a subdomain of a known model host counts
-        // *.bedrock*.amazonaws.com — the AWS Bedrock runtime endpoint (bedrock-runtime.<region>.amazonaws.com).
-        if (host.endsWith(".amazonaws.com") && host.contains("bedrock")) return true;
+        // AWS Bedrock model-inference endpoint: the FIRST label must be EXACTLY a runtime service and the host
+        // must end `.amazonaws.com`. This excludes the control-plane `bedrock.<region>.amazonaws.com` and any
+        // amazonaws host that merely contains the "bedrock" substring (e.g. `bedrock-backups.s3.amazonaws.com`).
+        if (host.endsWith(".amazonaws.com")) {
+            String firstLabel = host.substring(0, host.indexOf('.'));
+            if (BEDROCK_RUNTIME_LABELS.contains(firstLabel)) return true;
+        }
         return false;
     }
 

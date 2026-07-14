@@ -31,6 +31,119 @@ final class Literals {
         return looksLikeIpv4(h) ? h : null; // a bare token: only a literal IPv4 is unambiguous
     }
 
+    /** The StringConcatFactory recipe placeholders: {@code } (TAG_ARG, a dynamic stack operand) and
+     *  {@code } (TAG_CONST, a constant pulled from a later bootstrap arg). A concat's literal PREFIX
+     *  is the recipe text up to the FIRST of either — everything statically present before the first
+     *  runtime-substituted operand. */
+    static final char CONCAT_TAG_ARG = '', CONCAT_TAG_CONST = '';
+
+    /** The literal PREFIX of a string concatenation whose head is a constant, given the FULL concat text
+     *  with dynamic operands marked by the recipe placeholders (or a real prefix already sliced at the
+     *  first dynamic operand). Returns the substring before the first {@link #CONCAT_TAG_ARG}/
+     *  {@link #CONCAT_TAG_CONST}; null if the string starts with a placeholder (no literal head). */
+    static String concatLiteralPrefix(String recipe) {
+        if (recipe == null) return null;
+        int arg = recipe.indexOf(CONCAT_TAG_ARG), cst = recipe.indexOf(CONCAT_TAG_CONST);
+        int cut = (arg < 0) ? cst : (cst < 0 ? arg : Math.min(arg, cst));
+        String prefix = (cut < 0) ? recipe : recipe.substring(0, cut);
+        return prefix.isEmpty() ? null : prefix;
+    }
+
+    /** The host of a URL whose literal PREFIX is `prefix` — the SOUNDNESS-CRITICAL concat rule (SPEC §1):
+     *  a host is statically known ONLY when the authority is COMPLETE within the literal prefix, i.e. the
+     *  prefix matches {@code <scheme>://<authority>/…} with a `/` AFTER the `://`. Then host = authority
+     *  between `://` and that first `/`, `:port` and userinfo stripped. If the prefix has NO `/` after
+     *  `://` (a dynamic operand could still be inside the authority — split host, whole-host-dynamic,
+     *  unterminated host, or a dynamic `:port`), returns null → the caller under-reports (bare Net), never
+     *  guessing a partial authority. Deliberately NOT {@link #netHostLiteral}: that reads the authority as
+     *  the whole post-`://` remainder when there is no `/`, which on a concat prefix (`https://api.`) would
+     *  FABRICATE a host from a split authority. */
+    static String concatPrefixHost(String prefix) {
+        if (prefix == null) return null;
+        int scheme = prefix.indexOf("://");
+        if (scheme < 0) return null;
+        String rest = prefix.substring(scheme + 3);
+        int slash = rest.indexOf('/');
+        if (slash < 0) return null;                 // authority not terminated within the prefix → under-report
+        String authority = rest.substring(0, slash);
+        int at = authority.lastIndexOf('@'); if (at >= 0) authority = authority.substring(at + 1);
+        // A dynamic operand inside the authority (a placeholder slipped in before the `/`) is not a static
+        // host. Reuse netHostLiteral to normalize/validate the now-complete `scheme://authority/` form.
+        if (authority.isBlank() || authority.contains(" ")
+                || authority.indexOf(CONCAT_TAG_ARG) >= 0 || authority.indexOf(CONCAT_TAG_CONST) >= 0)
+            return null;
+        return netHostLiteral("http://" + authority + "/");
+    }
+
+    /** The host statically known from the argument of a URL/URI value ctor whose single String arg is a
+     *  RUNTIME string CONCATENATION with a literal head — `new URL("https://api.openai.com/v1/" + path)`.
+     *  javac compiles `"lit" + var` to one of two shapes, both handled here; returns null (safe
+     *  under-report) for a plain-constant arg (that path is already covered by {@link #literalArgsInWindow}
+     *  + {@link #netHostLiteral}) and for any concat whose literal prefix does not carry a complete
+     *  authority (see {@link #concatPrefixHost}):
+     *   (A) `invokedynamic makeConcatWithConstants` (JDK 9+ default) — the receiver-producing instruction
+     *       immediately before the ctor is the indy; its recipe is bootstrap arg 0, a String with ``/
+     *       `` placeholders. The prefix is the recipe text before the first placeholder.
+     *   (B) `StringBuilder().append("lit").append(var)…toString()` (javac `-XDstringConcat=inline`, older
+     *       compilers) — the receiver is the `StringBuilder.toString()`; the literal head is the constant
+     *       of the FIRST `append(String)` in that builder chain. */
+    static String concatArgHost(AbstractInsnNode ctorCall) {
+        AbstractInsnNode r = ctorCall.getPrevious();
+        while (r != null && r.getOpcode() < 0) r = r.getPrevious();       // skip labels/line-nos/frames
+        if (r == null) return null;
+        // (A) makeConcatWithConstants: the recipe is bsmArgs[0].
+        if (r instanceof InvokeDynamicInsnNode indy && indy.bsm != null
+                && indy.bsm.getOwner().equals("java/lang/invoke/StringConcatFactory")
+                && indy.bsmArgs != null && indy.bsmArgs.length >= 1
+                && indy.bsmArgs[0] instanceof String recipe) {
+            return concatPrefixHost(concatLiteralPrefix(recipe));
+        }
+        // (B) StringBuilder chain: receiver is `StringBuilder.toString()`; find the FIRST append's constant.
+        if (r instanceof MethodInsnNode ts && ts.owner.equals("java/lang/StringBuilder")
+                && ts.name.equals("toString")) {
+            String head = firstBuilderAppendLiteral(r);
+            return head == null ? null : concatPrefixHost(head);
+        }
+        return null;
+    }
+
+    /** The constant of the FIRST {@code StringBuilder.append(String)} in the builder chain ending at
+     *  {@code toString} — the literal head of a classic `new StringBuilder().append("lit").append(var)…`
+     *  concat. Walks back from `toString` within this expression: a `StringBuilder.<init>` bounds the
+     *  chain (its start); the last (earliest) `append` whose argument is an LDC String constant is the
+     *  head. Returns null if the first append's argument is a runtime value (the head is dynamic → no
+     *  static prefix). A non-append/non-toString method call bounds the scan (a different expression). */
+    static String firstBuilderAppendLiteral(AbstractInsnNode toStringCall) {
+        String head = null;
+        for (AbstractInsnNode n = toStringCall.getPrevious(); n != null; n = n.getPrevious()) {
+            if (n.getOpcode() < 0) continue;
+            if (n instanceof TypeInsnNode t && t.getOpcode() == Opcodes.NEW
+                    && t.desc.equals("java/lang/StringBuilder")) break;   // chain start
+            if (n instanceof MethodInsnNode m && m.owner.equals("java/lang/StringBuilder")) {
+                if (m.name.equals("<init>")) {
+                    // `new StringBuilder("lit")` — the ctor's String arg is the head (an LDC before it).
+                    if (m.desc.equals("(Ljava/lang/String;)V")) {
+                        AbstractInsnNode p = m.getPrevious();
+                        while (p != null && p.getOpcode() < 0) p = p.getPrevious();
+                        if (p instanceof LdcInsnNode ldc && ldc.cst instanceof String s) head = s;
+                    }
+                    break;
+                }
+                if (m.name.equals("append") && m.desc.startsWith("(Ljava/lang/String;")) {
+                    AbstractInsnNode p = m.getPrevious();
+                    while (p != null && p.getOpcode() < 0) p = p.getPrevious();
+                    // keep the EARLIEST append's constant (the head); a runtime-arg append resets to null,
+                    // so a dynamic first operand yields no static prefix.
+                    head = (p instanceof LdcInsnNode ldc && ldc.cst instanceof String s) ? s : null;
+                }
+                continue;
+            }
+            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode)
+                break; // a foreign call / branch bounds this concat expression
+        }
+        return head;
+    }
+
     /** Whether `h` is a dotted-quad IPv4 literal (`1.2.3.4`) — the one bare (scheme-less, port-less)
      *  form that's unambiguously a network endpoint, not a property/message key. */
     static boolean looksLikeIpv4(String h) {
@@ -160,7 +273,9 @@ final class Literals {
                 String hl = netHostLiteral(lit);
                 if (hl != null) return hl;
             }
-            return null; // a URL built from a RUNTIME string — no literal host attributable
+            // LITERAL-HEAD of a runtime CONCAT arg (`new URL("https://api.openai.com/v1/" + p)`): the
+            // authority is fully present in the literal prefix, so it is statically known (SPEC §1).
+            return concatArgHost(ctor); // null unless the prefix carries a complete authority → under-report
         }
         // (2) THROUGH A LOCAL: `u.openStream()` where the receiver is an ALOAD of a const-URL local.
         if (r instanceof VarInsnNode v && v.getOpcode() == Opcodes.ALOAD && urlLocals.containsKey(v.var))
@@ -187,6 +302,8 @@ final class Literals {
                         String hl = netHostLiteral(lit);
                         if (hl != null) { host = hl; break; }
                     }
+                    // Literal-head of a concat arg — the split `URL u = new URL("https://h/"+p); u.open…()`.
+                    if (host == null) host = concatArgHost(ctor);
                 }
                 // A non-URL store, a runtime-URL store (host==null), or a disagreeing host → ambiguous.
                 if (host == null || (m.containsKey(v.var) && !m.get(v.var).equals(host))) {

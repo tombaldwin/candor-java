@@ -24,7 +24,7 @@ final class TestCompiler {
     private TestCompiler() {}
 
     /** Compile the given {name → source} fixtures; returns the classes dir ({@code <temp>/cls}). */
-    static Path compile(Map<String, String> sources) throws Exception {
+    static Path compile(Map<String, String> sources, String... javacFlags) throws Exception {
         javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
         Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
         Path dir = Files.createTempDirectory("candor-test");
@@ -38,6 +38,9 @@ final class TestCompiler {
         Path out = dir.resolve("cls");
         Files.createDirectories(out);
         List<String> args = new ArrayList<>(List.of("-d", out.toString()));
+        // Extra javac flags (e.g. `-XDstringConcat=inline` to force the classic StringBuilder concat shape
+        // instead of the JDK 9+ default `invokedynamic makeConcatWithConstants`).
+        for (String f : javacFlags) args.add(f);
         args.addAll(files);
         assertEquals(0, jc.run(null, null, null, args.toArray(new String[0])), "fixture must compile");
         return out;

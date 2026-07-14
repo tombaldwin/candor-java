@@ -532,6 +532,39 @@ class CliBehaviourTest {
     }
 
     @Test
+    void gainsForeignEngineSidecarNeverMintsNewOrigin() throws Exception {
+        // A FOREIGN engine's report+sidecar (rust: `report.<crate>.scan.json` + `.callgraph.json`)
+        // beside a sidecar-LESS jvm baseline must NOT make "the graph decides": rust quals (`m::f`)
+        // can never contain JVM quals (`m.f`), so a foreign graph's "evidence" is systematically
+        // absent and every gained fn would read "new" — downgrading the supply-chain attack signal
+        // (existing fn gained an effect) to a feature. The union is ENGINE-OWNED (`.jvm.json`
+        // siblings only): with no java sidecar the graph is ABSENT → origin "unknown", never "new".
+        Files.writeString(scratch.resolve("base.app.jvm.json"),
+                "{\"candor\":{},\"functions\":[{\"fn\":\"app.F.f\",\"inferred\":[\"Fs\"]}]}");
+        // deliberately NO base.app.jvm.callgraph.json — the jvm baseline carries no sidecar
+        Files.writeString(scratch.resolve("base.mycrate.scan.json"),
+                "{\"candor\":{},\"functions\":[{\"fn\":\"mycrate::lib::run\",\"inferred\":[\"Net\"]}]}");
+        Files.writeString(scratch.resolve("base.mycrate.scan.callgraph.json"),
+                "{\"mycrate::lib::run\":[\"mycrate::util::fetch\"]}");
+        Path cur = scratch.resolve("cur.json");
+        Files.writeString(cur, "{\"candor\":{},\"functions\":["
+                + "{\"fn\":\"app.F.f\",\"inferred\":[\"Fs\",\"Net\"]},"   // baseline-report hit → existing
+                + "{\"fn\":\"app.G.g\",\"inferred\":[\"Net\"]}]}");        // absent + graph ABSENT → unknown
+        Run r = runCli("gains", cur.toString(), scratch.resolve("base").toString(), "--json");
+        assertEquals(0, r.exit(), "gains runs, exit 0\nSTDERR:\n" + r.stderr());
+        var byFn = new java.util.HashMap<String, String>();
+        for (var e : JsonParser.parseString(r.stdout()).getAsJsonObject().getAsJsonArray("byFunction"))
+            byFn.put(e.getAsJsonObject().get("fn").getAsString(),
+                     e.getAsJsonObject().get("origin").getAsString());
+        assertEquals("existing", byFn.get("app.F.f"), "a baseline-report hit is existing");
+        assertEquals("unknown", byFn.get("app.G.g"),
+                "with no ENGINE-OWNED sidecar the graph is absent — a foreign graph must not decide\n"
+                + "STDERR:\n" + r.stderr());
+        assertFalse(byFn.containsValue("new"),
+                "a foreign engine's graph can never mint \"new\"\nSTDOUT:\n" + r.stdout());
+    }
+
+    @Test
     void gateJsonUnwritablePathDoesNotCrashTheGate() throws Exception {
         // A bad --gate-json path must be a clean diagnostic, never a crash — and MUST NOT change the gate
         // verdict (the exit code is the source of truth; the verdict file is a surfacing side-output).

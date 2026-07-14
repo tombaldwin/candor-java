@@ -6,9 +6,37 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## [0.12.0] — 2026-07-14
+
+### spec 0.12 — the gains `origin` rung (current floor)
+
+candor-java now declares **spec `0.12`** (`SPEC_VERSION`; the envelope + `--gate-json` verdict carry it).
+0.12 is a **tier-2 (pinned-tool-surface) rung** (candor-spec §"Conformance tiers"): no report-schema or
+verdict change — a 0.11 report/verdict is byte-identical under 0.12 — but the **gains `origin` surface**
+is now pinned contract: every `gains --json` `byFunction` entry carries `origin` —
+`"existing"` (the function was in the baseline report, or is a node of a baseline callgraph sidecar —
+shipped effect-free, now reaches Net: the supply-chain alarm), `"new"` (in neither, under a COMPLETE
+graph — a feature, a different alarm), or `"unknown"` (existence undecidable — disclosed, never guessed).
+Reports omit effect-free functions (SPEC §2), so existence is keyed on the baseline **callgraph
+sidecars** — gains unions EVERY report the baseline locator matched, and a sidecar that is absent, or
+that exists but fails to read/parse (partial graph), yields `unknown` rather than a false `new`: dropped
+evidence must never downgrade "existing function gained an effect" to "new feature". The JSON keeps the
+`baseline_version`/`engine_version` provenance fields and discloses an engine-version mismatch (a
+"gained capability" may be the engine reclassifying). The human `fn\teffect` TSV is byte-stable.
+Mirrors candor-rust `cmd_gains`; pinned four-way by conformance PART 5b (including the partial-sidecar
+case). **⚠ the `spec` string changed** — a consumer pinning `spec == "0.11"` must accept `0.12`.
+
+### Changed
+
+- **⚠ Corrupt-report diagnostics for `gains`/`diff`/`containment` moved from stdout to stderr.** All
+  three printed `cannot read baseline …` on STDOUT, polluting the `--json` stream (and leaving stderr
+  empty). They now relay `load()`'s reason via stderr at exit 2 with stdout untouched, mirroring the
+  scan-path relay. A consumer that parsed the diagnostic off stdout must read stderr; a stdout-JSON
+  consumer now gets a clean channel (empty on failure) plus the exit code.
+
 ## [0.11.0] — 2026-07-13
 
-### spec 0.11 — the surprising-reach opener rung (current floor)
+### spec 0.11 — the surprising-reach opener rung
 
 candor-java now declares **spec `0.11`** (`SPEC_VERSION`; the envelope + `--gate-json` verdict carry it).
 0.11 is a **tier-2 (pinned-tool-surface) rung** (candor-spec §"Conformance tiers"): no report-schema or

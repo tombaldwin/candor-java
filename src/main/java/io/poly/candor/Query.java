@@ -507,7 +507,7 @@ public final class Query {
 
     /** A function's effects, instant — `*` marks an effect performed in its own body. */
     static int show(List<Effector> fns, String q, boolean json) {
-        if (q == null) return usage("show <report.json> <function-substring> [--json]");
+        if (q == null) return usage("show <function-substring> [--report <locator>] [--json]");
         int tier = bestTier(fns.stream().map(f -> f.fn()), q);
         List<Effector> hits = tier == 0 ? List.of()
                 : fns.stream().filter(f -> matchTier(f.fn(), q) >= tier).collect(Collectors.toList());
@@ -559,7 +559,7 @@ public final class Query {
 
     /** Which functions perform an effect — direct sources split from inheritors. */
     static int where(List<Effector> fns, String eff, boolean json) {
-        if (eff == null) return usage("where <report.json> <Effect> [--json]");
+        if (eff == null) return usage("where <Effect> [--report <locator>] [--json]");
         List<String> direct = fns.stream().filter(f -> f.direct().toNames().contains(eff)).map(f -> f.fn()).sorted().toList();
         List<String> inherit = fns.stream()
                 .filter(f -> f.inferred().toNames().contains(eff) && !f.direct().toNames().contains(eff)).map(f -> f.fn()).sorted().toList();
@@ -589,7 +589,7 @@ public final class Query {
 
     /** Who calls a function — inverts the report's `calls` effect graph (no re-analysis). */
     static int callers(List<Effector> fns, String reportPath, String q, boolean json, boolean includeUnknown) {
-        if (q == null) return usage("callers <report.json> <function-substring> [--json] [--include-unknown]");
+        if (q == null) return usage("callers <function-substring> [--report <locator>] [--json] [--include-unknown]");
         // Prefer the full call-graph sidecar (written beside the report): it records EVERY function's
         // callees, including pure ones, so we can answer "who TRANSITIVELY calls X" for any function —
         // the blast radius an agent needs BEFORE adding an effect to X. The report alone only has
@@ -868,7 +868,7 @@ public final class Query {
      *  boundary. Answers "if I add a network call here, what propagates and is it allowed?" BEFORE the edit.
      *  Reuses Policy.parsePolicy/scopeMatches so the verdict matches what the real gate would do. */
     static int whatif(String reportPath, String fn, String effect, String policyPath, boolean json) {
-        if (fn == null || effect == null) return usage("whatif <report.json> <fn> <Effect> [policy] [--json]");
+        if (fn == null || effect == null) return usage("whatif <fn> <Effect> [--report <locator>] [--policy <file>] [--json]");
         // Validate the effect against the vocabulary: a typo'd/lowercase effect (`net`) matches no deny
         // rule and would print an authoritative-looking clean verdict — a false green light for the very
         // edit the policy forbids (/code-review). Reject it as a usage error, not a pass.
@@ -1173,7 +1173,7 @@ public final class Query {
      *  (hoist to the nearest allowed-layer caller) and which functions become pure and thread the value.
      *  Advisory: candor names the structure, you write the code; the gate re-scan stays the ground truth. */
     static int fix(List<Effector> fns, String reportPath, String fn, String effect, String policyPath, boolean json) {
-        if (fn == null || effect == null) return usage("fix <report.json> <fn> <Effect> [policy] [--json]");
+        if (fn == null || effect == null) return usage("fix <fn> <Effect> [--report <locator>] [--policy <file>] [--json]");
         if (!Rules.KNOWN_EFFECTS.contains(effect) && !effect.equals("Unknown")) {
             System.err.println("candor: unknown effect `" + effect + "` (expected one of " + Rules.KNOWN_EFFECTS + " or Unknown)");
             return 2;
@@ -1847,7 +1847,7 @@ public final class Query {
      *  `calls` only records effect-carrying edges, so a pure fn — omitted from the report — has no blast
      *  radius to trace; that's the honest limit of working from the report). */
     static int impact(List<Effector> fns, String fnArg, boolean json) {
-        if (fnArg == null) return usage("impact <report.json> <fn-substring> [--json]");
+        if (fnArg == null) return usage("impact <fn-substring> [--report <locator>] [--json]");
         Map<String, Effector> byName = new HashMap<>();
         for (Effector f : fns) byName.putIfAbsent(f.fn(), f);
         Effector target = fns.stream().filter(f -> f.fn().equals(fnArg)).findFirst()
@@ -1913,7 +1913,7 @@ public final class Query {
      *  `callers` (who calls X) describe the ends of but never connect. Read-only over the report. */
     static int path(List<Effector> fns, String fnArg, String effect, boolean json) {
         if (fnArg == null || effect == null)
-            return usage("path <report.json> <fn-substring> <Effect> [--json]");
+            return usage("path <fn-substring> <Effect> [--report <locator>] [--json]");
         Map<String, Effector> byName = new HashMap<>();
         for (Effector f : fns) byName.putIfAbsent(f.fn(), f);
         Effector start = fns.stream().filter(f -> f.fn().equals(fnArg)).findFirst()
@@ -2166,7 +2166,7 @@ public final class Query {
         if (!amb.isEmpty())
             System.out.println("\n  ambient (cross-cutting expected, not scored): " + amb);
         System.out.println("\n  containment% = share of an effect's direct uses in its dominant layer; "
-                + "100% = fully contained.\n  ratchet a baseline: candor containment <report> <baseline.json> "
+                + "100% = fully contained.\n  ratchet a baseline: candor containment <baseline.json> "
                 + "(exit 1 if an effect leaks into a new layer).");
         return 0;
     }

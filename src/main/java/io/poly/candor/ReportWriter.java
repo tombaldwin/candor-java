@@ -59,9 +59,10 @@ final class ReportWriter {
         // not a known-pure stdlib op). Propagated along the call graph like the literal surfaces, then
         // intersected with the global-blind set — so `inferred` is never an unqualified claim: a `pure`
         // method that reaches an unanalyzable package carries it in `invisible`.
-        Set<String> globalBlind = ctx().kappaSeen.keySet().stream()
-                .filter(p -> !ctx().kappaClassified.contains(p) && !ctx().depCoveredPkgs.contains(p))
-                .collect(Collectors.toSet());
+        // ⟨0.15 staged⟩ read from the ONE shared ledger (Candor.kappaUncovered) that also feeds the stderr
+        // line, the envelope `coverage` field below, and the --gate-json advisory — same names everywhere.
+        List<Map.Entry<String, Integer>> uncovered = Candor.kappaUncovered();
+        Set<String> globalBlind = uncovered.stream().map(Map.Entry::getKey).collect(Collectors.toSet());
         Map<String, TreeSet<String>> blindAcc = literalFixpoint(ctx().blindDirect);
         List<Effector> effectors = new ArrayList<>();
         inferred.entrySet().stream()
@@ -155,9 +156,17 @@ final class ReportWriter {
             int slash = cn.name.lastIndexOf('/');
             if (slash > 0) pkgs.add(cn.name.substring(0, slash).replace('/', '.'));
         }
+        // ⟨0.15 staged⟩ the `coverage` envelope field: the κ ledger as data — same entries and counts as
+        // the stderr disclosure. null when fully covered → ReportJson omits the key entirely, keeping a
+        // fully-covered report byte-identical to a pre-⟨0.15⟩ one.
+        Coverage coverage = uncovered.isEmpty() ? null
+                : new Coverage(uncovered.stream()
+                        .map(e -> new Coverage.Uncovered(e.getKey(), e.getValue()))
+                        .collect(Collectors.toList()));
         Report report = new Report(
                 new Provenance(prov[0], prov[1], SPEC_VERSION), // §2.1 — contract version distinct from build id
                 new ArrayList<>(pkgs),
+                coverage,
                 effectors);
         // "-" is the --json-stdout pipe form: emit the report JSON to stdout (pure — `| jq .` parses it)
         // rather than writing a file. The progress line stays on stderr so stdout carries ONLY the report.

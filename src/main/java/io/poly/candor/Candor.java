@@ -469,11 +469,9 @@ public class Candor {
         // The κ-coverage disclosure (mirrors the Rust/TS receipts): external packages the bytecode
         // demonstrably calls where the classifier never fired — invisible, not Unknown. Per-scan
         // evidence instead of a doc footnote; never conclude "no effect" through a package named here.
-        List<Map.Entry<String, Integer>> unlisted = ctx().kappaSeen.entrySet().stream()
-                .filter(e -> !ctx().kappaClassified.contains(e.getKey()) && !ctx().depCoveredPkgs.contains(e.getKey()))
-                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()
-                        .thenComparing(Map.Entry.comparingByKey()))
-                .collect(Collectors.toList());
+        // ⟨0.15 staged⟩ the SAME ledger (one computation, kappaUncovered) also rides the report envelope
+        // (`coverage`, ReportWriter) and the --gate-json advisory below — stderr line unchanged.
+        List<Map.Entry<String, Integer>> unlisted = kappaUncovered();
         if (!unlisted.isEmpty()) {
             String shown = unlisted.stream().limit(8)
                     .map(e -> e.getKey() + " (" + e.getValue() + " call" + (e.getValue() == 1 ? "" : "s") + ")")
@@ -577,6 +575,20 @@ public class Candor {
         if (violations > 0) System.exit(1); // fail CI
     }
 
+    /** ⟨0.15 staged⟩ The κ-coverage ledger, computed the ONE shared way for its three consumers — the
+     *  per-scan stderr disclosure, the report envelope's `coverage` field (ReportWriter), and the
+     *  --gate-json advisory — so the three can never disagree on names or counts. An external package the
+     *  bytecode demonstrably calls where the classifier never fired AND no chained dep report covers it:
+     *  its effects are INVISIBLE to the scan (absent, NOT a claim of purity). Sorted by call count
+     *  descending, then name (the stderr line's order, kept for the wire too). */
+    static List<Map.Entry<String, Integer>> kappaUncovered() {
+        return ctx().kappaSeen.entrySet().stream()
+                .filter(e -> !ctx().kappaClassified.contains(e.getKey()) && !ctx().depCoveredPkgs.contains(e.getKey()))
+                .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()
+                        .thenComparing(Map.Entry.comparingByKey()))
+                .collect(Collectors.toList());
+    }
+
     /** `--gate-json`: write the structured gate verdict `{ spec, ok, violations:[{rule,fn,effects,detail}] }` — the
      *  machine analog of the AS-EFF console lines, from the SAME diagnostics (captured in {@link #diag}), so
      *  it can never disagree with the exit code. `ok` is the CI verdict (advisory AS-EFF-007 lines appear in
@@ -587,6 +599,19 @@ public class Candor {
         out.put("spec", SPEC_VERSION);
         out.put("ok", violations == 0);
         out.put("violations", gateViolations);
+        // ⟨0.15 staged⟩ the coverage ADVISORY (COVERAGE-DESIGN §3): when the κ ledger is non-empty the
+        // verdict discloses it — a gate verdict over partially-covered code must not read as total.
+        // VERDICT-PRESERVING (the ⟨0.9⟩ provable-purity auto-disclosure precedent): ok/violations/exit
+        // are untouched — a gate does NOT fail on uncovered deps (nearly every real scan has some); the
+        // policy author sees the note and decides (`deny Unknown` stays the opt-in strict posture).
+        // Omitted when fully covered, so that verdict stays byte-identical to a pre-⟨0.15⟩ one.
+        List<Map.Entry<String, Integer>> uncov = kappaUncovered();
+        if (!uncov.isEmpty()) {
+            var cov = new java.util.LinkedHashMap<String, Object>();
+            cov.put("uncovered", uncov.size());
+            cov.put("packages", uncov.stream().map(Map.Entry::getKey).collect(Collectors.toList()));
+            out.put("coverage", cov);
+        }
         try {
             String json = io.poly.candor.model.ReportJson.pretty(out);
             if (path.equals("-")) System.out.println(json);

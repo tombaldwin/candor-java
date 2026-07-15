@@ -1415,6 +1415,35 @@ public final class Query {
      *  provenance), or null when unreadable/absent (a legacy bare-array report). Tolerant by design: the
      *  comparison QUERIES below only DISCLOSE provenance; the fail-closed reading of a bad report already
      *  happened in {@link #load}. */
+    /** ⟨0.15 staged⟩ The report envelope's `coverage` field (the κ ledger as data — COVERAGE-DESIGN §1),
+     *  parsed tolerantly like {@link #reportVersion}: null when absent (a fully-covered or pre-⟨0.15⟩
+     *  report), unreadable, or not the expected object shape. Consumers (gains) re-disclose it verbatim. */
+    static JsonObject reportCoverage(String path) {
+        try {
+            JsonElement root = JsonParser.parseString(Files.readString(Path.of(path)));
+            if (!root.isJsonObject()) return null;
+            JsonElement c = root.getAsJsonObject().get("coverage");
+            return c != null && c.isJsonObject() ? c.getAsJsonObject() : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** The uncovered package NAMES a parsed `coverage` object carries (empty when null/malformed) — the
+     *  set gains' coverageDelta compares. Names, not counts: a call-count wobble is ordinary code change;
+     *  a package ENTERING or LEAVING the uncovered set is the coverage signal. ⟨0.15 staged⟩ */
+    private static TreeSet<String> uncoveredNames(JsonObject coverage) {
+        TreeSet<String> names = new TreeSet<>();
+        if (coverage == null || !coverage.has("uncovered") || !coverage.get("uncovered").isJsonArray())
+            return names;
+        for (JsonElement e : coverage.getAsJsonArray("uncovered")) {
+            if (!e.isJsonObject()) continue;
+            JsonElement n = e.getAsJsonObject().get("name");
+            if (n != null && n.isJsonPrimitive()) names.add(n.getAsString());
+        }
+        return names;
+    }
+
     static String reportVersion(String path) {
         try {
             JsonElement root = JsonParser.parseString(Files.readString(Path.of(path)));
@@ -1620,6 +1649,21 @@ public final class Query {
             out.put("engine_version", engineV == null ? "" : engineV);
             out.put("gained", new ArrayList<>(gained));
             out.put("byFunction", byFunction);
+            // ⟨0.15 staged⟩ coverage re-disclosure (COVERAGE-DESIGN §3): a "no gains" over an uncovered
+            // dep must not read as total — carry the CURRENT report's envelope `coverage` verbatim when
+            // present. When the baseline's uncovered NAME set differs (a dep became uncovered between
+            // scans — itself a signal, e.g. a chained dep report went missing), disclose `coverageDelta`.
+            // ADDITIVE + JSON-only: verdict fields/exit unchanged; the human TSV is a pinned surface.
+            JsonObject curCov = reportCoverage(curPath);
+            JsonObject baseCov = reportCoverage(basePath);
+            if (curCov != null) out.put("coverage", curCov);
+            TreeSet<String> curNames = uncoveredNames(curCov), baseNames = uncoveredNames(baseCov);
+            if (!curNames.equals(baseNames)) {
+                Map<String, Object> delta = new LinkedHashMap<>();
+                delta.put("nowUncovered", curNames.stream().filter(n -> !baseNames.contains(n)).toList());
+                delta.put("noLongerUncovered", baseNames.stream().filter(n -> !curNames.contains(n)).toList());
+                out.put("coverageDelta", delta);
+            }
             emit(out);
             return 0;
         }

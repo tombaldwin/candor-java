@@ -6,6 +6,26 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## [Unreleased] — ⟨0.15 staged⟩ the `coverage` surface
+
+Implements the COVERAGE-DESIGN.md rung (unversioned — the engine still declares spec `0.14`; the spec
+string rises with the held 0.14.2/0.15 train). The κ-coverage ledger — "what the scan couldn't see" —
+now travels WITH the artifacts instead of evaporating on stderr, computed the ONE shared way
+(`Candor.kappaUncovered`) so the four surfaces can never disagree:
+
+- **Report envelope `coverage` field** (§2, additive): `"coverage": { "uncovered": [ { "name", "calls" },
+  … ] }` — the same names and counts as the per-scan stderr disclosure (which is unchanged). **Omitted
+  entirely when nothing is uncovered**, so a fully-covered report is byte-identical to a pre-⟨0.15⟩ one
+  (verified against the 0.13 build). Per-function `invisible` is unchanged (formalized, not reshaped).
+- **`--gate-json` coverage advisory**: the verdict gains an OPTIONAL `"coverage": { "uncovered": N,
+  "packages": […] }` when the ledger is non-empty. **VERDICT-PRESERVING** (the ⟨0.9⟩ provable-purity
+  auto-disclosure precedent): `ok`/`violations`/exit are untouched — uncovered deps never fail a gate;
+  `deny Unknown` remains the opt-in strict posture. Omitted when fully covered.
+- **`gains` re-disclosure**: `gains --json` carries the CURRENT report's envelope `coverage` verbatim
+  when present, plus `"coverageDelta": { "nowUncovered", "noLongerUncovered" }` when the baseline's
+  uncovered NAME set differs (a dep becoming uncovered between scans is itself a signal). JSON-only —
+  the human TSV is a pinned consumer surface and stays byte-stable; exit still always 0.
+
 ## [0.14.0] — 2026-07-14
 
 ### spec 0.14 — floor alignment (the top-level-initializer rung)

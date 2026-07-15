@@ -40,6 +40,21 @@ public final class ReportJson {
         Map<String, Object> envelope = new LinkedHashMap<>();
         envelope.put("candor", header);
         envelope.put("packages", report.packages());
+        // ⟨0.15 staged⟩ the κ-coverage ledger as data (§2 `coverage`): OMITTED entirely when nothing is
+        // uncovered, so a fully-covered report is byte-identical to a pre-⟨0.15⟩ one. Placed before the
+        // (large) `functions` array with the other envelope-level facts.
+        if (report.coverage() != null && !report.coverage().uncovered().isEmpty()) {
+            List<Map<String, Object>> unc = new ArrayList<>();
+            for (Coverage.Uncovered u : report.coverage().uncovered()) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("name", u.name());
+                m.put("calls", u.calls());
+                unc.add(m);
+            }
+            Map<String, Object> cov = new LinkedHashMap<>();
+            cov.put("uncovered", unc);
+            envelope.put("coverage", cov);
+        }
         List<Map<String, Object>> entries = new ArrayList<>();
         for (Effector e : report.functions()) entries.add(entry(e));
         envelope.put("functions", entries);

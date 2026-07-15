@@ -611,6 +611,10 @@ public class Candor {
         // AS-EFF-007 is a heuristic ADVISORY (spec §6): emit findings but never fail CI on its own.
         int advisories = ctx().taintEnabled ? checkTaint(inferred) : 0;
         if (violations == 0 && advisories == 0) gate.println("candor-java: no violations");
+        // FAILURE-only pointer at the engine's own remedy verb: appended AFTER the AS-EFF lines, on the
+        // SAME stream (`gate`), so a clean run stays byte-identical and the pinned violation-line shapes,
+        // exit codes and --gate-json verdict are untouched (append-only, human channel only).
+        if (violations > 0) gate.println("→ candor fix-gate names the remedy for each");
         writeGateJson(gateJson, violations);   // machine verdict (before exit) — clean run writes ok:true,[]
         if (violations > 0) System.exit(1); // fail CI
     }

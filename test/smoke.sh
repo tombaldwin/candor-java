@@ -47,7 +47,7 @@ rep="$(cat "$W/r.json")"
 want "report is the v0.2 envelope"            "$rep" '"candor"'
 want "envelope carries a version"             "$rep" '"version"'
 want "envelope carries a toolchain"           "$rep" '"toolchain"'
-want "envelope declares the spec contract 0.14" "$rep" '"spec": "0.14"'
+want "envelope declares the spec contract 0.15" "$rep" '"spec": "0.15"'
 want "functions array present"               "$rep" '"functions"'
 want "reads performs Fs"                      "$rep" '"Fx.reads"'
 want "dyn is Unknown (reflection, trust §4)"  "$rep" '"Unknown"'
@@ -1622,13 +1622,13 @@ echo "== CLI surface: --help, --version, bare --json, empty scan =="
 hp="$("$CJ" --help 2>&1)"; hprc=$?
 want "--help shows usage"                          "$hp" 'USAGE: candor'
 want "--help names the gate flag"                  "$hp" '--gate-json'
-want "--help states the spec contract"             "$hp" 'candor-spec 0.14'
+want "--help states the spec contract"             "$hp" 'candor-spec 0.15'
 if [ "$hprc" -eq 0 ]; then echo "  ok   --help exits 0"; pass=$((pass+1));
 else echo "  FAIL --help exit $hprc (want 0)"; fail=$((fail+1)); fi
 hs="$("$CJ" -h 2>&1)"
 want "-h is the same surface"                      "$hs" 'USAGE: candor'
 vv="$("$CJ" --version 2>&1)"; vvrc=$?
-want    "--version prints the release + spec"      "$vv" '(spec 0.14)'
+want    "--version prints the release + spec"      "$vv" '(spec 0.15)'
 want    "--version prints the upgrade line"        "$vv" 'jbang --fresh'
 wantnot "--version release is baked (not the 'unknown' fallback)" "$vv" 'candor-java unknown'
 if [ "$vvrc" -eq 0 ]; then echo "  ok   --version exits 0"; pass=$((pass+1));
@@ -1727,10 +1727,10 @@ fi
 echo "== family identity phrases =="
 README_TXT="$(cat "$ROOT/README.md")"; AGENTS_TXT="$(cat "$ROOT/AGENTS.md")"
 want    "README names candor-java the family's reference engine" "$README_TXT" "the family's reference engine"
-want    "README pins the spec floor (spec 0.14)"                  "$README_TXT" "spec 0.14"
+want    "README pins the spec floor (spec 0.15)"                  "$README_TXT" "spec 0.15"
 wantnot "README does not call Rust the reference"                "$README_TXT" "Rust reference"
 want    "AGENTS names candor-java the reference engine"          "$AGENTS_TXT" "reference engine"
-want    "AGENTS pins the spec floor (spec 0.14)"                  "$AGENTS_TXT" "spec 0.14"
+want    "AGENTS pins the spec floor (spec 0.15)"                  "$AGENTS_TXT" "spec 0.15"
 
 echo
 echo "smoke: $pass passed, $fail failed"

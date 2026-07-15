@@ -6,25 +6,42 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
-## [Unreleased] — ⟨0.15 staged⟩ the `coverage` surface
+## [0.15.0] — 2026-07-15
 
-Implements the COVERAGE-DESIGN.md rung (unversioned — the engine still declares spec `0.14`; the spec
-string rises with the held 0.14.2/0.15 train). The κ-coverage ledger — "what the scan couldn't see" —
-now travels WITH the artifacts instead of evaporating on stderr, computed the ONE shared way
-(`Candor.kappaUncovered`) so the four surfaces can never disagree:
+### spec 0.15 — the coverage envelope
+
+candor-java now declares **spec `0.15`** (`SPEC_VERSION`; the envelope + `--gate-json` verdict carry it).
+The ⟨0.15⟩ rung is the COVERAGE-DESIGN.md surface, reference-implemented here: the κ-coverage ledger —
+"what the scan couldn't see" — now travels WITH the artifacts instead of evaporating on stderr, computed
+the ONE shared way (`Candor.kappaUncovered`) feeding stderr, envelope, and gate so the surfaces can never
+disagree. Pinned by conformance PART 4s.
 
 - **Report envelope `coverage` field** (§2, additive): `"coverage": { "uncovered": [ { "name", "calls" },
   … ] }` — the same names and counts as the per-scan stderr disclosure (which is unchanged). **Omitted
-  entirely when nothing is uncovered**, so a fully-covered report is byte-identical to a pre-⟨0.15⟩ one
-  (verified against the 0.13 build). Per-function `invisible` is unchanged (formalized, not reshaped).
+  entirely when nothing is uncovered**, so a fully-covered report is byte-identical to one from a prior
+  jar (verified against the 0.13 build). Per-function `invisible` now derives from the same ledger, so
+  the envelope and the per-function view can never disagree either.
 - **`--gate-json` coverage advisory**: the verdict gains an OPTIONAL `"coverage": { "uncovered": N,
   "packages": […] }` when the ledger is non-empty. **VERDICT-PRESERVING** (the ⟨0.9⟩ provable-purity
   auto-disclosure precedent): `ok`/`violations`/exit are untouched — uncovered deps never fail a gate;
   `deny Unknown` remains the opt-in strict posture. Omitted when fully covered.
 - **`gains` re-disclosure**: `gains --json` carries the CURRENT report's envelope `coverage` verbatim
   when present, plus `"coverageDelta": { "nowUncovered", "noLongerUncovered" }` when the baseline's
-  uncovered NAME set differs (a dep becoming uncovered between scans is itself a signal). JSON-only —
-  the human TSV is a pinned consumer surface and stays byte-stable; exit still always 0.
+  uncovered NAME set differs (a dep becoming uncovered between scans is itself a signal) — the reference
+  shape for the family. JSON-only — the human TSV is a pinned consumer surface and stays byte-stable;
+  exit still always 0.
+
+### Literal-head host extraction from runtime concat
+
+A URL built by RUNTIME string concatenation whose literal LEFT completes the authority
+(`new URL("https://api.openai.com/v1/" + p)`) now recovers the host from the bytecode and fires the §1
+Llm/Db/Net refinement (was bare Net). Handles both javac concat shapes: `makeConcatWithConstants` (the
+indy recipe's literal prefix) and the classic StringBuilder append chain. (`static final String` consts
+were already inlined by javac, so those were already sound.) Sound boundaries: a split authority, an
+interpolated port, or a dynamic head stay bare Net — no fabrication. Pinned by conformance PART 4r.
+**⚠ a refinement-affecting change** — a runtime-concat model/db URL that previously read bare `Net` may
+now read `Llm+Net`/`Db+Net`; a policy denying those boundaries can newly fire (in the
+soundness-increasing direction).
 
 ## [0.14.0] — 2026-07-14
 

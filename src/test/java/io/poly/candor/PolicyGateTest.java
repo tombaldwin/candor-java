@@ -135,6 +135,33 @@ class PolicyGateTest {
     }
 
     @Test
+    void baselineUnknownOnlyGainIsAdvisoryNotAViolation() throws Exception {
+        // ⟨0.16 staged⟩ A fn that was PURE at the baseline (a callgraph node, absent from the report) now
+        // reaches only an UNRESOLVED call (reflection/dynamic → Unknown). Unknown is the §4 trust marker,
+        // not an effect (`pure` policies exclude it); on version bumps it is resolution noise. So this is
+        // ADVISORY — disclosed on stderr, NOT an AS-EFF-005 regression (returns 0).
+        String v = ReportWriter.provenance()[0];
+        Path base = file("base", "{\"candor\":{\"version\":\"" + v + "\"},\"functions\":[]}");
+        writeSidecar(base, "{\"util.Fmt.fmt\":[],\"api.Api.fetch\":[\"util.Fmt.fmt\"]}");
+        Map<String, EffectSet> inferred = new HashMap<>();
+        inferred.put("util.Fmt.fmt", EffectSet.of(Effect.UNKNOWN)); // formerly pure, now only an unresolved call
+        assertEquals(0, Policy.checkBaseline(inferred, base.toString()),
+            "an Unknown-only gain is advisory (Unknown is not an effect), not an AS-EFF-005 regression");
+    }
+
+    @Test
+    void baselineMixedRealPlusUnknownGainReportsOnlyTheRealEffect() throws Exception {
+        // ⟨0.16 staged⟩ A gain of a REAL effect (Fs) alongside Unknown is STILL a violation (exit 1), but
+        // the reported effect set is the REAL gained set — Unknown is filtered out of what the finding shows.
+        String v = ReportWriter.provenance()[0];
+        Path base = file("base", "{\"candor\":{\"version\":\"" + v + "\"},\"functions\":[{\"fn\":\"a.B.c\",\"inferred\":[\"Net\"]}]}");
+        Map<String, EffectSet> inferred = new HashMap<>();
+        inferred.put("a.B.c", EffectSet.of(Effect.NET, Effect.FS, Effect.UNKNOWN)); // gained Fs (real) + Unknown
+        assertEquals(1, Policy.checkBaseline(inferred, base.toString()),
+            "gaining a real effect (even mixed with Unknown) is still an AS-EFF-005 regression");
+    }
+
+    @Test
     void baselineWithoutSidecarDegradesToReportOnly() throws Exception {
         // ⟨0.16 staged⟩ No sidecar → existence is report-only (pre-⟨0.16⟩): a fn absent from the report is
         // indistinguishable from new code, so the pure→effectful transition slips through — NOT a failure,

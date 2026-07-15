@@ -145,6 +145,12 @@ final class Policy {
                     + "the full pure→effectful guard.");
         }
         int v = 0;
+        // ⟨0.16 staged⟩ Functions whose ONLY gain vs the baseline is `Unknown` — the §4 trust marker,
+        // NOT an effect (`pure` policies already exclude it). On real dependency bumps an Unknown-only
+        // gain is dominated by resolution noise (dispatch-resolution variance; a JVM anonymous class's
+        // positional `$N` differs across versions — SOUNDNESS-LOG 2026-07-16), so it is ADVISORY, never a
+        // regression: collect the names and disclose them once, don't raise AS-EFF-005 or exit 1.
+        List<String> unknownOnly = new ArrayList<>();
         for (var e : new TreeMap<>(inferred).entrySet()) {
             EffectSet prior = base.get(e.getKey());
             if (prior == null) {
@@ -159,12 +165,29 @@ final class Policy {
                     continue; // new function (or report-only degradation) — reviewed as new code
                 }
             }
-            List<String> gained = e.getValue().minus(prior).toNames();
-            if (!gained.isEmpty()) {
-                diag(DiagnosticCode.AS_EFF_005, gained, "`%s` gained effect { %s } not present in the baseline",
-                        e.getKey(), String.join(", ", gained));
-                v++;
+            EffectSet gainedSet = e.getValue().minus(prior);
+            if (gainedSet.isEmpty()) {
+                continue;
             }
+            // ⟨0.16 staged⟩ Split the gain: the ratchet fires only on a REAL boundary effect. An
+            // Unknown-ONLY gain is advisory (disclosed below), and the REAL gained set (Unknown filtered
+            // out) is what the violation reports, so a mixed real+Unknown gain never shows `Unknown`.
+            List<String> gained = gainedSet.without(Effect.UNKNOWN).toNames();
+            if (gained.isEmpty()) {
+                unknownOnly.add(e.getKey());
+                continue;
+            }
+            diag(DiagnosticCode.AS_EFF_005, gained, "`%s` gained effect { %s } not present in the baseline",
+                    e.getKey(), String.join(", ", gained));
+            v++;
+        }
+        if (!unknownOnly.isEmpty()) {
+            List<String> shown = unknownOnly.subList(0, Math.min(3, unknownOnly.size()));
+            String more = unknownOnly.size() > 3 ? " (+" + (unknownOnly.size() - 3) + " more)" : "";
+            System.err.println("candor-java: note — " + unknownOnly.size() + " function(s) gained an "
+                    + "unresolved call (Unknown) vs the baseline but no real effect — advisory, NOT a "
+                    + "regression (Unknown is the §4 trust marker, dominated by resolution noise on version "
+                    + "bumps): " + String.join(", ", shown) + more + ".");
         }
         return v;
     }

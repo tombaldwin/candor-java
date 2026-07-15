@@ -102,12 +102,50 @@ class PolicyGateTest {
         // the fixture must carry THIS build's provenance — a stale/absent version now fails closed (exit 2)
         String v = ReportWriter.provenance()[0];
         Path base = file("base", "{\"candor\":{\"version\":\"" + v + "\"},\"functions\":[{\"fn\":\"a.B.c\",\"inferred\":[\"Fs\"]}]}");
-        // a.B.c gained Net vs the baseline → AS-EFF-005; a.B.NEW isn't in the baseline → reviewed as new code
+        // No sidecar here (report-only): a.B.c gained Net vs the baseline → AS-EFF-005; a.B.New is
+        // absent from the report AND there is no callgraph to prove it existed → reviewed as new code.
         Map<String, EffectSet> inferred = new HashMap<>();
         inferred.put("a.B.c", EffectSet.of(Effect.FS, Effect.NET));
         inferred.put("a.B.New", EffectSet.of(Effect.NET));
         assertEquals(1, Policy.checkBaseline(inferred, base.toString()),
             "only the function that gained an effect vs the baseline is a regression");
+    }
+
+    /** ⟨0.16 staged⟩ Write a callgraph sidecar next to a baseline report path (strip a trailing `.json`,
+     *  append `.callgraph.json` — the {@link Query#loadCallgraphSignalled} pairing). `body` is the raw
+     *  sidecar JSON, so a test can also write a CORRUPT one. */
+    private void writeSidecar(Path reportPath, String body) throws Exception {
+        String p = reportPath.toString();
+        String cg = (p.endsWith(".json") ? p.substring(0, p.length() - 5) : p) + ".callgraph.json";
+        Files.writeString(Path.of(cg), body);
+    }
+
+    @Test
+    void baselineSidecarCatchesPureToEffectful() throws Exception {
+        // ⟨0.16 staged⟩ The sharpest supply-chain shape: a fn that was PURE at the baseline (absent from
+        // the report, which omits pure fns — but present as a callgraph NODE) now performs an effect.
+        // With the sidecar present it is keyed as existing (baseline ∅) → any effect is a GAIN.
+        String v = ReportWriter.provenance()[0];
+        Path base = file("base", "{\"candor\":{\"version\":\"" + v + "\"},\"functions\":[]}");
+        writeSidecar(base, "{\"util.Fmt.fmt\":[],\"api.Api.fetch\":[\"util.Fmt.fmt\"]}");
+        Map<String, EffectSet> inferred = new HashMap<>();
+        inferred.put("util.Fmt.fmt", EffectSet.of(Effect.FS)); // formerly pure, now does I/O
+        assertEquals(1, Policy.checkBaseline(inferred, base.toString()),
+            "a formerly-pure callgraph node that turns effectful is a GAIN, not exempt new code");
+    }
+
+    @Test
+    void baselineWithoutSidecarDegradesToReportOnly() throws Exception {
+        // ⟨0.16 staged⟩ No sidecar → existence is report-only (pre-⟨0.16⟩): a fn absent from the report is
+        // indistinguishable from new code, so the pure→effectful transition slips through — NOT a failure,
+        // the weaker guard, disclosed once on stderr. (Sidecar-present is baselineSidecarCatchesPureToEffectful.)
+        String v = ReportWriter.provenance()[0];
+        Path base = file("base", "{\"candor\":{\"version\":\"" + v + "\"},\"functions\":[]}");
+        // deliberately NO writeSidecar — the .callgraph.json is absent
+        Map<String, EffectSet> inferred = new HashMap<>();
+        inferred.put("util.Fmt.fmt", EffectSet.of(Effect.FS));
+        assertEquals(0, Policy.checkBaseline(inferred, base.toString()),
+            "without a sidecar a pure→effectful fn reads as new code — the degraded guard does not fail");
     }
 
     @Test

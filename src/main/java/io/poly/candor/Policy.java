@@ -106,10 +106,59 @@ final class Policy {
                     + " Regenerate deliberately with this build: candor <target> --json " + path);
             System.exit(2);
         }
+        // ⟨0.16 staged⟩ Callgraph-aware existence. A function ABSENT from the baseline REPORT is not
+        // necessarily new: reports OMIT pure functions (§2), so a formerly-PURE fn that turns effectful
+        // reads as "new code" and escapes the guard — the sharpest supply-chain shape. Key existence on
+        // the baseline CALLGRAPH sidecar instead (§2.2 — it lists pure leaves), exactly as `gains --json`'s
+        // `origin` field does: reuse Query's signalled callgraph load + the caller∪callee node-union.
+        //   - sidecar PRESENT: a fn that is a node in it (even with an empty/pure baseline effect set)
+        //     and now performs ANY effect is a GAIN → violation. A fn genuinely ABSENT from the graph is
+        //     real new code → exempt. This makes pure→effectful a violation.
+        //   - sidecar ABSENT: degrade to report-only existence (a formerly-pure fn reads as new — the
+        //     pre-⟨0.16⟩ semantics; the guard still catches widening on already-effectful fns). Not a
+        //     failure — just the weaker guard, disclosed once on stderr.
+        //   - sidecar PRESENT-but-corrupt: fail closed (exit 2), same as a corrupt baseline report — a
+        //     broken sidecar must not silently NARROW the guard (drop its pure-leaf nodes → pure→effectful
+        //     would masquerade as new). This mirrors gains' "a partial graph proves absence of nothing".
+        Query.CallgraphLoad cgl = Query.loadCallgraphSignalled(path); // discloses a corrupt sidecar on stderr
+        if (cgl.partial()) {
+            System.err.println("candor-java: the baseline call-graph sidecar beside " + path + " is corrupt/"
+                    + "unreadable — failing (exit 2); the guard must not silently narrow to report-only "
+                    + "existence on a broken sidecar (a formerly-pure→effectful gain would masquerade as new "
+                    + "code). Regenerate the baseline: candor <target> --json " + path);
+            System.exit(2);
+        }
+        Set<String> baseCgNodes = new HashSet<>();
+        boolean sidecarPresent = cgl.graph() != null;
+        if (sidecarPresent) {
+            for (var cge : cgl.graph().entrySet()) {
+                baseCgNodes.add(cge.getKey());
+                baseCgNodes.addAll(cge.getValue());
+            }
+        } else {
+            // Report-only degradation: a formerly-pure fn is indistinguishable from new code, so the
+            // pure→effectful transition slips through. Say it once — the guard is weaker here.
+            System.err.println("candor-java: no call-graph sidecar beside the baseline " + path
+                    + " (looked for its .callgraph.json) — the regression guard degrades to report-only "
+                    + "existence: a formerly-pure function that turns effectful reads as new code and is NOT "
+                    + "flagged. Regenerate the baseline with a file-mode --json to emit the sidecar and get "
+                    + "the full pure→effectful guard.");
+        }
         int v = 0;
         for (var e : new TreeMap<>(inferred).entrySet()) {
             EffectSet prior = base.get(e.getKey());
-            if (prior == null) continue; // new function — reviewed as new code, not a regression
+            if (prior == null) {
+                // Absent from the baseline REPORT. With a sidecar we can tell a formerly-pure fn (a graph
+                // node, baseline effect set ∅) from genuinely new code (absent from the graph too):
+                //   - graph node → treat its baseline as ∅ (empty): ANY current effect is a gain.
+                //   - not a graph node → real new code → exempt (reviewed as new, not a regression).
+                // Without a sidecar, existence is report-only: absent means "new" → exempt (pre-⟨0.16⟩).
+                if (sidecarPresent && baseCgNodes.contains(e.getKey())) {
+                    prior = EffectSet.empty(); // formerly pure — a graph node with no report entry
+                } else {
+                    continue; // new function (or report-only degradation) — reviewed as new code
+                }
+            }
             List<String> gained = e.getValue().minus(prior).toNames();
             if (!gained.isEmpty()) {
                 diag(DiagnosticCode.AS_EFF_005, gained, "`%s` gained effect { %s } not present in the baseline",

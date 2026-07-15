@@ -411,6 +411,35 @@ class CliBehaviourTest {
     }
 
     @Test
+    void corruptBaselineSidecarFailsClosedNotOpen() throws Exception {
+        // ⟨0.16 staged⟩ The baseline callgraph sidecar keys the guard's existence check (it lists the pure
+        // leaves the report omits). A PRESENT-but-corrupt sidecar is invalid gate input → exit 2, exactly
+        // like a corrupt baseline REPORT: it must not silently narrow the guard to report-only existence
+        // (dropping the pure-leaf nodes would let a formerly-pure→effectful gain masquerade as new code).
+        Path classes = compileNetFixture();
+        // 1) produce a real baseline (report + valid .callgraph.json sidecar) from this same build.
+        Path base = scratch.resolve("baseline"); // --json <path>: report at <path>, sidecar at <path>.callgraph.json
+        Run scan = runCli(classes.toString(), "--json", base.toString());
+        assertEquals(0, scan.exit(), "the baseline scan itself must succeed\nSTDERR:\n" + scan.stderr());
+        Path sidecar = scratch.resolve("baseline.callgraph.json");
+        assertTrue(Files.exists(sidecar), "the scan must have emitted the callgraph sidecar");
+        // 2) corrupt the sidecar (truncate to `{`), then rescan with the baseline guard active.
+        Files.writeString(sidecar, "{");
+        String javaBin = System.getProperty("java.home") + "/bin/java";
+        String cp = System.getProperty("java.class.path");
+        ProcessBuilder pb = new ProcessBuilder(javaBin, "-cp", cp, "io.poly.candor.Candor", classes.toString());
+        pb.environment().put("CANDOR_BASELINE", base.toString());
+        Process p = pb.start();
+        String err = drain(p.getErrorStream());
+        String out = drain(p.getInputStream());
+        assertEquals(2, p.waitFor(), "a corrupt baseline sidecar must fail closed (exit 2)\nSTDERR:\n" + err);
+        assertTrue(err.contains("call-graph sidecar") && err.contains("corrupt"),
+                "the message names the corrupt sidecar and the fail-closed posture: " + err);
+        assertFalse(out.contains("[AS-EFF-005]") || err.contains("[AS-EFF-005]"),
+                "the guard must NOT evaluate on a corrupt sidecar — no 005 finding");
+    }
+
+    @Test
     void staleBaselineFailsClosedWithoutEvaluating() throws Exception {
         // The aligned family posture: a baseline from another engine build is INVALID GATE INPUT — the
         // unreadable-policy class. No AS-EFF-005 wave (evaluation would be semi-garbage), no silent skip

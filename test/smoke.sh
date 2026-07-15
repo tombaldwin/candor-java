@@ -1620,13 +1620,14 @@ else echo "  FAIL CANDOR_TAINT advisory exit $tnrc (want 0)"; fail=$((fail+1)); 
 # ── CLI surface: --help / --version / bare --json stdout purity / the empty-scan advice ──────────
 echo "== CLI surface: --help, --version, bare --json, empty scan =="
 hp="$("$CJ" --help 2>&1)"; hprc=$?
-want "--help shows usage"                          "$hp" 'USAGE: candor'
+want "--help shows usage"                          "$hp" 'USAGE'
+want "--help shows the scan form"                  "$hp" 'candor <classes-or-jar>'
 want "--help names the gate flag"                  "$hp" '--gate-json'
-want "--help states the spec contract"             "$hp" 'candor-spec 0.15'
+wantnot "--help leaves the spec disclosure to --version" "$hp" 'candor-spec'
 if [ "$hprc" -eq 0 ]; then echo "  ok   --help exits 0"; pass=$((pass+1));
 else echo "  FAIL --help exit $hprc (want 0)"; fail=$((fail+1)); fi
 hs="$("$CJ" -h 2>&1)"
-want "-h is the same surface"                      "$hs" 'USAGE: candor'
+want "-h is the same surface"                      "$hs" 'USAGE'
 vv="$("$CJ" --version 2>&1)"; vvrc=$?
 want    "--version prints the release + spec"      "$vv" '(spec 0.15)'
 want    "--version prints the upgrade line"        "$vv" 'jbang --fresh'

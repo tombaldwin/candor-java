@@ -224,25 +224,64 @@ public class Candor {
         // engine cannot drift (the §2.1 version-trust rule applied to documentation).
         if (args[0].equals("-h") || args[0].equals("--help")) {
             System.out.println("""
-                    candor-java %s — per-method effect audit for JVM bytecode (candor-spec %s)
+                    candor-java — the JVM effect analyzer. Compiled bytecode in, a capability map out.
 
-                    USAGE: candor <dir-or-jar-of-classes> [--json <file>] [--policy <file>] [--gate-json <file>]
-                           candor <show|where|callers|map|diff|...> <report.json> [arg]   (read-only queries)
-                           candor parsepolicy <policy-file> | candor --agents | candor --version
+                    The family's reference engine: point it at compiled classes or a jar —
+                    Java, Kotlin, Scala, Groovy, anything that compiles to JVM bytecode — and it
+                    emits the per-method effect report every candor engine shares. A call it cannot
+                    resolve comes back Unknown, never silently pure: the map may say "don't know",
+                    never a quiet "safe".
 
-                      <dir-or-jar>      compiled classes to scan (target/classes · build/classes/java/main, or a .jar)
-                      --json [<file>]   write the candor JSON report to <file> (the form an agent / MCP server
-                                        consumes); bare --json prints the report to stdout instead (pipeable —
-                                        `candor <classes> --json | jq .`; report envelope only, no sidecars)
-                      --policy <file>   enforce a policy file (deny/pure/allow/forbid, candor-spec §6.2) — exit 1 on a
-                                        violation, 2 if unreadable; honours $CANDOR_POLICY when the flag is absent
-                      --gate-json <f>   write the structured gate verdict { spec, ok, violations } as JSON
-                                        (candor-spec §3.3); `-` streams it to stdout
-                      --agents          print the agent contract embedded in this build (AGENTS.md)
-                      -V, --version     print the build and spec version (offline)
-                      -h, --help        show this help
+                    USAGE
+                      candor <classes-or-jar> [options]         analyse compiled classes (target/classes,
+                                                                build/classes/java/main, or a .jar)
+                      candor <action> [args] [options]          query the discovered report (.candor/ walk-up,
+                                                                $CANDOR_REPORT, or --report)
+                      candor --parallel <out-dir> <target>...   scan many targets concurrently, one report each
+                      candor parsepolicy <policy-file>          print a parsed policy file as canonical JSON
 
-                    See https://github.com/tombaldwin/candor""".formatted(release(), SPEC_VERSION));
+                    COMMON ACTIONS
+                      where <Effect>            the functions that perform an effect
+                      path <fn> <Effect>        the call path by which a function reaches an effect
+                      callers <fn>              who calls a function, direct and transitive
+                      tour [N]                  the N most surprising transitive reaches (default 10)
+                      blindspots                the Unknown sources worth resolving, ranked by reach
+                      gains <current> <base>    what a new version newly reaches (the supply-chain diff)
+                      fix <fn> <Effect>         the boundary hoist that would clear a violation
+
+                    ALL ACTIONS
+                      show  where  callers  map  containment  diff  reachable  impact  blindspots
+                      gains  path  tour  whatif  fix  fix-gate  unverified  rewire  parsepolicy
+
+                    OPTIONS  (uniform across every engine)
+                      --report <locator>        use this report instead of discovering .candor/
+                      --policy <file>           enforce a policy file (deny/pure/allow/forbid) — exit 1
+                                                on a violation, 2 if unreadable; honours $CANDOR_POLICY
+                                                when the flag is absent
+                      --json [<file>]           machine-readable output (the form an agent / MCP server
+                                                consumes); on a scan, --json <file> writes the report there,
+                                                bare --json prints it to stdout (pipeable — `candor <classes>
+                                                --json | jq .`; report envelope only, no sidecars)
+                      --gate-json <file>        write the structured gate verdict { spec, ok, violations }
+                                                as JSON; `-` streams it to stdout
+                      --agents                  print the agent contract embedded in this build (AGENTS.md)
+                      -V, --version             print the build and spec version (offline)
+                      -h, --help                show this help
+
+                    EXAMPLES
+                      candor build/libs/app.jar
+                      candor target/classes --json report.json
+                      candor where Db
+                      candor path OrderService.render Net
+                      candor app.jar --policy candor.policy --gate-json -
+
+                    ENVIRONMENT
+                      CANDOR_POLICY             policy file to enforce when --policy is absent
+                      CANDOR_REPORT             report locator for queries when --report is absent
+                      .candor/config            the declarative layer for the same settings, anchored to
+                                                the scan target; the env vars override it
+
+                    Docs: candor.poly.io   ·   Verify an install: candor doctor""");
             System.exit(0);
         }
         if (args[0].equals("--agents")) {

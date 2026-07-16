@@ -6,6 +6,21 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## [0.18.0] — 2026-07-16
+
+### spec 0.18 — the trust-trio
+
+candor-java now declares **spec `0.18`** (`SPEC_VERSION`). A pinned-tool-surface rung (no report/verdict
+change), closing three ways the tool could quietly mislead — all pinned four-way in the conformance suite:
+
+- **`--strict` advisory-verb CI gate**: `fix-gate`, `gains`, `unverified` are advisory (exit 0); `--strict`
+  makes each a CI gate (exit 1 while a finding remains). `gains` rejects a swallowed `--policy` (exit 2),
+  naming the scan-time `deny <E> gained` gate (`AS-EFF-005`).
+- **mostly-Unknown disclosure**: the scan opener + `tour` never say "nothing hidden" over a ≥⅓-Unknown graph;
+  `tour --json` carries an additive `unknown: {count, total}`.
+- Hardening from a Fable-model code review: `rejectUnknownFlag` now rejects single-dash typos (`-strict`),
+  matching the other engines.
+
 ## [0.16.0] — 2026-07-16
 
 ### spec 0.17 — the callgraph-aware baseline guard

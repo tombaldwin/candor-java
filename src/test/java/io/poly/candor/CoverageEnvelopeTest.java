@@ -217,7 +217,7 @@ class CoverageEnvelopeTest {
         Path base = reportFile("gbase.json", null);
         List<io.poly.candor.model.Effector> curFns = Query.load(cur.toString());
         String out = capture(() ->
-            Query.gains(curFns, cur.toString(), base.toString(), List.of(), true));
+            Query.gains(curFns, cur.toString(), base.toString(), List.of(), true, false));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
         // the CURRENT envelope's block, verbatim
         assertTrue(o.has("coverage"), "gains re-discloses the current report's coverage: " + out);
@@ -239,7 +239,7 @@ class CoverageEnvelopeTest {
         Path bareBase = reportFile("nb-base.json", null);
         List<io.poly.candor.model.Effector> bareFns = Query.load(bare.toString());
         String out = capture(() ->
-            Query.gains(bareFns, bare.toString(), bareBase.toString(), List.of(), true));
+            Query.gains(bareFns, bare.toString(), bareBase.toString(), List.of(), true, false));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
         assertFalse(o.has("coverage"), "pre-⟨0.15⟩ / fully-covered reports → no coverage key in gains");
         assertFalse(o.has("coverageDelta"), "equal (empty) uncovered sets → no delta");
@@ -249,7 +249,7 @@ class CoverageEnvelopeTest {
         Path base = reportFile("eq-base.json", cov);
         List<io.poly.candor.model.Effector> curFns = Query.load(cur.toString());
         String out2 = capture(() ->
-            Query.gains(curFns, cur.toString(), base.toString(), List.of(), true));
+            Query.gains(curFns, cur.toString(), base.toString(), List.of(), true, false));
         JsonObject o2 = JsonParser.parseString(out2).getAsJsonObject();
         assertTrue(o2.has("coverage"), "the current ledger still travels");
         assertFalse(o2.has("coverageDelta"), "same uncovered names → no delta");
@@ -261,7 +261,7 @@ class CoverageEnvelopeTest {
         Path base = reportFile("hbase.json", null, "Fs");   // baseline does Fs → cur GAINS Net (a TSV row)
         List<io.poly.candor.model.Effector> curFns = Query.load(cur.toString());
         String out = capture(() ->
-            Query.gains(curFns, cur.toString(), base.toString(), List.of(), false));
+            Query.gains(curFns, cur.toString(), base.toString(), List.of(), false, false));
         assertFalse(out.contains("coverage") || out.contains("okio"),
             "the human TSV is a pinned consumer surface — byte-stable, no coverage lines: " + out);
         assertTrue(out.contains("app.A.f\tNet"), "the TSV rows themselves are intact");

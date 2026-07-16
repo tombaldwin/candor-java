@@ -59,7 +59,7 @@ class FixGateTest {
         Path pol = dir.resolve("arch.policy");
         Files.writeString(pol, "deny Net domain\n");
 
-        String out = capture(() -> Query.fixGate(orderflowFns(), report, pol.toString(), true));
+        String out = capture(() -> Query.fixGate(orderflowFns(), report, pol.toString(), true, false));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
         assertFalse(o.get("ok").getAsBoolean(), "a crossing exists → not ok");
         JsonArray rem = o.getAsJsonArray("remedies");
@@ -152,7 +152,7 @@ class FixGateTest {
         Path pol = dir.resolve("arch.policy");
         Files.writeString(pol, "deny Net nonexistentlayer\n");
 
-        String out = capture(() -> Query.fixGate(orderflowFns(), report, pol.toString(), true));
+        String out = capture(() -> Query.fixGate(orderflowFns(), report, pol.toString(), true, false));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
         assertTrue(o.get("ok").getAsBoolean(), "no crossing → ok");
         assertEquals(0, o.getAsJsonArray("remedies").size());
@@ -209,5 +209,47 @@ class FixGateTest {
             System.setOut(orig);
         }
         return buf.toString();
+    }
+
+    /** Run an exit-code-returning call with stdout+stderr muted, returning the int. */
+    private static int exitOf(java.util.function.IntSupplier r) {
+        PrintStream o = System.out, e = System.err;
+        ByteArrayOutputStream sink = new ByteArrayOutputStream();
+        System.setOut(new PrintStream(sink));
+        System.setErr(new PrintStream(sink));
+        try { return r.getAsInt(); }
+        finally { System.setOut(o); System.setErr(e); }
+    }
+
+    @Test void fixGateStrictExitsOneOnCrossingAdvisoryOtherwise(@TempDir Path dir) throws Exception {
+        // #3 exit-code contract: fix-gate is ADVISORY (exit 0) by default so the agent fix-loop reads the
+        // remedy and edits; `--strict` makes an outstanding crossing a CI failure (exit 1), matching
+        // `unverified --strict`. Same crossing, two exit codes by flag.
+        String report = orderflowGraph(dir);
+        Path pol = dir.resolve("arch.policy");
+        Files.writeString(pol, "deny Net domain\n");
+        assertEquals(0, exitOf(() -> Query.fixGate(orderflowFns(), report, pol.toString(), false, false)),
+                "advisory default exits 0");
+        assertEquals(1, exitOf(() -> Query.fixGate(orderflowFns(), report, pol.toString(), false, true)),
+                "--strict with an outstanding crossing exits 1");
+        assertEquals(1, exitOf(() -> Query.fixGate(orderflowFns(), report, pol.toString(), true, true)),
+                "--strict --json with a crossing exits 1");
+        // clean policy → exit 0 even with --strict (no crossing to fail on)
+        Files.writeString(pol, "deny Net nonexistentlayer\n");
+        assertEquals(0, exitOf(() -> Query.fixGate(orderflowFns(), report, pol.toString(), false, true)),
+                "--strict over a clean report exits 0");
+    }
+
+    @Test void gainsStrictExitsOneAndRejectsSwallowedPolicy(@TempDir Path dir) throws Exception {
+        // #3: gains is a diff view (exit 0 by default). `--strict` fails on ANY gained effect; an unknown
+        // `--policy` a user reaches for expecting a gate is REJECTED loud (exit 2), never swallowed.
+        Path base = dir.resolve("b.lib.deep.json");
+        Path cur = dir.resolve("c.lib.deep.json");
+        Files.writeString(base, "{\"candor\":{\"version\":\"t\",\"spec\":\"0.17\"},\"package\":\"lib\",\"functions\":[{\"fn\":\"lib.f\",\"loc\":\"s:1\",\"inferred\":[\"Fs\"],\"hash\":\"h\"}]}");
+        Files.writeString(cur, "{\"candor\":{\"version\":\"t\",\"spec\":\"0.17\"},\"package\":\"lib\",\"functions\":[{\"fn\":\"lib.f\",\"loc\":\"s:1\",\"inferred\":[\"Fs\",\"Net\"],\"hash\":\"h\"}]}");
+        String c = dir.resolve("c").toString(), b = dir.resolve("b").toString();
+        assertEquals(0, exitOf(() -> Query.gains2(c, b, false, false, null)), "advisory default exits 0");
+        assertEquals(1, exitOf(() -> Query.gains2(c, b, false, true, null)), "--strict with a gain exits 1");
+        assertEquals(2, exitOf(() -> Query.gains2(c, b, false, false, "/x")), "a swallowed --policy is rejected (exit 2)");
     }
 }

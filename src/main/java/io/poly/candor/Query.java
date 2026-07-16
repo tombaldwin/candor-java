@@ -391,10 +391,10 @@ public final class Query {
             case "impact" -> impact(fns, a0, json);
             case "blindspots" -> blindspots(fns, json);
             case "tour" -> tour(fns, report, a0, json);
-            case "gains" -> gains2(a0, a1, json);
+            case "gains" -> gains2(a0, a1, json, strict, policyFlag);
             case "whatif" -> whatif(report, a0, a1, policyFlag, json);
             case "fix" -> fix(fns, report, a0, a1, policyFlag, json);
-            case "fix-gate" -> fixGate(fns, report, policyFlag, json);
+            case "fix-gate" -> fixGate(fns, report, policyFlag, json, strict);
             case "unverified" -> unverified(fns, policyFlag, json, strict);
             case "rewire" -> rewire2(a0, a1, json);
             default -> 2;
@@ -429,9 +429,17 @@ public final class Query {
         return diff(curFns, cur, base, json);
     }
 
-    /** `gains <current> <baseline>` (§3.3.1 two-positional): as {@link #diff2}, for the supply-chain gain. */
-    static int gains2(String curLoc, String baseLoc, boolean json) {
-        if (curLoc == null) return usage("gains <current> <baseline> [--json]");
+    /** `gains <current> <baseline>` (§3.3.1 two-positional): as {@link #diff2}, for the supply-chain gain.
+     *  Advisory (exit 0) by default; `--strict` fails on ANY gained effect (a supply-chain CI gate). gains
+     *  has no `--policy` of its own — the generic parser consumes it (a valid cross-verb flag), so a
+     *  `gains cur base --policy p` a user reaches for expecting a gate would be SILENTLY dropped and exit 0.
+     *  Reject it loud and point at the real gate (a `deny <E> gained` scan policy / `--strict`). */
+    static int gains2(String curLoc, String baseLoc, boolean json, boolean strict, String policyFlag) {
+        if (policyFlag != null) {
+            System.err.println("candor gains: unknown flag `--policy` — gains is a diff view; to FAIL CI on a newly-gained effect gate at scan time with a `deny <E> gained` policy (AS-EFF-005), or use `--strict` to fail on ANY gain");
+            return 2;
+        }
+        if (curLoc == null) return usage("gains <current> <baseline> [--json] [--strict]");
         String cur = resolveReportLocator(curLoc);
         if (cur == null) return 2;
         List<Effector> curFns;
@@ -449,7 +457,7 @@ public final class Query {
         // sibling report's graph as "new". ENGINE-OWNED matches only (resolveReportLocatorAll): a foreign
         // engine's sidecar beside ours is non-evidence, and an empty union means the graph is ABSENT.
         List<String> baseReports = baseLoc == null ? List.of() : resolveReportLocatorAll(baseLoc);
-        return gains(curFns, cur, base, baseReports, json);
+        return gains(curFns, cur, base, baseReports, json, strict);
     }
 
     static int usage(String u) {
@@ -1246,7 +1254,7 @@ public final class Query {
      *  report, collapsing the inheritors of one root cause to a single plan. The edit-time loop folds this
      *  into the block message so the agent gets the FIX, not just the finding. Scope is AS-EFF-006 only —
      *  the one refactor candor can compute; allowlist/layering findings are a different shape. */
-    static int fixGate(List<Effector> fns, String reportPath, String policyPath, boolean json) {
+    static int fixGate(List<Effector> fns, String reportPath, String policyPath, boolean json, boolean strict) {
         if (!loadPolicyOrFail(policyPath, "fix-gate")) return 2;
 
         Map<String, Effector> byName = new HashMap<>();
@@ -1271,7 +1279,9 @@ public final class Query {
             for (Remedy p : plans.values()) rem.add(p.toJson());
             out.put("remedies", rem);
             emit(out);
-            return 0;
+            // Advisory by default (exit 0 — the agent fix-loop reads the remedy and edits); `--strict` makes
+            // the exit follow `ok`, so CI can REQUIRE zero outstanding crossings (mirrors `unverified --strict`).
+            return strict && !plans.isEmpty() ? 1 : 0;
         }
         if (plans.isEmpty()) {
             System.out.println("candor fix-gate: no deny/pure boundary crossings in this report ✓");
@@ -1287,6 +1297,10 @@ public final class Query {
             System.out.print(sb);
         }
         System.out.println("\n  (Advisory: candor names the shape, you write the code; the gate re-scan verifies each fix.)");
+        if (strict) {
+            System.out.println("  (--strict: " + n + " outstanding boundary crossing(s) → exit 1)");
+            return 1;
+        }
         return 0;
     }
 
@@ -1593,8 +1607,8 @@ public final class Query {
      *  between releases. {gained:[Effect], byFunction:[{effect,fn,origin}]} — the cross-engine
      *  machine-readable form. Always exit 0 (candor-ts parity: the gained-effect exit-1 contract belongs to
      *  `diff` alone; gains is a pure disclosure whose consumers read the JSON, not the exit code). */
-    static int gains(List<Effector> cur, String curPath, String basePath, List<String> baseReports, boolean json) {
-        if (basePath == null) return usage("gains <report.json> <baseline.json> [--json]");
+    static int gains(List<Effector> cur, String curPath, String basePath, List<String> baseReports, boolean json, boolean strict) {
+        if (basePath == null) return usage("gains <report.json> <baseline.json> [--json] [--strict]");
         // An EMPTY union is meaningful, not a gap to paper over: the locator expanded to no ENGINE-OWNED
         // report (e.g. only a foreign engine's report matched the prefix), so the baseline graph is
         // ABSENT and origin resolves "unknown". Falling back to basePath here would resurrect the
@@ -1687,9 +1701,15 @@ public final class Query {
                 out.put("coverageDelta", delta);
             }
             emit(out);
-            return 0;
+            // Advisory by default (exit 0 — gains is a diff view); `--strict` fails on ANY gained effect so a
+            // supply-chain CI job can require a bump introduce no new capability (mirrors `unverified --strict`).
+            return strict && !gained.isEmpty() ? 1 : 0;
         }
         for (Map<String, Object> m : byFunction) System.out.println(m.get("fn") + "\t" + m.get("effect"));
+        if (strict && !gained.isEmpty()) {
+            System.err.println("candor gains --strict: the surface gained new effect(s) vs the baseline → exit 1");
+            return 1;
+        }
         return 0;
     }
 

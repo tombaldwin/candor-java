@@ -560,6 +560,15 @@ public final class Query {
     /** Which functions perform an effect — direct sources split from inheritors. */
     static int where(List<Effector> fns, String eff, boolean json) {
         if (eff == null) return usage("where <Effect> [--report <locator>] [--json]");
+        // A typo'd/unknown effect NAME is a LOUD error (exit 2) — never a false-empty 0-result at exit 0 that
+        // reads as an authoritative "nothing performs Net" when the user actually typed "Network" (corpus-audit
+        // #3). A KNOWN effect that is simply absent stays a valid 0-result; an unknown name PRESENT in the
+        // report (a spec extension effect) is allowed — so error only when the name is NEITHER known nor present.
+        if (!Rules.KNOWN_EFFECTS.contains(eff) && !eff.equals("Unknown")
+                && fns.stream().noneMatch(f -> f.inferred().toNames().contains(eff))) {
+            System.err.println("candor where: unknown effect `" + eff + "` (known: " + String.join(", ", new java.util.TreeSet<>(Rules.KNOWN_EFFECTS)) + ", Unknown)");
+            return 2;
+        }
         List<String> direct = fns.stream().filter(f -> f.direct().toNames().contains(eff)).map(f -> f.fn()).sorted().toList();
         List<String> inherit = fns.stream()
                 .filter(f -> f.inferred().toNames().contains(eff) && !f.direct().toNames().contains(eff)).map(f -> f.fn()).sorted().toList();
@@ -787,9 +796,16 @@ public final class Query {
         List<String> targets = new ArrayList<>();
         for (String n : names) if (tier > 0 && matchTier(n, q) >= tier) targets.add(n);
         if (targets.isEmpty()) {
-            if (json) emit(new LinkedHashMap<>());
-            else System.out.println("candor: no function matching `" + q + "` found in the call graph.");
-            return 0;
+            // A nonexistent function is a LOUD error (exit 2), like path/impact — never an empty result at exit
+            // 0, which reads as an authoritative "nothing calls it" for a fn that doesn't exist (corpus-audit
+            // #3). Gated on a non-empty call graph so a report without one isn't misreported as "no such fn".
+            if (names.isEmpty()) {
+                if (json) emit(new LinkedHashMap<>());
+                else System.out.println("candor: no call graph in the report.");
+                return 0;
+            }
+            System.err.println("candor callers: no function matching `" + q + "` in the call graph");
+            return 2;
         }
         TreeSet<String> direct = new TreeSet<>();
         for (String t : targets) direct.addAll(rev.getOrDefault(t, List.of()));
@@ -990,7 +1006,9 @@ public final class Query {
          *  layer, site and hoist target — not by which inheriting function tripped the gate. */
         String dedupKey() { return effect + "|" + layer + "|" + sites + "|" + hoistTo; }
         void renderText(StringBuilder out) {
-            String layerLabel = layer.isEmpty() ? "this" : "`" + layer + "`";
+            // An empty scope is a GLOBAL rule (`deny Exec` with no layer — program-wide); render a real word,
+            // not the literal "this", which read like an unsubstituted template variable (#12a).
+            String layerLabel = layer.isEmpty() ? "global" : "`" + layer + "`";
             String siteList = sites.isEmpty()
                     ? "(not a local source — a cross-jar or Unknown effect)"
                     : sites.stream().map(x -> "`" + x + "`").collect(Collectors.joining(", "));

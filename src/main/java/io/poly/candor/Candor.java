@@ -92,10 +92,12 @@ public class Candor {
      *  never be silently ignored nor read as a positional path — the same gateless-green class as an
      *  unreadable policy file. Shared by main() and Query.run so the binary has ONE posture. */
     static void rejectUnknownFlag(String arg, java.util.Set<String> known, String usage) {
-        // A `--`-prefixed token OR a bare `-` (candor reads no stdin, so `-` is never a valid positional) that
-        // isn't a known flag is a typo/newer-flag — FAIL with exit 2 rather than silently drop it or read it as
-        // a path. The bare-`-` case was previously ignored, slipping past the strict unknown-flag posture.
-        if ((arg.startsWith("--") || arg.equals("-")) && !known.contains(arg)) {
+        // ANY `-`-prefixed token that isn't a known flag is a typo/newer-flag — FAIL with exit 2 rather than
+        // silently drop it or read it as a path. This covers a bare `-` (candor reads no stdin, so `-` is
+        // never a valid positional) AND a single-dash typo like `-strict`: the latter, matched only against
+        // `--`/bare-`-` before, was swallowed as a positional and disarmed the CI gate at exit 0 (Fable-review
+        // finding B — rust/ts/swift all reject a single-dash typo; java diverged).
+        if (arg.startsWith("-") && !known.contains(arg)) {
             System.err.println("candor: unknown flag " + arg + " (usage: " + usage + ")");
             System.exit(2);
         }

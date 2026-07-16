@@ -1,8 +1,8 @@
 {
   "aliases": {
     "candor": {
-      "script-ref": "https://github.com/tombaldwin/candor-java/releases/download/v0.15.0/candor-java-0.15.0-all.jar",
-      "description": "candor-java — per-method side-effect audit for JVM bytecode (candor-spec 0.15). Usage: jbang candor@tombaldwin/candor-java <classes-dir-or-jar> [--json out.json] [--policy arch.policy] [--gate-json gate.json]"
+      "script-ref": "https://github.com/tombaldwin/candor-java/releases/download/v0.16.0/candor-java-0.16.0-all.jar",
+      "description": "candor-java — per-method side-effect audit for JVM bytecode (candor-spec 0.16). Usage: jbang candor@tombaldwin/candor-java <classes-dir-or-jar> [--json out.json] [--policy arch.policy] [--gate-json gate.json]"
     }
   }
 }

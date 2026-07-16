@@ -6,6 +6,34 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## [0.16.0] — 2026-07-16
+
+### spec 0.16 — the callgraph-aware baseline guard
+
+candor-java now declares **spec `0.16`** (`SPEC_VERSION`; the envelope + `--gate-json` verdict carry it).
+The ⟨0.16⟩ rung closes the sharpest supply-chain shape in the baseline regression guard and softens the
+Unknown trust marker from a regression into an advisory.
+
+- **⚠ Callgraph-aware existence — pure→effectful is now caught.** Reports OMIT pure functions (§2), so a
+  formerly-PURE function that turns effectful used to read as "new code" and escape the guard. The guard
+  now keys existence on the baseline CALLGRAPH sidecar (§2.2 — it lists pure leaves), exactly as `gains
+  --json`'s `origin` does: a fn that is a graph node (even with an empty baseline effect set) and now
+  performs ANY effect is a GAIN → AS-EFF-005 violation (exit 1). A fn genuinely absent from the graph is
+  real new code → exempt. **Verdict-affecting**: a baseline whose sidecar is present may now fail a gate
+  that previously passed — regenerate baselines (a file-mode `--json` emits the `.callgraph.json` sidecar)
+  and review policies.
+  - **Sidecar ABSENT** → the guard degrades to report-only existence (the pre-⟨0.16⟩ semantics: a
+    formerly-pure fn reads as new; widening on already-effectful fns is still caught), disclosed once on
+    stderr. Never a silent narrowing — you are told the guard is weaker.
+  - **Sidecar PRESENT-but-corrupt** → fail closed (exit 2), same as a corrupt baseline report: a broken
+    sidecar must not silently narrow the guard.
+- **Unknown-only gain is advisory, not a regression.** A function whose ONLY gain vs the baseline is
+  `Unknown` (the §4 trust marker, not an effect) is dominated by resolution noise on real dependency bumps
+  (dispatch-resolution variance; positional `$N` anonymous-class names differ across versions —
+  SOUNDNESS-LOG 2026-07-16), so it is collected and disclosed once, never raising AS-EFF-005 or exit 1. A
+  mixed real+Unknown gain still fires on the REAL boundary effect, and the violation reports the
+  Unknown-filtered gained set (so `Unknown` never surfaces in a violation).
+
 ## [0.15.0] — 2026-07-15
 
 ### spec 0.15 — the coverage envelope

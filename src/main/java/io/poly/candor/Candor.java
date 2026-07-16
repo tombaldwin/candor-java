@@ -58,14 +58,14 @@ public class Candor {
     /** The candor-spec contract version this build implements (the report SCHEMA + AS-EFF codes),
      *  distinct from the engine build id (the report's `version`). Emitted as the envelope's `spec` so a
      *  consumer can see which contract a report conforms to. candor-java is the REFERENCE engine and MAY
-     *  lead a minor rung (candor-spec §"Versioning policy" — the version ladder): it declares `0.15` (the
-     *  0.15 rung is the coverage envelope — the κ-coverage ledger, "what the scan couldn't see", travels
-     *  WITH the report as the §2 `coverage` field, omitted when empty, computed the ONE shared way
-     *  (kappaUncovered) that also feeds the stderr disclosure and the verdict-preserving --gate-json
-     *  advisory, so the surfaces can never disagree; candor-java is the REFERENCE implementation) while a
-     *  sibling may remain on an earlier floor and raise as it implements it. Additive-only, so an older
-     *  consumer is unaffected. */
-    static final String SPEC_VERSION = "0.15";
+     *  lead a minor rung (candor-spec §"Versioning policy" — the version ladder): it declares `0.16` (the
+     *  0.16 rung is the callgraph-aware baseline guard — a formerly-PURE fn that turns effectful is now
+     *  caught as a gain by keying existence on the baseline callgraph sidecar rather than the report, and
+     *  an Unknown-ONLY gain is advisory rather than a regression; candor-java is the REFERENCE
+     *  implementation. The prior 0.15 rung — the κ-coverage ledger riding the §2 `coverage` field — still
+     *  applies) while a sibling may remain on an earlier floor and raise as it implements it. Additive-only,
+     *  so an older consumer is unaffected. */
+    static final String SPEC_VERSION = "0.16";
 
     static final String FS_UNKNOWN = "?";   // Fs reached with no recorded kind (cross-jar) -> make no read/write claim
 

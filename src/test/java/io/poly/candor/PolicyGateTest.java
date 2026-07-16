@@ -111,7 +111,7 @@ class PolicyGateTest {
             "only the function that gained an effect vs the baseline is a regression");
     }
 
-    /** ⟨0.16 staged⟩ Write a callgraph sidecar next to a baseline report path (strip a trailing `.json`,
+    /** ⟨0.16⟩ Write a callgraph sidecar next to a baseline report path (strip a trailing `.json`,
      *  append `.callgraph.json` — the {@link Query#loadCallgraphSignalled} pairing). `body` is the raw
      *  sidecar JSON, so a test can also write a CORRUPT one. */
     private void writeSidecar(Path reportPath, String body) throws Exception {
@@ -122,7 +122,7 @@ class PolicyGateTest {
 
     @Test
     void baselineSidecarCatchesPureToEffectful() throws Exception {
-        // ⟨0.16 staged⟩ The sharpest supply-chain shape: a fn that was PURE at the baseline (absent from
+        // ⟨0.16⟩ The sharpest supply-chain shape: a fn that was PURE at the baseline (absent from
         // the report, which omits pure fns — but present as a callgraph NODE) now performs an effect.
         // With the sidecar present it is keyed as existing (baseline ∅) → any effect is a GAIN.
         String v = ReportWriter.provenance()[0];
@@ -136,7 +136,7 @@ class PolicyGateTest {
 
     @Test
     void baselineUnknownOnlyGainIsAdvisoryNotAViolation() throws Exception {
-        // ⟨0.16 staged⟩ A fn that was PURE at the baseline (a callgraph node, absent from the report) now
+        // ⟨0.16⟩ A fn that was PURE at the baseline (a callgraph node, absent from the report) now
         // reaches only an UNRESOLVED call (reflection/dynamic → Unknown). Unknown is the §4 trust marker,
         // not an effect (`pure` policies exclude it); on version bumps it is resolution noise. So this is
         // ADVISORY — disclosed on stderr, NOT an AS-EFF-005 regression (returns 0).
@@ -151,7 +151,7 @@ class PolicyGateTest {
 
     @Test
     void baselineMixedRealPlusUnknownGainReportsOnlyTheRealEffect() throws Exception {
-        // ⟨0.16 staged⟩ A gain of a REAL effect (Fs) alongside Unknown is STILL a violation (exit 1), but
+        // ⟨0.16⟩ A gain of a REAL effect (Fs) alongside Unknown is STILL a violation (exit 1), but
         // the reported effect set is the REAL gained set — Unknown is filtered out of what the finding shows.
         String v = ReportWriter.provenance()[0];
         Path base = file("base", "{\"candor\":{\"version\":\"" + v + "\"},\"functions\":[{\"fn\":\"a.B.c\",\"inferred\":[\"Net\"]}]}");
@@ -163,7 +163,7 @@ class PolicyGateTest {
 
     @Test
     void baselineWithoutSidecarDegradesToReportOnly() throws Exception {
-        // ⟨0.16 staged⟩ No sidecar → existence is report-only (pre-⟨0.16⟩): a fn absent from the report is
+        // ⟨0.16⟩ No sidecar → existence is report-only (pre-⟨0.16⟩): a fn absent from the report is
         // indistinguishable from new code, so the pure→effectful transition slips through — NOT a failure,
         // the weaker guard, disclosed once on stderr. (Sidecar-present is baselineSidecarCatchesPureToEffectful.)
         String v = ReportWriter.provenance()[0];

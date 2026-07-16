@@ -412,7 +412,7 @@ class CliBehaviourTest {
 
     @Test
     void corruptBaselineSidecarFailsClosedNotOpen() throws Exception {
-        // ⟨0.16 staged⟩ The baseline callgraph sidecar keys the guard's existence check (it lists the pure
+        // ⟨0.16⟩ The baseline callgraph sidecar keys the guard's existence check (it lists the pure
         // leaves the report omits). A PRESENT-but-corrupt sidecar is invalid gate input → exit 2, exactly
         // like a corrupt baseline REPORT: it must not silently narrow the guard to report-only existence
         // (dropping the pure-leaf nodes would let a formerly-pure→effectful gain masquerade as new code).

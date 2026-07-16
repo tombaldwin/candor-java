@@ -106,7 +106,7 @@ final class Policy {
                     + " Regenerate deliberately with this build: candor <target> --json " + path);
             System.exit(2);
         }
-        // ⟨0.16 staged⟩ Callgraph-aware existence. A function ABSENT from the baseline REPORT is not
+        // ⟨0.16⟩ Callgraph-aware existence. A function ABSENT from the baseline REPORT is not
         // necessarily new: reports OMIT pure functions (§2), so a formerly-PURE fn that turns effectful
         // reads as "new code" and escapes the guard — the sharpest supply-chain shape. Key existence on
         // the baseline CALLGRAPH sidecar instead (§2.2 — it lists pure leaves), exactly as `gains --json`'s
@@ -145,7 +145,7 @@ final class Policy {
                     + "the full pure→effectful guard.");
         }
         int v = 0;
-        // ⟨0.16 staged⟩ Functions whose ONLY gain vs the baseline is `Unknown` — the §4 trust marker,
+        // ⟨0.16⟩ Functions whose ONLY gain vs the baseline is `Unknown` — the §4 trust marker,
         // NOT an effect (`pure` policies already exclude it). On real dependency bumps an Unknown-only
         // gain is dominated by resolution noise (dispatch-resolution variance; a JVM anonymous class's
         // positional `$N` differs across versions — SOUNDNESS-LOG 2026-07-16), so it is ADVISORY, never a
@@ -169,7 +169,7 @@ final class Policy {
             if (gainedSet.isEmpty()) {
                 continue;
             }
-            // ⟨0.16 staged⟩ Split the gain: the ratchet fires only on a REAL boundary effect. An
+            // ⟨0.16⟩ Split the gain: the ratchet fires only on a REAL boundary effect. An
             // Unknown-ONLY gain is advisory (disclosed below), and the REAL gained set (Unknown filtered
             // out) is what the violation reports, so a mixed real+Unknown gain never shows `Unknown`.
             List<String> gained = gainedSet.without(Effect.UNKNOWN).toNames();

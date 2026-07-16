@@ -1856,6 +1856,17 @@ public final class Query {
             }
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("reaches", reaches);
+            // The MACHINE half of the mostly-Unknown disclosure (Fable-review finding E): a JSON consumer
+            // (the agent loop) got a bare {"reaches":[]} and read it as clean — the same false all-clear the
+            // text branch qualifies. ADDITIVE + present only when the ≥⅓-Unknown threshold trips (byte-
+            // identical otherwise); `unknown` sorts after `reaches` to match Rust's serde output.
+            long tot = inferred.values().stream().filter(es -> !es.toNames().isEmpty()).count();
+            long unk = inferred.values().stream().filter(es -> es.toNames().contains("Unknown")).count();
+            if (tot > 0 && unk * 3 >= tot) {
+                Map<String, Object> u = new TreeMap<>();  // count, total (sorted, matching serde)
+                u.put("count", unk); u.put("total", tot);
+                out.put("unknown", u);
+            }
             // Pure JSON to stdout, compact (no pretty-printing) — matches the Rust reference's
             // serde_json::to_string. The shared JSON serializer here pretty-prints, so build a compact one.
             System.out.println(new GsonBuilder().create().toJson(out));

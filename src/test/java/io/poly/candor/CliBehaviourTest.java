@@ -251,6 +251,16 @@ class CliBehaviourTest {
         assertTrue(r.stderr().contains("unknown flag -"), "must diagnose the bare dash\nSTDERR:\n" + r.stderr());
     }
 
+    @Test
+    void singleDashTypoExitsTwo() throws Exception {
+        // Fable-review finding B: a SINGLE-dash typo (`-strict`) must be rejected (exit 2), not swallowed as a
+        // positional — swallowed, it ran the CI gate disarmed at exit 0. rejectUnknownFlag matched only `--`
+        // /bare-`-` before, diverging from rust/ts/swift which reject any `-`-prefixed non-known token.
+        Run r = runCli(comparePureFixture().toString(), "-strict");
+        assertEquals(2, r.exit(), "a single-dash typo `-strict` must exit 2, not be swallowed\nSTDERR:\n" + r.stderr());
+        assertTrue(r.stderr().contains("unknown flag -strict"), "must diagnose the single-dash typo\nSTDERR:\n" + r.stderr());
+    }
+
     // ── adversarial / robustness: clean one-line stderr + exit 2, NO stack trace ─────────────────────
 
     @Test

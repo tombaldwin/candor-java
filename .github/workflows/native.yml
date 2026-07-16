@@ -22,8 +22,9 @@ jobs:
             asset: candor-linux-x64
           - os: macos-latest       # macOS arm64
             asset: candor-macos-arm64
-          - os: macos-13           # macOS x64
-            asset: candor-macos-x64
+          # macOS x64 (Intel) dropped: the macos-13 runner reliably hangs in the queue and never
+          # completes, stalling every release's native job (0.16 + 0.17). Apple Silicon + Linux cover
+          # what `candor update` fetches; add it back only if an Intel binary is actually requested.
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6

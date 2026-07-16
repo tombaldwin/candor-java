@@ -283,11 +283,15 @@ public final class Query {
         String reportFlag = null;       // --report <locator> (canonical §3.3.1)
         String policyFlag = null;       // --policy <file> (canonical §3.3.1)
         List<String> pos = new ArrayList<>();
-        Set<String> known = java.util.Set.of("--json", "--include-unknown", "--strict", "--report", "--policy");
+        // `--text`/`--human` are candor-ts's output-mode flags (#8): java prose is always the default, so
+        // ACCEPT + ignore them — cross-engine `candor <verb> --text` must not error just because the report
+        // routed to the JVM engine. (java already rejects a genuinely-unknown flag via rejectUnknownFlag.)
+        Set<String> known = java.util.Set.of("--json", "--text", "--human", "--include-unknown", "--strict", "--report", "--policy");
         String usage = "candor " + cmd + " <verb-args…> [--report <locator>] [--policy <file>] [--json] [--strict] [--include-unknown]";
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
                 case "--json" -> json = true;
+                case "--text", "--human" -> { /* candor-ts output-mode flags; java prose is the default — accept + ignore */ }
                 case "--include-unknown" -> includeUnknown = true;
                 case "--strict" -> strict = true;
                 case "--report" -> {

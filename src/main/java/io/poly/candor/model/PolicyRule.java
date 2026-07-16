@@ -1,5 +1,6 @@
 package io.poly.candor.model;
 
+import java.util.Set;
 import java.util.SortedSet;
 
 /**
@@ -20,7 +21,17 @@ import java.util.SortedSet;
  */
 public sealed interface PolicyRule permits PolicyRule.Deny, PolicyRule.Allow, PolicyRule.Forbid {
 
-    record Deny(EffectSet effects, String scope, String src) implements PolicyRule {}
+    /**
+     * {@code deny <Effect…> [Unknown[<class…>]] [scope]} / {@code pure [scope]}. {@code unknownClasses} is
+     * the reason-class filter on an {@code Unknown} membership (REASON-SCOPED-UNKNOWN-DESIGN.md): an EMPTY
+     * set means {@code Unknown[*]} — match any {@code Unknown} regardless of reason (the bare, pre-rung
+     * form); a non-empty set matches only an {@code Unknown} whose reason maps to one of these classes.
+     * Concrete effects in {@code effects} are unaffected by it.
+     */
+    record Deny(EffectSet effects, String scope, String src, Set<ReasonClass> unknownClasses) implements PolicyRule {
+        /** Bare form: {@code Unknown} (if present in {@code effects}) matches any reason — {@code Unknown[*]}. */
+        public Deny(EffectSet effects, String scope, String src) { this(effects, scope, src, Set.of()); }
+    }
 
     record Allow(Effect effect, String scope, SortedSet<String> values, String src) implements PolicyRule {}
 

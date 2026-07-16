@@ -220,6 +220,18 @@ final class Policy {
                 EffectSet bad = r.effects().isEmpty()
                         ? e.getValue().without(Effect.UNKNOWN)
                         : e.getValue().intersect(r.effects());
+                // Reason-scoped Unknown (REASON-SCOPED-UNKNOWN-DESIGN.md): a `deny E Unknown[classes]` rule
+                // (non-empty filter) fires its Unknown part ONLY if the fn's Unknown reasons include one of
+                // those classes. Concrete effects in `bad` are untouched — only the Unknown membership is scoped.
+                if (bad.toNames().contains("Unknown") && !r.unknownClasses().isEmpty()) {
+                    var reasons = ctx().unknownWhy.get(fn);
+                    java.util.Set<ReasonClass> fnClasses = reasons == null ? new java.util.HashSet<>()
+                            : reasons.stream().map(ReasonClass::of).collect(java.util.stream.Collectors.toSet());
+                    // An Unknown with NO recorded reason is UNRESOLVED (conservative — stays in `Unknown[*]`/`[unresolved]`).
+                    if (fnClasses.isEmpty()) fnClasses = java.util.Set.of(ReasonClass.UNRESOLVED);
+                    boolean matched = fnClasses.stream().anyMatch(r.unknownClasses()::contains);
+                    if (!matched) bad = bad.without(Effect.UNKNOWN);   // tolerated: wrong reason-class
+                }
                 if (!bad.isEmpty()) {
                     List<String> bn = bad.toNames();
                     diag(DiagnosticCode.AS_EFF_006, bn, "`%s` performs { %s }, forbidden by policy%s: `%s`",
@@ -364,13 +376,51 @@ final class Policy {
                     // load-bearing: an empty-effect rule would forbid EVERYTHING). `Unknown` is denyable
                     // so `deny Unknown <scope>` can forbid the unverifiable case (AS-EFF-008's companion).
                     List<String> effNames = new ArrayList<>();
+                    // Reason-class filter on an `Unknown` membership (REASON-SCOPED-UNKNOWN-DESIGN.md): empty ⇒
+                    // `Unknown[*]` (any reason — the bare form); non-empty ⇒ only those classes. `*` = all.
+                    java.util.Set<ReasonClass> unknownClasses = new java.util.LinkedHashSet<>();
+                    boolean unknownStar = false;
                     String scope = "";
                     for (int i = 1; i < t.length; i++) {
-                        if (KNOWN_EFFECTS.contains(t[i]) || "Unknown".equals(t[i])) effNames.add(t[i]);
-                        else { scope = t[i]; break; }
+                        String tok = t[i];
+                        if (KNOWN_EFFECTS.contains(tok) || "Unknown".equals(tok)) {
+                            effNames.add(tok);
+                            if ("Unknown".equals(tok)) unknownStar = true;      // bare Unknown ⇒ all classes
+                        } else if (tok.startsWith("Unknown[") && tok.endsWith("]")) {
+                            effNames.add("Unknown");
+                            String inner = tok.substring("Unknown[".length(), tok.length() - 1);
+                            for (String cn : inner.split(",")) {
+                                cn = cn.trim();
+                                if (cn.isEmpty()) continue;
+                                if (cn.equals("*")) { unknownStar = true; continue; }
+                                // Built-in alias `dynamic` = every GENUINE blind-spot class (excludes `setup`);
+                                // the design's recommended usable strict gate. Includes `unresolved` (the catch-all),
+                                // so `Unknown[dynamic]` never under-gates.
+                                if (cn.equals("dynamic")) {
+                                    unknownClasses.add(ReasonClass.REFLECT);
+                                    unknownClasses.add(ReasonClass.DISPATCH);
+                                    unknownClasses.add(ReasonClass.INDIRECT);
+                                    unknownClasses.add(ReasonClass.NATIVE);
+                                    unknownClasses.add(ReasonClass.UNRESOLVED);
+                                    continue;
+                                }
+                                ReasonClass rc = ReasonClass.fromToken(cn);
+                                if (rc == null) warnPolicy(line, "unknown reason-class `" + cn
+                                        + "` (known: reflect,dispatch,indirect,native,unresolved,setup; aliases: dynamic,*)");
+                                else unknownClasses.add(rc);
+                            }
+                        } else { scope = tok; break; }
                     }
                     if (effNames.isEmpty()) { warnPolicy(line, "names no known effect"); break; }
-                    ctx().denyRules.add(new PolicyRule.Deny(EffectSet.ofNames(effNames), scope, line));
+                    // `*` (or bare `Unknown`) means all classes ⇒ empty filter (matches any Unknown).
+                    if (unknownStar) unknownClasses.clear();
+                    // A2 under-gating lint: a narrowed scope that omits `unresolved` (the catch-all for holes an
+                    // engine couldn't classify) may silently tolerate exactly those — flag it (advisory, not fatal).
+                    else if (!unknownClasses.isEmpty() && !unknownClasses.contains(ReasonClass.UNRESOLVED)) {
+                        warnPolicy(line, "narrow `Unknown[…]` scope omits `unresolved` — may UNDER-gate on holes "
+                                + "the engine couldn't classify; add `unresolved` (or use the `dynamic` set) to stay conservative");
+                    }
+                    ctx().denyRules.add(new PolicyRule.Deny(EffectSet.ofNames(effNames), scope, line, unknownClasses));
                     break;
                 }
                 case "pure": {

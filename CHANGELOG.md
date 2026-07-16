@@ -8,7 +8,7 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.16.0] — 2026-07-16
 
-### spec 0.16 — the callgraph-aware baseline guard
+### spec 0.17 — the callgraph-aware baseline guard
 
 candor-java now declares **spec `0.16`** (`SPEC_VERSION`; the envelope + `--gate-json` verdict carry it).
 The ⟨0.16⟩ rung closes the sharpest supply-chain shape in the baseline regression guard and softens the

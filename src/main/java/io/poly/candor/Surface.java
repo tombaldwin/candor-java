@@ -331,9 +331,21 @@ final class Surface {
         switch (r.state) {
             case NONE:
                 return; // zero effectful functions — emit nothing
-            case FALLBACK:
+            case FALLBACK: {
+                // Do NOT reassure "nothing hidden" over a meaningfully-Unknown graph: the Unknowns (unresolved
+                // calls) ARE the hidden part, their transitive effects unanalyzed. ≥⅓ of effectful fns Unknown
+                // → qualify + point at blindspots (re-audit cardinal sin; four-way with candor-ts/rust).
+                long total = inferred.values().stream().filter(es -> !es.toNames().isEmpty()).count();
+                long unknown = inferred.values().stream().filter(es -> es.toNames().contains("Unknown")).count();
+                if (total > 0 && unknown * 3 >= total) {
+                    err.println("candor: no surprising reaches — but " + unknown + " of " + total
+                        + " function(s) are Unknown (unresolved calls; their transitive effects are NOT analyzed). "
+                        + "Run `candor blindspots`; unresolvable imports or missing project config are the usual cause.");
+                    return;
+                }
                 err.println("candor: nothing hidden — every effect sits where its name says it should.");
                 return;
+            }
             case WINNER:
                 Find f = r.find;
                 String whereS = loc.getOrDefault(f.source, "?");

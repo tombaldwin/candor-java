@@ -1840,7 +1840,17 @@ public final class Query {
 
         if (finds.isEmpty()) {
             // Effectful-but-nothing-surprising vs genuinely-pure both land here; either way the honest line
-            // is the useful answer (never a manufactured surprise) — mirrors the scan-note fallback.
+            // is the useful answer (never a manufactured surprise) — mirrors the scan-note fallback. BUT never
+            // reassure "nothing hidden" over a meaningfully-Unknown graph: the Unknowns ARE the hidden part
+            // (re-audit cardinal sin; four-way with candor-ts/rust). ≥⅓ effectful Unknown → qualify + blindspots.
+            long total = inferred.values().stream().filter(es -> !es.toNames().isEmpty()).count();
+            long unknown = inferred.values().stream().filter(es -> es.toNames().contains("Unknown")).count();
+            if (total > 0 && unknown * 3 >= total) {
+                System.out.println("candor: no surprising reaches — but " + unknown + " of " + total
+                    + " function(s) are Unknown (unresolved calls; their transitive effects are NOT analyzed). "
+                    + "Run `candor blindspots`; unresolvable imports or missing project config are the usual cause.");
+                return 0;
+            }
             System.out.println("candor: nothing hidden — every effect sits where its name says it should.");
             return 0;
         }

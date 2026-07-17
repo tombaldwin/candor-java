@@ -55,6 +55,28 @@ public final class ReportJson {
             cov.put("uncovered", unc);
             envelope.put("coverage", cov);
         }
+        // ⟨0.21⟩ COMPLETENESS MANIFEST (Gap 1): the analyzed-universe summary, so a consumer of the bare
+        // envelope tells analyzed-pure from never-seen (pure count = analyzed.count − |functions|). Emitted
+        // whenever the engine could enumerate its analyzed set (always, here); omitted only if it couldn't.
+        if (report.analyzed() != null) {
+            Map<String, Object> an = new LinkedHashMap<>();
+            an.put("count", report.analyzed().count());
+            an.put("digest", report.analyzed().digest());
+            envelope.put("analyzed", an);
+        }
+        // ⟨0.21⟩ COMPLETENESS MANIFEST (Gap 2): the target's own source candor could NOT analyze (skipped
+        // unparseable .class). OMITTED when empty (a complete scan is byte-identical to a pre-rung report),
+        // so a MACHINE reading --json sees the incompleteness the stderr warning alone used to hide.
+        if (report.unanalyzed() != null && !report.unanalyzed().isEmpty()) {
+            List<Map<String, Object>> un = new ArrayList<>();
+            for (Report.UnanalyzedUnit u : report.unanalyzed()) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("path", u.path());
+                m.put("reason", u.reason());
+                un.add(m);
+            }
+            envelope.put("unanalyzed", un);
+        }
         List<Map<String, Object>> entries = new ArrayList<>();
         for (Effector e : report.functions()) entries.add(entry(e));
         envelope.put("functions", entries);

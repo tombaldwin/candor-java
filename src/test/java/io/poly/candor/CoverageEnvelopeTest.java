@@ -135,8 +135,8 @@ class CoverageEnvelopeTest {
         assertEquals(0, r.exit(), r.stderr());
         assertFalse(r.stderr().contains("classifier doesn't cover"), "no stderr ledger when fully covered");
         JsonObject root = JsonParser.parseString(Files.readString(report)).getAsJsonObject();
-        assertEquals(Set.of("candor", "packages", "functions"), new TreeSet<>(root.keySet()),
-            "a fully-covered report is byte-identical to a pre-⟨0.15⟩ one: NO coverage key");
+        assertEquals(Set.of("candor", "packages", "analyzed", "functions"), new TreeSet<>(root.keySet()),
+            "a fully-covered report has NO coverage key; ⟨0.21⟩ `analyzed` (completeness manifest) is always present");
     }
 
     // ── 2. the --gate-json advisory ───────────────────────────────────────────────────────────────
@@ -151,8 +151,8 @@ class CoverageEnvelopeTest {
             Run r = runCli(app.toString(), "--policy", pol.toString(), "--gate-json", gate.toString());
             assertEquals(1, r.exit(), "the deny still bites — exit code UNCHANGED by the advisory\n" + r.stderr());
             JsonObject v = JsonParser.parseString(Files.readString(gate)).getAsJsonObject();
-            assertEquals(Set.of("spec", "ok", "violations", "coverage"), new TreeSet<>(v.keySet()),
-                "verdict fields spec/ok/violations undisturbed; coverage is the one added advisory");
+            assertEquals(Set.of("spec", "ok", "analyzed", "violations", "coverage"), new TreeSet<>(v.keySet()),
+                "verdict fields spec/ok/violations undisturbed; coverage advisory + ⟨0.21⟩ analyzed count added");
             assertFalse(v.get("ok").getAsBoolean(), "ok still mirrors the violations, not the coverage");
             assertTrue(v.getAsJsonArray("violations").size() >= 1, "the real violation is still listed");
             JsonObject cov = v.getAsJsonObject("coverage");
@@ -181,8 +181,8 @@ class CoverageEnvelopeTest {
         Run r = runCli(app.toString(), "--policy", pol.toString(), "--gate-json", gate.toString());
         assertEquals(0, r.exit(), r.stderr());
         JsonObject v = JsonParser.parseString(Files.readString(gate)).getAsJsonObject();
-        assertEquals(Set.of("spec", "ok", "violations"), new TreeSet<>(v.keySet()),
-            "a fully-covered verdict is byte-identical to a pre-⟨0.15⟩ one: NO coverage key");
+        assertEquals(Set.of("spec", "ok", "analyzed", "violations"), new TreeSet<>(v.keySet()),
+            "a fully-covered verdict has NO coverage key; ⟨0.21⟩ `analyzed` count is always present");
     }
 
     // ── 3. gains re-disclosure ────────────────────────────────────────────────────────────────────

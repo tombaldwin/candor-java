@@ -59,6 +59,11 @@ final class Loader {
                 } catch (Exception | LinkageError e) {
                     skipped[0]++;
                     if (firstErr[0] == null) firstErr[0] = p.getFileName() + ": " + e.getMessage();
+                    // ⟨0.21⟩ COMPLETENESS MANIFEST (Gap 2): record the un-analyzable class so the report + the
+                    // gate verdict disclose it to a MACHINE (not just the stderr line below) — its effects are
+                    // invisible, so a green gate over it would be a false-pure. path → reason.
+                    ctx().unanalyzed.put(p.toString(), "class file failed to parse: "
+                            + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
                 }
             }
         }

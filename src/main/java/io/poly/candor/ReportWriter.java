@@ -181,10 +181,20 @@ final class ReportWriter {
                 : new Coverage(uncovered.stream()
                         .map(e -> new Coverage.Uncovered(e.getKey(), e.getValue()))
                         .collect(Collectors.toList()));
+        // ⟨0.21⟩ COMPLETENESS MANIFEST: the analyzed universe = every method candor formed a judgment for =
+        // the §2.2 callgraph node set (ctx().edges keys, pure leaves included — NOT the effectful-only
+        // `functions` array). count lets a bare-envelope consumer compute the pure count (count − |functions|)
+        // and tell analyzed-pure from never-seen; digest fingerprints the set for same-engine re-scan agreement.
+        java.util.TreeSet<String> analyzedQuals = new java.util.TreeSet<>(ctx().edges.keySet());
+        Report.Analyzed analyzed = new Report.Analyzed(analyzedQuals.size(), fnv1aHex(analyzedQuals));
+        List<Report.UnanalyzedUnit> unanalyzed = ctx().unanalyzed.entrySet().stream()
+                .map(e -> new Report.UnanalyzedUnit(e.getKey(), e.getValue())).collect(Collectors.toList());
         Report report = new Report(
                 new Provenance(prov[0], prov[1], SPEC_VERSION), // §2.1 — contract version distinct from build id
                 new ArrayList<>(pkgs),
                 coverage,
+                analyzed,
+                unanalyzed,
                 effectors);
         // "-" is the --json-stdout pipe form: emit the report JSON to stdout (pure — `| jq .` parses it)
         // rather than writing a file. The progress line stays on stderr so stdout carries ONLY the report.
@@ -196,6 +206,23 @@ final class ReportWriter {
             System.err.println("candor-java: wrote " + effectors.size() + " entries (@" + prov[0] + ") to " + out);
         }
         reportUnknownSources();
+    }
+
+    /** ⟨0.21⟩ An opaque, within-engine-stable fingerprint of a sorted qual set — FNV-1a 64-bit over the
+     *  newline-joined UTF-8 quals, lowercase hex. Dependency-free + deterministic: it changes iff the set
+     *  changes, so a same-engine re-scan of unchanged input agrees. NOT cryptographic and NOT cross-engine
+     *  comparable (qualifiers differ `::` vs `.`) — a completeness-manifest re-scan check, not a security hash. */
+    static String fnv1aHex(Iterable<String> sortedQuals) {
+        long h = 0xcbf29ce484222325L; // FNV offset basis
+        for (String q : sortedQuals) {
+            for (byte b : q.getBytes(java.nio.charset.StandardCharsets.UTF_8)) {
+                h ^= (b & 0xff);
+                h *= 0x100000001b3L; // FNV prime
+            }
+            h ^= '\n';
+            h *= 0x100000001b3L;
+        }
+        return String.format("%016x", h);
     }
 
     /** The FULL call graph (every project method -> its callees, including pure ones), written beside the

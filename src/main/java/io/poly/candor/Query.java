@@ -504,8 +504,18 @@ public final class Query {
      *  Rules are sorted so the comparison is order-independent. */
     static String policyJson() {
         List<Map<String, Object>> deny = new ArrayList<>();
-        for (var r : AnalysisState.ctx().denyRules)
-            deny.add(Map.of("effects", r.effects().toNames(), "scope", r.scope()));
+        for (var r : AnalysisState.ctx().denyRules) {
+            var m = new java.util.LinkedHashMap<String, Object>();
+            m.put("effects", r.effects().toNames());
+            m.put("scope", r.scope());
+            // Reason-scoped `Unknown[class…]` (REASON-SCOPED-UNKNOWN-DESIGN.md): emit the sorted class
+            // tokens ONLY when the rule narrows Unknown, so a bare `deny E`/`deny E Unknown` dump is
+            // unchanged (byte-identical to pre-feature) and the four-way parsepolicy differential pins the
+            // reason-class parsing across engines. Empty ⇒ `Unknown[*]`, so the key's absence = all classes.
+            if (!r.unknownClasses().isEmpty())
+                m.put("unknownClasses", r.unknownClasses().stream().map(ReasonClass::token).sorted().toList());
+            deny.add(m);
+        }
         List<Map<String, Object>> allow = new ArrayList<>();
         for (var r : AnalysisState.ctx().allowRules)
             allow.add(Map.of("effect", r.effect().specName(), "scope", r.scope(), "values", new ArrayList<>(r.values())));

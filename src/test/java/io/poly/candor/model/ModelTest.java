@@ -137,7 +137,7 @@ class ModelTest {
         java.util.List<String> liveCalls = new java.util.ArrayList<>(List.of("a.b"));
         Effector e = new Effector("x.y", "", live, List.of(), EffectSet.empty(), EffectSet.empty(),
                 EffectSet.empty(), EffectSet.empty(), false, false, EffectorKind.FUNCTION, List.of(), "",
-                liveCalls, List.of(), List.of(), List.of(), List.of(), List.of());
+                liveCalls, List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
         // mutating the sources after construction must NOT change the Effector (defensive copy)
         live.add(Effect.DB);
         liveCalls.add("c.d");

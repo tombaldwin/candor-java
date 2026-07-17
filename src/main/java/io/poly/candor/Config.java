@@ -48,7 +48,7 @@ public final class Config {
      *  misspelt {@code policy} must not silently drop the gate. candor-java implements all seven + the
      *  MULTI-VALUE {@code unknown-alias} (⟨0.19⟩, reason-scoped Unknown). */
     private static final java.util.Set<String> KNOWN_KEYS = java.util.Set.of(
-            "policy", "baseline", "strict", "no-ambient", "closed-world", "taint", "deps", "unknown-alias");
+            "policy", "baseline", "strict", "no-ambient", "closed-world", "taint", "deps", "unknown-alias", "net-partner");
 
     /** The keys whose value is a PATH (list) — the ones anchor-resolution applies to. */
     private static final java.util.Set<String> PATH_KEYS = java.util.Set.of("policy", "baseline", "deps");
@@ -59,14 +59,21 @@ public final class Config {
      *  convenience only — it can never change what bare {@code deny E Unknown} means (that is always all
      *  classes), so a rule's denied set is legible from the policy alone. */
     private final Map<String, java.util.Set<ReasonClass>> unknownAliases;
+    /** ⟨0.21⟩ config-declared `Net` PARTNER hosts (NET-DESTINATION-CLASS-DESIGN.md): {@code net-partner <host>},
+     *  a MULTI-VALUE key. A partner is per-project (not universal), so it MUST be config-declared; a `Net` to a
+     *  declared partner classifies {@code known-partner}, not {@code unknown-host}. Lowercased, matched
+     *  subdomain-aware like {@link Literals#TELEMETRY_HOSTS}. */
+    private final java.util.Set<String> netPartners;
 
     private Config(Map<String, String> values) {
-        this(values, new LinkedHashMap<>());
+        this(values, new LinkedHashMap<>(), new java.util.LinkedHashSet<>());
     }
 
-    private Config(Map<String, String> values, Map<String, java.util.Set<ReasonClass>> unknownAliases) {
+    private Config(Map<String, String> values, Map<String, java.util.Set<ReasonClass>> unknownAliases,
+                   java.util.Set<String> netPartners) {
         this.values = values;
         this.unknownAliases = unknownAliases;
+        this.netPartners = netPartners;
     }
 
     static Config empty() {
@@ -76,6 +83,11 @@ public final class Config {
     /** The resolved {@code unknown-alias} map (name → reason classes); empty when none defined. */
     Map<String, java.util.Set<ReasonClass>> unknownAliases() {
         return unknownAliases;
+    }
+
+    /** The config-declared {@code net-partner} hosts (lowercased); empty when none. */
+    java.util.Set<String> netPartners() {
+        return netPartners;
     }
 
     /** Parse an {@code unknown-alias} value {@code <name> = <c1,c2,…>} into the map, warning-and-skipping a
@@ -173,6 +185,7 @@ public final class Config {
         if (!Files.exists(path)) return empty();
         Map<String, String> m = new LinkedHashMap<>();
         Map<String, java.util.Set<ReasonClass>> aliases = new LinkedHashMap<>();
+        java.util.Set<String> partners = new java.util.LinkedHashSet<>();
         Path anchor = anchorFor(path);
         try {
             for (String raw : Files.readAllLines(path)) {
@@ -187,6 +200,10 @@ public final class Config {
                 String val = kv.length > 1 ? kv[1].strip() : "";
                 if ("unknown-alias".equals(key)) {   // ⟨0.19⟩ MULTI-VALUE: many names, kept out of `values`
                     addAlias(aliases, val, path);
+                    continue;
+                }
+                if ("net-partner".equals(key)) {     // ⟨0.21⟩ MULTI-VALUE: declared Net partner hosts
+                    if (!val.isEmpty()) partners.add(Literals.hostPart(val).toLowerCase(Locale.ROOT));
                     continue;
                 }
                 if ("deps".equals(key) && !val.isEmpty()) {
@@ -207,7 +224,7 @@ public final class Config {
             }
             return empty();
         }
-        return new Config(m, aliases);
+        return new Config(m, aliases, partners);
     }
 
     private static Config parse(Path path) {

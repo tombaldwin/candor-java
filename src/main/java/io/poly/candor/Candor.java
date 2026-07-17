@@ -388,7 +388,9 @@ public class Candor {
             // ⟨0.19⟩ config-aware: discover `.candor/config` (or CANDOR_CONFIG) anchored to the policy file so
             // an `Unknown[<alias>]` resolves via a checked-in `unknown-alias` — the dump reflects real gate
             // resolution (and the four-way parsepolicy differential pins the expansion).
-            ctx().unknownAliases.putAll(Config.forTarget(Path.of(args[1])).unknownAliases());
+            Config pcfg = Config.forTarget(Path.of(args[1]));
+            ctx().unknownAliases.putAll(pcfg.unknownAliases());
+            ctx().netPartners.addAll(pcfg.netPartners());
             if (!parsePolicy(args[1])) { System.err.println("candor: cannot read policy " + args[1]); System.exit(2); }
             System.out.println(Query.policyJson());
             System.exit(0);
@@ -486,6 +488,7 @@ public class Candor {
         // config `unknown-alias` map survives for checkPolicy's parse. (Set pre-runScan it was silently wiped —
         // the alias resolved in `parsepolicy` but NOT the gate; caught by a corpus dogfood.)
         ctx().unknownAliases.putAll(config.unknownAliases());
+        ctx().netPartners.addAll(config.netPartners()); // ⟨0.21⟩ Net destination-class known-partner hosts
 
         // Fail loud on an EMPTY scan: a path that exists but holds no .class files (a source dir, an
         // unbuilt module, or a failed build) would otherwise report "0 functions reach effects" — which
@@ -685,7 +688,7 @@ public class Candor {
      *  code vocabulary is first-class rather than an inline string literal. {@code format} is the
      *  message body (no code prefix, no trailing newline); render() prepends {@code "[AS-EFF-00x] "}. */
     static void diag(DiagnosticCode code, String format, Object... args) {
-        diagCapture(code, java.util.List.of(), java.util.List.of(), format, args);
+        diagCapture(code, java.util.List.of(), java.util.List.of(), java.util.List.of(), format, args);
     }
 
     /** As the effect-bearing {@link #diag(DiagnosticCode, java.util.List, String, Object...)}, but also records
@@ -693,7 +696,14 @@ public class Candor {
      *  sees every reason the strict gate bit (SPEC §6.2 ⟨0.19⟩). Empty for any non-Unknown violation. */
     static void diag(DiagnosticCode code, java.util.List<String> effects, java.util.List<String> reasonClass,
                      String format, Object... args) {
-        diagCapture(code, effects, reasonClass, format, args);
+        diagCapture(code, effects, reasonClass, java.util.List.of(), format, args);
+    }
+
+    /** As above, plus the fn's Net destination classes (SPEC §6.2 ⟨0.21⟩) — recorded when {@code Net} is
+     *  denied, so a --gate-json consumer sees which destination classes the security gate bit. */
+    static void diag(DiagnosticCode code, java.util.List<String> effects, java.util.List<String> reasonClass,
+                     java.util.List<String> netClass, String format, Object... args) {
+        diagCapture(code, effects, reasonClass, netClass, format, args);
     }
 
     /** As {@link #diag(DiagnosticCode, String, Object...)}, but records the specific effect(s) the violation
@@ -702,11 +712,12 @@ public class Candor {
      *  effect-bearing codes; a layer-flow (009) / unresolved (003) code carries no effect and uses the plain
      *  form. */
     static void diag(DiagnosticCode code, java.util.List<String> effects, String format, Object... args) {
-        diagCapture(code, effects, java.util.List.of(), format, args);
+        diagCapture(code, effects, java.util.List.of(), java.util.List.of(), format, args);
     }
 
     private static void diagCapture(DiagnosticCode code, java.util.List<String> effects,
-                                    java.util.List<String> reasonClass, String format, Object... args) {
+                                    java.util.List<String> reasonClass, java.util.List<String> netClass,
+                                    String format, Object... args) {
         String body = String.format(format, args);
         diagOut.println(new Diagnostic(code, body).render());
         // --gate-json capture: EVERY AS-EFF site passes the offending entity (a fn, or a class for the
@@ -722,6 +733,9 @@ public class Candor {
             // ⟨0.19⟩ reason-scoped Unknown: the fn's reason classes when Unknown is denied (SPEC §6.2). Omitted
             // when empty, so a non-Unknown violation's verdict is byte-identical to pre-feature.
             if (!reasonClass.isEmpty()) m.put("reasonClass", reasonClass);
+            // ⟨0.21⟩ Net destination-class: the fn's destination classes when Net is denied (SPEC §6.2). Omitted
+            // when empty, so a non-Net violation's verdict stays byte-identical to pre-feature.
+            if (!netClass.isEmpty()) m.put("netClass", netClass);
             gateViolations.add(m);
         }
     }
@@ -1879,6 +1893,11 @@ public class Candor {
                 if (!inh.cmds.isEmpty()) ctx.cmdsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.cmds);
                 if (!inh.paths.isEmpty()) ctx.pathsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.paths);
                 if (!inh.tables.isEmpty()) ctx.tablesDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.tables);
+                // ⟨0.21⟩ a dep that itself reached an `unknown-host` (masked/runtime) taints the consumer
+                // fail-closed: mark its Net surface incomplete so the consumer's netClass carries unknown-host
+                // even though the dep's unresolved host never crossed into `hosts`. (Reuses the AS-EFF-008 marker.)
+                if (inh.netClass.contains("unknown-host"))
+                    ctx.surfaceIncomplete.computeIfAbsent(id, k -> new TreeSet<>()).add("Net");
             }
         }
     }

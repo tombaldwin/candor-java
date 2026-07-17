@@ -22,15 +22,23 @@ import java.util.SortedSet;
 public sealed interface PolicyRule permits PolicyRule.Deny, PolicyRule.Allow, PolicyRule.Forbid {
 
     /**
-     * {@code deny <Effect…> [Unknown[<class…>]] [scope]} / {@code pure [scope]}. {@code unknownClasses} is
-     * the reason-class filter on an {@code Unknown} membership (REASON-SCOPED-UNKNOWN-DESIGN.md): an EMPTY
-     * set means {@code Unknown[*]} — match any {@code Unknown} regardless of reason (the bare, pre-rung
-     * form); a non-empty set matches only an {@code Unknown} whose reason maps to one of these classes.
-     * Concrete effects in {@code effects} are unaffected by it.
+     * {@code deny <Effect…> [Unknown[<class…>]] [Net[<dest…>]] [scope]} / {@code pure [scope]}.
+     * {@code unknownClasses} is the reason-class filter on an {@code Unknown} membership
+     * (REASON-SCOPED-UNKNOWN-DESIGN.md): an EMPTY set means {@code Unknown[*]} — match any {@code Unknown}
+     * regardless of reason (the bare, pre-rung form); a non-empty set matches only an {@code Unknown} whose
+     * reason maps to one of these classes. {@code netClasses} is the analogous destination-class filter on a
+     * {@code Net} membership (NET-DESTINATION-CLASS-DESIGN.md): EMPTY ⇒ {@code Net[*]} (any destination, the
+     * bare form); a non-empty set (e.g. {@code {unknown-host}}) matches only a {@code Net} whose fn reaches one
+     * of these destination classes. Concrete effects in {@code effects} are unaffected by either filter.
      */
-    record Deny(EffectSet effects, String scope, String src, Set<ReasonClass> unknownClasses) implements PolicyRule {
-        /** Bare form: {@code Unknown} (if present in {@code effects}) matches any reason — {@code Unknown[*]}. */
-        public Deny(EffectSet effects, String scope, String src) { this(effects, scope, src, Set.of()); }
+    record Deny(EffectSet effects, String scope, String src, Set<ReasonClass> unknownClasses,
+                Set<String> netClasses) implements PolicyRule {
+        /** Bare form: {@code Unknown}/{@code Net} (if present) match any reason/destination — {@code [*]}. */
+        public Deny(EffectSet effects, String scope, String src) { this(effects, scope, src, Set.of(), Set.of()); }
+        /** Reason-scoped form without a Net destination filter. */
+        public Deny(EffectSet effects, String scope, String src, Set<ReasonClass> unknownClasses) {
+            this(effects, scope, src, unknownClasses, Set.of());
+        }
     }
 
     record Allow(Effect effect, String scope, SortedSet<String> values, String src) implements PolicyRule {}

@@ -87,7 +87,7 @@ class QueryBlindspotsTest {
     private static Effector eff(String fn, EffectSet inferred, List<String> calls, List<UnknownReason> why) {
         return new Effector(fn, "", inferred, List.of(), EffectSet.empty(), EffectSet.empty(),
                 EffectSet.empty(), EffectSet.empty(), false, inferred.hasUnknown(), EffectorKind.FUNCTION,
-                why, "", calls, List.of(), List.of(), List.of(), List.of(), List.of());
+                why, "", calls, List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
     }
 
     private static String capture(Runnable r) {

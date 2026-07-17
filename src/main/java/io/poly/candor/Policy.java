@@ -228,6 +228,11 @@ final class Policy {
             if (!classes.isEmpty()) reasonClassDirect.put(e.getKey(), classes);
         }
         Map<String, TreeSet<String>> reasonClassAcc = literalFixpoint(reasonClassDirect);
+        // ⟨0.21⟩ Net destination-class filter (NET-DESTINATION-CLASS-DESIGN.md) needs the fn's (transitive)
+        // destination classes — derived exactly like the report's `netClass` field (host fixpoint + the fail-
+        // closed masked-surface rule), so the gate and the report agree on what an fn's Net reaches.
+        Map<String, TreeSet<String>> netHostsAcc = literalFixpoint(ctx().hostsDirect);
+        Map<String, TreeSet<String>> netIncompleteAcc = literalFixpoint(ctx().surfaceIncomplete);
         // AS-EFF-006: a method in scope must not perform (transitively) a denied effect.
         for (var e : new TreeMap<>(inferred).entrySet()) {
             String fn = e.getKey();
@@ -253,6 +258,15 @@ final class Policy {
                     boolean matched = fnClasses.stream().anyMatch(r.unknownClasses()::contains);
                     if (!matched) bad = bad.without(Effect.UNKNOWN);   // tolerated: wrong reason-class
                 }
+                // Net destination-class (NET-DESTINATION-CLASS-DESIGN.md): a `deny Net[dest…]` rule (non-empty
+                // filter — e.g. `deny Net[unknown-host]`) fires its Net part ONLY if the fn reaches one of those
+                // destination classes. Fail-closed: a masked surface OR a Net with no visible host is unknown-host,
+                // so `deny Net[unknown-host]` bites anything candor can't positively identify as telemetry/partner.
+                if (bad.toNames().contains("Net") && !r.netClasses().isEmpty()) {
+                    List<String> fnNet = netClassesOf(fn, netHostsAcc, netIncompleteAcc);
+                    boolean matched = fnNet.stream().anyMatch(r.netClasses()::contains);
+                    if (!matched) bad = bad.without(Effect.NET);       // tolerated: only asserted-safe destinations
+                }
                 if (!bad.isEmpty()) {
                     List<String> bn = bad.toNames();
                     // §6.2 ⟨0.19⟩: when Unknown is denied, record ALL reason classes on the fn (transitive) so a
@@ -260,7 +274,12 @@ final class Policy {
                     List<String> reasonClass = bn.contains("Unknown")
                             ? new java.util.TreeSet<>(reasonClassAcc.getOrDefault(fn, new java.util.TreeSet<>())).stream().toList()
                             : java.util.List.of();
-                    diag(DiagnosticCode.AS_EFF_006, bn, reasonClass, "`%s` performs { %s }, forbidden by policy%s: `%s`",
+                    // ⟨0.21⟩ when Net is denied, record ALL of the fn's destination classes (transitive) so a
+                    // --gate-json consumer sees which class the security gate bit — bare `deny Net` too.
+                    List<String> netClass = bn.contains("Net")
+                            ? netClassesOf(fn, netHostsAcc, netIncompleteAcc)
+                            : java.util.List.of();
+                    diag(DiagnosticCode.AS_EFF_006, bn, reasonClass, netClass, "`%s` performs { %s }, forbidden by policy%s: `%s`",
                             fn, String.join(", ", bn),
                             r.scope().isEmpty() ? "" : " (scope `" + r.scope() + "`)", r.src());
                     v++;
@@ -406,12 +425,28 @@ final class Policy {
                     // `Unknown[*]` (any reason — the bare form); non-empty ⇒ only those classes. `*` = all.
                     java.util.Set<ReasonClass> unknownClasses = new java.util.LinkedHashSet<>();
                     boolean unknownStar = false;
+                    // Destination-class filter on a `Net` membership (NET-DESTINATION-CLASS-DESIGN.md): empty ⇒
+                    // `Net[*]` (any destination — the bare form); non-empty ⇒ only a fn reaching one of these.
+                    java.util.Set<String> netClasses = new java.util.LinkedHashSet<>();
+                    boolean netStar = false;
                     String scope = "";
                     for (int i = 1; i < t.length; i++) {
                         String tok = t[i];
                         if (KNOWN_EFFECTS.contains(tok) || "Unknown".equals(tok)) {
                             effNames.add(tok);
                             if ("Unknown".equals(tok)) unknownStar = true;      // bare Unknown ⇒ all classes
+                            if ("Net".equals(tok)) netStar = true;              // bare Net ⇒ all destinations
+                        } else if (tok.startsWith("Net[") && tok.endsWith("]")) {
+                            effNames.add("Net");
+                            String inner = tok.substring("Net[".length(), tok.length() - 1);
+                            for (String cn : inner.split(",")) {
+                                cn = cn.trim();
+                                if (cn.isEmpty()) continue;
+                                if (cn.equals("*")) { netStar = true; continue; }
+                                if (Literals.NET_DEST_CLASSES.contains(cn)) netClasses.add(cn);
+                                else warnPolicy(line, "unknown Net destination-class `" + cn
+                                        + "` (known: known-telemetry,known-partner,unknown-host, or *)");
+                            }
                         } else if (tok.startsWith("Unknown[") && tok.endsWith("]")) {
                             effNames.add("Unknown");
                             String inner = tok.substring("Unknown[".length(), tok.length() - 1);
@@ -436,6 +471,8 @@ final class Policy {
                     if (effNames.isEmpty()) { warnPolicy(line, "names no known effect"); break; }
                     // `*` (or bare `Unknown`) means all classes ⇒ empty filter (matches any Unknown).
                     if (unknownStar) unknownClasses.clear();
+                    // `*` (or bare `Net`) means all destinations ⇒ empty filter (matches any Net).
+                    if (netStar) netClasses.clear();
                     // A2 under-gating lint: a narrowed scope that omits `unresolved` (the catch-all for holes an
                     // engine couldn't classify) may silently tolerate exactly those — flag it (advisory, not fatal).
                     // NOT via warnPolicy: the rule is KEPT (it still gates), so "ignoring policy rule" is wrong
@@ -444,7 +481,7 @@ final class Policy {
                         System.err.println("candor: policy rule narrows `Unknown[…]` but omits `unresolved` — may UNDER-gate on holes "
                                 + "the engine couldn't classify; add `unresolved` (or use `dynamic`) to stay conservative: " + line);
                     }
-                    ctx().denyRules.add(new PolicyRule.Deny(EffectSet.ofNames(effNames), scope, line, unknownClasses));
+                    ctx().denyRules.add(new PolicyRule.Deny(EffectSet.ofNames(effNames), scope, line, unknownClasses, netClasses));
                     break;
                 }
                 case "pure": {
@@ -514,6 +551,20 @@ final class Policy {
             if (ok && segs[i + parts.length - 1].startsWith(last)) return true;
         }
         return false;
+    }
+
+    /** ⟨0.21⟩ The `Net` destination classes an fn reaches (transitive) — the SAME derivation as the report's
+     *  `netClass` field: an exact host-literal match (Literals.netDestClass) for the visible hosts, plus the
+     *  fail-closed `unknown-host` when the Net surface is masked (AS-EFF-008) OR carries no visible host (a
+     *  runtime-computed endpoint). Call only for an fn known to have Net; returns a sorted list. */
+    private static List<String> netClassesOf(String fn, Map<String, TreeSet<String>> hostsAcc,
+                                             Map<String, TreeSet<String>> incompleteAcc) {
+        java.util.TreeSet<String> classes = new java.util.TreeSet<>();
+        TreeSet<String> hk = hostsAcc.get(fn);
+        if (hk != null) for (String h : hk) classes.add(Literals.netDestClass(h, ctx().netPartners));
+        TreeSet<String> inc = incompleteAcc.get(fn);
+        if ((inc != null && inc.contains("Net")) || hk == null || hk.isEmpty()) classes.add("unknown-host");
+        return new ArrayList<>(classes);
     }
 
     /** The single predicate for a provable-purity hole (eval/fixloop/DISPATCH-NOTE.md): a method that is

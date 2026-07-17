@@ -35,7 +35,8 @@ public record Effector(
         List<String> hosts,
         List<String> cmds,
         List<String> paths,
-        List<String> tables) {
+        List<String> tables,
+        List<String> netClass) {
 
     /**
      * Defensive copy on construction so an {@code Effector} is a true value: its accessors can't be used
@@ -57,5 +58,6 @@ public record Effector(
         cmds = List.copyOf(cmds);
         paths = List.copyOf(paths);
         tables = List.copyOf(tables);
+        netClass = List.copyOf(netClass);
     }
 }

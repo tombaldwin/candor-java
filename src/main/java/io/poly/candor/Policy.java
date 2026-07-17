@@ -174,7 +174,21 @@ final class Policy {
             // out) is what the violation reports, so a mixed real+Unknown gain never shows `Unknown`.
             List<String> gained = gainedSet.without(Effect.UNKNOWN).toNames();
             if (gained.isEmpty()) {
-                unknownOnly.add(e.getKey());
+                // ⟨unknown-ratchet⟩ OPT-IN (config `unknown-ratchet` / CANDOR_UNKNOWN_RATCHET, default OFF).
+                // This is what makes `deny E Unknown` adoptable on legacy DI/reflection-heavy code: the CURRENT
+                // Unknown surface is GRANDFATHERED (a fn already Unknown in the baseline shows no gain ⇒ never
+                // flagged), and only a NEWLY-introduced Unknown — a blind spot the baseline did not have — fails.
+                // So a team freezes today's report as the baseline and the strict gate ratchets the Unknown
+                // surface DOWN instead of failing everywhere on day one. Grandfather one by regenerating the
+                // baseline. Default OFF preserves the ⟨0.16⟩ advisory posture (Unknown-gains = resolution noise).
+                if (ctx().unknownRatchet) {
+                    diag(DiagnosticCode.AS_EFF_005, List.of("Unknown"), "`%s` gained an unresolved call (Unknown) "
+                            + "not in the baseline — a NEW blind spot (unknown-ratchet); resolve it, or regenerate "
+                            + "the baseline to grandfather it", e.getKey());
+                    v++;
+                } else {
+                    unknownOnly.add(e.getKey());
+                }
                 continue;
             }
             diag(DiagnosticCode.AS_EFF_005, gained, "`%s` gained effect { %s } not present in the baseline",

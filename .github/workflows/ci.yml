@@ -52,12 +52,21 @@ jobs:
         run: bash soundness/reentrancy.sh
 
       # SELF-GATE (candor-spec §7.12): candor-java analyzes ITSELF and holds its own declared policy —
-      # the analyzer reads bytecode and writes reports (Fs/Env), and must never grow Net/Db/Exec/Ipc.
+      # the analyzer reads bytecode and writes reports (Fs/Env). It must reach the network / a database /
+      # IPC NOWHERE, and spawn a subprocess ONLY in `candor verify` (the honesty oracle runs your program).
+      # Prefix scopes can't exclude one sub-package from a deny, so we prove the two halves separately:
+      #   (1) the analyzer core (verify excluded) — no Net/Db/Exec/Ipc;  (2) the whole tool — no Net/Db/Ipc.
       # An effect-gate vendor whose own gate is red has no business gating anyone else.
       - name: Self-gate (candor-java on candor-java)
         run: |
           ./gradlew --no-daemon -q shadowJar
-          CANDOR_POLICY=.candor/policy java -jar build/libs/candor-java-*-all.jar build/classes/java/main
+          JAR=$(ls build/libs/candor-java-*-all.jar)
+          # (1) analyzer core — the one sanctioned subprocess surface (io.poly.candor.verify) removed — must not Exec.
+          rm -rf /tmp/candor-core && cp -r build/classes/java/main /tmp/candor-core && rm -rf /tmp/candor-core/io/poly/candor/verify
+          CANDOR_POLICY=.candor/policy java -jar "$JAR" /tmp/candor-core
+          # (2) the whole tool (verify included) must still never reach the network, a database, or IPC.
+          printf 'deny Net Db Ipc\n' > /tmp/candor-policy-notexec
+          CANDOR_POLICY=/tmp/candor-policy-notexec java -jar "$JAR" build/classes/java/main
 
       # Kotlin-bytecode lane: Kotlin compiles the same semantics through different shapes (suspend/CPS,
       # indy lambdas, object/companion <clinit>, $default wrappers, callable refs, property getters,

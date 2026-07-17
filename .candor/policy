@@ -1,3 +1,11 @@
 # candor-java self-gate (SPEC §7.12): the analyzer reads bytecode and writes reports — Fs/Env
-# are its job. It must never grow network, database, subprocess, or IPC behaviour.
+# are its job. It must never reach the network, a database, or IPC — anywhere, ever.
+#
+# It spawns a subprocess in exactly ONE place: `candor verify`, the dynamic honesty oracle, which
+# runs YOUR program under a -javaagent to check candor's static claim against reality. That Exec is
+# the feature, not a hidden effect. Prefix scopes can't say "deny Exec everywhere except one
+# sub-package", so the CI self-gate proves the two halves separately (see .github/workflows/ci.yml):
+#   (1) the analyzer CORE (io.poly.candor.verify excluded) under THIS policy — also no Exec;
+#   (2) the WHOLE tool (verify included) under `deny Net Db Ipc` — still no network/db/ipc.
+# Together: candor reaches the network / a database / IPC nowhere, and spawns a process ONLY in verify.
 deny Net Db Exec Ipc

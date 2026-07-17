@@ -155,6 +155,10 @@ public final class HonestyCheck {
         public final boolean honestyInvariantHolds;
         public final List<Row> rows;
         public final List<Violation> violations;
+        // Set by the CLI (not the pure check): false when the run could not soundly witness every effect — no
+        // callgraph sidecar (pure classes uninstrumented) or torn trace lines. Mirrors the ts arm; drives exit 2.
+        public boolean attributionComplete = true;
+        public String attributionNote = null;
 
         Result(String scope, Set<String> allowed, int checked, int clean, int disclosed,
                 int loadBearing, List<Row> rows, List<Violation> violations) {

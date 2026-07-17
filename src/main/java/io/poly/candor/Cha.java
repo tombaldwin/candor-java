@@ -13,7 +13,7 @@ import static io.poly.candor.AnalysisState.*;
  *  monomorphicTarget/nearestConcreteSuper + node-id methodId/paramTypeList family + declaresConcrete).
  *  EXTRACTED verbatim from Candor.java (refactor P4); reads shared state via the static import. See
  *  REFACTOR_PLAN.md + SEALED_CHA_PLAN.md. */
-final class Cha {
+public final class Cha { // public only so the verify -javaagent can reuse the overload-disambiguating methodId; all other members stay package-private
     /** A PROVABLY-CLOSED dispatch owner: an enum. An enum cannot be extended (the JVM forbids it),
      *  so its only subtypes are its own constant bodies — synthetic subclasses compiled into the same
      *  class file, ALL of which `chaTargets` already enumerates. A dispatch over it therefore resolves
@@ -263,7 +263,16 @@ final class Cha {
      *  desc/owner candor can't see (a non-project owner, an unknown descriptor) falls back to the bare
      *  name — harmless, since those never key a project node. */
     static String methodId(String dottedClass, String name, String desc) {
-        Set<String> descs = ctx().overloadDescs.get(dottedClass + "." + name);
+        return methodId(dottedClass, name, desc, ctx().overloadDescs.get(dottedClass + "." + name));
+    }
+
+    /** Overload-disambiguating node id from an EXPLICIT descriptor set (the set of distinct JVM descriptors
+     *  declared under {@code dottedClass.name}). The 3-arg form reads that set from the scan's overload index;
+     *  the DYNAMIC HONESTY ORACLE's -javaagent has no scan context, so it collects the set per-class from the
+     *  bytecode and calls this 4-arg form — so agent attribution keys MATCH the report's fn quals for
+     *  overloaded methods (else an overloaded effectful method never matches its report entry and reads as a
+     *  false cardinal-sin VIOLATION). PUBLIC + ctx-free for cross-package (io.poly.candor.verify) reuse. */
+    public static String methodId(String dottedClass, String name, String desc, Set<String> descs) {
         // Bare name unless this is a genuine overload with a parseable METHOD descriptor. The `(` guard is
         // defence-in-depth: a non-method descriptor (a field handle that slipped a caller's guard) must
         // never reach Type.getArgumentTypes, which overruns and crashes the scan on anything without `()`.

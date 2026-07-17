@@ -121,6 +121,18 @@ class VerifyOracleTest {
         assertEquals(null, m.invoke(null, "java/util/Random", "nextInt"));
     }
 
+    @Test
+    void agentAttributionKeyMatchesReportForOverloads() {
+        // The agent forms its emit key with Cha.methodId(class, name, desc, <the class's descs for that name>).
+        // An OVERLOADED name must carry the (params) suffix EXACTLY as the report does — else the effectful
+        // overload never matches its report entry and reads as a false cardinal-sin VIOLATION.
+        var descs = java.util.Set.of("(Ljava/lang/String;)V", "(I)V"); // write(String) + write(int)
+        assertEquals("A.write(String)", Cha.methodId("A", "write", "(Ljava/lang/String;)V", descs));
+        assertEquals("A.write(int)", Cha.methodId("A", "write", "(I)V", descs));
+        // a UNIQUELY-named method stays BARE (no suffix) — matches the report's non-overloaded fn quals.
+        assertEquals("A.read", Cha.methodId("A", "read", "()V", java.util.Set.of("()V")));
+    }
+
     // ── (2) END-TO-END through the built shadowJar ────────────────────────────────────────────────────
 
     private record Run(int exit, String stdout, String stderr) {}
@@ -242,6 +254,9 @@ class VerifyOracleTest {
         }
         Path seeded = tmp.resolve("report-seeded-pure.json");
         Files.writeString(seeded, doc.toString());
+        // Copy the real callgraph sidecar next to the doctored report so the include set covers the analyzed
+        // universe (attributionComplete) — a doctored report with no sidecar correctly fails closed (exit 2).
+        Files.copy(tmp.resolve("report.callgraph.json"), tmp.resolve("report-seeded-pure.callgraph.json"));
         Run viol = runVerifyJar(jar, cls, seeded);
         JsonObject vm = metrics(viol.stdout());
         assertFalse(vm.get("honestyInvariantHolds").getAsBoolean(), "seeded-pure report must VIOLATE");
@@ -264,10 +279,21 @@ class VerifyOracleTest {
         }
         Path disclosed = tmp.resolve("report-unknown.json");
         Files.writeString(disclosed, doc2.toString());
+        Files.copy(tmp.resolve("report.callgraph.json"), tmp.resolve("report-unknown.callgraph.json"));
         Run disc = runVerifyJar(jar, cls, disclosed);
         JsonObject dm = metrics(disc.stdout());
         assertTrue(dm.get("honestyInvariantHolds").getAsBoolean(), "Unknown-disclosed report must HOLD");
         assertEquals(0, disc.exit());
         assertEquals(1, dm.get("disclosedPartial").getAsInt());
+
+        // (d) FAIL-CLOSED — a report with NO callgraph sidecar can only instrument the effectful classes, so a
+        // secret effect in a wholly-pure class would be missed. verify must DISCLOSE (attributionComplete=false)
+        // and exit 2, never a green exit 0 (parity with the ts arm; the review's #2).
+        Path noCg = tmp.resolve("report-nocg.json");
+        Files.writeString(noCg, reportText); // the SOUND report, but deliberately with no <stem>.callgraph.json beside it
+        Run nc = runVerifyJar(jar, cls, noCg);
+        JsonObject ncm = metrics(nc.stdout());
+        assertFalse(ncm.get("attributionComplete").getAsBoolean(), "no callgraph ⇒ include set is effectful-only ⇒ not sound");
+        assertEquals(2, nc.exit(), "an incomplete-attribution HOLD fails closed (exit 2), never a green exit 0");
     }
 }

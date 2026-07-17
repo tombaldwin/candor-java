@@ -582,7 +582,12 @@ final class Literals {
             "segment.io", "segment.com", "mixpanel.com", "amplitude.com",       // product analytics
             "google-analytics.com", "analytics.google.com",
             "datadoghq.com", "datadoghq.eu", "newrelic.com", "nr-data.net",     // APM / monitoring / logs
-            "honeycomb.io", "logtail.com");
+            "honeycomb.io", "logtail.com",
+            // ⟨0.20.1⟩ corpus-grown (a real-repo dogfood): more single-purpose analytics / session-replay /
+            // RUM providers — vendor-specific product domains only (no general-purpose host), so no under-gate risk.
+            "posthog.com", "plausible.io", "usefathom.com", "heapanalytics.com", // product analytics
+            "fullstory.com", "hotjar.com", "logrocket.com",                     // session replay
+            "cloudflareinsights.com");                                          // web-vitals RUM
 
     /** Subdomain-aware, case-insensitive, `:port`-stripped membership of a curated host SET (the
      *  {@link #isModelHost} matching, factored out): a host EQUAL to an entry, or a subdomain of one. */

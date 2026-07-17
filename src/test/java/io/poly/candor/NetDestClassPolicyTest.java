@@ -36,6 +36,7 @@ class NetDestClassPolicyTest {
 
     @Test void classifierMapsHostsToDestinationClasses() {
         assertEquals("known-telemetry", Literals.netDestClass("sentry.io", Set.of()));
+        assertEquals("known-telemetry", Literals.netDestClass("us.i.posthog.com", Set.of())); // ⟨0.20.1⟩ corpus-grown
         assertEquals("known-telemetry", Literals.netDestClass("o123.ingest.sentry.io", Set.of()), "subdomain-aware");
         assertEquals("unknown-host", Literals.netDestClass("evil.example.com", Set.of()));
         assertEquals("unknown-host", Literals.netDestClass(null, Set.of()), "unresolved never fabricated onto a safe class");

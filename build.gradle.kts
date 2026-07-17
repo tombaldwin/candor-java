@@ -106,6 +106,23 @@ tasks.withType<JavaCompile>().configureEach { options.release.set(17) }
 application { mainClass = "io.poly.candor.Candor" }
 tasks.named<Test>("test") { useJUnitPlatform() }
 
+// ⟨verify⟩ The shadowJar doubles as the `candor-java verify` DYNAMIC HONESTY ORACLE agent: the SAME fat jar
+// is both the CLI (Main-Class) and a java.lang.instrument agent (Premain-Class). `candor-java verify` injects
+// it into the target JVM via `-javaagent:<thisJar>=<includeFile>` (through JAVA_TOOL_OPTIONS), instruments the
+// project methods the report names, and records the effect-bearing JDK calls they actually run — then checks
+// `observed(f) ⊆ inferred(f) ∪ {Unknown}` against candor's STATIC report. Can-Retransform-Classes lets the
+// agent (in principle) retransform already-loaded classes; the target's own classes load after premain so it
+// is not strictly needed, but it is correct and cheap to declare. No second jar, no extra dependency — ASM 9.8
+// is already bundled by the shadow plugin.
+tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJar") {
+    manifest {
+        attributes(
+            "Premain-Class" to "io.poly.candor.verify.Agent",
+            "Can-Retransform-Classes" to "true",
+        )
+    }
+}
+
 // Lint gate: javac's own -Xlint, warnings-as-errors. The engine is single-module hand-written Java;
 // -Xlint catches the real footguns (unchecked/rawtypes, fallthrough, finally, overrides) without a
 // third-party analyzer's setup cost. `this-escape` and `processing` are filtered: the former fires on

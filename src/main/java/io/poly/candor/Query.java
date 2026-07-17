@@ -402,7 +402,7 @@ public final class Query {
             case "whatif" -> whatif(report, a0, a1, policyFlag, json);
             case "fix" -> fix(fns, report, a0, a1, policyFlag, json);
             case "fix-gate" -> fixGate(fns, report, policyFlag, json, strict);
-            case "unverified" -> unverified(fns, policyFlag, json, strict);
+            case "unverified" -> unverified(fns, policyFlag, json, strict, parseClassFilter(classFlag));
             case "rewire" -> rewire2(a0, a1, json);
             default -> 2;
         };
@@ -1326,15 +1326,19 @@ public final class Query {
      *  but if that function is Unknown (an unresolvable call), the pass is UNVERIFIED: the Unknown could hide
      *  the very effect the rule forbids (the fn/closure-port hole). Names each such function + the
      *  `deny E Unknown <scope>` upgrade. Advisory (exit 0); `--strict` → exit 1. The gate verdict is untouched. */
-    static int unverified(List<Effector> fns, String policyPath, boolean json, boolean strict) {
+    static int unverified(List<Effector> fns, String policyPath, boolean json, boolean strict, Set<ReasonClass> classFilter) {
         if (!loadPolicyOrFail(policyPath, "unverified")) return 2;
         List<PolicyRule.Deny> deny = AnalysisState.ctx().denyRules;
         record Hole(Effector fn, PolicyRule.Deny rule) {}
+        // `--class <c,…>` (SPEC §3.1 ⟨0.20⟩): keep only holes whose Unknown is of a matching reason class.
+        java.util.function.Predicate<Effector> classMatch = f -> classFilter == null
+                || (f.unknownWhy() != null && f.unknownWhy().stream()
+                        .anyMatch(ur -> classFilter.contains(ReasonClass.classify(ur.format()))));
         List<Hole> holes = new ArrayList<>();
         for (Effector e : fns) {
             // Same predicate as the gate note (Policy.unverifiedHoleRule) — one definition of a hole.
             PolicyRule.Deny r = Policy.unverifiedHoleRule(e.fn(), e.inferred(), deny);
-            if (r != null) holes.add(new Hole(e, r));
+            if (r != null && classMatch.test(e)) holes.add(new Hole(e, r));
         }
         if (json) {
             List<Map<String, Object>> items = new ArrayList<>();

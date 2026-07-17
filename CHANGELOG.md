@@ -6,6 +6,17 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## [0.19.0] — 2026-07-17
+
+Reason-scoped `Unknown` policies (SPEC §6.2, the reference): `deny E Unknown[reflect,dispatch,indirect,native,unresolved,setup]`
+narrows the `Unknown` part of a deny to a fixed reason-class vocabulary (`model.ReasonClass`) projecting the §4
+`unknownWhy` reasons, with the `dynamic`/`*` aliases and config `.candor/config` `unknown-alias <name> = <class…>`
+names. Bare `deny E Unknown` is unchanged (`Unknown[*]`); an unrecognized reason maps to `unresolved`; the class
+propagates transitively (the gate classifies via the string `classify(format())` path, four-way-identical). An
+AS-EFF-006 `--gate-json` verdict whose `effects` include `Unknown` carries a **`reasonClass`** array. Report
+bytes unchanged. Also ships the **disclosure-completeness battery** (`DisclosureCompletenessTest`) — one fixture
+per edge kind asserting resolve-or-disclose (never silently pure). Conformance PART 4 + PART 12 pin it four-way.
+
 ## [0.18.0] — 2026-07-16
 
 ### spec 0.18 — the trust-trio

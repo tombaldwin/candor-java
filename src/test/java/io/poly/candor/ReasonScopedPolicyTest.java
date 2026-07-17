@@ -87,6 +87,25 @@ class ReasonScopedPolicyTest {
                 policy(dir, "deny Net Unknown[dynamic]\n").toString()));
     }
 
+    /** The reason CLASS must travel the call graph the same way the Unknown EFFECT does: a caller that
+     *  inherits Unknown from a reflect-caused callee is a reflect-class Unknown, even though the `reflect:*`
+     *  reason was emitted directly on the callee. Regression for the transitive-reason under-gating gap. */
+    @Test void reasonClassPropagatesTransitivelyToCallers(@TempDir Path dir) throws Exception {
+        String caller = "dom.Caller.entry", callee = "dom.Svc.reflecty";
+        // caller inherits Unknown transitively; only the callee carries the reflect reason.
+        Map<String, EffectSet> inferred = Map.of(
+                caller, EffectSet.ofNames(List.of("Unknown")),
+                callee, EffectSet.ofNames(List.of("Unknown")));
+
+        Candor.resetState();
+        ctx().unknownWhy.computeIfAbsent(callee, k -> new TreeSet<>())
+                .add(UnknownReason.of(UnknownReason.Kind.REFLECT, "java.lang.reflect.Method.invoke"));
+        ctx().edges.computeIfAbsent(caller, k -> new java.util.HashSet<>()).add(callee);
+
+        assertEquals(2, Policy.checkPolicy(inferred, policy(dir, "deny Net Unknown[reflect]\n").toString()),
+                "deny …Unknown[reflect] must fire on BOTH the reflect callee and the caller that inherits its Unknown");
+    }
+
     @Test void unknownWithNoRecordedReasonIsUnresolvedConservatively(@TempDir Path dir) throws Exception {
         String fn = "dom.Svc.opaque";
         Map<String, EffectSet> inferred = Map.of(fn, EffectSet.ofNames(List.of("Unknown")));

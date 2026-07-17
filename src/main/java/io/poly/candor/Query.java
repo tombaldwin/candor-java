@@ -280,13 +280,14 @@ public final class Query {
         boolean json = false;
         boolean includeUnknown = false; // `callers --include-unknown`: also disclose the unresolved-dispatch frontier
         boolean strict = false;         // `unverified --strict`: exit 1 on an unverified-purity hole
+        boolean stats = false;          // `blindspots --stats`: the reason-class distribution, not the source list
         String reportFlag = null;       // --report <locator> (canonical §3.3.1)
         String policyFlag = null;       // --policy <file> (canonical §3.3.1)
         List<String> pos = new ArrayList<>();
         // `--text`/`--human` are candor-ts's output-mode flags (#8): java prose is always the default, so
         // ACCEPT + ignore them — cross-engine `candor <verb> --text` must not error just because the report
         // routed to the JVM engine. (java already rejects a genuinely-unknown flag via rejectUnknownFlag.)
-        Set<String> known = java.util.Set.of("--json", "--text", "--human", "--include-unknown", "--strict", "--report", "--policy");
+        Set<String> known = java.util.Set.of("--json", "--text", "--human", "--include-unknown", "--strict", "--stats", "--report", "--policy");
         String usage = "candor " + cmd + " <verb-args…> [--report <locator>] [--policy <file>] [--json] [--strict] [--include-unknown]";
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
@@ -294,6 +295,7 @@ public final class Query {
                 case "--text", "--human" -> { /* candor-ts output-mode flags; java prose is the default — accept + ignore */ }
                 case "--include-unknown" -> includeUnknown = true;
                 case "--strict" -> strict = true;
+                case "--stats" -> stats = true;
                 case "--report" -> {
                     if (i + 1 >= args.length) { System.err.println("candor: --report needs a <locator> (usage: " + usage + ")"); return 2; }
                     reportFlag = args[++i];
@@ -389,7 +391,7 @@ public final class Query {
             case "reachable" -> reachable(fns, json);
             case "path" -> path(fns, a0, a1, json);
             case "impact" -> impact(fns, a0, json);
-            case "blindspots" -> blindspots(fns, json);
+            case "blindspots" -> blindspots(fns, json, stats);
             case "tour" -> tour(fns, report, a0, json);
             case "gains" -> gains2(a0, a1, json, strict, policyFlag);
             case "whatif" -> whatif(report, a0, a1, policyFlag, json);
@@ -1753,10 +1755,46 @@ public final class Query {
      *  read 60% Unknown from a handful of root causes — this names them, ranked, to declare/resolve/accept.
      *  Reverse-BFS over the report's effect-relevant `calls` edges (the channel Unknown propagates along),
      *  the same graph `impact` uses. */
-    static int blindspots(List<Effector> fns, boolean json) {
+    static int blindspots(List<Effector> fns, boolean json, boolean stats) {
         Map<String, List<String>> rev = new HashMap<>();
         for (Effector f : fns) for (String c : f.calls()) rev.computeIfAbsent(c, k -> new ArrayList<>()).add(f.fn());
         int totalUnknown = (int) fns.stream().filter(f -> f.inferred().hasUnknown()).count();
+        // `--stats` (SPEC §3.1 ⟨0.20⟩): the reason-class DISTRIBUTION over the Unknown SOURCES — how much
+        // Unknown, by class {reflect,dispatch,indirect,native,unresolved,setup} — so a team can SIZE the
+        // blind-spot cost (and separate genuine dynamism from `setup` mis-config) BEFORE turning on
+        // `deny E Unknown`. Counts SOURCE functions per class (a multi-reason fn counts in each class it has).
+        if (stats) {
+            java.util.Map<String, Integer> byClass = new java.util.LinkedHashMap<>();
+            for (ReasonClass c : ReasonClass.values()) byClass.put(c.token(), 0);
+            int sources = 0;
+            for (Effector f : fns) {
+                if (f.unknownWhy() == null || f.unknownWhy().isEmpty()) continue;
+                sources++;
+                java.util.Set<ReasonClass> classes = f.unknownWhy().stream()
+                        .map(ur -> ReasonClass.classify(ur.format())).collect(Collectors.toSet());
+                for (ReasonClass c : classes) byClass.merge(c.token(), 1, Integer::sum);
+            }
+            if (json) {
+                java.util.Map<String, Object> out = new LinkedHashMap<>();
+                out.put("byClass", byClass);           // ALL six classes, stable order (0 when absent)
+                out.put("sources", sources);
+                out.put("totalUnknown", totalUnknown);
+                emit(out);
+                return 0;
+            }
+            if (sources == 0) {
+                System.out.println("  no Unknown sources — nothing to classify (no direct-Unknown in this report).");
+                return 0;
+            }
+            System.out.println("  " + sources + " Unknown source(s) by reason class (of " + totalUnknown
+                    + " Unknown function(s)) — size the blind-spot cost before `deny E Unknown[…]`:");
+            byClass.entrySet().stream()
+                    .filter(e -> e.getValue() > 0)
+                    .sorted((a, b) -> b.getValue() - a.getValue())   // most-common class first
+                    .forEach(e -> System.out.printf("  %-12s %4d%s%n", e.getKey(), e.getValue(),
+                            e.getKey().equals("setup") ? "   ← fixable: the scan isn't configured, not a real blind spot" : ""));
+            return 0;
+        }
         List<Map<String, Object>> sources = new ArrayList<>();
         for (Effector f : fns) {
             if (f.unknownWhy() == null || f.unknownWhy().isEmpty()) continue; // a SOURCE carries its own why

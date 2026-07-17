@@ -36,6 +36,13 @@ public enum ReasonClass {
         return null;
     }
 
+    /** The {@code dynamic} alias: every GENUINE blind-spot class (excludes {@link #SETUP}), incl.
+     *  {@link #UNRESOLVED} so {@code Unknown[dynamic]} never under-gates. Shared by the policy parser and
+     *  the {@code unknown-alias} config expansion. */
+    public static java.util.Set<ReasonClass> dynamicSet() {
+        return java.util.EnumSet.of(REFLECT, DISPATCH, INDIRECT, NATIVE, UNRESOLVED);
+    }
+
     /**
      * Map a java {@link UnknownReason} to its class via the structured {@link UnknownReason.Kind} — the
      * robust path for this engine (ts/swift, which emit raw strings, use {@link #classify(String)}; the two

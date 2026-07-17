@@ -136,4 +136,21 @@ class ConfigTest {
         assertEquals(System.getenv("PATH"), viaEnv, "a SET env var overrides the config file");
         assertFalse("should-not-win".equals(viaEnv));
     }
+
+    @Test
+    void unknownAliasIsMultiValueAndRejectsReservedNames() throws Exception {
+        // ⟨0.19⟩ SPEC §6.2: `unknown-alias <name> = <class,…>` — many names (a multi-value key), a name
+        // shadowing a class token / `dynamic` / `*` is rejected, `dynamic` expands, an invalid class is dropped.
+        Config c = write("""
+            unknown-alias risky = reflect,native
+            unknown-alias broad = dynamic
+            unknown-alias reflect = native
+            unknown-alias empty = nope
+            """);
+        var a = c.unknownAliases();
+        assertEquals(java.util.EnumSet.of(io.poly.candor.model.ReasonClass.REFLECT, io.poly.candor.model.ReasonClass.NATIVE), a.get("risky"));
+        assertEquals(io.poly.candor.model.ReasonClass.dynamicSet(), a.get("broad"), "`dynamic` expands to every genuine class");
+        assertNull(a.get("reflect"), "a config alias may not shadow a class token");
+        assertNull(a.get("empty"), "an alias naming no valid class is dropped");
+    }
 }

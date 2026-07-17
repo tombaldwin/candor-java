@@ -398,6 +398,16 @@ public class Candor {
             System.out.println(Query.policyJson());
             System.exit(0);
         }
+        // `verify [<classdir-or-jar>] --run "<cmd>" [--report <json>] [--scope direct|all] [--json]` — the
+        // DYNAMIC HONESTY ORACLE (the JVM analog of candor-ts verify.mjs). Runs the program under THIS jar's
+        // bytecode-instrumentation agent (Premain-Class, injected via JAVA_TOOL_OPTIONS) and checks candor's
+        // STATIC report against what actually ran — `observed(f) ⊆ inferred(f) ∪ {Unknown}` per executed
+        // method; a cardinal-sin violation exits 1. Independent of the classifier by construction: it
+        // observes the real JDK effect boundary, sharing no code with the static engine (io.poly.candor.verify).
+        if (args[0].equals("verify")) {
+            io.poly.candor.verify.VerifyCli.main(args); // calls System.exit itself
+            return;
+        }
         // `selftest-reentrant <dirty-target> <real-target> --json <file>` — the REENTRANCY gate. Not a
         // user workflow: it scans <dirty-target> first to populate every static accumulator, then scans
         // <real-target> in the SAME process and writes <real-target>'s report. If resetState() missed an

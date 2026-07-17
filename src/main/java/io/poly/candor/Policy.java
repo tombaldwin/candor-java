@@ -250,7 +250,12 @@ final class Policy {
                 }
                 if (!bad.isEmpty()) {
                     List<String> bn = bad.toNames();
-                    diag(DiagnosticCode.AS_EFF_006, bn, "`%s` performs { %s }, forbidden by policy%s: `%s`",
+                    // §6.2 ⟨0.19⟩: when Unknown is denied, record ALL reason classes on the fn (transitive) so a
+                    // --gate-json consumer sees every reason the strict gate bit — not just the matched class.
+                    List<String> reasonClass = bn.contains("Unknown")
+                            ? new java.util.TreeSet<>(reasonClassAcc.getOrDefault(fn, new java.util.TreeSet<>())).stream().toList()
+                            : java.util.List.of();
+                    diag(DiagnosticCode.AS_EFF_006, bn, reasonClass, "`%s` performs { %s }, forbidden by policy%s: `%s`",
                             fn, String.join(", ", bn),
                             r.scope().isEmpty() ? "" : " (scope `" + r.scope() + "`)", r.src());
                     v++;

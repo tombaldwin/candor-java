@@ -677,7 +677,15 @@ public class Candor {
      *  code vocabulary is first-class rather than an inline string literal. {@code format} is the
      *  message body (no code prefix, no trailing newline); render() prepends {@code "[AS-EFF-00x] "}. */
     static void diag(DiagnosticCode code, String format, Object... args) {
-        diagCapture(code, java.util.List.of(), format, args);
+        diagCapture(code, java.util.List.of(), java.util.List.of(), format, args);
+    }
+
+    /** As the effect-bearing {@link #diag(DiagnosticCode, java.util.List, String, Object...)}, but also records
+     *  the reason CLASSES on the offending fn — for an AS-EFF-006 `Unknown` denial, so a `--gate-json` consumer
+     *  sees every reason the strict gate bit (SPEC §6.2 ⟨0.19⟩). Empty for any non-Unknown violation. */
+    static void diag(DiagnosticCode code, java.util.List<String> effects, java.util.List<String> reasonClass,
+                     String format, Object... args) {
+        diagCapture(code, effects, reasonClass, format, args);
     }
 
     /** As {@link #diag(DiagnosticCode, String, Object...)}, but records the specific effect(s) the violation
@@ -686,10 +694,11 @@ public class Candor {
      *  effect-bearing codes; a layer-flow (009) / unresolved (003) code carries no effect and uses the plain
      *  form. */
     static void diag(DiagnosticCode code, java.util.List<String> effects, String format, Object... args) {
-        diagCapture(code, effects, format, args);
+        diagCapture(code, effects, java.util.List.of(), format, args);
     }
 
-    private static void diagCapture(DiagnosticCode code, java.util.List<String> effects, String format, Object... args) {
+    private static void diagCapture(DiagnosticCode code, java.util.List<String> effects,
+                                    java.util.List<String> reasonClass, String format, Object... args) {
         String body = String.format(format, args);
         diagOut.println(new Diagnostic(code, body).render());
         // --gate-json capture: EVERY AS-EFF site passes the offending entity (a fn, or a class for the
@@ -702,6 +711,9 @@ public class Candor {
             m.put("fn", fn);
             m.put("effects", effects);
             m.put("detail", body);
+            // ⟨0.19⟩ reason-scoped Unknown: the fn's reason classes when Unknown is denied (SPEC §6.2). Omitted
+            // when empty, so a non-Unknown violation's verdict is byte-identical to pre-feature.
+            if (!reasonClass.isEmpty()) m.put("reasonClass", reasonClass);
             gateViolations.add(m);
         }
     }

@@ -83,6 +83,48 @@ class DisclosureCompletenessTest {
         return bos.toString();
     }
 
+    /** Run `candor <classesDir> --policy <p> --gate-json -` and return the verdict JSON from stdout. */
+    private static String gateJson(Path classesDir, Path policy) throws Exception {
+        String javaBin = System.getProperty("java.home") + "/bin/java";
+        String cp = System.getProperty("java.class.path");
+        Process p = new ProcessBuilder(javaBin, "-cp", cp, "io.poly.candor.Candor",
+                classesDir.toString(), "--policy", policy.toString(), "--gate-json", "-").start();
+        String out = drain(p.getInputStream());
+        drain(p.getErrorStream());
+        p.waitFor();
+        return out;
+    }
+
+    /** §6.2 ⟨0.19⟩: a reason-scoped Unknown denial's --gate-json verdict carries `reasonClass` on the offending
+     *  fn — including a caller that inherits the Unknown transitively (the reason class travels the graph). */
+    @Test void gateVerdictCarriesReasonClassOnUnknownDenial() throws Exception {
+        Path classes = compile(Map.of(
+            "app/Svc.java", SVC,
+            "app/Mid.java", """
+                package app;
+                public class Mid {
+                    public void go() throws Exception {
+                        Class.forName("app.Svc").getMethod("doNet").invoke(Class.forName("app.Svc").getConstructor().newInstance());
+                    }
+                }
+                """,
+            "app/Entry.java", "package app; public class Entry { public void entry() throws Exception { new Mid().go(); } }"));
+        Path policy = scratch.resolve("p.policy");
+        Files.writeString(policy, "deny Net Unknown[reflect]\n");
+        JsonObject root = JsonParser.parseString(gateJson(classes, policy)).getAsJsonObject();
+        JsonArray vs = root.getAsJsonArray("violations");
+        boolean sawEntry = false;
+        for (var el : vs) {
+            JsonObject o = el.getAsJsonObject();
+            if (!o.get("fn").getAsString().endsWith("Entry.entry")) continue;
+            sawEntry = true;
+            JsonArray rc = o.getAsJsonArray("reasonClass");
+            assertFalse(rc == null || rc.isEmpty(), "reasonClass must ride the transitive Unknown verdict on Entry.entry");
+            org.junit.jupiter.api.Assertions.assertEquals("reflect", rc.get(0).getAsString());
+        }
+        assertFalse(!sawEntry, "the reason-scoped deny must fire on Entry.entry (transitive reflect Unknown)");
+    }
+
     /** The inferred effect names (incl. "Unknown") of the function whose name ends with fnSuffix; empty if
      *  the function is absent from the report — i.e. claimed pure `(∅, ∅)`. */
     private static List<String> signatureOf(String json, String fnSuffix) {

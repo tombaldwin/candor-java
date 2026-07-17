@@ -464,7 +464,6 @@ public class Candor {
         // with the code" promise depend on where the command was launched from. The layer sits UNDER the
         // env vars (which sit under the CLI flags); configured-but-unreadable fails loud (exit 2).
         config = Config.forTarget(scanTarget);
-        ctx().unknownAliases.putAll(config.unknownAliases());   // ⟨0.19⟩ reason-class aliases for the §6.2 gate
         if (!Files.exists(scanTarget)) {
             System.err.println("candor: no such path: " + args[0]);
             System.err.println("        point candor at COMPILED classes (target/classes · build/classes/java/main) or a built .jar.");
@@ -483,6 +482,10 @@ public class Candor {
             System.exit(2);
             return; // unreachable — exit(2) above; satisfies the definite-assignment of `inferred`
         }
+        // ⟨0.19⟩ reason-class aliases for the §6.2 gate — populated AFTER runScan (which resets ctx()), so the
+        // config `unknown-alias` map survives for checkPolicy's parse. (Set pre-runScan it was silently wiped —
+        // the alias resolved in `parsepolicy` but NOT the gate; caught by a corpus dogfood.)
+        ctx().unknownAliases.putAll(config.unknownAliases());
 
         // Fail loud on an EMPTY scan: a path that exists but holds no .class files (a source dir, an
         // unbuilt module, or a failed build) would otherwise report "0 functions reach effects" — which

@@ -52,4 +52,15 @@ class ReasonClassTest {
         }
         assertEquals(null, ReasonClass.fromToken("not-a-class"));
     }
+
+    /** The gate classifies via the STRING path {@code classify(ur.format())} (four-way parity with rust/ts/
+     *  swift); the report still uses the structured {@code of(ur)} (Kind) path. Pin that the two AGREE for
+     *  every {@code Kind} candor-java emits, so the two java code paths can never silently drift (review). */
+    @Test void structuredAndStringPathsAgreeForEveryKind() {
+        for (io.poly.candor.model.UnknownReason.Kind k : io.poly.candor.model.UnknownReason.Kind.values()) {
+            var ur = io.poly.candor.model.UnknownReason.of(k, "detail.Sym");
+            assertEquals(ReasonClass.of(ur), ReasonClass.classify(ur.format()),
+                    "of(Kind) must match classify(format()) for " + k + " (" + ur.format() + ")");
+        }
+    }
 }

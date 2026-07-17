@@ -219,7 +219,12 @@ final class Policy {
         Map<String, TreeSet<String>> reasonClassDirect = new HashMap<>();
         for (var e : ctx().unknownWhy.entrySet()) {
             TreeSet<String> classes = new TreeSet<>();
-            for (UnknownReason ur : e.getValue()) classes.add(ReasonClass.of(ur).token());
+            // Classify via the STRING path (`classify(ur.format())`), identical to rust/ts/swift — NOT the
+            // structured `of(ur)` (Kind) path. They agree for every reason candor-java emits today, but
+            // `of()` down-classifies a foreign prefix (`closure:`/`ambiguous:`/`missing-config`) to
+            // `unresolved` while `classify()` maps it correctly — so a future/cross-report reason can't
+            // under-gate a narrow `Unknown[reflect]` on the java engine alone (review-found parity hazard).
+            for (UnknownReason ur : e.getValue()) classes.add(ReasonClass.classify(ur.format()).token());
             if (!classes.isEmpty()) reasonClassDirect.put(e.getKey(), classes);
         }
         Map<String, TreeSet<String>> reasonClassAcc = literalFixpoint(reasonClassDirect);
@@ -433,9 +438,11 @@ final class Policy {
                     if (unknownStar) unknownClasses.clear();
                     // A2 under-gating lint: a narrowed scope that omits `unresolved` (the catch-all for holes an
                     // engine couldn't classify) may silently tolerate exactly those — flag it (advisory, not fatal).
+                    // NOT via warnPolicy: the rule is KEPT (it still gates), so "ignoring policy rule" is wrong
+                    // wording (the same fix applied in the rust/ts/swift A2 lints).
                     else if (!unknownClasses.isEmpty() && !unknownClasses.contains(ReasonClass.UNRESOLVED)) {
-                        warnPolicy(line, "narrow `Unknown[…]` scope omits `unresolved` — may UNDER-gate on holes "
-                                + "the engine couldn't classify; add `unresolved` (or use the `dynamic` set) to stay conservative");
+                        System.err.println("candor: policy rule narrows `Unknown[…]` but omits `unresolved` — may UNDER-gate on holes "
+                                + "the engine couldn't classify; add `unresolved` (or use `dynamic`) to stay conservative: " + line);
                     }
                     ctx().denyRules.add(new PolicyRule.Deny(EffectSet.ofNames(effNames), scope, line, unknownClasses));
                     break;

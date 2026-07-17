@@ -47,7 +47,7 @@ rep="$(cat "$W/r.json")"
 want "report is the v0.2 envelope"            "$rep" '"candor"'
 want "envelope carries a version"             "$rep" '"version"'
 want "envelope carries a toolchain"           "$rep" '"toolchain"'
-want "envelope declares the spec contract 0.19" "$rep" '"spec": "0.19"'
+want "envelope declares the spec contract 0.20" "$rep" '"spec": "0.20"'
 want "functions array present"               "$rep" '"functions"'
 want "reads performs Fs"                      "$rep" '"Fx.reads"'
 want "dyn is Unknown (reflection, trust §4)"  "$rep" '"Unknown"'
@@ -1629,7 +1629,7 @@ else echo "  FAIL --help exit $hprc (want 0)"; fail=$((fail+1)); fi
 hs="$("$CJ" -h 2>&1)"
 want "-h is the same surface"                      "$hs" 'USAGE'
 vv="$("$CJ" --version 2>&1)"; vvrc=$?
-want    "--version prints the release + spec"      "$vv" '(spec 0.19)'
+want    "--version prints the release + spec"      "$vv" '(spec 0.20)'
 want    "--version prints the upgrade line"        "$vv" 'jbang --fresh'
 wantnot "--version release is baked (not the 'unknown' fallback)" "$vv" 'candor-java unknown'
 if [ "$vvrc" -eq 0 ]; then echo "  ok   --version exits 0"; pass=$((pass+1));
@@ -1728,10 +1728,10 @@ fi
 echo "== family identity phrases =="
 README_TXT="$(cat "$ROOT/README.md")"; AGENTS_TXT="$(cat "$ROOT/AGENTS.md")"
 want    "README names candor-java the family's reference engine" "$README_TXT" "the family's reference engine"
-want    "README pins the spec floor (spec 0.19)"                  "$README_TXT" "spec 0.19"
+want    "README pins the spec floor (spec 0.20)"                  "$README_TXT" "spec 0.20"
 wantnot "README does not call Rust the reference"                "$README_TXT" "Rust reference"
 want    "AGENTS names candor-java the reference engine"          "$AGENTS_TXT" "reference engine"
-want    "AGENTS pins the spec floor (spec 0.19)"                  "$AGENTS_TXT" "spec 0.19"
+want    "AGENTS pins the spec floor (spec 0.20)"                  "$AGENTS_TXT" "spec 0.20"
 
 echo
 echo "smoke: $pass passed, $fail failed"

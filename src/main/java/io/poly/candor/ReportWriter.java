@@ -64,7 +64,7 @@ final class ReportWriter {
         List<Map.Entry<String, Integer>> uncovered = Candor.kappaUncovered();
         Set<String> globalBlind = uncovered.stream().map(Map.Entry::getKey).collect(Collectors.toSet());
         Map<String, TreeSet<String>> blindAcc = literalFixpoint(ctx().blindDirect);
-        // ⟨0.21⟩ Net destination-class: transitive masked-surface markers, so a fn whose Net surface is
+        // ⟨0.20⟩ Net destination-class: transitive masked-surface markers, so a fn whose Net surface is
         // structurally incomplete (AS-EFF-008) fails closed to `unknown-host` even if its VISIBLE hosts are
         // all telemetry/partner — a benign visible host must not certify a fn that also reaches an invisible one.
         Map<String, TreeSet<String>> incompleteAcc = literalFixpoint(ctx().surfaceIncomplete);
@@ -128,7 +128,7 @@ final class ReportWriter {
                     TreeSet<String> tk = tablesAcc.get(fn);
                     List<String> tables = inf.contains(Effect.DB) && tk != null && !tk.isEmpty()
                             ? new ArrayList<>(tk) : List.of();
-                    // ⟨0.21⟩ Net destination-class (SPEC §1): the destination classes present in this fn's
+                    // ⟨0.20⟩ Net destination-class (SPEC §1): the destination classes present in this fn's
                     // (transitive) Net surface. `known-telemetry`/`known-partner` come from an EXACT host-
                     // literal match (Literals.netDestClass); a masked Net surface OR a Net with NO visible host
                     // (runtime-computed endpoint) fails closed to `unknown-host` — candor never guesses a host

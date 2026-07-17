@@ -30,7 +30,7 @@ class QueryBlindspotsTest {
                 List.of("app.Svc.dispatch"), List.of());
         Effector clean = eff("app.Util.pure", EffectSet.empty(), List.of(), List.of());
 
-        String out = capture(() -> Query.blindspots(List.of(src, caller, clean), true));
+        String out = capture(() -> Query.blindspots(List.of(src, caller, clean), true, false));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
 
         assertEquals(2, o.get("totalUnknown").getAsInt(), "two Unknown fns: the source + its transitive caller");
@@ -39,6 +39,27 @@ class QueryBlindspotsTest {
         JsonObject s = sources.get(0).getAsJsonObject();
         assertEquals("app.Svc.dispatch", s.get("fn").getAsString(), "the source is named");
         assertEquals(1, s.get("reaches").getAsInt(), "the source reaches its 1 transitive caller (the blast radius)");
+    }
+
+    @Test void statsReasonClassDistribution() {
+        // ⟨0.20⟩ `--stats`: the reason-class distribution over the Unknown SOURCES. One reflect source, one
+        // native source, plus a transitive-only caller (no own why → not a source).
+        Effector refl = eff("app.R.refl", EffectSet.of(Effect.UNKNOWN), List.of(),
+                List.of(UnknownReason.of(UnknownReason.Kind.REFLECT, "eval")));
+        Effector nat = eff("app.N.nat", EffectSet.of(Effect.UNKNOWN), List.of(),
+                List.of(UnknownReason.of(UnknownReason.Kind.NATIVE, "jni")));
+        Effector caller = eff("app.C.use", EffectSet.of(Effect.UNKNOWN), List.of("app.R.refl"), List.of());
+
+        String out = capture(() -> Query.blindspots(List.of(refl, nat, caller), true, true));
+        JsonObject o = JsonParser.parseString(out).getAsJsonObject();
+        JsonObject byClass = o.getAsJsonObject("byClass");
+        for (String c : new String[]{"reflect", "dispatch", "indirect", "native", "unresolved", "setup"})
+            assertEquals(true, byClass.has(c), "byClass must carry every class: " + c);
+        assertEquals(1, byClass.get("reflect").getAsInt());
+        assertEquals(1, byClass.get("native").getAsInt());
+        assertEquals(0, byClass.get("dispatch").getAsInt());
+        assertEquals(2, o.get("sources").getAsInt(), "refl + nat carry a direct reason; the caller is transitive-only");
+        assertEquals(3, o.get("totalUnknown").getAsInt());
     }
 
     private static Effector eff(String fn, EffectSet inferred, List<String> calls, List<UnknownReason> why) {

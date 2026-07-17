@@ -209,6 +209,20 @@ final class Policy {
             System.exit(2);
         }
         int v = 0;
+        // Reason-scoped Unknown needs the reason CLASS to travel the same call graph the Unknown EFFECT does:
+        // a fn that inherits Unknown from a reflect-caused callee is a reflect-class Unknown even though the
+        // `reflect:*` reason was emitted DIRECTLY on the callee (unknownWhy is deliberately direct-only, for the
+        // human "Unknown sources (direct)" summary). Without this a `deny E Unknown[reflect]` at the CALLER would
+        // see no reason, default to `unresolved`, and NOT fire — a reflection-caused Unknown slipping the gate
+        // (under-gating = a false all-clear). Propagate the class TOKENS transitively (the paper's `(S,D)` join:
+        // D is componentwise-unioned over callees), mirroring literalFixpoint. Report output is unchanged.
+        Map<String, TreeSet<String>> reasonClassDirect = new HashMap<>();
+        for (var e : ctx().unknownWhy.entrySet()) {
+            TreeSet<String> classes = new TreeSet<>();
+            for (UnknownReason ur : e.getValue()) classes.add(ReasonClass.of(ur).token());
+            if (!classes.isEmpty()) reasonClassDirect.put(e.getKey(), classes);
+        }
+        Map<String, TreeSet<String>> reasonClassAcc = literalFixpoint(reasonClassDirect);
         // AS-EFF-006: a method in scope must not perform (transitively) a denied effect.
         for (var e : new TreeMap<>(inferred).entrySet()) {
             String fn = e.getKey();
@@ -224,9 +238,11 @@ final class Policy {
                 // (non-empty filter) fires its Unknown part ONLY if the fn's Unknown reasons include one of
                 // those classes. Concrete effects in `bad` are untouched — only the Unknown membership is scoped.
                 if (bad.toNames().contains("Unknown") && !r.unknownClasses().isEmpty()) {
-                    var reasons = ctx().unknownWhy.get(fn);
-                    java.util.Set<ReasonClass> fnClasses = reasons == null ? new java.util.HashSet<>()
-                            : reasons.stream().map(ReasonClass::of).collect(java.util.stream.Collectors.toSet());
+                    // TRANSITIVE reason classes (see reasonClassAcc above) — so an Unknown inherited from a
+                    // reason-tagged callee is classified by that callee's reason, not defaulted to unresolved.
+                    var classTokens = reasonClassAcc.get(fn);
+                    java.util.Set<ReasonClass> fnClasses = classTokens == null ? new java.util.HashSet<>()
+                            : classTokens.stream().map(ReasonClass::fromToken).collect(java.util.stream.Collectors.toSet());
                     // An Unknown with NO recorded reason is UNRESOLVED (conservative — stays in `Unknown[*]`/`[unresolved]`).
                     if (fnClasses.isEmpty()) fnClasses = java.util.Set.of(ReasonClass.UNRESOLVED);
                     boolean matched = fnClasses.stream().anyMatch(r.unknownClasses()::contains);

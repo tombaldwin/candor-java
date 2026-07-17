@@ -521,6 +521,11 @@ public final class Query {
             // reason-class parsing across engines. Empty ⇒ `Unknown[*]`, so the key's absence = all classes.
             if (!r.unknownClasses().isEmpty())
                 m.put("unknownClasses", r.unknownClasses().stream().map(ReasonClass::token).sorted().toList());
+            // Net destination-class `Net[dest…]` (NET-DESTINATION-CLASS-DESIGN.md): emit the sorted dest tokens
+            // ONLY when the rule narrows Net, so a bare `deny Net` dump stays byte-identical and the four-way
+            // parsepolicy differential pins the destination-class parsing across engines. Empty ⇒ `Net[*]`.
+            if (!r.netClasses().isEmpty())
+                m.put("netClasses", r.netClasses().stream().sorted().toList());
             deny.add(m);
         }
         List<Map<String, Object>> allow = new ArrayList<>();
@@ -556,6 +561,7 @@ public final class Query {
                 if (!f.tables().isEmpty()) m.put("tables", f.tables());
                 if (!f.paths().isEmpty()) m.put("paths", f.paths());
                 if (!f.cmds().isEmpty()) m.put("cmds", f.cmds());
+                if (!f.netClass().isEmpty()) m.put("netClass", f.netClass()); // ⟨0.21⟩ Net destination-class
                 m.put("unresolved", f.unresolved());
                 out.add(m);
             }

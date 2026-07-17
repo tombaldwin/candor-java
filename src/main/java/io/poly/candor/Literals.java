@@ -573,6 +573,44 @@ final class Literals {
         return isModelHost(hostLiteral) ? Set.of("Llm") : Set.of();
     }
 
+    /** ⟨0.21⟩ The `Net` DESTINATION-CLASS curated telemetry set (SPEC §1, NET-DESTINATION-CLASS-DESIGN.md) —
+     *  unambiguous analytics / error-tracking / APM / log vendors, shared VERBATIM four-way like
+     *  {@link #MODEL_HOSTS}. Deliberately TIGHT + high-precision: a host wrongly called telemetry would let an
+     *  exfil `Net` slip a `deny Net[unknown-host]` gate (under-gating). BASE domains; matched subdomain-aware. */
+    static final Set<String> TELEMETRY_HOSTS = Set.of(
+            "sentry.io", "bugsnag.com", "rollbar.com",                          // error / crash tracking
+            "segment.io", "segment.com", "mixpanel.com", "amplitude.com",       // product analytics
+            "google-analytics.com", "analytics.google.com",
+            "datadoghq.com", "datadoghq.eu", "newrelic.com", "nr-data.net",     // APM / monitoring / logs
+            "honeycomb.io", "logtail.com");
+
+    /** Subdomain-aware, case-insensitive, `:port`-stripped membership of a curated host SET (the
+     *  {@link #isModelHost} matching, factored out): a host EQUAL to an entry, or a subdomain of one. */
+    private static boolean hostInSet(String hostLiteral, Set<String> set) {
+        if (hostLiteral == null) return false;
+        String host = hostPart(hostLiteral).toLowerCase(Locale.ROOT);
+        if (set.contains(host)) return true;
+        for (String e : set) if (host.endsWith("." + e)) return true;
+        return false;
+    }
+
+    static boolean isTelemetryHost(String hostLiteral) {
+        return hostInSet(hostLiteral, TELEMETRY_HOSTS);
+    }
+
+    /** ⟨0.21⟩ The `Net` DESTINATION CLASS of a host literal: {@code known-telemetry} (curated), {@code
+     *  known-partner} (config `net-partner` OR a model host — a declared-ish external API), else {@code
+     *  unknown-host} — the HONEST default (candor makes no claim; the security gate bites this). A
+     *  null/unresolved host is {@code unknown-host}: never fabricated onto a safe class. */
+    static String netDestClass(String hostLiteral, Set<String> partners) {
+        if (isTelemetryHost(hostLiteral)) return "known-telemetry";
+        if (hostInSet(hostLiteral, partners) || isModelHost(hostLiteral)) return "known-partner";
+        return "unknown-host";
+    }
+
+    /** ⟨0.21⟩ The closed `Net` destination-class vocabulary, for the `deny Net[<dest…>]` policy filter. */
+    static final Set<String> NET_DEST_CLASSES = Set.of("known-telemetry", "known-partner", "unknown-host");
+
     /** Whether an allowed dir `a` covers the reached path `r` at a COMPONENT boundary (so `/etc/app`
      *  covers `/etc/app/cfg` but not `/etc/apppwned`); a `..` in the reached path is never covered.
      *  Mirrors the Rust `fs_path_covered`, including the absolute-vs-relative rootedness check. */

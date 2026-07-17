@@ -206,7 +206,8 @@ final class Loader {
                                 de.effects.add(Effect.UNKNOWN); // inferred: null → untrusted
                             }
                             for (var pair : List.of(Map.entry("hosts", de.hosts), Map.entry("cmds", de.cmds),
-                                    Map.entry("paths", de.paths), Map.entry("tables", de.tables)))
+                                    Map.entry("paths", de.paths), Map.entry("tables", de.tables),
+                                    Map.entry("netClass", de.netClass)))
                                 if (m.has(pair.getKey()) && m.get(pair.getKey()).isJsonArray())
                                     for (JsonElement x : m.getAsJsonArray(pair.getKey()))
                                         pair.getValue().add(x.getAsString());

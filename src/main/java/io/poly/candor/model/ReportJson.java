@@ -85,6 +85,7 @@ public final class ReportJson {
         if (!e.cmds().isEmpty()) m.put("cmds", e.cmds());
         if (!e.paths().isEmpty()) m.put("paths", e.paths());
         if (!e.tables().isEmpty()) m.put("tables", e.tables());
+        if (!e.netClass().isEmpty()) m.put("netClass", e.netClass()); // ⟨0.21⟩ Net destination-class (SPEC §1)
         return m;
     }
 
@@ -121,7 +122,8 @@ public final class ReportJson {
                     strList(o, "hosts"),
                     strList(o, "cmds"),
                     strList(o, "paths"),
-                    strList(o, "tables")));
+                    strList(o, "tables"),
+                    strList(o, "netClass")));
         }
         return out;
     }

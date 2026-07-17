@@ -64,6 +64,10 @@ final class ReportWriter {
         List<Map.Entry<String, Integer>> uncovered = Candor.kappaUncovered();
         Set<String> globalBlind = uncovered.stream().map(Map.Entry::getKey).collect(Collectors.toSet());
         Map<String, TreeSet<String>> blindAcc = literalFixpoint(ctx().blindDirect);
+        // ⟨0.21⟩ Net destination-class: transitive masked-surface markers, so a fn whose Net surface is
+        // structurally incomplete (AS-EFF-008) fails closed to `unknown-host` even if its VISIBLE hosts are
+        // all telemetry/partner — a benign visible host must not certify a fn that also reaches an invisible one.
+        Map<String, TreeSet<String>> incompleteAcc = literalFixpoint(ctx().surfaceIncomplete);
         List<Effector> effectors = new ArrayList<>();
         inferred.entrySet().stream()
                 // Keep a method if it has effects, is an entry point, has a BLIND SPOT (an unanalyzable
@@ -124,6 +128,20 @@ final class ReportWriter {
                     TreeSet<String> tk = tablesAcc.get(fn);
                     List<String> tables = inf.contains(Effect.DB) && tk != null && !tk.isEmpty()
                             ? new ArrayList<>(tk) : List.of();
+                    // ⟨0.21⟩ Net destination-class (SPEC §1): the destination classes present in this fn's
+                    // (transitive) Net surface. `known-telemetry`/`known-partner` come from an EXACT host-
+                    // literal match (Literals.netDestClass); a masked Net surface OR a Net with NO visible host
+                    // (runtime-computed endpoint) fails closed to `unknown-host` — candor never guesses a host
+                    // onto a safe class. Omitted when the fn has no Net.
+                    List<String> netClass = List.of();
+                    if (inf.contains(Effect.NET)) {
+                        TreeSet<String> classes = new TreeSet<>();
+                        if (hk != null) for (String h : hk) classes.add(Literals.netDestClass(h, ctx().netPartners));
+                        TreeSet<String> inc = incompleteAcc.get(fn);
+                        boolean masked = inc != null && inc.contains("Net");
+                        if (masked || hk == null || hk.isEmpty()) classes.add("unknown-host");
+                        netClass = new ArrayList<>(classes);
+                    }
                     // Why Unknown was emitted HERE (not inherited): native:/reflect:/dispatch:/… tags.
                     TreeSet<UnknownReason> uw = ctx().unknownWhy.get(fn);
                     List<UnknownReason> reasons = uw == null ? List.of() : new ArrayList<>(uw);
@@ -144,7 +162,7 @@ final class ReportWriter {
                             reasons,
                             ctx().hashOf.getOrDefault(fn, ""), // cross-jar join key (SPEC §2)
                             calls,
-                            fsKinds, hosts, cmds, paths, tables));
+                            fsKinds, hosts, cmds, paths, tables, netClass));
                 });
         // v0.2 self-describing envelope (candor-spec §2): a provenance header + the entries. Readers
         // still accept the legacy v0.1 bare array (see loadBaseline) during migration.

@@ -48,7 +48,7 @@ class SchemaShapeTest {
     static {
         Set<String> all = new TreeSet<>(FN_REQUIRED);
         all.addAll(Set.of("calls", "fs", "hosts", "cmds", "paths", "tables",
-                "invisible", "unknownWhy", "unitKind"));
+                "invisible", "unknownWhy", "unitKind", "netClass"));
         FN_ALLOWED = all;
     }
     /** --gate-json: { spec, ok, violations:[{rule, fn, effects, detail}] } — the SARIF reporter's input. */

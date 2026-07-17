@@ -115,7 +115,7 @@ class TourTest {
     private static Effector eff(String fn, EffectSet inferred, EffectSet direct, List<String> calls, String loc) {
         return new Effector(fn, loc, inferred, List.of(), direct, EffectSet.empty(),
                 EffectSet.empty(), EffectSet.empty(), false, inferred.hasUnknown(), EffectorKind.FUNCTION,
-                List.of(), "", calls, List.of(), List.of(), List.of(), List.of(), List.of());
+                List.of(), "", calls, List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
     }
 
     private static String capture(Runnable r) {

@@ -30,7 +30,7 @@ class QueryBlindspotsTest {
                 List.of("app.Svc.dispatch"), List.of());
         Effector clean = eff("app.Util.pure", EffectSet.empty(), List.of(), List.of());
 
-        String out = capture(() -> Query.blindspots(List.of(src, caller, clean), true, false));
+        String out = capture(() -> Query.blindspots(List.of(src, caller, clean), true, false, null));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
 
         assertEquals(2, o.get("totalUnknown").getAsInt(), "two Unknown fns: the source + its transitive caller");
@@ -50,7 +50,7 @@ class QueryBlindspotsTest {
                 List.of(UnknownReason.of(UnknownReason.Kind.NATIVE, "jni")));
         Effector caller = eff("app.C.use", EffectSet.of(Effect.UNKNOWN), List.of("app.R.refl"), List.of());
 
-        String out = capture(() -> Query.blindspots(List.of(refl, nat, caller), true, true));
+        String out = capture(() -> Query.blindspots(List.of(refl, nat, caller), true, true, null));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
         JsonObject byClass = o.getAsJsonObject("byClass");
         for (String c : new String[]{"reflect", "dispatch", "indirect", "native", "unresolved", "setup"})
@@ -60,6 +60,28 @@ class QueryBlindspotsTest {
         assertEquals(0, byClass.get("dispatch").getAsInt());
         assertEquals(2, o.get("sources").getAsInt(), "refl + nat carry a direct reason; the caller is transitive-only");
         assertEquals(3, o.get("totalUnknown").getAsInt());
+    }
+
+    @Test void classFilterDrillsDownToOneReasonClass() {
+        Effector refl = eff("app.R.refl", EffectSet.of(Effect.UNKNOWN), List.of(),
+                List.of(UnknownReason.of(UnknownReason.Kind.REFLECT, "eval")));
+        Effector nat = eff("app.N.nat", EffectSet.of(Effect.UNKNOWN), List.of(),
+                List.of(UnknownReason.of(UnknownReason.Kind.NATIVE, "jni")));
+
+        // --class native → only the native source is listed
+        String out = capture(() -> Query.blindspots(List.of(refl, nat), true, false,
+                Query.parseClassFilter("native")));
+        var sources = JsonParser.parseString(out).getAsJsonObject().getAsJsonArray("sources");
+        assertEquals(1, sources.size(), "--class native keeps only the native source");
+        assertEquals("app.N.nat", sources.get(0).getAsJsonObject().get("fn").getAsString());
+
+        // --stats composes with --class: distribution restricted to reflect
+        String stats = capture(() -> Query.blindspots(List.of(refl, nat), true, true,
+                Query.parseClassFilter("reflect")));
+        JsonObject o = JsonParser.parseString(stats).getAsJsonObject();
+        assertEquals(1, o.get("sources").getAsInt());
+        assertEquals(1, o.getAsJsonObject("byClass").get("reflect").getAsInt());
+        assertEquals(0, o.getAsJsonObject("byClass").get("native").getAsInt());
     }
 
     private static Effector eff(String fn, EffectSet inferred, List<String> calls, List<UnknownReason> why) {

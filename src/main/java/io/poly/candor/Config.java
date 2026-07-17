@@ -48,7 +48,7 @@ public final class Config {
      *  misspelt {@code policy} must not silently drop the gate. candor-java implements all seven + the
      *  MULTI-VALUE {@code unknown-alias} (⟨0.19⟩, reason-scoped Unknown). */
     private static final java.util.Set<String> KNOWN_KEYS = java.util.Set.of(
-            "policy", "baseline", "strict", "no-ambient", "closed-world", "taint", "deps", "unknown-alias", "net-partner");
+            "policy", "baseline", "strict", "no-ambient", "closed-world", "taint", "deps", "unknown-alias", "net-partner", "unknown-ratchet");
 
     /** The keys whose value is a PATH (list) — the ones anchor-resolution applies to. */
     private static final java.util.Set<String> PATH_KEYS = java.util.Set.of("policy", "baseline", "deps");

@@ -150,6 +150,7 @@ public class Candor {
         loadCrossDeps(config.value("deps", "CANDOR_DEPS"), provenance()[0]);
         ctx().taintEnabled = config.flag("taint", Mode.TAINT.envVar()); // read before analyze (the pass runs per method)
         ctx().closedWorld = forceClosedWorld || config.flag("closed-world", "CANDOR_CLOSED_WORLD"); // opt-in: scanned set is complete
+        ctx().unknownRatchet = config.flag("unknown-ratchet", "CANDOR_UNKNOWN_RATCHET"); // opt-in: a NEW Unknown vs baseline fails
         // Per-class fail-soft: an exotic/malformed class that throws ANYWHERE in analyze (e.g. a malformed
         // method descriptor that ASM validates only lazily in Type.getArgumentTypes — the 0.5.6 crash class,
         // re-surfaced via an overloaded-name path the desc.startsWith("(") guard doesn't catch) must NOT

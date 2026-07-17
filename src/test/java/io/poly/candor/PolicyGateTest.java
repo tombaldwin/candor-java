@@ -121,6 +121,28 @@ class PolicyGateTest {
     }
 
     @Test
+    void unknownRatchetGrandfathersExistingButFailsNewUnknowns() throws Exception {
+        // ⟨unknown-ratchet⟩ Makes `deny E Unknown` adoptable on legacy code: freeze today's Unknown surface as
+        // the baseline; a pre-existing Unknown (no gain) is grandfathered, only a NEW Unknown fails.
+        String v = ReportWriter.provenance()[0];
+        // baseline: a.B.old is ALREADY Unknown; a.B.pure is a pure callgraph node (∅). Sidecar keys both as nodes.
+        Path base = file("ubase", "{\"candor\":{\"version\":\"" + v + "\"},\"functions\":[{\"fn\":\"a.B.old\",\"inferred\":[\"Unknown\"]}]}");
+        writeSidecar(base, "{\"a.B.old\":[],\"a.B.pure\":[]}");
+        Map<String, EffectSet> inferred = new HashMap<>();
+        inferred.put("a.B.old", EffectSet.of(Effect.UNKNOWN));   // unchanged vs baseline → no gain → grandfathered
+        inferred.put("a.B.pure", EffectSet.of(Effect.UNKNOWN));  // formerly-pure node now Unknown → a NEW blind spot
+
+        ctx().unknownRatchet = false; // DEFAULT: Unknown-gains stay advisory (⟨0.16⟩ posture) → 0 regressions
+        assertEquals(0, Policy.checkBaseline(inferred, base.toString()),
+            "default (ratchet off): an Unknown-only gain is advisory, never a regression");
+
+        Candor.resetState();
+        ctx().unknownRatchet = true;  // OPT-IN: the NEW Unknown fails; the pre-existing one is grandfathered
+        assertEquals(1, Policy.checkBaseline(inferred, base.toString()),
+            "unknown-ratchet: only the NEWLY-introduced Unknown (a.B.pure) fails; a.B.old is grandfathered");
+    }
+
+    @Test
     void baselineSidecarCatchesPureToEffectful() throws Exception {
         // ⟨0.16⟩ The sharpest supply-chain shape: a fn that was PURE at the baseline (absent from
         // the report, which omits pure fns — but present as a callgraph NODE) now performs an effect.

@@ -281,13 +281,14 @@ public final class Query {
         boolean includeUnknown = false; // `callers --include-unknown`: also disclose the unresolved-dispatch frontier
         boolean strict = false;         // `unverified --strict`: exit 1 on an unverified-purity hole
         boolean stats = false;          // `blindspots --stats`: the reason-class distribution, not the source list
+        String classFlag = null;        // `blindspots --class <c,…>`: keep only Unknown sources of these reason classes
         String reportFlag = null;       // --report <locator> (canonical §3.3.1)
         String policyFlag = null;       // --policy <file> (canonical §3.3.1)
         List<String> pos = new ArrayList<>();
         // `--text`/`--human` are candor-ts's output-mode flags (#8): java prose is always the default, so
         // ACCEPT + ignore them — cross-engine `candor <verb> --text` must not error just because the report
         // routed to the JVM engine. (java already rejects a genuinely-unknown flag via rejectUnknownFlag.)
-        Set<String> known = java.util.Set.of("--json", "--text", "--human", "--include-unknown", "--strict", "--stats", "--report", "--policy");
+        Set<String> known = java.util.Set.of("--json", "--text", "--human", "--include-unknown", "--strict", "--stats", "--class", "--report", "--policy");
         String usage = "candor " + cmd + " <verb-args…> [--report <locator>] [--policy <file>] [--json] [--strict] [--include-unknown]";
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
@@ -296,6 +297,10 @@ public final class Query {
                 case "--include-unknown" -> includeUnknown = true;
                 case "--strict" -> strict = true;
                 case "--stats" -> stats = true;
+                case "--class" -> {
+                    if (i + 1 >= args.length) { System.err.println("candor: --class needs <class,…> (usage: " + usage + ")"); return 2; }
+                    classFlag = args[++i];
+                }
                 case "--report" -> {
                     if (i + 1 >= args.length) { System.err.println("candor: --report needs a <locator> (usage: " + usage + ")"); return 2; }
                     reportFlag = args[++i];
@@ -391,7 +396,7 @@ public final class Query {
             case "reachable" -> reachable(fns, json);
             case "path" -> path(fns, a0, a1, json);
             case "impact" -> impact(fns, a0, json);
-            case "blindspots" -> blindspots(fns, json, stats);
+            case "blindspots" -> blindspots(fns, json, stats, parseClassFilter(classFlag));
             case "tour" -> tour(fns, report, a0, json);
             case "gains" -> gains2(a0, a1, json, strict, policyFlag);
             case "whatif" -> whatif(report, a0, a1, policyFlag, json);
@@ -1755,9 +1760,33 @@ public final class Query {
      *  read 60% Unknown from a handful of root causes — this names them, ranked, to declare/resolve/accept.
      *  Reverse-BFS over the report's effect-relevant `calls` edges (the channel Unknown propagates along),
      *  the same graph `impact` uses. */
-    static int blindspots(List<Effector> fns, boolean json, boolean stats) {
+    /** Parse a {@code --class <c,…>} filter into reason classes: the six tokens, {@code dynamic} (every genuine
+     *  class), or {@code *}/null (no filter → null). An unknown token warns + is skipped. Shared by
+     *  {@code blindspots} (and {@code unverified}) so the drill-down vocabulary matches the §6.2 policy one. */
+    static Set<ReasonClass> parseClassFilter(String spec) {
+        if (spec == null) return null;
+        Set<ReasonClass> out = new java.util.LinkedHashSet<>();
+        for (String t : spec.split(",")) {
+            t = t.trim();
+            if (t.isEmpty()) continue;
+            if (t.equals("*")) return null;                       // explicit "all" ⇒ no filter
+            if (t.equals("dynamic")) { out.addAll(ReasonClass.dynamicSet()); continue; }
+            ReasonClass rc = ReasonClass.fromToken(t);
+            if (rc == null) System.err.println("candor: --class ignores unknown reason-class `" + t
+                    + "` (known: reflect,dispatch,indirect,native,unresolved,setup; aliases: dynamic,*)");
+            else out.add(rc);
+        }
+        return out.isEmpty() ? java.util.Set.of() : out;          // all-unknown tokens ⇒ match nothing
+    }
+
+    static int blindspots(List<Effector> fns, boolean json, boolean stats, Set<ReasonClass> classFilter) {
         Map<String, List<String>> rev = new HashMap<>();
         for (Effector f : fns) for (String c : f.calls()) rev.computeIfAbsent(c, k -> new ArrayList<>()).add(f.fn());
+        // `--class <c,…>` (SPEC §3.1 ⟨0.20⟩): keep only Unknown SOURCES whose reason classes intersect the
+        // filter — the drill-down companion to `--stats` (which sizes; this names). null = no filter.
+        java.util.function.Predicate<Effector> classMatch = f -> classFilter == null
+                || (f.unknownWhy() != null && f.unknownWhy().stream()
+                        .anyMatch(ur -> classFilter.contains(ReasonClass.classify(ur.format()))));
         int totalUnknown = (int) fns.stream().filter(f -> f.inferred().hasUnknown()).count();
         // `--stats` (SPEC §3.1 ⟨0.20⟩): the reason-class DISTRIBUTION over the Unknown SOURCES — how much
         // Unknown, by class {reflect,dispatch,indirect,native,unresolved,setup} — so a team can SIZE the
@@ -1768,7 +1797,7 @@ public final class Query {
             for (ReasonClass c : ReasonClass.values()) byClass.put(c.token(), 0);
             int sources = 0;
             for (Effector f : fns) {
-                if (f.unknownWhy() == null || f.unknownWhy().isEmpty()) continue;
+                if (f.unknownWhy() == null || f.unknownWhy().isEmpty() || !classMatch.test(f)) continue;
                 sources++;
                 java.util.Set<ReasonClass> classes = f.unknownWhy().stream()
                         .map(ur -> ReasonClass.classify(ur.format())).collect(Collectors.toSet());
@@ -1797,7 +1826,7 @@ public final class Query {
         }
         List<Map<String, Object>> sources = new ArrayList<>();
         for (Effector f : fns) {
-            if (f.unknownWhy() == null || f.unknownWhy().isEmpty()) continue; // a SOURCE carries its own why
+            if (f.unknownWhy() == null || f.unknownWhy().isEmpty() || !classMatch.test(f)) continue; // a SOURCE of a matching class
             Set<String> affected = new TreeSet<>();
             Deque<String> q = new ArrayDeque<>();
             Set<String> seen = new HashSet<>();

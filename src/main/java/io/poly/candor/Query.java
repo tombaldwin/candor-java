@@ -561,7 +561,7 @@ public final class Query {
                 if (!f.tables().isEmpty()) m.put("tables", f.tables());
                 if (!f.paths().isEmpty()) m.put("paths", f.paths());
                 if (!f.cmds().isEmpty()) m.put("cmds", f.cmds());
-                if (!f.netClass().isEmpty()) m.put("netClass", f.netClass()); // ⟨0.21⟩ Net destination-class
+                if (!f.netClass().isEmpty()) m.put("netClass", f.netClass()); // ⟨0.20⟩ Net destination-class
                 m.put("unresolved", f.unresolved());
                 out.add(m);
             }

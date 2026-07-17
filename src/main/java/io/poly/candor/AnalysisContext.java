@@ -26,7 +26,7 @@ final class AnalysisContext {
     // ⟨0.19⟩ user-defined reason-class aliases from `.candor/config` (`unknown-alias <name> = <class,…>`),
     // consulted by the §6.2 deny parser for an `Unknown[<name>]` filter. Populated before parsePolicy.
     final Map<String, Set<ReasonClass>> unknownAliases = new HashMap<>();
-    // ⟨0.21⟩ project-declared partner hosts from `.candor/config` (`net-partner <host>`), consulted by the
+    // ⟨0.20⟩ project-declared partner hosts from `.candor/config` (`net-partner <host>`), consulted by the
     // Net destination-class classifier (Literals.netDestClass) to refine a visible host to `known-partner`.
     // Populated alongside unknownAliases (before parsePolicy / after runScan). Empty = telemetry-only asserts.
     final Set<String> netPartners = new HashSet<>();

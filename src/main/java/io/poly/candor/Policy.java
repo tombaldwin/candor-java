@@ -228,7 +228,7 @@ final class Policy {
             if (!classes.isEmpty()) reasonClassDirect.put(e.getKey(), classes);
         }
         Map<String, TreeSet<String>> reasonClassAcc = literalFixpoint(reasonClassDirect);
-        // ⟨0.21⟩ Net destination-class filter (NET-DESTINATION-CLASS-DESIGN.md) needs the fn's (transitive)
+        // ⟨0.20⟩ Net destination-class filter (NET-DESTINATION-CLASS-DESIGN.md) needs the fn's (transitive)
         // destination classes — derived exactly like the report's `netClass` field (host fixpoint + the fail-
         // closed masked-surface rule), so the gate and the report agree on what an fn's Net reaches.
         Map<String, TreeSet<String>> netHostsAcc = literalFixpoint(ctx().hostsDirect);
@@ -274,7 +274,7 @@ final class Policy {
                     List<String> reasonClass = bn.contains("Unknown")
                             ? new java.util.TreeSet<>(reasonClassAcc.getOrDefault(fn, new java.util.TreeSet<>())).stream().toList()
                             : java.util.List.of();
-                    // ⟨0.21⟩ when Net is denied, record ALL of the fn's destination classes (transitive) so a
+                    // ⟨0.20⟩ when Net is denied, record ALL of the fn's destination classes (transitive) so a
                     // --gate-json consumer sees which class the security gate bit — bare `deny Net` too.
                     List<String> netClass = bn.contains("Net")
                             ? netClassesOf(fn, netHostsAcc, netIncompleteAcc)
@@ -553,7 +553,7 @@ final class Policy {
         return false;
     }
 
-    /** ⟨0.21⟩ The `Net` destination classes an fn reaches (transitive) — the SAME derivation as the report's
+    /** ⟨0.20⟩ The `Net` destination classes an fn reaches (transitive) — the SAME derivation as the report's
      *  `netClass` field: an exact host-literal match (Literals.netDestClass) for the visible hosts, plus the
      *  fail-closed `unknown-host` when the Net surface is masked (AS-EFF-008) OR carries no visible host (a
      *  runtime-computed endpoint). Call only for an fn known to have Net; returns a sorted list. */

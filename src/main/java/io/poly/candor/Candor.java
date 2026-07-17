@@ -65,7 +65,7 @@ public class Candor {
      *  implementation. The prior 0.15 rung — the κ-coverage ledger riding the §2 `coverage` field — still
      *  applies) while a sibling may remain on an earlier floor and raise as it implements it. Additive-only,
      *  so an older consumer is unaffected. */
-    static final String SPEC_VERSION = "0.19";
+    static final String SPEC_VERSION = "0.20";
 
     static final String FS_UNKNOWN = "?";   // Fs reached with no recorded kind (cross-jar) -> make no read/write claim
 
@@ -488,7 +488,7 @@ public class Candor {
         // config `unknown-alias` map survives for checkPolicy's parse. (Set pre-runScan it was silently wiped —
         // the alias resolved in `parsepolicy` but NOT the gate; caught by a corpus dogfood.)
         ctx().unknownAliases.putAll(config.unknownAliases());
-        ctx().netPartners.addAll(config.netPartners()); // ⟨0.21⟩ Net destination-class known-partner hosts
+        ctx().netPartners.addAll(config.netPartners()); // ⟨0.20⟩ Net destination-class known-partner hosts
 
         // Fail loud on an EMPTY scan: a path that exists but holds no .class files (a source dir, an
         // unbuilt module, or a failed build) would otherwise report "0 functions reach effects" — which
@@ -699,7 +699,7 @@ public class Candor {
         diagCapture(code, effects, reasonClass, java.util.List.of(), format, args);
     }
 
-    /** As above, plus the fn's Net destination classes (SPEC §6.2 ⟨0.21⟩) — recorded when {@code Net} is
+    /** As above, plus the fn's Net destination classes (SPEC §6.2 ⟨0.20⟩) — recorded when {@code Net} is
      *  denied, so a --gate-json consumer sees which destination classes the security gate bit. */
     static void diag(DiagnosticCode code, java.util.List<String> effects, java.util.List<String> reasonClass,
                      java.util.List<String> netClass, String format, Object... args) {
@@ -733,7 +733,7 @@ public class Candor {
             // ⟨0.19⟩ reason-scoped Unknown: the fn's reason classes when Unknown is denied (SPEC §6.2). Omitted
             // when empty, so a non-Unknown violation's verdict is byte-identical to pre-feature.
             if (!reasonClass.isEmpty()) m.put("reasonClass", reasonClass);
-            // ⟨0.21⟩ Net destination-class: the fn's destination classes when Net is denied (SPEC §6.2). Omitted
+            // ⟨0.20⟩ Net destination-class: the fn's destination classes when Net is denied (SPEC §6.2). Omitted
             // when empty, so a non-Net violation's verdict stays byte-identical to pre-feature.
             if (!netClass.isEmpty()) m.put("netClass", netClass);
             gateViolations.add(m);
@@ -1893,7 +1893,7 @@ public class Candor {
                 if (!inh.cmds.isEmpty()) ctx.cmdsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.cmds);
                 if (!inh.paths.isEmpty()) ctx.pathsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.paths);
                 if (!inh.tables.isEmpty()) ctx.tablesDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.tables);
-                // ⟨0.21⟩ a dep that itself reached an `unknown-host` (masked/runtime) taints the consumer
+                // ⟨0.20⟩ a dep that itself reached an `unknown-host` (masked/runtime) taints the consumer
                 // fail-closed: mark its Net surface incomplete so the consumer's netClass carries unknown-host
                 // even though the dep's unresolved host never crossed into `hosts`. (Reuses the AS-EFF-008 marker.)
                 if (inh.netClass.contains("unknown-host"))

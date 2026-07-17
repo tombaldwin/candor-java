@@ -59,7 +59,7 @@ public final class Config {
      *  convenience only — it can never change what bare {@code deny E Unknown} means (that is always all
      *  classes), so a rule's denied set is legible from the policy alone. */
     private final Map<String, java.util.Set<ReasonClass>> unknownAliases;
-    /** ⟨0.21⟩ config-declared `Net` PARTNER hosts (NET-DESTINATION-CLASS-DESIGN.md): {@code net-partner <host>},
+    /** ⟨0.20⟩ config-declared `Net` PARTNER hosts (NET-DESTINATION-CLASS-DESIGN.md): {@code net-partner <host>},
      *  a MULTI-VALUE key. A partner is per-project (not universal), so it MUST be config-declared; a `Net` to a
      *  declared partner classifies {@code known-partner}, not {@code unknown-host}. Lowercased, matched
      *  subdomain-aware like {@link Literals#TELEMETRY_HOSTS}. */
@@ -202,7 +202,7 @@ public final class Config {
                     addAlias(aliases, val, path);
                     continue;
                 }
-                if ("net-partner".equals(key)) {     // ⟨0.21⟩ MULTI-VALUE: declared Net partner hosts
+                if ("net-partner".equals(key)) {     // ⟨0.20⟩ MULTI-VALUE: declared Net partner hosts
                     if (!val.isEmpty()) partners.add(Literals.hostPart(val).toLowerCase(Locale.ROOT));
                     continue;
                 }

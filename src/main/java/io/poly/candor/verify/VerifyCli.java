@@ -110,7 +110,14 @@ public final class VerifyCli {
         // (d) run --run with the agent + trace wired via JAVA_TOOL_OPTIONS so every spawned JVM records.
         List<String> cmd = List.of("/bin/sh", "-c", runCmd);
         ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.inheritIO();
+        // stdin + stderr are always inherited so the run looks normal. In --json mode the program's own
+        // STDOUT must be kept OFF our stdout — otherwise it interleaves with the verify JSON and a machine
+        // consumer can't parse it (found corpus-testing: `name=Tom Baldwin` printed into the JSON). Discard it
+        // then (its stderr still shows); in human mode inherit everything. Mirrors candor-ts-verify's
+        // `stdio: ["inherit","ignore","inherit"]` under --json.
+        pb.redirectInput(ProcessBuilder.Redirect.INHERIT);
+        pb.redirectError(ProcessBuilder.Redirect.INHERIT);
+        pb.redirectOutput(wantJson ? ProcessBuilder.Redirect.DISCARD : ProcessBuilder.Redirect.INHERIT);
         Map<String, String> env = pb.environment();
         String prior = env.getOrDefault("JAVA_TOOL_OPTIONS", "");
         String agentOpt = "-javaagent:" + jar + "=" + includeFile;
@@ -221,6 +228,7 @@ public final class VerifyCli {
         JsonObject out = new JsonObject();
         out.add("metrics", metrics);
         out.add("violations", gson.toJsonTree(r.violations));
+        out.add("rows", gson.toJsonTree(r.rows)); // per-fn detail — parity with candor-ts-verify's JSON
         return gson.toJson(out);
     }
 

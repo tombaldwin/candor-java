@@ -129,7 +129,21 @@ public final class HonestyCheck {
         }
     }
 
-    /** The full result: metrics + violations. */
+    /** One executed fn's verdict (mirrors verify-core's `rows`): sound-complete-ok / disclosed-partial / VIOLATION. */
+    public static final class Row {
+        public final String fn;
+        public final String verdict;
+        public final List<String> observed;
+        public final List<String> inferred;
+        Row(String fn, String verdict, Set<String> observed, Set<String> inferred) {
+            this.fn = fn;
+            this.verdict = verdict;
+            this.observed = new ArrayList<>(observed);
+            this.inferred = new ArrayList<>(inferred);
+        }
+    }
+
+    /** The full result: metrics + per-fn rows + violations. */
     public static final class Result {
         public final String scope;
         public final List<String> effectsInScope;
@@ -139,10 +153,11 @@ public final class HonestyCheck {
         public final int disclosedUnknownLoadBearing;
         public final int cardinalSinViolations;
         public final boolean honestyInvariantHolds;
+        public final List<Row> rows;
         public final List<Violation> violations;
 
         Result(String scope, Set<String> allowed, int checked, int clean, int disclosed,
-                int loadBearing, List<Violation> violations) {
+                int loadBearing, List<Row> rows, List<Violation> violations) {
             this.scope = scope;
             this.effectsInScope = new ArrayList<>(allowed);
             this.executedFunctionsChecked = checked;
@@ -151,6 +166,7 @@ public final class HonestyCheck {
             this.disclosedUnknownLoadBearing = loadBearing;
             this.cardinalSinViolations = violations.size();
             this.honestyInvariantHolds = violations.isEmpty();
+            this.rows = rows;
             this.violations = violations;
         }
     }
@@ -163,6 +179,7 @@ public final class HonestyCheck {
             Map<String, Set<String>> observedMap, String scope) {
         Set<String> allowed = scopeSet(scope);
         List<Violation> violations = new ArrayList<>();
+        List<Row> rows = new ArrayList<>();
         int clean = 0, disclosed = 0, loadBearing = 0;
         // observedMap is a TreeMap → iteration is already sorted by fn (matches verify-core's sort).
         for (Map.Entry<String, Set<String>> e : observedMap.entrySet()) {
@@ -170,17 +187,22 @@ public final class HonestyCheck {
             Set<String> inferred = reportMap.getOrDefault(fn, new TreeSet<>()); // absent ⇒ ∅ (claimed pure)
             Set<String> obs = new TreeSet<>();
             for (String o : e.getValue()) if (allowed.contains(o)) obs.add(o);
+            String verdict;
             if (inferred.contains(UNKNOWN)) {
                 disclosed++;
+                verdict = "disclosed-partial";
                 Set<String> tight = new TreeSet<>(inferred);
                 tight.remove(UNKNOWN);
                 if (!subset(obs, tight)) loadBearing++; // the Unknown was doing real work
             } else if (subset(obs, inferred)) {
                 clean++;
+                verdict = "sound-complete-ok";
             } else {
+                verdict = "VIOLATION";
                 violations.add(new Violation(fn, obs, inferred, escaped(obs, inferred)));
             }
+            rows.add(new Row(fn, verdict, obs, inferred));
         }
-        return new Result(scope, allowed, observedMap.size(), clean, disclosed, loadBearing, violations);
+        return new Result(scope, allowed, observedMap.size(), clean, disclosed, loadBearing, rows, violations);
     }
 }

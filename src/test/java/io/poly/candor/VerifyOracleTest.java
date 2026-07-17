@@ -181,6 +181,7 @@ class VerifyOracleTest {
             "  }",
             "  static int pure(int a, int b) { return a + b; }",
             "  public static void main(String[] a) throws Exception {",
+            "    System.out.println(\"program stdout must NOT corrupt --json output\");", // regression guard
             "    reads();",
             "    if (pure(2, 3) != 5) throw new IllegalStateException();",
             "  }",
@@ -221,6 +222,14 @@ class VerifyOracleTest {
         assertEquals(0, hold.exit());
         assertEquals(0, m.get("cardinalSinViolations").getAsInt());
         assertTrue(m.get("executedFunctionsChecked").getAsInt() >= 1, "reads() must be witnessed");
+        // The fixture prints to stdout; `metrics(hold.stdout())` parsing above already proves --json stdout is
+        // NOT corrupted by the program's output (the inheritIO bug). Also assert `rows` — parity with candor-ts.
+        var rows = JsonParser.parseString(hold.stdout()).getAsJsonObject().getAsJsonArray("rows");
+        assertTrue(rows.size() >= 1, "per-fn rows present (parity with candor-ts-verify); stdout=" + hold.stdout());
+        assertTrue(java.util.stream.StreamSupport.stream(rows.spliterator(), false)
+                .anyMatch(e -> "app.Main.reads".equals(e.getAsJsonObject().get("fn").getAsString())
+                        && "sound-complete-ok".equals(e.getAsJsonObject().get("verdict").getAsString())),
+                "reads() row is sound-complete-ok");
 
         // (b) VIOLATION — seed a MISS: declare reads() pure, run again → cardinal sin, exit 1, Fs escaped.
         String reportText = Files.readString(report);

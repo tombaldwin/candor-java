@@ -36,7 +36,9 @@ import org.junit.jupiter.api.Test;
 class SchemaShapeTest {
 
     /** Envelope: the v0.2 self-describing header (SPEC §2.1) + coverage + entries. */
-    private static final Set<String> TOP_KEYS = Set.of("candor", "packages", "functions");
+    // ⟨0.21⟩ `analyzed` (the completeness-manifest summary) is ALWAYS present; `coverage`/`unanalyzed` are
+    // conditional (omitted when fully covered / fully analyzed — this fixture is both).
+    private static final Set<String> TOP_KEYS = Set.of("candor", "packages", "analyzed", "functions");
     private static final Set<String> PROVENANCE_KEYS = Set.of("version", "toolchain", "spec");
     /** Every key a functions[] entry may carry (the Effector surface). Optional members (calls/fs/
      *  hosts/cmds/paths/tables/invisible/unknownWhy/unitKind) are omitted when empty — allowed, never
@@ -52,7 +54,9 @@ class SchemaShapeTest {
         FN_ALLOWED = all;
     }
     /** --gate-json: { spec, ok, violations:[{rule, fn, effects, detail}] } — the SARIF reporter's input. */
-    private static final Set<String> VERDICT_KEYS = Set.of("spec", "ok", "violations");
+    // ⟨0.21⟩ `analyzed` (count) always present; `incomplete`/`unanalyzed` only on an incomplete gate (this
+    // fixture is complete).
+    private static final Set<String> VERDICT_KEYS = Set.of("spec", "ok", "analyzed", "violations");
     private static final Set<String> VIOLATION_KEYS = Set.of("rule", "fn", "effects", "detail");
 
     private record Run(int exit, String stdout, String stderr) {}

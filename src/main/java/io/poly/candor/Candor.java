@@ -162,6 +162,9 @@ public class Candor {
             } catch (Throwable t) {
                 analyzeSkipped++;
                 if (firstAnalyzeErr == null) firstAnalyzeErr = cn.name + ": " + t;
+                // ⟨0.21⟩ COMPLETENESS MANIFEST (Gap 2): an un-analyzable class is unseen, not pure — disclose it
+                // to a machine (report + gate verdict), so the gate fails closed rather than green over it.
+                ctx().unanalyzed.put(cn.name, "class failed to analyze: " + t);
             }
         }
         if (analyzeSkipped > 0)
@@ -630,6 +633,16 @@ public class Candor {
         if (violations > 0) gate.println("→ candor fix-gate names the remedy for each");
         writeGateJson(gateJson, violations);   // machine verdict (before exit) — clean run writes ok:true,[]
         if (violations > 0) System.exit(1); // fail CI
+        // ⟨0.21⟩ COMPLETENESS MANIFEST (Gap 2): a CONFIGURED gate over code candor could NOT fully analyze
+        // (skipped unparseable classes) cannot certify — exit 2 (could-not-evaluate), the fail-closed posture
+        // (matches candor-scan's had_parse_failure). A real violation (exit 1, above) dominates. A bare scan
+        // with NO gate does not exit 2 — it discloses `unanalyzed` in the report and stays exit 0.
+        boolean gateConfigured = policy != null || noAmbient != null || baseline != null;
+        if (gateConfigured && !ctx().unanalyzed.isEmpty()) {
+            System.err.println("candor-java: gate NOT certified — " + ctx().unanalyzed.size()
+                    + " class(es) could not be analyzed (see above); a gate cannot be green over unanalyzed code");
+            System.exit(2);
+        }
     }
 
     /** ⟨0.15 staged⟩ The κ-coverage ledger, computed the ONE shared way for its three consumers — the
@@ -654,8 +667,33 @@ public class Candor {
         if (path == null) return;
         var out = new java.util.LinkedHashMap<String, Object>();
         out.put("spec", SPEC_VERSION);
-        out.put("ok", violations == 0);
+        // ⟨0.21⟩ COMPLETENESS MANIFEST (Gap 2): a gate over code candor could NOT fully analyze (skipped
+        // unparseable classes) must NOT read green — their effects are invisible, so a `deny`/`pure` that
+        // "passes" over them is a false-pure. `ok` requires BOTH no violation AND a complete analysis.
+        boolean incomplete = !ctx().unanalyzed.isEmpty();
+        out.put("ok", violations == 0 && !incomplete);
+        // ⟨0.21⟩ (Gap 1) the analyzed-universe count, so a --gate-json consumer sees the scan's scope from the
+        // verdict alone (mirrors the report envelope's `analyzed`).
+        var an = new java.util.LinkedHashMap<String, Object>();
+        an.put("count", ctx().edges.keySet().size());
+        out.put("analyzed", an);
         out.put("violations", gateViolations);
+        // ⟨0.21⟩ (Gap 2) the machine-legible incompleteness: the units candor couldn't analyze, so a CI/agent
+        // reading the JSON learns WHY the gate can't certify — the stderr warning alone used to hide this from
+        // a machine. `incomplete:true` + the list; the caller exits 2 (could-not-fully-evaluate). Tom's call
+        // 2026-07-17: emit a structured reason on the incomplete path rather than nothing (refines §3.3.1 to
+        // "no ok:true GUESS" — ok:false + incomplete:true is honest, never a fabricated pass).
+        if (incomplete) {
+            out.put("incomplete", true);
+            List<Map<String, Object>> un = new ArrayList<>();
+            for (var e : ctx().unanalyzed.entrySet()) {
+                var m = new java.util.LinkedHashMap<String, Object>();
+                m.put("path", e.getKey());
+                m.put("reason", e.getValue());
+                un.add(m);
+            }
+            out.put("unanalyzed", un);
+        }
         // ⟨0.15 staged⟩ the coverage ADVISORY (COVERAGE-DESIGN §3): when the κ ledger is non-empty the
         // verdict discloses it — a gate verdict over partially-covered code must not read as total.
         // VERDICT-PRESERVING (the ⟨0.9⟩ provable-purity auto-disclosure precedent): ok/violations/exit

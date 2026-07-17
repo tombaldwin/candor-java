@@ -385,6 +385,10 @@ public class Candor {
         if (args[0].equals("parsepolicy")) {
             if (args.length < 2) { System.err.println("usage: candor parsepolicy <policy-file>"); System.exit(2); }
             ctx().denyRules.clear(); ctx().allowRules.clear(); ctx().forbidRules.clear();
+            // ⟨0.19⟩ config-aware: discover `.candor/config` (or CANDOR_CONFIG) anchored to the policy file so
+            // an `Unknown[<alias>]` resolves via a checked-in `unknown-alias` — the dump reflects real gate
+            // resolution (and the four-way parsepolicy differential pins the expansion).
+            ctx().unknownAliases.putAll(Config.forTarget(Path.of(args[1])).unknownAliases());
             if (!parsePolicy(args[1])) { System.err.println("candor: cannot read policy " + args[1]); System.exit(2); }
             System.out.println(Query.policyJson());
             System.exit(0);
@@ -460,6 +464,7 @@ public class Candor {
         // with the code" promise depend on where the command was launched from. The layer sits UNDER the
         // env vars (which sit under the CLI flags); configured-but-unreadable fails loud (exit 2).
         config = Config.forTarget(scanTarget);
+        ctx().unknownAliases.putAll(config.unknownAliases());   // ⟨0.19⟩ reason-class aliases for the §6.2 gate
         if (!Files.exists(scanTarget)) {
             System.err.println("candor: no such path: " + args[0]);
             System.err.println("        point candor at COMPILED classes (target/classes · build/classes/java/main) or a built .jar.");

@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import io.poly.candor.model.ReasonClass;
 
 /**
  * {@code .candor/config} — a checked-in, declarative alternative to the {@code CANDOR_*} environment
@@ -44,21 +45,66 @@ import java.util.Map;
  */
 public final class Config {
     /** The shared §config key vocabulary (cross-engine). A key OUTSIDE it warns — typo protection: a
-     *  misspelt {@code policy} must not silently drop the gate. candor-java implements all seven. */
+     *  misspelt {@code policy} must not silently drop the gate. candor-java implements all seven + the
+     *  MULTI-VALUE {@code unknown-alias} (⟨0.19⟩, reason-scoped Unknown). */
     private static final java.util.Set<String> KNOWN_KEYS = java.util.Set.of(
-            "policy", "baseline", "strict", "no-ambient", "closed-world", "taint", "deps");
+            "policy", "baseline", "strict", "no-ambient", "closed-world", "taint", "deps", "unknown-alias");
 
     /** The keys whose value is a PATH (list) — the ones anchor-resolution applies to. */
     private static final java.util.Set<String> PATH_KEYS = java.util.Set.of("policy", "baseline", "deps");
 
     private final Map<String, String> values;
+    /** ⟨0.19⟩ user-defined reason-class aliases (SPEC §6.2): {@code unknown-alias <name> = <class,…>}, a
+     *  MULTI-VALUE key (many lines, many names) referenced EXPLICITLY as {@code Unknown[<name>]}. A spelling
+     *  convenience only — it can never change what bare {@code deny E Unknown} means (that is always all
+     *  classes), so a rule's denied set is legible from the policy alone. */
+    private final Map<String, java.util.Set<ReasonClass>> unknownAliases;
 
     private Config(Map<String, String> values) {
+        this(values, new LinkedHashMap<>());
+    }
+
+    private Config(Map<String, String> values, Map<String, java.util.Set<ReasonClass>> unknownAliases) {
         this.values = values;
+        this.unknownAliases = unknownAliases;
     }
 
     static Config empty() {
         return new Config(new LinkedHashMap<>());
+    }
+
+    /** The resolved {@code unknown-alias} map (name → reason classes); empty when none defined. */
+    Map<String, java.util.Set<ReasonClass>> unknownAliases() {
+        return unknownAliases;
+    }
+
+    /** Parse an {@code unknown-alias} value {@code <name> = <c1,c2,…>} into the map, warning-and-skipping a
+     *  name that shadows a built-in ({@code *}/{@code dynamic}/a class token) or a definition naming no valid
+     *  class. Shared shape with rust/ts/swift. */
+    private static void addAlias(Map<String, java.util.Set<ReasonClass>> aliases, String val, Path path) {
+        int eq = val.indexOf('=');
+        if (eq < 0) {
+            System.err.println("candor: ignoring `unknown-alias` (want `unknown-alias <name> = <class,…>`) in " + path + ": " + val);
+            return;
+        }
+        String name = val.substring(0, eq).strip();
+        String reserved = name.equals("*") || name.equals("dynamic") || ReasonClass.fromToken(name) != null ? name : null;
+        if (name.isEmpty() || reserved != null) {
+            System.err.println("candor: ignoring `unknown-alias` with " + (name.isEmpty() ? "no name" : "reserved name `" + reserved + "`")
+                    + " (a config alias may not shadow `*`/`dynamic`/a class token) in " + path);
+            return;
+        }
+        java.util.Set<ReasonClass> classes = new java.util.LinkedHashSet<>();
+        for (String cn : val.substring(eq + 1).split(",")) {
+            cn = cn.strip();
+            if (cn.isEmpty()) continue;
+            if (cn.equals("dynamic")) { classes.addAll(ReasonClass.dynamicSet()); continue; }
+            ReasonClass rc = ReasonClass.fromToken(cn);
+            if (rc == null) System.err.println("candor: `unknown-alias " + name + "` names unknown reason-class `" + cn + "` in " + path + " — skipped");
+            else classes.add(rc);
+        }
+        if (classes.isEmpty()) System.err.println("candor: ignoring `unknown-alias " + name + "` — no valid reason-class in " + path);
+        else aliases.put(name, classes);
     }
 
     /** The resolution base for a relative path VALUE in the config at {@code cfg}: the directory holding
@@ -126,6 +172,7 @@ public final class Config {
     static Config load(Path path, boolean failClosed) {
         if (!Files.exists(path)) return empty();
         Map<String, String> m = new LinkedHashMap<>();
+        Map<String, java.util.Set<ReasonClass>> aliases = new LinkedHashMap<>();
         Path anchor = anchorFor(path);
         try {
             for (String raw : Files.readAllLines(path)) {
@@ -138,6 +185,10 @@ public final class Config {
                     continue;
                 }
                 String val = kv.length > 1 ? kv[1].strip() : "";
+                if ("unknown-alias".equals(key)) {   // ⟨0.19⟩ MULTI-VALUE: many names, kept out of `values`
+                    addAlias(aliases, val, path);
+                    continue;
+                }
                 if ("deps".equals(key) && !val.isEmpty()) {
                     // a path LIST → the DEPS form, each element anchor-resolved
                     val = java.util.Arrays.stream(val.split("\\s+"))
@@ -156,7 +207,7 @@ public final class Config {
             }
             return empty();
         }
-        return new Config(m);
+        return new Config(m, aliases);
     }
 
     private static Config parse(Path path) {

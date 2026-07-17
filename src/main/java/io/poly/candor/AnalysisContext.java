@@ -23,6 +23,9 @@ final class AnalysisContext {
     final Map<String, DepFn> crossDeps = new HashMap<>();          // method-ref hash -> DepFn (from CANDOR_DEPS)
     final Map<String, TreeSet<String>> fsDirect = new HashMap<>(); // fn -> Fs read/write kind performed directly
     final Map<String, TreeSet<UnknownReason>> unknownWhy = new HashMap<>(); // fn -> why Unknown emitted directly
+    // ⟨0.19⟩ user-defined reason-class aliases from `.candor/config` (`unknown-alias <name> = <class,…>`),
+    // consulted by the §6.2 deny parser for an `Unknown[<name>]` filter. Populated before parsePolicy.
+    final Map<String, Set<ReasonClass>> unknownAliases = new HashMap<>();
     final Set<String> entryPoints = new HashSet<>();               // framework-invoked methods
     final Set<String> projectClasses = new HashSet<>();
     final Set<String> repoTypes = new HashSet<>();                 // Spring Data repository interfaces (internal names)

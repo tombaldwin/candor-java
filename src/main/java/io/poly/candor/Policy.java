@@ -417,18 +417,14 @@ final class Policy {
                                 // Built-in alias `dynamic` = every GENUINE blind-spot class (excludes `setup`);
                                 // the design's recommended usable strict gate. Includes `unresolved` (the catch-all),
                                 // so `Unknown[dynamic]` never under-gates.
-                                if (cn.equals("dynamic")) {
-                                    unknownClasses.add(ReasonClass.REFLECT);
-                                    unknownClasses.add(ReasonClass.DISPATCH);
-                                    unknownClasses.add(ReasonClass.INDIRECT);
-                                    unknownClasses.add(ReasonClass.NATIVE);
-                                    unknownClasses.add(ReasonClass.UNRESOLVED);
-                                    continue;
-                                }
+                                if (cn.equals("dynamic")) { unknownClasses.addAll(ReasonClass.dynamicSet()); continue; }
                                 ReasonClass rc = ReasonClass.fromToken(cn);
-                                if (rc == null) warnPolicy(line, "unknown reason-class `" + cn
-                                        + "` (known: reflect,dispatch,indirect,native,unresolved,setup; aliases: dynamic,*)");
-                                else unknownClasses.add(rc);
+                                // ⟨0.19⟩ a config `unknown-alias <name> = …` (SPEC §6.2) referenced explicitly.
+                                java.util.Set<ReasonClass> alias = rc == null ? ctx().unknownAliases.get(cn) : null;
+                                if (rc != null) unknownClasses.add(rc);
+                                else if (alias != null) unknownClasses.addAll(alias);
+                                else warnPolicy(line, "unknown reason-class/alias `" + cn
+                                        + "` (known: reflect,dispatch,indirect,native,unresolved,setup; aliases: dynamic,*, or a config `unknown-alias`)");
                             }
                         } else { scope = tok; break; }
                     }

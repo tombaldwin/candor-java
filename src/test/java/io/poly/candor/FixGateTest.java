@@ -245,8 +245,8 @@ class FixGateTest {
         // `--policy` a user reaches for expecting a gate is REJECTED loud (exit 2), never swallowed.
         Path base = dir.resolve("b.lib.deep.json");
         Path cur = dir.resolve("c.lib.deep.json");
-        Files.writeString(base, "{\"candor\":{\"version\":\"t\",\"spec\":\"0.18\"},\"package\":\"lib\",\"functions\":[{\"fn\":\"lib.f\",\"loc\":\"s:1\",\"inferred\":[\"Fs\"],\"hash\":\"h\"}]}");
-        Files.writeString(cur, "{\"candor\":{\"version\":\"t\",\"spec\":\"0.18\"},\"package\":\"lib\",\"functions\":[{\"fn\":\"lib.f\",\"loc\":\"s:1\",\"inferred\":[\"Fs\",\"Net\"],\"hash\":\"h\"}]}");
+        Files.writeString(base, "{\"candor\":{\"version\":\"t\",\"spec\":\"0.19\"},\"package\":\"lib\",\"functions\":[{\"fn\":\"lib.f\",\"loc\":\"s:1\",\"inferred\":[\"Fs\"],\"hash\":\"h\"}]}");
+        Files.writeString(cur, "{\"candor\":{\"version\":\"t\",\"spec\":\"0.19\"},\"package\":\"lib\",\"functions\":[{\"fn\":\"lib.f\",\"loc\":\"s:1\",\"inferred\":[\"Fs\",\"Net\"],\"hash\":\"h\"}]}");
         String c = dir.resolve("c").toString(), b = dir.resolve("b").toString();
         assertEquals(0, exitOf(() -> Query.gains2(c, b, false, false, null)), "advisory default exits 0");
         assertEquals(1, exitOf(() -> Query.gains2(c, b, false, true, null)), "--strict with a gain exits 1");

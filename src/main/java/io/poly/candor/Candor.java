@@ -2050,8 +2050,27 @@ public class Candor {
                 // matched, so its effect still propagates.
                 boolean deferred = feedsDeferredFactory(idin) || lambdaEscapesUninvoked(idin);
                 if (ctx.projectClasses.contains(h.getOwner())) {
-                    if (!deferred)
+                    if (!deferred) {
                         ctx.edges.get(id).add(methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc()));
+                        // An UNBOUND interface/abstract method-ref (`stream.forEach(Doer::go)`,
+                        // `list.removeIf(Rule::stale)`) targets an ABSTRACT method with no body, so the edge
+                        // above is silent-pure — the ubiquitous idiomatic-streams shape the LAMBDA form
+                        // (`it -> it.go()`) already handled via its synthetic body's invokeinterface CHA.
+                        // CHA the target over the owner's PROJECT impls exactly like a direct invokeinterface:
+                        // a narrow fan-out edges every override; a broad (>limit, open-hierarchy) fan-out
+                        // discloses Unknown, never silent-pure. A concrete method-ref / lambda synthetic
+                        // target has no (further) project override → `cha` is self/empty → no change.
+                        List<String> cha = chaTargets(h.getOwner(), h.getName(), h.getDesc());
+                        boolean broad = cha.size() > CHA_FANOUT_LIMIT && !isClosedHierarchy(h.getOwner())
+                                && !(ctx.closedWorld && ctx.byName.containsKey(h.getOwner()));
+                        if (broad) {
+                            dir.add(Effect.UNKNOWN);
+                            ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                                    .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, h.getOwner() + "." + h.getName()));
+                        } else {
+                            ctx.edges.get(id).addAll(cha);
+                        }
+                    }
                     // A static method-ref / ctor-ref (`H::staticM`, `H::new`) TRIGGERS H's class
                     // load → its <clinit> runs (JVMS §5.5), exactly like a static call / NEW /
                     // static-field access. The other three triggers call clinitEdge; this one

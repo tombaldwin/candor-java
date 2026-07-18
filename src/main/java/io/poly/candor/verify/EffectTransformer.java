@@ -110,6 +110,12 @@ final class EffectTransformer implements ClassFileTransformer {
                 String signature, String[] exceptions) {
             MethodVisitor mv = super.visitMethod(access, name, descriptor, signature, exceptions);
             if (mv == null) return null;
+            // A compiler-generated BRIDGE just forwards to the real override (cast + invoke), so its body has no
+            // effect site of its own; leaving it un-injected avoids ever attributing a forwarded effect to the
+            // real method's key (an attribution smear) while losing nothing — the real target is instrumented in
+            // its own right. NON-bridge synthetics (a `lambda$…` desugared body, an `access$` accessor) DO carry
+            // real body code, so they stay instrumented.
+            if ((access & Opcodes.ACC_BRIDGE) != 0) return mv;
             // qual = the candor `fn` of the ENCLOSING method — bare `Class.method`, or `Class.method(params)`
             // for an overloaded name, matching Cha.methodId exactly. For a ctor the name is `<init>` (candor
             // may not list it — those emits just won't attribute, which is fine).

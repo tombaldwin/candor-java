@@ -322,7 +322,7 @@ class CliBehaviourTest {
         assertNoStackTrace(r);
     }
 
-    // ── --gate-json (spec 0.21): the structured gate verdict, end-to-end through the real CLI ────────────
+    // ── --gate-json (spec 0.22): the structured gate verdict, end-to-end through the real CLI ────────────
 
     @Test
     void gateJsonWritesTheVerdictWithEffectsAndFailsClosed() throws Exception {

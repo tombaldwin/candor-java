@@ -6,6 +6,15 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## [0.22.0] — 2026-07-18
+
+Spec floor → **0.22** (the `verify` oracle rung; report/verdict schema unchanged from 0.21). candor-java folds in
+a `candor verify` (JVM `-javaagent`) fix: the agent's overload-key pre-pass no longer counts compiler-generated
+**synthetic bridge** methods, so a generic/covariant override (e.g. `executeTask(T)` beside the erased
+`executeTask(Object)` bridge) keys the same bare name the report uses — closing a spurious cardinal-sin
+false-positive that misfired on any generic task/visitor/callable/comparator override. Found on the public corpus
+(zip4j's integration suite). Verify-only; report and verdict bytes are unchanged.
+
 ## [0.19.0] — 2026-07-17
 
 Reason-scoped `Unknown` policies (SPEC §6.2, the reference): `deny E Unknown[reflect,dispatch,indirect,native,unresolved,setup]`

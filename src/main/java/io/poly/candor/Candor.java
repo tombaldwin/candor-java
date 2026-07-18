@@ -65,7 +65,7 @@ public class Candor {
      *  implementation. The prior 0.15 rung — the κ-coverage ledger riding the §2 `coverage` field — still
      *  applies) while a sibling may remain on an earlier floor and raise as it implements it. Additive-only,
      *  so an older consumer is unaffected. */
-    static final String SPEC_VERSION = "0.21";
+    static final String SPEC_VERSION = "0.22";
 
     static final String FS_UNKNOWN = "?";   // Fs reached with no recorded kind (cross-jar) -> make no read/write claim
 

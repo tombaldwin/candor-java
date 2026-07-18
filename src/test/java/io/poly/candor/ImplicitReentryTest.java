@@ -163,6 +163,50 @@ class ImplicitReentryTest {
         } finally { rm(cls.getParent()); }
     }
 
+    // ---- R32: a DIRECT call to a concrete PROVIDED java.io method (`w.write(String)` / `r.read(char[])`)
+    // whose JDK body drives the abstract required method on the RECEIVER. A custom effectful Writer/Reader
+    // subclass reached only via a provided overload was silent-pure (the direct sibling of the R16 facade
+    // case). Every receiver form must carry; a pure impl / coincidental non-io `write` / std sink stays pure.
+    private static Path compileDirectProvided() throws Exception {
+        return compile(Map.of("app/W.java", String.join("\n",
+            "package app;",
+            "import java.io.*; import java.nio.file.*;",
+            "class LoudWriter extends Writer {",
+            "  public void write(char[] c,int o,int l) throws IOException { Files.write(Paths.get(\"/tmp/x\"), new String(c,o,l).getBytes()); }",
+            "  public void flush(){} public void close(){} }",
+            "class QuietWriter extends Writer {",
+            "  public void write(char[] c,int o,int l){}",   // pure
+            "  public void flush(){} public void close(){} }",
+            "class LoudReader extends Reader {",
+            "  public int read(char[] c,int o,int l) throws IOException { return (int) Files.size(Paths.get(\"/tmp/x\")); }",
+            "  public void close(){} }",
+            "class Logger { void write(String s){} }",       // coincidental non-io write
+            "public class W {",
+            "  void viaParam(LoudWriter w) throws IOException { w.write(\"hi\"); }",
+            "  void viaLocalNew() throws IOException { LoudWriter w = new LoudWriter(); w.write(\"hi\"); }",
+            "  void viaBaseLocal() throws IOException { Writer w = new LoudWriter(); w.write(\"hi\"); }",
+            "  void viaAppend(LoudWriter w) throws IOException { w.append(\"hi\"); }",
+            "  void viaReader(LoudReader r) throws IOException { char[] b=new char[4]; r.read(b); }",
+            "  void viaQuiet(QuietWriter w) throws IOException { w.write(\"hi\"); }",
+            "  void viaLogger(Logger g){ g.write(\"x\"); }",
+            "  void viaStdSink() throws IOException { StringWriter sw=new StringWriter(); sw.write(\"x\"); } }")));
+    }
+
+    @Test void directProvidedIoMethodReachesReceiverOverride() throws Exception {
+        Path cls = compileDirectProvided();
+        try {
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(fs(r, "app.W.viaParam"),     "w.write(String) on a param LoudWriter must carry Fs");
+            assertTrue(fs(r, "app.W.viaLocalNew"),  "w.write(String) on a local-new LoudWriter must carry Fs");
+            assertTrue(fs(r, "app.W.viaBaseLocal"), "w.write(String) on a base-typed LoudWriter must carry Fs");
+            assertTrue(fs(r, "app.W.viaAppend"),    "w.append(..) drives the Writer's write override → Fs");
+            assertTrue(fs(r, "app.W.viaReader"),    "r.read(char[]) on a custom Reader must carry the read override's Fs");
+            assertFalse(fs(r, "app.W.viaQuiet"),    "a pure Writer override must stay pure (no over-fire)");
+            assertFalse(fs(r, "app.W.viaLogger"),   "a coincidental non-io write() must not get an io reentry");
+            assertFalse(fs(r, "app.W.viaStdSink"),  "a std StringWriter sink must stay pure (no fabrication)");
+        } finally { rm(cls.getParent()); }
+    }
+
     /** Wrap a single method body in the shared D class + contract-override fixtures. */
     private static String wrap(String method) {
         return String.join("\n",

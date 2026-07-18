@@ -1380,6 +1380,18 @@ public class Candor {
             // FileOutputStream has no LOCAL append/write override → contributes nothing).
             String sinkContract = formatterSinkCtor(min.owner, min.name, min.desc);
             if (sinkContract != null) reentryEdge(id, callArg(rf, min, 0), sinkContract);
+            // R32 — a DIRECT call to a concrete PROVIDED java.io method (`w.write(String)` / `w.append(..)` /
+            // `r.read(char[])`) whose JDK body drives the abstract required method on the RECEIVER. The
+            // receiver's own abstract override is reached only THROUGH the non-local provided overload, so
+            // otherwise it was silent (the direct sibling of the facade case above, which drives the ARG).
+            // Gated on the RECEIVER's type being a java.io stream (so a coincidental project `write`/`read`
+            // never triggers) then resolve-or-skip over its declType — a std FileWriter /
+            // ByteArrayOutputStream has no LOCAL write/read override → contributes nothing.
+            String recvContract = ioDriverContract(min.name);
+            if (recvContract != null) {
+                ProvValue recv = receiverProv(rf, min);
+                if (recv != null && isJavaIoStreamType(recv.declType)) reentryEdge(id, recv, recvContract);
+            }
         }
     }
 
@@ -2676,6 +2688,38 @@ public class Candor {
      *  Object whose contract is re-entered. Resolution is by the sink's owner+name+desc. */
     static final String C_TOSTRING = "toString", C_EQUALS = "equals", C_HASHCODE = "hashCode", C_COMPARETO = "compareTo";
     static final String C_APPEND = "append", C_WRITE = "write";   // the WRITER side (R16): Appendable.append / Writer/OutputStream.write
+    static final String C_READ = "read";   // the READER side (R32): Reader/InputStream.read driven by a concrete provided overload
+
+    /** A DIRECT call to a concrete PROVIDED java.io method whose JDK body drives the abstract required
+     *  method on the RECEIVER: `w.write(String)`/`w.append(..)`/`w.write(int)` → the abstract
+     *  `Writer.write(char[],int,int)` override (C_WRITE); `r.read(char[])`/`r.skip(..)`/`in.transferTo(..)`
+     *  → the abstract `Reader.read(char[],int,int)`/`InputStream.read()` override (C_READ). candor never
+     *  descends into the JDK provided method, so a CUSTOM effectful subclass reached ONLY via a provided
+     *  overload read silent-pure (R32 — the direct sibling of the R16 formatting-facade case; the facade
+     *  drives the SINK ARG, this drives the RECEIVER). The driver contract for a name, or null. NOTE: keyed
+     *  on the receiver's TYPE (a java.io stream base ancestor), NOT on `min.owner` — an `invokevirtual` owns
+     *  the inherited overload at the receiver's STATIC type, which is usually the project subclass
+     *  (`W$LoudWriter`), not the JDK base. Redundantly firing on the abstract override itself only adds the
+     *  same edge normal CHA already resolves (a harmless dup). */
+    static String ioDriverContract(String name) {
+        if (name.startsWith("write") || name.equals("append")) return C_WRITE;
+        if (name.startsWith("read") || name.startsWith("skip") || name.equals("transferTo")) return C_READ;
+        return null;
+    }
+
+    /** Whether `internal` IS, or transitively EXTENDS, one of the four abstract java.io stream bases whose
+     *  concrete provided methods drive an abstract required method (Writer/Reader/InputStream/OutputStream).
+     *  Gates the R32 receiver reentry so only a genuine stream type resolves — a project class with a
+     *  coincidental `write`/`read` method (no io ancestor) never triggers it. */
+    static boolean isJavaIoStreamType(String internal) {
+        if (internal == null) return false;
+        if (IO_STREAM_BASES.contains(internal)) return true;
+        for (String s : transSupers(internal)) if (IO_STREAM_BASES.contains(s)) return true;
+        return false;
+    }
+
+    static final Set<String> IO_STREAM_BASES = Set.of(
+            "java/io/Writer", "java/io/Reader", "java/io/InputStream", "java/io/OutputStream");
 
     /** If `min` constructs a JDK formatting facade WRAPPING a sink, the writer-side reentry contract for that
      *  sink (C_APPEND / C_WRITE); else null. `new Formatter(Appendable)` drives append; `new PrintWriter(
@@ -2749,7 +2793,8 @@ public class Candor {
         // By-NAME contracts (multiple overloads / erased descs): compareTo, and the WRITER side —
         // Appendable.append / Writer.write reached through a JDK formatting facade. Resolve to a project
         // subtype-or-self of declType declaring a concrete method of that name (any desc).
-        if (contract.equals(C_COMPARETO) || contract.equals(C_APPEND) || contract.equals(C_WRITE)) {
+        if (contract.equals(C_COMPARETO) || contract.equals(C_APPEND) || contract.equals(C_WRITE)
+                || contract.equals(C_READ)) {
             Set<String> out = new LinkedHashSet<>();
             for (String cName : ctx().subtypeIndex.getOrDefault(declType, List.of())) {
                 ClassNode c = ctx().byName.get(cName);

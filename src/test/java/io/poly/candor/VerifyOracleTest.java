@@ -296,4 +296,65 @@ class VerifyOracleTest {
         assertFalse(ncm.get("attributionComplete").getAsBoolean(), "no callgraph ⇒ include set is effectful-only ⇒ not sound");
         assertEquals(2, nc.exit(), "an incomplete-attribution HOLD fails closed (exit 2), never a green exit 0");
     }
+
+    @Test
+    void genericOverrideBridgeDoesNotFalselyViolate() throws Exception {
+        // REGRESSION (found on the zip4j public corpus — every *Task.executeTask override tripped it): a
+        // generic/covariant override (Task<String>.exec) makes javac emit a synthetic BRIDGE exec(Object)
+        // beside the real exec(String). candor's scan EXCLUDES bridges from its overload index, so the report
+        // keys the method BARE (app.Main$FileTask.exec). The agent must exclude the bridge too when forming its
+        // emit key — else it counts two `exec` descriptors, renders a param-qualified key, and the effectful
+        // override never matches its bare report entry → a SPURIOUS cardinal-sin VIOLATION. Must HOLD.
+        Path jar = shadowJar();
+        Assumptions.assumeTrue(jar != null, "no built shadowJar (run ./gradlew shadowJar) — skip end-to-end");
+        Path cls = compileBridgeFixture();
+
+        Path report = tmp.resolve("bridge-report.json");
+        Process scan = new ProcessBuilder(
+                System.getProperty("java.home") + "/bin/java", "-jar", jar.toString(),
+                cls.toString(), "--json", report.toString())
+                .redirectErrorStream(true).start();
+        drain(scan.getInputStream());
+        assertEquals(0, scan.waitFor(), "scan must succeed");
+
+        Run hold = runVerifyJar(jar, cls, report);
+        JsonObject m = metrics(hold.stdout());
+        assertTrue(m.get("honestyInvariantHolds").getAsBoolean(),
+                "generic-override bridge must not falsely violate; stdout=" + hold.stdout() + " stderr=" + hold.stderr());
+        assertEquals(0, hold.exit(), "no spurious violation ⇒ exit 0");
+        assertEquals(0, m.get("cardinalSinViolations").getAsInt());
+        assertTrue(m.get("executedFunctionsChecked").getAsInt() >= 1, "the effectful override must be witnessed");
+        // the bridged override's row is keyed BARE and reads sound-complete-ok (NOT a violation).
+        var rows = JsonParser.parseString(hold.stdout()).getAsJsonObject().getAsJsonArray("rows");
+        assertTrue(java.util.stream.StreamSupport.stream(rows.spliterator(), false)
+                .anyMatch(e -> e.getAsJsonObject().get("fn").getAsString().equals("app.Main$FileTask.exec")
+                        && "sound-complete-ok".equals(e.getAsJsonObject().get("verdict").getAsString())),
+                "the bridged override matches its bare report entry; stdout=" + hold.stdout());
+    }
+
+    /** Fixture: a generic override (Task&lt;String&gt;.exec) that does Fs — javac emits a synthetic bridge exec(Object). */
+    private Path compileBridgeFixture() throws Exception {
+        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
+        Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
+        Path target = tmp.resolve("bridge-data.txt");
+        Files.writeString(target, "hello");
+        Path src = tmp.resolve("Main.java");
+        Files.writeString(src, String.join("\n",
+            "package app;",
+            "import java.nio.file.Files;",
+            "import java.nio.file.Path;",
+            "public class Main {",
+            "  abstract static class Task<T> { abstract void exec(T p) throws Exception; }",
+            "  static class FileTask extends Task<String> {",
+            "    void exec(String path) throws Exception { Files.readAllBytes(Path.of(path)); }",
+            "  }",
+            "  public static void main(String[] a) throws Exception {",
+            "    new FileTask().exec(" + gstr(target.toString()) + ");",
+            "  }",
+            "}"));
+        Path out = tmp.resolve("bcls");
+        Files.createDirectories(out);
+        assertEquals(0, jc.run(null, null, null, "-d", out.toString(), src.toString()), "bridge fixture must compile");
+        return out;
+    }
 }

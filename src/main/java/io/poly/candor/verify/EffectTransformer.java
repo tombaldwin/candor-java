@@ -53,6 +53,12 @@ final class EffectTransformer implements ClassFileTransformer {
             cr.accept(new ClassVisitor(Opcodes.ASM9) {
                 @Override
                 public MethodVisitor visitMethod(int a, String n, String d, String s, String[] e) {
+                    // Match candor's scan-side overload index (Candor.java): EXCLUDE compiler-generated
+                    // bridge/synthetic forwarders. A generic/covariant override (e.g. executeTask(T) beside
+                    // the erased bridge executeTask(Object)) is a UNIQUE method — counting the bridge would
+                    // split it into a param-qualified id here while the report keeps it bare, so the emitted
+                    // key would miss its report entry and manufacture a spurious cardinal-sin violation.
+                    if ((a & (Opcodes.ACC_BRIDGE | Opcodes.ACC_SYNTHETIC)) != 0) return null;
                     descsByName.computeIfAbsent(n, k -> new HashSet<>()).add(d);
                     return null;
                 }

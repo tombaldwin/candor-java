@@ -88,4 +88,37 @@ class HandlerSurfaceAndMethodRefClinitTest {
                     "a non-implementor doFilterInternal must NOT be over-rooted");
         } finally { rm(cls.getParent()); }
     }
+
+    /** An UNBOUND interface-method reference (`stream.forEach(Doer::go)`) dispatches over the interface's
+     *  project impls via CHA — the method-ref twin of the lambda `it -> it.go()` (which already worked).
+     *  A pure interface / concrete ref / pure static ref must stay pure (no over-fire). */
+    @Test
+    void unboundInterfaceMethodRefDispatchesToImplWitnesses() throws Exception {
+        Path cls = compile(Map.of("app/M.java", String.join("\n",
+            "package app;",
+            "import java.util.List; import java.io.FileWriter;",
+            "public class M {",
+            "  static void sink() { try { new FileWriter(\"/tmp/x\").write(1); } catch (Exception e) {} }",
+            "  interface Doer { void go(); }",
+            "  static class Eff implements Doer { public void go() { sink(); } }",   // Fs
+            "  static class Pure implements Doer { public void go() {} }",
+            "  void viaRef(List<Doer> xs) { xs.forEach(Doer::go); }",                // Fs
+            "  void viaStream(List<Doer> xs) { xs.stream().forEach(Doer::go); }",    // Fs
+            "  void viaLambda(List<Doer> xs) { xs.forEach(it -> it.go()); }",        // Fs (control)
+            "  interface Quiet { void run(); }",
+            "  static class Q1 implements Quiet { public void run() {} }",
+            "  void viaPureRef(List<Quiet> xs) { xs.forEach(Quiet::run); }",         // PURE
+            "}")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(r.getOrDefault("app.M.viaRef", EffectSet.empty()).toNames().contains("Fs"),
+                    "forEach(Doer::go) must dispatch to the effectful impl (Fs)");
+            assertTrue(r.getOrDefault("app.M.viaStream", EffectSet.empty()).toNames().contains("Fs"),
+                    "stream().forEach(Doer::go) must dispatch too");
+            assertTrue(r.getOrDefault("app.M.viaLambda", EffectSet.empty()).toNames().contains("Fs"),
+                    "the lambda control still carries");
+            assertFalse(r.getOrDefault("app.M.viaPureRef", EffectSet.empty()).toNames().contains("Fs"),
+                    "a method-ref over an all-pure interface must stay pure (no over-fire)");
+        } finally { rm(cls.getParent()); }
+    }
 }

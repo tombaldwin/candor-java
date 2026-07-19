@@ -83,6 +83,27 @@ class StructuralDispatchTest {
                 "pinned new ArrayList().add() must stay pure (no sibling-override fabrication), got " + r.get("Main.plainList"));
     }
 
+    /** #2b — a super-call to a method INHERITED through a GENERIC intermediate superclass must propagate the
+     *  superclass method's effect. `Poolable extends Delegating<C> extends Trace`, `Trace.tick()` does Clock,
+     *  `Delegating` does not override; `super.tick()` in Poolable compiles to INVOKESPECIAL owner=Delegating,
+     *  which does NOT DECLARE tick — so an edge to `Delegating.tick` dangles on a non-existent node and the
+     *  Clock is silently lost. The edge must instead resolve to the nearest superclass that declares it
+     *  (Trace.tick). REGRESSION: found by the runtime oracle on Apache commons-dbcp2
+     *  (PoolableConnection.setLastUsed → super.setLastUsed() → Instant.now(), reported pure — an escaped Clock). */
+    @Test
+    void superCallThroughGenericIntermediateSuperclassPropagatesEffect() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of("Main.java", String.join("\n",
+            "import java.time.Instant;",
+            "class Trace { protected void tick(){ Instant.now(); } }",                      // Clock leaf (grandparent)
+            "class Delegating<C> extends Trace { }",                                        // GENERIC middle, no override
+            "class Poolable extends Delegating<Object> { @Override protected void tick(){ super.tick(); } }",
+            "public class Main { void go(){ new Poolable().tick(); } }")));
+        assertTrue(eff(r, "Poolable.tick").toNames().contains("Clock"),
+                "super.tick() through a generic intermediate must reach Trace.tick (Clock), got " + r.get("Poolable.tick"));
+        assertTrue(eff(r, "Main.go").toNames().contains("Clock"),
+                "the caller must transitively reach Clock through Poolable.tick, got " + r.get("Main.go"));
+    }
+
     /** #3 — an OPAQUE Runnable/Callable task (field/param) handed to an executor reads Unknown (its body is
      *  unknown); an inline pure lambda hand-off must NOT (its body is edged at the indy). */
     @Test

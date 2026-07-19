@@ -549,13 +549,25 @@ final class Rules {
     static final Set<String> TIMER_VERBS = Set.of(
             "schedule", "scheduleAtFixedRate", "scheduleWithFixedDelay");
 
+    /** SYNCHRONOUS callback-invokers: owner -> {names} whose FIRST arg is a Consumer-style callback invoked
+     *  in-process. An OPAQUE (field/param) such arg has an unknown body -> Unknown, as an opaque executor task. */
+    static final Map<String, Set<String>> SYNC_CALLBACK_INVOKERS = Map.of(
+            "java/util/Iterator", Set.of("forEachRemaining"),
+            "java/lang/Iterable", Set.of("forEach"),
+            "java/util/Collection", Set.of("forEach"),
+            "java/util/Map", Set.of("forEach"),
+            "java/util/stream/Stream", Set.of("forEach", "forEachOrdered"),
+            "java/util/Optional", Set.of("ifPresent", "ifPresentOrElse"),
+            "org/apache/commons/io/function/IOIterator", Set.of("forEachRemaining"),
+            "org/apache/commons/io/function/IOStream", Set.of("forEach", "forEachOrdered"));
+
     /** Functional-interface descriptors that, as the FIRST parameter, name a deferred TASK whose body is
      *  invoked by the runtime (executor/CF stage/timer) with no in-project call site. */
     static final Set<String> TASK_ARG_PREFIXES = Set.of(
             "(Ljava/lang/Runnable;", "(Ljava/util/concurrent/Callable;", "(Ljava/util/function/Supplier;",
             "(Ljava/util/function/Function;", "(Ljava/util/function/Consumer;",
             "(Ljava/util/function/BiConsumer;", "(Ljava/util/function/BiFunction;",
-            "(Ljava/util/TimerTask;");
+            "(Ljava/util/TimerTask;", "(Lorg/apache/commons/io/function/IOConsumer;");
 
     /** Packages OUTSIDE the ledger: the platform/runtime frontier (κ's builtin job — JDK, the
      *  language runtimes) and the verb-precise third-party packages κ already covers, where zero

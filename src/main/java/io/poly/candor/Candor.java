@@ -1258,7 +1258,8 @@ public class Candor {
         // attributes R.run) or an inline lambda (edged at its indy) is already captured; an OPAQUE
         // task — a field, a param, a factory return — has an unknown body, so the handing-off
         // method must read Unknown (parallel to an unpinned `task.run()`), else it is silent-pure.
-        if (isExecutorHandoff(min.owner, min.name, min.desc) && provFrames != null) {
+        if ((isExecutorHandoff(min.owner, min.name, min.desc)
+                || isSyncCallbackInvoker(min.owner, min.name, min.desc)) && provFrames != null) {
             ProvValue task = handoffTaskArg(provFrames[mn.instructions.indexOf(min)], min);
             if (task != null && !task.fromIndy && task.newType == null) {
                 dir.add(Effect.UNKNOWN);
@@ -2941,6 +2942,15 @@ public class Candor {
         if (owner.equals("java/util/concurrent/CompletableFuture") && COMPLETABLE_FUTURE_VERBS.contains(name))
             return true;
         return owner.equals("java/util/Timer") && TIMER_VERBS.contains(name);
+    }
+
+    static boolean isSyncCallbackInvoker(String owner, String name, String desc) {
+        if (desc == null) return false;
+        boolean taskArg = false;
+        for (String p : TASK_ARG_PREFIXES) { if (desc.startsWith(p)) { taskArg = true; break; } }
+        if (!taskArg) return false;
+        Set<String> names = SYNC_CALLBACK_INVOKERS.get(owner);
+        return names != null && names.contains(name);
     }
 
     /** The TASK argument (arg0 — the deepest) of an executor hand-off call, from the provenance frame. */

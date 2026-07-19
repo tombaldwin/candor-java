@@ -100,6 +100,37 @@ class StructuralDispatchTest {
                 "a filter-stream super.close() (unknown wrapped sink) must read Unknown, got " + r.get("Wrap.close"));
     }
 
+    /** #2a-bis — the READ/WRITE half of the wrapped-sink delegate: a BufferedOutputStream/FilterInputStream
+     *  subclass whose write/read calls `super.write`/`super.read` delegates the actual syscall to a wrapped
+     *  stream of unknown concrete type → Unknown (never silent-pure). Found by the runtime oracle on
+     *  commons-vfs2 (MonitorOutputStream.write/flush → super.write → a RAM sink's Clock; the MonitorInputStream
+     *  mirror; the http/ftp/sftp RandomAccessContent readers reaching Net). The close/flush half is the test
+     *  above; this pins the active-I/O methods on both the buffered and filter bases. */
+    @Test
+    void bufferedAndFilterStreamReadWriteDelegateToUnknownWrappedSink() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of("Main.java", String.join("\n",
+            "import java.io.*;",
+            "class MonOut extends BufferedOutputStream {",                            // super = BufferedOutputStream
+            "  MonOut(OutputStream o){ super(o); }",
+            "  @Override public synchronized void write(byte[] b,int off,int len) throws IOException { super.write(b,off,len); }",
+            "  @Override public synchronized void flush() throws IOException { super.flush(); }",
+            "}",
+            "class MonIn extends FilterInputStream {",                                // super.read → wrapped `in`
+            "  MonIn(InputStream i){ super(i); }",
+            "  @Override public int read() throws IOException { return super.read(); }",
+            "  @Override public int read(byte[] b,int off,int len) throws IOException { return super.read(b,off,len); }",
+            "}",
+            "public class Main {}")));
+        assertTrue(eff(r, "MonOut.write").toNames().contains("Unknown"),
+                "BufferedOutputStream super.write (unknown sink) must read Unknown, got " + r.get("MonOut.write"));
+        assertTrue(eff(r, "MonOut.flush").toNames().contains("Unknown"),
+                "BufferedOutputStream super.flush (unknown sink) must read Unknown, got " + r.get("MonOut.flush"));
+        assertTrue(eff(r, "MonIn.read()").toNames().contains("Unknown"),
+                "FilterInputStream super.read (unknown source) must read Unknown, got " + r.get("MonIn.read()"));
+        assertTrue(eff(r, "MonIn.read(byte[],int,int)").toNames().contains("Unknown"),
+                "FilterInputStream super.read(byte[],int,int) (unknown source) must read Unknown, got " + r.get("MonIn.read(byte[],int,int)"));
+    }
+
     /** #2b — a super-call to a method INHERITED through a GENERIC intermediate superclass must propagate the
      *  superclass method's effect. `Poolable extends Delegating<C> extends Trace`, `Trace.tick()` does Clock,
      *  `Delegating` does not override; `super.tick()` in Poolable compiles to INVOKESPECIAL owner=Delegating,

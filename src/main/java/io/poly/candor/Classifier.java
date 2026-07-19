@@ -149,9 +149,22 @@ final class Classifier {
         // subclass — performs the actual write/close syscall on the wrapped sink, which candor cannot resolve.
         // Disclose (Unknown), don't fabricate (never Fs — the wrapped sink may be in-memory). Found by the runtime
         // oracle on Apache commons-compress (CompressFilterOutputStream.close → super.close()); conformance-clean.
-        if ((owner.equals("java.io.FilterOutputStream") || owner.equals("java.io.FilterInputStream")
-                || owner.equals("java.io.FilterReader") || owner.equals("java.io.FilterWriter"))
-                && (method.equals("close") || method.equals("flush"))) return Effect.UNKNOWN;
+        // A java.io FILTER/BUFFERED stream's I/O method DELEGATES to a wrapped stream of unknown concrete
+        // type — candor catches the file OPEN at the concrete ctor (`new FileOutputStream`) but the deferred
+        // read/write/flush/close (reached e.g. via `super.write(...)` from a Monitor/Buffered subclass)
+        // performs the actual syscall on the wrapped sink, which candor cannot resolve → Unknown (never
+        // silent-pure; never fabricate Fs — the sink may be in-memory). The write side was found by the
+        // runtime oracle on commons-compress (CompressFilterOutputStream.close, close/flush) and commons-vfs2
+        // (MonitorOutputStream.write/flush → super.write → a RAM sink's Clock); the read side is its exact
+        // mirror (a MonitorInputStream.read → super.read → unknown source). Naturally narrow: the abstract
+        // declared type (`OutputStream x = new Buffered…`) has owner java/io/OutputStream and does NOT match —
+        // only the exact-typed or `super.`-from-subclass call does, i.e. the delegating-subclass vein itself.
+        if ((owner.equals("java.io.FilterOutputStream") || owner.equals("java.io.BufferedOutputStream")
+                || owner.equals("java.io.FilterInputStream") || owner.equals("java.io.BufferedInputStream")
+                || owner.equals("java.io.FilterReader") || owner.equals("java.io.BufferedReader")
+                || owner.equals("java.io.FilterWriter") || owner.equals("java.io.BufferedWriter"))
+                && (method.equals("close") || method.equals("flush") || method.equals("write")
+                    || method.equals("read") || method.equals("skip"))) return Effect.UNKNOWN;
         // WatchService.take()/poll() block on filesystem change events. java.nio.file.Path is otherwise
         // pure path manipulation (resolve/getParent/normalize), so VERB-gate it: toRealPath resolves
         // symlinks against the live FS and register walks/stats the watched dir. (JDK Fs-deep probe.)

@@ -143,6 +143,15 @@ final class Classifier {
                 && method.equals("<init>") && desc != null
                 && (desc.startsWith("(Ljava/lang/String;") || desc.startsWith("(Ljava/io/File;")))
             return Effect.FS;
+        // A java.io FILTER-stream close/flush DELEGATES to a wrapped stream of unknown concrete type, so its I/O
+        // is undetermined → Unknown (never silent-pure). candor catches the file OPEN at the concrete ctor
+        // (`new FileOutputStream`), but the deferred close/flush — reached e.g. via `super.close()` from a filter
+        // subclass — performs the actual write/close syscall on the wrapped sink, which candor cannot resolve.
+        // Disclose (Unknown), don't fabricate (never Fs — the wrapped sink may be in-memory). Found by the runtime
+        // oracle on Apache commons-compress (CompressFilterOutputStream.close → super.close()); conformance-clean.
+        if ((owner.equals("java.io.FilterOutputStream") || owner.equals("java.io.FilterInputStream")
+                || owner.equals("java.io.FilterReader") || owner.equals("java.io.FilterWriter"))
+                && (method.equals("close") || method.equals("flush"))) return Effect.UNKNOWN;
         // WatchService.take()/poll() block on filesystem change events. java.nio.file.Path is otherwise
         // pure path manipulation (resolve/getParent/normalize), so VERB-gate it: toRealPath resolves
         // symlinks against the live FS and register walks/stats the watched dir. (JDK Fs-deep probe.)

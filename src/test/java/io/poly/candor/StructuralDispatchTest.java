@@ -83,6 +83,23 @@ class StructuralDispatchTest {
                 "pinned new ArrayList().add() must stay pure (no sibling-override fabrication), got " + r.get("Main.plainList"));
     }
 
+    /** #2c — a java.io FILTER-stream close/flush (reached e.g. via `super.close()` from a filter subclass)
+     *  delegates to a wrapped stream of unknown concrete type → its I/O is undetermined → Unknown (never
+     *  silent-pure). REGRESSION: found by the runtime oracle on Apache commons-compress
+     *  (CompressFilterOutputStream.close / ZipArchiveOutputStream.destroy → super.close()). */
+    @Test
+    void filterStreamCloseDelegatesToUnknownWrappedSink() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of("Main.java", String.join("\n",
+            "import java.io.*;",
+            "class Wrap extends FilterOutputStream {",
+            "  Wrap(OutputStream o){ super(o); }",
+            "  @Override public void close() throws IOException { super.close(); }",   // super.close() → Unknown
+            "}",
+            "public class Main {}")));
+        assertTrue(eff(r, "Wrap.close").toNames().contains("Unknown"),
+                "a filter-stream super.close() (unknown wrapped sink) must read Unknown, got " + r.get("Wrap.close"));
+    }
+
     /** #2b — a super-call to a method INHERITED through a GENERIC intermediate superclass must propagate the
      *  superclass method's effect. `Poolable extends Delegating<C> extends Trace`, `Trace.tick()` does Clock,
      *  `Delegating` does not override; `super.tick()` in Poolable compiles to INVOKESPECIAL owner=Delegating,

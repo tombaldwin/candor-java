@@ -1225,9 +1225,20 @@ public class Candor {
             // mono-receiver resolved locally → the original `continue`: skip cross-dep too.
             if (virtualDispatch(ctx, s, min, owner, effect, springTyped)) return;
         } else if (ctx.projectClasses.contains(min.owner)) {
-            // static / special (super, private, ctor) — the exact target (descriptor known,
-            // so an overloaded callee resolves to the right overload's node).
-            ctx.edges.get(id).add(methodId(owner, min.name, min.desc));
+            // static / special (super, private, ctor) — the descriptor is known, so an overloaded callee
+            // resolves to the right overload. But a SUPER-call (or static call) to an INHERITED method names
+            // the DIRECT superclass in `min.owner`, which may NOT declare the method — it is inherited from
+            // higher up, e.g. through a generic intermediate class (`Poolable extends Delegating<C> extends
+            // Trace`, `super.setLastUsed()` compiling to INVOKESPECIAL owner=Delegating). Edging to
+            // `owner.method` then dangles on a non-existent node and the callee's effect is silently lost —
+            // found on commons-dbcp2 (`PoolableConnection.setLastUsed → super.setLastUsed() → Instant.now()`,
+            // reported pure; the runtime oracle caught the escaped Clock). Resolve to the nearest superclass
+            // that actually DECLARES the method, exactly as the virtual path does; fall back to the raw owner
+            // when it declares the method itself or the target is unresolvable (external / not loaded).
+            String special = declaresConcrete(ctx.byName.get(min.owner), min.name, min.desc)
+                    ? methodId(owner, min.name, min.desc)
+                    : nearestConcreteSuper(min.owner, min.name, min.desc);
+            ctx.edges.get(id).add(special != null ? special : methodId(owner, min.name, min.desc));
             // PRIVATE FUNCTIONAL-PARAM FORWARDING (collect): record the lambda this site passes
             // to a private functional-param sink (or mark it opaque) — resolved in runScan.
             collectForwardingArg(owner, min, provFrames == null ? null : provFrames[mn.instructions.indexOf(min)]);

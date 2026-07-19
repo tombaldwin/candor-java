@@ -221,6 +221,31 @@ class SoundnessSweepTest {
                 "an INVOKING container HOF (computeIfAbsent) must still attribute the lambda's effect, got " + eff(r, "A.invoke"));
     }
 
+    /** AccessController.doPrivileged(action) runs action.run() SYNCHRONOUSLY — a genuine invoking HOF.
+     *  A named PrivilegedAction/PrivilegedExceptionAction impl whose run() performs an effect must
+     *  propagate to the doPrivileged caller. Found silent-pure on commons-vfs2's PrivilegedFileReplicator
+     *  (init/replicateFile → Net/Fs through a doPrivileged'd wrapped-replicator call). */
+    @Test
+    void doPrivilegedActionRunsSynchronouslyAndPropagates() throws Exception {
+        var r = scan("import java.security.*;\n"
+                + "public class A {\n"
+                + "  final class NetAction implements PrivilegedAction<Object> {\n"
+                + "    public Object run(){ net(); return null; }\n"
+                + "  }\n"
+                + "  final class FsAction implements PrivilegedExceptionAction<Object> {\n"
+                + "    public Object run() throws Exception { fs(); return null; }\n"
+                + "  }\n"
+                + "  static void net(){ " + NET + " }\n"
+                + "  static void fs(){ " + FS + " }\n"
+                + "  void doNet(){ AccessController.doPrivileged(new NetAction()); }\n"
+                + "  void doFs() throws Exception { AccessController.doPrivileged(new FsAction()); }\n"
+                + "}");
+        assertTrue(eff(r, "A.doNet").toNames().contains("Net"),
+                "doPrivileged(PrivilegedAction) must propagate run()'s Net, got " + eff(r, "A.doNet"));
+        assertTrue(eff(r, "A.doFs").toNames().contains("Fs"),
+                "doPrivileged(PrivilegedExceptionAction) must propagate run()'s Fs, got " + eff(r, "A.doFs"));
+    }
+
     /** A factory method that RETURNS an effectful lambda must not be attributed the effect — it constructs
      *  the closure, it does not run it; the eventual invocation on the returned value discloses Unknown.
      *  Else the effect smears to the factory's callers, and (when called from an initializer) across the

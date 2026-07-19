@@ -2332,7 +2332,13 @@ public class Candor {
         return isFunctionalIface(internal)
                 || "java/util/Comparator".equals(internal)
                 || "java/io/FileFilter".equals(internal)
-                || "java/io/FilenameFilter".equals(internal);
+                || "java/io/FilenameFilter".equals(internal)
+                // AccessController.doPrivileged(action) SYNCHRONOUSLY runs action.run() (see isInvokingHof).
+                // The action is a project class implementing one of these — its run() body performs the
+                // real effect, so its SAM surface must propagate (found silent-pure on commons-vfs2's
+                // PrivilegedFileReplicator.init/replicateFile → Net/Fs via a doPrivileged'd wrapped call).
+                || "java/security/PrivilegedAction".equals(internal)
+                || "java/security/PrivilegedExceptionAction".equals(internal);
     }
 
     /** Library method SIMPLE-NAMES that INVOKE a functional/Comparator/FileFilter argument's SAM (so a
@@ -2357,6 +2363,9 @@ public class Candor {
             case "sort": case "sorted": case "min": case "max":
             // FileFilter / FilenameFilter
             case "listFiles": case "list":
+            // AccessController.doPrivileged(PrivilegedAction|PrivilegedExceptionAction) runs action.run()
+            // synchronously — a genuine invoking HOF (see isHofFunctionalIface).
+            case "doPrivileged":
                 return true;
             default:
                 return false;

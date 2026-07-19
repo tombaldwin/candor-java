@@ -540,6 +540,74 @@ class VerifyOracleTest {
         return out;
     }
 
+    @Test
+    void asyncSubmitterAcrossThreadHandoffIsThePerThreadBoundary() throws Exception {
+        // DOCUMENTED BOUNDARY (not a bug to fix): the transitive stack walk is PER-THREAD. An effect performed on
+        // a pool/worker thread attributes to that worker's stack (the task body + its leaf), NOT to the caller that
+        // SUBMITTED the task and has since returned on another thread. So a same-thread caller miss is caught
+        // (transitiveCallerMissIsCaught), but an async submitter's miss is not — its runtime `charged` set is empty
+        // because the effect surfaced on the worker. This test pins that boundary in BOTH directions: the pool
+        // task body IS witnessed (within-thread transitive attribution works), and the seeded-pure submitter is
+        // NOT flagged (the cross-handoff edge the walk cannot reach). If cross-thread attribution is ever added,
+        // this test should be revisited.
+        Path jar = shadowJar();
+        Assumptions.assumeTrue(jar != null, "no built shadowJar (run ./gradlew shadowJar) — skip end-to-end");
+        Path cls = compileAsyncFixture();
+        Path report = tmp.resolve("async-report.json");
+        Process scan = new ProcessBuilder(System.getProperty("java.home") + "/bin/java", "-jar", jar.toString(),
+                cls.toString(), "--json", report.toString()).redirectErrorStream(true).start();
+        drain(scan.getInputStream());
+        assertEquals(0, scan.waitFor(), "scan must succeed");
+        String reportText = Files.readString(report);
+        // (a) within-worker-thread attribution works: the task body (a lambda) is witnessed Fs and holds.
+        Run hold = runVerifyJar(jar, cls, report);
+        var rows = JsonParser.parseString(hold.stdout()).getAsJsonObject().getAsJsonArray("rows");
+        assertTrue(java.util.stream.StreamSupport.stream(rows.spliterator(), false)
+                .anyMatch(e -> e.getAsJsonObject().get("fn").getAsString().contains("lambda")
+                        && "sound-complete-ok".equals(e.getAsJsonObject().get("verdict").getAsString())),
+                "the pool task body (lambda) is witnessed Fs on the worker thread; stdout=" + hold.stdout());
+        // (b) the cross-handoff boundary: seed the SUBMITTER `submit` pure — it reaches Fs only via the pool, so
+        // the per-thread walk does NOT witness it → HOLDS (the documented limitation, not a false all-clear the
+        // oracle claims to catch: candor over-reported here, and an under-report across this edge is the residual).
+        var doc = JsonParser.parseString(reportText).getAsJsonObject();
+        for (var el : doc.getAsJsonArray("functions"))
+            if (el.getAsJsonObject().get("fn").getAsString().equals("app.Main.submit"))
+                el.getAsJsonObject().add("inferred", new com.google.gson.JsonArray());
+        Path seeded = tmp.resolve("async-seed.json");
+        Files.writeString(seeded, doc.toString());
+        Files.copy(tmp.resolve("async-report.callgraph.json"), tmp.resolve("async-seed.callgraph.json"));
+        Run viol = runVerifyJar(jar, cls, seeded);
+        JsonObject vm = metrics(viol.stdout());
+        assertTrue(vm.get("honestyInvariantHolds").getAsBoolean(),
+                "per-thread boundary: an async submitter's miss is NOT witnessed (effect fires on the worker); stdout=" + viol.stdout());
+    }
+
+    /** Fixture: main → submit(pool) → [worker thread] lambda → leaf(Fs). The Fs fires on the pool thread. */
+    private Path compileAsyncFixture() throws Exception {
+        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
+        Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
+        Path target = tmp.resolve("async-data.txt");
+        Files.writeString(target, "hello");
+        Path src = tmp.resolve("Main.java");
+        Files.writeString(src, String.join("\n",
+            "package app;",
+            "import java.nio.file.*;",
+            "import java.util.concurrent.*;",
+            "public class Main {",
+            "  static void leaf(String p) throws Exception { Files.readAllBytes(Path.of(p)); }",
+            "  static void submit(ExecutorService ex, String p) { ex.submit(() -> { try { leaf(p); } catch (Exception e) {} }); }",
+            "  public static void main(String[] a) throws Exception {",
+            "    ExecutorService ex = Executors.newSingleThreadExecutor();",
+            "    submit(ex, " + gstr(target.toString()) + ");",
+            "    ex.shutdown(); ex.awaitTermination(5, TimeUnit.SECONDS);",
+            "  }",
+            "}"));
+        Path out = tmp.resolve("acls");
+        Files.createDirectories(out);
+        assertEquals(0, jc.run(null, null, null, "-d", out.toString(), src.toString()), "async fixture must compile");
+        return out;
+    }
+
     /** Fixture: main → middle → leaf, where only `leaf` calls java.nio (Fs); `middle`/`main` are transitive. */
     private Path compileTransitiveFixture() throws Exception {
         javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();

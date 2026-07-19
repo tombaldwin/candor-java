@@ -63,28 +63,18 @@ final class EffectTransformer implements ClassFileTransformer {
                     return null;
                 }
             }, ClassReader.SKIP_CODE);
-            // COMPUTE_FRAMES rebuilds stack-map frames after we insert instructions; COMPUTE_MAXS the max
-            // stack/locals. getCommonSuperClass is overridden to resolve via the TARGET application's
-            // classloader (not the agent's) and to fall back to Object — otherwise a common-supertype lookup
-            // of an app class the agent's loader can't see throws, the whole class is left uninstrumented, and
-            // its runtime effects go unwitnessed (a silent false all-clear). Object is always a valid common
-            // supertype, so the fallback yields verifiable (if slightly loose) frames rather than aborting.
-            ClassWriter cw = new ClassWriter(cr, ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES) {
-                @Override
-                protected String getCommonSuperClass(String type1, String type2) {
-                    try {
-                        Class<?> c1 = Class.forName(type1.replace('/', '.'), false, loader);
-                        Class<?> c2 = Class.forName(type2.replace('/', '.'), false, loader);
-                        if (c1.isAssignableFrom(c2)) return type1;
-                        if (c2.isAssignableFrom(c1)) return type2;
-                        if (c1.isInterface() || c2.isInterface()) return "java/lang/Object";
-                        do { c1 = c1.getSuperclass(); } while (c1 != null && !c1.isAssignableFrom(c2));
-                        return c1 == null ? "java/lang/Object" : c1.getName().replace('.', '/');
-                    } catch (Throwable t) {
-                        return "java/lang/Object";
-                    }
-                }
-            };
+            // COMPUTE_MAXS recomputes max stack/locals (the injected `LDC;LDC;INVOKESTATIC …(String,String)V`
+            // grows the operand stack by two). We deliberately do NOT use COMPUTE_FRAMES: the injection is
+            // frame-NEUTRAL — it pushes two constants and immediately pops them via the emit call, adds no
+            // branch target and no local, and so leaves the type-state at every existing stack-map frame
+            // unchanged. The original frames therefore stay valid and are copied through verbatim (the reader
+            // is passed to the writer, and EXPAND_FRAMES lets ASM re-emit them at the shifted offsets). This
+            // avoids the classic instrumentation hazard that COMPUTE_FRAMES carries: its getCommonSuperClass
+            // must resolve supertypes by CLASS-LOADING the app's classes mid-transform, and force-loading a
+            // class while another is being defined on the same loader raises `LinkageError: attempted duplicate
+            // class definition` — which took down 194/195 of a real suite's tests. No frame recomputation ⇒ no
+            // mid-transform classloading ⇒ the agent never perturbs the program under test.
+            ClassWriter cw = new ClassWriter(cr, ClassWriter.COMPUTE_MAXS);
             cr.accept(new EmitInjector(cw, dotted, descsByName), ClassReader.EXPAND_FRAMES);
             return cw.toByteArray();
         } catch (Throwable t) {

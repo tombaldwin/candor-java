@@ -164,6 +164,33 @@ class StructuralDispatchTest {
         assertTrue(eff(r, "B.iterLambda").isEmpty(), "forEachRemaining(pure lambda) must stay pure, got " + r.get("B.iterLambda"));
     }
 
+    /** The owner-agnostic forEach family: `list.forEach(opaqueConsumer)` is the SINGLE most common form,
+     *  and its bytecode owner is the static receiver type (java/util/List, ArrayList, HashSet, a user
+     *  collection), NOT the java/lang/Iterable where the default method is declared. An owner-exact table
+     *  silently missed it — the four-way conformance differential (sync_callback_opaque) caught the miss.
+     *  Matched by NAME now (parity with the Rust/TS/Swift arms). Opaque args disclose; inline lambdas stay. */
+    @Test
+    void syncCallbackInvokerOwnerAgnosticListForEach() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of("B.java", String.join("\n",
+            "import java.util.*;",
+            "import java.util.function.*;",
+            "public class B {",
+            "  interface MyColl { void forEach(Consumer<String> c); }",
+            "  void listParam(List<String> xs, Consumer<String> c){ xs.forEach(c); }",
+            "  void arrayListParam(ArrayList<String> xs, Consumer<String> c){ xs.forEach(c); }",
+            "  void setParam(Set<String> xs, Consumer<String> c){ xs.forEach(c); }",
+            "  void mapParam(Map<String,String> m, BiConsumer<String,String> c){ m.forEach(c); }",
+            "  void userCollParam(MyColl xs, Consumer<String> c){ xs.forEach(c); }",
+            "  void listLambdaPure(List<String> xs){ xs.forEach(x -> {}); }",
+            "}")));
+        assertTrue(eff(r, "B.listParam").toNames().contains("Unknown"), "List.forEach(param) must read Unknown");
+        assertTrue(eff(r, "B.arrayListParam").toNames().contains("Unknown"), "ArrayList.forEach(param) must read Unknown");
+        assertTrue(eff(r, "B.setParam").toNames().contains("Unknown"), "Set.forEach(param) must read Unknown");
+        assertTrue(eff(r, "B.mapParam").toNames().contains("Unknown"), "Map.forEach(param) must read Unknown");
+        assertTrue(eff(r, "B.userCollParam").toNames().contains("Unknown"), "user-collection forEach(param) must read Unknown");
+        assertTrue(eff(r, "B.listLambdaPure").isEmpty(), "List.forEach(pure lambda) must stay pure, got " + r.get("B.listLambdaPure"));
+    }
+
     /** #3b — the SAME opaque-task hand-off must read Unknown for CompletableFuture `*Async` stages and
      *  java.util.Timer.schedule (not only ExecutorService.submit). An opaque field/param Runnable/Supplier/
      *  TimerTask whose body is unknown → Unknown; an inline lambda or `new R()` with a real effect must keep

@@ -2949,9 +2949,24 @@ public class Candor {
         boolean taskArg = false;
         for (String p : TASK_ARG_PREFIXES) { if (desc.startsWith(p)) { taskArg = true; break; } }
         if (!taskArg) return false;
+        // The `forEach`/`forEachOrdered`/`forEachRemaining` idiom invokes its functional argument
+        // SYNCHRONOUSLY by contract across the ENTIRE JDK collection/stream/iterator hierarchy AND user
+        // collections that mirror it — but the bytecode owner is the STATIC receiver type (`java/util/List`,
+        // `java/util/ArrayList`, `java/util/HashSet`, a user `MyList`…), not the `java/lang/Iterable` where
+        // the default method is declared, and candor-java has no JDK supertype index to normalize it. So an
+        // owner-exact table silently misses the single most common form, `list.forEach(opaqueConsumer)`.
+        // Match this family by NAME (owner-agnostic) — the sound + four-way-parity choice, since the Rust,
+        // TS and Swift arms all key their sync-invoker check on the method name too. Over-disclosure stays
+        // at the floor: only an OPAQUE functional arg reaches here (the caller gates on that); an inline
+        // lambda keeps its edged effect. A user method merely NAMED forEach that stashes without calling is
+        // vanishingly rare and disclosing Unknown there is the fail-safe direction anyway.
+        if (FOR_EACH_FAMILY.contains(name)) return true;
         Set<String> names = SYNC_CALLBACK_INVOKERS.get(owner);
         return names != null && names.contains(name);
     }
+
+    /** The synchronous for-each idiom, matched owner-agnostically (see {@link #isSyncCallbackInvoker}). */
+    static final Set<String> FOR_EACH_FAMILY = Set.of("forEach", "forEachOrdered", "forEachRemaining");
 
     /** The TASK argument (arg0 — the deepest) of an executor hand-off call, from the provenance frame. */
     static ProvValue handoffTaskArg(Frame<ProvValue> f, MethodInsnNode min) {

@@ -121,6 +121,32 @@ class StructuralDispatchTest {
         assertTrue(eff(r, "B.lambdaSubmit").isEmpty(), "es.submit(pure lambda) must stay pure, got " + r.get("B.lambdaSubmit"));
     }
 
+    /** #3c — the SAME opaque-callback rule for SYNCHRONOUS invokers (Iterator.forEachRemaining / Stream.forEach /
+     *  Optional.ifPresent), not only executor hand-offs. An OPAQUE (field/param) Consumer handed to such a HOF has
+     *  an unknown body invoked outside project code → Unknown; an inline lambda stays pure (edged at its indy).
+     *  REGRESSION: found by the runtime oracle on Apache commons-compress (`ArchiveInputStream.forEach` →
+     *  `iterator().forEachRemaining(param)` read silent-pure), and covers commons-io's IOIterator/IOConsumer too. */
+    @Test
+    void syncCallbackInvokerOpaqueArgReadsUnknown() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of("B.java", String.join("\n",
+            "import java.util.*;",
+            "import java.util.function.Consumer;",
+            "import java.util.stream.Stream;",
+            "public class B {",
+            "  Consumer<String> handler;",
+            "  void iterField(Iterator<String> it){ it.forEachRemaining(handler); }",
+            "  void iterParam(Iterator<String> it, Consumer<String> c){ it.forEachRemaining(c); }",
+            "  void streamParam(Stream<String> s, Consumer<String> c){ s.forEach(c); }",
+            "  void optParam(Optional<String> o, Consumer<String> c){ o.ifPresent(c); }",
+            "  void iterLambda(Iterator<String> it){ it.forEachRemaining(x -> {}); }",
+            "}")));
+        assertTrue(eff(r, "B.iterField").toNames().contains("Unknown"), "forEachRemaining(field) must read Unknown");
+        assertTrue(eff(r, "B.iterParam").toNames().contains("Unknown"), "forEachRemaining(param) must read Unknown");
+        assertTrue(eff(r, "B.streamParam").toNames().contains("Unknown"), "Stream.forEach(param) must read Unknown");
+        assertTrue(eff(r, "B.optParam").toNames().contains("Unknown"), "Optional.ifPresent(param) must read Unknown");
+        assertTrue(eff(r, "B.iterLambda").isEmpty(), "forEachRemaining(pure lambda) must stay pure, got " + r.get("B.iterLambda"));
+    }
+
     /** #3b — the SAME opaque-task hand-off must read Unknown for CompletableFuture `*Async` stages and
      *  java.util.Timer.schedule (not only ExecutorService.submit). An opaque field/param Runnable/Supplier/
      *  TimerTask whose body is unknown → Unknown; an inline lambda or `new R()` with a real effect must keep

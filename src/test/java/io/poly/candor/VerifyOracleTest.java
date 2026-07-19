@@ -415,6 +415,90 @@ class VerifyOracleTest {
         assertTrue(am.get("honestyInvariantHolds").getAsBoolean());
     }
 
+    @Test
+    void transitiveCallerMissIsCaught() throws Exception {
+        // The core of candor is a TRANSITIVE effect report: a caller that reaches an effect through a callee is
+        // itself effectful. The oracle must therefore attribute a runtime effect TRANSITIVELY — to the enclosing
+        // method AND every analyzed caller on the live stack — or it cannot falsify the dangerous cardinal sin:
+        // a CALLER (not the leaf) that reaches an effect through a dropped/dynamic edge and is reported pure. A
+        // direct-only (leaf-only) oracle is structurally blind to it (the effect lands on the leaf; the caller's
+        // obs is empty ⇒ vacuously holds). fixture: main → middle → leaf(Fs). We seed the miss at the CALLER
+        // `middle` (declare it pure, leave the leaf correct) and require a witnessed violation on middle.
+        Path jar = shadowJar();
+        Assumptions.assumeTrue(jar != null, "no built shadowJar (run ./gradlew shadowJar) — skip end-to-end");
+        Path cls = compileTransitiveFixture();
+
+        Path report = tmp.resolve("trans-report.json");
+        Process scan = new ProcessBuilder(
+                System.getProperty("java.home") + "/bin/java", "-jar", jar.toString(),
+                cls.toString(), "--json", report.toString())
+                .redirectErrorStream(true).start();
+        drain(scan.getInputStream());
+        assertEquals(0, scan.waitFor(), "scan must succeed");
+        String reportText = Files.readString(report);
+        // candor's report is transitive: middle and main both carry Fs though only leaf calls java.nio.
+        var doc0 = JsonParser.parseString(reportText).getAsJsonObject();
+        assertTrue(fnInferred(doc0, "app.Main.middle").contains("Fs"), "candor reports middle Fs (transitive)");
+        assertTrue(fnInferred(doc0, "app.Main.main").contains("Fs"), "candor reports main Fs (transitive)");
+
+        // POSITIVE — sound report holds, witnessing all three functions transitively (leaf, middle, main).
+        Run hold = runVerifyJar(jar, cls, report);
+        JsonObject hm = metrics(hold.stdout());
+        assertTrue(hm.get("honestyInvariantHolds").getAsBoolean(), "sound transitive report holds; stdout=" + hold.stdout());
+        assertTrue(hm.get("executedFunctionsChecked").getAsInt() >= 3,
+                "transitive attribution witnesses the caller chain, not just the leaf; stdout=" + hold.stdout());
+
+        // VIOLATION — seed the miss at the CALLER `middle`; leave the leaf correct. Must be CAUGHT on middle.
+        var doc = JsonParser.parseString(reportText).getAsJsonObject();
+        for (var el : doc.getAsJsonArray("functions")) {
+            var f = el.getAsJsonObject();
+            if (f.get("fn").getAsString().equals("app.Main.middle")) f.add("inferred", new com.google.gson.JsonArray());
+        }
+        Path seeded = tmp.resolve("trans-seeded-caller.json");
+        Files.writeString(seeded, doc.toString());
+        Files.copy(tmp.resolve("trans-report.callgraph.json"), tmp.resolve("trans-seeded-caller.callgraph.json"));
+        Run viol = runVerifyJar(jar, cls, seeded);
+        JsonObject vm = metrics(viol.stdout());
+        assertFalse(vm.get("honestyInvariantHolds").getAsBoolean(), "a transitive-caller miss must VIOLATE; stdout=" + viol.stdout());
+        assertEquals(1, viol.exit(), "a cardinal-sin violation exits 1");
+        var vArr = JsonParser.parseString(viol.stdout()).getAsJsonObject().getAsJsonArray("violations");
+        assertTrue(java.util.stream.StreamSupport.stream(vArr.spliterator(), false)
+                .anyMatch(e -> "app.Main.middle".equals(e.getAsJsonObject().get("fn").getAsString())),
+                "the violation is on the CALLER middle, not only the leaf; stdout=" + viol.stdout());
+    }
+
+    private static java.util.Set<String> fnInferred(JsonObject report, String fn) {
+        var out = new java.util.HashSet<String>();
+        for (var el : report.getAsJsonArray("functions")) {
+            var f = el.getAsJsonObject();
+            if (f.get("fn").getAsString().equals(fn) && f.has("inferred"))
+                f.getAsJsonArray("inferred").forEach(e -> out.add(e.getAsString()));
+        }
+        return out;
+    }
+
+    /** Fixture: main → middle → leaf, where only `leaf` calls java.nio (Fs); `middle`/`main` are transitive. */
+    private Path compileTransitiveFixture() throws Exception {
+        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
+        Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
+        Path target = tmp.resolve("trans-data.txt");
+        Files.writeString(target, "hello");
+        Path src = tmp.resolve("Main.java");
+        Files.writeString(src, String.join("\n",
+            "package app;",
+            "import java.nio.file.Files;",
+            "import java.nio.file.Path;",
+            "public class Main {",
+            "  static void leaf(String p) throws Exception { Files.readAllBytes(Path.of(p)); }",
+            "  static void middle(String p) throws Exception { leaf(p); }",   // transitive caller, no direct effect
+            "  public static void main(String[] a) throws Exception { middle(" + gstr(target.toString()) + "); }",
+            "}"));
+        Path out = tmp.resolve("tcls");
+        Files.createDirectories(out);
+        assertEquals(0, jc.run(null, null, null, "-d", out.toString(), src.toString()), "transitive fixture must compile");
+        return out;
+    }
+
     /** Fixture: an effectful method that fully runs (Fs witnessed) and then the program exits NON-ZERO. */
     private Path compileExitNonZeroFixture() throws Exception {
         javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();

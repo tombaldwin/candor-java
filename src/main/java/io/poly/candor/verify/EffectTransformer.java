@@ -106,32 +106,34 @@ final class EffectTransformer implements ClassFileTransformer {
             // its own right. NON-bridge synthetics (a `lambda$…` desugared body, an `access$` accessor) DO carry
             // real body code, so they stay instrumented.
             if ((access & Opcodes.ACC_BRIDGE) != 0) return mv;
-            // qual = the candor `fn` of the ENCLOSING method — bare `Class.method`, or `Class.method(params)`
-            // for an overloaded name, matching Cha.methodId exactly. For a ctor the name is `<init>` (candor
-            // may not list it — those emits just won't attribute, which is fine).
+            // qual = the candor `fn` of THIS method — bare `Class.method`, or `Class.method(params)` for an
+            // overloaded name, matching Cha.methodId exactly. REGISTER it under this method's runtime stack key
+            // (dotted-owner # name # descriptor) so Trace.emit's TRANSITIVE stack walk can attribute effects to
+            // this method whenever it is a frame on the stack — even if its own body performs no effect (a
+            // transitive caller). Registration is for EVERY non-bridge method, not only effect-leaf ones. For a
+            // ctor the name is `<init>` (candor may not list it — those frames just won't resolve, which is fine).
             String qual = Cha.methodId(dottedClass, name, descriptor, descsByName.get(name));
-            return new EmitMethod(mv, qual);
+            Trace.registerQual(dottedClass + '#' + name + '#' + descriptor, qual);
+            return new EmitMethod(mv);
         }
     }
 
-    /** MethodVisitor that, before each effect-bearing call, injects the Trace.emit(fn, effect). */
+    /** MethodVisitor that, before each effect-bearing call, injects {@code Trace.emit(effect)} — attribution is
+     *  transitive at runtime (the stack walk), so only the effect string is pushed here. */
     private static final class EmitMethod extends MethodVisitor {
-        private final String qual;
-
-        EmitMethod(MethodVisitor mv, String qual) {
+        EmitMethod(MethodVisitor mv) {
             super(Opcodes.ASM9, mv);
-            this.qual = qual;
         }
 
         @Override
         public void visitMethodInsn(int opcode, String owner, String name, String descriptor, boolean isInterface) {
             String effect = EffectMap.effectOf(owner, name);
             if (effect != null) {
-                // Inject BEFORE the original call: push (fn, effect), invoke Trace.emit, THEN the call.
-                super.visitLdcInsn(qual);
+                // Inject BEFORE the original call: push the effect, invoke Trace.emit (which walks the stack and
+                // attributes transitively), THEN the leaf call. Stack-neutral: pushes one constant, pops it.
                 super.visitLdcInsn(effect);
                 super.visitMethodInsn(Opcodes.INVOKESTATIC, "io/poly/candor/verify/Trace", "emit",
-                        "(Ljava/lang/String;Ljava/lang/String;)V", false);
+                        "(Ljava/lang/String;)V", false);
             }
             super.visitMethodInsn(opcode, owner, name, descriptor, isInterface);
         }

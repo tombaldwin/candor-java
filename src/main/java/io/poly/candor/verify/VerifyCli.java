@@ -99,12 +99,21 @@ public final class VerifyCli {
             String cls = classOf(fn);
             if (cls != null) includeClasses.add(cls);
         }
-        Path includeFile, traceFile;
+        // (b2) the UNCOVERED (invisible) package set — packages the bytecode calls into but candor's classifier
+        // cannot see (the §2 `coverage` envelope, ⟨0.15⟩). An effect that reaches a leaf THROUGH such a package
+        // is one candor's static chain legitimately breaks at (and disclosed via `invisible`): the transitive
+        // attribution must not blame a project caller ACROSS that boundary, or it false-positives a "violation"
+        // for any library using an unmodelled dep (found: commons-configuration2 CatalogResolver.getResolver →
+        // xml.resolver ctor). Trace.emit stops attributing once its stack walk crosses an uncovered frame.
+        List<String> uncoveredPkgs = uncoveredPackages(report);
+        Path includeFile, traceFile, uncoveredFile;
         try {
             includeFile = Files.createTempFile("candor-verify-include-", ".txt");
             traceFile = Files.createTempFile("candor-verify-trace-", ".ndjson");
+            uncoveredFile = Files.createTempFile("candor-verify-uncovered-", ".txt");
             Files.write(includeFile, includeClasses);
             Files.write(traceFile, new byte[0]); // fresh, empty
+            Files.write(uncoveredFile, uncoveredPkgs);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -135,6 +144,7 @@ public final class VerifyCli {
         String agentOpt = "-javaagent:" + jar + "=" + includeFile;
         env.put("JAVA_TOOL_OPTIONS", agentOpt + (prior.isEmpty() ? "" : " " + prior));
         env.put("CANDOR_VERIFY_TRACE", traceFile.toString());
+        if (!uncoveredPkgs.isEmpty()) env.put("CANDOR_VERIFY_UNCOVERED", uncoveredFile.toString());
 
         int programExit;
         try {
@@ -149,7 +159,7 @@ public final class VerifyCli {
 
         // (e) read the trace, run the check.
         List<TraceEvent> events = readTrace(traceFile);
-        try { Files.deleteIfExists(includeFile); Files.deleteIfExists(traceFile); } catch (IOException ignored) { /* best effort */ }
+        try { Files.deleteIfExists(includeFile); Files.deleteIfExists(traceFile); Files.deleteIfExists(uncoveredFile); } catch (IOException ignored) { /* best effort */ }
 
         Result result = HonestyCheck.honestyCheck(reportMap,
                 HonestyCheck.observedByFn(events, scope), scope);
@@ -225,6 +235,33 @@ public final class VerifyCli {
     /** The ANALYZED-fn universe = the keys of the `<stem>.callgraph.json` sidecar (§2.2 — it lists EVERY
      *  analyzed fn, pure ones included), or null when no readable sidecar sits next to the report. Used to
      *  instrument pure classes too (a secret effect in one is otherwise unwitnessed). */
+    /** The report's `coverage.packages` — the packages the bytecode calls into that candor's classifier does
+     *  not cover (the §2 coverage envelope). Empty when the field is absent (older reports / fully-covered
+     *  scans). Passed to the agent so Trace.emit's transitive attribution stops at an uncovered boundary. */
+    private static List<String> uncoveredPackages(JsonElement report) {
+        List<String> out = new ArrayList<>();
+        try {
+            if (report != null && report.isJsonObject()) {
+                JsonElement cov = report.getAsJsonObject().get("coverage");
+                if (cov != null && cov.isJsonObject()) {
+                    JsonObject co = cov.getAsJsonObject();
+                    // Scan-report shape: `uncovered: [{name, calls}, …]`.
+                    JsonElement unc = co.get("uncovered");
+                    if (unc != null && unc.isJsonArray())
+                        for (JsonElement e : unc.getAsJsonArray())
+                            if (e != null && e.isJsonObject() && e.getAsJsonObject().has("name"))
+                                out.add(e.getAsJsonObject().get("name").getAsString());
+                    // Gate-json shape: `packages: ["a.b", …]` (uncovered is a count there).
+                    JsonElement pkgs = co.get("packages");
+                    if (pkgs != null && pkgs.isJsonArray())
+                        for (JsonElement e : pkgs.getAsJsonArray())
+                            if (e != null && e.isJsonPrimitive()) out.add(e.getAsString());
+                }
+            }
+        } catch (RuntimeException ignored) { /* a malformed coverage field just yields no boundary — sound (no crediting) */ }
+        return out;
+    }
+
     private static Set<String> loadCallgraphNodes(Path reportPath) {
         String p = reportPath.toString();
         String cg = (p.endsWith(".json") ? p.substring(0, p.length() - 5) : p) + ".callgraph.json";

@@ -47,6 +47,38 @@ public final class Trace {
     private static final Set<String> SEEN = ConcurrentHashMap.newKeySet();
     private static final StackWalker WALKER = StackWalker.getInstance();
 
+    // Packages candor's classifier cannot see (the report's `coverage.packages`, ⟨0.15⟩). An effect reached
+    // THROUGH such a package is one candor's static analysis legitimately cannot follow (and disclosed via the
+    // per-fn `invisible` field), so the transitive attribution must STOP at that boundary: a project caller
+    // sitting OUTSIDE (above) an uncovered frame reached the effect through code candor never saw, and must
+    // not be blamed for it — else the oracle false-positives a "violation" for any library using an unmodelled
+    // dep. Loaded once from CANDOR_VERIFY_UNCOVERED (empty ⇒ no boundary ⇒ attribution exactly as before).
+    private static final String[] UNCOVERED = loadUncovered();
+
+    private static String[] loadUncovered() {
+        String path = System.getenv("CANDOR_VERIFY_UNCOVERED");
+        if (path == null || path.isEmpty()) return new String[0];
+        try {
+            java.util.List<String> out = new java.util.ArrayList<>();
+            for (String l : java.nio.file.Files.readAllLines(java.nio.file.Path.of(path))) {
+                String t = l.trim();
+                if (!t.isEmpty()) out.add(t);
+            }
+            return out.toArray(new String[0]);
+        } catch (Exception e) {
+            return new String[0]; // unreadable ⇒ no boundary ⇒ normal attribution (sound: no false crediting)
+        }
+    }
+
+    /** True when {@code className} (dotted) is in — or under — a package candor disclosed as uncovered. */
+    private static boolean inUncoveredPackage(String className) {
+        if (UNCOVERED.length == 0 || className == null) return false;
+        for (String p : UNCOVERED)
+            if (className.length() > p.length() && className.startsWith(p) && className.charAt(p.length()) == '.')
+                return true;
+        return false;
+    }
+
     private static synchronized void openLazily() {
         if (opened) return;
         opened = true;
@@ -78,10 +110,17 @@ public final class Trace {
     public static void emit(String effect) {
         if (effect == null) return;
         try {
+            // Walk from the leaf outward. Attribute to each ANALYZED project frame (registered at transform
+            // time; JDK/deps/the agent's own frames are absent from QUALS). But once the walk CROSSES a frame
+            // in an uncovered package, stop: every project frame beyond it reached this effect through code
+            // candor could not see (a broken static chain it disclosed via `invisible`), so blaming it would
+            // be a false positive. With no uncovered set this is identical to the plain attribution.
+            boolean[] crossed = {false};
             WALKER.forEach(f -> {
-                // Resolve only frames that are ANALYZED project methods (registered at transform time); JDK,
-                // deps, the agent's own frames, and this emit frame are absent from QUALS and so skipped.
-                String qual = QUALS.get(f.getClassName() + '#' + f.getMethodName() + '#' + f.getDescriptor());
+                if (crossed[0]) return;
+                String cn = f.getClassName();
+                if (inUncoveredPackage(cn)) { crossed[0] = true; return; }
+                String qual = QUALS.get(cn + '#' + f.getMethodName() + '#' + f.getDescriptor());
                 if (qual != null) recordOne(qual, effect);
             });
         } catch (Throwable ignored) {

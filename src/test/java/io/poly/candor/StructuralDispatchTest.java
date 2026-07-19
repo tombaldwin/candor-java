@@ -4,6 +4,7 @@ import io.poly.candor.model.Effect;
 import io.poly.candor.model.EffectSet;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Path;
@@ -98,6 +99,44 @@ class StructuralDispatchTest {
             "public class Main {}")));
         assertTrue(eff(r, "Wrap.close").toNames().contains("Unknown"),
                 "a filter-stream super.close() (unknown wrapped sink) must read Unknown, got " + r.get("Wrap.close"));
+    }
+
+    /** VALUE-PROVENANCE Phase 1: a stream-consuming utility (IOUtils.read) reading a stream NOT opened in
+     *  this method (a param or field — newType==null) discloses Unknown (the honest external-stream answer);
+     *  a stream opened IN THIS METHOD (`new FileInputStream` — newType set) stays pure-relative and gets NO
+     *  redundant Unknown (the precision the source/sink stance is meant to preserve). IOUtils is compiled but
+     *  NOT scanned (external, matching reality). Found by the runtime oracle on commons-compress readFully. */
+    @Test
+    void externalStreamReadViaUtilityIsUnknownButInScopeOpenStaysPure() throws Exception {
+        Path app = TestCompiler.compileApp(
+            Map.of("org/apache/commons/io/IOUtils.java", String.join("\n",
+                "package org.apache.commons.io;",
+                "import java.io.InputStream;",
+                "public class IOUtils {",
+                "  public static int read(InputStream in, byte[] b, int off, int len) { return 0; }",
+                "}")),
+            Map.of("A.java", String.join("\n",
+                "import java.io.*;",
+                "import org.apache.commons.io.IOUtils;",
+                "public class A {",
+                "  InputStream in;",
+                "  void readField(byte[] b) throws IOException { IOUtils.read(this.in, b, 0, b.length); }",
+                "  void readParam(InputStream p, byte[] b) throws IOException { IOUtils.read(p, b, 0, b.length); }",
+                "  void readFresh(byte[] b) throws IOException { InputStream s = new FileInputStream(\"x\"); IOUtils.read(s, b, 0, b.length); }",
+                "}")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(app);
+            assertTrue(eff(r, "A.readField").toNames().contains("Unknown"),
+                    "external FIELD stream read must be Unknown, got " + r.get("A.readField"));
+            assertTrue(eff(r, "A.readParam").toNames().contains("Unknown"),
+                    "external PARAM stream read must be Unknown, got " + r.get("A.readParam"));
+            assertTrue(eff(r, "A.readFresh").toNames().contains("Fs"),
+                    "an in-scope open must still be Fs, got " + r.get("A.readFresh"));
+            assertFalse(eff(r, "A.readFresh").toNames().contains("Unknown"),
+                    "an in-scope open must NOT get a redundant Unknown (source/sink precision), got " + r.get("A.readFresh"));
+        } finally {
+            TestCompiler.rm(app.getParent());
+        }
     }
 
     /** #2a-bis — the READ/WRITE half of the wrapped-sink delegate: a BufferedOutputStream/FilterInputStream

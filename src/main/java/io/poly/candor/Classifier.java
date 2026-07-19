@@ -1108,6 +1108,13 @@ final class Classifier {
             String params = paramsOf(desc);
             if (params.contains("Ljava/net/URL;") || params.contains("Ljava/net/URI;")) return Effect.NET;
             if (params.contains("Ljava/io/File;") || params.contains("Ljava/nio/file/Path;")) return Effect.FS;
+            // A caller-opened STREAM overload (IOUtils.read/copy/toByteArray(InputStream,…)) is PURE-RELATIVE
+            // — candor's source/sink stance charges the Fs/Net at the stream's CREATION, not at each read —
+            // so these fall through to null. NB the transitive runtime oracle attributes a file-backed read
+            // to the read site (e.g. ZipArchiveInputStream.readFully → IOUtils.read(in,…) → Fs), which the
+            // creation-site stance does not: that is a model-vs-oracle boundary (library-view under-report
+            // when the open is out of scope), a deliberate stance decision, NOT a classifier miss. See
+            // ClassifierLongTailTest.commonsIoFollowsTheSourceSinkStance.
             return null;
         }
         // Redisson — a Redis client: the R* handles (RMap/RLock/RBucket/…) are REMOTE data structures by

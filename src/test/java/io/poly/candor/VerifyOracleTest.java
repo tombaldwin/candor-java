@@ -332,6 +332,146 @@ class VerifyOracleTest {
                 "the bridged override matches its bare report entry; stdout=" + hold.stdout());
     }
 
+    @Test
+    void agentDoesNotBreakClassLoadingViaFrameRecomputation() throws Exception {
+        // REGRESSION (found on the apache/commons-io public suite: the agent broke 194/195 FileUtilsTest tests
+        // with `LinkageError: attempted duplicate class definition`). The agent's ClassWriter must NOT use
+        // COMPUTE_FRAMES: recomputing a stack-map frame forces getCommonSuperClass to CLASS-LOAD the app's types
+        // mid-transform, and force-loading a class whose supertype is being defined on the same loader raises the
+        // LinkageError — the agent perturbing the program under test, the one thing it must never do. The Trace.emit
+        // injection is frame-NEUTRAL (push two constants, pop them via the call — no branch, no local), so the
+        // javac-emitted frames stay valid and are copied through verbatim.
+        //
+        // This fixture reproduces the reentrancy MINIMALLY: Base.pick has a control-flow merge over two SUBCLASSES
+        // of Base (a ternary Sub1|Sub2), whose common supertype is Base ITSELF. Under COMPUTE_FRAMES, transforming
+        // Base computes that frame → getCommonSuperClass force-loads Sub1, whose superclass Base is mid-definition
+        // (its own load is what triggered the transform) → duplicate-definition LinkageError → the child JVM dies
+        // before Base.pick runs. With the fix, the frame is preserved, no class is loaded, pick runs and its Fs is
+        // witnessed. The assertion below has teeth: under a COMPUTE_FRAMES regression pick is NOT witnessed
+        // sound-complete-ok (the crash precedes it), so the test goes red.
+        Path jar = shadowJar();
+        Assumptions.assumeTrue(jar != null, "no built shadowJar (run ./gradlew shadowJar) — skip end-to-end");
+        Path cls = compileReentrantFrameFixture();
+
+        Path report = tmp.resolve("reentr-report.json");
+        Process scan = new ProcessBuilder(
+                System.getProperty("java.home") + "/bin/java", "-jar", jar.toString(),
+                cls.toString(), "--json", report.toString())
+                .redirectErrorStream(true).start();
+        drain(scan.getInputStream());
+        assertEquals(0, scan.waitFor(), "scan must succeed");
+
+        Run hold = runVerifyJar(jar, cls, report);
+        JsonObject m = metrics(hold.stdout());
+        assertEquals(0, hold.exit(), "instrumented run must not crash (no LinkageError); stderr=" + hold.stderr());
+        assertTrue(m.get("honestyInvariantHolds").getAsBoolean(),
+                "frame-carrying effectful method must instrument+run cleanly; stdout=" + hold.stdout() + " stderr=" + hold.stderr());
+        assertEquals(0, m.get("cardinalSinViolations").getAsInt());
+        // The effect must be WITNESSED sound-complete-ok — proving Base loaded, was instrumented, and its injected
+        // bytecode verified and RAN. Under a COMPUTE_FRAMES regression the child crashes before pick executes, so
+        // this row is absent → the test fails (teeth confirmed against the reverted-COMPUTE_FRAMES build).
+        var rows = JsonParser.parseString(hold.stdout()).getAsJsonObject().getAsJsonArray("rows");
+        assertTrue(java.util.stream.StreamSupport.stream(rows.spliterator(), false)
+                .anyMatch(e -> "app.Main$Base.pick".equals(e.getAsJsonObject().get("fn").getAsString())
+                        && "sound-complete-ok".equals(e.getAsJsonObject().get("verdict").getAsString())),
+                "Base.pick (frame merging its own subclasses) is witnessed sound-complete-ok; stdout=" + hold.stdout());
+    }
+
+    @Test
+    void nonZeroRunExitFailsClosedUnlessAllowed() throws Exception {
+        // A --run command that does NOT complete cleanly (non-zero exit — a crash, or a failing test suite) may
+        // have produced a PARTIAL trace, so a clean all-clear cannot be certified over it: verify fails closed
+        // (exit 2, attributionComplete=false), never a green exit 0 — the same posture as a torn trace / missing
+        // callgraph. The honesty invariant itself still HOLDS on what WAS witnessed (the effect ran and was
+        // reported); only completeness is in doubt. `--allow-run-failure` opts out for a suite with EXPECTED
+        // failures (effects still fully exercised): the verdict is kept and the non-zero exit only disclosed.
+        Path jar = shadowJar();
+        Assumptions.assumeTrue(jar != null, "no built shadowJar (run ./gradlew shadowJar) — skip end-to-end");
+        Path cls = compileExitNonZeroFixture();
+
+        Path report = tmp.resolve("exit-report.json");
+        Process scan = new ProcessBuilder(
+                System.getProperty("java.home") + "/bin/java", "-jar", jar.toString(),
+                cls.toString(), "--json", report.toString())
+                .redirectErrorStream(true).start();
+        drain(scan.getInputStream());
+        assertEquals(0, scan.waitFor(), "scan must succeed");
+
+        // DEFAULT — the --run child exits 3 → fail closed (exit 2), attribution incomplete, exit code disclosed,
+        // but the witnessed effect still HOLDS.
+        Run def = runVerifyJar(jar, cls, report);
+        JsonObject dm = metrics(def.stdout());
+        assertEquals(2, def.exit(), "a non-clean --run fails closed (exit 2); stdout=" + def.stdout() + " stderr=" + def.stderr());
+        assertFalse(dm.get("attributionComplete").getAsBoolean(), "a non-zero run exit ⇒ attribution not certified complete");
+        assertEquals(3, dm.get("programExitCode").getAsInt(), "the child exit code is disclosed in the verdict");
+        assertTrue(dm.get("honestyInvariantHolds").getAsBoolean(), "the effect WAS witnessed; only completeness is in doubt");
+
+        // OPT-OUT — --allow-run-failure keeps the verdict (advisory) and exits 0.
+        Run allow = runVerifyJar(jar, cls, report, "--allow-run-failure");
+        JsonObject am = metrics(allow.stdout());
+        assertEquals(0, allow.exit(), "--allow-run-failure keeps the green verdict; stdout=" + allow.stdout() + " stderr=" + allow.stderr());
+        assertTrue(am.get("attributionComplete").getAsBoolean(), "opt-out ⇒ the run-exit gap is not raised");
+        assertEquals(3, am.get("programExitCode").getAsInt(), "the non-zero exit is still disclosed under the opt-out");
+        assertTrue(am.get("honestyInvariantHolds").getAsBoolean());
+    }
+
+    /** Fixture: an effectful method that fully runs (Fs witnessed) and then the program exits NON-ZERO. */
+    private Path compileExitNonZeroFixture() throws Exception {
+        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
+        Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
+        Path target = tmp.resolve("exit-data.txt");
+        Files.writeString(target, "hello");
+        Path src = tmp.resolve("Main.java");
+        Files.writeString(src, String.join("\n",
+            "package app;",
+            "import java.nio.file.Files;",
+            "import java.nio.file.Path;",
+            "public class Main {",
+            "  static void reads(String p) throws Exception { Files.readAllBytes(Path.of(p)); }",
+            "  public static void main(String[] a) throws Exception {",
+            "    reads(" + gstr(target.toString()) + ");",  // effect fully runs + is flushed
+            "    System.exit(3);",                          // ...then a non-zero exit
+            "  }",
+            "}"));
+        Path out = tmp.resolve("xcls");
+        Files.createDirectories(out);
+        assertEquals(0, jc.run(null, null, null, "-d", out.toString(), src.toString()), "exit fixture must compile");
+        return out;
+    }
+
+    /** Fixture: an effectful method whose control-flow merge is over two SUBCLASSES of the enclosing class, so the
+     *  merge's stack-map frame type is the enclosing class itself — recomputing it force-loads a class whose
+     *  supertype is mid-definition (the reentrancy that raised the duplicate-definition LinkageError). */
+    private Path compileReentrantFrameFixture() throws Exception {
+        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
+        Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
+        Path target = tmp.resolve("reentr-data.txt");
+        Files.writeString(target, "hello");
+        Path src = tmp.resolve("Main.java");
+        Files.writeString(src, String.join("\n",
+            "package app;",
+            "import java.nio.file.Files;",
+            "import java.nio.file.Path;",
+            "public class Main {",
+            "  static class Base {",
+            "    Base pick(boolean c, String path) throws Exception {",
+            "      Base b = c ? new Sub1() : new Sub2();",  // merge over subclasses → frame type = Base (mid-load)
+            "      Files.readAllBytes(Path.of(path));",     // Fs leaf ⇒ Base.pick is instrumented
+            "      return b;",
+            "    }",
+            "  }",
+            "  static class Sub1 extends Base {}",
+            "  static class Sub2 extends Base {}",
+            "  public static void main(String[] a) throws Exception {",
+            "    new Base().pick(a.length == 0, " + gstr(target.toString()) + ");",
+            "  }",
+            "}"));
+        Path out = tmp.resolve("rcls");
+        Files.createDirectories(out);
+        assertEquals(0, jc.run(null, null, null, "-d", out.toString(), src.toString()), "reentrant fixture must compile");
+        return out;
+    }
+
     /** Fixture: a generic override (Task&lt;String&gt;.exec) that does Fs — javac emits a synthetic bridge exec(Object). */
     private Path compileBridgeFixture() throws Exception {
         javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();

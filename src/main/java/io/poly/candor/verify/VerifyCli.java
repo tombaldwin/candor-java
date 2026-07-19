@@ -29,7 +29,7 @@ import io.poly.candor.verify.HonestyCheck.Violation;
  * per executed method. A cardinal-sin VIOLATION exits 1.
  *
  * <pre>
- *   candor-java verify [&lt;classdir-or-jar&gt;] --run "&lt;cmd&gt;" [--report &lt;json&gt;] [--scope direct|all] [--json]
+ *   candor-java verify [&lt;classdir-or-jar&gt;] --run "&lt;cmd&gt;" [--report &lt;json&gt;] [--scope direct|all] [--json] [--allow-run-failure]
  * </pre>
  *
  * <p>Mechanism: it (a) resolves the report, (b) computes the include-class set from the report's fns and
@@ -46,6 +46,7 @@ public final class VerifyCli {
     public static void main(String[] args) {
         String dir = null, runCmd = null, reportArg = null, scope = "direct";
         boolean wantJson = false;
+        boolean allowRunFailure = false;
         for (int i = 1; i < args.length; i++) {
             String a = args[i];
             switch (a) {
@@ -53,6 +54,11 @@ public final class VerifyCli {
                 case "--report" -> reportArg = i + 1 < args.length ? args[++i] : null;
                 case "--scope" -> scope = i + 1 < args.length ? args[++i] : scope;
                 case "--json" -> wantJson = true;
+                // A non-zero --run exit means the run did not complete cleanly — its trace may be PARTIAL, so a
+                // clean all-clear cannot be certified over it (fail-closed by default, below). --allow-run-failure
+                // is the escape hatch for a suite where some test failures are EXPECTED: the run's effects were
+                // still fully exercised, so the verdict is kept (advisory), the non-zero exit only disclosed.
+                case "--allow-run-failure" -> allowRunFailure = true;
                 case "-h", "--help" -> usage(null);
                 default -> {
                     if (a.startsWith("-")) usage("unknown flag " + a);
@@ -158,6 +164,15 @@ public final class VerifyCli {
                 + "and would be missed (re-scan with --out to emit the callgraph)");
         if (lastTornLines > 0) gaps.add(lastTornLines + " trace line(s) were unparseable (torn/interleaved) — those "
                 + "captured effects are lost");
+        // A non-zero --run exit means the command did not complete cleanly (a crash — including one the agent
+        // itself could cause — or a failing test suite), so the trace may be PARTIAL and a clean all-clear cannot
+        // be certified over it: fail closed (exit 2), same posture as the incomplete-attribution cases above.
+        // --allow-run-failure opts out for a suite with EXPECTED failures (effects still fully exercised): the
+        // non-zero exit is then only disclosed (programExitCode in --json; the note below), never fails the verdict.
+        if (programExit != 0 && !allowRunFailure) gaps.add("the --run command exited " + programExit
+                + " (did not complete cleanly) — its trace may be partial, so a clean all-clear cannot be certified; "
+                + "re-run once it exits 0, or pass --allow-run-failure if some failures are expected and the effects "
+                + "were still fully exercised");
         if (!gaps.isEmpty()) {
             result.attributionComplete = false;
             result.attributionNote = String.join("; ", gaps) + " — not a sound all-clear";
@@ -321,7 +336,9 @@ public final class VerifyCli {
     private static void usage(String msg) {
         if (msg != null) System.err.println("candor verify: " + msg);
         System.err.println("usage: candor-java verify [<classdir-or-jar>] --run \"<cmd>\" "
-                + "[--report <json>] [--scope direct|all] [--json]");
+                + "[--report <json>] [--scope direct|all] [--json] [--allow-run-failure]");
+        System.err.println("       --allow-run-failure  keep the verdict when the --run command exits non-zero "
+                + "(a suite with expected test failures); by default a non-clean run fails closed (exit 2)");
         System.exit(2);
     }
 }

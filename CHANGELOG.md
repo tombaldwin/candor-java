@@ -15,6 +15,29 @@ a `candor verify` (JVM `-javaagent`) fix: the agent's overload-key pre-pass no l
 false-positive that misfired on any generic task/visitor/callable/comparator override. Found on the public corpus
 (zip4j's integration suite). Verify-only; report and verdict bytes are unchanged.
 
+⚠ **`candor verify` agent transparency fix — the instrument no longer perturbs the program under test.** The
+`-javaagent`'s `EffectTransformer` built its `ClassWriter` with `COMPUTE_FRAMES`, whose `getCommonSuperClass`
+resolves supertypes by **class-loading the application's types mid-transform**; force-loading a class whose
+supertype is being defined on the same loader raises `LinkageError: attempted duplicate class definition`. On
+Apache **commons-io**'s `FileUtilsTest` this broke **194/195** tests — the oracle crashing the code it is meant to
+observe. The `Trace.emit` injection is frame-**neutral** (it pushes two constants and pops them via the call — no
+branch target, no local), so the javac-emitted stack-map frames stay valid and need no recomputation: the writer
+now uses `COMPUTE_MAXS` only, eliminating all mid-transform class-loading. This is strictly better than both prior
+states (no crash, and no silent skip of classes an earlier `getCommonSuperClass` couldn't resolve). Found while
+measuring the agent's runtime overhead on a real suite (≈1.02× / +2.4 % on commons-io's filesystem tests);
+regression-gated by `VerifyOracleTest.agentDoesNotBreakClassLoadingViaFrameRecomputation` (a fixture whose
+control-flow merge is over its own subclasses — the minimal reentrancy trigger, confirmed to fail under the old
+`COMPUTE_FRAMES` build). Verify-only; report and verdict bytes are unchanged.
+
+⚠ **`candor verify` fails closed on a non-clean `--run`.** A `--run` command that exits non-zero (a crash, or a
+failing test suite) may have produced a *partial* trace, so a clean all-clear cannot be certified over it: verify
+now adds it to the attribution-gap set (`attributionComplete=false`, **exit 2**), the same posture already used for
+a torn trace or a missing callgraph — no more green `exit 0` over a run that did not complete. The honesty invariant
+still HOLDS on what *was* witnessed; only completeness is withheld. New **`--allow-run-failure`** flag opts out for a
+suite with *expected* failures (effects still fully exercised): the verdict is kept and the non-zero exit only
+disclosed (`programExitCode` in `--json`). Previously the child exit was disclosed but never affected the verdict.
+Regression-gated by `VerifyOracleTest.nonZeroRunExitFailsClosedUnlessAllowed`.
+
 ## [0.19.0] — 2026-07-17
 
 Reason-scoped `Unknown` policies (SPEC §6.2, the reference): `deny E Unknown[reflect,dispatch,indirect,native,unresolved,setup]`

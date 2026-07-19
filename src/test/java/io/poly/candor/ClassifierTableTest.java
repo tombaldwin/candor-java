@@ -418,6 +418,11 @@ class ClassifierTableTest {
         r.addAll(verbs("org.apache.commons.io.FileUtils", Effect.FS,
                 "readLines", "writeStringToFile", "copyFile", "moveFile", "deleteQuietly", "forceDelete",
                 "touch", "cleanDirectory", "listFiles", "openInputStream", "openOutputStream", "iterateFiles"));
+        // IOUtils: File/URL overloads are Fs/Net; a caller-opened STREAM overload is pure-relative (the
+        // source/sink stance charges at creation, not at each read — see ClassifierLongTailTest).
+        r.add(fx("org.apache.commons.io.IOUtils", "toByteArray", "(Ljava/net/URL;)[B", Effect.NET));
+        r.add(fx("org.apache.commons.io.IOUtils", "toByteArray", "(Ljava/io/InputStream;)[B", null));
+        r.add(fx("org.apache.commons.io.IOUtils", "copy", "(Ljava/io/InputStream;Ljava/io/OutputStream;)I", null));
         r.addAll(verbs("org.flywaydb.core.Flyway", Effect.DB,
                 "migrate", "clean", "validate", "baseline", "repair", "info"));
         r.addAll(verbs("org.rocksdb.RocksDB", Effect.FS,

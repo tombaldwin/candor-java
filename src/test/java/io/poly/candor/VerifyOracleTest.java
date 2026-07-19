@@ -467,6 +467,69 @@ class VerifyOracleTest {
                 "the violation is on the CALLER middle, not only the leaf; stdout=" + viol.stdout());
     }
 
+    @Test
+    void transitiveAttributionResolvesOverloadedCallerCorrectly() throws Exception {
+        // Transitive attribution resolves each stack frame's candor qual through a registry keyed on the method
+        // DESCRIPTOR (a bare frame carries no overload info). This guards that path: an OVERLOADED caller —
+        // `middle(String)` reaches Fs, `middle(int)` is pure — must attribute the effect to the EXACT overload
+        // that ran. Seed `middle(String)` pure → the violation must land on `app.Main.middle(String)`, and
+        // `middle(int)` must stay clean (no misattribution across overloads = no spurious violation, no silent miss).
+        Path jar = shadowJar();
+        Assumptions.assumeTrue(jar != null, "no built shadowJar (run ./gradlew shadowJar) — skip end-to-end");
+        Path cls = compileOverloadFixture();
+        Path report = tmp.resolve("ovl-report.json");
+        Process scan = new ProcessBuilder(
+                System.getProperty("java.home") + "/bin/java", "-jar", jar.toString(),
+                cls.toString(), "--json", report.toString())
+                .redirectErrorStream(true).start();
+        drain(scan.getInputStream());
+        assertEquals(0, scan.waitFor(), "scan must succeed");
+        String reportText = Files.readString(report);
+        assertTrue(fnInferred(JsonParser.parseString(reportText).getAsJsonObject(), "app.Main.middle(String)").contains("Fs"),
+                "candor reports the Fs-reaching overload middle(String) as Fs (transitive)");
+        // seed ONLY middle(String) pure → violation must be on middle(String), not middle(int).
+        var doc = JsonParser.parseString(reportText).getAsJsonObject();
+        for (var el : doc.getAsJsonArray("functions"))
+            if (el.getAsJsonObject().get("fn").getAsString().equals("app.Main.middle(String)"))
+                el.getAsJsonObject().add("inferred", new com.google.gson.JsonArray());
+        Path seeded = tmp.resolve("ovl-seed.json");
+        Files.writeString(seeded, doc.toString());
+        Files.copy(tmp.resolve("ovl-report.callgraph.json"), tmp.resolve("ovl-seed.callgraph.json"));
+        Run viol = runVerifyJar(jar, cls, seeded);
+        var vArr = JsonParser.parseString(viol.stdout()).getAsJsonObject().getAsJsonArray("violations");
+        assertEquals(1, viol.exit(), "exactly the seeded overload violates; stdout=" + viol.stdout());
+        assertTrue(java.util.stream.StreamSupport.stream(vArr.spliterator(), false)
+                .anyMatch(e -> "app.Main.middle(String)".equals(e.getAsJsonObject().get("fn").getAsString())),
+                "the violation lands on the exact overload middle(String); stdout=" + viol.stdout());
+        assertFalse(java.util.stream.StreamSupport.stream(vArr.spliterator(), false)
+                .anyMatch(e -> "app.Main.middle(int)".equals(e.getAsJsonObject().get("fn").getAsString())),
+                "the pure overload middle(int) must NOT be misattributed a violation; stdout=" + viol.stdout());
+    }
+
+    /** Fixture: an OVERLOADED caller — middle(String) reaches Fs, middle(int) is pure — to stress the transitive
+     *  attribution's descriptor-keyed overload registry. */
+    private Path compileOverloadFixture() throws Exception {
+        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
+        Assumptions.assumeTrue(jc != null, "no system Java compiler (JRE-only) — skip");
+        Path target = tmp.resolve("ovl-data.txt");
+        Files.writeString(target, "hello");
+        Path src = tmp.resolve("Main.java");
+        Files.writeString(src, String.join("\n",
+            "package app;",
+            "import java.nio.file.Files;",
+            "import java.nio.file.Path;",
+            "public class Main {",
+            "  static void leaf(String p) throws Exception { Files.readAllBytes(Path.of(p)); }",
+            "  static void middle(String p) throws Exception { leaf(p); }",  // reaches Fs
+            "  static void middle(int n) { if (n < 0) throw new IllegalStateException(); }",  // pure
+            "  public static void main(String[] a) throws Exception { middle(" + gstr(target.toString()) + "); middle(3); }",
+            "}"));
+        Path out = tmp.resolve("ocls");
+        Files.createDirectories(out);
+        assertEquals(0, jc.run(null, null, null, "-d", out.toString(), src.toString()), "overload fixture must compile");
+        return out;
+    }
+
     private static java.util.Set<String> fnInferred(JsonObject report, String fn) {
         var out = new java.util.HashSet<String>();
         for (var el : report.getAsJsonArray("functions")) {

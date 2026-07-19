@@ -1210,6 +1210,7 @@ public class Candor {
         namedFunctionalToHof(ctx, s, min);
         xmlParseFilePrecision(s, min);
         entryAbstractStream(ctx, s, min, owner, effect);
+        externalStreamUtility(ctx, s, min, owner, effect);
         contractReentry(s, min);
         deferredForce(ctx, s, min);
         reflectionPair(ctx, s, min, owner);
@@ -1337,6 +1338,44 @@ public class Candor {
                 ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                         .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
             }
+        }
+    }
+
+    /** VALUE-PROVENANCE Phase 1 (interprocedural stream provenance, the intraprocedural half). A stream-
+     *  CONSUMING library utility (`IOUtils.read`/`copy`/`toByteArray`, Guava `ByteStreams`/`CharStreams`)
+     *  reads the InputStream/Reader passed to it. candor's source/sink stance classifies these pure-relative —
+     *  the effect is charged at the stream's CREATION — which is sound when the stream was opened IN THIS
+     *  method (a fresh `new FileInputStream(...)`: newType is set, so this method already carries the Fs). But
+     *  when the argument is a PARAM or a FIELD (newType == null — opened OUTSIDE this method, e.g.
+     *  `ZipArchiveInputStream.readFully → IOUtils.read(this.in,…)`), the read is of an externally-provided
+     *  stream whose concrete type — and effect — candor cannot see → Unknown, never silent-pure and never a
+     *  fabricated Fs. This is R17's `entryAbstractStream` generalised from "an entry point's own param" to
+     *  "any stream not opened in this method", applied at the utility-consumer call site (where the stream is
+     *  an ARGUMENT, not the receiver). Whole-program precision — a caller's concrete stream flowing into the
+     *  field, so `readFully` resolves to Fs rather than Unknown — is reclaimed by the construction-carried
+     *  binding (Phase 2). See VALUE-PROVENANCE-DESIGN.md. Note it fires at the CALL SITE, not in classify(),
+     *  so the pure-relative stance table (ClassifierLongTailTest.commonsIoFollowsTheSourceSinkStance) stands. */
+    static void externalStreamUtility(AnalysisContext ctx, MethodScan s, MethodInsnNode min, String owner, Effect effect) {
+        if (effect != null) return;                     // a File/URL overload already classified Fs/Net — leave it
+        Frame<ProvValue>[] provFrames = s.provFrames;
+        if (provFrames == null) return;
+        Set<String> verbs = Rules.STREAM_CONSUMING_UTILITIES.get(min.owner);
+        if (verbs == null || !verbs.contains(min.name)) return;
+        Frame<ProvValue> f = provFrames[s.mn.instructions.indexOf(min)];
+        if (f == null) return;
+        Type[] at = Type.getArgumentTypes(min.desc);
+        for (int i = 0; i < at.length; i++) {
+            if (at[i].getSort() != Type.OBJECT) continue;
+            String tn = at[i].getInternalName();
+            if (!tn.equals("java/io/InputStream") && !tn.equals("java/io/Reader")) continue;
+            ProvValue a = callArg(f, min, i);
+            // newType == null ⇒ NOT a fresh in-scope `new` ⇒ a param/field/return ⇒ opened outside this method.
+            if (a != null && a.newType == null) {
+                s.dir.add(Effect.UNKNOWN);
+                ctx.unknownWhy.computeIfAbsent(s.id, k -> new TreeSet<>())
+                        .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
+            }
+            return;                                     // the first (input-side) stream argument decides it
         }
     }
 

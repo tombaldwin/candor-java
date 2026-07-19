@@ -561,6 +561,18 @@ final class Rules {
             "org/apache/commons/io/function/IOIterator", Set.of("forEachRemaining"),
             "org/apache/commons/io/function/IOStream", Set.of("forEach", "forEachOrdered"));
 
+    /** Stream-CONSUMING library utilities: a static helper that READS the InputStream/Reader passed to it.
+     *  candor's source/sink stance classifies these pure-relative (the effect is charged at the stream's
+     *  CREATION). That is sound when the stream was opened IN THE CALLER'S method (a fresh `new` local, whose
+     *  open already carries the effect); it UNDER-reports when the stream is a param/field opened elsewhere
+     *  (VALUE-PROVENANCE-DESIGN.md — the provenance handler discloses Unknown only in that external case). The
+     *  InputStream/Reader argument is the one whose effect is undetermined. */
+    static final Map<String, Set<String>> STREAM_CONSUMING_UTILITIES = Map.of(
+            "org/apache/commons/io/IOUtils", Set.of("read", "readFully", "copy", "copyLarge", "toByteArray",
+                    "toCharArray", "toString", "readLines", "skip", "skipFully", "consume", "contentEquals"),
+            "com/google/common/io/ByteStreams", Set.of("copy", "toByteArray", "read", "readFully", "exhaust", "skipFully"),
+            "com/google/common/io/CharStreams", Set.of("copy", "toString", "readLines", "exhaust"));
+
     /** Functional-interface descriptors that, as the FIRST parameter, name a deferred TASK whose body is
      *  invoked by the runtime (executor/CF stage/timer) with no in-project call site. */
     static final Set<String> TASK_ARG_PREFIXES = Set.of(

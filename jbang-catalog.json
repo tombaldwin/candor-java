@@ -2,7 +2,7 @@
   "aliases": {
     "candor": {
       "script-ref": "https://github.com/tombaldwin/candor-java/releases/download/v0.22.0/candor-java-0.22.0-all.jar",
-      "description": "candor-java — per-method side-effect audit for JVM bytecode (candor-spec 0.22). Usage: jbang candor@tombaldwin/candor-java <classes-dir-or-jar> [--json out.json] [--policy arch.policy] [--gate-json gate.json]"
+      "description": "candor-java — per-method side-effect audit for JVM bytecode (candor-spec 0.23). Usage: jbang candor@tombaldwin/candor-java <classes-dir-or-jar> [--json out.json] [--policy arch.policy] [--gate-json gate.json]"
     }
   }
 }

@@ -133,6 +133,88 @@ class VerifyOracleTest {
         assertEquals("A.read", Cha.methodId("A", "read", "()V", java.util.Set.of("()V")));
     }
 
+    /** The path-based COVERAGE-CREDITING fix: the transitive attribution must stop at an uncovered-package
+     *  boundary. An effect that reaches its leaf THROUGH a package candor cannot see (disclosed via `invisible`)
+     *  must NOT blame the project caller sitting OUTSIDE that boundary (crediting — else a false positive for
+     *  any library using an unmodelled dep, e.g. commons-configuration2 getResolver → xml.resolver ctor), yet a
+     *  genuine miss reached through ALL-COVERED frames MUST still be caught (no masking). Both in one run. */
+    @Test
+    void attributionStopsAtUncoveredBoundaryButNotThroughCoveredFrames() throws Exception {
+        Path jar = shadowJar();
+        Assumptions.assumeTrue(jar != null, "no built shadowJar (run ./gradlew shadowJar) — skip end-to-end");
+        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
+        Assumptions.assumeTrue(jc != null, "no system Java compiler — skip");
+        String javaBin = System.getProperty("java.home") + "/bin/java";
+        Path target = tmp.resolve("data.txt"); Files.writeString(target, "hi");
+        // (1) the UNCOVERED library: a bridge that synchronously calls back a supplied Runnable. Compiled to its
+        // own dir and NEVER scanned → it lands in the report's coverage.uncovered set.
+        Path libSrc = tmp.resolve("libsrc/com/example/ext"); Files.createDirectories(libSrc);
+        Path task = libSrc.resolve("Task.java");
+        Files.writeString(task, "package com.example.ext;\npublic interface Task { void go() throws Exception; }");
+        Path sink = libSrc.resolve("Sink.java");
+        // Sink's ctor synchronously calls back t.go() — but candor never sees that (Sink is uncovered), exactly
+        // like xml.resolver's CatalogResolver(manager) calling back into the manager. So candor is blind here.
+        Files.writeString(sink, "package com.example.ext;\npublic class Sink { public Sink(Task t){ try { t.go(); } catch (Exception e){} } }");
+        Path libOut = tmp.resolve("lib"); Files.createDirectories(libOut);
+        assertEquals(0, jc.run(null, null, null, "-d", libOut.toString(), task.toString(), sink.toString()), "lib compiles");
+        // (2) the APP: outer() reaches Fs THROUGH the uncovered Sink ctor (candor can't see the callback, so it
+        // reports outer PURE + invisible[com.example.ext]); midCovered() reaches the SAME Fs directly.
+        Path appSrc = tmp.resolve("appsrc/app"); Files.createDirectories(appSrc);
+        Path mainSrc = appSrc.resolve("Main.java");
+        Files.writeString(mainSrc, String.join("\n",
+            "package app;",
+            "import java.nio.file.*;",
+            "import com.example.ext.*;",
+            "public class Main {",
+            "  static class AppTask implements Task { public void go() throws Exception { doFs(); } }",
+            "  static void doFs() throws Exception { Files.readAllBytes(Path.of(" + gstr(target.toString()) + ")); }",
+            "  static void outer(){ new Sink(new AppTask()); }",               // Fs THROUGH the uncovered Sink ctor
+            "  static void midCovered() throws Exception { doFs(); }",         // Fs through covered frames only
+            "  public static void main(String[] a) throws Exception { outer(); midCovered(); }",
+            "}"));
+        Path appOut = tmp.resolve("app"); Files.createDirectories(appOut);
+        assertEquals(0, jc.run(null, null, null, "-d", appOut.toString(), "-cp", libOut.toString(), mainSrc.toString()), "app compiles");
+        // (3) scan the APP only → report (+ callgraph sidecar for complete attribution).
+        Path report = tmp.resolve("r.json");
+        Process scan = new ProcessBuilder(javaBin, "-jar", jar.toString(), appOut.toString(), "--json", report.toString())
+                .redirectErrorStream(true).start();
+        drain(scan.getInputStream());
+        assertEquals(0, scan.waitFor(), "scan must succeed");
+        var doc = JsonParser.parseString(Files.readString(report)).getAsJsonObject();
+        // outer must be PURE in the honest report (candor could not see through the uncovered bridge).
+        boolean outerPure = true;
+        for (var el : doc.getAsJsonArray("functions")) {
+            var f = el.getAsJsonObject();
+            if (f.get("fn").getAsString().equals("app.Main.outer"))
+                outerPure = f.getAsJsonArray("inferred").isEmpty();
+        }
+        assertTrue(outerPure, "precondition: candor reports outer pure (blind to the callback through the uncovered bridge)");
+        // (4) SEED midCovered pure → a genuine miss the oracle MUST still catch (its Fs is all-covered).
+        for (var el : doc.getAsJsonArray("functions")) {
+            var f = el.getAsJsonObject();
+            if (f.get("fn").getAsString().equals("app.Main.midCovered")) f.add("inferred", new com.google.gson.JsonArray());
+        }
+        Files.writeString(report, doc.toString());
+        // (5) run verify with the uncovered lib on the RUN classpath.
+        String sep = System.getProperty("path.separator");
+        List<String> cmd = new ArrayList<>(List.of(javaBin, "-jar", jar.toString(),
+                "verify", appOut.toString(), "--report", report.toString(),
+                "--run", "\"" + javaBin + "\" -cp \"" + appOut + sep + libOut + "\" app.Main", "--json"));
+        ProcessBuilder pb = new ProcessBuilder(cmd);
+        pb.environment().remove("JAVA_TOOL_OPTIONS");
+        Process p = pb.start();
+        String out = drain(p.getInputStream());
+        drain(p.getErrorStream());
+        p.waitFor();
+        var vArr = JsonParser.parseString(out).getAsJsonObject().getAsJsonArray("violations");
+        java.util.Set<String> flagged = new java.util.HashSet<>();
+        for (var v : vArr) flagged.add(v.getAsJsonObject().get("fn").getAsString());
+        assertTrue(flagged.contains("app.Main.midCovered"),
+                "NO MASKING: a real miss reached through covered frames must still be caught; flagged=" + flagged + " out=" + out);
+        assertFalse(flagged.contains("app.Main.outer"),
+                "CREDITING: an effect through an uncovered package must not blame the outer caller; flagged=" + flagged + " out=" + out);
+    }
+
     // ── (2) END-TO-END through the built shadowJar ────────────────────────────────────────────────────
 
     private record Run(int exit, String stdout, String stderr) {}

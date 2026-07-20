@@ -8,6 +8,15 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **Performance — the analyze pass is no longer super-linear in class count.** `Cha.chaTargets`
+  (class-hierarchy dispatch resolution) is a pure function of the fixed post-load hierarchy, but it was
+  recomputed from scratch at every call site that dispatches a given method on a given declared type —
+  so its cost (CHA fan-out × superchain walk) compounded as both call sites and hierarchy depth grew.
+  Memoizing it by `(owner,name,desc)` flattens the curve from ~2.7 ms/class to ~1.0 ms/class: a
+  4585-class corpus scans in 4.4s vs 12.5s (**2.85× faster**), with report output verified byte-for-byte
+  identical (it is a cache, not a semantic change). Interactive edit-time scans were already fast; this
+  is the batch/large-repo lane. Only the `java -jar`/native analyze pass — no gate or report change.
+
 - **Llm model-SDK precision — a builder/constructor no longer fabricates `Llm`+`Net`.** The ⟨0.13⟩
   model-SDK surface fired on *any* call into a curated provider package, which over-classified pure
   construction: a `new com.theokanning.openai.service.OpenAiService(...)` client build and Spring AI's

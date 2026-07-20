@@ -60,6 +60,11 @@ final class AnalysisContext {
     /** Reverse-subtype index for CHA: owner -> loaded classes that are owner-or-a-subtype. Built once
      *  after load so chaTargets() consults O(subtypes-of-owner) candidates, not ALL classes per call. */
     final Map<String, List<String>> subtypeIndex = new HashMap<>();
+    /** Memoized chaTargets(owner,name,desc) results. chaTargets is a PURE function of the (post-load,
+     *  fixed) class hierarchy — the same call-key recurs across the many call sites that invoke a method
+     *  on a given declared type — so caching collapses the analyze pass's dominant super-linear cost
+     *  (CHA fan-out × super-walk, re-done per call site). Immutable values → safe to share. */
+    final Map<String, List<String>> chaTargetsCache = new HashMap<>();
     /** Overload index: `dottedClass.methodName` -> the distinct JVM descriptors declared under that name,
      *  so an overloaded node gets a param-type suffix and a pure overload never unions an effectful one. */
     final Map<String, Set<String>> overloadDescs = new HashMap<>();

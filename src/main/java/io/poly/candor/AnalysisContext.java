@@ -2,6 +2,7 @@ package io.poly.candor;
 
 import java.util.*;
 import org.objectweb.asm.tree.*;
+import org.objectweb.asm.tree.analysis.Frame;
 import io.poly.candor.model.*;
 
 /** The engine's per-scan analysis state — the mutable accumulators a scan fills (effect/edge/literal
@@ -28,6 +29,10 @@ final class AnalysisContext {
     // Unknown is suppressed. Computed once in a pre-pass; empty unless a field is provably all-concrete
     // (conservative: any doubt leaves it out, keeping the sound Phase-1 disclosure).
     final Set<String> suppressibleStreamFields = new HashSet<>();
+    // Provenance frames the Phase-2 pre-pass computed, handed to the main analyze pass so a stream-touching
+    // method's ASM dataflow is not re-run (consume-once: provFrames removes on read). Bounded to the few
+    // stream-relevant methods the pre-pass visits; freed as the main pass consumes each.
+    final Map<String, Frame<Interp.ProvValue>[]> provFramesCache = new HashMap<>();
     // ⟨0.19⟩ user-defined reason-class aliases from `.candor/config` (`unknown-alias <name> = <class,…>`),
     // consulted by the §6.2 deny parser for an `Unknown[<name>]` filter. Populated before parsePolicy.
     final Map<String, Set<ReasonClass>> unknownAliases = new HashMap<>();

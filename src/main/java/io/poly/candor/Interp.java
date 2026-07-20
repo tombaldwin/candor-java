@@ -294,9 +294,14 @@ final class Interp {
             // to null (opaque), so a closed sink fed two different lambdas via a branch stays unresolved
             // unless BOTH call sites are separately collected (they are — collection is per call site).
             String mlt = Objects.equals(a.lambdaTarget, b.lambdaTarget) ? a.lambdaTarget : null;
+            // fieldOrigin likewise survives a join ONLY when both paths read the SAME field — a field-vs-param
+            // (or field-vs-other-field) merge collapses to null, so the value-provenance suppression never
+            // fires on a joined value that can be an external (non-field) operand (would be a silent under-report).
+            String mfo = Objects.equals(a.fieldOrigin, b.fieldOrigin) ? a.fieldOrigin : null;
             if (mb.equals(a.base) && Objects.equals(mt, a.newType) && mi == a.fromIndy
-                    && Objects.equals(mdt, a.declType) && Objects.equals(mlt, a.lambdaTarget)) return a;
-            return new ProvValue(mb, mt, mi, mdt, mlt);
+                    && Objects.equals(mdt, a.declType) && Objects.equals(mlt, a.lambdaTarget)
+                    && Objects.equals(mfo, a.fieldOrigin)) return a;
+            return new ProvValue(mb, mt, mi, mdt, mlt, mfo);
         }
     }
 

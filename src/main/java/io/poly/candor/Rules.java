@@ -118,10 +118,7 @@ final class Rules {
             "dev.langchain4j.model.",                            // langchain4j chat/embedding model invoke surfaces
             "com.openai.",                                       // openai-java (official)
             "com.theokanning.openai.",                          // openai-java (theokanning community client)
-            // NOTE: Spring AI (org.springframework.ai.) is deliberately NOT a blanket prefix — its package
-            // tree mixes a rich fluent BUILDER (ChatClient.prompt()/user()/system()/…, all pure) with the
-            // dispatch, so a package-prefix match FABRICATES Llm+Net on the builder. Its dispatch is modeled
-            // precisely by the explicit Net rules in Classifier + isSpringAiModelDispatch below.
+            "org.springframework.ai.",                           // Spring AI (ChatClient/ChatModel/EmbeddingModel/…)
             "com.google.cloud.vertexai.",                        // Google Vertex AI
             "com.google.genai.");                                // Google GenAI SDK
 
@@ -133,11 +130,28 @@ final class Rules {
         return false;
     }
 
-    /** Spring AI's genuine model-DISPATCH surface (single source of truth for both Classifier's Net rules
-     *  and the ⟨0.13⟩ Llm refinement at the call site): the ChatClient CallResponseSpec terminal
-     *  (content/chatResponse/entity/responseEntity) and any *ChatModel.call(Prompt). Spring AI is NOT in
-     *  {@link #MODEL_SDK_PACKAGES} because its fluent builders (prompt/user/system/…) are pure — so a
-     *  package-prefix blanket would fabricate; the Net dispatch here is what refines to Llm instead. */
+    /** Spring AI ChatClient FLUENT-BUILDER methods — pure chain steps that assemble a request but touch no
+     *  wire (`cc.prompt().user(..).system(..)…`). Excluded from the model-SDK blanket so they don't fabricate
+     *  Llm+Net. This is a DENYLIST by design: the blanket stays the default (sound over-approximation), and we
+     *  only carve out methods we are CERTAIN are pure — so a builder we forgot to list merely over-reports
+     *  (safe), never under-reports. Terminals that DO dispatch (call/stream/content/chatResponse/entity/
+     *  responseEntity) are deliberately absent, so they keep Llm+Net. */
+    static final Set<String> SPRING_AI_CHATCLIENT_BUILDERS = Set.of(
+            "prompt", "user", "system", "messages", "text", "media", "param", "params",
+            "options", "advisors", "functions", "tools", "toolCallbacks", "toolContext", "toolNames",
+            "defaultSystem", "defaultUser", "defaultAdvisors", "defaultFunctions", "defaultOptions",
+            "defaultToolCallbacks", "defaultToolContext", "templateRenderer", "mutate", "build", "clone");
+
+    /** A pure Spring AI ChatClient builder step (see {@link #SPRING_AI_CHATCLIENT_BUILDERS}). SCOPED to the
+     *  ChatClient family so the same verb on a genuinely-dispatching type elsewhere is unaffected. */
+    static boolean isSpringAiPureBuilder(String owner, String method) {
+        return owner.startsWith("org.springframework.ai.chat.client.ChatClient")
+                && SPRING_AI_CHATCLIENT_BUILDERS.contains(method);
+    }
+
+    /** Spring AI's genuine model-DISPATCH surface — used by Classifier to pin these leaves to `Net` (they
+     *  also get `Llm` from the model-SDK blanket, of which Spring AI is a member). The ChatClient
+     *  CallResponseSpec terminal (content/chatResponse/entity/responseEntity) and any *ChatModel.call. */
     static boolean isSpringAiModelDispatch(String owner, String method) {
         if (owner.equals("org.springframework.ai.chat.client.ChatClient$CallResponseSpec")
                 && (method.equals("content") || method.equals("chatResponse")

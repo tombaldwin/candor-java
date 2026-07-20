@@ -38,9 +38,13 @@ grep -vE '^\s*#|^\s*$' "$HERE/manifest.tsv" | while IFS=$'\t' read -r name url r
   sha=$(git -C "$d" rev-parse HEAD); echo "  pinned SHA: $sha"
   printf '%s\t%s\t%s\n' "$name" "$ref" "$sha" >>"$SHALOCK"
 
+  # Pristine tree before each build: our own report/log artifacts (and .candor/) otherwise trip a repo's
+  # build-hygiene check (e.g. Apache RAT license-check) on re-runs. Clean removes untracked incl. stale target.
+  git -C "$d" clean -fdxq 2>/dev/null || true
   echo "  building…"
-  if ! ( cd "$d" && eval "$build" ) >"$d/build.log" 2>&1; then
-    echo "  build failed (see $d/build.log) — disposition: build-failed"
+  if ! ( cd "$d" && eval "$build" ) >"/tmp/$name.build.log" 2>&1; then
+    cp "/tmp/$name.build.log" "$HERE/results/$name.build.log" 2>/dev/null || true
+    echo "  build failed (see results/$name.build.log) — disposition: build-failed"
     printf '%s\t%s\t-\t-\t-\t-\t-\t-\t-\tbuild-failed\n' "$name" "$sha" >>"$SUM"; continue
   fi
   cls="$d/$classes"
@@ -49,7 +53,7 @@ grep -vE '^\s*#|^\s*$' "$HERE/manifest.tsv" | while IFS=$'\t' read -r name url r
   echo "  static scan…"
   ( cd "$d" && java -jar "$JAR" "$cls" --json "$d/report.json" ) >/dev/null 2>&1
   echo "  dynamic verify (real suite under the transitive -javaagent)…"
-  ( cd "$d" && java -jar "$JAR" verify "$cls" --run "$test" --report "$d/report.json" --json --allow-run-failure ) \
+  ( cd "$d" && java -jar "$JAR" verify "$cls" --run "$test" --report "$d/report.json" --scope all --json --allow-run-failure ) \
       > "$HERE/results/$name.verify.json" 2>"$d/verify.err" || true
   vj="$HERE/results/$name.verify.json"
 

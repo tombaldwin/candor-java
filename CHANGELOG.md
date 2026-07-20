@@ -6,6 +6,35 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## [0.23.0] — 2026-07-20
+
+Spec floor → **0.23** (the cross-package interface-dispatch rung; report/verdict schema unchanged). This
+release folds in a large classifier-soundness wave driven by the *reconcile-against-reality* loop — running
+the transitive `candor verify` oracle against Apache commons-`dbcp2`/`compress`/`vfs2` to surface real silent
+under-reports on code we did not write, then fixing the classifier — plus a value-provenance precision layer
+and an oracle refinement. All changes are soundness-increasing (§4 trust contract) and regression-gated.
+
+- **⚠ super-call through a generic intermediate superclass** now propagates the inherited method's effect
+  (was silently dropped — dbcp2 pool-lifecycle `Clock`).
+- **⚠ opaque callback → synchronous invoking HOF** (`forEach`/`forEachRemaining`/`ifPresent`, matched
+  owner-agnostically so `List.forEach` is covered) discloses `Unknown` — the four-way sync-callback rung
+  (conformance `sync_callback_opaque`).
+- **⚠ filter/buffered stream `read`/`write`/`skip`/`flush`/`close`** that delegates to a wrapped sink of
+  unknown type discloses `Unknown` (compress/vfs2 Monitor/Filter streams).
+- **⚠ `AccessController.doPrivileged(action)`** now runs its `PrivilegedAction`/`PrivilegedExceptionAction`'s
+  `run()` — the wrapped effect no longer orphaned (vfs2 `PrivilegedFileReplicator`).
+- **⚠ value provenance**: a stream-consuming utility (`IOUtils.read`/`copy`/…, Guava streams) that reads a
+  stream the method did not itself open discloses `Unknown`; whole-program, a project stream field proven
+  bound only to in-scope concrete opens stays precise (construction-carried suppression). Closes the
+  `readFully` class as honest disclosure without abandoning the source/sink stance.
+- **`candor verify` oracle — coverage crediting**: transitive attribution stops once the stack walk crosses
+  an *unanalyzed* frame, so it no longer false-positives on a library's unmodelled-dependency effects (sound,
+  zero masking — keys on analyzed-set membership, not string prefixes; a credited frame is disclosed via the
+  coverage envelope, not a silent green).
+- **cross-package interface dispatch** (interfaceUnion, spec 0.23): a chained interface method resolves to the
+  impl's effect across packages.
+- Four soundness bugs in the new analysis code, found by adversarial code review, fixed + regression-pinned.
+
 ## [0.22.0] — 2026-07-18
 
 Spec floor → **0.22** (the `verify` oracle rung; report/verdict schema unchanged from 0.21). candor-java folds in

@@ -20,6 +20,15 @@ after upgrading; review policies and regenerate baselines with the new build.
   once instead of at every BFS node; `HashSet` for the visited set) takes the same corpus to 3.3s —
   **3.77× over the original** end-to-end — again byte-for-byte identical.
 
+- **Performance — the propagation fixpoint is no longer O(V²) on deep call chains.** `computeFixpoint`
+  re-swept every caller on every pass, so its pass count equalled the longest back-to-front call chain —
+  O(V²) on deep whole-program graphs (a controller→service→repo→… layering, or generated code). Replaced
+  the sweep with a worklist over a callee→callers reverse index: a function is reprocessed only when a
+  callee actually gained an effect. Same monotone least fixpoint → **output byte-for-byte identical**
+  (verified across the library corpora and a 4000-deep synthetic chain; `FixpointTest` + full suite green).
+  ~1.8× on a 12000-deep chain, growing with depth; shallow corpora unaffected. Mirrors the equivalent
+  worklist fix in the Rust engine.
+
 - **Llm model-SDK precision — a builder/constructor no longer fabricates `Llm`+`Net`.** The ⟨0.13⟩
   model-SDK surface fired on *any* call into a curated provider package, which over-classified pure
   construction: a `new com.theokanning.openai.service.OpenAiService(...)` client build and Spring AI's

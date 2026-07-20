@@ -1148,8 +1148,23 @@ public class Candor {
         return taintFrames;
     }
 
-    /** The receiver-provenance frames for one method (null on bodiless/failed — fail-soft). */
+    /** The receiver-provenance frames for one method (null on bodiless/failed — fail-soft). Reuses the Phase-2
+     *  pre-pass's computation for a stream-touching method (consume-once — the main pass reads each once). */
     static Frame<ProvValue>[] provFrames(ClassNode cn, MethodNode mn) {
+        Frame<ProvValue>[] pre = ctx().provFramesCache.remove(cn.name + '#' + mn.name + mn.desc);
+        return pre != null ? pre : provFramesRaw(cn, mn);
+    }
+
+    /** Compute the receiver-provenance frames from scratch (no cache) — the Phase-2 pre-pass memoises via
+     *  {@link #cachedProvFrames} so it and the main pass share one computation per stream-touching method. */
+    static Frame<ProvValue>[] cachedProvFrames(ClassNode cn, MethodNode mn) {
+        String ck = cn.name + '#' + mn.name + mn.desc;
+        Frame<ProvValue>[] c = ctx().provFramesCache.get(ck);
+        if (c == null) { c = provFramesRaw(cn, mn); if (c != null) ctx().provFramesCache.put(ck, c); }
+        return c; // null (bodiless/failed) is cheap to recompute, so it is not cached
+    }
+
+    static Frame<ProvValue>[] provFramesRaw(ClassNode cn, MethodNode mn) {
         // Receiver-provenance pass (SOUNDNESS, always-on): tells us at each invokevirtual below whether
         // the receiver is PROVABLY a single `new T`. If so, the dispatch narrows to the one method T
         // resolves — no CHA sibling fan-out (the monomorphic-fabrication fix). Anything else (param,
@@ -1365,21 +1380,23 @@ public class Candor {
         Frame<ProvValue> f = provFrames[s.mn.instructions.indexOf(min)];
         if (f == null) return;
         Type[] at = Type.getArgumentTypes(min.desc);
+        // Check EVERY InputStream/Reader argument — a dual-input verb (IOUtils.contentEquals(in,in) /
+        // (reader,reader)) reads BOTH, so a fresh first arg must not mask an external second one.
         for (int i = 0; i < at.length; i++) {
             if (at[i].getSort() != Type.OBJECT) continue;
             String tn = at[i].getInternalName();
             if (!tn.equals("java/io/InputStream") && !tn.equals("java/io/Reader")) continue;
             ProvValue a = callArg(f, min, i);
-            // newType == null ⇒ NOT a fresh in-scope `new` ⇒ a param/field/return ⇒ opened outside this method.
-            if (a != null && a.newType == null) {
-                // Phase 2: a FIELD proven (whole-program) bound only to in-scope concrete opens is pure-relative
-                // to a VISIBLE open — the effect is charged at that open, so suppress the disclosure here.
-                if (a.fieldOrigin != null && ctx.suppressibleStreamFields.contains(a.fieldOrigin)) return;
-                s.dir.add(Effect.UNKNOWN);
-                ctx.unknownWhy.computeIfAbsent(s.id, k -> new TreeSet<>())
-                        .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
-            }
-            return;                                     // the first (input-side) stream argument decides it
+            // newType != null ⇒ a fresh in-scope `new` ⇒ opened in THIS method ⇒ pure-relative — skip.
+            if (a == null || a.newType != null) continue;
+            // Phase 2: a FIELD proven (whole-program) bound only to in-scope concrete opens is pure-relative to
+            // a VISIBLE open (the effect is charged at that open) — skip it and keep checking the other args.
+            if (a.fieldOrigin != null && ctx.suppressibleStreamFields.contains(a.fieldOrigin)) continue;
+            // An external/unknown-origin stream argument: disclose Unknown, once, and stop.
+            s.dir.add(Effect.UNKNOWN);
+            ctx.unknownWhy.computeIfAbsent(s.id, k -> new TreeSet<>())
+                    .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
+            return;
         }
     }
 
@@ -1403,30 +1420,44 @@ public class Candor {
         Set<String> rejected = new HashSet<>();                  // owner#name -> proven NOT suppressible
         Set<String> candidates = new HashSet<>();                // owner#name stream fields with >=1 PUTFIELD
 
-        // Step 1 — classify each PUTFIELD to an instance stream field.
+        // The GLOBAL set of instance stream fields ("owner#name") declared anywhere in the project. A field is
+        // keyed by its DECLARING class, and a PUTFIELD to it can appear in ANY class (a package-private/
+        // protected/public field rebound cross-class, or a nestmate write to a private field) — so Step 1 must
+        // scan every method of every class against this global set, not just each class's own fields, or an
+        // external rebinding elsewhere would go unseen and wrongly leave the field suppressible.
+        Set<String> streamFieldKeys = new HashSet<>();
         for (ClassNode cn : classes) {
             if (cn.fields == null) continue;
-            Set<String> streamFields = new HashSet<>();
             for (FieldNode fn : cn.fields)
-                if ((fn.access & Opcodes.ACC_STATIC) == 0 && isStreamFieldDesc(fn.desc)) streamFields.add(fn.name);
-            if (streamFields.isEmpty()) continue;
+                if ((fn.access & Opcodes.ACC_STATIC) == 0 && isStreamFieldDesc(fn.desc))
+                    streamFieldKeys.add(cn.name + "#" + fn.name);
+        }
+        if (streamFieldKeys.isEmpty()) return;
+
+        // Step 1 — classify EVERY PUTFIELD (in any class) that stores an instance stream field.
+        for (ClassNode cn : classes) {
             for (MethodNode mn : cn.methods) {
                 Frame<ProvValue>[] pf = null; // computed lazily, only for methods that store one of these fields
                 AbstractInsnNode[] insns = mn.instructions.toArray();
                 for (int i = 0; i < insns.length; i++) {
                     if (!(insns[i] instanceof FieldInsnNode fi) || fi.getOpcode() != Opcodes.PUTFIELD) continue;
-                    if (!fi.owner.equals(cn.name) || !streamFields.contains(fi.name)) continue;
                     String key = fi.owner + "#" + fi.name;
+                    if (!streamFieldKeys.contains(key)) continue;
                     candidates.add(key);
-                    if (pf == null) pf = provFrames(cn, mn);
+                    if (pf == null) pf = cachedProvFrames(cn, mn);
                     ProvValue v = (pf != null && pf[i] != null && pf[i].getStackSize() > 0)
                             ? pf[i].getStack(pf[i].getStackSize() - 1) : null;
                     if (v == null) { rejected.add(key); continue; }
                     if (v.newType != null && Rules.SELF_SOURCING_STREAMS.contains(v.newType)) { concreteSelf.add(key); continue; }
                     if (v.fieldOrigin != null && v.fieldOrigin.equals(key)) continue; // self-rewrap (this.F = f(this.F)) — no new binding
-                    int idx = mn.name.equals("<init>") ? paramIndexOf(mn, v, pf[0]) : -1;
+                    // A ctor-PARAM binding is only trustworthy in the field's DECLARING class's own <init> (that
+                    // param maps to `new C(args)` construction sites, resolved in Step 2). A param/local bound in
+                    // any OTHER method — a cross-class write, a setter, a non-declaring-class <init> — is an
+                    // external rebinding we cannot prove concrete → reject.
+                    boolean inDeclaringCtor = mn.name.equals("<init>") && fi.owner.equals(cn.name);
+                    int idx = inDeclaringCtor ? paramIndexOf(mn, v, pf[0]) : -1;
                     if (idx >= 0) { fieldParams.computeIfAbsent(key, k -> new HashSet<>()).add(idx); continue; }
-                    rejected.add(key); // foreign field, method return, filter-wrap, non-ctor param — cannot prove concrete
+                    rejected.add(key); // foreign field, method return, filter-wrap, cross-class/non-ctor param — cannot prove concrete
                 }
             }
         }
@@ -1449,7 +1480,7 @@ public class Candor {
                         boolean relevant = false;
                         for (String key : paramFields) if (key.startsWith(mi.owner + "#")) { relevant = true; break; }
                         if (!relevant) continue;
-                        if (pf == null) pf = provFrames(cn, mn);
+                        if (pf == null) pf = cachedProvFrames(cn, mn);
                         for (String key : paramFields) {
                             if (!key.startsWith(mi.owner + "#")) continue;
                             paramHasSite.add(key);

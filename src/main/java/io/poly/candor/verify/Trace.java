@@ -110,18 +110,21 @@ public final class Trace {
     public static void emit(String effect) {
         if (effect == null) return;
         try {
-            // Walk from the leaf outward. Attribute to each ANALYZED project frame (registered at transform
-            // time; JDK/deps/the agent's own frames are absent from QUALS). But once the walk CROSSES a frame
-            // in an uncovered package, stop: every project frame beyond it reached this effect through code
-            // candor could not see (a broken static chain it disclosed via `invisible`), so blaming it would
-            // be a false positive. With no uncovered set this is identical to the plain attribution.
+            // Walk from the leaf outward. An ANALYZED project frame (registered at transform time — in QUALS) is
+            // ALWAYS attributed and is NEVER a boundary: candor CAN see it, so it must be blamed if it reached
+            // the effect (this is checked FIRST so a project package that merely sits UNDER an uncovered ANCESTOR
+            // prefix — e.g. project `com.acme.vendor.app` while `com.acme.vendor` is uncovered — is not falsely
+            // treated as uncovered and dropped). Only a NON-project frame (qual == null) in an uncovered package
+            // is the boundary: every project caller BEYOND it reached the effect through code candor could not
+            // see (a broken static chain it disclosed via `invisible`), so blaming those would be a false
+            // positive. With no uncovered set this is identical to the plain attribution.
             boolean[] crossed = {false};
             WALKER.forEach(f -> {
                 if (crossed[0]) return;
                 String cn = f.getClassName();
-                if (inUncoveredPackage(cn)) { crossed[0] = true; return; }
                 String qual = QUALS.get(cn + '#' + f.getMethodName() + '#' + f.getDescriptor());
-                if (qual != null) recordOne(qual, effect);
+                if (qual != null) { recordOne(qual, effect); return; } // a covered project frame — attribute, never a boundary
+                if (inUncoveredPackage(cn)) crossed[0] = true;          // a non-project frame in an uncovered package = the boundary
             });
         } catch (Throwable ignored) {
             // A capture failure must never perturb the program under test.

@@ -188,6 +188,62 @@ class StructuralDispatchTest {
         }
     }
 
+    /** Code-review soundness fixes for value-provenance Phase 1/2. Three cardinal-sin veins the review found:
+     *  (1) a dual-input utility (IOUtils.contentEquals) reads BOTH streams — an external SECOND arg must be
+     *  disclosed even when the first is a fresh open; (2) a CROSS-CLASS rebinding of an accessible stream field
+     *  (B sets a.in to an external stream) must reject A.in's suppression; (3) a control-flow join of a
+     *  suppressible field-read and an external param must NOT keep the field origin (merge drops fieldOrigin). */
+    @Test
+    void valueProvenanceReviewFixesAreSound() throws Exception {
+        Path app = TestCompiler.compileApp(
+            Map.of("org/apache/commons/io/IOUtils.java", String.join("\n",
+                "package org.apache.commons.io;",
+                "import java.io.InputStream;",
+                "public class IOUtils {",
+                "  public static int read(InputStream in, byte[] b, int off, int len) { return 0; }",
+                "  public static boolean contentEquals(InputStream a, InputStream b) { return false; }",
+                "}")),
+            Map.of(
+            "A.java", String.join("\n",
+                "import java.io.*;",
+                "import org.apache.commons.io.IOUtils;",
+                "public class A {",
+                "  InputStream in;",                                              // package-private → rebindable by B
+                "  A(String p) throws Exception { this.in = new FileInputStream(p); }", // self-open concrete
+                "  void rd(byte[] b) throws IOException { IOUtils.read(this.in, b, 0, b.length); }",
+                "}"),
+            "B.java",
+                "import java.io.InputStream;\npublic class B { void rebind(A a, InputStream ext){ a.in = ext; } }",
+            "Dual.java", String.join("\n",
+                "import java.io.*;",
+                "import org.apache.commons.io.IOUtils;",
+                "public class Dual {",
+                "  void cmp(InputStream ext) throws IOException { IOUtils.contentEquals(new ByteArrayInputStream(new byte[0]), ext); }",
+                "}"),
+            "C.java", String.join("\n",
+                "import java.io.*;",
+                "import org.apache.commons.io.IOUtils;",
+                "public class C {",
+                "  InputStream in;",
+                "  C(String p) throws Exception { this.in = new FileInputStream(p); }", // self-open → C.in suppressible
+                "  void join(boolean c, InputStream p, byte[] b) throws IOException {",
+                "    InputStream s = c ? this.in : p;",                            // merge of field + external param
+                "    IOUtils.read(s, b, 0, b.length);",
+                "  }",
+                "}")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(app);
+            assertTrue(eff(r, "A.rd").toNames().contains("Unknown"),
+                    "cross-class rebinding (B sets a.in external) must reject A.in suppression — A.rd keeps Unknown, got " + r.get("A.rd"));
+            assertTrue(eff(r, "Dual.cmp").toNames().contains("Unknown"),
+                    "a dual-input utility's external SECOND stream arg must be disclosed, got " + r.get("Dual.cmp"));
+            assertTrue(eff(r, "C.join").toNames().contains("Unknown"),
+                    "a merge of a suppressible field and an external param must NOT suppress — keep Unknown, got " + r.get("C.join"));
+        } finally {
+            TestCompiler.rm(app.getParent());
+        }
+    }
+
     /** #2a-bis — the READ/WRITE half of the wrapped-sink delegate: a BufferedOutputStream/FilterInputStream
      *  subclass whose write/read calls `super.write`/`super.read` delegates the actual syscall to a wrapped
      *  stream of unknown concrete type → Unknown (never silent-pure). Found by the runtime oracle on

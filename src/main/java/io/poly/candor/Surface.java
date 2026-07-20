@@ -4,6 +4,7 @@ import java.io.PrintStream;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -166,9 +167,9 @@ final class Surface {
      *  Only traverses through callees whose INFERRED set carries the effect, so the frontier stays
      *  on-effect (matches {@code candor path}'s walk). */
     static Object[] nearestSource(String func, String effect,
-            Map<String, EffectSet> direct, Map<String, EffectSet> inferred, Map<String, Set<String>> calls) {
+            Map<String, EffectSet> direct, Map<String, EffectSet> inferred, Map<String, List<String>> sortedCalls) {
         Effect e = Effect.fromSpecName(effect);
-        Set<String> seen = new TreeSet<>();
+        Set<String> seen = new HashSet<>();   // dedup only; iteration order never used → HashSet, not TreeSet
         Deque<Object[]> q = new ArrayDeque<>();
         seen.add(func);
         q.addLast(new Object[]{func, 0});
@@ -182,11 +183,11 @@ final class Surface {
             if (d >= 1 && cd != null && cd.contains(e)) {
                 return new Object[]{d, cur};
             }
-            Set<String> cs = calls.get(cur);
+            // Callees are pre-sorted once by the caller (deterministic frontier order, BFS distance
+            // unaffected) — avoids re-sorting the same set at every node of every per-(qual,effect) BFS.
+            List<String> cs = sortedCalls.get(cur);
             if (cs != null) {
-                // Deterministic frontier order: sorted callees (BFS distance is unaffected, but a stable
-                // order keeps the traversal reproducible).
-                for (String c : new TreeSet<>(cs)) {
+                for (String c : cs) {
                     EffectSet ci = inferred.get(c);
                     if (!seen.contains(c) && ci != null && ci.contains(e)) {
                         seen.add(c);
@@ -236,6 +237,15 @@ final class Surface {
         List<String> quals = new ArrayList<>(inferred.keySet());
         quals.sort(null);
 
+        // Pre-sort each function's callees ONCE. nearestSource runs a BFS per (qual,effect); without this it
+        // re-sorts the same callee set at every node of every BFS. Same order → byte-identical output.
+        Map<String, List<String>> sortedCalls = new HashMap<>(calls.size() * 2);
+        for (Map.Entry<String, Set<String>> en : calls.entrySet()) {
+            List<String> v = new ArrayList<>(en.getValue());
+            v.sort(null);
+            sortedCalls.put(en.getKey(), v);
+        }
+
         List<Find> cands = new ArrayList<>();
 
         for (String f : quals) {
@@ -265,7 +275,7 @@ final class Surface {
                 if (sal == 0) {
                     continue;
                 }
-                Object[] ns = nearestSource(f, e, direct, inferred, calls);
+                Object[] ns = nearestSource(f, e, direct, inferred, sortedCalls);
                 if (ns == null) {
                     continue; // no LOCAL direct source — nothing to show
                 }

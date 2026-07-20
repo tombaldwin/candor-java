@@ -16,6 +16,9 @@ after upgrading; review policies and regenerate baselines with the new build.
   4585-class corpus scans in 4.4s vs 12.5s (**2.85× faster**), with report output verified byte-for-byte
   identical (it is a cache, not a semantic change). Interactive edit-time scans were already fast; this
   is the batch/large-repo lane. Only the `java -jar`/native analyze pass — no gate or report change.
+  A follow-up pass on the reporting stage (`Surface.nearestSource` BFS: pre-sort each function's callees
+  once instead of at every BFS node; `HashSet` for the visited set) takes the same corpus to 3.3s —
+  **3.77× over the original** end-to-end — again byte-for-byte identical.
 
 - **Llm model-SDK precision — a builder/constructor no longer fabricates `Llm`+`Net`.** The ⟨0.13⟩
   model-SDK surface fired on *any* call into a curated provider package, which over-classified pure

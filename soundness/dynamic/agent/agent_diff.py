@@ -10,7 +10,12 @@ Each observed (method, effect) is then diffed against candor's STATIC report: an
 method whose static `inferred` lacks that effect AND lacks `Unknown` is a CONFIRMED model-gap
 under-report — it really did it, candor missed it (and did not disclose Unknown).
 
-`Unknown` in the static set is a PASS (candor honestly disclosed it could not resolve the path).
+`Unknown` in the static set is a PASS (candor honestly disclosed it could not resolve the path). THREE-WAY
+verdict per (method, effect), mirroring candor-ts verify-core + the candor-swift realworld oracle: PRECISE
+(effect in the non-Unknown claim), HELD BY DISCLOSURE (covered only by a disclosed Unknown — honest, and
+BLAME-TRACKED to the fn's `unknownWhy` reason so the exact unresolved edge to resolve is named), or
+UNDER-REPORT (neither = the cardinal sin). The three-way only splits the honest bucket — it never changes a
+pass/fail verdict.
 
 Usage:
     agent_diff.py --cp <classpath> --main <MainClass> --report <candor.json>
@@ -63,39 +68,65 @@ def main():
         observed[k] = set(effs)
 
     rep = json.load(open(a.report))
-    static = {}
+    static, why = {}, {}
     for f in rep["functions"]:
-        static.setdefault(f["fn"].split("(")[0], set()).update(f.get("inferred", []))
+        k = f["fn"].split("(")[0]
+        static.setdefault(k, set()).update(f.get("inferred", []))
+        # Blame data: candor's `unknownWhy` reasons (dispatch:/reflect:/native:/callback:…) — the exact
+        # unresolved edge(s) that would have to be resolved for a PRECISE claim (backlog P3).
+        for w in (f.get("unknownWhy") or []):
+            why.setdefault(k, set()).add(w)
 
-    bugs = []
+    # THREE-WAY honesty verdict per (method, observed effect), mirroring candor-ts verify-core.mjs + the
+    # candor-swift realworld oracle. This ONLY splits the honest bucket into PRECISE vs HELD-BY-DISCLOSURE
+    # and names the blame reason — it does NOT change any pass/fail: `bugs` (the cardinal-sin violations) is
+    # computed exactly as before (effect neither in the precise claim nor covered by a disclosed Unknown).
+    #   (1) PRECISE            — eff ∈ (static ∖ {Unknown}): held tightly (CLEAN).
+    #   (2) HELD BY DISCLOSURE — eff ∉ precise but Unknown ∈ static → honest, BLAME-TRACKED to unknownWhy.
+    #   (3) UNDER-REPORT       — neither: a silent-pure that really ran = the cardinal sin.
+    bugs, held = [], []
     for m in sorted(observed):
         si = static.get(m, set())
+        precise = si - {"Unknown"}
         for eff in sorted(observed[m]):
-            if eff not in si and "Unknown" not in si:
+            if eff in precise:
+                continue
+            if "Unknown" in si:
+                held.append((m, eff, sorted(why.get(m, [])) or ["(no reason recorded)"]))
+            else:
                 bugs.append((m, eff, sorted(si)))
 
     print(f"agent-diff: {len(observed)} project method(s) observed effectful (after --pkg filter)")
     for m in sorted(observed):
         si = static.get(m, set())
+        precise = si - {"Unknown"}
+        blame = sorted(why.get(m, []))
         verdict = []
         for eff in sorted(observed[m]):
-            if eff in si:
-                verdict.append(f"{eff}=CLEAN(static)")
+            if eff in precise:
+                verdict.append(f"{eff}=PRECISE(static)")
             elif "Unknown" in si:
-                verdict.append(f"{eff}=PASS(Unknown)")
+                # Held by a disclosed Unknown — honest, and blame-tracked to the reason(s).
+                verdict.append(f"{eff}=HELD-BY-DISCLOSURE[{','.join(blame) or '(no reason)'}]")
             else:
                 verdict.append(f"{eff}=UNDER-REPORT")
         print(f"  {m}: observed {sorted(observed[m])}; candor static {sorted(si) or 'PURE/absent'} -> "
               + ", ".join(verdict))
 
     print()
+    for m, eff, blame in held:
+        print(f"  HELD-BY-DISCLOSURE: {m} ran {eff}, covered by disclosed Unknown — blame: {blame}"
+              f"  (resolve this edge -> precise {eff})")
     for m, eff, si in bugs:
         print(f"  UNDER-REPORT: {m} ran {eff}, candor static = {si or 'PURE/absent'}")
+    if held:
+        print(f"agent-diff: {len(held)} effect(s) HELD BY DISCLOSURE (honest via Unknown, blame-tracked — not"
+              " a violation, a precision debt)")
     if bugs:
         print(f"agent-diff: {len(bugs)} candidate model-gap under-report(s) — VERIFY each "
               "(real path candor missed, not a fixture artifact)")
         sys.exit(1)
-    print("agent-diff: CLEAN — every observed effect was statically predicted (effect or Unknown)")
+    print("agent-diff: CLEAN — every observed effect was statically predicted (precise or disclosed Unknown)")
 
 
 if __name__ == "__main__":

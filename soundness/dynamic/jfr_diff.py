@@ -22,7 +22,10 @@ METHODOLOGY GOTCHAS (each one a real false-positive source, handled here):
   * STACK TRUNCATION — `jfr print` truncates the stack unless `--stack-depth` is large; deep project
     frames (below the JDK I/O frames) get cut. Use a generous depth.
   * `Unknown` IS A PASS — candor disclosing `Unknown` is sound (honestly unresolvable); only a silent
-    effect-free report on an observed-effectful method is a bug.
+    effect-free report on an observed-effectful method is a bug. THREE-WAY (mirrors candor-ts verify-core
+    + candor-swift realworld oracle): an observed effect is PRECISE (in the non-Unknown claim), HELD BY
+    DISCLOSURE (covered only by a disclosed Unknown — honest, and blame-tracked to the fn's `unknownWhy`
+    reason so the exact unresolved edge to fix is named), or an UNDER-REPORT (neither = the cardinal sin).
 
 Usage:
     jfr_diff.py --cp <classpath> --main <MainClass> --report <candor.json> [--pkg <frame-prefix>]
@@ -109,25 +112,49 @@ def main():
             observed.setdefault(f"{t}.{m.get('name','')}", set()).add(eff)
 
     rep = json.load(open(a.report))
-    static = {}
+    static, why = {}, {}
     for f in rep["functions"]:
-        static.setdefault(f["fn"].split("(")[0], set()).update(f.get("inferred", []))
+        k = f["fn"].split("(")[0]
+        static.setdefault(k, set()).update(f.get("inferred", []))
+        # The blame data: the `unknownWhy` reasons candor emitted (dispatch:/reflect:/native:/callback:…) —
+        # the exact unresolved edge(s) that would have to be resolved for a PRECISE claim (backlog P3).
+        for w in (f.get("unknownWhy") or []):
+            why.setdefault(k, set()).add(w)
 
-    bugs = []
+    # THREE-WAY honesty verdict per (method, observed effect), mirroring candor-ts verify-core.mjs and the
+    # candor-swift realworld oracle. `Unknown` is a PASS either way (honest disclosure) — this ONLY splits
+    # the honest bucket, never changes a pass/fail: `bugs` (the cardinal-sin violations) is computed exactly
+    # as before (observed effect neither in the PRECISE claim nor covered by a disclosed Unknown).
+    #   (1) PRECISE           — eff ∈ (static ∖ {Unknown}): held tightly.
+    #   (2) HELD BY DISCLOSURE — eff ∉ precise but Unknown ∈ static → honest, BLAME-TRACKED to unknownWhy.
+    #   (3) UNDER-REPORT       — neither: a silent-pure that really ran = the cardinal sin.
+    bugs, held = [], []
     for m in sorted(observed):
         si = static.get(m, set())
-        for eff in observed[m]:
-            if eff not in si and "Unknown" not in si:
+        precise = si - {"Unknown"}
+        for eff in sorted(observed[m]):
+            if eff in precise:
+                continue  # precise — held tightly
+            if "Unknown" in si:
+                held.append((m, eff, sorted(why.get(m, [])) or ["(no reason recorded)"]))
+            else:
                 bugs.append((m, eff, sorted(si)))
 
     print(f"jfr-diff: {n_io} data I/O event(s); {len(observed)} project method(s) observed effectful")
+    for m, eff, blame in held:
+        # Honest (Unknown disclosed), not a precise claim — name the unresolved edge to resolve for precision.
+        print(f"  HELD-BY-DISCLOSURE: {m} ran {eff}, covered by disclosed Unknown — blame: {blame}"
+              f"  (resolve this edge -> precise {eff})")
     for m, eff, si in bugs:
         print(f"  UNDER-REPORT: {m} ran {eff}, candor static = {si or 'PURE/absent'}")
+    if held:
+        print(f"jfr-diff: {len(held)} effect(s) HELD BY DISCLOSURE (honest via Unknown, blame-tracked — not a"
+              " violation, a precision debt)")
     if bugs:
         print(f"jfr-diff: {len(bugs)} candidate soundness under-report(s) — VERIFY each (rule out wrapper/"
               "abstract-type κ-boundary vs a structural drop)")
         sys.exit(1)
-    print("jfr-diff: CLEAN — every observed effect was statically predicted (effect or Unknown)")
+    print("jfr-diff: CLEAN — every observed effect was statically predicted (precise or disclosed Unknown)")
 
 if __name__ == "__main__":
     main()

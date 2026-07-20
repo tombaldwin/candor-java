@@ -6,6 +6,18 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## [Unreleased]
+
+- **Llm model-SDK precision — a builder/constructor no longer fabricates `Llm`+`Net`.** The ⟨0.13⟩
+  model-SDK surface fired on *any* call into a curated provider package, which over-classified pure
+  construction: a `new com.theokanning.openai.service.OpenAiService(...)` client build and Spring AI's
+  fluent `cc.prompt().user(..)` builder both read `['Llm','Net']` though they dispatch no request. Now a
+  constructor (`<init>`) is excluded from the blanket, and Spring AI is dropped from the package prefixes
+  (its builders are pure) with the `Llm` refinement re-attached to its true dispatch surface
+  (`CallResponseSpec` terminal / `*ChatModel.call`). Genuine model calls (`createChatCompletion`,
+  `ChatClient…call().content()`, langchain4j `generate`) still classify `Llm`+`Net`. Closes the two
+  `kappa_libs_probe` fabrications (`openaiServiceBuilderPure`, `springAiPromptBuilderPure`).
+
 ## [0.23.0] — 2026-07-20
 
 Spec floor → **0.23** (the cross-package interface-dispatch rung; report/verdict schema unchanged). This

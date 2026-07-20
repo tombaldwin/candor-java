@@ -1217,10 +1217,18 @@ public class Candor {
         // model-provider client dispatches a request → Llm + Net (Net is never dropped — a model call IS
         // network I/O). Set `effect` to LLM so the injection-taint surface (a caller-derived prompt) fires,
         // exactly as it does for a Net/Db arg. Additive to whatever classify already found.
-        if (isModelSdkOwner(owner)) {
+        // A CONSTRUCTOR (`<init>`) is excluded: it only builds the client (config + a lazy HTTP/Retrofit
+        // stub) and dispatches no request, so it stays pure — only a call INTO the client is Llm+Net.
+        if (isModelSdkOwner(owner) && !min.name.equals("<init>")) {
             dir.add(Effect.LLM);
             dir.add(Effect.NET);
             if (effect == null) effect = Effect.LLM;
+        }
+        // Spring AI is deliberately NOT a blanket MODEL_SDK_PACKAGES prefix (its fluent builders
+        // prompt/user/… are pure, and a prefix match would fabricate on them). classify already surfaced
+        // its true dispatch as Net; refine that to Llm+Net here so the ⟨0.13⟩ Llm surface still covers it.
+        else if (effect == Effect.NET && Rules.isSpringAiModelDispatch(owner, min.name)) {
+            dir.add(Effect.LLM);
         }
         opaqueTaskHandoff(ctx, s, min, owner);
         namedFunctionalToHof(ctx, s, min);

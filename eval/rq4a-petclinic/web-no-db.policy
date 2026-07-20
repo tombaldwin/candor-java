@@ -1,0 +1,8 @@
+# Architecture-as-code: the web tier (controllers) must not perform persistence directly —
+# it must delegate to a service. An import-graph gate cannot express this (controllers name no
+# java.sql; the DB reach is behind Spring Data repository interfaces). candor gates on the EFFECT.
+deny Db org.springframework.samples.petclinic.owner.OwnerController
+deny Db org.springframework.samples.petclinic.owner.PetController
+deny Db org.springframework.samples.petclinic.owner.VisitController
+deny Db org.springframework.samples.petclinic.vet.VetController
+deny Db org.springframework.samples.petclinic.system.CrashController

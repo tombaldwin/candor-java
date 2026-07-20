@@ -1217,18 +1217,19 @@ public class Candor {
         // model-provider client dispatches a request → Llm + Net (Net is never dropped — a model call IS
         // network I/O). Set `effect` to LLM so the injection-taint surface (a caller-derived prompt) fires,
         // exactly as it does for a Net/Db arg. Additive to whatever classify already found.
-        // A CONSTRUCTOR (`<init>`) is excluded: it only builds the client (config + a lazy HTTP/Retrofit
-        // stub) and dispatches no request, so it stays pure — only a call INTO the client is Llm+Net.
-        if (isModelSdkOwner(owner) && !min.name.equals("<init>")) {
+        // Two carve-outs keep the blanket SOUND (it stays the default → no genuine dispatch is ever missed)
+        // while killing the builder/ctor fabrication:
+        //  - a CONSTRUCTOR (`<init>`) only builds the client (config + a lazy HTTP/Retrofit stub) and
+        //    dispatches no request (true for every curated SDK — all lazy clients), so it stays pure;
+        //  - a Spring AI ChatClient FLUENT-BUILDER step (prompt/user/system/…) assembles a request but
+        //    touches no wire. A DENYLIST (only proven-pure methods carved out) — anything else, including
+        //    every real dispatch (call/stream/content/embed/… and any provider method we haven't enumerated)
+        //    stays Llm+Net. A forgotten builder over-reports (safe); nothing is ever silently dropped.
+        if (isModelSdkOwner(owner) && !min.name.equals("<init>")
+                && !Rules.isSpringAiPureBuilder(owner, min.name)) {
             dir.add(Effect.LLM);
             dir.add(Effect.NET);
             if (effect == null) effect = Effect.LLM;
-        }
-        // Spring AI is deliberately NOT a blanket MODEL_SDK_PACKAGES prefix (its fluent builders
-        // prompt/user/… are pure, and a prefix match would fabricate on them). classify already surfaced
-        // its true dispatch as Net; refine that to Llm+Net here so the ⟨0.13⟩ Llm surface still covers it.
-        else if (effect == Effect.NET && Rules.isSpringAiModelDispatch(owner, min.name)) {
-            dir.add(Effect.LLM);
         }
         opaqueTaskHandoff(ctx, s, min, owner);
         namedFunctionalToHof(ctx, s, min);

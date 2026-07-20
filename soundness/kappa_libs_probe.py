@@ -1339,6 +1339,16 @@ EFFECT_CASES = [
     ("springAiOpenAiModelCall", "Net",
         "org.springframework.ai.openai.OpenAiChatModel m, org.springframework.ai.chat.prompt.Prompt p",
         'org.springframework.ai.chat.model.ChatResponse cr = m.call(p)'),
+    # SOUNDNESS anchors (regression for the 2026-07-20 review): Spring AI dispatch surfaces BEYOND the
+    # chat-terminal — the STREAMING terminal (StreamResponseSpec.content) and the EMBEDDING model call. The
+    # model-SDK blanket (org.springframework.ai. prefix, minus the pure ChatClient builders) must classify
+    # BOTH as Net (a real wire dispatch); a builder-suppression that narrowed these to pure would be a SILENT
+    # UNDER-REPORT (the cardinal sin the review caught + this fix closes).
+    ("springAiChatClientStream", "Net", "org.springframework.ai.chat.client.ChatClient cc",
+        'reactor.core.publisher.Flux<String> f = cc.prompt().user("hi").stream().content()'),
+    ("springAiEmbeddingCall", "Net",
+        "org.springframework.ai.embedding.EmbeddingModel m, org.springframework.ai.embedding.EmbeddingRequest r",
+        'org.springframework.ai.embedding.EmbeddingResponse x = m.call(r)'),
 
     # ====================== ADDED LIBRARIES (2026-06-20 batch 13) ======================
     # --- Spring sub-libraries (FLOOR-SUPPRESSION sweep — owner org.springframework.*; a GAP here is a

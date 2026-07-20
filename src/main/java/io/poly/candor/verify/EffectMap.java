@@ -32,6 +32,7 @@ final class EffectMap {
     private static void env(String owner, String method) { EXACT.put(owner + "#" + method, "Env"); }
     private static void clock(String owner, String method) { EXACT.put(owner + "#" + method, "Clock"); }
     private static void rand(String owner, String method) { EXACT.put(owner + "#" + method, "Rand"); }
+    private static void db(String owner, String method) { EXACT.put(owner + "#" + method, "Db"); }
 
     static {
         // ── Fs ─────────────────────────────────────────────────────────────────────────────────────
@@ -91,6 +92,23 @@ final class EffectMap {
         rand("java/security/SecureRandom", "nextGaussian");
         rand("java/security/SecureRandom", "next");
         rand("java/security/SecureRandom", "generateSeed");
+
+        // ── Db (a Net refinement; BASE maps Db→Net in HonestyCheck) ──────────────────────────────────
+        // High-precision: only the JDBC statement-EXECUTE surface + connection open/commit, which
+        // unambiguously perform a database operation. prepareStatement/createStatement are local (no round
+        // trip) and deliberately omitted. The call-site owner is the static receiver type (Statement /
+        // PreparedStatement / CallableStatement), so all three are listed. Hand-written from the JDBC
+        // surface — independent of candor's Rules, like the rest of this map.
+        for (String o : new String[] {
+                "java/sql/Statement", "java/sql/PreparedStatement", "java/sql/CallableStatement" }) {
+            for (String m : new String[] {
+                    "execute", "executeQuery", "executeUpdate", "executeBatch",
+                    "executeLargeUpdate", "executeLargeBatch" }) db(o, m);
+        }
+        db("java/sql/Connection", "commit");
+        db("java/sql/Connection", "rollback");
+        db("java/sql/DriverManager", "getConnection");
+        db("javax/sql/DataSource", "getConnection");
     }
 
     /** The effect an {@code (owner, name)} call performs, or {@code null} if it is not an observed boundary. */

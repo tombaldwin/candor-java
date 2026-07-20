@@ -3223,25 +3223,37 @@ public class Candor {
         // Seed in effects inherited via cross-jar calls (kept out of `direct` — they're not in this
         // method's own body; they appear in `inferred` and propagate transitively, like the Rust impl).
         for (var e : viaCross.entrySet()) eff.computeIfAbsent(e.getKey(), k -> EffectSet.empty()).addAll(e.getValue());
-        boolean changed = true;
-        while (changed) {
-            changed = false;
-            for (var caller : edges.keySet()) {
-                var set = eff.computeIfAbsent(caller, k -> EffectSet.empty());
-                int before = set.size();
-                for (String callee : edges.get(caller)) {
-                    // A class-load TRIGGER edge propagates the `<clinit>`'s FULL transitive effects (spec §5:
-                    // `inferred` is the transitive fixpoint over edges). Touching the class runs its static
-                    // initializer, which can transitively reach whatever the static block calls or constructs,
-                    // so the trigger site CAN reach those effects — sound over-approximation ("can reach"). A
-                    // prior direct-only narrowing here under-reported (the §7.13 soundness fuzzer caught it on
-                    // every clinit form: a real effect threaded through a static block came back pure). The
-                    // guava-construction `Log` smear that narrowing avoided is sound-but-imprecise — the target
-                    // of a separate precision effort, never a reason to drop a real reachable effect.
-                    var ce = eff.get(callee);
-                    if (ce != null) set.addAll(ce);
-                }
-                if (set.size() != before) changed = true;
+        // WORKLIST least-fixpoint. The old `while (changed) { for caller in edges.keySet() }` re-swept EVERY
+        // caller on every pass, and the pass count equals the longest back-to-front call chain — up to V, so
+        // O(V²) on deep whole-program graphs. Instead, when eff[f] grows, re-enqueue only the callers whose
+        // union reads eff[f] (a callee→callers reverse index). Same monotone set-union (confluent) least
+        // fixpoint → order-independent → the RESULT is identical, in amortized O(V + E·effects).
+        Map<String, List<String>> callersOf = new HashMap<>();
+        for (var caller : edges.keySet())
+            for (String callee : edges.get(caller))
+                callersOf.computeIfAbsent(callee, k -> new ArrayList<>()).add(caller);
+        Deque<String> queue = new ArrayDeque<>(edges.keySet());
+        Set<String> queued = new HashSet<>(edges.keySet());
+        while (!queue.isEmpty()) {
+            String caller = queue.pollFirst();
+            queued.remove(caller);
+            var set = eff.computeIfAbsent(caller, k -> EffectSet.empty());
+            int before = set.size();
+            for (String callee : edges.get(caller)) {
+                // A class-load TRIGGER edge propagates the `<clinit>`'s FULL transitive effects (spec §5:
+                // `inferred` is the transitive fixpoint over edges). Touching the class runs its static
+                // initializer, which can transitively reach whatever the static block calls or constructs,
+                // so the trigger site CAN reach those effects — sound over-approximation ("can reach"). A
+                // prior direct-only narrowing here under-reported (the §7.13 soundness fuzzer caught it on
+                // every clinit form: a real effect threaded through a static block came back pure). The
+                // guava-construction `Log` smear that narrowing avoided is sound-but-imprecise — the target
+                // of a separate precision effort, never a reason to drop a real reachable effect.
+                var ce = eff.get(callee);
+                if (ce != null) set.addAll(ce);
+            }
+            if (set.size() != before) {   // caller grew → its own callers must re-absorb from it
+                List<String> cs = callersOf.get(caller);
+                if (cs != null) for (String c : cs) if (queued.add(c)) queue.addLast(c);
             }
         }
         return eff;

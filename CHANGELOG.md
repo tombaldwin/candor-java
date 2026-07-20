@@ -6,7 +6,11 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
-## [Unreleased]
+## [0.23.1] — 2026-07-20
+
+A performance + classifier-soundness patch (spec unchanged at **0.23**). The analysis engine loses two
+super-linear cliffs (both output-preserving), a model-SDK over-classification is fixed, and a follow-up
+review closed a silent under-report that the first cut of that fix had opened.
 
 - **Performance — the analyze pass is no longer super-linear in class count.** `Cha.chaTargets`
   (class-hierarchy dispatch resolution) is a pure function of the fixed post-load hierarchy, but it was
@@ -29,15 +33,18 @@ after upgrading; review policies and regenerate baselines with the new build.
   ~1.8× on a 12000-deep chain, growing with depth; shallow corpora unaffected. Mirrors the equivalent
   worklist fix in the Rust engine.
 
-- **Llm model-SDK precision — a builder/constructor no longer fabricates `Llm`+`Net`.** The ⟨0.13⟩
-  model-SDK surface fired on *any* call into a curated provider package, which over-classified pure
-  construction: a `new com.theokanning.openai.service.OpenAiService(...)` client build and Spring AI's
-  fluent `cc.prompt().user(..)` builder both read `['Llm','Net']` though they dispatch no request. Now a
-  constructor (`<init>`) is excluded from the blanket, and Spring AI is dropped from the package prefixes
-  (its builders are pure) with the `Llm` refinement re-attached to its true dispatch surface
-  (`CallResponseSpec` terminal / `*ChatModel.call`). Genuine model calls (`createChatCompletion`,
-  `ChatClient…call().content()`, langchain4j `generate`) still classify `Llm`+`Net`. Closes the two
-  `kappa_libs_probe` fabrications (`openaiServiceBuilderPure`, `springAiPromptBuilderPure`).
+- **⚠ Llm model-SDK precision — a builder/constructor no longer fabricates `Llm`+`Net`, WITHOUT opening an
+  under-report.** The ⟨0.13⟩ model-SDK surface fired on *any* call into a curated provider package, which
+  over-classified pure construction (`new OpenAiService(...)`, Spring AI's fluent `cc.prompt().user(..)`
+  read `['Llm','Net']` though they dispatch no request). A constructor (`<init>`) is now excluded, and the
+  Spring AI ChatClient fluent *builders* are carved out by a **denylist** (`SPRING_AI_CHATCLIENT_BUILDERS`)
+  layered over the retained `org.springframework.ai.` blanket — so every real dispatch (chat, **streaming
+  terminal**, **`EmbeddingModel.call`**, and anything not explicitly listed as a pure builder) still
+  classifies `Llm`+`Net`; a builder we forget to list merely over-reports (safe), never silently drops an
+  effect. (The first cut narrowed dispatch to an allowlist and silently under-reported streaming/embedding
+  calls — caught in review and corrected before release; regression anchors `springAiChatClientStream` +
+  `springAiEmbeddingCall` now pin it.) Closes the two `kappa_libs_probe` fabrications
+  (`openaiServiceBuilderPure`, `springAiPromptBuilderPure`).
 
 ## [0.23.0] — 2026-07-20
 

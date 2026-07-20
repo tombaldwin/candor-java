@@ -76,7 +76,7 @@ grep -vE '^\s*#|^\s*$' "$HERE/manifest.tsv" | while IFS=$'\t' read -r name url r
   fullcp="$cls:$testclasses:$depcp:$CONSOLE_JAR"
   echo "  dynamic verify (ConsoleLauncher, single JVM, --scope all)…"
   ( cd "$d" && java -jar "$JAR" verify "$cls" \
-      --run "timeout 480 java -cp $fullcp org.junit.platform.console.ConsoleLauncher execute --scan-class-path=$testclasses --disable-ansi-colors --details=none" \
+      --run "timeout -s KILL 480 java -cp $fullcp org.junit.platform.console.ConsoleLauncher execute --scan-class-path=$testclasses --disable-ansi-colors --details=none" \
       --report "$d/report.json" --scope all --json --allow-run-failure ) \
       > "$HERE/results/$name.verify.json" 2>"$d/verify.err" || true
   vj="$HERE/results/$name.verify.json"

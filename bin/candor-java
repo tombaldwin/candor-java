@@ -6,4 +6,20 @@ jar="${CANDOR_JAVA_JAR:-}"
 [ -n "$jar" ] || jar="$(ls "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/build/libs/"*-all.jar 2>/dev/null | head -1)"
 [ -n "$jar" ] || jar="$(ls "$HOME"/.candor/candor-java*-all.jar 2>/dev/null | head -1)"
 [ -n "$jar" ] && [ -f "$jar" ] || { echo "candor-java: no jar — build with ./gradlew shadowJar or set CANDOR_JAVA_JAR" >&2; exit 2; }
-exec java -jar "$jar" "$@"
+
+# JVM startup tuning. A short-lived scan (the agent edit-time loop's handful-to-hundreds of classes) spends
+# a big slice of its wall time in C2 JIT compilation of analysis code that runs only once — C1-only
+# (-XX:TieredStopAtLevel=1) is ~20% faster there (measured: 63 classes 365→281ms). For a large BATCH scan
+# the analysis loop runs hot and C2 wins decisively (measured: 4585 classes, C2 11.0s vs C1 18.9s, +72%),
+# so this is FAIL-SAFE: prefer C1 only when the scan target is a provably small directory; when in doubt,
+# stay on the default (C2). Callers who know their workload can override everything via CANDOR_JAVA_OPTS.
+opts="${CANDOR_JAVA_OPTS-}"
+if [ -z "${CANDOR_JAVA_OPTS+set}" ]; then
+  tgt=""
+  for a in "$@"; do case "$a" in -*) ;; *) tgt="$a"; break;; esac; done   # target-first: first non-flag arg
+  if [ -n "$tgt" ] && [ -d "$tgt" ]; then
+    n=$(find "$tgt" -name '*.class' 2>/dev/null | head -512 | wc -l | tr -d ' ')
+    [ "$n" -lt 500 ] && opts="-XX:TieredStopAtLevel=1"
+  fi
+fi
+exec java $opts -jar "$jar" "$@"

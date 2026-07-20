@@ -128,22 +128,30 @@ final class Interp {
         // node id; else null. Lets a closed private "sink" that invokes a functional PARAM resolve the
         // SAM to the exact bodies passed at its (enumerable) call sites instead of a callback: Unknown.
         final String lambdaTarget;
-        ProvValue(BasicValue base, String newType) { this(base, newType, false, declTypeOf(base), null); }
-        ProvValue(BasicValue base, String newType, boolean fromIndy) { this(base, newType, fromIndy, declTypeOf(base), null); }
-        ProvValue(BasicValue base, String newType, boolean fromIndy, String declType) { this(base, newType, fromIndy, declType, null); }
-        ProvValue(BasicValue base, String newType, boolean fromIndy, String declType, String lambdaTarget) {
+        // The instance field this value was read from ("owner#name"), or null if not a GETFIELD result. Carries
+        // NO allocation guarantee (newType stays null); it lets the value-provenance field-origin summary decide,
+        // at a stream read, whether the field is bound only to in-scope concrete opens (VALUE-PROVENANCE-DESIGN.md
+        // Phase 2). Only ever used to SUPPRESS a Phase-1 Unknown for a provably-concrete field — never to narrow.
+        final String fieldOrigin;
+        ProvValue(BasicValue base, String newType) { this(base, newType, false, declTypeOf(base), null, null); }
+        ProvValue(BasicValue base, String newType, boolean fromIndy) { this(base, newType, fromIndy, declTypeOf(base), null, null); }
+        ProvValue(BasicValue base, String newType, boolean fromIndy, String declType) { this(base, newType, fromIndy, declType, null, null); }
+        ProvValue(BasicValue base, String newType, boolean fromIndy, String declType, String lambdaTarget) { this(base, newType, fromIndy, declType, lambdaTarget, null); }
+        ProvValue(BasicValue base, String newType, boolean fromIndy, String declType, String lambdaTarget, String fieldOrigin) {
             this.base = base; this.newType = newType; this.fromIndy = fromIndy; this.declType = declType;
-            this.lambdaTarget = lambdaTarget;
+            this.lambdaTarget = lambdaTarget; this.fieldOrigin = fieldOrigin;
         }
         public int getSize() { return base.getSize(); }
         public boolean equals(Object o) {
             return o instanceof ProvValue p && base.equals(p.base)
                     && Objects.equals(newType, p.newType) && fromIndy == p.fromIndy
-                    && Objects.equals(declType, p.declType) && Objects.equals(lambdaTarget, p.lambdaTarget);
+                    && Objects.equals(declType, p.declType) && Objects.equals(lambdaTarget, p.lambdaTarget)
+                    && Objects.equals(fieldOrigin, p.fieldOrigin);
         }
         public int hashCode() {
-            return (((base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode())) * 31 + (fromIndy ? 1 : 0))
-                    * 31 + (declType == null ? 0 : declType.hashCode())) * 31 + (lambdaTarget == null ? 0 : lambdaTarget.hashCode());
+            return ((((base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode())) * 31 + (fromIndy ? 1 : 0))
+                    * 31 + (declType == null ? 0 : declType.hashCode())) * 31 + (lambdaTarget == null ? 0 : lambdaTarget.hashCode()))
+                    * 31 + (fieldOrigin == null ? 0 : fieldOrigin.hashCode());
         }
     }
 
@@ -173,6 +181,9 @@ final class Interp {
         // BasicInterpreter would have collapsed to bare Object (field reads, call returns, casts, NEW).
         private static ProvValue wrap(BasicValue b, String newType, String declType) {
             return b == null ? null : new ProvValue(b, newType, false, declType);
+        }
+        private static ProvValue wrapField(BasicValue b, String declType, String fieldOrigin) {
+            return b == null ? null : new ProvValue(b, null, false, declType, null, fieldOrigin);
         }
         /** The OBJECT-internal-name a type descriptor declares, or null if not a usefully-specific object
          *  type (primitives / void / array / bare Object). Used to seed declType from a field/return desc. */
@@ -221,8 +232,13 @@ final class Interp {
             // over-edges to siblings, never under-reports). A primitive conversion / arraylength yields null.
             BasicValue b = bi.unaryOperation(insn, value.base);
             String dt = null;
-            if (insn.getOpcode() == Opcodes.GETFIELD) dt = declFromDesc(((FieldInsnNode) insn).desc);
-            else if (insn.getOpcode() == Opcodes.CHECKCAST) {
+            if (insn.getOpcode() == Opcodes.GETFIELD) {
+                FieldInsnNode fi = (FieldInsnNode) insn;
+                // Carry the field identity so the value-provenance summary can decide, at a stream read, whether
+                // this field is bound only to in-scope concrete opens (Phase 2). newType stays null (no alloc).
+                return wrapField(b, declFromDesc(fi.desc), fi.owner + "#" + fi.name);
+            }
+            if (insn.getOpcode() == Opcodes.CHECKCAST) {
                 String d = ((TypeInsnNode) insn).desc; // CHECKCAST desc is an internal name (or [..] array)
                 dt = (d != null && d.charAt(0) != '[' && !d.equals("java/lang/Object")) ? d : null;
             }

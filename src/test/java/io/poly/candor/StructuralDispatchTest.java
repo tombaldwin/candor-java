@@ -139,6 +139,55 @@ class StructuralDispatchTest {
         }
     }
 
+    /** VALUE-PROVENANCE Phase 2: the whole-program construction-carried binding. A PROJECT-declared stream
+     *  field proven bound only to in-scope concrete opens (across all `new C(args)` sites) is pure-relative to
+     *  a VISIBLE open, so a consuming read of it SUPPRESSES the Phase-1 Unknown — while a field bound to an
+     *  external stream keeps it. Three shapes: (1) self-open field, (2) param field constructed only with a
+     *  concrete stream, (3) param field constructed with an external stream (must stay Unknown). */
+    @Test
+    void phase2ConcreteBoundStreamFieldSuppressesUnknownExternalKeepsIt() throws Exception {
+        Path app = TestCompiler.compileApp(
+            Map.of("org/apache/commons/io/IOUtils.java", String.join("\n",
+                "package org.apache.commons.io;",
+                "import java.io.InputStream;",
+                "public class IOUtils {",
+                "  public static int read(InputStream in, byte[] b, int off, int len) { return 0; }",
+                "}")),
+            Map.of("Main.java", String.join("\n",
+                "import java.io.*;",
+                "import org.apache.commons.io.IOUtils;",
+                "public class Main {",
+                "  static class SelfOpen {",                                     // (1) opens its OWN stream
+                "    InputStream in;",
+                "    SelfOpen(String p) throws Exception { this.in = new FileInputStream(p); }",
+                "    void rd(byte[] b) throws IOException { IOUtils.read(this.in, b, 0, b.length); }",
+                "  }",
+                "  static class ParamWrap {",                                    // (2) param, constructed CONCRETE
+                "    InputStream in;",
+                "    ParamWrap(InputStream i){ this.in = i; }",
+                "    void rd(byte[] b) throws IOException { IOUtils.read(this.in, b, 0, b.length); }",
+                "  }",
+                "  static class ParamExt {",                                     // (3) param, constructed EXTERNAL
+                "    InputStream in;",
+                "    ParamExt(InputStream i){ this.in = i; }",
+                "    void rd(byte[] b) throws IOException { IOUtils.read(this.in, b, 0, b.length); }",
+                "  }",
+                "  static void mkConcrete(String p) throws Exception { new ParamWrap(new FileInputStream(p)); }",
+                "  static void mkExternal(InputStream ext) { new ParamExt(ext); }",
+                "}")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(app);
+            assertFalse(eff(r, "Main$SelfOpen.rd").toNames().contains("Unknown"),
+                    "a self-opened concrete field read is pure-relative — no Unknown, got " + r.get("Main$SelfOpen.rd"));
+            assertFalse(eff(r, "Main$ParamWrap.rd").toNames().contains("Unknown"),
+                    "a param field constructed only with a concrete stream suppresses the Unknown, got " + r.get("Main$ParamWrap.rd"));
+            assertTrue(eff(r, "Main$ParamExt.rd").toNames().contains("Unknown"),
+                    "a param field constructed with an EXTERNAL stream must keep the Unknown, got " + r.get("Main$ParamExt.rd"));
+        } finally {
+            TestCompiler.rm(app.getParent());
+        }
+    }
+
     /** #2a-bis — the READ/WRITE half of the wrapped-sink delegate: a BufferedOutputStream/FilterInputStream
      *  subclass whose write/read calls `super.write`/`super.read` delegates the actual syscall to a wrapped
      *  stream of unknown concrete type → Unknown (never silent-pure). Found by the runtime oracle on

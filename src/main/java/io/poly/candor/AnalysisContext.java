@@ -23,6 +23,11 @@ final class AnalysisContext {
     final Map<String, DepFn> crossDeps = new HashMap<>();          // method-ref hash -> DepFn (from CANDOR_DEPS)
     final Map<String, TreeSet<String>> fsDirect = new HashMap<>(); // fn -> Fs read/write kind performed directly
     final Map<String, TreeSet<UnknownReason>> unknownWhy = new HashMap<>(); // fn -> why Unknown emitted directly
+    // VALUE-PROVENANCE Phase 2: instance stream fields ("owner#name") PROVEN bound only to in-scope concrete
+    // opens across the whole program — so a stream-consuming read of one is pure-relative and the Phase-1
+    // Unknown is suppressed. Computed once in a pre-pass; empty unless a field is provably all-concrete
+    // (conservative: any doubt leaves it out, keeping the sound Phase-1 disclosure).
+    final Set<String> suppressibleStreamFields = new HashSet<>();
     // ⟨0.19⟩ user-defined reason-class aliases from `.candor/config` (`unknown-alias <name> = <class,…>`),
     // consulted by the §6.2 deny parser for an `Unknown[<name>]` filter. Populated before parsePolicy.
     final Map<String, Set<ReasonClass>> unknownAliases = new HashMap<>();

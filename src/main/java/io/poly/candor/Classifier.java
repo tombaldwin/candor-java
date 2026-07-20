@@ -756,12 +756,9 @@ final class Classifier {
         // so they were FLOOR-SUPPRESSED (dropped from the report, like Spring Vault); explicit rules surface
         // them. The wire happens at the CallResponseSpec terminal (content/chatResponse/entity) and at
         // ChatModel.call(Prompt).
-        if (owner.equals("org.springframework.ai.chat.client.ChatClient$CallResponseSpec")
-                && (method.equals("content") || method.equals("chatResponse") || method.equals("entity")
-                    || method.equals("responseEntity"))) return Effect.NET;
-        if (owner.startsWith("org.springframework.ai.") && owner.endsWith("ChatModel") && method.equals("call"))
-            return Effect.NET;
-        if (owner.equals("org.springframework.ai.chat.model.ChatModel") && method.equals("call")) return Effect.NET;
+        // Spring AI dispatch (CallResponseSpec terminal / *ChatModel.call) — the single source of truth is
+        // Rules.isSpringAiModelDispatch, which the call site also consults to refine this Net to Llm+Net.
+        if (Rules.isSpringAiModelDispatch(owner, method)) return Effect.NET;
         // Telegram Bots — AbsSender.execute sends to the Bot API → Net.
         if (owner.startsWith("org.telegram.telegrambots.") && owner.endsWith("AbsSender")
                 && method.equals("execute")) return Effect.NET;

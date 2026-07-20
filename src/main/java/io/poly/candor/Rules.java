@@ -573,6 +573,16 @@ final class Rules {
             "com/google/common/io/ByteStreams", Set.of("copy", "toByteArray", "read", "readFully", "exhaust", "skipFully"),
             "com/google/common/io/CharStreams", Set.of("copy", "toString", "readLines", "exhaust"));
 
+    /** SELF-SOURCING concrete stream types: their construction is self-contained (the effect, if any, is
+     *  charged at the ctor — `new FileInputStream` = Fs there; `new ByteArrayInputStream` = pure). A field
+     *  bound ONLY to these is pure-relative to a VISIBLE open, so a later consuming read of it need not
+     *  disclose Unknown (VALUE-PROVENANCE-DESIGN.md Phase 2). A FILTER/buffered stream is deliberately absent —
+     *  it delegates to a wrapped stream of unknown origin, so it is never treated as self-sourcing-concrete. */
+    static final Set<String> SELF_SOURCING_STREAMS = Set.of(
+            "java/io/FileInputStream", "java/io/FileOutputStream", "java/io/FileReader", "java/io/FileWriter",
+            "java/io/ByteArrayInputStream", "java/io/ByteArrayOutputStream", "java/io/StringReader",
+            "java/io/StringWriter", "java/io/CharArrayReader", "java/io/CharArrayWriter");
+
     /** Functional-interface descriptors that, as the FIRST parameter, name a deferred TASK whose body is
      *  invoked by the runtime (executor/CF stage/timer) with no in-project call site. */
     static final Set<String> TASK_ARG_PREFIXES = Set.of(

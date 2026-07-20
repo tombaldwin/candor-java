@@ -145,6 +145,7 @@ public class Candor {
         }
         buildSubtypeIndex(classes);
         computeSpringTypes(classes);
+        computeStreamFieldOrigins(classes); // VALUE-PROVENANCE Phase 2: which stream fields are provably all-concrete
         // Cross-jar inheritance (candor-spec §2): load dependency reports named by CANDOR_DEPS BEFORE
         // analyze, so a call into an already-analyzed dependency inherits its effects (vs assumed-pure).
         loadCrossDeps(config.value("deps", "CANDOR_DEPS"), provenance()[0]);
@@ -1371,12 +1372,124 @@ public class Candor {
             ProvValue a = callArg(f, min, i);
             // newType == null ⇒ NOT a fresh in-scope `new` ⇒ a param/field/return ⇒ opened outside this method.
             if (a != null && a.newType == null) {
+                // Phase 2: a FIELD proven (whole-program) bound only to in-scope concrete opens is pure-relative
+                // to a VISIBLE open — the effect is charged at that open, so suppress the disclosure here.
+                if (a.fieldOrigin != null && ctx.suppressibleStreamFields.contains(a.fieldOrigin)) return;
                 s.dir.add(Effect.UNKNOWN);
                 ctx.unknownWhy.computeIfAbsent(s.id, k -> new TreeSet<>())
                         .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
             }
             return;                                     // the first (input-side) stream argument decides it
         }
+    }
+
+    /** VALUE-PROVENANCE Phase 2 pre-pass. Computes the set of instance stream fields ("owner#name") PROVEN
+     *  bound only to in-scope concrete opens across the WHOLE program, so a consuming read of one is
+     *  pure-relative and its Phase-1 Unknown is suppressed. CONSERVATIVE by construction — a field enters the
+     *  set only when every binding is provably concrete; any doubt (a foreign source, a filter-wrap, an
+     *  unresolved construction site, a param-sourced field of a subclassed class) leaves it out, keeping the
+     *  sound Phase-1 disclosure. A wrongly-suppressed Unknown would be a silent under-report, so the whole
+     *  pass errs to NOT suppressing. See VALUE-PROVENANCE-DESIGN.md. */
+    static void computeStreamFieldOrigins(List<ClassNode> classes) {
+        AnalysisContext ctx = ctx();
+        // A param-sourced field of a class with a PROJECT subclass can be bound via super() from a `new
+        // Subclass(...)` we would have to trace through — reject those to stay sound+simple.
+        Set<String> subclassed = new HashSet<>();
+        for (ClassNode cn : classes)
+            if (cn.superName != null && ctx.byName.containsKey(cn.superName)) subclassed.add(cn.superName);
+
+        Map<String, Set<Integer>> fieldParams = new HashMap<>(); // owner#name -> ctor param indices flowing in
+        Set<String> concreteSelf = new HashSet<>();              // owner#name -> has a `this.F = new SelfSource()` binding
+        Set<String> rejected = new HashSet<>();                  // owner#name -> proven NOT suppressible
+        Set<String> candidates = new HashSet<>();                // owner#name stream fields with >=1 PUTFIELD
+
+        // Step 1 — classify each PUTFIELD to an instance stream field.
+        for (ClassNode cn : classes) {
+            if (cn.fields == null) continue;
+            Set<String> streamFields = new HashSet<>();
+            for (FieldNode fn : cn.fields)
+                if ((fn.access & Opcodes.ACC_STATIC) == 0 && isStreamFieldDesc(fn.desc)) streamFields.add(fn.name);
+            if (streamFields.isEmpty()) continue;
+            for (MethodNode mn : cn.methods) {
+                Frame<ProvValue>[] pf = null; // computed lazily, only for methods that store one of these fields
+                AbstractInsnNode[] insns = mn.instructions.toArray();
+                for (int i = 0; i < insns.length; i++) {
+                    if (!(insns[i] instanceof FieldInsnNode fi) || fi.getOpcode() != Opcodes.PUTFIELD) continue;
+                    if (!fi.owner.equals(cn.name) || !streamFields.contains(fi.name)) continue;
+                    String key = fi.owner + "#" + fi.name;
+                    candidates.add(key);
+                    if (pf == null) pf = provFrames(cn, mn);
+                    ProvValue v = (pf != null && pf[i] != null && pf[i].getStackSize() > 0)
+                            ? pf[i].getStack(pf[i].getStackSize() - 1) : null;
+                    if (v == null) { rejected.add(key); continue; }
+                    if (v.newType != null && Rules.SELF_SOURCING_STREAMS.contains(v.newType)) { concreteSelf.add(key); continue; }
+                    if (v.fieldOrigin != null && v.fieldOrigin.equals(key)) continue; // self-rewrap (this.F = f(this.F)) — no new binding
+                    int idx = mn.name.equals("<init>") ? paramIndexOf(mn, v, pf[0]) : -1;
+                    if (idx >= 0) { fieldParams.computeIfAbsent(key, k -> new HashSet<>()).add(idx); continue; }
+                    rejected.add(key); // foreign field, method return, filter-wrap, non-ctor param — cannot prove concrete
+                }
+            }
+        }
+
+        // Step 2 — a param-sourced field needs EVERY `new C(args)` site to pass a self-sourcing concrete for
+        // each of its param slots (and >=1 site). Reject those of a subclassed class outright.
+        Set<String> paramFields = new HashSet<>(fieldParams.keySet());
+        paramFields.removeAll(rejected);
+        for (String key : new HashSet<>(paramFields))
+            if (subclassed.contains(key.substring(0, key.indexOf('#')))) { rejected.add(key); paramFields.remove(key); }
+        Set<String> paramHasSite = new HashSet<>();
+        if (!paramFields.isEmpty()) {
+            for (ClassNode cn : classes) {
+                for (MethodNode mn : cn.methods) {
+                    Frame<ProvValue>[] pf = null;
+                    AbstractInsnNode[] insns = mn.instructions.toArray();
+                    for (int i = 0; i < insns.length; i++) {
+                        if (!(insns[i] instanceof MethodInsnNode mi) || mi.getOpcode() != Opcodes.INVOKESPECIAL
+                                || !mi.name.equals("<init>")) continue;
+                        boolean relevant = false;
+                        for (String key : paramFields) if (key.startsWith(mi.owner + "#")) { relevant = true; break; }
+                        if (!relevant) continue;
+                        if (pf == null) pf = provFrames(cn, mn);
+                        for (String key : paramFields) {
+                            if (!key.startsWith(mi.owner + "#")) continue;
+                            paramHasSite.add(key);
+                            if (pf == null || pf[i] == null) { rejected.add(key); continue; }
+                            for (int idx : fieldParams.get(key)) {
+                                ProvValue arg = argAt(pf[i], mi, idx);
+                                if (arg == null || arg.newType == null || !Rules.SELF_SOURCING_STREAMS.contains(arg.newType))
+                                    rejected.add(key); // an external / non-self-sourcing construction arg — cannot suppress
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // a param-sourced field with NO in-scope construction site is library-view (constructed by callers we
+        // cannot see) → external → keep the Phase-1 disclosure.
+        for (String key : fieldParams.keySet()) if (!paramHasSite.contains(key)) rejected.add(key);
+
+        // Step 3 — a field is suppressible iff it has >=1 proven-concrete binding and NO rejected binding.
+        for (String key : candidates) {
+            if (rejected.contains(key)) continue;
+            if (concreteSelf.contains(key) || (fieldParams.containsKey(key) && paramHasSite.contains(key)))
+                ctx.suppressibleStreamFields.add(key);
+        }
+    }
+
+    /** An instance field whose declared type is an abstract java.io stream base — the fields the value-
+     *  provenance summary reasons about (a concrete-typed field carries its own effect already). */
+    static boolean isStreamFieldDesc(String desc) {
+        return desc.equals("Ljava/io/InputStream;") || desc.equals("Ljava/io/OutputStream;")
+                || desc.equals("Ljava/io/Reader;") || desc.equals("Ljava/io/Writer;");
+    }
+
+    /** The declared-parameter index (excluding the receiver) that value {@code v} IS, or -1 if it is not one
+     *  of {@code mn}'s own parameters. {@code f0} is the entry frame ({@code provFrames[0]}). */
+    static int paramIndexOf(MethodNode mn, ProvValue v, Frame<ProvValue> f0) {
+        if (v == null || f0 == null) return -1;
+        int n = Type.getArgumentTypes(mn.desc).length;
+        for (int i = 0; i < n; i++) if (isParamValue(mn, v, f0, i)) return i;
+        return -1;
     }
 
     /** Implicit-contract reentry: JDK sinks that re-enter user code via toString/equals/hashCode/

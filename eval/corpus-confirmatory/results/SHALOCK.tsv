@@ -1,6 +1,12 @@
 zt-zip	zt-zip-1.17	9feb38dcfd092aec8df2e4487787669af9705444
 zt-exec	zt-exec-1.12	763497ed4a4e60cc2847d87da2a0773e8ea6eb66
 commons-dbutils	rel/commons-dbutils-1.8.1	0b30ed1bddfa07bfda44122fc52ccd0e49fb6006
+commons-net	rel/commons-net-3.11.1	0505563df6664a8c5b5fad6897cd373aba809c64
+commons-pool2	rel/commons-pool-2.12.0	e5c44f5184a55a58fef4a1efec8124d162a348bd
+commons-imaging	rel/commons-imaging-1.0.0-alpha6	1fad84c74af3be111a564b8aba24dffc7e14b580
+gson	gson-parent-2.11.0	828a97be0f8d58108b140b77df8dc76b657f4a87
+commons-lang3	rel/commons-lang-3.17.0	29ccc7665f3bc5d84155a3092ab2209a053324e6
+commons-text	rel/commons-text-1.12.0	2c2d0818b0540c59f055f5174db51d0574af46da
 commons-collections4	rel/commons-collections-4.5.0	7f7fb0244abc940a2e9dd28b67508c0483a58c3e
 commons-codec	rel/commons-codec-1.17.1	965109705c5236b05011e1c45f47d991abfa521e
 commons-cli	rel/commons-cli-1.9.0	698b238276c0e22e97e4aec703a0b00201d29666

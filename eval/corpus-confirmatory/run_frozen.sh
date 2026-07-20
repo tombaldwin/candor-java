@@ -33,7 +33,7 @@ grep -vE '^\s*#|^\s*$' "$HERE/manifest.tsv" | cut -f1 | while read -r name; do
   fi
 done
 echo; echo "======================= FROZEN PER-REPO DISPOSITION (all manifest repos) ======================="
-column -t -s $'\t' "$FS"
+column -t -s "$(printf '\t')" "$FS" 2>/dev/null || cat "$FS"
 echo
 echo "sound-complete (falsifiable) total: $(awk -F'\t' 'NR>1 && $5 ~ /^[0-9]+$/ {s+=$5} END{print s+0}' "$FS")"
 echo "checked total: $(awk -F'\t' 'NR>1 && $4 ~ /^[0-9]+$/ {s+=$4} END{print s+0}' "$FS")"

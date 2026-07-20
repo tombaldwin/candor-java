@@ -31,3 +31,33 @@ edits riding along.
 disclosed-partial split. Because the corpus and binary are frozen in *this* commit, the resulting numbers are
 a genuine confirmatory datapoint — whatever they are, including a repeat of the R8 catch or a build-failure
 tally that is simply reported.
+
+## Result (run executed 2026-07-20, binary hash verified)
+
+215 functions checked across the frozen manifest on **held-out** code; **86 sound-complete** (`D = ∅`, the
+falsifiable frames); effect classes `Fs`/`Db`/`Clock`. **H held on every library that exercised effects
+except one**, where the oracle **caught a false all-clear** — the R8 catch, reproduced under the frozen binary.
+
+| repo | disposition | analyzed | checked | sound-complete | disclosed | violations |
+|---|---|---|---|---|---|---|
+| zt-zip | disclosed-partial | 251 | 110 | 25 | 85 | 0 |
+| commons-dbutils | disclosed-partial | 195 | 39 | 25 | 14 | 0 |
+| commons-lang3 | disclosed-partial | 1297 | 26 | 22 | 4 | 0 |
+| commons-collections4 | **VIOLATION** | 2826 | 18 | 7 | 10 | **1** (R8) |
+| commons-codec | disclosed-partial | 142 | 11 | 3 | 8 | 0 |
+| commons-text | disclosed-partial | 187 | 10 | 4 | 6 | 0 |
+| commons-imaging | disclosed-partial | 756 | 1 | 0 | 1 | 0 |
+| commons-net | no-in-scope-effect | 803 | 0 | 0 | 0 | 0 |
+| commons-pool2 | no-in-scope-effect | ? | 0 | 0 | 0 | ? |
+| zt-exec | no-in-scope-effect | 145 | 0 | 0 | 0 | 0 |
+| commons-cli | no-in-scope-effect | 230 | 0 | 0 | 0 | 0 |
+| gson | build-failed | – | – | – | – | – |
+
+**Totals: 215 checked, 86 sound-complete, 1 violation** (the R8 false all-clear, reported not fixed).
+
+**Attrition, tabulated not hidden:** `gson` build-failed (multi-module `-pl` under the plain runner);
+`commons-pool2` **hung** — its concurrency/timing suite spawns non-daemon threads that ignored the runner's
+`timeout` SIGTERM, so it was SIGKILL'd manually and recorded `no-in-scope-effect` (partial JSON); the runner
+now uses `timeout -s KILL` so this is reproducible without intervention (a harness fix — the frozen binary,
+manifest, and scope are unchanged). `commons-net`/`zt-exec`/`commons-cli` exercised no in-scope effect
+(mocked sockets / skipped process suite / pure parser) — valid fabrication-mirror rows.

@@ -2,6 +2,12 @@ repo	sha	analyzed	checked	sound	disclosed	violations	Hholds	complete	verdict
 zt-zip	9feb38dcfd092aec8df2e4487787669af9705444	251	110	25	85	0	true	true	disclosed-partial
 zt-exec	763497ed4a4e60cc2847d87da2a0773e8ea6eb66	145	0	0	0	0	true	true	no-in-scope-effect-executed
 commons-dbutils	0b30ed1bddfa07bfda44122fc52ccd0e49fb6006	195	39	25	14	0	true	true	disclosed-partial
+commons-net	0505563df6664a8c5b5fad6897cd373aba809c64	803	0	0	0	0	true	true	no-in-scope-effect-executed
+commons-pool2	e5c44f5184a55a58fef4a1efec8124d162a348bd	?	0	0	0	?	?	?	no-in-scope-effect-executed
+commons-imaging	1fad84c74af3be111a564b8aba24dffc7e14b580	756	1	0	1	0	true	true	disclosed-partial
+gson	828a97be0f8d58108b140b77df8dc76b657f4a87	-	-	-	-	-	-	-	build-failed
+commons-lang3	29ccc7665f3bc5d84155a3092ab2209a053324e6	1297	26	22	4	0	true	true	disclosed-partial
+commons-text	2c2d0818b0540c59f055f5174db51d0574af46da	187	10	4	6	0	true	true	disclosed-partial
 commons-collections4	7f7fb0244abc940a2e9dd28b67508c0483a58c3e	2826	18	7	10	1	false	true	VIOLATION(1)
 commons-codec	965109705c5236b05011e1c45f47d991abfa521e	142	11	3	8	0	true	true	disclosed-partial
 commons-cli	698b238276c0e22e97e4aec703a0b00201d29666	230	0	0	0	0	true	true	no-in-scope-effect-executed

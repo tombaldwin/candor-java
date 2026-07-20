@@ -200,6 +200,13 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
     /** CHA: project subtypes-or-self of `owner` that provide a concrete (name,desc) impl. */
     static List<String> chaTargets(String owner, String name, String desc) {
         AnalysisContext c = ctx();   // hoist the ThreadLocal lookup out of the per-subtype loop below
+        // Memoize: chaTargets is pure over the fixed post-load hierarchy, and the same (owner,name,desc)
+        // recurs across every call site that dispatches this method on this declared type. `name` never
+        // contains '(' and `desc` always begins with it, so `name+desc` is an unambiguous join; '\t'
+        // separates the owner (neither internal names nor descriptors contain a tab).
+        String key = owner + '\t' + name + desc;
+        List<String> memo = c.chaTargetsCache.get(key);
+        if (memo != null) return memo;
         Set<String> out = new LinkedHashSet<>();
         // O(subtypes-of-owner) via the precomputed reverse index instead of scanning ALL classes. The
         // candidate set + its order are identical to the old `for (ClassNode c : ALL) if (c.name==owner
@@ -228,7 +235,9 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
             String impl = nearestConcreteSuper(owner, name, desc);
             if (impl != null) out.add(impl);
         }
-        return new ArrayList<>(out);
+        List<String> result = List.copyOf(out);   // immutable → safe to share across call sites
+        c.chaTargetsCache.put(key, result);
+        return result;
     }
 
     /** The single method a dispatch on a PROVABLY-`new recv` receiver actually invokes: `recv` itself if it

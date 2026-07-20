@@ -4,12 +4,15 @@
 with its own Maven wrapper (`./mvnw -DskipTests compile`), 30 application classes. Both gates run on
 the same `target/classes`. Reproduce: `bash run.sh`.
 
-## The two gates on the same classes
+## The gates on the same classes
 
-| Gate                                   | Verdict | What it saw |
-|----------------------------------------|---------|-------------|
-| **ArchUnit** (import/package rule)     | 🟢 **GREEN** | No class depends on `java.sql`/`javax.sql`. Data access is behind Spring Data repository *interfaces*, so the import graph shows the app as persistence-free. |
+| Gate                                                    | Verdict | What it saw |
+|---------------------------------------------------------|---------|-------------|
+| **ArchUnit — Family 1** (naive `java.sql`/`javax.sql` ban) | 🟢 **GREEN** | No class depends on the JDBC driver packages. Data access is behind Spring Data repository *interfaces*, so the import graph shows the app as persistence-free. |
+| **ArchUnit — Family 2** (repository-type ban) | 🔴 **RED** | The knowledgeable rule "no `…Controller` may depend on a `*Repository` type" fires — on the controller constructors, fields, AND the `findById`/`save`/`findAll` call sites, i.e. the same controllers candor flags. |
 | **candor** (effect-reachability)       | 🔴 **RED**   | **17 controller methods** perform `{ Db }` — determined (`unresolved=false`), transitively through the repository interfaces. |
+
+**The honest delta (per the SE referee).** On PetClinic the effect is *not* structurally inexpressible to ArchUnit: because the controllers hold an import-visible dependency on the repository interfaces, the Family-2 rule catches it. The difference is *where the domain knowledge lives* — the Family-2 rule must hand-encode "`*Repository` = persistence," whereas candor derives the `Db` from its Spring Data model with no rule authoring. The structurally-inexpressible case — an effect behind an injected port with **no** import edge at all — is the fixture of `eval/rq4a` (Datapoint 1), where no ArchUnit rule of any family can fire because the dependency edge does not exist in the bytecode.
 
 candor's report over the 48 analyzed functions: **21 `Db`, 6 `Clock`, 25 pure, 0 `Unknown`.** The
 `Db` reaches propagate from the Spring Data repositories (`OwnerRepository.findById` → `Db`) up through

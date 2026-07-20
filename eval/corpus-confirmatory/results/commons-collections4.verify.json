@@ -1,0 +1,226 @@
+{
+  "metrics": {
+    "scope": "all",
+    "effectsInScope": [
+      "Clock",
+      "Db",
+      "Env",
+      "Exec",
+      "Fs",
+      "Llm",
+      "Net",
+      "Rand"
+    ],
+    "executedFunctionsChecked": 18,
+    "analyzedFunctionsTotal": 2826,
+    "soundCompleteOk": 7,
+    "disclosedPartial": 10,
+    "disclosedUnknownLoadBearing": 0,
+    "cardinalSinViolations": 1,
+    "honestyInvariantHolds": false,
+    "attributionComplete": true,
+    "programExitCode": 1
+  },
+  "violations": [
+    {
+      "fn": "org.apache.commons.collections4.map.AbstractMapDecorator.equals",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [],
+      "escaped": [
+        "Clock"
+      ]
+    }
+  ],
+  "rows": [
+    {
+      "fn": "org.apache.commons.collections4.map.AbstractMapDecorator.equals",
+      "verdict": "VIOLATION",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": []
+    },
+    {
+      "fn": "org.apache.commons.collections4.map.PassiveExpiringMap$ConstantTimeToLiveExpirationPolicy.expirationTime",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "org.apache.commons.collections4.map.PassiveExpiringMap.containsKey",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "org.apache.commons.collections4.map.PassiveExpiringMap.containsValue",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "org.apache.commons.collections4.map.PassiveExpiringMap.entrySet",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "org.apache.commons.collections4.map.PassiveExpiringMap.get",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "org.apache.commons.collections4.map.PassiveExpiringMap.isEmpty",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "org.apache.commons.collections4.map.PassiveExpiringMap.keySet",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "org.apache.commons.collections4.map.PassiveExpiringMap.now",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "org.apache.commons.collections4.map.PassiveExpiringMap.put",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "org.apache.commons.collections4.map.PassiveExpiringMap.putAll",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "org.apache.commons.collections4.map.PassiveExpiringMap.size",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "org.apache.commons.collections4.map.PassiveExpiringMap.values",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "org.apache.commons.collections4.properties.AbstractPropertiesFactory.load(File)",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Fs"
+      ],
+      "inferred": [
+        "Fs"
+      ]
+    },
+    {
+      "fn": "org.apache.commons.collections4.properties.AbstractPropertiesFactory.load(Path)",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Fs"
+      ],
+      "inferred": [
+        "Fs"
+      ]
+    },
+    {
+      "fn": "org.apache.commons.collections4.properties.AbstractPropertiesFactory.load(String)",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Fs"
+      ],
+      "inferred": [
+        "Fs"
+      ]
+    },
+    {
+      "fn": "org.apache.commons.collections4.properties.AbstractPropertiesFactory.load(URI)",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Fs"
+      ],
+      "inferred": [
+        "Fs"
+      ]
+    },
+    {
+      "fn": "org.apache.commons.collections4.properties.AbstractPropertiesFactory.load(URL)",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Net"
+      ],
+      "inferred": [
+        "Net"
+      ]
+    }
+  ]
+}

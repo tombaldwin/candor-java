@@ -1,55 +1,72 @@
-# Confirmatory-corpus run — findings (first attempt)
+# Confirmatory-corpus run — findings
 
-Recorded honestly against the pre-registration (`PREREG.md`). The harness ran; the result is instructive
-but **not** a confirmatory H-result yet, and this file says exactly why.
+Recorded against the pre-registration (`PREREG.md`). Engine frozen at v0.23.1 (classifier unchanged; the
+runtime *oracle* was improved — see below — which is a stronger falsifier, not a changed classifier).
 
-## What ran, and the numbers
+## The result
 
-Engine frozen at v0.23.1 (classifier unchanged). 10 held-out JVM repos built and were verified via
-`candor verify … --run "mvn test"`; 2 failed to build (gson multi-module `-pl`, commons-fileupload-1.5).
+Driving each held-out repo's suite through the **JUnit Platform ConsoleLauncher in one JVM** (see "Driver"
+below) with `--scope all`, on code the classifier was **not** tuned against:
 
-**Across ~7,000 analyzed functions in the 10 built repos: 0 cardinal-sin violations, 0 fabrications — but
-`executedFunctionsChecked = 0` on every repo.** The honesty invariant was therefore exercised on **zero**
-functions. As-run this is a *fabrication-mirror* result (no over-report on held-out code), **not** an
-H-confirmation.
+| repo | ref | analyzed | checked | sound-complete | disclosed-partial | **violations** | H |
+|---|---|---|---|---|---|---|---|
+| zt-zip (Fs) | zt-zip-1.17 | 251 | **110** | 25 | 85 | 0 | holds |
+| commons-dbutils (Db) | 1.8.1 | 195 | **39** | 25 | 14 | 0 | holds |
+| commons-codec | 1.17.1 | 142 | **11** | 3 | 8 | 0 | holds |
+| commons-collections4 | 4.5.0 | 2826 | 18 | 7 | 10 | **1** | **VIOLATED** |
+| commons-cli (control) | 1.9.0 | 230 | 0 | 0 | 0 | 0 | holds (vacuous) |
+| zt-exec | zt-exec-1.12 | 145 | 0 | 0 | 0 | 0 | holds (vacuous) |
 
-## Why `checked=0` — three compounding causes, each verified
+Also (separate, un-timed run): **commons-net** — 803 analyzed, **28 checked** (Net, socket clients), 0
+violations, H holds. Excluded from the table because its suite connects to *real* external FTP/SMTP servers
+and is timing-flaky (28 when it completes, 0 when the 8-min cap truncates it) — not reproducible enough to
+pin.
 
-1. **The `-javaagent` does not reach `mvn`'s forked test JVMs (the dominant cause).** Diagnostic: the
-   *known-good* developmental repo `commons-io` (which yielded 258 checked functions via the JUnit
-   Platform **ConsoleLauncher** in a single JVM) gives **`checked=0`** when driven through this harness's
-   `mvn test`. The verify stderr shows `Picked up JAVA_TOOL_OPTIONS` **once** — only the outer `mvn` JVM is
-   instrumented; Surefire forks the test JVMs and the agent env does not propagate into them. `-DforkCount=0`
-   did **not** fix it (still `checked=0`). So `mvn test` is the wrong driver; the working driver is the
-   ConsoleLauncher with a per-repo test classpath, single JVM (what the developmental runs used).
-2. **Effect delegation.** Even instrumented, many libraries perform their effects in the *JDK or a
-   dependency*, not their own functions: `commons-imaging` reads via `InputStream`/classpath resources
-   (not `new FileInputStream` in its code); `commons-email` delegates the socket to `javax.mail.Transport`;
-   CSV/codec/lang transform *caller-opened* streams (charge-at-creation → the caller's effect). `commons-io`
-   is productive precisely because it is a *thin I/O wrapper* whose own functions call `new FileInputStream`.
-3. **Mocked/absent effects in unit suites.** `commons-net` socket tests need live servers (skip/mock);
-   `commons-dbutils` tests largely mock JDBC rather than hit a DB.
+So on held-out code the run exercised **~160 functions against real runtime effects across Fs / Db / Net**
+(zt-zip 110 + dbutils 39 + codec 11 + net 28), H holds on all of them — and it **caught one false
+all-clear**.
 
-## What was fixed / improved along the way (kept)
+## The false all-clear it caught (reported, NOT fixed — per the pre-registration)
 
-- **Oracle scope widened (`--scope all`) + a Db mapping added to `EffectMap`** (JDBC `execute*` / `commit`
-  / `getConnection` → `Db`, high-precision, independent of candor's `Rules`). Clock was already covered
-  (`System.currentTimeMillis`/`nanoTime`/`Instant.now`). This is a genuine oracle-recall improvement; it did
-  not light up this corpus only because of causes (1)–(3), not because the mapping is wrong.
-- **Runner hardened:** `git clean -fdxq` before each build (our own report/log artifacts were tripping the
-  repos' Apache-RAT license check on re-runs); build logs written outside the repo tree; python-free parsing.
-- **Manifest tags corrected** (imaging `1.0.0-alpha6`, fileupload drops the `rel/` prefix, email2→email).
+`org.apache.commons.collections4.map.AbstractMapDecorator.equals` — **observed `Clock`, inferred `[]`**
+(candor declared it sound-complete/pure), `escaped: [Clock]`. Mechanism: `equals` is
+`return decorated().equals(object)`; when the compared `object` is a `PassiveExpiringMap` (a time-expiring
+map), the JDK's `HashMap.equals` calls back into that map's overridden accessors, which read the clock to
+evict expired entries. candor analysed the delegating `decorated().equals(object)` — an interface call whose
+target is argument-dependent — as **pure**, rather than disclosing `Unknown`. That is a genuine
+missing-disclosure of the same class as the developmental synchronous-opaque-callback / dynamic-dispatch
+finds (an **(A3)** reach under the collapsed call relation of §3.4): candor's overridden `PassiveExpiringMap`
+methods correctly carry `[Clock, Unknown]` (rows in the verify JSON), but the *inherited* `equals` does not.
+Per the pre-registration this is **recorded, not repaired**; a minimal repro to convert "flagged by the
+confirmatory oracle" into a gated classifier fix is the natural (separate) follow-up.
 
-## The honest status, and the remaining work
+## What made this work (vs. the first attempt's `checked=0` everywhere)
 
-The pre-registered harness's **static + fabrication-mirror** arms work at scale (0 fabrications on ~7,000
-held-out functions is real). The **H arm needs a different suite driver**: a ConsoleLauncher launched in one
-JVM with a per-repo test classpath (`mvn dependency:build-classpath` + `test-classes` + the
-`junit-platform-console-standalone` jar), and a corpus curated toward **thin-I/O-wrapper** libraries whose
-own functions perform `Fs`/`Net`/`Exec` and whose suites do real in-process I/O — a smaller, harder-won set
-than "popular dynamic-feature-rich libraries." That is the concrete next step; it is real infrastructure,
-not a flag.
+The first attempt drove suites with `mvn test` and got `checked=0` on everything — Surefire *forks* the test
+JVMs and the `-javaagent` (wired via `JAVA_TOOL_OPTIONS`) does not propagate into the forks (proven: the
+known-good commons-io gives `checked=0` through `mvn test`, `checked=217` through the ConsoleLauncher). Fixes
+that got real coverage:
 
-**Do not cite this run as an H-confirmation.** It confirms the fabrication mirror at scale and documents,
-with a clean diagnostic, why confirmatory H-testing on frozen third-party library code is hard — which is
-itself the honest reason the paper marks the at-scale H-corpus as pending.
+- **Driver:** run the whole suite via the JUnit **ConsoleLauncher in the single JVM the agent attaches to**
+  (`run_corpus.sh` builds each repo's test classpath: main+test classes + test-scope deps + the
+  console-standalone jar), not `mvn test`.
+- **Oracle scope:** `--scope all` (covers `Clock`/`Db`/`Env`/`Rand`), and a new **Db mapping** in
+  `EffectMap` (JDBC `execute*`/`commit`/`getConnection`). Without these, dbutils (Db) and the collections4
+  Clock miss are invisible. The Db/Clock coverage is what surfaced *both* the dbutils hold **and** the
+  collections4 violation.
+- **Corpus selection:** libraries whose *own* functions perform effects with **deterministic local** I/O —
+  zt-zip (files), dbutils (in-memory h2), zt-exec (processes) — not delegation libraries (imaging via
+  InputStream, email via javax.mail) or pure transformers, and not network libraries that need live servers
+  (commons-net's flakiness).
+- **Robustness:** per-suite 8-min timeout (pool2's timing/concurrency tests hang the single JVM otherwise),
+  `git clean` before each build (our artifacts tripped Apache-RAT), a pom `<source>1.6/1.7>`→`8` compat bump
+  for pre-JDK-8 libraries.
+
+## Honest scope
+
+This is a *first* confirmatory slice, not the full pre-registered corpus at scale: 6 repos in the pinned
+table + net, deterministic-local-effect libraries, JVM arm only. `zt-exec` and `commons-cli` are `checked=0`
+(a process suite that skips in the container; a pure arg-parser) — valid fabrication-mirror datapoints (no
+over-report), not H-tests. But it is a **real** confirmatory result: on held-out code the honesty invariant
+held on ~160 effect-exercising functions and the oracle **caught a real false all-clear** — the falsifier
+doing exactly what the paper claims, on code we did not write and did not tune against.

@@ -1,0 +1,7 @@
+repo	sha	analyzed	checked	sound	disclosed	violations	Hholds	complete	verdict
+zt-zip	9feb38dcfd092aec8df2e4487787669af9705444	251	110	25	85	0	true	true	disclosed-partial
+zt-exec	763497ed4a4e60cc2847d87da2a0773e8ea6eb66	145	0	0	0	0	true	true	no-in-scope-effect-executed
+commons-dbutils	0b30ed1bddfa07bfda44122fc52ccd0e49fb6006	195	39	25	14	0	true	true	disclosed-partial
+commons-collections4	7f7fb0244abc940a2e9dd28b67508c0483a58c3e	2826	18	7	10	1	false	true	VIOLATION(1)
+commons-codec	965109705c5236b05011e1c45f47d991abfa521e	142	11	3	8	0	true	true	disclosed-partial
+commons-cli	698b238276c0e22e97e4aec703a0b00201d29666	230	0	0	0	0	true	true	no-in-scope-effect-executed

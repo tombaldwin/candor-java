@@ -48,9 +48,13 @@ grep -vE '^\s*#|^\s*$' "$HERE/manifest.tsv" | while IFS=$'\t' read -r name url r
   # Pristine tree before each build: our own report/log artifacts (and .candor/) otherwise trip a repo's
   # build-hygiene check (e.g. Apache RAT license-check) on re-runs. Clean removes untracked incl. stale target.
   git -C "$d" clean -fdxq 2>/dev/null || true
-  # Compat only (not a code change): JDK 21 rejects source/target 6-7. Bump any hardcoded <source>/<target>
-  # 1.6/1.7 in the repo's poms to 8 so pre-JDK-8 libraries compile. Recorded as a build-compat deviation.
-  find "$d" -name pom.xml -exec sed -i -E 's#<(source|target)>1\.[67]</(source|target)>#<\1>8</\2>#g' {} + 2>/dev/null || true
+  # Compat only (not a code change): JDK 21 rejects source/target 5-7. Bump any hardcoded compiler source/
+  # target level in the repo's poms to 8 so pre-JDK-8 libraries compile — both the plugin <source>/<target>
+  # form and the <maven.compiler.source>/<maven.compiler.target> property form, dotted (1.5-1.7) or bare
+  # (5-7). Source level only sets the classfile version; it does not change the bytecode effects candor reads,
+  # so this is pure build feasibility. perl (not sed -i) for macOS/Linux portability. Recorded as a deviation.
+  find "$d" -name pom.xml -exec perl -0pi -e \
+    's#<(source|target|maven\.compiler\.source|maven\.compiler\.target)>\s*(1\.[567]|[567])\s*</\1>#<$1>8</$1>#g' {} + 2>/dev/null || true
   echo "  building…"
   if ! ( cd "$d" && eval "$build" ) >"/tmp/$name.build.log" 2>&1; then
     cp "/tmp/$name.build.log" "$HERE/results/$name.build.log" 2>/dev/null || true

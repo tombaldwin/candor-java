@@ -14,7 +14,7 @@ the same `target/classes`. Reproduce: `bash run.sh`.
 
 **The honest delta (per the SE referee).** On PetClinic the effect is *not* structurally inexpressible to ArchUnit: because the controllers hold an import-visible dependency on the repository interfaces, the Family-2 rule catches it. The difference is *where the domain knowledge lives* — the Family-2 rule must hand-encode "`*Repository` = persistence," whereas candor derives the `Db` from its Spring Data model with no rule authoring. The structurally-inexpressible case — an effect behind an injected port with **no** import edge at all — is the fixture of `eval/rq4a` (Datapoint 1), where no ArchUnit rule of any family can fire because the dependency edge does not exist in the bytecode.
 
-candor's report over the 48 analyzed functions: **21 `Db`, 6 `Clock`, 25 pure, 0 `Unknown`.** The
+candor's report over the 48 analyzed functions: **21 `Db`, 6 `Clock` (4 carrying both), 25 pure, 0 `Unknown`** (23 distinct effectful + 25 pure = 48). The
 `Db` reaches propagate from the Spring Data repositories (`OwnerRepository.findById` → `Db`) up through
 every controller that calls them (`OwnerController.processFindForm`, `VetController.showVetList`,
 `VisitController.processNewVisitForm`, …).

@@ -1,0 +1,17 @@
+# FRESH-DRAW confirmatory corpus — JVM arm. Committed before the run (see FRESHDRAW.md).
+# The SAME frozen classifier (candor-java 0.23.1, sha256 bf572eb3…) as the replication run, on a NEW held-out
+# corpus whose outcome is genuinely unknown at freeze time — no repo here appears in the replication manifest
+# (../corpus-confirmatory/manifest.tsv) NOR in the developmental EXCLUDED set (../corpus-confirmatory/EXCLUDED.md).
+# Columns: name<TAB>url<TAB>ref(tag)<TAB>classes<TAB>build_cmd<TAB>(unused)<TAB>role+why
+# Driven by the JUnit ConsoleLauncher in ONE JVM (run_corpus.sh), NOT `mvn test` (Surefire forks don't inherit
+# the -javaagent). role ∈ {H-test: perform effects in their OWN functions (drive checked>0) | fab-control:
+# pure/dynamic transformers that should NOT fabricate an effect (checked≈0 — the fabrication mirror)}.
+# HELD-OUT twice over: excludes the 12 replication repos AND the 8 developmental repos.
+commons-csv	https://github.com/apache/commons-csv	rel/commons-csv-1.11.0	target/classes	mvn -q -DskipTests -Drat.skip=true process-test-resources test-compile -Dmaven.compiler.source=8 -Dmaven.compiler.target=8	-	H-test: CSVParser/CSVPrinter open real files by path in tests — Fs in its own functions
+joda-time	https://github.com/JodaOrg/joda-time	v2.12.7	target/classes	mvn -q -DskipTests -Drat.skip=true process-test-resources test-compile -Dmaven.compiler.source=8 -Dmaven.compiler.target=8	-	H-test: DateTime/Instant.now() read the system clock in its own code — Clock (needs --scope all)
+nanohttpd	https://github.com/NanoHttpd/nanohttpd	nanohttpd-project-2.3.1	core/target/classes	mvn -q -pl core -am -DskipTests -Drat.skip=true process-test-resources test-compile -Dmaven.compiler.source=8 -Dmaven.compiler.target=8	-	H-test: binds a real ServerSocket itself in tests — Net via java.net in its own code
+jackson-core	https://github.com/FasterXML/jackson-core	jackson-core-2.17.2	target/classes	mvn -q -DskipTests -Drat.skip=true process-test-resources test-compile -Dmaven.compiler.source=8 -Dmaven.compiler.target=8	-	fab-control: streaming JSON parse/generate over CALLER-supplied streams/readers — charge-at-creation ⇒ effect-free (no over-report)
+commons-beanutils	https://github.com/apache/commons-beanutils	rel/commons-beanutils-1.11.0	target/classes	mvn -q -DskipTests -Drat.skip=true process-test-resources test-compile -Dmaven.compiler.source=8 -Dmaven.compiler.target=8	-	fab-control: reflection bean property access (PropertyUtils/BeanUtils) — pure invoke-by-name, must not fabricate effects
+commons-validator	https://github.com/apache/commons-validator	rel/commons-validator-1.9.0	target/classes	mvn -q -DskipTests -Drat.skip=true process-test-resources test-compile -Dmaven.compiler.source=8 -Dmaven.compiler.target=8	-	fab-control: field/format validation over in-memory data — a near-pure control
+commons-jexl	https://github.com/apache/commons-jexl	rel/commons-jexl-3.4.0	target/classes	mvn -q -DskipTests -Drat.skip=true process-test-resources test-compile -Dmaven.compiler.source=8 -Dmaven.compiler.target=8	-	fab-control: dynamic expression evaluation (opaque runtime dispatch) — should stay effect-free over in-memory contexts
+commons-digester3	https://github.com/apache/commons-digester	commons-digester3-3.0	target/classes	mvn -q -DskipTests -Drat.skip=true process-test-resources test-compile -Dmaven.compiler.source=8 -Dmaven.compiler.target=8	-	fab-control: reflection-driven XML→object rule dispatch — dynamic; a parser reading a caller Reader should not fabricate Fs

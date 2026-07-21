@@ -4,6 +4,9 @@
 with its own Maven wrapper (`./mvnw -DskipTests compile`), 30 application classes. Both gates run on
 the same `target/classes`. Reproduce: `bash run.sh`.
 
+**Reproducibility caveat:** the run clones upstream PetClinic HEAD unless `PETCLINIC_SHA` is set, so
+the counts here may drift as PetClinic evolves; set `PETCLINIC_SHA` in `run.sh` for bit-reproduction.
+
 ## The gates on the same classes
 
 | Gate                                                    | Verdict | What it saw |

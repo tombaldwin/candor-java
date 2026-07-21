@@ -8,11 +8,12 @@ is the result — reported, not repaired.
 
 ## The discipline (what makes this confirmatory, not developmental)
 
-1. **Frozen engine.** The engine is the candor-java `0.23.1`-labelled `-all.jar` (spec floor 0.23), pinned
+1. **Frozen engine.** The engine is the candor-java `0.23.1` `-all.jar` (spec floor 0.23), pinned
    **by the sha256 of the binary itself** — `bf572eb32db56ef419c8ad7d8f118cfe225f859320252c6969299434263e10d8`,
-   which `run_frozen.sh` verifies and **aborts on mismatch**. (There is no `v0.23.x` git *tag* — the public
-   tags stop at `v0.9.0`; the reproducible pin is the binary hash, not a tag, and that hash is the
-   pre-registration anchor.) No classifier change is made during or because of this run. If the run surfaces
+   which `run_frozen.sh` verifies and **aborts on mismatch**. The matching `-all.jar` is also published as the
+   **`v0.23.1` GitHub release asset** (tag `v0.23.1`, 2026-07-20), so the pin is a durable release artifact —
+   but the *load-bearing* anchor is the sha256, not the tag (a tag can be moved; the hash cannot), which is
+   why the runner gates on the hash. No classifier change is made during or because of this run. If the run surfaces
    a silent under-report, it is **recorded as a violation**, not fixed-then-rerun. Any fix is a *separate,
    later* effort with its own separate result; it does not amend this table.
 2. **Pre-registered corpus.** The repositories and their refs are fixed in `manifest.tsv` before the run.

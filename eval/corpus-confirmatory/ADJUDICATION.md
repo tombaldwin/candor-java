@@ -36,10 +36,29 @@ A flag **stands as a violation** unless one of the following holds (trace publis
   launder the async blind region (§8.2).
 - **(iii) uncovered reach, receipt-disclosed.** Its charged effect reaches *only* through an **uncovered**
   package that the flagged frame's coverage-envelope receipt actually discloses (§3.4 covered-set scoping).
+- **(iv) out-of-scope frame (scanner-scoping error).** The flagged frame lies **outside the library-under-test's
+  claimed analyzed scope** — e.g. a test-harness file that should not have been scanned at all. This is a
+  *scanner-scoping* error, tabulated as its **own disposition**, not a library false all-clear and not a
+  clean over-flag; the remedy is to fix the scan's input set, not the classifier. (This is the clause that
+  stands behind the `get-port` disposition: its flagged frame is the *test file's own* `<module>`, which the
+  scan should not have included.)
 
-A frame **candor never emitted a signature for does NOT earn dismissal**: under `absent ⇒ (∅,∅)` (§3.2) an
-un-enumerated frame *reads as provably pure*, so a flag on it is a genuine (A0) consumer-level false
-all-clear, not an artifact. (This is the clause that stands `node-tar`.)
+A frame **candor never emitted a signature for does NOT earn dismissal** under (i)–(iii): under
+`absent ⇒ (∅,∅)` (§3.2) an un-enumerated *in-scope* frame *reads as provably pure*, so a flag on it is a
+genuine (A0) consumer-level false all-clear, not an artifact. (This is the clause that stands `node-tar` —
+distinct from clause (iv), which is about a frame that should never have been in the analyzed set at all.)
+
+## Frame accounting (how flagged D=∅ frames are tallied)
+
+The runners' `sound_complete` column counts only D=∅ frames the oracle checked and found **clean**. A
+**flagged** D=∅ frame (one the oracle charged an effect against) is tallied in the **`violations`** column,
+*additional to* `sound_complete` — so a dismissed over-flag on a D=∅ frame is **not** inside the
+`sound_complete` denominator. This matters for the confirmatory rate (§8.5): the "0 violations on 25
+sound-complete frames" counts the 25 **clean** frames; the two dismissed Node over-flags (`get-port`,
+`proper-lockfile`) are D=∅ frames flagged-then-dismissed that sit *outside* the 25, so the strictest reading
+that refuses to dismiss them is **1/26** (proper-lockfile, the unambiguous in-scope library frame) or **2/27**
+(also counting get-port's out-of-scope frame per clause (iv)); the R8 event is likewise a flagged D=∅ frame
+outside the 86 replication `sound_complete`, so the pooled descriptive figure is **1/112**, not 1/111.
 
 ## v1 — the earlier form (reconstructed)
 
@@ -65,7 +84,7 @@ All three v1→v2 changes narrow what may be dismissed. There is no change that 
 |---|---|---|---|
 | R8 (`AbstractMapDecorator.equals` → `Clock`) | JVM | **violation** | reach is inside `equals`'s dynamic extent, through *covered* (modelled JDK `HashMap.equals`) code; `equals` carries a real `D=∅` signature. Not dismissible under (i)/(ii)/(iii). |
 | `node-tar` (`WriteEntrySync.constructor` Env/Fs) | Node | **violation** | un-emitted, undisclosed constructor → reads pure under `absent ⇒ (∅,∅)`. The removed v1 clause is what would have laundered it. |
-| `get-port` (`ava` snapshot `Fs`) | Node | over-flag | flagged frame is the *test file's own* `<module>`, not a library function invoking a callback (disjunct i). |
+| `get-port` (`ava` snapshot `Fs`) | Node | over-flag (scanner-scope) | flagged frame is the *test file's own* `<module>` — outside the library-under-test's claimed scope (clause iv), not a library false all-clear. |
 | `proper-lockfile` (module-init `Fs`) | Node | over-flag | effect fired *outside* the module-init frame's dynamic extent, disclosed on the functions that perform it (disjunct ii). |
 | `Path.swift next@Net` | Swift | over-flag | `-k` leaf-name collision (`next` iterator ≠ networking); XCTest socket mis-attributed by leaf name (instrument artifact, safe direction). |
 

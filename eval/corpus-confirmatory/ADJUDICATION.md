@@ -9,15 +9,26 @@ in the arm's `FINDINGS.md`, so which way a flag falls is checkable, not asserted
 
 ## Provenance, stated honestly
 
-The rule went through **two forms**. The **final form (v2)** below is the published, authoritative one
-(this file is its committed artifact; its git history is its timestamp). The **earlier form (v1)** was *not*
-separately committed at the time — it lived in the run's design notes — so it is **reconstructed here**, not
-presented as a retained independent artifact. The one thing that matters for the paper's non-post-hoc claim
-is verifiable from the reconstruction: **v2 differs from v1 only in the dismissal-*narrowing* direction** —
-it removed a clause that would have laundered a genuine miss and added a guard that routes an unverifiable
-case to a fail-closed verdict. Every amendment moved *against* the tool's interest. R8 and the two
-JVM/Node over-flag dispositions are invariant across v1 and v2; only `node-tar` changes disposition (v1
-would have wrongly dismissed it; v2 stands it as a violation).
+What was actually pre-registered is **stricter than this rule**. The committed pre-run artifact is
+`PREREG.md` (candor-java `9b81593`, committed before the run), and its acceptance criterion is
+**carve-out-free**: any witnessed `D=∅` violation on an executed path falsifies the honesty claim,
+full stop. Under the criterion we *did* pre-register, **R8 falsifies outright** — no adjudication
+clause rescues it. This file — the precision-fork refinement that separates genuine violations from
+instrument artifacts — was committed **post-run** (`c7e517c`) and **reconstructs an uncommitted
+earlier form**; it is therefore a **post-hoc refinement that relaxes the pre-registered bar**, and
+the paper treats it as such.
+
+Within the refinement itself, the rule went through **two forms**. The **final form (v2)** below is
+the published, authoritative one (this file is its committed artifact; its git history is its
+timestamp). The **earlier form (v1)** was *not* separately committed at the time — it lived in the
+run's design notes — so it is **reconstructed here**, not presented as a retained independent
+artifact. The v1→v2 history splits by clause: **clauses (i)–(iii) changed only in the
+dismissal-*narrowing* direction** — v2 removed a clause that would have laundered a genuine miss and
+added a guard that routes an unverifiable case to a fail-closed verdict. **Clause (iv) is different
+in kind**: it is a **post-hoc-added dismissal disposition** (it did not exist in v1), added to
+tabulate the `get-port` scanner-scoping error — an addition in the widening direction, called out as
+such below. R8 and the two JVM/Node over-flag dispositions are invariant across v1 and v2; only
+`node-tar` changes disposition (v1 would have wrongly dismissed it; v2 stands it as a violation).
 
 ## v2 — the final, authoritative rule
 
@@ -76,7 +87,13 @@ v1 was the same three-disjunct shape with two weaker points, both of which v2 ti
    violation* under v2.
 3. v1 had **no async guard** on disjunct (ii); v2 added the cross-thread → exit-2 routing.
 
-All three v1→v2 changes narrow what may be dismissed. There is no change that *widened* dismissal.
+Changes 1–3 — the (i)–(iii) history — narrow what may be dismissed. **Clause (iv) is the exception
+and is not claimed as a narrowing**: it did not exist in v1 and was added post-hoc as its own
+dismissal disposition (a widening), to name the `get-port` scanner-scoping error for what it is. Its
+saving property is **disjointness from the `node-tar` clause**: (iv) applies only to a frame that
+should never have been in the analyzed set at all (an out-of-scope test file), whereas the
+un-emitted-frame rule governs *in-scope* frames that read pure under `absent ⇒ (∅,∅)` — so (iv)
+cannot launder a `node-tar`-shaped miss, and `node-tar`'s violation disposition is unaffected by it.
 
 ## The five held-out flags under v2
 

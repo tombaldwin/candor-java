@@ -1,0 +1,9 @@
+repo	disposition	analyzed	checked	sound_complete	disclosed	violations
+commons-csv	disclosed-partial	231	5	0	5	0
+joda-time	no-in-scope-effect-executed	3167	0	0	0	0
+nanohttpd	disclosed-partial	69	16	9	7	0
+jackson-core	disclosed-partial	737	14	11	3	0
+commons-beanutils	no-in-scope-effect-executed	733	0	0	0	0
+commons-validator	no-in-scope-effect-executed	100	0	0	0	0
+commons-jexl	disclosed-partial	1588	6	0	6	0
+commons-digester3	build-failed	-	-	-	-	-

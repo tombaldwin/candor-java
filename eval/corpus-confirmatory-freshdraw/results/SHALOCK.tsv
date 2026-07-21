@@ -1,0 +1,8 @@
+commons-csv	rel/commons-csv-1.11.0	74e12741b24e724bb2e60109daa0c834fd75a68a
+joda-time	v2.12.7	290a451396637ed9ad52cce61e40382e8095d8fb
+nanohttpd	nanohttpd-project-2.3.1	16ed41b22c2739838ec7cb0e6ba26d52f4c8db3e
+jackson-core	jackson-core-2.17.2	a6f49caedcb398efe14c06c4e9abf6e672c412f5
+commons-beanutils	rel/commons-beanutils-1.11.0	9c0b5cf007818c3fb1ac36d5ed394d56d0fd13c3
+commons-validator	rel/commons-validator-1.9.0	191171b2fb1500d24c42a809cf13386ac8f4ecac
+commons-jexl	rel/commons-jexl-3.4.0	1555adf4cb2b21d15c03b1bcb7e79b75529656ab
+commons-digester3	commons-digester3-3.0	89e033d78236edb9344a9054545c1383a355f2a0

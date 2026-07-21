@@ -1,0 +1,16 @@
+# Transitive reconcile-against-reality corpus (RQ1, JVM arm) — the 15-catch / 5-fix result of the paper's
+# §7.1 Part F. Manifest-driven; one row per repo. Columns: name<TAB>url<TAB>ref<TAB>classes<TAB>build<TAB>test<TAB>why
+#
+# These are the independently-authored Apache Commons libraries the transitive `candor verify` oracle was run
+# on. THREE drove classifier fixes (dbcp2/compress/vfs2 — 15 caught silent under-reports, RECONCILE.md); TWO
+# held with zero finds (io/exec); ONE was a post-fix convergence run (configuration2). Running THIS manifest
+# on the CURRENT (post-fix) engine reproduces the *holds* — 0 undisclosed violations — because the fixes are
+# in the engine; re-witnessing the *catches* needs the pre-fix engine (RECONCILE.md gives the pre-fix commit
+# and the regression test per vein). Refs are release tags; the runner resolves each to a commit SHA and
+# locks it in results/SHALOCK.tsv.
+commons-io	https://github.com/apache/commons-io	rel/commons-io-2.16.1	target/classes	mvn -q -DskipTests -Drat.skip=true process-test-resources test-compile	-	held, zero finds — filesystem-utility library; override-heavy (visitor/filter/comparator), the generic-override pattern the dbcp2 vein comes from
+commons-exec	https://github.com/apache/commons-exec	rel/commons-exec-1.4.0	target/classes	mvn -q -DskipTests -Drat.skip=true process-test-resources test-compile	-	held, zero finds — process execution; witnesses Exec/Env/Clock through the transitive walk
+commons-dbcp2	https://github.com/apache/commons-dbcp	rel/commons-dbcp-2.12.0	target/classes	mvn -q -DskipTests -Drat.skip=true process-test-resources test-compile	-	FIX-DRIVING: 7 super-call-through-generic-superclass Clock under-reports (5 closed, 2 open borrowObject→activateObject, RECONCILE.md)
+commons-compress	https://github.com/apache/commons-compress	rel/commons-compress-1.26.2	target/classes	mvn -q -DskipTests -Drat.skip=true process-test-resources test-compile	-	FIX-DRIVING: 4 under-reports — synchronous-opaque-callback (forEach) + filter-stream-delegate close; plus the readFully scoping-class catch (value-provenance)
+commons-vfs2	https://github.com/apache/commons-vfs	rel/commons-vfs-2.9.0	commons-vfs2/target/classes	mvn -q -DskipTests -Drat.skip=true process-test-resources test-compile	-	FIX-DRIVING: 4 under-reports — doPrivileged-invoker + active-I/O stream-delegate; first Net-and-Fs-heavy corpus
+commons-configuration2	https://github.com/apache/commons-configuration	rel/commons-configuration-2.11.0	target/classes	mvn -q -DskipTests -Drat.skip=true process-test-resources test-compile	-	convergence run (post-fix): 130 fns witnessed, 0 new classifier vein; the CatalogResolver Net is an envelope-disclosed boundary, not a false all-clear

@@ -9,6 +9,10 @@
 # Needs: git, JDK 21, jbang (fetches ArchUnit once), the candor-java fat jar. Clones + compiles PetClinic
 # into a scratch dir (Maven wrapper downloads Spring deps — network required, ~1-3 min first run).
 set -uo pipefail
+# PETCLINIC_SHA: pin the PetClinic commit for bit-reproduction. Left empty, the script clones
+# upstream HEAD and the 17-controller-method count may drift as PetClinic evolves.
+# Maintainer: set this to the commit the published numbers were produced from.
+PETCLINIC_SHA="${PETCLINIC_SHA:-}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JAR="${CANDOR_JAR:-$(ls -t "$HERE"/../../build/libs/*-all.jar 2>/dev/null | head -1)}"
 [ -n "$JAR" ] && [ -f "$JAR" ] || { echo "no candor-java jar — run ./gradlew shadowJar first"; exit 1; }
@@ -20,6 +24,12 @@ if [ ! -d "$PC/target/classes" ]; then
   mkdir -p "$WORK"; rm -rf "$PC"
   echo "cloning + compiling spring-petclinic (first run only)…"
   git clone --depth 1 https://github.com/spring-projects/spring-petclinic.git "$PC" >/dev/null 2>&1
+  if [ -n "$PETCLINIC_SHA" ]; then
+    ( cd "$PC" && git fetch --depth 1 origin "$PETCLINIC_SHA" >/dev/null 2>&1 && git checkout -q "$PETCLINIC_SHA" ) \
+      || { echo "failed to checkout PETCLINIC_SHA=$PETCLINIC_SHA"; exit 1; }
+  else
+    echo "WARNING: PetClinic not SHA-pinned; result may drift — set PETCLINIC_SHA for bit-reproduction"
+  fi
   ( cd "$PC" && ./mvnw -q -B -DskipTests compile ) || { echo "petclinic build failed"; exit 1; }
 fi
 echo "petclinic classes: $(find "$PC/target/classes" -name '*.class' | wc -l | tr -d ' ')"

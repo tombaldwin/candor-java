@@ -35,7 +35,12 @@ Both violations, identical shape:
 | `com.zaxxer.hikari.util.ConcurrentBag.remove` | `[Log]` | `[Clock]` | `Clock` |
 | `com.zaxxer.hikari.util.ConcurrentBag.unreserve` | `[Log]` | `[Clock]` | `Clock` |
 
-### The vein: an effect reached through an IMPLICIT `toString()` over a generic-bounded type parameter
+### The vein: an effect reached through IMPLICIT STRINGIFICATION inside the logging library
+
+> **Correction.** This section first recorded the mechanism as "the compiler-inserted `toString()` at a
+> string concatenation". A 12-line fixture **disproved** that — candor-java resolves the concat case
+> correctly. The verified mechanism is below. The wrong version is kept in the record because the lesson
+> is reusable: never trust a mechanism story that has not been reduced to a fixture.
 
 ```java
 public class ConcurrentBag<T extends IConcurrentBagEntry> { ...
@@ -51,9 +56,12 @@ public String toString() {
 }
 ```
 
-candor resolved the `LOGGER.warn` call itself (hence the inferred `Log`) but did **not** follow the
-*implicit* `toString()` the logging call performs on its argument, whose receiver type is the generic
-parameter `T` bounded by a project interface. So the frame read `(S = {Log}, D = ∅)` — sound-complete and
+The call is **SLF4J parameterized logging**, not concatenation: `bagEntry` is passed as an `Object` and
+`toString()` is invoked **inside the logging library** (slf4j's `MessageFormatter`, at format time), not
+at this call site. At runtime the stack is `remove → LOGGER.warn → MessageFormatter → PoolEntry.toString
+→ currentTime`, so the effect is correctly charged to `remove`; statically, candor resolved the explicit
+`LOGGER.warn` (hence the inferred `Log`) and never followed the library's internal callback onto its
+argument. So the frame read `(S = {Log}, D = ∅)` — sound-complete and
 wrong — while the run charged it `Clock`. That is a false all-clear in the strict sense: a `D = ∅`
 signature whose executed effect escaped its declared set.
 
@@ -64,13 +72,23 @@ visible project interface with a visible implementor — so it earns **no §8.5 
 
 ### Why this matters more than one more catch
 
-The mechanism family is one candor has closed repeatedly in *other* engines — generic-bound dispatch
-(rust R37b, swift R39) — but the trigger here is the **implicit** call: no `toString()` appears in the
-source, the JVM inserts it at the string-concatenation/logging boundary. An analysis that models explicit
-dispatch and forgets compiler-inserted dispatch will read exactly this shape as pure. The Apache Commons
-corpora never surfaced it because their logging idiom differs; a different organization's house style
-found it in the first repository tried. That is the cross-organization argument in one datapoint, and it
-is evidence *for* the method and *against* the current headline rate.
+The family is one candor has closed before — **a library method that synchronously invokes a callback on
+its argument** (the `forEach` / `doPrivileged` veins, `eval/transitive-reconcile/RECONCILE.md`). What is
+new is that the callback is `toString()` and the invocation is a *formatting convention*, so
+`isInvokingHof`-style modelling never fired.
+
+**It is silent in ALL FOUR engines** — reproduced in 12-line fixtures: java (`LOGGER.warn`), ts
+(`console.log`), rust (`format!` via `Display`), swift (interpolation via `CustomStringConvertible`). In
+every engine the *implementation* is analysed correctly and carries `Clock`; the missed thing is the
+**edge from the formatting site to it**. Full write-up:
+`candor-spec/SOUNDNESS-VEIN-implicit-stringify.md`.
+
+That makes it a textbook **common-mode** defect and a live instance of the paper's RQ3 thesis:
+cross-engine conformance was green on it throughout, because four implementations over four unrelated
+representations share the *assumption* that stringification is pure — not any code. Agreement is
+structurally unable to see it. The Apache Commons corpora never triggered it; a different organization's
+logging idiom found it in the first repository with a real effect surface. Evidence *for* the method and
+*against* the current headline rate.
 
 ### Effect on the paper's claims
 

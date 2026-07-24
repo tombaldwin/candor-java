@@ -548,7 +548,53 @@ public class Candor {
             System.err.printf("candor-java: candor's classifier doesn't cover %d package%s this code calls into — "
                     + "their effects are INVISIBLE to the scan (absent from the report, NOT a claim they're pure): %s%s%n",
                     unlisted.size(), unlisted.size() == 1 ? "" : "s", shown, more);
+
         }
+
+        // CLOSED-WORLD HAZARD GUARD. `closed-world` asserts "the scanned classes ARE the complete world",
+        // which licenses resolving a would-be-broad dispatch to the visible impls instead of disclosing
+        // Unknown. The trigger is the set of owners where the flag ACTUALLY CHANGED THE ANSWER — not the
+        // κ ledger, which is a different gap entirely (an owner in an uncovered package is never
+        // closed-world-resolved, since resolution requires the owner in `byName`). Triggering on the
+        // ledger both MISSED the load-bearing case — a self-contained app whose own broad interface is
+        // silently resolved, with nothing uncovered to report — and misnamed the mechanism. The hazard is
+        // real whenever this fires: if ANY listed owner has an implementor in code the scan never loaded,
+        // its resolved answer can read PURE where a real effect lives. Measured on a real 18.7k-fn webapp:
+        // app classes ONLY under closed-world reported 618 gate hits where the same app scanned WITH its
+        // 222 dependency jars honestly reports ~6.7k — the flag had silenced the library reaches. We warn
+        // rather than refuse (the disclosure posture informs), and a user who genuinely scanned the whole
+        // world is legitimately served by the flag — the remedy line tells the other user what to do.
+        if (!ctx().closedWorldResolvedOwners.isEmpty()) {
+            int n = ctx().closedWorldResolvedOwners.size();
+            String top = ctx().closedWorldResolvedOwners.stream().limit(3)
+                    .map(s -> s.replace('/', '.')).collect(Collectors.joining(", "));
+            System.err.printf("candor-java: ⚠ closed-world resolved %d broad dispatch owner%s that would otherwise "
+                    + "have disclosed Unknown (%s%s). If any of them has an implementor outside this scan, that "
+                    + "resolution reads PURE where a real effect lives — a false all-clear. Only keep closed-world "
+                    + "if the scan really is the whole world (the .war/.jar AND its dependency jars).%n",
+                    n, n == 1 ? "" : "s", top, n > 3 ? ", …" : "");
+        }
+
+        // SCAN-COMPLETENESS NUDGE. A scan pointed at `build/classes` alone sees the app but none of its
+        // dependencies, so the effects those dependencies perform are INVISIBLE (κ ledger above) — a
+        // MISSING INPUT, not a precision defect. Measured on a real 18.7k-fn webapp: scanned app-only it
+        // could PROVE Net on 465 functions; re-scanned as the deployed war (app + its 222 dependency
+        // jars) the same gate proved Net on 5,865 — the library reaches became visible, determined
+        // effects rather than nothing. (The nudge deliberately promises VISIBILITY, not dispatch
+        // resolution: on that app 23 of 26 unresolved dispatches were over the app's OWN broad
+        // hierarchies, which more bytecode does not fix.) Advisory only; never touches the verdict.
+        // Triggered on CALL VOLUME into unscanned code, not on package count: count is the wrong metric —
+        // candor's own `build/classes` calls 518 times into just 4 unscanned packages (gson, asm), the
+        // textbook "you pointed it at classes, not the artifact" scan, which a count threshold misses
+        // entirely, while a small app touching 5 tiny util packages would be nudged for nothing.
+        int uncoveredCalls = unlisted.stream().mapToInt(Map.Entry::getValue).sum();
+        if (uncoveredCalls >= UNCOVERED_CALLS_NUDGE_MIN)
+            System.err.printf("candor-java: hint — %d call%s go into %d package%s that %s not scanned, so their "
+                    + "effects are invisible here. If you scanned only your app's classes, point candor at the "
+                    + "full deployed artifact (the .war/.jar AND its dependency jars): those reaches then resolve "
+                    + "to DETERMINED effects instead of being absent.%n",
+                    uncoveredCalls, uncoveredCalls == 1 ? "" : "s",
+                    unlisted.size(), unlisted.size() == 1 ? "" : "s", unlisted.size() == 1 ? "is" : "are");
 
         // Gate modes (candor-spec §3), each selected by its Mode's env var: CANDOR_STRICT (conformance
         // via DI), CANDOR_BASELINE (regression guard), CANDOR_NO_AMBIENT, CANDOR_POLICY.
@@ -2011,6 +2057,10 @@ public class Candor {
             boolean closedWorldResolvable = ctx.closedWorld && ctx.byName.containsKey(min.owner);
             boolean broad = cha.size() > CHA_FANOUT_LIMIT && !isClosedHierarchy(min.owner)
                     && !closedWorldResolvable;
+            // Record the owners where the FLAG changed the answer (would-be-broad, resolved anyway) —
+            // the trigger for the closed-world hazard warning. Advisory bookkeeping only.
+            if (closedWorldResolvable && cha.size() > CHA_FANOUT_LIMIT && !isClosedHierarchy(min.owner))
+                ctx.closedWorldResolvedOwners.add(min.owner);
             // A NARROW java.util container-iteration dispatch (Iterator.next / Iterable etc.)
             // DOES fan out: skipping it under-reported a custom Iterable's effect at the loop
             // site (`for (x : customBag)` came back pure) — the §7.13 fuzzer's for-each form
@@ -2265,8 +2315,11 @@ public class Candor {
                         // discloses Unknown, never silent-pure. A concrete method-ref / lambda synthetic
                         // target has no (further) project override → `cha` is self/empty → no change.
                         List<String> cha = chaTargets(h.getOwner(), h.getName(), h.getDesc());
-                        boolean broad = cha.size() > CHA_FANOUT_LIMIT && !isClosedHierarchy(h.getOwner())
+                        boolean wouldBeBroad = cha.size() > CHA_FANOUT_LIMIT && !isClosedHierarchy(h.getOwner());
+                        boolean broad = wouldBeBroad
                                 && !(ctx.closedWorld && ctx.byName.containsKey(h.getOwner()));
+                        // Same hazard bookkeeping as the direct-dispatch site: the flag changed the answer.
+                        if (wouldBeBroad && !broad) ctx.closedWorldResolvedOwners.add(h.getOwner());
                         if (broad) {
                             dir.add(Effect.UNKNOWN);
                             ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())

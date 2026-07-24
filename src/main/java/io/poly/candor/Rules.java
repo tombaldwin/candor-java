@@ -519,6 +519,14 @@ final class Rules {
      *  this and are dropped (their bodies stay reachable via the RUNTIME_OVERRIDES entry points). */
     static final int CHA_FANOUT_LIMIT = 12;
 
+    /** Total CALLS into unscanned packages above which a scan is assumed to be MISSING ITS DEPENDENCIES —
+     *  pointed at `build/classes` rather than at the deployed artifact — and so earns the scan-completeness
+     *  nudge. Volume, not package COUNT: candor's own `build/classes` makes 518 such calls into just 4
+     *  packages (gson, asm), the textbook case, which any count threshold misses, while a small app
+     *  touching a handful of tiny util packages would be nudged for nothing. A complete scan (the fat jar,
+     *  or app + dependency jars) sits at or near zero. Advisory only — never affects a verdict. */
+    static final int UNCOVERED_CALLS_NUDGE_MIN = 50;
+
     /** The single-ABSTRACT-method names of java.util.function.* (Function/BiFunction/operators → apply*;
      *  Consumer → accept; Predicate → test; Supplier → get*). Matched by NAME so the package's pure DEFAULT
      *  methods (andThen/compose/and/or/negate — known JDK plumbing that wraps the receiver into a new

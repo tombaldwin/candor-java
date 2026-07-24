@@ -1,0 +1,26 @@
+{
+  "metrics": {
+    "scope": "all",
+    "effectsInScope": [
+      "Clock",
+      "Db",
+      "Env",
+      "Exec",
+      "Fs",
+      "Llm",
+      "Net",
+      "Rand"
+    ],
+    "executedFunctionsChecked": 0,
+    "analyzedFunctionsTotal": 386,
+    "soundCompleteOk": 0,
+    "disclosedPartial": 0,
+    "disclosedUnknownLoadBearing": 0,
+    "cardinalSinViolations": 0,
+    "honestyInvariantHolds": true,
+    "attributionComplete": true,
+    "programExitCode": 1
+  },
+  "violations": [],
+  "rows": []
+}

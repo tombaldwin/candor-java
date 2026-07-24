@@ -88,3 +88,54 @@ is evidence *for* the method and *against* the current headline rate.
 concedes. HikariCP's suite is thorough for a pool but touches a small fraction of the analyzed surface.
 The >50% target is **not** achieved by this repo and is not claimed. Whether `gson` (117 test classes over
 223 analyzed) or `jgit` reach it is an open question at pre-registration time.
+
+---
+
+# Complete cross-org corpus result (all three repos)
+
+| repo | org | outcome-blind? | analyzed | checked | coverage | falsifiable (`D=∅`) | violations | verdict |
+|---|---|---|---|---|---|---|---|---|
+| HikariCP | brettwooldridge | **no** (feasibility probe) | 1180 | 74 | 6.3% | 25 | **2** | **VIOLATION** |
+| gson | Google | yes | 386 | 0 | 0.0% | 0 | 0 | vacuous |
+| jgit | Eclipse | yes | 7615 | 1541 | **20.2%** | **36** | 0 | held |
+
+## What each row actually supports
+
+**HikariCP — 2 false all-clears, but outcome-known.** The implicit-stringification vein
+(`candor-spec/SOUNDNESS-VEIN-implicit-stringify.md`), silent in all four engines. Seen during feasibility
+probing before pre-registration, so it does **not** carry blind-confirmatory status; it is a genuine
+catch on cross-org code, reported with that caveat.
+
+**gson — vacuous, and a SELECTION ERROR we own.** The suite ran; **no in-scope effect ever executed**
+(`checked = 0`). gson was chosen for dynamic-feature density (reflective type adapters) and it has that —
+but it is effect-*poor*: pure serialization, no `Net`/`Fs`/`Db`/`Clock` in its hot path. `PREREG.md` names
+the criterion as "dynamic-feature density **AND** effect class"; we satisfied the first and not the
+second. This row is **not a hold** and must never be counted as one — a corpus with no effect surface
+cannot falsify H.
+
+**jgit — the strongest row methodologically, and weaker than it first reads.** Outcome-blind, effect-rich
+(Fs + Net), **20.2% coverage — 3× the best of any prior confirmatory corpus** (§6.2 concedes 0–6.3%), 1541
+functions checked, attribution complete, **0 violations, H holds.** But the falsifiable denominator is
+**36**: of 1541 executed-and-checked functions, 1505 were **disclosed-partial**, where H is *vacuous by
+construction*. So the hold rests on 36 sound-complete frames, not on 1541. candor disclosed `Unknown` on
+**98% of executed jgit functions** — the disclosure posture working exactly as designed (never silently
+pure), but leaving H with very little to bite on. A reader must not convert "1541 checked, 0 violations"
+into confidence proportional to 1541.
+
+## Against the two W2 goals
+
+1. **Cross-organization holdout: ACHIEVED.** Three organizations, none of which authored code any candor
+   classifier fix was developed against. And it did what a fair test is supposed to do — it found a
+   defect the in-family corpora never surfaced, in the first repository with a real effect surface.
+2. **>50% coverage: NOT ACHIEVED.** Best is jgit at 20.2%. Better than the 0–6.3% the paper concedes, and
+   materially so, but not the target. The claim stands as measured; the target is not quietly restated
+   downward.
+
+## The honest headline for the paper
+
+The cross-organization corpus **did not confirm the in-family rate — it broke it.** On the first repo with
+a genuine effect surface, the frozen engine issued two false all-clears via a vein that is silent in all
+four engines. The one clean hold (jgit) is real, outcome-blind, and at the best coverage yet, but rests on
+36 falsifiable frames. §6.3's conceded threat — "the confirmatory holds are anti-conservative on in-family
+code; the classifier was patched on the neighbours" — is now a **measured result rather than a risk**, and
+the `0/25` / `1/112` rates must be labelled in-family wherever they appear.

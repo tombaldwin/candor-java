@@ -1,0 +1,2 @@
+repo	org	sha	analyzed	checked	coverage%	sound	disclosed	violations	Hholds	complete	verdict
+jgit	Eclipse	ea02caf1e7fa818f3a470a768bc34d38f8f70e9d	7615	1541	20.2	36	1505	0	true	true	held(disclosed-partial)

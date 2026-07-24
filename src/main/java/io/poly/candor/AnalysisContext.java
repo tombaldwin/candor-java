@@ -77,6 +77,14 @@ final class AnalysisContext {
                                                                    // complete world: a broad (>CHA_FANOUT_LIMIT) dispatch
                                                                    // over a PROJECT-defined type resolves to all its
                                                                    // impls (exact union) instead of dropping to Unknown
+    // The dispatch owners where closed-world ACTUALLY CHANGED THE ANSWER — a broad fan-out that would
+    // have disclosed Unknown was resolved to the visible impls because the flag asserted the world is
+    // complete. This, not the κ ledger, is the precise trigger for the closed-world hazard warning: it
+    // fires exactly when the flag moved a verdict, and stays quiet when the flag was inert. If that
+    // assertion is wrong for any owner here (an implementor lives in code the scan never loaded), the
+    // resolved answer can read PURE where a real effect lives — the cardinal sin, caused by a config
+    // flag rather than a classifier bug.
+    final Set<String> closedWorldResolvedOwners = new TreeSet<>(); // owner internal names, distinct
     final Map<String, EffectSet> tainted = new HashMap<>();        // fn -> injection-class effects on caller-derived args
     final Map<String, TreeSet<String>> hostsDirect = new HashMap<>();  // fn -> literal Net endpoints
     final Map<String, TreeSet<String>> cmdsDirect = new HashMap<>();   // fn -> literal Exec commands

@@ -1,5 +1,9 @@
 # CROSS-ORGANIZATION high-coverage confirmatory corpus (RQ1) — see PREREG.md.
-# Columns: name<TAB>org<TAB>url<TAB>ref<TAB>module<TAB>classes<TAB>build<TAB>why
+# Columns: name<TAB>org<TAB>url<TAB>ref<TAB>module<TAB>classes<TAB>testmodule<TAB>build<TAB>why
+#
+# `testmodule` is the module whose target/test-classes drives the suite. It is usually the same module as
+# the classes under analysis, but some projects (jgit) keep tests in a SEPARATE sibling module, which the
+# first run tabulated as `no-suite` attrition until the harness modelled it.
 #
 # HELD OUT BY ORGANIZATION, not merely by repository. The developmental + prior confirmatory sets are
 # Apache Commons (io, exec, dbcp2, compress, vfs2, configuration2, csv, lang3, text, collections4, codec,
@@ -10,6 +14,6 @@
 # `-Denforcer.skip=true` appears in build commands because several of these projects pin a maven-enforcer
 # JDK range that excludes the JDK 21 this harness runs on. It relaxes a BUILD-POLICY check only; it does
 # not alter sources, dependencies, or bytecode semantics.
-gson	Google	https://github.com/google/gson	gson-parent-2.11.0	gson	gson/target/classes	mvn -q -pl gson -am -DskipTests -Denforcer.skip=true test-compile	reflection-driven binding (TypeAdapter/ReflectiveTypeAdapterFactory), ServiceLoader, and a large first-party suite — dense (A3) dispatch surface, authored by Google not Apache
-HikariCP	brettwooldridge	https://github.com/brettwooldridge/HikariCP	HikariCP-5.1.0	.	target/classes	mvn -q -DskipTests -Denforcer.skip=true test-compile	THE regime §6.2 concedes is untested: a connection pool exercising Db/Net whose own suite is POOLED AND MULTI-THREADED (saturation tests run >10 threads), plus dynamic proxies (ProxyFactory/JavassistProxyFactory) — the async/pool thread-handoff attribution case
-jgit	Eclipse	https://github.com/eclipse-jgit/jgit	v6.7.0.202309050840-r	org.eclipse.jgit	org.eclipse.jgit/target/classes	mvn -q -pl org.eclipse.jgit -am -DskipTests -Denforcer.skip=true test-compile	Fs-and-Net heavy (git object store + transport), ServiceLoader-driven, a third organization and a fourth idiom family
+gson	Google	https://github.com/google/gson	gson-parent-2.11.0	gson	gson/target/classes	gson	mvn -q -pl gson -am -DskipTests -Denforcer.skip=true test-compile	reflection-driven binding (TypeAdapter/ReflectiveTypeAdapterFactory), ServiceLoader, and a large first-party suite — dense (A3) dispatch surface, authored by Google not Apache
+HikariCP	brettwooldridge	https://github.com/brettwooldridge/HikariCP	HikariCP-5.1.0	.	target/classes	.	mvn -q -DskipTests -Denforcer.skip=true test-compile	THE regime §6.2 concedes is untested: a connection pool exercising Db/Net whose own suite is POOLED AND MULTI-THREADED (saturation tests run >10 threads), plus dynamic proxies (ProxyFactory/JavassistProxyFactory) — the async/pool thread-handoff attribution case
+jgit	Eclipse	https://github.com/eclipse-jgit/jgit	v6.7.0.202309050840-r	org.eclipse.jgit	org.eclipse.jgit/target/classes	org.eclipse.jgit.test	mvn -q -pl org.eclipse.jgit.test -am -DskipTests -Denforcer.skip=true test-compile	Fs-and-Net heavy (git object store + transport), ServiceLoader-driven, a third organization and a fourth idiom family

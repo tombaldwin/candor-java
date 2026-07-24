@@ -46,7 +46,7 @@ jget() { grep -m1 "\"$2\"" "$1" 2>/dev/null | grep -oE '(true|false|-?[0-9]+)' |
 want=("$@")
 wanted() { [ ${#want[@]} -eq 0 ] && return 0; for w in "${want[@]}"; do [ "$w" = "$1" ] && return 0; done; return 1; }
 
-grep -vE '^\s*#|^\s*$' "$HERE/manifest.tsv" | while IFS=$'\t' read -r name org url ref module classes build why; do
+grep -vE '^\s*#|^\s*$' "$HERE/manifest.tsv" | while IFS=$'\t' read -r name org url ref module classes testmodule build why; do
   wanted "$name" || continue
   echo; echo "################## $name ($org, $ref) ##################"
   d="$WORK/$name"
@@ -70,10 +70,12 @@ grep -vE '^\s*#|^\s*$' "$HERE/manifest.tsv" | while IFS=$'\t' read -r name org u
   ( cd "$d" && java -jar "$JAR" "$cls" --json "$d/report.json" ) >/dev/null 2>&1
 
   moddir="$module"; [ "$moddir" = "." ] && moddir="."
-  ( cd "$d/$moddir" && mvn -q -Denforcer.skip=true dependency:build-classpath \
+  tmod="${testmodule:-$module}"
+  ( cd "$d/$tmod" && mvn -q -Denforcer.skip=true dependency:build-classpath \
       -Dmdep.outputFile=/tmp/$name.cp -Dmdep.includeScope=test ) >/dev/null 2>&1
   depcp="$(cat /tmp/$name.cp 2>/dev/null)"
-  testclasses="$d/$moddir/target/test-classes"
+  # Tests may live in a SEPARATE sibling module (jgit): resolve them from `testmodule`.
+  testclasses="$d/$tmod/target/test-classes"
   [ -d "$testclasses" ] || { echo "  no test-classes — disposition: no-suite"; printf '%s\t%s\t%s\t-\t-\t-\t-\t-\t-\t-\t-\tno-suite\n' "$name" "$org" "$sha" >>"$SUM"; continue; }
   fullcp="$cls:$testclasses:$depcp:$CONSOLE_JAR"
 

@@ -1,0 +1,972 @@
+{
+  "metrics": {
+    "scope": "all",
+    "effectsInScope": [
+      "Clock",
+      "Db",
+      "Env",
+      "Exec",
+      "Fs",
+      "Llm",
+      "Net",
+      "Rand"
+    ],
+    "executedFunctionsChecked": 74,
+    "analyzedFunctionsTotal": 1180,
+    "soundCompleteOk": 25,
+    "disclosedPartial": 47,
+    "disclosedUnknownLoadBearing": 2,
+    "cardinalSinViolations": 2,
+    "honestyInvariantHolds": false,
+    "attributionComplete": true,
+    "programExitCode": 1
+  },
+  "violations": [
+    {
+      "fn": "com.zaxxer.hikari.util.ConcurrentBag.remove",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Log"
+      ],
+      "escaped": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.util.ConcurrentBag.unreserve",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Log"
+      ],
+      "escaped": [
+        "Clock"
+      ]
+    }
+  ],
+  "rows": [
+    {
+      "fn": "com.zaxxer.hikari.HikariDataSource.<init>(HikariConfig)",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock",
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Fs",
+        "Log",
+        "Net",
+        "Rand",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.HikariDataSource.close",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.HikariDataSource.getConnection()",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock",
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Net",
+        "Rand",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.HikariJNDIFactory.createDataSource",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock",
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Fs",
+        "Log",
+        "Net",
+        "Rand",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.HikariJNDIFactory.getObjectInstance",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock",
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Fs",
+        "Log",
+        "Net",
+        "Rand",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.HikariJNDIFactory.lookupJndiDataSource",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock",
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Fs",
+        "Log",
+        "Net",
+        "Rand",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.hibernate.HikariConnectionProvider.closeConnection",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.hibernate.HikariConnectionProvider.configure",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock",
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Fs",
+        "Log",
+        "Net",
+        "Rand",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.hibernate.HikariConnectionProvider.getConnection",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Net",
+        "Rand",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.hibernate.HikariConnectionProvider.stop",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.metrics.PoolStats.getActiveConnections",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.metrics.PoolStats.getIdleConnections",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.metrics.PoolStats.getMaxConnections",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.metrics.PoolStats.getMinConnections",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.metrics.PoolStats.getPendingThreads",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.metrics.PoolStats.getTotalConnections",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.metrics.PoolStats.shouldLoad",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.metrics.dropwizard.CodahaleHealthChecker$ConnectivityHealthCheck.check",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.metrics.prometheus.HikariCPCollector.collect",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.metrics.prometheus.HikariCPCollector.createGauge",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.metrics.prometheus.HikariCPCollector.lambda$createGauge$0",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariPool$HouseKeeper.<init>",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariPool$HouseKeeper.run",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariPool$KeepaliveTask.run",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariPool$PoolEntryCreator.call",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock",
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Net",
+        "Rand",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariPool.<init>",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock",
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Net",
+        "Rand",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariPool.checkFailFast",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock",
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Net",
+        "Rand",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariPool.createPoolEntry",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock",
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Net",
+        "Rand",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariPool.createTimeoutException",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Log"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariPool.getConnection()",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock",
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariPool.getConnection(long)",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock",
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariPool.recycle",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariPool.shutdown",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariProxyConnection.commit",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariProxyConnection.rollback()",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariProxyConnection.rollback(Savepoint)",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariProxyPreparedStatement.executeQuery()",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariProxyPreparedStatement.executeQuery(String)",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariProxyStatement.execute(String)",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariProxyStatement.execute(String,int)",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.HikariProxyStatement.executeQuery",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.PoolBase$MetricsTrackerDelegate.recordBorrowStats",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.PoolBase$MetricsTrackerDelegate.recordBorrowTimeoutStats",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.PoolBase$MetricsTrackerDelegate.recordConnectionUsage",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.PoolBase.checkDriverSupport",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.PoolBase.checkValidationSupport",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.PoolBase.executeSql",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.PoolBase.isConnectionDead",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.PoolBase.newConnection",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock",
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Net",
+        "Rand",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.PoolBase.newPoolEntry",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock",
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Net",
+        "Rand",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.PoolBase.setupConnection",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.PoolEntry.<init>",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.PoolEntry.getMillisSinceBorrowed",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.PoolEntry.recycle",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.PoolEntry.toString",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.ProxyConnection.close",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock",
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.ProxyConnection.commit",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.ProxyConnection.rollback()",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.ProxyConnection.rollback(Savepoint)",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.ProxyPreparedStatement.executeQuery",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.ProxyStatement.execute(String)",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.ProxyStatement.execute(String,int)",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.pool.ProxyStatement.executeQuery",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Db"
+      ],
+      "inferred": [
+        "Clock",
+        "Db",
+        "Log",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.util.ClockSource$MillisecondClockSource.currentTime0",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.util.ClockSource$MillisecondClockSource.elapsedMillis0(long)",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.util.ClockSource$MillisecondClockSource.elapsedNanos0(long)",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.util.ClockSource.currentTime",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.util.ClockSource.elapsedMillis(long)",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.util.ClockSource.elapsedNanos(long)",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.util.ConcurrentBag.borrow",
+      "verdict": "disclosed-partial",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Unknown"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.util.ConcurrentBag.dumpState",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Log"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.util.ConcurrentBag.lambda$dumpState$3",
+      "verdict": "sound-complete-ok",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Clock",
+        "Log"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.util.ConcurrentBag.remove",
+      "verdict": "VIOLATION",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Log"
+      ]
+    },
+    {
+      "fn": "com.zaxxer.hikari.util.ConcurrentBag.unreserve",
+      "verdict": "VIOLATION",
+      "observed": [
+        "Clock"
+      ],
+      "inferred": [
+        "Log"
+      ]
+    }
+  ]
+}

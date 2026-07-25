@@ -38,8 +38,21 @@ echo "engine: $(java -jar "$JAR" --version 2>/dev/null | head -1)  sha256 OK"
 
 WORK="${CROSSORG_WORK:-${TMPDIR:-/tmp}/candor-crossorg}"; mkdir -p "$WORK" "$HERE/results"
 SUM="$HERE/results/SUMMARY.tsv"; SHALOCK="$HERE/results/SHALOCK.tsv"
-: > "$SHALOCK"
-printf 'repo\torg\tsha\tanalyzed\tchecked\tcoverage%%\tsound\tdisclosed\tviolations\tHholds\tcomplete\tverdict\n' > "$SUM"
+# Truncate the tables ONLY on a full run. A SUBSET run (`run.sh jgit`) must not erase the rows of repos it
+# is not running: the first subset invocation of this script silently destroyed the pre-registered
+# HikariCP + gson rows, which had to be reconstructed from the retained per-repo verify.json files. A
+# pre-registered result that a later partial re-run can delete is not pre-registered in any useful sense.
+HDR='repo\torg\tsha\tanalyzed\tchecked\tcoverage%%\tsound\tdisclosed\tviolations\tHholds\tcomplete\tverdict'
+if [ $# -eq 0 ]; then
+  : > "$SHALOCK"; printf "$HDR\n" > "$SUM"
+else
+  [ -f "$SUM" ] || printf "$HDR\n" > "$SUM"
+  # drop only the rows for the repos being re-run, keep every other row intact
+  for n in "$@"; do
+    [ -f "$SUM" ] && awk -F'\t' -v n="$n" 'NR==1 || $1!=n' "$SUM" > "$SUM.tmp" && mv "$SUM.tmp" "$SUM"
+    [ -f "$SHALOCK" ] && awk -F'\t' -v n="$n" '$1!=n' "$SHALOCK" > "$SHALOCK.tmp" && mv "$SHALOCK.tmp" "$SHALOCK"
+  done
+fi
 
 jget() { grep -m1 "\"$2\"" "$1" 2>/dev/null | grep -oE '(true|false|-?[0-9]+)' | head -1; }
 

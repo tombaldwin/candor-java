@@ -227,4 +227,47 @@ class ImplicitReentryTest {
             "    try { new FileOutputStream(\"/tmp/cmp\").write(1); } catch (Exception e) {} return 0; } }",
             "public class D { " + method + " }");
     }
+
+    // ── PARAMETERIZED LOGGING: the sink is the LOGGING LIBRARY, not a JDK facade ──────────────────────
+
+    /** THE CROSS-ORG CATCH (eval/corpus-crossorg): `LOGGER.warn("...{}", entry)` hands the argument to the
+     *  logging library as an Object; the library calls toString() on it INSIDE its own formatter, so nothing
+     *  in the caller's bytecode names `toString` and the JDK-facade sinks above never match. On HikariCP this
+     *  read (S={Log}, D=0) — sound-complete — while the run charged it Clock, because PoolEntry.toString()
+     *  calls currentTime(). A false all-clear, and one silent in ALL FOUR engines
+     *  (candor-spec/SOUNDNESS-VEIN-implicit-stringify.md). Uses a hand-rolled Logger so the fixture needs no
+     *  slf4j on the test classpath — the match is by level-name + an Object-bearing descriptor, exactly as a
+     *  real facade presents. */
+    @Test
+    void parameterizedLoggingReentersTheArgumentsToString() throws Exception {
+        Path cls = compile(Map.of(
+            "app/Log.java", String.join("\n",
+                "package app;",
+                "public class Log {",
+                "  public void warn(String fmt, Object arg) {}",   // a facade: stringifies INSIDE the library
+                "  public void info(String msg) {} }"),            // no Object arg -> not a stringify sink
+            "app/Entry.java", String.join("\n",
+                "package app;",
+                "public class Entry {",
+                "  @Override public String toString() {",
+                "    try { java.nio.file.Files.readAllBytes(java.nio.file.Path.of(\"/tmp/x\")); } catch (Exception e) {}",
+                "    return \"e\"; } }"),
+            "app/Pure.java", "package app; public class Pure { @Override public String toString(){ return \"p\"; } }",
+            "app/Use.java", String.join("\n",
+                "package app;",
+                "public class Use {",
+                "  private final Log log = new Log();",
+                "  public void logsEffectful(Entry e){ log.warn(\"entry {}\", e); }",   // MUST inherit Fs
+                "  public void logsPure(Pure p){ log.warn(\"pure {}\", p); }",          // must stay pure
+                "  public void logsPlainString(){ log.info(\"no args\"); } }")));      // must stay pure
+        try {
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(fs(r, "app.Use.logsEffectful"),
+                "the effect reached through the library's implicit toString() must be charged: " + r.get("app.Use.logsEffectful"));
+            assertFalse(fs(r, "app.Use.logsPure"),
+                "a PURE toString override contributes nothing — no flood: " + r.get("app.Use.logsPure"));
+            assertFalse(fs(r, "app.Use.logsPlainString"),
+                "a level method with no Object argument is not a stringify sink: " + r.get("app.Use.logsPlainString"));
+        } finally { rm(cls); }
+    }
 }

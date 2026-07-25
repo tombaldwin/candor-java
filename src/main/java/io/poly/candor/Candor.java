@@ -2374,13 +2374,63 @@ public class Candor {
     static void inheritDepClinit(String callerId, String internalOwner) {
         AnalysisContext c = ctx();
         if (c.projectClasses.contains(internalOwner)) return;   // a project class edges locally instead
-        DepFn init = c.crossDeps.get(internalOwner + ".<clinit>()V");
-        if (init == null) return;
-        c.viaCross.computeIfAbsent(callerId, k -> EffectSet.empty()).addAll(init.effects);
-        if (!init.hosts.isEmpty()) c.hostsDirect.computeIfAbsent(callerId, k -> new TreeSet<>()).addAll(init.hosts);
-        if (!init.cmds.isEmpty()) c.cmdsDirect.computeIfAbsent(callerId, k -> new TreeSet<>()).addAll(init.cmds);
-        if (!init.paths.isEmpty()) c.pathsDirect.computeIfAbsent(callerId, k -> new TreeSet<>()).addAll(init.paths);
-        if (!init.tables.isEmpty()) c.tablesDirect.computeIfAbsent(callerId, k -> new TreeSet<>()).addAll(init.tables);
+        inheritDepFn(callerId, c.crossDeps.get(internalOwner + ".<clinit>()V"));
+    }
+
+    /** Fold a chained dependency unit's effects + literal surfaces into `callerId`. The cross-jar
+     *  join (§2) does this for a direct CALL into the dep; every other route that provably reaches a dep
+     *  body — an implicit contract reentry, a `<clinit>` trigger, an inherited method — needs the same
+     *  fold, because the dep's unit lives in another report and cannot be edged to as a node.
+     *  A null `d` (no chained report covers that hash) is a no-op, exactly as before the lookup existed. */
+    static void inheritDepFn(String callerId, DepFn d) {
+        if (d == null) return;
+        AnalysisContext c = ctx();
+        c.viaCross.computeIfAbsent(callerId, k -> EffectSet.empty()).addAll(d.effects);
+        if (!d.hosts.isEmpty()) c.hostsDirect.computeIfAbsent(callerId, k -> new TreeSet<>()).addAll(d.hosts);
+        if (!d.cmds.isEmpty()) c.cmdsDirect.computeIfAbsent(callerId, k -> new TreeSet<>()).addAll(d.cmds);
+        if (!d.paths.isEmpty()) c.pathsDirect.computeIfAbsent(callerId, k -> new TreeSet<>()).addAll(d.paths);
+        if (!d.tables.isEmpty()) c.tablesDirect.computeIfAbsent(callerId, k -> new TreeSet<>()).addAll(d.tables);
+        if (d.netClass.contains("unknown-host"))
+            c.surfaceIncomplete.computeIfAbsent(callerId, k -> new TreeSet<>()).add("Net");
+    }
+
+    /** The direct supertypes of `internal` in JVM RESOLUTION ORDER — superclass first, then the declared
+     *  interfaces. Reads the project ClassNode when there is one, else the classpath (a dep type candor
+     *  can't load has no visible supers, which is the sound under-approximation: we simply find nothing). */
+    static List<String> directSupers(String internal) {
+        ClassNode cn = ctx().byName.get(internal);
+        if (cn == null) return externalSupers(internal);
+        List<String> out = new ArrayList<>();
+        if (cn.superName != null) out.add(cn.superName);
+        if (cn.interfaces != null) out.addAll(cn.interfaces);
+        return out;
+    }
+
+    /** The chained-dependency record for the `(name,desc)` body a value of static type `internal` would
+     *  actually invoke — the cross-boundary analogue of {@link Cha#nearestConcreteSuper}.
+     *
+     *  <p>Walks `internal` and its supertypes NEAREST-FIRST and stops at the first declaration it finds.
+     *  If that declaration is a PROJECT body, returns null: that body is analyzed in this scan and is
+     *  edged to normally, and charging a dep superclass's shadowed implementation on top of it would
+     *  FABRICATE an effect the JVM never runs. Only when the nearest declaration is a dependency's, and a
+     *  chained report carries it, is there anything to inherit. */
+    static DepFn nearestDepFn(String internal, String name, String desc) {
+        if (internal == null) return null;
+        AnalysisContext c = ctx();
+        if (c.crossDeps.isEmpty()) return null;                 // no chained report — nothing to look up
+        Set<String> seen = new HashSet<>();
+        ArrayDeque<String> q = new ArrayDeque<>();
+        q.add(internal);
+        while (!q.isEmpty()) {
+            String t = q.poll();
+            if (t == null || !seen.add(t) || t.equals("java/lang/Object")) continue;
+            ClassNode cn = c.byName.get(t);
+            if (cn != null && declaresConcrete(cn, name, desc)) return null;  // a project body wins outright
+            DepFn d = c.crossDeps.get(t + "." + name + desc);
+            if (d != null) return d;
+            q.addAll(directSupers(t));
+        }
+        return null;
     }
 
     static void clinitEdge(String callerId, String internalOwner) {
@@ -3152,6 +3202,23 @@ public class Candor {
     static void reentryEdge(String callerId, ProvValue argVal, String contract) {
         if (argVal == null) return;
         for (String t : reentryTargets(argVal.declType, contract)) ctx().edges.get(callerId).add(t);
+        // ACROSS THE SCAN BOUNDARY. `reentryTargets` ends in `chaTargets`, which scans PROJECT classes only
+        // — so when the argument's declared type belongs to a chained DEPENDENCY it returns empty and the
+        // site emitted nothing at all. `"x" + entry` on a dep type whose `toString()` reads the environment,
+        // or `set.contains(depKey)` whose `equals` does, therefore read silent-pure — even though the dep's
+        // own report carries that unit under exactly the hash we can compute here. Nothing looked for it.
+        // This is the implicit-stringification / equals-reentry vein on the far side of the boundary
+        // (candor-spec SOUNDNESS-VEIN-crossing-the-scan-boundary.md); the mechanism was closed INSIDE the
+        // scan in all four engines, and stayed open across it, where it also flips the gate green.
+        //
+        // Inheritance, not an edge: the dep's unit lives in another report, so there is no node to edge to
+        // — the same reason `inheritDepClinit` folds rather than edges. Restricted to the FIXED-descriptor
+        // contracts, whose hash is exact; the by-NAME contracts (compareTo/append/write/read) resolve over
+        // any descriptor and have no single hash to join on.
+        String depDesc = contract.equals(C_TOSTRING) ? "()Ljava/lang/String;"
+                : contract.equals(C_HASHCODE) ? "()I"
+                : contract.equals(C_EQUALS) ? "(Ljava/lang/Object;)Z" : null;
+        if (depDesc != null) inheritDepFn(callerId, nearestDepFn(argVal.declType, contract, depDesc));
     }
 
     /** The ProvValue of argument `argPos` (0-based, in source order) of the call `min` in frame `f`, or null.

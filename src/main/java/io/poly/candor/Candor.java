@@ -2215,6 +2215,37 @@ public class Candor {
                     ctx.surfaceIncomplete.computeIfAbsent(id, k -> new TreeSet<>()).add("Net");
             }
         }
+        // INHERITED / DEFAULT METHOD FROM A DEPENDENCY SUPERTYPE. The join above requires a NON-project
+        // owner, and that is exactly why this shape escaped it: `this.load()` on a project class extending
+        // a dependency's `Base` compiles to INVOKEVIRTUAL with the PROJECT class as owner, so the join was
+        // never even reached. The local resolution misses it too — `nearestConcreteSuper` walks
+        // project-only indexes, so a dependency supertype yields nothing, and an empty CHA emits no Unknown
+        // either. The consumer of an effectful inherited/default method therefore read silent-pure, with
+        // the dependency's report carrying the body under `lib/Base.load()V` all along
+        // (candor-spec SOUNDNESS-VEIN-crossing-the-scan-boundary.md, JVM root cause 1).
+        //
+        // `nearestDepFn` walks the project class's OWN supertype chain — visible here precisely because the
+        // subclass is in this scan and its ClassNode names its dependency parent — and stops at the first
+        // declaration, so a project override (concrete or abstract) shadows the dependency body and nothing
+        // is charged. With no chained report it short-circuits and the scan is unchanged.
+        if (effect == null && !springTyped && ctx.projectClasses.contains(min.owner)) {
+            DepFn inherited = nearestDepFn(min.owner, min.name, min.desc);
+            // A dep entry whose ENTIRE content is Unknown carries no positive effect — it is the
+            // dependency saying "I could not resolve this dispatch", which is what its own scan reports for
+            // an ABSTRACT declaration with no implementor inside it. When THIS scan resolves the same
+            // signature (the project CHA is non-empty), importing that Unknown replaces a complete local
+            // answer with an unresolved one: on jackson-databind chained onto jackson-core, the single
+            // abstract `ResolvedType.isReferenceType()` turned 12 fully-resolved functions Unknown, every
+            // one of them resolvable — and resolved — from the databind subtypes in the scan. Trading a
+            // silent under-report for manufactured uncertainty is the same bad bargain as fabricating an
+            // effect. A dep entry with REAL effects is still inherited, resolved locally or not, because
+            // that is positive information this scan does not otherwise have.
+            if (inherited != null && inherited.effects.size() == 1
+                    && inherited.effects.contains(Effect.UNKNOWN)
+                    && !chaTargets(min.owner, min.name, min.desc).isEmpty())
+                inherited = null;
+            inheritDepFn(id, inherited);
+        }
     }
 
     /** A `NEW C` site: the class-load `<clinit>` edge, plus the anonymous/local-class and named
@@ -2410,10 +2441,12 @@ public class Candor {
      *  actually invoke — the cross-boundary analogue of {@link Cha#nearestConcreteSuper}.
      *
      *  <p>Walks `internal` and its supertypes NEAREST-FIRST and stops at the first declaration it finds.
-     *  If that declaration is a PROJECT body, returns null: that body is analyzed in this scan and is
-     *  edged to normally, and charging a dep superclass's shadowed implementation on top of it would
-     *  FABRICATE an effect the JVM never runs. Only when the nearest declaration is a dependency's, and a
-     *  chained report carries it, is there anything to inherit. */
+     *  If that declaration is a PROJECT one, returns null: a concrete project body is analyzed in this
+     *  scan and edged to normally, and an ABSTRACT project declaration OVERRIDES any dependency default
+     *  further up (every concrete subtype must then supply its own body, which CHA already enumerates).
+     *  Either way, charging the dependency's shadowed implementation on top would FABRICATE an effect the
+     *  JVM never runs — worse than the miss it fixes. Only when the nearest declaration is a dependency's,
+     *  and a chained report carries it, is there anything to inherit. */
     static DepFn nearestDepFn(String internal, String name, String desc) {
         if (internal == null) return null;
         AnalysisContext c = ctx();
@@ -2425,12 +2458,21 @@ public class Candor {
             String t = q.poll();
             if (t == null || !seen.add(t) || t.equals("java/lang/Object")) continue;
             ClassNode cn = c.byName.get(t);
-            if (cn != null && declaresConcrete(cn, name, desc)) return null;  // a project body wins outright
+            if (cn != null && declaresMethod(cn, name, desc)) return null;   // a project declaration wins
             DepFn d = c.crossDeps.get(t + "." + name + desc);
             if (d != null) return d;
             q.addAll(directSupers(t));
         }
         return null;
+    }
+
+    /** Whether `c` DECLARES `(name,desc)` at all — abstract included. {@link Cha#declaresConcrete} asks the
+     *  narrower "is there a body here"; resolution-shadowing asks this one, because an abstract declaration
+     *  still overrides an inherited default and redirects dispatch to the concrete subtypes. */
+    static boolean declaresMethod(ClassNode c, String name, String desc) {
+        if (c == null) return false;
+        for (MethodNode mn : c.methods) if (mn.name.equals(name) && mn.desc.equals(desc)) return true;
+        return false;
     }
 
     static void clinitEdge(String callerId, String internalOwner) {

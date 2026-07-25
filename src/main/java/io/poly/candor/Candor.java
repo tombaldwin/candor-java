@@ -2369,9 +2369,33 @@ public class Candor {
      *  use site instead of looking pure. Over-approximates — the class may already be loaded by the
      *  time we reach this site — which is the SOUND direction (the I/O genuinely runs on first trigger).
      *  Only project classes that actually have a `<clinit>` (so the edge isn't dangling). */
+
+    /** Inherit a DEPENDENCY class's `<clinit>` effects from a chained report (see {@link #clinitEdge}). */
+    static void inheritDepClinit(String callerId, String internalOwner) {
+        AnalysisContext c = ctx();
+        if (c.projectClasses.contains(internalOwner)) return;   // a project class edges locally instead
+        DepFn init = c.crossDeps.get(internalOwner + ".<clinit>()V");
+        if (init == null) return;
+        c.viaCross.computeIfAbsent(callerId, k -> EffectSet.empty()).addAll(init.effects);
+        if (!init.hosts.isEmpty()) c.hostsDirect.computeIfAbsent(callerId, k -> new TreeSet<>()).addAll(init.hosts);
+        if (!init.cmds.isEmpty()) c.cmdsDirect.computeIfAbsent(callerId, k -> new TreeSet<>()).addAll(init.cmds);
+        if (!init.paths.isEmpty()) c.pathsDirect.computeIfAbsent(callerId, k -> new TreeSet<>()).addAll(init.paths);
+        if (!init.tables.isEmpty()) c.tablesDirect.computeIfAbsent(callerId, k -> new TreeSet<>()).addAll(init.tables);
+    }
+
     static void clinitEdge(String callerId, String internalOwner) {
         if (ctx().classesWithClinit.contains(internalOwner))
             ctx().edges.get(callerId).add(internalOwner.replace('/', '.') + ".<clinit>");
+        // The owner may be a DEPENDENCY, analyzed separately. Touching it still runs its `<clinit>`, and a
+        // chained report records that unit under the ordinary method-ref hash — but nothing looked for it,
+        // so a class whose static initializer reads the environment or opens a socket left every consumer
+        // reading sound-complete pure. The edge exists for project classes above; this is the same edge on
+        // the other side of the scan boundary (candor-spec SOUNDNESS-VEIN-initializer-edge.md, the JVM
+        // sibling of candor-ts's module-import edge). Inheritance, not an edge, because the dep's unit lives
+        // in another report. Superclasses too: JVMS §5.5 initializes those first.
+        inheritDepClinit(callerId, internalOwner);
+        for (String sup : transSupers(internalOwner))
+            if (!sup.equals(internalOwner)) inheritDepClinit(callerId, sup);
         // JVMS §5.5: initializing a class FIRST initializes its superclasses — so touching `Sub` runs
         // `Base.<clinit>` too. Edge to every project SUPERCLASS's <clinit> as well, else an effect in a base
         // class's static initializer is silently dropped when only the subclass is touched (round-13 hole;

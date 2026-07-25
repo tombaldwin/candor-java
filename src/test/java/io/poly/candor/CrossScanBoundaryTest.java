@@ -160,6 +160,106 @@ class CrossScanBoundaryTest {
         assertFalse(env(r, "app.S.contains"), "a dep key with no effectful equals/hashCode must stay pure");
     }
 
+    // ---- M2: an INHERITED / DEFAULT method from a DEPENDENCY supertype ----------------------------------
+
+    /** A dependency supplying a class to extend and an interface to implement, plus the PURE siblings the
+     *  fabrication controls need, plus an ABSTRACT method with no implementor inside the dependency — whose
+     *  own report entry is therefore a bare `Unknown`. */
+    private static final Map<String, String> LIB2 = Map.of(
+        "lib/Base.java", "package lib;\npublic class Base {\n"
+            + "  public void load(){ System.getenv(\"HOME\"); }\n"
+            + "  public void quiet(){ }\n"
+            + "  public void hook(){ System.getenv(\"HOME\"); }\n}\n",
+        "lib/Iface.java", "package lib;\npublic interface Iface {\n"
+            + "  default void dflt(){ System.getenv(\"HOME\"); }\n"
+            + "  void req();\n}\n",
+        "lib/Abs.java", "package lib;\npublic abstract class Abs {\n"
+            + "  public abstract int raw();\n"
+            + "  public boolean flag(){ return raw() > 0; }\n}\n");
+
+    @Test
+    void anInheritedMethodFromADependencySuperclassIsCharged() throws Exception {
+        // `s.load()` compiles to INVOKEVIRTUAL with the PROJECT class as owner, so the cross-dep join was
+        // never even reached (it requires a non-project owner) and the local CHA walks project-only indexes.
+        Map<String, EffectSet> r = scanChained(LIB2, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.Base;",
+            "public class S {",
+            "  public static class Sub extends Base { public void self(){ load(); } }",
+            "  public void callInherited(Sub s){ s.load(); }",
+            "}")));
+        assertTrue(env(r, "app.S$Sub.self"), "this.load() on a dep superclass must carry its Env");
+        assertTrue(env(r, "app.S.callInherited"), "s.load() on a project subclass of a dep must carry its Env");
+    }
+
+    @Test
+    void aDefaultMethodFromADependencyInterfaceIsCharged() throws Exception {
+        Map<String, EffectSet> r = scanChained(LIB2, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.Iface;",
+            "public class S {",
+            "  public static class Impl implements Iface { public void req(){} public void self(){ dflt(); } }",
+            "  public void callDefault(Impl i){ i.dflt(); }",
+            "}")));
+        assertTrue(env(r, "app.S$Impl.self"), "an inherited dep DEFAULT method must carry its Env");
+        assertTrue(env(r, "app.S.callDefault"), "a dep default reached through a project impl must carry its Env");
+    }
+
+    @Test
+    void anInheritedPureDependencyMethodContributesNothing() throws Exception {
+        Map<String, EffectSet> r = scanChained(LIB2, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.Base;",
+            "public class S {",
+            "  public static class Sub extends Base { public void self(){ quiet(); } }",
+            "}")));
+        assertFalse(env(r, "app.S$Sub.self"), "a dep method the report shows as pure must add nothing");
+    }
+
+    @Test
+    void aProjectOverrideOfTheInheritedMethodIsNotCharged() throws Exception {
+        // The override is the body the JVM runs; the dep superclass's is shadowed and must not be charged.
+        Map<String, EffectSet> r = scanChained(LIB2, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.Base;",
+            "public class S {",
+            "  public static class Sub extends Base { public void hook(){ } public void self(){ hook(); } }",
+            "}")));
+        assertFalse(env(r, "app.S$Sub.self"),
+                "a project override shadows the dep body — nothing to inherit, got " + r.get("app.S$Sub.self"));
+    }
+
+    @Test
+    void anAbstractProjectDeclarationShadowsTheDependencyBody() throws Exception {
+        // An ABSTRACT project declaration also overrides: every concrete subtype must supply its own body,
+        // which CHA enumerates. Charging the dep's implementation on top would fabricate.
+        Map<String, EffectSet> r = scanChained(LIB2, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.Base;",
+            "public class S {",
+            "  public static abstract class Mid extends Base { public abstract void hook(); }",
+            "  public static class Leaf extends Mid { public void hook(){ } }",
+            "  public void call(Mid m){ m.hook(); }",
+            "}")));
+        assertFalse(env(r, "app.S.call"),
+                "an abstract project declaration redirects dispatch to the project subtypes, got " + r.get("app.S.call"));
+    }
+
+    @Test
+    void aDependencysBareUnknownIsNotImportedOverAResolvedLocalDispatch() throws Exception {
+        // `lib.Abs.flag()` is a concrete body whose OWN dispatch (`raw()`) has no implementor inside the
+        // dependency, so the dep's report entry for it is a bare `Unknown` — "I could not resolve this".
+        // Here the project resolves the same signature (`Leaf.flag` is in this scan), so importing that
+        // Unknown would replace a complete answer with an unresolved one. This is the EXACT shape measured
+        // on jackson-databind chained onto jackson-core, where `ResolvedType.isReferenceType()` — one
+        // concrete body whose `getReferencedType()` dispatch jackson-core alone cannot resolve — turned 12
+        // fully-resolved databind functions Unknown.
+        Map<String, EffectSet> r = scanChained(LIB2, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.Abs;",
+            "public class S {",
+            "  public static abstract class Mid extends Abs { }",
+            "  public static class Leaf extends Mid { public int raw(){ return 3; } public boolean flag(){ return true; } }",
+            "  public boolean call(Mid m){ return m.flag(); }",
+            "}")));
+        assertFalse(r.getOrDefault("app.S.call", EffectSet.empty()).toNames().contains("Unknown"),
+                "a dep's bare Unknown must not overwrite a dispatch this scan resolves, got " + r.get("app.S.call"));
+    }
+
     // ---- the no-report baseline ------------------------------------------------------------------------
 
     @Test

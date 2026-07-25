@@ -3033,8 +3033,33 @@ public class Candor {
         // PrintStream/PrintWriter print/println(Object)
         if ((owner.equals("java/io/PrintStream") || owner.equals("java/io/PrintWriter"))
                 && (name.equals("print") || name.equals("println")) && desc.equals("(Ljava/lang/Object;)V")) return true;
+        // PARAMETERIZED LOGGING (slf4j/log4j2/commons-logging/JUL). `LOGGER.warn("...{}", entry)` hands the
+        // argument to the logging library as an Object and the library calls toString() on it INSIDE its own
+        // formatter, at format time — so nothing in the caller's bytecode names `toString`, the JDK-facade
+        // sinks above never match, and any effect reachable from the argument's toString() was SILENT.
+        //
+        // Found on HikariCP by the cross-organization confirmatory corpus (eval/corpus-crossorg): a
+        // `ConcurrentBag.remove` reading (S={Log}, D=0) — sound-complete — while the run charged it Clock,
+        // because PoolEntry.toString() calls currentTime(). A genuine false all-clear, and one silent in all
+        // FOUR engines (candor-spec/SOUNDNESS-VEIN-implicit-stringify.md): what the engines share is not code
+        // but the ASSUMPTION that stringification is pure.
+        //
+        // Matched by NAME + an Object-bearing descriptor rather than by exact owner, for the same reason
+        // `isSyncCallbackInvoker` matches the forEach family owner-agnostically: the bytecode owner is
+        // whichever Logger interface the project imported (org/slf4j/Logger, org/apache/logging/log4j/Logger,
+        // a facade, a wrapper), and an owner-exact table silently misses the common case. Over-disclosure is
+        // floored by `reentryEdge`, which resolves over the argument's declType and contributes NOTHING when
+        // that type has no LOCAL toString override — so a String/boxed/JDK argument (the overwhelming
+        // majority of log arguments) edges nowhere, and only a project type with its own toString does.
+        if (LOG_LEVEL_NAMES.contains(name) && desc.contains("Ljava/lang/Object;")) return true;
         return false;
     }
+
+    /** Level methods of the parameterized-logging facades (slf4j/log4j/commons-logging/JUL). Matched by name
+     *  (see {@link #isToStringSink}); the Object-bearing-descriptor test is what keeps `warn(String)` and
+     *  `isDebugEnabled()` out. */
+    static final Set<String> LOG_LEVEL_NAMES =
+            Set.of("trace", "debug", "info", "warn", "warning", "error", "fatal", "log", "severe", "config", "finest", "finer", "fine");
 
     /** equals/hashCode-reentry sinks: a collection lookup/insert that hashes or compares the KEY/element by
      *  calling its equals + hashCode. */

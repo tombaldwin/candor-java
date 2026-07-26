@@ -16,7 +16,22 @@ EXPECT="bf572eb32db56ef419c8ad7d8f118cfe225f859320252c6969299434263e10d8"
 sha() { if command -v sha256sum >/dev/null; then sha256sum "$1"|cut -d' ' -f1; else shasum -a 256 "$1"|cut -d' ' -f1; fi; }
 GOT="$(sha "$JAR")"
 if [ "$GOT" != "$EXPECT" ]; then
-  echo "FROZEN ABORT: jar hash mismatch"; echo "  got  $GOT"; echo "  want $EXPECT (FROZEN.md)"; exit 1
+  echo "FROZEN ABORT: jar hash mismatch"
+  echo "  got  $GOT"
+  echo "  want $EXPECT (FROZEN.md)"
+  echo "  jar  $JAR"
+  # A failure has to carry its remedy. This gate did its job — it aborted rather than certifying a
+  # different classifier — but for a while the archived jar had been rebuilt over, so the mismatch was
+  # unexplainable from the message alone and a reproducer had no way forward.
+  echo
+  echo "  The frozen jar is archived at:"
+  echo "      eval/corpus-confirmatory/frozen/candor-java-0.23.1-all.jar"
+  echo "  Point CANDOR_JAR at it, or recover it from the commit that archived it:"
+  echo "      git show 8a4837a:build/libs/candor-java-0.23.1-all.jar > /tmp/frozen.jar"
+  echo "      CANDOR_JAR=/tmp/frozen.jar bash \"\$0\""
+  echo "  Do NOT rebuild to match: a fresh build of the same source will NOT reproduce this hash, and"
+  echo "  editing EXPECT would restate a pre-registered result as though the original had never run."
+  exit 1
 fi
 echo "FROZEN: binary hash verified ($EXPECT)"
 

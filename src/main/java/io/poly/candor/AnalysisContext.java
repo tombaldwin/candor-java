@@ -105,7 +105,6 @@ final class AnalysisContext {
     // reflective calls with a LITERAL method name in the same body: a unique project match gets an EDGE
     // alongside the honest Unknown (recall without guessing).
     final List<String[]> reflectPairs = new ArrayList<>();         // [callerId, literalName]
-    final Set<String> kappaClassified = new HashSet<>();           // packages with >=1 classification
     // Packages a CANDOR_DEPS sibling report covers: chained, not blind (even an omitted pure dep fn).
     final Set<String> depCoveredPkgs = new HashSet<>();
     // TRUE-FORWARDING for deferred-execution containers (`by lazy`, ThreadLocal.withInitial, …): per

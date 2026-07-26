@@ -457,19 +457,25 @@ class InterfaceUnionTest {
     }
 
     @Test
-    void aChainedConsumerInheritsTheUnknownButNotItsReasonClass() throws Exception {
-        // RESIDUAL, asserted so it cannot drift, and so no comment can claim otherwise. The union entry
-        // publishes `unknownWhy: [dispatch:…]` ON THE WIRE — but `DepFn` carries effects and literal
-        // surfaces and no reasons, so the consumer's inherited Unknown has no recorded reason and
-        // classifies as `unresolved`: bare `deny Unknown` bites there, `deny Unknown[dispatch]` does not.
-        // That is a pre-existing gap in the cross-dep join — it costs EVERY dep Unknown its class,
-        // `reflect` included — not something the fan-out bound introduced.
+    void aChainedConsumerInheritsTheUnknownAndItsReasonClass() throws Exception {
+        // WAS A RESIDUAL, now the behaviour. The residual this replaces asserted `unknownWhy` was NULL on
+        // the consumer, and left the instruction "if this ever becomes non-null the join learned to carry
+        // reasons — delete the residual". It did, so this is that deletion.
+        //
+        // The gap cost EVERY chained dep Unknown its class, `reflect` included, so the shipped ⟨0.19⟩
+        // reason-scoped gate was silently inert at the boundary — measured `deny Net Unknown[reflect]`
+        // exit 1 on the dependency itself and exit 0 on a consumer chaining it. `DepFn` now carries
+        // `unknownWhy` and one shared `inheritDepFn` applies it.
         Map<String, String> app = Map.of("app/Go.java",
                 "package app;\nimport lib.Chan;\npublic class Go { public void run(Chan c) { c.go(); } }\n");
         Map<String, Object> after = chainedApp(chanLib(13, false), app, true).get("app.Go.run");
         assertEquals(List.of("Unknown"), after.get("inferred"));
-        assertNull(after.get("unknownWhy"),
-                "if this ever becomes non-null the join learned to carry reasons — delete the residual");
+        @SuppressWarnings("unchecked")
+        List<String> why = (List<String>) after.get("unknownWhy");
+        assertNotNull(why, "the inherited Unknown must carry the reason class across the boundary");
+        assertTrue(why.stream().anyMatch(w -> w.startsWith("dispatch:")),
+                "a bounded-away broad hierarchy is a `dispatch:` Unknown, and the class must survive the "
+                + "join so `deny Unknown[dispatch]` can bite on the consumer; got " + why);
     }
 
     // ---- THE Net DESTINATION CLASS: fail-closed across the union ---------------------------------------

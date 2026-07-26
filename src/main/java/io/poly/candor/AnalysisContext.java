@@ -22,6 +22,9 @@ final class AnalysisContext {
     final Map<String, String> hashOf = new HashMap<>();           // fn -> stable method-ref hash (owner.name+desc)
     final Map<String, EffectSet> viaCross = new HashMap<>();       // fn -> effects inherited from a dependency report
     final Map<String, DepFn> crossDeps = new HashMap<>();          // method-ref hash -> DepFn (from CANDOR_DEPS)
+    // Memoized `crossDeps` grouped by declaring type (internal name) — the hand-off join has no descriptor
+    // to key on (see Candor#depFnsOfType), and scanning every hash per site would be quadratic.
+    final Map<String, List<DepFn>> depFnsByOwner = new HashMap<>();
     final Map<String, TreeSet<String>> fsDirect = new HashMap<>(); // fn -> Fs read/write kind performed directly
     final Map<String, TreeSet<UnknownReason>> unknownWhy = new HashMap<>(); // fn -> why Unknown emitted directly
     // VALUE-PROVENANCE Phase 2: instance stream fields ("owner#name") PROVEN bound only to in-scope concrete

@@ -1338,6 +1338,14 @@ public class Candor {
                 ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                         .add(UnknownReason.of(UnknownReason.Kind.TASK_HANDOFF, owner + "." + min.name));
             }
+            // `es.submit(new lib.Task())` — the Unknown above is correctly suppressed for a `new T`, since
+            // the NEW-site edge attributes T's run()/call(). But that edge is project-only: when T belongs
+            // to a chained DEPENDENCY the task body was attributed NOWHERE, and the suppression left the
+            // scheduling method silent-pure. The parameter is already gated to Runnable/Callable by
+            // TASK_ARG_PREFIXES, so the constructed type is a task type and its reported surface is what
+            // the runtime invokes.
+            if (task != null && task.newType != null && !ctx.projectClasses.contains(task.newType))
+                for (DepFn d : depFnsOfType(task.newType)) inheritDepFn(id, d);
         }
     }
 
@@ -1365,9 +1373,23 @@ public class Candor {
         // analysed directly).
         if (provFrames != null && !ctx.projectClasses.contains(min.owner)
                 && isInvokingHof(min.name)) {
-            for (ProvValue a : callArgs(provFrames[mn.instructions.indexOf(min)], min)) {
+            Type[] pt = Type.getArgumentTypes(min.desc);
+            List<ProvValue> args = callArgs(provFrames[mn.instructions.indexOf(min)], min);
+            for (int i = 0; i < args.size(); i++) {
+                ProvValue a = args.get(i);
                 if (a == null || a.newType == null) continue;
                 ctx.edges.get(id).addAll(functionalSamSurface(a.newType));
+                // ACROSS THE SCAN BOUNDARY: the same hand-off, but the functional impl belongs to a chained
+                // DEPENDENCY. `functionalSamSurface` reads the project ClassNode, so a dep type yields an
+                // empty surface — and the opaque-handoff Unknown does not fire either, because the argument
+                // HAS a `newType`. The site got neither an edge nor an Unknown: silent-pure
+                // (candor-spec SOUNDNESS-VEIN-crossing-the-scan-boundary.md, JVM root cause 2).
+                // Gated on the PARAMETER's declared type being a functional interface, so an ordinary object
+                // that merely happens to be constructed at a HOF call site (`map.merge(k, new Val(), fn)`)
+                // is never charged its whole surface.
+                if (i < pt.length && isHofFunctionalIface(pt[i].getInternalName())
+                        && !ctx.projectClasses.contains(a.newType))
+                    for (DepFn d : depFnsOfType(a.newType)) inheritDepFn(id, d);
             }
         }
     }
@@ -2376,6 +2398,20 @@ public class Candor {
                     // null → nothing added (no fabrication).
                     Effect eff = Classifier.classify(h.getOwner().replace('/', '.'), h.getName(), h.getDesc());
                     if (eff != null) dir.add(eff);
+                    // ACROSS THE SCAN BOUNDARY. `Classifier` knows the JDK and the frameworks; it knows
+                    // nothing about the user's OWN dependency, so `xs.forEach(DepUtil::write)` and
+                    // `xs.forEach(d::writeInst)` fell through it and read silent-pure — while the direct
+                    // call `DepUtil.write(x)` inherits correctly through the cross-jar join. The reference
+                    // form got neither an edge nor an Unknown, because the opaque-handoff fallback is
+                    // suppressed for anything `fromIndy` (candor-spec
+                    // SOUNDNESS-VEIN-crossing-the-scan-boundary.md, JVM root cause 2).
+                    //
+                    // A method handle carries the EXACT owner, name and descriptor, so this is the same
+                    // precise hash the direct call joins on — no resolution guessing. `deferred` gates it
+                    // exactly as it gates the project edge: a reference merely stowed for later must not be
+                    // attributed here. Also the class-load trigger, as for a project static/ctor ref.
+                    if (!deferred) inheritDepFn(id, ctx.crossDeps.get(h.getOwner() + "." + h.getName() + h.getDesc()));
+                    inheritDepClinit(id, h.getOwner());
                 }
             }
         }
@@ -2464,6 +2500,33 @@ public class Candor {
             q.addAll(directSupers(t));
         }
         return null;
+    }
+
+    /** EVERY chained-dependency unit declared by `internalOwner`, whatever the descriptor. Used where the
+     *  route into the dependency is a HAND-OFF rather than a call: a `new lib.Consumer()` passed to a
+     *  forEach/executor is invoked through its SAM, and the descriptor at the hand-off site is the ERASED
+     *  functional-interface one (`accept(Object)`) while the report keys the real specialized body
+     *  (`accept(String)`), so there is no single hash to join on. Taking the type's whole reported surface
+     *  mirrors {@link #functionalSamSurface}, which edges every method of a project functional impl for the
+     *  same reason — such a type exists to be invoked, and its surface is one or two methods. */
+    static List<DepFn> depFnsOfType(String internalOwner) {
+        AnalysisContext c = ctx();
+        if (c.crossDeps.isEmpty() || internalOwner == null) return List.of();
+        List<DepFn> memo = c.depFnsByOwner.get(internalOwner);
+        if (memo != null) return memo;
+        List<DepFn> out = new ArrayList<>();
+        String prefix = internalOwner + ".";
+        for (Map.Entry<String, DepFn> e : c.crossDeps.entrySet()) {
+            String h = e.getKey();
+            // `owner.name(desc)` — require the '.' to be followed by a name then '(' with no further '/',
+            // so `lib/A.m()V` matches `lib/A` and never `lib/A$Inner` or `lib/Ax`.
+            if (!h.startsWith(prefix)) continue;
+            int paren = h.indexOf('(', prefix.length());
+            if (paren < 0 || h.lastIndexOf('/', paren) >= prefix.length()) continue;
+            out.add(e.getValue());
+        }
+        c.depFnsByOwner.put(internalOwner, out);
+        return out;
     }
 
     /** Whether `c` DECLARES `(name,desc)` at all — abstract included. {@link Cha#declaresConcrete} asks the

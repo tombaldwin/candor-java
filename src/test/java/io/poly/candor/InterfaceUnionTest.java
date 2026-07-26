@@ -309,9 +309,9 @@ class InterfaceUnionTest {
 
     @Test
     void anEffectfulDefaultMethodKeepsItsOwnRealEntryAndIsNotDuplicated() throws Exception {
-        // A synthetic entry must never displace a body candor actually analysed: the hash is already claimed.
-        // RESIDUAL, asserted rather than papered over — an OVERRIDE's effect therefore does not reach that
-        // hash, so a consumer dispatching on `Cfg.load` sees the default's Env and not the override's Fs.
+        // A synthetic entry must never DISPLACE a body candor actually analysed: the hash is already claimed,
+        // so the real entry stays (unmarked, with its own `loc`, `direct` and declared/undeclared surfaces).
+        // But it must not SUPPRESS the union either — see theOverridingImplementersEffectReachesADefaultsHash.
         Map<String, Map<String, Object>> r = depReport(Map.of(
                 "lib/Cfg.java", "package lib;\n"
                         + "public interface Cfg { default void load() { System.getenv(\"HOME\"); } }\n",
@@ -322,7 +322,63 @@ class InterfaceUnionTest {
         Map<String, Object> e = r.get("lib/Cfg.load()V");
         assertNotNull(e, "the default method's own entry; hashes " + r.keySet());
         assertNull(e.get("interfaceUnion"), "the REAL entry stays real — it is not replaced by a synthetic one");
-        assertEquals(List.of("Env"), e.get("inferred"), "the default body's own effect, unwidened (residual)");
+        assertEquals(List.of("Env"), e.get("direct"),
+                "`direct` describes the analysed BODY at `loc` and is never widened by the dispatch union");
+        assertEquals(1, r.values().stream().filter(x -> "lib/Cfg.load()V".equals(x.get("hash"))).count(),
+                "exactly one entry may carry the hash — a duplicate would make the consumer's join order-dependent");
+    }
+
+    @Test
+    void theOverridingImplementersEffectReachesADefaultsHash() throws Exception {
+        // THE CARDINAL SIN this rung nearly shipped. An effectful `default` claims the hash a consumer's
+        // INVOKEINTERFACE keys on, and the union was SKIPPED for a claimed hash — so `S3Store implements
+        // Store` overriding a logging `default` with an HTTP call published only ["Log"], and `deny Net`
+        // passed on code that makes an HTTP call. Publishing under a hash is answering "what can running
+        // this member do", and in-scan the same `iface.load()` is already charged the CHA union — so the
+        // boundary answer must be the union too, or the two disagree.
+        Map<String, Map<String, Object>> r = depReport(Map.of(
+                "lib/Cfg.java", "package lib;\n"
+                        + "public interface Cfg { default void load() { System.getenv(\"HOME\"); } }\n",
+                "lib/DiskCfg.java", "package lib;\nimport java.io.*;\n"
+                        + "public class DiskCfg implements Cfg {\n"
+                        + "  public void load() { try { new FileWriter(\"/tmp/x\").write(\"c\"); }"
+                        + " catch (IOException e) {} }\n}\n"), true);
+        assertEquals(List.of("Env", "Fs"), inferred(r, "lib/Cfg.load()V"),
+                "the published effects for the hash must cover the default body AND every overrider");
+    }
+
+    @Test
+    void aDefaultMethodWithOnlyPureImplementersIsNotWidenedAtAll() throws Exception {
+        // THE SECOND FIXTURE for the widening. Merging into a claimed hash must be a no-op when there is
+        // nothing to merge: the entry must be byte-for-byte the entry the unflagged scan writes, or the rung
+        // is mutating ordinary report content instead of adding to it.
+        Map<String, String> lib = Map.of(
+                "lib/Cfg.java", "package lib;\n"
+                        + "public interface Cfg { default void load() { System.getenv(\"HOME\"); } }\n",
+                "lib/QuietCfg.java", "package lib;\n"
+                        + "public class QuietCfg implements Cfg { public void load() { } }\n");
+        assertEquals(byHash(depReportText(lib, false)).get("lib/Cfg.load()V"),
+                byHash(depReportText(lib, true)).get("lib/Cfg.load()V"),
+                "a claimed hash with nothing new to publish must be untouched by the rung");
+    }
+
+    @Test
+    void theOverridingImplementersEffectReachesTheConsumerAcrossTheBoundary() throws Exception {
+        // The end-to-end form of the same defect: `deny Net` must bite. The consumer's INVOKEINTERFACE
+        // resolves to the default's REAL entry, so before the fix it read Env only and the override's Net
+        // was never charged to anyone.
+        Map<String, String> lib = Map.of(
+                "lib/Store.java", "package lib;\n"
+                        + "public interface Store { default void save(String s) { System.getenv(\"HOME\"); } }\n",
+                "lib/S3Store.java", "package lib;\nimport java.net.*;\n"
+                        + "public class S3Store implements Store {\n"
+                        + "  public void save(String s) { try { new URL(\"http://s3.example.com/x\").openStream(); }"
+                        + " catch (Exception e) {} }\n}\n");
+        Map<String, String> app = Map.of("app/Go.java",
+                "package app;\nimport lib.Store;\npublic class Go { public void run(Store s) { s.save(\"x\"); } }\n");
+        List<?> after = (List<?>) chainedApp(lib, app, true).get("app.Go.run").get("inferred");
+        assertTrue(after.contains("Net"),
+                "the overrider's Net must reach the consumer through the default's hash; got " + after);
     }
 
     // ---- the boundary: the motivating experiment, end to end -------------------------------------------

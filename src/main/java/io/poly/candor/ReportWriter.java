@@ -247,9 +247,23 @@ final class ReportWriter {
      *       a dep report omits its pure functions, and that silence IS the purity claim (§2 rule 3). This is
      *       also what makes "an interface nothing implements publishes nothing" fall out — {@code chaTargets}
      *       returns nothing to union.
-     *   <li>A REAL entry already claims the hash (an effectful {@code default} method) → no entry; a
-     *       synthetic entry must never displace a body candor actually analysed. Residual, asserted in the
-     *       test rather than papered over: an override's effect then does not reach that hash.
+     *   <li>A REAL entry already claims the hash (an effectful {@code default} method) → the union is MERGED
+     *       INTO IT, never skipped and never replaced. Skipping was a SILENT UNDER-REPORT — the cardinal sin
+     *       — and it shipped: {@code interface Store { default void save(String s){ log(s); } }} publishes
+     *       {@code ["Log"]} under the very hash a consumer's INVOKEINTERFACE keys on, so an
+     *       {@code S3Store implements Store} that overrides it with an HTTP call was never charged to
+     *       anyone and {@code deny Net} passed on code that makes an HTTP call. Publishing under a hash is
+     *       answering "what can running this member do", and IN-SCAN the same {@code iface.save()} is
+     *       already charged the whole CHA union — so the boundary answer must be the union too, or the
+     *       engine contradicts itself across the scan boundary. The merge WIDENS only: {@code inferred},
+     *       {@code invisible}, the literal surfaces and {@code netClass} take the union; {@code loc},
+     *       {@code direct}, {@code declared}/{@code undeclared}/{@code overdeclared} and {@code calls}
+     *       still describe the analysed BODY (they are assertions about that body, not about the dispatch),
+     *       and the entry stays UNMARKED — it is a real analysed unit, counted in ⟨0.21⟩ {@code analyzed},
+     *       and marking it would make a consumer subtract it twice. {@code fs} is DROPPED when another
+     *       implementer contributes {@code Fs}: the field means "kind known and complete", and the union
+     *       does not carry kinds, so keeping the default body's {@code ["read"]} would claim completeness
+     *       for a write it never saw.
      *   <li>{@code static} / {@code private} / synthetic / {@code <clinit>} interface members are skipped.
      *       Not cosmetic: a PURE {@code static} interface method has no real entry to claim its hash, and an
      *       implementer that happens to declare the same {@code name+desc} as an INSTANCE method would be
@@ -281,8 +295,13 @@ final class ReportWriter {
             Map<String, TreeSet<String>> pathsAcc, Map<String, TreeSet<String>> tablesAcc,
             Map<String, TreeSet<String>> incompleteAcc) {
         if (!workspaceChain()) return;
-        Set<String> claimed = effectors.stream().map(Effector::hash).collect(Collectors.toSet());
+        // The REAL entry claiming each hash, by index — the union MERGES into it (see the `default`-method
+        // bullet above); `putIfAbsent` keeps the first, so the merge target is stable.
+        Map<String, Integer> claimedAt = new HashMap<>();
+        for (int i = 0; i < effectors.size(); i++) claimedAt.putIfAbsent(effectors.get(i).hash(), i);
+        Set<String> published = new HashSet<>();            // one entry per hash, whatever ALL contains
         List<Effector> unions = new ArrayList<>();
+        int merged = 0;
         for (ClassNode cn : ctx().ALL) {
             if ((cn.access & org.objectweb.asm.Opcodes.ACC_INTERFACE) == 0) continue;
             for (MethodNode mn : cn.methods) {
@@ -290,14 +309,22 @@ final class ReportWriter {
                         | org.objectweb.asm.Opcodes.ACC_SYNTHETIC)) != 0) continue;
                 if (mn.name.startsWith("<")) continue;
                 String hash = cn.name + "." + mn.name + mn.desc;   // the exact key crossDepJoin forms
-                if (!claimed.add(hash)) continue;                  // a real entry already claims it
+                if (!published.add(hash)) continue;
+                Integer at = claimedAt.get(hash);
+                Effector real = at == null ? null : effectors.get(at);
                 EffectSet inf = EffectSet.empty();
+                // What the OTHER implementers contribute — the interface's own `default` body is one of
+                // `chaTargets`' targets, and only the rest is news to a claimed entry.
+                EffectSet fromOthers = EffectSet.empty();
                 TreeSet<String> inv = new TreeSet<>(), hosts = new TreeSet<>(), cmds = new TreeSet<>(),
                         paths = new TreeSet<>(), tables = new TreeSet<>();
                 boolean masked = false;
                 for (String impl : chaTargets(cn.name, mn.name, mn.desc)) {
                     EffectSet ie = inferred.get(impl);
-                    if (ie != null) inf.addAll(ie);
+                    if (ie != null) {
+                        inf.addAll(ie);
+                        if (real == null || !impl.equals(real.fn())) fromOthers.addAll(ie);
+                    }
                     inv.addAll(blindAcc.getOrDefault(impl, new TreeSet<>()).stream()
                             .filter(globalBlind::contains).collect(Collectors.toList()));
                     hosts.addAll(hostsAcc.getOrDefault(impl, new TreeSet<>()));
@@ -314,6 +341,12 @@ final class ReportWriter {
                     if (masked || hosts.isEmpty()) classes.add("unknown-host");
                     netClass = new ArrayList<>(classes);
                 }
+                if (real != null) {
+                    Effector wide = mergeUnionInto(real, inf, fromOthers, inv, hosts, cmds, paths, tables,
+                            netClass);
+                    if (wide != real) { effectors.set(at, wide); merged++; }
+                    continue;
+                }
                 unions.add(new Effector(
                         cn.name.replace('/', '.') + "." + mn.name, "", inf, new ArrayList<>(inv),
                         EffectSet.empty(), EffectSet.empty(), EffectSet.empty(), EffectSet.empty(),
@@ -326,11 +359,55 @@ final class ReportWriter {
                         netClass, true));
             }
         }
-        if (unions.isEmpty()) return;
+        if (unions.isEmpty() && merged == 0) return;
         unions.sort(Comparator.comparing(Effector::hash));
         effectors.addAll(unions);
         System.err.println("candor-java: emitted " + unions.size()
-                + " interface-CHA union entries (workspace chain)");
+                + " interface-CHA union entries, merged " + merged + " into a claimed hash (workspace chain)");
+    }
+
+    /**
+     * WIDEN the real entry that already claims an interface method's hash with the dispatch union over its
+     * implementers — the merge half of {@link #appendInterfaceUnions}. Returns {@code real} UNCHANGED when
+     * the union adds nothing, so a claimed hash with only pure implementers is byte-identical to the
+     * unflagged report (the second fixture); otherwise a copy with the widened fields.
+     *
+     * <p>WIDEN ONLY, never veto and never replace: every field is a union with what the analysed body
+     * already reported. The body's own assertions — {@code loc}, {@code direct}, {@code declared},
+     * {@code undeclared}, {@code overdeclared}, {@code calls} — are left alone; they describe the code at
+     * {@code loc}, not the dispatch, and widening them would manufacture an AS-EFF-001 violation on a class
+     * for an effect a DIFFERENT class performs. The entry also stays unmarked (see the bullet).
+     */
+    private static Effector mergeUnionInto(Effector real, EffectSet inf, EffectSet fromOthers,
+            TreeSet<String> inv, TreeSet<String> hosts, TreeSet<String> cmds, TreeSet<String> paths,
+            TreeSet<String> tables, List<String> netClass) {
+        EffectSet wide = real.inferred().join(inf);
+        TreeSet<String> invW = new TreeSet<>(real.invisible()); invW.addAll(inv);
+        TreeSet<String> hostsW = new TreeSet<>(real.hosts()); hostsW.addAll(hosts);
+        TreeSet<String> cmdsW = new TreeSet<>(real.cmds()); cmdsW.addAll(cmds);
+        TreeSet<String> pathsW = new TreeSet<>(real.paths()); pathsW.addAll(paths);
+        TreeSet<String> tablesW = new TreeSet<>(real.tables()); tablesW.addAll(tables);
+        TreeSet<String> netW = new TreeSet<>(real.netClass()); netW.addAll(netClass);
+        // `fs` means "the access kind, known AND complete" (see the fsKinds branch above). The union carries
+        // no kinds, so once ANOTHER implementer contributes Fs the body's own kinds stop being the whole
+        // story — drop the field rather than half-publish it (empty = unknown = the gate fails closed).
+        List<String> fsW = fromOthers.contains(Effect.FS) ? List.of() : real.fs();
+        boolean unchanged = wide.equals(real.inferred())
+                && invW.size() == real.invisible().size() && hostsW.size() == real.hosts().size()
+                && cmdsW.size() == real.cmds().size() && pathsW.size() == real.paths().size()
+                && tablesW.size() == real.tables().size() && netW.size() == real.netClass().size()
+                && fsW.equals(real.fs());
+        if (unchanged) return real;
+        boolean hasNet = wide.contains(Effect.NET);
+        return new Effector(real.fn(), real.loc(), wide, new ArrayList<>(invW), real.direct(),
+                real.declared(), real.undeclared(), real.overdeclared(), real.entryPoint(),
+                wide.hasUnknown(), real.kind(), real.unknownWhy(), real.hash(), real.calls(), fsW,
+                hasNet ? new ArrayList<>(hostsW) : real.hosts(),
+                wide.contains(Effect.EXEC) ? new ArrayList<>(cmdsW) : real.cmds(),
+                wide.contains(Effect.FS) ? new ArrayList<>(pathsW) : real.paths(),
+                wide.contains(Effect.DB) ? new ArrayList<>(tablesW) : real.tables(),
+                hasNet ? new ArrayList<>(netW) : real.netClass(),
+                real.interfaceUnion());
     }
 
     /** ⟨0.21⟩ An opaque, within-engine-stable fingerprint of a sorted qual set — FNV-1a 64-bit over the

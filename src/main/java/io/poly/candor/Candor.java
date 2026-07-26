@@ -1353,7 +1353,7 @@ public class Candor {
             // TASK_ARG_PREFIXES, so the constructed type is a task type and its reported surface is what
             // the runtime invokes.
             if (task != null && task.newType != null && !ctx.projectClasses.contains(task.newType))
-                for (DepFn d : depFnsOfType(task.newType)) inheritDepFn(id, d);
+                for (DepFn d : depFnsInvokedByHandoff(task.newType)) inheritDepFn(id, d);
         }
     }
 
@@ -1397,7 +1397,7 @@ public class Candor {
                 // is never charged its whole surface.
                 if (i < pt.length && isHofFunctionalIface(pt[i].getInternalName())
                         && !ctx.projectClasses.contains(a.newType))
-                    for (DepFn d : depFnsOfType(a.newType)) inheritDepFn(id, d);
+                    for (DepFn d : depFnsInvokedByHandoff(a.newType)) inheritDepFn(id, d);
             }
         }
     }
@@ -2610,6 +2610,41 @@ public class Candor {
      *  (`accept(String)`), so there is no single hash to join on. Taking the type's whole reported surface
      *  mirrors {@link #functionalSamSurface}, which edges every method of a project functional impl for the
      *  same reason — such a type exists to be invoked, and its surface is one or two methods. */
+    /** The SAM method names of every functional interface `TASK_ARG_PREFIXES` / `isHofFunctionalIface`
+     *  admit, plus `<init>`. A hand-off invokes exactly ONE member of the constructed type — the
+     *  interface's single abstract method — and the constructor, which runs at the `new` site itself.
+     *  Every other member of that type is unreachable through the hand-off.
+     *
+     *  Without this filter `depFnsOfType` returned the type's WHOLE reported surface: an
+     *  `executor.submit(new lib.ReportJob())` inherited `exportCsv()`'s Fs and `upload()`'s Net —
+     *  public helpers the executor never calls — onto the scheduling method, failing a `deny Net` on a
+     *  service that only enqueues work. The comment at the call site argued the parameter gate made the
+     *  surface safe; the gate constrains which TYPE is handed off, never which MEMBER runs. */
+    static final Set<String> HANDOFF_INVOKED = Set.of(
+            "<init>",            // runs at the construction site, so its effects ARE reached
+            "run", "call", "get", "apply", "accept",
+            "compare", "test",   // Comparator / Predicate, admitted by isHofFunctionalIface
+            "applyAsInt", "applyAsLong", "applyAsDouble");
+
+    /** Like {@link #depFnsOfType}, restricted to the members a hand-off can actually invoke. */
+    static List<DepFn> depFnsInvokedByHandoff(String internalOwner) {
+        AnalysisContext c = ctx();
+        if (c.crossDeps.isEmpty() || internalOwner == null) return List.of();
+        List<DepFn> out = new ArrayList<>();
+        String prefix = internalOwner + ".";
+        for (Map.Entry<String, DepFn> e : c.crossDeps.entrySet()) {
+            String h = e.getKey();
+            if (!h.startsWith(prefix)) continue;
+            int paren = h.indexOf('(', prefix.length());
+            if (paren < 0) continue;
+            String name = h.substring(prefix.length(), paren);
+            if (name.indexOf('/') >= 0) continue;   // a nested owner, not a member of this type
+            if (!HANDOFF_INVOKED.contains(name)) continue;
+            out.add(e.getValue());
+        }
+        return out;
+    }
+
     static List<DepFn> depFnsOfType(String internalOwner) {
         AnalysisContext c = ctx();
         if (c.crossDeps.isEmpty() || internalOwner == null) return List.of();

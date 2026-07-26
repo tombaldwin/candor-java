@@ -490,6 +490,28 @@ class CrossScanBoundaryTest {
                         + r.get("app.S.run"));
     }
 
+    /** A hand-off invokes ONE member of the constructed type — the interface's SAM — plus the constructor.
+     *  The rest of the type's reported surface is unreachable through it, and inheriting all of it charged
+     *  a scheduling method with effects no call path reaches. */
+    @Test
+    void aTaskHandoffInheritsOnlyWhatTheRuntimeInvokes() throws Exception {
+        Map<String, String> lib = Map.of("lib/ReportJob.java", String.join("\n",
+            "package lib;",
+            "import java.io.*;",
+            "public class ReportJob implements Runnable {",
+            "  public void run(){ }",
+            "  public void exportCsv(){ try (FileWriter w = new FileWriter(\"/tmp/r\")) { w.write(\"x\"); } catch (Exception e) {} }",
+            "  public void upload(){ try { new java.net.Socket(\"example.com\", 80).close(); } catch (Exception e) {} }",
+            "}"));
+        Map<String, EffectSet> r = scanChained(lib, Map.of("app/Sched.java", String.join("\n",
+            "package app; import java.util.concurrent.*;",
+            "public class Sched { public void enqueue(ExecutorService es){ es.submit(new lib.ReportJob()); } }")));
+        var got = r.getOrDefault("app.Sched.enqueue", EffectSet.empty()).toNames();
+        assertFalse(got.contains("Fs") || got.contains("Net"),
+                "the executor invokes run() and nothing else — exportCsv()'s Fs and upload()'s Net are "
+                        + "public helpers no call path reaches from here, got " + got);
+    }
+
     // ---- the no-report baseline ------------------------------------------------------------------------
 
     @Test

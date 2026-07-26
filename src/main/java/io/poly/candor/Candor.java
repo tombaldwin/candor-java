@@ -708,10 +708,18 @@ public class Candor {
      *  --gate-json advisory — so the three can never disagree on names or counts. An external package the
      *  bytecode demonstrably calls where the classifier never fired AND no chained dep report covers it:
      *  its effects are INVISIBLE to the scan (absent, NOT a claim of purity). Sorted by call count
-     *  descending, then name (the stderr line's order, kept for the wire too). */
+     *  descending, then name (the stderr line's order, kept for the wire too).
+     *
+     *  Coverage is a REVIEW claim, not a resolution outcome. This filter deliberately does NOT consult
+     *  `kappaClassified` (packages where κ fired at least once). That set is an unvouched proxy: κ matching
+     *  `FileUtils.readFileToString` says nothing about whether `FilenameUtils.getName` is modeled, so one
+     *  classified call was clearing the blind marker for every OTHER call shape into the same package. The
+     *  vouching mechanism is the curated prefix list (`kappaCovers`) plus a chained dep report — both of
+     *  which someone reviewed. `blindDirect` already records the per-call-site datum and `literalFixpoint`
+     *  already propagates it, so the per-method truth was present all along and only this filter hid it. */
     static List<Map.Entry<String, Integer>> kappaUncovered() {
         return ctx().kappaSeen.entrySet().stream()
-                .filter(e -> !ctx().kappaClassified.contains(e.getKey()) && !ctx().depCoveredPkgs.contains(e.getKey()))
+                .filter(e -> !ctx().depCoveredPkgs.contains(e.getKey()))
                 .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()
                         .thenComparing(Map.Entry.comparingByKey()))
                 .collect(Collectors.toList());
@@ -1709,18 +1717,24 @@ public class Candor {
         // κ ledger: key external owners by their EXACT package (the slash-form owner
         // up to the class segment — no uppercase heuristic, which mangled lowercase/
         // obfuscated classes); array owners ([Ljava/lang/String; — every enum's
-        // values() clone) are types, not packages, and stay out. A package with zero
-        // classifications anywhere in the scan is a named blind spot.
+        // values() clone) are types, not packages, and stay out. A package outside the
+        // curated coverage list is a named blind spot at every call shape κ floors.
         if (!ctx.projectClasses.contains(min.owner) && min.owner.charAt(0) != '[') {
             int slash = min.owner.lastIndexOf('/');
             String pkg = slash > 0 ? min.owner.substring(0, slash).replace('/', '.') : "";
             if (!pkg.isEmpty() && !kappaCovers(pkg)) {
-                ctx.kappaSeen.merge(pkg, 1, Integer::sum);
-                if (effect != null) ctx.kappaClassified.add(pkg);
-                // A FLOORED call (classifier returned pure) into an external package is a candidate
-                // per-method blind spot. Post-filtered to packages κ never classified ANYWHERE
-                // (so a known package's pure method isn't disclosed) and propagated to callers.
-                else ctx.blindDirect.computeIfAbsent(id, k -> new TreeSet<>()).add(pkg);
+                // A FLOORED call (classifier returned pure) into an uncurated external package is a
+                // per-method blind spot, propagated to callers. A call κ actually CLASSIFIED is not — its
+                // effect is on the record — so it is counted in NEITHER the ledger nor the call tally, and
+                // a package whose every call is classified never enters the ledger at all. Note the
+                // asymmetry: a classification vouches for the CALL it fired on, never for the package,
+                // which is why kappaUncovered() no longer consults a package-wide "was ever classified"
+                // set. The tally must mean the same thing as the name beside it: calls whose effects this
+                // scan could not see.
+                if (effect == null) {
+                    ctx.kappaSeen.merge(pkg, 1, Integer::sum);
+                    ctx.blindDirect.computeIfAbsent(id, k -> new TreeSet<>()).add(pkg);
+                }
             } else if (!pkg.isEmpty() && effect == null
                     && pkg.startsWith("org.springframework")
                     && isSpringIoOwner(min.owner) && !isConventionallyPure(min.name)) {

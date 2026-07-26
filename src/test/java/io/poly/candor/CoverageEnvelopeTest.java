@@ -6,6 +6,7 @@ import com.google.gson.JsonParser;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static io.poly.candor.TestCompiler.compileApp;
 import static io.poly.candor.TestCompiler.rm;
@@ -265,5 +266,93 @@ class CoverageEnvelopeTest {
         assertFalse(out.contains("coverage") || out.contains("okio"),
             "the human TSV is a pinned consumer surface — byte-stable, no coverage lines: " + out);
         assertTrue(out.contains("app.A.f\tNet"), "the TSV rows themselves are intact");
+    }
+
+    // ── 5. coverage is a REVIEW claim, not a resolution outcome ───────────────────────────────────
+
+    /** Two arms whose OBSERVED method is byte-identical; arm B adds an unrelated, CLASSIFIED call into the
+     *  same uncurated package. The classifier fires on `FileUtils.readFileToString` (→ Fs) and floors
+     *  `FilenameUtils.getName`, and `org.apache.commons.io` is deliberately NOT a curated prefix — the
+     *  Rules comment says so in as many words: *"org.hibernate broadly stays LEDGERED — its unclassified
+     *  surface is not vouched for"*, the same stance. The lib is compiled off the scan path so the package
+     *  is genuinely external. */
+    private Path armApp(boolean withClassifiedCall) throws Exception {
+        Map<String, String> lib = Map.of(
+            "FilenameUtils.java", "package org.apache.commons.io; public class FilenameUtils {"
+                + " public static String getName(String p){ return p; } }",
+            "FileUtils.java", "package org.apache.commons.io; public class FileUtils {"
+                + " public static String readFileToString(java.io.File f, String cs){ return \"\"; } }");
+        String other = withClassifiedCall
+            ? "  public String other(java.io.File f){ return org.apache.commons.io.FileUtils.readFileToString(f, \"UTF-8\"); }\n"
+            : "";
+        return compileApp(lib, Map.of("A.java", String.join("\n",
+            "package app;",
+            "public class A {",
+            "  public String nm(String p){ return org.apache.commons.io.FilenameUtils.getName(p); }",
+            other + "}")));
+    }
+
+    private JsonObject scanToJson(Path app, String name) throws Exception {
+        Path report = tmp.resolve(name);
+        Files.deleteIfExists(report);          // a stale report read back as this arm's result is the trap
+        Run r = runCli(app.toString(), "--json", report.toString());
+        assertEquals(0, r.exit(), r.stderr());
+        return JsonParser.parseString(Files.readString(report)).getAsJsonObject();
+    }
+
+    private static JsonObject fnOrNull(JsonObject root, String fn) {
+        for (var fe : root.getAsJsonArray("functions")) {
+            JsonObject f = fe.getAsJsonObject();
+            if (f.get("fn").getAsString().equals(fn)) return f;
+        }
+        return null;
+    }
+
+    @Test
+    void aClassifiedCallMustNotClearTheHedgeOnAnUnrelatedCallIntoTheSamePackage() throws Exception {
+        Path plain = armApp(false), withHit = armApp(true);
+        try {
+            JsonObject a = scanToJson(plain, "arm-a.json");
+            JsonObject b = scanToJson(withHit, "arm-b.json");
+
+            for (String arm : List.of("A", "B")) {
+                JsonObject root = arm.equals("A") ? a : b;
+                JsonObject nm = fnOrNull(root, "app.A.nm");
+                assertNotNull(nm, "arm " + arm + ": app.A.nm must be IN the report — a floored call into an "
+                    + "uncurated package is a blind spot, and absence would read as a purity claim "
+                    + "(the ⟨0.21⟩ manifest counts it in `analyzed`, so absence is a POSITIVE claim)");
+                assertTrue(nm.has("invisible")
+                        && nm.getAsJsonArray("invisible").toString().contains("org.apache.commons.io"),
+                    "arm " + arm + ": app.A.nm carries invisible:[org.apache.commons.io], got " + nm);
+            }
+
+            // The defect this pins: κ matching FileUtils.readFileToString vouches for THAT call, never for
+            // the package. Before the fix arm B's app.A.nm vanished from the report entirely, with no
+            // coverage field and no stderr advisory — a hedge silently converted into a purity claim by
+            // adding an unrelated method elsewhere in the same file.
+            assertEquals(fnOrNull(a, "app.A.nm").getAsJsonArray("invisible"),
+                         fnOrNull(b, "app.A.nm").getAsJsonArray("invisible"),
+                "identical source must get an identical hedge regardless of an unrelated classified call");
+
+            // The tally must mean the same thing as the name beside it: calls this scan could not see.
+            // The classified call is on the record, so it is NOT counted as invisible.
+            for (String arm : List.of("A", "B")) {
+                JsonObject root = arm.equals("A") ? a : b;
+                JsonArray unc = root.getAsJsonObject("coverage").getAsJsonArray("uncovered");
+                assertEquals(1, unc.size(), "arm " + arm + ": exactly the one uncurated package");
+                JsonObject e0 = unc.get(0).getAsJsonObject();
+                assertEquals("org.apache.commons.io", e0.get("name").getAsString());
+                assertEquals(1, e0.get("calls").getAsInt(),
+                    "arm " + arm + ": ONLY the floored call is counted — a classified call's effect is on "
+                    + "the record, so counting it would overstate what is invisible");
+            }
+
+            // ...and the classified call itself keeps its effect, with no spurious hedge: the fix discloses
+            // more, it does not blur what was already resolved.
+            JsonObject other = fnOrNull(b, "app.A.other");
+            assertNotNull(other, "the classified call's own method is in the report");
+            assertTrue(other.getAsJsonArray("inferred").toString().contains("Fs"),
+                "app.A.other keeps its classified Fs, got " + other);
+        } finally { rm(plain.getParent()); rm(withHit.getParent()); }
     }
 }

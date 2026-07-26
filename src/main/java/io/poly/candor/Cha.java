@@ -135,7 +135,41 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
      *  <p>So the hierarchy answers questions ABOUT DEPENDENCY TYPES — is this dep type a `java.io` stream,
      *  what does it inherit from its own supers — at the two dep-facing walks, and does not enter the
      *  project's subtype index. Widening those two is additive: they can only find MORE dependency bodies
-     *  to inherit. */
+     *  to inherit.
+     *
+     *  <p><b>NOW MEASURED, so nobody has to re-derive it — and BOTH numbers matter.</b> The paragraph above
+     *  was an argument; a shadow subtype index built from the sidecar and compared against the real one at
+     *  every polymorphic dispatch site, over seven chained real jar pairs (68 539 sites), makes it a
+     *  measurement. 737 sites go empty-CHA -> non-empty; at report level that is 113 gains and <b>8
+     *  LOSSES</b> — 7 functions lose a disclosed {@code Unknown} and one loses a concrete {@code Net}.
+     *  httpclient's {@code IdleConnectionHandler.closeExpiredConnections} and three siblings go from
+     *  {@code ['Unknown']} to a confident purity claim on a method that closes network connections: the
+     *  project's connection adapters get filed under {@code HttpConnection}, the CHA stops being empty, and
+     *  the target set that replaces the disclosure is not the true one, because httpcore's OWN implementers
+     *  are outside the scan. A partial answer wearing a complete one's clothes.
+     *
+     *  <p><b>The hazard is real; the GATE named above is not the one that fired.</b> Instrumented per site,
+     *  the JDK-functional-SAM `callback:` branch this paragraph reasons about suppressed <b>zero</b> across
+     *  the seven pairs, as did the missing-project-impl branch. What suppressed was half 1
+     *  ({@link Candor#untypedDepReceiver}), whose conjunct 4 is the same "the project CHA is empty" test.
+     *  The argument generalises and the illustration did not; the property to protect is <i>every</i>
+     *  Unknown branch conditioned on an empty target set, not the one that was easiest to picture.
+     *
+     *  <p><b>And it does not buy what it is usually reached for.</b> The abstract-dep-CLASS row was the
+     *  standing argument for widening here, and widening cannot close it: {@link #buildSubtypeIndex} files
+     *  PROJECT {@code ClassNode}s and {@link #chaTargets} needs one to test {@link #declaresConcrete}, so a
+     *  DEPENDENCY's implementer never enters the index however wide the hierarchy gets — the two-tree
+     *  fixture is exit 0 in that arm too. That row is closed producer-side instead, by
+     *  {@code ReportWriter.appendInterfaceUnions}' ACC_ABSTRACT arm.
+     *
+     *  <p><b>One ordering fact worth knowing before trusting the hazard is dormant.</b> As a literal
+     *  one-liner inside {@code externalSupers} the widening is INERT today, because {@code runScan} builds
+     *  the subtype index BEFORE {@code loadCrossDeps} populates {@code depSupers}. The first measurement
+     *  arm reported byte-identical zero cost for exactly that reason, and it pointed the flattering way.
+     *  So the numbers above are from an arm with the load hoisted — and a future reordering of
+     *  {@code runScan} would arm the hazard silently. {@code CrossScanBoundaryTest}'s assertion that
+     *  {@code externalSupers} on a sidecar type still returns empty is the guard that survives either
+     *  order; keep it. */
     static List<String> depDirectSupers(String internal) {
         List<String> dep = ctx().depSupers.get(internal);
         if (dep != null) {

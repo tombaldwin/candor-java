@@ -270,21 +270,29 @@ class InterfaceUnionTest {
     }
 
     @Test
-    void aNonInterfaceMethodIsUntouched() throws Exception {
-        // The rung is scoped to INTERFACES. An abstract dependency CLASS receiver is the documented residual
-        // (DEP-RECEIVER-TYPING-DESIGN.md: INVOKEVIRTUAL on a dep class usually names the body itself), and a
-        // concrete class method already has a real entry when it is effectful. Neither may gain a synthetic
-        // one — that would be a second entry under a key the join already answers.
+    void aCONCRETEClassMethodIsUntouched() throws Exception {
+        // WAS `aNonInterfaceMethodIsUntouched`, and half its premise was the OPEN ROW rather than a scope.
+        // It read "the rung is scoped to INTERFACES; an abstract dependency CLASS receiver is the documented
+        // residual", and that residual is now closed by the ACC_ABSTRACT arm — see
+        // `anAbstractDepClassPublishesAUnionForItsAbstractMember`. What survives is the half that was always
+        // a scope: a CONCRETE class method must gain nothing. Its key names a body that exists and was
+        // analysed, so the report's answer under that key — the entry, or silence meaning pure — is already
+        // true, and a synthetic second answer could only widen a true one.
         Map<String, Map<String, Object>> r = depReport(Map.of(
-                "lib/AbstractStore.java", "package lib;\npublic abstract class AbstractStore {\n"
-                        + "  public abstract void save(String s);\n}\n",
+                "lib/Base.java", "package lib;\npublic class Base {\n"
+                        + "  public void save(String s) { }\n"
+                        + "  public String tag() { return \"b\"; }\n}\n",
                 "lib/DiskStore.java", "package lib;\nimport java.io.*;\n"
-                        + "public class DiskStore extends AbstractStore {\n"
+                        + "public class DiskStore extends Base {\n"
                         + "  public void save(String s) { try { new FileWriter(\"/tmp/x\").write(s); }"
-                        + " catch (IOException e) {} }\n}\n"), true);
+                        + " catch (IOException e) {} }\n"
+                        + "  public String tag() { System.getenv(\"HOME\"); return \"d\"; }\n}\n"), true);
         for (Map.Entry<String, Map<String, Object>> e : r.entrySet())
             assertNull(e.getValue().get("interfaceUnion"),
-                    "no interface here — nothing may be synthesized; got " + e.getKey());
+                    "no interface and no abstract member here — nothing may be synthesized; got " + e.getKey());
+        assertNull(r.get("lib/Base.save(Ljava/lang/String;)V"),
+                "a concrete member overridden effectfully must not be unioned — its own body IS pure and the"
+                        + " report says so truthfully");
     }
 
     @Test
@@ -564,5 +572,176 @@ class InterfaceUnionTest {
                 "package app;\nimport lib.Quiet;\npublic class Go { public String run(Quiet q) { return q.tag(); } }\n");
         assertNull(chainedApp(lib, app, true).get("app.Go.run"),
                 "a pure dep interface must leave the consumer pure (absent from `functions`)");
+    }
+
+    // ---- the ABSTRACT DEP CLASS (candor-spec SCAN-BOUNDARY-WORK-QUEUE, the row half 1 left open) --------
+    //
+    // `Store s = Factory.build(); s.save()` where `Store` is a dependency's ABSTRACT CLASS compiles to
+    // INVOKEVIRTUAL, so half 1 (`untypedDepReceiver`) deliberately does not disclose, the project CHA is
+    // empty because the implementer is in the dependency, and the caller read SILENT-PURE. The producer's
+    // discriminator is ACC_ABSTRACT on the MEMBER: it proves the JVM will never run the declaration the
+    // consumer's key names, so no report of any version can answer that key and absence under it licenses
+    // nothing. Half the tests below are the SCOPE — what must still publish nothing.
+
+    /** A dependency's ABSTRACT CLASS: one abstract member with an effectful implementer, plus a CONCRETE
+     *  member with an effectful OVERRIDE (the scope control). */
+    private static Map<String, String> absLib() {
+        Map<String, String> m = new java.util.HashMap<>();
+        m.put("lib/Store.java", "package lib;\npublic abstract class Store {\n"
+                + "  public abstract void save(String s);\n"
+                // CONCRETE, and overridden effectfully below. Its key names a body that EXISTS and was
+                // analysed, so its absence from the report is a TRUE purity claim about that body.
+                + "  public String label() { return \"store\"; }\n}\n");
+        m.put("lib/FileStore.java", "package lib;\nimport java.io.*;\n"
+                + "public class FileStore extends Store {\n"
+                + "  public void save(String s) { try { new FileWriter(\"/tmp/x\").write(s); } catch (IOException e) {} }\n"
+                + "  public String label() { System.getenv(\"HOME\"); return \"file\"; }\n}\n");
+        m.put("lib/Factory.java", "package lib;\npublic class Factory {\n"
+                + "  public static Store build() { return new FileStore(); }\n}\n");
+        return m;
+    }
+
+    @Test
+    void anAbstractDepClassPublishesAUnionForItsAbstractMember() throws Exception {
+        Map<String, Map<String, Object>> r = depReport(absLib(), true);
+        Map<String, Object> u = r.get("lib/Store.save(Ljava/lang/String;)V");
+        assertNotNull(u, "an ABSTRACT member's key can never be answered by any report — it must carry the"
+                + " union; got hashes " + r.keySet());
+        assertEquals(Boolean.TRUE, u.get("interfaceUnion"), "a synthetic union entry must be marked");
+        assertEquals(List.of("Fs"), u.get("inferred"), "the union over the abstract class's own subclasses");
+    }
+
+    @Test
+    void aConcreteMemberOfTheSameAbstractClassPublishesNoUnion() throws Exception {
+        // THE SCOPE, asserted rather than described (standing-bar item 9). `label()` HAS a body, it was
+        // analysed, and it is pure — so its absence from the report is a TRUE claim about that body, and a
+        // union over `FileStore.label`'s Env would overwrite a true answer with a wider one. This is the
+        // guard that keeps the arm to the unanswerable key; mutate the `(mn.access & ACC_ABSTRACT) == 0`
+        // skip out of appendInterfaceUnions and this test fails.
+        Map<String, Map<String, Object>> r = depReport(absLib(), true);
+        assertNull(r.get("lib/Store.label()Ljava/lang/String;"),
+                "a CONCRETE member's key names a body that exists — it must not be unioned; got "
+                        + r.get("lib/Store.label()Ljava/lang/String;"));
+    }
+
+    @Test
+    void theAbstractDepClassRowResolvesAcrossTheBoundaryAndMatchesItsSingleTreeControl() throws Exception {
+        // THE ROW. Both the factory-bound receiver (the queue's exact wording) and the parameter-typed one.
+        Map<String, String> app = Map.of("app/S.java", String.join("\n",
+                "package app; import lib.*;",
+                "public class S {",
+                "  public void viaFactory() { Store s = Factory.build(); s.save(\"x\"); }",
+                "  public void viaParam(Store s) { s.save(\"x\"); }",
+                "}"));
+        // CONTROL — the dep report as produced today: SILENT-PURE, i.e. absent from `functions` while
+        // counted in ⟨0.21⟩ `analyzed`. That is the cardinal sin, and INVOKEVIRTUAL is why half 1 misses it.
+        Map<String, Map<String, Object>> before = chainedApp(absLib(), app, false);
+        assertNull(before.get("app.S.viaFactory"), "the control must reproduce the silent-pure row");
+        assertNull(before.get("app.S.viaParam"), "the control must reproduce the silent-pure row");
+        // WITH the rung — the consumer is UNCHANGED (it never sets the producer flag) and resolves.
+        Map<String, Map<String, Object>> after = chainedApp(absLib(), app, true);
+        assertNotNull(after.get("app.S.viaFactory"), "the row is still silent; got " + after.keySet());
+        assertEquals(List.of("Fs"), after.get("app.S.viaFactory").get("inferred"),
+                "a factory-bound receiver typed by a dep ABSTRACT class must reach the impl; got "
+                        + after.get("app.S.viaFactory"));
+        assertEquals(List.of("Fs"), after.get("app.S.viaParam").get("inferred"),
+                "got " + after.get("app.S.viaParam"));
+        // THE SINGLE-TREE CONTROL, which is what makes this a BOUNDARY defect and not a limitation: scan
+        // lib and app as one tree and candor already says Fs.
+        Path oneTree = TestCompiler.compile(merge(absLib(), app));
+        Config saved = Candor.config;
+        try {
+            Candor.config = Config.empty();
+            Map<String, io.poly.candor.model.EffectSet> one = Candor.runScan(oneTree);
+            assertTrue(one.get("app.S.viaFactory").toNames().contains("Fs"),
+                    "the single-tree control must be Fs, or this is a limitation and not a boundary defect");
+            assertTrue(one.get("app.S.viaParam").toNames().contains("Fs"), "single-tree control");
+        } finally {
+            Candor.config = saved;
+            rm(oneTree.getParent());
+        }
+    }
+
+    private static Map<String, String> merge(Map<String, String> a, Map<String, String> b) {
+        Map<String, String> m = new java.util.HashMap<>(a);
+        m.putAll(b);
+        return m;
+    }
+
+    @Test
+    void anAbstractMemberWithOnlyPureImplementersPublishesNothing() throws Exception {
+        // THE FABRICATION CONTROL, and the one that stops this arm becoming "abstract ⇒ Unknown". An empty
+        // union means every implementer this scan analysed is pure, and a dep report omits its pure
+        // functions — silence is the right answer and it is TRUE. Mutating the `inf.isEmpty() && inv.isEmpty()`
+        // skip into an unconditional emit makes this test fail.
+        Map<String, String> lib = Map.of(
+                "lib/Quiet.java", "package lib;\npublic abstract class Quiet { public abstract String tag(); }\n",
+                "lib/QuietImpl.java", "package lib;\npublic class QuietImpl extends Quiet {\n"
+                        + "  public String tag() { return \"q\"; }\n}\n");
+        assertNull(depReport(lib, true).get("lib/Quiet.tag()Ljava/lang/String;"),
+                "an all-pure abstract hierarchy must publish nothing");
+        Map<String, String> app = Map.of("app/Go.java",
+                "package app;\nimport lib.Quiet;\npublic class Go { public String run(Quiet q) { return q.tag(); } }\n");
+        assertNull(chainedApp(lib, app, true).get("app.Go.run"),
+                "and the consumer must stay pure — the union must not manufacture uncertainty");
+    }
+
+    @Test
+    void aBroadAbstractHierarchyPublishesUnknownRatherThanTheSmearedUnion() throws Exception {
+        // The CHA_FANOUT_LIMIT bound applies to the abstract-class arm identically: past the bound an OPEN
+        // hierarchy may have a subtype this scan never saw, so the visible union is an open-world guess.
+        // Unknown, never silence — twelve pure subclasses do not make the thirteenth pure.
+        Map<String, String> lib = new java.util.HashMap<>();
+        lib.put("lib/Chan.java", "package lib;\npublic abstract class Chan { public abstract void go(); }\n");
+        for (int i = 0; i < 13; i++)
+            lib.put("lib/C" + i + ".java", "package lib;\nimport java.net.*;\n"
+                    + "public class C" + i + " extends Chan {\n"
+                    + "  public void go() { try { new URL(\"http://s3.example.com/x\").openStream(); }"
+                    + " catch (Exception e) {} }\n}\n");
+        Map<String, Object> u = depReport(lib, true).get("lib/Chan.go()V");
+        assertNotNull(u, "a bound must not produce SILENCE — that is the cardinal sin, not a bound");
+        assertEquals(List.of("Unknown"), u.get("inferred"), "the broad union must not be published");
+        assertEquals(List.of("dispatch:lib.Chan.go"), u.get("unknownWhy"));
+        assertNull(u.get("hosts"), "no literal surface may travel with an unresolved dispatch");
+    }
+
+    @Test
+    void anAbstractMemberThatAlreadyHasABodilessEntryIsWidenedNotSkipped() throws Exception {
+        // MEASURED, NOT REASONED. The rung's comment first claimed an abstract member can never meet a real
+        // entry ("it has no body, so nothing claims its hash"); the A/B falsified it — `writeJson`'s filter
+        // keeps a BODILESS entry when the method is framework-rooted or its class declares a capability, and
+        // 17 such entries exist across twelve real dependency reports (logback's `AppenderBase.append`, an
+        // entry point carrying `inferred: []`). `[]` published under a hash a consumer keys on IS a purity
+        // claim about the dispatch, and it is false — so the union MERGES, exactly as for an effectful
+        // `default` (`48a5f18`). Here `run()` is a RUNTIME_OVERRIDES entry point, so the abstract
+        // declaration gets its own empty entry.
+        Map<String, String> lib = Map.of(
+                "lib/Task.java", "package lib;\n"
+                        + "public abstract class Task implements Runnable { public abstract void run(); }\n",
+                "lib/LoudTask.java", "package lib;\nimport java.io.*;\n"
+                        + "public class LoudTask extends Task {\n"
+                        + "  public void run() { try { new FileWriter(\"/tmp/x\").write(\"t\"); }"
+                        + " catch (IOException e) {} }\n}\n");
+        Map<String, Object> u = depReport(lib, true).get("lib/Task.run()V");
+        assertNotNull(u, "the abstract entry-point declaration must be present");
+        assertEquals(List.of("Fs"), u.get("inferred"),
+                "the bodiless entry's `[]` was a purity claim about the dispatch — it must be WIDENED; got " + u);
+        assertNull(u.get("interfaceUnion"),
+                "a merged entry stays UNMARKED: it is a real unit counted in ⟨0.21⟩ analyzed, and marking it"
+                        + " would make a consumer subtract it twice");
+    }
+
+    @Test
+    void withTheRungOffTheAbstractArmIsInvisibleOnTheWire() throws Exception {
+        // The producer-only scope: everything above is gated, so a default report — and every consumer,
+        // which never sets the flag — is byte-identical to the pre-change engine.
+        String off = depReportText(absLib(), false);
+        assertFalse(off.contains("interfaceUnion"), "the rung is gated; an unflagged report never carries the key");
+        assertNull(byHash(off).get("lib/Store.save(Ljava/lang/String;)V"), "no synthetic entry with the rung off");
+        List<Map<String, Object>> onOrdinary = new ArrayList<>();
+        for (Map<String, Object> e : byHash(depReportText(absLib(), true)).values())
+            if (e.get("interfaceUnion") == null) onOrdinary.add(e);
+        assertEquals(new java.util.HashSet<>(byHash(off).values()), new java.util.HashSet<>(onOrdinary),
+                "turning the rung on must not touch an ordinary entry");
     }
 }

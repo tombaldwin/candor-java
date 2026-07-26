@@ -270,6 +270,54 @@ final class ReportWriter {
      *       unioned onto it — charging a consumer's INVOKESTATIC the effects of a body it never runs.
      * </ul>
      *
+     * <p><b>THE ABSTRACT DEP CLASS, and why the answer is here rather than in the consumer's CHA.</b>
+     * {@code Store s = Factory.build(); s.save()} where {@code Store} is a dependency's ABSTRACT class
+     * compiles to INVOKEVIRTUAL, not INVOKEINTERFACE — so half 1 ({@link Candor#untypedDepReceiver})
+     * deliberately does not disclose there (a plain dep class usually IS the body, and a miss on it is a
+     * real purity claim), the project CHA is empty because the implementer is in the dependency, and the
+     * caller read SILENT-PURE. The discriminator half 1 uses on the consumer side is the OPCODE; the
+     * discriminator here is the ACCESS FLAG, and it is strictly better evidence: {@code ACC_ABSTRACT} on
+     * the member proves the JVM will never run the declaration this key names, so <b>no report, of any
+     * version, produced by any engine, can ever answer that key</b>. Absence under it licenses nothing.
+     * That is the three-row rule (conformance PART 21) stated from the producing side.
+     *
+     * <p>Two further points. (a) Nothing on the CONSUMER changes: no CHA, no subtype index, no Unknown
+     * gate, no new resolution path — the union entry lands under the key {@code crossDepJoin} already
+     * forms for an INVOKEVIRTUAL site. (b) The scope is asserted by {@code InterfaceUnionTest}, not
+     * described here — a concrete member of the same abstract class must publish NO union, because absence
+     * under ITS key is a true claim about a body that exists and was analysed.
+     *
+     * <p><b>A claim this comment made and the measurement falsified, kept because the correction is the
+     * point.</b> It first read "an abstract member has no body, so no real entry can claim its hash — the
+     * merge path is unreachable for it". False: {@code writeJson}'s filter keeps a BODILESS entry when the
+     * method is framework-rooted or its class declares a capability, and 17 such entries exist across the
+     * twelve real dependency reports measured — logback's {@code AppenderBase.append} is one, an entry
+     * point carrying {@code inferred: []}. The merge is right there for exactly the reason {@code 48a5f18}
+     * gives for an effectful {@code default}: {@code []} published under a hash a consumer keys on IS a
+     * purity claim about the dispatch, and it was false. Verified widening-only across those 17: no
+     * effect, surface or field is ever removed.
+     *
+     * <p><b>The route this deliberately does NOT take, with the numbers that refused it.</b> The obvious
+     * reading of "the abstract dep CLASS needs the dependency's hierarchy" is: let the
+     * {@code <report>.hierarchy.json} sidecar {@code 800f471} consumes widen {@link Cha#externalSupers},
+     * hence {@link Cha#buildSubtypeIndex}. Measured, on seven chained real jar pairs, with the load hoisted
+     * so the arm is not inert (it IS inert as a one-liner — the index is built before {@code loadCrossDeps}
+     * runs, which is why a first pass reported a flattering byte-identical zero):
+     * <ul>
+     *   <li>It does not close this row at all. {@code buildSubtypeIndex} files PROJECT ClassNodes, and
+     *       {@code chaTargets} needs a ClassNode to test {@code declaresConcrete}, so a DEPENDENCY's
+     *       implementer can never enter it however wide the hierarchy gets. The fixture is exit 0 in that
+     *       arm too.
+     *   <li>It costs 8 losses over 113 gains — 7 functions lose a disclosed {@code Unknown} and one loses a
+     *       concrete {@code Net}. httpclient's {@code IdleConnectionHandler.closeExpiredConnections} and
+     *       three siblings go from {@code ['Unknown']} to a confident purity claim, because widening files
+     *       the project's connection adapters under {@code HttpConnection}, the CHA stops being empty, and
+     *       every Unknown gate that raises the honest answer is conditioned on an EMPTY target set. The
+     *       target set it substitutes is not the true one — httpcore's own implementers are outside the
+     *       scan — so it is a partial answer wearing a complete one's clothes.
+     * </ul>
+     * The suppression is real and the route does not buy the row, so it stays refused.
+     *
      * <p>An "at least one local subtype" guard was written here first and then REMOVED: measured across
      * twelve real jars it changed not one entry, and the single shape where it did fire — an interface that
      * re-abstracts a method whose only body is a super-interface {@code default} — is a genuinely runnable
@@ -303,11 +351,21 @@ final class ReportWriter {
         List<Effector> unions = new ArrayList<>();
         int merged = 0;
         for (ClassNode cn : ctx().ALL) {
-            if ((cn.access & org.objectweb.asm.Opcodes.ACC_INTERFACE) == 0) continue;
+            boolean iface = (cn.access & org.objectweb.asm.Opcodes.ACC_INTERFACE) != 0;
+            // An ABSTRACT CLASS declares bodiless members too — see the "abstract dep CLASS" paragraph.
+            if (!iface && (cn.access & org.objectweb.asm.Opcodes.ACC_ABSTRACT) == 0) continue;
             for (MethodNode mn : cn.methods) {
                 if ((mn.access & (org.objectweb.asm.Opcodes.ACC_STATIC | org.objectweb.asm.Opcodes.ACC_PRIVATE
                         | org.objectweb.asm.Opcodes.ACC_SYNTHETIC)) != 0) continue;
                 if (mn.name.startsWith("<")) continue;
+                // THE SCOPE, and the whole soundness argument for the abstract-class arm: a CLASS publishes
+                // only its ABSTRACT members. A concrete member's key names a body that exists and was
+                // analysed, so its absence from the report is a TRUE purity claim about that body and must
+                // not be overwritten by a union over overrides. An abstract member's key names a
+                // declaration the JVM will never run, so no report of any version can ever answer it —
+                // the unanswerable key. (Widening this to concrete overridable members is a separate,
+                // larger question; see the paragraph above and its pinned test.)
+                if (!iface && (mn.access & org.objectweb.asm.Opcodes.ACC_ABSTRACT) == 0) continue;
                 String hash = cn.name + "." + mn.name + mn.desc;   // the exact key crossDepJoin forms
                 if (!published.add(hash)) continue;
                 Integer at = claimedAt.get(hash);

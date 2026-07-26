@@ -25,6 +25,11 @@ final class AnalysisContext {
     // Memoized `crossDeps` grouped by declaring type (internal name) — the hand-off join has no descriptor
     // to key on (see Candor#depFnsOfType), and scanning every hash per site would be quadratic.
     final Map<String, List<DepFn>> depFnsByOwner = new HashMap<>();
+    // `crossDeps` inverted by SIGNATURE (`name+desc` -> the dep owners declaring an EFFECTFUL body with
+    // it) — the evidence the untyped-dep-receiver disclosure needs (Candor#untypedDepReceiver). Built
+    // once, lazily, on the first interface dispatch that gets that far; empty when nothing is chained.
+    final Map<String, Set<String>> depOwnersBySig = new HashMap<>();
+    boolean depOwnersBySigBuilt = false;
     final Map<String, TreeSet<String>> fsDirect = new HashMap<>(); // fn -> Fs read/write kind performed directly
     final Map<String, TreeSet<UnknownReason>> unknownWhy = new HashMap<>(); // fn -> why Unknown emitted directly
     // VALUE-PROVENANCE Phase 2: instance stream fields ("owner#name") PROVEN bound only to in-scope concrete

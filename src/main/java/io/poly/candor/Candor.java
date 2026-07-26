@@ -2232,12 +2232,17 @@ public class Candor {
             // the join on the concrete impl's hash. Sound: it is the EXACT runtime type, so
             // this is the one body the JVM dispatches to — never a CHA over-approximation.
             int xop = min.getOpcode();
+            String monoRecv = null;
             if (inh == null && (xop == Opcodes.INVOKEVIRTUAL || xop == Opcodes.INVOKEINTERFACE)) {
                 String cRecv = monomorphicReceiver(provFrames == null ? null
                         : provFrames[mn.instructions.indexOf(min)], min);
+                monoRecv = cRecv;
                 if (cRecv != null && !ctx.byName.containsKey(cRecv) && !cRecv.equals(min.owner))
                     inh = ctx.crossDeps.get(cRecv + "." + min.name + min.desc);
             }
+            // Still nothing under any key we could form — the two readings of that emptiness are not
+            // the same claim. Disclose the one that licenses nothing (see untypedDepReceiver).
+            if (inh == null) untypedDepReceiver(ctx, s, min, xop, monoRecv);
             if (inh != null) {
                 ctx.viaCross.computeIfAbsent(id, k -> EffectSet.empty()).addAll(inh.effects);
                 if (!inh.hosts.isEmpty()) ctx.hostsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.hosts);
@@ -2282,6 +2287,88 @@ public class Candor {
                 inherited = null;
             inheritDepFn(id, inherited);
         }
+    }
+
+    /**
+     * THE UNTYPED CROSS-PACKAGE RECEIVER — half 1 of candor-spec {@code DEP-RECEIVER-TYPING-DESIGN.md}:
+     * DISCLOSE the key that was never formed.
+     *
+     * <p>A chained lookup that comes back empty has two readings with opposite evidential weight.
+     * KEYED-AND-MISSED — the engine formed the hash and the dep's report has no entry — IS a purity
+     * claim, because a dep report omits its pure functions (SPEC §2 rule 3), and silence is the right
+     * answer. COULD-NOT-FORM-A-KEY — the dispatch target was never named, so no lookup happened — is
+     * not an answer to anything, and dropping it makes the CALLER a confident purity claim: absent from
+     * {@code functions} while counted in ⟨0.21⟩ {@code analyzed}. That is the cardinal sin, and on the
+     * JVM it is the queue's open "dep-interface-typed dispatch to a dep impl" (candor-spec
+     * SOUNDNESS-VEIN-crossing-the-scan-boundary.md): {@code Store s = Factory.build(); s.save()}
+     * compiles to INVOKEINTERFACE on {@code lib/Store}, the body is keyed {@code lib/FileStore.save},
+     * the CHA over PROJECT classes is empty — and an empty CHA emits no Unknown, only a dropped edge.
+     *
+     * <p>The trigger is a CONJUNCTION, not "unresolved receiver". Measured over nine chained JVM
+     * corpora, "unresolved receiver into a chained dep" alone fires on 5.4% of all analyzed functions
+     * (8.4% on logback-classic) — the false-uncertainty flood candor-spec COVERAGE-GRANULARITY-FINDING
+     * .md puts at 8–25%. Five conjuncts cut that to 0.49%:
+     *
+     * <ol>
+     *   <li><b>INVOKEINTERFACE.</b> The bytecode PROVES the static owner is an interface, so the hash
+     *       we formed names a declaration, not the body the JVM runs. INVOKEVIRTUAL is excluded: a
+     *       plain dep class usually IS the body, so its absence from the report is a real purity
+     *       claim. (An abstract dep CLASS is therefore a residual — half 2's {@code typeSurface}.)
+     *   <li><b>The receiver is not provably typed.</b> A monomorphic {@code new T} receiver has already
+     *       been re-keyed on T above; if THAT missed, the key was exact and the miss is real.
+     *   <li><b>The dependency is CHAINED</b> — the owner's package is in {@code depCoveredPkgs}. For an
+     *       UNCHAINED package the κ ledger already discloses {@code invisible: [pkg]}, so a second
+     *       disclosure is pure false uncertainty; it is precisely when the dep IS chained that the
+     *       ledger correctly falls silent (§2 rule 3) and the silence becomes the confident claim.
+     *       The rust engine found this conjunct the same way — by measuring.
+     *   <li><b>No project impl.</b> A non-empty CHA means the dispatch HAS a local answer; whether that
+     *       answer is complete is the documented bounded-CHA trade, not this rung.
+     *   <li><b>The dep demonstrably holds an effectful body with this exact signature</b>, under some
+     *       other owner. Without it the disclosure lands overwhelmingly on interfaces whose every
+     *       implementation in the dep is a pure accessor ({@code Header.getValue}, {@code
+     *       HttpRequest.getMethod}) — 2.1% of functions hedged to say nothing.
+     * </ol>
+     *
+     * <p>Conjunct 5 is a signature join, and a signature join is exactly what
+     * DEP-RECEIVER-TYPING-DESIGN rejects for RESOLUTION ("leaves as generic as write, run or send would
+     * fabricate on unrelated receivers"). It is used here only as EVIDENCE TO DISCLOSE — nothing is
+     * charged, no edge is formed, no effect is inherited — which is the behaviour that document
+     * prescribes when the type surface is absent: "the correct behaviour is half 1 — disclose — not a
+     * widened match." A collision costs one conservative Unknown on a site candor genuinely cannot
+     * resolve; it can never fabricate an effect.
+     */
+    static void untypedDepReceiver(AnalysisContext ctx, MethodScan s, MethodInsnNode min,
+            int xop, String monoRecv) {
+        if (xop != Opcodes.INVOKEINTERFACE) return;                        // conjunct 1
+        if (monoRecv != null) return;                                      // conjunct 2
+        if (isChaExemptMethod(min.owner, min.name, min.desc)) return;      // the conventionally-pure surface
+        int slash = min.owner.lastIndexOf('/');
+        if (slash <= 0) return;
+        if (!ctx.depCoveredPkgs.contains(min.owner.substring(0, slash).replace('/', '.'))) return; // conjunct 3
+        if (!chaTargets(min.owner, min.name, min.desc).isEmpty()) return;  // conjunct 4
+        if (!depDeclaresSigElsewhere(ctx, min)) return;                    // conjunct 5
+        s.dir.add(Effect.UNKNOWN);
+        ctx.unknownWhy.computeIfAbsent(s.id, k -> new TreeSet<>()).add(UnknownReason.of(
+                UnknownReason.Kind.DISPATCH, min.owner.replace('/', '.') + "." + min.name));
+    }
+
+    /** Does a chained dep report hold an EFFECTFUL body with this exact {@code name+desc} under a
+     *  DIFFERENT owner? Evidence that the interface this site dispatches on has a reachable effectful
+     *  implementation whose key this scan cannot name. Inverts {@code crossDeps} once, lazily. */
+    static boolean depDeclaresSigElsewhere(AnalysisContext ctx, MethodInsnNode min) {
+        if (!ctx.depOwnersBySigBuilt) {
+            for (String h : ctx.crossDeps.keySet()) {
+                int paren = h.indexOf('(');
+                int dot = paren < 0 ? -1 : h.lastIndexOf('.', paren);
+                if (dot > 0) ctx.depOwnersBySig
+                        .computeIfAbsent(h.substring(dot + 1), k -> new HashSet<>()).add(h.substring(0, dot));
+            }
+            ctx.depOwnersBySigBuilt = true;
+        }
+        Set<String> owners = ctx.depOwnersBySig.get(min.name + min.desc);
+        if (owners == null) return false;
+        for (String o : owners) if (!o.equals(min.owner)) return true;
+        return false;
     }
 
     /** A `NEW C` site: the class-load `<clinit>` edge, plus the anonymous/local-class and named

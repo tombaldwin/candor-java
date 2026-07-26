@@ -36,7 +36,19 @@ public record Effector(
         List<String> cmds,
         List<String> paths,
         List<String> tables,
-        List<String> netClass) {
+        List<String> netClass,
+        boolean interfaceUnion) {
+
+    /** The pre-⟨0.23⟩ arity: an ordinary entry, never a synthetic {@code interfaceUnion} union. Keeps the
+     *  read side and the tests that build an {@code Effector} by hand from restating the default. */
+    public Effector(String fn, String loc, EffectSet inferred, List<String> invisible, EffectSet direct,
+            EffectSet declared, EffectSet undeclared, EffectSet overdeclared, boolean entryPoint,
+            boolean unresolved, EffectorKind kind, List<UnknownReason> unknownWhy, String hash,
+            List<String> calls, List<String> fs, List<String> hosts, List<String> cmds,
+            List<String> paths, List<String> tables, List<String> netClass) {
+        this(fn, loc, inferred, invisible, direct, declared, undeclared, overdeclared, entryPoint,
+                unresolved, kind, unknownWhy, hash, calls, fs, hosts, cmds, paths, tables, netClass, false);
+    }
 
     /**
      * Defensive copy on construction so an {@code Effector} is a true value: its accessors can't be used

@@ -108,6 +108,11 @@ public final class ReportJson {
         if (!e.paths().isEmpty()) m.put("paths", e.paths());
         if (!e.tables().isEmpty()) m.put("tables", e.tables());
         if (!e.netClass().isEmpty()) m.put("netClass", e.netClass()); // ⟨0.20⟩ Net destination-class (SPEC §1)
+        // ⟨0.23⟩ interfaceUnion (SPEC §2, WORKSPACE-CHAINING-DESIGN.md): this entry is SYNTHETIC — the union
+        // over a local interface's implementers, published so a CHAINED consumer's cross-package interface
+        // dispatch resolves. OMITTED when false, so every ordinary entry (and every report produced without
+        // CANDOR_WORKSPACE_CHAIN) is byte-identical to a pre-⟨0.23⟩ one.
+        if (e.interfaceUnion()) m.put("interfaceUnion", true);
         return m;
     }
 
@@ -145,7 +150,8 @@ public final class ReportJson {
                     strList(o, "cmds"),
                     strList(o, "paths"),
                     strList(o, "tables"),
-                    strList(o, "netClass")));
+                    strList(o, "netClass"),
+                    bool(o, "interfaceUnion")));   // ⟨0.23⟩ absent/false → an ordinary entry
         }
         return out;
     }

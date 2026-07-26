@@ -117,6 +117,35 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         return false;
     }
 
+    /** Direct supertypes of `internal`, ALSO consulting a chained dependency's own published hierarchy
+     *  ({@link Loader#loadDepHierarchy}) — the dep-facing analogue of {@link #externalSupers}.
+     *
+     *  <p><b>Why this is a separate entry point rather than a line inside {@code externalSupers}.</b> That
+     *  chokepoint feeds {@link #buildSubtypeIndex}, and widening it there is NOT additive in the direction
+     *  that matters. A project class `P extends DepBase`, where `DepBase implements Runnable` in the
+     *  dependency, would newly land in `subtypeIndex[Runnable]`; a `r.run()` site on a `Runnable`-typed
+     *  receiver would then find a non-empty CHA and take the resolved-narrow path — and the JDK-functional-SAM
+     *  gate that raises the honest `callback:` Unknown fires only on an EMPTY target set. So a call whose real
+     *  receiver is a lambda or one of the dependency's OWN implementers would go from a disclosed Unknown to
+     *  a confident purity claim: a silent under-report manufactured by a change whose whole argument was that
+     *  it only adds knowledge. (The same posture already applies to a class implementing `Runnable`
+     *  DIRECTLY — that is pre-existing and separately argued; it is not a licence to extend its reach
+     *  silently as a side effect of reading a sidecar.)
+     *
+     *  <p>So the hierarchy answers questions ABOUT DEPENDENCY TYPES — is this dep type a `java.io` stream,
+     *  what does it inherit from its own supers — at the two dep-facing walks, and does not enter the
+     *  project's subtype index. Widening those two is additive: they can only find MORE dependency bodies
+     *  to inherit. */
+    static List<String> depDirectSupers(String internal) {
+        List<String> dep = ctx().depSupers.get(internal);
+        if (dep != null) {
+            if (System.getenv("CANDOR_DEPHIER_DEBUG") != null)
+                System.err.println("DEPHIER hit " + internal + " -> " + dep);
+            return dep;
+        }
+        return externalSupers(internal);
+    }
+
     /** Direct supertypes (internal names) of an EXTERNAL class, read off candor's runtime classpath via
      *  ASM. JDK classes (java/util/ArrayList → AbstractList → List/Collection) resolve; the SCANNED
      *  project's own third-party deps are not on candor's classpath, so they fail to load and yield nothing
@@ -124,6 +153,8 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
     static List<String> externalSupers(String internal) {
         List<String> cached = ctx().externalSupersCache.get(internal);
         if (cached != null) return cached;
+        // DELIBERATELY NOT consulting the chained dependency's hierarchy here — see {@link #depDirectSupers}
+        // for where it IS consulted and why this chokepoint is the wrong one.
         List<String> out = new ArrayList<>();
         try {
             ClassReader cr = new ClassReader(internal);

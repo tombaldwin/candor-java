@@ -14,7 +14,14 @@ edits riding along.
 
 - **Engine binary (classifier + verify oracle):** `candor-java-0.23.1-all.jar`,
   **sha256 `bf572eb32db56ef419c8ad7d8f118cfe225f859320252c6969299434263e10d8`**, built at source commit
-  `e2d93ed9f9fddd6e5e667cfcd8f0234d8da0f034`. `run_frozen.sh` **aborts** if the jar on the runner does not
+  `e2d93ed9f9fddd6e5e667cfcd8f0234d8da0f034`. The archived copy lives at
+  **`eval/corpus-confirmatory/frozen/candor-java-0.23.1-all.jar`**, and that location is load-bearing: it was
+  originally tracked under `build/libs/`, which is a *gradle target*, so eight ordinary development commits
+  rebuilt over it and the binary at `HEAD` stopped being the frozen one. The gate failed closed — it aborts
+  rather than certifying a different binary, which is why nothing downstream was wrong — but the archive had
+  quietly stopped doing its job, and a reproducer at `HEAD` could no longer meet the hash gate at all.
+  Recovered from `8a4837a` with the hash re-verified on restore, and moved where no build can write.
+  **Do not move it back under `build/`.** `run_frozen.sh` **aborts** if the jar on the runner does not
   match this hash — so the "frozen binary" claim is machine-enforced, not asserted.
 - **Corpus:** the 12 rows of `manifest.tsv` as of this commit — the complete set, *including* the repos that
   will build-fail or exercise no in-scope effect. Every one gets a disposition row (per PREREG's protocol);

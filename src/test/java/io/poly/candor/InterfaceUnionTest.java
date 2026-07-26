@@ -456,6 +456,61 @@ class InterfaceUnionTest {
                 "a broad dep hierarchy is honest indeterminacy, not Net; got " + after);
     }
 
+    // ---- THE Net DESTINATION CLASS: fail-closed across the union ---------------------------------------
+
+    /** {@code Fetch.go()} with a telemetry-host implementer and, optionally, one whose host is computed at
+     *  runtime (invisible to the scan — the shape `netClass` exists to fail closed on). */
+    private static Map<String, String> netLib(boolean withRuntimeHost) {
+        Map<String, String> m = new java.util.HashMap<>();
+        m.put("lib/Fetch.java", "package lib;\npublic interface Fetch { void go(); }\n");
+        m.put("lib/Telemetry.java", "package lib;\nimport java.net.*;\n"
+                + "public class Telemetry implements Fetch {\n"
+                + "  public void go() { try { new URL(\"https://sentry.io/api\").openStream(); }"
+                + " catch (Exception e) {} }\n}\n");
+        m.put("lib/Telemetry2.java", "package lib;\nimport java.net.*;\n"
+                + "public class Telemetry2 implements Fetch {\n"
+                + "  public void go() { try { new URL(\"https://logtail.com/in\").openStream(); }"
+                + " catch (Exception e) {} }\n}\n");
+        // `Wild`'s endpoint lives in a connection built somewhere candor cannot see, so its Net has NO
+        // visible host and no masking marker either — the `hosts.isEmpty()` branch of the ⟨0.20⟩ rule, which
+        // is exactly the branch a merged host set destroys. (A `new URL(getenv).openStream()` would NOT
+        // reproduce the defect: that shape sets the AS-EFF-008 masked marker, and the union already ORs it.)
+        if (withRuntimeHost)
+            m.put("lib/Wild.java", "package lib;\nimport java.net.*;\n"
+                    + "public class Wild implements Fetch {\n"
+                    + "  URLConnection c;\n"
+                    + "  public void go() { try { c.getInputStream(); } catch (Exception e) {} }\n}\n");
+        return m;
+    }
+
+    @Test
+    void aRuntimeHostImplementerIsNotCertifiedByATelemetrySibling() throws Exception {
+        // ⟨0.20⟩ netClass is FAIL-CLOSED by design: a Net with no visible host is `unknown-host`, never a
+        // benign class. The union merged `hosts` ACROSS implementers first and classified afterwards, so
+        // `Telemetry`'s literal sentry.io made the merged host set non-empty and `Wild`'s runtime endpoint —
+        // which alone is unknown-host — was certified `known-telemetry`. `deny Net[unknown-host]` then passed
+        // on a dep that posts to an endpoint read from the environment. Classify PER IMPLEMENTER and union
+        // the CLASSES; a union of hosts is not a host.
+        Map<String, Object> u = depReport(netLib(true), true).get("lib/Fetch.go()V");
+        assertNotNull(u, "union entry missing");
+        assertTrue(((List<?>) u.get("netClass")).contains("unknown-host"),
+                "an implementer with no visible host must keep the union unknown-host; got " + u.get("netClass"));
+    }
+
+    @Test
+    void aUnionOfTelemetryOnlyImplementersStaysKnownTelemetry() throws Exception {
+        // THE SECOND FIXTURE for the fail-closed fix: failing closed must be driven by an actual invisible
+        // destination, not by the mere fact of unioning. Two implementers, both with a literal telemetry
+        // host — the class stays exactly `known-telemetry`, or `deny Net[unknown-host]` becomes a rule that
+        // fires on every chained interface and stops meaning anything.
+        Map<String, Object> u = depReport(netLib(false), true).get("lib/Fetch.go()V");
+        assertNotNull(u, "union entry missing");
+        assertEquals(List.of("known-telemetry"), u.get("netClass"),
+                "two literal telemetry hosts must not manufacture an unknown-host");
+        assertEquals(List.of("logtail.com", "sentry.io"), u.get("hosts"),
+                "the literal hosts still travel — the fix is to the CLASSIFICATION, not to the surface");
+    }
+
     // ---- the boundary: the motivating experiment, end to end -------------------------------------------
 
     @Test

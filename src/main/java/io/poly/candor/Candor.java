@@ -2845,11 +2845,23 @@ public class Candor {
      *  CONTAINER (or a comparator); their element type is erased inside the generic and is not the
      *  argument's declared type, so resolving the contract over that type answers a question nobody asked —
      *  a container that happens to implement {@code Comparable} would be charged for an ordering the JVM
-     *  performs on its ELEMENTS. Only the sinks that take the element/key directly qualify. */
+     *  performs on its ELEMENTS. Only the sinks that take the element/key directly qualify.
+     *
+     *  <p>Written as a DENYLIST of the container-typed sinks, NOT as a list of the element-typed ones, and
+     *  the two spell the same thing today — {@link #isCompareToSink}'s owners are exactly these four plus
+     *  TreeSet/TreeMap. They differ in what happens to the NEXT sink somebody adds. As an allowlist, a new
+     *  element-taking sink (`PriorityQueue.add`, `ConcurrentSkipListSet.add`, `Collections.binarySearch`)
+     *  would default to SUPPRESSING the dependency join and go silently under-reported — a guard defaulting
+     *  to the cardinal sin, which is how the sibling fix in this same vein shipped an allowlist of SAM names
+     *  with four already missing. As a denylist a new CONTAINER sink defaults to asking the join, and the
+     *  join is near-inert there anyway: the argument's declared type is `List`/`Object[]`, and no dependency
+     *  report declares a member on those. */
     static boolean comparesArgZero(String owner, String name) {
-        return (owner.equals("java/util/TreeSet") && (name.equals("add") || name.equals("contains")))
-                || (owner.equals("java/util/TreeMap")
-                        && (name.equals("put") || name.equals("get") || name.equals("containsKey")));
+        if (name.equals("sort") && (owner.equals("java/util/Collections") || owner.equals("java/util/Arrays")
+                || owner.equals("java/util/List") || owner.equals("java/util/ArrayList")
+                || owner.equals("java/util/LinkedList"))) return false;
+        if (owner.equals("java/util/stream/Stream") && name.equals("sorted")) return false;
+        return true;
     }
 
     /** Whether `c` DECLARES `(name,desc)` at all — abstract included. {@link Cha#declaresConcrete} asks the

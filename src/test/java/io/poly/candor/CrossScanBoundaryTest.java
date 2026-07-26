@@ -763,6 +763,69 @@ class CrossScanBoundaryTest {
         }
     }
 
+    // ---- JVM RESOLUTION ORDER: the class chain beats an interface default, across the boundary ----------
+    // `nearestDepFnsNamed` polled ONE queue seeded from "superclass and interfaces" flattened together, so
+    // it interleaved the two BY DEPTH and a nearer interface `default` settled a descriptor before the
+    // superclass body was reached. JLS 15.12.2.5 / 8.4.8: a concrete method inherited from a superclass
+    // beats a `default` at ANY depth. `Half extends Mid implements Trace`, `Mid extends Root`: the walk
+    // settled `append(CharSequence)` on Trace at depth 1 and skipped Root's body at depth 2 as already
+    // decided. The JVM runs Root's. Both halves of the honesty invariant failed at once — the real Fs was
+    // dropped (a silent under-report) and Trace's Env was charged to a body that never runs (a fabrication).
+
+    private static final Map<String, String> LIB7 = Map.of(
+        // the body the JVM actually runs — Fs
+        "lib/Root.java", "package lib;\npublic class Root implements Appendable {\n"
+            + "  public Appendable append(CharSequence c){ new java.io.File(\"/tmp/candor-x\").exists(); return this; }\n"
+            + "  public Appendable append(char c){ return this; }\n"
+            + "  public Appendable append(CharSequence c, int s, int e){ return this; }\n}\n",
+        "lib/Mid.java", "package lib;\npublic class Mid extends Root {}\n",
+        // NEARER in the depth-ordered walk, and a different effect so either error is visible — Env
+        "lib/Trace.java", "package lib;\npublic interface Trace {\n"
+            + "  default Appendable append(CharSequence c){ System.getenv(\"HOME\"); return null; }\n}\n",
+        // the OTHER direction: a genuine default with NO competing class declaration anywhere
+        "lib/LoudTrace.java", "package lib;\npublic interface LoudTrace extends Appendable {\n"
+            + "  default Appendable append(CharSequence c){ System.getenv(\"HOME\"); return this; }\n}\n",
+        "lib/IfaceOnly.java", "package lib;\npublic class IfaceOnly implements LoudTrace {\n"
+            + "  public Appendable append(char c){ return this; }\n"
+            + "  public Appendable append(CharSequence c, int s, int e){ return this; }\n}\n");
+
+    @Test
+    void aSuperclassBodyBeatsANearerInterfaceDefaultAcrossTheBoundary() throws Exception {
+        Map<String, EffectSet> r = scanChained(LIB7, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.*;",
+            "public class S {",
+            "  public static class Half extends Mid implements Trace {}",
+            "  public void half(Half h){ new java.util.Formatter(h).format(\"x\"); }",
+            "}")));
+        assertTrue(fs(r, "app.S.half"),
+                "Half inherits Root.append(CharSequence) — a CLASS body beats Trace's default at any depth, "
+                        + "and that is the body the JVM runs, got " + r.get("app.S.half"));
+        assertFalse(env(r, "app.S.half"),
+                "Trace's default is SHADOWED by the inherited class body — charging its Env is a "
+                        + "fabrication on a method that never runs, got " + r.get("app.S.half"));
+    }
+
+    @Test
+    void aDependencyInterfaceDefaultWithNoCompetingClassStillResolves() throws Exception {
+        // Item 0's second fixture, and it was written first. "The class wins" must not be implemented by
+        // dropping interfaces from the walk: with no class declaration anywhere in the chain, the interface
+        // `default` IS the body the JVM runs and its effect must still cross.
+        Map<String, EffectSet> r = scanChained(LIB7, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.*;",
+            "public class S {",
+            "  public void direct(IfaceOnly k){ new java.util.Formatter(k).format(\"x\"); }",
+            "  public static class Sub extends IfaceOnly {}",
+            "  public void viaSubclass(Sub s){ new java.util.Formatter(s).format(\"x\"); }",
+            "}")));
+        assertTrue(env(r, "app.S.direct"),
+                "a dep interface DEFAULT with no competing class declaration must still be charged, got "
+                        + r.get("app.S.direct"));
+        assertTrue(env(r, "app.S.viaSubclass"),
+                "the same default, reached through a project subclass that declares nothing, must still be "
+                        + "charged — the interface phase must run after the class phase, not instead of it, got "
+                        + r.get("app.S.viaSubclass"));
+    }
+
     // ---- the no-report baseline ------------------------------------------------------------------------
 
     @Test

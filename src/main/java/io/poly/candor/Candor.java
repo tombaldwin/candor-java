@@ -2596,21 +2596,6 @@ public class Candor {
         }
     }
 
-    /** The direct supertypes of `internal` in JVM RESOLUTION ORDER — superclass first, then the declared
-     *  interfaces. Reads the project ClassNode when there is one, else the classpath — and, for a type
-     *  candor's classpath cannot load, the CHAINED DEPENDENCY'S OWN published hierarchy
-     *  ({@link Cha#depDirectSupers}). Both callers are the dependency-inheritance walks
-     *  ({@link #nearestDepFn}, {@link #nearestDepFnsNamed}), where a wider supertype set can only find MORE
-     *  dependency bodies to inherit; it deliberately does NOT reach `buildSubtypeIndex`. */
-    static List<String> directSupers(String internal) {
-        ClassNode cn = ctx().byName.get(internal);
-        if (cn == null) return Cha.depDirectSupers(internal);
-        List<String> out = new ArrayList<>();
-        if (cn.superName != null) out.add(cn.superName);
-        if (cn.interfaces != null) out.addAll(cn.interfaces);
-        return out;
-    }
-
     /** The chained-dependency record for the `(name,desc)` body a value of static type `internal` would
      *  actually invoke — the cross-boundary analogue of {@link Cha#nearestConcreteSuper}.
      *
@@ -2620,22 +2605,20 @@ public class Candor {
      *  further up (every concrete subtype must then supply its own body, which CHA already enumerates).
      *  Either way, charging the dependency's shadowed implementation on top would FABRICATE an effect the
      *  JVM never runs — worse than the miss it fixes. Only when the nearest declaration is a dependency's,
-     *  and a chained report carries it, is there anything to inherit. */
+     *  and a chained report carries it, is there anything to inherit.
+     *
+     *  <p>NEAREST-FIRST is {@link Cha#resolutionOrder}'s definition of nearest — the superclass chain
+     *  before any interface — not "by depth". A depth-ordered walk let a nearer interface {@code default}
+     *  answer for a descriptor a superclass body owns, which the JVM never does. */
     static DepFn nearestDepFn(String internal, String name, String desc) {
         if (internal == null) return null;
         AnalysisContext c = ctx();
         if (c.crossDeps.isEmpty()) return null;                 // no chained report — nothing to look up
-        Set<String> seen = new HashSet<>();
-        ArrayDeque<String> q = new ArrayDeque<>();
-        q.add(internal);
-        while (!q.isEmpty()) {
-            String t = q.poll();
-            if (t == null || !seen.add(t) || t.equals("java/lang/Object")) continue;
+        for (String t : Cha.resolutionOrder(internal, true)) {
             ClassNode cn = c.byName.get(t);
             if (cn != null && declaresMethod(cn, name, desc)) return null;   // a project declaration wins
             DepFn d = c.crossDeps.get(t + "." + name + desc);
             if (d != null) return d;
-            q.addAll(directSupers(t));
         }
         return null;
     }
@@ -2792,19 +2775,17 @@ public class Candor {
      *      {@code append(CharSequence)}. Whole-name shadowing would have been an under-report, and no
      *      shadowing at all a fabrication.
      *  </ul>
-     *  Nearest declaration wins per descriptor, so a dependency subclass's override beats its super's. */
+     *  Nearest declaration wins per descriptor, so a dependency subclass's override beats its super's —
+     *  where NEAREST is {@link Cha#resolutionOrder}'s order, the superclass chain before any interface. By
+     *  DEPTH, a nearer interface {@code default} settled a descriptor that a superclass body owns and the
+     *  superclass was then skipped as already decided: a silent under-report on the body the JVM runs. */
     static List<DepFn> nearestDepFnsNamed(String internal, String contract) {
         if (internal == null) return List.of();
         AnalysisContext c = ctx();
         if (c.crossDeps.isEmpty()) return List.of();
         List<DepFn> out = new ArrayList<>();
         Set<String> settled = new HashSet<>();          // descriptors already decided (project or nearer dep)
-        Set<String> seen = new HashSet<>();
-        ArrayDeque<String> q = new ArrayDeque<>();
-        q.add(internal);
-        while (!q.isEmpty()) {
-            String t = q.poll();
-            if (t == null || !seen.add(t) || t.equals("java/lang/Object")) continue;
+        for (String t : Cha.resolutionOrder(internal, true)) {
             ClassNode cn = c.byName.get(t);
             if (cn != null)                              // a PROJECT declaration wins for its own descriptor
                 for (MethodNode m : cn.methods) if (m.name.equals(contract)) settled.add(m.desc);
@@ -2812,7 +2793,6 @@ public class Candor {
                 if (!contractShapeOk(contract, e.getKey())) continue;
                 if (settled.add(e.getKey())) out.add(e.getValue());
             }
-            q.addAll(directSupers(t));
         }
         return out;
     }
@@ -3655,17 +3635,18 @@ public class Candor {
                 // not at all would charge the replaced body (a fabrication). An ABSTRACT declaration settles
                 // its descriptor without contributing — it overrides what is above it and redirects dispatch
                 // to the concrete subtypes, which the subtype index enumerates separately.
+                //
+                // NEAREST is `Cha.resolutionOrder`'s order — the whole superclass chain before any
+                // interface — because that is what the JVM does. By DEPTH, a nearer interface `default`
+                // settled the descriptor and the superclass body two levels up was skipped as already
+                // decided, so `new Formatter(half)` where `Half extends Mid implements Trace` charged
+                // Trace's empty default and dropped `Root.append`'s Fs: a real effect read pure.
                 Set<String> settled = new HashSet<>();
-                Set<String> seen = new HashSet<>();
-                ArrayDeque<String> q = new ArrayDeque<>();
-                q.add(cName);
-                while (!q.isEmpty()) {
-                    String t = q.poll();
-                    if (!seen.add(t)) continue;
+                for (String t : Cha.resolutionOrder(cName, true)) {
                     ClassNode c = ctx().byName.get(t);
-                    // An EXTERNAL super ends this branch of the walk: `byName` holds project classes alone,
-                    // and a JDK/library body is not a project node to edge to — the same bound the
-                    // single-class scan had, just reached one level at a time.
+                    // `byName` holds project classes alone, and a JDK/library body is not a project node to
+                    // edge to — an external type contributes nothing and settles nothing, but the walk
+                    // continues past it (a project class CAN sit above one in a partial scan).
                     if (c == null) continue;
                     for (MethodNode m : c.methods) {
                         if (!m.name.equals(contract) || (m.access & Opcodes.ACC_SYNTHETIC) != 0)
@@ -3674,7 +3655,6 @@ public class Candor {
                         if ((m.access & Opcodes.ACC_ABSTRACT) == 0)
                             out.add(methodId(c.name.replace('/', '.'), m.name, m.desc));
                     }
-                    q.addAll(directSupers(t));
                 }
             }
             return new ArrayList<>(out);

@@ -444,4 +444,30 @@ class StructuralDispatchTest {
         for (String fn : List.of("App.asyncTask", "App.restGet", "App.advice", "MyTask.run", "V.isValid"))
             assertTrue(AnalysisState.ctx().entryPoints.contains(fn), fn + " must be rooted as a framework entry point");
     }
+
+    /** ORDINARY VIRTUAL DISPATCH, and the third site of the same defect. {@link Cha#nearestConcreteSuper}
+     *  — which {@link Cha#chaTargets} and {@link Cha#monomorphicTarget} both end in — walked
+     *  {@code transSupers}, a {@code HashSet}, and returned the first {@code declaresConcrete} hit in HASH
+     *  order. With a superclass body and an interface {@code default} both declaring the descriptor, which
+     *  one it named was arbitrary, and here it named the default: {@code h.go()} read PURE though the JVM
+     *  runs {@code Root2.go}, which writes a file. JLS 15.12.2.5 / 8.4.8 — the class wins at any depth.
+     *  {@link Cha#resolutionOrder} is the shared walk; verified to catch (single-queue mutant → this
+     *  test fails). */
+    @Test
+    void aSuperclassBodyBeatsAnInterfaceDefaultOnAnOrdinaryDispatch() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of("app/N.java", String.join("\n",
+            "package app;",
+            "import java.io.*;",
+            "class Root2 { public void go(){ try{ new FileOutputStream(\"/tmp/n\").write(1);}catch(Exception e){} } }",
+            "class Mid2 extends Root2 {}",
+            "interface Trace3 { default void go(){} }",
+            "class Half2 extends Mid2 implements Trace3 {}",
+            "public class N {",
+            "  void viaHalf(Half2 h){ h.go(); }",
+            "  void viaMid(Mid2 m){ m.go(); } }")));
+        assertTrue(r.getOrDefault("app.N.viaMid", EffectSet.empty()).toNames().contains("Fs"),
+                "the control: Mid2 inherits Root2.go with no interface in play");
+        assertTrue(r.getOrDefault("app.N.viaHalf", EffectSet.empty()).toNames().contains("Fs"),
+                "Half2 inherits Root2.go — a CLASS body beats Trace3's default: " + r.get("app.N.viaHalf"));
+    }
 }

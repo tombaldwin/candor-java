@@ -308,4 +308,89 @@ class ImplicitReentryTest {
                     + "fabrication: " + r.get("app.H.viaShadow"));
         } finally { rm(cls.getParent()); }
     }
+
+    // ---- JVM RESOLUTION ORDER: THE CLASS WINS ----------------------------------------------------------
+    // The walk above resolved nearest-first BY DEPTH over a single queue seeded from "superclass and
+    // interfaces" flattened together, so a nearer interface `default` settled a descriptor before the
+    // superclass body was reached. Java does not resolve that way — JLS 15.12.2.5 / 8.4.8: a concrete
+    // method inherited from a SUPERCLASS beats an interface `default` at ANY depth. The caller was reported
+    // with no Fs (a silent under-report) while being charged the default's empty effects.
+    // `Cha.resolutionOrder` is the shared walk that fixes it, at all four sites that had this shape.
+
+    /** ITEM 0'S SECOND FIXTURE, AND IT WAS WRITTEN FIRST. "The class wins" must not be implemented by
+     *  dropping interfaces from the walk: with no class declaration anywhere in the chain, the interface
+     *  `default` IS the body the JVM runs. Verified to catch — never feeding the interface phase fails
+     *  this and {@code CrossScanBoundaryTest#aDefaultMethodFromADependencyInterfaceIsCharged}. */
+    @Test void interfaceDefaultWithNoCompetingClassStillResolves() throws Exception {
+        Path cls = compile(Map.of("app/I.java", String.join("\n",
+            "package app;",
+            "import java.io.*; import java.util.*;",
+            "interface LoudTrace extends Appendable {",
+            "  default Appendable append(CharSequence c){ try{ new FileOutputStream(\"/tmp/lt\").write(1);}catch(Exception e){} return this; } }",
+            "class OnlyIface implements LoudTrace {",
+            "  public Appendable append(CharSequence c,int s,int e){ return this; }",
+            "  public Appendable append(char c){ return this; } }",
+            // one plain class in between: still no CLASS declaration of append(CharSequence) anywhere
+            "class DeepIface extends OnlyIface {}",
+            "public class I {",
+            "  void viaIface(){ OnlyIface o = new OnlyIface(); new Formatter(o).format(\"hi %s\", 1); }",
+            "  void viaDeep(){ DeepIface d = new DeepIface(); new Formatter(d).format(\"hi %s\", 1); } }")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(fs(r, "app.I.viaIface"), "an interface DEFAULT with no class declaration must be charged: "
+                    + r.get("app.I.viaIface"));
+            assertTrue(fs(r, "app.I.viaDeep"), "the same default inherited through a plain class must be charged: "
+                    + r.get("app.I.viaDeep"));
+        } finally { rm(cls.getParent()); }
+    }
+
+    /** THE DEFECT. `Half extends Mid implements Trace`, `Mid extends Root`: a depth-ordered walk visits
+     *  {Mid, Trace} first, `Trace` settles `append(CharSequence)`, and `Root.append` at depth 2 is skipped
+     *  as already decided. The JVM runs `Root.append`, which writes a file. */
+    @Test void superclassBodyBeatsANearerInterfaceDefault() throws Exception {
+        Path cls = compile(Map.of("app/C.java", String.join("\n",
+            "package app;",
+            "import java.io.*; import java.util.*;",
+            "class Root implements Appendable {",
+            "  public Appendable append(CharSequence c){ try{ new FileOutputStream(\"/tmp/rt\").write(1);}catch(Exception e){} return this; }",
+            "  public Appendable append(CharSequence c,int s,int e){ return this; }",
+            "  public Appendable append(char c){ return this; } }",
+            "class Mid extends Root {}",
+            "interface Trace { default Appendable append(CharSequence c){ return null; } }",   // PURE, nearer
+            "class Half extends Mid implements Trace {}",
+            "public class C {",
+            "  void viaHalf(){ Half h = new Half(); new Formatter(h).format(\"hi %s\", 1); }",
+            "  void viaRoot(){ Root r = new Root(); new Formatter(r).format(\"hi %s\", 1); } }")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(fs(r, "app.C.viaRoot"), "the control: the declaring class itself carries Fs");
+            assertTrue(fs(r, "app.C.viaHalf"),
+                "Half inherits Root.append(CharSequence) — a CLASS body beats Trace's default at any depth, "
+                    + "and that is the body the JVM runs: " + r.get("app.C.viaHalf"));
+        } finally { rm(cls.getParent()); }
+    }
+
+    /** The same rule's FABRICATION direction: a PURE superclass body wins, so the effectful interface
+     *  default never runs and must not be charged. (This one held before the fix as well — the superclass
+     *  and the interface are at the same depth here and the superclass was listed first, which is exactly
+     *  why the defect needed the extra `Mid` level to surface.) */
+    @Test void effectfulInterfaceDefaultLosesToAPureSuperclassBody() throws Exception {
+        Path cls = compile(Map.of("app/F.java", String.join("\n",
+            "package app;",
+            "import java.io.*; import java.util.*;",
+            "class PureRoot implements Appendable {",
+            "  public Appendable append(CharSequence c){ return this; }",
+            "  public Appendable append(CharSequence c,int s,int e){ return this; }",
+            "  public Appendable append(char c){ return this; } }",
+            "interface LoudTrace2 { default Appendable append(CharSequence c){ try{ new FileOutputStream(\"/tmp/l2\").write(1);}catch(Exception e){} return null; } }",
+            "class Both extends PureRoot implements LoudTrace2 {}",
+            "public class F {",
+            "  void viaBoth(){ Both b = new Both(); new Formatter(b).format(\"hi %s\", 1); } }")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertFalse(fs(r, "app.F.viaBoth"),
+                "PureRoot.append(CharSequence) is what the JVM runs — charging the shadowed interface default "
+                    + "is a fabrication: " + r.get("app.F.viaBoth"));
+        } finally { rm(cls.getParent()); }
+    }
 }

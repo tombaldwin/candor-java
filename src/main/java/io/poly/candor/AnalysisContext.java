@@ -135,7 +135,10 @@ final class AnalysisContext {
     final Map<String, List<AnnotationNode>> annoMetaCache = new HashMap<>(); // meta/composed-annotation resolution cache
     final Map<String, Boolean> sealedClosedMemo = new HashMap<>();           // Cha: sealed-closure verdict memo
     final Map<String, Boolean> sealedUnseenMemo = new HashMap<>();           // Cha: sealed-permit-unseen memo
-    final Map<String, List<String>> externalSupersCache = new HashMap<>();   // Cha: external-class supers (classpath) cache
+    final Map<String, Cha.ExtSupers> externalSupersCache = new HashMap<>();  // Cha: external-class supers (classpath) cache
+    // Cha: memoized JVM METHOD-RESOLUTION ORDER per type (superclass chain first, then interfaces —
+    // see Cha#resolutionOrder). Keyed by `P\t`/`D\t` + internal name, the two `useDepHierarchy` arms.
+    final Map<String, List<String>> resolutionOrderCache = new HashMap<>();
     // A CHAINED dependency's own class hierarchy, read from the `<report>.hierarchy.json` sidecar every
     // scan already writes (internal name -> direct supers + interfaces, internal names). A dep's classes
     // are not on candor's classpath, so `Cha.externalSupers` could not see them and every question about a

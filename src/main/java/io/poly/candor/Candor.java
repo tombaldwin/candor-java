@@ -1353,7 +1353,8 @@ public class Candor {
             // TASK_ARG_PREFIXES, so the constructed type is a task type and its reported surface is what
             // the runtime invokes.
             if (task != null && task.newType != null && !ctx.projectClasses.contains(task.newType))
-                for (DepFn d : depFnsInvokedByHandoff(task.newType)) inheritDepFn(id, d);
+                for (DepFn d : depFnsInvokedByHandoff(task.newType, handoffInvoked(taskArgIface(min.desc))))
+                    inheritDepFn(id, d);
         }
     }
 
@@ -1397,7 +1398,8 @@ public class Candor {
                 // is never charged its whole surface.
                 if (i < pt.length && isHofFunctionalIface(pt[i].getInternalName())
                         && !ctx.projectClasses.contains(a.newType))
-                    for (DepFn d : depFnsInvokedByHandoff(a.newType)) inheritDepFn(id, d);
+                    for (DepFn d : depFnsInvokedByHandoff(a.newType, handoffInvoked(pt[i].getInternalName())))
+                        inheritDepFn(id, d);
             }
         }
     }
@@ -2620,16 +2622,67 @@ public class Candor {
      *  public helpers the executor never calls — onto the scheduling method, failing a `deny Net` on a
      *  service that only enqueues work. The comment at the call site argued the parameter gate made the
      *  surface safe; the gate constrains which TYPE is handed off, never which MEMBER runs. */
-    static final Set<String> HANDOFF_INVOKED = Set.of(
-            "<init>",            // runs at the construction site, so its effects ARE reached
-            "run", "call", "get", "apply", "accept",
-            "compare", "test",   // Comparator / Predicate, admitted by isHofFunctionalIface
-            "applyAsInt", "applyAsLong", "applyAsDouble");
+    /** Functional interface -> its single abstract method. Keyed by INTERFACE, not by method name, because
+     *  the interface set is CLOSED (isFunctionalIface / isHofFunctionalIface / TASK_ARG_PREFIXES all gate on
+     *  an explicit list) while the set of SAM names is not. An earlier version allowlisted the NAMES and
+     *  promptly omitted `getAsInt`/`getAsLong`/`getAsDouble`/`getAsBoolean`, which would have silently
+     *  dropped an `IntSupplier` implementation's effects — an allowlist under-reports exactly what you
+     *  forgot, which is why this project prefers a denylist over a sound over-approximation.
+     *
+     *  A `java/util/function/` interface not listed here falls through to the CONSERVATIVE branch below
+     *  (charge the whole surface) rather than to silence: over-charging is loud in an A/B and is the
+     *  fabrication side, whereas a missed SAM is the cardinal sin and is invisible. */
+    static final Map<String, String> SAM_OF = Map.ofEntries(
+            Map.entry("java/lang/Runnable", "run"),
+            Map.entry("java/util/TimerTask", "run"),
+            Map.entry("java/security/PrivilegedAction", "run"),
+            Map.entry("java/security/PrivilegedExceptionAction", "run"),
+            Map.entry("java/util/concurrent/Callable", "call"),
+            Map.entry("java/util/Comparator", "compare"),
+            Map.entry("java/io/FileFilter", "accept"),
+            Map.entry("java/io/FilenameFilter", "accept"),
+            Map.entry("org/apache/commons/io/function/IOConsumer", "accept"),
+            Map.entry("java/util/function/Function", "apply"),
+            Map.entry("java/util/function/BiFunction", "apply"),
+            Map.entry("java/util/function/UnaryOperator", "apply"),
+            Map.entry("java/util/function/BinaryOperator", "apply"),
+            Map.entry("java/util/function/Consumer", "accept"),
+            Map.entry("java/util/function/BiConsumer", "accept"),
+            Map.entry("java/util/function/Supplier", "get"),
+            Map.entry("java/util/function/Predicate", "test"),
+            Map.entry("java/util/function/BiPredicate", "test"));
+
+    /** The members a hand-off through {@code iface} can actually invoke: that interface's SAM, plus
+     *  {@code <init>} — the constructor runs at the {@code new} site itself, so its effects ARE reached.
+     *  An UNKNOWN interface yields null, and the caller then falls back to the whole surface. */
+    /** The functional interface an executor-style hand-off declares as its FIRST parameter, from the
+     *  callee's descriptor — the same descriptors `TASK_ARG_PREFIXES` gates on, read back so the SAM is
+     *  derived rather than guessed. Null when the shape is not one we model, which fails SAFE. */
+    static String taskArgIface(String desc) {
+        if (desc == null) return null;
+        for (String p : Rules.TASK_ARG_PREFIXES) {
+            if (desc.startsWith(p)) return p.substring(2, p.length() - 1);   // "(Lfoo/Bar;" -> "foo/Bar"
+        }
+        return null;
+    }
+
+    static Set<String> handoffInvoked(String iface) {
+        String sam = iface == null ? null : SAM_OF.get(iface);
+        return sam == null ? null : Set.of("<init>", sam);
+    }
+    // RESIDUAL, measured and left: the filter matches the SAM by NAME, not by descriptor, so a type
+    // implementing two interfaces whose SAMs share a name (`Consumer.accept(Object)` and
+    // `IntConsumer.accept(int)`) contributes both overloads. Narrowing further needs the SAM's erased
+    // descriptor. This over-charges, which is the safe direction and far narrower than the whole-surface
+    // behaviour it replaced — a `Sink` implementing both now yields {Fs, Net} instead of {Fs, Net, Env}.
 
     /** Like {@link #depFnsOfType}, restricted to the members a hand-off can actually invoke. */
-    static List<DepFn> depFnsInvokedByHandoff(String internalOwner) {
+    static List<DepFn> depFnsInvokedByHandoff(String internalOwner, Set<String> allowed) {
         AnalysisContext c = ctx();
         if (c.crossDeps.isEmpty() || internalOwner == null) return List.of();
+        // A hand-off through an interface we do not model falls back to the WHOLE surface: an over-charge
+        // is visible in an A/B, a dropped SAM is not.
+        if (allowed == null) return depFnsOfType(internalOwner);
         List<DepFn> out = new ArrayList<>();
         String prefix = internalOwner + ".";
         for (Map.Entry<String, DepFn> e : c.crossDeps.entrySet()) {
@@ -2639,7 +2692,7 @@ public class Candor {
             if (paren < 0) continue;
             String name = h.substring(prefix.length(), paren);
             if (name.indexOf('/') >= 0) continue;   // a nested owner, not a member of this type
-            if (!HANDOFF_INVOKED.contains(name)) continue;
+            if (!allowed.contains(name)) continue;
             out.add(e.getValue());
         }
         return out;

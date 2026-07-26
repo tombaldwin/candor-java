@@ -664,6 +664,28 @@ class CrossScanBoundaryTest {
     }
 
     @Test
+    void theContainerGuardIsADenylistSoTheNextSinkAddedStillCrosses() {
+        // WHICH DIRECTION THE GUARD DEFAULTS IN, pinned — the thing no scan can show. `comparesArgZero` and
+        // `isCompareToSink` spell the same partition today, so no corpus and no fixture distinguishes an
+        // allowlist of the element-taking sinks from a denylist of the container-taking ones. They differ
+        // only for the NEXT sink somebody adds, and an allowlist would default it to SUPPRESSING the
+        // dependency join: a guard whose omissions are silent under-reports. That is exactly how this vein's
+        // sibling fix shipped an allowlist of SAM names with four already missing.
+        for (String[] elementSink : new String[][] {
+                {"java/util/PriorityQueue", "add"}, {"java/util/concurrent/ConcurrentSkipListSet", "add"},
+                {"java/util/Collections", "binarySearch"}, {"java/util/TreeSet", "headSet"}})
+            assertTrue(Candor.comparesArgZero(elementSink[0], elementSink[1]),
+                    elementSink[0] + "." + elementSink[1] + " is not a container-typed sink, so the guard must "
+                            + "default to ASKING the dep join — an allowlist here under-reports silently");
+        for (String[] containerSink : new String[][] {
+                {"java/util/Collections", "sort"}, {"java/util/Arrays", "sort"},
+                {"java/util/List", "sort"}, {"java/util/stream/Stream", "sorted"}})
+            assertFalse(Candor.comparesArgZero(containerSink[0], containerSink[1]),
+                    containerSink[0] + "." + containerSink[1] + " takes a CONTAINER — its element type is "
+                            + "erased, so the argument's declared type is not the value whose contract runs");
+    }
+
+    @Test
     void theReceiverDrivenIoFormStaysOpenAndTheReasonIsPinned() throws Exception {
         // THE RESIDUAL, asserted so it cannot drift. R32's OTHER half — `w.write("x")` driving the
         // receiver's own abstract `write(char[],int,int)` through a JDK-provided overload — resolves in one

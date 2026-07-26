@@ -260,6 +260,79 @@ class CrossScanBoundaryTest {
                 "a dep's bare Unknown must not overwrite a dispatch this scan resolves, got " + r.get("app.S.call"));
     }
 
+    // ---- M4: CALLBACK / higher-order hand-off of a DEPENDENCY body -------------------------------------
+
+    /** A dependency supplying a functional impl, a task type, static + instance method-ref targets, a PURE
+     *  functional impl, and an ordinary value type with an effectful method that must never be charged. */
+    private static final Map<String, String> LIB4 = Map.of(
+        "lib/DepConsumer.java", "package lib;\nimport java.util.function.Consumer;\n"
+            + "public class DepConsumer implements Consumer<String> {\n"
+            + "  public void accept(String s){ System.getenv(\"HOME\"); }\n}\n",
+        "lib/PureConsumer.java", "package lib;\nimport java.util.function.Consumer;\n"
+            + "public class PureConsumer implements Consumer<String> {\n"
+            + "  public void accept(String s){ }\n}\n",
+        "lib/DepRunnable.java", "package lib;\npublic class DepRunnable implements Runnable {\n"
+            + "  public void run(){ System.getenv(\"HOME\"); }\n}\n",
+        "lib/DepUtil.java", "package lib;\npublic class DepUtil {\n"
+            + "  public static void write(String s){ System.getenv(\"HOME\"); }\n"
+            + "  public void writeInst(String s){ System.getenv(\"HOME\"); }\n}\n",
+        "lib/DepValue.java", "package lib;\npublic class DepValue {\n"
+            + "  public void touch(){ System.getenv(\"HOME\"); }\n}\n");
+
+    @Test
+    void aDependencyFunctionalHandedToAnInvokingHofIsCharged() throws Exception {
+        // `new DepConsumer()` HAS a newType, so the opaque-handoff Unknown is suppressed; and
+        // `functionalSamSurface` reads the project ClassNode, so a dep type yields no edge either.
+        Map<String, EffectSet> r = scanChained(LIB4, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.DepConsumer; import java.util.*;",
+            "public class S { public void each(List<String> xs){ xs.forEach(new DepConsumer()); } }")));
+        assertTrue(env(r, "app.S.each"), "forEach(new DepConsumer()) must carry the dep body's Env");
+    }
+
+    @Test
+    void aDependencyTaskSubmittedToAnExecutorIsCharged() throws Exception {
+        Map<String, EffectSet> r = scanChained(LIB4, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.DepRunnable; import java.util.concurrent.*;",
+            "public class S { public void go(ExecutorService es){ es.submit(new DepRunnable()); } }")));
+        assertTrue(env(r, "app.S.go"), "es.submit(new DepRunnable()) must carry the dep task's Env");
+    }
+
+    @Test
+    void aMethodReferenceIntoADependencyIsCharged() throws Exception {
+        // A method handle carries the exact owner+name+desc, so this joins on the same hash the direct call
+        // would. Both the static and the bound-instance form.
+        Map<String, EffectSet> r = scanChained(LIB4, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.DepUtil; import java.util.*;",
+            "public class S {",
+            "  public void staticRef(List<String> xs){ xs.forEach(DepUtil::write); }",
+            "  public void instRef(List<String> xs, DepUtil d){ xs.forEach(d::writeInst); }",
+            "}")));
+        assertTrue(env(r, "app.S.staticRef"), "forEach(DepUtil::write) must carry the dep body's Env");
+        assertTrue(env(r, "app.S.instRef"), "forEach(d::writeInst) must carry the dep body's Env");
+    }
+
+    @Test
+    void aPureDependencyFunctionalContributesNothing() throws Exception {
+        Map<String, EffectSet> r = scanChained(LIB4, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.PureConsumer; import java.util.*;",
+            "public class S { public void each(List<String> xs){ xs.forEach(new PureConsumer()); } }")));
+        assertFalse(env(r, "app.S.each"), "a dep functional the report shows as pure must add nothing");
+    }
+
+    @Test
+    void anOrdinaryValueConstructedAtAHofCallSiteIsNotCharged() throws Exception {
+        // `Map.merge` IS an invoking HOF, but its second argument is the VALUE, not the function. Charging
+        // the whole surface of anything constructed at a HOF call site would fabricate; the hand-off join
+        // is gated on the PARAMETER's declared type being a functional interface.
+        Map<String, EffectSet> r = scanChained(LIB4, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.DepValue; import java.util.*;",
+            "public class S {",
+            "  public void put(Map<String,DepValue> m){ m.merge(\"k\", new DepValue(), (a,b) -> a); }",
+            "}")));
+        assertFalse(env(r, "app.S.put"),
+                "a non-functional argument must not be charged its type's surface, got " + r.get("app.S.put"));
+    }
+
     // ---- the no-report baseline ------------------------------------------------------------------------
 
     @Test

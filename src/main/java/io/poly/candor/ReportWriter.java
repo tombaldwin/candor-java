@@ -312,6 +312,20 @@ final class ReportWriter {
                 if (!published.add(hash)) continue;
                 Integer at = claimedAt.get(hash);
                 Effector real = at == null ? null : effectors.get(at);
+                List<String> impls = chaTargets(cn.name, mn.name, mn.desc);
+                // BOUNDED CHA, the same bound every IN-SCAN dispatch site applies (Candor: `broad =
+                // cha.size() > CHA_FANOUT_LIMIT && !isClosedHierarchy(owner)`). Past the limit an OPEN
+                // hierarchy may have a subtype candor never saw, so its visible union is an open-world
+                // guess, and publishing it is a FABRICATION at the far end: a consumer holding the one
+                // pure implementer reads {Rand, Net, Fs} and fails `deny Net`. Only the consumer breaks,
+                // which is why nothing local caught it — the producing scan's own gate reads `inferred`,
+                // never the report it writes. A PROVABLY-closed hierarchy (a sealed family's `permits`
+                // list is the whole subtype set) is exempt exactly as in-scan: its union is exact.
+                // The in-scan formula's THIRD term, `closedWorldResolvable`, is deliberately NOT copied:
+                // CANDOR_CLOSED_WORLD asserts the scanned classes are the whole world, and that assertion
+                // is exactly what publishing for a CHAINED consumer contradicts — the consumer's own
+                // implementers are, by construction, outside this scan.
+                boolean broad = impls.size() > Rules.CHA_FANOUT_LIMIT && !isClosedHierarchy(cn.name);
                 EffectSet inf = EffectSet.empty();
                 // What the OTHER implementers contribute — the interface's own `default` body is one of
                 // `chaTargets`' targets, and only the rest is news to a claimed entry.
@@ -319,7 +333,18 @@ final class ReportWriter {
                 TreeSet<String> inv = new TreeSet<>(), hosts = new TreeSet<>(), cmds = new TreeSet<>(),
                         paths = new TreeSet<>(), tables = new TreeSet<>();
                 boolean masked = false;
-                for (String impl : chaTargets(cn.name, mn.name, mn.desc)) {
+                // UNKNOWN, not silence. Dropping the broad union and publishing nothing would be the other
+                // half of the same defect: a dep report omits its pure functions, so an absent entry IS a
+                // purity claim (§2 rule 3), and twelve pure implementers do not make the thirteenth pure.
+                // Unknown is what is true of candor's state, it is what the in-scan site reports, and it
+                // carries its reason so a `deny E Unknown[dispatch]` still bites.
+                List<UnknownReason> why = List.of();
+                if (broad) {
+                    inf.add(Effect.UNKNOWN);
+                    why = List.of(UnknownReason.of(UnknownReason.Kind.DISPATCH,
+                            cn.name.replace('/', '.') + "." + mn.name));
+                }
+                for (String impl : broad ? List.<String>of() : impls) {
                     EffectSet ie = inferred.get(impl);
                     if (ie != null) {
                         inf.addAll(ie);
@@ -343,14 +368,14 @@ final class ReportWriter {
                 }
                 if (real != null) {
                     Effector wide = mergeUnionInto(real, inf, fromOthers, inv, hosts, cmds, paths, tables,
-                            netClass);
+                            netClass, why);
                     if (wide != real) { effectors.set(at, wide); merged++; }
                     continue;
                 }
                 unions.add(new Effector(
                         cn.name.replace('/', '.') + "." + mn.name, "", inf, new ArrayList<>(inv),
                         EffectSet.empty(), EffectSet.empty(), EffectSet.empty(), EffectSet.empty(),
-                        false, inf.hasUnknown(), EffectorKind.FUNCTION, List.of(), hash, List.of(),
+                        false, inf.hasUnknown(), EffectorKind.FUNCTION, why, hash, List.of(),
                         List.of(),
                         inf.contains(Effect.NET) ? new ArrayList<>(hosts) : List.of(),
                         inf.contains(Effect.EXEC) ? new ArrayList<>(cmds) : List.of(),
@@ -380,8 +405,9 @@ final class ReportWriter {
      */
     private static Effector mergeUnionInto(Effector real, EffectSet inf, EffectSet fromOthers,
             TreeSet<String> inv, TreeSet<String> hosts, TreeSet<String> cmds, TreeSet<String> paths,
-            TreeSet<String> tables, List<String> netClass) {
+            TreeSet<String> tables, List<String> netClass, List<UnknownReason> why) {
         EffectSet wide = real.inferred().join(inf);
+        TreeSet<UnknownReason> whyW = new TreeSet<>(real.unknownWhy()); whyW.addAll(why);
         TreeSet<String> invW = new TreeSet<>(real.invisible()); invW.addAll(inv);
         TreeSet<String> hostsW = new TreeSet<>(real.hosts()); hostsW.addAll(hosts);
         TreeSet<String> cmdsW = new TreeSet<>(real.cmds()); cmdsW.addAll(cmds);
@@ -396,12 +422,12 @@ final class ReportWriter {
                 && invW.size() == real.invisible().size() && hostsW.size() == real.hosts().size()
                 && cmdsW.size() == real.cmds().size() && pathsW.size() == real.paths().size()
                 && tablesW.size() == real.tables().size() && netW.size() == real.netClass().size()
-                && fsW.equals(real.fs());
+                && fsW.equals(real.fs()) && whyW.size() == real.unknownWhy().size();
         if (unchanged) return real;
         boolean hasNet = wide.contains(Effect.NET);
         return new Effector(real.fn(), real.loc(), wide, new ArrayList<>(invW), real.direct(),
                 real.declared(), real.undeclared(), real.overdeclared(), real.entryPoint(),
-                wide.hasUnknown(), real.kind(), real.unknownWhy(), real.hash(), real.calls(), fsW,
+                wide.hasUnknown(), real.kind(), new ArrayList<>(whyW), real.hash(), real.calls(), fsW,
                 hasNet ? new ArrayList<>(hostsW) : real.hosts(),
                 wide.contains(Effect.EXEC) ? new ArrayList<>(cmdsW) : real.cmds(),
                 wide.contains(Effect.FS) ? new ArrayList<>(pathsW) : real.paths(),

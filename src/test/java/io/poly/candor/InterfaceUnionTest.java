@@ -381,6 +381,81 @@ class InterfaceUnionTest {
                 "the overrider's Net must reach the consumer through the default's hash; got " + after);
     }
 
+    // ---- THE FAN-OUT BOUND: the second fixtures come first ---------------------------------------------
+
+    /** A lib with an interface {@code Chan.go()} and {@code n} implementers, the LAST one effectful (Net to
+     *  {@code s3.example.com}), every other one pure. {@code sealTo} != null makes the interface SEALED over
+     *  exactly those implementers — a PROVABLY complete hierarchy, which is what earns the carve-out. */
+    private static Map<String, String> chanLib(int n, boolean sealed) {
+        Map<String, String> m = new java.util.HashMap<>();
+        StringBuilder permits = new StringBuilder();
+        for (int i = 0; i < n; i++) permits.append(i == 0 ? "" : ", ").append("C").append(i);
+        m.put("lib/Chan.java", "package lib;\npublic " + (sealed ? "sealed " : "") + "interface Chan"
+                + (sealed ? " permits " + permits : "") + " { void go(); }\n");
+        for (int i = 0; i < n - 1; i++)
+            m.put("lib/C" + i + ".java", "package lib;\npublic " + (sealed ? "final " : "")
+                    + "class C" + i + " implements Chan { public void go() { } }\n");
+        m.put("lib/C" + (n - 1) + ".java", "package lib;\nimport java.net.*;\npublic " + (sealed ? "final " : "")
+                + "class C" + (n - 1) + " implements Chan {\n"
+                + "  public void go() { try { new URL(\"http://s3.example.com/x\").openStream(); }"
+                + " catch (Exception e) {} }\n}\n");
+        return m;
+    }
+
+    @Test
+    void anInterfaceAtTheFanoutBoundStillPublishesItsPreciseUnion() throws Exception {
+        // THE SECOND FIXTURE, written before the bound was applied. Bounding the union at CHA_FANOUT_LIMIT is
+        // a NARROWING, and the fixture that proves a narrowing closed a fabrication cannot notice the reaches
+        // it closed with it. Exactly 12 implementers = the widest hierarchy in-scan dispatch resolves, so the
+        // union must still be published, precisely.
+        Map<String, Map<String, Object>> r = depReport(chanLib(12, false), true);
+        assertEquals(List.of("Net"), inferred(r, "lib/Chan.go()V"),
+                "a hierarchy AT the bound must keep resolving; got " + r.get("lib/Chan.go()V"));
+        assertEquals(List.of("s3.example.com"), r.get("lib/Chan.go()V").get("hosts"));
+    }
+
+    @Test
+    void aProvablyClosedSealedHierarchyPublishesItsUnionPastTheBound() throws Exception {
+        // The other half of the second fixture: `isClosedHierarchy` is the in-scan carve-out for a hierarchy
+        // that is PROVABLY complete (a sealed family's `permits` list is the whole subtype set), so the union
+        // over it is exact rather than an open-world guess. Applying the bound without the carve-out would
+        // throw away a precise answer on every sealed ADT with more than 12 cases.
+        Map<String, Map<String, Object>> r = depReport(chanLib(14, true), true);
+        assertEquals(List.of("Net"), inferred(r, "lib/Chan.go()V"),
+                "a fully-closed sealed family is exact at any size; got " + r.get("lib/Chan.go()V"));
+    }
+
+    @Test
+    void aBroadOpenHierarchyPublishesUnknownRatherThanTheSmearedUnion() throws Exception {
+        // THE FABRICATION. In-scan, `chan.go()` over a 13-deep OPEN hierarchy drops to Unknown (Candor:
+        // `broad = cha.size() > CHA_FANOUT_LIMIT && !isClosedHierarchy(owner)`) precisely because an unseen
+        // external subtype may exist and the visible union is an open-world guess. The union entry ignored
+        // that bound, so a chained consumer holding one PURE implementer read Net and failed `deny Net` —
+        // and only the consumer failed, because the producer's own gate reads `inferred`, never the report.
+        // Unknown, not silence: silence IS a purity claim (§2 rule 3), and 12 of these implementers being
+        // pure does not make the 13th pure.
+        Map<String, Map<String, Object>> r = depReport(chanLib(13, false), true);
+        Map<String, Object> u = r.get("lib/Chan.go()V");
+        assertNotNull(u, "a bound must not produce SILENCE — that is the cardinal sin, not a bound");
+        assertEquals(List.of("Unknown"), u.get("inferred"), "the broad union must not be published");
+        assertEquals(List.of("dispatch:lib.Chan.go"), u.get("unknownWhy"),
+                "the Unknown must say why, so a reason-scoped `deny E Unknown[dispatch]` can bite");
+        assertNull(u.get("hosts"), "no literal surface may travel with an unresolved dispatch");
+        assertEquals(Boolean.TRUE, u.get("interfaceUnion"));
+    }
+
+    @Test
+    void aBroadHierarchyDoesNotFabricateNetOnTheConsumer() throws Exception {
+        // The boundary form: the consumer must not inherit the smear (fabrication), and must not read pure
+        // (the cardinal sin). Unknown is the answer that is true of candor's state.
+        Map<String, String> app = Map.of("app/Go.java",
+                "package app;\nimport lib.Chan;\npublic class Go { public void run(Chan c) { c.go(); } }\n");
+        Map<String, Object> after = chainedApp(chanLib(13, false), app, true).get("app.Go.run");
+        assertNotNull(after, "the consumer must not vanish from the report (that is a purity claim)");
+        assertEquals(List.of("Unknown"), after.get("inferred"),
+                "a broad dep hierarchy is honest indeterminacy, not Net; got " + after);
+    }
+
     // ---- the boundary: the motivating experiment, end to end -------------------------------------------
 
     @Test

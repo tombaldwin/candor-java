@@ -25,6 +25,11 @@ final class AnalysisContext {
     // Memoized `crossDeps` grouped by declaring type (internal name) — the hand-off join has no descriptor
     // to key on (see Candor#depFnsOfType), and scanning every hash per site would be quadratic.
     final Map<String, List<DepFn>> depFnsByOwner = new HashMap<>();
+    // Memoized `crossDeps` grouped by declaring type AND member name ("owner.name" -> desc -> DepFn). The
+    // by-NAME reentry contracts (compareTo/append/write/read) resolve over ANY descriptor, so there is no
+    // single hash to key on; the DESCRIPTOR is kept because per-overload shadowing decides which of a
+    // dependency's same-named methods a project override actually replaces (Candor#nearestDepFnsNamed).
+    final Map<String, Map<String, DepFn>> depFnsByOwnerName = new HashMap<>();
     // `crossDeps` inverted by SIGNATURE (`name+desc` -> the dep owners declaring an EFFECTFUL body with
     // it) — the evidence the untyped-dep-receiver disclosure needs (Candor#untypedDepReceiver). Built
     // once, lazily, on the first interface dispatch that gets that far; empty when nothing is chained.

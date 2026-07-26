@@ -512,6 +512,182 @@ class CrossScanBoundaryTest {
                         + "public helpers no call path reaches from here, got " + got);
     }
 
+    // ---- M6: the by-NAME reentry contracts (compareTo / append / write) --------------------------------
+
+    /** {@code toString}/{@code equals}/{@code hashCode} each have ONE descriptor, so M1/M3 could compute the
+     *  dependency's exact hash. {@code Comparable.compareTo}, {@code Appendable.append} and
+     *  {@code Writer.write} are re-entered over whichever overload the JDK sink picks, and the consumer's
+     *  bytecode names none of them — {@code treeSet.add(depItem)} carries no descriptor at all. This lib
+     *  supplies one effectful case per contract, plus everything the fabrication controls need: a PURE
+     *  comparable, a same-named NON-contract member, a partially-overridden multi-overload sink, and an
+     *  unrelated dependency type whose method merely SHARES the leaf name {@code write}. */
+    private static final Map<String, String> LIB6 = Map.of(
+        "lib/Item.java", "package lib;\npublic class Item implements Comparable<Item> {\n"
+            + "  public int compareTo(Item o){ System.getenv(\"HOME\"); return 0; }\n}\n",
+        "lib/PureItem.java", "package lib;\npublic class PureItem implements Comparable<PureItem> {\n"
+            + "  public int compareTo(PureItem o){ return 0; }\n}\n",
+        "lib/Odd.java", "package lib;\npublic class Odd implements Comparable<Odd> {\n"
+            + "  public int compareTo(Odd o){ return 0; }\n"
+            + "  public void compareTo(String a, int b){ System.getenv(\"HOME\"); }\n}\n",
+        "lib/Sink.java", "package lib;\npublic class Sink implements Appendable {\n"
+            + "  public Appendable append(CharSequence c){ System.getenv(\"HOME\"); return this; }\n"
+            + "  public Appendable append(char c){ new java.io.File(\"/tmp/candor-x\").exists(); return this; }\n"
+            + "  public Appendable append(CharSequence c, int s, int e){ return this; }\n}\n",
+        "lib/LoudWriter.java", "package lib;\npublic class LoudWriter extends java.io.Writer {\n"
+            + "  public void write(char[] c, int o, int n){ System.getenv(\"HOME\"); }\n"
+            + "  public void flush(){}\n  public void close(){}\n}\n",
+        "lib/QuietWriter.java", "package lib;\npublic class QuietWriter extends java.io.Writer {\n"
+            + "  public void write(char[] c, int o, int n){ }\n"
+            + "  public void flush(){}\n  public void close(){}\n}\n",
+        "lib/Session.java", "package lib;\npublic class Session {\n"
+            + "  public void write(String s){ new java.io.File(\"/tmp/candor-x\").exists(); }\n}\n");
+
+    private static boolean fs(Map<String, EffectSet> r, String m) {
+        return r.getOrDefault(m, EffectSet.empty()).toNames().contains("Fs");
+    }
+
+    @Test
+    void byNameContractReentryReachesADependencyBody() throws Exception {
+        // THE DEFECT. Each of these resolves in a SINGLE tree (the control below) and read silent-pure once
+        // the same source was split and lib's report chained: `reentryTargets`' by-NAME arm ends in the
+        // project-only subtype index, and the cross-boundary join beside it handled only the three
+        // fixed-descriptor contracts.
+        Map<String, EffectSet> r = scanChained(LIB6, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.*; import java.util.*;",
+            "public class S {",
+            "  public void treeAdd(TreeSet<Item> s, Item i){ s.add(i); }",
+            "  public void treeMapPut(TreeMap<Item,String> m, Item i){ m.put(i, \"x\"); }",
+            "  public void formatter(Sink k){ new java.util.Formatter(k).format(\"x\"); }",
+            "  public void printWriter(LoudWriter w){ new java.io.PrintWriter(w).println(\"x\"); }",
+            "}")));
+        assertTrue(env(r, "app.S.treeAdd"), "TreeSet.add(depItem) re-enters the dep's compareTo, got " + r.get("app.S.treeAdd"));
+        assertTrue(env(r, "app.S.treeMapPut"), "TreeMap.put(depKey,..) re-enters the dep's compareTo, got " + r.get("app.S.treeMapPut"));
+        assertTrue(env(r, "app.S.formatter"), "new Formatter(depAppendable) drives the dep's append, got " + r.get("app.S.formatter"));
+        assertTrue(env(r, "app.S.printWriter"), "new PrintWriter(depWriter) drives the dep's write, got " + r.get("app.S.printWriter"));
+    }
+
+    @Test
+    void byNameContractReentryMatchesItsSingleTreeControl() throws Exception {
+        // The control that makes it a BOUNDARY defect rather than a general limitation: identical source,
+        // one tree, nothing chained.
+        Map<String, String> all = new java.util.LinkedHashMap<>(LIB6);
+        all.put("app/S.java", String.join("\n",
+            "package app; import lib.*; import java.util.*;",
+            "public class S {",
+            "  public void treeAdd(TreeSet<Item> s, Item i){ s.add(i); }",
+            "  public void formatter(Sink k){ new java.util.Formatter(k).format(\"x\"); }",
+            "  public void printWriter(LoudWriter w){ new java.io.PrintWriter(w).println(\"x\"); }",
+            "}"));
+        Path dir = TestCompiler.compile(all);
+        Config saved = Candor.config;
+        Map<String, EffectSet> r;
+        try {
+            Candor.config = Config.empty();
+            r = Candor.runScan(dir);
+        } finally {
+            Candor.config = saved;
+            rm(dir.getParent());
+        }
+        for (String m : new String[] {"treeAdd", "formatter", "printWriter"})
+            assertTrue(env(r, "app.S." + m), "single-tree control: `" + m + "` must carry Env, got " + r.get("app.S." + m));
+    }
+
+    @Test
+    void aPureDependencyComparableContributesNothing() throws Exception {
+        Map<String, EffectSet> r = scanChained(LIB6, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.PureItem; import java.util.*;",
+            "public class S { public void add(TreeSet<PureItem> s, PureItem i){ s.add(i); } }")));
+        assertFalse(env(r, "app.S.add"), "a dep comparable the report shows as pure must add nothing");
+    }
+
+    @Test
+    void aSameNamedNonContractMemberIsNotCharged() throws Exception {
+        // The join keys on `owner.name` over ANY descriptor, so the DESCRIPTOR SHAPE is what stops a
+        // coincidental same-named helper being charged: `Comparable.compareTo` takes one reference and
+        // returns int, and `lib.Odd.compareTo(String,int)V` is not that. Its real compareTo IS pure, so
+        // any Env here came from the helper.
+        Map<String, EffectSet> r = scanChained(LIB6, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.Odd; import java.util.*;",
+            "public class S { public void add(TreeSet<Odd> s, Odd o){ s.add(o); } }")));
+        assertFalse(env(r, "app.S.add"),
+                "a same-named member that cannot BE the contract must not be charged, got " + r.get("app.S.add"));
+    }
+
+    @Test
+    void anUnrelatedDependencyTypeSharingTheLeafNameIsNotCharged() throws Exception {
+        // THE LEAF-NAME TRAP this vein has been burned by twice. `write`, `read` and `append` are among the
+        // most common method names there are; a join that matched the NAME across owners would charge
+        // `lib.Session.write`'s Fs at a PrintWriter site that never touches a Session. The owner is pinned
+        // to the sink argument's declared type, and `lib.QuietWriter`'s own write is pure.
+        Map<String, EffectSet> r = scanChained(LIB6, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.QuietWriter;",
+            "public class S { public void quiet(QuietWriter w){ new java.io.PrintWriter(w).println(\"x\"); } }")));
+        assertFalse(fs(r, "app.S.quiet"),
+                "another dep type's same-named method must not reach this sink, got " + r.get("app.S.quiet"));
+        assertFalse(env(r, "app.S.quiet"), "a pure dep sink must stay pure, got " + r.get("app.S.quiet"));
+    }
+
+    @Test
+    void shadowingIsPerOverloadNotPerName() throws Exception {
+        // BOTH directions of item 0 in one fixture. `lib.Sink` declares two effectful `append` overloads —
+        // `append(CharSequence)` reads Env, `append(char)` touches the filesystem — and the project subclass
+        // overrides ONLY `append(char)`. Shadow the whole NAME and the inherited `append(CharSequence)`'s Env
+        // is dropped (an under-report); shadow nothing and the overridden `append(char)`'s Fs is charged to a
+        // body the JVM never runs (a fabrication). Neither is acceptable, so the walk settles per DESCRIPTOR.
+        Map<String, EffectSet> r = scanChained(LIB6, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.Sink;",
+            "public class S {",
+            "  public static class Half extends Sink { public Appendable append(char c){ return this; } }",
+            "  public void half(Half h){ new java.util.Formatter(h).format(\"x\"); }",
+            "}")));
+        assertTrue(env(r, "app.S.half"),
+                "the NON-overridden append(CharSequence) still runs the dep body — its Env must survive, got "
+                        + r.get("app.S.half"));
+        assertFalse(fs(r, "app.S.half"),
+                "the OVERRIDDEN append(char) is shadowed by the project body — its Fs must not be charged, got "
+                        + r.get("app.S.half"));
+    }
+
+    @Test
+    void anOrderingSinkOverAContainerIsNotChargedTheContainersOwnContract() throws Exception {
+        // `Collections.sort(list)` orders the list's ELEMENTS, and the element type is erased inside the
+        // generic — the argument's declared type is the CONTAINER. A container that happens to implement
+        // Comparable would otherwise be charged for an ordering the JVM performs on something else.
+        Map<String, String> lib = Map.of("lib/Roster.java", "package lib;\nimport java.util.*;\n"
+            + "public class Roster extends ArrayList<String> implements Comparable<Roster> {\n"
+            + "  public int compareTo(Roster o){ System.getenv(\"HOME\"); return 0; }\n}\n");
+        Map<String, EffectSet> r = scanChained(lib, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.Roster; import java.util.*;",
+            "public class S { public void sort(Roster r){ Collections.sort(r); } }")));
+        assertFalse(env(r, "app.S.sort"),
+                "sorting a container does not invoke the CONTAINER's compareTo, got " + r.get("app.S.sort"));
+    }
+
+    @Test
+    void theReceiverDrivenIoFormStaysOpenAndTheReasonIsPinned() throws Exception {
+        // THE RESIDUAL, asserted so it cannot drift. R32's OTHER half — `w.write("x")` driving the
+        // receiver's own abstract `write(char[],int,int)` through a JDK-provided overload — resolves in one
+        // tree and does NOT cross the boundary, and the missing ingredient is NOT the by-name join (an
+        // instrumented run with the io gate forced open resolves it through exactly the code above). It is
+        // `isJavaIoStreamType`: proving the receiver IS a stream needs the DEPENDENCY's supertypes, and a
+        // chained dep's classes are not on candor's classpath, so `externalSupers` reads nothing.
+        //
+        // Dropping that gate for dep types was MEASURED, not reasoned about, on eleven real libraries split
+        // in half and chained: 161 call sites qualify, over 31 distinct dependency types, and only three of
+        // those 31 are java.io streams. The rest are `PacketLineOut.writeString`, `RebaseState.readFile`,
+        // `ObjectWriter.writeValueAsString` — ordinary methods whose names merely begin with write/read,
+        // every one of them ALREADY resolved by the exact-hash join. Relaxing the gate would charge them
+        // their type's whole write/read surface: the leaf-name fabrication this vein's design note rejects,
+        // at a measured ~90% wrong-receiver rate. It stays shut until the dependency's hierarchy is
+        // available (the same blocker as the abstract-dep-CLASS row).
+        Map<String, EffectSet> r = scanChained(LIB6, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.LoudWriter;",
+            "public class S { public void direct(LoudWriter w) throws Exception { w.write(\"x\"); } }")));
+        assertFalse(env(r, "app.S.direct"),
+                "if this now PASSES the dep hierarchy became available — delete the residual, do not relax "
+                        + "the io gate; got " + r.get("app.S.direct"));
+    }
+
     // ---- the no-report baseline ------------------------------------------------------------------------
 
     @Test

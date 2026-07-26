@@ -2,6 +2,7 @@ package io.poly.candor;
 
 import io.poly.candor.model.EffectSet;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static io.poly.candor.TestCompiler.compileApp;
@@ -540,7 +541,15 @@ class CrossScanBoundaryTest {
             + "  public void write(char[] c, int o, int n){ }\n"
             + "  public void flush(){}\n  public void close(){}\n}\n",
         "lib/Session.java", "package lib;\npublic class Session {\n"
-            + "  public void write(String s){ new java.io.File(\"/tmp/candor-x\").exists(); }\n}\n");
+            + "  public void write(String s){ new java.io.File(\"/tmp/candor-x\").exists(); }\n}\n",
+        "lib/LoudReader.java", "package lib;\npublic class LoudReader extends java.io.Reader {\n"
+            + "  public int read(char[] c, int o, int n){ System.getenv(\"HOME\"); return -1; }\n"
+            + "  public void close(){}\n}\n",
+        // NOT a stream, and it declares the very overload a relaxed io gate would reach for. The
+        // fabrication control for the hierarchy consumer: `l.write("x")` runs the PURE `write(String)`.
+        "lib/Ledger.java", "package lib;\npublic class Ledger {\n"
+            + "  public void write(char[] c, int o, int n){ System.getenv(\"HOME\"); }\n"
+            + "  public void write(String s){ }\n}\n");
 
     private static boolean fs(Map<String, EffectSet> r, String m) {
         return r.getOrDefault(m, EffectSet.empty()).toNames().contains("Fs");
@@ -686,28 +695,72 @@ class CrossScanBoundaryTest {
     }
 
     @Test
-    void theReceiverDrivenIoFormStaysOpenAndTheReasonIsPinned() throws Exception {
-        // THE RESIDUAL, asserted so it cannot drift. R32's OTHER half — `w.write("x")` driving the
-        // receiver's own abstract `write(char[],int,int)` through a JDK-provided overload — resolves in one
-        // tree and does NOT cross the boundary, and the missing ingredient is NOT the by-name join (an
-        // instrumented run with the io gate forced open resolves it through exactly the code above). It is
-        // `isJavaIoStreamType`: proving the receiver IS a stream needs the DEPENDENCY's supertypes, and a
-        // chained dep's classes are not on candor's classpath, so `externalSupers` reads nothing.
+    void theReceiverDrivenIoFormCrossesOnceTheDependencysHierarchyIsRead() throws Exception {
+        // THE RESIDUAL, CLOSED — and closed the way its own pinned test said to close it. `w.write("x")`
+        // drives the receiver's abstract `write(char[],int,int)` through a JDK-provided overload; it
+        // resolved in one tree and not across the boundary, and the missing ingredient was never the
+        // by-name join. It was `isJavaIoStreamType`: proving the receiver IS a stream needs the
+        // DEPENDENCY's supertypes, and a dep's classes are not on candor's classpath.
         //
-        // Dropping that gate for dep types was MEASURED, not reasoned about, on eleven real libraries split
-        // in half and chained: 161 call sites qualify, over 31 distinct dependency types, and only three of
-        // those 31 are java.io streams. The rest are `PacketLineOut.writeString`, `RebaseState.readFile`,
-        // `ObjectWriter.writeValueAsString` — ordinary methods whose names merely begin with write/read,
-        // every one of them ALREADY resolved by the exact-hash join. Relaxing the gate would charge them
-        // their type's whole write/read surface: the leaf-name fabrication this vein's design note rejects,
-        // at a measured ~90% wrong-receiver rate. It stays shut until the dependency's hierarchy is
-        // available (the same blocker as the abstract-dep-CLASS row).
+        // Relaxing the gate instead was MEASURED and refused — eleven libraries split and chained, 161
+        // qualifying sites over 31 dep types, only THREE of the 31 actually java.io streams (the rest are
+        // `PacketLineOut.writeString`, `RebaseState.readFile`, `ObjectWriter.writeValueAsString`, already
+        // resolved by the exact-hash join), a ~90% wrong-receiver rate. The hierarchy answers the question
+        // the gate was asking rather than dropping it, so the same call sites now discriminate.
         Map<String, EffectSet> r = scanChained(LIB6, Map.of("app/S.java", String.join("\n",
-            "package app; import lib.LoudWriter;",
-            "public class S { public void direct(LoudWriter w) throws Exception { w.write(\"x\"); } }")));
-        assertFalse(env(r, "app.S.direct"),
-                "if this now PASSES the dep hierarchy became available — delete the residual, do not relax "
-                        + "the io gate; got " + r.get("app.S.direct"));
+            "package app; import lib.*;",
+            "public class S {",
+            "  public void directWrite(LoudWriter w) throws Exception { w.write(\"x\"); }",
+            "  public void directRead(LoudReader d) throws Exception { d.read(); }",
+            "  public void quiet(QuietWriter w) throws Exception { w.write(\"x\"); }",
+            "  public void ledger(Ledger l){ l.write(\"x\"); }",
+            "}")));
+        assertTrue(env(r, "app.S.directWrite"),
+                "`w.write(String)` runs the dep's own `write(char[],int,int)` — its Env must cross, got "
+                        + r.get("app.S.directWrite"));
+        assertTrue(env(r, "app.S.directRead"),
+                "`r.read()` runs the dep's own `read(char[],int,int)` — its Env must cross, got "
+                        + r.get("app.S.directRead"));
+        // THE OTHER DIRECTION, which is the whole reason the gate was kept rather than relaxed. `Ledger` is
+        // NOT a stream and declares the exact overload a relaxed gate would have reached for; `l.write("x")`
+        // runs its PURE `write(String)`. A hierarchy that answers "no java.io ancestor" must still refuse.
+        assertFalse(env(r, "app.S.ledger"),
+                "a NON-stream dep type was charged its `write(char[],int,int)` surface — the ~90% "
+                        + "wrong-receiver fabrication the gate exists to prevent, got " + r.get("app.S.ledger"));
+        assertFalse(env(r, "app.S.quiet"), "a pure dep stream must stay pure, got " + r.get("app.S.quiet"));
+    }
+
+    @Test
+    void theDependencyHierarchyIsReadFromTheSidecarBesideTheReport() throws Exception {
+        // The sidecar `ReportWriter.writeHierarchy` has written beside EVERY scan since it was added, which
+        // nothing on the consumer side ever opened. This asserts the WIRING, separately from any effect it
+        // enables: a dep class's supertypes must be visible to `Cha.externalSupers`, which reads candor's
+        // own classpath and therefore could never see a scanned project's third-party types.
+        Path base = Files.createTempDirectory("candor-hier");
+        try {
+            Path rep = base.resolve("dep.json");
+            Files.writeString(rep, "{\"candor\":{\"version\":\"x\"},\"functions\":[]}");
+            Files.writeString(base.resolve("dep.hierarchy.json"),
+                    "{\"lib.LoudWriter\": [\"java.io.Writer\"], \"lib.Ledger\": [\"lib.Base\"]}");
+            AnalysisState.newContext();
+            Loader.loadCrossDeps(rep.toString(), "x");
+            assertEquals(List.of("java/io/Writer"), Cha.depDirectSupers("lib/LoudWriter"),
+                    "the sidecar beside a report named as a FILE was not read");
+            assertTrue(Candor.isJavaIoStreamType("lib/LoudWriter"),
+                    "a dep type extending java.io.Writer must now answer as a stream");
+            assertFalse(Candor.isJavaIoStreamType("lib/Ledger"),
+                    "a dep type with a non-stream ancestor must not answer as a stream");
+            assertEquals(List.of(), Cha.depDirectSupers("lib/Unlisted"),
+                    "a type the sidecar does not mention keeps the empty pre-sidecar answer");
+            // THE SCOPE, asserted rather than described: the sidecar must NOT reach the project subtype
+            // index, where a newly non-empty CHA would suppress the honest `callback:`/dispatch Unknown.
+            assertEquals(List.of(), Cha.externalSupers("lib/LoudWriter"),
+                    "the dep hierarchy leaked into externalSupers — that feeds buildSubtypeIndex, where a "
+                            + "wider hierarchy turns a disclosed Unknown into a confident purity claim");
+        } finally {
+            AnalysisState.remove();
+            rm(base);
+        }
     }
 
     // ---- the no-report baseline ------------------------------------------------------------------------

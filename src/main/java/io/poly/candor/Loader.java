@@ -128,6 +128,56 @@ final class Loader {
      *  unreadable/unparseable dep report FAILS the run (exit 2). Silently skipping any of these made
      *  every call into that dep read PURE — the §2.1 "corrupt report ≠ pure" care taken inside the
      *  parser, undone one level up. */
+    /** The `<report>.hierarchy.json` sidecar path for a report file, or null if `f` is not a report name.
+     *  Mirrors {@link ReportWriter#writeHierarchy}'s naming exactly — one producer, one consumer, one rule. */
+    static Path hierarchySidecarOf(Path f) {
+        String n = f.getFileName().toString();
+        if (!n.endsWith(".json") || n.endsWith(".hierarchy.json")) return null;
+        return f.resolveSibling(n.substring(0, n.length() - 5) + ".hierarchy.json");
+    }
+
+    /** Read a chained dependency's class hierarchy from the sidecar {@link ReportWriter#writeHierarchy}
+     *  writes beside EVERY report — `{"a.b.C": ["a.b.Base", "a.b.Iface"], …}`, dotted, direct supers only.
+     *
+     *  <p>WHY THIS EXISTS. A dependency's classes are not on candor's classpath, so {@link Cha#externalSupers}
+     *  reads nothing for them and every question about a dep type's supertypes answered "no supers". That is
+     *  a sound under-approximation and it is also the exact blocker under three open rows: the receiver-driven
+     *  `w.write(..)` / `r.read(..)` reentry (proving the receiver IS a `java.io` stream needs its ancestry),
+     *  dispatch through a dep's abstract CLASS, and swift's protocol-typed-parameter row one repo over. The
+     *  information was already on disk beside every report and nothing read it.
+     *
+     *  <p>NOT VERSION-GATED, and the reason is that it carries no effect claim. §2.1 downgrades a
+     *  different-version report's EFFECTS to Unknown because a different classifier produced them; a list of
+     *  direct supertypes is a structural fact of the compiled bytecode, and it can only ROUTE a lookup — the
+     *  entry it routes to is still version-gated and still downgraded. A stale hierarchy therefore reaches a
+     *  stale entry and yields Unknown, which is the disclosure direction.
+     *
+     *  <p>Fail-closed like the report parser above: a sidecar that is PRESENT and unparsable fails the run.
+     *  Absent is the ordinary case (candor-ts and pre-sidecar reports have none) and simply leaves the map
+     *  empty — the behaviour every scan had before this. */
+    static void loadDepHierarchy(Path f) {
+        try {
+            JsonElement root = JsonParser.parseString(Files.readString(f));
+            if (!root.isJsonObject()) return;                    // an unexpected shape names no supertype
+            for (var e : root.getAsJsonObject().entrySet()) {
+                if (!e.getValue().isJsonArray()) continue;
+                List<String> sup = new ArrayList<>();
+                for (JsonElement x : e.getValue().getAsJsonArray())
+                    if (x.isJsonPrimitive()) sup.add(x.getAsString().replace('.', '/'));
+                if (!sup.isEmpty()) ctx().depSupers.putIfAbsent(e.getKey().replace('.', '/'), sup);
+            }
+            // INSTRUMENT THE PRECONDITION, not the output. A diff cannot show that a mechanism never fired
+            // (a sidecar that loads zero types looks exactly like one that loads thousands and is never
+            // consulted); `Cha.externalSupers` prints the other half, the hits.
+            if (System.getenv("CANDOR_DEPHIER_DEBUG") != null)
+                System.err.println("DEPHIER load " + f + ": " + ctx().depSupers.size() + " types known");
+        } catch (Exception e) {
+            System.err.println("candor: CANDOR_DEPS hierarchy sidecar " + f + " is unreadable ("
+                    + e.getMessage() + ") — failing (exit 2), a configured dep must not silently read pure");
+            System.exit(2);
+        }
+    }
+
     static void loadCrossDeps(String spec, String ownVersion) {
         if (spec == null || spec.isBlank()) return;
         for (String tok : spec.split("[\\s:,]+")) {
@@ -141,6 +191,11 @@ final class Loader {
                     }
                 } else if (Files.isRegularFile(p)) {
                     files.add(p);
+                    // A token naming the report FILE directly (what `.candor/config`'s `deps` key usually
+                    // holds) never walks a directory, so the sidecar beside it would never be seen. Add it
+                    // explicitly; absent is the ordinary case and simply leaves the hierarchy empty.
+                    Path sib = hierarchySidecarOf(p);
+                    if (sib != null && Files.isRegularFile(sib)) files.add(sib);
                 } else {
                     System.err.println("candor: CANDOR_DEPS names " + p + " but it is not a readable file or"
                             + " directory — failing (exit 2), a configured dep must not silently read pure");
@@ -152,6 +207,10 @@ final class Loader {
                 System.exit(2);
             }
             for (Path f : files) {
+                if (f.getFileName().toString().endsWith(".hierarchy.json")) {
+                    loadDepHierarchy(f);
+                    continue;                      // a hierarchy sidecar carries no `functions` and no effects
+                }
                 try {
                     JsonElement root = JsonParser.parseString(Files.readString(f));
                     JsonObject obj = root.isJsonObject() ? root.getAsJsonObject() : null;

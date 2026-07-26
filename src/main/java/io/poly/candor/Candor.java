@@ -2597,11 +2597,14 @@ public class Candor {
     }
 
     /** The direct supertypes of `internal` in JVM RESOLUTION ORDER — superclass first, then the declared
-     *  interfaces. Reads the project ClassNode when there is one, else the classpath (a dep type candor
-     *  can't load has no visible supers, which is the sound under-approximation: we simply find nothing). */
+     *  interfaces. Reads the project ClassNode when there is one, else the classpath — and, for a type
+     *  candor's classpath cannot load, the CHAINED DEPENDENCY'S OWN published hierarchy
+     *  ({@link Cha#depDirectSupers}). Both callers are the dependency-inheritance walks
+     *  ({@link #nearestDepFn}, {@link #nearestDepFnsNamed}), where a wider supertype set can only find MORE
+     *  dependency bodies to inherit; it deliberately does NOT reach `buildSubtypeIndex`. */
     static List<String> directSupers(String internal) {
         ClassNode cn = ctx().byName.get(internal);
-        if (cn == null) return externalSupers(internal);
+        if (cn == null) return Cha.depDirectSupers(internal);
         List<String> out = new ArrayList<>();
         if (cn.superName != null) out.add(cn.superName);
         if (cn.interfaces != null) out.addAll(cn.interfaces);
@@ -3514,6 +3517,21 @@ public class Candor {
         if (internal == null) return false;
         if (IO_STREAM_BASES.contains(internal)) return true;
         for (String s : transSupers(internal)) if (IO_STREAM_BASES.contains(s)) return true;
+        // A CHAINED DEPENDENCY'S type: candor's classpath cannot load it, so `transSupers` reads nothing and
+        // this answered "not a stream" for every dep type — which is why the receiver-driven `w.write(..)`
+        // reentry could not cross the scan boundary. The dep published its own hierarchy beside its report.
+        // Kept as a SECOND walk rather than folded into `transSupers`, because that one feeds the project
+        // subtype index (see Cha#depDirectSupers): the question here is only ever about a dep type, and
+        // answering it must not change how a project type's dispatch resolves.
+        if (ctx().depSupers.isEmpty()) return false;
+        Set<String> seen = new HashSet<>();
+        ArrayDeque<String> q = new ArrayDeque<>(ctx().depSupers.getOrDefault(internal, List.of()));
+        while (!q.isEmpty()) {
+            String t = q.poll();
+            if (!seen.add(t)) continue;
+            if (IO_STREAM_BASES.contains(t)) return true;
+            q.addAll(Cha.depDirectSupers(t));
+        }
         return false;
     }
 

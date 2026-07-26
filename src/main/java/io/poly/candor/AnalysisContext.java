@@ -136,6 +136,12 @@ final class AnalysisContext {
     final Map<String, Boolean> sealedClosedMemo = new HashMap<>();           // Cha: sealed-closure verdict memo
     final Map<String, Boolean> sealedUnseenMemo = new HashMap<>();           // Cha: sealed-permit-unseen memo
     final Map<String, List<String>> externalSupersCache = new HashMap<>();   // Cha: external-class supers (classpath) cache
+    // A CHAINED dependency's own class hierarchy, read from the `<report>.hierarchy.json` sidecar every
+    // scan already writes (internal name -> direct supers + interfaces, internal names). A dep's classes
+    // are not on candor's classpath, so `Cha.externalSupers` could not see them and every question about a
+    // dep type's supertypes answered "no supers" — the blocker under the receiver-driven write/read
+    // residual and the abstract-dep-CLASS row. Empty when nothing is chained or the dep predates the sidecar.
+    final Map<String, List<String>> depSupers = new HashMap<>();
     final List<PolicyRule.Deny> denyRules = new ArrayList<>();               // CANDOR_POLICY deny/pure (AS-EFF-006)
     final List<PolicyRule.Allow> allowRules = new ArrayList<>();             // CANDOR_POLICY allow (AS-EFF-008)
     final List<PolicyRule.Forbid> forbidRules = new ArrayList<>();           // CANDOR_POLICY forbid (AS-EFF-009)

@@ -180,20 +180,39 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         return externalSupers(internal);
     }
 
+    /** An external type's direct supertypes, kept SPLIT the way JVM method resolution needs them:
+     *  {@code superClass} (null only for {@code java/lang/Object}, which has none) and the directly
+     *  implemented {@code interfaces}. {@code all} is the flattened superclass-then-interfaces view
+     *  {@link #externalSupers} has always returned, precomputed so the hot path allocates nothing. */
+    record ExtSupers(String superClass, List<String> interfaces, List<String> all) {
+        static ExtSupers of(String superClass, List<String> interfaces) {
+            List<String> all = new ArrayList<>();
+            if (superClass != null) all.add(superClass);
+            all.addAll(interfaces);
+            return new ExtSupers(superClass, List.copyOf(interfaces), List.copyOf(all));
+        }
+        static final ExtSupers NONE = of(null, List.of());
+    }
+
     /** Direct supertypes (internal names) of an EXTERNAL class, read off candor's runtime classpath via
      *  ASM. JDK classes (java/util/ArrayList → AbstractList → List/Collection) resolve; the SCANNED
      *  project's own third-party deps are not on candor's classpath, so they fail to load and yield nothing
      *  — the same sound under-approximation as before (never fabrication). Never throws. Cached per name. */
     static List<String> externalSupers(String internal) {
-        List<String> cached = ctx().externalSupersCache.get(internal);
+        return externalSupersSplit(internal).all();
+    }
+
+    /** {@link #externalSupers}, with the superclass still distinguishable from the interfaces — the one
+     *  fact JVM method resolution turns on and the flattened list throws away. Cached per name. */
+    static ExtSupers externalSupersSplit(String internal) {
+        ExtSupers cached = ctx().externalSupersCache.get(internal);
         if (cached != null) return cached;
         // DELIBERATELY NOT consulting the chained dependency's hierarchy here — see {@link #depDirectSupers}
         // for where it IS consulted and why this chokepoint is the wrong one.
-        List<String> out = new ArrayList<>();
+        ExtSupers out = ExtSupers.NONE;
         try {
             ClassReader cr = new ClassReader(internal);
-            if (cr.getSuperName() != null) out.add(cr.getSuperName());
-            for (String i : cr.getInterfaces()) out.add(i);
+            out = ExtSupers.of(cr.getSuperName(), List.of(cr.getInterfaces()));
         } catch (Throwable t) {
             // Can't read the .class bytes off the classpath. On the JVM this means a class not on
             // candor's classpath (e.g. a project's third-party dep) → no supers (sound under-approx). In a
@@ -201,13 +220,109 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
             // back to the build-time JDK supertype index so JDK hierarchies still resolve (native == jar).
             // Gate to NATIVE only: on the JVM the only behavior is ClassReader-or-empty (host-independent,
             // and the ~270KB index is never loaded); the index can't make the JVM's output host-dependent.
+            //
+            // The index is written as `superName interface…` by the SAME ClassReader (build.gradle.kts
+            // `generateJdkSupertypes`), and `superName` is null only for `java/lang/Object` — whose entry
+            // is then empty and never written. So a present entry's head IS the superclass, and native
+            // splits identically to the JVM rather than degrading to "kind unknown".
             if (IN_NATIVE_IMAGE) {
                 List<String> idx = JdkSupers.MAP.get(internal);
-                if (idx != null) out.addAll(idx);
+                if (idx != null && !idx.isEmpty())
+                    out = ExtSupers.of(idx.get(0), idx.subList(1, idx.size()));
             }
         }
         ctx().externalSupersCache.put(internal, out);
         return out;
+    }
+
+    /** Every supertype of {@code start}, {@code start} ITSELF FIRST, in JVM METHOD-RESOLUTION ORDER: the
+     *  whole SUPERCLASS CHAIN before any interface, then interfaces breadth-first. {@code java/lang/Object}
+     *  is excluded — no walk here has anything to read from it.
+     *
+     *  <p><b>THE DEFECT THIS EXISTS TO PREVENT, and it was live at four sites.</b> Each of those walks
+     *  polled ONE queue seeded from a list that flattened "superclass" and "interfaces" together, so the
+     *  traversal interleaved the two BY DEPTH and a nearer interface {@code default} settled a descriptor
+     *  before the superclass body was reached. Java resolution does not work that way — JLS 15.12.2.5 /
+     *  8.4.8: a concrete method inherited from a superclass beats an interface {@code default} AT ANY
+     *  DEPTH. Given
+     *  <pre>
+     *    class Root { public void write(byte[] b) { … writes a file … } }
+     *    class Mid extends Root {}
+     *    interface Trace { default void write(byte[] b) {} }        // pure
+     *    class Half extends Mid implements Trace {}
+     *  </pre>
+     *  a depth-ordered walk from {@code Half} visits {Mid, Trace}; {@code Mid} declares no {@code write},
+     *  {@code Trace} does, the descriptor is settled, and {@code Root.write} at depth 2 is skipped as
+     *  already decided. The JVM runs {@code Root.write}. The caller was reported with NO {@code Fs} — a
+     *  silent under-report — while simultaneously being charged {@code Trace}'s empty effects.
+     *
+     *  <p>{@code useDepHierarchy} decides whether a type candor's classpath cannot load falls back to a
+     *  CHAINED DEPENDENCY's published hierarchy ({@link #depDirectSupers}) — true for the dep-facing walks,
+     *  false for the project-facing ones. See that method for why the two are deliberately separate.
+     *
+     *  <p><b>What happens where the split is not knowable.</b> The dependency sidecar records supertypes as
+     *  a SORTED SET with no superclass/interface marker, so for those types the kind is unknown and they
+     *  are walked in the CLASS phase. That is precisely the behaviour all four walks had before, so an
+     *  unknown region is never made worse while every project/classpath region becomes exact. Demoting an
+     *  unknown type to the interface phase would be the other error, and a NEW one: it could push a real
+     *  superclass BELOW an interface and manufacture the very under-report this ordering exists to close.
+     *  A type reached THROUGH an interface stays in the interface phase whatever its own split says — a
+     *  class is never a supertype of an interface.
+     *
+     *  <p><b>RESIDUAL, scoped and named.</b> The consumer's OWN classes state their superclass and their
+     *  interfaces separately, so the shape this defect was found in — a project class extending a dep class
+     *  and implementing a dep interface — resolves exactly. What stays depth-ordered is a chain lying
+     *  ENTIRELY inside the dependency: a dep interface `default` shadowing a dep superclass body two hops
+     *  up. Closing it means teaching {@code ReportWriter#writeHierarchy} to record which entry is the
+     *  superclass — today it writes a sorted {@code TreeSet}, which throws that away. The compatible shape
+     *  is a sibling key whose value is an OBJECT ({@code Loader#loadDepHierarchy} skips any non-array
+     *  value, so an older consumer ignores it), and a sidecar without it keeps exactly today's answer. It
+     *  is a sidecar-format rung, so it wants its own measurement rather than a ride on this one. */
+    static List<String> resolutionOrder(String start, boolean useDepHierarchy) {
+        if (start == null) return List.of();
+        AnalysisContext c = ctx();
+        String key = (useDepHierarchy ? "D\t" : "P\t") + start;
+        List<String> memo = c.resolutionOrderCache.get(key);
+        if (memo != null) return memo;
+        List<String> out = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        ArrayDeque<String> classQ = new ArrayDeque<>();
+        ArrayDeque<String> ifaceQ = new ArrayDeque<>();
+        classQ.add(start);
+        while (!classQ.isEmpty() || !ifaceQ.isEmpty()) {
+            // The class phase runs to EXHAUSTION before the interface phase is entered — that ordering IS
+            // the JLS rule. (Both queues grow as the walk proceeds; a superclass found while draining the
+            // interface queue cannot exist, so this stays a two-phase drain and not an alternation.)
+            boolean inClassPhase = !classQ.isEmpty();
+            String t = (inClassPhase ? classQ : ifaceQ).poll();
+            if (t == null || t.equals("java/lang/Object") || !seen.add(t)) continue;
+            out.add(t);
+            ClassNode cn = c.byName.get(t);
+            String sup;
+            List<String> ifaces;
+            if (cn != null) {
+                // A project ClassNode: ASM gives an INTERFACE `superName = java/lang/Object`, which the
+                // Object skip above drops — so the same two fields split classes and interfaces alike and
+                // no ACC_INTERFACE test is needed.
+                sup = cn.superName;
+                ifaces = cn.interfaces == null ? List.of() : cn.interfaces;
+            } else {
+                List<String> dep = useDepHierarchy ? c.depSupers.get(t) : null;
+                if (dep != null) {
+                    // KIND UNKNOWN (see the class doc): walk them in whichever phase we are already in.
+                    (inClassPhase ? classQ : ifaceQ).addAll(dep);
+                    continue;
+                }
+                ExtSupers e = externalSupersSplit(t);
+                sup = e.superClass();
+                ifaces = e.interfaces();
+            }
+            if (sup != null) (inClassPhase ? classQ : ifaceQ).add(sup);
+            ifaceQ.addAll(ifaces);
+        }
+        List<String> result = List.copyOf(out);
+        c.resolutionOrderCache.put(key, result);
+        return result;
     }
 
     /** True iff running as a GraalVM native image. The {@code org.graalvm.nativeimage.imagecode} property
@@ -318,10 +433,20 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
     }
 
     /** The concrete `(name, desc)` declaration `internal` would invoke via inheritance: the first one
-     *  found walking its supertype chain (excludes `internal` itself — the caller checks that). */
+     *  found walking its supertype chain in JVM RESOLUTION ORDER (excludes `internal` itself — the caller
+     *  checks that).
+     *
+     *  <p>This walked {@link Candor#transSupers} — a {@code HashSet} — and returned the first
+     *  {@code declaresConcrete} hit in HASH order, so it had no notion of the class chain at all. With a
+     *  superclass body and an interface {@code default} both declaring the descriptor, which one it named
+     *  was arbitrary: `class Half extends Mid implements Trace` where `Mid extends Root` and both
+     *  `Root.go()` and `Trace.go()` are concrete resolved to {@code Trace.go} and `h.go()` read PURE,
+     *  though the JVM runs {@code Root.go}. {@link #resolutionOrder} is the fix and the shared walk. */
     static String nearestConcreteSuper(String internal, String name, String desc) {
         AnalysisContext cx = ctx();   // hoist the ThreadLocal lookup out of the per-super loop
-        for (String sup : transSupers(internal)) {
+        List<String> order = resolutionOrder(internal, false);
+        for (int i = 1; i < order.size(); i++) {          // index 0 is `internal` itself
+            String sup = order.get(i);
             ClassNode c = cx.byName.get(sup);
             if (c != null && declaresConcrete(c, name, desc)) return methodId(sup.replace('/', '.'), name, desc);
         }

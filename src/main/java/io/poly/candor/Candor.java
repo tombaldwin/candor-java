@@ -1651,7 +1651,7 @@ public class Candor {
                 // container's element override is still attributed at any explicit compareTo call,
                 // and a `new TreeSet().add(localComparable)` IS caught here via the direct arg).
                 ProvValue elem = callArg(rf, min, 0);
-                reentryEdge(id, elem, C_COMPARETO);
+                reentryEdge(id, elem, C_COMPARETO, comparesArgZero(min.owner, min.name));
             }
             // WRITER side (R16): constructing a JDK formatting facade over a CUSTOM sink drives
             // the sink's append/write when it formats. `new Formatter(Appendable)` → append;
@@ -2750,6 +2750,108 @@ public class Candor {
         return out;
     }
 
+    /** Every chained-dependency unit `internalOwner` declares under member name `name`, keyed by DESCRIPTOR.
+     *  The by-NAME reentry contracts resolve over any descriptor, so the join enumerates them; the key stays
+     *  the exact `owner.name(` prefix, so this is NEVER a bare leaf-name match across arbitrary owners.
+     *  Memoized per `owner.name`, mirroring {@link #depFnsOfType}'s cost model. */
+    static Map<String, DepFn> depFnsNamed(String internalOwner, String name) {
+        AnalysisContext c = ctx();
+        if (c.crossDeps.isEmpty() || internalOwner == null) return Map.of();
+        String key = internalOwner + "." + name;
+        Map<String, DepFn> memo = c.depFnsByOwnerName.get(key);
+        if (memo != null) return memo;
+        Map<String, DepFn> out = new LinkedHashMap<>();
+        String prefix = key + "(";       // `owner.name(desc)ret` — the '(' pins the member name exactly
+        for (Map.Entry<String, DepFn> e : c.crossDeps.entrySet())
+            if (e.getKey().startsWith(prefix)) out.put(e.getKey().substring(key.length()), e.getValue());
+        c.depFnsByOwnerName.put(key, out);
+        return out;
+    }
+
+    /** The chained-dependency records for a by-NAME reentry contract on a value of static type
+     *  {@code internal} — the by-NAME analogue of {@link #nearestDepFn}, and the residual that rung left
+     *  open. {@code toString}/{@code equals}/{@code hashCode} have ONE descriptor each, so a chained
+     *  consumer can compute the exact hash; {@code Comparable.compareTo}, {@code Appendable.append} and
+     *  {@code Writer}/{@code Reader}'s {@code write}/{@code read} are re-entered over whichever overload
+     *  the JDK sink picks, and that overload is not visible at the consumer's call site — a
+     *  {@code TreeSet.add(depItem)} names no descriptor at all. So the join takes the type's WHOLE reported
+     *  surface under that name, exactly as the in-scan {@link #reentryTargets} edges every same-named
+     *  concrete method of a project subtype.
+     *
+     *  <p>Three things keep that from becoming the leaf-name join this vein has twice been burned by:
+     *  <ul>
+     *  <li>the OWNER is pinned to the argument's declared type, which the consumer's own bytecode states —
+     *      never "any dependency declaring a method called {@code write}";
+     *  <li>the descriptor must match the JDK contract's SHAPE ({@link #contractShapeOk}), so a coincidental
+     *      {@code compareTo(String,int)} or {@code void append(..)} helper on the same type is not charged;
+     *  <li>per-OVERLOAD shadowing: a project declaration of `name+desc` wins for THAT descriptor only, so
+     *      overriding {@code append(char)} neither charges the shadowed body nor drops the inherited
+     *      {@code append(CharSequence)}. Whole-name shadowing would have been an under-report, and no
+     *      shadowing at all a fabrication.
+     *  </ul>
+     *  Nearest declaration wins per descriptor, so a dependency subclass's override beats its super's. */
+    static List<DepFn> nearestDepFnsNamed(String internal, String contract) {
+        if (internal == null) return List.of();
+        AnalysisContext c = ctx();
+        if (c.crossDeps.isEmpty()) return List.of();
+        List<DepFn> out = new ArrayList<>();
+        Set<String> settled = new HashSet<>();          // descriptors already decided (project or nearer dep)
+        Set<String> seen = new HashSet<>();
+        ArrayDeque<String> q = new ArrayDeque<>();
+        q.add(internal);
+        while (!q.isEmpty()) {
+            String t = q.poll();
+            if (t == null || !seen.add(t) || t.equals("java/lang/Object")) continue;
+            ClassNode cn = c.byName.get(t);
+            if (cn != null)                              // a PROJECT declaration wins for its own descriptor
+                for (MethodNode m : cn.methods) if (m.name.equals(contract)) settled.add(m.desc);
+            for (Map.Entry<String, DepFn> e : depFnsNamed(t, contract).entrySet()) {
+                if (!contractShapeOk(contract, e.getKey())) continue;
+                if (settled.add(e.getKey())) out.add(e.getValue());
+            }
+            q.addAll(directSupers(t));
+        }
+        return out;
+    }
+
+    /** Whether `desc` has the SHAPE the JDK declares for by-NAME contract `contract`. The name alone does
+     *  not identify the contract — a dependency type may declare its own `write`/`append`/`read` helpers —
+     *  so the descriptor must still be one the contract could be invoked through:
+     *  {@code Comparable.compareTo} takes one reference and returns int; {@code Appendable.append} returns a
+     *  reference (an override is covariant on {@code Appendable}); {@code Writer}/{@code OutputStream}'s
+     *  {@code write} returns void; {@code Reader}/{@code InputStream}'s {@code read} returns int. Every
+     *  genuine override matches by construction — an override's descriptor IS the contract's (modulo a
+     *  covariant reference return) — so this can only exclude a same-named non-contract member. */
+    static boolean contractShapeOk(String contract, String desc) {
+        if (desc == null || desc.indexOf(')') < 0) return false;
+        String ret = desc.substring(desc.indexOf(')') + 1);
+        switch (contract) {
+            case C_COMPARETO: {
+                Type[] a = Type.getArgumentTypes(desc);
+                return ret.equals("I") && a.length == 1 && a[0].getSort() == Type.OBJECT;
+            }
+            case C_APPEND: return ret.startsWith("L");
+            case C_WRITE: return ret.equals("V");
+            case C_READ: return ret.equals("I");
+            // A by-NAME contract added later and not listed here is admitted, not dropped. This switch is a
+            // DENYLIST of shapes proven not to be the contract; as an allowlist it would silently under-report
+            // whatever the next contract is, which is the cardinal sin wearing a guard's clothes.
+            default: return true;
+        }
+    }
+
+    /** Whether a {@code compareTo}-reentry sink's argument 0 IS the compared element. The ORDERING sinks
+     *  ({@code Collections.sort(List)}, {@code Arrays.sort(Object[])}, {@code list.sort(cmp)}) take a
+     *  CONTAINER (or a comparator); their element type is erased inside the generic and is not the
+     *  argument's declared type, so resolving the contract over that type answers a question nobody asked —
+     *  a container that happens to implement {@code Comparable} would be charged for an ordering the JVM
+     *  performs on its ELEMENTS. Only the sinks that take the element/key directly qualify. */
+    static boolean comparesArgZero(String owner, String name) {
+        return (owner.equals("java/util/TreeSet") && (name.equals("add") || name.equals("contains")))
+                || (owner.equals("java/util/TreeMap")
+                        && (name.equals("put") || name.equals("get") || name.equals("containsKey")));
+    }
+
     /** Whether `c` DECLARES `(name,desc)` at all — abstract included. {@link Cha#declaresConcrete} asks the
      *  narrower "is there a body here"; resolution-shadowing asks this one, because an abstract declaration
      *  still overrides an inherited default and redirects dispatch to the concrete subtypes. */
@@ -3526,6 +3628,13 @@ public class Candor {
      *  reentry of a JDK sink. No-op when the arg type is external/Object-default/non-overriding (empty CHA),
      *  so a String/Integer/pure-override argument adds nothing. */
     static void reentryEdge(String callerId, ProvValue argVal, String contract) {
+        reentryEdge(callerId, argVal, contract, true);
+    }
+
+    /** {@link #reentryEdge}, with the cross-boundary half suppressible. {@code crossBoundary=false} keeps the
+     *  in-scan CHA and skips the dependency join, for a sink whose argument is NOT provably the value whose
+     *  contract runs (see {@link #comparesArgZero}). */
+    static void reentryEdge(String callerId, ProvValue argVal, String contract, boolean crossBoundary) {
         if (argVal == null) return;
         for (String t : reentryTargets(argVal.declType, contract)) ctx().edges.get(callerId).add(t);
         // ACROSS THE SCAN BOUNDARY. `reentryTargets` ends in `chaTargets`, which scans PROJECT classes only
@@ -3538,13 +3647,16 @@ public class Candor {
         // scan in all four engines, and stayed open across it, where it also flips the gate green.
         //
         // Inheritance, not an edge: the dep's unit lives in another report, so there is no node to edge to
-        // — the same reason `inheritDepClinit` folds rather than edges. Restricted to the FIXED-descriptor
-        // contracts, whose hash is exact; the by-NAME contracts (compareTo/append/write/read) resolve over
-        // any descriptor and have no single hash to join on.
+        // — the same reason `inheritDepClinit` folds rather than edges. The FIXED-descriptor contracts
+        // (toString/hashCode/equals) have an exact hash; the by-NAME contracts (compareTo/append/write/read)
+        // resolve over ANY descriptor, so they enumerate the type's reported surface under that name
+        // instead — see {@link #nearestDepFnsNamed} for the three guards that keeps it off a leaf-name join.
+        if (!crossBoundary) return;
         String depDesc = contract.equals(C_TOSTRING) ? "()Ljava/lang/String;"
                 : contract.equals(C_HASHCODE) ? "()I"
                 : contract.equals(C_EQUALS) ? "(Ljava/lang/Object;)Z" : null;
         if (depDesc != null) inheritDepFn(callerId, nearestDepFn(argVal.declType, contract, depDesc));
+        else for (DepFn d : nearestDepFnsNamed(argVal.declType, contract)) inheritDepFn(callerId, d);
     }
 
     /** The ProvValue of argument `argPos` (0-based, in source order) of the call `min` in frame `f`, or null.

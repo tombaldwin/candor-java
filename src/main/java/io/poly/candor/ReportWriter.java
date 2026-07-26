@@ -335,8 +335,13 @@ final class ReportWriter {
                 // UNKNOWN, not silence. Dropping the broad union and publishing nothing would be the other
                 // half of the same defect: a dep report omits its pure functions, so an absent entry IS a
                 // purity claim (§2 rule 3), and twelve pure implementers do not make the thirteenth pure.
-                // Unknown is what is true of candor's state, it is what the in-scan site reports, and it
-                // carries its reason so a `deny E Unknown[dispatch]` still bites.
+                // Unknown is what is true of candor's state, and it is what the in-scan site reports.
+                // The reason travels ON THE WIRE (`unknownWhy`), for a report reader and --gate-json. It
+                // does NOT reach a chained consumer's gate: {@link DepFn} carries effects and surfaces but
+                // no reasons, so an inherited Unknown classifies as `unresolved` there and only a bare
+                // `deny Unknown` bites, not `deny Unknown[dispatch]`. Measured, not assumed, and pinned as
+                // a residual in InterfaceUnionTest — it is a pre-existing gap in the cross-dep join (it
+                // costs EVERY dep Unknown its class, reflect included), not something this rung introduced.
                 List<UnknownReason> why = List.of();
                 if (broad) {
                     inf.add(Effect.UNKNOWN);

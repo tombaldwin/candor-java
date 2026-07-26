@@ -331,8 +331,7 @@ final class ReportWriter {
                 // `chaTargets`' targets, and only the rest is news to a claimed entry.
                 EffectSet fromOthers = EffectSet.empty();
                 TreeSet<String> inv = new TreeSet<>(), hosts = new TreeSet<>(), cmds = new TreeSet<>(),
-                        paths = new TreeSet<>(), tables = new TreeSet<>();
-                boolean masked = false;
+                        paths = new TreeSet<>(), tables = new TreeSet<>(), classes = new TreeSet<>();
                 // UNKNOWN, not silence. Dropping the broad union and publishing nothing would be the other
                 // half of the same defect: a dep report omits its pure functions, so an absent entry IS a
                 // purity claim (§2 rule 3), and twelve pure implementers do not make the thirteenth pure.
@@ -352,23 +351,36 @@ final class ReportWriter {
                     }
                     inv.addAll(blindAcc.getOrDefault(impl, new TreeSet<>()).stream()
                             .filter(globalBlind::contains).collect(Collectors.toList()));
-                    hosts.addAll(hostsAcc.getOrDefault(impl, new TreeSet<>()));
+                    TreeSet<String> ih = hostsAcc.getOrDefault(impl, new TreeSet<>());
+                    hosts.addAll(ih);
                     cmds.addAll(cmdsAcc.getOrDefault(impl, new TreeSet<>()));
                     paths.addAll(pathsAcc.getOrDefault(impl, new TreeSet<>()));
                     tables.addAll(tablesAcc.getOrDefault(impl, new TreeSet<>()));
-                    masked |= incompleteAcc.getOrDefault(impl, new TreeSet<>()).contains("Net");
+                    // ⟨0.20⟩ Net destination-class, classified PER IMPLEMENTER — the fail-closed rule is
+                    // "a Net with no visible host, or a masked surface, is unknown-host", and it has to be
+                    // asked of each body separately. Merging the host SETS first and classifying afterwards
+                    // let one implementer's literal `sentry.io` fill the set and certify a sibling whose
+                    // endpoint candor cannot see as `known-telemetry`: `deny Net[unknown-host]` then passed
+                    // on a dependency that posts to a runtime-computed address. A union of hosts is not a
+                    // host. (The masked marker was already OR-ed; the hostless branch — the one an
+                    // `HttpClient.send(request,…)` or a field-held `URLConnection` takes — was not.)
+                    if (ie != null && ie.contains(Effect.NET)) {
+                        for (String h : ih) classes.add(Literals.netDestClass(h, ctx().netPartners));
+                        if (ih.isEmpty() || incompleteAcc.getOrDefault(impl, new TreeSet<>()).contains("Net"))
+                            classes.add("unknown-host");
+                    }
                 }
                 if (inf.isEmpty() && inv.isEmpty()) continue;      // pure across every implementer
                 List<String> netClass = List.of();
                 if (inf.contains(Effect.NET)) {
-                    TreeSet<String> classes = new TreeSet<>();
-                    for (String h : hosts) classes.add(Literals.netDestClass(h, ctx().netPartners));
-                    if (masked || hosts.isEmpty()) classes.add("unknown-host");
+                    // A union that reaches Net with nothing classifiable behind it (an implementer whose
+                    // own entry candor never wrote) still fails closed rather than omitting the field.
+                    if (classes.isEmpty()) classes.add("unknown-host");
                     netClass = new ArrayList<>(classes);
                 }
                 if (real != null) {
                     Effector wide = mergeUnionInto(real, inf, fromOthers, inv, hosts, cmds, paths, tables,
-                            netClass, why);
+                            netClass, why, broad);
                     if (wide != real) { effectors.set(at, wide); merged++; }
                     continue;
                 }
@@ -405,7 +417,7 @@ final class ReportWriter {
      */
     private static Effector mergeUnionInto(Effector real, EffectSet inf, EffectSet fromOthers,
             TreeSet<String> inv, TreeSet<String> hosts, TreeSet<String> cmds, TreeSet<String> paths,
-            TreeSet<String> tables, List<String> netClass, List<UnknownReason> why) {
+            TreeSet<String> tables, List<String> netClass, List<UnknownReason> why, boolean broad) {
         EffectSet wide = real.inferred().join(inf);
         TreeSet<UnknownReason> whyW = new TreeSet<>(real.unknownWhy()); whyW.addAll(why);
         TreeSet<String> invW = new TreeSet<>(real.invisible()); invW.addAll(inv);
@@ -414,6 +426,9 @@ final class ReportWriter {
         TreeSet<String> pathsW = new TreeSet<>(real.paths()); pathsW.addAll(paths);
         TreeSet<String> tablesW = new TreeSet<>(real.tables()); tablesW.addAll(tables);
         TreeSet<String> netW = new TreeSet<>(real.netClass()); netW.addAll(netClass);
+        // A body whose own Net destination is a benign literal cannot certify a dispatch we just declared
+        // unresolvable: the implementers the bound dropped may reach anywhere.
+        if (broad && wide.contains(Effect.NET)) netW.add("unknown-host");
         // `fs` means "the access kind, known AND complete" (see the fsKinds branch above). The union carries
         // no kinds, so once ANOTHER implementer contributes Fs the body's own kinds stop being the whole
         // story — drop the field rather than half-publish it (empty = unknown = the gate fails closed).

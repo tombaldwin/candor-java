@@ -7,8 +7,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static io.poly.candor.TestCompiler.compileApp;
 import static io.poly.candor.TestCompiler.rm;
 
+import com.google.gson.Gson;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -69,6 +71,44 @@ class CrossScanBoundaryTest {
 
     private static boolean env(Map<String, EffectSet> r, String m) {
         return r.getOrDefault(m, EffectSet.empty()).toNames().contains("Env");
+    }
+
+    /** Like {@link #scanChained} / {@link #scanUnchained} but returns the WRITTEN REPORT, keyed by `fn` —
+     *  the only view that shows the two things the untyped-receiver rung is about: `unknownWhy`, and
+     *  whether a function is PRESENT at all (absence from `functions` is itself a purity claim). */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Map<String, Object>> report(Map<String, String> lib, Map<String, String> app,
+            boolean chained) throws Exception {
+        Path appDir = compileApp(lib, app);
+        Path base = appDir.getParent();
+        Config saved = Candor.config;
+        try {
+            Candor.config = Config.empty();
+            if (chained) {
+                Path depReport = base.resolve("dep.json");
+                ReportWriter.writeReport(Candor.runScan(base.resolve("lib")), depReport.toString(), null);
+                Files.createDirectories(base.resolve(".candor"));
+                Files.writeString(base.resolve(".candor/config"), "deps " + depReport + "\n");
+                Candor.config = Config.forTarget(appDir);
+            }
+            Path out = base.resolve("app.json");
+            Files.deleteIfExists(out);                       // standing-bar item 7: never read a stale arm
+            ReportWriter.writeJson(Candor.runScan(appDir), out.toString());
+            Map<String, Object> root = new Gson().fromJson(Files.readString(out), Map.class);
+            Map<String, Map<String, Object>> byFn = new java.util.HashMap<>();
+            for (Map<String, Object> e : (List<Map<String, Object>>) root.get("functions"))
+                byFn.put((String) e.get("fn"), e);
+            return byFn;
+        } finally {
+            Candor.config = saved;
+            rm(base);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<String> field(Map<String, Map<String, Object>> r, String fn, String key) {
+        Map<String, Object> e = r.get(fn);
+        return e == null ? List.of() : (List<String>) e.getOrDefault(key, List.of());
     }
 
     /** A dependency whose `toString`, `equals` and `hashCode` read the environment, plus PURE siblings that
@@ -331,6 +371,123 @@ class CrossScanBoundaryTest {
             "}")));
         assertFalse(env(r, "app.S.put"),
                 "a non-functional argument must not be charged its type's surface, got " + r.get("app.S.put"));
+    }
+
+    // ---- M5: the UNTYPED CROSS-PACKAGE RECEIVER (candor-spec DEP-RECEIVER-TYPING-DESIGN.md, half 1) -----
+
+    /** A dependency whose effectful body sits behind an INTERFACE it also exports, reached through a
+     *  factory — so the call site names {@code lib/Store} and the body is keyed {@code lib/FileStore.save}.
+     *  Plus the four things the controls need: a PURE member of the same interface, a pure static, and a
+     *  pure/effectful pair of same-signature CLASS methods. */
+    private static final Map<String, String> LIB5 = Map.of(
+        "lib/Store.java", "package lib;\npublic interface Store {\n"
+            + "  void save(String s);\n  String label();\n}\n",
+        "lib/FileStore.java", "package lib;\npublic class FileStore implements Store {\n"
+            + "  public void save(String s){ System.getenv(\"HOME\"); }\n"
+            + "  public String label(){ return \"f\"; }\n}\n",
+        "lib/Factory.java", "package lib;\npublic class Factory {\n"
+            + "  public static Store build(){ return new FileStore(); }\n}\n",
+        "lib/Pure.java", "package lib;\npublic class Pure {\n"
+            + "  public static int twice(int n){ return n * 2; }\n}\n",
+        "lib/Plain.java", "package lib;\npublic class Plain {\n  public void tick(){ }\n}\n",
+        "lib/Noisy.java", "package lib;\npublic class Noisy {\n"
+            + "  public void tick(){ System.getenv(\"HOME\"); }\n}\n");
+
+    private static final String CALL_THROUGH_IFACE = String.join("\n",
+        "package app; import lib.*;",
+        "public class S {",
+        "  public void run(){ Store s = Factory.build(); s.save(\"x\"); }",
+        "}");
+
+    @Test
+    void anUntypedDependencyInterfaceReceiverDisclosesRatherThanReadingPure() throws Exception {
+        // THE DEFECT. `Store s = Factory.build(); s.save("x")` compiles to INVOKEINTERFACE on lib/Store;
+        // the dep report keys the body lib/FileStore.save, the factory is PURE so it is absent from the
+        // report entirely, and the CHA over project classes is empty — and an empty CHA emits no Unknown,
+        // only a dropped edge. The caller was therefore ABSENT from `functions` while counted in ⟨0.21⟩
+        // `analyzed`: a confident purity claim about a method that reads the environment.
+        Map<String, Map<String, Object>> r = report(LIB5, Map.of("app/S.java", CALL_THROUGH_IFACE), true);
+        assertTrue(r.containsKey("app.S.run"),
+                "the caller must not be ABSENT from the report — absence IS a purity claim");
+        assertTrue(field(r, "app.S.run", "inferred").contains("Unknown"),
+                "an unformed key across the scan boundary must disclose, got " + r.get("app.S.run"));
+        assertTrue(field(r, "app.S.run", "unknownWhy").contains("dispatch:lib.Store.save"),
+                "the disclosure must name the dispatch it could not resolve, got "
+                        + field(r, "app.S.run", "unknownWhy"));
+    }
+
+    @Test
+    void aKeyedAndMissedDependencyLookupStaysSilent() throws Exception {
+        // THE CONTROL THAT MAKES THE RUNG NARROW. A lookup whose key WAS formed and came back empty is a
+        // genuine purity claim — a dep report omits its pure functions (SPEC §2 rule 3) — so silence is
+        // the honest answer and a hedge here would be manufactured uncertainty. Two forms: an exact
+        // static key (`Pure.twice`), and an interface member whose signature has no effectful body
+        // anywhere in the chained report (`Store.label` — conjunct 5).
+        Map<String, Map<String, Object>> r = report(LIB5, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.*;",
+            "public class S {",
+            "  public int calc(){ return Pure.twice(21); }",
+            "  public String lbl(){ Store s = Factory.build(); return s.label(); }",
+            "}")), true);
+        assertFalse(field(r, "app.S.calc", "inferred").contains("Unknown"),
+                "an EXACT key that missed is a purity claim, not a gap, got " + r.get("app.S.calc"));
+        assertFalse(field(r, "app.S.lbl", "inferred").contains("Unknown"),
+                "an interface member with no effectful body in the chained report must stay silent, got "
+                        + r.get("app.S.lbl"));
+    }
+
+    @Test
+    void anUnchainedDependencyIsUnchangedAndKeepsItsInvisible() throws Exception {
+        // CONJUNCT 3, the one rust found by measuring. With NOTHING chained the κ ledger already discloses
+        // `invisible: [lib]`, so a second voice would be pure false uncertainty. It is precisely when the
+        // dep IS chained that the ledger correctly falls silent and the silence becomes the confident claim.
+        Map<String, Map<String, Object>> r = report(LIB5, Map.of("app/S.java", CALL_THROUGH_IFACE), false);
+        assertTrue(field(r, "app.S.run", "invisible").contains("lib"),
+                "the unchained arm's κ disclosure must be intact, got " + r.get("app.S.run"));
+        assertFalse(field(r, "app.S.run", "inferred").contains("Unknown"),
+                "an unchained dep must not gain a SECOND disclosure, got " + r.get("app.S.run"));
+    }
+
+    @Test
+    void aProvablyTypedDependencyReceiverIsKeyedNotDisclosed() throws Exception {
+        // CONJUNCT 2. A monomorphic `new FileStore()` receiver IS typed, so the concrete key is formed and
+        // the real effect comes back. Disclosing Unknown here instead would be a strict loss of precision.
+        Map<String, EffectSet> r = scanChained(LIB5, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.*;",
+            "public class S { public void run(){ Store s = new FileStore(); s.save(\"x\"); } }")));
+        assertTrue(env(r, "app.S.run"), "a provably-typed dep receiver keys the concrete body, got " + r.get("app.S.run"));
+        assertFalse(r.getOrDefault("app.S.run", EffectSet.empty()).toNames().contains("Unknown"),
+                "a resolved dispatch must not also be hedged, got " + r.get("app.S.run"));
+    }
+
+    @Test
+    void aProjectImplementationOfTheDependencyInterfaceAnswersTheDispatch() throws Exception {
+        // CONJUNCT 4. A non-empty CHA means the dispatch HAS a local answer; whether that answer is
+        // complete is the documented bounded-CHA trade, not this rung's business.
+        Map<String, EffectSet> r = scanChained(LIB5, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.*;",
+            "public class S {",
+            "  public static class Mine implements Store { public void save(String s){} public String label(){ return \"m\"; } }",
+            "  public void run(Store s){ s.save(\"x\"); }",
+            "}")));
+        assertFalse(r.getOrDefault("app.S.run", EffectSet.empty()).toNames().contains("Unknown"),
+                "a dispatch the project CHA resolves must not be hedged, got " + r.get("app.S.run"));
+    }
+
+    @Test
+    void anInvokevirtualOnADependencyClassIsNotDisclosed() throws Exception {
+        // CONJUNCT 1, and the reason this rung is not "unresolved receiver". `p.tick()` on a dep CLASS is
+        // INVOKEVIRTUAL: the static owner usually IS the body, so its absence from the report is a real
+        // purity claim. Every other conjunct holds here — lib is chained, no project impl, the receiver is
+        // a parameter, and lib/Noisy.tick()V IS an effectful same-signature body in the chained report —
+        // so INVOKEINTERFACE is the only thing keeping this silent. Fire on INVOKEVIRTUAL too and the
+        // trigger degenerates into the 5.4%-of-all-functions flood measured on nine chained JVM corpora.
+        Map<String, EffectSet> r = scanChained(LIB5, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.Plain;",
+            "public class S { public void run(Plain p){ p.tick(); } }")));
+        assertFalse(r.getOrDefault("app.S.run", EffectSet.empty()).toNames().contains("Unknown"),
+                "a virtual call on a dep CLASS names its own body — a miss there is a purity claim, got "
+                        + r.get("app.S.run"));
     }
 
     // ---- the no-report baseline ------------------------------------------------------------------------

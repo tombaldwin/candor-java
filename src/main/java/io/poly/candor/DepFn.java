@@ -16,4 +16,10 @@ final class DepFn {
     // resolved hosts flow across (above) but that ALSO reached a masked/runtime host must taint the consumer
     // fail-closed — its unresolved host never appears in `hosts`, so without this the consumer under-reports.
     List<String> netClass = new ArrayList<>();
+    /// ⟨0.19⟩ the dep's own `unknownWhy` tags. Without these an inherited `Unknown` reaches the consumer
+    /// with NO reason class, so it classifies as bare `unresolved` and a reason-scoped gate —
+    /// `deny Net Unknown[reflect]` — cannot bite across a scan boundary. Measured: the gate exits 1 on the
+    /// dependency itself and 0 on a consumer that chains it, which is a fail-OPEN gate in precisely the
+    /// place a consumer most needs one.
+    List<String> unknownWhy = new ArrayList<>();
 }

@@ -2272,16 +2272,12 @@ public class Candor {
             // the same claim. Disclose the one that licenses nothing (see untypedDepReceiver).
             if (inh == null) untypedDepReceiver(ctx, s, min, xop, monoRecv);
             if (inh != null) {
-                ctx.viaCross.computeIfAbsent(id, k -> EffectSet.empty()).addAll(inh.effects);
-                if (!inh.hosts.isEmpty()) ctx.hostsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.hosts);
-                if (!inh.cmds.isEmpty()) ctx.cmdsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.cmds);
-                if (!inh.paths.isEmpty()) ctx.pathsDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.paths);
-                if (!inh.tables.isEmpty()) ctx.tablesDirect.computeIfAbsent(id, k -> new TreeSet<>()).addAll(inh.tables);
-                // ⟨0.20⟩ a dep that itself reached an `unknown-host` (masked/runtime) taints the consumer
-                // fail-closed: mark its Net surface incomplete so the consumer's netClass carries unknown-host
-                // even though the dep's unresolved host never crossed into `hosts`. (Reuses the AS-EFF-008 marker.)
-                if (inh.netClass.contains("unknown-host"))
-                    ctx.surfaceIncomplete.computeIfAbsent(id, k -> new TreeSet<>()).add("Net");
+                // ONE place applies a DepFn. This block used to duplicate `inheritDepFn` line for line,
+                // and the two had already drifted: the ⟨0.19⟩ reason class was taught to one and not the
+                // other, so a reason-scoped gate worked at the task/HOF hand-off sites and was inert on the
+                // ORDINARY call — the overwhelmingly common path. Duplicated propagation logic is how a
+                // rung ends up shipped-but-inert in half the places it matters.
+                inheritDepFn(id, inh);
             }
         }
         // INHERITED / DEFAULT METHOD FROM A DEPENDENCY SUPERTYPE. The join above requires a NON-project
@@ -2588,6 +2584,16 @@ public class Candor {
         if (!d.tables.isEmpty()) c.tablesDirect.computeIfAbsent(callerId, k -> new TreeSet<>()).addAll(d.tables);
         if (d.netClass.contains("unknown-host"))
             c.surfaceIncomplete.computeIfAbsent(callerId, k -> new TreeSet<>()).add("Net");
+        // The REASON CLASS travels with the Unknown. §2's transitive rule already carries the effect; the
+        // class has to ride with it or a reason-scoped gate silently degrades to "some Unknown, cause
+        // unknown" exactly at the boundary. Only meaningful when the dep actually contributed an Unknown —
+        // a dep with reasons but no Unknown effect cannot make this caller reason-scoped.
+        if (d.effects.hasUnknown()) {
+            for (String tag : d.unknownWhy) {
+                UnknownReason r = UnknownReason.parse(tag);
+                if (r != null) c.unknownWhy.computeIfAbsent(callerId, k -> new TreeSet<>()).add(r);
+            }
+        }
     }
 
     /** The direct supertypes of `internal` in JVM RESOLUTION ORDER — superclass first, then the declared

@@ -477,18 +477,37 @@ final class ReportWriter {
      * {@code undeclared}, {@code overdeclared}, {@code calls} — are left alone; they describe the code at
      * {@code loc}, not the dispatch, and widening them would manufacture an AS-EFF-001 violation on a class
      * for an effect a DIFFERENT class performs. The entry also stays unmarked (see the bullet).
+     *
+     * <p><b>The {@code unchanged} test compares SETS, not sizes, and that is load-bearing rather than
+     * stylistic.</b> It used to compare each widened {@code TreeSet}'s size against the ORIGINAL LIST's
+     * size. Those two counts agree only when the list holds no duplicates — and if one ever did, a genuine
+     * widening could land on the same count and read as "no change": the union would be dropped and the
+     * entry would keep a narrower effect set than the dispatch reaches. A silent under-report manufactured
+     * by an equality test. Today it is NOT reachable — every list field of an ordinary entry is
+     * materialised from a sorted {@code TreeSet} in {@link #writeJson}, and {@code real} is always an
+     * ordinary entry — but that is an invariant three hundred lines away which nothing here states or
+     * checks, and a size test that is right for a reason it does not mention is the shape this vein has
+     * been burned by. Comparing the deduped BASE against the widened set removes the dependence.
+     * Pinned by {@code InterfaceUnionTest#aDuplicateInAListFieldStillWidens}, verified to catch.
      */
-    private static Effector mergeUnionInto(Effector real, EffectSet inf, EffectSet fromOthers,
+    static Effector mergeUnionInto(Effector real, EffectSet inf, EffectSet fromOthers,
             TreeSet<String> inv, TreeSet<String> hosts, TreeSet<String> cmds, TreeSet<String> paths,
             TreeSet<String> tables, List<String> netClass, List<UnknownReason> why, boolean broad) {
         EffectSet wide = real.inferred().join(inf);
-        TreeSet<UnknownReason> whyW = new TreeSet<>(real.unknownWhy()); whyW.addAll(why);
-        TreeSet<String> invW = new TreeSet<>(real.invisible()); invW.addAll(inv);
-        TreeSet<String> hostsW = new TreeSet<>(real.hosts()); hostsW.addAll(hosts);
-        TreeSet<String> cmdsW = new TreeSet<>(real.cmds()); cmdsW.addAll(cmds);
-        TreeSet<String> pathsW = new TreeSet<>(real.paths()); pathsW.addAll(paths);
-        TreeSet<String> tablesW = new TreeSet<>(real.tables()); tablesW.addAll(tables);
-        TreeSet<String> netW = new TreeSet<>(real.netClass()); netW.addAll(netClass);
+        TreeSet<UnknownReason> whyBase = new TreeSet<>(real.unknownWhy());
+        TreeSet<String> invBase = new TreeSet<>(real.invisible());
+        TreeSet<String> hostsBase = new TreeSet<>(real.hosts());
+        TreeSet<String> cmdsBase = new TreeSet<>(real.cmds());
+        TreeSet<String> pathsBase = new TreeSet<>(real.paths());
+        TreeSet<String> tablesBase = new TreeSet<>(real.tables());
+        TreeSet<String> netBase = new TreeSet<>(real.netClass());
+        TreeSet<UnknownReason> whyW = new TreeSet<>(whyBase); whyW.addAll(why);
+        TreeSet<String> invW = new TreeSet<>(invBase); invW.addAll(inv);
+        TreeSet<String> hostsW = new TreeSet<>(hostsBase); hostsW.addAll(hosts);
+        TreeSet<String> cmdsW = new TreeSet<>(cmdsBase); cmdsW.addAll(cmds);
+        TreeSet<String> pathsW = new TreeSet<>(pathsBase); pathsW.addAll(paths);
+        TreeSet<String> tablesW = new TreeSet<>(tablesBase); tablesW.addAll(tables);
+        TreeSet<String> netW = new TreeSet<>(netBase); netW.addAll(netClass);
         // A body whose own Net destination is a benign literal cannot certify a dispatch we just declared
         // unresolvable: the implementers the bound dropped may reach anywhere.
         if (broad && wide.contains(Effect.NET)) netW.add("unknown-host");
@@ -497,10 +516,10 @@ final class ReportWriter {
         // story — drop the field rather than half-publish it (empty = unknown = the gate fails closed).
         List<String> fsW = fromOthers.contains(Effect.FS) ? List.of() : real.fs();
         boolean unchanged = wide.equals(real.inferred())
-                && invW.size() == real.invisible().size() && hostsW.size() == real.hosts().size()
-                && cmdsW.size() == real.cmds().size() && pathsW.size() == real.paths().size()
-                && tablesW.size() == real.tables().size() && netW.size() == real.netClass().size()
-                && fsW.equals(real.fs()) && whyW.size() == real.unknownWhy().size();
+                && invW.equals(invBase) && hostsW.equals(hostsBase)
+                && cmdsW.equals(cmdsBase) && pathsW.equals(pathsBase)
+                && tablesW.equals(tablesBase) && netW.equals(netBase)
+                && fsW.equals(real.fs()) && whyW.equals(whyBase);
         if (unchanged) return real;
         boolean hasNet = wide.contains(Effect.NET);
         return new Effector(real.fn(), real.loc(), wide, new ArrayList<>(invW), real.direct(),

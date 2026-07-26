@@ -744,4 +744,44 @@ class InterfaceUnionTest {
         assertEquals(new java.util.HashSet<>(byHash(off).values()), new java.util.HashSet<>(onOrdinary),
                 "turning the rung on must not touch an ordinary entry");
     }
+
+    /** THE MERGE'S EQUALITY TEST, pinned directly. {@code mergeUnionInto} decides "the union adds nothing"
+     *  and returns the entry untouched; that decision used to compare each widened {@code TreeSet}'s SIZE
+     *  against the original LIST's size, and those agree only while no list holds a duplicate. Feed it one
+     *  that does and a genuine widening lands on the same count, reads as "no change", and the union is
+     *  dropped — the entry then claims a narrower effect set than the dispatch reaches, under the very hash
+     *  a chained consumer keys on. Not reachable through {@code writeJson} today (every list field there is
+     *  materialised from a sorted set), which is exactly why no corpus can show it and the unit test is the
+     *  evidence. Verified to catch: restore the size comparison and this test, and only this test, fails. */
+    @Test
+    void aDuplicateInAListFieldStillWidens() {
+        // `invisible` carries the same package twice — the shape writeJson cannot produce and nothing
+        // downstream forbids. Deduped it is size 1; as a list it is size 2.
+        io.poly.candor.model.Effector real = new io.poly.candor.model.Effector(
+                "lib.Store.save", "Store.java:1", io.poly.candor.model.EffectSet.empty(),
+                new ArrayList<>(List.of("dup.pkg", "dup.pkg")),
+                io.poly.candor.model.EffectSet.empty(), io.poly.candor.model.EffectSet.empty(),
+                io.poly.candor.model.EffectSet.empty(), io.poly.candor.model.EffectSet.empty(),
+                false, false, io.poly.candor.model.EffectorKind.FUNCTION, List.of(),
+                "lib/Store.save(Ljava/lang/String;)V", List.of(), List.of(), List.of(), List.of(),
+                List.of(), List.of(), List.of());
+        // The union contributes a genuinely NEW invisible package and nothing else.
+        io.poly.candor.model.Effector wide = ReportWriter.mergeUnionInto(real,
+                io.poly.candor.model.EffectSet.empty(), io.poly.candor.model.EffectSet.empty(),
+                new java.util.TreeSet<>(List.of("dup.pkg", "brand.new.pkg")),
+                new java.util.TreeSet<>(), new java.util.TreeSet<>(), new java.util.TreeSet<>(),
+                new java.util.TreeSet<>(), List.of(), List.of(), false);
+        assertTrue(wide.invisible().contains("brand.new.pkg"),
+                "a duplicate in the entry's own list must not make a real widening read as 'no change' — "
+                        + "the union's blind package was dropped, got " + wide.invisible());
+
+        // The other direction, so the fix is not "always widen": a union that adds NOTHING must still
+        // return the entry UNTOUCHED, which is what keeps an unflagged report byte-identical.
+        io.poly.candor.model.Effector same = ReportWriter.mergeUnionInto(real,
+                io.poly.candor.model.EffectSet.empty(), io.poly.candor.model.EffectSet.empty(),
+                new java.util.TreeSet<>(List.of("dup.pkg")),
+                new java.util.TreeSet<>(), new java.util.TreeSet<>(), new java.util.TreeSet<>(),
+                new java.util.TreeSet<>(), List.of(), List.of(), false);
+        assertTrue(same == real, "a union that adds nothing must return the SAME entry, not a copy");
+    }
 }

@@ -1920,14 +1920,40 @@ public class Candor {
             boolean urlTerminal = isUrlValueOwner(min.owner) && !min.desc.startsWith("(Ljava/lang/String;")
                     && (min.name.equals("openStream") || min.name.equals("openConnection")
                             || min.name.equals("getContent"));
+            boolean urlTerminalCapturedHost = false;
             if (urlTerminal) {
                 String h = urlTerminalHost(min, urlLocals, constLocals);
                 if (h != null) {
+                    urlTerminalCapturedHost = true;
                     ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(h);
                     dir.addAll(EffectSet.ofNames(modelHostEffects(h))); // §1 ⟨0.13⟩ Llm host-literal refinement
                 } else ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
             }
             if (hostLessOwner || runtimeStringHost)
+                ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
+            // THE GENERAL RULE, and the two above are special cases of it: a Net call that contributes NO
+            // VISIBLE HOST leaves this function's host surface incomplete. Stating it per-idiom missed the
+            // shapes where the owner IS host-bearing but the invoked overload carries no host —
+            // `HttpClient.send(request, handler)`, `Socket.connect(SocketAddress)`, `DatagramSocket.send`,
+            // a field-held `URLConnection`. Alone those were still `unknown-host` (via the empty-hosts
+            // branch, which is per FUNCTION), but combined with any literal sibling in the same method the
+            // branch stopped firing and a benign literal CERTIFIED the invisible endpoint:
+            //
+            //     new URL("https://sentry.io/x").openStream();      // literal
+            //     client.send(request, handler);                    // runtime-computed
+            //     -> netClass ["known-telemetry"]     an `allow Net known-telemetry` policy PASSED it
+            //
+            // Net destination-class is fail-closed by design (SPEC §6.2). Deriving the marker from what the
+            // call actually yielded, rather than from a list of idioms, is what makes it fail closed for
+            // the idioms nobody enumerated.
+            // Restricted to calls that TAKE ARGUMENTS. A zero-argument Net call — `socket.close()`,
+            // `conn.disconnect()`, `stream.flush()` — cannot carry a destination, so it is evidence of
+            // neither completeness nor incompleteness; excluding it is not narrowing past a reach, it is
+            // declining to read a non-signal. Without this the rule fired on the `.close()` in
+            // `new Socket("api.x.com", 443).close()` and flagged a method whose host is fully visible —
+            // caught by an existing masking test, which is the argument for running the whole suite.
+            boolean carriesArgs = !min.desc.startsWith("()");
+            if (carriesArgs && !capturedHostHere && !urlTerminalCapturedHost)
                 ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
         }
         // Table literals from THIS SQL-bearing call's OWN argument (the executed/prepared SQL) —

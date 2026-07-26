@@ -73,4 +73,40 @@ class NetSurfaceMaskingTest {
                     "the runtime-host leaf is flagged incomplete");
         } finally { rm(cls.getParent()); }
     }
+
+    /** A LITERAL host must not certify a sibling call whose endpoint is runtime-computed.
+     *
+     *  Net destination-class is fail-closed by design (SPEC §6.2), and it was failing OPEN here: the
+     *  "no visible host → unknown-host" branch is per FUNCTION, so a method combining an inline-literal URL
+     *  with a hostless idiom (`HttpClient.send(request, handler)`) reported `["known-telemetry"]` and an
+     *  `allow Net known-telemetry` policy passed a runtime-computed HTTP call. The masking rule was stated
+     *  per-idiom, and this is a shape nobody enumerated — the owner IS host-bearing, the overload just
+     *  carries no host.
+     *
+     *  Both directions are asserted: the mixed method must fail closed, and a method with ONLY the literal
+     *  must still CERTIFY. Widening the first without the second would trade a fail-open for the false
+     *  uncertainty that makes the class useless. */
+    @Test
+    void aLiteralHostDoesNotCertifyAHostlessSibling() throws Exception {
+        Path cls = compile(Map.of("app/N.java", String.join("\n",
+            "package app;",
+            "import java.net.*;",
+            "import java.net.http.*;",
+            "public class N {",
+            "  public void lit() throws Exception { new URL(\"https://sentry.io/x\").openStream().close(); }",
+            "  public void both(HttpClient c, HttpRequest r) throws Exception {",
+            "    new URL(\"https://sentry.io/x\").openStream().close();",
+            "    c.send(r, HttpResponse.BodyHandlers.ofString());",
+            "  }",
+            "}")));
+        try {
+            Candor.runScan(cls);
+            assertTrue(AnalysisState.ctx().surfaceIncomplete.getOrDefault("app.N.both", new TreeSet<>()).contains("Net"),
+                    "a Net call contributing NO visible host leaves the host surface incomplete, even when a "
+                    + "literal sibling in the same method did contribute one");
+            assertFalse(AnalysisState.ctx().surfaceIncomplete.getOrDefault("app.N.lit", new TreeSet<>()).contains("Net"),
+                    "a method whose ONLY Net call carries an inline literal host stays complete — the fix must "
+                    + "not trade a fail-open for false uncertainty");
+        } finally { rm(cls.getParent()); }
+    }
 }

@@ -5,7 +5,13 @@
 #   CANDOR_JAR=/path/to/candor-java-0.23.1-all.jar  bash run_frozen.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-JAR="${CANDOR_JAR:-$(ls -t "$HERE"/../../build/libs/*-all.jar 2>/dev/null | head -1)}"
+# Default to the ARCHIVED copy, never to a build output. The archive used to live in `build/libs`, which is
+# a gradle target: eight ordinary development commits silently rebuilt over it, so a reproducer at HEAD
+# could no longer meet the hash gate below. It now lives where no build can write to it.
+# (`ls -t … | head -1` is itself a hazard — with two jars present it picks by mtime, which is how a stale
+# binary produced two false negatives during the scan-boundary work. Kept only as a fallback.)
+JAR="${CANDOR_JAR:-$HERE/../corpus-confirmatory/frozen/candor-java-0.23.1-all.jar}"
+[ -f "$JAR" ] || JAR="$(ls -t "$HERE"/../../build/libs/*-all.jar 2>/dev/null | head -1)"
 EXPECT="bf572eb32db56ef419c8ad7d8f118cfe225f859320252c6969299434263e10d8"
 sha() { if command -v sha256sum >/dev/null; then sha256sum "$1"|cut -d' ' -f1; else shasum -a 256 "$1"|cut -d' ' -f1; fi; }
 GOT="$(sha "$JAR")"

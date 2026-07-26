@@ -3639,12 +3639,43 @@ public class Candor {
                 || contract.equals(C_READ)) {
             Set<String> out = new LinkedHashSet<>();
             for (String cName : ctx().subtypeIndex.getOrDefault(declType, List.of())) {
-                ClassNode c = ctx().byName.get(cName);
-                if (c == null) continue;
-                for (MethodNode m : c.methods)
-                    if (m.name.equals(contract) && (m.access & Opcodes.ACC_ABSTRACT) == 0
-                            && (m.access & Opcodes.ACC_SYNTHETIC) == 0) // skip bridges; edge the real impl(s)
-                        out.add(methodId(c.name.replace('/', '.'), m.name, m.desc));
+                if (ctx().byName.get(cName) == null) continue;
+                // Each subtype contributes its OWN declarations AND the ones it INHERITS. Scanning only
+                // `c.methods` fanned exclusively DOWN the subtype index, so a class overriding one overload
+                // and inheriting the effectful other was silent: `new Formatter(half)` where
+                // `Half extends Base` overrides `append(char)` still runs `Base.append(CharSequence)`, and
+                // that body was never edged. (The fixed-descriptor branch below has always walked UP, via
+                // `chaTargets` -> `nearestConcreteSuper`; only the by-NAME branch was one-directional. Found
+                // when the CHAINED arm — which walks the dependency's supers — came out strictly MORE
+                // complete than the in-scan control, which is the wrong way round.)
+                //
+                // Shadowing is per OVERLOAD, nearest-first, exactly as the cross-boundary
+                // `nearestDepFnsNamed` resolves it: a project override of `append(char)` replaces THAT
+                // descriptor and nothing else. Per NAME would drop the inherited overload (an under-report);
+                // not at all would charge the replaced body (a fabrication). An ABSTRACT declaration settles
+                // its descriptor without contributing — it overrides what is above it and redirects dispatch
+                // to the concrete subtypes, which the subtype index enumerates separately.
+                Set<String> settled = new HashSet<>();
+                Set<String> seen = new HashSet<>();
+                ArrayDeque<String> q = new ArrayDeque<>();
+                q.add(cName);
+                while (!q.isEmpty()) {
+                    String t = q.poll();
+                    if (!seen.add(t)) continue;
+                    ClassNode c = ctx().byName.get(t);
+                    // An EXTERNAL super ends this branch of the walk: `byName` holds project classes alone,
+                    // and a JDK/library body is not a project node to edge to — the same bound the
+                    // single-class scan had, just reached one level at a time.
+                    if (c == null) continue;
+                    for (MethodNode m : c.methods) {
+                        if (!m.name.equals(contract) || (m.access & Opcodes.ACC_SYNTHETIC) != 0)
+                            continue;                                 // skip bridges; edge the real impl(s)
+                        if (!settled.add(m.desc)) continue;           // a nearer declaration won
+                        if ((m.access & Opcodes.ACC_ABSTRACT) == 0)
+                            out.add(methodId(c.name.replace('/', '.'), m.name, m.desc));
+                    }
+                    q.addAll(directSupers(t));
+                }
             }
             return new ArrayList<>(out);
         }

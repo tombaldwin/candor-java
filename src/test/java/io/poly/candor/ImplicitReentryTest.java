@@ -270,4 +270,42 @@ class ImplicitReentryTest {
                 "a level method with no Object argument is not a stringify sink: " + r.get("app.Use.logsPlainString"));
         } finally { rm(cls); }
     }
+
+    // ---- INHERITED BODIES: the by-NAME reentry resolver fans only DOWN the subtype index ---------------
+    // `subtypeIndex[declType]` gives the subtypes-or-self; the resolver then scans each one's OWN declared
+    // methods. A subtype that overrides ONE overload and inherits the effectful other is therefore missed
+    // in a SINGLE TREE — the fixed-descriptor branch goes through `chaTargets`, which walks UP via
+    // `nearestConcreteSuper`, and the by-NAME branch never did. Found because the CHAINED arm (which walks
+    // the dep's supers) became strictly more complete than the in-scan control, which is the wrong way round.
+    private static Path compileInherited() throws Exception {
+        return compile(Map.of("app/H.java", String.join("\n",
+            "package app;",
+            "import java.io.*; import java.util.*;",
+            "class Base implements Appendable {",
+            "  public Appendable append(CharSequence c){ try{ new FileOutputStream(\"/tmp/bs\").write(1);}catch(Exception e){} return this; }",
+            "  public Appendable append(CharSequence c,int s,int e){ return this; }",
+            "  public Appendable append(char c){ return this; } }",
+            // overrides ONLY the char overload — append(CharSequence) is INHERITED and still runs
+            "class Half extends Base { public Appendable append(char c){ return this; } }",
+            // overrides the EFFECTFUL overload with a pure body — the shadowed body must NOT be charged
+            "class Shadow extends Base { public Appendable append(CharSequence c){ return this; } }",
+            "public class H {",
+            "  void viaHalf(){ Half h = new Half(); new Formatter(h).format(\"hi %s\", 1); }",
+            "  void viaShadow(){ Shadow s = new Shadow(); new Formatter(s).format(\"hi %s\", 1); }",
+            "  void viaBase(){ Base b = new Base(); new Formatter(b).format(\"hi %s\", 1); } }")));
+    }
+
+    @Test void byNameReentryReachesAnInheritedBody() throws Exception {
+        Path cls = compileInherited();
+        try {
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(fs(r, "app.H.viaBase"), "the control: the declaring class itself must carry Fs");
+            assertTrue(fs(r, "app.H.viaHalf"),
+                "Half overrides append(char) and INHERITS the effectful append(CharSequence), which the "
+                    + "Formatter still runs — its Fs must be charged: " + r.get("app.H.viaHalf"));
+            assertFalse(fs(r, "app.H.viaShadow"),
+                "Shadow REPLACES append(CharSequence) with a pure body — charging the shadowed one is a "
+                    + "fabrication: " + r.get("app.H.viaShadow"));
+        } finally { rm(cls.getParent()); }
+    }
 }

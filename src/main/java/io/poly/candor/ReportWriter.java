@@ -164,6 +164,10 @@ final class ReportWriter {
                             calls,
                             fsKinds, hosts, cmds, paths, tables, netClass));
                 });
+        // ⟨0.23, gated⟩ the synthetic INTERFACE-UNION entries. Appended last so the ordinary entries above
+        // are untouched; a no-op unless CANDOR_WORKSPACE_CHAIN is set.
+        appendInterfaceUnions(effectors, inferred, blindAcc, globalBlind,
+                hostsAcc, cmdsAcc, pathsAcc, tablesAcc, incompleteAcc);
         // v0.2 self-describing envelope (candor-spec §2): a provenance header + the entries. Readers
         // still accept the legacy v0.1 bare array (see loadBaseline) during migration.
         String[] prov = provenance();
@@ -206,6 +210,127 @@ final class ReportWriter {
             System.err.println("candor-java: wrote " + effectors.size() + " entries (@" + prov[0] + ") to " + out);
         }
         reportUnknownSources();
+    }
+
+    /** ⟨0.23⟩ Is the workspace-chain rung ON? PRESENCE of {@code CANDOR_WORKSPACE_CHAIN} in the environment,
+     *  matching candor-scan (`env::var_os(..).is_some()`) and candor-swift. A package-private field rather
+     *  than a direct read so an in-process test can drive both arms; {@link #workspaceChainOverride} is null
+     *  in every production path, so the env var is the only thing that turns the rung on. */
+    static Boolean workspaceChainOverride = null;
+
+    static boolean workspaceChain() {
+        return workspaceChainOverride != null ? workspaceChainOverride
+                : System.getenv("CANDOR_WORKSPACE_CHAIN") != null;
+    }
+
+    /**
+     * ⟨0.23, gated on {@code CANDOR_WORKSPACE_CHAIN}⟩ INTERFACE-CHA UNION ENTRIES — candor-java joining the
+     * rung candor-scan / candor-ts / candor-swift already ship (SPEC §2, WORKSPACE-CHAINING-DESIGN.md,
+     * conformance PART 18).
+     *
+     * <p>A consumer that calls {@code s.save()} on a value typed by an interface declared HERE compiles to
+     * INVOKEINTERFACE with THIS package's interface as the static owner, so it keys the chain lookup on
+     * {@code lib/Store.save(…)} — a declaration with no body, hashed under no entry. candor-java was marked
+     * N/A for PART 18 because "whole-classpath bytecode resolves cross-module dispatch natively", which is
+     * true of an UNCHAINED whole-classpath scan and false across the scan boundary, where the implementer is
+     * in the other tree (candor-spec DEP-RECEIVER-TYPING-DESIGN.md, "Which engine needs WHICH field").
+     *
+     * <p>The consumer side needed no change at all: this engine keys report entries by
+     * {@code owner.name+desc}, which is exactly the key {@code crossDepJoin} forms for an INVOKEINTERFACE
+     * site — so a union entry lands where the join already looks. Only the PRODUCER was missing.
+     *
+     * <p>Emitted per interface method, with effects = the union over {@link Cha#chaTargets} — the very CHA
+     * universe in-scan dispatch uses, so the union can only name bodies this scan actually analysed. Bounds,
+     * each pinned by a test in {@code InterfaceUnionTest} and each verified to CATCH by mutation:
+     * <ul>
+     *   <li>Union EMPTY (no implementer at all, or every implementer pure, and nothing invisible) → no entry:
+     *       a dep report omits its pure functions, and that silence IS the purity claim (§2 rule 3). This is
+     *       also what makes "an interface nothing implements publishes nothing" fall out — {@code chaTargets}
+     *       returns nothing to union.
+     *   <li>A REAL entry already claims the hash (an effectful {@code default} method) → no entry; a
+     *       synthetic entry must never displace a body candor actually analysed. Residual, asserted in the
+     *       test rather than papered over: an override's effect then does not reach that hash.
+     *   <li>{@code static} / {@code private} / synthetic / {@code <clinit>} interface members are skipped.
+     *       Not cosmetic: a PURE {@code static} interface method has no real entry to claim its hash, and an
+     *       implementer that happens to declare the same {@code name+desc} as an INSTANCE method would be
+     *       unioned onto it — charging a consumer's INVOKESTATIC the effects of a body it never runs.
+     * </ul>
+     *
+     * <p>An "at least one local subtype" guard was written here first and then REMOVED: measured across
+     * twelve real jars it changed not one entry, and the single shape where it did fire — an interface that
+     * re-abstracts a method whose only body is a super-interface {@code default} — is a genuinely runnable
+     * local body that an external implementer inherits, so suppressing it was an under-report, not a bound.
+     *
+     * <p>Sound over-approximation, in the same sense as in-scan bounded CHA: a consumer holding the PURE
+     * implementer is charged the effectful sibling's effect, because nothing types the receiver more
+     * precisely. What it replaces is not silence — half 1 ({@link Candor#untypedDepReceiver}) already
+     * discloses {@code Unknown[dispatch:…]} at that site — so the rung's effect on a chained consumer is
+     * {@code Unknown} → the precise union.
+     *
+     * <p>Two things a union entry deliberately does NOT carry. The literal surfaces it DOES carry
+     * ({@code hosts}/{@code cmds}/{@code paths}/{@code tables}/{@code netClass}) are exactly the ones
+     * {@code crossDepJoin} inherits, so the join is as informative through a union as through a real entry;
+     * {@code fs} (the read/write kind) is not among them and is omitted rather than half-published. And a
+     * union entry is NOT in ⟨0.21⟩ {@code analyzed} — it is not a unit anyone analysed — so under this flag
+     * {@code analyzed.count − |functions|} undercounts the pure set by the number of marked entries. That
+     * is what the marker is for; a consumer computing the pure count subtracts them.
+     */
+    private static void appendInterfaceUnions(List<Effector> effectors, Map<String, EffectSet> inferred,
+            Map<String, TreeSet<String>> blindAcc, Set<String> globalBlind,
+            Map<String, TreeSet<String>> hostsAcc, Map<String, TreeSet<String>> cmdsAcc,
+            Map<String, TreeSet<String>> pathsAcc, Map<String, TreeSet<String>> tablesAcc,
+            Map<String, TreeSet<String>> incompleteAcc) {
+        if (!workspaceChain()) return;
+        Set<String> claimed = effectors.stream().map(Effector::hash).collect(Collectors.toSet());
+        List<Effector> unions = new ArrayList<>();
+        for (ClassNode cn : ctx().ALL) {
+            if ((cn.access & org.objectweb.asm.Opcodes.ACC_INTERFACE) == 0) continue;
+            for (MethodNode mn : cn.methods) {
+                if ((mn.access & (org.objectweb.asm.Opcodes.ACC_STATIC | org.objectweb.asm.Opcodes.ACC_PRIVATE
+                        | org.objectweb.asm.Opcodes.ACC_SYNTHETIC)) != 0) continue;
+                if (mn.name.startsWith("<")) continue;
+                String hash = cn.name + "." + mn.name + mn.desc;   // the exact key crossDepJoin forms
+                if (!claimed.add(hash)) continue;                  // a real entry already claims it
+                EffectSet inf = EffectSet.empty();
+                TreeSet<String> inv = new TreeSet<>(), hosts = new TreeSet<>(), cmds = new TreeSet<>(),
+                        paths = new TreeSet<>(), tables = new TreeSet<>();
+                boolean masked = false;
+                for (String impl : chaTargets(cn.name, mn.name, mn.desc)) {
+                    EffectSet ie = inferred.get(impl);
+                    if (ie != null) inf.addAll(ie);
+                    inv.addAll(blindAcc.getOrDefault(impl, new TreeSet<>()).stream()
+                            .filter(globalBlind::contains).collect(Collectors.toList()));
+                    hosts.addAll(hostsAcc.getOrDefault(impl, new TreeSet<>()));
+                    cmds.addAll(cmdsAcc.getOrDefault(impl, new TreeSet<>()));
+                    paths.addAll(pathsAcc.getOrDefault(impl, new TreeSet<>()));
+                    tables.addAll(tablesAcc.getOrDefault(impl, new TreeSet<>()));
+                    masked |= incompleteAcc.getOrDefault(impl, new TreeSet<>()).contains("Net");
+                }
+                if (inf.isEmpty() && inv.isEmpty()) continue;      // pure across every implementer
+                List<String> netClass = List.of();
+                if (inf.contains(Effect.NET)) {
+                    TreeSet<String> classes = new TreeSet<>();
+                    for (String h : hosts) classes.add(Literals.netDestClass(h, ctx().netPartners));
+                    if (masked || hosts.isEmpty()) classes.add("unknown-host");
+                    netClass = new ArrayList<>(classes);
+                }
+                unions.add(new Effector(
+                        cn.name.replace('/', '.') + "." + mn.name, "", inf, new ArrayList<>(inv),
+                        EffectSet.empty(), EffectSet.empty(), EffectSet.empty(), EffectSet.empty(),
+                        false, inf.hasUnknown(), EffectorKind.FUNCTION, List.of(), hash, List.of(),
+                        List.of(),
+                        inf.contains(Effect.NET) ? new ArrayList<>(hosts) : List.of(),
+                        inf.contains(Effect.EXEC) ? new ArrayList<>(cmds) : List.of(),
+                        inf.contains(Effect.FS) ? new ArrayList<>(paths) : List.of(),
+                        inf.contains(Effect.DB) ? new ArrayList<>(tables) : List.of(),
+                        netClass, true));
+            }
+        }
+        if (unions.isEmpty()) return;
+        unions.sort(Comparator.comparing(Effector::hash));
+        effectors.addAll(unions);
+        System.err.println("candor-java: emitted " + unions.size()
+                + " interface-CHA union entries (workspace chain)");
     }
 
     /** ⟨0.21⟩ An opaque, within-engine-stable fingerprint of a sorted qual set — FNV-1a 64-bit over the

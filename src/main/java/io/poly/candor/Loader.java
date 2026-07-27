@@ -325,6 +325,24 @@ final class Loader {
                                 if (m.has(pair.getKey()) && m.get(pair.getKey()).isJsonArray())
                                     for (JsonElement x : m.getAsJsonArray(pair.getKey()))
                                         pair.getValue().add(x.getAsString());
+                            // §2 `calls` + `fn`: the dependency's OWN effect-relevant call graph. A dep
+                            // entry whose Unknown was INHERITED carries no `unknownWhy` of its own (the
+                            // field is direct-by-contract), so the reason class died one hop past where
+                            // ⟨0.19⟩'s boundary fix looked. The chain is on the wire already — record it
+                            // so {@link Candor#depTransitiveWhy} can walk it. Keyed by the report QUAL,
+                            // which is what `calls` names.
+                            if (m.has("fn") && m.get("fn").isJsonPrimitive()) {
+                                de.fn = m.get("fn").getAsString();
+                                if (!de.unknownWhy.isEmpty())
+                                    ctx().depWhyByFn.computeIfAbsent(de.fn, k -> new ArrayList<>())
+                                            .addAll(de.unknownWhy);
+                                if (m.has("calls") && m.get("calls").isJsonArray()) {
+                                    List<String> cs = ctx().depCallsByFn
+                                            .computeIfAbsent(de.fn, k -> new ArrayList<>());
+                                    for (JsonElement x : m.getAsJsonArray("calls"))
+                                        if (x.isJsonPrimitive()) cs.add(x.getAsString());
+                                }
+                            }
                         }
                         if (!de.effects.isEmpty()) ctx().crossDeps.put(h, de);
                         // Entry-level coverage fallback (reports with no package field): the hash's

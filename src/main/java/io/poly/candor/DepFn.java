@@ -22,4 +22,9 @@ final class DepFn {
     /// dependency itself and 0 on a consumer that chains it, which is a fail-OPEN gate in precisely the
     /// place a consumer most needs one.
     List<String> unknownWhy = new ArrayList<>();
+    /// The report QUAL this entry was written under (§2 `fn`), null for a report that omits it. It is the
+    /// key the dependency's own `calls` array names, and so the only handle on the dep's INTERNAL call
+    /// graph — which is where an INHERITED Unknown's reason lives, `unknownWhy` being direct-by-contract.
+    /// See {@link Candor#depTransitiveWhy}.
+    String fn;
 }

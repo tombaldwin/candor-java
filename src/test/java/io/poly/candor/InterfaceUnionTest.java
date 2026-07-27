@@ -624,6 +624,120 @@ class InterfaceUnionTest {
                         + r.get("lib/Store.label()Ljava/lang/String;"));
     }
 
+    /**
+     * THE OPEN ROW, pinned in BOTH directions with the measurement that refused the obvious fix.
+     *
+     * <p>A CONCRETE dep method overridden effectfully answers only for its OWN body across the boundary,
+     * where IN-SCAN the same site is charged the CHA union — {@code 48a5f18}'s "the engine contradicts
+     * itself across the scan boundary" argument one rung down. Unlike the abstract case the key IS
+     * answerable and the answer IS true, so this is a NARROWER question than a purity claim, not a false
+     * one. This test asserts TODAY's behaviour on both arms; if the row is ever closed, the first
+     * assertion FLIPS (delete it and assert {@code ["Env"]}) and the second must NOT.
+     *
+     * <p><b>The obvious producer-side fix — admit concrete overridable members to
+     * {@link ReportWriter#appendInterfaceUnions}, publishing the union under the base's own key — was
+     * written, measured and REFUSED.</b> It is not a bound that is missing; it is the wrong KEY. Publishing
+     * under {@code lib/Store.label()…} answers for every site that forms that key, and a {@code super.m()}
+     * call forms exactly the same one — while INVOKESPECIAL by JVM semantics runs the base body and can
+     * never dispatch to an override. That is the {@code app.Sub.label} arm below, and on real code it is
+     * where nearly all the traffic is:
+     *
+     * <ul>
+     *   <li>PRECONDITION, 11 real dep jars: 12 242 concrete overridable members, 861 (7.0%) have any
+     *       override in the dependency at all, and <b>76</b> have one carrying an effect the base does not
+     *       — 35 of them under a key with no entry, i.e. a live purity claim.
+     *   <li>CONSUMER A/B, 7 chained real jar pairs / 10 914 analysed functions: 22 functions change, 0
+     *       lose anything. <b>12 are charged through a direct {@code invokespecial}</b> to the widened base
+     *       ({@code ResponseEntityProxy.getContent} → {@code HttpEntityWrapper.getContent},
+     *       {@code WithLayoutListAppender.start} → {@code AppenderBase.start}, four logback converters via
+     *       a project superclass), and 6 more are transitive callers of those — every one a fabrication.
+     *   <li>THE SAME UNION UNDER A KEY ONLY A VIRTUAL SITE FORMS ({@code owner.<dispatch>name+desc}, joined
+     *       when the opcode is INVOKEVIRTUAL/INVOKEINTERFACE) changes <b>4</b> functions on the same seven
+     *       pairs, 0 losses: spring's {@code DefaultListableBeanFactory.getPriority} {@code []} →
+     *       {@code [Fs,Log,Unknown]} through {@code OrderComparator.getPriority}, which
+     *       {@code AnnotationAwareOrderComparator} really does override — the row's one traced real reach —
+     *       plus its caller, and a {@code BasicFuture.get} pair that is the same over-approximation the
+     *       in-scan CHA already makes.
+     * </ul>
+     *
+     * <p>So the treatment that closed the ABSTRACT row is structurally unavailable here. That one was free
+     * because an abstract member's key is unanswerable AND unreachable by {@code super} — you cannot
+     * {@code super}-call an abstract method, so no INVOKESPECIAL can ever land on it. Both properties fail
+     * for a concrete member. What remains is a DIFFERENT rung: a separate union key plus an opcode-gated
+     * consumer lookup — a new resolution path in the consumer (which {@code 333cf10} needed none of) and a
+     * synthetic entry shape no other engine produces or consumes, i.e. a four-way question rather than a
+     * unilateral edit, for 4 functions in 10 914.
+     */
+    /** The consumer tree for both arms of the row: one POLYMORPHIC site and one {@code super} call, which
+     *  form the SAME key {@code lib/Store.label()…} and want opposite answers. */
+    private static Map<String, String> concreteRowApp() {
+        Map<String, String> app = new java.util.HashMap<>();
+        // THE ROW: a POLYMORPHIC site. The runtime receiver may be `FileStore`, whose `label()` reads Env.
+        app.put("app/S.java", "package app; import lib.*;\n"
+                + "public class S { public void viaDispatch(Store s) { s.label(); } }\n");
+        // THE SECOND DIRECTION: `super.label()` compiles to INVOKESPECIAL on the same key and runs Store's
+        // own body — never an override.
+        app.put("app/Sub.java", "package app; import lib.*;\n"
+                + "public class Sub extends Store {\n"
+                + "  public void save(String s) {}\n"
+                + "  public String label() { return super.label(); }\n}\n");
+        return app;
+    }
+
+    @Test
+    void aConcreteDepMethodOverriddenEffectfullyStaysNARROWAcrossTheBoundary() throws Exception {
+        Map<String, Map<String, Object>> after = chainedApp(absLib(), concreteRowApp(), true);
+        assertNull(after.get("app.S.viaDispatch"),
+                "TODAY the concrete-method row is narrow across the boundary. If this now has effects the "
+                        + "row was closed — flip this assertion to assertEquals([\"Env\"]); got "
+                        + after.get("app.S.viaDispatch"));
+        // THE SINGLE-TREE CONTROL: in one tree candor already charges the dispatch site the CHA union, so
+        // the narrowing IS a boundary effect and not a general limitation.
+        Path oneTree = TestCompiler.compile(merge(absLib(), concreteRowApp()));
+        Config saved = Candor.config;
+        try {
+            Candor.config = Config.empty();
+            Map<String, io.poly.candor.model.EffectSet> one = Candor.runScan(oneTree);
+            assertTrue(one.get("app.S.viaDispatch").toNames().contains("Env"),
+                    "the single-tree control must charge the union, or this is a limitation and not a "
+                            + "boundary effect; got " + one.get("app.S.viaDispatch").toNames());
+        } finally {
+            Candor.config = saved;
+            rm(oneTree.getParent());
+        }
+    }
+
+    /**
+     * THE SECOND FIXTURE, and it is a separate test on purpose: run inside the row's test it would be
+     * shadowed by the flipping assertion and could never be observed (standing-bar item 8c). It must fail
+     * on its own, under its own name, and it must NEVER be made to pass by closing the row.
+     *
+     * <p>{@code super.label()} is INVOKESPECIAL on {@code lib/Store.label()…} — the SAME key the polymorphic
+     * site forms — and the JVM runs Store's own body there, never an override. Twelve of the twenty-two
+     * consumer changes the base-key treatment produced on real jar pairs were exactly this shape.
+     */
+    @Test
+    void aSuperCallToAConcreteDepMethodIsNeverChargedItsOverrides() throws Exception {
+        Map<String, Map<String, Object>> after = chainedApp(absLib(), concreteRowApp(), true);
+        assertNull(after.get("app.Sub.label"),
+                "a super.label() call runs lib/Store.label EXACTLY — charging it the union over Store's "
+                        + "overrides is a FABRICATION and must never be made true; got "
+                        + after.get("app.Sub.label"));
+        Path oneTree = TestCompiler.compile(merge(absLib(), concreteRowApp()));
+        Config saved = Candor.config;
+        try {
+            Candor.config = Config.empty();
+            Map<String, io.poly.candor.model.EffectSet> one = Candor.runScan(oneTree);
+            assertFalse(one.get("app.Sub.label").toNames().contains("Env"),
+                    "even in ONE tree a super call is not charged the override, which is what makes this a "
+                            + "requirement rather than an artefact of the split; got "
+                            + one.get("app.Sub.label").toNames());
+        } finally {
+            Candor.config = saved;
+            rm(oneTree.getParent());
+        }
+    }
+
     @Test
     void theAbstractDepClassRowResolvesAcrossTheBoundaryAndMatchesItsSingleTreeControl() throws Exception {
         // THE ROW. Both the factory-bound receiver (the queue's exact wording) and the parameter-typed one.

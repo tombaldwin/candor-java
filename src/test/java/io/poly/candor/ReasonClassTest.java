@@ -63,4 +63,20 @@ class ReasonClassTest {
                     "of(Kind) must match classify(format()) for " + k + " (" + ur.format() + ")");
         }
     }
+
+    /** A FOREIGN engine's token in the normative {@code kind:detail} form must classify by its KIND.
+     *  candor-swift emits {@code dynamicMemberLookup:<root>.<prop>} and never the bare token, so the
+     *  equality test this replaced could not match a real one — the token fell through to UNRESOLVED, and
+     *  because both classes sit in the `dynamic` set a bare {@code deny Unknown} still fired while the
+     *  class-targeted {@code deny Unknown[reflect]} silently did not. That is the form in which the reason
+     *  ratchet is actually adopted, so the weakening is exactly where it matters least visibly.
+     *
+     *  <p>The BARE row stays: it is what the equality test covered, and dropping it while widening would
+     *  be a narrowing dressed as a fix. Both must classify REFLECT. */
+    @Test void aForeignReasonTokenClassifiesByKindNotByExactString() {
+        assertEquals(ReasonClass.REFLECT, ReasonClass.classify("dynamicMemberLookup:Config.host"),
+                "swift's real emitted form must be REFLECT, not UNRESOLVED");
+        assertEquals(ReasonClass.REFLECT, ReasonClass.classify("dynamicMemberLookup"),
+                "the bare token the old equality test covered must still be REFLECT");
+    }
 }

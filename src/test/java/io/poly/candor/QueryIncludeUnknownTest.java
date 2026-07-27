@@ -94,8 +94,14 @@ class QueryIncludeUnknownTest {
     /** The frontier entries as `fn -> viaDispatchOn`, for one run of the query. */
     private static Map<String, String> frontier(Map<String, Set<String>> broad,
                                                 Map<String, List<String>> hier) {
+        return frontier(graph(), broad, hier);
+    }
+
+    private static Map<String, String> frontier(Map<String, List<String>> cg,
+                                                Map<String, Set<String>> broad,
+                                                Map<String, List<String>> hier) {
         String out = capture(() ->
-                Query.callersViaCallgraph(graph(), "app.Sink.touch", true, broad, hier));
+                Query.callersViaCallgraph(cg, "app.Sink.touch", true, broad, hier));
         Map<String, String> m = new TreeMap<>();
         for (var el : JsonParser.parseString(out).getAsJsonObject()
                 .getAsJsonArray("possibleViaUnknownDispatch"))
@@ -144,17 +150,49 @@ class QueryIncludeUnknownTest {
         }
     }
 
-    @Test void dotFreeDetailCollidingWithAReacherSimpleNameIsStillJustTheRawDetail() {
-        // THE FALSE-POSITIVE LANE, checked rather than reasoned away: `simpleMethod`/`declaringType` BOTH
-        // fall back to the WHOLE string when there is no dot, so a dot-free detail that happens to equal a
-        // confirmed reacher's simple method name (`run`, from `app.Impl.run`) used to match by accident —
-        // disclosed in the no-hierarchy arm, dropped in the hierarchy arm (isSubtypeOf("app.Impl","run") is
-        // false). The structural dot-free branch runs BEFORE that lookup, so the accidental lane is no longer
-        // reachable: both arms now disclose it, labelled with the raw detail, exactly like any other dot-free
-        // detail. No new false positive — the label was already the raw string — and no arm-dependent answer.
+    @Test void dotFreeDetailCollidingWithAReacherSimpleNameIsDisclosedIDENTICALLYInBothArms() {
+        // SPEC §3.1 ⟨0.24⟩ hazard 2, the ARM-DEPENDENCE — the shape that makes the short-circuit a MUST
+        // rather than a style note, and the reason it must run BEFORE the owner/member split.
+        // `simpleMethod`/`declaringType` BOTH fall back to the WHOLE string when there is no dot, so the
+        // override test degenerates into string equality between a reason detail and a function name.
+        // MEASURED BEFORE THE FIX on `dispatch:run` against the confirmed reacher `app.Impl.run`:
+        //   no-hierarchy arm  -> DISCLOSED  (byMethod.get("run") hits, and with no sidecar that is enough)
+        //   hierarchy arm     -> DROPPED    (isSubtypeOf("app.Impl", "run") — "run" is not a type — is false)
+        // Same input, opposite outputs, decided by nothing but whether a sidecar happens to exist. The
+        // structural branch short-circuits before `simpleMethod`, before `declaringType` and before
+        // `reacherTypesByMethod` is consulted at all, so neither arm can reach that lane: both now disclose
+        // it with the raw detail. Asserted as a WHOLE-FRONTIER equality, not two lookups — the arms must be
+        // indistinguishable, not merely both non-empty.
         Map<String, Set<String>> broad = Map.of("app.Frontier.go", Set.of("run"));
-        assertEquals("run", frontier(broad, hierarchy()).get("app.Frontier.go"));
-        assertEquals("run", frontier(broad, null).get("app.Frontier.go"));
+        Map<String, String> withHier = frontier(broad, hierarchy());
+        assertEquals(Map.of("app.Frontier.go", "run"), withHier, "hierarchy arm: disclosed, raw detail");
+        assertEquals(withHier, frontier(broad, null), "no-hierarchy arm must be IDENTICAL, not arm-dependent");
+        assertEquals(withHier, frontier(broad, Map.of()), "empty-sidecar arm must be identical too");
+    }
+
+    @Test void dotFreeDetailEqualToAWholeReacherQualIsDisclosedForTheRIGHTReason() {
+        // SPEC §3.1 ⟨0.24⟩ hazard 1, RIGHT FOR THE WRONG REASON. JVM quals are dotted, so a detail equal to
+        // a whole qual is normally dotted and never reaches this branch — but the query also reads reports
+        // written by other producers, and a report CAN carry a dot-free unit name (a top-level `main`). Then
+        // detail == qual == owner == member, and the pre-fix subtype check passed by REFLEXIVITY
+        // (isSubtypeOf("main","main") is true before the sidecar is even opened) — a match over a string that
+        // is not a type name, landing the right answer for a reason that would not survive any change to the
+        // detail's wording. Measured pre-fix: disclosed in BOTH arms, so the OUTPUT was already correct here
+        // and this test cannot distinguish the fix by output alone — that is the point of the shape, and why
+        // the guard against it is structural placement rather than an output assertion. What is pinned is
+        // that the answer stays correct and arm-independent once the reflexive accident is gone.
+        Map<String, List<String>> cg = new TreeMap<>(graph());
+        cg.put("main", List.of("app.Sink.touch")); // a DOT-FREE confirmed reacher
+        Map<String, Set<String>> broad = Map.of("app.Frontier.go", Set.of("main"));
+        Map<String, String> withHier = frontier(cg, broad, hierarchy());
+        assertEquals(Map.of("app.Frontier.go", "main"), withHier);
+        assertEquals(withHier, frontier(cg, broad, null));
+        assertEquals(withHier, frontier(cg, broad, Map.of()));
+        // ...and the reflexive lane is genuinely gone rather than merely agreeing: a DOTTED detail whose
+        // owner is that same dot-free reacher name still has to pass the real subtype test, and fails it.
+        assertEquals(Map.of(), frontier(cg, Map.of("app.Frontier.go", Set.of("main.run")), hierarchy()),
+                "CONTROL: `main.run` is dotted -> owner `main`, member `run`; app.Impl is not a subtype of "
+                        + "`main`, so the subtype test still decides it and it stays OUT");
     }
 
     @Test void anEmptyHierarchySidecarIsTheSameInputAsAnAbsentOne() {

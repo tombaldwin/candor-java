@@ -6,6 +6,22 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## [Unreleased]
+
+- **⚠ A dep report ENTRY's package was parsed out of the method DESCRIPTOR** (`Loader.entryPackage`). The
+  entry-level fallback — the only package registration a chained report with no `package`/`packages`
+  envelope gets — took the last `/` in the whole hash, and this engine's hash is
+  `owner/Class.method(Ljava/lang/String;)V`, so for every method taking or returning a reference type that
+  last `/` landed inside the descriptor: `com.example.Svc.save(Ljava.lang`. It could not FABRICATE
+  coverage (the bogus name necessarily contains the descriptor's `(`, which no package name can, so it
+  matched nothing), but the registration that never happened cost a disclosure: `depChainedPkgs` is
+  conjunct 3 of the half-1 unanswerable-key rung, so an INVOKEINTERFACE into a chained dependency whose
+  implementation candor cannot name read as a confident purity claim and `deny Fs Unknown[dispatch]` sat
+  at exit 0 against a single-tree control that is exit 1 in both arms. The `pkg#qual` (Rust/TS) branch of
+  the same two lines was always exact, so this makes one hash form behave like the other rather than
+  introducing a policy. ⚠ a chained consumer of a package-field-less report may newly disclose
+  `Unknown[dispatch:…]`, and may stop emitting `invisible` for a package that report does cover.
+
 ## [0.23.1] — 2026-07-20
 
 A performance + classifier-soundness patch (spec unchanged at **0.23**). The analysis engine loses two

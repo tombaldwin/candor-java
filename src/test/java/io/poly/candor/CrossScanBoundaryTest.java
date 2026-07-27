@@ -772,6 +772,71 @@ class CrossScanBoundaryTest {
         return new Gson().toJson(m);
     }
 
+    // ---- THE MARKER MUST NOT BE THE ONLY KEY IN THE FILE -------------------------------------------------
+    // A sidecar that used to serialize as `{}` became `{"@superclass":{}}`, and TWO consumers gate the
+    // PRECISE dispatch frontier on the map being non-empty — candor-ts `Object.keys(h).length > 0`,
+    // candor-rust `!hier.is_empty()`. The metadata key alone flips that gate from its documented
+    // over-listing fallback to the precise path over an EMPTY hierarchy, so a disclosure is withdrawn on
+    // zero information. Reproduced with candor-ts before the fix: `callers app.Sink.touch
+    // --include-unknown` over a flat java project listed one frontier function with `{}` and NONE with
+    // `{"@superclass":{}}`.
+
+    /** A dep type with NO superclass, whose interface must therefore be walked in the INTERFACE phase. */
+    private static final Map<String, String> LIB10 = Map.of(
+        "lib/IA.java", "package lib;\npublic interface IA {\n"
+            + "  default void emit(String s){ try { new ProcessBuilder(s).start(); } catch (Exception e) {} }\n}\n",
+        "lib/IB.java", "package lib;\npublic interface IB extends IA {\n"
+            + "  default void emit(String s){ System.getenv(\"HOME\"); }\n}\n",
+        "lib/DepA.java", "package lib;\npublic class DepA implements IA {}\n");
+
+    private static final Map<String, String> APP10 = Map.of("app/S.java", String.join("\n",
+        "package app; import lib.*;",
+        "public class S extends DepA implements IB {",
+        "  public void go(){ emit(\"x\"); }",
+        "}"));
+
+    @Test
+    void aDepTypeWithNoSuperclassSTILLNeedsTheMarkerToOrderItsInterfacesLast() throws Exception {
+        // THE SECOND FIXTURE, WRITTEN FIRST, and it is what stops "omit the marker whenever it is empty"
+        // from being the fix for the emptiness-gate flip. `DepA` has no superclass, so it contributes no
+        // marker PAIR — but the marker's presence is still what says so. With it, `DepA`'s `IA` is enqueued
+        // in the INTERFACE phase and `S`'s own `IB` (which overrides `IA.emit`, and is what the JVM runs)
+        // is reached first. Without it the kinds are unknown, `IA` goes into the CLASS queue, and `IA.emit`
+        // wins — a body that never runs. Mutate `writeHierarchy` to skip the marker when `supers` is empty
+        // and this test fails.
+        Map<String, EffectSet> r = scanChained(LIB10, APP10);
+        assertTrue(env(r, "app.S.go"),
+                "IB.emit overrides IA.emit and is what the JVM runs, got " + r.get("app.S.go"));
+        assertFalse(exec(r, "app.S.go"),
+                "IA.emit is shadowed by IB.emit — charging its Exec is a fabrication, got " + r.get("app.S.go"));
+        Map<String, EffectSet> one = scanOneTree(LIB10, APP10);
+        assertTrue(one.get("app.S.go").toNames().contains("Env"),
+                "single-tree control, got " + one.get("app.S.go"));
+        // And the arm that proves the assertion above is not vacuous: an UNMARKED sidecar gets the shipped
+        // depth-ordered answer, which here is the wrong one. That is the documented residual for a sidecar
+        // an older producer wrote, and it is exactly what the mutant would make the marked case do too.
+        Map<String, EffectSet> unmarked = scanChainedRewritingSidecar(LIB10, APP10,
+                CrossScanBoundaryTest::unmark);
+        assertTrue(exec(unmarked, "app.S.go"),
+                "an unmarked sidecar keeps the shipped unknown-kind behaviour — if this is Env the marked "
+                        + "arm above proves nothing, got " + unmarked.get("app.S.go"));
+    }
+
+    @Test
+    void aSidecarThatNamesNoTypeCarriesNoMetadataKeyAtAll() throws Exception {
+        // The gate flip itself. A project whose types have no supertype at all wrote `{}` before this rung
+        // and `{"@superclass":{}}` after, and that key ALONE takes candor-ts's and candor-rust's frontier
+        // off the over-listing fallback. The marker is provably inert here — `Loader.loadDepHierarchy` only
+        // consults it INSIDE the per-type loop, so with no type key it is read zero times — which is what
+        // makes omitting it free rather than a trade. Mutate the `h.isEmpty()` guard out and this fails.
+        String sidecar = capturedSidecar(
+                Map.of("lib/Flat.java", "package lib;\npublic class Flat { public void go(){ System.getenv(\"HOME\"); } }\n"),
+                Map.of("app/S.java", "package app;\npublic class S { public void go(){ new lib.Flat().go(); } }\n"));
+        assertEquals(0, com.google.gson.JsonParser.parseString(sidecar).getAsJsonObject().size(),
+                "a sidecar naming no type must be exactly `{}` — a metadata key alone flips two engines' "
+                        + "non-empty gate off the documented over-listing fallback; got " + sidecar);
+    }
+
     @Test
     void byNameContractReentryReachesADependencyBody() throws Exception {
         // THE DEFECT. Each of these resolves in a SINGLE tree (the control below) and read silent-pure once

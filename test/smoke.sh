@@ -1864,11 +1864,17 @@ fi
 # ── family identity phrases (drift gate): the claims that have actually drifted before ───────────
 echo "== family identity phrases =="
 README_TXT="$(cat "$ROOT/README.md")"; AGENTS_TXT="$(cat "$ROOT/AGENTS.md")"
+# The spec the docs must pin is read from the BINARY, not written here as a literal. A literal makes
+# this gate ENFORCE the drift it exists to catch: at the 0.23→0.24 floor bump the constant moved and
+# these two assertions kept both docs pinned to 0.23, green. Derive it and the gate cannot go stale.
+BSPEC="$("$CJ" --version 2>/dev/null | sed -nE 's/.*\(spec ([0-9.]+)\).*/\1/p' | head -1)"
+if [ -n "$BSPEC" ]; then echo "  ok   docs gate reads the spec floor off the binary ($BSPEC)"; pass=$((pass+1));
+else echo "  FAIL could not read the binary's declared spec for the docs drift gate"; fail=$((fail+1)); fi
 want    "README names candor-java the family's reference engine" "$README_TXT" "the family's reference engine"
-want    "README pins the spec floor (spec 0.23)"                  "$README_TXT" "spec 0.23"
+want    "README pins the spec floor (spec $BSPEC)"               "$README_TXT" "spec $BSPEC"
 wantnot "README does not call Rust the reference"                "$README_TXT" "Rust reference"
 want    "AGENTS names candor-java the reference engine"          "$AGENTS_TXT" "reference engine"
-want    "AGENTS pins the spec floor (spec 0.23)"                  "$AGENTS_TXT" "spec 0.23"
+want    "AGENTS pins the spec floor (spec $BSPEC)"               "$AGENTS_TXT" "spec $BSPEC"
 
 echo
 echo "smoke: $pass passed, $fail failed"

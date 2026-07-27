@@ -562,7 +562,8 @@ final class Loader {
      * representable signature at all. A dependency ENTRY that carries `Unknown` and can account for none
      * of it gets an actual reason recorded here, at the point that `Unknown` enters this scan: `dep:<hash>`
      * ordinarily, `dep-stale:<pkg>` for a §2.1 distrusted producer. Both project to `unresolved`
-     * ({@link io.poly.candor.model.ReasonClass#classify} — an unrecognized prefix is the conservative
+     * ({@link io.poly.candor.model.ReasonClass#classify}: ⟨0.24⟩ SPEC §4 now REGISTERS both kinds and §6.2
+     * fixes that class, so classify pins them on their own branch instead of leaning on the conservative
      * catch-all), so the fail-closed intent the old default had is kept, and it now COMPOSES: because the
      * reason rides the ENTRY rather than the consuming function, a caller of a reasonless entry and a
      * reasoned one accumulates `{unresolved, dispatch}` with no join-time special case. candor-swift

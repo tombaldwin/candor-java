@@ -82,7 +82,9 @@ classDiagram
     class ReasonKind {
         <<enumeration>>
         REFLECT NATIVE DISPATCH
-        CALLBACK TASK_HANDOFF INDY
+        CALLBACK AMBIGUOUS
+        DEP DEP_STALE
+        TASK_HANDOFF INDY
         +prefix() String
     }
 
@@ -151,7 +153,7 @@ classDiagram
     note for EffectSet "SEMANTICS §1 — a lattice element (join = ∪). toNames() emits spec-name-sorted: the ONE wire path, and the byte-identity invariant."
     note for Effector "spec §2 — the per-unit entry ('effector' = the spec's 'unit'). The wire field stays fn; serialized by ReportJson, not by reflecting the record (conditional omission)."
     note for UnknownReason "spec §4 — a kind:detail disclosure tag. Stores the raw prefix so any (incl. foreign) tag round-trips; kind() is derived."
-    note for ReasonKind "spec §4 canonical: reflect/native/dispatch/callback. task-handoff/indy are candor-java extras (tracked follow-up)."
+    note for ReasonKind "spec §4 canonical ⟨0.24⟩ is FIVE: reflect/native/dispatch/callback/ambiguous, plus the REGISTERED dep/dep-stale (class unresolved). task-handoff/indy are candor-java MIGRATION kinds (tracked follow-up); ambiguous/dep/dep-stale are NOT. Recognized is not the same as emitted — java consumes ambiguous across the dependency boundary, it never produces one."
     note for Report "spec §2 — the { candor, packages, functions } envelope."
     note for Provenance "spec §2.1 — the candor header (build id + toolchain + contract version)."
     note for PolicyRule "spec §6.2 — the deny/allow/forbid DSL, parsed into a sealed family."

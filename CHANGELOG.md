@@ -8,6 +8,33 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⟨0.24⟩ `ambiguous:` is now the FIFTH canonical §4 `unknownWhy` kind, and candor-java recognizes it as
+  one** — the analyser's own NAME RESOLUTION was ambiguous (two same-named local definitions), so no owner
+  could be formed at all. It is not a `dispatch:` with a missing body (there an owner type *was* formed, and
+  the detail is the normative `owner.member`) and not a `callback:` (no function value is involved).
+  **No verdict changes**: §6.2 has always projected `ambiguous:*` to class `dispatch`, and this engine's
+  gate has always classified it through the string path, so a CONSUMER was already correct — which is
+  exactly why nobody noticed the vocabulary it drew from did not contain the kind. What was non-conforming
+  was the *typed* half: `UnknownReason.Kind` listed only the old canonical four plus java's two migration
+  kinds, so `ambiguous:` read as a foreign prefix, `kind()` was `null`, and `ReasonClass.of` handed back
+  `unresolved` where §6.2 says `dispatch`. `AMBIGUOUS` is now a first-class `Kind`, not a tolerated
+  exception, and explicitly NOT a migration kind — migration kinds are the ones being reconciled away
+  (java's own `task-handoff:`/`indy:`); this one is permanent. `dep:`/`dep-stale:`, which §4 ⟨0.24⟩ now
+  REGISTERS, are promoted the same way: `Kind` members with an explicit `classify` branch pinning them to
+  `unresolved`, rather than reaching that class by falling through the catch-all.
+
+  candor-java **emits none of the five's `ambiguous:`** — a JVM invoke carries owner+name+descriptor, so
+  bytecode name resolution is never ambiguous — but it **consumes** them: a chained dependency's report
+  contributes its reasons into this scan (`depTransitiveWhy`), so a candor-rust `ambiguous:` both gates
+  here and is relayed into this engine's own `unknownWhy`.
+
+  The control is pinned in both directions: an off-vocabulary `banana:whatever` is still foreign — no
+  `Kind`, and the conservative `unresolved` catch-all under §2 forward compatibility — asserted through
+  the model *and* end-to-end through `gate --report`, so "learned a fifth kind" cannot be confused with
+  "stopped classifying kinds". Regressions: `ReasonClassTest.theFiveCanonicalKindsAndTheTwoRegisteredOnesAreRecognized`,
+  `ReasonClassTest.anOffVocabularyKindIsStillForeign`,
+  `GateReportVerbTest.anOffVocabularyKindStillClassifiesUnresolvedNotAsTheNewCanonicalOne`.
+
 - **✨ ⟨0.24⟩ `gate --report <locator> --policy <file>` — apply a policy to an EXISTING report, with no
   scan** (SPEC §3.1). Exit codes and `--gate-json` verdict are exactly `candor <classes> --policy <file>`'s;
   the only difference is that `S` and `D` are READ from the report rather than recomputed from bytecode.

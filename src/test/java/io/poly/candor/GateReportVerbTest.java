@@ -663,8 +663,31 @@ class GateReportVerbTest {
                 "a `::`-written name and scope must match (the §6.2 segment rule)");
         Candor.resetState();
         assertEquals(1, gate(rep, policy("deny Unknown[dispatch] app::util\n")),
-                "a foreign `ambiguous:` reason projects to `dispatch` (§6.2's normative table)");
+                "⟨0.24⟩ `ambiguous:` — the FIFTH canonical §4 kind, which candor-java consumes but never "
+                        + "produces — projects to `dispatch` (§6.2's normative table)");
         Candor.resetState();
         assertNotEquals(1, gate(rep, policy("deny Exec app\n")), "…and it is not just always-failing");
+    }
+
+    /**
+     * ⟨0.24⟩ THE CONTROL for the fifth §4 kind, end to end through the verb a supply-chain consumer
+     * actually runs. {@code ambiguous:} is now canonical and projects to class {@code dispatch} (row above);
+     * a genuinely off-vocabulary kind must behave EXACTLY as it did before — the conservative
+     * {@code unresolved} catch-all under §2 forward compatibility. The two tests together are what separate
+     * "candor-java learned a fifth kind" from "candor-java stopped classifying kinds": had the check become
+     * a blanket, {@code banana:} would fire {@code Unknown[dispatch]} here too.
+     */
+    @Test
+    void anOffVocabularyKindStillClassifiesUnresolvedNotAsTheNewCanonicalOne() throws Exception {
+        Path rep = report("mystery.crate.json", List.of(
+                entry("app::util::spawn", List.of("Unknown"), List.of("banana:whatever"), null)));
+        assertNotEquals(1, gate(rep, policy("deny Unknown[dispatch] app::util\n")),
+                "an off-vocabulary kind must NOT be swept into `dispatch` — that is a blanket, not a kind");
+        Candor.resetState();
+        assertEquals(1, gate(rep, policy("deny Unknown[unresolved] app::util\n")),
+                "it lands in the conservative catch-all, so it is never silently tolerated (§2)");
+        Candor.resetState();
+        assertEquals(1, gate(rep, policy("deny Unknown[dynamic] app::util\n")),
+                "…and the `dynamic` alias still covers it");
     }
 }

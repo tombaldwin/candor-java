@@ -2,6 +2,7 @@ package io.poly.candor.model;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -70,22 +71,41 @@ class ModelTest {
     }
 
     @Test
-    void unknownReasonRoundTripsAllSixKinds() {
+    void unknownReasonRoundTripsEveryRecognizedKind() {
         String[] tags = {
             "reflect:Foo.bar", "native:doNative", "dispatch:com.x.Y.m",
-            "callback:p.q.R.run", "task-handoff:e.Executor.submit", "indy:groovy.Bsm"
+            "callback:p.q.R.run", "ambiguous:same-name local defs",
+            "dep:9f2a", "dep-stale:com.example",
+            "task-handoff:e.Executor.submit", "indy:groovy.Bsm"
         };
         for (String tag : tags) {
             UnknownReason r = UnknownReason.parse(tag);
             assertEquals(tag, r.format(), "round-trip: " + tag);
+            assertNotNull(r.kind(), "a RECOGNIZED prefix must resolve to a Kind: " + tag);
         }
         assertEquals(UnknownReason.Kind.DISPATCH, UnknownReason.parse("dispatch:A.b").kind());
+        // ⟨0.24⟩ the fifth canonical kind is its OWN Kind, not DISPATCH and not CALLBACK: no owner type
+        // was ever formed, so its detail is best-effort prose and it must not join the `callers
+        // --include-unknown` frontier (which keys off `Kind.DISPATCH`'s normative dotted owner.member).
+        assertEquals(UnknownReason.Kind.AMBIGUOUS, UnknownReason.parse("ambiguous:same-name").kind());
+        assertEquals(UnknownReason.Kind.DEP_STALE, UnknownReason.parse("dep-stale:com.example").kind(),
+                "`dep-stale` must not be swallowed by the shorter `dep` prefix");
         // detail keeps everything after the FIRST colon (task-handoff prefix has no inner colon issue)
         assertEquals("e.Executor.submit", UnknownReason.parse("task-handoff:e.Executor.submit").detail());
-        // a foreign prefix is PRESERVED verbatim (round-trips), with kind() == null
+        // THE CONTROL. Recognizing a fifth canonical kind must not become "recognizing everything": a
+        // genuinely unknown prefix is still PRESERVED verbatim (round-trips) with kind() == null, which
+        // is §2 forward compatibility. Without this row, "added AMBIGUOUS" is indistinguishable from
+        // "stopped checking the prefix at all".
         UnknownReason foreign = UnknownReason.parse("bogus:x");
         assertEquals("bogus:x", foreign.format());
         assertNull(foreign.kind());
+        assertNull(UnknownReason.parse("banana:whatever").kind(), "an off-vocabulary kind stays foreign");
+        assertNull(UnknownReason.Kind.fromPrefix("banana"));
+        assertEquals("banana:whatever", UnknownReason.parse("banana:whatever").format());
+        // ...and near-misses of the new prefixes do NOT become recognized
+        assertNull(UnknownReason.Kind.fromPrefix("ambiguous:"), "fromPrefix matches the PREFIX, not a tag");
+        assertNull(UnknownReason.parse("ambiguity:x").kind());
+        assertNull(UnknownReason.parse("deps:x").kind());
         // no colon → not a tag
         assertNull(UnknownReason.parse("nocolon"));
         // of(kind, detail) builds the same as parse

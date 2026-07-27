@@ -32,6 +32,10 @@ class QueryIncludeUnknownTest {
         cg.put("app.Impl.run", List.of("app.Sink.touch"));
         cg.put("app.Sink.touch", List.of());
         cg.put("app.Frontier.go", List.of());
+        // A function in the graph that carries NO dispatch reason at all — the control candidate for the
+        // ⟨0.24⟩ dot-free rule below. It reaches nothing and is not a broad-dispatch source, so it changes
+        // no existing expectation; it must never appear in the frontier.
+        cg.put("app.Quiet.idle", List.of());
         return cg;
     }
 
@@ -83,6 +87,91 @@ class QueryIncludeUnknownTest {
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
         assertEquals(0, o.getAsJsonArray("possibleViaUnknownDispatch").size(),
                 "a confirmed caller is not re-listed as a possible reacher");
+    }
+
+    // ---- ⟨0.24⟩ the DOT-FREE `dispatch:` detail ---------------------------------------------------
+
+    /** The frontier entries as `fn -> viaDispatchOn`, for one run of the query. */
+    private static Map<String, String> frontier(Map<String, Set<String>> broad,
+                                                Map<String, List<String>> hier) {
+        String out = capture(() ->
+                Query.callersViaCallgraph(graph(), "app.Sink.touch", true, broad, hier));
+        Map<String, String> m = new TreeMap<>();
+        for (var el : JsonParser.parseString(out).getAsJsonObject()
+                .getAsJsonArray("possibleViaUnknownDispatch"))
+            m.put(el.getAsJsonObject().get("fn").getAsString(),
+                    el.getAsJsonObject().get("viaDispatchOn").getAsString());
+        return m;
+    }
+
+    @Test void dotFreeDispatchDetailIsDisclosedVerbatimInBothArms() {
+        // MEASURED BEFORE THE FIX: `dispatch:untyped cross-package receiver` (candor-rust's reason when no
+        // owner type could be formed at all) was SILENTLY DROPPED in BOTH arms, with no diagnostic. With no
+        // dot there is no OWNER and no M, so condition (3) — "is a confirmed reacher an override of OWNER.M?"
+        // — is UNANSWERABLE, and an unanswerable condition must not be scored as a failed one (SPEC §3.1
+        // ⟨0.24⟩). Disclose it with the RAW DETAIL verbatim. The CONTROL rides in the same call: a dotted
+        // `app.Unrelated.run` that genuinely FAILS condition (3) stays OUT under the hierarchy, so this is a
+        // fix and not a blanket.
+        String dotFree = "untyped cross-package receiver";
+        Map<String, Set<String>> broad = new TreeMap<>(Map.of(
+                "app.Frontier.go", Set.of(dotFree),
+                "app.Frontier.other", Set.of("app.Unrelated.run"),   // CONTROL: dotted, fails condition (3)
+                "app.Frontier.hit", Set.of("app.Base.run")));        // dotted, PASSES condition (3)
+
+        Map<String, String> withHier = frontier(broad, hierarchy());
+        assertEquals(dotFree, withHier.get("app.Frontier.go"),
+                "hierarchy arm: the dot-free source is disclosed with the raw detail verbatim");
+        assertTrue(withHier.containsKey("app.Frontier.hit"), "the genuine dotted override is still disclosed");
+        assertFalse(withHier.containsKey("app.Frontier.other"),
+                "CONTROL: a dotted dispatch that fails the subtype test must still be OUT — "
+                        + "disclosing the unanswerable case must not become disclosing everything");
+
+        Map<String, String> noHier = frontier(broad, null);
+        assertEquals(dotFree, noHier.get("app.Frontier.go"),
+                "no-hierarchy arm: same — the dot-free source is disclosed with the raw detail verbatim");
+        assertTrue(noHier.containsKey("app.Frontier.other"),
+                "and the documented simple-name over-list still applies to the dotted ones here");
+    }
+
+    @Test void aFunctionWithNoDispatchReasonIsNeverAFrontierSource() {
+        // CONTROL 2: `app.Quiet.idle` exists in the graph but carries no `dispatch:` reason at all, so it is
+        // absent from broadByFn. It must not appear however permissive the dot-free rule is.
+        Map<String, Set<String>> broad = Map.of("app.Frontier.go", Set.of("untyped cross-package receiver"));
+        for (Map<String, List<String>> h : java.util.Arrays.asList(hierarchy(), null, Map.<String, List<String>>of())) {
+            Map<String, String> f = frontier(broad, h);
+            assertEquals(Set.of("app.Frontier.go"), f.keySet(),
+                    "only a function that CARRIES a dispatch reason is ever a frontier source");
+        }
+    }
+
+    @Test void dotFreeDetailCollidingWithAReacherSimpleNameIsStillJustTheRawDetail() {
+        // THE FALSE-POSITIVE LANE, checked rather than reasoned away: `simpleMethod`/`declaringType` BOTH
+        // fall back to the WHOLE string when there is no dot, so a dot-free detail that happens to equal a
+        // confirmed reacher's simple method name (`run`, from `app.Impl.run`) used to match by accident —
+        // disclosed in the no-hierarchy arm, dropped in the hierarchy arm (isSubtypeOf("app.Impl","run") is
+        // false). The structural dot-free branch runs BEFORE that lookup, so the accidental lane is no longer
+        // reachable: both arms now disclose it, labelled with the raw detail, exactly like any other dot-free
+        // detail. No new false positive — the label was already the raw string — and no arm-dependent answer.
+        Map<String, Set<String>> broad = Map.of("app.Frontier.go", Set.of("run"));
+        assertEquals("run", frontier(broad, hierarchy()).get("app.Frontier.go"));
+        assertEquals("run", frontier(broad, null).get("app.Frontier.go"));
+    }
+
+    @Test void anEmptyHierarchySidecarIsTheSameInputAsAnAbsentOne() {
+        // MEASURED BEFORE THE FIX: the guard was `hier == null`, so a sidecar that exists and parses to `{}`
+        // was NON-null and honoured as a real hierarchy — `isSubtypeOf` then failed for every type, condition
+        // (3) failed for every dotted source, and the frontier collapsed to EMPTY. `{}` is not the claim "no
+        // type has a supertype"; it is the hierarchy pass finding nothing / not running / writing a stub, and
+        // scoring condition (3) as FAILED on it turns a disclosed over-list into a silent empty answer. rust
+        // (`has_hier`, callers.rs) and ts (`hasHier`, query-core.mjs) already treat empty == absent; java now
+        // agrees. All three arms asserted so the distinction cannot silently come back.
+        Map<String, Set<String>> broad = Map.of("app.Frontier.go", Set.of("app.Unrelated.run"));
+        assertEquals(Set.of(), frontier(broad, hierarchy()).keySet(),
+                "POPULATED sidecar: the subtype test is answerable and rules this one out");
+        assertEquals(Set.of("app.Frontier.go"), frontier(broad, null).keySet(),
+                "ABSENT sidecar: unanswerable -> simple-name over-list");
+        assertEquals(Set.of("app.Frontier.go"), frontier(broad, Map.of()).keySet(),
+                "EMPTY `{}` sidecar: the SAME unanswerable input as absent -> the same over-list, never []");
     }
 
     @Test void defaultOutputUnchangedWithoutFlag() {

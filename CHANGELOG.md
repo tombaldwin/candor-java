@@ -8,6 +8,30 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⟨0.24⟩ A DOT-FREE `dispatch:` detail is DISCLOSED on the `callers --include-unknown` frontier, not
+  dropped** (`Query`). A detail with no dot (candor-rust emits `dispatch:untyped cross-package receiver`
+  when no owner type could be formed at all) names no `OWNER` and no `M`, so condition (3) — "is a
+  confirmed reacher an override of `OWNER.M`?" — is UNANSWERABLE. `simpleMethod`/`declaringType` both fall
+  back to the whole string when there is no dot, so the lookup missed and the entry vanished. MEASURED on
+  a report carrying one dotted and one dot-free source: the frontier listed only the dotted one, in BOTH
+  the hierarchy and the no-hierarchy arm, with no diagnostic naming the dropped one. An unanswerable
+  condition must not be scored as a failed one — the entry is now listed with `viaDispatchOn` set to the
+  RAW DETAIL verbatim, the same direction the no-hierarchy fallback already takes one rung up. Detected
+  structurally (no dot before any descriptor), not by matching a known wording: an allowlist of strings
+  would silently drop every wording it did not enumerate, which is the defect itself. The frontier
+  over-lists by construction and asserts nothing into `transitive`, so a spurious entry costs precision
+  while a dropped one is a false all-clear on the query.
+- **⟨0.7⟩ An EMPTY hierarchy sidecar is now the same input as an ABSENT one** (`Query`). The guard was
+  `hier == null`, so a sidecar that exists and parses to `{}` was honoured as a real hierarchy:
+  `isSubtypeOf` then failed for every type, condition (3) failed for every dotted source, and the whole
+  frontier collapsed to `[]`. MEASURED on the same report: sidecar absent → one entry disclosed, sidecar
+  `{}` → nothing disclosed at all. `{}` is not the claim "no type has a supertype" — it is the hierarchy
+  pass finding nothing, not running, or writing a stub — so scoring condition (3) as failed on it turns a
+  disclosed over-list into a silent empty answer a consumer reads as "no function may reach the target
+  through an unresolved dispatch". candor-rust (`has_hier`) and candor-ts (`hasHier`) already treated empty
+  as absent; java now agrees. Both rungs pinned by `QueryIncludeUnknownTest`, with controls: a dotted
+  dispatch that genuinely fails the subtype test, and a function carrying no dispatch reason, must both
+  still be OUT.
 - **⚠ ⟨0.7⟩ The type-hierarchy sidecar records WHICH supertype is the superclass** (`ReportWriter`,
   `Loader`, `Cha`, `Query`). `writeHierarchy` wrote a sorted set and threw the kinds away, so a chain lying
   ENTIRELY inside a chained dependency stayed depth-ordered at the consumer and the JLS 15.12.2.5 / 8.4.8

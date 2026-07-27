@@ -692,6 +692,16 @@ public final class Query {
         return dot >= 0 ? base.substring(0, dot) : base;
     }
 
+    /** Does this qualified name / `dispatch:` detail actually NAME an owner — i.e. is there a `.` in the
+     *  part before any `(…)` descriptor? Mirrors the split {@link #simpleMethod}/{@link #declaringType}
+     *  do, so it answers exactly the question they silently paper over: both fall back to the WHOLE string
+     *  when there is no dot, so a dot-free input yields owner == member == the raw text and condition (3)
+     *  is unanswerable rather than false. ⟨0.24⟩ */
+    static boolean hasOwner(String qual) {
+        int paren = qual.indexOf('(');
+        return (paren >= 0 ? qual.substring(0, paren) : qual).indexOf('.') >= 0;
+    }
+
     /** Load the type-hierarchy sidecar (`<report-stem>.hierarchy.json`, ⟨0.7⟩), or null if absent. */
     static Map<String, List<String>> loadHierarchy(String reportPath) {
         try {
@@ -868,10 +878,19 @@ public final class Query {
         // MAY also reach `q` iff a confirmed reacher R is an OVERRIDE of OWNER.M — same method name AND R's
         // declaring type is a subtype of OWNER per the hierarchy sidecar. The subtype check (vs a bare
         // simple-name match) drops unrelated same-named dispatches — PRECISE. If the hierarchy sidecar is
-        // absent (hier == null), fall back to a simple-name match, which OVER-lists — the safe direction
+        // absent OR empty, fall back to a simple-name match, which OVER-lists — the safe direction
         // for a lower-bound disclosure. candor never asserts these; they are disclosed as "cannot confirm".
         List<Map<String, String>> possible = new ArrayList<>();
         if (incl) {
+            // An EMPTY hierarchy sidecar is the SAME INPUT as an absent one — what rust (`has_hier`,
+            // callers.rs) and ts (`hasHier`, query-core.mjs) already do. `{}` is not the claim "no type has
+            // a supertype"; it is overwhelmingly "the hierarchy pass found nothing / was not run / wrote a
+            // stub". Honouring it makes isSubtypeOf fail for EVERY type, so condition (3) fails for every
+            // dotted source and the whole frontier collapses to []. MEASURED before this guard: the same
+            // report that discloses a frontier entry with the sidecar absent disclosed NOTHING with a `{}`
+            // sidecar — a disclosed over-list silently turned into an empty answer a consumer reads as
+            // "nothing may reach the target through an unresolved dispatch".
+            boolean hasHier = hier != null && !hier.isEmpty();
             Set<String> confirmed = new HashSet<>(all);
             confirmed.addAll(targets);
             // confirmed reachers indexed by simple method name -> their declaring types (for the subtype check)
@@ -881,12 +900,24 @@ public final class Query {
             for (var e : new TreeMap<>(broadByFn).entrySet()) {
                 if (confirmed.contains(e.getKey())) continue; // already a confirmed caller — not "additional"
                 TreeSet<String> hits = new TreeSet<>();
-                for (String key : e.getValue()) { // key = OWNER.M (dotted)
+                for (String key : e.getValue()) { // key = OWNER.M, or a DOT-FREE detail (no owner at all)
+                    if (!hasOwner(key)) {
+                        // ⟨0.24⟩ A DOT-FREE `dispatch:` detail (e.g. candor-rust's `untyped cross-package
+                        // receiver`) names NO owner and NO member, so condition (3) — "is a confirmed
+                        // reacher an override of OWNER.M?" — is UNANSWERABLE. An unanswerable condition
+                        // MUST NOT be scored as a failed one: disclose the entry with the RAW DETAIL
+                        // verbatim as `viaDispatchOn`, never drop it. Same direction the no-hierarchy
+                        // fallback takes one rung up. Detected STRUCTURALLY (no dot before any descriptor),
+                        // NOT by matching a known wording — an allowlist of strings silently drops every
+                        // wording it does not enumerate, which is this defect itself.
+                        hits.add(key);
+                        continue;
+                    }
                     String m = simpleMethod(key);
                     String owner = declaringType(key);
                     List<String> reacherTypes = reacherTypesByMethod.get(m);
                     if (reacherTypes == null) continue;
-                    boolean hit = hier == null // no hierarchy sidecar → simple-name match (over-lists)
+                    boolean hit = !hasHier // no usable hierarchy sidecar → simple-name match (over-lists)
                             || reacherTypes.stream().anyMatch(t -> isSubtypeOf(t, owner, hier));
                     if (hit) hits.add(m);
                 }

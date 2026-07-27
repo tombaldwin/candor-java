@@ -1406,9 +1406,22 @@ absent "…and the chained package leaves the coverage ledger" "$DJC_CHAIN" "cla
 # An ALL-PURE dep's EMPTY report in SPEC singular-`package` form must register coverage (SPEC §2
 # rule 3) — reading only `packages[]` (the JVM's own plural) ignored it and falsely named the
 # package a blind spot. (/code-review max: the spec + the Rust/TS producers emit singular `package`.)
-printf '{"candor":{"version":"x","spec":"0.4"},"package":"com.thirdparty.io","functions":[]}' > "$W/djc/empty-pkg.json"
+#
+# The version must be THIS BUILD's. It was hardcoded `"x"` — i.e. permanently STALE — so this row was
+# really asserting that an UNTRUSTED report grants coverage, the §2.1 defect pinned as a requirement.
+# Coverage is what silences the κ ledger for every key a report OMITS, and a report whose producing
+# build cannot be verified has no standing to silence anything. Both directions are rows now; the
+# singular-vs-plural `package` reading this row exists for is untouched.
+DJC_OWNVER=$(python3 -c "import json; print(json.load(open('$W/djc/dep.json'))['candor']['version'])")
+printf '{"candor":{"version":"%s","spec":"0.4"},"package":"com.thirdparty.io","functions":[]}' \
+    "$DJC_OWNVER" > "$W/djc/empty-pkg.json"
 DJC_EMPTY=$(CANDOR_DEPS="$W/djc/empty-pkg.json" "$CJ" "$W/djc/app" 2>&1)
 absent "a singular-`package` empty report covers its package (no false blind spot)" "$DJC_EMPTY" "classifier doesn't cover"
+printf '{"candor":{"version":"%s-NOT-THIS-BUILD","spec":"0.4"},"package":"com.thirdparty.io","functions":[]}' \
+    "$DJC_OWNVER" > "$W/djc/empty-pkg-stale.json"
+DJC_EMPTY_STALE=$(CANDOR_DEPS="$W/djc/empty-pkg-stale.json" "$CJ" "$W/djc/app" 2>&1)
+want   "…but a STALE empty report grants NO coverage (§2.1: no trust, no silence)" "$DJC_EMPTY_STALE" "classifier doesn't cover"
+want   "…and the run says so, naming the other build"                              "$DJC_EMPTY_STALE" "not this one"
 
 # ── chained LITERAL SURFACES + empty-report coverage + array owners (/code-review fixes) ─────────
 echo "== chained surfaces, empty-report coverage, array owners =="

@@ -178,6 +178,33 @@ final class Loader {
         }
     }
 
+    /** The package name(s) a dep report's ENVELOPE names. Accepts BOTH the spec's singular
+     *  {@code "package": "<name>"} (what candor-report and candor-ts emit) AND this engine's own plural
+     *  {@code packages[]} — reading only the array meant an all-pure spec-form report was ignored and its
+     *  package falsely named a blind spot. One reader, so the trust-gated and the ungated registration
+     *  below can never disagree about WHICH packages a report is about, only about what that licenses. */
+    static List<String> reportPackages(JsonObject obj) {
+        if (obj == null) return List.of();
+        List<String> out = new ArrayList<>();
+        if (obj.has("package") && obj.get("package").isJsonPrimitive())
+            out.add(obj.get("package").getAsString());
+        if (obj.has("packages") && obj.get("packages").isJsonArray())
+            for (JsonElement x : obj.getAsJsonArray("packages"))
+                if (x.isJsonPrimitive()) out.add(x.getAsString());
+        return out;
+    }
+
+    /** The package a report ENTRY's hash names, or null if the hash names none — the fallback for reports
+     *  with no envelope package field. The spec join key is {@code pkg#qual} (Rust/TS), so take what is
+     *  before {@code #}; this engine's own hash is the slash-form {@code owner/Class.method(desc)}, so fall
+     *  back to the last {@code /}. */
+    static String entryPackage(String hash) {
+        int hashSep = hash.indexOf('#');
+        if (hashSep > 0) return hash.substring(0, hashSep);
+        int slash = hash.lastIndexOf('/');
+        return slash > 0 ? hash.substring(0, slash).replace('/', '.') : null;
+    }
+
     static void loadCrossDeps(String spec, String ownVersion) {
         if (spec == null || spec.isBlank()) return;
         for (String tok : spec.split("[\\s:,]+")) {
@@ -231,19 +258,41 @@ final class Loader {
                     // header is as untrustworthy as a mismatched one (the Rust engine's rule;
                     // /code-review found the engines split three ways on versionless reports).
                     boolean stale = depVer == null || !depVer.equals(ownVersion);
+                    // §2.1 TRUST IS ONE DECISION, NOT TWO. A stale report's EFFECTS are downgraded to
+                    // Unknown below — the engine refuses to believe what it says. Registering its packages
+                    // as COVERED believes it about everything it does NOT say: coverage is what silences
+                    // the κ ledger's `invisible: [pkg]` disclosure, so every key this report omits then
+                    // reads as a confident purity claim (absent from `functions` while counted in ⟨0.21⟩
+                    // `analyzed`) on the authority of a report we had just declined to trust. Measured:
+                    // `app.S.go` calling an unmentioned dep method vanished from the report entirely,
+                    // identical to the FRESH arm and unlike the honest unchained arm. Coverage is claimed
+                    // ONLY from a report whose producing build verifies. See StaleDepTrustTest — the
+                    // FRESH arm is the case that must still work, and it is asserted beside this one.
+                    //
+                    // BUT COVERAGE AND CHAINED-NESS ARE TWO QUESTIONS, and collapsing them was wrong in the
+                    // other direction — standing-bar item 0 in its exact shape. {@link
+                    // Candor#untypedDepReceiver}'s conjunct 3 reads "is this dependency chained?" purely as
+                    // an anti-flood test: it discloses ONLY where the κ ledger correctly falls silent.
+                    // Routing it through the trust-gated set cost 2 disclosed Unknowns on logback-classic
+                    // (`ContextInitializer.printConfiguratorOrder` ['Unknown'] -> [], an entry reduced to an
+                    // empty purity claim) with NOTHING to replace them, because `ch.qos.logback` is a
+                    // κ-CURATED-covered prefix and `invisible` is never emitted for it either way. So the
+                    // chained-ness fact keeps its own, ungated set. `depCoveredPkgs` = whose silence we
+                    // trust; `depChainedPkgs` = for whom a report was configured.
+                    ctx().depChainedPkgs.addAll(reportPackages(obj));
+                    if (stale) {
+                        System.err.println("candor: CANDOR_DEPS report " + f + " was produced by build '"
+                                + depVer + "', not this one ('" + ownVersion + "') — its effects are"
+                                + " downgraded to Unknown (§2.1) and its packages are NOT counted as"
+                                + " covered. Re-run the dependency's scan with this build to trust it.");
+                    }
                     // File-level coverage: the producer's own package name(s) register the report's
                     // packages as COVERED even when `functions` is empty — an all-pure dep's empty
                     // report is its purity claim (SPEC §2 rule 3; the serde_json lesson). Accept BOTH
                     // the spec's singular `"package": "<name>"` (what candor-report and candor-ts
                     // emit) AND this engine's own plural `packages[]` — reading only the array meant an
                     // all-pure spec-form report was ignored and its package falsely named a blind spot.
-                    if (obj != null) {
-                        if (obj.has("package") && obj.get("package").isJsonPrimitive())
-                            ctx().depCoveredPkgs.add(obj.get("package").getAsString());
-                        if (obj.has("packages") && obj.get("packages").isJsonArray())
-                            for (JsonElement x : obj.getAsJsonArray("packages"))
-                                ctx().depCoveredPkgs.add(x.getAsString());
-                    }
+                    if (!stale) ctx().depCoveredPkgs.addAll(reportPackages(obj));
                     for (JsonElement el : fns) {
                         if (!el.isJsonObject()) continue;                 // a non-object entry → skip (not pure-able)
                         JsonObject m = el.getAsJsonObject();
@@ -282,13 +331,13 @@ final class Loader {
                         // package prefix gives the EXACT package. The spec join key is `pkg#qual`
                         // (Rust/TS) — take what's before `#`; this engine's own hash is the
                         // slash-form `owner/Class.method(desc)`, so fall back to the last `/`.
-                        int hashSep = h.indexOf('#');
-                        if (hashSep > 0) {
-                            ctx().depCoveredPkgs.add(h.substring(0, hashSep));
-                        } else {
-                            int slash = h.lastIndexOf('/');
-                            if (slash > 0) ctx().depCoveredPkgs.add(h.substring(0, slash).replace('/', '.'));
-                        }
+                        // The COVERAGE half is gated on trust for the same reason as the file-level
+                        // registration above (an untrusted report's entry names a package, it does not
+                        // vouch for it); the CHAINED-NESS half is not, for the reason recorded there.
+                        String pkg = entryPackage(h);
+                        if (pkg == null) continue;
+                        ctx().depChainedPkgs.add(pkg);
+                        if (!stale) ctx().depCoveredPkgs.add(pkg);
                     }
                 } catch (Exception ex) {
                     // FAIL-CLOSED: an unreadable/unparseable dep report swallowed here meant every call

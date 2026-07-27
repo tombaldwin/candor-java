@@ -2340,11 +2340,18 @@ public class Candor {
      *       claim. (An abstract dep CLASS is therefore a residual — half 2's {@code typeSurface}.)
      *   <li><b>The receiver is not provably typed.</b> A monomorphic {@code new T} receiver has already
      *       been re-keyed on T above; if THAT missed, the key was exact and the miss is real.
-     *   <li><b>The dependency is CHAINED</b> — the owner's package is in {@code depCoveredPkgs}. For an
+     *   <li><b>The dependency is CHAINED</b> — the owner's package is in {@code depChainedPkgs}. For an
      *       UNCHAINED package the κ ledger already discloses {@code invisible: [pkg]}, so a second
      *       disclosure is pure false uncertainty; it is precisely when the dep IS chained that the
      *       ledger correctly falls silent (§2 rule 3) and the silence becomes the confident claim.
      *       The rust engine found this conjunct the same way — by measuring.
+     *       <p>This reads {@code depChainedPkgs}, NOT the §2.1-trust-gated {@code depCoveredPkgs}, and
+     *       the difference is measured rather than argued. Chained-ness is a fact about the
+     *       CONFIGURATION and no version check unsettles it; coverage is an authority for silence and a
+     *       stale report has none. Routing this conjunct through the trust-gated set turned
+     *       logback-classic's {@code ContextInitializer.printConfiguratorOrder} from {@code ['Unknown']}
+     *       to {@code []} — a disclosed dispatch reduced to an empty purity claim, with no {@code
+     *       invisible} to take its place because {@code ch.qos.logback} is a κ-CURATED-covered prefix.
      *   <li><b>No project impl.</b> A non-empty CHA means the dispatch HAS a local answer; whether that
      *       answer is complete is the documented bounded-CHA trade, not this rung.
      *   <li><b>The dep demonstrably holds an effectful body with this exact signature</b>, under some
@@ -2368,7 +2375,7 @@ public class Candor {
         if (isChaExemptMethod(min.owner, min.name, min.desc)) return;      // the conventionally-pure surface
         int slash = min.owner.lastIndexOf('/');
         if (slash <= 0) return;
-        if (!ctx.depCoveredPkgs.contains(min.owner.substring(0, slash).replace('/', '.'))) return; // conjunct 3
+        if (!ctx.depChainedPkgs.contains(min.owner.substring(0, slash).replace('/', '.'))) return; // conjunct 3
         if (!chaTargets(min.owner, min.name, min.desc).isEmpty()) return;  // conjunct 4
         if (!depDeclaresSigElsewhere(ctx, min)) return;                    // conjunct 5
         s.dir.add(Effect.UNKNOWN);

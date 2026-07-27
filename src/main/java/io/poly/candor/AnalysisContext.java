@@ -116,7 +116,17 @@ final class AnalysisContext {
     // alongside the honest Unknown (recall without guessing).
     final List<String[]> reflectPairs = new ArrayList<>();         // [callerId, literalName]
     // Packages a CANDOR_DEPS sibling report covers: chained, not blind (even an omitted pure dep fn).
+    // TRUST-GATED (§2.1): only a report whose producing build VERIFIES registers here, because coverage
+    // is what turns the κ ledger's silence into a purity claim about every key the report omits.
     final Set<String> depCoveredPkgs = new HashSet<>();
+    // Packages a CANDOR_DEPS report was CHAINED for, trusted or not. Deliberately NOT trust-gated: it
+    // answers "was a report configured for this package", a fact no version check unsettles, and it is
+    // used only as the anti-flood conjunct of the untyped-receiver disclosure
+    // ({@link Candor#untypedDepReceiver}) — never as an authority for silence. Gating it on trust cost 2
+    // disclosed Unknowns on logback-classic (`ContextInitializer.printConfiguratorOrder` went
+    // ['Unknown'] -> []) with no `invisible` to replace them, because `ch.qos.logback` is a κ-CURATED
+    // covered prefix so the ledger is silent there either way. See StaleDepTrustTest.
+    final Set<String> depChainedPkgs = new HashSet<>();
     // TRUE-FORWARDING for deferred-execution containers (`by lazy`, ThreadLocal.withInitial, …): per
     // field, the lambda(s) stored into a recognised container, edged to the forcing site. FIELD-SCOPED
     // (key `internalOwner/fieldName:fieldDesc`), so a pure-init lazy stays pure.

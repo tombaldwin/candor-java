@@ -67,7 +67,14 @@ public enum ReasonClass {
         if (why == null) return UNRESOLVED;
         String w = why.trim().toLowerCase();
         // reflection family (ts reflect:* / reflect_apply / reflect-metadata; swift reflecting / dynamicMemberLookup)
-        if (w.startsWith("reflect") || w.equals("dynamicmemberlookup")) return REFLECT;
+        // `startsWith`, NOT `equals`. candor-swift emits this token in the normative `kind:detail` form —
+        // `dynamicMemberLookup:<root>.<prop>` (CallCollector.swift), never bare — so an equality test can
+        // NEVER match a real one and the token falls through to UNRESOLVED. Both classes are in the
+        // `dynamic` set, so a bare `deny Unknown` is unaffected; what silently weakens is the
+        // class-targeted `deny Unknown[reflect]`, which is how the reason ratchet is adopted. Found by the
+        // swift sweep, where the same equality test made `Unknown[reflect]` unsatisfiable even in one tree.
+        // Widening equality to a prefix can only ever move MORE tokens into REFLECT, never fewer.
+        if (w.startsWith("reflect") || w.startsWith("dynamicmemberlookup")) return REFLECT;
         // FFI / native
         if (w.startsWith("native")) return NATIVE;
         // callback / closure / async-continuation indirection

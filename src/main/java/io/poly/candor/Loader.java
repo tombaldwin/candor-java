@@ -196,13 +196,35 @@ final class Loader {
 
     /** The package a report ENTRY's hash names, or null if the hash names none — the fallback for reports
      *  with no envelope package field. The spec join key is {@code pkg#qual} (Rust/TS), so take what is
-     *  before {@code #}; this engine's own hash is the slash-form {@code owner/Class.method(desc)}, so fall
-     *  back to the last {@code /}. */
+     *  before {@code #}; this engine's own hash is the slash-form {@code owner/Class.method(desc)}, so
+     *  split the OWNER portion only.
+     *
+     *  <p><b>THE OWNER PORTION ONLY, and that qualifier is the whole fix.</b> This once took the last
+     *  {@code /} in the WHOLE hash — but a JVM descriptor is full of slashes ({@code (Ljava/lang/String;)V}),
+     *  so for every method taking or returning a reference type the last {@code /} landed INSIDE the
+     *  descriptor and the answer was {@code com.example.Svc.save(Ljava.lang}: not a package, and not one any
+     *  bytecode could produce. So the owner is bounded first — everything before the descriptor's {@code (},
+     *  then before the last {@code .} that separates the method name — and only then is the package taken.
+     *
+     *  <p>WHICH DIRECTION IT FAILED IN. The bogus name could never GRANT anything: it necessarily contains
+     *  the {@code (} that opens the descriptor, and no package name can, so it matched nothing in
+     *  {@code depCoveredPkgs}. The cost was the registration that never happened — {@code depChainedPkgs}
+     *  is conjunct 3 of {@link Candor#untypedDepReceiver}, so a chained report with no envelope package
+     *  field left the half-1 unanswerable-key disclosure silent and an INVOKEINTERFACE into an
+     *  unnameable dep implementation read as a confident purity claim. See {@link DepEntryPackageTest} for
+     *  the two-tree fixture and its single-tree control.
+     *
+     *  <p>The {@code pkg#qual} branch above was always exact and has always granted per-entry coverage, so
+     *  this makes one hash form behave like the other rather than introducing a policy. */
     static String entryPackage(String hash) {
         int hashSep = hash.indexOf('#');
         if (hashSep > 0) return hash.substring(0, hashSep);
-        int slash = hash.lastIndexOf('/');
-        return slash > 0 ? hash.substring(0, slash).replace('/', '.') : null;
+        int paren = hash.indexOf('(');                                  // the descriptor starts here
+        String ownerAndMethod = paren >= 0 ? hash.substring(0, paren) : hash;
+        int dot = ownerAndMethod.lastIndexOf('.');                      // owner/method separator
+        String owner = dot > 0 ? ownerAndMethod.substring(0, dot) : ownerAndMethod;
+        int slash = owner.lastIndexOf('/');
+        return slash > 0 ? owner.substring(0, slash).replace('/', '.') : null;
     }
 
     static void loadCrossDeps(String spec, String ownVersion) {

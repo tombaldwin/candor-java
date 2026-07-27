@@ -164,10 +164,16 @@ final class Loader {
             // unknown, which is exactly what every consumer assumed before this key existed; reading an
             // unmarked list as all-interfaces or all-classes would be a guess, and both guesses are wrong
             // in a direction this vein has already paid for.
-            JsonElement marker = root.getAsJsonObject().get(ReportWriter.SUPERCLASS_KEY);
-            boolean split = marker != null && marker.isJsonObject();
+            Map<String, String> split =
+                    readSuperclassMarker(root.getAsJsonObject().get(ReportWriter.SUPERCLASS_KEY));
             for (var e : root.getAsJsonObject().entrySet()) {
-                if (!e.getValue().isJsonArray()) continue;       // the marker (an OBJECT) is skipped here
+                // `@` is the RESERVED METADATA NAMESPACE (SPEC §2.2). The marker's value is now an array
+                // like every other value in the file — which is what keeps a strictly typed reader working
+                // — so the shape no longer tells them apart and the name has to. A key starting `@` is
+                // never a type: javac cannot produce one, and treating a metadata key as a type would put a
+                // phantom entry in `depSupers` for every future extension.
+                if (e.getKey().startsWith("@")) continue;
+                if (!e.getValue().isJsonArray()) continue;       // any other non-array value is metadata too
                 List<String> sup = new ArrayList<>();
                 for (JsonElement x : e.getValue().getAsJsonArray())
                     if (x.isJsonPrimitive()) sup.add(x.getAsString().replace('.', '/'));
@@ -175,25 +181,61 @@ final class Loader {
                 String internal = e.getKey().replace('.', '/');
                 // The split must come from the SAME sidecar as the list, or a later report's kinds would be
                 // applied to an earlier one's supertypes — `putIfAbsent` keeps the first, so gate on it.
-                if (ctx().depSupers.putIfAbsent(internal, sup) == null && split) {
+                if (ctx().depSupers.putIfAbsent(internal, sup) == null && split != null) {
                     ctx().depSplitKnown.add(internal);
-                    JsonElement s = marker.getAsJsonObject().get(e.getKey());
+                    String s = split.get(e.getKey());
                     // Absent = the superclass is java/lang/Object (or this is an interface): every listed
                     // supertype is an interface. The writer omits it for exactly that case.
-                    if (s != null && s.isJsonPrimitive())
-                        ctx().depSuperclass.put(internal, s.getAsString().replace('.', '/'));
+                    if (s != null) ctx().depSuperclass.put(internal, s.replace('.', '/'));
                 }
             }
             // INSTRUMENT THE PRECONDITION, not the output. A diff cannot show that a mechanism never fired
             // (a sidecar that loads zero types looks exactly like one that loads thousands and is never
             // consulted); `Cha.externalSupers` prints the other half, the hits.
+            // The SPLIT's own precondition is counted separately from the supertype lists: a marker this
+            // reader silently failed to understand — a shape it does not accept, a foreign engine's, a
+            // future one's — costs 0 report entries and 0 effects (the split moves resolution ORDER, and
+            // the corpus measurement for that rung was 125 orders / 0 effect changes), so an A/B cannot
+            // tell a working reader from a dead one. This count can.
             if (System.getenv("CANDOR_DEPHIER_DEBUG") != null)
-                System.err.println("DEPHIER load " + f + ": " + ctx().depSupers.size() + " types known");
+                System.err.println("DEPHIER load " + f + ": " + ctx().depSupers.size() + " types known, "
+                        + ctx().depSplitKnown.size() + " with a known split");
         } catch (Exception e) {
             System.err.println("candor: CANDOR_DEPS hierarchy sidecar " + f + " is unreadable ("
                     + e.getMessage() + ") — failing (exit 2), a configured dep must not silently read pure");
             System.exit(2);
         }
+    }
+
+    /** The {@code @superclass} marker as type → superclass, or NULL when the sidecar does not carry a
+     *  usable one — which means the kinds are unknown and {@link Cha#resolutionOrder} keeps the
+     *  depth-ordered behaviour that shipped, never a guess.
+     *
+     *  <p>BOTH shapes are read, and that is deliberate. The current shape is a FLAT array
+     *  {@code [type, superclass, …]} — chosen so every value in the sidecar is an array and a strictly
+     *  typed reader (candor-rust's) does not discard the file. candor-java 0.23.1 shipped it as an OBJECT,
+     *  so every dep report and sidecar that build wrote carries that form; narrowing this reader to the new
+     *  shape alone would silently drop the split for all of them — a fabrication fix manufacturing the
+     *  under-report it was closing. A malformed array (odd length) yields null rather than a partial
+     *  pairing: an untrustworthy pairing must fall back to "kinds unknown", not to half a guess. */
+    private static Map<String, String> readSuperclassMarker(JsonElement marker) {
+        if (marker == null) return null;
+        Map<String, String> out = new HashMap<>();
+        if (marker.isJsonArray()) {
+            var a = marker.getAsJsonArray();
+            if (a.size() % 2 != 0) return null;
+            for (int i = 0; i < a.size(); i += 2) {
+                if (!a.get(i).isJsonPrimitive() || !a.get(i + 1).isJsonPrimitive()) return null;
+                out.put(a.get(i).getAsString(), a.get(i + 1).getAsString());
+            }
+            return out;
+        }
+        if (marker.isJsonObject()) {                              // the 0.23.1 shape, still in the wild
+            for (var e : marker.getAsJsonObject().entrySet())
+                if (e.getValue().isJsonPrimitive()) out.put(e.getKey(), e.getValue().getAsString());
+            return out;
+        }
+        return null;
     }
 
     /** The package name(s) a dep report's ENVELOPE names. Accepts BOTH the spec's singular

@@ -265,9 +265,12 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
      *  implementing a dep interface always resolved exactly. What stayed depth-ordered was a chain lying
      *  ENTIRELY inside the dependency — a dep interface {@code default} shadowing a dep superclass body two
      *  hops up — because {@code ReportWriter#writeHierarchy} wrote a sorted {@code TreeSet} that threw the
-     *  kinds away. It now also writes {@link ReportWriter#SUPERCLASS_KEY}, a sibling key whose value is an
-     *  OBJECT, so {@code Loader#loadDepHierarchy}'s array-only reader ignores it in an older consumer and
-     *  the rung needs no version gate on either side.
+     *  kinds away. It now also writes {@link ReportWriter#SUPERCLASS_KEY}, a sibling key in the reserved
+     *  {@code @} metadata namespace whose value is a FLAT ARRAY of {@code [type, superclass]} pairs — an
+     *  array precisely so that EVERY value in the sidecar is one and a strictly typed reader (candor-rust's,
+     *  which models the whole file as {@code BTreeMap<String, Vec<String>>}) still parses it. A consumer
+     *  that does not know the key sees one phantom entry it never looks up, so the rung needs no version
+     *  gate on either side; see {@code SUPERCLASS_KEY} for the reader survey that produced that shape.
      *
      *  <p><b>What happens where the split is STILL not knowable</b> — a sidecar written before that marker,
      *  or by an engine that writes none. Those types are walked in whichever phase the walk is already in,

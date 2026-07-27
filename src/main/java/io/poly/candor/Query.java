@@ -702,13 +702,17 @@ public final class Query {
             var o = JsonParser.parseString(Files.readString(Path.of(hPath))).getAsJsonObject();
             Map<String, List<String>> h = new LinkedHashMap<>();
             for (var e : o.entrySet()) {
-                // SKIP any entry whose value is not an ARRAY. That is the sidecar's extension point, and
-                // this is its SECOND reader: `getAsJsonArray()` THROWS on an object, and the catch below
-                // swallows it into `return null`, which discards the WHOLE hierarchy and drops the dispatch
-                // frontier back to a bare simple-name match. Adding {@link ReportWriter#SUPERCLASS_KEY}
-                // broke exactly this, while {@code Loader#loadDepHierarchy} — which already skipped
-                // non-arrays — was fine: the compatibility argument was true of one reader and untrue of
-                // the other, and the whole suite was green through it. Pinned by
+                // `@` is the RESERVED METADATA NAMESPACE (SPEC §2.2). {@link ReportWriter#SUPERCLASS_KEY}'s
+                // value is an ARRAY like every type's, so shape no longer tells them apart — without this
+                // the marker becomes a phantom TYPE in the subtype walk.
+                if (e.getKey().startsWith("@")) continue;
+                // And still SKIP any entry whose value is not an array: this is the sidecar's SECOND
+                // reader, `getAsJsonArray()` THROWS on an object, and the catch below swallows it into
+                // `return null` — discarding the WHOLE hierarchy and dropping the dispatch frontier back to
+                // a bare simple-name match. The first shape of the marker broke exactly this while
+                // {@code Loader#loadDepHierarchy} was fine, and the whole suite was green through it. Kept
+                // as defence in depth now that the writer no longer emits a non-array, because the file may
+                // have been written by an older producer or another engine. Pinned by
                 // {@code QueryIncludeUnknownTest#aSidecarSiblingKeyDoesNotDiscardTheWholeHierarchy}.
                 if (!e.getValue().isJsonArray()) continue;
                 List<String> sup = new ArrayList<>();

@@ -8,6 +8,73 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **✨ ⟨0.24⟩ `gate --report <locator> --policy <file>` — apply a policy to an EXISTING report, with no
+  scan** (SPEC §3.1). Exit codes and `--gate-json` verdict are exactly `candor <classes> --policy <file>`'s;
+  the only difference is that `S` and `D` are READ from the report rather than recomputed from bytecode.
+  `--json` is `--gate-json -`. Two things this buys, and the second is why the spec makes it a MUST.
+
+  *The supply-chain verb.* Gating a dependency's published report is what an adopter actually wants and
+  could not previously express without re-analysing code they do not have.
+
+  *It makes the gate reachable as a function of a GIVEN signature.* `scan --policy` recomputes the effect
+  set from source, so the classifier is always in the loop; `whatif` reports only what a hypothetical
+  INTRODUCES (a report already carrying `Net` under `deny Net` answers `ok: true`, by design). So a defect
+  in the GATE and a defect in the CLASSIFIER were indistinguishable from any test that could be written.
+
+  **The seam.** `Policy.checkPolicy` split into `gateInputFromScan` (the fixpoints that used to sit inline)
+  and `Policy.gate(GateInput)` — the only §6.2 matching code in the engine. The report route
+  (`gateInputFromReport`) builds the same record from a written report. There is deliberately no second
+  copy of the matching: §6.2's ⟨0.24⟩ clause exists because an open-coded copy drifted from the gate
+  silently, "because nothing compared them".
+
+  **It reads the report file and NOTHING else** — no `.callgraph.json`, no chained dep, no `.hierarchy.json`,
+  no re-classification of hosts/literals through this machine's config. An entry the report OMITS is pure
+  (the ⟨0.21⟩ claim), and the test that proves it puts a sidecar naming the absent function AND a chained-dep
+  report supplying it AND a `.candor/config` wiring that dep into the one directory the verb does open —
+  with the positive control beside it, since a verdict that never fires would pass the negative half alone.
+  Verified by mutation: back-filling from the sidecar fails both halves.
+
+  **A rule whose evidence the wire does not carry is REFUSED (exit 2), naming it — never approximated.**
+  Approximating always fails OPEN here, and a gate that passes for lack of evidence is the failure the gate
+  exists to prevent. Three cases, each measured:
+  - `forbid A -> B` needs the full call graph, and a report's `calls` is effect-relevant, so a crossing into
+    a wholly PURE unit is invisible in it.
+  - `allow <E>` needs the AS-EFF-008 surface-completeness marker, which rides the wire for no effect at all.
+    `netClass: unknown-host` LOOKS like it for `Net` and is a different predicate (`netDestClass` returns it
+    for any unrecognised host, so a fully-visible `api.stripe.com` carries it). The first cut of this verb
+    did reconstruct it that way and the scan-vs-gate equivalence test refuted it in one run: 2 functions
+    flagged that the scan passes.
+  - ⚠ **A CLASS-SCOPED `deny` over an entry whose evidence is absent.** `deny Net[unknown-host]` reads
+    `netClass`; `deny Unknown[dispatch]` reads a reason class resolved transitively over `calls`. Both are
+    OPTIONAL wire fields. When absent, the matcher sees an empty set, nothing matches, and the effect is
+    **dropped from the violation** — the narrowing succeeds precisely BECAUSE the evidence is missing.
+    MEASURED, one function per row: a `Net` entry with no `netClass` gave `deny Net[unknown-host]` **exit 0**
+    while bare `deny Net` gave exit 1; an inherited `Unknown` with no `calls` gave `deny Unknown[dispatch]`
+    **exit 0** while bare `deny Unknown` gave exit 1. An absence-keyed relaxation of a fail-closed gate,
+    inside the newest verb — the exact class ⟨0.24⟩ exists to remove. Now exit 2. Refusing costs nothing on
+    a report this engine wrote: `netClass` is emitted for every `Net`-bearing entry and is never empty (the
+    derivation floors it at `unknown-host`), and an inherited `Unknown` always has its callee in `calls`
+    (the callee carries `Unknown`, so it is effectful). The check is per (rule, function), so a scoped rule
+    whose own matches carry their evidence still evaluates.
+
+  Each refusal names exactly what a future format rung must add.
+
+  **Equivalence, measured.** On candor's own 970-function report across 13 policies (6 failing, up to 113
+  violations), and on a second fixture built to make the scoped arms non-vacuous across 12 more
+  (`Net[unknown-host]` 3, `Net[known-telemetry]` 2, `Unknown[reflect]` 2, `Unknown[dispatch]` 0 —
+  discriminating, not blanket), the two routes produce **byte-identical `--gate-json` verdict documents**,
+  including `analyzed.count`, `reasonClass`, `netClass` and the coverage advisory. The spec's "a consumer
+  must not be able to tell the two apart from the output alone" holds literally, on all 25 rows.
+
+  **Differential against the reference model** (`candor-spec/reference/policy_model.py`), 256 signatures ×
+  7 verbs = 1792 rows: `deny Fs`, `deny Fs Unknown[reflect,unresolved]`, `deny Exec Unknown[native]` and
+  `pure` agree **exactly** (0 disagreements over 256 points each). Every one of the 100 remaining
+  disagreements is a single family — a signature containing `Db`, under a `deny Net` — where the model
+  applies PAPER3 Definition 4's refinement preorder (`Db ⊑ₑ Net`) and the engine intersects the denied set
+  with `inferred`. Direction is uniform: model REJECT, engine pass. SPEC §6.2's normative `deny` grammar
+  has no refinement clause, so this is a MODEL-vs-CONTRACT divergence rather than an engine defect;
+  reported upstream, and pinned in both directions here rather than patched, since making `deny Net` fire
+  on `Db` would silently tighten every existing policy in the family.
 - **⟨0.24⟩ The report-locator globs exclude ALL of §2.2's reserved sidecar segments, from ONE list**
   (`Loader.isSidecarName`, `Query`). This engine carved out `.callgraph.json` and `.hierarchy.json`;
   candor-ts carved out six; the spec now enumerates seven family-wide (`callgraph`, `hierarchy`,

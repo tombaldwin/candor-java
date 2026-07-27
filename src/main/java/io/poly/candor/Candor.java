@@ -242,6 +242,7 @@ public class Candor {
             System.err.println("usage: candor <dir-or-jar-of-classes> [--json <file>] [--policy <file>] [--gate-json <file>]");
             System.err.println(
                     "       candor <show|where|callers|map|diff|containment|reachable|path|impact|blindspots|tour|gains|whatif|rewire> [args] [--report <locator>]");
+            System.err.println("       candor gate --report <locator> --policy <file> [--json] [--gate-json <file>]");
             System.err.println("       candor parsepolicy <policy-file>");
             System.err.println("       candor --version | --agents | --help");
             System.exit(2);
@@ -278,10 +279,16 @@ public class Candor {
                       blindspots                the Unknown sources worth resolving, ranked by reach
                       gains <current> <base>    what a new version newly reaches (the supply-chain diff)
                       fix <fn> <Effect>         the boundary hoist that would clear a violation
+                      gate --policy <file>      apply a policy to an EXISTING report, with no scan —
+                                                the supply-chain gate (exit 1 on a violation, 2 if the
+                                                policy or the report cannot be read). Same exit codes and
+                                                same verdict shape as `candor <classes> --policy <file>`;
+                                                the only difference is that the effect set is READ from
+                                                the report rather than recomputed from bytecode.
 
                     ALL ACTIONS
                       show  where  callers  map  containment  diff  reachable  impact  blindspots
-                      gains  path  tour  whatif  fix  fix-gate  unverified  rewire  parsepolicy
+                      gains  path  tour  whatif  fix  fix-gate  unverified  rewire  gate  parsepolicy
 
                     OPTIONS  (uniform across every engine)
                       --report <locator>        use this report instead of discovering .candor/
@@ -759,18 +766,37 @@ public class Candor {
      *  it can never disagree with the exit code. `ok` is the CI verdict (advisory AS-EFF-007 lines appear in
      *  the list but do NOT clear `ok`). Consumed by the PR-native SARIF reporter (integrations/github). */
     static void writeGateJson(String path, int violations) {
+        writeGateJson(path, violations, scanGateFacts());
+    }
+
+    /** ⟨0.24⟩ The non-violation facts a gate verdict carries, sourced independently of HOW the gate was
+     *  reached: a scan reads them from its own live state ({@link #scanGateFacts}), {@code gate --report}
+     *  reads the same three from the §2 report ENVELOPE it was handed ({@code analyzed.count},
+     *  {@code unanalyzed}, {@code coverage.uncovered} — the wire fields these were written from). Splitting
+     *  them out is what lets ONE verdict writer serve both routes, so the two documents cannot drift in
+     *  shape and a consumer cannot tell a scanned verdict from a report-gated one. */
+    record GateFacts(int analyzedCount, java.util.List<String[]> unanalyzed,
+                     java.util.List<Map.Entry<String, Integer>> uncovered) {}
+
+    static GateFacts scanGateFacts() {
+        java.util.List<String[]> un = new ArrayList<>();
+        for (var e : ctx().unanalyzed.entrySet()) un.add(new String[]{e.getKey(), e.getValue()});
+        return new GateFacts(ctx().edges.keySet().size(), un, kappaUncovered());
+    }
+
+    static void writeGateJson(String path, int violations, GateFacts facts) {
         if (path == null) return;
         var out = new java.util.LinkedHashMap<String, Object>();
         out.put("spec", SPEC_VERSION);
         // ⟨0.21⟩ COMPLETENESS MANIFEST (Gap 2): a gate over code candor could NOT fully analyze (skipped
         // unparseable classes) must NOT read green — their effects are invisible, so a `deny`/`pure` that
         // "passes" over them is a false-pure. `ok` requires BOTH no violation AND a complete analysis.
-        boolean incomplete = !ctx().unanalyzed.isEmpty();
+        boolean incomplete = !facts.unanalyzed().isEmpty();
         out.put("ok", violations == 0 && !incomplete);
         // ⟨0.21⟩ (Gap 1) the analyzed-universe count, so a --gate-json consumer sees the scan's scope from the
         // verdict alone (mirrors the report envelope's `analyzed`).
         var an = new java.util.LinkedHashMap<String, Object>();
-        an.put("count", ctx().edges.keySet().size());
+        an.put("count", facts.analyzedCount());
         out.put("analyzed", an);
         out.put("violations", gateViolations);
         // ⟨0.21⟩ (Gap 2) the machine-legible incompleteness: the units candor couldn't analyze, so a CI/agent
@@ -781,10 +807,10 @@ public class Candor {
         if (incomplete) {
             out.put("incomplete", true);
             List<Map<String, Object>> un = new ArrayList<>();
-            for (var e : ctx().unanalyzed.entrySet()) {
+            for (String[] e : facts.unanalyzed()) {
                 var m = new java.util.LinkedHashMap<String, Object>();
-                m.put("path", e.getKey());
-                m.put("reason", e.getValue());
+                m.put("path", e[0]);
+                m.put("reason", e[1]);
                 un.add(m);
             }
             out.put("unanalyzed", un);
@@ -795,7 +821,7 @@ public class Candor {
         // are untouched — a gate does NOT fail on uncovered deps (nearly every real scan has some); the
         // policy author sees the note and decides (`deny Unknown` stays the opt-in strict posture).
         // Omitted when fully covered, so that verdict stays byte-identical to a pre-⟨0.15⟩ one.
-        List<Map.Entry<String, Integer>> uncov = kappaUncovered();
+        List<Map.Entry<String, Integer>> uncov = facts.uncovered();
         if (!uncov.isEmpty()) {
             var cov = new java.util.LinkedHashMap<String, Object>();
             cov.put("uncovered", uncov.size());

@@ -89,6 +89,7 @@ java -jar candor.jar whatif   .candor/report.json <method> Net [policy] [--json]
 java -jar candor.jar fix      .candor/report.json <method> Net [policy] [--json]  # the boundary FIX: where the effect belongs + the hoist refactor
 java -jar candor.jar fix-gate .candor/report.json [policy] [--json]               # a fix for EVERY boundary crossing (the loop's block-message remedy)
 java -jar candor.jar unverified .candor/report.json [policy] [--strict] [--json]  # pure/deny layers that PASS but are Unknown (not PROVABLY clean)
+java -jar candor.jar gate --report <locator> --policy <file> [--json] [--gate-json <f>]  # ⟨0.24⟩ apply a policy to an EXISTING report, NO scan
 java -jar candor.jar diff     .candor/report.json baseline.json [--json]
 java -jar candor.jar tour     .candor/report.json [N] [--json]                    # the N most surprising transitive reaches (default 10)
 java -jar candor.jar map|containment|reachable|path|impact|blindspots .candor/report.json …
@@ -113,6 +114,21 @@ Name queries resolve exact > segment-suffix (`Svc.save` matches `com.example.Svc
   verifies. Needs a policy (the fix is defined relative to the boundary it crosses).
 - **Enforce in CI** → `--policy <file>` (or `CANDOR_POLICY`) (candor-spec §6.2: `deny`/`pure`/`allow`/`forbid`) +
   `CANDOR_BASELINE` (regression guard). Deterministic — not an LLM opinion.
+- **Gate a report you did not produce** ⟨0.24⟩ → `gate --report <locator> --policy <file>`. Applies the
+  policy to an EXISTING report with **no scan** — the supply-chain gate: check a dependency's published
+  report against your rules without re-analysing code you do not have. Exit codes and `--gate-json`
+  verdict are exactly `candor <classes> --policy <file>`'s; the only difference is that `S` and `D` are
+  READ from the report instead of recomputed. It reads that file and nothing else — no callgraph sidecar,
+  no chained dep, no re-classification — so an entry the report OMITS is pure, per the ⟨0.21⟩ claim.
+  **A rule whose evidence the report does not carry is REFUSED (exit 2), naming it — never evaluated
+  half-blind, because half-blind here always fails OPEN.** Three cases: `forbid A -> B` (needs the full
+  call graph; `calls` is effect-relevant, so a crossing into a wholly pure unit is invisible); `allow <E>`
+  (needs the AS-EFF-008 surface-completeness marker, which rides the wire for no effect); and a
+  CLASS-SCOPED `deny` — `Net[dest…]` / `Unknown[class…]` — over an entry missing `netClass`, or whose
+  reason class is unreachable for want of `calls`. That last one is the subtle one: the filter reads an
+  absent field, matches nothing, and DROPS the effect, so the narrowing succeeds because the evidence is
+  missing while the bare `deny` fires. `deny`/`pure` and any scoped rule whose own matches carry their
+  evidence evaluate normally. `--json` is `--gate-json -`.
 - **Gate semantics to know**: scopes match by dotted segment, and the `$` nested-type boundary is a
   segment split too — a JVM nested class is a scope segment, so `deny Net client` bites
   `Outer$client` (the family §6.2 ruling). `pure` forbids every *effect*; `Unknown` (the §4 trust

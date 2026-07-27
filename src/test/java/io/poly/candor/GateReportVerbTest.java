@@ -1,0 +1,670 @@
+package io.poly.candor;
+
+import static io.poly.candor.TestCompiler.compile;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import io.poly.candor.model.EffectSet;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+/**
+ * ⟨0.24⟩ {@code gate --report <locator> --policy <file>} (SPEC §3.1) — apply a policy to an EXISTING
+ * report, with no scan.
+ *
+ * <p>Three properties, in the order that matters:
+ *
+ * <p><b>1. THE MUST NOT.</b> "An engine MUST NOT re-derive, widen, or re-classify anything while serving
+ * this verb … a report entry that is ABSENT is absent — the ⟨0.21⟩ purity claim — and MUST NOT be
+ * back-filled from a callgraph sidecar or a chained dep." {@link #absentEntryIsPureEvenBesideASidecarAndAChainedDep}
+ * builds exactly that trap — an absent entry, a {@code .callgraph.json} that names it, a chained dep
+ * report that would give it {@code Net}, and a {@code .candor/config} pointing at that dep — and asserts
+ * the verdict reads it as pure. The POSITIVE CONTROL beside it is what makes that mean anything: the same
+ * policy over a report that DOES carry the effect must fail. Without both, the test only shows the verb
+ * runs.
+ *
+ * <p><b>2. EQUIVALENCE with the scanning path.</b> For a program scanned normally, {@code scan --policy P}
+ * and {@code gate --report <that report> --policy P} must produce the same verdict and the same exit code,
+ * over passing AND failing policies. That is the property the ANSWERABILITY refusals (see
+ * {@link Query#gate}) exist to keep true rather than approximately true.
+ *
+ * <p><b>3. AGREEMENT WITH THE REFERENCE MODEL.</b> {@code candor-spec/reference/policy_model.py} is the
+ * executable transcription of PAPER3's Definitions 4/30/31/32. This verb is what finally lets an ENGINE be
+ * checked against it: a report carrying an exact {@code (S, D)} in, a verdict out. The rows in
+ * {@link #agreesWithTheReferenceModelOnDenyAndDenyUnknown} are the model's own worked examples plus the
+ * ⟨0.24⟩ repair rows.
+ */
+class GateReportVerbTest {
+
+    @TempDir
+    Path tmp;
+
+    @BeforeEach
+    void fresh() {
+        Candor.resetState();
+        Candor.gateViolations.clear();
+        Candor.gateCapture = false;
+    }
+
+    @AfterEach
+    void clear() {
+        Candor.gateCapture = false;
+        Candor.gateViolations.clear();
+        Candor.resetState();
+    }
+
+    // ── report construction (hand-built, so a test states an EXACT (S, D)) ──────────────────────────────
+
+    /** One report entry. {@code inferred} is candor's `S` (with `Unknown` carried as a member — the engine
+     *  encoding of the model's `D ≠ ∅`); {@code why} is the raw `unknownWhy` tags, i.e. `D`. */
+    private static Map<String, Object> entry(String fn, List<String> inferred, List<String> why,
+                                             Map<String, Object> extra) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("fn", fn);
+        m.put("loc", "X.java:1");
+        m.put("inferred", inferred);
+        m.put("direct", inferred);
+        m.put("declared", List.of());
+        m.put("undeclared", List.of());
+        m.put("overdeclared", List.of());
+        m.put("entryPoint", false);
+        m.put("unresolved", inferred.contains("Unknown"));
+        if (!why.isEmpty()) m.put("unknownWhy", why);
+        m.put("hash", "");
+        if (extra != null) m.putAll(extra);
+        return m;
+    }
+
+    private static Map<String, Object> entry(String fn, List<String> inferred) {
+        return entry(fn, inferred, List.of(), null);
+    }
+
+    /** Write a §2 envelope report holding the given entries. */
+    private Path report(String name, List<Map<String, Object>> entries) throws Exception {
+        Map<String, Object> env = new LinkedHashMap<>();
+        env.put("candor", Map.of("version", "test", "toolchain", "test", "spec", Candor.SPEC_VERSION));
+        env.put("packages", List.of("app"));
+        env.put("analyzed", Map.of("count", entries.size(), "digest", "0"));
+        env.put("functions", entries);
+        Path p = tmp.resolve(name);
+        Files.createDirectories(p.getParent() == null ? tmp : p.getParent());
+        Files.writeString(p, io.poly.candor.model.ReportJson.pretty(env));
+        return p;
+    }
+
+    private Path policy(String body) throws Exception {
+        Path p = tmp.resolve("p" + Math.abs(body.hashCode()) + ".policy");
+        Files.writeString(p, body);
+        return p;
+    }
+
+    /** Run the verb the way a user does — through the CLI dispatcher, so the flag grammar is under test
+     *  too. Returns the exit code. */
+    private static int gate(Path report, Path policy, String... more) {
+        List<String> a = new ArrayList<>(List.of("gate", "--report", report.toString(),
+                "--policy", policy.toString()));
+        a.addAll(List.of(more));
+        return Query.run(a.toArray(new String[0]));
+    }
+
+    // ── 1. THE MUST NOT ────────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * THE LOAD-BEARING TEST. {@code app.Facade.load} is ABSENT from the report. Beside the report sit two
+     * things that WOULD give it {@code Net} if the verb consulted them:
+     * <ul>
+     *   <li>a {@code .callgraph.json} sidecar with the edge {@code app.Facade.load → app.Wire.post}, and
+     *       {@code app.Wire.post} is in the report WITH {@code Net} — so propagating over the sidecar
+     *       hands {@code load} a {@code Net} the report does not claim;</li>
+     *   <li>a chained dep report giving {@code app.Facade.load} {@code Net} outright, wired up through a
+     *       {@code .candor/config} {@code deps} key in the directory the verb DOES open a config from
+     *       (it reads that directory for {@code unknown-alias}) — so the bait is on the one path the code
+     *       actually walks, not on a path it was never going to look at.</li>
+     * </ul>
+     * Under {@code deny Net app.Facade} the answer must be: no violation. An absent entry is the ⟨0.21⟩
+     * purity claim, and this verb takes it as given.
+     */
+    @Test
+    void absentEntryIsPureEvenBesideASidecarAndAChainedDep() throws Exception {
+        Path rep = report("app.jvm.json", List.of(
+                entry("app.Wire.post", List.of("Net"))));          // app.Facade.load is ABSENT
+
+        // BAIT 1 — the §2.2 callgraph sidecar, naming the absent fn and edging it to the effectful one.
+        Files.writeString(tmp.resolve("app.jvm.callgraph.json"), io.poly.candor.model.ReportJson.pretty(
+                Map.of("app.Facade.load", List.of("app.Wire.post"), "app.Wire.post", List.of())));
+
+        // BAIT 2 — a chained dep report that gives the absent fn Net outright, wired via .candor/config.
+        Path dep = report("dep.jvm.json", List.of(entry("app.Facade.load", List.of("Net"))));
+        Files.createDirectories(tmp.resolve(".candor"));
+        Files.writeString(tmp.resolve(".candor/config"), "deps " + dep.getFileName() + "\n");
+
+        Path pol = policy("deny Net app.Facade\n");
+        assertEquals(0, gate(rep, pol),
+                "an ABSENT report entry is PURE (⟨0.21⟩) — neither the callgraph sidecar nor the chained "
+                + "dep may back-fill an effect for it (SPEC §3.1 ⟨0.24⟩ MUST NOT)");
+        assertEquals(0, Candor.gateViolations.size(), "and no violation was recorded");
+
+        // POSITIVE CONTROL. Same policy, same directory, same baits — the ONLY change is that the report
+        // now CARRIES the effect. Without this the test above would pass on a verb that gates nothing.
+        Path rep2 = report("carrying.jvm.json", List.of(
+                entry("app.Wire.post", List.of("Net")),
+                entry("app.Facade.load", List.of("Net"))));
+        assertEquals(1, gate(rep2, pol),
+                "the same policy over a report that DOES carry Net for that fn must FAIL — so the pass "
+                + "above is a property of the input, not of a gate that never fires");
+    }
+
+    /** The sidecar is not consulted for TOPOLOGY either. Here {@code app.Facade.load} IS in the report but
+     *  carries no effect; the sidecar edges it to the {@code Net} unit. A verb that walked the sidecar and
+     *  propagated would flag it. (Effects on the wire are already transitive — §2 — so propagating at gate
+     *  time is not a refinement, it is fabrication.) */
+    @Test
+    void anEffectlessEntryIsNotWidenedOverTheSidecarGraph() throws Exception {
+        Path rep = report("t.jvm.json", List.of(
+                entry("app.Facade.load", List.of()),
+                entry("app.Wire.post", List.of("Net"))));
+        Files.writeString(tmp.resolve("t.jvm.callgraph.json"), io.poly.candor.model.ReportJson.pretty(
+                Map.of("app.Facade.load", List.of("app.Wire.post"))));
+        assertEquals(0, gate(rep, policy("deny Net app.Facade\n")),
+                "an entry whose `inferred` is empty stays empty — the wire's effect sets are already "
+                + "transitive, so re-propagating them at gate time invents reach");
+    }
+
+    // ── 2. EQUIVALENCE with the scanning path ──────────────────────────────────────────────────────────
+
+    /**
+     * {@code scan --policy P} ≡ {@code gate --report <that report> --policy P}, over policies that pass and
+     * policies that fail, and over the deny / pure / reason-scoped-Unknown / Net-destination-class / allow-Net
+     * arms. Both counts AND both exit codes.
+     */
+    @Test
+    void scanAndGateAgreeOnTheSameProgram() throws Exception {
+        Path cls = compile(Map.of("app/Svc.java", String.join("\n",
+                "package app;",
+                "import java.net.*;",
+                "public class Svc {",
+                "  public void fetch() throws Exception { new URL(\"https://api.stripe.com/v1\").openStream().close(); }",
+                "  public void relay() throws Exception { fetch(); }",
+                "  public void telem() throws Exception { new URL(\"https://sentry.io/e\").openStream().close(); }",
+                "  public void log() { System.out.println(\"x\"); }",
+                "  public void dyn(Object o) throws Exception { o.getClass().getMethod(\"run\").invoke(o); }",
+                "}")));
+        List<String> policies = List.of(
+                "deny Net app\n",                    // fails
+                "deny Exec app\n",                   // passes (nothing execs)
+                "pure app.Svc\n",                    // fails
+                "pure app.Nothing\n",                // passes (scope matches nothing)
+                "deny Net Unknown app\n",            // fails on both arms
+                "deny Unknown[reflect] app\n",       // reason-scoped
+                "deny Unknown[native] app\n",        // reason-scoped, other class
+                "deny Net[known-telemetry] app\n",   // ⟨0.20⟩ destination class
+                "deny Net[known-partner] app\n",
+                "deny Net[unknown-host] app\n",
+                "deny Fs app\ndeny Db app\n",
+                "deny Log app\npure app.Svc.dyn\n");
+        try {
+            for (String body : policies) {
+                Candor.resetState();
+                Map<String, EffectSet> inferred = Candor.runScan(cls);
+                Path rep = tmp.resolve("eq" + Math.abs(body.hashCode()) + ".jvm.json");
+                ReportWriter.writeReport(inferred, rep.toString(), null);
+                Path pol = policy(body);
+                Candor.gateCapture = true;
+                Candor.gateViolations.clear();
+                int scanViolations = Policy.checkPolicy(inferred, pol.toString());
+                int scanExit = scanViolations > 0 ? 1 : 0;
+
+                Candor.resetState();                 // no scan state may survive into the report route
+                Candor.gateViolations.clear();
+                int gateExit = gate(rep, pol);
+                int gateViolations = Candor.gateViolations.size();
+
+                assertEquals(scanViolations, gateViolations,
+                        "violation COUNT must match for policy: " + body.replace("\n", " ; "));
+                assertEquals(scanExit, gateExit,
+                        "EXIT CODE must match for policy: " + body.replace("\n", " ; "));
+            }
+        } finally {
+            TestCompiler.rm(cls.getParent());
+        }
+    }
+
+    /** …and the equivalence is not vacuous: at least one of those policies actually FAILED and at least
+     *  one PASSED. A suite where every row is green on both sides proves nothing about the gate. */
+    @Test
+    void theEquivalenceCorpusContainsBothVerdicts() throws Exception {
+        Path cls = compile(Map.of("app/Svc.java", String.join("\n",
+                "package app;",
+                "import java.net.*;",
+                "public class Svc {",
+                "  public void fetch() throws Exception { new URL(\"https://api.stripe.com/v1\").openStream().close(); }",
+                "}")));
+        try {
+            Candor.resetState();
+            Map<String, EffectSet> inferred = Candor.runScan(cls);
+            Path rep = tmp.resolve("both.jvm.json");
+            ReportWriter.writeReport(inferred, rep.toString(), null);
+            Candor.resetState();
+            assertEquals(1, gate(rep, policy("deny Net app\n")), "a failing policy must exit 1");
+            Candor.resetState();
+            assertEquals(0, gate(rep, policy("deny Exec app\n")), "a passing policy must exit 0");
+        } finally {
+            TestCompiler.rm(cls.getParent());
+        }
+    }
+
+    // ── 3. AGREEMENT WITH THE REFERENCE MODEL ──────────────────────────────────────────────────────────
+
+    /**
+     * Rows taken from {@code reference/policy_model.py}: Definition 4's refinement example, Definition 30's
+     * second sentence ("a non-empty `D` must NOT fire a bare `deny e`"), Definition 31, and the three
+     * ⟨0.24⟩ repair rows from {@code repair_reproduces_the_counterexample_correctly}.
+     *
+     * <p>The mapping from a model {@code Sig(S, D)} to a candor report entry: {@code inferred} = S, plus
+     * the {@code Unknown} marker iff D ≠ ∅ (candor carries the marker in the effect set; the model carries
+     * it in D); {@code unknownWhy} = one raw tag per class in D.
+     */
+    @Test
+    void agreesWithTheReferenceModelOnDenyAndDenyUnknown() throws Exception {
+        // {policy, S, D, expected reject}
+        Object[][] rows = {
+            // Refinement is directional: `deny Db` must NOT fire on {Net}. Model and engine agree.
+            {"deny Db app\n", List.of("Net"), List.<String>of(), false},
+            // Definition 30, the sentence implementations get wrong: a non-empty D does NOT fire a bare deny.
+            {"deny Net app\n", List.<String>of(), List.of("dispatch:app.X.m"), false},
+            // Definition 31: bare `deny e Unknown` is C = R, so ANY reason fires it.
+            {"deny Net Unknown app\n", List.<String>of(), List.of("dispatch:app.X.m"), true},
+            {"deny Net Unknown app\n", List.<String>of(), List.of("native:x"), true},
+            // Definition 31 with a class filter: ψ_C is D ∩ C ≠ ∅, no more.
+            {"deny Net Unknown[dispatch] app\n", List.<String>of(), List.of("dispatch:app.X.m"), true},
+            {"deny Net Unknown[dispatch] app\n", List.<String>of(), List.of("reflect:x"), false},
+            {"deny Net Unknown[reflect,unresolved] app\n", List.<String>of(), List.of("reflect:x"), true},
+            {"deny Net Unknown[reflect,unresolved] app\n", List.<String>of(), List.of("native:x"), false},
+            // φ is independent of ψ: a determined Net fires `deny Net Unknown[native]` through φ alone.
+            {"deny Net Unknown[native] app\n", List.of("Net"), List.of("reflect:x"), true},
+            // ⟨0.24⟩ repair rows. Row 2 (reasoned only) passes; row 3 (worse-known, same filter) rejects.
+            {"deny Net Unknown[unresolved] app\n", List.<String>of(), List.of("dispatch:x"), false},
+            {"deny Net Unknown[unresolved] app\n", List.<String>of(), List.of("dispatch:x", "someUnrecognised:x"), true},
+        };
+        for (Object[] r : rows) {
+            @SuppressWarnings("unchecked") List<String> s = (List<String>) r[1];
+            @SuppressWarnings("unchecked") List<String> d = (List<String>) r[2];
+            List<String> inferred = new ArrayList<>(s);
+            if (!d.isEmpty()) inferred.add("Unknown");   // candor's encoding of the model's `D ≠ ∅`
+            Path rep = report("m" + Math.abs((r[0] + s.toString() + d).hashCode()) + ".jvm.json",
+                    List.of(entry("app.U.f", inferred, d, null)));
+            Candor.resetState();
+            int exit = gate(rep, policy((String) r[0]));
+            assertEquals(((Boolean) r[3]) ? 1 : 0, exit,
+                    "model row: " + r[0].toString().trim() + "  over S=" + s + " D=" + d);
+        }
+    }
+
+    /**
+     * A MEASURED DISAGREEMENT between the engine and the reference model, pinned here rather than fixed —
+     * the first thing {@code gate --report} was able to find, and the reason the verb is a MUST.
+     *
+     * <p>PAPER3 Definition 4, transcribed in {@code policy_model.py}, makes {@code ⊑ₑ} a preorder with
+     * {@code Db ⊑ₑ Net} and {@code Llm ⊑ₑ Net}, and Definition 30's firing condition is
+     * {@code φₑ(S,D) := ∃ e' ∈ S. e' ⊑ₑ e}. So the model REJECTS {@code deny Net} over {@code S = {Db}},
+     * and its {@code selftest} asserts that as a worked example. Every candor engine instead intersects the
+     * denied set with {@code inferred} — plain membership, no preorder — so it PASSES. Confirmed by running
+     * the model: {@code deny('Net')(Sig({'Db'})) -> True}.
+     *
+     * <p>Which side is wrong is NOT this test's call, and the disagreement is not obviously the engine's:
+     * SPEC §6.2's normative {@code deny} grammar says only "each token that names an effect … joins the
+     * forbidden set", and AS-EFF-006 is stated as an intersection. So the CONTRACT the four engines
+     * implement has no refinement clause, and the model has one — the same species of model-versus-contract
+     * divergence as the ⟨0.24⟩ §6.2 defect, which is what this file's existence is meant to surface. It is
+     * reported upstream, not patched here: making {@code deny Net} fire on {@code Db} is a four-way
+     * semantic change to a security gate, and it would tighten every existing policy silently.
+     *
+     * <p>The row is pinned in BOTH directions so a future change in either is loud rather than silent.
+     */
+    @Test
+    void engineDoesNotImplementTheModelsRefinementPreorderInDeny() throws Exception {
+        Path db = report("ref1.jvm.json", List.of(entry("app.U.f", List.of("Db"))));
+        assertEquals(0, gate(db, policy("deny Net app\n")),
+                "MEASURED: candor-java passes `deny Net` over a determined {Db}; policy_model's Definition 4 "
+                + "REJECTS it (Db ⊑ₑ Net). Reported as a model-vs-contract divergence, not fixed here.");
+        Candor.resetState();
+        Path llm = report("ref2.jvm.json", List.of(entry("app.U.f", List.of("Llm"))));
+        assertEquals(0, gate(llm, policy("deny Net app\n")),
+                "…and the same for Llm ⊑ₑ Net, so the divergence is the preorder itself, not one pair");
+        Candor.resetState();
+        Path net = report("ref3.jvm.json", List.of(entry("app.U.f", List.of("Net"))));
+        assertEquals(1, gate(net, policy("deny Net app\n")),
+                "the plain membership case still fires — the gate is not simply inert on Net");
+    }
+
+    /**
+     * A report that says a function is {@code Unknown} but records NO reason is the signature the formal
+     * model calls ill-formed — Def 6 makes {@code D} the carrier of the {@code Unknown}, so {@code (∅, ∅)}
+     * is the model's way of saying "sound-complete" about a function whose report says otherwise. Only a
+     * hand-authored or foreign report can reach it, which is why no end-to-end test could ever have pinned
+     * it, and why the ⟨0.24⟩ producer-side repair makes it unreachable from a scan.
+     *
+     * <p>A NARROWED filter over it is REFUSED, not answered. {@code Policy.gate} carries a fail-closed
+     * backstop that contributes {@code unresolved} to an empty class set, and on the report route that
+     * backstop would be inventing the very datum the filter is asking about: a rule naming
+     * {@code Unknown[unresolved]} would "fire" on a class nothing in the report asserts, and a rule naming
+     * any other class would silently tolerate. Exit 2 is the honest answer to both. The BARE forms still
+     * gate — the effect set alone answers them — so refusing the narrowing costs no reach.
+     */
+    @Test
+    void aNarrowedFilterOverAReasonlessUnknownIsRefusedNotAnswered() throws Exception {
+        Path rep = report("rl.jvm.json", List.of(entry("app.U.f", List.of("Unknown"), List.of(), null)));
+        assertEquals(2, gate(rep, policy("deny Net Unknown[unresolved] app\n")),
+                "the class set would have to be invented to answer this — refuse, never report a violation "
+                + "attributed to a class the report does not assert");
+        Candor.resetState();
+        assertEquals(2, gate(rep, policy("deny Net Unknown[native] app\n")),
+                "…and refusing covers the tolerating direction too, which is the dangerous one");
+        Candor.resetState();
+        assertEquals(1, gate(rep, policy("deny Net Unknown app\n")),
+                "the BARE form still fires — the effect set alone answers it, so the refusal costs no reach");
+        Candor.resetState();
+        assertEquals(1, gate(rep, policy("deny Net Unknown[*] app\n")),
+                "`[*]` is the bare form spelled out (an empty filter), so it fires too");
+    }
+
+    /**
+     * FINDING 3 — AN ABSENT OPTIONAL FIELD MUST NOT RELAX A FAIL-CLOSED GATE.
+     *
+     * <p>A class-scoped {@code deny} narrows on a second question ("…and is the destination / the reason
+     * class one of THESE?"). When the report does not carry the field that question is read from, the
+     * matcher sees an empty set, nothing matches, and the effect is DROPPED from the violation — the
+     * narrowing succeeds precisely BECAUSE the evidence is missing. Measured before the refusal, one
+     * function per row:
+     * <pre>
+     *   Net-bearing entry, netClass ABSENT   →  deny Net[unknown-host]  exit 0   |  deny Net      exit 1
+     *   inherited Unknown, `calls` ABSENT    →  deny Unknown[dispatch]  exit 0   |  deny Unknown  exit 1
+     * </pre>
+     * Both are now exit 2. Each row is asserted with its EVIDENCE-PRESENT control, because a refusal that
+     * fires on everything would pass the fail-open half while destroying the verb.
+     */
+    @Test
+    void aScopedDenyIsRefusedWhenTheReportCannotAnswerTheNarrowing() throws Exception {
+        // ── the Net destination-class half ──
+        Path noNetClass = report("nc0.jvm.json", List.of(entry("app.A.f", List.of("Net"))));
+        assertEquals(2, gate(noNetClass, policy("deny Net[unknown-host] app\n")),
+                "no `netClass` on a Net-bearing entry ⇒ the filter cannot be answered — refuse, never pass");
+        Candor.resetState();
+        assertEquals(1, gate(noNetClass, policy("deny Net app\n")),
+                "…and the BARE rule still fires on the very same report, which is what made the green above "
+                + "a relaxation rather than a true negative");
+        Candor.resetState();
+        Path withNetClass = report("nc1.jvm.json", List.of(entry("app.A.f", List.of("Net"), List.of(),
+                Map.of("netClass", List.of("unknown-host")))));
+        assertEquals(1, gate(withNetClass, policy("deny Net[unknown-host] app\n")),
+                "CONTROL: with the evidence present the scoped rule evaluates normally");
+        Candor.resetState();
+        assertEquals(0, gate(withNetClass, policy("deny Net[known-telemetry] app\n")),
+                "CONTROL: …and still DISCRIMINATES — a non-matching class passes, so the refusal has not "
+                + "collapsed into always-fail");
+
+        // ── the Unknown reason-class half ──
+        Candor.resetState();
+        Path noCalls = report("nk0.jvm.json", List.of(
+                entry("app.C.go", List.of("Unknown"), List.of(), null),              // INHERITED, no `calls`
+                entry("app.L.m", List.of("Unknown"), List.of("dispatch:app.L.m"), null)));
+        assertEquals(2, gate(noCalls, policy("deny Unknown[dispatch] app.C\n")),
+                "the reason lives on a callee the report does not link to — the class set is unreachable, "
+                + "so the narrowing must not succeed by default");
+        Candor.resetState();
+        assertEquals(1, gate(noCalls, policy("deny Unknown app.C\n")), "…the BARE rule still fires");
+        Candor.resetState();
+        Path withCalls = report("nk1.jvm.json", List.of(
+                entry("app.C.go", List.of("Unknown"), List.of(), Map.of("calls", List.of("app.L.m"))),
+                entry("app.L.m", List.of("Unknown"), List.of("dispatch:app.L.m"), null)));
+        assertEquals(1, gate(withCalls, policy("deny Unknown[dispatch] app.C\n")),
+                "CONTROL: with the `calls` edge present the class resolves transitively and the rule fires");
+        Candor.resetState();
+        assertEquals(0, gate(withCalls, policy("deny Unknown[native] app.C\n")),
+                "CONTROL: …and a non-matching class still passes");
+    }
+
+    /** The refusal is per (rule, function): a scoped rule whose MATCHED functions all carry their evidence
+     *  evaluates normally even when some other, out-of-scope entry does not. Otherwise one legacy entry
+     *  anywhere in a big report would disable every scoped rule in the policy. */
+    @Test
+    void theScopedRefusalIsScopedToTheRulesOwnMatches() throws Exception {
+        Path rep = report("sc.jvm.json", List.of(
+                entry("app.ok.A.f", List.of("Net"), List.of(), Map.of("netClass", List.of("unknown-host"))),
+                entry("app.legacy.B.g", List.of("Net"))));            // no netClass — but out of scope
+        assertEquals(1, gate(rep, policy("deny Net[unknown-host] app.ok\n")),
+                "the rule's own matches all carry `netClass`, so it is answerable and evaluates");
+        Candor.resetState();
+        assertEquals(2, gate(rep, policy("deny Net[unknown-host] app\n")),
+                "widen the scope to cover the evidence-less entry and the same rule is refused");
+    }
+
+    /** The reason class must travel TRANSITIVELY over the report's own `calls` (§6.2: `unknownWhy` is
+     *  direct-only by contract, so a filter matching the direct field reads a field that answers a
+     *  different question). The caller here has `Unknown` with NO reason of its own; the reason lives on
+     *  the callee it names in `calls`. */
+    @Test
+    void reasonClassesResolveTransitivelyOverTheReportsOwnCalls() throws Exception {
+        Path rep = report("tr.jvm.json", List.of(
+                entry("app.Caller.go", List.of("Unknown"), List.of(), Map.of("calls", List.of("app.Leaf.m"))),
+                entry("app.Leaf.m", List.of("Unknown"), List.of("reflect:app.Leaf.m"), null)));
+        assertEquals(1, gate(rep, policy("deny Unknown[reflect] app.Caller\n")),
+                "the CALLER inherits the callee's `reflect` class — resolving it only from the caller's own "
+                + "(empty) unknownWhy would default to `unresolved` and let a reflection-caused hole pass");
+    }
+
+    // ── the ANSWERABILITY refusals ─────────────────────────────────────────────────────────────────────
+
+    /** `forbid A -> B` is refused, loudly, rather than evaluated over the report's EFFECT-RELEVANT `calls`
+     *  graph — where a crossing into a wholly PURE unit is invisible and the rule would read green. */
+    @Test
+    void forbidRulesAreRefusedNotApproximated() throws Exception {
+        Path rep = report("f.jvm.json", List.of(entry("app.web.H.go", List.of("Net"))));
+        assertEquals(2, gate(rep, policy("forbid app.web -> app.db\n")),
+                "a rule this verb cannot faithfully evaluate must FAIL (exit 2), never pass silently");
+        Candor.resetState();
+        assertEquals(2, gate(rep, policy("deny Net app.web\nforbid app.web -> app.db\n")),
+                "and the refusal covers the whole policy — enforcing only the answerable half and exiting "
+                + "0 would be the gateless-green failure");
+    }
+
+    /**
+     * EVERY {@code allow} rule is refused — the AS-EFF-008 surface-completeness marker rides the wire for
+     * no effect at all.
+     *
+     * <p>This test exists in this shape because the first implementation got it wrong in the fail-OPEN
+     * direction and {@link #scanAndGateAgreeOnTheSameProgram} caught it. That version reconstructed the
+     * marker for {@code Net} from {@code netClass ∋ unknown-host}, which reads plausible and is a different
+     * predicate: {@code unknown-host} is ALSO what {@code netDestClass} returns for a merely UNRECOGNISED
+     * host, so {@code api.stripe.com} — fully visible, nothing masked — carried it. The reconstruction
+     * flagged 2 functions the scan passes. Refusing is the only posture that neither fails open nor
+     * invents violations.
+     */
+    @Test
+    void everyAllowRuleIsRefused() throws Exception {
+        Path rep = report("a.jvm.json", List.of(
+                entry("app.R.run", List.of("Exec"), List.of(), Map.of("cmds", List.of("git"))),
+                entry("app.R.get", List.of("Net"), List.of(),
+                        Map.of("hosts", List.of("api.stripe.com"), "netClass", List.of("unknown-host")))));
+        for (String body : List.of("allow Exec in app git\n", "allow Fs in app /tmp\n",
+                "allow Db in app users\n", "allow Net in app api.stripe.com\n",
+                "allow Llm in app api.openai.com\n")) {
+            Candor.resetState();
+            assertEquals(2, gate(rep, policy(body)),
+                    "not answerable from a report — must fail loudly, never certify: " + body.trim());
+        }
+        // The refusal covers the whole policy: enforcing only the answerable half and exiting 0 would be
+        // the gateless-green failure on a policy the user believed was enforced.
+        Candor.resetState();
+        assertEquals(2, gate(rep, policy("deny Net app\nallow Exec in app git\n")),
+                "a policy mixing an answerable rule with an unanswerable one is refused whole");
+    }
+
+    // ── CLI shape + the loud-failure postures ──────────────────────────────────────────────────────────
+
+    /** A CONFIGURED-but-unreadable policy fails loudly (exit 2), never gateless-green (§6.2). */
+    @Test
+    void anUnreadablePolicyFailsClosed() throws Exception {
+        Path rep = report("u.jvm.json", List.of(entry("app.A.f", List.of("Net"))));
+        assertEquals(2, Query.run(new String[]{"gate", "--report", rep.toString(),
+                "--policy", tmp.resolve("nope.policy").toString()}));
+    }
+
+    /** No policy at all is a usage error, not an empty pass. */
+    @Test
+    void aMissingPolicyIsAUsageErrorNotAPass() throws Exception {
+        Path rep = report("np.jvm.json", List.of(entry("app.A.f", List.of("Net"))));
+        assertEquals(2, Query.run(new String[]{"gate", "--report", rep.toString()}),
+                "with no policy there is no verdict to give — never exit 0");
+    }
+
+    /** A corrupt report fails loudly rather than reading as an effect-free package (§3.1). */
+    @Test
+    void aCorruptReportFailsClosed() throws Exception {
+        Path bad = tmp.resolve("bad.jvm.json");
+        Files.writeString(bad, "{\"nope\": 1}");
+        assertEquals(2, Query.run(new String[]{"gate", "--report", bad.toString(),
+                "--policy", policy("deny Net app\n").toString()}));
+    }
+
+    /** `gate` takes no positionals, and a valueless `--gate-json` must not swallow the next flag (the
+     *  `--gate-json --policy p` shape that ran a scan GATELESS and green). A genuinely unknown flag is
+     *  {@link Candor#rejectUnknownFlag}'s shared exit-2 posture, which halts the JVM and so is pinned by
+     *  the out-of-process CLI suite rather than here. */
+    @Test
+    void strayPositionalsAndAValuelessGateJsonAreRejected() throws Exception {
+        Path rep = report("uf.jvm.json", List.of(entry("app.A.f", List.of("Net"))));
+        Path pol = policy("deny Exec app\n");
+        assertEquals(2, Query.run(new String[]{"gate", "--report", rep.toString(),
+                "--policy", pol.toString(), "somestray"}), "gate takes no positional args");
+        assertEquals(2, Query.run(new String[]{"gate", "--report", rep.toString(), "--gate-json"}),
+                "a valueless --gate-json must fail, never swallow the next flag");
+        assertEquals(2, Query.run(new String[]{"gate", "--report", rep.toString(),
+                "--gate-json", "--policy", pol.toString()}),
+                "a flag-shaped --gate-json value must fail — swallowing --policy here is exactly how a "
+                + "gate runs green with no policy at all");
+    }
+
+    /** `--gate-json` is a GATE flag: on a read-only query it would be silently inert, which reads as a
+     *  clean verdict to a wrapper that only checks the file exists. */
+    @Test
+    void gateJsonIsRejectedOnNonGateVerbs() throws Exception {
+        Path rep = report("gj.jvm.json", List.of(entry("app.A.f", List.of("Net"))));
+        assertEquals(2, Query.run(new String[]{"map", "--report", rep.toString(),
+                "--gate-json", tmp.resolve("v.json").toString()}));
+    }
+
+    /**
+     * The VERDICT DOCUMENT is the scanning path's, from the same writer — a consumer must not be able to
+     * tell the two routes apart from the output. Asserts the ⟨0.21⟩ {@code analyzed.count} rides from the
+     * report ENVELOPE rather than being invented, and that {@code --json} ≡ {@code --gate-json -}.
+     */
+    @Test
+    void theVerdictDocumentMatchesTheScanningPathsShape() throws Exception {
+        Path rep = report("v.jvm.json", List.of(
+                entry("app.A.f", List.of("Net")), entry("app.A.g", List.of("Fs"))));
+        Path out = tmp.resolve("verdict.json");
+        assertEquals(1, gate(rep, policy("deny Net app\n"), "--gate-json", out.toString()));
+        JsonObject v = JsonParser.parseString(Files.readString(out)).getAsJsonObject();
+        assertEquals(Candor.SPEC_VERSION, v.get("spec").getAsString());
+        assertFalse(v.get("ok").getAsBoolean());
+        assertEquals(2, v.getAsJsonObject("analyzed").get("count").getAsInt(),
+                "analyzed.count comes from the report envelope — the scan's own count is unavailable here "
+                + "and must not be faked from the entry list");
+        assertEquals(1, v.getAsJsonArray("violations").size());
+        JsonObject viol = v.getAsJsonArray("violations").get(0).getAsJsonObject();
+        assertEquals("AS-EFF-006", viol.get("rule").getAsString());
+        assertEquals("app.A.f", viol.get("fn").getAsString());
+        assertEquals("Net", viol.getAsJsonArray("effects").get(0).getAsString());
+    }
+
+    /**
+     * In {@code --json} mode STDOUT MUST BE PURE JSON. Found by piping the real CLI into a parser: the
+     * trailer line ("→ candor fix-gate names the remedy…") was written to {@code Candor.diagOut} AFTER the
+     * finally-block restored it to stdout, so it prefixed the verdict document and
+     * {@code candor gate … --json | jq} failed to parse. Both verdicts are asserted — the clean run prints
+     * "no violations" on the same stream and would corrupt stdout identically.
+     */
+    @Test
+    void inJsonModeStdoutIsPureJson() throws Exception {
+        Path rep = report("pj.jvm.json", List.of(entry("app.A.f", List.of("Net"))));
+        for (String pol : List.of("deny Net app\n", "deny Exec app\n")) {   // one failing, one clean
+            Candor.resetState();
+            java.io.PrintStream realOut = System.out;
+            java.io.PrintStream realDiag = Candor.diagOut;
+            java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+            try {
+                java.io.PrintStream cap =
+                        new java.io.PrintStream(buf, true, java.nio.charset.StandardCharsets.UTF_8);
+                System.setOut(cap);
+                // `Candor.diagOut` is a static initialised to System.out AT CLASS LOAD, so swapping
+                // System.out alone leaves it pointing at the REAL stdout — and the first version of this
+                // test passed against the bug for exactly that reason, because the stray trailer went to
+                // the console instead of the buffer. Point it at the capture too, which is the state a
+                // fresh process is actually in.
+                Candor.diagOut = cap;
+                gate(rep, policy(pol), "--json");
+            } finally {
+                System.setOut(realOut);
+                Candor.diagOut = realDiag;
+            }
+            String out = buf.toString(java.nio.charset.StandardCharsets.UTF_8);
+            JsonObject v = JsonParser.parseString(out).getAsJsonObject();   // throws if anything else rode along
+            assertTrue(v.has("ok") && v.has("violations"),
+                    "stdout must be the verdict document and nothing else, for policy: " + pol.trim());
+        }
+    }
+
+    /** ⟨0.21⟩ COMPLETENESS MANIFEST: a report declaring unanalyzed units cannot yield a green gate. The
+     *  scan path exits 2 on its own manifest; here the manifest travels ON the report and the same verdict
+     *  follows from it. */
+    @Test
+    void anIncompleteReportCannotProduceAGreenGate() throws Exception {
+        Map<String, Object> env = new LinkedHashMap<>();
+        env.put("candor", Map.of("version", "test", "toolchain", "test", "spec", Candor.SPEC_VERSION));
+        env.put("packages", List.of("app"));
+        env.put("analyzed", Map.of("count", 1, "digest", "0"));
+        env.put("unanalyzed", List.of(Map.of("path", "app/Broken.class", "reason", "unsupported class version")));
+        env.put("functions", List.of(entry("app.A.f", List.of("Fs"))));
+        Path rep = tmp.resolve("inc.jvm.json");
+        Files.writeString(rep, io.poly.candor.model.ReportJson.pretty(env));
+
+        Path out = tmp.resolve("incverdict.json");
+        assertEquals(2, gate(rep, policy("deny Net app\n"), "--gate-json", out.toString()),
+                "no violation, but the analysis was incomplete — exit 2 (could-not-evaluate), never 0");
+        JsonObject v = JsonParser.parseString(Files.readString(out)).getAsJsonObject();
+        assertFalse(v.get("ok").getAsBoolean(), "ok requires BOTH no violation AND a complete analysis");
+        assertTrue(v.get("incomplete").getAsBoolean());
+        assertEquals("app/Broken.class",
+                v.getAsJsonArray("unanalyzed").get(0).getAsJsonObject().get("path").getAsString());
+    }
+
+    /** The one difference between {@code scan --policy} and this verb is where the signature comes from —
+     *  so a report produced by a DIFFERENT engine (no `hash`, `::`-separated names, a foreign `unknownWhy`
+     *  prefix) must gate just as well. This is the supply-chain case. */
+    @Test
+    void gatesAForeignEnginesReport() throws Exception {
+        Path rep = report("rust.crate.json", List.of(
+                entry("app::client::post", List.of("Net"), List.of(), null),
+                entry("app::util::spawn", List.of("Unknown"), List.of("ambiguous:same-name"), null)));
+        assertEquals(1, gate(rep, policy("deny Net app::client\n")),
+                "a `::`-written name and scope must match (the §6.2 segment rule)");
+        Candor.resetState();
+        assertEquals(1, gate(rep, policy("deny Unknown[dispatch] app::util\n")),
+                "a foreign `ambiguous:` reason projects to `dispatch` (§6.2's normative table)");
+        Candor.resetState();
+        assertNotEquals(1, gate(rep, policy("deny Exec app\n")), "…and it is not just always-failing");
+    }
+}

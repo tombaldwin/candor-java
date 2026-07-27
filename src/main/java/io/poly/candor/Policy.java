@@ -222,7 +222,44 @@ final class Policy {
                     + " could not be read — failing (exit 2), policy NOT evaluated");
             System.exit(2);
         }
-        int v = 0;
+        return gate(gateInputFromScan(inferred));
+    }
+
+    /**
+     * ⟨0.24⟩ THE GATE'S INPUT — the seam between "what produced the signature" and "what §6.2 does with
+     * it". Every field is ALREADY ACCUMULATED: the gate performs no fixpoint and consults no scan state,
+     * so the same matching code serves both routes in.
+     *
+     * <p>{@link #gateInputFromScan} builds it from the classifier's per-scan direct maps (the fixpoints
+     * that used to sit inline in {@code checkPolicy}); {@link #gateInputFromReport} builds it from a
+     * WRITTEN report and nothing else. That is the whole point of SPEC §3.1 ⟨0.24⟩: until this split
+     * existed, the gate was reachable only THROUGH the classifier, so a defect in the gate and a defect in
+     * the classifier were indistinguishable from any end-to-end test. Do NOT re-implement the matching on
+     * the report side — the §6.2 clause that mandates this verb was written about exactly that mistake
+     * ("an open-coded second copy of the classification … drifting silently because nothing compared them").
+     *
+     * @param inferred          per fn, the TRANSITIVE effect set — the model's `S`, with candor's
+     *                          {@code Unknown} marker carried as a member (the engine encoding of `D ≠ ∅`)
+     * @param reasonClasses     per fn, the TRANSITIVE reason-class tokens — the model's `D` (§6.2 ⟨0.19⟩)
+     * @param netClasses        per Net-bearing fn, its ⟨0.20⟩ destination classes, already derived
+     * @param hosts/cmds/paths/tables  per fn, the TRANSITIVE literal surface for AS-EFF-008
+     * @param surfaceIncomplete per fn, the effects whose literal surface is structurally incomplete
+     *                          (the AS-EFF-008 fail-closed marker)
+     * @param edges             the call graph AS-EFF-009 walks
+     */
+    record GateInput(Map<String, EffectSet> inferred,
+                     Map<String, TreeSet<String>> reasonClasses,
+                     Map<String, List<String>> netClasses,
+                     Map<String, TreeSet<String>> hosts,
+                     Map<String, TreeSet<String>> cmds,
+                     Map<String, TreeSet<String>> paths,
+                     Map<String, TreeSet<String>> tables,
+                     Map<String, TreeSet<String>> surfaceIncomplete,
+                     Map<String, Set<String>> edges) {}
+
+    /** The scan route into the gate: accumulate the classifier's direct maps over the live call graph.
+     *  Byte-for-byte the fixpoints {@code checkPolicy} used to run inline. */
+    static GateInput gateInputFromScan(Map<String, EffectSet> inferred) {
         // Reason-scoped Unknown needs the reason CLASS to travel the same call graph the Unknown EFFECT does:
         // a fn that inherits Unknown from a reflect-caused callee is a reflect-class Unknown even though the
         // `reflect:*` reason was emitted DIRECTLY on the callee (unknownWhy is deliberately direct-only, for the
@@ -247,6 +284,32 @@ final class Policy {
         // closed masked-surface rule), so the gate and the report agree on what an fn's Net reaches.
         Map<String, TreeSet<String>> netHostsAcc = literalFixpoint(ctx().hostsDirect);
         Map<String, TreeSet<String>> netIncompleteAcc = literalFixpoint(ctx().surfaceIncomplete);
+        // Precomputed for every Net-bearing fn — the same set, computed by the same helper, the inline gate
+        // used to ask for lazily. `netClassesOf` is only ever called for an fn that HAS Net (it is the `deny`
+        // Net membership that triggers it), so materializing exactly those is behaviour-preserving.
+        Map<String, List<String>> netClasses = new HashMap<>();
+        for (var e : inferred.entrySet())
+            if (e.getValue().contains(Effect.NET))
+                netClasses.put(e.getKey(), netClassesOf(e.getKey(), netHostsAcc, netIncompleteAcc));
+        return new GateInput(inferred, reasonClassAcc, netClasses,
+                netHostsAcc,
+                literalFixpoint(ctx().cmdsDirect),
+                literalFixpoint(ctx().pathsDirect),
+                literalFixpoint(ctx().tablesDirect),
+                netIncompleteAcc,
+                ctx().edges);
+    }
+
+    /**
+     * ⟨0.24⟩ Apply the parsed §6.2 policy to an already-accumulated signature. THE ONLY matching code in
+     * this engine — {@code scan --policy} and {@code gate --report} both land here, which is what makes
+     * "the same verdict from the same signature" a property of the code rather than of two consistent
+     * authors. Returns the violation count; the caller owns the exit code.
+     */
+    static int gate(GateInput gi) {
+        int v = 0;
+        Map<String, EffectSet> inferred = gi.inferred();
+        Map<String, TreeSet<String>> reasonClassAcc = gi.reasonClasses();
         // AS-EFF-006: a method in scope must not perform (transitively) a denied effect.
         for (var e : new TreeMap<>(inferred).entrySet()) {
             String fn = e.getKey();
@@ -287,7 +350,7 @@ final class Policy {
                 // destination classes. Fail-closed: a masked surface OR a Net with no visible host is unknown-host,
                 // so `deny Net[unknown-host]` bites anything candor can't positively identify as telemetry/partner.
                 if (bad.toNames().contains("Net") && !r.netClasses().isEmpty()) {
-                    List<String> fnNet = netClassesOf(fn, netHostsAcc, netIncompleteAcc);
+                    List<String> fnNet = gi.netClasses().getOrDefault(fn, List.of());
                     boolean matched = fnNet.stream().anyMatch(r.netClasses()::contains);
                     if (!matched) bad = bad.without(Effect.NET);       // tolerated: only asserted-safe destinations
                 }
@@ -301,7 +364,7 @@ final class Policy {
                     // ⟨0.20⟩ when Net is denied, record ALL of the fn's destination classes (transitive) so a
                     // --gate-json consumer sees which class the security gate bit — bare `deny Net` too.
                     List<String> netClass = bn.contains("Net")
-                            ? netClassesOf(fn, netHostsAcc, netIncompleteAcc)
+                            ? gi.netClasses().getOrDefault(fn, List.of())
                             : java.util.List.of();
                     diag(DiagnosticCode.AS_EFF_006, bn, reasonClass, netClass, "`%s` performs { %s }, forbidden by policy%s: `%s`",
                             fn, String.join(", ", bn),
@@ -330,8 +393,8 @@ final class Policy {
         // Certifies the VISIBLE literal surface (propagated transitively). A method whose surface is empty OR
         // INCOMPLETE (a structurally-invisible reach — see surfaceIncomplete) can't be certified: fail-closed,
         // so a benign visible literal can't MASK an invisible forbidden endpoint.
-        Map<String, TreeSet<String>> incomplete = literalFixpoint(ctx().surfaceIncomplete);
-        Map<String, TreeSet<String>> hostFixpoint = literalFixpoint(ctx().hostsDirect);
+        Map<String, TreeSet<String>> incomplete = gi.surfaceIncomplete();
+        Map<String, TreeSet<String>> hostFixpoint = gi.hosts();
         v += checkAllowlist(inferred, "Net", hostFixpoint, incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> hostPart(a).equals(hostPart(reached))));
         // `Llm` ⟨0.13⟩ rides Net's host literal (SPEC §1) — `allow Llm <host…>` restricts which MODEL
@@ -341,17 +404,17 @@ final class Policy {
         // visible model host can't MASK an invisible forbidden one).
         v += checkAllowlist(inferred, "Llm", hostFixpoint, incompleteAsLlm(incomplete),
                 (allowed, reached) -> allowed.stream().anyMatch(a -> hostPart(a).equals(hostPart(reached))));
-        v += checkAllowlist(inferred, "Exec", literalFixpoint(ctx().cmdsDirect), incomplete,
+        v += checkAllowlist(inferred, "Exec", gi.cmds(), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> cmdBase(a).equals(cmdBase(reached))));
-        v += checkAllowlist(inferred, "Fs", literalFixpoint(ctx().pathsDirect), incomplete,
+        v += checkAllowlist(inferred, "Fs", gi.paths(), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> pathCovered(a, reached)));
-        v += checkAllowlist(inferred, "Db", literalFixpoint(ctx().tablesDirect), incomplete,
+        v += checkAllowlist(inferred, "Db", gi.tables(), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> tableCovered(a, reached)));
         // AS-EFF-009: a method in scope A must not transitively reach into scope B (over the call graph).
         for (PolicyRule.Forbid r : ctx().forbidRules) {
-            for (String fn : new TreeSet<>(ctx().edges.keySet())) {
+            for (String fn : new TreeSet<>(gi.edges().keySet())) {
                 if (!scopeMatches(fn, r.from())) continue;
-                String hit = reachesScope(fn, r.to());
+                String hit = reachesScope(gi.edges(), fn, r.to());
                 if (hit != null) {
                     diag(DiagnosticCode.AS_EFF_009, "`%s` reaches into a forbidden layer (via `%s`), "
                             + "violating policy: `forbid %s -> %s`", fn, hit, r.from(), r.to());
@@ -360,6 +423,84 @@ final class Policy {
             }
         }
         return v;
+    }
+
+    /**
+     * ⟨0.24⟩ THE REPORT ROUTE INTO THE GATE (SPEC §3.1 `gate --report`) — a signature read from a written
+     * report, with no scan and no classifier.
+     *
+     * <p><b>THE MUST NOT, and how this method satisfies it.</b> §3.1 ⟨0.24⟩: "An engine MUST NOT re-derive,
+     * widen, or re-classify anything while serving this verb: it reads `S` and `D` from the report as given
+     * … In particular a report entry that is ABSENT is absent — the ⟨0.21⟩ purity claim — and MUST NOT be
+     * back-filled from a callgraph sidecar or a chained dep." So the ONLY input here is {@code fns} (the
+     * report's own {@code functions} array) and {@code rawUnknownWhy} (the same array's {@code unknownWhy}
+     * strings, read raw — see below). Concretely, and each of these is a thing this codebase's SCAN loader
+     * does and this method does not:
+     * <ul>
+     *   <li>no {@code .callgraph.json} sidecar (unlike {@code callers}/{@code tour}/{@code whatif}/{@code
+     *       fix}, which all call {@link Query#loadCallgraph}) — an fn absent from {@code functions} has NO
+     *       entry here even if the sidecar names it;</li>
+     *   <li>no {@code CANDOR_DEPS} / {@code .candor/config} dep chaining ({@link Loader}), no
+     *       {@code .hierarchy.json}, no CHA, no κ ledger;</li>
+     *   <li>no re-classification: {@code hosts}/{@code cmds}/{@code paths}/{@code tables} and
+     *       {@code netClass} are taken VERBATIM (they are already transitive on the wire — see
+     *       {@code ReportWriter#writeJson}, which writes the fixpointed accumulators), so no literal is
+     *       re-matched and no host is re-mapped through THIS process's {@code net-partner} config.</li>
+     * </ul>
+     *
+     * <p><b>{@code surfaceIncomplete} is left EMPTY, and that is why {@code gate --report} refuses every
+     * AS-EFF-008 {@code allow} rule</b> ({@link Query#gate}). The marker does not ride the ⟨0.24⟩ wire in
+     * any form. The first cut of this method reconstructed it for {@code Net} from
+     * {@code netClass ∋ unknown-host}; the scan-vs-gate equivalence test refuted that in one run, because
+     * {@code unknown-host} is OVERLOADED — {@link Literals#netDestClass} returns it for any host it does
+     * not recognise, so a function with a perfectly visible {@code api.stripe.com} carries it too. Reading
+     * it as "masked" flagged 2 functions the scan passes. The reconstruction was not merely imprecise, it
+     * was reading a different predicate. Leaving the map empty would instead fail OPEN (a masked command
+     * beside a benign literal would be CERTIFIED), so the rule is refused rather than evaluated.
+     *
+     * <p>The one thing that IS computed is the TRANSITIVE closure of the reason classes — because
+     * {@code unknownWhy} is direct-only by contract (§4) while §6.2 requires the class set to resolve
+     * "TRANSITIVELY, over the same reach the gate uses". It is computed by the SHARED
+     * {@link Literals#literalFixpoint(Map, Map)} over the report's own {@code calls} edges: report data in,
+     * report data out, and the same function the scan path uses, so the two cannot drift.
+     *
+     * @param rawUnknownWhy the report's {@code unknownWhy} strings, UNPARSED. {@link Effector#unknownWhy()}
+     *        holds {@link UnknownReason}s, and {@code ReportJson.parseEntries} drops any tag with no colon
+     *        ({@code UnknownReason.parse} returns null) — so a foreign engine's dot-free {@code
+     *        missing-config} marker would vanish, taking a real disclosure out of `D` beside a surviving
+     *        one. Since `D` is half the signature this verb exists to gate on, it is read raw. Pass an empty
+     *        map to fall back to the parsed reasons.
+     */
+    static GateInput gateInputFromReport(List<Effector> fns, Map<String, List<String>> rawUnknownWhy) {
+        Map<String, EffectSet> inferred = new HashMap<>();
+        Map<String, Set<String>> edges = new HashMap<>();
+        Map<String, TreeSet<String>> whyDirect = new HashMap<>();
+        Map<String, List<String>> netClasses = new HashMap<>();
+        Map<String, TreeSet<String>> hosts = new HashMap<>(), cmds = new HashMap<>(),
+                paths = new HashMap<>(), tables = new HashMap<>(), incomplete = new HashMap<>();
+        for (Effector e : fns) {
+            String fn = e.fn();
+            // JOIN on a repeated `fn` rather than overwrite: a duplicate key is malformed input, and taking
+            // the union is the direction that cannot turn a violation into a pass.
+            inferred.merge(fn, e.inferred(), EffectSet::join);
+            edges.computeIfAbsent(fn, k -> new HashSet<>()).addAll(e.calls());
+            if (!e.hosts().isEmpty()) hosts.computeIfAbsent(fn, k -> new TreeSet<>()).addAll(e.hosts());
+            if (!e.cmds().isEmpty()) cmds.computeIfAbsent(fn, k -> new TreeSet<>()).addAll(e.cmds());
+            if (!e.paths().isEmpty()) paths.computeIfAbsent(fn, k -> new TreeSet<>()).addAll(e.paths());
+            if (!e.tables().isEmpty()) tables.computeIfAbsent(fn, k -> new TreeSet<>()).addAll(e.tables());
+            if (!e.netClass().isEmpty())
+                netClasses.computeIfAbsent(fn, k -> new ArrayList<>()).addAll(e.netClass());
+            // `incomplete` stays empty — see the class note above. Every `allow` rule is refused upstream.
+            List<String> raw = rawUnknownWhy.get(fn);
+            if (raw == null || raw.isEmpty())
+                raw = e.unknownWhy().stream().map(UnknownReason::format).collect(Collectors.toList());
+            // Classify via the STRING path, identical to the scan route (which deliberately uses
+            // `classify(ur.format())` rather than the structured `of(ur)`) and to rust/ts/swift.
+            for (String why : raw)
+                whyDirect.computeIfAbsent(fn, k -> new TreeSet<>()).add(ReasonClass.classify(why).token());
+        }
+        return new GateInput(inferred, literalFixpoint(whyDirect, edges), netClasses,
+                hosts, cmds, paths, tables, incomplete, edges);
     }
 
     /** Re-key the surface-incompleteness map so an incomplete "Net" surface ALSO reads incomplete for
@@ -654,25 +795,24 @@ final class Policy {
      *  exactly like a chosen one. Breadth-first with a SORTED expansion makes it the nearest crossing —
      *  the boundary a reader would actually hoist — with ties broken by name, so the answer is a fact
      *  about the call graph rather than about string hashing. */
-    static String reachesScope(String start, String scope) {
-        AnalysisContext c = ctx();
-        Deque<String> q = new ArrayDeque<>(sortedCallees(c, start));
+    static String reachesScope(Map<String, Set<String>> edges, String start, String scope) {
+        Deque<String> q = new ArrayDeque<>(sortedCallees(edges, start));
         Set<String> seen = new HashSet<>();
         while (!q.isEmpty()) {
             String n = q.poll();                       // poll, not pop: FIFO == nearest-first
             if (!seen.add(n)) continue;
             if (scopeMatches(n, scope)) return n;
-            for (String cc : sortedCallees(c, n)) if (!seen.contains(cc)) q.add(cc);
+            for (String cc : sortedCallees(edges, n)) if (!seen.contains(cc)) q.add(cc);
         }
         return null;
     }
 
-    /** {@code fn}'s callees in a stable order. {@code ctx().edges} values are {@code HashSet}s, so this is
+    /** {@code fn}'s callees in a stable order. The graph's values are {@code HashSet}s, so this is
      *  the one place the ordering of a BFS layer is decided; sorting here keeps the tie-break a property of
      *  the NAMES rather than of their hash codes. Returns the shared empty list for a leaf, so the common
      *  case allocates nothing. */
-    private static List<String> sortedCallees(AnalysisContext c, String fn) {
-        Set<String> cs = c.edges.get(fn);
+    private static List<String> sortedCallees(Map<String, Set<String>> edges, String fn) {
+        Set<String> cs = edges.get(fn);
         if (cs == null || cs.isEmpty()) return List.of();
         List<String> out = new ArrayList<>(cs);
         Collections.sort(out);

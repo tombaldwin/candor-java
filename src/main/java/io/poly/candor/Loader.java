@@ -159,12 +159,30 @@ final class Loader {
         try {
             JsonElement root = JsonParser.parseString(Files.readString(f));
             if (!root.isJsonObject()) return;                    // an unexpected shape names no supertype
+            // ⟨the superclass split⟩ Read the marker FIRST — JSON object order is not a contract, so a
+            // class key may arrive before it. Its ABSENCE is the old sidecar shape and means the kinds are
+            // unknown, which is exactly what every consumer assumed before this key existed; reading an
+            // unmarked list as all-interfaces or all-classes would be a guess, and both guesses are wrong
+            // in a direction this vein has already paid for.
+            JsonElement marker = root.getAsJsonObject().get(ReportWriter.SUPERCLASS_KEY);
+            boolean split = marker != null && marker.isJsonObject();
             for (var e : root.getAsJsonObject().entrySet()) {
-                if (!e.getValue().isJsonArray()) continue;
+                if (!e.getValue().isJsonArray()) continue;       // the marker (an OBJECT) is skipped here
                 List<String> sup = new ArrayList<>();
                 for (JsonElement x : e.getValue().getAsJsonArray())
                     if (x.isJsonPrimitive()) sup.add(x.getAsString().replace('.', '/'));
-                if (!sup.isEmpty()) ctx().depSupers.putIfAbsent(e.getKey().replace('.', '/'), sup);
+                if (sup.isEmpty()) continue;
+                String internal = e.getKey().replace('.', '/');
+                // The split must come from the SAME sidecar as the list, or a later report's kinds would be
+                // applied to an earlier one's supertypes — `putIfAbsent` keeps the first, so gate on it.
+                if (ctx().depSupers.putIfAbsent(internal, sup) == null && split) {
+                    ctx().depSplitKnown.add(internal);
+                    JsonElement s = marker.getAsJsonObject().get(e.getKey());
+                    // Absent = the superclass is java/lang/Object (or this is an interface): every listed
+                    // supertype is an interface. The writer omits it for exactly that case.
+                    if (s != null && s.isJsonPrimitive())
+                        ctx().depSuperclass.put(internal, s.getAsString().replace('.', '/'));
+                }
             }
             // INSTRUMENT THE PRECONDITION, not the output. A diff cannot show that a mechanism never fired
             // (a sidecar that loads zero types looks exactly like one that loads thousands and is never

@@ -702,6 +702,15 @@ public final class Query {
             var o = JsonParser.parseString(Files.readString(Path.of(hPath))).getAsJsonObject();
             Map<String, List<String>> h = new LinkedHashMap<>();
             for (var e : o.entrySet()) {
+                // SKIP any entry whose value is not an ARRAY. That is the sidecar's extension point, and
+                // this is its SECOND reader: `getAsJsonArray()` THROWS on an object, and the catch below
+                // swallows it into `return null`, which discards the WHOLE hierarchy and drops the dispatch
+                // frontier back to a bare simple-name match. Adding {@link ReportWriter#SUPERCLASS_KEY}
+                // broke exactly this, while {@code Loader#loadDepHierarchy} — which already skipped
+                // non-arrays — was fine: the compatibility argument was true of one reader and untrue of
+                // the other, and the whole suite was green through it. Pinned by
+                // {@code QueryIncludeUnknownTest#aSidecarSiblingKeyDoesNotDiscardTheWholeHierarchy}.
+                if (!e.getValue().isJsonArray()) continue;
                 List<String> sup = new ArrayList<>();
                 for (JsonElement v : e.getValue().getAsJsonArray()) sup.add(v.getAsString());
                 h.put(e.getKey(), sup);

@@ -8,6 +8,26 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⚠ ⟨0.7⟩ The type-hierarchy sidecar records WHICH supertype is the superclass** (`ReportWriter`,
+  `Loader`, `Cha`, `Query`). `writeHierarchy` wrote a sorted set and threw the kinds away, so a chain lying
+  ENTIRELY inside a chained dependency stayed depth-ordered at the consumer and the JLS 15.12.2.5 / 8.4.8
+  rule `9f8e71c` implemented — a concrete method inherited from a superclass beats an interface `default`
+  at any depth — could not be applied to it. A dep interface `default` therefore shadowed a dep superclass
+  body two hops up: both halves of the honesty invariant at once, the real effect dropped AND the
+  interface's charged in its place. The sidecar now also carries `"@superclass"`, a sibling key whose value
+  is an OBJECT of type → superclass; its PRESENCE is what tells a consumer the kinds are known, and a
+  sidecar without it keeps exactly the depth-ordered answer that shipped rather than a guess — reading an
+  unmarked list as all-interfaces would push a real superclass below an interface and manufacture the very
+  under-report the ordering exists to close. No version gate on either side: an object value is skipped by
+  the array-only readers, so an older consumer ignores it. ⚠ a chained consumer may newly report the
+  superclass body's effects instead of an interface default's — an effect can APPEAR (the under-report) and
+  one can DISAPPEAR (the fabrication that replaced it). Measured on 7 chained real jar pairs: 125 of 2 702
+  dependency-hierarchy resolution orders change (4.6%; logback-classic 65, httpclient 23, httpclient5 21,
+  spring-beans 16) and 2 214 dep types load with a known split — with **0 report changes**: 0 gains, 0
+  losses, identical entry and Unknown counts, every dep report byte-identical apart from its build id. The
+  fixture is the evidence and the corpus is the fabrication control. `Query.loadHierarchy` was the SECOND
+  reader of this file and did NOT skip non-array values — it threw, swallowed it into `return null`, and
+  discarded the whole hierarchy, dropping the dispatch frontier to a simple-name match. Fixed with it.
 - **⚠ ⟨0.21⟩ A chained report that DECLARES ITSELF INCOMPLETE no longer grants coverage** (`Loader`).
   SPEC §2 rule 3 turns a report's silence into a purity claim; a report carrying a non-empty `unanalyzed`
   has just said it never read some of its own source, so its silence about that source answers nothing —

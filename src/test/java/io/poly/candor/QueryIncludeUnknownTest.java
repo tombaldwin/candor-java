@@ -92,6 +92,32 @@ class QueryIncludeUnknownTest {
                 "no flag -> no possibleViaUnknownDispatch key (cross-engine parity preserved)");
     }
 
+    @Test void aSidecarSiblingKeyDoesNotDiscardTheWholeHierarchy() throws Exception {
+        // THE SECOND READER. `ReportWriter.writeHierarchy` gained a sibling key whose value is an OBJECT,
+        // and the compatibility argument for it — "the reader skips any non-array value" — was true of
+        // `Loader.loadDepHierarchy` and untrue HERE: `getAsJsonArray()` throws on an object, the catch
+        // returns null, and the WHOLE hierarchy is discarded, dropping the dispatch frontier back to a bare
+        // simple-name match. Nothing in the suite could see it. Mutate the `isJsonArray` skip out of
+        // `Query.loadHierarchy` and this test fails.
+        java.nio.file.Path base = java.nio.file.Files.createTempDirectory("candor-side");
+        try {
+            java.nio.file.Path rep = base.resolve("r.json");
+            java.nio.file.Files.writeString(rep, "{\"candor\":{},\"functions\":[]}");
+            java.nio.file.Files.writeString(base.resolve("r.hierarchy.json"),
+                    "{\"app.Impl\": [\"app.Base\"], \"" + ReportWriter.SUPERCLASS_KEY
+                            + "\": {\"app.Impl\": \"app.Base\"}, \"app.Other\": [\"app.Base\"]}");
+            Map<String, List<String>> h = Query.loadHierarchy(rep.toString());
+            assertTrue(h != null, "one unreadable sibling key discarded the entire hierarchy");
+            assertEquals(List.of("app.Base"), h.get("app.Impl"), "the class keys must survive");
+            assertEquals(List.of("app.Base"), h.get("app.Other"),
+                    "a class key AFTER the sibling key must survive too — the loop must skip, not abort");
+            assertFalse(h.containsKey(ReportWriter.SUPERCLASS_KEY),
+                    "the sibling key must not become a phantom TYPE in the subtype walk");
+        } finally {
+            TestCompiler.rm(base);
+        }
+    }
+
     private static String capture(Runnable r) {
         PrintStream orig = System.out;
         ByteArrayOutputStream buf = new ByteArrayOutputStream();

@@ -56,6 +56,46 @@ class CrossScanBoundaryTest {
         }
     }
 
+    /** {@link #scanChained}, with a chance to REWRITE the hierarchy sidecar between the two scans — the only
+     *  way to test what a consumer does with a sidecar it did not write (an older producer's, say). */
+    private static Map<String, EffectSet> scanChainedRewritingSidecar(Map<String, String> lib,
+            Map<String, String> app, java.util.function.UnaryOperator<String> rewrite) throws Exception {
+        Path appDir = compileApp(lib, app);
+        Path base = appDir.getParent();
+        Config saved = Candor.config;
+        try {
+            Path depReport = base.resolve("dep.json");
+            Candor.config = Config.empty();
+            ReportWriter.writeReport(Candor.runScan(base.resolve("lib")), depReport.toString(), null);
+            Path side = base.resolve("dep.hierarchy.json");
+            Files.writeString(side, rewrite.apply(Files.readString(side)));
+            Files.createDirectories(base.resolve(".candor"));
+            Files.writeString(base.resolve(".candor/config"), "deps " + depReport + "\n");
+            Candor.config = Config.forTarget(appDir);
+            return Candor.runScan(appDir);
+        } finally {
+            Candor.config = saved;
+            rm(base);
+        }
+    }
+
+    /** Scan `lib` and `app` as ONE tree — the control that says whether a chained answer is a boundary
+     *  defect or a general limitation. */
+    private static Map<String, EffectSet> scanOneTree(Map<String, String> lib, Map<String, String> app)
+            throws Exception {
+        Map<String, String> both = new java.util.HashMap<>(lib);
+        both.putAll(app);
+        Path dir = TestCompiler.compile(both);
+        Config saved = Candor.config;
+        try {
+            Candor.config = Config.empty();
+            return Candor.runScan(dir);
+        } finally {
+            Candor.config = saved;
+            rm(dir.getParent());
+        }
+    }
+
     /** Scan `app` alone with NOTHING chained — the honest baseline (the dep package is disclosed invisible). */
     private static Map<String, EffectSet> scanUnchained(Map<String, String> lib, Map<String, String> app)
             throws Exception {
@@ -553,6 +593,87 @@ class CrossScanBoundaryTest {
 
     private static boolean fs(Map<String, EffectSet> r, String m) {
         return r.getOrDefault(m, EffectSet.empty()).toNames().contains("Fs");
+    }
+
+    private static boolean exec(Map<String, EffectSet> r, String m) {
+        return r.getOrDefault(m, EffectSet.empty()).toNames().contains("Exec");
+    }
+
+    // ---- JVM RESOLUTION ORDER FOR A CHAIN LYING ENTIRELY INSIDE THE DEPENDENCY --------------------------
+    // `9f8e71c` made all four supertype walks resolve the CLASS chain before any interface and left ONE
+    // residual: the sidecar recorded a dep type's supertypes as a sorted set with no superclass marker, so
+    // for those types the kind was unknown and the JLS rule could not be applied. Its own tests put the
+    // branching class in the APP, where a project ClassNode states the split. Here every link is in `lib`.
+
+    private static final Map<String, String> LIB9 = Map.of(
+        // the body the JVM actually runs — Fs
+        "lib/Root9.java", "package lib;\npublic class Root9 {\n"
+            + "  public void emit(String s){ new java.io.File(\"/tmp/candor-y\").exists(); }\n}\n",
+        "lib/Mid9.java", "package lib;\npublic class Mid9 extends Root9 {}\n",
+        // NEARER in a depth-ordered walk, and a different effect so either error is visible — Env
+        "lib/Trace9.java", "package lib;\npublic interface Trace9 {\n"
+            + "  default void emit(String s){ System.getenv(\"HOME\"); }\n}\n",
+        "lib/Half9.java", "package lib;\npublic class Half9 extends Mid9 implements Trace9 {}\n",
+        // a THIRD effect, reachable only if an unknown-kind supertype is demoted to the interface phase.
+        // Exec rather than Log: `System.out.println` produces no report entry at all, and with no entry
+        // the mutant that reads an unmarked list as all-interfaces changes nothing and the second fixture
+        // could not fail — which is exactly what mutating it showed before this line was Exec.
+        "lib/Loud9.java", "package lib;\npublic interface Loud9 {\n"
+            + "  default void emit(String s){ try { new ProcessBuilder(s).start(); } catch (Exception e) {} }\n}\n");
+
+    /** The app's own class implements a dep interface DIRECTLY, so the readings of an unmarked supertype
+     *  list — walk it in the phase we are already in (what shipped) versus demote it to the interface phase
+     *  — give different answers instead of coinciding. Without this the second fixture could not fail. */
+    private static final Map<String, String> APP9 = Map.of("app/S.java", String.join("\n",
+        "package app; import lib.*;",
+        "public class S extends Half9 implements Loud9 {",
+        "  public void go(){ emit(\"x\"); }",
+        "}"));
+
+    @Test
+    void anUnmarkedHierarchySidecarKeepsEXACTLYTodaysDepthOrderedAnswer() throws Exception {
+        // THE SECOND FIXTURE, AND IT WAS WRITTEN FIRST. A sidecar an older producer wrote carries no
+        // superclass marker, and the fallback for it must be the behaviour that shipped, not a guess:
+        // reading an unmarked list as ALL INTERFACES would push a real superclass below an interface and
+        // charge `Loud9`'s body, which the JVM never runs here. Mutate `resolutionOrder`'s unknown-kind
+        // branch to `ifaceQ.addAll(dep)` and this test fails.
+        Map<String, EffectSet> r = scanChainedRewritingSidecar(LIB9, APP9, CrossScanBoundaryTest::unmark);
+        assertTrue(env(r, "app.S.go"),
+                "an unmarked sidecar must keep the depth-ordered answer that shipped, got " + r.get("app.S.go"));
+        assertFalse(exec(r, "app.S.go"),
+                "an unmarked supertype list read as ALL INTERFACES puts a dep interface above a dep "
+                        + "superclass — a body the JVM never runs, got " + r.get("app.S.go"));
+    }
+
+    @Test
+    void aChainInsideTheDependencyResolvesClassFirstOnceTheSidecarMarksItsSuperclass() throws Exception {
+        // THE ROW. `S.go` resolves to `Root9.emit` (Fs) — JLS 15.12.2.5 / 8.4.8, the class wins at any
+        // depth — where the depth-ordered walk settled on `Trace9`'s default (Env) two hops earlier.
+        Map<String, EffectSet> r = scanChained(LIB9, APP9);
+        assertTrue(fs(r, "app.S.go"),
+                "a chain lying entirely inside the dependency must resolve CLASS-first: Root9.emit is the "
+                        + "body the JVM runs, got " + r.get("app.S.go"));
+        assertFalse(env(r, "app.S.go"),
+                "Trace9's default is SHADOWED by the inherited class body — charging its Env is a "
+                        + "fabrication on a method that never runs, got " + r.get("app.S.go"));
+        assertFalse(exec(r, "app.S.go"),
+                "Loud9 loses to the whole class chain, got " + r.get("app.S.go"));
+        // THE SINGLE-TREE CONTROL: as one tree candor already says Fs, so the split was the thing wrong.
+        Map<String, EffectSet> one = scanOneTree(LIB9, APP9);
+        assertTrue(one.get("app.S.go").toNames().contains("Fs"),
+                "the single-tree control must be Fs, or this is a limitation and not a boundary defect; got "
+                        + one.get("app.S.go"));
+        assertFalse(one.get("app.S.go").toNames().contains("Env"), "single-tree control");
+    }
+
+    /** Strip the {@code @superclass} object from a sidecar — the shape every producer before this rung
+     *  wrote. Asserts it actually removed something, so the second fixture cannot pass vacuously. */
+    @SuppressWarnings("unchecked")
+    private static String unmark(String sidecar) {
+        Map<String, Object> m = new Gson().fromJson(sidecar, Map.class);
+        assertTrue(m.remove(ReportWriter.SUPERCLASS_KEY) != null,
+                "the producer never wrote a marker — this fixture would pass vacuously");
+        return new Gson().toJson(m);
     }
 
     @Test

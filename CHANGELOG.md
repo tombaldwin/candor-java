@@ -8,6 +8,21 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⟨0.24⟩ The frontier's `viaDispatchOn` join sorts by UNICODE CODE POINT, not by UTF-16 code unit**
+  (`Query`). One function carrying several `dispatch:` reasons gets one entry whose `viaDispatchOn` is the
+  sorted, deduplicated, comma-joined union of the dispatched members and the raw dot-free details — and the
+  spec pins the collation, because the natural implementation differs per language and two engines must not
+  drift on a field neither of them re-parses. Rust's `BTreeSet<&str>` gives code-point order for free;
+  java's `TreeSet` used NATURAL String ordering, which is `String.compareTo` — UTF-16 code unit — agreeing
+  on ASCII and disagreeing above the BMP, where a supplementary character sorts as if it were below every
+  BMP character from `U+E000` up. Reachable rather than theoretical: the dotted form is `<owner>.<member>`
+  built from user identifiers, and all four analysed languages permit non-ASCII ones. Now an explicit
+  code-point comparator. Deliberately NOT `getBytes(UTF_8)` compared unsigned, which is the shorter spelling
+  of the same order but is lossy on an unpaired surrogate (all of them encode to `?`) — a `TreeSet` reads
+  `compare == 0` as a duplicate, so two distinct details would silently collapse to one, reintroducing the
+  drop class this rung exists to close. Both hazards pinned: the ordering test uses `U+1D400` against
+  `U+FB00` (the two orders disagree, so it fails under natural ordering) and the collapse test fails under
+  the byte comparator. All-ASCII output is byte-identical.
 - **⟨0.24⟩ A DOT-FREE `dispatch:` detail is DISCLOSED on the `callers --include-unknown` frontier, not
   dropped** (`Query`). A detail with no dot (candor-rust emits `dispatch:untyped cross-package receiver`
   when no owner type could be formed at all) names no `OWNER` and no `M`, so condition (3) — "is a

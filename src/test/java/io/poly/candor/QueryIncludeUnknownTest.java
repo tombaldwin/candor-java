@@ -195,6 +195,51 @@ class QueryIncludeUnknownTest {
                         + "`main`, so the subtype test still decides it and it stays OUT");
     }
 
+    /** The mixed-source graph: TWO confirmed reachers with different simple names, so two dotted reasons
+     *  can both pass condition (3) and be joined with a dot-free one. `write` is here to sort AFTER the
+     *  dot-free detail — see the test. */
+    private static Map<String, List<String>> mixedGraph() {
+        Map<String, List<String>> cg = new TreeMap<>();
+        cg.put("app.Impl.run", List.of("app.Sink.touch"));
+        cg.put("app.Zed.write", List.of("app.Sink.touch"));
+        cg.put("app.Sink.touch", List.of());
+        cg.put("app.Frontier.go", List.of());
+        return cg;
+    }
+
+    @Test void aMixedSourceJoinsTheUnionSortedAndDeduplicated() {
+        // SPEC §3.1 ⟨0.24⟩: one function carrying SEVERAL `dispatch:` reasons gets ONE entry, whose
+        // `viaDispatchOn` is the SORTED, DEDUPLICATED, comma-joined union of the dispatched members (`M`, per
+        // dotted reason that passed condition (3)) and the RAW DETAILS (per dot-free one). Sorted and
+        // deduplicated precisely so two engines cannot drift on a field neither of them re-parses — and the
+        // cross-impl differential only does a SUBSTRING check on this field, so it cannot catch a drift here.
+        // This asserts the LITERAL string.
+        //
+        // The fixture is built so encounter order and sort order DISAGREE: `write` sorts AFTER the dot-free
+        // detail, so the expected string INTERLEAVES the two kinds. A "dotted members first, then dot-free"
+        // join, or any encounter-order join, produces a different literal and fails here.
+        Map<String, List<String>> hier = Map.of("app.Impl", List.of("app.Base"), "app.Zed", List.of("app.Base"));
+        Map<String, Set<String>> broad = Map.of("app.Frontier.go", new java.util.LinkedHashSet<>(
+                List.of("untyped cross-package receiver",  // dot-free    -> the raw detail
+                        "app.Base.write",                  // dotted, app.Zed  <: app.Base -> `write`
+                        "app.Base.run")));                 // dotted, app.Impl <: app.Base -> `run`
+        assertEquals(Map.of("app.Frontier.go", "run,untyped cross-package receiver,write"),
+                frontier(mixedGraph(), broad, hier),
+                "one entry; the union sorted in byte order, comma-joined, kinds interleaved");
+    }
+
+    @Test void twoDottedReasonsOnTheSameMemberYieldThatMemberOnce() {
+        // DEDUPLICATION, its own case: two DISTINCT dotted reasons whose member name is the same `M` collapse
+        // to one `M`. `app.Impl` is a subtype of BOTH `app.Base` and `app.Other`, so `app.Base.run` and
+        // `app.Other.run` both pass condition (3) and both contribute `run` — it must appear ONCE. (Two
+        // identical raw details cannot arise: the per-function reason collection is already a set upstream.)
+        Map<String, List<String>> hier = Map.of("app.Impl", List.of("app.Base", "app.Other"));
+        Map<String, Set<String>> broad = Map.of("app.Frontier.go",
+                new java.util.LinkedHashSet<>(List.of("app.Base.run", "app.Other.run")));
+        assertEquals(Map.of("app.Frontier.go", "run"), frontier(broad, hier),
+                "the same member reached through two owners is listed once, not `run,run`");
+    }
+
     @Test void anEmptyHierarchySidecarIsTheSameInputAsAnAbsentOne() {
         // MEASURED BEFORE THE FIX: the guard was `hier == null`, so a sidecar that exists and parses to `{}`
         // was NON-null and honoured as a real hierarchy — `isSubtypeOf` then failed for every type, condition

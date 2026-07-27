@@ -151,6 +151,12 @@ Name queries resolve exact > segment-suffix (`Svc.save` matches `com.example.Svc
   method (lambdas + anonymous/local classes are edged at their creation site).
 - **Multi-module**: set `CANDOR_DEPS=dep-report.json:…` so calls into separately-analyzed modules
   inherit their effects instead of reading pure; or analyze app + deps on one classpath for full CHA.
+  A chained report produced by a **different build** has its effects downgraded to `Unknown` and grants
+  its packages **no coverage** (spec §2.1); one that declares itself **incomplete** — a non-empty ⟨0.21⟩
+  `unanalyzed` — grants no coverage either, but its entries are KEPT (they came from source it *did*
+  read). In both cases a key the report does not answer falls back to the κ ledger's `invisible: [pkg]`
+  hedge rather than reading pure, and the reason is printed on stderr. Chaining a report is therefore
+  never worse than not chaining it.
 - **Whole-app precision**: set `CANDOR_CLOSED_WORLD=1` to assert the scanned classes are the COMPLETE
   world — a broad (>12-impl) dispatch over a *project-defined* type then resolves to the exact union of
   its impls instead of dropping to `Unknown` (e.g. a 40-enum `IdentifiableEnum::getId` → pure, not a

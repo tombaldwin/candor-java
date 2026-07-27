@@ -608,11 +608,22 @@ final class ReportWriter {
      *  one short list each), so the precise dispatch-frontier query can resolve "is R an override of
      *  OWNER.M?" by name + subtype WITHOUT the engine storing the exploded candidate edges bounded-CHA
      *  drops (which would re-encode the very flood it prevents). `java/lang/Object` is omitted as noise. */
-    /** The sibling key carrying the superclass split, and the ONE place its name is written. Chosen so an
-     *  older consumer needs no version check: {@link Loader#loadDepHierarchy} skips any entry whose value is
-     *  not an ARRAY, and this one's is an OBJECT. A class key's value is always an array, so even a type
-     *  somehow named {@code @superclass} is told apart by SHAPE rather than by the name being unusable —
-     *  the name is a convenience, the shape is the contract. */
+    /** The sibling key carrying the superclass split, and the ONE place its name is written.
+     *
+     *  <p><b>ITS VALUE IS AN ARRAY, and that is the whole compatibility argument.</b> It first shipped as an
+     *  OBJECT on the grounds that a reader "skips any entry whose value is not an array" — true of
+     *  {@link Loader#loadDepHierarchy}, false of {@code Query.loadHierarchy}, and false of the THIRD reader
+     *  nobody checked: candor-rust's {@code candor-query::load_hierarchy} deserializes the whole file as
+     *  {@code BTreeMap<String, Vec<String>>} in one typed call and drops it entirely when that fails. A
+     *  typed reader cannot skip anything, so the only encoding that needs no lockstep upgrade is one whose
+     *  every value is an array of strings. The pairs are therefore FLAT — {@code [type, superclass, …]},
+     *  type-sorted — rather than delimited, because a JVM binary name may legally contain almost any
+     *  character and a delimiter would be a guess about the corpus.
+     *
+     *  <p>The cost is that the key is now told apart by its NAME rather than by its shape. The {@code @}
+     *  prefix is the reserved metadata namespace (SPEC §2.2); no source-level JVM type can start with it,
+     *  and a hand-crafted class that did would contribute one phantom supertype list to a reader that does
+     *  not filter the prefix — a bounded, disclosed cost against a reader that silently discards the file. */
     static final String SUPERCLASS_KEY = "@superclass";
 
     static void writeHierarchy(String out) throws IOException {
@@ -639,10 +650,13 @@ final class ReportWriter {
                     supers.put(cn.name.replace('/', '.'), cn.superName.replace('/', '.'));
             }
         }
-        // ALWAYS written, even when empty: its PRESENCE is what tells a consumer this sidecar knows the
-        // split at all. Omitting it when no class has a superclass would make "no marker" ambiguous
-        // between an old producer and a flat hierarchy, and the consumer would have to guess.
-        h.put(SUPERCLASS_KEY, supers);
+        // Written even when it carries no PAIR: its presence is what tells a consumer this sidecar knows
+        // the split at all, and "no class here has a superclass" is a fact the consumer needs (it is what
+        // puts a dep type's interfaces in the INTERFACE phase rather than the one the walk is already in).
+        // Flat [type, superclass, …] so every value in the file is an ARRAY — see SUPERCLASS_KEY.
+        List<String> flat = new ArrayList<>(supers.size() * 2);
+        for (Map.Entry<String, String> e : supers.entrySet()) { flat.add(e.getKey()); flat.add(e.getValue()); }
+        h.put(SUPERCLASS_KEY, flat);
         writeAtomic(Path.of(hOut), ReportJson.pretty(h));
     }
 

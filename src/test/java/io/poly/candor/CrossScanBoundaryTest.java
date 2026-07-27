@@ -676,6 +676,102 @@ class CrossScanBoundaryTest {
         return new Gson().toJson(m);
     }
 
+    /** Run a chained scan purely to CAPTURE the sidecar this engine writes, unmodified. */
+    private static String capturedSidecar(Map<String, String> lib, Map<String, String> app) throws Exception {
+        StringBuilder seen = new StringBuilder();
+        scanChainedRewritingSidecar(lib, app, s -> { seen.append(s); return s; });
+        assertFalse(seen.isEmpty(), "no sidecar was written — this fixture would pass vacuously");
+        return seen.toString();
+    }
+
+    // ---- THE SIDECAR IS A WIRE, AND ITS THIRD READER IS IN ANOTHER LANGUAGE ------------------------------
+
+    @Test
+    void theSidecarLoadsUnderTheSTRICTLYTypedDeserializerCandorQueryUses() throws Exception {
+        // THE THIRD READER. candor-rust's `candor-query::load_hierarchy` deserializes this file as
+        // `BTreeMap<String, Vec<String>>` — one strict typed call, no per-entry loop to skip anything — and
+        // its `if let Ok(map)` drops the WHOLE file when that fails. `--report <a java report>.json` is an
+        // explicitly supported route into it (candor_report::report_files: "so one engine can query
+        // another's report by path"), so an OBJECT value under `@superclass` silently discarded a java
+        // sidecar there exactly as it did in `Query.loadHierarchy` — the same failure, in a second reader,
+        // introduced by the fix for the first. Reproduced before this test was written: `candor-query
+        // callers app.Sink.touch --include-unknown` over a real java scan disclosed a frontier function the
+        // hierarchy rules out, and stripping the marker from the same sidecar dropped it again.
+        //
+        // The model below IS that deserializer: every value an array of strings, no exceptions. Mutate
+        // `writeHierarchy` back to `h.put(SUPERCLASS_KEY, supers)` with a Map value and this test fails.
+        String sidecar = capturedSidecar(LIB9, APP9);
+        Map<String, List<String>> strict;
+        try {
+            strict = new Gson().fromJson(sidecar,
+                    new com.google.gson.reflect.TypeToken<Map<String, List<String>>>() {}.getType());
+        } catch (RuntimeException e) {
+            throw new AssertionError("the sidecar does not parse under the strict `BTreeMap<String, "
+                    + "Vec<String>>` model candor-query uses — it discards the WHOLE hierarchy there, with "
+                    + "no diagnostic: " + e, e);
+        }
+        assertTrue(strict.containsKey("lib.Half9"), "a strict reader must still see the class keys");
+        // The writer-side constraint, stated as an assertion rather than as a comment: EVERY value in this
+        // file is an array. That — not a name — is what keeps a typed reader working, and it is the property
+        // the `@superclass` rung broke.
+        for (var e : com.google.gson.JsonParser.parseString(sidecar).getAsJsonObject().entrySet())
+            assertTrue(e.getValue().isJsonArray(),
+                    "every value in the hierarchy sidecar must be an ARRAY (a typed reader models it as "
+                            + "one); `" + e.getKey() + "` is " + e.getValue());
+    }
+
+    @Test
+    void aSidecarCarryingTheOLDObjectFormOfTheMarkerStillSplitsTheChain() throws Exception {
+        // THE SECOND DIRECTION, and it is a real deployed shape: candor-java 0.23.1 shipped the marker as an
+        // OBJECT, so every dep report and sidecar written by it carries that form. Narrowing the reader to
+        // the new array form alone would silently drop the split for all of them — a fabrication fix
+        // manufacturing the under-report it was closing (standing-bar item 0). Mutate the object branch out
+        // of `Loader.readSuperclassMarker` and this test fails.
+        Map<String, EffectSet> r = scanChainedRewritingSidecar(LIB9, APP9,
+                CrossScanBoundaryTest::markerAsObject);
+        assertTrue(fs(r, "app.S.go"),
+                "a 0.23.1-shaped sidecar must still resolve CLASS-first, got " + r.get("app.S.go"));
+        assertFalse(env(r, "app.S.go"), "Trace9's default is shadowed, got " + r.get("app.S.go"));
+    }
+
+    @Test
+    void aReservedMetadataKeyNeverBecomesADependencyTYPE() throws Exception {
+        // The marker's value is an array like every type's now, so SHAPE no longer tells them apart and
+        // `Loader.loadDepHierarchy` has to skip the reserved `@` namespace by NAME. Without that skip the
+        // marker lands in `depSupers` as a type whose "supertypes" are the flattened pair list — a
+        // fabricated structural fact, and one that makes `depSupers.isEmpty()` (a live short-circuit in
+        // `Candor.isJavaIoStreamType`) non-empty for a sidecar naming no type at all. Mutate the
+        // `startsWith("@")` skip out of `Loader.loadDepHierarchy` and this test fails.
+        Path base = Files.createTempDirectory("candor-meta");
+        try {
+            Path side = base.resolve("dep.hierarchy.json");
+            Files.writeString(side, "{\"lib.A\": [\"lib.B\"], \"" + ReportWriter.SUPERCLASS_KEY
+                    + "\": [\"lib.A\", \"lib.B\"]}");
+            AnalysisState.newContext();
+            Loader.loadDepHierarchy(side);
+            assertEquals(List.of("lib/B"), AnalysisState.ctx().depSupers.get("lib/A"),
+                    "the class key must load, or this fixture proves nothing");
+            for (String k : AnalysisState.ctx().depSupers.keySet())
+                assertFalse(k.startsWith("@"), "a reserved metadata key became a dependency TYPE: " + k);
+        } finally {
+            AnalysisState.remove();
+            rm(base);
+        }
+    }
+
+    /** Rewrite the marker into the OBJECT form candor-java 0.23.1 wrote. Asserts it changed something. */
+    @SuppressWarnings("unchecked")
+    private static String markerAsObject(String sidecar) {
+        Map<String, Object> m = new Gson().fromJson(sidecar, Map.class);
+        List<String> flat = (List<String>) m.get(ReportWriter.SUPERCLASS_KEY);
+        assertTrue(flat != null && !flat.isEmpty(),
+                "the producer wrote no marker pairs — this fixture would pass vacuously");
+        Map<String, String> obj = new java.util.LinkedHashMap<>();
+        for (int i = 0; i + 1 < flat.size(); i += 2) obj.put(flat.get(i), flat.get(i + 1));
+        m.put(ReportWriter.SUPERCLASS_KEY, obj);
+        return new Gson().toJson(m);
+    }
+
     @Test
     void byNameContractReentryReachesADependencyBody() throws Exception {
         // THE DEFECT. Each of these resolves in a SINGLE tree (the control below) and read silent-pure once

@@ -103,16 +103,22 @@ class QueryIncludeUnknownTest {
         try {
             java.nio.file.Path rep = base.resolve("r.json");
             java.nio.file.Files.writeString(rep, "{\"candor\":{},\"functions\":[]}");
-            java.nio.file.Files.writeString(base.resolve("r.hierarchy.json"),
-                    "{\"app.Impl\": [\"app.Base\"], \"" + ReportWriter.SUPERCLASS_KEY
-                            + "\": {\"app.Impl\": \"app.Base\"}, \"app.Other\": [\"app.Base\"]}");
-            Map<String, List<String>> h = Query.loadHierarchy(rep.toString());
-            assertTrue(h != null, "one unreadable sibling key discarded the entire hierarchy");
-            assertEquals(List.of("app.Base"), h.get("app.Impl"), "the class keys must survive");
-            assertEquals(List.of("app.Base"), h.get("app.Other"),
-                    "a class key AFTER the sibling key must survive too — the loop must skip, not abort");
-            assertFalse(h.containsKey(ReportWriter.SUPERCLASS_KEY),
-                    "the sibling key must not become a phantom TYPE in the subtype walk");
+            // BOTH shapes, because they are skipped by DIFFERENT guards. The OBJECT is the 0.23.1 shape and
+            // is caught by the non-array skip; the ARRAY is what the writer emits now (so candor-rust's
+            // strictly typed reader does not discard the whole file), and it is caught ONLY by the
+            // reserved-`@`-namespace skip. Mutate either guard out of `Query.loadHierarchy` and this fails.
+            for (String marker : List.of("{\"app.Impl\": \"app.Base\"}", "[\"app.Impl\", \"app.Base\"]")) {
+                java.nio.file.Files.writeString(base.resolve("r.hierarchy.json"),
+                        "{\"app.Impl\": [\"app.Base\"], \"" + ReportWriter.SUPERCLASS_KEY
+                                + "\": " + marker + ", \"app.Other\": [\"app.Base\"]}");
+                Map<String, List<String>> h = Query.loadHierarchy(rep.toString());
+                assertTrue(h != null, "one unreadable sibling key discarded the entire hierarchy: " + marker);
+                assertEquals(List.of("app.Base"), h.get("app.Impl"), "the class keys must survive: " + marker);
+                assertEquals(List.of("app.Base"), h.get("app.Other"),
+                        "a class key AFTER the sibling key must survive too — the loop must skip, not abort");
+                assertFalse(h.containsKey(ReportWriter.SUPERCLASS_KEY),
+                        "the sibling key must not become a phantom TYPE in the subtype walk: " + marker);
+            }
         } finally {
             TestCompiler.rm(base);
         }

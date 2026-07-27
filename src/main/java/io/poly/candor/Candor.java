@@ -2385,8 +2385,21 @@ public class Candor {
 
     /** Does a chained dep report hold an EFFECTFUL body with this exact {@code name+desc} under a
      *  DIFFERENT owner? Evidence that the interface this site dispatches on has a reachable effectful
-     *  implementation whose key this scan cannot name. Inverts {@code crossDeps} once, lazily. */
+     *  implementation whose key this scan cannot name. Inverts {@code crossDeps} once, lazily.
+     *
+     *  <p><b>A LATCH OVER AN EMPTY INPUT IS PERMANENT, and nothing here would ever rebuild it.</b>
+     *  {@code depOwnersBySigBuilt} is set unconditionally once this is entered, so an entry BEFORE
+     *  {@code loadCrossDeps} has populated {@code crossDeps} would freeze the empty inversion for the
+     *  whole scan — every later site answering "no, the dep declares nothing" and the disclosure it gates
+     *  falling silent. That cannot happen today: the sole caller is {@link #untypedDepReceiver}'s conjunct
+     *  5, reached only past conjunct 3's {@code depChainedPkgs} test, and that set is written only by
+     *  {@code loadCrossDeps}. But nothing in THIS method prevents it, which is the difference between
+     *  absent and absent-by-accident — and its two siblings {@link #depFnsOfType}/{@link #depFnsNamed}
+     *  already guard exactly this way, so the inconsistency was the tell. Returning without latching is
+     *  behaviourally identical today (an empty inversion yields a null lookup, hence false) and leaves
+     *  the memo rebuildable if a future ordering ever does reach it early. */
     static boolean depDeclaresSigElsewhere(AnalysisContext ctx, MethodInsnNode min) {
+        if (ctx.crossDeps.isEmpty()) return false;
         if (!ctx.depOwnersBySigBuilt) {
             for (String h : ctx.crossDeps.keySet()) {
                 int paren = h.indexOf('(');

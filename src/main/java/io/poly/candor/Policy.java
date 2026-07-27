@@ -304,6 +304,53 @@ final class Policy {
     }
 
     /**
+     * ⟨0.24⟩ SPEC §6.2 — THE reason-CLASS SET of a function, and the ONLY definition of it in this engine.
+     * The gate reads it to decide whether a {@code deny E Unknown[c…]} rule fires; {@code candor unverified
+     * --class} reads it to decide whether an entry is selected. §6.2: "THE GATE AND THE DISCLOSURE MUST
+     * APPLY THE SAME RULE, AND SHOULD SHARE THE SAME CODE" — the clause was written about an engine that
+     * had two copies, one of them right, "drifting silently because nothing compared them". This is the one
+     * copy; a second one is the defect, not an optimisation.
+     *
+     * <p>Two properties, both normative and both invisible in the field the filter naively wants to read:
+     * <ul>
+     *   <li>TRANSITIVE. {@code gi.reasonClasses()} is already the fixpoint over the gate's own reach (§4
+     *       makes {@code unknownWhy} direct-only — a reason names a site in the function's OWN body — so a
+     *       function whose {@code Unknown} is purely INHERITED carries no reason of its own, and matching
+     *       against the direct field answers a different question).</li>
+     *   <li>FAIL-CLOSED. A function this cannot classify at all gets {@code {unresolved}}, so it is KEPT by
+     *       a filter naming its own class and by {@code dynamic}, never silently dropped by every filter
+     *       including the one that names it. This is the backstop, NOT the contribution: the contribution
+     *       for a directly-raised, unnamed {@code Unknown} happens at the source (a scan records a reason
+     *       beside every {@code Unknown} it raises; {@link #gateInputFromReport} contributes per ENTRY),
+     *       because a set that has already been unioned over callees can no longer tell which member was
+     *       unaccounted-for.</li>
+     * </ul>
+     * A token that names no class also reads {@code unresolved} rather than becoming a null member — a
+     * null in the set is silently unmatchable by every filter, which is the drop this method exists to
+     * refuse. (Unreachable today: every token here comes from {@code ReasonClass.classify().token()}.)
+     */
+    static Set<ReasonClass> reasonClassesOf(GateInput gi, String fn) {
+        TreeSet<String> tokens = gi.reasonClasses().get(fn);
+        if (tokens == null || tokens.isEmpty()) return Set.of(ReasonClass.UNRESOLVED);
+        Set<ReasonClass> out = java.util.EnumSet.noneOf(ReasonClass.class);
+        for (String t : tokens) {
+            ReasonClass c = ReasonClass.fromToken(t);
+            out.add(c == null ? ReasonClass.UNRESOLVED : c);
+        }
+        return out;
+    }
+
+    /** ⟨0.24⟩ SPEC §6.2 — THE match rule: a function is selected by a reason-class filter when its
+     *  {@link #reasonClassesOf} set INTERSECTS the filter. A null filter is "no filter" (every function
+     *  matches), which is how {@code --class '*'} and an absent flag are spelled. Shared by the gate's
+     *  {@code Unknown[c…]} scoping and by {@code unverified --class}, for the same reason as above. */
+    static boolean reasonClassMatches(GateInput gi, String fn, Set<ReasonClass> filter) {
+        if (filter == null) return true;
+        for (ReasonClass c : reasonClassesOf(gi, fn)) if (filter.contains(c)) return true;
+        return false;
+    }
+
+    /**
      * ⟨0.24⟩ Apply the parsed §6.2 policy to an already-accumulated signature. THE ONLY matching code in
      * this engine — {@code scan --policy} and {@code gate --report} both land here, which is what makes
      * "the same verdict from the same signature" a property of the code rather than of two consistent
@@ -328,25 +375,14 @@ final class Policy {
                 // (non-empty filter) fires its Unknown part ONLY if the fn's Unknown reasons include one of
                 // those classes. Concrete effects in `bad` are untouched — only the Unknown membership is scoped.
                 if (bad.toNames().contains("Unknown") && !r.unknownClasses().isEmpty()) {
-                    // TRANSITIVE reason classes (see reasonClassAcc above) — so an Unknown inherited from a
-                    // reason-tagged callee is classified by that callee's reason, not defaulted to unresolved.
-                    var classTokens = reasonClassAcc.get(fn);
-                    java.util.Set<ReasonClass> fnClasses = classTokens == null ? new java.util.HashSet<>()
-                            : classTokens.stream().map(ReasonClass::fromToken).collect(java.util.stream.Collectors.toSet());
-                    // ⟨0.24⟩ FAIL-CLOSED BACKSTOP FOR A STATE THAT SHOULD NO LONGER BE REACHABLE. §6.2 says a
-                    // reasonless Unknown CONTRIBUTES `unresolved`; contributing is not something this matcher
-                    // can do, because by the time a class set arrives here the information that one of the
-                    // fn's Unknowns was unaccounted-for is gone — a fn with a reasonless Unknown BESIDE a
-                    // `reflect:` one is byte-identical to one with only the `reflect:`. So the contribution
-                    // happens where the Unknown is CREATED: every in-scan site records an `unknownWhy` beside
-                    // the Unknown it raises, and the dependency boundary — the one route that did not — now
-                    // synthesizes one per ENTRY (Loader#synthesizeReasonlessDepReasons). This line is what
-                    // remains of the old ABSENCE rule: harmless where the state is unreachable (measured: 0
-                    // fires on a real target with stale deps chained, against 78 before), and still
-                    // fail-closed for any route that fix does not cover, which is the direction to be wrong in.
-                    if (fnClasses.isEmpty()) fnClasses = java.util.Set.of(ReasonClass.UNRESOLVED);
-                    boolean matched = fnClasses.stream().anyMatch(r.unknownClasses()::contains);
-                    if (!matched) bad = bad.without(Effect.UNKNOWN);   // tolerated: wrong reason-class
+                    // THE SHARED §6.2 RULE — transitive, fail-closed, one definition (see #reasonClassesOf,
+                    // which `candor unverified --class` calls too). An Unknown inherited from a
+                    // reason-tagged callee is classified by that callee's reason, not defaulted to
+                    // unresolved; a reasonless direct Unknown has already CONTRIBUTED `unresolved` at its
+                    // source, so a fn reaching both a reasonless hole and a `dispatch:` one is caught by
+                    // `[unresolved]` AND by `[dispatch]`.
+                    if (!reasonClassMatches(gi, fn, r.unknownClasses()))
+                        bad = bad.without(Effect.UNKNOWN);            // tolerated: wrong reason-class
                 }
                 // Net destination-class (NET-DESTINATION-CLASS-DESIGN.md): a `deny Net[dest…]` rule (non-empty
                 // filter — e.g. `deny Net[unknown-host]`) fires its Net part ONLY if the fn reaches one of those
@@ -501,6 +537,25 @@ final class Policy {
             // `classify(ur.format())` rather than the structured `of(ur)`) and to rust/ts/swift.
             for (String why : raw)
                 whyDirect.computeIfAbsent(fn, k -> new TreeSet<>()).add(ReasonClass.classify(why).token());
+            // ⟨0.24⟩ SPEC §6.2 requirement (3), THE CONTRIBUTION, on the one route where the producer-side
+            // repair cannot reach: a report is DATA, so `Loader#synthesizeReasonlessDepReasons` (which makes
+            // the state unreachable in a report THIS engine writes) says nothing about a hand-authored or
+            // foreign one. An entry that raises `Unknown` DIRECTLY and names no reason for it CONTRIBUTES
+            // `unresolved` here, at the entry, BEFORE the fixpoint — which is what makes it compose: a
+            // caller of one reasonless entry and one `dispatch:` entry accumulates {unresolved, dispatch}
+            // and is caught by BOTH filters. Contributing at the JOIN instead (an empty-set default) cannot
+            // do that: by then the two entries' sets have already been unioned, and the caller of both is
+            // byte-identical to the caller of the reasoned one alone — the §6.2 counterexample in which
+            // ADDING a call turned a red verdict green.
+            //
+            // GATED ON A DIRECT `Unknown` IT DID NOT NAME, never on the reason set being absent, because
+            // absence is ALSO what an INHERITED `Unknown` looks like and marking those is the mirror
+            // fabrication (measured elsewhere at 435 functions where the legitimate count is 0). An ABSENT
+            // `direct` key reads as an empty EffectSet and therefore contributes NOTHING: it is a report
+            // that did not carry the channel, not a claim of a direct `Unknown`. That case stays with the
+            // fail-closed empty-set rule in `reasonClassesOf`, which keeps it rather than drops it.
+            if (e.direct().hasUnknown() && raw.isEmpty())
+                whyDirect.computeIfAbsent(fn, k -> new TreeSet<>()).add(ReasonClass.UNRESOLVED.token());
         }
         return new GateInput(inferred, literalFixpoint(whyDirect, edges), netClasses,
                 hosts, cmds, paths, tables, incomplete, edges);

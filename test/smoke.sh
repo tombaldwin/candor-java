@@ -1798,6 +1798,32 @@ want "blindspots --class dispatch stays direct-only (the source, not its callers
      "$(csel blindspots "$W/cls6/r.json" --class dispatch)" 'app.src_reasoned'
 want "blindspots --class reflect stays direct-only" \
      "$(csel blindspots "$W/cls6/r.json" --class reflect)" 'app.d_named_direct'
+# ⟨0.24⟩ THE FLAG'S VALUE GRAMMAR. A dropped token here leaves a NARROWER filter (unlike the policy
+# side, where it leaves a wider rule), so `--class dyanmic` would silently answer a question nobody
+# asked, with a smaller number. A query flag that cannot be honoured is refused.
+for v in unverified blindspots; do
+  vargs=(--report "$W/cls6/r.json" --json); [ "$v" = unverified ] && vargs+=(--policy "$W/cls6/pol")
+  typo=$("$CJ" "$v" "${vargs[@]}" --class dyanmic 2>&1); trc=$?
+  if [ "$trc" -eq 2 ]; then echo "  ok   $v --class <typo> is a usage error (exit 2)"; pass=$((pass+1));
+  else echo "  FAIL $v --class dyanmic exit $trc (want 2)"; fail=$((fail+1)); fi
+  want "$v --class <typo> NAMES the offending token"   "$typo" 'dyanmic'
+  want "$v --class <typo> lists the accepted set"      "$typo" 'reflect, dispatch, indirect, native, unresolved, setup'
+  rep2=$("$CJ" "$v" "${vargs[@]}" --class unresolved --class native 2>&1); rrc=$?
+  if [ "$rrc" -eq 2 ]; then echo "  ok   $v repeated --class is a usage error (exit 2)"; pass=$((pass+1));
+  else echo "  FAIL $v repeated --class exit $rrc (want 2)"; fail=$((fail+1)); fi
+  want "$v repeated --class points at the one comma list" "$rep2" '--class unresolved,native'
+  empty=$("$CJ" "$v" "${vargs[@]}" --class '' 2>&1); erc=$?
+  if [ "$erc" -eq 2 ]; then echo "  ok   $v --class '' is a usage error (exit 2)"; pass=$((pass+1));
+  else echo "  FAIL $v --class '' exit $erc (want 2)"; fail=$((fail+1)); fi
+  # CONTROL: the refusal must not have swallowed the values it exists to protect.
+  "$CJ" "$v" "${vargs[@]}" --class dynamic >/dev/null 2>&1; grc=$?
+  "$CJ" "$v" "${vargs[@]}" --class '*' >/dev/null 2>&1; src=$?
+  "$CJ" "$v" "${vargs[@]}" --class reflect,native >/dev/null 2>&1; crc=$?
+  if [ "$grc" -eq 0 ] && [ "$src" -eq 0 ] && [ "$crc" -eq 0 ]; then
+    echo "  ok   $v still accepts dynamic, * and a comma list"; pass=$((pass+1));
+  else echo "  FAIL $v rejected a valid --class (dynamic=$grc *=$src list=$crc)"; fail=$((fail+1)); fi
+done
+
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

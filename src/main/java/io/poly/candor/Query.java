@@ -303,6 +303,18 @@ public final class Query {
                 case "--stats" -> stats = true;
                 case "--class" -> {
                     if (i + 1 >= args.length) { System.err.println("candor: --class needs <class,…> (usage: " + usage + ")"); return 2; }
+                    // ⟨0.24⟩ SPEC §6.2: `--class <c>[,<c>…]` takes ONE comma-separated list and is NOT
+                    // repeatable — a second occurrence is a usage error, not a union. Unioning would answer
+                    // a question the user did not ask (they wrote two filters and got neither); taking the
+                    // last would silently discard the first. Both are a smaller number under a flag the
+                    // user believes they widened.
+                    if (classFlag != null) {
+                        System.err.println("candor " + cmd + ": --class was given more than once (`" + classFlag
+                                + "` then `" + args[i + 1] + "`). It takes ONE comma-separated list and is not "
+                                + "repeatable — a second occurrence is a usage error, not a union. Write: --class "
+                                + classFlag + "," + args[i + 1]);
+                        return 2;
+                    }
                     classFlag = args[++i];
                 }
                 case "--report" -> {
@@ -404,6 +416,17 @@ public final class Query {
             }
         }
 
+        // ⟨0.24⟩ SPEC §6.2 THE FLAG'S VALUE GRAMMAR, parsed ONCE for every verb that takes `--class`, so a
+        // value this engine cannot honour is refused on all of them by construction rather than by three
+        // authors remembering. See #parseClassFilter for why it is exit 2 and not a warning.
+        Set<ReasonClass> classFilter;
+        try {
+            classFilter = parseClassFilter(classFlag);
+        } catch (ClassFilterUsageError e) {
+            System.err.println("candor " + cmd + ": " + e.getMessage());
+            return 2;
+        }
+
         String a0 = pos.size() > 0 ? pos.get(0) : null; // first verb arg
         String a1 = pos.size() > 1 ? pos.get(1) : null; // second verb arg
         return switch (cmd) {
@@ -416,13 +439,13 @@ public final class Query {
             case "reachable" -> reachable(fns, json);
             case "path" -> path(fns, a0, a1, json);
             case "impact" -> impact(fns, a0, json);
-            case "blindspots" -> blindspots(fns, json, stats, parseClassFilter(classFlag));
+            case "blindspots" -> blindspots(fns, json, stats, classFilter);
             case "tour" -> tour(fns, report, a0, json);
             case "gains" -> gains2(a0, a1, json, strict, policyFlag);
             case "whatif" -> whatif(report, a0, a1, policyFlag, json);
             case "fix" -> fix(fns, report, a0, a1, policyFlag, json);
             case "fix-gate" -> fixGate(fns, report, policyFlag, json, strict);
-            case "unverified" -> unverified(fns, report, policyFlag, json, strict, parseClassFilter(classFlag));
+            case "unverified" -> unverified(fns, report, policyFlag, json, strict, classFilter);
             case "rewire" -> rewire2(a0, a1, json);
             case "gate" -> gate(fns, report, a0, policyFlag, json, gateJsonFlag);
             default -> 2;
@@ -2177,23 +2200,53 @@ public final class Query {
      *  read 60% Unknown from a handful of root causes — this names them, ranked, to declare/resolve/accept.
      *  Reverse-BFS over the report's effect-relevant `calls` edges (the channel Unknown propagates along),
      *  the same graph `impact` uses. */
-    /** Parse a {@code --class <c,…>} filter into reason classes: the six tokens, {@code dynamic} (every genuine
-     *  class), or {@code *}/null (no filter → null). An unknown token warns + is skipped. Shared by
-     *  {@code blindspots} (and {@code unverified}) so the drill-down vocabulary matches the §6.2 policy one. */
+    /** ⟨0.24⟩ Thrown by {@link #parseClassFilter} for a {@code --class} value this engine cannot honour.
+     *  Carries the message the CLI prints verbatim; {@link #run} turns it into exit 2. */
+    static final class ClassFilterUsageError extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+        ClassFilterUsageError(String message) { super(message); }
+    }
+
+    /** The accepted {@code --class} vocabulary, named in every refusal so the user never has to guess. */
+    private static final String CLASS_TOKENS =
+            "reflect, dispatch, indirect, native, unresolved, setup (aliases: dynamic, *)";
+
+    /**
+     * Parse a {@code --class <c,…>} filter into reason classes: the six tokens, {@code dynamic} (every
+     * genuine class — which by its own definition EXCLUDES {@code setup}), or {@code *} (no filter → null,
+     * as an absent flag is). Shared by {@code blindspots} and {@code unverified} so the drill-down
+     * vocabulary matches the §6.2 policy one.
+     *
+     * <p>⟨0.24⟩ AN UNRECOGNISED TOKEN IS A USAGE ERROR (exit 2), NOT A WARNING. This used to print
+     * "ignores unknown reason-class `x`" and carry on, which is the POLICY side's drop-with-warning rule
+     * applied where it inverts: on the policy side a dropped token leaves a WIDER rule standing, so the
+     * gate can only over-fire; here it leaves a NARROWER filter, so {@code --class dyanmic} silently
+     * answers a question the user did not ask, WITH A SMALLER NUMBER — on the one verb whose job is to
+     * name the holes a green gate is hiding. That is a fail-open disclosure, and a query flag that cannot
+     * be honoured is refused rather than approximated. An empty value ({@code --class ""}, {@code
+     * --class ,}) is refused for the same reason: it names no class, so it selects nothing, which is the
+     * narrowest wrong answer of all.
+     *
+     * @throws ClassFilterUsageError on an unrecognised or empty value; the caller prints it and exits 2
+     */
     static Set<ReasonClass> parseClassFilter(String spec) {
         if (spec == null) return null;
         Set<ReasonClass> out = new java.util.LinkedHashSet<>();
-        for (String t : spec.split(",")) {
+        for (String t : spec.split(",", -1)) {
             t = t.trim();
             if (t.isEmpty()) continue;
             if (t.equals("*")) return null;                       // explicit "all" ⇒ no filter
             if (t.equals("dynamic")) { out.addAll(ReasonClass.dynamicSet()); continue; }
             ReasonClass rc = ReasonClass.fromToken(t);
-            if (rc == null) System.err.println("candor: --class ignores unknown reason-class `" + t
-                    + "` (known: reflect,dispatch,indirect,native,unresolved,setup; aliases: dynamic,*)");
-            else out.add(rc);
+            if (rc == null) throw new ClassFilterUsageError("--class does not accept `" + t
+                    + "` — it names no reason class, and a filter that cannot be honoured would answer a "
+                    + "NARROWER question than the one asked, with a smaller number. Accepted: " + CLASS_TOKENS);
+            out.add(rc);
         }
-        return out.isEmpty() ? java.util.Set.of() : out;          // all-unknown tokens ⇒ match nothing
+        if (out.isEmpty()) throw new ClassFilterUsageError("--class was given the empty value `" + spec
+                + "`, which names no reason class and would select nothing. Accepted: " + CLASS_TOKENS
+                + "; omit the flag (or use `*`) for no filter.");
+        return out;
     }
 
     static int blindspots(List<Effector> fns, boolean json, boolean stats, Set<ReasonClass> classFilter) {

@@ -8,6 +8,28 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⟨0.24⟩ `--class` now has a VALUE GRAMMAR, and refuses a filter it cannot honour (exit 2)** (SPEC §6.2).
+  `--class <c>[,<c>…]` takes ONE comma-separated list and is **not repeatable**; an **unrecognised token**
+  is a usage error naming the token and listing the accepted set. Previously `candor unverified --class
+  dyanmic` printed "ignores unknown reason-class" to stderr and **exited 0 with an answer document** —
+  and so did a repeated `--class`, which silently meant "the last one".
+
+  **Why exit 2 and not the policy side's drop-with-warning, which is where that behaviour came from.**
+  The two invert. On the policy side a dropped token leaves a **wider** rule standing, so the gate can
+  only over-fire and the failure is loud. Here it leaves a **narrower filter**, so `--class dyanmic`
+  silently answers a question the user did not ask, **with a smaller number** — on the one verb whose job
+  is to name the holes a green gate is hiding, where a smaller number is indistinguishable from a real
+  all-clear. That is the same fail-open the transitive/fail-closed repair above closes, one exit code
+  away. A query flag that cannot be honoured is refused, not approximated.
+
+  Parsed once in the argument loop, so it applies to **every** verb taking `--class` (`unverified`,
+  `blindspots`) by construction rather than per call site. `dynamic` and `*` are accepted (the diagnostic
+  §6.2 prescribes uses `dynamic`, so it must be); an empty value (`--class ""`, `--class ,`) is refused
+  too — it names no class, so it selects nothing, which is the narrowest wrong answer of all. Controls in
+  `test/smoke.sh` assert both directions per verb: the typo and the repeat exit 2 and NAME what was
+  wrong, and `dynamic`, `*` and a comma list still exit 0, so the refusal has not swallowed the values it
+  exists to protect. Conformance PART 27 row R5 `value-grammar`.
+
 - **⚠ ⟨0.24⟩ `unverified --class` resolves the reason class TRANSITIVELY and FAILS CLOSED — it used to
   under-report the holes it exists to surface, and under-report MORE the more you narrowed** (SPEC §6.2).
   The filter tested `unknownWhy`, the DIRECT field, which is the wrong field for this question twice over.

@@ -128,6 +128,41 @@ final class Loader {
      *  unreadable/unparseable dep report FAILS the run (exit 2). Silently skipping any of these made
      *  every call into that dep read PURE — the §2.1 "corrupt report ≠ pure" care taken inside the
      *  parser, undone one level up. */
+    /** ⟨0.24⟩ SPEC §2.2's RESERVED trailing segments, family-wide: a file whose LAST dotted segment before
+     *  `.json` is one of these is a SIDECAR, never a report. Stated in the spec because the engines were
+     *  already drifting — java carved out two of these, candor-ts six — and cross-engine reading is not
+     *  hypothetical (the conformance frontier differential has one engine produce and another consume). */
+    private static final Set<String> RESERVED_SIDECAR_SEGMENTS =
+            Set.of("callgraph", "hierarchy", "calibrated", "layerreach", "locs", "gate");
+
+    /**
+     * Is this file name a SIDECAR rather than a report? The ONE rule, for every locator glob in this engine
+     * — {@link Query#prefixHits}, {@link Query#quietPrefixMatches} and the CANDOR_DEPS directory walk all
+     * ask here, because two lists that can drift apart is exactly how this started.
+     *
+     * <p><b>It is a DENYLIST over the reserved segment, and must stay one.</b> The inversion — accept only
+     * the `<type>` values this engine knows — is an ALLOWLIST, and a report whose type segment an
+     * implementer failed to anticipate would become silently invisible to every query: a false all-clear.
+     * A denylist can only be INCOMPLETE, and incompleteness here is LOUD — an unregistered suffix falls
+     * back into the candidate set and the locator discloses the ambiguity on every query. Noise, never a
+     * swallowed report.
+     *
+     * <p>The reserved word is reserved in the SIDECAR SEGMENT POSITION, not banned from the name: the test
+     * is the LAST segment, so `report.hierarchy.jvm.json` — a crate legitimately named `hierarchy` — still
+     * resolves, because there the word sits in the `<crate>` position. Segment COUNT is deliberately not
+     * the discriminator: sidecar names are per-engine, so counting excludes this engine's own 3-segment
+     * sidecars and not a 2-segment one from another producer. The `encountered-*` family matches in any
+     * position, as candor-ts has it — a crate named `encountered-<something>` is not a real shape, and
+     * agreeing with the sibling engine on a shared convention is worth more than the last inch of width.
+     */
+    static boolean isSidecarName(String name) {
+        if (name.contains(".encountered-")) return true;
+        if (!name.endsWith(".json")) return false;
+        String stem = name.substring(0, name.length() - ".json".length());
+        int dot = stem.lastIndexOf('.');
+        return dot >= 0 && RESERVED_SIDECAR_SEGMENTS.contains(stem.substring(dot + 1));
+    }
+
     /** The `<report>.hierarchy.json` sidecar path for a report file, or null if `f` is not a report name.
      *  Mirrors {@link ReportWriter#writeHierarchy}'s naming exactly — one producer, one consumer, one rule. */
     static Path hierarchySidecarOf(Path f) {
@@ -351,10 +386,18 @@ final class Loader {
                 System.exit(2);
             }
             for (Path f : files) {
-                if (f.getFileName().toString().endsWith(".hierarchy.json")) {
+                String fname = f.getFileName().toString();
+                if (fname.endsWith(".hierarchy.json")) {
                     loadDepHierarchy(f);
                     continue;                      // a hierarchy sidecar carries no `functions` and no effects
                 }
+                // ⟨0.24⟩ …and neither does any OTHER reserved sidecar segment (§2.2). A directory-form
+                // CANDOR_DEPS walks every `.json` beside the report, so another engine's `.locs.json` /
+                // `.gate.json` reached the report parser. Today they fall out of it harmlessly (no
+                // `functions` array ⇒ skipped), so this changes no verdict — it is here because the reserved
+                // set must have ONE reader in this engine. A second list that only happens to agree is the
+                // state this rung exists to end, and the next sidecar shape is the one that would not.
+                if (isSidecarName(fname)) continue;
                 try {
                     JsonElement root = JsonParser.parseString(Files.readString(f));
                     JsonObject obj = root.isJsonObject() ? root.getAsJsonObject() : null;

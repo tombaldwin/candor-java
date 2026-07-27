@@ -626,19 +626,47 @@ final class Policy {
         return out.toArray(new String[0]);
     }
 
-    /** Forward reachability over the project call graph: the first method `start` transitively reaches
+    /** Forward reachability over the project call graph: the NEAREST method `start` transitively reaches
      *  whose name matches `scope` (seeded from `start`'s direct callees, so `start` itself isn't a hit),
-     *  or null. Used for AS-EFF-009 layering. */
+     *  or null. Used for AS-EFF-009 layering.
+     *
+     *  <p><b>The VERDICT never depended on the traversal; the WITNESS did.</b> {@code hit != null} is a set
+     *  property — the walk visits the whole reachable set before returning null — so the violation, the
+     *  count and the exit code are the same under any order. But the node returned is the one named in
+     *  the diagnostic and in {@code --gate-json}'s machine-readable {@code detail}, and this used to be a
+     *  DEPTH-FIRST walk over a stack seeded from a {@code HashSet}: the branch explored first was whichever
+     *  bucket the set happened to hand over. Demonstrated — with two routes out of {@code app.A.run}, one
+     *  crossing at 2 hops and one at 6, it named the 6-hop node; and two structurally identical siblings
+     *  were resolved to different members of the same class.
+     *
+     *  <p>That is the shape {@code 9f8e71c} removed from four supertype walks ("walk an unordered set,
+     *  return the first hit"), and the reason to remove it here too is that an arbitrary witness reads
+     *  exactly like a chosen one. Breadth-first with a SORTED expansion makes it the nearest crossing —
+     *  the boundary a reader would actually hoist — with ties broken by name, so the answer is a fact
+     *  about the call graph rather than about string hashing. */
     static String reachesScope(String start, String scope) {
-        Deque<String> stack = new ArrayDeque<>(ctx().edges.getOrDefault(start, Set.of()));
+        AnalysisContext c = ctx();
+        Deque<String> q = new ArrayDeque<>(sortedCallees(c, start));
         Set<String> seen = new HashSet<>();
-        while (!stack.isEmpty()) {
-            String n = stack.pop();
+        while (!q.isEmpty()) {
+            String n = q.poll();                       // poll, not pop: FIFO == nearest-first
             if (!seen.add(n)) continue;
             if (scopeMatches(n, scope)) return n;
-            for (String c : ctx().edges.getOrDefault(n, Set.of())) if (!seen.contains(c)) stack.push(c);
+            for (String cc : sortedCallees(c, n)) if (!seen.contains(cc)) q.add(cc);
         }
         return null;
+    }
+
+    /** {@code fn}'s callees in a stable order. {@code ctx().edges} values are {@code HashSet}s, so this is
+     *  the one place the ordering of a BFS layer is decided; sorting here keeps the tie-break a property of
+     *  the NAMES rather than of their hash codes. Returns the shared empty list for a leaf, so the common
+     *  case allocates nothing. */
+    private static List<String> sortedCallees(AnalysisContext c, String fn) {
+        Set<String> cs = c.edges.get(fn);
+        if (cs == null || cs.isEmpty()) return List.of();
+        List<String> out = new ArrayList<>(cs);
+        Collections.sort(out);
+        return out;
     }
 
     static Map<String, EffectSet> loadBaseline(String path) {

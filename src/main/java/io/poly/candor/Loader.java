@@ -227,6 +227,41 @@ final class Loader {
         return slash > 0 ? owner.substring(0, slash).replace('/', '.') : null;
     }
 
+    /** ⟨0.21⟩ Does this dep report DECLARE ITSELF INCOMPLETE — i.e. does its `unanalyzed` manifest name
+     *  source the producing scan could not analyze?
+     *
+     *  <p>WHY IT COSTS COVERAGE. SPEC §2 rule 3 turns a report's SILENCE into a purity claim: a key the
+     *  report does not answer is answered pure, and registering the report's packages as covered is exactly
+     *  what silences the κ ledger's {@code invisible: [pkg]} hedge so that silence can be read that way. A
+     *  report carrying a non-empty `unanalyzed` has just said it never read some of its own source, so its
+     *  silence about that source answers nothing — and chaining it was strictly WORSE than not chaining it:
+     *  the dependency's own gate refuses to certify itself over unanalyzed code ({@link Candor} exits 2 for
+     *  precisely this), and the consumer was certifying one on its behalf. The same door {@code 7e41327}
+     *  closed for a report failing the §2.1 version check, with a different key. candor-ts found it first
+     *  and closed it in its own sweep (`21277eb`); this is the JVM half.
+     *
+     *  <p><b>THE TREATMENT DIFFERS FROM STALENESS, and the difference is the whole point.</b> A stale
+     *  report's ENTRIES are assertions from a build we do not trust, so they are downgraded to Unknown. An
+     *  incomplete report's entries were derived from source it DID read and are true — only its SILENCE is
+     *  not a purity claim. So the entries are kept exactly as they are and only COVERAGE is withheld:
+     *  strictly additive, an answered key still answers, an unanswered one falls back to the ledger's
+     *  hedge, and no effect is ever removed. Asserted in {@link StaleDepTrustTest}, not assumed — treating
+     *  incomplete like stale fails the entries-kept row and only it.
+     *
+     *  <p><b>ABSENT means complete, PRESENT-BUT-MALFORMED means incomplete.</b> {@code ReportJson} omits
+     *  the key entirely when the manifest is empty, so absence is this engine's own way of saying "I read
+     *  everything" and treating it as incompleteness would hedge every report ever written. Anything else —
+     *  a non-empty array, a JsonNull, a string, an object — is a completeness claim that cannot be read, and
+     *  a claim that cannot be read is not a claim: it goes the fail-closed way, matching the field-by-field
+     *  posture the entry parser below already takes for a malformed `inferred`. So the ONLY shapes that buy
+     *  coverage are an absent key and an explicitly EMPTY array — a denylist of proven-safe shapes, never an
+     *  allowlist of rejected ones (candor-spec: `candor-denylist-over-allowlist`). */
+    static boolean declaresItselfIncomplete(JsonObject obj) {
+        if (obj == null || !obj.has("unanalyzed")) return false;
+        JsonElement un = obj.get("unanalyzed");
+        return !(un.isJsonArray() && un.getAsJsonArray().isEmpty());
+    }
+
     static void loadCrossDeps(String spec, String ownVersion) {
         if (spec == null || spec.isBlank()) return;
         for (String tok : spec.split("[\\s:,]+")) {
@@ -280,6 +315,7 @@ final class Loader {
                     // header is as untrustworthy as a mismatched one (the Rust engine's rule;
                     // /code-review found the engines split three ways on versionless reports).
                     boolean stale = depVer == null || !depVer.equals(ownVersion);
+                    boolean incomplete = declaresItselfIncomplete(obj);
                     // §2.1 TRUST IS ONE DECISION, NOT TWO. A stale report's EFFECTS are downgraded to
                     // Unknown below — the engine refuses to believe what it says. Registering its packages
                     // as COVERED believes it about everything it does NOT say: coverage is what silences
@@ -307,6 +343,16 @@ final class Loader {
                                 + depVer + "', not this one ('" + ownVersion + "') — its effects are"
                                 + " downgraded to Unknown (§2.1) and its packages are NOT counted as"
                                 + " covered. Re-run the dependency's scan with this build to trust it.");
+                    } else if (incomplete) {
+                        // Say it on STDERR too. `gradle test check` and the four-way conformance suite read
+                        // the report and the exit code; the smoke suite is the leg that reads this channel,
+                        // and standing-bar item 7g is the record of a defect sitting in the channel nobody's
+                        // assertions looked at.
+                        System.err.println("candor: CANDOR_DEPS report " + f + " declares itself INCOMPLETE"
+                                + " (⟨0.21⟩ `unanalyzed` is non-empty or malformed) — its entries are kept,"
+                                + " but its packages are NOT counted as covered, so a key it does not answer"
+                                + " falls back to the κ ledger's `invisible: [pkg]` hedge instead of reading"
+                                + " pure. Re-run the dependency's scan over source this build can analyze.");
                     }
                     // File-level coverage: the producer's own package name(s) register the report's
                     // packages as COVERED even when `functions` is empty — an all-pure dep's empty
@@ -314,7 +360,10 @@ final class Loader {
                     // the spec's singular `"package": "<name>"` (what candor-report and candor-ts
                     // emit) AND this engine's own plural `packages[]` — reading only the array meant an
                     // all-pure spec-form report was ignored and its package falsely named a blind spot.
-                    if (!stale) ctx().depCoveredPkgs.addAll(reportPackages(obj));
+                    //
+                    // ⟨0.21⟩ …AND NEITHER DOES A REPORT THAT DECLARES ITSELF INCOMPLETE. See
+                    // {@link #declaresItselfIncomplete}: the same door as staleness with a different key.
+                    if (!stale && !incomplete) ctx().depCoveredPkgs.addAll(reportPackages(obj));
                     for (JsonElement el : fns) {
                         if (!el.isJsonObject()) continue;                 // a non-object entry → skip (not pure-able)
                         JsonObject m = el.getAsJsonObject();
@@ -373,11 +422,12 @@ final class Loader {
                         // slash-form `owner/Class.method(desc)`, so fall back to the last `/`.
                         // The COVERAGE half is gated on trust for the same reason as the file-level
                         // registration above (an untrusted report's entry names a package, it does not
-                        // vouch for it); the CHAINED-NESS half is not, for the reason recorded there.
+                        // vouch for it) and ⟨0.21⟩ on the report declaring itself complete, for the reason
+                        // recorded there; the CHAINED-NESS half is neither, for the reason recorded there.
                         String pkg = entryPackage(h);
                         if (pkg == null) continue;
                         ctx().depChainedPkgs.add(pkg);
-                        if (!stale) ctx().depCoveredPkgs.add(pkg);
+                        if (!stale && !incomplete) ctx().depCoveredPkgs.add(pkg);
                     }
                 } catch (Exception ex) {
                     // FAIL-CLOSED: an unreadable/unparseable dep report swallowed here meant every call

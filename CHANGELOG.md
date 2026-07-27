@@ -8,6 +8,23 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⚠ ⟨0.21⟩ A chained report that DECLARES ITSELF INCOMPLETE no longer grants coverage** (`Loader`).
+  SPEC §2 rule 3 turns a report's silence into a purity claim; a report carrying a non-empty `unanalyzed`
+  has just said it never read some of its own source, so its silence about that source answers nothing —
+  and it was still registering full coverage for its packages. Chaining it was strictly WORSE than not
+  chaining it: the dependency's own scan refuses to certify a gate over unanalyzed code (exit 2) and the
+  consumer certified one on its behalf. The same door `7e41327` closed for a report failing the §2.1
+  version check, with a different key; candor-ts closed it first (`21277eb`) and this is the JVM half.
+  The TREATMENT differs from staleness and that difference is the point: a stale report's entries are
+  assertions from a build we do not trust and are downgraded to `Unknown`; an incomplete report's entries
+  were derived from source it DID read and are kept **unchanged**. Only the silence hedges — strictly
+  additive, no effect is ever removed, and the half-1 `Unknown[dispatch:…]` disclosure still fires
+  alongside the ledger hedge rather than being replaced by it. An absent or explicitly empty `unanalyzed`
+  is a completeness claim; anything else, including a malformed value, fails closed. The reason is
+  printed on stderr. ⚠ a chained consumer may newly carry `invisible: [pkg]` where a dependency's report
+  is incomplete, and functions that were absent from the report may appear carrying only that hedge;
+  regenerate baselines.
+
 - **⚠ A dep report ENTRY's package was parsed out of the method DESCRIPTOR** (`Loader.entryPackage`). The
   entry-level fallback — the only package registration a chained report with no `package`/`packages`
   envelope gets — took the last `/` in the whole hash, and this engine's hash is

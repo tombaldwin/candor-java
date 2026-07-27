@@ -14,12 +14,11 @@ after upgrading; review policies and regenerate baselines with the new build.
   rule `9f8e71c` implemented — a concrete method inherited from a superclass beats an interface `default`
   at any depth — could not be applied to it. A dep interface `default` therefore shadowed a dep superclass
   body two hops up: both halves of the honesty invariant at once, the real effect dropped AND the
-  interface's charged in its place. The sidecar now also carries `"@superclass"`, a sibling key whose value
-  is an OBJECT of type → superclass; its PRESENCE is what tells a consumer the kinds are known, and a
+  interface's charged in its place. The sidecar now also carries `"@superclass"`, a sibling key holding a
+  FLAT `[type, superclass, …]` array; its PRESENCE is what tells a consumer the kinds are known, and a
   sidecar without it keeps exactly the depth-ordered answer that shipped rather than a guess — reading an
   unmarked list as all-interfaces would push a real superclass below an interface and manufacture the very
-  under-report the ordering exists to close. No version gate on either side: an object value is skipped by
-  the array-only readers, so an older consumer ignores it. ⚠ a chained consumer may newly report the
+  under-report the ordering exists to close. No version gate on either side. ⚠ a chained consumer may newly report the
   superclass body's effects instead of an interface default's — an effect can APPEAR (the under-report) and
   one can DISAPPEAR (the fabrication that replaced it). Measured on 7 chained real jar pairs: 125 of 2 702
   dependency-hierarchy resolution orders change (4.6%; logback-classic 65, httpclient 23, httpclient5 21,
@@ -28,6 +27,25 @@ after upgrading; review policies and regenerate baselines with the new build.
   fixture is the evidence and the corpus is the fabrication control. `Query.loadHierarchy` was the SECOND
   reader of this file and did NOT skip non-array values — it threw, swallowed it into `return null`, and
   discarded the whole hierarchy, dropping the dispatch frontier to a simple-name match. Fixed with it.
+- **⚠ The sidecar's compatibility rule is now a WRITER constraint: every value in it is an ARRAY of
+  strings, metadata lives under a `@`-prefixed key, and a metadata key is never the file's only key**
+  (`ReportWriter`, `Loader`, `Query`; SPEC §2.2 restated with it). The rung above shipped `"@superclass"`
+  as an OBJECT on a reader-side argument, and that argument was false of TWO of the sidecar's three
+  readers. The third is in another language and had not been looked for: candor-rust's
+  `candor-query::load_hierarchy` deserializes the whole file as `BTreeMap<String, Vec<String>>` in one
+  typed call and DROPS IT ENTIRELY when that fails — a strictly typed reader cannot skip anything, and
+  `--report <a java report>.json` is a supported route into it. Measured on 7 chained real jar pairs: **0
+  of 18 sidecars parsed there** before, **18 of 18** now (3 553 type keys), and over 28 real
+  `callers --include-unknown` targets the disclosed frontier falls **1 086 → 983** as the precise subtype
+  test comes back. Both marker shapes are read, so a 0.23.1-written dep sidecar keeps its split.
+  Separately, the key was written UNCONDITIONALLY, so a sidecar that serialized as `{}` became
+  `{"@superclass":{}}` — and candor-ts (`Object.keys(h).length > 0`) and candor-rust (`!hier.is_empty()`)
+  both take the PRECISE dispatch frontier iff the map is non-empty, so a key carrying nothing flipped them
+  off the documented over-listing fallback onto a walk over an empty hierarchy and withdrew a disclosure.
+  It is now omitted iff the sidecar names no type — where a consumer reads it exactly zero times — and
+  never merely because it holds no pair, which is a fact a consumer needs. 0 gains / 0 losses / identical
+  entry and Unknown counts on both A/Bs; the split count (1 128 dep types) is identical under both
+  encodings read by one consumer, which is what says the re-encoding is lossless rather than inert.
 - **⚠ ⟨0.21⟩ A chained report that DECLARES ITSELF INCOMPLETE no longer grants coverage** (`Loader`).
   SPEC §2 rule 3 turns a report's silence into a purity claim; a report carrying a non-empty `unanalyzed`
   has just said it never read some of its own source, so its silence about that source answers nothing —

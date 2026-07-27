@@ -287,6 +287,39 @@ final class ReportWriter {
      * described here — a concrete member of the same abstract class must publish NO union, because absence
      * under ITS key is a true claim about a body that exists and was analysed.
      *
+     * <p><b>WHY THAT SCOPE IS NOT MERELY CONSERVATIVE — the concrete-member row, measured and REFUSED.</b>
+     * A CONCRETE dep method overridden effectfully answers only for its own body across the boundary, where
+     * IN-SCAN the same site is charged the CHA union: the {@code 48a5f18} "the engine contradicts itself
+     * across the scan boundary" argument, one rung down. Admitting concrete overridable members here — the
+     * obvious fix, one relaxed skip — was written and measured, and what it runs into is not a missing
+     * bound but the wrong KEY. {@code lib/Store.label()…} answers for every site that forms it, and
+     * {@code super.label()} forms exactly the same key while INVOKESPECIAL, by JVM semantics, runs the base
+     * body and can never dispatch to an override.
+     * <ul>
+     *   <li>Precondition over 11 real dep jars: 12 242 concrete overridable members, 861 (7.0%) with any
+     *       override in the dependency, <b>76</b> whose override carries an effect the base does not — 35
+     *       of them under a key with no entry at all, i.e. a live purity claim.
+     *   <li>Consumer A/B, 7 chained real jar pairs / 10 914 analysed functions: 22 functions change, 0 lose
+     *       anything — and <b>12 are charged through a direct {@code invokespecial}</b> to the widened base
+     *       ({@code ResponseEntityProxy.getContent} → {@code HttpEntityWrapper.getContent},
+     *       {@code WithLayoutListAppender.start} → {@code AppenderBase.start}, four logback converters
+     *       through a project superclass), with 6 more transitive callers of those. Fabrications.
+     *   <li>The SAME union under a key only a virtual site can form ({@code owner.<dispatch>name+desc},
+     *       joined when the opcode is INVOKEVIRTUAL/INVOKEINTERFACE) changes <b>4</b> functions on the same
+     *       pairs, 0 losses — spring's {@code DefaultListableBeanFactory.getPriority} {@code []} →
+     *       {@code [Fs,Log,Unknown]} through {@code OrderComparator.getPriority}, which
+     *       {@code AnnotationAwareOrderComparator} really does override, plus its caller and a
+     *       {@code BasicFuture.get} pair that is the same over-approximation the in-scan CHA already makes.
+     * </ul>
+     * The ABSTRACT arm escapes all of this for a structural reason rather than a quantitative one: an
+     * abstract member's key is unanswerable AND unreachable by {@code super} — you cannot {@code super}-call
+     * an abstract method — so no INVOKESPECIAL can ever land on it. Both properties fail for a concrete
+     * member. What is left is a different rung (a separate union key plus an opcode-gated consumer lookup:
+     * a new resolution path here, and a synthetic entry shape no other engine produces or consumes, so a
+     * four-way question) for 4 functions in 10 914. Pinned in both directions by
+     * {@code InterfaceUnionTest#aConcreteDepMethodOverriddenEffectfullyStaysNARROWAcrossTheBoundary} and
+     * {@code #aSuperCallToAConcreteDepMethodIsNeverChargedItsOverrides}.
+     *
      * <p><b>A claim this comment made and the measurement falsified, kept because the correction is the
      * point.</b> It first read "an abstract member has no body, so no real entry can claim its hash — the
      * merge path is unreachable for it". False: {@code writeJson}'s filter keeps a BODILESS entry when the

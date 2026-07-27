@@ -182,7 +182,7 @@ class FixGateTest {
                 eff("domain.calc", EffectSet.empty(), EffectSet.empty(), List.of()));
         Path pol = dir.resolve("p.policy");
         Files.writeString(pol, "pure domain\n");
-        String out = capture(() -> Query.unverified(fns, pol.toString(), true, false, null));
+        String out = capture(() -> Query.unverified(fns, null, pol.toString(), true, false, null));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
         assertFalse(o.get("ok").getAsBoolean());
         JsonArray items = o.getAsJsonArray("unverified");
@@ -190,7 +190,7 @@ class FixGateTest {
         assertEquals("domain.price", items.get(0).getAsJsonObject().get("fn").getAsString());
         assertEquals("deny Unknown domain", items.get(0).getAsJsonObject().get("upgrade").getAsString());
         // --strict → exit 1
-        assertEquals(1, Query.unverified(fns, pol.toString(), false, true, null));
+        assertEquals(1, Query.unverified(fns, null, pol.toString(), false, true, null));
     }
 
     private static Effector eff(String fn, EffectSet inferred, EffectSet direct, List<String> calls) {

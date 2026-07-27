@@ -8,6 +8,59 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⚠ ⟨0.24⟩ `unverified --class` resolves the reason class TRANSITIVELY and FAILS CLOSED — it used to
+  under-report the holes it exists to surface, and under-report MORE the more you narrowed** (SPEC §6.2).
+  The filter tested `unknownWhy`, the DIRECT field, which is the wrong field for this question twice over.
+  §4 makes `unknownWhy` direct-only *by design* — a reason names a site in the function's own body — so a
+  function whose `Unknown` is purely INHERITED carried no reason of its own and matched **no filter at
+  all**; and an entry the filter could not classify was DROPPED by every filter, including one naming its
+  own class. Measured on the conformance fixture (7 Unknown-bearing entries, hand-written report):
+  `--class unresolved` selected **0, now 3**; `--class dispatch` **1, now 3**; `--class reflect` **1, now
+  2**; `--class dynamic` — which aliases every genuine class and must therefore exclude nothing on a
+  setup-free report — **2, now 7**.
+
+  **The repair is structural, and that is the point.** `unverified` carried an OPEN-CODED SECOND COPY of a
+  classification the gate beside it already did correctly, which is the exact defect §6.2 was written
+  about ("two implementations of one rule inside one engine, one of them correct, drifting silently
+  because nothing compared them"). There is now one: `Policy.reasonClassesOf` / `Policy.reasonClassMatches`
+  over `Policy.gateInputFromReport`, called by BOTH the gate's `Unknown[c…]` scoping and this verb. A
+  disclosure that contradicts the gate beside it is worse than either being wrong alone — it says your
+  gate is green *and* under-reports why you should not believe it.
+
+  **`blindspots --class` is deliberately NOT changed and shares no part of the fix.** §3.1 makes
+  `blindspots` the SOURCE view: a unit whose `Unknown` is purely inherited is *defined out of it*, so
+  every entry it filters carries a direct reason by construction and the direct-only read is CORRECT
+  there. Resolving transitively would pull in exactly the units the verb exists to exclude, turning a
+  ranked worklist of root causes into a list of everything downstream of them. One verb's definition is
+  the other verb's bug; a shared code path here would have been a shared defect. Measured unchanged on
+  the same fixture (2 sources; `--class dispatch` → 1, `--class reflect` → 1).
+
+  **⚠ The verdict change is on `gate --report`, and it is an equivalence repair.** §6.2 requirement (3)
+  says a reasonless `Unknown` CONTRIBUTES `unresolved` — gated on the function having a DIRECT `Unknown`
+  IT DID NOT NAME, never on its reason set being absent (absence is also what an INHERITED `Unknown`
+  looks like, and marking those is the mirror fabrication). `gateInputFromReport` now applies that per
+  ENTRY, before the fixpoint, which is what makes it compose: a caller of one reasonless entry and one
+  `dispatch:` entry accumulates `{unresolved, dispatch}` and is caught by BOTH filters — the counter-
+  example in which ADDING a call turned a red verdict green. Consequence on a hand-authored or foreign
+  report: an entry with `direct: ["Unknown"]` and no `unknownWhy` now makes `deny Unknown[unresolved]`
+  FIRE (was exit 2, refused) and `deny Unknown[native]` TOLERATE (was exit 2) — which is what
+  `scan --policy` already did over the same signature, so refusing had become a divergence between the
+  two routes. The answerability REFUSAL is unchanged for the case it was measured on — an INHERITED
+  `Unknown` with no `calls` edge to a reason, where nothing in the report bears on the class — and that
+  row is now pinned with a fixture that actually builds one (it said INHERITED in a comment while the
+  report it wrote said `direct: ["Unknown"]`).
+
+  Both halves verified BY MUTATION: contributing `unresolved` unconditionally turns exactly the two
+  mirror-fabrication controls red (an inherited-but-classified caller, and the caller of a reasoned
+  source) plus both gate refusal rows; dropping the fixpoint turns exactly the four transitive rows red.
+  Note that `--class dynamic` alone survives BOTH mutations — a repair that merely made it converge, by
+  keeping everything, would look done — which is why the discrimination control is not optional.
+  Regressions: `test/smoke.sh` "== --class reason-class filter (§6.2) ==" (driven through the shipped
+  launcher and PARSED — the contract here is an exit code and a JSON document, and a unit test can agree
+  with a binary that prints something else),
+  `GateReportVerbTest.aReasonlessDirectUnknownContributesUnresolvedRatherThanBeingRefused`, and
+  conformance PART 27 rows R1 / R5.
+
 - **⟨0.24⟩ `ambiguous:` is now the FIFTH canonical §4 `unknownWhy` kind, and candor-java recognizes it as
   one** — the analyser's own NAME RESOLUTION was ambiguous (two same-named local definitions), so no owner
   could be formed at all. It is not a `dispatch:` with a missing body (there an owner type *was* formed, and

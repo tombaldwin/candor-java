@@ -422,7 +422,7 @@ public final class Query {
             case "whatif" -> whatif(report, a0, a1, policyFlag, json);
             case "fix" -> fix(fns, report, a0, a1, policyFlag, json);
             case "fix-gate" -> fixGate(fns, report, policyFlag, json, strict);
-            case "unverified" -> unverified(fns, policyFlag, json, strict, parseClassFilter(classFlag));
+            case "unverified" -> unverified(fns, report, policyFlag, json, strict, parseClassFilter(classFlag));
             case "rewire" -> rewire2(a0, a1, json);
             case "gate" -> gate(fns, report, a0, policyFlag, json, gateJsonFlag);
             default -> 2;
@@ -1430,14 +1430,49 @@ public final class Query {
      *  but if that function is Unknown (an unresolvable call), the pass is UNVERIFIED: the Unknown could hide
      *  the very effect the rule forbids (the fn/closure-port hole). Names each such function + the
      *  `deny E Unknown <scope>` upgrade. Advisory (exit 0); `--strict` → exit 1. The gate verdict is untouched. */
-    static int unverified(List<Effector> fns, String policyPath, boolean json, boolean strict, Set<ReasonClass> classFilter) {
+    static int unverified(List<Effector> fns, String reportPath, String policyPath, boolean json,
+                          boolean strict, Set<ReasonClass> classFilter) {
         if (!loadPolicyOrFail(policyPath, "unverified")) return 2;
         List<PolicyRule.Deny> deny = AnalysisState.ctx().denyRules;
         record Hole(Effector fn, PolicyRule.Deny rule) {}
-        // `--class <c,…>` (SPEC §3.1 ⟨0.20⟩): keep only holes whose Unknown is of a matching reason class.
-        java.util.function.Predicate<Effector> classMatch = f -> classFilter == null
-                || (f.unknownWhy() != null && f.unknownWhy().stream()
-                        .anyMatch(ur -> classFilter.contains(ReasonClass.classify(ur.format()))));
+        // `--class <c,…>` (SPEC §6.2 ⟨0.24⟩): keep the holes whose reason classes intersect the filter,
+        // resolved by the SAME code the gate beside this disclosure uses — Policy#reasonClassesOf over
+        // Policy#gateInputFromReport. §6.2 requires exactly that ("THE GATE AND THE DISCLOSURE MUST APPLY
+        // THE SAME RULE, AND SHOULD SHARE THE SAME CODE"), and this verb is the query it was written about:
+        // the filter used to test `f.unknownWhy()`, the DIRECT field, which is
+        //   (1) the wrong question — §4 makes `unknownWhy` direct-only by design, so a function whose
+        //       `Unknown` is purely INHERITED carries no reason of its own and matched NO filter; and
+        //   (2) fail-OPEN — an entry the filter could not classify was dropped by EVERY filter, including
+        //       one naming its own class, so `unverified` under-reported the holes it exists to surface,
+        //       and under-reported MORE the more the user narrowed.
+        // MEASURED on the PART 27 fixture, before → after: `--class unresolved` 0 → 3 of 7 and `--class
+        // dynamic` 2 → 7. The disclosure now agrees with the gate rather than contradicting it.
+        //
+        // NOT shared with `blindspots --class`, deliberately: §3.1 makes `blindspots` the SOURCE view and
+        // EXCLUDES a unit whose `Unknown` is purely inherited, so every entry it filters carries a direct
+        // reason by construction and the direct-only read is CORRECT there. Resolving transitively would
+        // pull in exactly the units that verb is defined to exclude. One verb's definition is the other
+        // verb's bug — a shared code path would be a shared defect here.
+        Policy.GateInput gi = null;
+        if (classFilter != null) {
+            // The RAW `unknownWhy` strings, for the reason Policy#gateInputFromReport documents: a
+            // colon-free tag (`missing-config`) is dropped by `UnknownReason.parse`, so reading the parsed
+            // reasons would silently reclassify a `setup` entry as `unresolved` and put it back inside
+            // `--class dynamic`, which by definition excludes `setup`.
+            Envelope env;
+            try {
+                env = readEnvelope(reportPath);
+            } catch (Exception e) {
+                String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                System.err.println("candor unverified: --class needs the report's reason channel, but "
+                        + reportPath + " could not be re-read (" + why + ")");
+                return 2;
+            }
+            gi = Policy.gateInputFromReport(fns, env.rawUnknownWhy());
+        }
+        final Policy.GateInput gin = gi;
+        java.util.function.Predicate<Effector> classMatch =
+                f -> Policy.reasonClassMatches(gin, f.fn(), classFilter);
         List<Hole> holes = new ArrayList<>();
         for (Effector e : fns) {
             // Same predicate as the gate note (Policy.unverifiedHoleRule) — one definition of a hole.

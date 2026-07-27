@@ -1700,6 +1700,104 @@ else
   else echo "  FAIL unreadable config exit $cnrc (want 2)"; fail=$((fail+1)); fi
 fi
 
+# ── ⟨0.24⟩ SPEC §6.2 `--class`: the reason-class filter, over the SHIPPED launcher ────────────────
+# Driven end-to-end and PARSED, not unit-tested: the two things under test are an exit CODE and a JSON
+# document, and a unit test that calls the function can agree with a binary that prints something else.
+# The fixture is hand-written (no scan, no compiler) because every §6.2 consumer surface is a pure
+# function of a REPORT + a policy — which is also what lets the four-engine conformance differential
+# (PART 27) hand every engine the same bytes.
+echo "== --class reason-class filter (§6.2) =="
+mkdir -p "$W/cls6"
+cat > "$W/cls6/r.json" <<'J'
+{ "candor": {"version":"handwritten","spec":"0.23"}, "package": "app",
+  "analyzed": {"count":7,"digest":"0"},
+  "functions": [
+    {"fn":"app.a_reasonless_only","inferred":["Unknown"],"calls":["app.src_reasonless"]},
+    {"fn":"app.b_reasoned_only","inferred":["Unknown"],"calls":["app.src_reasoned"]},
+    {"fn":"app.c_both","inferred":["Unknown"],"calls":["app.src_reasonless","app.src_reasoned"]},
+    {"fn":"app.d_named_direct","inferred":["Unknown"],"direct":["Unknown"],
+     "unknownWhy":["reflect:Method.invoke","native:strlen"]},
+    {"fn":"app.e_named_inherited","inferred":["Unknown"],"calls":["app.d_named_direct"]},
+    {"fn":"app.src_reasonless","inferred":["Unknown"],"direct":["Unknown"],"unknownWhy":[]},
+    {"fn":"app.src_reasoned","inferred":["Unknown"],"direct":["Unknown"],
+     "unknownWhy":["dispatch:app.Base.run"]} ] }
+J
+cat > "$W/cls6/r.callgraph.json" <<'J'
+{ "app.a_reasonless_only":["app.src_reasonless"], "app.b_reasoned_only":["app.src_reasoned"],
+  "app.c_both":["app.src_reasonless","app.src_reasoned"], "app.d_named_direct":[],
+  "app.e_named_inherited":["app.d_named_direct"], "app.src_reasonless":[], "app.src_reasoned":[] }
+J
+# the same report plus ONE entry whose only class is `setup` — `dynamic` aliases every GENUINE class,
+# which by its own definition EXCLUDES setup, so the invariant is "unfiltered MINUS setup-only". Stated
+# flatly ("dynamic excludes nothing") it would fail on any corpus carrying a setup reason.
+python3 - "$W/cls6/r.json" "$W/cls6/s.json" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))
+r["functions"].append({"fn": "app.f_setup_only", "inferred": ["Unknown"], "direct": ["Unknown"],
+                       "unknownWhy": ["missing-config"]})
+r["analyzed"]["count"] = len(r["functions"])
+json.dump(r, open(sys.argv[2], "w"))
+json.dump({e["fn"]: e.get("calls", []) for e in r["functions"]},
+          open(sys.argv[2].replace(".json", ".callgraph.json"), "w"))
+PY
+printf 'pure app\n' > "$W/cls6/pol"
+# the SORTED fn list a `--json` selection names, or the literal BADJSON — an empty answer and a CLI that
+# never ran must not print the same thing.
+csel() { # csel <verb> <report> [--class …]
+  local verb="$1" rep="$2"; shift 2
+  local args=("$verb" --report "$rep" --json)
+  [ "$verb" = unverified ] && args+=(--policy "$W/cls6/pol")
+  "$CJ" "${args[@]}" "$@" 2>/dev/null | python3 -c '
+import json, sys
+raw = sys.stdin.read()
+try: d = json.loads(raw)
+except Exception: print("BADJSON"); sys.exit()
+print(",".join(sorted(x["fn"] for x in d.get("unverified", d.get("sources", [])))))'
+}
+ALL7='app.a_reasonless_only,app.b_reasoned_only,app.c_both,app.d_named_direct,app.e_named_inherited,app.src_reasoned,app.src_reasonless'
+want "unverified: the unfiltered denominator is all 7 Unknown-bearing entries" "$(csel unverified "$W/cls6/r.json")" "$ALL7"
+# THE DIAGNOSTIC. `dynamic` names every genuine class, so on a setup-free report it must exclude
+# NOTHING. Measured before this landed: 2 of 7 (−71%) — the filter under-reported the holes the verb
+# exists to surface, and under-reported MORE the more the user narrowed.
+want "unverified --class dynamic excludes nothing on a setup-free report" \
+     "$(csel unverified "$W/cls6/r.json" --class dynamic)" "$ALL7"
+want "unverified --class dynamic drops ONLY the setup-only entry" \
+     "$(csel unverified "$W/cls6/s.json" --class dynamic)" "$ALL7"
+absent "…and dynamic really does exclude it" \
+     "$(csel unverified "$W/cls6/s.json" --class dynamic)" 'app.f_setup_only'
+want "…while the setup fixture's UNFILTERED set carries it (not a vacuous subtraction)" \
+     "$(csel unverified "$W/cls6/s.json")" 'app.f_setup_only'
+want "unverified --class setup names it" "$(csel unverified "$W/cls6/s.json" --class setup)" 'app.f_setup_only'
+# §6.2 (2) FAIL CLOSED + (1) TRANSITIVE: a hole nobody named is `unresolved` — at the source that raised
+# it, at the caller that inherits it, AND at the caller that reaches BOTH it and a `dispatch:` hole
+# (the counterexample: c_both is strictly worse-known than a_reasonless_only and used to select nothing).
+want "unverified --class unresolved selects the reasonless source + both its reachers" \
+     "$(csel unverified "$W/cls6/r.json" --class unresolved)" 'app.a_reasonless_only,app.c_both,app.src_reasonless'
+want "unverified --class dispatch travels transitively to the two inheriting callers" \
+     "$(csel unverified "$W/cls6/r.json" --class dispatch)" 'app.b_reasoned_only,app.c_both,app.src_reasoned'
+# §6.2 (3) THE MIRROR FABRICATION, both controls: an entry whose reasons are ALL classifiable and none
+# `unresolved` must NOT match `--class unresolved` — including when its Unknown is INHERITED (absence is
+# also what an inherited Unknown looks like, so a rule keyed on absence over-fires on exactly these).
+absent "…and an inherited-but-CLASSIFIED caller is not swept in as unresolved" \
+     "$(csel unverified "$W/cls6/r.json" --class unresolved)" 'app.e_named_inherited'
+absent "…nor is the caller of the reasoned source" \
+     "$(csel unverified "$W/cls6/r.json" --class unresolved)" 'app.b_reasoned_only'
+want "unverified --class reflect selects the named source AND its inheriting caller" \
+     "$(csel unverified "$W/cls6/r.json" --class reflect)" 'app.d_named_direct,app.e_named_inherited'
+# the DISCRIMINATION control's zero row, asserted with an explicit emptiness test (`want` greps, and
+# grep for the empty string over empty input matches nothing — a false FAIL, or a false pass elsewhere).
+ind=$(csel unverified "$W/cls6/r.json" --class indirect)
+if [ -z "$ind" ]; then echo "  ok   unverified --class indirect selects nothing (no entry carries a callback:)"; pass=$((pass+1));
+else echo "  FAIL unverified --class indirect selected: $ind"; fail=$((fail+1)); fi
+# `blindspots` SHARES THE FLAG AND MUST NOT SHARE THE FIX. §3.1 makes it the SOURCE view: a unit whose
+# Unknown is purely inherited is DEFINED out of it, so the direct-only read is correct there and
+# resolving transitively would turn a ranked worklist of root causes into everything downstream of them.
+want "blindspots is the SOURCE view — only entries with a direct, named reason" \
+     "$(csel blindspots "$W/cls6/r.json")" 'app.d_named_direct,app.src_reasoned'
+want "blindspots --class dispatch stays direct-only (the source, not its callers)" \
+     "$(csel blindspots "$W/cls6/r.json" --class dispatch)" 'app.src_reasoned'
+want "blindspots --class reflect stays direct-only" \
+     "$(csel blindspots "$W/cls6/r.json" --class reflect)" 'app.d_named_direct'
 echo "== candor wrapper =="
 want "./candor analyzes via the wrapper"   "$("$ROOT/candor" "$W/cls" 2>/dev/null)"               'Fx.reads'
 want "./candor queries via the wrapper"    "$("$ROOT/candor" show "$W/r.json" reads 2>/dev/null)" 'Fs'

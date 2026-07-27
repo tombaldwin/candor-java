@@ -350,34 +350,60 @@ class GateReportVerbTest {
     }
 
     /**
-     * A report that says a function is {@code Unknown} but records NO reason is the signature the formal
-     * model calls ill-formed — Def 6 makes {@code D} the carrier of the {@code Unknown}, so {@code (∅, ∅)}
-     * is the model's way of saying "sound-complete" about a function whose report says otherwise. Only a
-     * hand-authored or foreign report can reach it, which is why no end-to-end test could ever have pinned
-     * it, and why the ⟨0.24⟩ producer-side repair makes it unreachable from a scan.
+     * A report entry that raises {@code Unknown} DIRECTLY and records NO reason for it. Only a hand-authored
+     * or foreign report can reach this state — the ⟨0.24⟩ producer-side repair makes it unreachable from a
+     * scan (every in-scan site records an {@code unknownWhy} beside the {@code Unknown} it raises, and
+     * {@code Loader#synthesizeReasonlessDepReasons} covers the dependency boundary).
      *
-     * <p>A NARROWED filter over it is REFUSED, not answered. {@code Policy.gate} carries a fail-closed
-     * backstop that contributes {@code unresolved} to an empty class set, and on the report route that
-     * backstop would be inventing the very datum the filter is asking about: a rule naming
-     * {@code Unknown[unresolved]} would "fire" on a class nothing in the report asserts, and a rule naming
-     * any other class would silently tolerate. Exit 2 is the honest answer to both. The BARE forms still
-     * gate — the effect set alone answers them — so refusing the narrowing costs no reach.
+     * <p>⟨0.24⟩ SPEC §6.2 requirement (3): the entry CONTRIBUTES {@code unresolved}, and this is not
+     * inventing a datum — the report positively asserts a direct {@code Unknown} and positively asserts no
+     * reason for it, and "a direct {@code Unknown} you did not name" IS the {@code unresolved} class. So
+     * {@code Unknown[unresolved]} FIRES and {@code Unknown[native]} tolerates, which is exactly what
+     * {@code scan --policy} does over the same signature (there, the reason is synthesised at the source
+     * and classifies to {@code unresolved} the same way). This row previously asserted exit 2 for BOTH,
+     * from the pre-⟨0.24⟩ reading in which the rule was keyed on the class set being EMPTY: under that
+     * reading the contribution really would have been an invention, because the same empty set also
+     * describes an INHERITED {@code Unknown} whose reason the report simply did not link to. Requirement
+     * (3) is the distinction — gate on a DIRECT {@code Unknown} it did not name, never on absence — and
+     * with it drawn, refusing here would COST the scan-vs-report equivalence this verb exists to provide.
+     *
+     * <p>The refusal has not gone anywhere: the last rows are the case the class set genuinely cannot be
+     * derived for — an INHERITED {@code Unknown} with no {@code calls} edge to the reason — and it is still
+     * exit 2. The BARE forms gate throughout; the effect set alone answers them.
      */
     @Test
-    void aNarrowedFilterOverAReasonlessUnknownIsRefusedNotAnswered() throws Exception {
+    void aReasonlessDirectUnknownContributesUnresolvedRatherThanBeingRefused() throws Exception {
         Path rep = report("rl.jvm.json", List.of(entry("app.U.f", List.of("Unknown"), List.of(), null)));
-        assertEquals(2, gate(rep, policy("deny Net Unknown[unresolved] app\n")),
-                "the class set would have to be invented to answer this — refuse, never report a violation "
-                + "attributed to a class the report does not assert");
+        assertEquals(1, gate(rep, policy("deny Net Unknown[unresolved] app\n")),
+                "§6.2 (3): a DIRECT Unknown the entry did not name IS of class `unresolved` — the filter "
+                + "naming that class must select it, not refuse the policy");
         Candor.resetState();
-        assertEquals(2, gate(rep, policy("deny Net Unknown[native] app\n")),
-                "…and refusing covers the tolerating direction too, which is the dangerous one");
+        assertEquals(0, gate(rep, policy("deny Net Unknown[native] app\n")),
+                "…and a filter naming a class it is NOT tolerates it, the same narrowing `scan --policy` "
+                + "performs over the same signature — the contribution discriminates, it does not flood");
         Candor.resetState();
         assertEquals(1, gate(rep, policy("deny Net Unknown app\n")),
                 "the BARE form still fires — the effect set alone answers it, so the refusal costs no reach");
         Candor.resetState();
         assertEquals(1, gate(rep, policy("deny Net Unknown[*] app\n")),
                 "`[*]` is the bare form spelled out (an empty filter), so it fires too");
+
+        // THE REFUSAL IS STILL ALIVE — the control that separates "contributes" from "answers everything".
+        // Same `inferred`, but the Unknown is INHERITED (no direct Unknown) and no `calls` edge reaches a
+        // reason, so nothing in the report bears on the class. §6.2 requirement (3) does not apply and the
+        // narrowing is refused in BOTH directions.
+        Candor.resetState();
+        Path inherited = report("rl2.jvm.json", List.of(
+                entry("app.U.g", List.of("Unknown"), List.of(), Map.of("direct", List.of()))));
+        assertEquals(2, gate(inherited, policy("deny Net Unknown[unresolved] app\n")),
+                "an INHERITED Unknown with no reason reachable is the case the class set WOULD have to be "
+                + "invented for — still refused, so the contribution above is gated, not blanket");
+        Candor.resetState();
+        assertEquals(2, gate(inherited, policy("deny Net Unknown[native] app\n")),
+                "…including the tolerating direction, which is the dangerous one");
+        Candor.resetState();
+        assertEquals(1, gate(inherited, policy("deny Net Unknown app\n")),
+                "…and the BARE form still fires on it, so the refusal costs no reach");
     }
 
     /**
@@ -416,9 +442,14 @@ class GateReportVerbTest {
                 + "collapsed into always-fail");
 
         // ── the Unknown reason-class half ──
+        // `direct: []` is LOAD-BEARING here, not decoration: it is what makes `app.C.go`'s Unknown
+        // INHERITED, which is the case this refusal is for. The row said INHERITED in a comment while the
+        // report it built said `direct: ["Unknown"]` (the `entry` helper's default), so it was in fact
+        // asserting the ⟨0.24⟩ §6.2 CONTRIBUTES case — which is answerable, and is asserted as such by
+        // #aReasonlessDirectUnknownContributesUnresolvedRatherThanBeingRefused.
         Candor.resetState();
         Path noCalls = report("nk0.jvm.json", List.of(
-                entry("app.C.go", List.of("Unknown"), List.of(), null),              // INHERITED, no `calls`
+                entry("app.C.go", List.of("Unknown"), List.of(), Map.of("direct", List.of())),
                 entry("app.L.m", List.of("Unknown"), List.of("dispatch:app.L.m"), null)));
         assertEquals(2, gate(noCalls, policy("deny Unknown[dispatch] app.C\n")),
                 "the reason lives on a callee the report does not link to — the class set is unreachable, "
@@ -427,7 +458,8 @@ class GateReportVerbTest {
         assertEquals(1, gate(noCalls, policy("deny Unknown app.C\n")), "…the BARE rule still fires");
         Candor.resetState();
         Path withCalls = report("nk1.jvm.json", List.of(
-                entry("app.C.go", List.of("Unknown"), List.of(), Map.of("calls", List.of("app.L.m"))),
+                entry("app.C.go", List.of("Unknown"), List.of(),
+                        Map.of("direct", List.of(), "calls", List.of("app.L.m"))),
                 entry("app.L.m", List.of("Unknown"), List.of("dispatch:app.L.m"), null)));
         assertEquals(1, gate(withCalls, policy("deny Unknown[dispatch] app.C\n")),
                 "CONTROL: with the `calls` edge present the class resolves transitively and the rule fires");

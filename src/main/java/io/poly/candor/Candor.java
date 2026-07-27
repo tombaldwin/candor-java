@@ -123,7 +123,30 @@ public class Candor {
     static boolean forceClosedWorld = false;
 
     static Map<String, EffectSet> runScan(Path target) throws IOException {
+        return runScan(target, null);
+    }
+
+    /** {@link #runScan(Path)} with an EXPLICIT {@code .candor/config} layer instead of the process-wide
+     *  {@link #config} static.
+     *
+     *  <p>{@code --parallel} scans N targets on N threads through one static, so it could not have a config
+     *  per target and simply read whatever {@code config} held — which on that path is the
+     *  {@code Config.empty()} default, because the only assignment to it lives on the single-target branch.
+     *  Every `.candor/config` key was therefore silently dropped for every `--parallel` target, while the
+     *  flag's own contract says each report is byte-identical to a standalone {@code candor <target>
+     *  --json}. Measured: a project whose config names `deps` reported {@code app.A.run -> ['Unknown']}
+     *  standalone and {@code []} under `--parallel`.
+     *
+     *  <p>The config rides the THREAD-LOCAL {@link AnalysisContext} rather than the static, so N concurrent
+     *  targets each get their own — which is the reason a static could not simply be assigned in the task. */
+    static Map<String, EffectSet> runScan(Path target, Config perScan) throws IOException {
         resetState();
+        Config cfg = perScan != null ? perScan : config;
+        // ⟨0.19⟩/⟨0.20⟩ the gate-facing config maps, applied AFTER resetState (which installs the fresh
+        // context) so they survive into the report + gate. main() also applies them from the static on the
+        // single-target path; both are idempotent putAll/addAll into a just-created context.
+        ctx().unknownAliases.putAll(cfg.unknownAliases());
+        ctx().netPartners.addAll(cfg.netPartners());
         List<ClassNode> classes = load(target);
         ctx().ALL = classes;
         for (ClassNode cn : classes) {
@@ -148,10 +171,10 @@ public class Candor {
         computeStreamFieldOrigins(classes); // VALUE-PROVENANCE Phase 2: which stream fields are provably all-concrete
         // Cross-jar inheritance (candor-spec §2): load dependency reports named by CANDOR_DEPS BEFORE
         // analyze, so a call into an already-analyzed dependency inherits its effects (vs assumed-pure).
-        loadCrossDeps(config.value("deps", "CANDOR_DEPS"), provenance()[0]);
-        ctx().taintEnabled = config.flag("taint", Mode.TAINT.envVar()); // read before analyze (the pass runs per method)
-        ctx().closedWorld = forceClosedWorld || config.flag("closed-world", "CANDOR_CLOSED_WORLD"); // opt-in: scanned set is complete
-        ctx().unknownRatchet = config.flag("unknown-ratchet", "CANDOR_UNKNOWN_RATCHET"); // opt-in: a NEW Unknown vs baseline fails
+        loadCrossDeps(cfg.value("deps", "CANDOR_DEPS"), provenance()[0]);
+        ctx().taintEnabled = cfg.flag("taint", Mode.TAINT.envVar()); // read before analyze (the pass runs per method)
+        ctx().closedWorld = forceClosedWorld || cfg.flag("closed-world", "CANDOR_CLOSED_WORLD"); // opt-in: scanned set is complete
+        ctx().unknownRatchet = cfg.flag("unknown-ratchet", "CANDOR_UNKNOWN_RATCHET"); // opt-in: a NEW Unknown vs baseline fails
         // Per-class fail-soft: an exotic/malformed class that throws ANYWHERE in analyze (e.g. a malformed
         // method descriptor that ASM validates only lazily in Type.getArgumentTypes — the 0.5.6 crash class,
         // re-surfaced via an overloaded-name path the desc.startsWith("(") guard doesn't catch) must NOT
@@ -317,7 +340,13 @@ public class Candor {
         // <out-dir>/<name>.json (+ .callgraph.json / .hierarchy.json sidecars). Each scan runs on its own
         // thread with its OWN thread-local AnalysisContext (LB-1b), so they never clobber each other; this
         // amortizes one JVM start across N targets (a multi-module build, or a CI sweep over several
-        // artifacts). Each report is byte-identical to a standalone `candor <target> --json` of that target.
+        // artifacts). Each report is byte-identical to a standalone `candor <target> --json` of that target
+        // — including its `.candor/config`, which each task resolves for ITS OWN target and passes into
+        // runScan. That promise was false until then: `config` is a process-wide static assigned only on
+        // the single-target branch, so every `--parallel` target scanned with `Config.empty()` and a
+        // checked-in `deps`/`taint`/`net-partner` key was silently dropped. A config that names a dep
+        // report is the consequential one — the effects it chains simply did not arrive, and the report
+        // read cleaner than the standalone run of the same bytes.
         if (args[0].equals("--parallel")) {
             if (args.length < 3) {
                 System.err.println("usage: candor --parallel <out-dir> <target>...");
@@ -357,7 +386,7 @@ public class Candor {
                     Path out = outDir.resolve(baseOf.apply(t) + ".json");
                     try {
                         if (!Files.exists(t)) { failures.add(t + " (no such path)"); return; }
-                        writeReport(runScan(t), out.toString(), null);   // own thread → own ctx() (LB-1b)
+                        writeReport(runScan(t, Config.forTarget(t)), out.toString(), null);  // own thread → own ctx() + own config (LB-1b)
                         System.out.println("  " + t + " -> " + out);
                     } catch (Throwable e) {
                         // Record ANY failure — incl. a RuntimeException/Error from a phase outside runScan's

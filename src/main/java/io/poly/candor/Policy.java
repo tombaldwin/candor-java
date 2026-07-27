@@ -271,10 +271,13 @@ final class Policy {
         for (var e : ctx().unknownWhy.entrySet()) {
             TreeSet<String> classes = new TreeSet<>();
             // Classify via the STRING path (`classify(ur.format())`), identical to rust/ts/swift — NOT the
-            // structured `of(ur)` (Kind) path. They agree for every reason candor-java emits today, but
-            // `of()` down-classifies a foreign prefix (`closure:`/`ambiguous:`/`missing-config`) to
-            // `unresolved` while `classify()` maps it correctly — so a future/cross-report reason can't
-            // under-gate a narrow `Unknown[reflect]` on the java engine alone (review-found parity hazard).
+            // structured `of(ur)` (Kind) path. The two agree on every prefix this build RECOGNIZES (pinned
+            // by a test over `Kind.values()`), but `of()` can only ever recognize what this build's enum
+            // lists, so an unlisted token (`closure:`, `missing-config`) down-classifies to `unresolved`
+            // while `classify()` maps it correctly — a future/cross-report reason must not under-gate a
+            // narrow `Unknown[reflect]` on the java engine alone (review-found parity hazard). ⟨0.24⟩
+            // `ambiguous:` used to be in that unlisted set; it is now a canonical §4 kind and both paths
+            // give `dispatch`, which is why the hazard is stated as structural, not as a list of tokens.
             for (UnknownReason ur : e.getValue()) classes.add(ReasonClass.classify(ur.format()).token());
             if (!classes.isEmpty()) reasonClassDirect.put(e.getKey(), classes);
         }

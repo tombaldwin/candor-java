@@ -4,11 +4,17 @@ package io.poly.candor.model;
  * Why a unit's body introduced {@code Unknown} directly — the {@code unknownWhy} wire tag
  * (candor-spec §4). A {@code prefix:detail} pair, e.g. {@code dispatch:Foo.bar}.
  *
- * <p>The spec's canonical code vocabulary is four kinds ({@code reflect}/{@code native}/
- * {@code dispatch}/{@code callback}). candor-java additionally emits {@code task-handoff} and
- * {@code indy} today (see {@link Kind}); both are modelled so its wire round-trips byte-for-byte.
- * Consolidating those two into the canonical four is a separate, deliberate (byte-changing)
- * spec-conformance task — tracked, not done here.
+ * <p>⟨0.24⟩ The spec's canonical code vocabulary is <b>five</b> kinds ({@code reflect}/{@code native}/
+ * {@code dispatch}/{@code callback}/{@code ambiguous}), plus the two REGISTERED dependency-boundary
+ * kinds {@code dep}/{@code dep-stale} (§4 ⟨0.24⟩ / §6.2). All seven are modelled in {@link Kind} —
+ * candor-java is a CONSUMER of every one of them even where it is not a producer, because a chained
+ * dependency's report contributes its reasons into this scan (Candor's {@code depTransitiveWhy}).
+ *
+ * <p>Separately, candor-java emits two MIGRATION kinds of its own, {@code task-handoff} and
+ * {@code indy}, modelled so its wire round-trips byte-for-byte. Consolidating those two onto the
+ * canonical five is a deliberate (byte-changing) task — tracked, not done here. {@code ambiguous},
+ * {@code dep} and {@code dep-stale} are NOT migration kinds: they are permanent members of the
+ * spec's vocabulary and are never to be reconciled away.
  *
  * <p>The raw {@code prefix} string is stored (not just the {@link Kind}) so a tag from ANY engine —
  * including a future or foreign prefix this build doesn't recognize — round-trips exactly; {@link #kind()}
@@ -16,11 +22,31 @@ package io.poly.candor.model;
  */
 public record UnknownReason(String prefix, String detail) implements Comparable<UnknownReason> {
 
+    /**
+     * The prefixes this build RECOGNIZES. Membership is not "candor-java emits it" — it is "candor-java
+     * has an opinion about what it means", which for a consumer of three other engines' reports is the
+     * wider set. A prefix absent here is not rejected: it round-trips verbatim and classifies through the
+     * conservative catch-all (§2 forward compatibility) — see {@link #fromPrefix}.
+     */
     public enum Kind {
+        // ── spec §4 canonical (five) ────────────────────────────────────────────────────────────────
         REFLECT("reflect"),
         NATIVE("native"),
         DISPATCH("dispatch"),
         CALLBACK("callback"),
+        /** ⟨0.24⟩ the analyser's own NAME RESOLUTION was ambiguous (two same-named local definitions), so
+         *  no owner could be formed at all. Not a {@link #DISPATCH} with a missing body (there an owner
+         *  type WAS formed, and the detail is the normative {@code owner.member}); not a {@link #CALLBACK}
+         *  (no function value is involved). candor-java's bytecode model does not produce it — a JVM
+         *  invoke carries owner+name+descriptor, so name resolution is never ambiguous — but candor-rust
+         *  emits it heavily and it reaches this engine over the dependency boundary. */
+        AMBIGUOUS("ambiguous"),
+        // ── spec §4 ⟨0.24⟩ REGISTERED dependency-boundary kinds (project to `unresolved`, §6.2) ───────
+        /** an `Unknown`-bearing dependency ENTRY that accounts for none of its own `Unknown` (Loader). */
+        DEP("dep"),
+        /** ditto, where the producing report is §2.1 distrusted (stale). */
+        DEP_STALE("dep-stale"),
+        // ── candor-java MIGRATION kinds (off-vocabulary, to be reconciled onto the canonical five) ────
         TASK_HANDOFF("task-handoff"),
         INDY("indy");
 

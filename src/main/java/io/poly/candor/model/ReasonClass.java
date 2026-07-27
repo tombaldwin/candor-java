@@ -13,13 +13,15 @@ package io.poly.candor.model;
 public enum ReasonClass {
     /** reflection / metaprogramming: ts reflect:* / reflect_apply / reflect-metadata; swift reflecting / dynamicMemberLookup; (rust/java to emit). */
     REFLECT("reflect"),
-    /** unresolved virtual/dynamic dispatch candor declined to resolve: dispatch:* ; rust ambiguous:same-name. */
+    /** unresolved virtual/dynamic dispatch candor declined to resolve: dispatch:* ; ⟨0.24⟩ the canonical
+     *  ambiguous:* (rust's same-name name-resolution ambiguity) projects here too — §6.2's normative table. */
     DISPATCH("dispatch"),
     /** callback / closure / function-value indirection: callback:* ; ts closure. */
     INDIRECT("indirect"),
     /** FFI / native boundary: native:* (JNI / C-interop / native addons as engines emit them). */
     NATIVE("native"),
-    /** generic unresolvable call/import, AND the catch-all for any unrecognized raw reason. */
+    /** generic unresolvable call/import, the ⟨0.24⟩ registered dep:/dep-stale: dependency-boundary kinds,
+     *  AND the catch-all for any unrecognized raw reason. */
     UNRESOLVED("unresolved"),
     /** the analysis is not wired up (fixable, not a real dynamic hole): missing-config / no-tsconfig. NOT emitted today — see design finding 1. */
     SETUP("setup");
@@ -44,9 +46,11 @@ public enum ReasonClass {
     }
 
     /**
-     * Map a java {@link UnknownReason} to its class via the structured {@link UnknownReason.Kind} — the
-     * robust path for this engine (ts/swift, which emit raw strings, use {@link #classify(String)}; the two
-     * agree by construction — see the test). A reason whose prefix this build doesn't recognize → UNRESOLVED.
+     * Map a java {@link UnknownReason} to its class via the structured {@link UnknownReason.Kind}. The
+     * gate deliberately uses {@link #classify(String)} instead (four-way parity — see
+     * {@code Policy.gateInputFromScan}); this typed path exists for callers that already hold a parsed
+     * reason, and the two MUST agree on every recognized {@code Kind} (pinned by a test that iterates
+     * {@code Kind.values()}). A reason whose prefix this build doesn't recognize → UNRESOLVED.
      */
     public static ReasonClass of(UnknownReason r) {
         UnknownReason.Kind k = r == null ? null : r.kind();
@@ -54,8 +58,11 @@ public enum ReasonClass {
         return switch (k) {
             case REFLECT -> REFLECT;
             case NATIVE -> NATIVE;
-            case DISPATCH, INDY -> DISPATCH;          // invokedynamic = a dispatch candor couldn't resolve
-            case CALLBACK, TASK_HANDOFF -> INDIRECT;  // callback / async continuation = function-value indirection
+            // ⟨0.24⟩ ambiguous = name resolution failed, no owner formed; §6.2 projects it to `dispatch`,
+            // and reclassifying it to `indirect` was measured to delete `deny E Unknown[dispatch]` on rust.
+            case DISPATCH, INDY, AMBIGUOUS -> DISPATCH; // invokedynamic = a dispatch candor couldn't resolve
+            case CALLBACK, TASK_HANDOFF -> INDIRECT;    // callback / async continuation = function-value indirection
+            case DEP, DEP_STALE -> UNRESOLVED;          // §4 ⟨0.24⟩ registered dependency-boundary kinds
         };
     }
 
@@ -79,8 +86,15 @@ public enum ReasonClass {
         if (w.startsWith("native")) return NATIVE;
         // callback / closure / async-continuation indirection
         if (w.startsWith("callback") || w.startsWith("closure") || w.startsWith("task-handoff")) return INDIRECT;
-        // unresolved dispatch / invokedynamic / same-name ambiguity
+        // unresolved dispatch / invokedynamic / ⟨0.24⟩ the canonical `ambiguous:` kind (name resolution
+        // found two same-named local defs, so no owner was formed). §6.2 has ALWAYS projected it here.
         if (w.startsWith("dispatch") || w.startsWith("indy") || w.startsWith("ambiguous")) return DISPATCH;
+        // §4 ⟨0.24⟩ REGISTERED dependency-boundary kinds. `unresolved` is ALSO the catch-all below, so
+        // this branch changes no verdict — that is the point. Their class is a recorded decision, not an
+        // accident of what the catch-all happens to be, so a future change to the catch-all cannot
+        // silently re-class every chained dependency's Unknown.
+        if (w.startsWith("dep:") || w.startsWith("dep-stale:")
+                || w.equals("dep") || w.equals("dep-stale")) return UNRESOLVED;
         // setup markers (not emitted as unknownWhy today — design finding 1 — but pinned for when they are)
         if (w.startsWith("missing-config") || w.startsWith("no-tsconfig") || w.startsWith("no-node_modules")) return SETUP;
         // generic + the conservative catch-all

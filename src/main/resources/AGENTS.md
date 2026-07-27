@@ -190,7 +190,12 @@ Name queries resolve exact > segment-suffix (`Svc.save` matches `com.example.Svc
 present — reflection, `native` bodies, Groovy metaclass dispatch, a project interface with no visible
 impl), the set may be incomplete: read the source before relying on it. `unknownWhy` tells you whether
 the opacity is irreducible (`reflect:`/`native:`) or fixable by widening the analyzed classpath
-(`dispatch:`). **`unknownWhy` appears only on the ROOT entries** — the methods whose own bodies hit
+(`dispatch:`). A `dep:`/`dep-stale:` tag names the dependency boundary itself, and a tag relayed from a
+chained dependency's report may carry any spec §4 kind this engine does not produce — notably
+candor-rust's `ambiguous:` (its own name resolution found two same-named definitions, so no owner was
+formed). Every kind projects onto the fixed §6.2 reason classes the `Unknown[…]` gate quantifies over
+(`ambiguous:` → `dispatch`, `dep:`/`dep-stale:` → `unresolved`), so a policy never has to enumerate
+kinds. **`unknownWhy` appears only on the ROOT entries** — the methods whose own bodies hit
 the opaque call; methods that merely *inherit* `Unknown` carry it in `inferred` with no why. To find
 what taints an inheritor, follow its `calls` edges down (or `where Unknown` and intersect) to the
 root. Never conclude a method is pure while it is marked unresolved.

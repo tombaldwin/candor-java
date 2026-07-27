@@ -115,8 +115,9 @@ public final class Query {
     /** Resolve a `--report <locator>` to a full report `.json` path, by the ONE §3.3.1 rule:
      *  a DIRECTORY → the `<dir>/.candor/report` prefix inside it; a path ending `.json` → that FULL path;
      *  otherwise a PREFIX (`<prefix>.<crate>.<backend>.json`). A dir/prefix is expanded to the single
-     *  matching report file (sidecars — `.callgraph.json`/`.hierarchy.json` — are excluded). Returns null
-     *  (with a stderr reason) when a dir/prefix names no report file. */
+     *  matching report file (sidecars are excluded — §2.2 ⟨0.24⟩'s reserved trailing segments, one rule in
+     *  {@link Loader#isSidecarName}). Returns null (with a stderr reason) when a dir/prefix names no
+     *  report file. */
     static String resolveReportLocator(String locator) {
         Path p = Path.of(locator);
         if (locator.endsWith(".json")) return locator;              // rule 2: a full report path, verbatim
@@ -126,9 +127,11 @@ public final class Query {
     }
 
     /** Expand a report PREFIX (`<dir>/report`) to the single report file `<prefix>.<crate>.<backend>.json`
-     *  beside it — the §3.3.1/§3.4 form the other engines write. A `.callgraph.json`/`.hierarchy.json`
-     *  sidecar is NOT a report (it has a 3rd dotted segment before `.json`, or its middle segment is a
-     *  sidecar tag). When exactly one report matches, use it; when several do, take the lexicographically
+     *  beside it — the §3.3.1/§3.4 form the other engines write. A SIDECAR is not a report: the test is
+     *  §2.2 ⟨0.24⟩'s reserved TRAILING SEGMENT ({@link Loader#isSidecarName}), never the segment COUNT the
+     *  old wording here claimed — sidecar names are per-engine, so counting segments excludes this engine's
+     *  own 3-segment sidecars and not a 2-segment one from another producer.
+     *  When exactly one report matches, use it; when several do, take the lexicographically
      *  first (deterministic — the Java engine loads ONE report, unlike the Rust lint's multi-crate union),
      *  and disclose the choice. `original` is the user-typed locator, for the error message. Returns null
      *  when nothing matches. */
@@ -170,7 +173,7 @@ public final class Query {
             s.forEach(f -> {
                 String name = f.getFileName().toString();
                 if (!name.startsWith(dot) || !name.endsWith(".json")) return;
-                if (name.endsWith(".callgraph.json") || name.endsWith(".hierarchy.json")) return; // sidecars aren't reports
+                if (Loader.isSidecarName(name)) return;   // §2.2 ⟨0.24⟩ reserved segment — a sidecar is not a report
                 addHit.accept(f);
             });
         } catch (Exception e) {
@@ -267,8 +270,7 @@ public final class Query {
         try (var s = Files.list(dir)) {
             return s.anyMatch(f -> {
                 String n = f.getFileName().toString();
-                return n.startsWith(dot) && n.endsWith(".json")
-                        && !n.endsWith(".callgraph.json") && !n.endsWith(".hierarchy.json");
+                return n.startsWith(dot) && n.endsWith(".json") && !Loader.isSidecarName(n);
             });
         } catch (Exception e) {
             return false;

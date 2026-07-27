@@ -8,6 +8,27 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⟨0.24⟩ The report-locator globs exclude ALL of §2.2's reserved sidecar segments, from ONE list**
+  (`Loader.isSidecarName`, `Query`). This engine carved out `.callgraph.json` and `.hierarchy.json`;
+  candor-ts carved out six; the spec now enumerates seven family-wide (`callgraph`, `hierarchy`,
+  `calibrated`, `layerreach`, `locs`, `gate`, and the `encountered-*` family) precisely because the engines
+  were drifting and nothing said they should not. Cross-engine reading is not hypothetical — the
+  conformance frontier differential has one engine produce and another consume — so the drift was a live
+  loss, not a spurious warning. MEASURED on a directory holding one real report and two foreign sidecars:
+  `candor map` disclosed *"locator … matches 3 reports; using report.asm.gate.json"* — a false ambiguity —
+  then picked the sidecar (`gate` sorts before `jvm`, and the resolver takes the lexicographically first
+  hit) and REFUSED every query with *"not a candor report: object has no 'functions' array"*, about a file
+  the user never named, while the report it wanted sat beside it. Exit 2 and no answer over intact data.
+  The reference engine's other two consequences do NOT apply here: this engine reads provenance from the
+  report it resolved rather than from the first file by sorted path, and it has no `reports` verb to
+  mislist. It stays a DENYLIST over the reserved segment — the inversion (accept only known backends) is an
+  allowlist, and a report whose type segment nobody anticipated would become silently invisible to every
+  query, a false all-clear; a denylist can only be incomplete, and incompleteness here is loud. The word is
+  reserved in the sidecar SEGMENT POSITION, not banned from the name: `report.hierarchy.jvm.json` — a
+  package legitimately named `hierarchy` — still resolves, and that control is pinned. Segment COUNT is
+  explicitly not the discriminator (it would exclude this engine's own 3-segment sidecars and not a
+  2-segment one from another producer); a stale comment claiming it was has been corrected. Both globs plus
+  the CANDOR_DEPS directory walk now ask the one predicate, so no two lists can drift apart again.
 - **⚠ ⟨0.24⟩ A reasonless `Unknown` CONTRIBUTES `unresolved` to a function's reason-class set — and the
   contribution is made where the `Unknown` is CREATED, not where the gate matches** (`Loader`, `DepFn`,
   `Policy`). The old §6.2 rule keyed on ABSENCE: an empty class set was read as `{unresolved}`. Absence is

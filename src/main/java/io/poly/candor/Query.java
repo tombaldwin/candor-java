@@ -692,6 +692,36 @@ public final class Query {
         return dot >= 0 ? base.substring(0, dot) : base;
     }
 
+    /**
+     * Lexicographic by UNICODE CODE POINT — the order SPEC §3.1 ⟨0.24⟩ pins for the frontier's
+     * {@code viaDispatchOn} join, equivalently UTF-8 byte order.
+     *
+     * <p>Java's NATURAL String ordering ({@code String.compareTo}) is by UTF-16 CODE UNIT, which the clause
+     * forbids: it agrees with code-point order on ASCII and disagrees above the BMP, because a supplementary
+     * character is stored as a surrogate pair starting in {@code U+D800..U+DBFF} and so sorts as if it were
+     * below every BMP character from {@code U+E000} up. Reachable, not theoretical — the dotted form is
+     * {@code <owner>.<member>}, built from USER IDENTIFIERS, and all four analysed languages permit
+     * non-ASCII identifiers.
+     *
+     * <p>Compared code point by code point rather than over {@code getBytes(UTF_8)}, which is the shorter
+     * spelling of the same order but is NOT safe here: a {@code TreeSet} treats {@code compare == 0} as a
+     * DUPLICATE, and UTF-8 encoding is lossy on an unpaired surrogate (they all encode to {@code ?}), so two
+     * distinct details differing only in a lone surrogate would compare equal and one would be silently
+     * DROPPED from the join — trading a conformance fix for the drop class this rung exists to close.
+     * Code-point decomposition is injective over char sequences, so this stays consistent with equals.
+     * Pinned by {@code QueryIncludeUnknownTest} in both directions.
+     */
+    static final Comparator<String> BY_CODE_POINT = (a, b) -> {
+        int i = 0, j = 0;
+        while (i < a.length() && j < b.length()) {
+            int ca = a.codePointAt(i), cb = b.codePointAt(j);
+            if (ca != cb) return Integer.compare(ca, cb);
+            i += Character.charCount(ca);
+            j += Character.charCount(cb);
+        }
+        return Integer.compare(a.length() - i, b.length() - j); // the shorter string is a prefix of the longer
+    };
+
     /** Does this qualified name / `dispatch:` detail actually NAME an owner — i.e. is there a `.` in the
      *  part before any `(…)` descriptor? Mirrors the split {@link #simpleMethod}/{@link #declaringType}
      *  do, so it answers exactly the question they silently paper over: both fall back to the WHOLE string
@@ -899,7 +929,10 @@ public final class Query {
                 reacherTypesByMethod.computeIfAbsent(simpleMethod(r), k -> new ArrayList<>()).add(declaringType(r));
             for (var e : new TreeMap<>(broadByFn).entrySet()) {
                 if (confirmed.contains(e.getKey())) continue; // already a confirmed caller — not "additional"
-                TreeSet<String> hits = new TreeSet<>();
+                // BY_CODE_POINT, not natural order: ⟨0.24⟩ pins this join as sorted by CODE POINT, and
+                // `String.compareTo` — what `new TreeSet<>()` would use — sorts by UTF-16 code unit, which
+                // differs above the BMP. Sorted + deduplicated by construction, as the clause requires.
+                TreeSet<String> hits = new TreeSet<>(BY_CODE_POINT);
                 for (String key : e.getValue()) { // key = OWNER.M, or a DOT-FREE detail (no owner at all)
                     if (!hasOwner(key)) {
                         // ⟨0.24⟩ A DOT-FREE `dispatch:` detail (e.g. candor-rust's `untyped cross-package

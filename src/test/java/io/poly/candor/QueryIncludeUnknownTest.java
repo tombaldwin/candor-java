@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -225,7 +226,60 @@ class QueryIncludeUnknownTest {
                         "app.Base.run")));                 // dotted, app.Impl <: app.Base -> `run`
         assertEquals(Map.of("app.Frontier.go", "run,untyped cross-package receiver,write"),
                 frontier(mixedGraph(), broad, hier),
-                "one entry; the union sorted in byte order, comma-joined, kinds interleaved");
+                "one entry; the union sorted by code point, comma-joined, kinds interleaved");
+    }
+
+    @Test void theJoinSortsByCODEPOINTNotUtf16CodeUnit() {
+        // SPEC §3.1 ⟨0.24⟩: "sorted" means by UNICODE CODE POINT, equivalently UTF-8 byte order. Java's
+        // NATURAL String order is by UTF-16 CODE UNIT, so `new TreeSet<>()` did NOT conform: it agrees with
+        // code-point order on ASCII (which is why the literal above is unaffected) and disagrees above the
+        // BMP. Reachable, not theoretical — the dotted form is <owner>.<member>, built from USER IDENTIFIERS,
+        // and all four analysed languages permit non-ASCII ones. Both members below are letters, so this is a
+        // real identifier pair rather than a synthetic string.
+        //
+        // THE FIXTURE HAS TO DISTINGUISH THE TWO ORDERS or it pins nothing:
+        //   MATH = U+1D400 MATHEMATICAL BOLD CAPITAL A — supplementary, stored as the pair D835 DC00
+        //   LIG  = U+FB00  LATIN SMALL LIGATURE FF     — BMP, above the surrogate block
+        // UTF-16 code unit: 0xD835  < 0xFB00 -> MATH first — the old, non-conforming answer
+        // code point:       0x1D400 > 0xFB00 -> LIG  first — what ⟨0.24⟩ requires
+        // Restore `new TreeSet<>()` in Query and this fails on exactly that flip.
+        String math = new String(Character.toChars(0x1D400));
+        String lig = "ﬀ";
+        Map<String, List<String>> cg = new TreeMap<>();
+        cg.put("app.Impl." + math, List.of("app.Sink.touch"));
+        cg.put("app.Zed." + lig, List.of("app.Sink.touch"));
+        cg.put("app.Sink.touch", List.of());
+        cg.put("app.Frontier.go", List.of());
+        Map<String, List<String>> hier = Map.of("app.Impl", List.of("app.Base"), "app.Zed", List.of("app.Base"));
+        Map<String, Set<String>> broad = Map.of("app.Frontier.go",
+                new java.util.LinkedHashSet<>(List.of("app.Base." + math, "app.Base." + lig)));
+        assertEquals(Map.of("app.Frontier.go", lig + "," + math), frontier(cg, broad, hier),
+                "the join must be in CODE POINT order (U+FB00 before U+1D400), not UTF-16 code-unit order");
+    }
+
+    @Test void aLoneSurrogateDetailIsNotCollapsedIntoAnother() {
+        // WHY THE COMPARATOR IS CODE-POINT-WISE AND NOT OVER `getBytes(UTF_8)` — the shorter spelling of the
+        // SAME order. A TreeSet treats compare == 0 as a DUPLICATE, and UTF-8 encoding is LOSSY on an
+        // unpaired surrogate: every one of them encodes to `?`. Under a byte-array comparator these two
+        // distinct details compare EQUAL and one is silently DROPPED from the join — a conformance fix
+        // reintroducing the very drop class this rung exists to close, in the one place the rung is about.
+        // Code-point decomposition is injective over char sequences, so both survive.
+        assertTrue(Query.BY_CODE_POINT.compare("\uD800", "\uDC00") < 0,
+                "distinct lone surrogates must not compare EQUAL — equal means duplicate, means dropped");
+        TreeSet<String> set = new TreeSet<>(Query.BY_CODE_POINT);
+        set.add("\uDC00");
+        set.add("\uD800");
+        assertEquals(2, set.size(), "both survive the set the join is built from");
+
+        // End-to-end the COUNT is what can be asserted, not the identity: a lone surrogate is not
+        // representable in UTF-8 at all, so the test's byte-stream capture — and the JSON wire itself —
+        // replaces each one with `?` (measured: `?,?`). That lossiness is a property of the output channel
+        // and no comparator can change it. The collapse hazard is about CARDINALITY, and cardinality is
+        // exactly what survives: two elements, not one.
+        Map<String, Set<String>> broad = Map.of("app.Frontier.go",
+                new java.util.LinkedHashSet<>(List.of("\uDC00", "\uD800"))); // lone LOW then lone HIGH
+        assertEquals(2, frontier(broad, hierarchy()).get("app.Frontier.go").split(",", -1).length,
+                "two distinct details must BOTH be listed — never collapsed into one");
     }
 
     @Test void twoDottedReasonsOnTheSameMemberYieldThatMemberOnce() {

@@ -650,13 +650,28 @@ final class ReportWriter {
                     supers.put(cn.name.replace('/', '.'), cn.superName.replace('/', '.'));
             }
         }
-        // Written even when it carries no PAIR: its presence is what tells a consumer this sidecar knows
-        // the split at all, and "no class here has a superclass" is a fact the consumer needs (it is what
-        // puts a dep type's interfaces in the INTERFACE phase rather than the one the walk is already in).
-        // Flat [type, superclass, …] so every value in the file is an ARRAY — see SUPERCLASS_KEY.
-        List<String> flat = new ArrayList<>(supers.size() * 2);
-        for (Map.Entry<String, String> e : supers.entrySet()) { flat.add(e.getKey()); flat.add(e.getValue()); }
-        h.put(SUPERCLASS_KEY, flat);
+        // Written even when it carries no PAIR — its presence is what tells a consumer this sidecar knows
+        // the split at all, and "no type here has a superclass" is a fact the consumer needs (it is what
+        // puts a dep type's interfaces in the INTERFACE phase rather than the one the walk is already in;
+        // `aDepTypeWithNoSuperclassSTILLNeedsTheMarkerToOrderItsInterfacesLast` is that assertion) —
+        // but NEVER as the file's only key.
+        //
+        // A sidecar naming no type serialized as `{}` before this rung and `{"@superclass":{}}` after, and
+        // TWO consumers take the PRECISE dispatch frontier iff the map is non-empty: candor-ts
+        // `Object.keys(hierarchy).length > 0`, candor-rust `!hier.is_empty()`. The metadata key ALONE
+        // flipped that gate off the documented over-listing fallback and onto a precise walk over an EMPTY
+        // hierarchy, which resolves nothing — so a disclosure was withdrawn on zero information, in another
+        // engine, by a key that carries nothing.
+        //
+        // Omitting it here is FREE rather than a trade, and that is a fact about the consumer rather than a
+        // judgement: `Loader.loadDepHierarchy` consults the marker only INSIDE the per-type loop, so with no
+        // type key it is read exactly zero times. Flat [type, superclass, …] so every value in the file is
+        // an ARRAY — see SUPERCLASS_KEY.
+        if (!h.isEmpty()) {
+            List<String> flat = new ArrayList<>(supers.size() * 2);
+            for (Map.Entry<String, String> e : supers.entrySet()) { flat.add(e.getKey()); flat.add(e.getValue()); }
+            h.put(SUPERCLASS_KEY, flat);
+        }
         writeAtomic(Path.of(hOut), ReportJson.pretty(h));
     }
 

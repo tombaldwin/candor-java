@@ -162,6 +162,13 @@ final class AnalysisContext {
     // dep type's supertypes answered "no supers" — the blocker under the receiver-driven write/read
     // residual and the abstract-dep-CLASS row. Empty when nothing is chained or the dep predates the sidecar.
     final Map<String, List<String>> depSupers = new HashMap<>();
+    // ⟨the superclass split⟩ The dep types whose sidecar carried the `@superclass` marker, and their
+    // superclass where they have one other than java/lang/Object. A type in `depSupers` but NOT in
+    // `depSplitKnown` came from a sidecar written before the marker existed: its kinds are unknown and
+    // `Cha.resolutionOrder` keeps the depth-ordered behaviour that shipped, rather than guessing. Membership
+    // of `depSplitKnown` with no `depSuperclass` entry is a FACT — every listed supertype is an interface.
+    final Set<String> depSplitKnown = new HashSet<>();
+    final Map<String, String> depSuperclass = new HashMap<>();
     final List<PolicyRule.Deny> denyRules = new ArrayList<>();               // CANDOR_POLICY deny/pure (AS-EFF-006)
     final List<PolicyRule.Allow> allowRules = new ArrayList<>();             // CANDOR_POLICY allow (AS-EFF-008)
     final List<PolicyRule.Forbid> forbidRules = new ArrayList<>();           // CANDOR_POLICY forbid (AS-EFF-009)

@@ -260,24 +260,31 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
      *  CHAINED DEPENDENCY's published hierarchy ({@link #depDirectSupers}) — true for the dep-facing walks,
      *  false for the project-facing ones. See that method for why the two are deliberately separate.
      *
-     *  <p><b>What happens where the split is not knowable.</b> The dependency sidecar records supertypes as
-     *  a SORTED SET with no superclass/interface marker, so for those types the kind is unknown and they
-     *  are walked in the CLASS phase. That is precisely the behaviour all four walks had before, so an
-     *  unknown region is never made worse while every project/classpath region becomes exact. Demoting an
-     *  unknown type to the interface phase would be the other error, and a NEW one: it could push a real
-     *  superclass BELOW an interface and manufacture the very under-report this ordering exists to close.
-     *  A type reached THROUGH an interface stays in the interface phase whatever its own split says — a
-     *  class is never a supertype of an interface.
+     *  <p><b>THE DEPENDENCY'S OWN CHAIN, and the residual that closed it.</b> The consumer's OWN classes
+     *  state their superclass and their interfaces separately, so a project class extending a dep class and
+     *  implementing a dep interface always resolved exactly. What stayed depth-ordered was a chain lying
+     *  ENTIRELY inside the dependency — a dep interface {@code default} shadowing a dep superclass body two
+     *  hops up — because {@code ReportWriter#writeHierarchy} wrote a sorted {@code TreeSet} that threw the
+     *  kinds away. It now also writes {@link ReportWriter#SUPERCLASS_KEY}, a sibling key whose value is an
+     *  OBJECT, so {@code Loader#loadDepHierarchy}'s array-only reader ignores it in an older consumer and
+     *  the rung needs no version gate on either side.
      *
-     *  <p><b>RESIDUAL, scoped and named.</b> The consumer's OWN classes state their superclass and their
-     *  interfaces separately, so the shape this defect was found in — a project class extending a dep class
-     *  and implementing a dep interface — resolves exactly. What stays depth-ordered is a chain lying
-     *  ENTIRELY inside the dependency: a dep interface `default` shadowing a dep superclass body two hops
-     *  up. Closing it means teaching {@code ReportWriter#writeHierarchy} to record which entry is the
-     *  superclass — today it writes a sorted {@code TreeSet}, which throws that away. The compatible shape
-     *  is a sibling key whose value is an OBJECT ({@code Loader#loadDepHierarchy} skips any non-array
-     *  value, so an older consumer ignores it), and a sidecar without it keeps exactly today's answer. It
-     *  is a sidecar-format rung, so it wants its own measurement rather than a ride on this one. */
+     *  <p><b>What happens where the split is STILL not knowable</b> — a sidecar written before that marker,
+     *  or by an engine that writes none. Those types are walked in whichever phase the walk is already in,
+     *  which is precisely the behaviour all four walks had before, so an unknown region is never made worse
+     *  while every marked, project and classpath region becomes exact. The fallback is that behaviour and
+     *  not a reading of the list, deliberately: taking an unmarked list as all-INTERFACES would push a real
+     *  superclass BELOW an interface and manufacture the very under-report this ordering exists to close.
+     *  {@code CrossScanBoundaryTest}'s {@code anUnmarkedHierarchySidecarKeepsEXACTLYTodaysDepthOrderedAnswer}
+     *  is that assertion, verified to catch by mutation.
+     *
+     *  <p>The other mis-reading — forcing an unmarked list into the CLASS phase — is NOT observable, and
+     *  saying so is worth more than implying a symmetry that does not hold. It differs from this branch only
+     *  for a kind-unknown type polled from the INTERFACE queue, whose supertypes are necessarily interfaces;
+     *  promoting them would visit them before the remaining interfaces, and for that to change an answer two
+     *  unrelated interfaces would have to supply the same method — which javac rejects outright. A type
+     *  reached THROUGH an interface stays in the interface phase whatever its own split says, because a
+     *  class is never a supertype of an interface. */
     static List<String> resolutionOrder(String start, boolean useDepHierarchy) {
         if (start == null) return List.of();
         AnalysisContext c = ctx();
@@ -309,13 +316,30 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
             } else {
                 List<String> dep = useDepHierarchy ? c.depSupers.get(t) : null;
                 if (dep != null) {
-                    // KIND UNKNOWN (see the class doc): walk them in whichever phase we are already in.
-                    (inClassPhase ? classQ : ifaceQ).addAll(dep);
-                    continue;
+                    if (!c.depSplitKnown.contains(t)) {
+                        // KIND UNKNOWN — a sidecar written before the `@superclass` marker. Walk them in
+                        // whichever phase we are already in, which is exactly what shipped. Demoting them
+                        // to the interface phase would push a real superclass BELOW an interface and
+                        // manufacture the under-report this ordering exists to close (see the class doc for
+                        // why the other mis-reading is not observable, rather than claiming a symmetry).
+                        (inClassPhase ? classQ : ifaceQ).addAll(dep);
+                        continue;
+                    }
+                    // KIND KNOWN: the sidecar says which entry is the superclass, so the JLS rule applies
+                    // to a chain lying ENTIRELY inside the dependency too. No entry means the superclass is
+                    // java/lang/Object and every listed supertype is an interface — a fact the writer
+                    // records by omission, not a default.
+                    sup = c.depSuperclass.get(t);
+                    List<String> di = new ArrayList<>(dep.size());
+                    for (String s : dep) if (!s.equals(sup)) di.add(s);
+                    ifaces = di;
+                    // fall through to the shared enqueue below, which keeps a type reached THROUGH an
+                    // interface in the interface phase whatever its own split says.
+                } else {
+                    ExtSupers e = externalSupersSplit(t);
+                    sup = e.superClass();
+                    ifaces = e.interfaces();
                 }
-                ExtSupers e = externalSupersSplit(t);
-                sup = e.superClass();
-                ifaces = e.interfaces();
             }
             if (sup != null) (inClassPhase ? classQ : ifaceQ).add(sup);
             ifaceQ.addAll(ifaces);

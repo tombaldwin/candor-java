@@ -608,17 +608,41 @@ final class ReportWriter {
      *  one short list each), so the precise dispatch-frontier query can resolve "is R an override of
      *  OWNER.M?" by name + subtype WITHOUT the engine storing the exploded candidate edges bounded-CHA
      *  drops (which would re-encode the very flood it prevents). `java/lang/Object` is omitted as noise. */
+    /** The sibling key carrying the superclass split, and the ONE place its name is written. Chosen so an
+     *  older consumer needs no version check: {@link Loader#loadDepHierarchy} skips any entry whose value is
+     *  not an ARRAY, and this one's is an OBJECT. A class key's value is always an array, so even a type
+     *  somehow named {@code @superclass} is told apart by SHAPE rather than by the name being unusable —
+     *  the name is a convenience, the shape is the contract. */
+    static final String SUPERCLASS_KEY = "@superclass";
+
     static void writeHierarchy(String out) throws IOException {
         String hOut = out.endsWith(".json") ? out.substring(0, out.length() - 5) + ".hierarchy.json"
                                             : out + ".hierarchy.json";
-        Map<String, List<String>> h = new TreeMap<>();
+        Map<String, Object> h = new TreeMap<>();
+        // WHICH ENTRY IS THE SUPERCLASS. The sorted set above throws that away, so a chain lying ENTIRELY
+        // inside a dependency stayed depth-ordered at the consumer and JLS 15.12.2.5 / 8.4.8 ("the class
+        // wins, at any depth") could not be applied to it — the residual `9f8e71c` named and did not ride.
+        // Recorded SEPARATELY rather than by reordering the list, because the list's sorted order is what
+        // makes a re-scan of unchanged input byte-identical.
+        Map<String, String> supers = new TreeMap<>();
         for (ClassNode cn : ctx().ALL) {
             if (!ctx().projectClasses.contains(cn.name)) continue; // key on the project types we resolve overrides for
             TreeSet<String> sup = new TreeSet<>();
             if (cn.superName != null && !cn.superName.equals("java/lang/Object")) sup.add(cn.superName.replace('/', '.'));
             if (cn.interfaces != null) for (String i : cn.interfaces) sup.add(i.replace('/', '.'));
-            if (!sup.isEmpty()) h.put(cn.name.replace('/', '.'), new ArrayList<>(sup));
+            if (!sup.isEmpty()) {
+                h.put(cn.name.replace('/', '.'), new ArrayList<>(sup));
+                // ASM reports `java/lang/Object` as an INTERFACE's superName too, and that is dropped above,
+                // so an absent entry here means "every listed supertype is an interface" for a class and an
+                // interface alike. That is a fact, not a default — which is what lets the consumer trust it.
+                if (cn.superName != null && !cn.superName.equals("java/lang/Object"))
+                    supers.put(cn.name.replace('/', '.'), cn.superName.replace('/', '.'));
+            }
         }
+        // ALWAYS written, even when empty: its PRESENCE is what tells a consumer this sidecar knows the
+        // split at all. Omitting it when no class has a superclass would make "no marker" ambiguous
+        // between an old producer and a flat hierarchy, and the consumer would have to guess.
+        h.put(SUPERCLASS_KEY, supers);
         writeAtomic(Path.of(hOut), ReportJson.pretty(h));
     }
 

@@ -188,14 +188,24 @@ final class Literals {
      *  a method that reaches the effect only through a callee still sees the callee's literals — the scale
      *  path for AS-EFF-008 (the literal often lives in a deep, even cross-layer, callee). */
     static Map<String, TreeSet<String>> literalFixpoint(Map<String, TreeSet<String>> direct) {
+        return literalFixpoint(direct, ctx().edges);
+    }
+
+    /** As {@link #literalFixpoint(Map)}, over an EXPLICIT call graph rather than the live scan's
+     *  {@code ctx().edges}. The ⟨0.24⟩ {@code gate --report} verb has no scan behind it — its graph is the
+     *  one the REPORT carries (§2 {@code calls}) — so the propagation rule has to be reachable without a
+     *  classifier in the loop. Same code, different graph: the two gate paths cannot drift in HOW they
+     *  propagate, only in WHAT they propagate over, which is the one difference §3.1 ⟨0.24⟩ allows. */
+    static Map<String, TreeSet<String>> literalFixpoint(Map<String, TreeSet<String>> direct,
+                                                        Map<String, Set<String>> edges) {
         Map<String, TreeSet<String>> acc = new HashMap<>();
         for (var e : direct.entrySet()) acc.put(e.getKey(), new TreeSet<>(e.getValue()));
         boolean changed = true;
         while (changed) {
             changed = false;
-            for (var caller : ctx().edges.keySet()) {
+            for (var caller : edges.keySet()) {
                 TreeSet<String> add = new TreeSet<>();
-                for (String c : ctx().edges.get(caller)) {
+                for (String c : edges.get(caller)) {
                     var ce = acc.get(c);
                     if (ce != null) add.addAll(ce);
                 }

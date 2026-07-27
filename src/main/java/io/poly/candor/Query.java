@@ -25,7 +25,8 @@ import java.util.stream.Collectors;
 public final class Query {
     static final Set<String> COMMANDS =
             Set.of("show", "where", "callers", "map", "diff", "containment", "reachable", "path", "impact",
-                    "blindspots", "tour", "gains", "whatif", "fix", "fix-gate", "unverified", "rewire");
+                    "blindspots", "tour", "gains", "whatif", "fix", "fix-gate", "unverified", "rewire",
+                    "gate");   // ⟨0.24⟩ SPEC §3.1 — apply a policy to an EXISTING report, with no scan
     static final Gson JSON = new GsonBuilder().setPrettyPrinting().create();
 
     // Boundary effects SHOULD live in a dedicated layer — their dispersion is the architecture signal
@@ -286,11 +287,12 @@ public final class Query {
         String classFlag = null;        // `blindspots --class <c,…>`: keep only Unknown sources of these reason classes
         String reportFlag = null;       // --report <locator> (canonical §3.3.1)
         String policyFlag = null;       // --policy <file> (canonical §3.3.1)
+        String gateJsonFlag = null;     // --gate-json <file|-> (⟨0.24⟩ `gate`, the scan path's own flag)
         List<String> pos = new ArrayList<>();
         // `--text`/`--human` are candor-ts's output-mode flags (#8): java prose is always the default, so
         // ACCEPT + ignore them — cross-engine `candor <verb> --text` must not error just because the report
         // routed to the JVM engine. (java already rejects a genuinely-unknown flag via rejectUnknownFlag.)
-        Set<String> known = java.util.Set.of("--json", "--text", "--human", "--include-unknown", "--strict", "--stats", "--class", "--report", "--policy");
+        Set<String> known = java.util.Set.of("--json", "--text", "--human", "--include-unknown", "--strict", "--stats", "--class", "--report", "--policy", "--gate-json");
         String usage = "candor " + cmd + " <verb-args…> [--report <locator>] [--policy <file>] [--json] [--strict] [--include-unknown]";
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
@@ -310,6 +312,13 @@ public final class Query {
                 case "--policy" -> {
                     if (i + 1 >= args.length) { System.err.println("candor: --policy needs a <file> (usage: " + usage + ")"); return 2; }
                     policyFlag = args[++i];
+                }
+                case "--gate-json" -> {
+                    // Same dash-check as main()'s: a valueless OR flag-shaped value FAILS (exit 2), so
+                    // `--gate-json --policy p` cannot swallow `--policy` and run gateless-green. `-` = stdout.
+                    boolean ok = i + 1 < args.length && (args[i + 1].equals("-") || !args[i + 1].startsWith("-"));
+                    if (!ok) { System.err.println("candor: --gate-json requires a value (a path, or `-` for stdout)"); return 2; }
+                    gateJsonFlag = args[++i];
                 }
                 default -> {
                     // an unknown --flag must FAIL, not be swallowed as a query positional (a typo'd
@@ -372,6 +381,15 @@ public final class Query {
             }
         }
 
+        // `--gate-json` is the GATE's verdict flag: on a read-only query it would be silently inert, which is
+        // the gateless-green shape (a wrapper writes a verdict path, reads nothing, and calls it clean).
+        if (gateJsonFlag != null && !cmd.equals("gate")) {
+            System.err.println("candor " + cmd + ": --gate-json applies to `gate` (and to a scan) — `" + cmd
+                    + "` emits no gate verdict. Use `candor gate --report <locator> --policy <file> --gate-json "
+                    + gateJsonFlag + "`.");
+            return 2;
+        }
+
         // The comparative verbs load their reports themselves (two positionals); the rest load `report`.
         List<Effector> fns = List.of();
         if (!TWO_REPORT.contains(cmd)) {
@@ -406,6 +424,7 @@ public final class Query {
             case "fix-gate" -> fixGate(fns, report, policyFlag, json, strict);
             case "unverified" -> unverified(fns, policyFlag, json, strict, parseClassFilter(classFlag));
             case "rewire" -> rewire2(a0, a1, json);
+            case "gate" -> gate(fns, report, a0, policyFlag, json, gateJsonFlag);
             default -> 2;
         };
     }
@@ -1462,6 +1481,280 @@ public final class Query {
         System.out.println("  The gate still PASSES — this is advisory. To REQUIRE provable purity, add:");
         for (String u : upgrades) System.out.println("      " + u);
         return strict ? 1 : 0;
+    }
+
+    // ── ⟨0.24⟩ `gate --report <locator> --policy <file>` (SPEC §3.1) ────────────────────────────────────
+
+    /**
+     * THE THIRD ANSWERABILITY CASE — a class-scoped {@code deny} filter over a report that cannot answer it.
+     * Returns the refusal message, or null when every scoped filter is answerable.
+     *
+     * <p>A bare {@code deny Net} / {@code deny Unknown} asks a question the effect set alone answers. A
+     * SCOPED one — {@code deny Net[unknown-host]}, {@code deny Unknown[dispatch]} — asks a second question
+     * ("…and is the destination / the reason class one of THESE?") and NARROWS the gate on the answer. When
+     * the report does not carry the evidence for that second question, the fields it is read from are
+     * simply absent, both matchers see an empty set, no class matches, and the effect is dropped from the
+     * violation. <b>The narrowing succeeds because the evidence is missing.</b> That is an absence-keyed
+     * relaxation of a fail-closed security gate — the defect class ⟨0.24⟩ exists to remove — and it is
+     * silent, because the scoped rule is exactly the one a hardening team reaches for.
+     *
+     * <p>MEASURED on this engine before this check, one function per row, hand-built reports:
+     * <pre>
+     *   report                                   deny Net[unknown-host]   deny Net
+     *   Net-bearing entry, netClass ABSENT       exit 0  ← green          exit 1
+     *   the same entry, netClass PRESENT         exit 1                   exit 1
+     *
+     *   report                                   deny Unknown[dispatch]   deny Unknown
+     *   inherited Unknown, `calls` ABSENT        exit 0  ← green          exit 1
+     *   the same pair, `calls` PRESENT           exit 1                   exit 1
+     * </pre>
+     *
+     * <p>Refusing does NOT cost equivalence with {@code scan --policy}, because neither state is reachable
+     * in a report this engine wrote:
+     * <ul>
+     *   <li>{@code netClass} is emitted for EVERY {@code Net}-bearing entry and is never empty — the
+     *       derivation adds {@code unknown-host} whenever no host is visible ({@code ReportWriter}), which
+     *       is the fail-closed floor. An empty set on a {@code Net}-bearing entry therefore means "this
+     *       producer did not carry the field", never "this function reaches nothing".</li>
+     *   <li>an {@code Unknown} that is INHERITED comes from a callee that carries {@code Unknown}, so that
+     *       callee is effectful and is in {@code calls} by construction; and an {@code Unknown} raised
+     *       DIRECTLY records its {@code unknownWhy} at the site (the ⟨0.24⟩ producer-side repair). So an
+     *       in-scope {@code Unknown} function with an EMPTY resolved class set cannot arise from a scan —
+     *       only from a report that dropped the channel.</li>
+     * </ul>
+     * The check is per (rule, function), not per policy, so a scoped rule whose matched functions all carry
+     * their evidence evaluates normally; only the rule that would have been silently narrowed is refused.
+     */
+    static String unanswerableScopedFilter(Policy.GateInput gi) {
+        for (PolicyRule.Deny r : AnalysisState.ctx().denyRules) {
+            for (var e : new TreeMap<>(gi.inferred()).entrySet()) {
+                String fn = e.getKey();
+                if (!Policy.scopeMatches(fn, r.scope())) continue;
+                List<String> names = e.getValue().toNames();
+                if (!r.netClasses().isEmpty() && names.contains("Net")
+                        && gi.netClasses().getOrDefault(fn, List.of()).isEmpty())
+                    return "`" + r.src().trim() + "` narrows on the Net DESTINATION CLASS, but `" + fn
+                            + "` carries Net with no `netClass` in this report — the field the filter reads "
+                            + "is absent, so the narrowing would succeed for lack of evidence and drop a Net "
+                            + "the bare `deny Net` catches. Refusing (exit 2) rather than passing: an absent "
+                            + "optional field must not relax a fail-closed gate. Use the bare `deny Net`, or "
+                            + "gate at scan time.";
+                if (!r.unknownClasses().isEmpty() && names.contains("Unknown")
+                        && gi.reasonClasses().getOrDefault(fn, new TreeSet<>()).isEmpty())
+                    return "`" + r.src().trim() + "` narrows on the Unknown REASON CLASS, but `" + fn
+                            + "` carries Unknown with no reason reachable in this report — neither its own "
+                            + "`unknownWhy` nor a `calls` edge to one. §6.2 requires the class set to resolve "
+                            + "TRANSITIVELY over the gate's reach; with the channel missing, every narrowed "
+                            + "filter silently tolerates while only the bare `deny Unknown` fires. Refusing "
+                            + "(exit 2). Use the bare `deny Unknown`, or gate at scan time.";
+            }
+        }
+        return null;
+    }
+
+    /** The §2 ENVELOPE facts the gate verdict needs, none of which survive {@link #load} (which returns
+     *  only the {@code functions} array): the ⟨0.21⟩ completeness manifest, the ⟨0.15⟩ κ-coverage ledger,
+     *  and the RAW {@code unknownWhy} strings (see {@link Policy#gateInputFromReport}). Read from the SAME
+     *  file, in one pass — no sidecar, no second locator. */
+    record Envelope(int analyzedCount, List<String[]> unanalyzed, List<Map.Entry<String, Integer>> uncovered,
+                    Map<String, List<String>> rawUnknownWhy) {}
+
+    static Envelope readEnvelope(String path) throws Exception {
+        JsonElement root = JsonParser.parseString(Files.readString(Path.of(path)));
+        Map<String, List<String>> raw = new HashMap<>();
+        List<String[]> unanalyzed = new ArrayList<>();
+        List<Map.Entry<String, Integer>> uncovered = new ArrayList<>();
+        int analyzed = 0;
+        JsonArray fns = null;
+        if (root.isJsonObject()) {
+            JsonObject o = root.getAsJsonObject();
+            if (o.has("analyzed") && o.get("analyzed").isJsonObject()) {
+                JsonObject a = o.getAsJsonObject("analyzed");
+                if (a.has("count") && a.get("count").isJsonPrimitive()) analyzed = a.get("count").getAsInt();
+            }
+            if (o.has("unanalyzed") && o.get("unanalyzed").isJsonArray())
+                for (JsonElement e : o.getAsJsonArray("unanalyzed"))
+                    if (e.isJsonObject()) {
+                        JsonObject u = e.getAsJsonObject();
+                        unanalyzed.add(new String[]{
+                                u.has("path") ? u.get("path").getAsString() : "",
+                                u.has("reason") ? u.get("reason").getAsString() : ""});
+                    }
+            if (o.has("coverage") && o.get("coverage").isJsonObject()) {
+                JsonObject c = o.getAsJsonObject("coverage");
+                if (c.has("uncovered") && c.get("uncovered").isJsonArray())
+                    for (JsonElement e : c.getAsJsonArray("uncovered"))
+                        if (e.isJsonObject()) {
+                            JsonObject u = e.getAsJsonObject();
+                            uncovered.add(Map.entry(u.has("name") ? u.get("name").getAsString() : "?",
+                                    u.has("calls") ? u.get("calls").getAsInt() : 0));
+                        }
+            }
+            if (o.has("functions") && o.get("functions").isJsonArray()) fns = o.getAsJsonArray("functions");
+        } else if (root.isJsonArray()) {
+            fns = root.getAsJsonArray();   // the legacy v0.1 bare array — no envelope facts to read
+        }
+        if (fns != null)
+            for (JsonElement e : fns) {
+                if (!e.isJsonObject()) continue;
+                JsonObject o = e.getAsJsonObject();
+                if (!o.has("fn") || !o.get("fn").isJsonPrimitive()) continue;
+                if (!o.has("unknownWhy") || !o.get("unknownWhy").isJsonArray()) continue;
+                List<String> ws = new ArrayList<>();
+                for (JsonElement w : o.getAsJsonArray("unknownWhy"))
+                    if (w.isJsonPrimitive()) ws.add(w.getAsString());
+                if (!ws.isEmpty()) raw.put(o.get("fn").getAsString(), ws);
+            }
+        return new Envelope(analyzed, unanalyzed, uncovered, raw);
+    }
+
+    /**
+     * ⟨0.24⟩ {@code gate --report <locator> --policy <file>} — apply a policy to an EXISTING report, with no
+     * scan (SPEC §3.1). Exit codes and verdict shape are exactly {@code scan --policy}'s; the only
+     * difference is where {@code S} and {@code D} come from.
+     *
+     * <p><b>Why it is a MUST and not a convenience.</b> {@code scan --policy} recomputes {@code S} from
+     * source, so the classifier is always in the loop; {@code whatif} reports only what a hypothetical
+     * INTRODUCES (a report already carrying {@code Net} under {@code deny Net} answers {@code ok: true}, by
+     * design). The gate was therefore never reachable as a function of a GIVEN signature, and a defect in
+     * the gate was indistinguishable from a defect in the classifier by any test that could be written.
+     * With this verb, conformance can hand the engine a signature {@code reference/policy_model.py} has
+     * already judged and compare verdicts directly.
+     *
+     * <p><b>It reads the report file and nothing else.</b> No callgraph sidecar, no chained dep, no
+     * hierarchy sidecar, no re-classification — see {@link Policy#gateInputFromReport}, which is where that
+     * is enforced and argued. An ABSENT entry is absent: the ⟨0.21⟩ purity claim, taken as given.
+     *
+     * <p><b>ANSWERABILITY (the refusals below).</b> Two §6.2 rule kinds need evidence the ⟨0.24⟩ wire
+     * format does not carry, so this verb REFUSES them (exit 2) rather than evaluating them on partial
+     * evidence — which would be the gateless-green failure the gate exists to prevent, in the fail-OPEN
+     * direction, on a policy the user believed was enforced:
+     * <ul>
+     *   <li>{@code forbid A -> B} needs the FULL call graph. A report's {@code calls} is EFFECT-RELEVANT
+     *       (ReportWriter keeps only callees with a non-empty effect set), which is complete for any
+     *       crossing into an EFFECTFUL unit — effects propagate, so every intermediate on such a path is
+     *       itself effectful and present — but blind to a crossing into a wholly PURE unit, and
+     *       {@code forbid} matches on NAME, not on effect. So {@code forbid domain -> infra} would pass on
+     *       a report where the scan fails.</li>
+     *   <li>{@code allow <E> …} (ANY effect) needs the AS-EFF-008 surface-completeness marker, and the
+     *       ⟨0.24⟩ wire does not carry it in any form. Without it a function with one visible {@code git}
+     *       literal AND one runtime-computed command is CERTIFIED by {@code allow Exec git} while the scan
+     *       flags it — fail-open, on the rule whose entire job is to stop a benign literal from masking an
+     *       invisible endpoint. {@code netClass: unknown-host} looks like the marker for {@code Net} and is
+     *       NOT: {@code Literals.netDestClass} returns it for any UNRECOGNISED host too, so reading it as
+     *       "masked" flags functions whose surface is fully visible (measured — it flagged 2 the scan
+     *       passes, before this refusal replaced it).</li>
+     * </ul>
+     * Both refusals name what a future format rung would have to add — a per-function
+     * {@code surfaceIncomplete} field, and a call graph that is not effect-filtered. The point of stating
+     * them as refusals rather than as caveats is that everything this verb DOES accept — {@code deny} and
+     * {@code pure}, which is exactly the {@code (S, D)} gate §3.1 ⟨0.24⟩ frames the verb around — is
+     * verdict-equivalent to {@code scan --policy}, and that is a property a test can hold it to.
+     *
+     * @param surplus a stray positional — {@code gate} takes none (a usage error, never ignored)
+     */
+    static int gate(List<Effector> fns, String reportPath, String surplus, String policyPath,
+                    boolean json, String gateJsonPath) {
+        if (surplus != null) {
+            System.err.println("candor gate: unexpected argument `" + surplus + "` (usage: candor gate "
+                    + "--report <locator> --policy <file> [--json] [--gate-json <file>])");
+            return 2;
+        }
+        if (policyPath == null) policyPath = System.getenv("CANDOR_POLICY");
+        if (policyPath == null) {
+            System.err.println("candor gate: a policy is required — pass `--policy <file>` or set CANDOR_POLICY. "
+                    + "`gate` applies a policy to an existing report; with no policy there is no verdict to give.");
+            return 2;
+        }
+        AnalysisState.ctx().denyRules.clear();
+        AnalysisState.ctx().allowRules.clear();
+        AnalysisState.ctx().forbidRules.clear();
+        // ⟨0.19⟩ `unknown-alias` expansion for an `Unknown[<alias>]` filter. Anchored to the POLICY file, as
+        // `parsepolicy` anchors it — an alias is part of the policy's own vocabulary, not of the report. The
+        // ⟨0.20⟩ `net-partner` list is deliberately NOT loaded: `netClass` is read verbatim from the report,
+        // so re-classifying its hosts through THIS machine's config would be exactly the re-derivation the
+        // §3.1 ⟨0.24⟩ MUST NOT forbids (and would make the verdict depend on the consumer's CWD).
+        AnalysisState.ctx().unknownAliases.putAll(Config.forTarget(Path.of(policyPath)).unknownAliases());
+        if (!Policy.parsePolicy(policyPath)) {
+            System.err.println("candor gate: policy file " + policyPath
+                    + " could not be read — failing (exit 2), policy NOT evaluated");
+            return 2;
+        }
+        // The answerability refusals (see the javadoc). Loud, exit 2, naming the rule and the reason.
+        if (!AnalysisState.ctx().forbidRules.isEmpty()) {
+            System.err.println("candor gate: this policy has " + AnalysisState.ctx().forbidRules.size()
+                    + " `forbid` rule(s), which `gate --report` cannot evaluate — a report's `calls` graph is "
+                    + "EFFECT-RELEVANT, so a crossing into a wholly pure unit is invisible in it and the rule "
+                    + "would read green where a scan fails. Gate layering at scan time: candor <classes> --policy "
+                    + policyPath);
+            return 2;
+        }
+        if (!AnalysisState.ctx().allowRules.isEmpty()) {
+            List<String> effects = AnalysisState.ctx().allowRules.stream()
+                    .map(r -> r.effect().specName()).distinct().sorted().collect(Collectors.toList());
+            System.err.println("candor gate: this policy has `allow " + String.join("`/`", effects)
+                    + "` rule(s), which `gate --report` cannot evaluate — the AS-EFF-008 surface-completeness "
+                    + "marker does not ride the report wire, so a benign visible literal beside a "
+                    + "runtime-computed endpoint would be CERTIFIED here and flagged by a scan. (`netClass: "
+                    + "unknown-host` is NOT that marker — it also names a merely unrecognised host.) Gate "
+                    + "allowlists at scan time: candor <classes> --policy " + policyPath);
+            return 2;
+        }
+
+        Envelope env;
+        try {
+            env = readEnvelope(reportPath);
+        } catch (Exception e) {
+            String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            System.err.println("candor gate: cannot read report " + reportPath + " (" + why + ")");
+            return 2;
+        }
+        Policy.GateInput gi = Policy.gateInputFromReport(fns, env.rawUnknownWhy());
+
+        // THE THIRD ANSWERABILITY CASE, and the only one that depends on the REPORT rather than the policy
+        // alone. See #unanswerableScopedFilter — a class-scoped `deny` NARROWS the gate, and a narrowing is
+        // sound only where the report can answer the narrowing question.
+        String unanswerable = unanswerableScopedFilter(gi);
+        if (unanswerable != null) {
+            System.err.println("candor gate: " + unanswerable);
+            return 2;
+        }
+
+        // Route the gate's HUMAN output exactly as a scan does: to stderr whenever stdout carries the
+        // verdict document, so `candor gate … --json | jq` sees pure JSON.
+        // `human` is the stream EVERY line of prose uses — the AS-EFF diagnostics AND the trailer. Reading
+        // `Candor.diagOut` back for the trailer, after the finally-block restore below, put that line on
+        // stdout and corrupted the verdict document `--json` had just written there. Caught by piping the
+        // real CLI into a JSON parser; the identical class the scan path fixed for `--gate-json -`.
+        java.io.PrintStream human = (json || "-".equals(gateJsonPath)) ? System.err : System.out;
+        java.io.PrintStream prior = Candor.diagOut;
+        Candor.diagOut = human;
+        Candor.gateCapture = true;
+        Candor.gateViolations.clear();
+        int violations;
+        try {
+            violations = Policy.gate(gi);
+        } finally {
+            Candor.diagOut = prior;
+        }
+        if (violations == 0) human.println("candor-java: no violations");
+        else human.println("→ candor fix-gate names the remedy for each");
+
+        var facts = new Candor.GateFacts(env.analyzedCount(), env.unanalyzed(), env.uncovered());
+        // `--json` IS `--gate-json -`: the verb's machine output is the gate verdict, the same document and
+        // the same builder the scan writes, so a consumer cannot tell the two routes apart from the output.
+        if (json) Candor.writeGateJson("-", violations, facts);
+        if (gateJsonPath != null) Candor.writeGateJson(gateJsonPath, violations, facts);
+        if (violations > 0) return 1;
+        // ⟨0.21⟩ COMPLETENESS MANIFEST: a gate cannot be green over code candor never analyzed. The scan
+        // path exits 2 on its own `unanalyzed`; here the same manifest travels ON the report, so the same
+        // verdict follows from it. A real violation (exit 1, above) dominates, as it does there.
+        if (!env.unanalyzed().isEmpty()) {
+            System.err.println("candor gate: NOT certified — the report declares " + env.unanalyzed().size()
+                    + " unit(s) candor could not analyze; a gate cannot be green over unanalyzed code");
+            return 2;
+        }
+        return 0;
     }
 
     /** rewire <cur-report> <baseline-report> — the de-wiring detector (mirrors candor-query). Diffs the

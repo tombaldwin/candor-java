@@ -2596,11 +2596,61 @@ public class Candor {
         // unknown" exactly at the boundary. Only meaningful when the dep actually contributed an Unknown —
         // a dep with reasons but no Unknown effect cannot make this caller reason-scoped.
         if (d.effects.hasUnknown()) {
-            for (String tag : d.unknownWhy) {
+            for (String tag : depTransitiveWhy(d)) {
                 UnknownReason r = UnknownReason.parse(tag);
                 if (r != null) c.unknownWhy.computeIfAbsent(callerId, k -> new TreeSet<>()).add(r);
             }
         }
+    }
+
+    /** Every reason tag the dependency unit {@code d} reaches — its own, PLUS those of everything it calls,
+     *  transitively, through the {@code calls} graph its own report published.
+     *
+     *  <p><b>Why the direct tags are not enough, measured.</b> {@code unknownWhy} is DIRECT by contract —
+     *  "why Unknown was emitted HERE, not inherited" — because its other consumers ({@code candor
+     *  blindspots}, the `Unknown sources (direct)` summary) want SOURCES. So a dep unit whose Unknown was
+     *  inherited from a callee publishes {@code inferred: ['Unknown']} and NO {@code unknownWhy} at all,
+     *  and the ⟨0.19⟩ boundary fix ({@code 6ab26e4}) — which carries {@code d.unknownWhy} across — finds
+     *  nothing to carry. One hop further than that fix looked, the class dies:
+     *  <pre>
+     *    lib.Deep.go      ['Unknown']  unknownWhy ['reflect:java.lang.Class.forName', …]
+     *    lib.Shallow.call ['Unknown']  unknownWhy ABSENT            calls ['lib.Deep.go']
+     *
+     *    deny Net Unknown[reflect] app     both trees in one scan          exit 1
+     *                                      app chaining lib's report       exit 0   <- fail-OPEN
+     *                                      (bare `deny Net Unknown`        exit 1  — the Unknown IS there,
+     *                                       only its CLASS was missing)
+     *  </pre>
+     *
+     *  <p><b>No format rung: the dependency's report already held the answer under the right key.</b>
+     *  {@code calls} (SPEC §2) is the dep's effect-relevant local call graph, and it is exactly the edge
+     *  set an Unknown propagates along — a callee with no effects cannot have contributed one, and is
+     *  omitted from {@code calls} for the same reason. So the closure over {@code calls} from a unit that
+     *  carries Unknown is precisely the set of units whose reasons that Unknown could have come from.
+     *
+     *  <p><b>It cannot over-attribute.</b> Applied only when the joined unit itself carries Unknown, and
+     *  every tag it returns belongs to a unit this caller demonstrably reaches through it — the same
+     *  transitive rule §2 already uses for the EFFECT. A report that omits {@code fn} or {@code calls}
+     *  (an older or foreign producer) simply yields the direct tags, i.e. today's behaviour, never less.
+     *  Memoised per qual; {@code seen} bounds a cyclic call graph. */
+    static List<String> depTransitiveWhy(DepFn d) {
+        if (d.fn == null) return d.unknownWhy;              // no qual → no handle on `calls` → direct only
+        AnalysisContext c = ctx();
+        List<String> memo = c.depTransWhyMemo.get(d.fn);
+        if (memo != null) return memo;
+        TreeSet<String> out = new TreeSet<>(d.unknownWhy);
+        Set<String> seen = new HashSet<>();
+        ArrayDeque<String> q = new ArrayDeque<>(c.depCallsByFn.getOrDefault(d.fn, List.of()));
+        seen.add(d.fn);
+        while (!q.isEmpty()) {
+            String n = q.poll();
+            if (!seen.add(n)) continue;
+            out.addAll(c.depWhyByFn.getOrDefault(n, List.of()));
+            q.addAll(c.depCallsByFn.getOrDefault(n, List.of()));
+        }
+        List<String> result = List.copyOf(out);
+        c.depTransWhyMemo.put(d.fn, result);
+        return result;
     }
 
     /** The chained-dependency record for the `(name,desc)` body a value of static type `internal` would

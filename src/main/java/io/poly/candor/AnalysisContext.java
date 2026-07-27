@@ -127,6 +127,13 @@ final class AnalysisContext {
     // ['Unknown'] -> []) with no `invisible` to replace them, because `ch.qos.logback` is a κ-CURATED
     // covered prefix so the ledger is silent there either way. See StaleDepTrustTest.
     final Set<String> depChainedPkgs = new HashSet<>();
+    // A chained dependency's OWN effect-relevant call graph and direct Unknown reasons, keyed by the §2
+    // report QUAL (`fn`) — which is what `calls` names. Together they let a consumer recover the reason
+    // class of an Unknown the dep INHERITED rather than emitted, which `unknownWhy` cannot carry because
+    // it is direct-by-contract. Memoised closure in Candor#depTransitiveWhy.
+    final Map<String, List<String>> depCallsByFn = new HashMap<>();
+    final Map<String, List<String>> depWhyByFn = new HashMap<>();
+    final Map<String, List<String>> depTransWhyMemo = new HashMap<>();
     // TRUE-FORWARDING for deferred-execution containers (`by lazy`, ThreadLocal.withInitial, …): per
     // field, the lambda(s) stored into a recognised container, edged to the forcing site. FIELD-SCOPED
     // (key `internalOwner/fieldName:fieldDesc`), so a pure-init lazy stays pure.

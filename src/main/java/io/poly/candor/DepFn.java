@@ -22,6 +22,13 @@ final class DepFn {
     /// dependency itself and 0 on a consumer that chains it, which is a fail-OPEN gate in precisely the
     /// place a consumer most needs one.
     List<String> unknownWhy = new ArrayList<>();
+    /// ⟨0.24⟩ Whether this entry came from a report whose producing build could not be VERIFIED (§2.1), so
+    /// its effects were downgraded to `Unknown` rather than read. It changes only how the SYNTHESIZED
+    /// reason is spelled (`dep-stale:<pkg>` vs `dep:<hash>` — both project to `unresolved`); the two are
+    /// distinguished because a reader deserves to know whether the hole is "this dependency classified
+    /// nothing" or "this report is not the one this build produced, and re-running its scan fixes it".
+    /// See {@link Loader#synthesizeReasonlessDepReasons}.
+    boolean stale;
     /// The report QUAL this entry was written under (§2 `fn`), null for a report that omits it. It is the
     /// key the dependency's own `calls` array names, and so the only handle on the dep's INTERNAL call
     /// graph — which is where an INHERITED Unknown's reason lives, `unknownWhy` being direct-by-contract.

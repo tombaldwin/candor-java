@@ -8,6 +8,35 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⚠ ⟨0.24⟩ A reasonless `Unknown` CONTRIBUTES `unresolved` to a function's reason-class set — and the
+  contribution is made where the `Unknown` is CREATED, not where the gate matches** (`Loader`, `DepFn`,
+  `Policy`). The old §6.2 rule keyed on ABSENCE: an empty class set was read as `{unresolved}`. Absence is
+  not upward-closed, so acquiring a second, classifiable reason REMOVED the default — and under
+  `deny E Unknown[unresolved]` a function calling one reasonless dependency was rejected, a function
+  calling one reasoned dependency correctly was not, and **a function calling BOTH was not**. Adding a call
+  turned a red verdict green: the silent relaxation `reference/policy_model.py` Lemma 2 forbids. No
+  rewriting of the emptiness test could have separated those last two — their class sets were identical, so
+  the missing information was not in the class set at all. Reproduced on this engine before it was changed.
+  Every in-scan site already records an `unknownWhy` beside the `Unknown` it raises, so the one route that
+  reached the state was the DEPENDENCY boundary: a §2.1 distrusted report (effects downgraded to `Unknown`,
+  its `fn`/`calls`/`unknownWhy` never even parsed) and any entry whose `Unknown` neither its own tags nor
+  its published `calls` chain accounts for. Those entries now carry a synthesized reason of their own —
+  `dep:<hash>`, or `dep-stale:<pkg>` for the distrusted producer — recorded per dependency ENTRY at load,
+  both projecting to `unresolved` (§6.2's conservative catch-all). Because the reason rides the entry rather
+  than the consuming function, a caller of a reasonless entry and a reasoned one accumulates
+  `{unresolved, reflect}` with no join-time special case, and the reason travels on to anyone who chains
+  THIS report. candor-swift reached the same shape independently; SPEC §6.2 ⟨0.24⟩ now names it normative.
+  **Verdict impact, measured, because it is the adoption cost.** With TRUSTED dep reports nothing moves:
+  0 class sets changed and 0 verdicts flipped on both measured targets. Under a §2.1 STALE report the new
+  rule matches a strict superset — on candor-java's own tree (asm+gson chained, staled) 130 of 145
+  `Unknown`-bearing functions' class sets changed and **52 flipped `deny E Unknown[unresolved]` from pass to
+  reject**; on asm-commons (asm+asm-tree chained, staled) 311 of 311 changed and 2 flipped. Those flips are
+  the counterexample row: a function that already carried a classified reason and ALSO reached an
+  unaccounted-for `Unknown`. The condition is what makes this a fix and not a flood — contributing on the
+  presence of an `Unknown` rather than on the absence of an accounting flips 96 of 141 and 211 of 211 on the
+  same two targets with FRESH reports, where the correct rule flips none. Both directions are pinned
+  (`ReasonlessUnknownContributesTest`), including a fresh-dep arm whose `Unknown` the dependency's report
+  explains — through its own tag and through a `calls` edge — and which must NOT be marked.
 - **⟨0.24⟩ The frontier's `viaDispatchOn` join sorts by UNICODE CODE POINT, not by UTF-16 code unit**
   (`Query`). One function carrying several `dispatch:` reasons gets one entry whose `viaDispatchOn` is the
   sorted, deduplicated, comma-joined union of the dispatched members and the raw dot-free details — and the

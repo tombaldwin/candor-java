@@ -267,7 +267,17 @@ final class Policy {
                     var classTokens = reasonClassAcc.get(fn);
                     java.util.Set<ReasonClass> fnClasses = classTokens == null ? new java.util.HashSet<>()
                             : classTokens.stream().map(ReasonClass::fromToken).collect(java.util.stream.Collectors.toSet());
-                    // An Unknown with NO recorded reason is UNRESOLVED (conservative — stays in `Unknown[*]`/`[unresolved]`).
+                    // ⟨0.24⟩ FAIL-CLOSED BACKSTOP FOR A STATE THAT SHOULD NO LONGER BE REACHABLE. §6.2 says a
+                    // reasonless Unknown CONTRIBUTES `unresolved`; contributing is not something this matcher
+                    // can do, because by the time a class set arrives here the information that one of the
+                    // fn's Unknowns was unaccounted-for is gone — a fn with a reasonless Unknown BESIDE a
+                    // `reflect:` one is byte-identical to one with only the `reflect:`. So the contribution
+                    // happens where the Unknown is CREATED: every in-scan site records an `unknownWhy` beside
+                    // the Unknown it raises, and the dependency boundary — the one route that did not — now
+                    // synthesizes one per ENTRY (Loader#synthesizeReasonlessDepReasons). This line is what
+                    // remains of the old ABSENCE rule: harmless where the state is unreachable (measured: 0
+                    // fires on a real target with stale deps chained, against 78 before), and still
+                    // fail-closed for any route that fix does not cover, which is the direction to be wrong in.
                     if (fnClasses.isEmpty()) fnClasses = java.util.Set.of(ReasonClass.UNRESOLVED);
                     boolean matched = fnClasses.stream().anyMatch(r.unknownClasses()::contains);
                     if (!matched) bad = bad.without(Effect.UNKNOWN);   // tolerated: wrong reason-class

@@ -431,6 +431,7 @@ final class Loader {
                         String h = m.get("hash").getAsString();
                         if (h.isBlank()) continue;
                         DepFn de = new DepFn();
+                        de.stale = stale;
                         if (stale) {
                             de.effects.add(Effect.UNKNOWN);
                         } else {
@@ -499,5 +500,58 @@ final class Loader {
                 }
             }
         }
+        synthesizeReasonlessDepReasons();
+    }
+
+    /**
+     * ⟨0.24⟩ SPEC §6.2 — MAKE THE REASONLESS {@code Unknown} UNREACHABLE, at the SOURCE.
+     *
+     * <p>A reason-scoped gate (`deny E Unknown[unresolved]`) quantifies over a function's reason-CLASS set.
+     * The rule used to be keyed on ABSENCE: an empty class set was read as `{unresolved}`. Absence is not
+     * upward-closed, so acquiring a SECOND, classifiable reason REMOVED the default — and a function
+     * calling both a reasonless dependency and a reasoned one PASSED a gate that rejected a function
+     * calling only the reasonless one. Adding a call turned a red verdict green, which is the silent
+     * relaxation `reference/policy_model.py` Lemma 2 forbids (`Reject` is upward-closed). No rewriting of
+     * the emptiness test could have separated those two functions: their class sets were IDENTICAL.
+     *
+     * <p>So the state is removed rather than handled, which is also what the formal model demands — Def 6
+     * makes the reason set the CARRIER of the `Unknown`, so "Unknown present, no reasons" is not a
+     * representable signature at all. A dependency ENTRY that carries `Unknown` and can account for none
+     * of it gets an actual reason recorded here, at the point that `Unknown` enters this scan: `dep:<hash>`
+     * ordinarily, `dep-stale:<pkg>` for a §2.1 distrusted producer. Both project to `unresolved`
+     * ({@link io.poly.candor.model.ReasonClass#classify} — an unrecognized prefix is the conservative
+     * catch-all), so the fail-closed intent the old default had is kept, and it now COMPOSES: because the
+     * reason rides the ENTRY rather than the consuming function, a caller of a reasonless entry and a
+     * reasoned one accumulates `{unresolved, dispatch}` with no join-time special case. candor-swift
+     * reached this shape independently, before the model was written; SPEC §6.2 names it as the one to copy.
+     *
+     * <p><b>It is conditional, and that is the whole fix.</b> "The entry carries `Unknown`" is NOT the
+     * trigger — "and nothing accounts for it" is. {@link Candor#depTransitiveWhy} is the accounting: the
+     * entry's own tags PLUS every tag reachable through the `calls` graph its report published, which is
+     * exactly where an INHERITED `Unknown`'s reason lives. Contributing `unresolved` whenever an `Unknown`
+     * is present would mark every chained `Unknown`-bearing entry, flood every narrowed `[class]` gate and
+     * delete the feature (measured on candor-swift's corpus: 435 marked where the legitimate count is 0).
+     *
+     * <p>Runs ONCE, after every report is read, because `calls` may name an entry later in the same file.
+     * Decisions are computed against the pre-pass state and only then applied, so the result cannot depend
+     * on entry order; the {@code depTransWhyMemo} is dropped afterwards because the answers it holds were
+     * computed before these tags existed.
+     */
+    private static void synthesizeReasonlessDepReasons() {
+        AnalysisContext c = ctx();
+        List<Map.Entry<String, DepFn>> reasonless = new ArrayList<>();
+        for (var e : c.crossDeps.entrySet()) {
+            DepFn de = e.getValue();
+            if (!de.effects.hasUnknown()) continue;               // no Unknown → nothing to carry a reason
+            if (!Candor.depTransitiveWhy(de).isEmpty()) continue; // already accounted for → NOT reasonless
+            reasonless.add(e);
+        }
+        for (var e : reasonless) {
+            String pkg = entryPackage(e.getKey());
+            e.getValue().unknownWhy.add(e.getValue().stale
+                    ? "dep-stale:" + (pkg == null ? "?" : pkg)
+                    : "dep:" + e.getKey());
+        }
+        if (!reasonless.isEmpty()) c.depTransWhyMemo.clear();
     }
 }

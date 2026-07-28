@@ -8,6 +8,72 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⚠ ⟨0.24⟩ A certain violation now DOMINATES a refusal — a refusal standing beside a firing rule was
+  deleting the violation from the verdict document** (SPEC §3.1). Three outcomes can be live at once and
+  the order is **violation (1) > refusal (2) > incomplete (2)**, forced by Lemma 2 rather than chosen: a
+  rule that FIRES on evidence the report carries rejects the policy, and `Reject` being upward-closed, no
+  resolution of the unanswerable rule could un-reject it. Measured here on a report with one `Fs` unit and
+  one inherited reasonless `Unknown`: `deny Fs app` alone gave exit 1 with a document naming the violation;
+  `deny Fs app` **plus** `deny Unknown[dispatch] app` gave **exit 2 and no document at all**. Four-way
+  agreement, and four-way wrong.
+
+  Rules that cannot be evaluated are now WITHHELD per (rule, function) rather than short-circuiting the
+  run, and disclosed on stderr AND in the verdict document under a new **`unevaluated`** key (omitted when
+  empty, so every other verdict is byte-identical). The withholding is load-bearing, not tidy:
+  `reasonClassesOf` floors an empty class set at `unresolved`, so once the refusal stopped short-circuiting,
+  `deny Unknown[unresolved]` over an inherited reasonless `Unknown` began emitting a violation record for a
+  class the report never asserted — a fabrication reachable only through this change, and closed by §3.1's
+  own minimal-refusal rule. Three rows in `GateReportVerbTest` flip to exit 1, all correctly.
+
+- **⚠ ⟨0.24⟩ A REFUSAL now writes its `--gate-json` document — it used to write nothing, so CI re-read the
+  PREVIOUS run's verdict as current** (SPEC §3.1). Measured with a green verdict already at the path: all
+  six refusal routes (unanswerable scoped `deny`, `forbid`, `allow`, unreadable policy, unreadable report,
+  and the SCAN route's unreadable policy) exited 2 leaving the file untouched. A green file from
+  yesterday's clean run is how a refusal becomes an all-clear; deleting the path is not the fix either,
+  since a consumer treating a missing file as "nothing to report" fails open by another route.
+
+  The document is fail-closed to a NAIVE reader — `"ok": false` plus `"refused": true` and the reason —
+  and it carries **no `violations` key at all**, not an empty array: the gate is making no claim about
+  violations, and `[]` is precisely the claim it cannot make. A usage error still writes nothing (the
+  command was never a gate invocation).
+
+- **⚠ ⟨0.24⟩ An unrecognised reason-class or Net destination-class token in a policy is now a POLICY ERROR
+  (exit 2), not a warning-and-rewrite** (SPEC §6.2). The clause used to justify drop-with-warning on the
+  policy side by asserting a dropped token can only WIDEN the rule. Measured, it does both:
+  `deny Unknown[corp]` widened to a bare `deny Unknown` **while printing "ignoring policy rule"** — a false
+  disclosure — and `deny Unknown[dispatch,nativ]`, a typo BESIDE valid tokens, silently NARROWED to
+  `[dispatch]` and stopped gating native-caused holes while the gate still looked armed. That half is
+  **fail-open** and it is the common case. End to end, `gate --report` gave **exit 0** on the narrowing
+  form and exit 1 on the widening one — two wrong answers from two rewrites of the same one-line policy.
+
+  Both class vocabularies take the rule (the ruling names the reason class; the Net destination class was
+  measured to have the identical defect). The diagnostic names the token, lists the accepted set and points
+  at `unknown-alias`, from one `Policy.policyFailure` shared by all five call sites.
+
+- **⚠ ⟨0.24⟩ POLICY VOCABULARY now anchors at the `--policy` file's directory on BOTH routes — a third file
+  could otherwise flip the verdict** (SPEC §3.1). The gate verbs anchored `.candor/config` discovery at the
+  policy file while the scan route anchored at the target, so with the policy filed outside the scan tree
+  the same rule expanded differently. Measured with `unknown-alias corp = native` beside the policy and
+  none beside the target: `scan --policy P` **exit 1** (alias unresolved → rule widened to bare
+  `deny Unknown`) vs `gate --report R --policy P` **exit 0** (alias resolved → no match). §3.1's
+  byte-equality MUST broken by a file that is neither the report nor the policy; now 0 and 0.
+
+  Target-scoped keys (`deps`, `net-partner`, scan settings) keep anchoring at the target. **`whatif` and
+  `fix-gate` never loaded `unknown-alias` at all** and now do, so the pre-edit verbs and the gate cannot
+  read the same rule two ways. And the ambience is DISCLOSED: the verdict document carries
+  **`policyVocabulary: {config, aliases}`** naming the file whenever a rule referenced a config-supplied
+  alias — on a reference, not only on a firing, because the measured harm was a GREEN verdict a vocabulary
+  file made green. Omitted when unused.
+
+- **⟨0.24⟩ The `scan --policy` ≡ `gate --report` equivalence test is now a real BYTE comparison.** It
+  compared only the violation count and the exit code, which is the weakest reading of a MUST that names
+  `analyzed.count`, `reasonClass`, `netClass` and the coverage advisory — and this is the reference engine,
+  so those fields were pinned by the newer engines' suites rather than by java's own. Both documents are
+  now compared as bytes over 12 policies, with a mutation control inside the test, non-vacuity assertions
+  (≥ 4 failing policies; `reasonClass` and `netClass` present in the compared bytes), and verification
+  against a real injected drift that the old test passed cleanly. Confirmed byte-equal on a 1432-function
+  corpus (candor-java's own fat jar) across 6 policies.
+
 - **⚠ ⟨0.24⟩ A chained dep report with `analyzed.count: 0` no longer buys COVERAGE — "I judged nothing"
   must not read as full coverage** (SPEC §2). A report carrying `functions: []` and `analyzed.count: 0`
   was strictly MORE confident than not chaining the package at all: its caller dropped out of `functions`

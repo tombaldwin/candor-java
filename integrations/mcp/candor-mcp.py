@@ -82,25 +82,58 @@ def newest_class_mtime(path):
 
 
 def ensure_report():
-    """(Re)analyse CLASSES into REPORT (+ its callgraph sidecar) when the report is missing or stale."""
+    """(Re)analyse CLASSES into REPORT (+ its callgraph sidecar) when the report is missing or stale.
+
+    Returns None on success, else an error string.
+
+    ⟨0.24⟩ THE STALE-DOCUMENT RULE BINDS THIS SURFACE TOO (candor-spec SPEC §3.1, 1503368 generalised over
+    output PATHS by 901f14d). This used to discard the scan's result entirely and return
+    `os.path.exists(REPORT)`, so a scan that FAILED left the PREVIOUS run's report on disk and every query
+    below was answered from it — as current, with nothing said. MEASURED: a good jar scanned, then the same
+    path replaced by a corrupt one; the scan exits 2 and `candor_effects` kept returning the old jar's
+    `Net`/`hosts`/`netClass` for a function whose bytecode was no longer there. That is exactly the harm the
+    rule names — a CI wrapper (here, an agent) reading a path unconditionally and getting yesterday's
+    answer — and an agent has no other way to know.
+
+    The check is on the INVARIANT rather than on the exit code: after the scan, the report must be at least
+    as new as the newest class. Exit codes cannot carry it — exit 1 is a GATE VIOLATION (CANDOR_POLICY may
+    be set in this environment), which writes a perfectly good report, while exit 2 has several causes that
+    do and do not.
+    """
     if not os.path.exists(CLASSES):
-        return False
-    stale = (not os.path.exists(REPORT)) or newest_class_mtime(CLASSES) > os.path.getmtime(REPORT)
-    if stale:
-        os.makedirs(os.path.dirname(REPORT) or ".", exist_ok=True)
-        subprocess.run([WRAPPER, CLASSES, "--json", REPORT], capture_output=True, text=True, timeout=600)
-    return os.path.exists(REPORT)
+        return (f"candor: nothing to analyse at '{CLASSES}'. Build first (e.g. `gradle classes`), or set "
+                f"CANDOR_CLASSES to your classes dir / jar.")
+    newest = newest_class_mtime(CLASSES)
+    fresh = os.path.exists(REPORT) and os.path.getmtime(REPORT) >= newest
+    if fresh:
+        return None
+    os.makedirs(os.path.dirname(REPORT) or ".", exist_ok=True)
+    try:
+        r = subprocess.run([WRAPPER, CLASSES, "--json", REPORT], capture_output=True, text=True, timeout=600)
+        why = (r.stderr or r.stdout or "").strip()
+    except Exception as e:  # noqa: BLE001
+        why = str(e)
+    if os.path.exists(REPORT) and os.path.getmtime(REPORT) >= newest:
+        return None
+    had = " A PREVIOUS report is on disk and is NOT being served: it describes bytecode that has since " \
+          "changed, and answering from it would be a stale answer presented as a current one." \
+        if os.path.exists(REPORT) else ""
+    return (f"candor: the scan of '{CLASSES}' did not produce a current report, so there is nothing "
+            f"trustworthy to answer from.{had}\n{why}")
 
 
 def run_query(args):
-    if not ensure_report():
-        return (f"candor: nothing to analyse at '{CLASSES}'. Build first (e.g. `gradle classes`), or set "
-                f"CANDOR_CLASSES to your classes dir / jar.")
+    """Run a query. Returns (text, is_error) — `is_error` is the MCP-protocol analog of the gate's `ok`,
+    and it is set on exit 2 (COULD NOT EVALUATE) but never on exit 1 (a violation, which IS the answer)."""
+    err = ensure_report()
+    if err:
+        return err, True
     try:
         r = subprocess.run([WRAPPER, *args], capture_output=True, text=True, timeout=300)
-        return r.stdout.strip() or r.stderr.strip() or "(no output)"
+        text = r.stdout.strip() or r.stderr.strip() or "(no output)"
+        return text, r.returncode >= 2
     except Exception as e:  # noqa: BLE001 — surface any failure to the agent as text
-        return f"candor: query failed ({e})"
+        return f"candor: query failed ({e})", True
 
 
 def arg(args, key):
@@ -130,7 +163,7 @@ def dispatch(name, args):
             q.append("--json")
             return run_query(q)
     except ValueError as e:
-        return f"candor: {e}"
+        return f"candor: {e}", True
     return None
 
 
@@ -169,11 +202,18 @@ def main():
             send(mid, result={"tools": TOOLS})
         elif method == "tools/call":
             params = req.get("params", {})
-            text = dispatch(params.get("name"), params.get("arguments", {}))
-            if text is None:
+            got = dispatch(params.get("name"), params.get("arguments", {}))
+            if got is None:
                 send(mid, result={"content": [{"type": "text", "text": f"unknown tool: {params.get('name')}"}], "isError": True})
             else:
-                send(mid, result={"content": [{"type": "text", "text": text}]})
+                # ⟨0.24⟩ `isError` is this protocol's `ok`, and the naive read of it has to be the safe one:
+                # a refusal handed back with the same status as an answer is a could-not-evaluate presented
+                # as a result. Set on exit 2 only — a gate VIOLATION (exit 1) is the answer, not an error.
+                text, is_error = got
+                r = {"content": [{"type": "text", "text": text}]}
+                if is_error:
+                    r["isError"] = True
+                send(mid, result=r)
         else:
             send(mid, error={"code": -32601, "message": "Method not found"})
 

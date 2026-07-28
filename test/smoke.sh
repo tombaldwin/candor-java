@@ -1876,6 +1876,49 @@ javac -cp "$W/d.jar" -d "$W/dappcls" "$W/dapp/com/app/A.java" 2>/dev/null
 ( cd "$W" && CANDOR_DEPS_DIR="$W/.deps" "$ROOT/candor" --deps "$W/d.jar" "$W/dappcls" 2>/dev/null ) > "$W/deps.out"
 want "./candor --deps scans the classpath jar and chains it (A.run inherits Fs)" "$(grep 'A.run' "$W/deps.out")" 'Fs*'
 
+# ── the MCP surface: ⟨0.24⟩ THE STALE-DOCUMENT RULE BINDS IT TOO (SPEC §3.1) ─────────────────────
+# The server used to discard the scan's result and serve `os.path.exists(REPORT)`, so a scan that FAILED
+# left the PREVIOUS run's report on disk and every query was answered from it, as current, silently.
+# MEASURED: a good jar, then the same path replaced by a corrupt one — `candor_effects` kept returning the
+# old jar's Net/hosts/netClass for bytecode that was no longer there. An agent has no other way to know.
+echo "== MCP surface (stale report + isError) =="
+MCPW="$W/mcp"; mkdir -p "$MCPW/.candor"
+( cd "$W/cls" && jar cf "$MCPW/good.jar" . ) 2>/dev/null
+cat > "$W/mcp-drive.py" <<'PY'
+import json, os, subprocess, sys
+cwd, jar, rep = sys.argv[1], sys.argv[2], sys.argv[3]
+env = dict(os.environ); env["CANDOR_CLASSES"] = jar; env["CANDOR_REPORT"] = rep
+env.pop("CANDOR_POLICY", None)
+srv = subprocess.Popen([sys.executable, sys.argv[4]], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                       stderr=subprocess.DEVNULL, text=True, cwd=cwd, env=env)
+def call(i, m, p=None):
+    srv.stdin.write(json.dumps({"jsonrpc": "2.0", "id": i, "method": m, **({"params": p} if p else {})}) + "\n")
+    srv.stdin.flush()
+    return json.loads(srv.stdout.readline())
+call(1, "initialize", {})
+r = call(2, "tools/call", {"name": "candor_effects", "arguments": {"function": "Fx.reads"}})["result"]
+srv.stdin.close(); srv.wait()
+print("ISERROR=%s" % bool(r.get("isError")))
+print(r["content"][0]["text"])
+PY
+MCPSRV="$ROOT/integrations/mcp/candor-mcp.py"
+mcp1="$(python3 "$W/mcp-drive.py" "$MCPW" "$MCPW/good.jar" "$MCPW/.candor/report.json" "$MCPSRV" 2>&1)"
+want "MCP answers from a fresh scan"                 "$mcp1" 'ISERROR=False'
+want "…with the real effect set"                     "$mcp1" '"Fs"'
+sleep 1
+printf 'not a zip at all' > "$MCPW/good.jar"          # same path, newer mtime, unscannable
+mcp2="$(python3 "$W/mcp-drive.py" "$MCPW" "$MCPW/good.jar" "$MCPW/.candor/report.json" "$MCPSRV" 2>&1)"
+want    "MCP REFUSES rather than serving the previous run's report" "$mcp2" 'ISERROR=True'
+want    "…and says the stale report is NOT being served"            "$mcp2" 'NOT being served'
+wantnot "…so the old jar's effect set does not leak through"        "$mcp2" '"Fs"'
+# THE MIRROR: exit 1 is a gate VIOLATION, not a failure — the report it wrote is valid and must be served.
+rm -f "$MCPW/good.jar" "$MCPW/.candor/report.json"
+( cd "$W/cls" && jar cf "$MCPW/good.jar" . ) 2>/dev/null
+echo 'deny Fs Fx' > "$MCPW/p.policy"
+mcp3="$(CANDOR_POLICY="$MCPW/p.policy" python3 "$W/mcp-drive.py" "$MCPW" "$MCPW/good.jar" "$MCPW/.candor/report.json" "$MCPSRV" 2>&1)"
+want "MIRROR: a GATING scan (exit 1) still serves its valid report" "$mcp3" 'ISERROR=False'
+want "…with the real effect set"                                    "$mcp3" '"Fs"'
+
 # ── --agents: the self-describing engine (the contract is a jar resource) ────────────────────────
 echo "== --agents =="
 AG=$("$CJ" --agents 2>&1)

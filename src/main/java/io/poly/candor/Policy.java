@@ -848,7 +848,13 @@ final class Policy {
                     // engine couldn't classify) may silently tolerate exactly those — flag it (advisory, not fatal).
                     // NOT via warnPolicy: the rule is KEPT (it still gates), so "ignoring policy rule" is wrong
                     // wording (the same fix applied in the rust/ts/swift A2 lints).
-                    else if (!unknownClasses.isEmpty() && !unknownClasses.contains(ReasonClass.UNRESOLVED)) {
+                    //
+                    // ⟨0.24⟩ …and NOT at all once a class token has already failed: the advice would be about a
+                    // rule the engine is refusing to run, and `deny Unknown[reflect,unresolvd]` would be told to
+                    // "add `unresolved`" — which it plainly tried to. Advising on a rewritten rule is the shape
+                    // of the false disclosure this rung exists to remove.
+                    else if (policyError == null && !unknownClasses.isEmpty()
+                            && !unknownClasses.contains(ReasonClass.UNRESOLVED)) {
                         System.err.println("candor: policy rule narrows `Unknown[…]` but omits `unresolved` — may UNDER-gate on holes "
                                 + "the engine couldn't classify; add `unresolved` (or use `dynamic`) to stay conservative: " + line);
                     }

@@ -1674,7 +1674,7 @@ public final class Query {
      *  and the RAW {@code unknownWhy} strings (see {@link Policy#gateInputFromReport}). Read from the SAME
      *  file, in one pass — no sidecar, no second locator. */
     record Envelope(int analyzedCount, List<String[]> unanalyzed, List<Map.Entry<String, Integer>> uncovered,
-                    Map<String, List<String>> rawUnknownWhy) {}
+                    Map<String, List<String>> rawUnknownWhy, String packageName) {}
 
     static Envelope readEnvelope(String path) throws Exception {
         JsonElement root = JsonParser.parseString(Files.readString(Path.of(path)));
@@ -1682,9 +1682,18 @@ public final class Query {
         List<String[]> unanalyzed = new ArrayList<>();
         List<Map.Entry<String, Integer>> uncovered = new ArrayList<>();
         int analyzed = 0;
+        String pkg = null;                 // §2 `package`/`packages` — for the judged-nothing advisory
         JsonArray fns = null;
         if (root.isJsonObject()) {
             JsonObject o = root.getAsJsonObject();
+            if (o.has("package") && o.get("package").isJsonPrimitive())
+                pkg = o.get("package").getAsString();
+            else if (o.has("packages") && o.get("packages").isJsonArray()) {
+                List<String> ps = new ArrayList<>();
+                for (JsonElement e : o.getAsJsonArray("packages"))
+                    if (e.isJsonPrimitive()) ps.add(e.getAsString());
+                if (!ps.isEmpty()) pkg = String.join("+", ps);
+            }
             if (o.has("analyzed") && o.get("analyzed").isJsonObject()) {
                 JsonObject a = o.getAsJsonObject("analyzed");
                 if (a.has("count") && a.get("count").isJsonPrimitive()) analyzed = a.get("count").getAsInt();
@@ -1722,7 +1731,7 @@ public final class Query {
                     if (w.isJsonPrimitive()) ws.add(w.getAsString());
                 if (!ws.isEmpty()) raw.put(o.get("fn").getAsString(), ws);
             }
-        return new Envelope(analyzed, unanalyzed, uncovered, raw);
+        return new Envelope(analyzed, unanalyzed, uncovered, raw, pkg);
     }
 
     /**
@@ -1849,6 +1858,7 @@ public final class Query {
         List<String[]> unanalyzed = new ArrayList<>();
         List<Map.Entry<String, Integer>> uncovered = new ArrayList<>();
         Map<String, List<String>> rawWhy = new HashMap<>();
+        List<String> judgedNothing = new ArrayList<>();
         for (String reportPath : reportPaths) {
             Envelope env;
             try {
@@ -1868,6 +1878,9 @@ public final class Query {
             // A repeated `fn` across reports joins by UNION here too — same direction as the entry join.
             for (var e : env.rawUnknownWhy().entrySet())
                 rawWhy.computeIfAbsent(e.getKey(), k -> new ArrayList<>()).addAll(e.getValue());
+            if (env.analyzedCount() == 0)
+                judgedNothing.add((env.packageName() != null ? env.packageName() : "<unnamed package>")
+                        + " (" + reportPath + ")");
         }
         if (reportPaths.size() > 1)
             System.err.println("candor gate: locator names " + reportPaths.size()
@@ -1903,6 +1916,30 @@ public final class Query {
         }
         if (violations == 0) human.println("candor-java: no violations");
         else human.println("→ candor fix-gate names the remedy for each");
+
+        // ⟨0.24⟩ A REPORT THAT JUDGED NOTHING LICENSES NO PURITY CLAIM — SPEC §2/§3.1. `analyzed.count: 0`
+        // says the producer analysed no units at all, so this verb's `no violations` is a statement about
+        // an empty set and NOT about the package. It must be SAID.
+        //
+        // As a DISCLOSURE, and only that: the exit code and the verdict document are untouched. §3.1's
+        // byte-equality MUST binds the gate route to `scan --policy`, and a scan of an empty facade package
+        // exits 0 with a clean verdict — so refusing here would break byte-equality on the very reports
+        // (~7-10% of real dependency reports, measured) it is trying to protect, and §3.3 enumerates
+        // exactly two exit-2 causes, neither of which is a judged-nothing DEPENDENCY. Manufacturing a
+        // violation instead would assert an effect the consumer has no evidence for. The harm this clause
+        // names is the DELETED DISCLOSURE, so the repair is the disclosure. (This engine printed
+        // `candor-java: no violations` with ZERO bytes on stderr; candor-ts is the model.)
+        //
+        // System.err explicitly, never `human`: with `--json`/`--gate-json -` the human stream IS stderr,
+        // but without them it is STDOUT, and putting an advisory there would corrupt a verdict document a
+        // consumer is piping.
+        if (!judgedNothing.isEmpty())
+            System.err.println("candor gate: NOTE — " + judgedNothing.size() + " of the "
+                    + reportPaths.size() + " report(s) gated declare `analyzed.count: 0`, i.e. they JUDGED "
+                    + "NOTHING: " + String.join(", ", judgedNothing) + ". A verdict over them is a statement "
+                    + "about an empty set, not a purity claim about the package — nothing here was checked. "
+                    + "(Advisory: the exit code and the verdict document are unchanged; re-run the producing "
+                    + "scan over the package's own sources if you meant to gate it.)");
 
         var facts = new Candor.GateFacts(analyzedCount, unanalyzed, uncovered);
         // `--json` IS `--gate-json -`: the verb's machine output is the gate verdict, the same document and

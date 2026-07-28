@@ -650,6 +650,73 @@ class GateReportVerbTest {
                 + "(§3.3), so a wrapper reading the file cannot mistake it for a judgement");
     }
 
+    // ── a report that JUDGED NOTHING (⟨0.24⟩ SPEC §2/§3.1) ────────────────────────────────────────────
+
+    /**
+     * A report with {@code analyzed.count: 0} has judged nothing, so it licenses NO purity claim — and the
+     * verb MUST SAY SO. As a DISCLOSURE, and only that.
+     *
+     * <p>The three assertions are the three halves of the corrected clause, and the last two are the ones
+     * that keep the repair from becoming a different defect:
+     * <ul>
+     *   <li>stderr is NON-EMPTY and names the package. MEASURED before: {@code candor-java: no violations}
+     *       on stdout and <b>zero bytes</b> on stderr — the forbidden literal with nothing beside it.</li>
+     *   <li>the EXIT CODE is unmoved (0). §3.3 enumerates exactly two exit-2 causes — a broken gate CONFIG
+     *       and an INCOMPLETE analysis of the target's OWN code — and a judged-nothing DEPENDENCY is
+     *       neither, so refusing here mints a third and splits the verb.</li>
+     *   <li>the VERDICT DOCUMENT is unmoved. §3.1's byte-equality MUST binds this route to
+     *       {@code scan --policy}, and a scan of an empty facade package exits 0 with a clean verdict; and
+     *       manufacturing a violation would assert an effect the consumer has no evidence for.</li>
+     * </ul>
+     */
+    @Test
+    void aReportThatJudgedNothingIsDisclosedWithoutMovingTheVerdict() throws Exception {
+        Path rep = report("facade.jvm.json", List.of(), 0);       // analyzed.count: 0, functions: []
+        Path out = tmp.resolve("nothingverdict.json");
+        java.io.PrintStream priorErr = System.err;
+        java.io.ByteArrayOutputStream err = new java.io.ByteArrayOutputStream();
+        int rc;
+        try {
+            System.setErr(new java.io.PrintStream(err, true));
+            rc = Query.run(new String[]{"gate", "--report", rep.toString(),
+                    "--policy", policy("deny Net\n").toString(), "--gate-json", out.toString()});
+        } finally {
+            System.setErr(priorErr);
+        }
+        String e = err.toString();
+        assertFalse(e.isBlank(), "a count-0 report must be DISCLOSED — the measured defect was `candor-java: "
+                + "no violations` with ZERO bytes on stderr, which is the deleted disclosure §2 names as "
+                + "the harm");
+        assertTrue(e.contains("app"), "the advisory must NAME the package it judged nothing about, "
+                + "otherwise a multi-package CI log cannot act on it — got: " + e);
+
+        assertEquals(0, rc, "the exit code is UNMOVED: §3.3 has exactly two exit-2 causes and a "
+                + "judged-nothing dependency is neither — refusing here mints a third and splits the verb");
+        JsonObject v = JsonParser.parseString(Files.readString(out)).getAsJsonObject();
+        assertTrue(v.get("ok").getAsBoolean(), "and the verdict document is UNMOVED — §3.1's byte-equality "
+                + "MUST binds this route to `scan --policy`, which exits 0 with a clean verdict over an "
+                + "empty facade package");
+        assertEquals(0, v.getAsJsonObject("analyzed").get("count").getAsInt());
+        assertEquals(0, v.getAsJsonArray("violations").size(),
+                "manufacturing a violation would assert an effect the consumer has no evidence for");
+
+        // NEGATIVE CONTROL — the same policy over a report that DID judge something must NOT carry the
+        // advisory. Without this the assertion above passes on a verb that prints the note unconditionally.
+        Candor.resetState();
+        Path rep2 = report("judged.jvm.json", List.of(entry("app.A.f", List.of("Fs"))), 5);
+        java.io.ByteArrayOutputStream err2 = new java.io.ByteArrayOutputStream();
+        try {
+            System.setErr(new java.io.PrintStream(err2, true));
+            Query.run(new String[]{"gate", "--report", rep2.toString(),
+                    "--policy", policy("deny Net\n").toString(), "--gate-json",
+                    tmp.resolve("judgedverdict.json").toString()});
+        } finally {
+            System.setErr(priorErr);
+        }
+        assertFalse(err2.toString().contains("JUDGED NOTHING"),
+                "a report with analyzed.count > 0 judged something — the advisory must not fire on it");
+    }
+
     /** A corrupt report fails loudly rather than reading as an effect-free package (§3.1). */
     @Test
     void aCorruptReportFailsClosed() throws Exception {

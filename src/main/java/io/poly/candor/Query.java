@@ -1928,7 +1928,10 @@ public final class Query {
         if (!Policy.parsePolicy(policyPath)) {
             String why = Policy.policyFailure(policyPath);
             System.err.println("candor gate: " + why);
-            return refuse(json, gateJsonPath, why, List.of());
+            // ⟨0.24⟩ the refusal names EVERY rule it left unevaluated, not just the offending one — the
+            // same rows, from the same helper, the SCAN route's refusal carries, so the two routes'
+            // refusal documents cannot drift (SPEC §3.1's byte-equality MUST).
+            return refuse(json, gateJsonPath, why, Policy.unhonouredRules(policyPath));
         }
         // ⟨0.24⟩ THE ANSWERABILITY REFUSALS ARE COLLECTED, NOT RETURNED ON — SPEC §3.1's corrected
         // precedence is **violation (1) > refusal (2) > incomplete (2)**. If some other rule FIRES on

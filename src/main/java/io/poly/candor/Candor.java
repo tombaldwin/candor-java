@@ -748,9 +748,30 @@ public class Candor {
                 : checkConformance(inferred, strict);     // gate-only: scope-filtered declared
         if (noAmbient != null) violations += checkNoAmbient(inferred, noAmbient);
         if (baseline != null) violations += checkBaseline(inferred, baseline);
-        // ⟨0.24⟩ the --gate-json sink travels IN, so an unreadable policy refuses WITH a document (SPEC
-        // §3.1) instead of exiting 2 over a path CI will re-read yesterday's verdict from.
-        if (policy != null) violations += Policy.checkPolicy(inferred, policy, gateJson);
+        // ⟨0.24⟩ PRECEDENCE BINDS THE VERDICT, NOT THE POLICY GATE (SPEC §3.1). The three producers above
+        // record into THIS verdict and run BEFORE the policy by design, so a policy the engine cannot
+        // honour must not delete what they already established: the refusal is REPORTED back here
+        // (Policy.checkPolicyOutcome) and weighed, never taken inside the policy gate. The arm below is
+        // keyed on "this run evaluated nothing" (violations == 0) — never on "this run ended refused",
+        // which is exactly the conflation §3.1 forbids.
+        //
+        // The --gate-json sink travels into the sole-refusal arm so an unreadable policy refuses WITH a
+        // document instead of exiting 2 over a path CI will re-read yesterday's verdict from.
+        String policyRefusal = null;                                  // set only when a violation dominates it
+        java.util.List<String[]> unevaluated = new ArrayList<>();     // ⟨0.24⟩ {rule, why}, one row per rule
+        if (policy != null) {
+            Policy.PolicyOutcome po = Policy.checkPolicyOutcome(inferred, policy);
+            violations += po.violations();
+            if (po.refusal() != null) {
+                System.err.println("candor-java: " + po.refusal());
+                if (violations == 0) {   // the refusal is the SOLE outcome — nothing certain stands above it
+                    writeRefusedGateJson(gateJson, po.refusal(), po.unevaluated());
+                    System.exit(2);
+                }
+                policyRefusal = po.refusal();
+                unevaluated.addAll(po.unevaluated());
+            }
+        }
         // AS-EFF-007 is a heuristic ADVISORY (spec §6): emit findings but never fail CI on its own.
         int advisories = ctx().taintEnabled ? checkTaint(inferred) : 0;
         if (violations == 0 && advisories == 0) gate.println("candor-java: no violations");
@@ -758,7 +779,15 @@ public class Candor {
         // SAME stream (`gate`), so a clean run stays byte-identical and the pinned violation-line shapes,
         // exit codes and --gate-json verdict are untouched (append-only, human channel only).
         if (violations > 0) gate.println("→ candor fix-gate names the remedy for each");
-        writeGateJson(gateJson, violations);   // machine verdict (before exit) — clean run writes ok:true,[]
+        // …and the MIRROR of the fix above: exit 1 must not read as "the policy ran and this is all it
+        // found". Say on the human channel what the document says under `refused`/`reason`/`unevaluated`.
+        if (policyRefusal != null)
+            gate.println("candor-java: exiting 1 on the violation(s) above — they were established BEFORE "
+                    + "the policy was read and their evidence does not depend on it, so the refusal cannot "
+                    + "un-reject the run (SPEC §3.1). The policy itself was NOT evaluated: "
+                    + unevaluated.size() + " rule(s) went unevaluated, named in the verdict document.");
+        // machine verdict (before exit) — clean run writes ok:true,[]
+        writeGateJson(gateJson, violations, scanGateFacts(), unevaluated, policyRefusal);
         if (violations > 0) System.exit(1); // fail CI
         // ⟨0.21⟩ COMPLETENESS MANIFEST (Gap 2): a CONFIGURED gate over code candor could NOT fully analyze
         // (skipped unparseable classes) cannot certify — exit 2 (could-not-evaluate), the fail-closed posture
@@ -829,6 +858,24 @@ public class Candor {
      *  binds. */
     static void writeGateJson(String path, int violations, GateFacts facts,
                               java.util.List<String[]> unevaluated) {
+        writeGateJson(path, violations, facts, unevaluated, null);
+    }
+
+    /**
+     * ⟨0.24⟩ As above, plus {@code refusal} — the reason a policy could NOT be honoured on a run whose
+     * verdict a violation nevertheless decides (SPEC §3.1: <b>precedence binds the VERDICT, not the policy
+     * gate</b>). Null on every other path, and the two keys are omitted when it is, so every verdict that
+     * is not this case stays byte-identical to a pre-⟨0.24⟩ one — including {@code gate --report}'s, which
+     * cannot reach this state (it refuses before any rule can fire) and so cannot drift from the scan's.
+     *
+     * <p>The document carries BOTH: {@code violations} (the finding the run is certain of, whatever
+     * subsystem produced it) AND {@code refused}/{@code reason}/{@code unevaluated} (the part it could not
+     * read). Dropping either half is a measured defect — dropping the first deletes a baseline regression
+     * from CI, and dropping the second publishes an exit 1 that reads as a policy that ran clean.
+     * {@code ok} is false and a naive reader lands on FAIL under any of the three keys.
+     */
+    static void writeGateJson(String path, int violations, GateFacts facts,
+                              java.util.List<String[]> unevaluated, String refusal) {
         if (path == null) return;
         var out = new java.util.LinkedHashMap<String, Object>();
         out.put("spec", SPEC_VERSION);
@@ -837,6 +884,13 @@ public class Candor {
         // "passes" over them is a false-pure. `ok` requires BOTH no violation AND a complete analysis.
         boolean incomplete = !facts.unanalyzed().isEmpty();
         out.put("ok", violations == 0 && !incomplete);
+        // ⟨0.24⟩ …and the policy this run could not honour, in the SAME two keys and the SAME position the
+        // pure-refusal document uses (writeRefusedGateJson), so one consumer reads one shape whichever
+        // outcome dominated. Omitted when null — i.e. on every path but the one §3.1's fifth mirror names.
+        if (refusal != null) {
+            out.put("refused", true);
+            out.put("reason", refusal);
+        }
         // ⟨0.21⟩ (Gap 1) the analyzed-universe count, so a --gate-json consumer sees the scan's scope from the
         // verdict alone (mirrors the report envelope's `analyzed`).
         var an = new java.util.LinkedHashMap<String, Object>();

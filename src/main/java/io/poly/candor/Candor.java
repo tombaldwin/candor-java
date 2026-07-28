@@ -445,9 +445,14 @@ public class Candor {
             }
             // …and say so on stderr too, so a human reading `parsepolicy` does not take exit 0 for a green
             // light: this verb's 0 means "here is the parse", never "this policy will run".
+            // FATAL entries only. A DROPPED line already printed its own "ignoring policy rule" warning as
+            // the parser threw it away, and it does NOT make the gate refuse (§3.1 195d45a is additive to
+            // the witness and deliberately silent about the gate) — so repeating this sentence over it
+            // would be a FALSE disclosure, the class PART 13b exists for.
             for (var e : Policy.policyErrors)
-                System.err.println("candor parsepolicy: " + e.message() + " — in policy rule: " + e.rule()
-                        + "\n        Reported in `errors` and NOT applied; the GATE REFUSES this policy (exit 2).");
+                if (e.fatal())
+                    System.err.println("candor parsepolicy: " + e.message() + " — in policy rule: " + e.rule()
+                            + "\n        Reported in `errors` and NOT applied; the GATE REFUSES this policy (exit 2).");
             System.out.println(Query.policyJson());
             System.exit(0);
         }

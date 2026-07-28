@@ -725,30 +725,87 @@ final class Policy {
         return v;
     }
 
-    /** SPEC §6.2: a malformed/unknown policy line is "ignored with a WARNING" — never silently
-     *  reinterpreted (a security gate must not). Mirrors the Rust parser's eprintln warnings. */
-    static void warnPolicy(String line, String reason) {
-        System.err.println("candor: ignoring policy rule (" + reason + "): " + line);
-    }
-
     /**
-     * ⟨0.24⟩ One token the policy names that this engine cannot honour — the token itself, the accepted
-     * set, and the rule it appeared in. A RECORD rather than a formatted string because the two consumers
-     * want different things out of it: the GATE wants one sentence to refuse with, and {@code parsepolicy}
-     * (the §3.1 witness) has to put the token in its JSON, where a consumer reads it as data.
+     * SPEC §6.2: a malformed/unknown policy line is "ignored with a WARNING" — never silently
+     * reinterpreted (a security gate must not). Mirrors the Rust parser's eprintln warnings.
+     *
+     * <p>⟨0.24⟩ …AND IT IS RECORDED, because stderr is not the machine channel (SPEC §3.1, candor-spec
+     * {@code 195d45a}). See {@link #policyErrors}: a DROPPED rule is the limit case of "silently rewritten
+     * into a different policy" — the rewritten policy is the one without that line, a bigger rewrite than
+     * a narrowed filter, not a smaller one.
+     *
+     * @param kind     the vocabulary or shape that failed — {@code rule kind}, {@code effect name}, …
+     * @param token    the thing not recognised, or {@code ""} where the FORM failed rather than a token
+     * @param accepted the admissible set, or empty where there is no fixed one (an `allow` needs at least
+     *                 one value; the values themselves are free text)
      */
-    record PolicyTokenError(String kind, String token, List<String> accepted, String known, String rule) {
+    static void warnPolicy(String line, String kind, String token, List<String> accepted, String reason) {
+        System.err.println("candor: ignoring policy rule (" + reason + "): " + line);
+        policyErrors.add(new PolicyTokenError(kind, token, accepted, reason, line, false));
+    }
+
+    /** The effect names a `deny`/`pure` rule may spell — the same set the parser tests, so the accepted
+     *  set the witness publishes cannot drift from the one that decided the drop. */
+    private static List<String> knownEffectNames() {
+        List<String> a = new ArrayList<>(KNOWN_EFFECTS);
+        a.add("Unknown");
+        java.util.Collections.sort(a);
+        return a;
+    }
+
+    /** The effects an `allow` may name — those carrying a literal surface (AS-EFF-008). Kept beside the
+     *  branch that enforces it, for the same reason as above. */
+    private static final List<String> ALLOW_EFFECTS = List.of("Db", "Exec", "Fs", "Llm", "Net");
+
+    /**
+     * ⟨0.24⟩ One LINE the policy holds that this engine did not honour as written — what failed, the
+     * accepted set, and the rule it appeared in. A RECORD rather than a formatted string because the two
+     * consumers want different things out of it: the GATE wants one sentence to refuse with, and
+     * {@code parsepolicy} (the §3.1 witness) has to put it in its JSON, where a consumer reads it as data.
+     *
+     * @param fatal ⟨0.24⟩ TRUE for an unrecognised class TOKEN, which makes the whole policy unhonourable
+     *              and the GATE refuse (exit 2, policy NOT evaluated); FALSE for a line the parser DROPPED,
+     *              where the gate's behaviour is deliberately unchanged (see {@link #policyErrors}).
+     */
+    record PolicyTokenError(String kind, String token, List<String> accepted, String known, String rule,
+                            boolean fatal) {
         /** The one-line diagnostic — the same words on the gate route and in the witness's `errors`. */
-        String message() { return "unknown " + kind + " `" + token + "` (known: " + known + ")"; }
+        String message() {
+            return fatal ? "unknown " + kind + " `" + token + "` (known: " + known + ")"
+                    : "policy line NOT HONOURED — DROPPED (" + known + "); it is absent from the parse, so "
+                      + "the policy that ran is the one without it";
+        }
     }
 
     /**
-     * ⟨0.24⟩ Non-empty when the policy was READ but CANNOT BE HONOURED AS WRITTEN (SPEC §6.2: an
-     * unrecognised reason-class or Net destination-class token). Distinct from {@link #parsePolicy}
-     * returning false for an unreadable FILE ({@link #policyUnreadable}); on the GATE routes the posture
-     * is the same one — exit 2, policy NOT evaluated — but `parsepolicy` REPORTS it and exits 0 (§3.1).
+     * ⟨0.24⟩ EVERY LINE THIS ENGINE DID NOT HONOUR AS WRITTEN (SPEC §3.1, candor-spec {@code 195d45a}) —
+     * not only unrecognised tokens. Two populations, distinguished by {@link PolicyTokenError#fatal}:
+     * <ul>
+     *   <li><b>fatal</b> — an unrecognised reason-class or Net destination-class token (§6.2). The policy
+     *       was READ but CANNOT BE HONOURED AS WRITTEN; the GATE routes take the unreadable-file posture
+     *       over it (exit 2, policy NOT evaluated) while `parsepolicy` REPORTS it and exits 0.</li>
+     *   <li><b>dropped</b> ⟨0.24⟩ — a line the parser threw away entirely: an unknown effect name, an
+     *       `allow` on an effect with no literal surface, a malformed `forbid`, an unknown rule kind.
+     *       MEASURED on the conformance battery the moment `errors` existed: 2 token errors reached the
+     *       machine output while 8 further lines were dropped with nothing but a stderr warning. <b>A
+     *       dropped rule is the limit case of "silently rewritten into a different policy" — the rewritten
+     *       policy is the one WITHOUT that line, a bigger rewrite than a narrowed filter, not a smaller
+     *       one.</b></li>
+     * </ul>
+     * The second population is <b>additive to the witness and silent about the gate</b>, deliberately.
+     * Whether a dropped rule should make the GATE refuse is a harder question and stays open: the parser
+     * cannot tell `deny Net Exex app` from a legitimate scope, so treating unknown effect names as errors
+     * is a GRAMMAR change rather than a token change. Reporting what was dropped needs no such decision,
+     * and until it is reported nobody can measure how often it happens. Hence {@link #parsePolicy} and
+     * {@link #policyFailure} both filter on {@code fatal}.
      */
     static final List<PolicyTokenError> policyErrors = new ArrayList<>();
+
+    /** ⟨0.24⟩ Does {@link #policyErrors} hold anything the GATE must refuse over? A DROPPED line does not
+     *  qualify — see the class note. One predicate, so "unhonourable" cannot come to mean two things. */
+    static boolean policyUnhonourable() {
+        return policyErrors.stream().anyMatch(PolicyTokenError::fatal);
+    }
 
     /**
      * ⟨0.24⟩ True when {@link #parsePolicy} returned false because the FILE could not be read, so a caller
@@ -779,7 +836,7 @@ final class Policy {
      * gate refuses on the first — it does not matter which token defeated it.
      */
     static void policyError(String line, String kind, String token, List<String> accepted, String known) {
-        policyErrors.add(new PolicyTokenError(kind, token, accepted, known, line));
+        policyErrors.add(new PolicyTokenError(kind, token, accepted, known, line, true));
     }
 
     /**
@@ -791,9 +848,13 @@ final class Policy {
      * diagnosed has inverted its purpose.)
      */
     static String policyFailure(String path) {
-        return !policyErrors.isEmpty()
+        // ⟨0.24⟩ the FIRST FATAL one — a DROPPED line is also in `policyErrors` now (the §3.1 witness owes
+        // it to the machine consumer) but the gate's posture over dropped lines is deliberately unchanged,
+        // so it must not become the sentence a refusal is explained with.
+        PolicyTokenError fatal = policyErrors.stream().filter(PolicyTokenError::fatal).findFirst().orElse(null);
+        return fatal != null
                 ? "policy " + path + " cannot be honoured AS WRITTEN — "
-                  + policyErrors.get(0).message() + " — in policy rule: " + policyErrors.get(0).rule()
+                  + fatal.message() + " — in policy rule: " + fatal.rule()
                   + "\n        Refusing (exit 2), policy NOT evaluated: dropping the token would rewrite the "
                   + "policy into a DIFFERENT one. If it is the rule's only class token the rule WIDENS to the "
                   + "bare effect; if it sits beside valid tokens the rule NARROWS and stops gating what you "
@@ -898,7 +959,14 @@ final class Policy {
                             }
                         } else { scope = tok; break; }
                     }
-                    if (effNames.isEmpty()) { warnPolicy(line, "names no known effect"); break; }
+                    if (effNames.isEmpty()) {
+                        // ⟨0.24⟩ the DROPPED-rule case §3.1 195d45a is about, and the one the parser
+                        // cannot promote to an error without a grammar change: `deny Net Exex app` is
+                        // indistinguishable from a legitimate scope here. Reported, gate unchanged.
+                        warnPolicy(line, "effect name", t.length > 1 ? t[1] : "", knownEffectNames(),
+                                "names no known effect");
+                        break;
+                    }
                     // `*` (or bare `Unknown`) means all classes ⇒ empty filter (matches any Unknown).
                     if (unknownStar) unknownClasses.clear();
                     // `*` (or bare `Net`) means all destinations ⇒ empty filter (matches any Net).
@@ -912,7 +980,7 @@ final class Policy {
                     // rule the engine is refusing to run, and `deny Unknown[reflect,unresolvd]` would be told to
                     // "add `unresolved`" — which it plainly tried to. Advising on a rewritten rule is the shape
                     // of the false disclosure this rung exists to remove.
-                    else if (policyErrors.isEmpty() && !unknownClasses.isEmpty()
+                    else if (!policyUnhonourable() && !unknownClasses.isEmpty()
                             && !unknownClasses.contains(ReasonClass.UNRESOLVED)) {
                         System.err.println("candor: policy rule narrows `Unknown[…]` but omits `unresolved` — may UNDER-gate on holes "
                                 + "the engine couldn't classify; add `unresolved` (or use `dynamic`) to stay conservative: " + line);
@@ -931,19 +999,24 @@ final class Policy {
                     if (t.length >= 4 && t[2].equals("->")) {
                         ctx().forbidRules.add(new PolicyRule.Forbid(t[1], t[3]));
                     } else {
-                        warnPolicy(line, "want `forbid <scope> -> <scope>`");
+                        warnPolicy(line, "forbid form", t.length > 1 ? t[1] : "",
+                                List.of("<scope> -> <scope>"), "want `forbid <scope> -> <scope>`");
                     }
                     break;
                 }
                 case "allow": {
                     // SPEC §6.2: `allow <Effect> [in <scope>] <value…>` — the effect MUST be one of the
                     // three that carry a literal surface; an `allow` for any other effect is dropped.
-                    if (t.length < 3) { warnPolicy(line, "allow names no values"); break; }
+                    if (t.length < 3) {
+                        warnPolicy(line, "allow values", "", List.of(), "allow names no values");
+                        break;
+                    }
                     if (!t[1].equals("Net") && !t[1].equals("Exec") && !t[1].equals("Fs")
                             && !t[1].equals("Db") && !t[1].equals("Llm")) {
                         // `Llm` ⟨0.13⟩ carries a literal surface — it rides Net's host literal, so a masked
                         // model host can't evade `allow Llm host` (the AS-EFF-008 fail-closed treatment).
-                        warnPolicy(line, "allow supports only Net hosts / Llm hosts / Exec commands / Fs paths / Db tables");
+                        warnPolicy(line, "allow effect", t[1], ALLOW_EFFECTS,
+                                "allow supports only Net hosts / Llm hosts / Exec commands / Fs paths / Db tables");
                         break;
                     }
                     String scope = "";
@@ -954,19 +1027,26 @@ final class Policy {
                     if (t[2].equals("in")) { scope = t.length > 3 ? t[3] : ""; vi = 4; }
                     TreeSet<String> values = new TreeSet<>(); // sorted: the wire surface order
                     for (int i = vi; i < t.length; i++) values.add(t[i]);
-                    if (values.isEmpty()) { warnPolicy(line, "allow names no values"); break; }
+                    if (values.isEmpty()) {
+                        warnPolicy(line, "allow values", "", List.of(), "allow names no values");
+                        break;
+                    }
                     ctx().allowRules.add(new PolicyRule.Allow(Effect.fromSpecName(t[1]), scope, values, line));
                     break;
                 }
                 default:
-                    warnPolicy(line, "unknown rule kind `" + t[0] + "`");
+                    warnPolicy(line, "rule kind", t[0], List.of("deny", "pure", "forbid", "allow"),
+                            "unknown rule kind `" + t[0] + "`");
                     break;
             }
         }
         // ⟨0.24⟩ the rules PARSED, but at least one names a class token this engine cannot honour — a GATE
         // caller takes the unreadable-policy posture over it (exit 2), never the rewritten rule. The
         // `parsepolicy` witness instead REPORTS {@link #policyErrors} beside the parse and exits 0 (§3.1).
-        return policyErrors.isEmpty();
+        // ⟨0.24⟩ FATAL only. `policyErrors` now also carries the lines the parser DROPPED (§3.1 owes the
+        // machine consumer every unhonoured line), but making a dropped line refuse the GATE would be a
+        // grammar change — deliberately still open, see the #policyErrors note.
+        return !policyUnhonourable();
     }
 
     /** A policy scope matches a method by dotted SEGMENT (so `domain` matches `app.domain.Svc.handle`

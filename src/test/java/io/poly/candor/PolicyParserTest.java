@@ -204,6 +204,90 @@ class PolicyParserTest {
                 "…and it keeps its own wording");
     }
 
+    /**
+     * ⟨0.24⟩ SPEC §3.1 (candor-spec {@code 195d45a}) — <b>{@code errors} CARRIES EVERY LINE THE ENGINE DID
+     * NOT HONOUR AS WRITTEN, not only unrecognised tokens.</b>
+     *
+     * <p>MEASURED on the conformance battery the moment the list existed: {@code parsepolicy} reported 2
+     * token errors while its stderr reported 8 further lines DROPPED entirely — an unknown effect name, an
+     * {@code allow} on an effect with no literal surface, two malformed {@code forbid}s, an unknown rule
+     * kind. None reached the machine output. A dropped rule is the LIMIT CASE of "silently rewritten into a
+     * different policy": the rewritten policy is the one WITHOUT that line, which is a bigger rewrite than
+     * a narrowed filter, not a smaller one. The witness was disclosing the two cases that prompted the
+     * clause and staying silent on the rest.
+     *
+     * <p>The gate's behaviour over a dropped rule is DELIBERATELY UNCHANGED, and the second block pins
+     * that: the parser cannot tell {@code deny Net Exex app} from a legitimate scope, so making unknown
+     * effect names refuse is a GRAMMAR change rather than a token change, and that question stays open.
+     * Reporting needs no such decision — and until it is reported nobody can measure how often it happens.
+     */
+    @Test
+    void errorsCarriesEveryLineTheEngineDidNotHonour() throws Exception {
+        fresh();
+        Path p = Files.createTempFile(tmp, "pol", ".policy");
+        Files.writeString(p, String.join("\n",
+                "deny Net domain",                       // honoured — the control that the parse still works
+                "deny notaneffect",                      // dropped: unknown effect name
+                "allow Clock whatever",                  // dropped: no literal surface for Clock
+                "forbid bad",                            // dropped: malformed
+                "forbid glued->arrow",                   // dropped: the arrow must be its own token
+                "allow Net in",                          // dropped: names no values
+                "nonsense line",                         // dropped: unknown rule kind
+                "deny Unknown[bogus] api") + "\n");      // FATAL: an unrecognised class token
+        assertFalse(Policy.parsePolicy(p.toString()),
+                "the FATAL token still refuses — dropped lines must not dilute that");
+
+        String json = Query.policyJson();
+        com.google.gson.JsonArray errs =
+                com.google.gson.JsonParser.parseString(json).getAsJsonObject().getAsJsonArray("errors");
+        assertEquals(7, errs.size(), "6 dropped lines + 1 unhonourable token — a witness that reports the "
+                + "token and stays silent on the six DROPPED rules is silent about the bigger rewrite: " + json);
+
+        List<String> rules = errs.asList().stream()
+                .map(e -> e.getAsJsonObject().get("rule").getAsString()).toList();
+        assertEquals(List.of("deny notaneffect", "allow Clock whatever", "forbid bad", "forbid glued->arrow",
+                        "allow Net in", "nonsense line", "deny Unknown[bogus] api"), rules,
+                "every unhonoured line, verbatim, in FILE ORDER — the operator reads these against their "
+                + "policy top-to-bottom: " + rules);
+
+        // The SHAPE is pinned (§3.1): exactly {kind, token, accepted, rule, message}, no more. A sixth key
+        // here would be this engine inventing a field the other three would each have to guess at.
+        for (var e : errs)
+            assertEquals(List.of("kind", "token", "accepted", "rule", "message"),
+                    List.copyOf(e.getAsJsonObject().keySet()), "the pinned entry shape: " + e);
+
+        // …and each entry says WHICH vocabulary failed and WHICH token, as data rather than only in prose.
+        assertEquals("effect name", errs.get(0).getAsJsonObject().get("kind").getAsString());
+        assertEquals("notaneffect", errs.get(0).getAsJsonObject().get("token").getAsString());
+        assertTrue(errs.get(0).getAsJsonObject().getAsJsonArray("accepted").toString().contains("Net"),
+                "the accepted set travels with it, as data: " + errs.get(0));
+        assertTrue(errs.get(0).getAsJsonObject().get("message").getAsString().contains("DROPPED"),
+                "…and a dropped line says it was DROPPED, not that a token was unknown: " + errs.get(0));
+        assertEquals("rule kind", errs.get(5).getAsJsonObject().get("kind").getAsString());
+        assertEquals("nonsense", errs.get(5).getAsJsonObject().get("token").getAsString());
+
+        // ADDITIVE TO THE WITNESS, SILENT ABOUT THE GATE. With the fatal token removed, a policy full of
+        // dropped lines still PARSES — they are reported and the gate runs the rules that survived, exactly
+        // as before. Turning them into refusals is a grammar change and stays open.
+        fresh();
+        Path q = Files.createTempFile(tmp, "pol", ".policy");
+        Files.writeString(q, "deny Net domain\ndeny notaneffect\nnonsense line\n");
+        assertTrue(Policy.parsePolicy(q.toString()),
+                "a DROPPED line must not make the gate refuse — that question is deliberately still open, "
+                + "because the parser cannot tell `deny Net Exex app` from a legitimate scope");
+        assertEquals(1, ctx().denyRules.size(), "…and exactly the honoured rule survives");
+        assertEquals(2, com.google.gson.JsonParser.parseString(Query.policyJson()).getAsJsonObject()
+                        .getAsJsonArray("errors").size(),
+                "…while both dropped lines are still REPORTED");
+
+        // CONTROL — a clean policy emits NO `errors` key at all, so a clean battery's dump stays
+        // byte-identical to the pre-feature one and the four-way deny/allow/forbid diff is untouched.
+        fresh();
+        parse("deny Net domain\nallow Net in domain example.com\nforbid domain -> infra\n");
+        assertFalse(com.google.gson.JsonParser.parseString(Query.policyJson()).getAsJsonObject().has("errors"),
+                "CONTROL: `errors` is OMITTED when empty: " + Query.policyJson());
+    }
+
     /** Parse the body and require the ⟨0.24⟩ policy-error posture: {@code parsePolicy} returns FALSE, the
      *  diagnostic NAMES the offending token and the accepted set, and NO rule survives — the policy is not
      *  rewritten into a different one. */

@@ -862,6 +862,30 @@ final class Policy {
                     : "policy line NOT HONOURED — DROPPED (" + known + "); it is absent from the parse, so "
                       + "the policy that ran is the one without it";
         }
+
+        /** ⟨0.24⟩ WHY refusing is the only posture — per KIND, because the two fatal families fail
+         *  differently and a remedy written for one is misleading about the other. A class token rewrites
+         *  the rule's FILTER; an effect name deletes the rule outright. */
+        String why() {
+            return "effect-name".equals(kind)
+                    ? "a rule naming no known effect gates NOTHING, so keeping it would leave you reading "
+                      + "an armed rule that does not exist — the LIMIT CASE of silently rewriting the "
+                      + "policy into a different one, and a bigger rewrite than a narrowed filter, not a "
+                      + "smaller one."
+                    : "dropping the token would rewrite the policy into a DIFFERENT one. If it is the "
+                      + "rule's only class token the rule WIDENS to the bare effect; if it sits beside "
+                      + "valid tokens the rule NARROWS and stops gating what you spelled, while the gate "
+                      + "still looks armed.";
+        }
+
+        /** ⟨0.24⟩ The fix, per kind. A class token can also be DEFINED rather than respelled; an effect
+         *  name cannot, so offering the config escape hatch there would send the operator nowhere. */
+        String remedy() {
+            return "effect-name".equals(kind)
+                    ? "Fix the spelling. Accepted here: " + String.join(", ", accepted) + "."
+                    : "Fix the spelling, or define it in `.candor/config` as "
+                      + "`unknown-alias <name> = <class,…>`.";
+        }
     }
 
     /**
@@ -945,12 +969,8 @@ final class Policy {
                   // ⟨0.24⟩ the sentence names the POSTURE, not an exit code: a violation another producer
                   // established before the policy was read dominates this refusal and the run exits 1
                   // (SPEC §3.1). Promising "exit 2" here made the message wrong on exactly that path.
-                  + "\n        REFUSING — the policy is NOT evaluated: dropping the token would rewrite the "
-                  + "policy into a DIFFERENT one. If it is the rule's only class token the rule WIDENS to the "
-                  + "bare effect; if it sits beside valid tokens the rule NARROWS and stops gating what you "
-                  + "spelled, while the gate still looks armed."
-                  + "\n        Fix the spelling, or define it in `.candor/config` as "
-                  + "`unknown-alias <name> = <class,…>`."
+                  + "\n        REFUSING — the policy is NOT evaluated: " + fatal.why()
+                  + "\n        " + fatal.remedy()
                 : "policy file " + path + " could not be read — REFUSING, the policy is NOT evaluated";
     }
 
@@ -1050,11 +1070,19 @@ final class Policy {
                         } else { scope = tok; break; }
                     }
                     if (effNames.isEmpty()) {
-                        // ⟨0.24⟩ the DROPPED-rule case §3.1 195d45a is about, and the one the parser
-                        // cannot promote to an error without a grammar change: `deny Net Exex app` is
-                        // indistinguishable from a legitimate scope here. Reported, gate unchanged.
-                        warnPolicy(line, "effect name", t.length > 1 ? t[1] : "", knownEffectNames(),
-                                "names no known effect");
+                        // ⟨0.24⟩ A `deny` WHOSE EFFECT LIST IS EMPTY AFTER SCOPE-SPLITTING IS A POLICY
+                        // ERROR (§6.2). It used to be dropped with a warning, so `deny Nett app` exited 0
+                        // and the operator read an armed `deny Net` where there was no gate at all — the
+                        // limit case of "silently rewritten into a different policy", and a BIGGER rewrite
+                        // than the narrowed filter that is already exit 2.
+                        //
+                        // The grammar defence is real but NARROWER than it looked: `deny Net Exex app`
+                        // cannot be told from a legitimate scope, and that ambiguous middle stays
+                        // permissive (an effect survived, so `Exex` reads as the scope). But a rule left
+                        // with NO effect is malformed under EITHER reading — there is no legitimate policy
+                        // it could be — so refusing it loses nothing.
+                        policyError(line, "effect-name", t.length > 1 ? t[1] : "", knownEffectNames(),
+                                String.join(", ", knownEffectNames()));
                         break;
                     }
                     // `*` (or bare `Unknown`) means all classes ⇒ empty filter (matches any Unknown).
@@ -1101,12 +1129,16 @@ final class Policy {
                         warnPolicy(line, "allow values", "", List.of(), "allow names no values");
                         break;
                     }
-                    if (!t[1].equals("Net") && !t[1].equals("Exec") && !t[1].equals("Fs")
-                            && !t[1].equals("Db") && !t[1].equals("Llm")) {
-                        // `Llm` ⟨0.13⟩ carries a literal surface — it rides Net's host literal, so a masked
-                        // model host can't evade `allow Llm host` (the AS-EFF-008 fail-closed treatment).
-                        warnPolicy(line, "allow effect", t[1], ALLOW_EFFECTS,
-                                "allow supports only Net hosts / Llm hosts / Exec commands / Fs paths / Db tables");
+                    if (!ALLOW_EFFECTS.contains(t[1])) {
+                        // ⟨0.24⟩ A POLICY ERROR, not a drop (§6.2). `allow`'s effect position is a FIXED,
+                        // CLOSED set — there is no scope reading available in it, so `allow Nett host` is
+                        // unambiguously a typo and dropping it silently vanished the certification while
+                        // the operator read one that was armed. (`Llm` ⟨0.13⟩ is in the set: it rides Net's
+                        // host literal, so a masked model host cannot evade `allow Llm host`.)
+                        policyError(line, "effect-name", t[1], ALLOW_EFFECTS,
+                                String.join(", ", ALLOW_EFFECTS)
+                                + " — `allow` covers only the effects carrying a literal surface "
+                                + "(Net/Llm hosts, Exec commands, Fs paths, Db tables)");
                         break;
                     }
                     String scope = "";

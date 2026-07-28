@@ -57,12 +57,41 @@ class PolicyParserTest {
         assertEquals("com.acme.domain", d.scope());
     }
 
-    /** A `deny` naming NO known effect is DROPPED — it must NOT be reinterpreted as a `pure` (empty-effect)
-     *  rule, which would forbid EVERYTHING. */
+    /**
+     * A `deny` naming NO known effect must NOT be reinterpreted as a `pure` (empty-effect) rule, which
+     * would forbid EVERYTHING.
+     *
+     * <p>⟨0.24⟩ …and it is no longer merely DROPPED either (candor-spec {@code 1e1748a}): a `deny` whose
+     * effect list is empty after scope-splitting is a POLICY ERROR. Measured before, `deny Nett app` exited
+     * 0 four-way — the rule silently deleted, the operator reading an armed `deny Net` where no gate
+     * existed. This document already calls a dropped rule "the limit case of silently rewritten into a
+     * different policy… a bigger rewrite than a narrowed filter", and the narrowed filter was already
+     * exit 2. The misreading-as-`pure` invariant is unchanged and asserted alongside.
+     */
     @Test
-    void denyWithNoKnownEffectIsDroppedNotPure() throws Exception {
-        parse("deny notaneffect");
-        assertTrue(ctx().denyRules.isEmpty(), "a deny with no known effect must be dropped, not become pure");
+    void denyWithNoKnownEffectIsAPolicyErrorNotPure() throws Exception {
+        Path p = Files.createTempFile(tmp, "pol", ".policy");
+        Files.writeString(p, "deny notaneffect\n");
+        assertFalse(Policy.parsePolicy(p.toString()),
+                "a `deny` left with no effect is malformed under EITHER reading — there is no legitimate "
+                + "policy it could be, so refusing it loses nothing");
+        assertTrue(ctx().denyRules.isEmpty(),
+                "…and it certainly must not become a `pure` rule, which would forbid EVERYTHING");
+        assertTrue(Policy.policyUnhonourable(), "the GATE refuses over it (exit 2), it is not a warning");
+    }
+
+    /**
+     * THE AMBIGUOUS MIDDLE STAYS PERMISSIVE — deliberately, and this is the control that keeps the ruling
+     * above from over-reaching. `deny Net Exex app` cannot be told from a legitimate scope by the parser:
+     * an effect survived, so `Exex` reads as the scope. Only the two unambiguous cases are errors.
+     */
+    @Test
+    void aTrailingUnknownTokenBesideAValidEffectIsStillAScope() throws Exception {
+        parse("deny Net Exex app");
+        assertEquals(1, ctx().denyRules.size(), "the rule is KEPT — the parser has no way to know `Exex` is "
+                + "not the scope the operator meant");
+        assertEquals("Exex", ctx().denyRules.get(0).scope());
+        assertFalse(Policy.policyUnhonourable(), "…and the gate is not refused over it");
     }
 
     /** `pure <scope>` IS the empty-effect Deny (forbid any effect in scope). */
@@ -100,13 +129,41 @@ class PolicyParserTest {
         assertFalse(a.values().contains("in"), "the `in` keyword must not be kept as an allowed value");
     }
 
+    /** A value-less `allow` is a FORM failure, not a vocabulary one — it stays a DROP (the ⟨0.24⟩ ruling
+     *  closes the effect POSITION, and this token is not in it). */
     @Test
-    void valuelessAllowAndUnsupportedEffectAreDropped() throws Exception {
+    void valuelessAllowIsDropped() throws Exception {
         parse("allow Net in");          // no values → dropped
         assertTrue(ctx().allowRules.isEmpty(), "a value-less allow must be dropped");
-        fresh();
-        parse("allow Log com.acme.x");  // Log has no literal surface → dropped
-        assertTrue(ctx().allowRules.isEmpty(), "allow supports only Net/Exec/Fs/Db");
+    }
+
+    /**
+     * ⟨0.24⟩ <b>`allow`'s EFFECT POSITION IS A FIXED, CLOSED SET, so an unrecognised token there is a
+     * POLICY ERROR</b> (candor-spec {@code 1e1748a}). Unlike `deny`, there is no scope reading available in
+     * that position at all — `allow Nett host.example` is unambiguously a typo — and dropping it made the
+     * certification silently vanish while the operator read one that was armed. Measured before:
+     * {@code allow Nett host.example} exited 0 on all four engines.
+     *
+     * <p>`Log` is the same error for a different reason: a real effect name, but not one carrying a
+     * literal surface, so `allow Log …` names no allowlist this engine can enforce either.
+     */
+    @Test
+    void anAllowOnAnEffectOutsideTheClosedSetIsAPolicyError() throws Exception {
+        for (String body : List.of("allow Nett host.example\n", "allow Log com.acme.x\n")) {
+            fresh();
+            Path p = Files.createTempFile(tmp, "pol", ".policy");
+            Files.writeString(p, body);
+            assertFalse(Policy.parsePolicy(p.toString()),
+                    "the effect position is closed — a token outside it is a typo, never a scope: " + body.trim());
+            assertTrue(ctx().allowRules.isEmpty(), "…and no rule is manufactured from it");
+        }
+        // CONTROL: every member of the closed set still parses, so the test cannot pass on a parser that
+        // rejects `allow` outright.
+        for (String eff : List.of("Net", "Llm", "Exec", "Fs", "Db")) {
+            fresh();
+            parse("allow " + eff + " in com.acme.x somevalue\n");
+            assertEquals(1, ctx().allowRules.size(), "CONTROL: `allow " + eff + "` still parses");
+        }
     }
 
     /**
@@ -216,10 +273,11 @@ class PolicyParserTest {
      * a narrowed filter, not a smaller one. The witness was disclosing the two cases that prompted the
      * clause and staying silent on the rest.
      *
-     * <p>The gate's behaviour over a dropped rule is DELIBERATELY UNCHANGED, and the second block pins
-     * that: the parser cannot tell {@code deny Net Exex app} from a legitimate scope, so making unknown
-     * effect names refuse is a GRAMMAR change rather than a token change, and that question stays open.
-     * Reporting needs no such decision — and until it is reported nobody can measure how often it happens.
+     * <p>⟨0.24⟩ The population shifted under {@code 1e1748a}: a typo'd EFFECT NAME is now FATAL on both
+     * `deny` and `allow`, so those two lines moved from the dropped half to the refusing half. What stays
+     * DROPPED is exactly what the ruling left open — the FORM failures (a malformed `forbid`, a value-less
+     * `allow`) and an unknown rule kind — and the second block still pins that the gate does not refuse
+     * over them.
      */
     @Test
     void errorsCarriesEveryLineTheEngineDidNotHonour() throws Exception {
@@ -227,21 +285,21 @@ class PolicyParserTest {
         Path p = Files.createTempFile(tmp, "pol", ".policy");
         Files.writeString(p, String.join("\n",
                 "deny Net domain",                       // honoured — the control that the parse still works
-                "deny notaneffect",                      // dropped: unknown effect name
-                "allow Clock whatever",                  // dropped: no literal surface for Clock
-                "forbid bad",                            // dropped: malformed
+                "deny notaneffect",                      // ⟨0.24⟩ FATAL: the effect list ends up EMPTY
+                "allow Clock whatever",                  // ⟨0.24⟩ FATAL: outside `allow`'s closed effect set
+                "forbid bad",                            // dropped: malformed FORM
                 "forbid glued->arrow",                   // dropped: the arrow must be its own token
                 "allow Net in",                          // dropped: names no values
                 "nonsense line",                         // dropped: unknown rule kind
                 "deny Unknown[bogus] api") + "\n");      // FATAL: an unrecognised class token
         assertFalse(Policy.parsePolicy(p.toString()),
-                "the FATAL token still refuses — dropped lines must not dilute that");
+                "the FATAL tokens still refuse — dropped lines must not dilute that");
 
         String json = Query.policyJson();
         com.google.gson.JsonArray errs =
                 com.google.gson.JsonParser.parseString(json).getAsJsonObject().getAsJsonArray("errors");
-        assertEquals(7, errs.size(), "6 dropped lines + 1 unhonourable token — a witness that reports the "
-                + "token and stays silent on the six DROPPED rules is silent about the bigger rewrite: " + json);
+        assertEquals(7, errs.size(), "4 dropped lines + 3 unhonourable ones — a witness that reports the "
+                + "tokens and stays silent on the DROPPED rules is silent about the bigger rewrite: " + json);
 
         List<String> rules = errs.asList().stream()
                 .map(e -> e.getAsJsonObject().get("rule").getAsString()).toList();
@@ -257,24 +315,29 @@ class PolicyParserTest {
                     List.copyOf(e.getAsJsonObject().keySet()), "the pinned entry shape: " + e);
 
         // …and each entry says WHICH vocabulary failed and WHICH token, as data rather than only in prose.
-        assertEquals("effect name", errs.get(0).getAsJsonObject().get("kind").getAsString());
+        assertEquals("effect-name", errs.get(0).getAsJsonObject().get("kind").getAsString());
         assertEquals("notaneffect", errs.get(0).getAsJsonObject().get("token").getAsString());
         assertTrue(errs.get(0).getAsJsonObject().getAsJsonArray("accepted").toString().contains("Net"),
                 "the accepted set travels with it, as data: " + errs.get(0));
-        assertTrue(errs.get(0).getAsJsonObject().get("message").getAsString().contains("DROPPED"),
-                "…and a dropped line says it was DROPPED, not that a token was unknown: " + errs.get(0));
+        assertTrue(errs.get(0).getAsJsonObject().get("message").getAsString().contains("unknown effect-name"),
+                "⟨0.24⟩ a FATAL effect name says the token was unknown, not that the line was dropped — the "
+                + "line was refused over, not silently removed: " + errs.get(0));
+        assertEquals("effect-name", errs.get(1).getAsJsonObject().get("kind").getAsString(),
+                "…and `allow`'s effect position reports the SAME vocabulary, differing only in `accepted`");
+        assertTrue(errs.get(2).getAsJsonObject().get("message").getAsString().contains("DROPPED"),
+                "…while a FORM failure is still a DROP and still says so: " + errs.get(2));
         assertEquals("rule kind", errs.get(5).getAsJsonObject().get("kind").getAsString());
         assertEquals("nonsense", errs.get(5).getAsJsonObject().get("token").getAsString());
 
-        // ADDITIVE TO THE WITNESS, SILENT ABOUT THE GATE. With the fatal token removed, a policy full of
+        // ADDITIVE TO THE WITNESS, SILENT ABOUT THE GATE. With the fatal lines removed, a policy full of
         // dropped lines still PARSES — they are reported and the gate runs the rules that survived, exactly
-        // as before. Turning them into refusals is a grammar change and stays open.
+        // as before. ⟨0.24⟩ closed only the two unambiguous positions; the FORM failures stay open.
         fresh();
         Path q = Files.createTempFile(tmp, "pol", ".policy");
-        Files.writeString(q, "deny Net domain\ndeny notaneffect\nnonsense line\n");
+        Files.writeString(q, "deny Net domain\nforbid glued->arrow\nnonsense line\n");
         assertTrue(Policy.parsePolicy(q.toString()),
-                "a DROPPED line must not make the gate refuse — that question is deliberately still open, "
-                + "because the parser cannot tell `deny Net Exex app` from a legitimate scope");
+                "a DROPPED line must not make the gate refuse — that question is deliberately still open "
+                + "for the FORM failures, which have no closed vocabulary to be measured against");
         assertEquals(1, ctx().denyRules.size(), "…and exactly the honoured rule survives");
         assertEquals(2, com.google.gson.JsonParser.parseString(Query.policyJson()).getAsJsonObject()
                         .getAsJsonArray("errors").size(),
@@ -302,5 +365,44 @@ class PolicyParserTest {
         assertTrue(msg.contains("known:"), "…and list the accepted set: " + msg);
         // The rule may sit in ctx() as a parse artefact, but the CALLER exits 2 before evaluating it —
         // asserted end-to-end by GateReportVerbTest#anUnrecognisedClassTokenRefusesTheWholeGate.
+    }
+
+    /**
+     * ⟨0.24⟩ THE END-TO-END HALF OF {@code 1e1748a}: the harm measured was an EXIT CODE, not a parse
+     * artefact. {@code deny Nett app} and {@code allow Nett host.example} both exited <b>0</b> on all four
+     * engines — the operator reads an armed gate that does not exist. Asserted through the real CLI
+     * dispatcher over a report that would make a correctly-spelled rule fire, so a green here would be a
+     * green on genuinely violating code.
+     */
+    @Test
+    void aTypodEffectNameRefusesTheGateRatherThanExitingZero() throws Exception {
+        Path rep = tmp.resolve("t.jvm.json");
+        Files.writeString(rep, io.poly.candor.model.ReportJson.pretty(java.util.Map.of(
+                "candor", java.util.Map.of("version", "test", "toolchain", "test", "spec", Candor.SPEC_VERSION),
+                "packages", List.of("app"),
+                "analyzed", java.util.Map.of("count", 1, "digest", "0"),
+                "functions", List.of(java.util.Map.of("fn", "app.S.get", "inferred", List.of("Net"),
+                        "direct", List.of("Net"), "hosts", List.of("evil.example"),
+                        "netClass", List.of("unknown-host"))))));
+
+        for (String body : List.of("deny Nett app\n", "allow Nett evil.example\n")) {
+            fresh();
+            Path pol = Files.createTempFile(tmp, "pol", ".policy");
+            Files.writeString(pol, body);
+            assertEquals(2, Query.run(new String[]{"gate", "--report", rep.toString(),
+                            "--policy", pol.toString()}),
+                    "a typo'd effect name must REFUSE (exit 2), never exit 0 over a rule it deleted: "
+                    + body.trim());
+        }
+        // CONTROL — correctly spelled, the same report, the same verb: the rules are real and one FIRES.
+        fresh();
+        Path good = Files.createTempFile(tmp, "pol", ".policy");
+        Files.writeString(good, "deny Net app\n");
+        Candor.gateCapture = true;
+        Candor.gateViolations.clear();
+        assertEquals(1, Query.run(new String[]{"gate", "--report", rep.toString(), "--policy", good.toString()}),
+                "CONTROL: the rule the operator MEANT fires — so the exit 0 above was a deleted gate, not "
+                + "a policy that legitimately had nothing to say");
+        Candor.gateCapture = false;
     }
 }

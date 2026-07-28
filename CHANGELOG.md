@@ -8,6 +8,38 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⚠ ⟨0.24⟩ A chained dep report with `analyzed.count: 0` no longer buys COVERAGE — "I judged nothing"
+  must not read as full coverage** (SPEC §2). A report carrying `functions: []` and `analyzed.count: 0`
+  was strictly MORE confident than not chaining the package at all: its caller dropped out of `functions`
+  entirely, which under ⟨0.21⟩ is a positive purity claim, with no `invisible`, no `coverage.uncovered`
+  and no line on stderr — while the same scan with `CANDOR_DEPS` unset disclosed both. Measured here on a
+  two-caller fixture: report entries **2 → 0**, `coverage` **present → absent**, and `deny Fs` **exit 1
+  (trusted) → exit 0**. A silent under-report, found four-way by conformance PART 26.
+
+  **The rule lives in `Loader.loadCrossDeps`, beside the §2.1 staleness and ⟨0.21⟩ incompleteness gates**,
+  as a third conjunct on the `depCoveredPkgs` registration — the κ-ledger's "whose silence do we trust"
+  set, and the one place coverage is granted. It is not in the gate: a gate reads its verdict off a
+  coverage decision already made, so putting it there would mean repeating it per verb.
+
+  **The second row is the control, and it is why this is not a one-liner.** `functions: []` is equally the
+  shape of an all-pure dependency, whose empty report SPEC §2 chaining rule 3 requires a consumer to
+  BELIEVE. Only ⟨0.21⟩'s `analyzed.count` tells the two apart, so the predicate is keyed on that integer
+  and never on the emptiness of `functions`; a count > 0 report is untouched, unhedged, still exit 0.
+  Blast radius measured over **1997 JVM dependency jars** (deduplicated `~/.m2`): 79 (4.0%) emit
+  `count: 0`, of which only **6** actually granted coverage — the other 73 carry no `packages` at all
+  (POM-aggregator starters, native-binary and webjar artifacts) — while **104** reports are the legitimate
+  all-pure kind and every one of those carries packages. A fix keyed on emptiness would have withdrawn 104
+  real claims to catch 6.
+
+  What is withheld is the report's SILENCE, never its entries: a count-0 report has none to withhold, and
+  the strictly-additive posture is asserted on an arm that does. `depChainedPkgs` is deliberately NOT
+  gated, for the reason recorded at its own registration. Row 3 of the spec's table is a behaviour
+  **change**: a manifest-less empty report (a pre-⟨0.21⟩ producer) now falls back to the unchained reading
+  too, since nothing on its wire says whether it judged anything. Rows in `StaleDepTrustTest` (both
+  controls plus their divergence, mutation-verified in three directions) and `test/smoke.sh`; PART 26's
+  CONTROL SEPARATION for java moves from INDISTINGUISHABLE to **SEPARATED on 56/80 cells**, and its
+  `empty_zero` waiver from 72 ABSENT cells down to 16.
+
 - **⟨0.24⟩ `--class` now has a VALUE GRAMMAR, and refuses a filter it cannot honour (exit 2)** (SPEC §6.2).
   `--class <c>[,<c>…]` takes ONE comma-separated list and is **not repeatable**; an **unrecognised token**
   is a usage error naming the token and listing the accepted set. Previously `candor unverified --class

@@ -1412,11 +1412,37 @@ absent "…and the chained package leaves the coverage ledger" "$DJC_CHAIN" "cla
 # Coverage is what silences the κ ledger for every key a report OMITS, and a report whose producing
 # build cannot be verified has no standing to silence anything. Both directions are rows now; the
 # singular-vs-plural `package` reading this row exists for is untouched.
+#
+# ⟨0.24⟩ THE FIXTURE NOW CARRIES `analyzed`, AND THAT IS THE RUNG, NOT AN ADJUSTMENT MADE TO SUIT IT. This
+# row is about READING the singular `package` key, so it needs a report whose silence is a real claim —
+# and ⟨0.24⟩ is what makes `functions: []` say which of the two things it means. `count: 3` = "I judged
+# three units and none of them has an effect", which SPEC §2 chaining rule 3 says to believe, so this row
+# asserts exactly what it always did. Left without the field it would have become the row two below: a
+# producer that cannot say whether it judged anything, which falls back to the unchained reading.
+# (The label's backticks are escaped now: unescaped in a double-quoted string they were COMMAND
+# SUBSTITUTION, so this row has been printing "a singular- empty report" and running `package`.)
 DJC_OWNVER=$(python3 -c "import json; print(json.load(open('$W/djc/dep.json'))['candor']['version'])")
-printf '{"candor":{"version":"%s","spec":"0.4"},"package":"com.thirdparty.io","functions":[]}' \
+printf '{"candor":{"version":"%s","spec":"0.4"},"package":"com.thirdparty.io","analyzed":{"count":3},"functions":[]}' \
     "$DJC_OWNVER" > "$W/djc/empty-pkg.json"
 DJC_EMPTY=$(CANDOR_DEPS="$W/djc/empty-pkg.json" "$CJ" "$W/djc/app" 2>&1)
-absent "a singular-`package` empty report covers its package (no false blind spot)" "$DJC_EMPTY" "classifier doesn't cover"
+absent "a singular-\`package\` all-pure report covers its package (no false blind spot)" "$DJC_EMPTY" "classifier doesn't cover"
+# ⟨0.24⟩ THE SAME FILE WITH ONE INTEGER CHANGED — the whole rung, on the stderr channel. `count: 0` says
+# the producer judged NOTHING, so it has no silence to offer and its package goes back to being a named
+# blind spot: chaining a report must never buy more confidence than not chaining it at all. Before the fix
+# both spellings were answered identically and this arm was silent and exit 0.
+printf '{"candor":{"version":"%s","spec":"0.4"},"package":"com.thirdparty.io","analyzed":{"count":0},"functions":[]}' \
+    "$DJC_OWNVER" > "$W/djc/empty-pkg-zero.json"
+DJC_EMPTY_ZERO=$(CANDOR_DEPS="$W/djc/empty-pkg-zero.json" "$CJ" "$W/djc/app" 2>&1)
+want   "…but \`analyzed.count: 0\` judged NOTHING, so its package stays a blind spot" "$DJC_EMPTY_ZERO" "classifier doesn't cover"
+want   "…and the run says so on stderr, naming the report"                           "$DJC_EMPTY_ZERO" "judged NOTHING"
+# ⟨0.24⟩ row 3: a pre-⟨0.21⟩ producer has no manifest, so nothing on the wire says whether it judged
+# anything — it falls back to the unchained reading. This is a CHANGE to what this engine did before the
+# rung (a manifest-less empty report used to buy full coverage), and it is the spec's third row, not an
+# extrapolation from the first.
+printf '{"candor":{"version":"%s","spec":"0.4"},"package":"com.thirdparty.io","functions":[]}' \
+    "$DJC_OWNVER" > "$W/djc/empty-pkg-nomanifest.json"
+DJC_EMPTY_NOMAN=$(CANDOR_DEPS="$W/djc/empty-pkg-nomanifest.json" "$CJ" "$W/djc/app" 2>&1)
+want   "…and a manifest-LESS empty report makes no claim either (⟨0.24⟩ row 3)" "$DJC_EMPTY_NOMAN" "classifier doesn't cover"
 printf '{"candor":{"version":"%s-NOT-THIS-BUILD","spec":"0.4"},"package":"com.thirdparty.io","functions":[]}' \
     "$DJC_OWNVER" > "$W/djc/empty-pkg-stale.json"
 DJC_EMPTY_STALE=$(CANDOR_DEPS="$W/djc/empty-pkg-stale.json" "$CJ" "$W/djc/app" 2>&1)

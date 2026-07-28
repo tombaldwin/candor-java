@@ -357,6 +357,67 @@ final class Loader {
         return !(un.isJsonArray() && un.getAsJsonArray().isEmpty());
     }
 
+    /** ⟨0.24⟩ Does this dep report say it JUDGED NOTHING — i.e. is {@code analyzed.count} zero?
+     *
+     *  <p><b>THE DEFECT.</b> A chained report carrying {@code functions: []} and {@code analyzed.count: 0}
+     *  bought a consumer MORE confidence than not chaining the package at all. The caller dropped out of
+     *  {@code functions} entirely — which under ⟨0.21⟩ is a positive PURITY claim — with no {@code invisible}
+     *  on the entry, no {@code coverage.uncovered} in the envelope and no line on stderr, while the UNCHAINED
+     *  arm of the same scan disclosed both. Measured on this engine before the fix: `deny Fs` exit 1 (trusted)
+     *  → exit 0 (this arm), report entries 2 → 0, `coverage` present → absent. That is a silent under-report,
+     *  and conformance PART 26 measured the same door in all four engines.
+     *
+     *  <p><b>WHAT THE FIX RESTORES IS THE DISCLOSURE, NOT THE VERDICT</b>, and the distinction is not a
+     *  shortfall. The consumer has no evidence the dep performs `Fs` — the report it was handed says nothing
+     *  about any unit — so re-asserting the effect would be fabrication, and this engine's channel for an
+     *  uncovered package is the κ ledger, not `Unknown`. `deny Fs` therefore stays exit 0 on this arm,
+     *  exactly as it is on the UNCHAINED arm, which is the FLOOR the rule asks for: not more confident than
+     *  no report at all. In PART 26's letters the arm moves from `A` (silent purity claim) to `h`
+     *  (HEDGED_LOSS — knowledge lost, disclosed), which is the correct §2.1 shape.
+     *
+     *  <p><b>WHY THE WIRE CAN ANSWER IT.</b> `functions: []` alone cannot: it is the shape of an all-pure
+     *  dependency AND of one that analyzed nothing, and SPEC §2 chaining rule 3 requires a consumer to
+     *  BELIEVE the first ("an all-pure dependency's empty report is a claim, not a blind spot"). ⟨0.21⟩'s
+     *  {@code analyzed.count} is the integer that separates them — a facade package of pure re-exports scans
+     *  to count 0, an all-pure two-function package to count 2 — and no engine was reading it. So this
+     *  predicate is keyed on the COUNT, never on the emptiness of `functions`: hedging both shapes would not
+     *  implement the rule, it would disable the claim rule 3 exists to protect. {@link StaleDepTrustTest}
+     *  carries the count-n arm as an in-band control beside the count-0 one for exactly that reason.
+     *
+     *  <p><b>WHAT IT COSTS, AND WHAT IT DOES NOT.</b> Only COVERAGE is withheld — the treatment the ⟨0.21⟩
+     *  incomplete arm gets, not the §2.1 stale one. A count-0 report has no entries to downgrade, so nothing
+     *  is removed and the change is strictly additive; and {@code depChainedPkgs} stays ungated for the
+     *  reason recorded at its own registration (it only ever ADDS disclosure, so routing a trust decision
+     *  through it silences {@link Candor#untypedDepReceiver} where the κ ledger cannot replace it).
+     *
+     *  <p><b>THE THREE ROWS ⟨0.24⟩ SPELLS OUT, and the shapes each covers:</b>
+     *  <ul>
+     *    <li>{@code count} numeric and 0 (or negative) → judged nothing → NO coverage;</li>
+     *    <li>{@code count} numeric and positive → n units judged → coverage, unchanged. Note this holds even
+     *        with a non-empty `functions`, which is the ordinary case;</li>
+     *    <li>{@code analyzed} ABSENT → a pre-⟨0.21⟩ producer, which has no manifest and so makes no claim.
+     *        Judged-nothing iff `functions` is EMPTY: an empty report from a producer that cannot say whether
+     *        it judged anything falls back to the unchained reading, while one that LISTS functions
+     *        demonstrably judged units and keeps the coverage it has always had. (In this engine the §2.1
+     *        version check almost always fires first on such a report — pre-⟨0.21⟩ builds carry a different
+     *        build id — so this row is the belt to staleness's braces, not the load-bearing one.)</li>
+     *    <li>{@code analyzed} PRESENT but unreadable (a JsonNull, a string, an object with no numeric
+     *        `count`) → a judgment claim that cannot be READ is not a claim → NO coverage, the same
+     *        fail-closed posture {@link #declaresItselfIncomplete} takes for a malformed `unanalyzed` and the
+     *        entry parser takes for a malformed `inferred`. A denylist of proven-safe shapes.</li>
+     *  </ul>
+     *
+     *  @param fns the report's {@code functions} array (possibly the bare-array root form), consulted ONLY
+     *             on the manifest-absent row above. */
+    static boolean claimsToHaveJudgedNothing(JsonObject obj, JsonArray fns) {
+        if (obj == null || !obj.has("analyzed")) return fns == null || fns.isEmpty();
+        JsonElement an = obj.get("analyzed");
+        if (!an.isJsonObject()) return true;                        // unreadable manifest → not a claim
+        JsonElement c = an.getAsJsonObject().get("count");
+        if (c == null || !c.isJsonPrimitive() || !c.getAsJsonPrimitive().isNumber()) return true;
+        return c.getAsInt() <= 0;
+    }
+
     static void loadCrossDeps(String spec, String ownVersion) {
         if (spec == null || spec.isBlank()) return;
         for (String tok : spec.split("[\\s:,]+")) {
@@ -419,6 +480,10 @@ final class Loader {
                     // /code-review found the engines split three ways on versionless reports).
                     boolean stale = depVer == null || !depVer.equals(ownVersion);
                     boolean incomplete = declaresItselfIncomplete(obj);
+                    // ⟨0.24⟩ the THIRD key on the same door: a report that judged NOTHING. See
+                    // {@link #claimsToHaveJudgedNothing} — `functions: []` with `analyzed.count: 0` was
+                    // buying strictly more confidence than not chaining the package at all.
+                    boolean judgedNothing = claimsToHaveJudgedNothing(obj, fns);
                     // §2.1 TRUST IS ONE DECISION, NOT TWO. A stale report's EFFECTS are downgraded to
                     // Unknown below — the engine refuses to believe what it says. Registering its packages
                     // as COVERED believes it about everything it does NOT say: coverage is what silences
@@ -456,6 +521,17 @@ final class Loader {
                                 + " but its packages are NOT counted as covered, so a key it does not answer"
                                 + " falls back to the κ ledger's `invisible: [pkg]` hedge instead of reading"
                                 + " pure. Re-run the dependency's scan over source this build can analyze.");
+                    } else if (judgedNothing) {
+                        // Same channel as the two arms above, and for the same reason: the smoke suite is
+                        // the leg that reads stderr, and a disclosure nobody's assertions look at is where
+                        // defects sit. The remedy is named because a count-0 report is usually a
+                        // MIS-TARGETED scan (an empty output directory, a facade module with no compiled
+                        // classes of its own), not a fact about the dependency.
+                        System.err.println("candor: CANDOR_DEPS report " + f + " judged NOTHING (⟨0.24⟩"
+                                + " `analyzed.count` is 0, absent-with-no-functions, or unreadable) — its"
+                                + " packages are NOT counted as covered, so a call into them falls back to"
+                                + " the κ ledger's `invisible: [pkg]` hedge instead of reading pure. Point"
+                                + " the dependency's scan at compiled classes it can actually analyze.");
                     }
                     // File-level coverage: the producer's own package name(s) register the report's
                     // packages as COVERED even when `functions` is empty — an all-pure dep's empty
@@ -466,7 +542,13 @@ final class Loader {
                     //
                     // ⟨0.21⟩ …AND NEITHER DOES A REPORT THAT DECLARES ITSELF INCOMPLETE. See
                     // {@link #declaresItselfIncomplete}: the same door as staleness with a different key.
-                    if (!stale && !incomplete) ctx().depCoveredPkgs.addAll(reportPackages(obj));
+                    //
+                    // ⟨0.24⟩ …NOR DOES A REPORT THAT JUDGED NOTHING. `functions: []` is the shape of BOTH an
+                    // all-pure dependency (rule 3's claim, which must survive) and one that analyzed no
+                    // units at all; ⟨0.21⟩'s `analyzed.count` is the only thing on the wire that tells them
+                    // apart. See {@link #claimsToHaveJudgedNothing}.
+                    if (!stale && !incomplete && !judgedNothing)
+                        ctx().depCoveredPkgs.addAll(reportPackages(obj));
                     for (JsonElement el : fns) {
                         if (!el.isJsonObject()) continue;                 // a non-object entry → skip (not pure-able)
                         JsonObject m = el.getAsJsonObject();
@@ -526,12 +608,16 @@ final class Loader {
                         // slash-form `owner/Class.method(desc)`, so fall back to the last `/`.
                         // The COVERAGE half is gated on trust for the same reason as the file-level
                         // registration above (an untrusted report's entry names a package, it does not
-                        // vouch for it) and ⟨0.21⟩ on the report declaring itself complete, for the reason
-                        // recorded there; the CHAINED-NESS half is neither, for the reason recorded there.
+                        // vouch for it), ⟨0.21⟩ on the report declaring itself complete and ⟨0.24⟩ on its
+                        // having judged anything at all, each for the reason recorded at its predicate; the
+                        // CHAINED-NESS half is none of the three, for the reason recorded there. A count-0
+                        // report reaches this loop with no entries, so the ⟨0.24⟩ conjunct here bites only on
+                        // the CONTRADICTORY shapes — a manifest that cannot be read, or one claiming zero
+                        // while listing functions — and it fails those closed rather than picking a side.
                         String pkg = entryPackage(h);
                         if (pkg == null) continue;
                         ctx().depChainedPkgs.add(pkg);
-                        if (!stale && !incomplete) ctx().depCoveredPkgs.add(pkg);
+                        if (!stale && !incomplete && !judgedNothing) ctx().depCoveredPkgs.add(pkg);
                     }
                 } catch (Exception ex) {
                     // FAIL-CLOSED: an unreadable/unparseable dep report swallowed here meant every call

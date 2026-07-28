@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -171,6 +172,36 @@ class PolicyParserTest {
         assertTrue(Policy.parsePolicy(p.toString()),
                 "CONTROL: a config `unknown-alias` resolves — the remedy the diagnostic names is real");
         assertEquals(1, ctx().denyRules.size());
+    }
+
+    /**
+     * ⟨0.24⟩ SPEC §3.1 — EVERY offending token is recorded, not just the first, and the FILE-unreadable case
+     * stays distinguishable from the token case. Both exist for the `parsepolicy` witness (candor-spec
+     * 6929dce): it must name them ALL (stopping at the first sends the operator round the loop once per
+     * typo) and it must still REFUSE when there is no parse to show. The gate takes the first — it does not
+     * matter which token defeated it.
+     */
+    @Test
+    void everyUnhonourableTokenIsRecordedAndAnUnreadableFileStaysDistinct() throws Exception {
+        fresh();
+        Path p = Files.createTempFile(tmp, "pol", ".policy");
+        Files.writeString(p, "deny Unknown[dispatch,nativ] app\ndeny Net[unkown-host] app\n");
+        assertFalse(Policy.parsePolicy(p.toString()));
+        assertEquals(List.of("nativ", "unkown-host"),
+                Policy.policyErrors.stream().map(Policy.PolicyTokenError::token).toList(),
+                "both tokens, in file order — a witness that stops at the first hides the second typo");
+        assertFalse(Policy.policyUnreadable, "the file READ fine; it is the tokens that cannot be honoured");
+        assertTrue(Policy.policyErrors.get(0).accepted().contains("dispatch"),
+                "the accepted set travels as DATA, not only inside the prose message");
+
+        fresh();
+        assertFalse(Policy.parsePolicy(tmp.resolve("nope.policy").toString()));
+        assertTrue(Policy.policyUnreadable,
+                "an unreadable FILE is the other failure — `parsepolicy` refuses THAT one, since there is "
+                + "no parse to report");
+        assertTrue(Policy.policyErrors.isEmpty());
+        assertTrue(Policy.policyFailure(tmp.resolve("nope.policy").toString()).contains("could not be read"),
+                "…and it keeps its own wording");
     }
 
     /** Parse the body and require the ⟨0.24⟩ policy-error posture: {@code parsePolicy} returns FALSE, the

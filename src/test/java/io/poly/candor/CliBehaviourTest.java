@@ -211,6 +211,64 @@ class CliBehaviourTest {
         assertEquals(2, r.exit(), "a valueless --policy must FAIL, never run gateless\nSTDERR:\n" + r.stderr());
     }
 
+    /**
+     * ⟨0.24⟩ <b>THE WITNESS REPORTS, THE GATE REFUSES — SPEC §3.1</b> (candor-spec 6929dce), asserted as ONE
+     * test because the pair is the point: the SAME policy file must produce exit 0 with the token named from
+     * {@code parsepolicy}, and exit 2 from the gate.
+     *
+     * <p>MEASURED: ⟨0.24⟩ made an unrecognised class token a policy error (§6.2) and this engine implemented
+     * it in the PARSER, so {@code parsepolicy} began exiting 2 with EMPTY stdout on the conformance battery —
+     * which carries such tokens deliberately — and the four-way suite HALTED at PART 4 ("FAIL: candor-java
+     * parsepolicy errored on the battery"). One ruling took the whole cross-impl differential offline.
+     *
+     * <p>The fix moves the refusal out of the parser, which is exactly the change that could RELAX THE GATE
+     * and re-open the fail-open that {@code 5d501c9} closed — so the gate half is asserted here beside it,
+     * and again in {@link GateReportVerbTest#anUnrecognisedClassTokenRefusesTheWholeGate} on the report route.
+     * The token must APPEAR in the witness's output: a diff that cannot tell "dropped" (the pre-⟨0.24⟩
+     * behaviour) from "rejected" cannot pin this rung at all, so an exit-0-and-silently-dropped parse would
+     * satisfy the exit code and still fail the ruling.
+     */
+    @Test
+    void parsepolicyReportsAnUnhonourableTokenAndTheGateStillRefusesIt() throws Exception {
+        Path typo = policy("deny Net app\ndeny Unknown[dispatch,nativ] app\n");
+        Path classes = compileNetFixture();
+
+        // ── THE WITNESS: reports, exits 0, and NAMES the token it could not honour ──
+        Run w = runCli("parsepolicy", typo.toString());
+        assertEquals(0, w.exit(), "⟨0.24⟩ §3.1: `parsepolicy` MUST NOT refuse — a diagnostic that declines "
+                + "to explain the thing being diagnosed has inverted its purpose\nSTDERR:\n" + w.stderr());
+        assertNoStackTrace(w);
+        JsonParser.parseString(w.stdout());  // stdout is still a PARSE, not a diagnostic dump
+        assertTrue(w.stdout().contains("\"errors\""),
+                "…and the parse carries an `errors` list\nSTDOUT:\n" + w.stdout());
+        assertTrue(w.stdout().contains("\"nativ\""),
+                "…naming the unrecognised TOKEN — dropping it silently is the pre-⟨0.24⟩ behaviour, and a "
+                + "diff that cannot separate dropped from rejected cannot pin this rung\nSTDOUT:\n" + w.stdout());
+        assertTrue(w.stdout().contains("\"accepted\""),
+                "…and the accepted set, so the operator does not have to go and look it up\nSTDOUT:\n" + w.stdout());
+        assertTrue(w.stdout().contains("\"Net\""),
+                "…while STILL reporting the parse it could honour — reporting is not refusing\nSTDOUT:\n" + w.stdout());
+
+        // ── THE GATE: the same file, still refused. Moving the refusal out of the parser is exactly the
+        //    change that could relax this, and that would re-open the measured fail-open. ──
+        Run g = runCli(classes.toString(), "--policy", typo.toString());
+        assertEquals(2, g.exit(), "the GATE must still refuse a policy it cannot honour as written (exit 2), "
+                + "never the silently-rewritten rule\nSTDERR:\n" + g.stderr());
+        assertTrue(g.stderr().contains("`nativ`") && g.stderr().contains("known:"),
+                "…naming the token and the accepted set\nSTDERR:\n" + g.stderr());
+
+        // ── CONTROLS. Without these this passes on a witness that prints `errors` unconditionally and a
+        //    gate that refuses every policy. ──
+        Path ok = policy("deny Net app\n");
+        Run w2 = runCli("parsepolicy", ok.toString());
+        assertEquals(0, w2.exit(), "CONTROL: a clean policy parses\nSTDERR:\n" + w2.stderr());
+        assertFalse(w2.stdout().contains("errors"),
+                "CONTROL: …and emits NO `errors` key, so the dump stays byte-identical to the pre-feature "
+                + "one and PART 4's deny/allow/forbid comparison is untouched\nSTDOUT:\n" + w2.stdout());
+        assertEquals(1, runCli(classes.toString(), "--policy", ok.toString()).exit(),
+                "CONTROL: the same rule, spelled right, still FIRES (exit 1) — the gate is armed, not broken");
+    }
+
     // ── --version / -V / --help / -h ─────────────────────────────────────────────────────────────────
 
     @Test

@@ -432,7 +432,22 @@ public class Candor {
             Config pcfg = Config.policyVocabulary(Path.of(args[1]));   // ⟨0.24⟩ the named anchor (§3.1)
             ctx().unknownAliases.putAll(pcfg.unknownAliases());
             ctx().netPartners.addAll(pcfg.netPartners());
-            if (!parsePolicy(args[1])) { System.err.println("candor: " + Policy.policyFailure(args[1])); System.exit(2); }
+            // ⟨0.24⟩ SPEC §3.1 — **THE WITNESS MUST NOT REFUSE.** An unrecognised class token is a policy
+            // error at the GATE (§6.2, exit 2, policy NOT evaluated) — but the gate is the thing that must
+            // not enforce a policy it cannot honour, and this verb is not the gate. Its whole job is to
+            // answer *what did this engine make of my policy?*, which is most valuable exactly when the
+            // answer is "not what you meant". Refusing here made the four-way PART 4 differential HALT on a
+            // battery that carries such tokens deliberately, so one ruling took the differential offline at
+            // the one input where the engines are likeliest to differ. So: report the parse AND the errors,
+            // exit 0. An unreadable FILE still exits 2 — there is no parse to report.
+            if (!parsePolicy(args[1]) && Policy.policyUnreadable) {
+                System.err.println("candor: " + Policy.policyFailure(args[1])); System.exit(2);
+            }
+            // …and say so on stderr too, so a human reading `parsepolicy` does not take exit 0 for a green
+            // light: this verb's 0 means "here is the parse", never "this policy will run".
+            for (var e : Policy.policyErrors)
+                System.err.println("candor parsepolicy: " + e.message() + " — in policy rule: " + e.rule()
+                        + "\n        Reported in `errors` and NOT applied; the GATE REFUSES this policy (exit 2).");
             System.out.println(Query.policyJson());
             System.exit(0);
         }

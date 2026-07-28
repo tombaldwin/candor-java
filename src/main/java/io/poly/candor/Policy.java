@@ -1157,7 +1157,10 @@ final class Policy {
                     break;
                 }
                 default:
-                    warnPolicy(line, "rule kind", t[0], List.of("deny", "pure", "forbid", "allow"),
+                    // ⟨0.24⟩ `rule-kind`, hyphenated — the closed `kind` vocabulary SPEC §3.1 pins
+                    // (candor-spec 901f14d) is `reason-class/alias | Net destination-class | effect-name |
+                    // rule-kind`, and this engine spelled two of the four with a space.
+                    warnPolicy(line, "rule-kind", t[0], List.of("deny", "pure", "forbid", "allow"),
                             "unknown rule kind `" + t[0] + "`");
                     break;
             }

@@ -326,7 +326,7 @@ class PolicyParserTest {
                 "…and `allow`'s effect position reports the SAME vocabulary, differing only in `accepted`");
         assertTrue(errs.get(2).getAsJsonObject().get("message").getAsString().contains("DROPPED"),
                 "…while a FORM failure is still a DROP and still says so: " + errs.get(2));
-        assertEquals("rule kind", errs.get(5).getAsJsonObject().get("kind").getAsString());
+        assertEquals("rule-kind", errs.get(5).getAsJsonObject().get("kind").getAsString());
         assertEquals("nonsense", errs.get(5).getAsJsonObject().get("token").getAsString());
 
         // ADDITIVE TO THE WITNESS, SILENT ABOUT THE GATE. With the fatal lines removed, a policy full of
@@ -365,6 +365,66 @@ class PolicyParserTest {
         assertTrue(msg.contains("known:"), "…and list the accepted set: " + msg);
         // The rule may sit in ctx() as a parse artefact, but the CALLER exits 2 before evaluating it —
         // asserted end-to-end by GateReportVerbTest#anUnrecognisedClassTokenRefusesTheWholeGate.
+    }
+
+    /**
+     * ⟨0.24⟩ SPEC §3.1 (candor-spec {@code 901f14d}) — <b>{@code errors[].accepted} IS AN ARRAY OF TOKENS
+     * and {@code kind} is drawn from a CLOSED set</b>: {@code reason-class/alias}, {@code Net
+     * destination-class}, {@code effect-name}, {@code rule-kind}. The measured divergence was candor-ts
+     * emitting {@code accepted} as a PROSE STRING (unparseable by the consumer the field exists for) and
+     * renaming {@code kind}/{@code rule} to {@code vocabulary}/{@code where}; this engine's shape was
+     * already the pinned one, and this test is what keeps it that way rather than by luck.
+     *
+     * <p><b>THE ONE DIVERGENCE THAT REMAINS, deliberately.</b> Two of this engine's rows report a FORM
+     * failure rather than a vocabulary one — a malformed {@code forbid} and a value-less {@code allow} —
+     * and the closed set has no member for them. They are NOT mapped into it: {@code rule-kind} with
+     * {@code accepted: ["&lt;scope&gt; -&gt; &lt;scope&gt;"]} would tell a consumer that {@code forbid} is
+     * not a known rule kind, which is false, and a false disclosure is the defect class this rung exists to
+     * remove. The closed set was derived from the TOKEN population; the DROPPED population (candor-spec
+     * {@code 195d45a}, which this engine added) includes form failures the set does not name. Reported
+     * rather than papered over.
+     */
+    @Test
+    void everyErrorRowCarriesAnAcceptedArrayAndAPinnedKind() throws Exception {
+        fresh();
+        Path p = Files.createTempFile(tmp, "pol", ".policy");
+        Files.writeString(p, String.join("\n",
+                "deny Unknown[corp] app",                // reason-class/alias
+                "deny Net[unkown-host] app",             // Net destination-class
+                "deny Nett app",                         // effect-name (deny position)
+                "allow Nett host.example",               // effect-name (allow position)
+                "frobid a -> b",                         // rule-kind
+                "forbid glued->arrow",                   // FORM — outside the closed set, see the javadoc
+                "allow Net in") + "\n");                 // FORM — likewise
+        assertFalse(Policy.parsePolicy(p.toString()));
+
+        com.google.gson.JsonArray errs = com.google.gson.JsonParser.parseString(Query.policyJson())
+                .getAsJsonObject().getAsJsonArray("errors");
+        List<String> kinds = errs.asList().stream()
+                .map(e -> e.getAsJsonObject().get("kind").getAsString()).toList();
+        assertEquals(List.of("reason-class/alias", "Net destination-class", "effect-name", "effect-name",
+                        "rule-kind", "forbid form", "allow values"), kinds,
+                "the four VOCABULARY kinds are exactly the pinned closed set; the trailing two are FORM "
+                + "failures the set does not name: " + kinds);
+        assertEquals(List.of("reason-class/alias", "Net destination-class", "effect-name", "rule-kind"),
+                kinds.stream().distinct().filter(k -> !k.equals("forbid form") && !k.equals("allow values")).toList(),
+                "…and nothing outside the closed set is invented for a vocabulary failure");
+
+        for (var e : errs) {
+            var row = e.getAsJsonObject();
+            assertTrue(row.get("accepted").isJsonArray(),
+                    "`accepted` is an ARRAY OF TOKENS — a prose string is unparseable by the consumer the "
+                    + "field exists for: " + row);
+            for (var tok : row.getAsJsonArray("accepted"))
+                assertTrue(tok.isJsonPrimitive() && tok.getAsJsonPrimitive().isString(),
+                        "…of strings: " + row);
+            assertTrue(row.get("token").isJsonPrimitive(), "`token` is the thing not recognised: " + row);
+            assertTrue(row.get("rule").isJsonPrimitive(), "`rule` is the raw line, NOT renamed `where`: " + row);
+        }
+        // `accepted` may be EMPTY (a form failure has no fixed admissible set) but it is still an array —
+        // the shape does not change with the population.
+        assertEquals(0, errs.get(6).getAsJsonObject().getAsJsonArray("accepted").size(),
+                "a value-less `allow` has no fixed accepted set; the key stays an (empty) array");
     }
 
     /**

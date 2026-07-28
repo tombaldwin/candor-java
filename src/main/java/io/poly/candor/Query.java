@@ -1681,8 +1681,11 @@ public final class Query {
      *       in-scope {@code Unknown} function with an EMPTY resolved class set cannot arise from a scan —
      *       only from a report that dropped the channel.</li>
      * </ul>
-     * The check is per (rule, function), not per policy, so a scoped rule whose matched functions all carry
-     * their evidence evaluates normally; only the rule that would have been silently narrowed is refused.
+     * The check is per (rule, function, EFFECT) — not per policy and (candor-spec {@code b3748ed}) not per
+     * (rule, function) either. A scoped rule whose matched functions all carry their evidence evaluates
+     * normally; a rule that names {@code Fs} beside a {@code Net[unknown-host]} it cannot answer FIRES for
+     * the {@code Fs} and is withheld only for the {@code Net}. Withholding the pair let one unevidenced
+     * effect delete a certain finding standing beside it — see {@link Policy#gate} for the measurement.
      *
      * <p>⟨0.24⟩ Returns EVERY unanswerable rule (one row per rule, the message naming a witness function)
      * rather than the first, because a refusal no longer short-circuits the run: {@link #gate} evaluates
@@ -1697,25 +1700,34 @@ public final class Query {
         return 2;
     }
 
-    record Unanswerable(List<String[]> disclosures, Set<String> pairs) {}
+    /** ⟨0.24⟩ {@code triples} holds one {@link Policy#unanswerableKey} per (rule, function, EFFECT) the
+     *  gate must withhold — never per (rule, function): see {@link Policy#gate}. */
+    record Unanswerable(List<String[]> disclosures, Set<String> triples) {}
 
     static Unanswerable unanswerableScopedFilters(Policy.GateInput gi) {
         List<String[]> out = new ArrayList<>();
-        Set<String> pairs = new java.util.LinkedHashSet<>();
+        Set<String> triples = new java.util.LinkedHashSet<>();
         for (PolicyRule.Deny r : AnalysisState.ctx().denyRules) {
             List<String> netless = new ArrayList<>(), reasonless = new ArrayList<>();
             for (var e : new TreeMap<>(gi.inferred()).entrySet()) {
                 String fn = e.getKey();
                 if (!Policy.scopeMatches(fn, r.scope())) continue;
                 List<String> names = e.getValue().toNames();
+                // TWO INDEPENDENT CAUSES, TESTED INDEPENDENTLY — `if`, never `else if`. Under the old
+                // per-(rule, function) key the two collapsed harmlessly, because either one withheld the
+                // whole pair. Per EFFECT they cannot: a `deny Net[…] Unknown[…]` rule over a function that
+                // is BOTH netClass-less AND reasonless would, with an `else`, withhold only `Net` and let
+                // `Unknown` fire on `reasonClassesOf`'s `unresolved` floor — the exact fabrication the
+                // Unknown branch exists to prevent, reintroduced by the granularity fix for its mirror.
                 if (!r.netClasses().isEmpty() && names.contains("Net")
                         && gi.netClasses().getOrDefault(fn, List.of()).isEmpty()) {
                     netless.add(fn);
-                    pairs.add(Policy.unanswerableKey(r, fn));
-                } else if (!r.unknownClasses().isEmpty() && names.contains("Unknown")
+                    triples.add(Policy.unanswerableKey(r, fn, Effect.NET));
+                }
+                if (!r.unknownClasses().isEmpty() && names.contains("Unknown")
                         && gi.reasonClasses().getOrDefault(fn, new TreeSet<>()).isEmpty()) {
                     reasonless.add(fn);
-                    pairs.add(Policy.unanswerableKey(r, fn));
+                    triples.add(Policy.unanswerableKey(r, fn, Effect.UNKNOWN));
                 }
             }
             // One disclosure row per (rule, cause), naming EVERY function it withheld — not just the first.
@@ -1726,9 +1738,10 @@ public final class Query {
                         "`" + r.src().trim() + "` narrows on the Net DESTINATION CLASS, but " + names(netless)
                         + " carr" + (netless.size() == 1 ? "ies" : "y") + " Net with no `netClass` in this "
                         + "report — the field the filter reads is absent, so the narrowing would succeed for "
-                        + "lack of evidence and drop a Net the bare `deny Net` catches. NOT EVALUATED for "
-                        + "those functions rather than passed: an absent optional field must not relax a "
-                        + "fail-closed gate. Use the bare `deny Net`, or gate at scan time."});
+                        + "lack of evidence and drop a Net the bare `deny Net` catches. The rule's Net PART "
+                        + "is NOT EVALUATED for those functions rather than passed: an absent optional field "
+                        + "must not relax a fail-closed gate. Any OTHER effect this rule names is decided on "
+                        + "its own evidence and still fires. Use the bare `deny Net`, or gate at scan time."});
             if (!reasonless.isEmpty())
                 out.add(new String[]{r.src().trim(),
                         "`" + r.src().trim() + "` narrows on the Unknown REASON CLASS, but " + names(reasonless)
@@ -1736,10 +1749,11 @@ public final class Query {
                         + "reachable in this report — neither its own `unknownWhy` nor a `calls` edge to one. "
                         + "§6.2 requires the class set to resolve TRANSITIVELY over the gate's reach; with the "
                         + "channel missing, every narrowed filter silently tolerates while only the bare "
-                        + "`deny Unknown` fires. NOT EVALUATED for those functions. Use the bare "
-                        + "`deny Unknown`, or gate at scan time."});
+                        + "`deny Unknown` fires. The rule's Unknown PART is NOT EVALUATED for those "
+                        + "functions; any other effect it names is decided on its own evidence and still "
+                        + "fires. Use the bare `deny Unknown`, or gate at scan time."});
         }
-        return new Unanswerable(out, pairs);
+        return new Unanswerable(out, triples);
     }
 
     /** `a`, `a` and `b`, `a`, `b` and `c` — the withheld functions, all of them, in report order. */
@@ -2002,8 +2016,10 @@ public final class Query {
         // sound only where the report can answer the narrowing question. Collected, not returned on: the
         // rule STAYS in the evaluation (unlike `forbid`/`allow`, whose granularity §3.1 makes whole-policy),
         // because the same rule may fire on a sibling function that DOES carry its evidence — and a rule
-        // that fires is answered, not refused. The unanswerable (rule, function) pairs are disclosed below
-        // whichever way the verdict goes, so the tolerated pair is never silent.
+        // that fires is answered, not refused. ⟨0.24⟩ …and it may fire for one of its OWN EFFECTS on the
+        // very function it is withheld for on another, which is why the withhold set is keyed on
+        // (rule, function, effect). The withheld triples are disclosed below whichever way the verdict
+        // goes, so nothing tolerated is silent.
         Unanswerable scoped = unanswerableScopedFilters(gi);
         unevaluated.addAll(scoped.disclosures());
 
@@ -2020,7 +2036,7 @@ public final class Query {
         Candor.gateViolations.clear();
         int violations;
         try {
-            violations = Policy.gate(gi, scoped.pairs());
+            violations = Policy.gate(gi, scoped.triples());
         } finally {
             Candor.diagOut = prior;
         }

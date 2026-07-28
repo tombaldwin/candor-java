@@ -798,6 +798,151 @@ class GateReportVerbTest {
     }
 
     /**
+     * ⟨0.24⟩ WITHHOLDING IS PER (rule, function, EFFECT) — candor-spec {@code b3748ed}, which corrects the
+     * per-{@code (rule, function)} form §3.1 first specced (and this engine first implemented).
+     *
+     * <p>A single rule may name SEVERAL effects and the evidence for them is INDEPENDENT.
+     * {@code deny Fs Net[unknown-host] app} over ONE function carrying a certain {@code Fs} beside a
+     * {@code netClass}-less {@code Net} has a certain match and an unanswerable one on the SAME function.
+     * MEASURED on this engine at {@code 868dbc9}, that one function alone in the report:
+     * <pre>
+     *   per (rule, function)          exit 2, refused, `violations` key ABSENT   ← the certain Fs DELETED
+     *   per (rule, function, effect)  exit 1, violations: [{app.mixed, [Fs]}] + `unevaluated` for the Net
+     * </pre>
+     * The pair form reintroduces exactly the harm the precedence ruling above exists to remove, arrived at
+     * through the fix for it. The document must now carry BOTH keys — the violation it is sure of and the
+     * part it could not read.
+     *
+     * <p>The precedence test above cannot see this: its fixture puts the certain effect and the
+     * unanswerable one on DIFFERENT functions, where pair-granularity and effect-granularity agree.
+     */
+    @Test
+    void anUnevidencedEffectMustNotSuppressACertainOneInTheSameRule() throws Exception {
+        // ONE function: certain Fs, and a Net whose `netClass` the report does not carry.
+        Path rep = report("gran.jvm.json", List.of(entry("app.mixed", List.of("Fs", "Net"))));
+        Path pol = policy("deny Fs Net[unknown-host] app\n");
+        Path out = tmp.resolve("gran.verdict.json");
+        Files.deleteIfExists(out);                       // never measure against a stale artifact
+
+        Candor.gateCapture = true;
+        Candor.gateViolations.clear();
+        int rc = Query.run(new String[]{"gate", "--report", rep.toString(), "--policy", pol.toString(),
+                "--gate-json", out.toString()});
+        assertEquals(1, rc, "the rule FIRES for Fs on evidence the entry carries; the Net it cannot decide "
+                + "sits in the same rule on the same function and must not un-reject the policy");
+
+        assertTrue(Files.exists(out), "a verdict document, not a refusal that writes nothing");
+        JsonObject v = JsonParser.parseString(Files.readString(out)).getAsJsonObject();
+        assertTrue(v.has("violations"), "THE DEFECT: the pair form deleted the `violations` key entirely, "
+                + "so the certain Fs never reached a machine consumer — an exit-code-only assertion "
+                + "cannot see that: " + v);
+        assertEquals(1, v.getAsJsonArray("violations").size(), "one violation: " + v);
+        JsonObject viol = v.getAsJsonArray("violations").get(0).getAsJsonObject();
+        assertEquals("app.mixed", viol.get("fn").getAsString());
+        assertEquals(List.of("Fs"),
+                viol.getAsJsonArray("effects").asList().stream().map(x -> x.getAsString()).toList(),
+                "…charging ONLY the effect the entry evidences. Charging the Net too would be the "
+                + "fabrication mirror: the report never asserted its destination class");
+        assertTrue(v.has("unevaluated"), "…and the withheld EFFECT is still disclosed. The repair is that a "
+                + "withheld effect must not suppress a fired one, NOT that the disclosure goes away — a "
+                + "document carrying the violation while silently dropping the Net would be this same "
+                + "defect one level down: " + v);
+        assertTrue(v.getAsJsonArray("unevaluated").get(0).getAsJsonObject().get("why").getAsString()
+                        .contains("Net DESTINATION CLASS"),
+                "…naming which part of the rule went unread: " + v.getAsJsonArray("unevaluated"));
+
+        // CONTROL 1 — the refusal is not dissolved. Strip the certain effect from the entry and the SAME
+        // rule over the SAME shape is exit 2 again. Without this the assertion above would pass on an
+        // engine that had simply stopped withholding.
+        Candor.resetState();
+        Path netOnly = report("gran2.jvm.json", List.of(entry("app.mixed", List.of("Net"))));
+        assertEquals(2, gate(netOnly, pol),
+                "CONTROL: with nothing certain beside it, the unanswerable Net still refuses");
+
+        // CONTROL 2 — the Fs really is certain over this report, so the exit 1 above is the violation and
+        // not the mere presence of a second effect token in the rule.
+        Candor.resetState();
+        assertEquals(1, gate(rep, policy("deny Fs app\n")),
+                "CONTROL: the bare `deny Fs` over the same report is exit 1");
+    }
+
+    /**
+     * THE MIRROR OF THE ROW ABOVE, AND IT IS NOT HYPOTHETICAL — this rung has produced its own inverse
+     * three times. Making a rule fire per EFFECT must not resurrect the fabrication {@code 9f24cc5} closed:
+     * {@code reasonClassesOf} floors an empty class set at {@code unresolved}, which is the right
+     * fail-closed default for a MATCHER and the wrong basis for a FIRING, so a scoped
+     * {@code deny Unknown[unresolved]} over an entry whose class set is genuinely EMPTY (INHERITED
+     * {@code Unknown}, no {@code unknownWhy}, no {@code calls}) would charge a class the report never
+     * asserted.
+     *
+     * <p>Row 3 is the one the granularity change actually endangers, and it was MEASURED failing during
+     * this change rather than assumed safe. The two causes — netless {@code Net} and reasonless
+     * {@code Unknown} — used to be tested with an {@code else if}, which was harmless while either one
+     * withheld the whole pair. Per EFFECT it is not: with the {@code else} in place, one function carrying
+     * BOTH causes under ONE rule emitted {@code violations: [{app.both, [Unknown]}]} at exit 1 — the
+     * fabrication, reintroduced by the fix for its mirror.
+     */
+    @Test
+    void aWithheldEffectIsStillWithheldWhenNothingCertainStandsBesideIt() throws Exception {
+        // 1. The reasonless INHERITED Unknown alone — refused, and no `violations` key to fabricate into.
+        Path inh = report("mir1.jvm.json", List.of(
+                entry("app.inh", List.of("Unknown"), List.of(), Map.of("direct", List.of()))));
+        Path out = tmp.resolve("mir1.verdict.json");
+        Files.deleteIfExists(out);
+        assertEquals(2, gate(inh, policy("deny Unknown[unresolved] app\n"),
+                        "--gate-json", out.toString()),
+                "the class set is EMPTY here, not `unresolved` — an effect that fires only on the default "
+                + "for the ABSENT datum has not fired");
+        JsonObject v1 = JsonParser.parseString(Files.readString(out)).getAsJsonObject();
+        assertFalse(v1.has("violations"), "…and a refusal makes no claim about violations, not even []: " + v1);
+
+        // 2. The certain Fs beside it — the Fs fires, the Unknown stays withheld. Both halves in one run.
+        Candor.resetState();
+        Path mixed = report("mir2.jvm.json", List.of(
+                entry("app.inh", List.of("Fs", "Unknown"), List.of(), Map.of("direct", List.of("Fs")))));
+        Path out2 = tmp.resolve("mir2.verdict.json");
+        Files.deleteIfExists(out2);
+        Candor.gateCapture = true;
+        Candor.gateViolations.clear();
+        assertEquals(1, gate(mixed, policy("deny Fs Unknown[unresolved] app\n"),
+                "--gate-json", out2.toString()));
+        JsonObject v2 = JsonParser.parseString(Files.readString(out2)).getAsJsonObject();
+        assertEquals(List.of("Fs"), v2.getAsJsonArray("violations").get(0).getAsJsonObject()
+                        .getAsJsonArray("effects").asList().stream().map(x -> x.getAsString()).toList(),
+                "the fired effect and ONLY the fired effect — the withheld Unknown must not ride along on "
+                + "the violation the Fs earned: " + v2);
+        assertTrue(v2.has("unevaluated"), "…with the withheld half disclosed: " + v2);
+
+        // 3. BOTH causes on ONE function under ONE rule — the `else if` hazard the granularity change
+        //    creates. Nothing in this entry is decidable, so nothing may fire.
+        Candor.resetState();
+        Path both = report("mir3.jvm.json", List.of(
+                entry("app.both", List.of("Net", "Unknown"), List.of(), Map.of("direct", List.of()))));
+        Path out3 = tmp.resolve("mir3.verdict.json");
+        Files.deleteIfExists(out3);
+        assertEquals(2, gate(both, policy("deny Net[unknown-host] Unknown[unresolved] app\n"),
+                        "--gate-json", out3.toString()),
+                "MEASURED with an `else if` between the two causes: exit 1 charging `Unknown` — the "
+                + "fabrication resurrected by the granularity fix. The causes are independent and must "
+                + "each be tested");
+        JsonObject v3 = JsonParser.parseString(Files.readString(out3)).getAsJsonObject();
+        assertFalse(v3.has("violations"), "…and no violation record naming a class the report never "
+                + "asserted: " + v3);
+        assertEquals(2, v3.getAsJsonArray("unevaluated").size(),
+                "BOTH withheld effects are disclosed — an `else` would have named only the Net while "
+                + "silently deciding the Unknown: " + v3);
+
+        // CONTROL — the bare forms still fire on every one of these entries, so the withholding costs no
+        // reach: it is the NARROWED filter that cannot be answered, never the effect's membership.
+        Candor.resetState();
+        assertEquals(1, gate(inh, policy("deny Unknown app\n")),
+                "CONTROL: the bare `deny Unknown` fires on the same entry — the effect set alone answers it");
+        Candor.resetState();
+        assertEquals(1, gate(both, policy("deny Net Unknown app\n")),
+                "CONTROL: …and the bare forms fire on the both-causes entry too");
+    }
+
+    /**
      * ⟨0.24⟩ <b>A REFUSAL MUST STILL WRITE A DOCUMENT — SPEC §3.1.</b>
      *
      * <p>MEASURED at 2cdc443: every refusal path exited 2 having written NOTHING to the {@code --gate-json}

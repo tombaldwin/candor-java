@@ -221,18 +221,105 @@ final class Policy {
      *  §3.1). Before this, a scan with a typo'd {@code --policy} path exited 2 having written NOTHING to
      *  the path CI reads — so the wrapper re-read the PREVIOUS run's green verdict as current. This is the
      *  scan-route half of the hazard {@code gate --report} closes; the two routes are the two ways a
-     *  pipeline reaches a gate, so closing one of them is closing half of it. */
+     *  pipeline reaches a gate, so closing one of them is closing half of it.
+     *
+     *  <p>⟨0.24⟩ This form still takes the REFUSAL-IS-THE-SOLE-OUTCOME posture unconditionally, because it
+     *  is only reachable from callers that ran no other violation producer. The scan CLI goes through
+     *  {@link #checkPolicyOutcome}, which lets the caller weigh the refusal against violations already
+     *  established — see the note there. */
     static int checkPolicy(Map<String, EffectSet> inferred, String path, String gateJson) {
-        if (!parsePolicy(path)) {
+        PolicyOutcome o = checkPolicyOutcome(inferred, path);
+        if (o.refusal() != null) {
             // A SET-but-unreadable policy FAILS the run (exit 2) — it must never gate-pass: a
             // typo'd CANDOR_POLICY path otherwise runs gateless and green (spec §6.2). Found by
             // the spec review: this engine printed loudly but returned clean; the siblings exit 2.
-            String why = policyFailure(path);
-            System.err.println("candor-java: " + why);
-            Candor.writeRefusedGateJson(gateJson, why, List.of());
+            System.err.println("candor-java: " + o.refusal());
+            Candor.writeRefusedGateJson(gateJson, o.refusal(), o.unevaluated());
             System.exit(2);
         }
-        return gate(gateInputFromScan(inferred));
+        return o.violations();
+    }
+
+    /**
+     * ⟨0.24⟩ <b>PRECEDENCE BINDS THE VERDICT, NOT THE POLICY GATE — SPEC §3.1.</b> The policy gate is one
+     * violation PRODUCER among several, and it is not the first: the AS-EFF-005 baseline ratchet,
+     * AS-EFF-002 conformance and AS-EFF-004 no-ambient all run BEFORE it and record into the same verdict.
+     * So this method REPORTS a refusal instead of taking it, and the caller — which knows what the earlier
+     * producers already established — decides.
+     *
+     * <p>MEASURED on this engine before the repair, a pure function gaining an {@code Fs} call against a
+     * frozen baseline:
+     * <pre>
+     *   CANDOR_BASELINE=b --gate-json g          →  exit 1, violations ["AS-EFF-005"]
+     *   …plus --policy P with a bad class token  →  exit 2, NO `violations` key   ← the regression DELETED
+     * </pre>
+     * The AS-EFF-005 line still printed on stderr, so the human kept the finding and CI lost it. <b>A typo
+     * in a policy token downgraded "your change added an effect" to "could not evaluate".</b>
+     *
+     * <p>Three individually-correct decisions composed into it: the baseline guard runs first BY DESIGN,
+     * the precedence repair was scoped to {@link #gate}'s own violation list, and "a refusal document
+     * carries no {@code violations} key" was justified by every exit-2 site running before anything could
+     * be recorded — <b>a claim about ORDERING that reads as a claim about SHAPE</b>, and it stopped being
+     * true the moment a producer's evidence sat upstream of the refusal. Hence the shape of this fix: the
+     * refusal arm is keyed on <i>"this run evaluated nothing"</i>, never on <i>"this run ended refused"</i>.
+     *
+     * <p>The refusal's cause is a POLICY the engine cannot honour, which does not undermine the premise the
+     * precedence argument runs on (§3.1's corruption boundary) — the baseline finding's evidence is the
+     * scan and the frozen report, neither of which the policy touches. So the violation dominates: exit 1,
+     * and the document carries it.
+     *
+     * @param violations the count from {@link #gate}, or 0 when the policy was refused
+     * @param refusal    null when the policy was honoured; else the one-sentence {@link #policyFailure}
+     * @param unevaluated ⟨0.24⟩ one {@code {rule, why}} row PER RULE of the refused policy — every line of
+     *                    it went unevaluated, not only the offending one. Naming only the offending line
+     *                    would let a consumer read the rest as evaluated-and-passed, which is the
+     *                    "gate still looks armed" harm this rung exists to remove.
+     */
+    record PolicyOutcome(int violations, String refusal, List<String[]> unevaluated) {}
+
+    /** See {@link PolicyOutcome}. Parses, and either gates or reports why it could not. */
+    static PolicyOutcome checkPolicyOutcome(Map<String, EffectSet> inferred, String path) {
+        if (!parsePolicy(path)) {
+            String why = policyFailure(path);
+            return new PolicyOutcome(0, why, unhonouredRules(path));
+        }
+        return new PolicyOutcome(gate(gateInputFromScan(inferred)), null, List.of());
+    }
+
+    /**
+     * ⟨0.24⟩ EVERY RULE A REFUSED POLICY LEFT UNEVALUATED — one row per rule, the RAW policy line verbatim
+     * (SPEC §3.1's pinned {@code unevaluated} shape). A policy is honoured as a whole or not at all, so
+     * this is every non-comment line in the file, not just the ones carrying the offending token: a
+     * document naming only the typo'd rule reads as though the others were evaluated and passed.
+     *
+     * <p>Empty when the file could not be READ at all — there is no parse to report, and the row's `rule`
+     * is pinned to a policy LINE, so there is nothing honest to put there. That case is carried by the
+     * verdict's {@code reason} instead, which is why the violation-dominates document keeps it.
+     */
+    static List<String[]> unhonouredRules(String path) {
+        List<String[]> out = new ArrayList<>();
+        if (policyUnreadable) return out;
+        Map<String, String> fatalBy = new java.util.LinkedHashMap<>();
+        for (PolicyTokenError e : policyErrors)
+            if (e.fatal()) fatalBy.putIfAbsent(e.rule(), e.message());
+        List<String> lines;
+        try {
+            lines = Files.readAllLines(Path.of(path));
+        } catch (IOException | RuntimeException e) {
+            return out;   // it parsed a moment ago; if it has since vanished, `reason` still carries the refusal
+        }
+        for (String raw : lines) {
+            String line = raw.split("#", 2)[0].trim();
+            if (line.isEmpty()) continue;
+            String own = fatalBy.get(line);
+            out.add(new String[]{line, own != null
+                    ? own + " — this rule is NOT evaluated; the policy is refused rather than silently "
+                      + "rewritten into a different one"
+                    : "NOT evaluated — a rule elsewhere in this policy cannot be honoured as written (see "
+                      + "the refusal reason), and a policy is evaluated as a whole or not at all: a verdict "
+                      + "from its readable subset would be a verdict on a policy nobody wrote"});
+        }
+        return out;
     }
 
     /**
@@ -855,13 +942,16 @@ final class Policy {
         return fatal != null
                 ? "policy " + path + " cannot be honoured AS WRITTEN — "
                   + fatal.message() + " — in policy rule: " + fatal.rule()
-                  + "\n        Refusing (exit 2), policy NOT evaluated: dropping the token would rewrite the "
+                  // ⟨0.24⟩ the sentence names the POSTURE, not an exit code: a violation another producer
+                  // established before the policy was read dominates this refusal and the run exits 1
+                  // (SPEC §3.1). Promising "exit 2" here made the message wrong on exactly that path.
+                  + "\n        REFUSING — the policy is NOT evaluated: dropping the token would rewrite the "
                   + "policy into a DIFFERENT one. If it is the rule's only class token the rule WIDENS to the "
                   + "bare effect; if it sits beside valid tokens the rule NARROWS and stops gating what you "
                   + "spelled, while the gate still looks armed."
                   + "\n        Fix the spelling, or define it in `.candor/config` as "
                   + "`unknown-alias <name> = <class,…>`."
-                : "policy file " + path + " could not be read — failing (exit 2), policy NOT evaluated";
+                : "policy file " + path + " could not be read — REFUSING, the policy is NOT evaluated";
     }
 
     /** Parse a CANDOR_POLICY file into deny/forbid rules. One rule per line; `#` comments + blanks

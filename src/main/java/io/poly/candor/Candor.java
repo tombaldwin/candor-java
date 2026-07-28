@@ -785,6 +785,17 @@ public class Candor {
     }
 
     static void writeGateJson(String path, int violations, GateFacts facts) {
+        writeGateJson(path, violations, facts, java.util.List.of());
+    }
+
+    /** ⟨0.24⟩ As above, plus the rules the run could NOT evaluate (SPEC §3.1's corrected precedence: a
+     *  certain violation dominates a refusal, and "the refusal message MUST still disclose which rules
+     *  could not be evaluated"). Each row is {@code {rule, why}}. Empty on every path but
+     *  {@code gate --report}'s answerability refusals, so a scan's verdict is byte-identical to before —
+     *  and so is a gate verdict over a report this engine wrote, which is what §3.1's byte-equality MUST
+     *  binds. */
+    static void writeGateJson(String path, int violations, GateFacts facts,
+                              java.util.List<String[]> unevaluated) {
         if (path == null) return;
         var out = new java.util.LinkedHashMap<String, Object>();
         out.put("spec", SPEC_VERSION);
@@ -799,6 +810,11 @@ public class Candor {
         an.put("count", facts.analyzedCount());
         out.put("analyzed", an);
         out.put("violations", gateViolations);
+        // ⟨0.24⟩ THE RULES THIS RUN COULD NOT EVALUATE. A verdict that exits 1 over a policy one of whose
+        // rules was refused is CERTAIN about the violation and silent about the rest — so the rest is said
+        // here, in the same document, rather than only on a stderr line a CI wrapper discards. Omitted when
+        // empty, so every other route's verdict is byte-identical to a pre-⟨0.24⟩ one.
+        if (!unevaluated.isEmpty()) out.put("unevaluated", unevaluatedJson(unevaluated));
         // ⟨0.21⟩ (Gap 2) the machine-legible incompleteness: the units candor couldn't analyze, so a CI/agent
         // reading the JSON learns WHY the gate can't certify — the stderr warning alone used to hide this from
         // a machine. `incomplete:true` + the list; the caller exits 2 (could-not-fully-evaluate). Tom's call
@@ -841,6 +857,19 @@ public class Candor {
             System.err.println("candor: could not write --gate-json " + path + ": " + e.getMessage());
             if (violations == 0) System.exit(2);
         }
+    }
+
+    /** {@code [{rule, why}, …]} — the wire shape of an unevaluated rule, shared by the violation document
+     *  and (⟨0.24⟩) the refusal one, so a consumer parses one shape. */
+    static List<Map<String, Object>> unevaluatedJson(java.util.List<String[]> unevaluated) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (String[] u : unevaluated) {
+            var m = new java.util.LinkedHashMap<String, Object>();
+            m.put("rule", u[0]);
+            m.put("why", u[1]);
+            rows.add(m);
+        }
+        return rows;
     }
 
     /** Emit one AS-EFF diagnostic line (candor-spec §6) through the typed {@link DiagnosticCode}, so the

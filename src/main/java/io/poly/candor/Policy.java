@@ -346,6 +346,13 @@ final class Policy {
         return out;
     }
 
+    /** The key identifying one (rule, function) pair for the ⟨0.24⟩ unanswerability withholding. The rule
+     *  is identified by its SOURCE LINE — the same string every refusal message quotes. Unambiguous
+     *  because a method name holds no whitespace, so the last space is always the join. */
+    static String unanswerableKey(PolicyRule.Deny r, String fn) {
+        return r.src().trim() + " " + fn;
+    }
+
     /** ⟨0.24⟩ SPEC §6.2 — THE match rule: a function is selected by a reason-class filter when its
      *  {@link #reasonClassesOf} set INTERSECTS the filter. A null filter is "no filter" (every function
      *  matches), which is how {@code --class '*'} and an absent flag are spelled. Shared by the gate's
@@ -363,6 +370,12 @@ final class Policy {
      * authors. Returns the violation count; the caller owns the exit code.
      */
     static int gate(GateInput gi) {
+        return gate(gi, Set.of());
+    }
+
+    /** ⟨0.24⟩ The gate, with a set of (rule, function) pairs the caller has found UNANSWERABLE over this
+     *  input — see {@link Query#unanswerableScopedFilters}. Keys come from {@link #unanswerableKey}. */
+    static int gate(GateInput gi, Set<String> unanswerable) {
         int v = 0;
         Map<String, EffectSet> inferred = gi.inferred();
         Map<String, TreeSet<String>> reasonClassAcc = gi.reasonClasses();
@@ -372,6 +385,19 @@ final class Policy {
             String fn = e.getKey();
             for (PolicyRule.Deny r : ctx().denyRules) {
                 if (!scopeMatches(fn, r.scope())) continue;
+                // ⟨0.24⟩ A (rule, function) pair the caller has declared UNANSWERABLE is neither a
+                // violation nor a pass — it is withheld, and disclosed as such (SPEC §3.1's per-(rule,
+                // function) refusal granularity). Empty on the scan route, so nothing there moves.
+                //
+                // This is load-bearing rather than tidy. `reasonClassesOf` floors an empty class set at
+                // `unresolved` — the right fail-closed default for a matcher — so once the refusal stopped
+                // short-circuiting the run, `deny Unknown[unresolved]` over an INHERITED reasonless Unknown
+                // began emitting a VIOLATION RECORD naming a class the report never asserted: a fabrication
+                // in the direction opposite the one the refusal exists to prevent. §3.1's minimal-refusal
+                // rule settles it — "the classes determinable from the entry ALONE" is EMPTY there, so the
+                // filter does not yet fire and the missing datum could still make it, which is a refusal,
+                // not a firing. A pair that fires only on the default for the absent datum has not fired.
+                if (unanswerable.contains(unanswerableKey(r, fn))) continue;
                 // pure rule (empty effects) ⇒ any effect except Unknown (handled by AS-EFF-003);
                 // deny rule ⇒ the inferred effects that intersect the denied set. Test the EnumSet
                 // directly; only materialize the sorted names on an actual violation (rare).

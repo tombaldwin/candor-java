@@ -43,5 +43,12 @@ public sealed interface PolicyRule permits PolicyRule.Deny, PolicyRule.Allow, Po
 
     record Allow(Effect effect, String scope, SortedSet<String> values, String src) implements PolicyRule {}
 
-    record Forbid(String from, String to) implements PolicyRule {}
+    /**
+     * {@code forbid <A> -> <B>}. ⟨0.24⟩ {@code src} is the RAW policy line, exactly as {@link Deny} and
+     * {@link Allow} carry theirs — SPEC §3.1 pins the {@code unevaluated} disclosure to one entry PER RULE
+     * with the raw line verbatim, and while this field was missing the only thing {@code gate --report}
+     * could say about the rules it cannot evaluate was a KIND AGGREGATE ({@code "forbid (× 2)"}), which
+     * answers "how many" where the operator asked "which".
+     */
+    record Forbid(String from, String to, String src) implements PolicyRule {}
 }

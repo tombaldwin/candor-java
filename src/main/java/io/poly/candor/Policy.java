@@ -356,11 +356,18 @@ final class Policy {
         return out;
     }
 
-    /** The key identifying one (rule, function) pair for the ⟨0.24⟩ unanswerability withholding. The rule
-     *  is identified by its SOURCE LINE — the same string every refusal message quotes. Unambiguous
-     *  because a method name holds no whitespace, so the last space is always the join. */
-    static String unanswerableKey(PolicyRule.Deny r, String fn) {
-        return r.src().trim() + "\0" + fn;
+    /** The key identifying one (rule, function, EFFECT) TRIPLE for the ⟨0.24⟩ unanswerability withholding
+     *  (SPEC §3.1, candor-spec {@code b3748ed}). The rule is identified by its SOURCE LINE — the same
+     *  string every refusal message quotes — and the effect by its spec name. The separator is a NUL,
+     *  which no component can contain, written as the {@code \0} ESCAPE: a literal NUL between the quotes
+     *  compiles to the identical string and makes `grep` treat this entire file as binary.
+     *
+     *  <p>THE EFFECT COMPONENT IS THE WHOLE POINT. A rule may name several effects and the evidence for
+     *  them is INDEPENDENT: {@code deny Fs Net[unknown-host] app} carries a certain {@code Fs} match beside
+     *  an unevidenced {@code Net} one on the same function. Keying the withhold on {@code (rule, function)}
+     *  lets the unevidenced effect suppress the certain one — see {@link #gate}. */
+    static String unanswerableKey(PolicyRule.Deny r, String fn, Effect effect) {
+        return r.src().trim() + "\0" + fn + "\0" + effect.specName();
     }
 
     /** ⟨0.24⟩ SPEC §6.2 — THE match rule: a function is selected by a reason-class filter when its
@@ -383,8 +390,9 @@ final class Policy {
         return gate(gi, Set.of());
     }
 
-    /** ⟨0.24⟩ The gate, with a set of (rule, function) pairs the caller has found UNANSWERABLE over this
-     *  input — see {@link Query#unanswerableScopedFilters}. Keys come from {@link #unanswerableKey}. */
+    /** ⟨0.24⟩ The gate, with a set of (rule, function, EFFECT) triples the caller has found UNANSWERABLE
+     *  over this input — see {@link Query#unanswerableScopedFilters}. Keys come from
+     *  {@link #unanswerableKey}. */
     static int gate(GateInput gi, Set<String> unanswerable) {
         int v = 0;
         Map<String, EffectSet> inferred = gi.inferred();
@@ -395,25 +403,44 @@ final class Policy {
             String fn = e.getKey();
             for (PolicyRule.Deny r : ctx().denyRules) {
                 if (!scopeMatches(fn, r.scope())) continue;
-                // ⟨0.24⟩ A (rule, function) pair the caller has declared UNANSWERABLE is neither a
-                // violation nor a pass — it is withheld, and disclosed as such (SPEC §3.1's per-(rule,
-                // function) refusal granularity). Empty on the scan route, so nothing there moves.
-                //
-                // This is load-bearing rather than tidy. `reasonClassesOf` floors an empty class set at
-                // `unresolved` — the right fail-closed default for a matcher — so once the refusal stopped
-                // short-circuiting the run, `deny Unknown[unresolved]` over an INHERITED reasonless Unknown
-                // began emitting a VIOLATION RECORD naming a class the report never asserted: a fabrication
-                // in the direction opposite the one the refusal exists to prevent. §3.1's minimal-refusal
-                // rule settles it — "the classes determinable from the entry ALONE" is EMPTY there, so the
-                // filter does not yet fire and the missing datum could still make it, which is a refusal,
-                // not a firing. A pair that fires only on the default for the absent datum has not fired.
-                if (unanswerable.contains(unanswerableKey(r, fn))) continue;
                 // pure rule (empty effects) ⇒ any effect except Unknown (handled by AS-EFF-003);
                 // deny rule ⇒ the inferred effects that intersect the denied set. Test the EnumSet
                 // directly; only materialize the sorted names on an actual violation (rare).
                 EffectSet bad = r.effects().isEmpty()
                         ? e.getValue().without(Effect.UNKNOWN)
                         : e.getValue().intersect(r.effects());
+                // ⟨0.24⟩ A (rule, function, EFFECT) triple the caller has declared UNANSWERABLE is neither a
+                // violation nor a pass for THAT EFFECT — it is withheld, and disclosed as such (SPEC §3.1,
+                // candor-spec b3748ed). Empty on the scan route, so nothing there moves.
+                //
+                // WITHHOLD THE EFFECT, NEVER THE PAIR. §3.1 first specced this per (rule, function) and
+                // corrected itself: a rule may name SEVERAL effects and the evidence for them is
+                // INDEPENDENT. MEASURED on this engine at 868dbc9, `deny Fs Net[unknown-host] app` over ONE
+                // function carrying a certain `Fs` beside a netClass-less `Net`:
+                //
+                //   per (rule, function)          -> exit 2, refused, `violations` key ABSENT  ← the Fs DELETED
+                //   per (rule, function, effect)  -> exit 1, violations: [{app.mixed, [Fs]}]
+                //
+                // `continue` there let the unevidenced effect suppress a CERTAIN finding standing beside it
+                // in the same rule on the same function — which is the harm the precedence ruling exists to
+                // remove, arrived at through the fix for it.
+                //
+                // Removing the effect (rather than skipping the pair) keeps the other direction intact, and
+                // that half is load-bearing rather than tidy. `reasonClassesOf` floors an empty class set at
+                // `unresolved` — the right fail-closed default for a matcher — so once the refusal stopped
+                // short-circuiting the run, `deny Unknown[unresolved]` over an INHERITED reasonless Unknown
+                // began emitting a VIOLATION RECORD naming a class the report never asserted: a fabrication
+                // in the direction opposite the one the refusal exists to prevent. §3.1's minimal-refusal
+                // rule settles it — "the classes determinable from the entry ALONE" is EMPTY there, so the
+                // filter does not yet fire and the missing datum could still make it, which is a refusal,
+                // not a firing. An effect that fires only on the default for the absent datum has not fired,
+                // and dropping it from `bad` is exactly as strong as skipping the whole pair was.
+                //
+                // BEFORE the class narrowing below, not after: the narrowing reads the very field that is
+                // missing, so running it first would decide the effect on the absence this block refuses to
+                // read. Order is not cosmetic here.
+                for (Effect w : List.of(Effect.NET, Effect.UNKNOWN))
+                    if (unanswerable.contains(unanswerableKey(r, fn, w))) bad = bad.without(w);
                 // Reason-scoped Unknown (REASON-SCOPED-UNKNOWN-DESIGN.md): a `deny E Unknown[classes]` rule
                 // (non-empty filter) fires its Unknown part ONLY if the fn's Unknown reasons include one of
                 // those classes. Concrete effects in `bad` are untouched — only the Unknown membership is scoped.

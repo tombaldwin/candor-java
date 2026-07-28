@@ -1646,6 +1646,15 @@ public final class Query {
      * rather than the first, because a refusal no longer short-circuits the run: {@link #gate} evaluates
      * the answerable rules first and discloses this whole list whichever way the verdict goes.
      */
+    /** ⟨0.24⟩ SPEC §3.1: a refusal writes its {@code --gate-json} document (to BOTH sinks when both were
+     *  asked for — {@code --json} is {@code --gate-json -}) and then exits 2. Returning the exit code from
+     *  here rather than beside each call keeps "refused" and "wrote the refusal" from ever separating. */
+    private static int refuse(boolean json, String gateJsonPath, String reason, List<String[]> unevaluated) {
+        if (json) Candor.writeRefusedGateJson("-", reason, unevaluated);
+        if (gateJsonPath != null) Candor.writeRefusedGateJson(gateJsonPath, reason, unevaluated);
+        return 2;
+    }
+
     record Unanswerable(List<String[]> disclosures, Set<String> pairs) {}
 
     static Unanswerable unanswerableScopedFilters(Policy.GateInput gi) {
@@ -1830,6 +1839,11 @@ public final class Query {
      */
     static int gate(List<String> reportPaths, String surplus, String policyPath,
                     boolean json, String gateJsonPath) {
+        // ⟨0.24⟩ Every `return 2` below that is a REFUSAL — the gate declining to give a verdict — writes
+        // its refusal DOCUMENT first (SPEC §3.1: a refusal that writes nothing leaves a CI wrapper reading
+        // the previous run's green file as current). A USAGE error is deliberately not one of them: the
+        // command was never a gate invocation, so there is nothing to refuse, and writing a verdict for a
+        // typo'd flag would put a document where the operator's own shell already failed.
         if (surplus != null) {
             System.err.println("candor gate: unexpected argument `" + surplus + "` (usage: candor gate "
                     + "--report <locator> --policy <file> [--json] [--gate-json <file>])");
@@ -1851,9 +1865,10 @@ public final class Query {
         // §3.1 ⟨0.24⟩ MUST NOT forbids (and would make the verdict depend on the consumer's CWD).
         AnalysisState.ctx().unknownAliases.putAll(Config.forTarget(Path.of(policyPath)).unknownAliases());
         if (!Policy.parsePolicy(policyPath)) {
-            System.err.println("candor gate: policy file " + policyPath
-                    + " could not be read — failing (exit 2), policy NOT evaluated");
-            return 2;
+            String why = "policy file " + policyPath
+                    + " could not be read — failing (exit 2), policy NOT evaluated";
+            System.err.println("candor gate: " + why);
+            return refuse(json, gateJsonPath, why, List.of());
         }
         // ⟨0.24⟩ THE ANSWERABILITY REFUSALS ARE COLLECTED, NOT RETURNED ON — SPEC §3.1's corrected
         // precedence is **violation (1) > refusal (2) > incomplete (2)**. If some other rule FIRES on
@@ -1913,11 +1928,12 @@ public final class Query {
                 env = readEnvelope(reportPath);
             } catch (Exception e) {
                 String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                System.err.println("candor gate: cannot read report " + reportPath + " (" + why + ")"
+                String msg = "cannot read report " + reportPath + " (" + why + ")"
                         + (reportPaths.size() > 1 ? " — refusing to gate over a report set one of whose "
                         + reportPaths.size() + " reports did not load; a green verdict would rest on which "
-                        + "files happened to be readable" : ""));
-                return 2;
+                        + "files happened to be readable" : "");
+                System.err.println("candor gate: " + msg);
+                return refuse(json, gateJsonPath, msg, List.of());
             }
             analyzedCount += env.analyzedCount();
             unanalyzed.addAll(env.unanalyzed());
@@ -2016,7 +2032,9 @@ public final class Query {
         }
         // No rule fired. NOW the refusal is the answer — the gate could not be evaluated as written, and
         // there is no certain verdict standing above it.
-        if (!unevaluated.isEmpty()) return 2;
+        if (!unevaluated.isEmpty())
+            return refuse(json, gateJsonPath, unevaluated.size()
+                    + " policy rule(s) could not be evaluated against this report", unevaluated);
         if (json) Candor.writeGateJson("-", violations, facts, unevaluated);
         if (gateJsonPath != null) Candor.writeGateJson(gateJsonPath, violations, facts, unevaluated);
         // ⟨0.21⟩ COMPLETENESS MANIFEST: a gate cannot be green over code candor never analyzed. The scan

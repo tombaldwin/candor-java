@@ -720,6 +720,120 @@ class GateReportVerbTest {
                 "CONTROL: with the answerable rule passing, the refusal is the answer again");
     }
 
+    /**
+     * ⟨0.24⟩ <b>A REFUSAL MUST STILL WRITE A DOCUMENT — SPEC §3.1.</b>
+     *
+     * <p>MEASURED at 2cdc443: every refusal path exited 2 having written NOTHING to the {@code --gate-json}
+     * path. A CI wrapper that reads that path unconditionally therefore re-reads <b>the PREVIOUS run's
+     * document as current</b> — a green file from yesterday's clean run becomes today's all-clear. Deleting
+     * the path is not the fix: a consumer that reads a missing file as "nothing to report" fails open by a
+     * different route.
+     *
+     * <p>The document is fail-closed to a NAIVE reader: {@code ok: false} (a consumer keying only on
+     * {@code ok} lands on FAIL) plus {@code refused: true} and the reason (a consumer keying on
+     * {@code refused} learns why). And it carries <b>no {@code violations} key at all</b> — not an empty
+     * array. The gate is making no claim about violations, and {@code []} is exactly the claim it cannot
+     * make. That distinction is the test's whole point, so it is asserted as ABSENCE, not emptiness.
+     */
+    @Test
+    void everyRefusalWritesAFailClosedDocumentWithNoViolationsKey() throws Exception {
+        Path rep = report("ref.jvm.json", List.of(
+                entry("app.U.g", List.of("Unknown"), List.of(), Map.of("direct", List.of()))));
+
+        // The STALE-DOCUMENT bait, made literal: a green verdict from "yesterday" already sits at the path.
+        Path out = tmp.resolve("verdict.json");
+        String yesterday = "{\n \"spec\": \"0.24\",\n \"ok\": true,\n \"violations\": []\n}\n";
+
+        record Row(String name, String[] argv) {}
+        Path good = policy("deny Unknown[dispatch] app\n");
+        List<Row> rows = List.of(
+                new Row("an unanswerable scoped deny",
+                        new String[]{"gate", "--report", rep.toString(), "--policy", good.toString()}),
+                new Row("a whole-policy `forbid` refusal",
+                        new String[]{"gate", "--report", rep.toString(),
+                                "--policy", policy("forbid app -> lib\n").toString()}),
+                new Row("a whole-policy `allow` refusal",
+                        new String[]{"gate", "--report", rep.toString(),
+                                "--policy", policy("allow Exec in app git\n").toString()}),
+                new Row("an UNREADABLE policy",
+                        new String[]{"gate", "--report", rep.toString(),
+                                "--policy", tmp.resolve("no-such.policy").toString()}),
+                new Row("an UNREADABLE report",
+                        new String[]{"gate", "--report", tmp.resolve("corrupt.jvm.json").toString(),
+                                "--policy", good.toString()}));
+        Files.writeString(tmp.resolve("corrupt.jvm.json"), "{ not json");
+
+        for (Row row : rows) {
+            Candor.resetState();
+            Files.writeString(out, yesterday);            // the stale green, back on disk for every row
+            List<String> argv = new ArrayList<>(List.of(row.argv()));
+            argv.addAll(List.of("--gate-json", out.toString()));
+            assertEquals(2, Query.run(argv.toArray(new String[0])), row.name() + ": refuses");
+
+            String written = Files.readString(out);
+            assertNotEquals(yesterday, written, row.name()
+                    + ": the document at the --gate-json path must have been REPLACED. Leaving it is how "
+                    + "yesterday's clean run becomes today's all-clear");
+            JsonObject v = JsonParser.parseString(written).getAsJsonObject();
+            assertFalse(v.get("ok").getAsBoolean(), row.name()
+                    + ": `ok` must be false — a consumer keying only on `ok` has to land on FAIL");
+            assertTrue(v.get("refused").getAsBoolean(), row.name() + ": `refused: true` says WHY it is false");
+            assertTrue(v.has("reason"), row.name() + ": …and the reason travels with it");
+            assertFalse(v.has("violations"), row.name()
+                    + ": the `violations` key must be ABSENT, not empty — the gate is making no claim "
+                    + "about violations, and `[]` is precisely the claim it cannot make. Got: " + written);
+        }
+
+        // CONTROL — a run that DOES give a verdict still carries `violations`, so the absence above is a
+        // property of refusing and not of the writer having lost the key.
+        Candor.resetState();
+        Files.deleteIfExists(out);
+        assertEquals(1, Query.run(new String[]{"gate", "--report",
+                report("ok.jvm.json", List.of(entry("app.W.w", List.of("Fs")))).toString(),
+                "--policy", policy("deny Fs app\n").toString(), "--gate-json", out.toString()}));
+        JsonObject v = JsonParser.parseString(Files.readString(out)).getAsJsonObject();
+        assertTrue(v.has("violations"), "CONTROL: a real verdict carries the key");
+        assertFalse(v.has("refused"), "CONTROL: …and is not marked refused");
+    }
+
+    /**
+     * ⟨0.24⟩ The SCAN route reaches a gate too, and it had the same hole: {@code candor <classes> --policy
+     * <typo> --gate-json <path>} exited 2 having written nothing, so the CI wrapper read the previous run's
+     * document. Closing it only on {@code gate --report} would be closing half of it.
+     */
+    @Test
+    void theScanRoutesUnreadablePolicyAlsoWritesTheRefusalDocument() throws Exception {
+        Path cls = compile(Map.of("app/S.java", String.join("\n",
+                "package app;",
+                "public class S { public void go() {} }")));
+        try {
+            Path out = tmp.resolve("scanverdict.json");
+            String yesterday = "{\n \"spec\": \"0.24\",\n \"ok\": true,\n \"violations\": []\n}\n";
+            Files.writeString(out, yesterday);
+
+            // The real CLI in a child JVM — this path ends in System.exit(2), so it cannot be driven
+            // in-process, and the wiring (not just the writer) is what needs to be under test.
+            String javaBin = System.getProperty("java.home") + "/bin/java";
+            Process p = new ProcessBuilder(javaBin, "-cp", System.getProperty("java.class.path"),
+                    "io.poly.candor.Candor", cls.toString(),
+                    "--policy", tmp.resolve("no-such.policy").toString(),
+                    "--gate-json", out.toString())
+                    .redirectErrorStream(true).start();
+            String log = new String(p.getInputStream().readAllBytes());
+            assertEquals(2, p.waitFor(), "an unreadable --policy fails the scan closed: " + log);
+
+            String written = Files.readString(out);
+            assertNotEquals(yesterday, written, "MEASURED at 2cdc443: the scan route exited 2 having "
+                    + "written NOTHING here, so a CI wrapper re-read yesterday's green verdict as today's");
+            JsonObject v = JsonParser.parseString(written).getAsJsonObject();
+            assertFalse(v.get("ok").getAsBoolean(), "the scan route's refusal document is the SAME document");
+            assertTrue(v.get("refused").getAsBoolean());
+            assertFalse(v.has("violations"), "and it makes no violations claim either");
+        } finally {
+            TestCompiler.rm(cls.getParent());
+        }
+    }
+
     // ── CLI shape + the loud-failure postures ──────────────────────────────────────────────────────────
 
     /** A CONFIGURED-but-unreadable policy fails loudly (exit 2), never gateless-green (§6.2). */
@@ -814,9 +928,19 @@ class GateReportVerbTest {
                 "--policy", policy("deny Net\n").toString(), "--gate-json", out.toString()}),
                 "a torn sibling under the same prefix must refuse the whole run — a green verdict over "
                 + "the readable half asserts purity for functions nothing parsed");
-        assertFalse(Files.exists(out),
-                "and it must not leave a verdict document behind: a broken-input exit 2 writes no verdict "
-                + "(§3.3), so a wrapper reading the file cannot mistake it for a judgement");
+        // ⟨0.24⟩ This assertion used to read `assertFalse(Files.exists(out))`, on the argument that writing
+        // no verdict keeps a wrapper from mistaking one for a judgement. SPEC §3.1 overturns it, and the
+        // counter is decisive: writing nothing does not leave the wrapper with no document, it leaves the
+        // wrapper with the PREVIOUS run's — a green file from yesterday's clean run, read as today's. The
+        // document below cannot be mistaken for a judgement by anyone who reads it (`refused: true`, no
+        // `violations` key at all) and is FAIL to anyone who reads only `ok`.
+        assertTrue(Files.exists(out), "a refusal must still write a document — see §3.1's stale-verdict "
+                + "hazard: a missing file is not 'no verdict', it is LAST RUN's verdict");
+        JsonObject v = JsonParser.parseString(Files.readString(out)).getAsJsonObject();
+        assertFalse(v.get("ok").getAsBoolean(), "…and it is fail-closed to a reader that keys only on `ok`");
+        assertTrue(v.get("refused").getAsBoolean(), "…and says it is a refusal, not a judgement");
+        assertFalse(v.has("violations"), "…and makes NO claim about violations — that is what stops it "
+                + "being mistaken for a judgement, not its absence from the disk");
     }
 
     // ── a report that JUDGED NOTHING (⟨0.24⟩ SPEC §2/§3.1) ────────────────────────────────────────────

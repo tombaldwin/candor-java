@@ -566,7 +566,20 @@ public class Candor {
         // Same report, same policy, two verdicts — §3.1's byte-equality MUST broken by a file that is
         // neither. Vocabulary travels with the policy that uses it; `net-partner` and `deps` stay
         // TARGET-anchored below, because they describe the thing being scanned.
-        Config vocab = policyArg != null ? Config.policyVocabulary(Path.of(policyArg)) : config;
+        //
+        // ⟨0.24⟩ …AND THE ANCHOR IS THE RESOLVED POLICY PATH, HOWEVER IT WAS SUPPLIED. This first keyed on
+        // `policyArg != null`, i.e. on the policy having arrived as a FLAG — so a policy supplied through
+        // `CANDOR_POLICY` (CI's primary channel) or the config `policy` key fell back to the TARGET's
+        // config and expanded its aliases there. MEASURED, one policy and one target, three channels:
+        //   --policy <file>              exit 1, resolved at the policy's config
+        //   gate --report … --policy     exit 1, resolved at the policy's config
+        //   CANDOR_POLICY=<file>         exit 0, ok:true, resolved at the TARGET's config  ← a silent PASS
+        // The ruling is about where policy VOCABULARY lives, and a policy does not change what it is
+        // according to how the operator handed it over; keying on the flag made the fail-open case the one
+        // CI actually uses. The resolution ladder itself (flag → env → config `policy`) is unchanged and is
+        // read HERE so the anchor and the gate below can never disagree about which file is the policy.
+        String policyPath = policyArg != null ? policyArg : config.value("policy", Mode.POLICY.envVar());
+        Config vocab = policyVocabularyFor(policyPath, config);
         ctx().unknownAliases.putAll(vocab.unknownAliases());
         if (!vocab.unknownAliases().isEmpty() && vocab.source() != null)
             ctx().vocabularySource = vocab.source().toString();
@@ -669,7 +682,9 @@ public class Candor {
         String strict = config.value("strict", Mode.CONFORMANCE.envVar());
         String baseline = config.value("baseline", Mode.BASELINE.envVar());
         String noAmbient = config.value("no-ambient", Mode.NO_AMBIENT.envVar());
-        String policy = policyArg != null ? policyArg : config.value("policy", Mode.POLICY.envVar()); // --policy takes precedence
+        // ⟨0.24⟩ the SAME resolved path the vocabulary anchored on above — one resolution, so the anchor and
+        // the gate cannot disagree about which file is the policy (`--policy` still takes precedence).
+        String policy = policyPath;
         boolean enforce = baseline != null || noAmbient != null || strict != null || policy != null
                 || ctx().taintEnabled || gateJson != null;   // --gate-json always emits its verdict (ok:true,[] when nothing to gate)
 
@@ -944,6 +959,27 @@ public class Candor {
             // but the failure is loud either way.
             System.err.println("candor: could not write --gate-json " + path + ": " + e.getMessage());
             if (violations == 0) System.exit(2);
+        }
+    }
+
+    /**
+     * ⟨0.24⟩ SPEC §3.1 — the POLICY VOCABULARY config for a run, anchored at the RESOLVED policy path
+     * whichever channel supplied it ({@code --policy}, {@code CANDOR_POLICY}, or the config `policy` key).
+     * Falls back to the target's config only when there is no policy at all, so the aliases a
+     * {@code parsepolicy} witness would report and the ones the GATE expands are read from one file.
+     *
+     * <p>A path this machine cannot even turn into a {@code Path} is not diagnosed here — the gate is about
+     * to read the same string and will fail loudly and specifically on it (the unreadable-policy posture).
+     * Falling back to the target's config in the meantime would be the anchor bug in miniature, so the
+     * fallback is an EMPTY vocabulary: no aliases resolve, and the policy's own failure is what the
+     * operator sees.
+     */
+    static Config policyVocabularyFor(String policyPath, Config targetConfig) {
+        if (policyPath == null || policyPath.isEmpty()) return targetConfig;
+        try {
+            return Config.policyVocabulary(Path.of(policyPath));
+        } catch (java.nio.file.InvalidPathException e) {
+            return Config.empty();
         }
     }
 

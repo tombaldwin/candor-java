@@ -8,6 +8,64 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⚠ ⟨0.24⟩ PRECEDENCE BINDS THE VERDICT, NOT THE POLICY GATE — a certain BASELINE regression was deleted
+  from the machine channel by an unrelated policy refusal** (SPEC §3.1, candor-spec `4c79958`). Measured, a
+  pure function gaining an `Fs` call against a frozen baseline: `CANDOR_BASELINE=b --gate-json g` → exit 1
+  with `violations: ["AS-EFF-005"]`; add `--policy P` carrying a bad class token → **exit 2 and no
+  `violations` key at all**. The `[AS-EFF-005]` line still printed on stderr, so the human kept the
+  regression and CI lost it — a typo in a policy token downgraded "your change added an effect" to "could
+  not evaluate". The AS-EFF-005 ratchet is a violation PRODUCER that runs before the policy gate by design
+  and records into the same verdict; the earlier precedence repair was scoped to the policy gate's own
+  list. The refusal is now weighed by the caller, and the arm is keyed on *"this run evaluated nothing"*,
+  never on *"this run ended refused"*. **Verdict-affecting**: such a run now exits **1**, not 2, and the
+  document carries the violation PLUS `refused`/`reason`/`unevaluated` (every rule of the refused policy,
+  not only the offending one). A refusal with nothing standing above it is unchanged: exit 2,
+  `refused: true`, no `violations` key.
+
+- **⚠ ⟨0.24⟩ THE POLICY-VOCABULARY ANCHOR KEYED ON THE `--policy` FLAG, so `CANDOR_POLICY` gate-PASSED
+  silently** (SPEC §3.1, candor-spec `99eb4e9`). `unknown-alias` resolves relative to the policy file's
+  directory — but this engine tested `policyArg != null`, so a policy supplied through `CANDOR_POLICY` (CI's
+  primary channel) or the config `policy` key fell back to the TARGET's config and expanded its aliases
+  there. Measured, one policy and one target, the target defining `corp = native` and the policy's config
+  `corp = reflect`, over a reflect-caused `Unknown`: `--policy <file>` → exit 1, `gate --report` → exit 1,
+  **`CANDOR_POLICY=<file>` → exit 0, `ok: true`**. The anchor is now the RESOLVED policy path however it was
+  supplied, resolved once so the anchor and the gate cannot disagree. Target-scoped keys (`net-partner`,
+  `deps`) still anchor at the target, and that half has its own test.
+
+- **⟨0.24⟩ `unevaluated` was a KIND AGGREGATE and lost WHICH rules** (SPEC §3.1, candor-spec `fc4b5f6`;
+  candor-ts is the reference shape). `gate --report` emitted `{"rule": "forbid (× 2)"}` for two distinct
+  `forbid` lines and `{"rule": "allow Fs/Net"}` for every `allow` — answering *how many* where the operator
+  asked *which*, so a consumer could not tell which of their boundaries went unchecked. Now one entry per
+  rule with the RAW policy line verbatim, and each `why` about its own rule. `PolicyRule.Forbid` gained the
+  `src` field its `Deny`/`Allow` siblings already carried.
+
+- **⚠ ⟨0.24⟩ A TYPO'D EFFECT NAME DELETED THE RULE SILENTLY** (SPEC §6.2, candor-spec `1e1748a`). Measured:
+  `deny Nett app` → exit **0**, `allow Nett host.example` → exit **0** — the operator reads an armed gate
+  that does not exist. Both are now policy errors (exit 2): `allow`'s effect position is a fixed, closed
+  set with no scope reading available in it, and a `deny` whose effect list is EMPTY after scope-splitting
+  is malformed under either reading. **The genuinely ambiguous middle stays permissive by design** —
+  `deny Net Exex app` still parses with `Exex` as the scope, with its own control test — and form failures
+  (a value-less `allow`, a malformed `forbid`) stay dropped-and-reported. **Verdict-affecting**: a policy
+  carrying either typo now refuses instead of running gateless.
+
+- **⟨0.24⟩ `errors[].accepted` + the closed `kind` set pinned** (SPEC §3.1, candor-spec `901f14d`).
+  `accepted` was already an array of tokens here and the field names were already the pinned ones; both are
+  now held by a test rather than by luck. `rule kind` → `rule-kind` and `effect name`/`allow effect` →
+  `effect-name`, completing the closed set. **Reported, not papered over**: two rows report a FORM failure
+  (malformed `forbid`, value-less `allow`) and the closed set has no member for them; they are deliberately
+  NOT mapped into `rule-kind`, since `accepted: ["<scope> -> <scope>"]` there would tell a consumer that
+  `forbid` is not a known rule kind, which is false.
+
+- **⟨0.24⟩ THE MCP SERVER ANSWERED FROM THE PREVIOUS RUN'S REPORT AFTER A SCAN THAT FAILED** (SPEC §3.1's
+  stale-document rule, `1503368` generalised over output paths by `901f14d`). `ensure_report()` discarded
+  the scan's result and returned `os.path.exists(REPORT)`. Measured: a good jar scanned, the same path then
+  replaced by a corrupt one; the scan exits 2, and `candor_effects` kept returning the old jar's
+  `Net`/`hosts`/`netClass` for bytecode that was no longer there. The check is now on the invariant (the
+  report must be at least as new as the newest class) rather than on the exit code — exit 1 is a gate
+  VIOLATION and writes a perfectly good report. `isError` is set on exit ≥ 2 only. candor-java ships no LSP
+  surface, and its MCP has no `candor_gate` tool; every tool shells out to the real CLI, so there is no
+  second evaluator to skip a withhold path.
+
 - **⟨0.24⟩ `parsepolicy` MUST NOT REFUSE — implementing the class-token rung in the PARSER took the whole
   four-way differential offline** (SPEC §3.1, candor-spec `6929dce`). The refusal below was right for the
   gate and wrong here: this engine put it in `parsePolicy`, so `parsepolicy` exited 2 with **empty stdout**

@@ -502,6 +502,7 @@ public class Candor {
                 gateCapture = true;
                 gateViolations.clear();   // clear HERE (single-threaded, before runScan) — not in resetState,
                                           // which --parallel calls concurrently across a thread pool.
+                armGateJson(gateJson);    // ⟨0.24⟩ fail-closed from the first instant — see the method
             } else if (args[i].equals("--json")) {
                 // `--json <file>` (a following non-flag arg) writes the report file + sidecars; bare
                 // `--json` (last arg, or the next arg is a flag) streams the report ENVELOPE to stdout
@@ -959,6 +960,50 @@ public class Candor {
             // but the failure is loud either way.
             System.err.println("candor: could not write --gate-json " + path + ": " + e.getMessage());
             if (violations == 0) System.exit(2);
+        }
+    }
+
+    /**
+     * ⟨0.24⟩ <b>ARM THE `--gate-json` PATH FAIL-CLOSED THE MOMENT IT IS NAMED — SPEC §3.1's stale-document
+     * rule, over its CONDITION rather than over the exit sites it was found at.</b>
+     *
+     * <p>{@code 1503368} made a refusal write its document; {@code 901f14d} generalised that over machine
+     * output PATHS: <i>"on any exit-2, every machine output path the invocation requested is written
+     * fail-closed, or is not left holding a previous run's answer."</i> Both were implemented at the exit
+     * sites that had been measured. MEASURED here, on a path a clean run had left {@code ok: true}:
+     * <pre>
+     *   candor classes --policy p --gate-json g      -> exit 0, g = {ok: true, violations: []}
+     *   CANDOR_BASELINE=&lt;no-provenance&gt; …--gate-json g -> exit 2, g STILL READS ok: true
+     *   candor /nonexistent --policy p --gate-json g -> exit 2, g STILL READS ok: true
+     * </pre>
+     * Two different causes, one stale green, and a CI wrapper reading that path unconditionally passes.
+     *
+     * <p>Threading the sink into each of the ~20 {@code System.exit(2)} sites is the fix scoped to the
+     * POSITION, and it is wrong twice over: it is the error this rung has now recorded four times, and it
+     * still leaves every site nobody enumerated — a crash, an OOM, a CI timeout, a future exit. So the
+     * document is written when the flag is PARSED, before anything can fail, saying exactly that. Every
+     * normal path overwrites it with the verdict, so a completed run's bytes are unchanged; anything that
+     * does not complete leaves a document whose naive read is FAIL.
+     *
+     * <p>{@code -} (stdout) is excluded: that stream carries exactly ONE document, written at the end, and
+     * a placeholder there would put two in a consumer's pipe. A placeholder that cannot be WRITTEN is a
+     * warning, not a refusal — the end-of-run write hits the same path and fails loudly and specifically.
+     */
+    static void armGateJson(String path) {
+        if (path == null || path.equals("-")) return;
+        var out = new java.util.LinkedHashMap<String, Object>();
+        out.put("spec", SPEC_VERSION);
+        out.put("ok", false);
+        out.put("refused", true);
+        out.put("reason", "the gate did not complete — this document was written when the run STARTED and "
+                + "was never replaced by a verdict, so the run failed, crashed or was killed before it "
+                + "could decide. It is NOT a verdict about the code; see the run's stderr for the cause.");
+        try {
+            Files.writeString(Path.of(path), io.poly.candor.model.ReportJson.pretty(out) + "\n");
+        } catch (IOException | RuntimeException e) {
+            System.err.println("candor: could not arm --gate-json " + path + " fail-closed ("
+                    + e.getMessage() + ") — if this run does not complete, that path may still hold a "
+                    + "PREVIOUS run's verdict");
         }
     }
 

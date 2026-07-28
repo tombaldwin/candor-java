@@ -1641,32 +1641,61 @@ public final class Query {
      * </ul>
      * The check is per (rule, function), not per policy, so a scoped rule whose matched functions all carry
      * their evidence evaluates normally; only the rule that would have been silently narrowed is refused.
+     *
+     * <p>⟨0.24⟩ Returns EVERY unanswerable rule (one row per rule, the message naming a witness function)
+     * rather than the first, because a refusal no longer short-circuits the run: {@link #gate} evaluates
+     * the answerable rules first and discloses this whole list whichever way the verdict goes.
      */
-    static String unanswerableScopedFilter(Policy.GateInput gi) {
+    record Unanswerable(List<String[]> disclosures, Set<String> pairs) {}
+
+    static Unanswerable unanswerableScopedFilters(Policy.GateInput gi) {
+        List<String[]> out = new ArrayList<>();
+        Set<String> pairs = new java.util.LinkedHashSet<>();
         for (PolicyRule.Deny r : AnalysisState.ctx().denyRules) {
+            List<String> netless = new ArrayList<>(), reasonless = new ArrayList<>();
             for (var e : new TreeMap<>(gi.inferred()).entrySet()) {
                 String fn = e.getKey();
                 if (!Policy.scopeMatches(fn, r.scope())) continue;
                 List<String> names = e.getValue().toNames();
                 if (!r.netClasses().isEmpty() && names.contains("Net")
-                        && gi.netClasses().getOrDefault(fn, List.of()).isEmpty())
-                    return "`" + r.src().trim() + "` narrows on the Net DESTINATION CLASS, but `" + fn
-                            + "` carries Net with no `netClass` in this report — the field the filter reads "
-                            + "is absent, so the narrowing would succeed for lack of evidence and drop a Net "
-                            + "the bare `deny Net` catches. Refusing (exit 2) rather than passing: an absent "
-                            + "optional field must not relax a fail-closed gate. Use the bare `deny Net`, or "
-                            + "gate at scan time.";
-                if (!r.unknownClasses().isEmpty() && names.contains("Unknown")
-                        && gi.reasonClasses().getOrDefault(fn, new TreeSet<>()).isEmpty())
-                    return "`" + r.src().trim() + "` narrows on the Unknown REASON CLASS, but `" + fn
-                            + "` carries Unknown with no reason reachable in this report — neither its own "
-                            + "`unknownWhy` nor a `calls` edge to one. §6.2 requires the class set to resolve "
-                            + "TRANSITIVELY over the gate's reach; with the channel missing, every narrowed "
-                            + "filter silently tolerates while only the bare `deny Unknown` fires. Refusing "
-                            + "(exit 2). Use the bare `deny Unknown`, or gate at scan time.";
+                        && gi.netClasses().getOrDefault(fn, List.of()).isEmpty()) {
+                    netless.add(fn);
+                    pairs.add(Policy.unanswerableKey(r, fn));
+                } else if (!r.unknownClasses().isEmpty() && names.contains("Unknown")
+                        && gi.reasonClasses().getOrDefault(fn, new TreeSet<>()).isEmpty()) {
+                    reasonless.add(fn);
+                    pairs.add(Policy.unanswerableKey(r, fn));
+                }
             }
+            // One disclosure row per (rule, cause), naming EVERY function it withheld — not just the first.
+            // A message that named one witness while silently withholding forty would be the deleted
+            // disclosure one level down, on exactly the exit-1 path §3.1 now routes these through.
+            if (!netless.isEmpty())
+                out.add(new String[]{r.src().trim(),
+                        "`" + r.src().trim() + "` narrows on the Net DESTINATION CLASS, but " + names(netless)
+                        + " carr" + (netless.size() == 1 ? "ies" : "y") + " Net with no `netClass` in this "
+                        + "report — the field the filter reads is absent, so the narrowing would succeed for "
+                        + "lack of evidence and drop a Net the bare `deny Net` catches. NOT EVALUATED for "
+                        + "those functions rather than passed: an absent optional field must not relax a "
+                        + "fail-closed gate. Use the bare `deny Net`, or gate at scan time."});
+            if (!reasonless.isEmpty())
+                out.add(new String[]{r.src().trim(),
+                        "`" + r.src().trim() + "` narrows on the Unknown REASON CLASS, but " + names(reasonless)
+                        + " carr" + (reasonless.size() == 1 ? "ies" : "y") + " Unknown with no reason "
+                        + "reachable in this report — neither its own `unknownWhy` nor a `calls` edge to one. "
+                        + "§6.2 requires the class set to resolve TRANSITIVELY over the gate's reach; with the "
+                        + "channel missing, every narrowed filter silently tolerates while only the bare "
+                        + "`deny Unknown` fires. NOT EVALUATED for those functions. Use the bare "
+                        + "`deny Unknown`, or gate at scan time."});
         }
-        return null;
+        return new Unanswerable(out, pairs);
+    }
+
+    /** `a`, `a` and `b`, `a`, `b` and `c` — the withheld functions, all of them, in report order. */
+    private static String names(List<String> fns) {
+        List<String> q = fns.stream().map(f -> "`" + f + "`").collect(Collectors.toList());
+        if (q.size() == 1) return q.get(0);
+        return String.join(", ", q.subList(0, q.size() - 1)) + " and " + q.get(q.size() - 1);
     }
 
     /** The §2 ENVELOPE facts the gate verdict needs, none of which survive {@link #load} (which returns
@@ -1826,25 +1855,43 @@ public final class Query {
                     + " could not be read — failing (exit 2), policy NOT evaluated");
             return 2;
         }
-        // The answerability refusals (see the javadoc). Loud, exit 2, naming the rule and the reason.
+        // ⟨0.24⟩ THE ANSWERABILITY REFUSALS ARE COLLECTED, NOT RETURNED ON — SPEC §3.1's corrected
+        // precedence is **violation (1) > refusal (2) > incomplete (2)**. If some other rule FIRES on
+        // evidence this report carries, the policy is REJECTED, and because `Reject` is upward-closed
+        // (PAPER3 Lemma 2) however the unanswerable rule would have resolved cannot un-reject it: exit 1
+        // is CERTAIN there, and strictly more informative than exit 2 because it names the violation.
+        //
+        // MEASURED on this engine before the repair, one hand-built report carrying an `Fs` unit and an
+        // `Unknown` unit with no reason: `deny Fs app` alone → exit 1 + a verdict document naming the
+        // violation; `deny Fs app` PLUS `deny Unknown[dispatch] app` → exit 2 and NO document at all. The
+        // certain violation was deleted from the machine-consumer channel by the refusal standing beside
+        // it — the same harm as an incomplete-analysis path that writes nothing.
+        //
+        // The refused rules are REMOVED from the evaluation (`forbid`/`allow` whole-policy, per §3.1's
+        // granularity rule) rather than approximated: dropping a rule can only REMOVE violations, so a
+        // surviving exit 1 stays certain. They are disclosed either way — exit 1 reports the violation it
+        // is sure of, it does not conceal the part it could not read.
+        List<String[]> unevaluated = new ArrayList<>();   // {rule, why}
         if (!AnalysisState.ctx().forbidRules.isEmpty()) {
-            System.err.println("candor gate: this policy has " + AnalysisState.ctx().forbidRules.size()
+            unevaluated.add(new String[]{"forbid (× " + AnalysisState.ctx().forbidRules.size() + ")",
+                    "this policy has " + AnalysisState.ctx().forbidRules.size()
                     + " `forbid` rule(s), which `gate --report` cannot evaluate — a report's `calls` graph is "
                     + "EFFECT-RELEVANT, so a crossing into a wholly pure unit is invisible in it and the rule "
                     + "would read green where a scan fails. Gate layering at scan time: candor <classes> --policy "
-                    + policyPath);
-            return 2;
+                    + policyPath});
+            AnalysisState.ctx().forbidRules.clear();
         }
         if (!AnalysisState.ctx().allowRules.isEmpty()) {
             List<String> effects = AnalysisState.ctx().allowRules.stream()
                     .map(r -> r.effect().specName()).distinct().sorted().collect(Collectors.toList());
-            System.err.println("candor gate: this policy has `allow " + String.join("`/`", effects)
+            unevaluated.add(new String[]{"allow " + String.join("/", effects),
+                    "this policy has `allow " + String.join("`/`", effects)
                     + "` rule(s), which `gate --report` cannot evaluate — the AS-EFF-008 surface-completeness "
                     + "marker does not ride the report wire, so a benign visible literal beside a "
                     + "runtime-computed endpoint would be CERTIFIED here and flagged by a scan. (`netClass: "
                     + "unknown-host` is NOT that marker — it also names a merely unrecognised host.) Gate "
-                    + "allowlists at scan time: candor <classes> --policy " + policyPath);
-            return 2;
+                    + "allowlists at scan time: candor <classes> --policy " + policyPath});
+            AnalysisState.ctx().allowRules.clear();
         }
 
         // Load EVERY report the locator named, and refuse the whole run if ANY of them fails to load.
@@ -1889,13 +1936,14 @@ public final class Query {
         Policy.GateInput gi = Policy.gateInputFromReport(fns, rawWhy);
 
         // THE THIRD ANSWERABILITY CASE, and the only one that depends on the REPORT rather than the policy
-        // alone. See #unanswerableScopedFilter — a class-scoped `deny` NARROWS the gate, and a narrowing is
-        // sound only where the report can answer the narrowing question.
-        String unanswerable = unanswerableScopedFilter(gi);
-        if (unanswerable != null) {
-            System.err.println("candor gate: " + unanswerable);
-            return 2;
-        }
+        // alone. See #unanswerableScopedFilters — a class-scoped `deny` NARROWS the gate, and a narrowing is
+        // sound only where the report can answer the narrowing question. Collected, not returned on: the
+        // rule STAYS in the evaluation (unlike `forbid`/`allow`, whose granularity §3.1 makes whole-policy),
+        // because the same rule may fire on a sibling function that DOES carry its evidence — and a rule
+        // that fires is answered, not refused. The unanswerable (rule, function) pairs are disclosed below
+        // whichever way the verdict goes, so the tolerated pair is never silent.
+        Unanswerable scoped = unanswerableScopedFilters(gi);
+        unevaluated.addAll(scoped.disclosures());
 
         // Route the gate's HUMAN output exactly as a scan does: to stderr whenever stdout carries the
         // verdict document, so `candor gate … --json | jq` sees pure JSON.
@@ -1910,12 +1958,15 @@ public final class Query {
         Candor.gateViolations.clear();
         int violations;
         try {
-            violations = Policy.gate(gi);
+            violations = Policy.gate(gi, scoped.pairs());
         } finally {
             Candor.diagOut = prior;
         }
-        if (violations == 0) human.println("candor-java: no violations");
-        else human.println("→ candor fix-gate names the remedy for each");
+        // A REFUSAL is not "no violations": with every unanswerable rule withheld from the evaluation, a
+        // zero here means "nothing the gate COULD read fired", which is not a clean bill. Say the refusal
+        // instead (below) rather than a green line the operator will read as the verdict.
+        if (violations == 0 && unevaluated.isEmpty()) human.println("candor-java: no violations");
+        else if (violations > 0) human.println("→ candor fix-gate names the remedy for each");
 
         // ⟨0.24⟩ A REPORT THAT JUDGED NOTHING LICENSES NO PURITY CLAIM — SPEC §2/§3.1. `analyzed.count: 0`
         // says the producer analysed no units at all, so this verb's `no violations` is a statement about
@@ -1941,12 +1992,33 @@ public final class Query {
                     + "(Advisory: the exit code and the verdict document are unchanged; re-run the producing "
                     + "scan over the package's own sources if you meant to gate it.)");
 
+        // ⟨0.24⟩ THE DISCLOSURE THE PRECEDENCE RULE OWES. Whatever the verdict, every rule this run could
+        // not evaluate is named — on stderr for the operator, and (below) in the verdict document for the
+        // machine consumer, because a violation list that silently omits a rule's tolerated functions is
+        // the same deleted-disclosure defect one level down.
+        for (String[] u : unevaluated) System.err.println("candor gate: " + u[1]);
+
         var facts = new Candor.GateFacts(analyzedCount, unanalyzed, uncovered);
         // `--json` IS `--gate-json -`: the verb's machine output is the gate verdict, the same document and
         // the same builder the scan writes, so a consumer cannot tell the two routes apart from the output.
-        if (json) Candor.writeGateJson("-", violations, facts);
-        if (gateJsonPath != null) Candor.writeGateJson(gateJsonPath, violations, facts);
-        if (violations > 0) return 1;
+        if (violations > 0) {
+            // VIOLATION DOMINATES REFUSAL (§3.1 ⟨0.24⟩). Certain by Lemma 2: the rules withheld above could
+            // only have ADDED violations, so exit 1 is not a guess and the document must carry it.
+            if (!unevaluated.isEmpty())
+                System.err.println("candor gate: exiting 1 on the violation(s) above — a rule that FIRED on "
+                        + "evidence this report carries REJECTS the policy, and `Reject` is upward-closed "
+                        + "(PAPER3 Lemma 2), so however the " + unevaluated.size() + " unevaluated rule(s) "
+                        + "would have resolved cannot un-reject it. The verdict document names them under "
+                        + "`unevaluated`.");
+            if (json) Candor.writeGateJson("-", violations, facts, unevaluated);
+            if (gateJsonPath != null) Candor.writeGateJson(gateJsonPath, violations, facts, unevaluated);
+            return 1;
+        }
+        // No rule fired. NOW the refusal is the answer — the gate could not be evaluated as written, and
+        // there is no certain verdict standing above it.
+        if (!unevaluated.isEmpty()) return 2;
+        if (json) Candor.writeGateJson("-", violations, facts, unevaluated);
+        if (gateJsonPath != null) Candor.writeGateJson(gateJsonPath, violations, facts, unevaluated);
         // ⟨0.21⟩ COMPLETENESS MANIFEST: a gate cannot be green over code candor never analyzed. The scan
         // path exits 2 on its own `unanalyzed`; here the same manifest travels ON the report, so the same
         // verdict follows from it. A real violation (exit 1, above) dominates, as it does there.

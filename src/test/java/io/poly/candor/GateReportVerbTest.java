@@ -561,8 +561,19 @@ class GateReportVerbTest {
         assertEquals(1, gate(rep, policy("deny Net[unknown-host] app.ok\n")),
                 "the rule's own matches all carry `netClass`, so it is answerable and evaluates");
         Candor.resetState();
-        assertEquals(2, gate(rep, policy("deny Net[unknown-host] app\n")),
-                "widen the scope to cover the evidence-less entry and the same rule is refused");
+        // ⟨0.24⟩ Widening the scope pulls the evidence-less entry in. `app.legacy.B.g` is withheld — but
+        // `app.ok.A.f` still FIRES on evidence the report carries, so the policy is rejected with
+        // certainty and exit 1 dominates the refusal (§3.1). This row asserted exit 2 before that
+        // correction: the whole verdict was withheld because ONE of two entries lacked a field.
+        assertEquals(1, gate(rep, policy("deny Net[unknown-host] app\n")),
+                "the same rule fires on the entry that CARRIES its evidence — the withheld sibling cannot "
+                + "un-reject a rejected policy");
+        // …and the entry that could not be judged is not silently folded into the pass. The CONTROL that
+        // makes exit 2 reachable: drop the firing entry and the same widened rule refuses.
+        Candor.resetState();
+        Path onlyLegacy = report("sc2.jvm.json", List.of(entry("app.legacy.B.g", List.of("Net"))));
+        assertEquals(2, gate(onlyLegacy, policy("deny Net[unknown-host] app\n")),
+                "CONTROL: with nothing left to fire on, the unanswerable entry IS the answer — exit 2");
     }
 
     /** The reason class must travel TRANSITIVELY over the report's own `calls` (§6.2: `unknownWhy` is
@@ -589,9 +600,12 @@ class GateReportVerbTest {
         assertEquals(2, gate(rep, policy("forbid app.web -> app.db\n")),
                 "a rule this verb cannot faithfully evaluate must FAIL (exit 2), never pass silently");
         Candor.resetState();
-        assertEquals(2, gate(rep, policy("deny Net app.web\nforbid app.web -> app.db\n")),
-                "and the refusal covers the whole policy — enforcing only the answerable half and exiting "
-                + "0 would be the gateless-green failure");
+        assertEquals(1, gate(rep, policy("deny Net app.web\nforbid app.web -> app.db\n")),
+                "⟨0.24⟩ …but a rule that FIRES beside it wins. `deny Net app.web` is answered from the "
+                + "report, so the policy is REJECTED, and `Reject` being upward-closed (Lemma 2) no "
+                + "resolution of the `forbid` could un-reject it. This row asserted exit 2 on the reading "
+                + "that enforcing only the answerable half means exiting 0 — it does not: it means exiting "
+                + "1 and disclosing the rule that went unevaluated");
     }
 
     /**
@@ -619,11 +633,91 @@ class GateReportVerbTest {
             assertEquals(2, gate(rep, policy(body)),
                     "not answerable from a report — must fail loudly, never certify: " + body.trim());
         }
-        // The refusal covers the whole policy: enforcing only the answerable half and exiting 0 would be
-        // the gateless-green failure on a policy the user believed was enforced.
+        // ⟨0.24⟩ The refusal is the answer only while nothing else fires. Mixed with a rule the report DOES
+        // answer, the certain violation dominates (§3.1) — exit 1, never 0, and never the exit 2 that would
+        // delete the violation from the verdict document.
         Candor.resetState();
-        assertEquals(2, gate(rep, policy("deny Net app\nallow Exec in app git\n")),
-                "a policy mixing an answerable rule with an unanswerable one is refused whole");
+        assertEquals(1, gate(rep, policy("deny Net app\nallow Exec in app git\n")),
+                "a policy mixing a FIRING rule with an unanswerable one exits 1 on the violation it is "
+                + "certain of, disclosing the `allow` it could not evaluate");
+    }
+
+    /**
+     * ⟨0.24⟩ <b>A CERTAIN VIOLATION DOMINATES A REFUSAL — SPEC §3.1.</b> Three outcomes can be live at
+     * once and the order is <b>violation (1) &gt; refusal (2) &gt; incomplete (2)</b>, forced by Lemma 2
+     * rather than chosen: a rule that FIRES on evidence the report carries REJECTS the policy, and
+     * {@code Reject} is upward-closed, so however the unanswerable rule would have resolved cannot
+     * un-reject it.
+     *
+     * <p><b>MEASURED before this repair</b>, on the fixture below (a hand-built report carrying one
+     * {@code Fs} unit and one INHERITED {@code Unknown} with no reason and no {@code calls}):
+     * <pre>
+     *   deny Fs app                                   →  exit 1, document naming app.W.write
+     *   deny Unknown[dispatch] app                    →  exit 2, NO document
+     *   deny Fs app  +  deny Unknown[dispatch] app    →  exit 2, NO document   ← the defect
+     * </pre>
+     * The third row is the harm, and it is not taxonomic: the refusal standing beside the firing rule
+     * DELETED a certain violation from the machine-consumer channel. Four-way agreement, and four-way
+     * wrong (rust/java/ts/swift all measured at exit 2 with no document).
+     *
+     * <p><b>The assertion is on the DOCUMENT, not the exit code.</b> A test that only checked the exit
+     * cannot see this defect — it is precisely the case where the exit code is repaired while the
+     * violation stays absent from what CI reads.
+     */
+    @Test
+    void aFiringRuleDominatesAnUnanswerableOneAndTheViolationReachesTheDocument() throws Exception {
+        // `direct: []` makes the Unknown INHERITED, and there is no `calls` edge to a reason — the state
+        // no scan can produce and the one `deny Unknown[dispatch]` genuinely cannot be answered over.
+        Path rep = report("prec.jvm.json", List.of(
+                entry("app.W.write", List.of("Fs")),
+                entry("app.U.g", List.of("Unknown"), List.of(), Map.of("direct", List.of()))));
+        Path both = policy("deny Fs app\ndeny Unknown[dispatch] app\n");
+        Path out = tmp.resolve("prec.verdict.json");
+        Files.deleteIfExists(out);                       // never measure against a stale artifact
+
+        Candor.gateCapture = true;
+        Candor.gateViolations.clear();
+        int rc = Query.run(new String[]{"gate", "--report", rep.toString(), "--policy", both.toString(),
+                "--gate-json", out.toString()});
+        assertEquals(1, rc, "a rule that fires on evidence the report carries makes exit 1 CERTAIN — the "
+                + "unanswerable rule beside it cannot un-reject the policy (§3.1, PAPER3 Lemma 2)");
+
+        assertTrue(Files.exists(out), "…and the verdict DOCUMENT must exist: the whole harm of refusing "
+                + "here was that the refusal wrote nothing, so CI re-read the previous run's file");
+        JsonObject v = JsonParser.parseString(Files.readString(out)).getAsJsonObject();
+        assertFalse(v.get("ok").getAsBoolean(), "ok must be false");
+        assertEquals(1, v.getAsJsonArray("violations").size(),
+                "THE POINT: the violation is IN THE DOCUMENT, not merely implied by the exit code");
+        assertEquals("app.W.write",
+                v.getAsJsonArray("violations").get(0).getAsJsonObject().get("fn").getAsString(),
+                "and it names the function — the datum the refusal used to delete");
+
+        // …and the part it could not read is NOT concealed. §3.1: "exit 1 reports the violation it is sure
+        // of, it does not conceal the part it could not read."
+        assertTrue(v.has("unevaluated"), "the rule that could not be evaluated must be disclosed IN the "
+                + "document too — a stderr line a CI wrapper discards is not a disclosure to the consumer");
+        assertTrue(v.getAsJsonArray("unevaluated").get(0).getAsJsonObject().get("rule").getAsString()
+                        .contains("Unknown[dispatch]"),
+                "…naming the rule: " + v.getAsJsonArray("unevaluated"));
+
+        // CONTROL 1 — the refusal has NOT been dissolved. Alone, the same rule over the same report is
+        // still exit 2; without this the test above would pass on an engine that stopped refusing at all.
+        Candor.resetState();
+        assertEquals(2, gate(rep, policy("deny Unknown[dispatch] app\n")),
+                "CONTROL: the unanswerable rule ALONE still refuses — the precedence rule reorders the "
+                + "outcomes, it does not delete the middle one");
+
+        // CONTROL 2 — the firing rule alone gives the same verdict, so the exit 1 above comes from the
+        // violation and not from the mere presence of a second rule.
+        Candor.resetState();
+        assertEquals(1, gate(rep, policy("deny Fs app\n")),
+                "CONTROL: the firing rule alone is exit 1 over the same report");
+
+        // CONTROL 3 — and a policy whose firing rule does NOT fire falls back to the refusal. This is what
+        // separates "violation dominates" from "never refuse when two rules are present".
+        Candor.resetState();
+        assertEquals(2, gate(rep, policy("deny Exec app\ndeny Unknown[dispatch] app\n")),
+                "CONTROL: with the answerable rule passing, the refusal is the answer again");
     }
 
     // ── CLI shape + the loud-failure postures ──────────────────────────────────────────────────────────

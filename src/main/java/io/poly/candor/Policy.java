@@ -705,11 +705,30 @@ final class Policy {
     }
 
     /**
-     * ⟨0.24⟩ Set when the policy was READ but CANNOT BE HONOURED AS WRITTEN (SPEC §6.2: an unrecognised
-     * reason-class or Net destination-class token). Distinct from {@link #parsePolicy} returning false for
-     * an unreadable FILE, but the posture is the same one: exit 2, policy NOT evaluated.
+     * ⟨0.24⟩ One token the policy names that this engine cannot honour — the token itself, the accepted
+     * set, and the rule it appeared in. A RECORD rather than a formatted string because the two consumers
+     * want different things out of it: the GATE wants one sentence to refuse with, and {@code parsepolicy}
+     * (the §3.1 witness) has to put the token in its JSON, where a consumer reads it as data.
      */
-    static String policyError;
+    record PolicyTokenError(String kind, String token, List<String> accepted, String known, String rule) {
+        /** The one-line diagnostic — the same words on the gate route and in the witness's `errors`. */
+        String message() { return "unknown " + kind + " `" + token + "` (known: " + known + ")"; }
+    }
+
+    /**
+     * ⟨0.24⟩ Non-empty when the policy was READ but CANNOT BE HONOURED AS WRITTEN (SPEC §6.2: an
+     * unrecognised reason-class or Net destination-class token). Distinct from {@link #parsePolicy}
+     * returning false for an unreadable FILE ({@link #policyUnreadable}); on the GATE routes the posture
+     * is the same one — exit 2, policy NOT evaluated — but `parsepolicy` REPORTS it and exits 0 (§3.1).
+     */
+    static final List<PolicyTokenError> policyErrors = new ArrayList<>();
+
+    /**
+     * ⟨0.24⟩ True when {@link #parsePolicy} returned false because the FILE could not be read, so a caller
+     * can tell "there is no parse to show you" from "here is the parse, and here is what I could not
+     * honour". `parsepolicy` is the only caller that needs to: it refuses the first and reports the second.
+     */
+    static boolean policyUnreadable;
 
     /**
      * ⟨0.24⟩ SPEC §6.2 — <b>AN UNRECOGNISED CLASS TOKEN IS A POLICY ERROR, not a warning.</b> The clause
@@ -727,20 +746,27 @@ final class Policy {
      *       a typo lands beside correct tokens far more often than alone.</li>
      * </ul>
      * A policy that cannot be honoured as written is not silently rewritten into a different policy.
+     *
+     * <p>EVERY offending token is recorded, not just the first: {@code parsepolicy} has to name them all
+     * (a witness that stops at the first one sends the operator round the loop once per typo), while the
+     * gate refuses on the first — it does not matter which token defeated it.
      */
-    static void policyError(String line, String reason) {
-        if (policyError == null) policyError = reason + " — in policy rule: " + line;
+    static void policyError(String line, String kind, String token, List<String> accepted, String known) {
+        policyErrors.add(new PolicyTokenError(kind, token, accepted, known, line));
     }
 
     /**
      * The exit-2 diagnostic for a policy {@link #parsePolicy} rejected, distinguishing UNREADABLE (the
-     * file) from UNHONOURABLE (⟨0.24⟩ an unrecognised class token). One place, so all five call sites — the
-     * scan gate, {@code gate --report}, {@code whatif}, {@code fix-gate} and {@code parsepolicy} — take the
-     * same posture and print the same words.
+     * file) from UNHONOURABLE (⟨0.24⟩ an unrecognised class token). One place, so all four GATE call
+     * sites — the scan gate, {@code gate --report}, {@code whatif} and {@code fix-gate} — take the same
+     * posture and print the same words. ({@code parsepolicy} shares the wording but NOT the posture: §3.1
+     * ⟨0.24⟩ — the witness reports and exits 0, since a diagnostic that refuses to explain the thing being
+     * diagnosed has inverted its purpose.)
      */
     static String policyFailure(String path) {
-        return policyError != null
-                ? "policy " + path + " cannot be honoured AS WRITTEN — " + policyError
+        return !policyErrors.isEmpty()
+                ? "policy " + path + " cannot be honoured AS WRITTEN — "
+                  + policyErrors.get(0).message() + " — in policy rule: " + policyErrors.get(0).rule()
                   + "\n        Refusing (exit 2), policy NOT evaluated: dropping the token would rewrite the "
                   + "policy into a DIFFERENT one. If it is the rule's only class token the rule WIDENS to the "
                   + "bare effect; if it sits beside valid tokens the rule NARROWS and stops gating what you "
@@ -751,15 +777,18 @@ final class Policy {
     }
 
     /** Parse a CANDOR_POLICY file into deny/forbid rules. One rule per line; `#` comments + blanks
-     *  ignored. Returns false if the file can't be read, or (⟨0.24⟩) if a rule names a class token this
-     *  engine does not recognise — see {@link #policyFailure}, which the caller prints before exiting 2. */
+     *  ignored. Returns false if the file can't be read ({@link #policyUnreadable}), or (⟨0.24⟩) if a rule
+     *  names a class token this engine does not recognise ({@link #policyErrors}). A GATE caller prints
+     *  {@link #policyFailure} and exits 2; `parsepolicy` reports the errors beside the parse and exits 0. */
     static boolean parsePolicy(String path) {
-        policyError = null;
+        policyErrors.clear();
+        policyUnreadable = false;
         ctx().vocabularyUsed.clear();   // ⟨0.24⟩ recomputed per parse — the disclosure is about THIS policy
         List<String> lines;
         try {
             lines = Files.readAllLines(Path.of(path));
         } catch (IOException e) {
+            policyUnreadable = true;
             return false;
         }
         for (String raw : lines) {
@@ -807,8 +836,9 @@ final class Policy {
                                 // `Net[known-partner,unkown-host]` NARROWS and stops gating unknown hosts.
                                 // MEASURED on this engine at 2cdc443: both printed "ignoring policy rule"
                                 // and both kept a rewritten rule, exit 0.
-                                else policyError(line, "unknown Net destination-class `" + cn
-                                        + "` (known: known-telemetry, known-partner, unknown-host, or *)");
+                                else policyError(line, "Net destination-class", cn,
+                                        List.of("known-telemetry", "known-partner", "unknown-host", "*"),
+                                        "known-telemetry, known-partner, unknown-host, or *");
                             }
                         } else if (tok.startsWith("Unknown[") && tok.endsWith("]")) {
                             effNames.add("Unknown");
@@ -833,9 +863,11 @@ final class Policy {
                                     ctx().vocabularyUsed.add(cn);
                                 }
                                 // ⟨0.24⟩ a POLICY ERROR, not a warning — see #policyError.
-                                else policyError(line, "unknown reason-class/alias `" + cn
-                                        + "` (known: reflect, dispatch, indirect, native, unresolved, setup; "
-                                        + "aliases: dynamic, *, or a config `unknown-alias`)");
+                                else policyError(line, "reason-class/alias", cn,
+                                        List.of("reflect", "dispatch", "indirect", "native", "unresolved",
+                                                "setup", "dynamic", "*"),
+                                        "reflect, dispatch, indirect, native, unresolved, setup; "
+                                        + "aliases: dynamic, *, or a config `unknown-alias`");
                             }
                         } else { scope = tok; break; }
                     }
@@ -853,7 +885,7 @@ final class Policy {
                     // rule the engine is refusing to run, and `deny Unknown[reflect,unresolvd]` would be told to
                     // "add `unresolved`" — which it plainly tried to. Advising on a rewritten rule is the shape
                     // of the false disclosure this rung exists to remove.
-                    else if (policyError == null && !unknownClasses.isEmpty()
+                    else if (policyErrors.isEmpty() && !unknownClasses.isEmpty()
                             && !unknownClasses.contains(ReasonClass.UNRESOLVED)) {
                         System.err.println("candor: policy rule narrows `Unknown[…]` but omits `unresolved` — may UNDER-gate on holes "
                                 + "the engine couldn't classify; add `unresolved` (or use `dynamic`) to stay conservative: " + line);
@@ -904,9 +936,10 @@ final class Policy {
                     break;
             }
         }
-        // ⟨0.24⟩ the rules PARSED, but at least one names a class token this engine cannot honour — the
-        // caller takes the unreadable-policy posture over it (exit 2), never the rewritten rule.
-        return policyError == null;
+        // ⟨0.24⟩ the rules PARSED, but at least one names a class token this engine cannot honour — a GATE
+        // caller takes the unreadable-policy posture over it (exit 2), never the rewritten rule. The
+        // `parsepolicy` witness instead REPORTS {@link #policyErrors} beside the parse and exits 0 (§3.1).
+        return policyErrors.isEmpty();
     }
 
     /** A policy scope matches a method by dotted SEGMENT (so `domain` matches `app.domain.Svc.handle`

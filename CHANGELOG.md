@@ -8,6 +8,27 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⟨0.24⟩ `parsepolicy` MUST NOT REFUSE — implementing the class-token rung in the PARSER took the whole
+  four-way differential offline** (SPEC §3.1, candor-spec `6929dce`). The refusal below was right for the
+  gate and wrong here: this engine put it in `parsePolicy`, so `parsepolicy` exited 2 with **empty stdout**
+  on the conformance battery — which carries such tokens deliberately — and the suite **HALTED at PART 4**
+  ("FAIL: candor-java parsepolicy errored on the battery"). candor-ts did the same; rust and swift did not.
+
+  The refusal belongs to the gate, which must not enforce a policy it cannot honour as written. It does not
+  belong to the witness, whose job is to answer *what did this engine make of my policy?* — most valuable
+  exactly when the answer is "not what you meant". So `parsepolicy` now emits its parse **plus an `errors`
+  list** naming each unrecognised token, its `kind`, the `accepted` set, and the rule it appeared in, and
+  **exits 0** (stderr additionally says the gate will still refuse, so the 0 is not read as a green light).
+  The token APPEARS there rather than being dropped: a diff that cannot tell "dropped" (pre-⟨0.24⟩) from
+  "rejected" cannot pin this rung. The key is omitted when empty, so a clean dump is byte-identical.
+
+  **The gate is unchanged and that is the risk this carries**, since moving a refusal out of a parser is
+  exactly the edit that re-opens the fail-open. Verified after: `gate --report`, `scan --policy`, `whatif`,
+  `fix`, `fix-gate` and `unverified` all still exit 2 on `deny Unknown[dispatch,nativ]` and
+  `deny Net[known-partner,unkown-host]`, naming the token and the accepted set. An unreadable policy FILE
+  still exits 2 from `parsepolicy` too — there is no parse to report. The pair (witness 0, gate 2 on the
+  same file) is one test, with a mutation control on each half. 604 tests pass; PART 4 now MATCHes four-way.
+
 - **⚠ ⟨0.24⟩ A certain violation now DOMINATES a refusal — a refusal standing beside a firing rule was
   deleting the violation from the verdict document** (SPEC §3.1). Three outcomes can be live at once and
   the order is **violation (1) > refusal (2) > incomplete (2)**, forced by Lemma 2 rather than chosen: a
@@ -48,7 +69,8 @@ after upgrading; review policies and regenerate baselines with the new build.
 
   Both class vocabularies take the rule (the ruling names the reason class; the Net destination class was
   measured to have the identical defect). The diagnostic names the token, lists the accepted set and points
-  at `unknown-alias`, from one `Policy.policyFailure` shared by all five call sites.
+  at `unknown-alias`, from one `Policy.policyFailure` shared by every GATE call site. (`parsepolicy` shares
+  the wording but not the posture — see the §3.1 entry above.)
 
 - **⚠ ⟨0.24⟩ POLICY VOCABULARY now anchors at the `--policy` file's directory on BOTH routes — a third file
   could otherwise flip the verdict** (SPEC §3.1). The gate verbs anchored `.candor/config` discovery at the

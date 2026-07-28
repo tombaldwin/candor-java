@@ -639,7 +639,32 @@ public final class Query {
             forbid.add(Map.of("from", r.from(), "to", r.to()));
         Comparator<Map<String, Object>> byJson = Comparator.comparing(JSON::toJson);
         deny.sort(byJson); allow.sort(byJson); forbid.sort(byJson);
-        return JSON.toJson(Map.of("deny", deny, "allow", allow, "forbid", forbid));
+        // LinkedHashMap, not Map.of: `Map.of` iterates in a per-JVM-run SALTED order, so the dump's TOP-LEVEL
+        // key order varied between runs of the same engine on the same file. Nothing byte-compares it today
+        // (PART 4 parses the JSON), but a witness whose output is not reproducible is a poor witness.
+        var out = new java.util.LinkedHashMap<String, Object>();
+        out.put("deny", deny); out.put("allow", allow); out.put("forbid", forbid);
+        // ⟨0.24⟩ SPEC §3.1 — `parsepolicy` MUST NOT REFUSE: it reports the parse AND what it could not
+        // honour, so the unrecognised token APPEARS here instead of being dropped. A diff that cannot tell
+        // "dropped" (the pre-⟨0.24⟩ behaviour) from "rejected" (the gate's posture, §6.2) cannot pin this
+        // rung at all. Emitted only when non-empty, so a clean policy's dump is byte-identical to the
+        // pre-feature one and the four-way PART 4 comparison (deny/allow/forbid) is untouched.
+        if (!Policy.policyErrors.isEmpty()) {
+            List<Map<String, Object>> errors = new ArrayList<>();
+            // FILE ORDER, not sorted: the operator reads these against their policy top-to-bottom, and one
+            // parse pass already makes the order deterministic.
+            for (var e : Policy.policyErrors) {
+                var m = new java.util.LinkedHashMap<String, Object>();
+                m.put("kind", e.kind());
+                m.put("token", e.token());
+                m.put("accepted", e.accepted());
+                m.put("rule", e.rule());
+                m.put("message", e.message());
+                errors.add(m);
+            }
+            out.put("errors", errors);
+        }
+        return JSON.toJson(out);
     }
 
     /** A function's effects, instant — `*` marks an effect performed in its own body. */

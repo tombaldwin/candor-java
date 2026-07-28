@@ -139,11 +139,7 @@ public final class Query {
     static String expandPrefix(String prefix, String original) {
         List<String> hits = prefixHits(prefix);
         if (hits.isEmpty()) {
-            Path pp = Path.of(prefix);
-            Path dir = pp.getParent() != null ? pp.getParent() : Path.of(".");
-            String base = pp.getFileName() != null ? pp.getFileName().toString() : prefix;
-            System.err.println("candor: no report found for locator `" + original + "` (looked for "
-                    + base + ".*.json under " + dir + ")");
+            reportNotFound(prefix, original);
             return null;
         }
         if (hits.size() > 1)
@@ -215,22 +211,60 @@ public final class Query {
         return own;
     }
 
-    /** DISCOVER the report when no `--report` was given (SPEC §3.3.1): a `CANDOR_REPORT` env var overrides;
-     *  else walk UP from the CWD for a `.candor/` directory and use its `report` prefix (the §3.4 config
-     *  discovery mechanism, applied to the report). Returns the resolved report path, or null (with a
-     *  stderr reason) when no `.candor/` is found or the prefix names no report. */
-    static String discoverReport() {
+    /** EVERY report file a locator names, by the same §3.3.1 rule as {@link #resolveReportLocator} — the
+     *  set {@link #expandPrefix} picks ONE from, returned whole and QUIETLY.
+     *
+     *  <p>Distinct from {@link #resolveReportLocatorAll}, which additionally filters to this ENGINE's own
+     *  report shapes because its consumer (gains' baseline-callgraph union) would mis-read a foreign
+     *  engine's qual naming. The gate has no such constraint — it reads `inferred`/`unknownWhy`, which
+     *  every engine writes in the same §2 shape, and `gate --report other-engine.scan.json` is a supported
+     *  invocation — so this one takes the candidate set VERBATIM. Keeping the two apart matters: the set
+     *  the gate reads MUST equal the set the "matches N reports" disclosure counted, or the disclosure
+     *  lies about the answer. */
+    static List<String> locatorReportSet(String locator) {
+        if (locator == null) return List.of();
+        if (locator.endsWith(".json")) return List.of(locator);   // rule 2: that FULL path, verbatim
+        Path p = Path.of(locator);
+        String prefix = Files.isDirectory(p)                       // rule 1: a directory → its .candor/report
+                ? p.resolve(".candor").resolve("report").toString()
+                : locator;                                         // rule 3: a bare prefix
+        return prefixHits(prefix);
+    }
+
+    /** The `looked for …` line {@link #expandPrefix} prints when a dir/prefix locator names no report —
+     *  shared so the SET resolver ({@link #locatorReportSet}) fails with the same words as the single one. */
+    static void reportNotFound(String prefix, String original) {
+        Path pp = Path.of(prefix);
+        Path dir = pp.getParent() != null ? pp.getParent() : Path.of(".");
+        String base = pp.getFileName() != null ? pp.getFileName().toString() : prefix;
+        System.err.println("candor: no report found for locator `" + original + "` (looked for "
+                + base + ".*.json under " + dir + ")");
+    }
+
+    /** The LOCATOR §3.3.1 discovery yields, BEFORE expansion: a `CANDOR_REPORT` env var overrides; else
+     *  walk UP from the CWD for a `.candor/` directory and use its `report` prefix (the §3.4 config
+     *  discovery mechanism, applied to the report). Returns null (with a stderr reason) when no `.candor/`
+     *  is found. Kept separate from {@link #discoverReport} because `gate` needs the locator itself — a
+     *  discovered PREFIX can name a report SET, and expanding it to one file first would throw the rest
+     *  away before the verb ever saw them. */
+    static String discoverReportLocator() {
         String override = System.getenv("CANDOR_REPORT");
-        if (override != null && !override.isEmpty()) return resolveReportLocator(override);
+        if (override != null && !override.isEmpty()) return override;
         Path p = Path.of("").toAbsolutePath();
         for (; p != null; p = p.getParent()) {
             Path candor = p.resolve(".candor");
-            if (Files.isDirectory(candor))
-                return expandPrefix(candor.resolve("report").toString(), candor.resolve("report").toString());
+            if (Files.isDirectory(candor)) return candor.resolve("report").toString();
         }
         System.err.println("candor: no report given and no `.candor/` directory found walking up from the CWD "
                 + "— pass --report <locator> or set CANDOR_REPORT.");
         return null;
+    }
+
+    /** DISCOVER the report when no `--report` was given (SPEC §3.3.1). Returns the resolved report path, or
+     *  null (with a stderr reason) when no `.candor/` is found or the prefix names no report. */
+    static String discoverReport() {
+        String loc = discoverReportLocator();
+        return loc == null ? null : resolveReportLocator(loc);
     }
 
     /** Does `tok` resolve to an existing report (a `.json` file, or a dir/prefix with a matching report)?
@@ -356,6 +390,7 @@ public final class Query {
         // (`show <missing>.json foo`) is still consumed AS the report so the missing file fails LOUD naming
         // it — never silently dropped to discovery (the cardinal sin). Aligns with the candor-swift peel.
         String report = null;
+        String reportLocator = null;         // the locator AS TYPED, before prefix expansion (see `gate` below)
         boolean explicitReportGiven = false; // did the user name a report (via --report or a leading locator)?
         if (TWO_REPORT.contains(cmd)) {
             // diff/gains/rewire: two positional locators <current> <baseline>. No discovery, no --report.
@@ -363,8 +398,7 @@ public final class Query {
                 System.err.println("candor: --report is ignored for `" + cmd + "` — it takes two positional report locators <current> <baseline>.");
         } else if (reportFlag != null) {
             explicitReportGiven = true;
-            report = resolveReportLocator(reportFlag);
-            if (report == null) return 2;
+            reportLocator = reportFlag;
         } else if (pos.size() > canonicalArity(cmd)
                 && (looksLikeReport(pos.get(0)) || explicitLocatorShape(pos.get(0)))) {
             // DEPRECATED: a leading-positional report (surplus + report-shaped). Consume it, warn, resolve it
@@ -372,12 +406,36 @@ public final class Query {
             explicitReportGiven = true;
             System.err.println("candor: the leading-positional report is deprecated — use `--report " + pos.get(0)
                     + "` (report discovery + --report is the canonical §3.3.1 grammar). Still accepted for now.");
-            report = resolveReportLocator(pos.remove(0));
-            if (report == null) return 2;
-        } else {
+            reportLocator = pos.remove(0);
+        } else if (!TWO_REPORT.contains(cmd)) {
             // canonical: discover the report (walk up for .candor/, or CANDOR_REPORT).
-            report = discoverReport();
-            if (report == null) return 2;
+            reportLocator = discoverReportLocator();
+            if (reportLocator == null) return 2;
+        }
+
+        // ⟨0.24⟩ THE REPORT SET, and why only `gate` reads it. §2: "A consumer SHOULD treat all reports
+        // under one prefix as a single analysis world" — a PREFIX locator names a report SET, not a file.
+        // {@link #expandPrefix} picks the lexicographically-first and DISCLOSES the choice on stderr, which
+        // is a narrowing a human reading prose is told about. `gate` is the one verb whose output is a
+        // MACHINE VERDICT — an exit code and a `--gate-json` document — and there a narrowing is invisible:
+        // a violating sibling the locator named and the verb never opened comes back `ok: true`, exit 0.
+        // That is the §4 false all-clear, so this verb reads EVERY report the locator names and gates over
+        // the union. See {@link #gate} for the join rule and for why the other verbs are NOT changed here.
+        List<String> reportSet = List.of();
+        if (!TWO_REPORT.contains(cmd)) {
+            if (cmd.equals("gate")) {
+                reportSet = locatorReportSet(reportLocator);
+                if (reportSet.isEmpty()) {
+                    Path lp = Path.of(reportLocator);
+                    reportNotFound(Files.isDirectory(lp)
+                            ? lp.resolve(".candor").resolve("report").toString() : reportLocator, reportLocator);
+                    return 2;
+                }
+                report = reportSet.get(0);
+            } else {
+                report = resolveReportLocator(reportLocator);
+                if (report == null) return 2;
+            }
         }
 
         // DEPRECATED: a trailing POSITIONAL policy on the policy verbs, when --policy wasn't given. whatif
@@ -402,9 +460,10 @@ public final class Query {
             return 2;
         }
 
-        // The comparative verbs load their reports themselves (two positionals); the rest load `report`.
+        // The comparative verbs load their reports themselves (two positionals); `gate` loads the whole
+        // report SET itself (above); the rest load `report`.
         List<Effector> fns = List.of();
-        if (!TWO_REPORT.contains(cmd)) {
+        if (!TWO_REPORT.contains(cmd) && !cmd.equals("gate")) {
             try {
                 fns = load(report);
             } catch (Exception e) {
@@ -447,7 +506,7 @@ public final class Query {
             case "fix-gate" -> fixGate(fns, report, policyFlag, json, strict);
             case "unverified" -> unverified(fns, report, policyFlag, json, strict, classFilter);
             case "rewire" -> rewire2(a0, a1, json);
-            case "gate" -> gate(fns, report, a0, policyFlag, json, gateJsonFlag);
+            case "gate" -> gate(reportSet, a0, policyFlag, json, gateJsonFlag);
             default -> 2;
         };
     }
@@ -1709,9 +1768,29 @@ public final class Query {
      * {@code pure}, which is exactly the {@code (S, D)} gate §3.1 ⟨0.24⟩ frames the verb around — is
      * verdict-equivalent to {@code scan --policy}, and that is a property a test can hold it to.
      *
+     * <p><b>⟨0.24⟩ IT GATES THE WHOLE REPORT SET A LOCATOR NAMES, not one file of it.</b> §2: reports under
+     * one prefix are "a single analysis world". {@link #expandPrefix} — the engine-wide resolver every
+     * other verb uses — picks the lexicographically-first match and discloses the choice on stderr. On a
+     * prose verb that is a narrowing the reader is told about; here the output is a MACHINE verdict, and a
+     * violating sibling that the locator NAMED and the verb never opened comes back `ok: true`, exit 0,
+     * over an `analyzed.count` that silently excludes it. Measured on a two-report prefix whose violation
+     * sat in the second file: exit 0 / analyzed 3 / 0 violations, where candor-rust and candor-ts both gave
+     * exit 1 / analyzed 4 / 1 violation. So this verb resolves the locator to the SET
+     * ({@link #locatorReportSet}) and unions it: `analyzed.count` SUMS, `unanalyzed` and the κ ledger
+     * concatenate, and the entries join in {@link Policy#gateInputFromReport}, which already merges a
+     * repeated `fn` by UNION — the direction that cannot turn a violation into a pass (§2's "join across
+     * reports by `hash`, never by bare `fn`" hazard, resolved in the safe direction rather than by dropping
+     * a colliding entry). A locator naming ONE report is byte-identical to before.
+     *
+     * <p>Scoped to this verb DELIBERATELY. The read-only verbs derive per-report SIDECARS from the resolved
+     * path — {@code callers}/{@code tour}/{@code whatif}/{@code fix} all call {@link #loadCallgraph} —
+     * so unioning their ENTRIES while leaving the graph anchored on one report would answer "no callers"
+     * for every sibling's function: a silent under-report introduced by the repair. They keep the
+     * single-report reading and its stderr disclosure until the sidecars travel with it.
+     *
      * @param surplus a stray positional — {@code gate} takes none (a usage error, never ignored)
      */
-    static int gate(List<Effector> fns, String reportPath, String surplus, String policyPath,
+    static int gate(List<String> reportPaths, String surplus, String policyPath,
                     boolean json, String gateJsonPath) {
         if (surplus != null) {
             System.err.println("candor gate: unexpected argument `" + surplus + "` (usage: candor gate "
@@ -1759,15 +1838,42 @@ public final class Query {
             return 2;
         }
 
-        Envelope env;
-        try {
-            env = readEnvelope(reportPath);
-        } catch (Exception e) {
-            String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-            System.err.println("candor gate: cannot read report " + reportPath + " (" + why + ")");
-            return 2;
+        // Load EVERY report the locator named, and refuse the whole run if ANY of them fails to load.
+        // §3.1: "a report that cannot be parsed is corrupt input, not an effect-free package … A located
+        // report that yields no trustworthy functions MUST fail loudly." Over a SET that has to mean the
+        // set: a half-written sibling is exactly the file that would have carried the violation, and
+        // gating over its readable neighbours would publish a green verdict whose only evidence is which
+        // file the writer happened to finish.
+        List<Effector> fns = new ArrayList<>();
+        int analyzedCount = 0;
+        List<String[]> unanalyzed = new ArrayList<>();
+        List<Map.Entry<String, Integer>> uncovered = new ArrayList<>();
+        Map<String, List<String>> rawWhy = new HashMap<>();
+        for (String reportPath : reportPaths) {
+            Envelope env;
+            try {
+                fns.addAll(load(reportPath));
+                env = readEnvelope(reportPath);
+            } catch (Exception e) {
+                String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                System.err.println("candor gate: cannot read report " + reportPath + " (" + why + ")"
+                        + (reportPaths.size() > 1 ? " — refusing to gate over a report set one of whose "
+                        + reportPaths.size() + " reports did not load; a green verdict would rest on which "
+                        + "files happened to be readable" : ""));
+                return 2;
+            }
+            analyzedCount += env.analyzedCount();
+            unanalyzed.addAll(env.unanalyzed());
+            uncovered.addAll(env.uncovered());
+            // A repeated `fn` across reports joins by UNION here too — same direction as the entry join.
+            for (var e : env.rawUnknownWhy().entrySet())
+                rawWhy.computeIfAbsent(e.getKey(), k -> new ArrayList<>()).addAll(e.getValue());
         }
-        Policy.GateInput gi = Policy.gateInputFromReport(fns, env.rawUnknownWhy());
+        if (reportPaths.size() > 1)
+            System.err.println("candor gate: locator names " + reportPaths.size()
+                    + " reports — gating over all of them as one analysis world (§2): "
+                    + String.join(", ", reportPaths));
+        Policy.GateInput gi = Policy.gateInputFromReport(fns, rawWhy);
 
         // THE THIRD ANSWERABILITY CASE, and the only one that depends on the REPORT rather than the policy
         // alone. See #unanswerableScopedFilter — a class-scoped `deny` NARROWS the gate, and a narrowing is
@@ -1798,7 +1904,7 @@ public final class Query {
         if (violations == 0) human.println("candor-java: no violations");
         else human.println("→ candor fix-gate names the remedy for each");
 
-        var facts = new Candor.GateFacts(env.analyzedCount(), env.unanalyzed(), env.uncovered());
+        var facts = new Candor.GateFacts(analyzedCount, unanalyzed, uncovered);
         // `--json` IS `--gate-json -`: the verb's machine output is the gate verdict, the same document and
         // the same builder the scan writes, so a consumer cannot tell the two routes apart from the output.
         if (json) Candor.writeGateJson("-", violations, facts);
@@ -1807,8 +1913,8 @@ public final class Query {
         // ⟨0.21⟩ COMPLETENESS MANIFEST: a gate cannot be green over code candor never analyzed. The scan
         // path exits 2 on its own `unanalyzed`; here the same manifest travels ON the report, so the same
         // verdict follows from it. A real violation (exit 1, above) dominates, as it does there.
-        if (!env.unanalyzed().isEmpty()) {
-            System.err.println("candor gate: NOT certified — the report declares " + env.unanalyzed().size()
+        if (!unanalyzed.isEmpty()) {
+            System.err.println("candor gate: NOT certified — the report declares " + unanalyzed.size()
                     + " unit(s) candor could not analyze; a gate cannot be green over unanalyzed code");
             return 2;
         }

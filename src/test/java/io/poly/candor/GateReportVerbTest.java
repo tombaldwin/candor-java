@@ -93,10 +93,17 @@ class GateReportVerbTest {
 
     /** Write a §2 envelope report holding the given entries. */
     private Path report(String name, List<Map<String, Object>> entries) throws Exception {
+        return report(name, entries, entries.size());
+    }
+
+    /** As above with an EXPLICIT ⟨0.21⟩ {@code analyzed.count}: a report omits its pure units (§2 rule 3),
+     *  so the count is normally LARGER than the entry list, and a test about the count must be able to
+     *  say so — the count is what reveals a report the verb never opened. */
+    private Path report(String name, List<Map<String, Object>> entries, int analyzedCount) throws Exception {
         Map<String, Object> env = new LinkedHashMap<>();
         env.put("candor", Map.of("version", "test", "toolchain", "test", "spec", Candor.SPEC_VERSION));
         env.put("packages", List.of("app"));
-        env.put("analyzed", Map.of("count", entries.size(), "digest", "0"));
+        env.put("analyzed", Map.of("count", analyzedCount, "digest", "0"));
         env.put("functions", entries);
         Path p = tmp.resolve(name);
         Files.createDirectories(p.getParent() == null ? tmp : p.getParent());
@@ -560,6 +567,87 @@ class GateReportVerbTest {
         Path rep = report("np.jvm.json", List.of(entry("app.A.f", List.of("Net"))));
         assertEquals(2, Query.run(new String[]{"gate", "--report", rep.toString()}),
                 "with no policy there is no verdict to give — never exit 0");
+    }
+
+    // ── the REPORT SET a prefix locator names (§2 "a single analysis world") ───────────────────────────
+
+    /**
+     * A PREFIX locator matching SEVERAL reports must gate over EVERY one of them. The engine-wide resolver
+     * ({@link Query#expandPrefix}) picks the lexicographically-first match and discloses the choice on
+     * stderr; on this verb that narrowing is invisible to the consumer, because the output is an exit code
+     * and a verdict document.
+     *
+     * <p>The fixture puts the violation in the SECOND file, which is exactly the one a first-match pick
+     * never opens. MEASURED before the repair: exit 0, {@code analyzed.count: 3}, zero violations — where
+     * candor-rust and candor-ts both gave exit 1, {@code analyzed.count: 4}, one violation.
+     *
+     * <p><b>The count is asserted, not just the exit code.</b> 3-vs-4 is the only part of the verdict that
+     * names the failure mode: an exit code can be repaired by a gate that happens to fire, but a count of 3
+     * over a 3+1 report set says in the document itself that a located report was never read — and the
+     * ⟨0.21⟩ reading of that document is that those units were analysed and found pure.
+     */
+    @Test
+    void aPrefixNamingSeveralReportsGatesOverEveryOneOfThem() throws Exception {
+        report("set/rep.Aclean.jvm.json", List.of(entry("a.ok", List.of())), 3);
+        report("set/rep.Bdirty.jvm.json", List.of(entry("b.leak", List.of("Net"))), 1);
+        Path pol = policy("deny Net\n");
+        Path out = tmp.resolve("setverdict.json");
+
+        Candor.gateCapture = true;
+        Candor.gateViolations.clear();
+        int rc = Query.run(new String[]{"gate", "--report", tmp.resolve("set/rep").toString(),
+                "--policy", pol.toString(), "--gate-json", out.toString()});
+        assertEquals(1, rc, "the violation lives in the SECOND report of the set — a locator that names "
+                + "both must not exit 0 over the one that happens to sort first");
+
+        JsonObject v = JsonParser.parseString(Files.readString(out)).getAsJsonObject();
+        assertEquals(4, v.getAsJsonObject("analyzed").get("count").getAsInt(),
+                "analyzed.count must SUM the set (3 + 1). A count of 3 is the tell: it claims ⟨0.21⟩ "
+                + "coverage of one report while a located sibling was never opened");
+        assertFalse(v.get("ok").getAsBoolean(), "the verdict document must be red, not just the exit code");
+        assertEquals(1, v.getAsJsonArray("violations").size());
+        assertEquals("b.leak",
+                v.getAsJsonArray("violations").get(0).getAsJsonObject().get("fn").getAsString(),
+                "and it must name the sibling's function");
+
+        // NEGATIVE CONTROL — the same policy over the clean report ALONE is green. Without this the test
+        // above would also pass on a gate that flags everything.
+        Candor.resetState();
+        Path out2 = tmp.resolve("cleanonly.json");
+        assertEquals(0, Query.run(new String[]{"gate", "--report",
+                tmp.resolve("set/rep.Aclean.jvm.json").toString(), "--policy", pol.toString(),
+                "--gate-json", out2.toString()}), "the clean report alone passes — so the failure above "
+                + "comes from the sibling, not from the policy");
+        assertEquals(3, JsonParser.parseString(Files.readString(out2)).getAsJsonObject()
+                .getAsJsonObject("analyzed").get("count").getAsInt(),
+                "and a locator naming ONE report is byte-identical to before the set reading");
+    }
+
+    /**
+     * A PARTIALLY-CORRUPT report set gates RED-LOUD, never green. §3.1: "a report that cannot be parsed is
+     * corrupt input, not an effect-free package … A located report that yields no trustworthy functions
+     * MUST fail loudly." Over a SET that has to mean the set — the half-written sibling here is exactly the
+     * file that would have carried the violation, so gating over its readable neighbour publishes a green
+     * verdict whose only evidence is which file the writer happened to finish.
+     *
+     * <p>MEASURED before the repair: exit 0 with a clean verdict document, because the verb read one
+     * report and the one it read was the clean one. candor-rust and candor-swift both exit 2 here.
+     */
+    @Test
+    void aPartiallyCorruptReportSetRefusesRatherThanGatingTheReadableHalf() throws Exception {
+        report("torn/rep.Aclean.jvm.json", List.of(entry("a.ok", List.of())), 3);
+        Path b = tmp.resolve("torn/rep.Bdirty.jvm.json");
+        // truncated mid-write — the shape a report has while a producer is still writing it
+        Files.writeString(b, "{\"candor\":{\"spec\":\"" + Candor.SPEC_VERSION + "\"},\"package\":\"dirty\","
+                + "\"functions\":[{\"fn\":\"b.leak\",\"inferred\":[\"Ne");
+        Path out = tmp.resolve("tornverdict.json");
+        assertEquals(2, Query.run(new String[]{"gate", "--report", tmp.resolve("torn/rep").toString(),
+                "--policy", policy("deny Net\n").toString(), "--gate-json", out.toString()}),
+                "a torn sibling under the same prefix must refuse the whole run — a green verdict over "
+                + "the readable half asserts purity for functions nothing parsed");
+        assertFalse(Files.exists(out),
+                "and it must not leave a verdict document behind: a broken-input exit 2 writes no verdict "
+                + "(§3.3), so a wrapper reading the file cannot mistake it for a judgement");
     }
 
     /** A corrupt report fails loudly rather than reading as an effect-free package (§3.1). */

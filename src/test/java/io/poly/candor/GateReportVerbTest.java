@@ -720,6 +720,51 @@ class GateReportVerbTest {
     }
 
     /**
+     * ⟨0.24⟩ <b>{@code unevaluated} IS ONE ENTRY PER RULE, THE RAW POLICY LINE VERBATIM — SPEC §3.1</b>
+     * (candor-spec {@code fc4b5f6}; candor-ts is the reference shape). This engine emitted a KIND
+     * AGGREGATE, so <b>two distinct {@code forbid} lines collapsed into one entry {@code "forbid (× 2)"}</b>
+     * and every {@code allow} into {@code "allow Fs/Net"}. That satisfies a naive reading of "disclose which
+     * rules could not be evaluated" while answering the other question: it says HOW MANY where the operator
+     * asked WHICH, so a consumer of the document cannot tell which of their boundaries went unchecked.
+     *
+     * <p>Measured, {@code deny Fs app} + two {@code forbid} lines + two {@code allow} lines, exit 1:
+     * {@code unevaluated} held 2 rows before and holds 4 after — one per rule, each the raw line.
+     */
+    @Test
+    void unevaluatedNamesEveryRuleIndividuallyNotAKindAggregate() throws Exception {
+        Path rep = report("agg.jvm.json", List.of(entry("app.W.write", List.of("Fs"))));
+        Path pol = policy("""
+                deny Fs app
+                forbid app.a -> app.b
+                forbid app.c -> app.d
+                allow Net in app example.com
+                allow Fs in app /tmp
+                """);
+        Path out = tmp.resolve("agg.verdict.json");
+        Files.deleteIfExists(out);                       // never measure against a stale artifact
+
+        Candor.gateCapture = true;
+        Candor.gateViolations.clear();
+        assertEquals(1, Query.run(new String[]{"gate", "--report", rep.toString(),
+                "--policy", pol.toString(), "--gate-json", out.toString()}),
+                "the `deny Fs` fires, so the four unanswerable rules are disclosed rather than refused on");
+
+        JsonObject v = JsonParser.parseString(Files.readString(out)).getAsJsonObject();
+        List<String> rules = new ArrayList<>();
+        for (var e : v.getAsJsonArray("unevaluated"))
+            rules.add(e.getAsJsonObject().get("rule").getAsString());
+        assertEquals(List.of("forbid app.a -> app.b", "forbid app.c -> app.d",
+                        "allow Net in app example.com", "allow Fs in app /tmp"), rules,
+                "one entry PER RULE, the RAW policy line verbatim — a kind aggregate answers `how many` "
+                + "where the operator asked `which`\nDOC:\n" + v);
+        for (var e : v.getAsJsonArray("unevaluated")) {
+            String why = e.getAsJsonObject().get("why").getAsString();
+            assertTrue(why.contains(e.getAsJsonObject().get("rule").getAsString()),
+                    "…and each `why` is about ITS OWN rule, not about the population: " + why);
+        }
+    }
+
+    /**
      * ⟨0.24⟩ <b>A CERTAIN VIOLATION DOMINATES A REFUSAL — SPEC §3.1.</b> Three outcomes can be live at
      * once and the order is <b>violation (1) &gt; refusal (2) &gt; incomplete (2)</b>, forced by Lemma 2
      * rather than chosen: a rule that FIRES on evidence the report carries REJECTS the policy, and

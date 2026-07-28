@@ -1087,7 +1087,7 @@ final class Policy {
                     // SPEC §6.2: `forbid <A> -> <B>` — two scopes separated by a literal `->` TOKEN
                     // (so `forbid a->b` without surrounding spaces is malformed and dropped).
                     if (t.length >= 4 && t[2].equals("->")) {
-                        ctx().forbidRules.add(new PolicyRule.Forbid(t[1], t[3]));
+                        ctx().forbidRules.add(new PolicyRule.Forbid(t[1], t[3], line));
                     } else {
                         warnPolicy(line, "forbid form", t.length > 1 ? t[1] : "",
                                 List.of("<scope> -> <scope>"), "want `forbid <scope> -> <scope>`");

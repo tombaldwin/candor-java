@@ -1949,26 +1949,32 @@ public final class Query {
         // granularity rule) rather than approximated: dropping a rule can only REMOVE violations, so a
         // surviving exit 1 stays certain. They are disclosed either way — exit 1 reports the violation it
         // is sure of, it does not conceal the part it could not read.
+        //
+        // ⟨0.24⟩ ONE ROW PER RULE, THE RAW POLICY LINE VERBATIM (SPEC §3.1's pinned shape). These two used
+        // to be KIND AGGREGATES — `"forbid (× 2)"`, `"allow Fs/Net"` — which satisfies a naive reading of
+        // "disclose which rules could not be evaluated" while answering a different question: how many, not
+        // which. Two distinct `forbid` lines collapsed into one entry and the operator could not tell from
+        // the document which of their boundaries had gone unchecked. The scoped-filter disclosures below
+        // already emitted `r.src()`, so this is the shape the rest of the list was already in.
         List<String[]> unevaluated = new ArrayList<>();   // {rule, why}
         if (!AnalysisState.ctx().forbidRules.isEmpty()) {
-            unevaluated.add(new String[]{"forbid (× " + AnalysisState.ctx().forbidRules.size() + ")",
-                    "this policy has " + AnalysisState.ctx().forbidRules.size()
-                    + " `forbid` rule(s), which `gate --report` cannot evaluate — a report's `calls` graph is "
-                    + "EFFECT-RELEVANT, so a crossing into a wholly pure unit is invisible in it and the rule "
-                    + "would read green where a scan fails. Gate layering at scan time: candor <classes> --policy "
-                    + policyPath});
+            for (PolicyRule.Forbid f : AnalysisState.ctx().forbidRules)
+                unevaluated.add(new String[]{f.src().trim(),
+                        "`" + f.src().trim() + "` is a `forbid` rule, which `gate --report` cannot evaluate — "
+                        + "a report's `calls` graph is EFFECT-RELEVANT, so a crossing into a wholly pure unit "
+                        + "is invisible in it and the rule would read green where a scan fails. Gate layering "
+                        + "at scan time: candor <classes> --policy " + policyPath});
             AnalysisState.ctx().forbidRules.clear();
         }
         if (!AnalysisState.ctx().allowRules.isEmpty()) {
-            List<String> effects = AnalysisState.ctx().allowRules.stream()
-                    .map(r -> r.effect().specName()).distinct().sorted().collect(Collectors.toList());
-            unevaluated.add(new String[]{"allow " + String.join("/", effects),
-                    "this policy has `allow " + String.join("`/`", effects)
-                    + "` rule(s), which `gate --report` cannot evaluate — the AS-EFF-008 surface-completeness "
-                    + "marker does not ride the report wire, so a benign visible literal beside a "
-                    + "runtime-computed endpoint would be CERTIFIED here and flagged by a scan. (`netClass: "
-                    + "unknown-host` is NOT that marker — it also names a merely unrecognised host.) Gate "
-                    + "allowlists at scan time: candor <classes> --policy " + policyPath});
+            for (PolicyRule.Allow a : AnalysisState.ctx().allowRules)
+                unevaluated.add(new String[]{a.src().trim(),
+                        "`" + a.src().trim() + "` is an `allow` rule, which `gate --report` cannot evaluate — "
+                        + "the AS-EFF-008 surface-completeness marker does not ride the report wire, so a "
+                        + "benign visible literal beside a runtime-computed endpoint would be CERTIFIED here "
+                        + "and flagged by a scan. (`netClass: unknown-host` is NOT that marker — it also names "
+                        + "a merely unrecognised host.) Gate allowlists at scan time: candor <classes> "
+                        + "--policy " + policyPath});
             AnalysisState.ctx().allowRules.clear();
         }
 

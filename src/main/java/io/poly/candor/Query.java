@@ -365,6 +365,7 @@ public final class Query {
                     boolean ok = i + 1 < args.length && (args[i + 1].equals("-") || !args[i + 1].startsWith("-"));
                     if (!ok) { System.err.println("candor: --gate-json requires a value (a path, or `-` for stdout)"); return 2; }
                     gateJsonFlag = args[++i];
+                    Candor.armGateJson(gateJsonFlag);   // ⟨0.24⟩ fail-closed from the first instant
                 }
                 default -> {
                     // an unknown --flag must FAIL, not be swallowed as a query positional (a typo'd

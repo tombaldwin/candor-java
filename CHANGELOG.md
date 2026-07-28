@@ -22,6 +22,18 @@ after upgrading; review policies and regenerate baselines with the new build.
   not only the offending one). A refusal with nothing standing above it is unchanged: exit 2,
   `refused: true`, no `violations` key.
 
+- **⟨0.24⟩ THE STALE-DOCUMENT RULE, OVER ITS CONDITION RATHER THAN ITS EXIT SITES** (SPEC §3.1,
+  `1503368` + `901f14d`). Found while checking the mirror of the fix above. `1503368` made a refusal write
+  its document and `901f14d` generalised that over machine output paths — both implemented at the exit
+  sites that had been measured. On a `--gate-json` path a clean run had left `ok: true`: a baseline with no
+  provenance header → **exit 2, the path still reads `ok: true`**; an unreadable scan target → **exit 2,
+  the path still reads `ok: true`**. Two unrelated causes, one stale green, and a CI wrapper reading that
+  path unconditionally passes. Threading the sink into each of the ~20 `System.exit(2)` sites is the fix
+  scoped to the POSITION and still misses every site nobody enumerated (a crash, an OOM, a kill), so the
+  path is now **armed fail-closed when the flag is PARSED** — `ok:false, refused:true` with a reason saying
+  the run never completed — and every normal path overwrites it, leaving a completed run's bytes unchanged.
+  `-` (stdout) is excluded: that stream carries exactly one document, and its own test pins that.
+
 - **⚠ ⟨0.24⟩ THE POLICY-VOCABULARY ANCHOR KEYED ON THE `--policy` FLAG, so `CANDOR_POLICY` gate-PASSED
   silently** (SPEC §3.1, candor-spec `99eb4e9`). `unknown-alias` resolves relative to the policy file's
   directory — but this engine tested `policyArg != null`, so a policy supplied through `CANDOR_POLICY` (CI's

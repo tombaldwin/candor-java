@@ -197,6 +197,70 @@ class VerdictPrecedenceTest {
         assertEquals(1, v.getAsJsonArray("unevaluated").size(), "the refused rule is named\nDOC:\n" + v);
     }
 
+    /**
+     * ⟨0.24⟩ <b>THE STALE-DOCUMENT RULE OVER ITS CONDITION, NOT ITS EXIT SITES — SPEC §3.1.</b>
+     * {@code 1503368} made a refusal write its document and {@code 901f14d} generalised that over machine
+     * output PATHS; both were implemented at the exit sites that had been measured. Found while checking
+     * the mirror of the fix above, on a {@code --gate-json} path a clean run had left {@code ok: true}:
+     * <pre>
+     *   CANDOR_BASELINE=&lt;no provenance header&gt;  -> exit 2, the path STILL READS ok: true
+     *   an unreadable scan target                -> exit 2, the path STILL READS ok: true
+     * </pre>
+     * Two unrelated causes, one stale green, and a CI wrapper reading that path unconditionally passes.
+     * The repair arms the path fail-closed when the FLAG IS PARSED, so it covers every exit site including
+     * the ones nobody enumerated — a crash, an OOM, a kill.
+     */
+    @Test
+    void anIncompleteRunNeverLeavesThePreviousVerdictOnTheGateJsonPath() throws Exception {
+        Path pure = pureFixture();
+        Path pol = scratch.resolve("ok.policy");
+        Files.writeString(pol, "deny Net app\n");
+        Path verdict = scratch.resolve("verdict.json");
+
+        // Establish the stale green the hazard needs: a real, clean, ok:true document on that exact path.
+        assertEquals(0, runCli(Map.of(), pure.toString(), "--policy", pol.toString(),
+                "--gate-json", verdict.toString()).exit(), "the clean run must pass");
+        assertTrue(doc(verdict).get("ok").getAsBoolean(), "…and leave ok:true behind");
+
+        // CAUSE 1 — a baseline with no provenance header. Nothing about the policy or the code is wrong.
+        Path legacy = scratch.resolve("legacy.json");
+        Files.writeString(legacy, "[]");
+        Run a = runCli(Map.of("CANDOR_BASELINE", legacy.toString()),
+                pure.toString(), "--policy", pol.toString(), "--gate-json", verdict.toString());
+        assertEquals(2, a.exit(), "an unusable baseline is exit 2\nSTDERR:\n" + a.stderr());
+        JsonObject va = doc(verdict);
+        assertFalse(va.get("ok").getAsBoolean(),
+                "a run that could not decide must not leave the PREVIOUS run's green on the path CI "
+                + "reads — the naive read of what is there has to be FAIL\nDOC:\n" + va);
+        assertTrue(va.get("refused").getAsBoolean(), "…and say so under `refused`\nDOC:\n" + va);
+
+        // CAUSE 2 — a different subsystem entirely, which is why the repair is at the flag and not at the
+        // exit: an unreadable scan target. Re-establish the green first, or this proves nothing.
+        assertEquals(0, runCli(Map.of(), pure.toString(), "--policy", pol.toString(),
+                "--gate-json", verdict.toString()).exit());
+        assertTrue(doc(verdict).get("ok").getAsBoolean(), "the green is back on the path");
+        Run b = runCli(Map.of(), scratch.resolve("no-such-tree").toString(),
+                "--policy", pol.toString(), "--gate-json", verdict.toString());
+        assertEquals(2, b.exit(), "an unreadable scan target is exit 2\nSTDERR:\n" + b.stderr());
+        assertFalse(doc(verdict).get("ok").getAsBoolean(),
+                "…and the same rule binds it, because the rule is about the PATH, not about which "
+                + "subsystem failed\nDOC:\n" + doc(verdict));
+    }
+
+    /** THE MIRROR of the arming above: `-` means stdout, which carries exactly ONE document. A placeholder
+     *  there would put two in a consumer's pipe and break every `--gate-json - | jq` in existence. */
+    @Test
+    void armingNeverWritesASecondDocumentToStdout() throws Exception {
+        Path pure = pureFixture();
+        Path pol = scratch.resolve("ok.policy");
+        Files.writeString(pol, "deny Net app\n");
+        Run r = runCli(Map.of(), pure.toString(), "--policy", pol.toString(), "--gate-json", "-");
+        assertEquals(0, r.exit(), "a clean gate is exit 0\nSTDERR:\n" + r.stderr());
+        JsonObject v = JsonParser.parseString(r.stdout()).getAsJsonObject();   // throws on two documents
+        assertTrue(v.get("ok").getAsBoolean(), "…and stdout is exactly the one verdict\nSTDOUT:\n" + r.stdout());
+        assertFalse(v.has("refused"), "no placeholder leaked into it\nSTDOUT:\n" + r.stdout());
+    }
+
     /** …and a clean gate is untouched: no `refused`, no `reason`, no `unevaluated`. */
     @Test
     void aCleanGateVerdictCarriesNoneOfTheRefusalKeys() throws Exception {

@@ -49,6 +49,14 @@ final class AnalysisContext {
     // ⟨0.19⟩ user-defined reason-class aliases from `.candor/config` (`unknown-alias <name> = <class,…>`),
     // consulted by the §6.2 deny parser for an `Unknown[<name>]` filter. Populated before parsePolicy.
     final Map<String, Set<ReasonClass>> unknownAliases = new HashMap<>();
+    // ⟨0.24⟩ SPEC §3.1 — THE AMBIENCE MUST BE DISCLOSED. `vocabularySource` is the config file the aliases
+    // above were read from; `vocabularyUsed` is the alias names a POLICY RULE actually referenced. When
+    // both are set the file PARTICIPATED IN THE VERDICT, and the --gate-json document MUST name it: a
+    // verdict changed by a file the operator cannot see named in the output is the ambient-input failure
+    // this format exists to refuse. Emitted whether the rule FIRED or not — the measured harm was a GREEN
+    // verdict that a vocabulary file made green.
+    String vocabularySource;
+    final java.util.TreeSet<String> vocabularyUsed = new java.util.TreeSet<>();
     // ⟨0.20⟩ project-declared partner hosts from `.candor/config` (`net-partner <host>`), consulted by the
     // Net destination-class classifier (Literals.netDestClass) to refine a visible host to `known-partner`.
     // Populated alongside unknownAliases (before parsePolicy / after runScan). Empty = telemetry-only asserts.

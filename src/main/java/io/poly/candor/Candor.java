@@ -429,7 +429,7 @@ public class Candor {
             // ⟨0.19⟩ config-aware: discover `.candor/config` (or CANDOR_CONFIG) anchored to the policy file so
             // an `Unknown[<alias>]` resolves via a checked-in `unknown-alias` — the dump reflects real gate
             // resolution (and the four-way parsepolicy differential pins the expansion).
-            Config pcfg = Config.forTarget(Path.of(args[1]));
+            Config pcfg = Config.policyVocabulary(Path.of(args[1]));   // ⟨0.24⟩ the named anchor (§3.1)
             ctx().unknownAliases.putAll(pcfg.unknownAliases());
             ctx().netPartners.addAll(pcfg.netPartners());
             if (!parsePolicy(args[1])) { System.err.println("candor: " + Policy.policyFailure(args[1])); System.exit(2); }
@@ -538,7 +538,18 @@ public class Candor {
         // ⟨0.19⟩ reason-class aliases for the §6.2 gate — populated AFTER runScan (which resets ctx()), so the
         // config `unknown-alias` map survives for checkPolicy's parse. (Set pre-runScan it was silently wiped —
         // the alias resolved in `parsepolicy` but NOT the gate; caught by a corpus dogfood.)
-        ctx().unknownAliases.putAll(config.unknownAliases());
+        //
+        // ⟨0.24⟩ …but read from the POLICY's config, not the TARGET's, when --policy was given explicitly
+        // (SPEC §3.1). MEASURED at 2cdc443 with `unknown-alias corp = native` beside the policy and none
+        // beside the target: `scan --policy P` exited 1 (alias unresolved → `deny Unknown[corp]` widened
+        // to bare `deny Unknown`) where `gate --report R --policy P` exited 0 (alias resolved → no match).
+        // Same report, same policy, two verdicts — §3.1's byte-equality MUST broken by a file that is
+        // neither. Vocabulary travels with the policy that uses it; `net-partner` and `deps` stay
+        // TARGET-anchored below, because they describe the thing being scanned.
+        Config vocab = policyArg != null ? Config.policyVocabulary(Path.of(policyArg)) : config;
+        ctx().unknownAliases.putAll(vocab.unknownAliases());
+        if (!vocab.unknownAliases().isEmpty() && vocab.source() != null)
+            ctx().vocabularySource = vocab.source().toString();
         ctx().netPartners.addAll(config.netPartners()); // ⟨0.20⟩ Net destination-class known-partner hosts
 
         // Fail loud on an EMPTY scan: a path that exists but holds no .class files (a source dir, an
@@ -811,6 +822,7 @@ public class Candor {
         var an = new java.util.LinkedHashMap<String, Object>();
         an.put("count", facts.analyzedCount());
         out.put("analyzed", an);
+        policyVocabularyJson(out);
         out.put("violations", gateViolations);
         // ⟨0.24⟩ THE RULES THIS RUN COULD NOT EVALUATE. A verdict that exits 1 over a policy one of whose
         // rules was refused is CERTAIN about the violation and silent about the rest — so the rest is said
@@ -888,6 +900,7 @@ public class Candor {
         out.put("ok", false);
         out.put("refused", true);
         out.put("reason", reason);
+        policyVocabularyJson(out);   // a refusal can be CAUSED by the vocabulary too — name the file
         if (!unevaluated.isEmpty()) out.put("unevaluated", unevaluatedJson(unevaluated));
         try {
             String json = io.poly.candor.model.ReportJson.pretty(out);
@@ -899,6 +912,28 @@ public class Candor {
             System.err.println("candor: could not write the refusal verdict to --gate-json " + path
                     + ": " + e.getMessage() + " — a consumer reading that path will see a STALE document");
         }
+    }
+
+    /**
+     * ⟨0.24⟩ <b>THE AMBIENCE MUST BE DISCLOSED — SPEC §3.1.</b> If a config file supplied POLICY VOCABULARY
+     * that participated in the verdict, the {@code --gate-json} document MUST name that file. §3.1's MUST
+     * NOT lists three channels an effect must never enter a gate through; {@code .candor/config}'s
+     * {@code unknown-alias} is the fourth, and it is the one no engine's test covered. Config discovery
+     * walks PARENT directories and {@code CANDOR_CONFIG} overrides it entirely, so an alias file the
+     * operator never named can be what decides the verdict — and the measured harm was a GREEN one, so the
+     * disclosure fires on any alias a rule REFERENCED, not only on one that fired.
+     *
+     * <p>The remedy is the usual one here: not to forbid the input, but to make it impossible for it to act
+     * unnamed. Omitted entirely when no alias was used, so every verdict without one is byte-identical to
+     * a pre-⟨0.24⟩ one — and identical across the two routes, which is the point (both anchor at the policy
+     * file now, so both name the same file).
+     */
+    static void policyVocabularyJson(java.util.LinkedHashMap<String, Object> out) {
+        if (ctx().vocabularySource == null || ctx().vocabularyUsed.isEmpty()) return;
+        var v = new java.util.LinkedHashMap<String, Object>();
+        v.put("config", ctx().vocabularySource);
+        v.put("aliases", new ArrayList<>(ctx().vocabularyUsed));
+        out.put("policyVocabulary", v);
     }
 
     /** {@code [{rule, why}, …]} — the wire shape of an unevaluated rule, shared by the violation document

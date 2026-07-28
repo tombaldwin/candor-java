@@ -65,15 +65,27 @@ public final class Config {
      *  subdomain-aware like {@link Literals#TELEMETRY_HOSTS}. */
     private final java.util.Set<String> netPartners;
 
+    /** ⟨0.24⟩ The file this config was read from, or null when none was found. SPEC §3.1 requires the
+     *  {@code --gate-json} document to NAME a config file that supplied POLICY VOCABULARY participating in
+     *  the verdict — "a verdict changed by a file the operator cannot see named in the output is the
+     *  ambient-input failure this whole format exists to refuse". */
+    private final Path source;
+
     private Config(Map<String, String> values) {
-        this(values, new LinkedHashMap<>(), new java.util.LinkedHashSet<>());
+        this(values, new LinkedHashMap<>(), new java.util.LinkedHashSet<>(), null);
     }
 
     private Config(Map<String, String> values, Map<String, java.util.Set<ReasonClass>> unknownAliases,
-                   java.util.Set<String> netPartners) {
+                   java.util.Set<String> netPartners, Path source) {
         this.values = values;
         this.unknownAliases = unknownAliases;
         this.netPartners = netPartners;
+        this.source = source;
+    }
+
+    /** The file this config came from (absolute); null when none was found. */
+    Path source() {
+        return source;
     }
 
     static Config empty() {
@@ -158,6 +170,35 @@ public final class Config {
         return found != null ? parse(found) : empty();
     }
 
+    /**
+     * ⟨0.24⟩ <b>POLICY VOCABULARY ANCHORS AT THE POLICY FILE, ON BOTH ROUTES — SPEC §3.1.</b>
+     *
+     * <p>§3.1's MUST NOT names three channels through which an effect must never enter a gate that its
+     * report does not carry. A review found a fourth: {@code .candor/config}'s {@code unknown-alias}. All
+     * four GATE verbs anchored discovery at the POLICY file's directory while all four SCAN routes
+     * anchored at the TARGET — so with the policy filed outside the scan target, {@code scan --policy P}
+     * and {@code gate --report R --policy P} expand the same rule differently, and <b>§3.1's byte-equality
+     * MUST is breakable by a file that is neither the report nor the policy.</b>
+     *
+     * <p>MEASURED on this engine at 2cdc443, with {@code unknown-alias corp = native} beside the policy,
+     * the scan target carrying no config, and the target's one {@code Unknown} being {@code reflect}-caused:
+     * <pre>
+     *   scan --policy polhome/my.policy              →  exit 1   (alias unresolved → rule WIDENED to bare Unknown)
+     *   gate --report r --policy polhome/my.policy   →  exit 0   (alias resolved → deny Unknown[native], no match)
+     * </pre>
+     * Same report, same policy, two verdicts, and the fail-open one is the gate.
+     *
+     * <p><b>RULING.</b> {@code unknown-alias} — and any future key that supplies POLICY VOCABULARY rather
+     * than scan configuration — resolves relative to the {@code --policy} file's directory on BOTH routes
+     * when {@code --policy} is given explicitly. Vocabulary travels with the policy that uses it;
+     * TARGET-scoped keys ({@code deps}, {@code net-partner}, scan settings) keep anchoring at the target,
+     * because they describe the thing being scanned. Byte-equality then holds BY CONSTRUCTION rather than
+     * by the two routes happening to be pointed at the same directory.
+     */
+    static Config policyVocabulary(Path policyFile) {
+        return forTarget(policyFile);
+    }
+
     /** The nearest {@code .candor/config} walking UP from the scan target (a classes dir, a jar, a source
      *  dir), so the checked-in config applies wherever the process is launched from; else null. NO CWD
      *  fallback (the spec-§3.4 contradiction the family deleted): it fired only when the CWD was OUTSIDE
@@ -224,7 +265,7 @@ public final class Config {
             }
             return empty();
         }
-        return new Config(m, aliases, partners);
+        return new Config(m, aliases, partners, path.toAbsolutePath().normalize());
     }
 
     private static Config parse(Path path) {

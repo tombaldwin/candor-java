@@ -755,6 +755,7 @@ final class Policy {
      *  engine does not recognise — see {@link #policyFailure}, which the caller prints before exiting 2. */
     static boolean parsePolicy(String path) {
         policyError = null;
+        ctx().vocabularyUsed.clear();   // ⟨0.24⟩ recomputed per parse — the disclosure is about THIS policy
         List<String> lines;
         try {
             lines = Files.readAllLines(Path.of(path));
@@ -824,7 +825,13 @@ final class Policy {
                                 // ⟨0.19⟩ a config `unknown-alias <name> = …` (SPEC §6.2) referenced explicitly.
                                 java.util.Set<ReasonClass> alias = rc == null ? ctx().unknownAliases.get(cn) : null;
                                 if (rc != null) unknownClasses.add(rc);
-                                else if (alias != null) unknownClasses.addAll(alias);
+                                // ⟨0.24⟩ record the alias USE. A config file that supplied vocabulary a
+                                // rule referenced PARTICIPATED IN THE VERDICT, and SPEC §3.1 requires the
+                                // gate document to name it.
+                                else if (alias != null) {
+                                    unknownClasses.addAll(alias);
+                                    ctx().vocabularyUsed.add(cn);
+                                }
                                 // ⟨0.24⟩ a POLICY ERROR, not a warning — see #policyError.
                                 else policyError(line, "unknown reason-class/alias `" + cn
                                         + "` (known: reflect, dispatch, indirect, native, unresolved, setup; "

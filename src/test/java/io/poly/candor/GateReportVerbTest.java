@@ -887,6 +887,120 @@ class GateReportVerbTest {
                 "CONTROL: the Net destination-class vocabulary works when spelled right");
     }
 
+    /**
+     * ⟨0.24⟩ <b>THE FOURTH CHANNEL: POLICY VOCABULARY ANCHORS AT THE POLICY FILE, ON BOTH ROUTES</b> —
+     * SPEC §3.1 (candor-spec 99eb4e9).
+     *
+     * <p>§3.1's MUST NOT names three channels through which an effect must never enter a gate that its
+     * report does not carry. The fourth is {@code .candor/config}'s {@code unknown-alias}, and no engine
+     * tested it: all four GATE verbs anchored discovery at the POLICY file's directory while all four SCAN
+     * routes anchored at the TARGET. With the policy filed outside the scan target, the two routes expand
+     * the same rule differently — <b>so the byte-equality MUST is breakable by a file that is neither the
+     * report nor the policy.</b>
+     *
+     * <p>MEASURED at 2cdc443. {@code unknown-alias corp = native} sits beside the policy, the scan target
+     * carries no config, and the target's one {@code Unknown} is {@code reflect}-caused:
+     * <pre>
+     *   scan --policy polhome/my.policy               →  exit 1   alias UNRESOLVED, rule WIDENED to bare Unknown
+     *   gate --report r --policy polhome/my.policy    →  exit 0   alias resolved, deny Unknown[native], no match
+     * </pre>
+     * Same report, same policy, two verdicts — and the fail-open one is the gate.
+     *
+     * <p>The second half is the DISCLOSURE: a verdict changed by a file the operator cannot see named in
+     * the output is the ambient-input failure this format exists to refuse, so the document names it. It
+     * fires on an alias a rule REFERENCED, not only on one that fired — the measured harm above was a
+     * GREEN verdict a vocabulary file made green.
+     */
+    @Test
+    void policyVocabularyAnchorsAtThePolicyFileOnBothRoutesAndIsNamedInTheVerdict() throws Exception {
+        // The target tree, with NO config of its own.
+        Path cls = compile(Map.of("app/Svc.java", String.join("\n",
+                "package app;",
+                "public class Svc {",
+                "  public void dyn(Object o) throws Exception { o.getClass().getMethod(\"run\").invoke(o); }",
+                "}")));
+        try {
+            // The policy tree, elsewhere, carrying the vocabulary. `native` is chosen so the alias
+            // DISCRIMINATES: the fn's Unknown is `reflect`, so the resolved rule must NOT fire — which is
+            // what makes the two routes' answers differ rather than agree by luck.
+            Path polHome = tmp.resolve("polhome");
+            Files.createDirectories(polHome.resolve(".candor"));
+            Files.writeString(polHome.resolve(".candor/config"), "unknown-alias corp = native\n");
+            Path pol = polHome.resolve("my.policy");
+            Files.writeString(pol, "deny Unknown[corp,unresolved] app\n");
+
+            // ── the SCAN route, through the REAL CLI in a child JVM. Calling the anchor helper from the
+            // test would leave Candor.main's own wiring untested, which is exactly where the defect was.
+            Path rep = tmp.resolve("anchor.jvm.json");
+            String javaBin = System.getProperty("java.home") + "/bin/java";
+            Process p = new ProcessBuilder(javaBin, "-cp", System.getProperty("java.class.path"),
+                    "io.poly.candor.Candor", cls.toString(), "--json", rep.toString(),
+                    "--policy", pol.toString())
+                    .redirectErrorStream(true).start();
+            String scanLog = new String(p.getInputStream().readAllBytes());
+            int scanExit = p.waitFor();
+            assertTrue(scanExit == 0 || scanExit == 1, "the scan gives a verdict, not an error: " + scanLog);
+
+            // ── the GATE route, over the report that scan wrote ──
+            Candor.resetState();
+            Candor.gateViolations.clear();
+            Path out = tmp.resolve("anchor.verdict.json");
+            int gateExit = Query.run(new String[]{"gate", "--report", rep.toString(),
+                    "--policy", pol.toString(), "--gate-json", out.toString()});
+
+            assertEquals(scanExit, gateExit,
+                    "the two routes must expand `Unknown[corp]` the SAME way. Before the anchor fix the "
+                    + "scan resolved it against the TARGET (no config → token dropped → rule widened to "
+                    + "bare `deny Unknown` → exit 1) while the gate resolved it against the POLICY (→ "
+                    + "`deny Unknown[native]` → exit 0), which is §3.1's byte-equality MUST broken by a "
+                    + "file that is neither the report nor the policy");
+            assertEquals(0, gateExit, "and the AGREED answer is the policy-anchored one: `corp` = native, "
+                    + "the fn's Unknown is reflect, so the rule does not fire");
+
+            // THE DISCLOSURE. The verdict is GREEN and a file the operator never named is why.
+            JsonObject v = JsonParser.parseString(Files.readString(out)).getAsJsonObject();
+            assertTrue(v.has("policyVocabulary"), "a config file that supplied vocabulary participating in "
+                    + "the verdict MUST be named in the document — this verdict is green BECAUSE of it");
+            JsonObject pv = v.getAsJsonObject("policyVocabulary");
+            assertTrue(pv.get("config").getAsString().endsWith(".candor/config"),
+                    "…by path: " + pv.get("config").getAsString());
+            assertTrue(pv.get("config").getAsString().contains("polhome"),
+                    "…and it is the POLICY's config, not the target's: " + pv.get("config").getAsString());
+            assertEquals("corp", pv.getAsJsonArray("aliases").get(0).getAsString(),
+                    "…and names which alias was used");
+
+            // NEGATIVE CONTROL — a policy using no alias gets no such key, so the field means something.
+            Candor.resetState();
+            Path plain = polHome.resolve("plain.policy");
+            Files.writeString(plain, "deny Unknown[native,unresolved] app\n");
+            Path out2 = tmp.resolve("plain.verdict.json");
+            assertEquals(0, Query.run(new String[]{"gate", "--report", rep.toString(),
+                    "--policy", plain.toString(), "--gate-json", out2.toString()}));
+            assertFalse(JsonParser.parseString(Files.readString(out2)).getAsJsonObject()
+                            .has("policyVocabulary"),
+                    "CONTROL: no alias used ⇒ no key, so a pre-⟨0.24⟩ verdict is byte-identical");
+
+            // POSITIVE CONTROL on the alias itself — spell it to a class the fn DOES have and the same
+            // rule fires. Without this the green above could be a rule that never gates.
+            Candor.resetState();
+            Files.writeString(polHome.resolve(".candor/config"), "unknown-alias corp = reflect\n");
+            assertEquals(1, gate(rep, pol),
+                    "CONTROL: `corp` = reflect makes the same rule FIRE — the alias is load-bearing");
+
+            // …and the SAME vocabulary reaches the pre-edit verbs. `whatif` and `fix-gate` never loaded
+            // `unknown-alias` at all, so before this they silently rewrote an aliased rule (widening or
+            // narrowing it) while the gate honoured it — the same rule meaning two things in the verb an
+            // agent consults BEFORE editing and in the gate that judges the edit.
+            Candor.resetState();
+            assertNotEquals(2, Query.run(new String[]{"fix-gate", "--report", rep.toString(),
+                            "--policy", pol.toString()}),
+                    "`fix-gate` must honour the policy's own vocabulary, not refuse it as unspellable");
+
+        } finally {
+            TestCompiler.rm(cls.getParent());
+        }
+    }
+
     // ── CLI shape + the loud-failure postures ──────────────────────────────────────────────────────────
 
     /** A CONFIGURED-but-unreadable policy fails loudly (exit 2), never gateless-green (§6.2). */

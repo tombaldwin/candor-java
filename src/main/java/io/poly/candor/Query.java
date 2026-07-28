@@ -1136,6 +1136,12 @@ public final class Query {
         List<String[]> violations = new ArrayList<>(); // {fn, rule-desc}
         if (policyPath != null) {
             AnalysisState.ctx().denyRules.clear();
+            // ⟨0.24⟩ POLICY VOCABULARY, anchored at the policy file (SPEC §3.1) — the same call the gate
+            // and scan routes make. `whatif` never loaded it at all, so a policy using a config-declared
+            // `unknown-alias` was silently rewritten here (widened or narrowed) while the gate honoured
+            // it: the same rule, two meanings, in the verb an agent consults BEFORE editing.
+            AnalysisState.ctx().unknownAliases.putAll(
+                    Config.policyVocabulary(Path.of(policyPath)).unknownAliases());
             // A SPECIFIED-but-unreadable policy must FAIL LOUD, not silently yield ok:true — a typo'd
             // CANDOR_POLICY path otherwise reads as "no violations" and an agent proceeds with a
             // forbidden edit believing the boundary was checked (/code-review; mirrors the gate's own
@@ -1374,6 +1380,11 @@ public final class Query {
             return false;
         }
         AnalysisState.ctx().denyRules.clear();
+        // ⟨0.24⟩ POLICY VOCABULARY, anchored at the policy file (SPEC §3.1) — as `whatif` and the two gate
+        // routes do. `fix-gate` must compute the hoist for the rule the GATE will run, not for a rewritten
+        // one; without this an `Unknown[<alias>]` rule named a different boundary here than there.
+        AnalysisState.ctx().unknownAliases.putAll(
+                Config.policyVocabulary(Path.of(policyPath)).unknownAliases());
         if (!Policy.parsePolicy(policyPath)) {
             System.err.println("candor: " + Policy.policyFailure(policyPath) + " — no fix computed.");
             return false;
@@ -1863,7 +1874,12 @@ public final class Query {
         // ⟨0.20⟩ `net-partner` list is deliberately NOT loaded: `netClass` is read verbatim from the report,
         // so re-classifying its hosts through THIS machine's config would be exactly the re-derivation the
         // §3.1 ⟨0.24⟩ MUST NOT forbids (and would make the verdict depend on the consumer's CWD).
-        AnalysisState.ctx().unknownAliases.putAll(Config.forTarget(Path.of(policyPath)).unknownAliases());
+        // ⟨0.24⟩ `Config.policyVocabulary` IS this anchor, named — and the SCAN route now calls the same
+        // method for the same reason, so the two routes cannot expand a rule differently (SPEC §3.1).
+        Config vocab = Config.policyVocabulary(Path.of(policyPath));
+        AnalysisState.ctx().unknownAliases.putAll(vocab.unknownAliases());
+        AnalysisState.ctx().vocabularySource = !vocab.unknownAliases().isEmpty() && vocab.source() != null
+                ? vocab.source().toString() : null;
         if (!Policy.parsePolicy(policyPath)) {
             String why = Policy.policyFailure(policyPath);
             System.err.println("candor gate: " + why);

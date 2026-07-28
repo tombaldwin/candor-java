@@ -834,6 +834,59 @@ class GateReportVerbTest {
         }
     }
 
+    /**
+     * ⟨0.24⟩ <b>AN UNRECOGNISED CLASS TOKEN REFUSES THE WHOLE GATE — SPEC §6.2</b> (candor-spec 382a7e0),
+     * end to end and on BOTH routes, because the parser-level assertion in {@link PolicyParserTest} cannot
+     * see whether the caller acts on it.
+     *
+     * <p>MEASURED at 2cdc443 over a report carrying one {@code Unknown} unit whose reason is
+     * {@code reflect}:
+     * <pre>
+     *   deny Unknown[dispatch,nativ] app  ->  exit 0   ← the rule NARROWED to [dispatch] and passed
+     *   deny Unknown[corp] app            ->  exit 1   ← the rule WIDENED to bare `deny Unknown`
+     * </pre>
+     * Two different wrong answers from two different silent rewrites of the same one-line policy. The
+     * first is the fail-open one and it is the common case.
+     */
+    @Test
+    void anUnrecognisedClassTokenRefusesTheWholeGate() throws Exception {
+        Path rep = report("tok.jvm.json", List.of(
+                entry("app.U.f", List.of("Unknown"), List.of("reflect:app.U.f"), null),
+                entry("app.N.g", List.of("Net"), List.of(),
+                        Map.of("netClass", List.of("known-partner")))));
+
+        for (String body : List.of(
+                "deny Unknown[dispatch,nativ] app\n",              // NARROWS — was exit 0
+                "deny Unknown[corp] app\n",                        // WIDENS  — was exit 1
+                "deny Net[known-partner,unkown-host] app\n",       // NARROWS
+                "deny Net[unkown-host] app\n")) {                  // WIDENS
+            Candor.resetState();
+            Path out = tmp.resolve("tok" + Math.abs(body.hashCode()) + ".json");
+            assertEquals(2, Query.run(new String[]{"gate", "--report", rep.toString(),
+                            "--policy", policy(body).toString(), "--gate-json", out.toString()}),
+                    "a policy that cannot be honoured as written takes the unreadable-policy posture, "
+                    + "never a silently rewritten rule: " + body.trim());
+            assertEquals(0, Candor.gateViolations.size(),
+                    "…and NOTHING was evaluated — a rewritten rule must not produce a verdict either way");
+            JsonObject v = JsonParser.parseString(Files.readString(out)).getAsJsonObject();
+            assertFalse(v.get("ok").getAsBoolean());
+            assertTrue(v.get("refused").getAsBoolean(),
+                    "…and the refusal reaches the machine consumer, per the ⟨0.24⟩ document rung");
+        }
+
+        // CONTROLS — the same rules, spelled correctly, still discriminate in BOTH directions. Without
+        // these the block above passes on a gate that refuses every scoped rule.
+        Candor.resetState();
+        assertEquals(1, gate(rep, policy("deny Unknown[reflect,unresolved] app\n")),
+                "CONTROL: the correctly-spelled filter FIRES on the reflect-caused hole");
+        Candor.resetState();
+        assertEquals(0, gate(rep, policy("deny Unknown[native,unresolved] app.N\n")),
+                "CONTROL: …and a correctly-spelled non-matching filter still passes");
+        Candor.resetState();
+        assertEquals(1, gate(rep, policy("deny Net[known-partner] app\n")),
+                "CONTROL: the Net destination-class vocabulary works when spelled right");
+    }
+
     // ── CLI shape + the loud-failure postures ──────────────────────────────────────────────────────────
 
     /** A CONFIGURED-but-unreadable policy fails loudly (exit 2), never gateless-green (§6.2). */

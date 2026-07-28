@@ -1141,7 +1141,7 @@ public final class Query {
             // forbidden edit believing the boundary was checked (/code-review; mirrors the gate's own
             // loud-on-unreadable contract and the diff/rewire path checks).
             if (!Policy.parsePolicy(policyPath)) {
-                System.err.println("candor: policy `" + policyPath + "` could not be read — verdict NOT computed.");
+                System.err.println("candor: " + Policy.policyFailure(policyPath) + " — verdict NOT computed.");
                 return 2;
             }
             for (String f : affected) {
@@ -1375,7 +1375,7 @@ public final class Query {
         }
         AnalysisState.ctx().denyRules.clear();
         if (!Policy.parsePolicy(policyPath)) {
-            System.err.println("candor: policy `" + policyPath + "` could not be read — no fix computed.");
+            System.err.println("candor: " + Policy.policyFailure(policyPath) + " — no fix computed.");
             return false;
         }
         return true;
@@ -1865,8 +1865,7 @@ public final class Query {
         // §3.1 ⟨0.24⟩ MUST NOT forbids (and would make the verdict depend on the consumer's CWD).
         AnalysisState.ctx().unknownAliases.putAll(Config.forTarget(Path.of(policyPath)).unknownAliases());
         if (!Policy.parsePolicy(policyPath)) {
-            String why = "policy file " + policyPath
-                    + " could not be read — failing (exit 2), policy NOT evaluated";
+            String why = Policy.policyFailure(policyPath);
             System.err.println("candor gate: " + why);
             return refuse(json, gateJsonPath, why, List.of());
         }

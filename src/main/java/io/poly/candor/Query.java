@@ -1411,7 +1411,13 @@ public final class Query {
         AnalysisState.ctx().unknownAliases.putAll(
                 Config.policyVocabulary(Path.of(policyPath)).unknownAliases());
         if (!Policy.parsePolicy(policyPath)) {
-            System.err.println("candor: " + Policy.policyFailure(policyPath) + " — no fix computed.");
+            // The CONSEQUENCE is the calling verb's, not the loader's. This helper is shared by `fix`,
+            // `fix-gate` and `unverified`, and `unverified` computes no fix — it reports which functions
+            // PASS their policy without being provably clean, so an unhonourable policy costs it the
+            // CHECK, not a remedy. The posture (refuse rather than proceed on a policy read differently
+            // from how it was written) is right; only the noun was borrowed from the sibling verb.
+            System.err.println("candor " + who + ": " + Policy.policyFailure(policyPath) + " — "
+                    + ("unverified".equals(who) ? "nothing was checked" : "no fix computed") + ".");
             return false;
         }
         return true;

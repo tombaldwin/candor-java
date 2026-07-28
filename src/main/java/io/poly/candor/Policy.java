@@ -227,8 +227,7 @@ final class Policy {
             // A SET-but-unreadable policy FAILS the run (exit 2) — it must never gate-pass: a
             // typo'd CANDOR_POLICY path otherwise runs gateless and green (spec §6.2). Found by
             // the spec review: this engine printed loudly but returned clean; the siblings exit 2.
-            String why = "policy file " + path
-                    + " could not be read — failing (exit 2), policy NOT evaluated";
+            String why = policyFailure(path);
             System.err.println("candor-java: " + why);
             Candor.writeRefusedGateJson(gateJson, why, List.of());
             System.exit(2);
@@ -705,9 +704,57 @@ final class Policy {
         System.err.println("candor: ignoring policy rule (" + reason + "): " + line);
     }
 
+    /**
+     * ⟨0.24⟩ Set when the policy was READ but CANNOT BE HONOURED AS WRITTEN (SPEC §6.2: an unrecognised
+     * reason-class or Net destination-class token). Distinct from {@link #parsePolicy} returning false for
+     * an unreadable FILE, but the posture is the same one: exit 2, policy NOT evaluated.
+     */
+    static String policyError;
+
+    /**
+     * ⟨0.24⟩ SPEC §6.2 — <b>AN UNRECOGNISED CLASS TOKEN IS A POLICY ERROR, not a warning.</b> The clause
+     * used to justify the query/policy asymmetry by asserting that dropping such a token on the policy side
+     * can only WIDEN the rule, so the failure is loud. Measured four-way, it does both, and the second
+     * direction is fail-open:
+     * <ul>
+     *   <li>{@code deny Unknown[corp]} — the ONLY token is unrecognised, the filter empties, and the rule
+     *       widens to a bare {@code deny Unknown}. Merely surprising — except that this engine printed
+     *       <i>"ignoring policy rule (unknown reason-class/alias `corp`)"</i> and then KEPT and re-scoped
+     *       it. A FALSE DISCLOSURE, the {@code net-partner} class PART 13b already exists for.</li>
+     *   <li>{@code deny Unknown[dispatch,nativ]} — a <b>typo among valid tokens</b>. It was silently
+     *       dropped, the rule NARROWED to {@code [dispatch]}, and it no longer gated native-caused holes
+     *       at all while the operator read a gate that looked armed. Fail-open, and it is the COMMON case:
+     *       a typo lands beside correct tokens far more often than alone.</li>
+     * </ul>
+     * A policy that cannot be honoured as written is not silently rewritten into a different policy.
+     */
+    static void policyError(String line, String reason) {
+        if (policyError == null) policyError = reason + " — in policy rule: " + line;
+    }
+
+    /**
+     * The exit-2 diagnostic for a policy {@link #parsePolicy} rejected, distinguishing UNREADABLE (the
+     * file) from UNHONOURABLE (⟨0.24⟩ an unrecognised class token). One place, so all five call sites — the
+     * scan gate, {@code gate --report}, {@code whatif}, {@code fix-gate} and {@code parsepolicy} — take the
+     * same posture and print the same words.
+     */
+    static String policyFailure(String path) {
+        return policyError != null
+                ? "policy " + path + " cannot be honoured AS WRITTEN — " + policyError
+                  + "\n        Refusing (exit 2), policy NOT evaluated: dropping the token would rewrite the "
+                  + "policy into a DIFFERENT one. If it is the rule's only class token the rule WIDENS to the "
+                  + "bare effect; if it sits beside valid tokens the rule NARROWS and stops gating what you "
+                  + "spelled, while the gate still looks armed."
+                  + "\n        Fix the spelling, or define it in `.candor/config` as "
+                  + "`unknown-alias <name> = <class,…>`."
+                : "policy file " + path + " could not be read — failing (exit 2), policy NOT evaluated";
+    }
+
     /** Parse a CANDOR_POLICY file into deny/forbid rules. One rule per line; `#` comments + blanks
-     *  ignored. Returns false if the file can't be read (so the caller can fail loud). */
+     *  ignored. Returns false if the file can't be read, or (⟨0.24⟩) if a rule names a class token this
+     *  engine does not recognise — see {@link #policyFailure}, which the caller prints before exiting 2. */
     static boolean parsePolicy(String path) {
+        policyError = null;
         List<String> lines;
         try {
             lines = Files.readAllLines(Path.of(path));
@@ -753,8 +800,14 @@ final class Policy {
                                 if (cn.isEmpty()) continue;
                                 if (cn.equals("*")) { netStar = true; continue; }
                                 if (Literals.NET_DEST_CLASSES.contains(cn)) netClasses.add(cn);
-                                else warnPolicy(line, "unknown Net destination-class `" + cn
-                                        + "` (known: known-telemetry,known-partner,unknown-host, or *)");
+                                // ⟨0.24⟩ a POLICY ERROR, not a warning — see #policyError. The Net
+                                // destination-class token has the identical two directions as the reason
+                                // class: `Net[unkown-host]` alone WIDENS to bare `Net`, and
+                                // `Net[known-partner,unkown-host]` NARROWS and stops gating unknown hosts.
+                                // MEASURED on this engine at 2cdc443: both printed "ignoring policy rule"
+                                // and both kept a rewritten rule, exit 0.
+                                else policyError(line, "unknown Net destination-class `" + cn
+                                        + "` (known: known-telemetry, known-partner, unknown-host, or *)");
                             }
                         } else if (tok.startsWith("Unknown[") && tok.endsWith("]")) {
                             effNames.add("Unknown");
@@ -772,8 +825,10 @@ final class Policy {
                                 java.util.Set<ReasonClass> alias = rc == null ? ctx().unknownAliases.get(cn) : null;
                                 if (rc != null) unknownClasses.add(rc);
                                 else if (alias != null) unknownClasses.addAll(alias);
-                                else warnPolicy(line, "unknown reason-class/alias `" + cn
-                                        + "` (known: reflect,dispatch,indirect,native,unresolved,setup; aliases: dynamic,*, or a config `unknown-alias`)");
+                                // ⟨0.24⟩ a POLICY ERROR, not a warning — see #policyError.
+                                else policyError(line, "unknown reason-class/alias `" + cn
+                                        + "` (known: reflect, dispatch, indirect, native, unresolved, setup; "
+                                        + "aliases: dynamic, *, or a config `unknown-alias`)");
                             }
                         } else { scope = tok; break; }
                     }
@@ -836,7 +891,9 @@ final class Policy {
                     break;
             }
         }
-        return true;
+        // ⟨0.24⟩ the rules PARSED, but at least one names a class token this engine cannot honour — the
+        // caller takes the unreadable-policy posture over it (exit 2), never the rewritten rule.
+        return policyError == null;
     }
 
     /** A policy scope matches a method by dotted SEGMENT (so `domain` matches `app.domain.Svc.handle`

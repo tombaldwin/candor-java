@@ -432,7 +432,7 @@ public class Candor {
             Config pcfg = Config.forTarget(Path.of(args[1]));
             ctx().unknownAliases.putAll(pcfg.unknownAliases());
             ctx().netPartners.addAll(pcfg.netPartners());
-            if (!parsePolicy(args[1])) { System.err.println("candor: cannot read policy " + args[1]); System.exit(2); }
+            if (!parsePolicy(args[1])) { System.err.println("candor: " + Policy.policyFailure(args[1])); System.exit(2); }
             System.out.println(Query.policyJson());
             System.exit(0);
         }

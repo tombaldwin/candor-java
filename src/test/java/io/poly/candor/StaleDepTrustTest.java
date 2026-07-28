@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static io.poly.candor.TestCompiler.compileApp;
 import static io.poly.candor.TestCompiler.rm;
@@ -36,6 +37,17 @@ import org.junit.jupiter.api.Test;
  * consumer certified one on its behalf. Its TREATMENT differs from the stale arm's and that difference is
  * the point — its entries were derived from source it DID read, so they are KEPT unchanged and only the
  * silence hedges. candor-ts closed this first (`21277eb`); this is the JVM half.
+ *
+ * <p>⟨0.24⟩ THE FIFTH ARM IS THE SAME DOOR AGAIN, AND IT ARRIVES WITH ITS OWN NEGATIVE CONTROL. A report
+ * with {@code functions: []} and {@code analyzed.count: 0} judged nothing, so it has nothing to be silent
+ * ABOUT — yet chaining it was strictly more confident than the UNCHAINED arm, which discloses. Measured here
+ * before the fix: the consumer's report went from 2 entries carrying {@code invisible: [lib]} plus a
+ * {@code coverage} envelope to ZERO entries and no envelope, i.e. a positive purity claim for both callers
+ * with no advisory anywhere. The SIXTH arm is why this is not a one-liner: {@code functions: []} with
+ * {@code analyzed.count} LEFT ALONE is a legitimate all-pure claim SPEC §2 chaining rule 3 requires a
+ * consumer to BELIEVE, and a fix hedging both would have disabled the rule rather than implemented it. The
+ * two arms are byte-identical apart from one integer, so they must DIVERGE — which is exactly what
+ * conformance PART 26's CONTROL SEPARATION row asks, and what all four engines failed.
  */
 class StaleDepTrustTest {
 
@@ -51,7 +63,8 @@ class StaleDepTrustTest {
             + "  public void go(){ new lib.Blind().hidden(); }\n"
             + "  public void dial(){ new lib.Blind().phone(); }\n}\n");
 
-    private enum Arm { UNCHAINED, FRESH, STALE, INCOMPLETE }
+    private enum Arm { UNCHAINED, FRESH, STALE, INCOMPLETE, JUDGED_NOTHING, ALL_PURE_EMPTY,
+                       UNREADABLE_MANIFEST_NO_PKG }
 
     /** Scan the app with lib's report chained fresh / staled / not at all, and return the written report
      *  root (so the coverage envelope AND the entry set are both visible — absence from {@code functions}
@@ -82,6 +95,38 @@ class StaleDepTrustTest {
                     Files.writeString(depReport, json.replace(marker,
                             "\"unanalyzed\": [{\"path\": \"lib/Unreadable.class\","
                             + " \"reason\": \"class file failed to parse: injected\"}], " + marker));
+                }
+                if (arm == Arm.JUDGED_NOTHING || arm == Arm.ALL_PURE_EMPTY) {
+                    // ⟨0.24⟩ The two arms this rung turns on, built from ONE dep report so they differ in
+                    // exactly one integer (standing-bar item 7d). Both empty `functions`; only
+                    // JUDGED_NOTHING zeroes `analyzed.count`. Built structurally rather than by string
+                    // surgery because the whole property is about that field's VALUE, and a replace() that
+                    // silently matched nothing would leave two identical arms and a green run.
+                    com.google.gson.JsonObject o = new Gson().fromJson(Files.readString(depReport),
+                            com.google.gson.JsonObject.class);
+                    assertTrue(o.has("analyzed") && o.getAsJsonObject("analyzed").get("count").getAsInt() > 0,
+                            "the produced dep report must carry a POSITIVE analyzed.count, else the two arms "
+                            + "differ in nothing: " + o);
+                    o.add("functions", new com.google.gson.JsonArray());
+                    if (arm == Arm.JUDGED_NOTHING) o.getAsJsonObject("analyzed").addProperty("count", 0);
+                    Files.writeString(depReport, o.toString());
+                }
+                if (arm == Arm.UNREADABLE_MANIFEST_NO_PKG) {
+                    // ⟨0.24⟩ COVERAGE IS ANCHORED TWICE — the envelope's `packages` and, as a fallback for
+                    // reports that carry none, each ENTRY's hash prefix. Gating only one would have been a
+                    // no-op wearing a fix's clothes (the ⟨0.21⟩ arm learned this the same way), and a
+                    // count-0 report has no entries, so it cannot exercise the second anchor at all. This
+                    // arm can: the envelope field is DELETED, so only the entry-level gate is left, and the
+                    // manifest is an unreadable `null` — a judgment claim that cannot be read is not a
+                    // claim. Its entries are real and must survive: this is also the additivity row.
+                    com.google.gson.JsonObject o = new Gson().fromJson(Files.readString(depReport),
+                            com.google.gson.JsonObject.class);
+                    assertTrue(o.has("packages"), "the produced dep report must carry `packages`, else "
+                            + "deleting it proves nothing about the entry-level anchor: " + o);
+                    o.remove("packages");
+                    o.remove("package");
+                    o.add("analyzed", com.google.gson.JsonNull.INSTANCE);
+                    Files.writeString(depReport, o.toString());
                 }
                 if (arm == Arm.STALE) {
                     // The ONE thing the two chained arms differ in (standing-bar item 7d): the producing
@@ -199,6 +244,127 @@ class StaleDepTrustTest {
                 + "from a consumer that had one");
         assertEquals(List.of("Net"), inferredOf(reportFor(Arm.FRESH), "app.S.dial"),
                 "…and it is the same answer the COMPLETE report gives, so the arms differ only in silence");
+    }
+
+    // ── ⟨0.24⟩ the JUDGED-NOTHING arm and its all-pure control ──────────────────────────────────────
+
+    /** THE DEFECT: a report that judged NO units has nothing to be silent about, and its silence was
+     *  buying a purity claim — strictly more confidence than not chaining the package at all. The answer
+     *  must match the UNCHAINED baseline exactly, in both channels. */
+    @Test
+    void aReportThatJudgedNothingGrantsNoCoverage() throws Exception {
+        Map<String, Object> r = reportFor(Arm.JUDGED_NOTHING);
+        assertEquals(List.of("lib"), invisibleOf(r, "app.S.go"),
+                "a report with `analyzed.count: 0` judged no unit in `lib`, so it vouches for nothing there "
+                + "— the caller must disclose the package exactly as if nothing were chained. Before the "
+                + "fix `app.S.go` was ABSENT from `functions` entirely, which is a ⟨0.21⟩ purity claim");
+        assertEquals(List.of("lib"), invisibleOf(r, "app.S.dial"),
+                "…and so must the caller whose dep method really does perform an effect: this is the reach "
+                + "that vanished, `deny Fs`/`deny Net` exit 1 → exit 0 against the TRUSTED arm");
+        assertTrue(coveragePkgs(r).contains("lib"),
+                "the envelope must name lib uncovered: `analyzed.count: 0` is the producer saying it judged "
+                + "nothing, which cannot be read as full coverage");
+    }
+
+    /** THE NEGATIVE CONTROL, and the reason this rung is not a one-liner. The SAME file with the SAME empty
+     *  `functions` and `analyzed.count` left as produced is a legitimate all-pure claim — SPEC §2 chaining
+     *  rule 3: "an all-pure dependency's empty report is a claim, not a blind spot" — and a consumer MUST
+     *  believe it, unhedged. A fix that hedged both arms would not have implemented ⟨0.24⟩'s table; it would
+     *  have deleted its second row. Conformance PART 26 carries the same pair and prints their divergence. */
+    @Test
+    void anAllPureEmptyReportIsStillBelieved() throws Exception {
+        Map<String, Object> r = reportFor(Arm.ALL_PURE_EMPTY);
+        assertNull(invisibleOf(r, "app.S.go"),
+                "an all-pure dep report (`functions: []`, `analyzed.count` > 0) makes a positive purity "
+                + "claim, so the caller is pure and drops out of `functions` — no hedge is owed and none "
+                + "may be added");
+        assertFalse(coveragePkgs(r).contains("lib"),
+                "…and the envelope must NOT name lib uncovered: hedging this arm disables the claim §2 "
+                + "chaining rule 3 requires a consumer to believe");
+    }
+
+    /** THE DIVERGENCE ITSELF, asserted as its own row rather than inferred from the two above. The arms are
+     *  byte-identical apart from one integer, so an engine that does not READ `analyzed.count` answers them
+     *  identically — which is precisely what PART 26's CONTROL SEPARATION row measured on all four engines,
+     *  and what a passing pair of rows above could still hide if the fixture ever stopped differing. */
+    @Test
+    void theTwoEmptyArmsMustDiverge() throws Exception {
+        Map<String, Object> zero = reportFor(Arm.JUDGED_NOTHING);
+        Map<String, Object> allPure = reportFor(Arm.ALL_PURE_EMPTY);
+        // The two channels an engine can answer in, and both must move: the ⟨0.21⟩ entry set (absence is a
+        // purity claim) and the κ envelope. Compared as a PROJECTION rather than whole-report equality so a
+        // future envelope field cannot make this row pass for an unrelated reason.
+        // (asList, not List.of: `coverage` is OMITTED — a null value — on the all-pure arm, and that
+        // omission is half of what is being compared.)
+        assertFalse(java.util.Arrays.asList(zero.get("functions"), zero.get("coverage"))
+                        .equals(java.util.Arrays.asList(allPure.get("functions"), allPure.get("coverage"))),
+                "`analyzed.count: 0` and `analyzed.count: n>0` over the SAME empty `functions` mean opposite "
+                + "things — judged nothing vs judged n and found nothing. An engine answering them "
+                + "identically is not reading the field at all");
+        assertEquals(List.of("lib"), invisibleOf(zero, "app.S.go"), "the count-0 arm hedges");
+        assertNull(invisibleOf(allPure, "app.S.go"), "the count-n arm does not");
+    }
+
+    /** THE SECOND ANCHOR, and the reason the ⟨0.24⟩ conjunct is on BOTH coverage registrations rather than
+     *  only the obvious one. A report with no `packages` envelope field registers coverage from each ENTRY's
+     *  hash prefix instead; a count-0 report has no entries, so nothing in the two arms above can tell
+     *  whether that second gate exists. Here it is the only gate there is — and the row doubles as the
+     *  ADDITIVITY check: the entries the report DOES carry are still applied, so `dial` keeps its Net. Only
+     *  the silence hedges, exactly as on the ⟨0.21⟩ incomplete arm. */
+    @Test
+    void anUnreadableManifestWithdrawsOnlyTheSilence() throws Exception {
+        Map<String, Object> r = reportFor(Arm.UNREADABLE_MANIFEST_NO_PKG);
+        assertEquals(List.of("lib"), invisibleOf(r, "app.S.go"),
+                "`analyzed: null` is a judgment claim that cannot be READ, so the report's silence licenses "
+                + "nothing — and with no `packages` field the entry-level registration is the ONLY thing "
+                + "that could have granted coverage here");
+        assertEquals(List.of("Net"), inferredOf(r, "app.S.dial"),
+                "…while the entry it DOES carry is applied unchanged: withdrawing coverage must never "
+                + "remove an effect a consumer already had");
+    }
+
+    /** THE SHAPE TABLE, unit-level, so every row of ⟨0.24⟩'s three-row table has an assertion rather than a
+     *  comment — including the two the end-to-end arms above cannot reach (a pre-⟨0.21⟩ producer, and a
+     *  manifest that cannot be READ). A claim that cannot be read is not a claim: it fails closed, the same
+     *  posture {@link Loader#declaresItselfIncomplete} takes for a malformed `unanalyzed`. */
+    @Test
+    void onlyAPositiveAnalyzedCountIsAJudgmentClaim() {
+        Gson g = new Gson();
+        com.google.gson.JsonArray empty = new com.google.gson.JsonArray();
+        com.google.gson.JsonArray oneFn = g.fromJson("[{\"hash\":\"lib/A.b()V\"}]",
+                com.google.gson.JsonArray.class);
+        // row 2 — the CONTROL. n>0 is a judgment claim whatever `functions` holds.
+        assertFalse(Loader.claimsToHaveJudgedNothing(
+                        g.fromJson("{\"analyzed\":{\"count\":2}}", com.google.gson.JsonObject.class), empty),
+                "n>0 with empty functions = n units judged, all pure — §2 chaining rule 3 says believe it");
+        assertFalse(Loader.claimsToHaveJudgedNothing(
+                        g.fromJson("{\"analyzed\":{\"count\":9}}", com.google.gson.JsonObject.class), oneFn),
+                "n>0 with entries = the ordinary report, untouched by this rung");
+        // row 1 — the defect.
+        assertTrue(Loader.claimsToHaveJudgedNothing(
+                        g.fromJson("{\"analyzed\":{\"count\":0}}", com.google.gson.JsonObject.class), empty),
+                "count 0 = judged nothing: the shape a facade package scans to");
+        assertTrue(Loader.claimsToHaveJudgedNothing(
+                        g.fromJson("{\"analyzed\":{\"count\":0}}", com.google.gson.JsonObject.class), oneFn),
+                "count 0 while LISTING functions is self-contradictory — fail closed, do not pick a side");
+        // row 3 — a pre-⟨0.21⟩ producer, which has no manifest and so makes no claim about its silence.
+        assertTrue(Loader.claimsToHaveJudgedNothing(g.fromJson("{}", com.google.gson.JsonObject.class), empty),
+                "no manifest + no functions: nothing on the wire says whether anything was judged, so it "
+                + "falls back to the unchained reading");
+        assertFalse(Loader.claimsToHaveJudgedNothing(g.fromJson("{}", com.google.gson.JsonObject.class), oneFn),
+                "no manifest but functions LISTED: units were demonstrably judged, and a pre-⟨0.21⟩ report "
+                + "keeps the coverage it has always had — this rung must not retroactively hedge every "
+                + "report written before the manifest existed");
+        assertTrue(Loader.claimsToHaveJudgedNothing(null, empty),
+                "the bare-ARRAY root form has no envelope at all, so it makes no judgment claim either");
+        // the fourth direction: present but unreadable.
+        for (String malformed : List.of("null", "\"some\"", "7", "[]", "{}", "{\"count\":null}",
+                                        "{\"count\":\"3\"}")) {
+            assertTrue(Loader.claimsToHaveJudgedNothing(g.fromJson(
+                            "{\"analyzed\":" + malformed + "}", com.google.gson.JsonObject.class), oneFn),
+                    "a judgment claim that cannot be READ is not a claim — `analyzed: " + malformed
+                    + "` must fail closed. A denylist of proven-safe shapes, not an allowlist of rejected ones");
+        }
     }
 
     /** THE SECOND FIXTURE FOR THE COMPLETENESS HALF, written before the fix (standing bar item 0): a report

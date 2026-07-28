@@ -212,29 +212,20 @@ final class Policy {
      *   - AS-EFF-008 `allow <Effect> in <scope> <value…>` — WHICH literals (Net hosts / Exec commands /
      *     Fs paths) it may reach, against the visible surface.
      *   - AS-EFF-009 `forbid <A> -> <B>` — WHO a layer may depend on (reachability over the call graph).
-     *  A set-but-unreadable policy is LOUD (not silently passing). */
-    static int checkPolicy(Map<String, EffectSet> inferred, String path) {
-        return checkPolicy(inferred, path, null);
-    }
-
-    /** As above, plus the {@code --gate-json} sink so a REFUSAL can still write its document (⟨0.24⟩ SPEC
-     *  §3.1). Before this, a scan with a typo'd {@code --policy} path exited 2 having written NOTHING to
-     *  the path CI reads — so the wrapper re-read the PREVIOUS run's green verdict as current. This is the
-     *  scan-route half of the hazard {@code gate --report} closes; the two routes are the two ways a
-     *  pipeline reaches a gate, so closing one of them is closing half of it.
+     *  A set-but-unreadable policy is LOUD (not silently passing).
      *
-     *  <p>⟨0.24⟩ This form still takes the REFUSAL-IS-THE-SOLE-OUTCOME posture unconditionally, because it
-     *  is only reachable from callers that ran no other violation producer. The scan CLI goes through
-     *  {@link #checkPolicyOutcome}, which lets the caller weigh the refusal against violations already
-     *  established — see the note there. */
-    static int checkPolicy(Map<String, EffectSet> inferred, String path, String gateJson) {
+     *  <p>⟨0.24⟩ This form takes the REFUSAL-IS-THE-SOLE-OUTCOME posture unconditionally, and is therefore
+     *  NOT the CLI's route: the scan goes through {@link #checkPolicyOutcome}, which reports the refusal so
+     *  the caller — which knows what the earlier violation producers established — can weigh it. Keeping a
+     *  form that exits on its own would be keeping the defect available. */
+    static int checkPolicy(Map<String, EffectSet> inferred, String path) {
         PolicyOutcome o = checkPolicyOutcome(inferred, path);
         if (o.refusal() != null) {
             // A SET-but-unreadable policy FAILS the run (exit 2) — it must never gate-pass: a
             // typo'd CANDOR_POLICY path otherwise runs gateless and green (spec §6.2). Found by
             // the spec review: this engine printed loudly but returned clean; the siblings exit 2.
             System.err.println("candor-java: " + o.refusal());
-            Candor.writeRefusedGateJson(gateJson, o.refusal(), o.unevaluated());
+            Candor.writeRefusedGateJson(null, o.refusal(), o.unevaluated());
             System.exit(2);
         }
         return o.violations();

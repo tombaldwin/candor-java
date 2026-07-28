@@ -193,6 +193,47 @@ class FixGateTest {
         assertEquals(1, Query.unverified(fns, null, pol.toString(), false, true, null));
     }
 
+    /**
+     * THE REFUSAL IS RIGHT; THE NOUN WAS BORROWED. {@code fix}, {@code fix-gate} and {@code unverified}
+     * share one policy loader, and over an unhonourable policy (⟨0.24⟩ an unrecognised class token) it
+     * refused with "— no fix computed" for all three. {@code unverified} computes no fix: it reports which
+     * functions PASS their policy without being provably clean, so what an unhonourable policy costs it is
+     * the CHECK. A diagnostic naming the wrong consequence sends the reader looking for a remedy that was
+     * never the subject. Exit 2 either way — this is about what the sentence says, not what it does.
+     */
+    @Test void anUnhonourablePolicyNamesTheCallingVerbsConsequence(@TempDir Path dir) throws Exception {
+        List<Effector> fns = List.of(eff("domain.price", EffectSet.of(Effect.UNKNOWN), EffectSet.empty(), List.of()));
+        Path pol = dir.resolve("p.policy");
+        Files.writeString(pol, "deny Unknown[dispatch,nativ] domain\n");   // `nativ` — a typo among valid tokens
+
+        String unv = captureErr(() -> Query.unverified(fns, null, pol.toString(), false, false, null));
+        assertTrue(unv.contains("nothing was checked"),
+                "`unverified` must name ITS consequence — it computes no fix, so an unhonourable policy "
+                + "costs it the CHECK: " + unv);
+        assertFalse(unv.contains("no fix computed"),
+                "…and must not borrow the sibling verb's noun: " + unv);
+        assertTrue(unv.startsWith("candor unverified:"),
+                "…under the verb's own name, as the missing-policy branch of the same loader already does: " + unv);
+        Candor.resetState();
+        assertEquals(2, exitOf(() -> Query.unverified(fns, null, pol.toString(), false, false, null)),
+                "the POSTURE is unchanged — an unhonourable policy still refuses (exit 2)");
+
+        Candor.resetState();
+        String fx = captureErr(() -> Query.fixGate(fns, dir.resolve("r.json").toString(), pol.toString(), false, false));
+        assertTrue(fx.contains("no fix computed"),
+                "CONTROL: the verb that DOES compute a fix keeps the noun — the repair is per-verb wording, "
+                + "not the deletion of a sentence: " + fx);
+    }
+
+    /** stderr, where every refusal diagnostic in the shared policy loader goes. */
+    private static String captureErr(Runnable r) {
+        PrintStream orig = System.err;
+        ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        System.setErr(new PrintStream(buf));
+        try { r.run(); } finally { System.setErr(orig); }
+        return buf.toString().trim();
+    }
+
     private static Effector eff(String fn, EffectSet inferred, EffectSet direct, List<String> calls) {
         return new Effector(fn, "", inferred, List.of(), direct, EffectSet.empty(),
                 EffectSet.empty(), EffectSet.empty(), false, inferred.hasUnknown(), EffectorKind.FUNCTION,

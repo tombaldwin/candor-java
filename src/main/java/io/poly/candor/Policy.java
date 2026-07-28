@@ -360,7 +360,7 @@ final class Policy {
      *  is identified by its SOURCE LINE — the same string every refusal message quotes. Unambiguous
      *  because a method name holds no whitespace, so the last space is always the join. */
     static String unanswerableKey(PolicyRule.Deny r, String fn) {
-        return r.src().trim() + " " + fn;
+        return r.src().trim() + "\0" + fn;
     }
 
     /** ⟨0.24⟩ SPEC §6.2 — THE match rule: a function is selected by a reason-class filter when its

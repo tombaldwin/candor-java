@@ -272,6 +272,81 @@ class GateReportVerbTest {
         }
     }
 
+    /**
+     * ⟨0.23⟩ EQUIVALENCE SURVIVES THE {@code interfaceUnion} RUNG. With {@code CANDOR_WORKSPACE_CHAIN} set,
+     * {@link ReportWriter#appendInterfaceUnions} appends a SYNTHETIC entry per bodiless interface member
+     * carrying the CHA union over the package's implementers — a publication device so a CHAINED CONSUMER's
+     * dispatch resolves across the scan boundary, not an assertion that a declaration performs anything.
+     *
+     * <p>MEASURED before the repair, on the engine's OWN output: {@code scan --policy deny Net} flagged 2
+     * ({@code app.impl.HttpClient.get}, {@code app.main.Runner.run}) while {@code gate --report} over the
+     * report that same scan wrote flagged 3 — the extra row being the synthetic {@code app.api.Client.get}.
+     * §3.1's byte-equality MUST refuted, in the FABRICATION direction, by turning on an opt-in PRODUCER
+     * rung: a producer's own gate verdict must not move because it published more for its consumers.
+     *
+     * <p>Skipped, never dropped. Every effect under a union entry is already carried by the implementer's
+     * own entry in the SAME report, so no reach is lost — and the entry stays in the gate's {@code inferred}
+     * map, so a {@code calls} edge naming it still propagates. The advisory {@link Policy#gate} prints names
+     * each skipped entry and the rule it matched, so nothing the gate saw goes unsaid.
+     */
+    @Test
+    void aSyntheticInterfaceUnionEntryIsNotGatedAsAFunction() throws Exception {
+        Path cls = compile(Map.of(
+                "app/api/Client.java", String.join("\n",
+                        "package app.api;",
+                        "public interface Client { String get(String u) throws Exception; }"),
+                "app/impl/HttpClient.java", String.join("\n",
+                        "package app.impl;",
+                        "public class HttpClient implements app.api.Client {",
+                        "  public String get(String u) throws Exception {",
+                        "    return String.valueOf(new java.net.URL(u).openStream().read()); }",
+                        "}"),
+                "app/main/Runner.java", String.join("\n",
+                        "package app.main;",
+                        "public class Runner {",
+                        "  public String run(app.api.Client c) throws Exception { return c.get(\"http://x\"); }",
+                        "}")));
+        try {
+            ReportWriter.workspaceChainOverride = true;      // the PRODUCER rung, opt-in
+            Candor.resetState();
+            Map<String, EffectSet> inferred = Candor.runScan(cls);
+            Path rep = tmp.resolve("iu.jvm.json");
+            ReportWriter.writeReport(inferred, rep.toString(), null);
+
+            // the fixture is non-vacuous only if the rung actually emitted the synthetic entry
+            assertTrue(Files.readString(rep).contains("\"interfaceUnion\": true"),
+                    "precondition: the workspace-chain rung must have published a union entry, otherwise "
+                    + "this test asserts nothing about it");
+
+            Path pol = policy("deny Net\n");
+            Candor.gateCapture = true;
+            Candor.gateViolations.clear();
+            int scanViolations = Policy.checkPolicy(inferred, pol.toString());
+
+            Candor.resetState();
+            Candor.gateViolations.clear();
+            int gateExit = gate(rep, pol);
+            List<String> gated = new ArrayList<>();
+            for (var v : Candor.gateViolations) gated.add(String.valueOf(v.get("fn")));
+
+            assertEquals(1, gateExit, "the real violators still fail the gate");
+            assertEquals(scanViolations, gated.size(),
+                    "scan --policy and gate --report must flag the SAME number of functions over the "
+                    + "engine's own report — measured 2 vs 3 before, the extra row being the synthetic "
+                    + "entry; got " + gated);
+            assertFalse(gated.contains("app.api.Client.get"),
+                    "a bodiless interface declaration cannot `perform` an effect — the union under its "
+                    + "hash exists for a chained consumer's dispatch, and every effect in it is already "
+                    + "gated under the implementer's own entry; got " + gated);
+            assertTrue(gated.contains("app.impl.HttpClient.get") && gated.contains("app.main.Runner.run"),
+                    "and the skip must not have taken the REAL violators with it — the fabrication fix "
+                    + "must not become an under-report; got " + gated);
+        } finally {
+            ReportWriter.workspaceChainOverride = null;
+            TestCompiler.rm(cls.getParent());
+        }
+    }
+
     // ── 3. AGREEMENT WITH THE REFERENCE MODEL ──────────────────────────────────────────────────────────
 
     /**

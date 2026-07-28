@@ -246,6 +246,10 @@ final class Policy {
      * @param surfaceIncomplete per fn, the effects whose literal surface is structurally incomplete
      *                          (the AS-EFF-008 fail-closed marker)
      * @param edges             the call graph AS-EFF-009 walks
+     * @param synthetic         ⟨0.23⟩ the report entries that are NOT units — {@code interfaceUnion: true}.
+     *                          They stay in {@code inferred}, so a `calls` edge naming one still propagates
+     *                          its effects to a real caller, but they are never REPORTED as violators.
+     *                          Always EMPTY on the scan route, which has no such entries. See {@link #gate}.
      */
     record GateInput(Map<String, EffectSet> inferred,
                      Map<String, TreeSet<String>> reasonClasses,
@@ -255,7 +259,8 @@ final class Policy {
                      Map<String, TreeSet<String>> paths,
                      Map<String, TreeSet<String>> tables,
                      Map<String, TreeSet<String>> surfaceIncomplete,
-                     Map<String, Set<String>> edges) {}
+                     Map<String, Set<String>> edges,
+                     Set<String> synthetic) {}
 
     /** The scan route into the gate: accumulate the classifier's direct maps over the live call graph.
      *  Byte-for-byte the fixpoints {@code checkPolicy} used to run inline. */
@@ -300,7 +305,8 @@ final class Policy {
                 literalFixpoint(ctx().pathsDirect),
                 literalFixpoint(ctx().tablesDirect),
                 netIncompleteAcc,
-                ctx().edges);
+                ctx().edges,
+                Set.of());   // the scan gates BODIES; synthetic union entries exist only in a written report
     }
 
     /**
@@ -360,6 +366,7 @@ final class Policy {
         int v = 0;
         Map<String, EffectSet> inferred = gi.inferred();
         Map<String, TreeSet<String>> reasonClassAcc = gi.reasonClasses();
+        List<String[]> synthHits = new ArrayList<>();   // ⟨0.23⟩ union entries a rule matched — DISCLOSED below
         // AS-EFF-006: a method in scope must not perform (transitively) a denied effect.
         for (var e : new TreeMap<>(inferred).entrySet()) {
             String fn = e.getKey();
@@ -394,6 +401,25 @@ final class Policy {
                     if (!matched) bad = bad.without(Effect.NET);       // tolerated: only asserted-safe destinations
                 }
                 if (!bad.isEmpty()) {
+                    // ⟨0.23⟩ A SYNTHETIC `interfaceUnion` ENTRY IS NOT A FUNCTION, so it cannot "perform"
+                    // anything and must not become a violation ROW. Its `fn` names a BODILESS declaration
+                    // (`lib.Store.save` on an interface, an abstract member); the effects under it are the
+                    // CHA union over the package's implementers, published under that hash so a CHAINED
+                    // CONSUMER's dispatch resolves across the scan boundary. Every one of those effects is
+                    // already carried by the implementer's OWN entry in the same report — which IS a unit,
+                    // and IS gated one loop iteration away.
+                    //
+                    // MEASURED: with CANDOR_WORKSPACE_CHAIN set, `scan --policy deny Net` over an interface
+                    // + one Net implementer flags 1 violation while `gate --report` over the report that
+                    // scan just wrote flagged 2, the extra row being the synthetic `app.api.Client.get`.
+                    // That refutes §3.1's byte-equality MUST on the engine's OWN output — and it does it in
+                    // the FABRICATION direction, so turning an opt-in PRODUCER rung on changed the
+                    // producer's own gate verdict. It is disclosed, not dropped: the note below names each
+                    // one and the rule it matched, so nothing the gate saw goes unsaid.
+                    if (gi.synthetic().contains(fn)) {
+                        synthHits.add(new String[]{fn, String.join(", ", bad.toNames()), r.src().trim()});
+                        continue;
+                    }
                     List<String> bn = bad.toNames();
                     // §6.2 ⟨0.19⟩: when Unknown is denied, record ALL reason classes on the fn (transitive) so a
                     // --gate-json consumer sees every reason the strict gate bit — not just the matched class.
@@ -411,6 +437,20 @@ final class Policy {
                     v++;
                 }
             }
+        }
+        // ⟨0.23⟩ THE SYNTHETIC ENTRIES A RULE MATCHED — said out loud, on stderr, without moving the
+        // verdict. A union entry is a republication of effects the implementers' own entries already
+        // carry, so skipping the ROW loses no reach; skipping it SILENTLY would lose the one thing a
+        // reader of a chained DEPENDENCY's report wants here, which is that the dependency publishes a
+        // dispatch surface reaching a denied effect.
+        if (!synthHits.isEmpty()) {
+            System.err.println("candor: note — " + synthHits.size() + " ⟨0.23⟩ interfaceUnion entr"
+                    + (synthHits.size() == 1 ? "y matches a policy rule and is NOT gated as a function"
+                                             : "ies match a policy rule and are NOT gated as functions")
+                    + ": the key names a BODILESS declaration, and the effects under it are the CHA union "
+                    + "over implementers, each of which IS gated under its own entry.");
+            for (String[] h : synthHits)
+                System.err.println("    `" + h[0] + "`  { " + h[1] + " }  would have matched  `" + h[2] + "`");
         }
         // Provable-purity DISCLOSURE (advisory — NEVER a violation, so `v`/exit are untouched): methods in a
         // pure/deny scope that PASS but are Unknown (the Unknown could hide the forbidden effect — a
@@ -517,8 +557,16 @@ final class Policy {
         Map<String, List<String>> netClasses = new HashMap<>();
         Map<String, TreeSet<String>> hosts = new HashMap<>(), cmds = new HashMap<>(),
                 paths = new HashMap<>(), tables = new HashMap<>(), incomplete = new HashMap<>();
+        Set<String> synthetic = new HashSet<>(), real = new HashSet<>();
         for (Effector e : fns) {
             String fn = e.fn();
+            // ⟨0.23⟩ An `interfaceUnion: true` entry is not a UNIT — it is a CHA union published under a
+            // bodiless declaration's hash so a CHAINED CONSUMER's dispatch resolves across the scan
+            // boundary (ReportWriter#appendInterfaceUnions). It records its effects and is tracked here so
+            // the gate does not report it AS a function; a name that is ALSO carried by a real entry (a
+            // duplicate `fn`) is real, and `real` wins below — never the other way round, or a marked
+            // sibling could erase a genuine violator.
+            if (e.interfaceUnion()) synthetic.add(fn); else real.add(fn);
             // JOIN on a repeated `fn` rather than overwrite: a duplicate key is malformed input, and taking
             // the union is the direction that cannot turn a violation into a pass.
             inferred.merge(fn, e.inferred(), EffectSet::join);
@@ -557,8 +605,9 @@ final class Policy {
             if (e.direct().hasUnknown() && raw.isEmpty())
                 whyDirect.computeIfAbsent(fn, k -> new TreeSet<>()).add(ReasonClass.UNRESOLVED.token());
         }
+        synthetic.removeAll(real);   // a name a REAL entry also claims is a real unit — see the note above
         return new GateInput(inferred, literalFixpoint(whyDirect, edges), netClasses,
-                hosts, cmds, paths, tables, incomplete, edges);
+                hosts, cmds, paths, tables, incomplete, edges, synthetic);
     }
 
     /** Re-key the surface-incompleteness map so an incomplete "Net" surface ALSO reads incomplete for

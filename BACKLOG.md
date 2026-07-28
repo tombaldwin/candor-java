@@ -85,6 +85,40 @@ actually covers — again needing the report to name its interfaces). Both touch
 this is a cross-engine spec item, not a local patch. Repro: the `viaParam` fixture in the audit
 (interface param, no visible `new`) — absent from the report under `--deps`.
 
+## Equivalence (scan --policy ≡ gate --report)
+
+### A MERGED `interfaceUnion` entry still breaks §3.1 byte-equality — needs a format rung
+
+**What (MEASURED 2026-07-28, `CANDOR_WORKSPACE_CHAIN=1`).** `ReportWriter.appendInterfaceUnions` has two
+arms. When the interface method's hash is UNCLAIMED it appends a fresh entry marked `interfaceUnion: true`
+— `Policy.gateInputFromReport` now reads that marker and the gate does not report it as a violator (fixed
+2026-07-28, verified byte-equal). When a REAL entry already claims the hash (an effectful `default` method,
+or an abstract class's concrete member) the union is MERGED INTO IT and the entry stays **UNMARKED**,
+deliberately: it is a real analysed unit counted in ⟨0.21⟩ `analyzed`, and marking it would make a consumer
+subtract it twice from the pure count.
+
+Measured on `interface Store { default void save(String s){ Files.writeString(…); } }` +
+`class S3Store implements Store` overriding with an HTTP call, under `deny Net`:
+
+| route | violations |
+|---|---|
+| `scan --policy` | 1 — `impl.S3Store.save` |
+| `gate --report` over the report that scan just wrote | 2 — `impl.S3Store.save`, `lib.Store.save` |
+
+`lib.Store.save`'s BODY performs `{Fs}`; the report publishes `{Fs, Net}` because the merge widened it for
+a chained consumer. The gate is a pure function of the report, so it is faithfully reading a widened set —
+the divergence is that a producer's own gate verdict moves because it published more for its consumers.
+
+**Why it is not patched around.** The report carries no way to tell a widened entry's BODY effects from its
+dispatch union, and there is no marker to key off (adding one is what the merge arm deliberately rejected).
+Guessing — e.g. skipping any entry whose hash names an interface member — would drop a real `default`-body
+violation: a fabrication traded for a silent under-report. As it stands the defect is in the FABRICATION
+direction (an extra violation row, never a missing one), so it fails safe.
+
+**Shape of the fix:** a third state on the wire — either the body's own effect set beside the widened one,
+or a `unionWidened: true` flag distinct from `interfaceUnion` and excluded from the pure-count arithmetic.
+Cross-engine (rust/ts/swift all ship the rung), so it is a spec item, not a local patch.
+
 ## Done (recent — for context)
 
 - **κ persistence coverage, batches 24–27 (0.7.9 / 0.7.10).** Closed the inherited-into-project silent-pure

@@ -1,6 +1,7 @@
 package io.poly.candor;
 
 import static io.poly.candor.TestCompiler.compile;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -192,12 +193,28 @@ class GateReportVerbTest {
     // ── 2. EQUIVALENCE with the scanning path ──────────────────────────────────────────────────────────
 
     /**
-     * {@code scan --policy P} ≡ {@code gate --report <that report> --policy P}, over policies that pass and
-     * policies that fail, and over the deny / pure / reason-scoped-Unknown / Net-destination-class / allow-Net
-     * arms. Both counts AND both exit codes.
+     * <b>EQUIVALENCE IS THE ACCEPTANCE TEST, AND IT IS BYTE-LEVEL.</b> SPEC §3.1: for any report a scan
+     * produced, {@code gate --report <it> --policy P} MUST produce a {@code --gate-json} document
+     * <b>byte-equal</b> to {@code scan --policy P}'s — "{@code analyzed.count}, {@code reasonClass},
+     * {@code netClass} and the coverage advisory included". Anything less lets the two routes drift into
+     * two gates.
+     *
+     * <p>⟨0.24⟩ <b>This test used to compare only the violation COUNT and the exit code</b>, which is the
+     * weakest reading of a MUST that names specific fields — and this engine is the reference one, so
+     * those fields were in fact pinned by the newer engines' suites rather than by java's. Every field of
+     * both documents is now compared as bytes.
+     *
+     * <p>The comparison carries a <b>MUTATION CONTROL</b>: a byte comparison that can never fail proves
+     * nothing, so one row is deliberately perturbed (a single field of the scan-side document rewritten)
+     * and the comparator must report it. Without that, a bug in the comparator reads exactly like 12 green
+     * rows.
+     *
+     * <p>The corpus is non-vacuous by assertion, not by hope: at least one policy must FAIL, and the
+     * ⟨0.19⟩ {@code reasonClass} and ⟨0.20⟩ {@code netClass} fields — two of the four §3.1 names — must
+     * actually appear in the compared bytes.
      */
     @Test
-    void scanAndGateAgreeOnTheSameProgram() throws Exception {
+    void scanAndGateProduceByteEqualVerdictDocuments() throws Exception {
         Path cls = compile(Map.of("app/Svc.java", String.join("\n",
                 "package app;",
                 "import java.net.*;",
@@ -214,35 +231,95 @@ class GateReportVerbTest {
                 "pure app.Svc\n",                    // fails
                 "pure app.Nothing\n",                // passes (scope matches nothing)
                 "deny Net Unknown app\n",            // fails on both arms
-                "deny Unknown[reflect] app\n",       // reason-scoped
-                "deny Unknown[native] app\n",        // reason-scoped, other class
-                "deny Net[known-telemetry] app\n",   // ⟨0.20⟩ destination class
+                "deny Unknown[reflect,unresolved] app\n",   // reason-scoped — carries reasonClass
+                "deny Unknown[native,unresolved] app\n",    // reason-scoped, other class
+                "deny Net[known-telemetry] app\n",   // ⟨0.20⟩ destination class — carries netClass
                 "deny Net[known-partner] app\n",
                 "deny Net[unknown-host] app\n",
                 "deny Fs app\ndeny Db app\n",
                 "deny Log app\npure app.Svc.dyn\n");
+        List<String> diffs = new ArrayList<>();
+        int fired = 0;
+        boolean sawReasonClass = false, sawNetClass = false;
         try {
             for (String body : policies) {
+                String tag = "eq" + Math.abs(body.hashCode());
+                Path rep = tmp.resolve(tag + ".jvm.json");
+                Path pol = policy(body);
+                Path a = tmp.resolve(tag + ".scan.verdict.json");     // scan --policy's document
+                Path b = tmp.resolve(tag + ".gate.verdict.json");     // gate --report's document
+                // DELETE the outputs before measuring — a stale artefact is a flattering datapoint.
+                Files.deleteIfExists(a);
+                Files.deleteIfExists(b);
+
+                // ── the SCAN route, writing its verdict exactly as Candor.main does ──
                 Candor.resetState();
                 Map<String, EffectSet> inferred = Candor.runScan(cls);
-                Path rep = tmp.resolve("eq" + Math.abs(body.hashCode()) + ".jvm.json");
                 ReportWriter.writeReport(inferred, rep.toString(), null);
-                Path pol = policy(body);
                 Candor.gateCapture = true;
                 Candor.gateViolations.clear();
                 int scanViolations = Policy.checkPolicy(inferred, pol.toString());
+                Candor.writeGateJson(a.toString(), scanViolations);
                 int scanExit = scanViolations > 0 ? 1 : 0;
 
+                // ── the GATE route, over the report that scan just wrote ──
                 Candor.resetState();                 // no scan state may survive into the report route
                 Candor.gateViolations.clear();
-                int gateExit = gate(rep, pol);
-                int gateViolations = Candor.gateViolations.size();
+                int gateExit = gate(rep, pol, "--gate-json", b.toString());
 
-                assertEquals(scanViolations, gateViolations,
-                        "violation COUNT must match for policy: " + body.replace("\n", " ; "));
-                assertEquals(scanExit, gateExit,
-                        "EXIT CODE must match for policy: " + body.replace("\n", " ; "));
+                if (!Files.exists(a) || !Files.exists(b)) {
+                    diffs.add(tag + " (" + body.trim() + "): a verdict document was not written");
+                    continue;
+                }
+                byte[] av = Files.readAllBytes(a), bv = Files.readAllBytes(b);
+                if (!java.util.Arrays.equals(av, bv))
+                    diffs.add("NOT BYTE-EQUAL for `" + body.replace("\n", " ; ").trim() + "`\n  scan: "
+                            + new String(av) + "\n  gate: " + new String(bv));
+                if (scanExit != gateExit)
+                    diffs.add("EXIT " + scanExit + " (scan) vs " + gateExit + " (gate) for `"
+                            + body.replace("\n", " ; ").trim() + "`");
+                if (scanExit == 1) fired++;
+                String s = new String(av);
+                if (s.contains("reasonClass")) sawReasonClass = true;
+                if (s.contains("netClass")) sawNetClass = true;
             }
+            assertTrue(diffs.isEmpty(), "§3.1's byte-equality MUST, over " + policies.size()
+                    + " policies:\n" + String.join("\n", diffs));
+
+            // NON-VACUITY. Byte-equal EMPTY verdicts prove nothing, and §3.1 names `reasonClass` and
+            // `netClass` specifically — so the corpus has to put them in the compared bytes.
+            assertTrue(fired >= 4, "the corpus must contain policies that actually FAIL — fired=" + fired);
+            assertTrue(sawReasonClass, "⟨0.19⟩ `reasonClass` must ride the compared verdict — it is one of "
+                    + "the four fields §3.1 names, and a comparison that never sees it does not pin it");
+            assertTrue(sawNetClass, "⟨0.20⟩ `netClass` likewise");
+
+            // ── THE MUTATION CONTROL ──────────────────────────────────────────────────────────────────
+            // A byte comparison that cannot fail is 12 green rows and no information. Perturb ONE field of
+            // one scan-side document and require the comparator to see it. `analyzed.count` is chosen
+            // because it is a §3.1-named field that the old count-and-exit-code test could not have seen:
+            // both routes can agree on every violation and still disagree about how much was analysed,
+            // which is precisely the shape of the report-set defect this suite already carries a row for.
+            Path a = tmp.resolve("mut.scan.json"), b = tmp.resolve("mut.gate.json");
+            Path pol = policy("deny Net app\n");
+            Path rep = tmp.resolve("mut.jvm.json");
+            Candor.resetState();
+            Map<String, EffectSet> inferred = Candor.runScan(cls);
+            ReportWriter.writeReport(inferred, rep.toString(), null);
+            Candor.gateCapture = true;
+            Candor.gateViolations.clear();
+            Candor.writeGateJson(a.toString(), Policy.checkPolicy(inferred, pol.toString()));
+            Candor.resetState();
+            Candor.gateViolations.clear();
+            gate(rep, pol, "--gate-json", b.toString());
+            assertArrayEquals(Files.readAllBytes(a), Files.readAllBytes(b),
+                    "the control row is byte-equal BEFORE the mutation");
+            String mutated = Files.readString(a).replaceFirst("\"count\": \\d+", "\"count\": 99999");
+            assertNotEquals(Files.readString(a), mutated, "the mutation must actually change the bytes");
+            Files.writeString(a, mutated);
+            assertFalse(java.util.Arrays.equals(Files.readAllBytes(a), Files.readAllBytes(b)),
+                    "MUTATION CONTROL: a one-field difference in `analyzed.count` MUST be visible to this "
+                    + "comparison. If it is not, every green row above is meaningless — and the old test, "
+                    + "which compared only the violation count and the exit code, would have passed here");
         } finally {
             TestCompiler.rm(cls.getParent());
         }

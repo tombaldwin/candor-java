@@ -717,7 +717,9 @@ public class Candor {
                 : checkConformance(inferred, strict);     // gate-only: scope-filtered declared
         if (noAmbient != null) violations += checkNoAmbient(inferred, noAmbient);
         if (baseline != null) violations += checkBaseline(inferred, baseline);
-        if (policy != null) violations += checkPolicy(inferred, policy);
+        // ⟨0.24⟩ the --gate-json sink travels IN, so an unreadable policy refuses WITH a document (SPEC
+        // §3.1) instead of exiting 2 over a path CI will re-read yesterday's verdict from.
+        if (policy != null) violations += Policy.checkPolicy(inferred, policy, gateJson);
         // AS-EFF-007 is a heuristic ADVISORY (spec §6): emit findings but never fail CI on its own.
         int advisories = ctx().taintEnabled ? checkTaint(inferred) : 0;
         if (violations == 0 && advisories == 0) gate.println("candor-java: no violations");
@@ -856,6 +858,46 @@ public class Candor {
             // but the failure is loud either way.
             System.err.println("candor: could not write --gate-json " + path + ": " + e.getMessage());
             if (violations == 0) System.exit(2);
+        }
+    }
+
+    /**
+     * ⟨0.24⟩ <b>A REFUSAL MUST STILL WRITE A DOCUMENT — SPEC §3.1.</b> A gate that refuses used to write
+     * no {@code --gate-json} file at all, so a CI wrapper that reads the path unconditionally re-read
+     * <b>the PREVIOUS run's document as current</b>. A green file from yesterday's clean run, still on
+     * disk, is how a refusal becomes an all-clear. Deleting the path is not the fix either: a consumer
+     * that treats a missing file as "nothing to report" fails open by a different route.
+     *
+     * <p>So the document is written, and it is <b>fail-closed to a NAIVE reader</b>: {@code ok: false}
+     * plus {@code refused: true} and the reason. A consumer keying only on {@code ok} lands on FAIL; one
+     * keying on {@code refused} learns why. Same reasoning as the empty-report rung — the naive read of a
+     * document this format emits has to be the safe one, because the naive read is the one that ships.
+     *
+     * <p><b>It carries NO {@code violations} key.</b> Not an empty array: the gate is making no claim
+     * about violations, and {@code "violations": []} is precisely the claim it cannot make. That is the
+     * whole difference between "I found nothing" and "I could not look", and it is the difference a
+     * machine consumer has to be able to see.
+     *
+     * <p>No {@code analyzed} either, for the same reason — on the whole-policy refusals the reports are
+     * not even opened, and a count would describe a universe the verdict says nothing about.
+     */
+    static void writeRefusedGateJson(String path, String reason, java.util.List<String[]> unevaluated) {
+        if (path == null) return;
+        var out = new java.util.LinkedHashMap<String, Object>();
+        out.put("spec", SPEC_VERSION);
+        out.put("ok", false);
+        out.put("refused", true);
+        out.put("reason", reason);
+        if (!unevaluated.isEmpty()) out.put("unevaluated", unevaluatedJson(unevaluated));
+        try {
+            String json = io.poly.candor.model.ReportJson.pretty(out);
+            if (path.equals("-")) System.out.println(json);
+            else Files.writeString(Path.of(path), json + "\n");
+        } catch (IOException e) {
+            // The caller is already exiting 2; say why the document is missing so the stale-file hazard
+            // this method exists to close is at least AUDIBLE when the write itself fails.
+            System.err.println("candor: could not write the refusal verdict to --gate-json " + path
+                    + ": " + e.getMessage() + " — a consumer reading that path will see a STALE document");
         }
     }
 

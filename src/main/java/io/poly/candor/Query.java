@@ -1190,6 +1190,23 @@ public final class Query {
             }
         }
 
+        // ⟨0.24⟩ IS THE REPORT THIS ANSWER IS COMPUTED FROM COMPLETE? (SPEC §3.2, candor-spec 0075987.)
+        // `affected` is a transitive-CALLER closure, so an unparsed file's caller is INVISIBLE to it: the
+        // blast radius is a LOWER BOUND, and the verdict drawn from it cannot be more certain than that.
+        // A report that cannot be parsed at all is corrupt input, not an effect-free package (§3.1) — and
+        // this verb reads only the callgraph SIDECAR, so it would otherwise answer over a report it never
+        // opened. Fail loud instead.
+        List<String[]> unanalyzed;
+        try {
+            unanalyzed = readEnvelope(reportPath).unanalyzed();
+        } catch (Exception e) {
+            System.err.println("candor: cannot read report " + reportPath + " ("
+                    + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName())
+                    + ") — verdict NOT computed. A blast radius answered from the call-graph sidecar alone "
+                    + "would be a pre-edit all-clear over a report nothing checked.");
+            return 2;
+        }
+
         if (json) {
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("of", targets);
@@ -1198,19 +1215,64 @@ public final class Query {
             List<Map<String, String>> vs = new ArrayList<>();
             for (String[] v : violations) vs.add(Map.of("fn", v[0], "rule", v[1]));
             out.put("violations", vs);
-            out.put("ok", violations.isEmpty());
+            // ⟨0.24⟩ **OVER AN INCOMPLETE REPORT, `ok` IS OMITTED — not `true`, and not `false` either.**
+            // Measured independently by candor-rust and this engine: `whatif` answered `ok: true` over a
+            // report declaring `unanalyzed` units. It is not a gate, but its `ok` READS as one, and this
+            // document's standing rule is that the naive read of a field must be the safe one.
+            //
+            //   `ok: true`  asserts nothing this hypothetical touches is denied, over a universe known to
+            //               be partial — a claim the input does not license.
+            //   `ok: false` would assert a VIOLATION the analysis never found: the fabrication mirror, and
+            //               worse than the thing it replaces.
+            //
+            // So the field is omitted and `incomplete` + the manifest take its place: `if (r.ok)` gets
+            // `undefined` and fails safe, and a consumer that looks further learns exactly what was unread.
+            // DELIBERATELY NOT the gate verdict's shape (`ok:false` + `incomplete:true`, writeGateJson) nor
+            // the refusal document's (`ok:false` + `refused:true`): in BOTH of those `ok:false` is TRUE —
+            // the gate did not pass — whereas here neither value is. A shape is copied for its reasoning,
+            // not for its familiarity.
+            //
+            // `affected`/`violations` still ship above: a partial answer that says it is partial beats a
+            // refusal, and `whatif` is consulted BEFORE an edit, where the alternative is the operator
+            // guessing. The EXIT CODE is unchanged (0/1 on the violations actually found) — it is the
+            // answer to "did I find one", which is a question this run can still answer.
+            if (unanalyzed.isEmpty()) {
+                out.put("ok", violations.isEmpty());
+            } else {
+                out.put("incomplete", true);
+                List<Map<String, Object>> un = new ArrayList<>();
+                for (String[] u : unanalyzed) {
+                    var m = new LinkedHashMap<String, Object>();
+                    m.put("path", u[0]);
+                    m.put("reason", u[1]);
+                    un.add(m);
+                }
+                out.put("unanalyzed", un);
+            }
             emit(out);
             return violations.isEmpty() ? 0 : 1;
         }
         System.out.println("whatif: adding `" + effect + "` to `" + String.join(", ", targets) + "`");
         System.out.println("  → propagates to " + affected.size() + " function(s) (the blast radius):");
         for (String f : affected) System.out.println("      " + f);
+        // ⟨0.24⟩ …and the PROSE channel carries the same limit. "✓ within policy" is the human `ok: true`,
+        // and leaving it unqualified here while omitting the field in JSON would close one channel and
+        // leave the identical false all-clear open in the other.
+        if (!unanalyzed.isEmpty())
+            System.out.println("  ⚠ the report declares " + unanalyzed.size() + " unanalyzed unit(s) — this "
+                    + "blast radius is a LOWER BOUND (a caller in an unanalyzed unit is invisible to it):"
+                    + unanalyzed.stream().limit(5).map(u -> "\n      " + u[0] + " (" + u[1] + ")")
+                            .reduce("", String::concat)
+                    + (unanalyzed.size() > 5 ? "\n      … and " + (unanalyzed.size() - 5) + " more" : ""));
         if (policyPath == null) {
             System.out.println("  (no policy given — pass a policy file or set CANDOR_POLICY for the gate verdict)");
             return 0;
         }
         if (violations.isEmpty()) {
-            System.out.println("  ✓ within policy — this edit introduces no `deny`/`pure` boundary violation.");
+            System.out.println(unanalyzed.isEmpty()
+                    ? "  ✓ within policy — this edit introduces no `deny`/`pure` boundary violation."
+                    : "  · no `deny`/`pure` violation among the functions candor could SEE — NOT an "
+                      + "all-clear, since the report is incomplete (above).");
             return 0;
         }
         System.out.println("  ⚠ WOULD VIOLATE policy (" + violations.size() + ") — run BEFORE the edit:");

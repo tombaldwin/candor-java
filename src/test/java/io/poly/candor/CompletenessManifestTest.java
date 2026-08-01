@@ -128,4 +128,99 @@ class CompletenessManifestTest {
                     "the incompleteness is still disclosed on a violating run");
         } finally { rm(app.getParent()); }
     }
+
+    /**
+     * ⟨0.24⟩ SPEC §3.2 (candor-spec {@code 0075987}) — <b>{@code whatif} OVER AN INCOMPLETE REPORT OMITS
+     * {@code ok}: it does not answer {@code true}, and it does not answer {@code false} either.</b>
+     *
+     * <p>MEASURED independently by candor-rust and this engine, and REPORTED rather than decided, which is
+     * why it became a ruling: {@code whatif} returned {@code ok: true} over a report declaring
+     * {@code unanalyzed} units. Its {@code affected} set is a transitive-CALLER closure, so a caller sitting
+     * in a file nothing parsed is invisible to it — the blast radius is a LOWER BOUND and the verdict drawn
+     * from it cannot be more certain than that. {@code whatif} is not a gate, but <b>its {@code ok} reads as
+     * one</b>, and the standing rule is that the naive read of a field must be the safe one.
+     *
+     * <p>Neither boolean is honest, which is why the answer is neither. {@code ok: true} asserts "nothing
+     * this hypothetical touches is denied" over a knowingly partial set; {@code ok: false} would assert a
+     * VIOLATION the analysis never found — the fabrication mirror, and worse than the thing it replaces. So
+     * the field is OMITTED: {@code if (r.ok)} gets a falsy value and fails safe, and a consumer that looks
+     * further learns exactly what was unread. This is deliberately NOT the gate verdict's shape
+     * ({@code ok:false} + {@code incomplete:true}, pinned in the test above) — there {@code ok:false} is
+     * TRUE, because the gate did not certify. A shape is copied for its reasoning, not its familiarity.
+     *
+     * <p>THE MIRROR, asserted below: a COMPLETE report must still carry {@code ok}. Omitting it everywhere
+     * would make the absence mean nothing, and this verb's whole answer is that field.
+     */
+    @Test void whatifOverAnIncompleteReportOmitsOkEntirely() throws Exception {
+        Path app = app();
+        try {
+            Path pol = tmp.resolve("wp.policy");
+            Files.writeString(pol, "deny Fs app\n");     // `reads` performs Fs → a real violation is available
+
+            // ── (a) the CONTROL, first: a COMPLETE report still answers `ok`. Written before the corrupt
+            // class exists, so the two runs differ in exactly one input.
+            Path good = tmp.resolve("wi-good.json");
+            assertEquals(0, runCli(app.toString(), "--json", good.toString()).exit());
+            Run okRun = runCli("whatif", "--report", good.toString(),
+                    "app.A.pure", "Net", "--policy", pol.toString(), "--json");
+            JsonObject okDoc = JsonParser.parseString(okRun.stdout()).getAsJsonObject();
+            assertTrue(okDoc.has("ok"), "MIRROR: a complete report still carries `ok` — if it were omitted "
+                    + "everywhere the absence would mean nothing: " + okRun.stdout());
+            assertTrue(okDoc.get("ok").getAsBoolean(), "…and it is `true`: `deny Fs` does not deny Net");
+            assertFalse(okDoc.has("incomplete"), "…and says nothing about incompleteness it does not have");
+
+            // ── (b) the same target, plus one class ASM cannot parse.
+            Files.write(app.resolve("Corrupt.class"),
+                    new byte[]{(byte) 0xca, (byte) 0xfe, (byte) 0xba, (byte) 0xbe, 0, 0, 0, 0, 9});
+            Path bad = tmp.resolve("wi-bad.json");
+            assertEquals(0, runCli(app.toString(), "--json", bad.toString()).exit());
+            assertTrue(JsonParser.parseString(Files.readString(bad)).getAsJsonObject().has("unanalyzed"),
+                    "precondition: the report this verdict is computed from declares unanalyzed units");
+
+            Run badRun = runCli("whatif", "--report", bad.toString(),
+                    "app.A.pure", "Net", "--policy", pol.toString(), "--json");
+            JsonObject doc = JsonParser.parseString(badRun.stdout()).getAsJsonObject();
+            // THE ASSERTION THIS TEST EXISTS FOR: `ok` is ABSENT, not false.
+            assertFalse(doc.has("ok"),
+                    "`ok` must be OMITTED over an incomplete report — `if (r.ok)` then fails safe: "
+                    + badRun.stdout());
+            assertFalse(badRun.stdout().contains("\"ok\""),
+                    "…and not hidden anywhere else in the document either: " + badRun.stdout());
+            // …and NOT replaced by `ok:false`, which would assert a violation nothing found.
+            assertEquals(0, doc.getAsJsonArray("violations").size(),
+                    "this run found no violation, so an `ok:false` here would be an INVENTION — the "
+                    + "fabrication mirror of the `ok:true` it replaces");
+            assertTrue(doc.has("incomplete") && doc.get("incomplete").getAsBoolean(),
+                    "`incomplete:true` takes its place: " + badRun.stdout());
+            assertTrue(doc.has("unanalyzed") && doc.getAsJsonArray("unanalyzed").size() >= 1,
+                    "…with the manifest, so a consumer learns exactly what was unread: " + badRun.stdout());
+            assertTrue(doc.getAsJsonArray("unanalyzed").get(0).getAsJsonObject().has("path")
+                            && doc.getAsJsonArray("unanalyzed").get(0).getAsJsonObject().has("reason"),
+                    "…in the same {path, reason} shape the report and the gate verdict use");
+            // The partial answer STILL SHIPS: a partial answer that says it is partial beats a refusal, and
+            // whatif is consulted BEFORE an edit, where the alternative is the operator guessing.
+            assertTrue(doc.has("affected") && doc.getAsJsonArray("affected").size() >= 1,
+                    "`affected` still ships: " + badRun.stdout());
+            assertTrue(doc.has("violations"), "`violations` still ships: " + badRun.stdout());
+            assertEquals(0, badRun.exit(),
+                    "the exit code answers `did I find a violation`, which this run CAN still answer");
+
+            // …and a real violation over the same incomplete report is still reported, still without `ok`.
+            Run viol = runCli("whatif", "--report", bad.toString(),
+                    "app.A.reads", "Fs", "--policy", pol.toString(), "--json");
+            JsonObject vd = JsonParser.parseString(viol.stdout()).getAsJsonObject();
+            assertFalse(vd.has("ok"), "still omitted when a violation IS found: " + viol.stdout());
+            assertTrue(vd.getAsJsonArray("violations").size() >= 1, "…and the violation is reported anyway");
+            assertEquals(1, viol.exit(), "…exit 1, as it would be over a complete report");
+
+            // THE PROSE CHANNEL carries the same limit — closing the JSON one and leaving "✓ within policy"
+            // standing would move the identical false all-clear to the channel the human reads.
+            Run human = runCli("whatif", "--report", bad.toString(),
+                    "app.A.pure", "Net", "--policy", pol.toString());
+            assertFalse(human.stdout().contains("✓ within policy"),
+                    "no ✓ all-clear over an incomplete report: " + human.stdout());
+            assertTrue(human.stdout().contains("unanalyzed"),
+                    "…the incompleteness is named instead: " + human.stdout());
+        } finally { rm(app.getParent()); }
+    }
 }

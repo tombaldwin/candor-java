@@ -8,6 +8,22 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⚠ ⟨0.24⟩ `whatif` OVER AN INCOMPLETE REPORT OMITS `ok` — it does not answer `true`, and it does not
+  answer `false` either** (SPEC §3.2, candor-spec `0075987`). Measured independently by candor-rust and this
+  engine: `whatif` returned `ok: true` over a report declaring `unanalyzed` units. Its `affected` set is a
+  transitive-CALLER closure, so a caller in a file nothing parsed is invisible to it — the blast radius is a
+  LOWER BOUND. `whatif` is not a gate, but **its `ok` reads as one**. Neither boolean is honest here:
+  `ok: true` asserts nothing touched is denied over a knowingly partial set, and `ok: false` would assert a
+  violation the analysis never found (the fabrication mirror). So the field is **omitted**, and
+  `incomplete: true` + the `unanalyzed` manifest take its place — `if (r.ok)` gets a falsy value and fails
+  safe. Deliberately NOT the gate verdict's shape (`ok:false` + `incomplete:true`), where `ok:false` is
+  *true* because the gate did not certify. `affected`/`violations` still ship and the EXIT CODE is unchanged
+  (0/1 on the violations actually found — a question this run can still answer). The prose channel carries
+  the same limit: the `✓ within policy` all-clear is replaced by a line naming the unanalyzed units, since
+  closing the JSON channel and leaving the identical claim standing in the human one closes nothing.
+  Alongside it, `whatif` now **fails loud (exit 2) on a report that does not parse**: it reads only the
+  call-graph sidecar, so it was answering a pre-edit all-clear over a report nothing had opened.
+
 - **⟨0.24⟩ `policyVocabulary.aliases` IS AN OBJECT `{alias: [classes…]}`, NOT AN ARRAY OF NAMES**
   (SPEC §3.1, candor-spec `7f5b5ba`). This engine shipped `["corp"]`; candor-ts shipped
   `{"corp": ["reflect"]}` and won the shape argument against three engines by quoting §3.1's own reasoning

@@ -1186,28 +1186,45 @@ public final class Query {
         return un;
     }
 
-    /** ⟨0.24⟩ SPEC §3.2 — FINISH AN ADVISORY VERB'S JSON ANSWER. Over a COMPLETE report: {@code ok} plus
-     *  the verb's own body, byte for byte as before. Over one declaring {@code unanalyzed}: {@code ok} is
-     *  <b>OMITTED</b> and {@code incomplete: true} + the manifest take its place.
+    /** ⟨0.24⟩ SPEC §3.2 — FINISH AN ADVISORY VERB'S JSON ANSWER. Over a report the verb could read WHOLE,
+     *  under a policy it could read WHOLE: {@code ok} plus the verb's own body, byte for byte as before.
+     *  Under EITHER of the two ways that fails — the report declares {@code unanalyzed}, or the gate would
+     *  have WITHHELD a rule — {@code ok} is <b>OMITTED</b>, and the disclosure that names the gap
+     *  ({@code unevaluated}, or {@code incomplete: true} + the manifest) takes its place.
      *
-     *  <p><b>NEITHER BOOLEAN IS A STATEMENT THE INPUT LICENSES.</b> {@code ok: true} certifies a universe
-     *  the verb knows it cannot see all of — a function in an unparsed file is absent from
-     *  {@code functions}, so it cannot be enumerated at all, and that absence is exactly what the verb
-     *  would have to report. {@code ok: false} would assert <i>"a hole/crossing exists, here it is"</i>
-     *  beside an EMPTY array: the fabrication mirror, and worse than the silence it replaces. So the field
-     *  goes — {@code if (r.ok)} gets a falsy value and fails safe, and a consumer that looks further
-     *  learns precisely what went unread.
+     *  <p><b>TWO TRIGGERS, ONE ANSWER (candor-spec {@code 142740a}).</b> {@code 4fd140c} ruled the withheld
+     *  case to {@code ok: false} and that was wrong by the argument in the very next paragraph: on an
+     *  ADVISORY verb {@code false} asserts <i>"a hole/crossing exists, here it is"</i> — and where a rule was
+     *  withheld NO hole was found, the question was DECLINED. That is the fabrication mirror, which is
+     *  exactly why the incompleteness trigger omits the field. The two are the same shape and they looked
+     *  different only because they were ruled in two clauses a day apart. MEASURED before this repair, on a
+     *  report carrying {@code Net}+{@code hosts} with no {@code netClass} under {@code deny
+     *  Net[unknown-host] app}: rust/ts/swift omitted, java alone answered {@code false} — a 1-against-3
+     *  split, the sibling of the 2-against-2 one this rung had just closed.
+     *
+     *  <p><b>AND NEITHER BOOLEAN IS A STATEMENT THE INPUT LICENSES</b>, which is the property both triggers
+     *  share. {@code ok: true} certifies a universe the verb knows it cannot see all of — a function in an
+     *  unparsed file is absent from {@code functions}, a boundary under a withheld rule was never
+     *  adjudicated. So the field goes: {@code if (r.ok)} gets a falsy value and fails safe, and a consumer
+     *  that looks further learns precisely what went unread or unevaluated.
      *
      *  <p>DELIBERATELY NOT the gate verdict's shape ({@code ok:false} + {@code incomplete:true},
      *  {@link Candor#writeGateJson}) nor the refusal document's ({@code ok:false} + {@code refused:true}):
      *  in BOTH of those {@code ok:false} is TRUE — the gate did not certify — whereas here neither value
      *  is. A shape is copied for its reasoning, not for its familiarity, and the gate is NOT changed to
      *  match. The verb's own array still ships either way: a partial answer that says it is partial beats
-     *  a refusal. */
-    static Map<String, Object> advisoryAnswer(boolean ok, List<String[]> unanalyzed, Map<String, Object> body) {
+     *  a refusal.
+     *
+     *  <p><b>{@code unevaluated} IS WRITTEN HERE, not by the caller.</b> A trigger whose disclosure is
+     *  emitted in one place and whose consequence is decided in another is precisely how these two clauses
+     *  drifted apart in the first place — {@code whatif} held the incompleteness rule inline and its
+     *  siblings never got it. One producer decides both. */
+    static Map<String, Object> advisoryAnswer(boolean ok, List<String[]> unanalyzed,
+                                              List<String[]> unevaluated, Map<String, Object> body) {
         Map<String, Object> out = new LinkedHashMap<>();
-        if (unanalyzed.isEmpty()) out.put("ok", ok);
+        if (unanalyzed.isEmpty() && unevaluated.isEmpty()) out.put("ok", ok);
         out.putAll(body);
+        if (!unevaluated.isEmpty()) out.put("unevaluated", Candor.unevaluatedJson(unevaluated));
         if (!unanalyzed.isEmpty()) {
             out.put("incomplete", true);
             out.put("unanalyzed", manifestJson(unanalyzed));
@@ -1242,6 +1259,13 @@ public final class Query {
     static final String INCOMPLETE_TAIL_STRICT =
             "(`ok` is OMITTED — neither value is a statement this input licenses; `--strict` exits 2, the "
             + "could-not-evaluate code)";
+
+    /** ⟨0.24⟩ `142740a` — the same sentence for the WITHHELD-RULE trigger, because it is the same answer.
+     *  The prose channel carries it for the reason §3.2 gives twice: a limit stated only under `--json`
+     *  leaves the human reading the unqualified verdict. */
+    static final String UNEVALUATED_TAIL_STRICT =
+            "(`ok` is OMITTED from `--json` — a declined question is not a finding, and not a pass either; "
+            + "`--strict` exits 2, the could-not-evaluate code.)";
 
     /** whatif <report> <fn> <Effect> [policy] — the PRE-EDIT verdict (mirrors candor-query). Computes the
      *  blast radius of introducing `effect` into `fn` (the fn + every transitive caller, all of which would
@@ -1381,7 +1405,9 @@ public final class Query {
             // edit, where the alternative is the operator guessing. The EXIT CODE is unchanged (0/1 on the
             // violations actually found) — it is the answer to "did I find one", which is a question this
             // run can still answer, and this verb has no `--strict` for §3.2 to rule an exit for.
-            emit(advisoryAnswer(violations.isEmpty(), unanalyzed, body));
+            // No `unevaluated` list here: this verb discloses an unanswerable narrowing PER VIOLATION, as
+            // `conditional` (§3.1) — see the `violations` loop above. It has no rule-level channel to pass.
+            emit(advisoryAnswer(violations.isEmpty(), unanalyzed, List.of(), body));
             return violations.isEmpty() ? 0 : 1;
         }
         System.out.println("whatif: adding `" + effect + "` to `" + String.join(", ", targets) + "`");
@@ -1852,17 +1878,18 @@ public final class Query {
                 }
             }
         }
-        // ⟨0.24⟩ `ok` IS THE CLAIM, and it is bounded above by the gate's. With a rule left unevaluated,
-        // "no outstanding boundary crossings" is a statement about the rules this verb could read, not
-        // about the policy — the same green-over-a-refusal the gate itself refuses to print.
+        // ⟨0.24⟩ `ok` IS THE CLAIM, and it is bounded above by the gate's. With a rule left unevaluated the
+        // claim is not made AT ALL — `142740a`: `true` would be a statement about the rules this verb could
+        // read rather than about the policy, and `false` would assert a crossing beside an empty `remedies`
+        // that nobody found. {@link #advisoryAnswer} withholds the field; `clean` survives only to rank the
+        // exit below, where "did I find a crossing" is still a question this run answered.
         boolean clean = plans.isEmpty() && unevaluated.isEmpty();
         if (json) {
             Map<String, Object> body = new LinkedHashMap<>();
             List<Map<String, Object>> rem = new ArrayList<>();
             for (Remedy p : plans.values()) rem.add(p.toJson());
             body.put("remedies", rem);
-            if (!unevaluated.isEmpty()) body.put("unevaluated", Candor.unevaluatedJson(unevaluated));
-            emit(advisoryAnswer(clean, unanalyzed, body));
+            emit(advisoryAnswer(clean, unanalyzed, unevaluated, body));
             // Advisory by default (exit 0 — the agent fix-loop reads the remedy and edits); `--strict` makes
             // the exit follow `ok`, so CI can REQUIRE zero outstanding crossings (mirrors `unverified --strict`).
             // ⟨0.24⟩ 2, not 1, when a rule went unevaluated OR the report is incomplete: SPEC §3.2 pins the
@@ -1883,7 +1910,7 @@ public final class Query {
                 System.out.println("candor fix-gate: no remedy — " + unevaluated.size() + " policy rule(s) could "
                         + "not be evaluated against this report (above), and `gate --report` refuses over them. "
                         + "NOT an all-clear: a hoist plan premised on evidence the gate declined to read would "
-                        + "be a confident instruction resting on a guess.");
+                        + "be a confident instruction resting on a guess. " + UNEVALUATED_TAIL_STRICT);
             if (!unanalyzed.isEmpty())
                 System.out.println("candor fix-gate: no deny/pure boundary crossing among the functions candor "
                         + "could SEE — NOT an all-clear: " + unanalyzed.size() + " unit(s) went unanalyzed "
@@ -2033,6 +2060,10 @@ public final class Query {
                 .distinct().toList();
         // `ok` IS THE CLAIM, and §3.2 bounds it above by the gate's: a run in which the gate refused cannot
         // report a clean bill here, whether the refusal named functions (`unjudged`) or a whole rule kind.
+        // ⟨0.24⟩ `142740a`: under a withheld rule it makes NO claim — {@link #advisoryAnswer} omits the
+        // field. `unjudged` is non-empty only when `unevaluated` is (one producer emits both, per function
+        // and per rule), so the two arms of that refusal reach the same answer by construction; `clean`
+        // survives to rank the EXIT, which is about what this run did find.
         boolean clean = holes.isEmpty() && unjudged.isEmpty() && unevaluated.isEmpty();
         if (json) {
             List<Map<String, Object>> items = new ArrayList<>();
@@ -2061,8 +2092,7 @@ public final class Query {
             }
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("unverified", items);
-            if (!unevaluated.isEmpty()) body.put("unevaluated", Candor.unevaluatedJson(unevaluated));
-            emit(advisoryAnswer(clean, unanalyzed, body));
+            emit(advisoryAnswer(clean, unanalyzed, unevaluated, body));
             // ⟨0.24⟩ 2, not 1, when the gate would have refused OR the report is incomplete — SPEC §3.2
             // pins the exit to the gate's, and could-not-fully-evaluate outranks found-a-hole.
             if (strict && (!unevaluated.isEmpty() || !unanalyzed.isEmpty())) return 2;
@@ -2085,7 +2115,7 @@ public final class Query {
             if (!unevaluated.isEmpty())
                 System.out.println("candor unverified: no Unknown holes among the rules this report can answer — "
                         + "but " + unevaluated.size() + " rule(s) went unevaluated (above) and `gate --report` "
-                        + "refuses over them. NOT an all-clear.");
+                        + "refuses over them. NOT an all-clear. " + UNEVALUATED_TAIL_STRICT);
             if (!unanalyzed.isEmpty())
                 System.out.println("candor unverified: no Unknown holes among the functions candor could SEE — "
                         + "NOT an all-clear: " + unanalyzed.size() + " unit(s) went unanalyzed (above), and a "

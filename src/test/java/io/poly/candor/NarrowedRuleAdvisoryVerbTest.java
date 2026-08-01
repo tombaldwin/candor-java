@@ -345,6 +345,32 @@ class NarrowedRuleAdvisoryVerbTest {
      * because the function passes that rule WHILE carrying an {@code Unknown} that could hide a Net to
      * somewhere else entirely. Same defect, different key; fixing one key and not the other leaves the
      * identical hole under {@code Net[…]}.
+     *
+     * <p><b>⟨0.24⟩ RE-MEASURED INDEPENDENTLY AT SCALE, AND THE RESULT IS NULL — this axis is closed.</b>
+     * candor-swift reported the {@code Net} half as a live defect in its own engine and asked whether java
+     * carried it, on the argument that a destination class cannot be derived from the fields the hole and
+     * remedy records carry (it needs the host surface plus the partner set) and is therefore a data-threading
+     * job rather than a conjunct. That argument is correct in general and was already discharged here: the
+     * hoist took {@link Policy.GateInput} — which carries {@code netClasses()} — rather than an effect set,
+     * so threading it into {@link Policy#unverifiedHoleRule} and {@code Query#deniedLayer} covered BOTH axes
+     * at once, and all three call sites loop over {@code {UNKNOWN, NET}}.
+     *
+     * <p>Measured rather than read, on a 2395-function scan of {@code httpclient5-5.6.1} (393 {@code Net}-
+     * bearing functions, 389 {@code Unknown}-bearing in scope), A/B against a jar built from the commit
+     * BEFORE the hoist — so the instrument is shown able to fail before its null result is believed:
+     *
+     * <pre>
+     *   rule                       PRE-HOIST                     HEAD
+     *   deny Net[known-telemetry]  gate   0 + unverified 114 ✗   gate   0 + unverified 389 ✓
+     *   deny Net[known-partner]    gate   0 + unverified 114 ✗   gate   0 + unverified 389 ✓
+     *   deny Net[unknown-host]     gate 393 + unverified 114 ✓   gate 393 + unverified 114 ✓
+     *   deny Net                   gate 393 + unverified 114 ✓   gate 393 + unverified 114 ✓
+     * </pre>
+     *
+     * The two narrowed rows are the defect at scale and the shape swift described: a wholly green gate over
+     * 275 unproven {@code Net}-carrying {@code Unknown}s that nothing named. They partition on HEAD and did
+     * not before. <b>The gate verdict is byte-identical in every row</b> (0/0, 0/0, 393/393, 393/393), and
+     * the two unfiltered/covering rows do not move at all — the mirror, at scale.
      */
     @Test
     void theNetDestinationFilterMovesWithTheReasonFilter() throws Exception {

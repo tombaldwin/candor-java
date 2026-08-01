@@ -8,6 +8,18 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⟨0.24⟩ `policyVocabulary.aliases` IS AN OBJECT `{alias: [classes…]}`, NOT AN ARRAY OF NAMES**
+  (SPEC §3.1, candor-spec `7f5b5ba`). This engine shipped `["corp"]`; candor-ts shipped
+  `{"corp": ["reflect"]}` and won the shape argument against three engines by quoting §3.1's own reasoning
+  back at it, not on a headcount. §3.1 rejects `configSources: [path]` because *a disclosure that names the
+  source but not the content leaves the reader knowing they were affected and not how* — and
+  `aliases: ["corp"]` fails that test one level down. **`corp = reflect` and `corp = reflect,native` gate
+  DIFFERENTLY under one unchanged policy line**, and under the array both runs disclosed the byte-identical
+  `["corp"]`: the alias NAME is precisely the part that did not change, so it cannot be the part that tells
+  the reader which gate ran. The object is a strict superset (`Object.keys` recovers the array). Class
+  tokens are sorted, so declaration order cannot change the bytes; `config` keeps its position — the content
+  is disclosed in addition to the source, never instead of it.
+
 - **⟨0.24⟩ `errors[].kind` NORMALISED ONTO THE CLOSED FIVE — `forbid form`/`allow values` → `rule-form`**
   (SPEC §3.1, candor-spec `f735b16`). The pinned set gained a fifth member, `rule-form`, because it had been
   closed over its author's sample rather than over the domain: this engine emitted two rows for a rule whose

@@ -1082,12 +1082,35 @@ public class Candor {
      * unnamed. Omitted entirely when no alias was used, so every verdict without one is byte-identical to
      * a pre-⟨0.24⟩ one — and identical across the two routes, which is the point (both anchor at the policy
      * file now, so both name the same file).
+     *
+     * <p>⟨0.24⟩ <b>{@code aliases} MAPS EACH ALIAS TO THE CLASSES IT EXPANDS TO — an OBJECT, not an array</b>
+     * (candor-spec {@code 7f5b5ba}). This engine shipped {@code ["corp"]}; candor-ts shipped
+     * {@code {"corp": ["reflect"]}} and won the argument from THIS SECTION'S OWN SENTENCE rather than on a
+     * headcount. §3.1 rejects {@code configSources: [path]} because <i>a disclosure that names the source but
+     * not the content leaves the reader knowing they were affected and not how</i> — and {@code
+     * aliases: ["corp"]} fails that same test one level down. <b>{@code corp = reflect} and
+     * {@code corp = reflect,native} gate DIFFERENTLY under one unchanged policy line</b>, so a reader given
+     * only the NAME cannot tell which gate ran; the name is exactly the part that did not change. The object
+     * is a strict superset — {@code Object.keys} recovers the array a consumer had.
+     *
+     * <p>The class tokens are SORTED, so two configs declaring the same expansion in different orders
+     * disclose the same bytes; {@code config} keeps its position and its meaning, since the content the
+     * object adds is in addition to the source, not instead of it.
      */
     static void policyVocabularyJson(java.util.LinkedHashMap<String, Object> out) {
         if (ctx().vocabularySource == null || ctx().vocabularyUsed.isEmpty()) return;
         var v = new java.util.LinkedHashMap<String, Object>();
         v.put("config", ctx().vocabularySource);
-        v.put("aliases", new ArrayList<>(ctx().vocabularyUsed));
+        // Key order = `vocabularyUsed`'s (a TreeSet, so codepoint order — locale-independent, ⟨0.24⟩).
+        var aliases = new java.util.LinkedHashMap<String, Object>();
+        for (String name : ctx().vocabularyUsed) {
+            // The alias is in the map by construction: `vocabularyUsed` is only added to on the branch that
+            // RESOLVED it (Policy line ~1050). getOrDefault rather than get so a future caller that records
+            // a use without a definition cannot NPE the whole verdict document out of existence.
+            var classes = ctx().unknownAliases.getOrDefault(name, java.util.Set.of());
+            aliases.put(name, classes.stream().map(io.poly.candor.model.ReasonClass::token).sorted().toList());
+        }
+        v.put("aliases", aliases);
         out.put("policyVocabulary", v);
     }
 

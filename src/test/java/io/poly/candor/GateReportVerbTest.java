@@ -1233,8 +1233,29 @@ class GateReportVerbTest {
                     "…by path: " + pv.get("config").getAsString());
             assertTrue(pv.get("config").getAsString().contains("polhome"),
                     "…and it is the POLICY's config, not the target's: " + pv.get("config").getAsString());
-            assertEquals("corp", pv.getAsJsonArray("aliases").get(0).getAsString(),
-                    "…and names which alias was used");
+            // ⟨0.24⟩ `aliases` MAPS EACH ALIAS TO ITS CLASSES — an OBJECT (candor-spec 7f5b5ba). This
+            // engine shipped `["corp"]`, which names the source of the change and not its content: the
+            // same test §3.1 already applies to `configSources: [path]`, one level down. THE
+            // DISCRIMINATING PAIR IS IN THIS VERY TEST — `corp = native` (below, green) and
+            // `corp = reflect` (the positive control further down, exit 1) gate DIFFERENTLY under the ONE
+            // unchanged policy line `deny Unknown[corp,unresolved] app`, and under an array disclosure
+            // both runs emit the byte-identical `["corp"]`. The name is exactly the part that did not
+            // change, so it cannot be the part that tells the reader which gate ran.
+            assertTrue(pv.get("aliases").isJsonObject(),
+                    "`aliases` is an OBJECT {alias: [classes…]}; an array names the alias but not its "
+                    + "expansion, and the expansion is what decided this verdict: " + pv);
+            assertEquals(List.of("corp"), List.copyOf(pv.getAsJsonObject("aliases").keySet()),
+                    "…keyed by the alias a rule referenced (Object.keys recovers the old array)");
+            assertEquals("[\"native\"]", pv.getAsJsonObject("aliases").get("corp").toString(),
+                    "…and CARRYING the classes it expands to — this green verdict is green BECAUSE `corp` "
+                    + "is `native` and the fn's Unknown is `reflect`");
+            // MIRROR: the object must not have displaced the `config` path. Content is disclosed IN
+            // ADDITION to the source, never instead of it — dropping the path would re-open the ambient
+            // -input failure the key exists for.
+            assertTrue(pv.has("config") && pv.get("config").getAsString().contains("polhome"),
+                    "the source path SURVIVES the shape change: " + pv);
+            assertEquals(List.of("config", "aliases"), List.copyOf(pv.keySet()),
+                    "…in that order, and with no third key invented: " + pv);
 
             // NEGATIVE CONTROL — a policy using no alias gets no such key, so the field means something.
             Candor.resetState();
@@ -1251,8 +1272,40 @@ class GateReportVerbTest {
             // rule fires. Without this the green above could be a rule that never gates.
             Candor.resetState();
             Files.writeString(polHome.resolve(".candor/config"), "unknown-alias corp = reflect\n");
-            assertEquals(1, gate(rep, pol),
+            Path out3 = tmp.resolve("reflect.verdict.json");
+            assertEquals(1, Query.run(new String[]{"gate", "--report", rep.toString(),
+                            "--policy", pol.toString(), "--gate-json", out3.toString()}),
                     "CONTROL: `corp` = reflect makes the same rule FIRE — the alias is load-bearing");
+
+            // ⟨0.24⟩ THE POINT OF THE OBJECT, measured rather than argued. Two runs, ONE unchanged policy
+            // line, opposite verdicts (exit 0 above vs exit 1 here) — and the only difference between them
+            // is the alias EXPANSION. Under the array shape both documents disclosed the identical
+            // `["corp"]` and the reader could not tell which gate ran; under the object they differ.
+            JsonObject pv3 = JsonParser.parseString(Files.readString(out3)).getAsJsonObject()
+                    .getAsJsonObject("policyVocabulary");
+            assertEquals("[\"reflect\"]", pv3.getAsJsonObject("aliases").get("corp").toString(),
+                    "the SAME alias name, a DIFFERENT expansion — and this run's verdict is the opposite "
+                    + "of the one above: " + pv3);
+            assertNotEquals(pv.getAsJsonObject("aliases").toString(),
+                    pv3.getAsJsonObject("aliases").toString(),
+                    "two policies that gate differently must not disclose byte-identical vocabulary — "
+                    + "that is the `configSources: [path]` failure one level down");
+            assertEquals(List.copyOf(pv.getAsJsonObject("aliases").keySet()),
+                    List.copyOf(pv3.getAsJsonObject("aliases").keySet()),
+                    "…while the alias NAMES are identical, which is exactly why the name cannot carry it");
+
+            // …and a MULTI-CLASS expansion travels whole, sorted, so `corp = reflect` and
+            // `corp = reflect,native` are distinguishable too (the spec's own example pair).
+            Candor.resetState();
+            Files.writeString(polHome.resolve(".candor/config"), "unknown-alias corp = native,reflect\n");
+            Path out4 = tmp.resolve("both.verdict.json");
+            Query.run(new String[]{"gate", "--report", rep.toString(),
+                    "--policy", pol.toString(), "--gate-json", out4.toString()});
+            assertEquals("[\"native\",\"reflect\"]",
+                    JsonParser.parseString(Files.readString(out4)).getAsJsonObject()
+                            .getAsJsonObject("policyVocabulary").getAsJsonObject("aliases")
+                            .get("corp").toString(),
+                    "every class the alias expands to, sorted so declaration order cannot change the bytes");
 
             // …and the SAME vocabulary reaches the pre-edit verbs. `whatif` and `fix-gate` never loaded
             // `unknown-alias` at all, so before this they silently rewrote an aliased rule (widening or

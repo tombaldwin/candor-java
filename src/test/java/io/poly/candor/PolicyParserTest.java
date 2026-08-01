@@ -6,6 +6,7 @@ import io.poly.candor.model.PolicyRule;
 import static io.poly.candor.AnalysisState.ctx;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
@@ -24,6 +25,12 @@ class PolicyParserTest {
 
     @TempDir
     Path tmp;
+
+    /** ⟨0.24⟩ The CLOSED `errors[].kind` set SPEC §3.1 pins (candor-spec {@code f735b16}). Written out here
+     *  rather than read from the engine on purpose: a test that derives the admissible set from the code it
+     *  is checking cannot catch the code widening it. */
+    static final List<String> CLOSED_KINDS = List.of(
+            "reason-class/alias", "Net destination-class", "effect-name", "rule-kind", "rule-form");
 
     @BeforeEach
     void fresh() {
@@ -368,21 +375,25 @@ class PolicyParserTest {
     }
 
     /**
-     * ⟨0.24⟩ SPEC §3.1 (candor-spec {@code 901f14d}) — <b>{@code errors[].accepted} IS AN ARRAY OF TOKENS
-     * and {@code kind} is drawn from a CLOSED set</b>: {@code reason-class/alias}, {@code Net
-     * destination-class}, {@code effect-name}, {@code rule-kind}. The measured divergence was candor-ts
-     * emitting {@code accepted} as a PROSE STRING (unparseable by the consumer the field exists for) and
-     * renaming {@code kind}/{@code rule} to {@code vocabulary}/{@code where}; this engine's shape was
-     * already the pinned one, and this test is what keeps it that way rather than by luck.
+     * ⟨0.24⟩ SPEC §3.1 (candor-spec {@code f735b16}) — <b>{@code errors[].accepted} IS AN ARRAY OF TOKENS
+     * and {@code kind} is drawn from a CLOSED set of FIVE</b>: {@code reason-class/alias}, {@code Net
+     * destination-class}, {@code effect-name}, {@code rule-kind}, {@code rule-form}. The measured
+     * divergence was candor-ts emitting {@code accepted} as a PROSE STRING (unparseable by the consumer the
+     * field exists for) and renaming {@code kind}/{@code rule} to {@code vocabulary}/{@code where}.
      *
-     * <p><b>THE ONE DIVERGENCE THAT REMAINS, deliberately.</b> Two of this engine's rows report a FORM
-     * failure rather than a vocabulary one — a malformed {@code forbid} and a value-less {@code allow} —
-     * and the closed set has no member for them. They are NOT mapped into it: {@code rule-kind} with
-     * {@code accepted: ["&lt;scope&gt; -&gt; &lt;scope&gt;"]} would tell a consumer that {@code forbid} is
-     * not a known rule kind, which is false, and a false disclosure is the defect class this rung exists to
-     * remove. The closed set was derived from the TOKEN population; the DROPPED population (candor-spec
-     * {@code 195d45a}, which this engine added) includes form failures the set does not name. Reported
-     * rather than papered over.
+     * <p><b>THE DIVERGENCE THIS ENGINE CARRIED, now closed at the SPEC end.</b> Two of this engine's rows
+     * report a FORM failure rather than a vocabulary one — a malformed {@code forbid} and a value-less
+     * {@code allow} — and the four-member set had no member for them, so they shipped as {@code forbid
+     * form} / {@code allow values}: outside the set, and unhyphenated, so not machine-comparable with any
+     * other engine's answer. Reporting rather than folding them into {@code rule-kind} was right — {@code
+     * rule-kind} would have told a consumer that {@code forbid} is not a known rule kind, which is false —
+     * and the ruling was to widen the DOMAIN, not the reading: {@code rule-form} is the fifth member.
+     *
+     * <p><b>The mirror this test guards is that the widening did not COLLAPSE the two.</b> {@code frobid a
+     * -&gt; b} names no rule kind at all and stays {@code rule-kind}; {@code forbid glued-&gt;arrow} names
+     * one and is {@code rule-form}. Those are different failures with different remedies (respell the head
+     * token vs. fix the line's shape), and a consumer that cannot tell them apart is back where the prose
+     * spellings left it.
      */
     @Test
     void everyErrorRowCarriesAnAcceptedArrayAndAPinnedKind() throws Exception {
@@ -393,9 +404,9 @@ class PolicyParserTest {
                 "deny Net[unkown-host] app",             // Net destination-class
                 "deny Nett app",                         // effect-name (deny position)
                 "allow Nett host.example",               // effect-name (allow position)
-                "frobid a -> b",                         // rule-kind
-                "forbid glued->arrow",                   // FORM — outside the closed set, see the javadoc
-                "allow Net in") + "\n");                 // FORM — likewise
+                "frobid a -> b",                         // rule-kind  — the head token names NO rule
+                "forbid glued->arrow",                   // rule-form  — `forbid` IS a rule; the FORM failed
+                "allow Net in") + "\n");                 // rule-form  — likewise
         assertFalse(Policy.parsePolicy(p.toString()));
 
         com.google.gson.JsonArray errs = com.google.gson.JsonParser.parseString(Query.policyJson())
@@ -403,12 +414,24 @@ class PolicyParserTest {
         List<String> kinds = errs.asList().stream()
                 .map(e -> e.getAsJsonObject().get("kind").getAsString()).toList();
         assertEquals(List.of("reason-class/alias", "Net destination-class", "effect-name", "effect-name",
-                        "rule-kind", "forbid form", "allow values"), kinds,
-                "the four VOCABULARY kinds are exactly the pinned closed set; the trailing two are FORM "
-                + "failures the set does not name: " + kinds);
-        assertEquals(List.of("reason-class/alias", "Net destination-class", "effect-name", "rule-kind"),
-                kinds.stream().distinct().filter(k -> !k.equals("forbid form") && !k.equals("allow values")).toList(),
-                "…and nothing outside the closed set is invented for a vocabulary failure");
+                        "rule-kind", "rule-form", "rule-form"), kinds,
+                "every `kind` is one of the pinned CLOSED FIVE, hyphenated: " + kinds);
+        // THE CLOSED SET, asserted as a set membership rather than as this row order — so a NEW error site
+        // added later cannot introduce a sixth spelling without this failing.
+        assertEquals(List.of(), kinds.stream().distinct()
+                        .filter(k -> !CLOSED_KINDS.contains(k)).toList(),
+                "nothing outside the closed five is invented; the set is " + CLOSED_KINDS);
+        // THE MIRROR: `rule-form` must not have SWALLOWED `rule-kind`. A head token that names no rule at
+        // all is a KIND failure and must still say so — collapsing the two would trade one false
+        // disclosure ("`forbid` is not a rule kind") for its opposite ("`frobid` is one, badly spelled").
+        assertEquals("rule-kind", errs.get(4).getAsJsonObject().get("kind").getAsString(),
+                "`frobid a -> b` names no rule kind — that is a KIND failure, not a FORM one");
+        assertEquals("rule-form", errs.get(5).getAsJsonObject().get("kind").getAsString(),
+                "`forbid glued->arrow` names a REAL rule kind whose line is malformed");
+        // …and the two are distinguishable BY VALUE, not only by the prose in `message`.
+        assertNotEquals(errs.get(4).getAsJsonObject().get("kind").getAsString(),
+                errs.get(5).getAsJsonObject().get("kind").getAsString(),
+                "FORM and KIND are different failures and must not share one value");
 
         for (var e : errs) {
             var row = e.getAsJsonObject();

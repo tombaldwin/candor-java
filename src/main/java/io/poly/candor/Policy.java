@@ -459,6 +459,50 @@ final class Policy {
     }
 
     /**
+     * ⟨0.24⟩ <b>DOES RULE {@code r}'s MEMBERSHIP FOR {@code effect} ACTUALLY FIRE AT {@code fn}, once the
+     * rule's own {@code Unknown[class…]} / {@code Net[dest…]} NARROWING is applied?</b> The one place this
+     * engine answers that, so §6.2's "THE GATE AND THE DISCLOSURE MUST APPLY THE SAME RULE, AND SHOULD SHARE
+     * THE SAME CODE" is a property of the code and not of three consistent authors.
+     *
+     * <p>Only {@code Unknown} and {@code Net} can be narrowed; every other effect is unfiltered by
+     * construction, so this returns {@code true} for them and the callers need no special case.
+     *
+     * <p><b>Why it had to be hoisted out of {@link #gate}.</b> It lived inline there, and the two advisory
+     * verbs beside the gate ({@code unverified}'s hole predicate, {@code fix-gate}'s denied-layer predicate)
+     * computed from the EFFECT SET ALONE. MEASURED on a report whose only hole is {@code native:dlopen},
+     * under {@code deny Unknown[reflect,unresolved] app}:
+     *
+     * <pre>
+     *   gate --report        exit 0                       correct — the class is excluded
+     *   fix-gate --strict    exit 1 + a remedy naming it   a red CI check + a hoist instruction for a
+     *                                                      boundary the policy does not draw
+     *   unverified --strict  exit 0, ok:true               the layer PASSES while carrying an Unknown —
+     *                                                      the exact hole the verb exists to name
+     * </pre>
+     *
+     * The under-report is the worse half and it is the SAME defect, not a second one: the hole predicate
+     * asked {@code inferred ∩ r.effects() ≠ ∅}, saw the rule name {@code Unknown} and the function carry
+     * {@code Unknown}, and concluded "the gate will catch this, not my problem" — about a gate that,
+     * applying the filter, did not.
+     *
+     * @param gi the accumulated signature; REQUIRED — a caller with no reason/destination channel cannot
+     *           evaluate a narrowed rule at all, and guessing either way is one of the two defects above
+     */
+    static boolean classNarrowingFires(PolicyRule.Deny r, GateInput gi, String fn, Effect effect) {
+        // Reason-scoped Unknown (REASON-SCOPED-UNKNOWN-DESIGN.md): a `deny E Unknown[classes]` rule fires
+        // its Unknown part ONLY if the fn's reason classes include one of those classes. Transitive and
+        // fail-closed — see #reasonClassesOf.
+        if (effect == Effect.UNKNOWN && !r.unknownClasses().isEmpty())
+            return reasonClassMatches(gi, fn, r.unknownClasses());
+        // Net destination-class (NET-DESTINATION-CLASS-DESIGN.md): `deny Net[dest…]` fires its Net part
+        // ONLY if the fn reaches one of those destination classes. Fail-closed upstream: a masked surface
+        // or a Net with no visible host is already `unknown-host` by the time it lands in `gi`.
+        if (effect == Effect.NET && !r.netClasses().isEmpty())
+            return gi.netClasses().getOrDefault(fn, List.of()).stream().anyMatch(r.netClasses()::contains);
+        return true;
+    }
+
+    /**
      * ⟨0.24⟩ Apply the parsed §6.2 policy to an already-accumulated signature. THE ONLY matching code in
      * this engine — {@code scan --policy} and {@code gate --report} both land here, which is what makes
      * "the same verdict from the same signature" a property of the code rather than of two consistent
@@ -522,25 +566,18 @@ final class Policy {
                 // Reason-scoped Unknown (REASON-SCOPED-UNKNOWN-DESIGN.md): a `deny E Unknown[classes]` rule
                 // (non-empty filter) fires its Unknown part ONLY if the fn's Unknown reasons include one of
                 // those classes. Concrete effects in `bad` are untouched — only the Unknown membership is scoped.
-                if (bad.toNames().contains("Unknown") && !r.unknownClasses().isEmpty()) {
-                    // THE SHARED §6.2 RULE — transitive, fail-closed, one definition (see #reasonClassesOf,
-                    // which `candor unverified --class` calls too). An Unknown inherited from a
-                    // reason-tagged callee is classified by that callee's reason, not defaulted to
-                    // unresolved; a reasonless direct Unknown has already CONTRIBUTED `unresolved` at its
-                    // source, so a fn reaching both a reasonless hole and a `dispatch:` one is caught by
-                    // `[unresolved]` AND by `[dispatch]`.
-                    if (!reasonClassMatches(gi, fn, r.unknownClasses()))
-                        bad = bad.without(Effect.UNKNOWN);            // tolerated: wrong reason-class
-                }
-                // Net destination-class (NET-DESTINATION-CLASS-DESIGN.md): a `deny Net[dest…]` rule (non-empty
-                // filter — e.g. `deny Net[unknown-host]`) fires its Net part ONLY if the fn reaches one of those
-                // destination classes. Fail-closed: a masked surface OR a Net with no visible host is unknown-host,
-                // so `deny Net[unknown-host]` bites anything candor can't positively identify as telemetry/partner.
-                if (bad.toNames().contains("Net") && !r.netClasses().isEmpty()) {
-                    List<String> fnNet = gi.netClasses().getOrDefault(fn, List.of());
-                    boolean matched = fnNet.stream().anyMatch(r.netClasses()::contains);
-                    if (!matched) bad = bad.without(Effect.NET);       // tolerated: only asserted-safe destinations
-                }
+                // THE SHARED §6.2 RULE — transitive, fail-closed, ONE definition, now in
+                // #classNarrowingFires so the two advisory verbs beside this gate apply the identical
+                // narrowing (they used to compute from the effect set alone — see that method's note).
+                // An Unknown inherited from a reason-tagged callee is classified by that callee's reason,
+                // not defaulted to unresolved; a reasonless direct Unknown has already CONTRIBUTED
+                // `unresolved` at its source, so a fn reaching both a reasonless hole and a `dispatch:` one
+                // is caught by `[unresolved]` AND by `[dispatch]`. Net is the same shape one key over:
+                // fail-closed, so `deny Net[unknown-host]` bites anything candor can't positively identify
+                // as telemetry/partner. Concrete effects in `bad` are untouched by either.
+                for (Effect w : List.of(Effect.UNKNOWN, Effect.NET))
+                    if (bad.contains(w) && !classNarrowingFires(r, gi, fn, w))
+                        bad = bad.without(w);                          // tolerated: outside the rule's classes
                 if (!bad.isEmpty()) {
                     // ⟨0.23⟩ A SYNTHETIC `interfaceUnion` ENTRY IS NOT A FUNCTION, so it cannot "perform"
                     // anything and must not become a violation ROW. Its `fn` names a BODILESS declaration
@@ -599,8 +636,8 @@ final class Policy {
         List<String[]> holes = new ArrayList<>();
         for (var e : new TreeMap<>(inferred).entrySet()) {
             // Same predicate + upgrade reconstruction as `candor unverified` (Query) — one source of truth.
-            PolicyRule.Deny r = unverifiedHoleRule(e.getKey(), e.getValue(), ctx().denyRules);
-            if (r != null) holes.add(new String[]{e.getKey(), ruleUpgrade(r)[1]});
+            PolicyRule.Deny r = unverifiedHoleRule(e.getKey(), e.getValue(), ctx().denyRules, gi);
+            if (r != null) holes.add(new String[]{e.getKey(), ruleUpgrade(r, reasonClassesOf(gi, e.getKey()))[1]});
         }
         if (!holes.isEmpty()) {
             System.err.println("candor-java: note — " + holes.size()
@@ -1222,27 +1259,87 @@ final class Policy {
      *  this. Returns the first governing rule under which the method is such a hole, or null. Shared by the
      *  gate note ({@link #checkPolicy}) and `candor unverified` (Query) so "what a hole is" has ONE
      *  definition — the two disclosure paths cannot drift (conformance PART 12d pins their agreement). */
-    static PolicyRule.Deny unverifiedHoleRule(String fn, EffectSet inferred, List<PolicyRule.Deny> deny) {
+    static PolicyRule.Deny unverifiedHoleRule(String fn, EffectSet inferred, List<PolicyRule.Deny> deny,
+                                              GateInput gi) {
         if (!inferred.toNames().contains("Unknown")) return null;
         for (PolicyRule.Deny r : deny) {
             if (!scopeMatches(fn, r.scope())) continue;
-            boolean violates = r.effects().isEmpty()
-                    ? !inferred.without(Effect.UNKNOWN).isEmpty()   // pure: any real effect is a violation
-                    : !inferred.intersect(r.effects()).isEmpty();    // deny: a named effect is a violation
-            if (!violates) return r;
+            EffectSet bad = r.effects().isEmpty()
+                    ? inferred.without(Effect.UNKNOWN)   // pure: any real effect is a violation
+                    : inferred.intersect(r.effects());   // deny: a named effect is a violation
+            // ⟨0.24⟩ …AS THE GATE WOULD COMPUTE IT — through the same #classNarrowingFires. A rule that
+            // names `Unknown[reflect,unresolved]` does NOT deny a `native:` hole, so a function carrying
+            // one PASSES that rule, and a pass while Unknown is precisely what this predicate is for.
+            // Without the narrowing the intersection was non-empty, the predicate read "the gate has this
+            // one" and returned null, and the gate — applying the filter — passed it: the layer went
+            // green with an unproven Unknown in it and NEITHER channel said so.
+            for (Effect w : List.of(Effect.UNKNOWN, Effect.NET))
+                if (bad.contains(w) && !classNarrowingFires(r, gi, fn, w)) bad = bad.without(w);
+            if (bad.isEmpty()) return r;
         }
         return null;
     }
 
-    /** Reconstruct a rule's source form and its `Unknown`-forbidding upgrade: `{source, upgrade}`. `pure
-     *  <scope>` → {"pure <scope>", "deny Unknown <scope>"}; `deny <E…> <scope>` → {"deny <E…> <scope>",
-     *  "deny <E…> Unknown <scope>"}. Shared so the gate note and `unverified` name the identical upgrade. */
-    static String[] ruleUpgrade(PolicyRule.Deny r) {
+    /**
+     * Reconstruct a rule's source form and the upgrade that would make this hole PROVABLE:
+     * {@code {source, upgrade}}. {@code pure <scope>} → {@code {"pure <scope>", "deny Unknown <scope>"}};
+     * {@code deny <E…> <scope>} → {@code {"deny <E…> <scope>", "deny <E…> Unknown <scope>"}}. Shared so the
+     * gate note and {@code unverified} name the identical upgrade.
+     *
+     * <p>⟨0.24⟩ <b>A NARROWING FILTER IS PART OF THE RULE, in both halves.</b> Once a narrowed rule can pass
+     * a function (see {@link #unverifiedHoleRule}) this method started being asked about one, and both
+     * halves were wrong in a way that only shows up there:
+     * <ul>
+     *   <li>the SOURCE dropped the filter — {@code deny Unknown[reflect,unresolved] app} was quoted back as
+     *       {@code deny Unknown app}, attributing the pass to a rule the operator did not write, and to one
+     *       that would not have passed. SPEC §3.1 rules on the identical shape for {@code whatif}: printing
+     *       a rule stripped of its filter misattributes the verdict.</li>
+     *   <li>the UPGRADE appended a second {@code Unknown} to a rule that already names it —
+     *       {@code deny Unknown[reflect,unresolved] Unknown app}, which is not a policy. When the rule
+     *       already denies {@code Unknown} and only its FILTER missed, the upgrade is to WIDEN the filter by
+     *       the classes that got through, which is also the smaller ask: it closes this hole without
+     *       silently re-arming the rule against every other class.</li>
+     * </ul>
+     * The effect NAMES are still reconstructed in canonical {@link Effect} order rather than quoted from
+     * {@code r.src()} — that normalisation is pre-existing, names the same rule, and is what conformance
+     * PART 12c compares four-way. A filter is the case where reconstruction changes the MEANING.
+     *
+     * @param holeClasses the hole's own reason classes ({@link #reasonClassesOf}), used to widen an
+     *                    already-narrowed {@code Unknown[…]}; may be null/empty, in which case nothing widens
+     */
+    static String[] ruleUpgrade(PolicyRule.Deny r, Set<ReasonClass> holeClasses) {
         String suffix = r.scope().isEmpty() ? "" : " " + r.scope();
         if (r.effects().isEmpty())
             return new String[]{"pure" + suffix, "deny Unknown" + suffix};
-        String effs = String.join(" ", r.effects().toNames());
-        return new String[]{"deny " + effs + suffix, "deny " + effs + " Unknown" + suffix};
+        String src = "deny " + denyEffects(r, null) + suffix;
+        if (r.effects().contains(Effect.UNKNOWN) && !r.unknownClasses().isEmpty()) {
+            Set<ReasonClass> widened = java.util.EnumSet.copyOf(r.unknownClasses());
+            if (holeClasses != null) widened.addAll(holeClasses);
+            return new String[]{src, "deny " + denyEffects(r, widened) + suffix};
+        }
+        return new String[]{src, "deny " + denyEffects(r, null) + " Unknown" + suffix};
+    }
+
+    /** The effect list of a {@code deny} rule as §6.2 spells it — canonical {@link Effect} order, with the
+     *  {@code Unknown[class…]} and {@code Net[dest…]} narrowing filters rendered on the members that carry
+     *  them (tokens sorted, since a {@code Set} has no order to be faithful to). {@code unknownOverride}
+     *  replaces the rule's own reason-class filter; that is how {@link #ruleUpgrade} widens it. */
+    private static String denyEffects(PolicyRule.Deny r, Set<ReasonClass> unknownOverride) {
+        StringBuilder sb = new StringBuilder();
+        for (String n : r.effects().toNames()) {
+            if (sb.length() > 0) sb.append(' ');
+            sb.append(n);
+            if (n.equals("Unknown")) {
+                Set<ReasonClass> f = unknownOverride != null ? unknownOverride : r.unknownClasses();
+                if (!f.isEmpty())
+                    sb.append('[').append(f.stream().map(ReasonClass::token).sorted()
+                            .collect(Collectors.joining(","))).append(']');
+            } else if (n.equals("Net") && !r.netClasses().isEmpty()) {
+                sb.append('[').append(r.netClasses().stream().sorted()
+                        .collect(Collectors.joining(","))).append(']');
+            }
+        }
+        return sb.toString();
     }
 
     /** Split a name OR a policy scope into segments on `.`, `::` AND the JVM's `$` nested-type boundary,

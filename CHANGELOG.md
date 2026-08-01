@@ -8,6 +8,44 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⟨0.24⟩ A NARROWED RULE IS A NARROWER RULE FOR `unverified` AND `fix-gate` TOO** (SPEC §6.2, "THE GATE
+  AND THE DISCLOSURE MUST APPLY THE SAME RULE, AND SHOULD SHARE THE SAME CODE"). `deny E Unknown[c…]` and
+  `deny Net[dest…]` carry a class filter the gate has always honoured; the two advisory verbs beside it
+  computed from the EFFECT SET ALONE. MEASURED over a report whose only hole is `native:dlopen`, under
+  `deny Unknown[reflect,unresolved] app` — a layer the gate PASSES:
+
+  | verb | before | |
+  |---|---|---|
+  | `gate --report` | exit 0 | correct — the class is excluded |
+  | `fix-gate --strict` | exit 1 + a remedy naming it | a red CI check and a hoist instruction for a boundary the policy does not draw |
+  | `unverified --strict` | exit 0, `ok:true` | the under-report, and the worse half |
+
+  **The under-report is the half that matters.** The layer passes while carrying an `Unknown`, so it is
+  exactly a PASS-but-Unknown hole — and `unverified`, the verb whose whole job is *"your green gate is not
+  provably green"*, certified it clean. Its hole predicate asked `inferred ∩ rule.effects() ≠ ∅`, saw the
+  rule name `Unknown` and the function carry `Unknown`, and concluded the gate would catch this one; the
+  gate, applying the filter, did not. **Both halves are one defect and are fixed in one change** — the
+  narrowing is hoisted out of the gate into `Policy#classNarrowingFires` and all three call sites share it.
+  MEASURED AT SCALE on this engine's own 407-function report (72 `Unknown`-bearing functions), where the two
+  channels must PARTITION that set — a function either violates the rule, or passes it while `Unknown`:
+
+  ```
+  deny Unknown[reflect,unresolved]    gate 44 + unverified  0 = 44  →  44 + 28 = 72
+  deny Unknown[indirect,unresolved]   gate 34 + unverified  0 = 34  →  34 + 38 = 72
+  deny Unknown[dispatch,unresolved]   gate  0 + unverified  0 =  0  →   0 + 72 = 72
+  ```
+
+  The last row is the defect in one line: a wholly green gate over 72 unproven `Unknown`s, with not one word
+  said about any of them. **The gate verdict is byte-identical across the change** (44/44, 34/34, 0/0) — this
+  moves what is DISCLOSED, never what is decided; unfiltered rules and the `Unknown[*]`/`Unknown[dynamic]`
+  forms do not move at all. `fix` shares the denied-layer predicate and moves with it. Two adjacent repairs
+  fall out: the disclosure now quotes the rule WITH its filter (`deny Unknown[reflect,unresolved] app`, not
+  `deny Unknown app` — a rule nobody wrote, and one that would not have passed), and the upgrade for an
+  already-narrowed rule WIDENS the filter by the class that got through rather than appending a second bare
+  `Unknown` to a rule that already names it. Pinned by `NarrowedRuleAdvisoryVerbTest` (9 tests; the mirrors —
+  a policy whose classes DO cover the hole, and every unfiltered rule — assert the disclosure is still named,
+  byte-for-byte).
+
 - **⟨0.21⟩ THE COMPLETENESS MANIFEST NOW REACHES THE AGENT ACROSS THE MCP SURFACE.** candor-ts found its
   MCP `candor_gate` implementing no ⟨0.21⟩ incompleteness rule — `{"ok":true}` over a report declaring
   `unanalyzed` where the CLI exits 2. **This server exposes no gate tool at all** (four read-only queries;

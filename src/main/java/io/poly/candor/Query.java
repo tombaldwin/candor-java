@@ -1330,12 +1330,26 @@ public final class Query {
      *  MEASURED — {@code deny Unknown[reflect,unresolved] app} over a report whose only hole is
      *  {@code native:dlopen} produced a full hoist plan and {@code --strict} exit 1 for a boundary the gate
      *  (correctly, exit 0) does not draw: a red CI check and an instruction to restructure code around a
-     *  line the policy does not contain. */
-    static String deniedLayer(String fn, String effect, Policy.GateInput gi) {
+     *  line the policy does not contain.
+     *
+     *  <p>⟨0.24⟩ …AND NOT A RULE THE GATE WITHHELD (SPEC §3.2). {@code classNarrowingFires} returns the same
+     *  {@code false} for "the filter says a DIFFERENT class" and for "the field the filter reads is ABSENT",
+     *  and those are opposite statements: the first is a boundary the policy does not draw, the second is a
+     *  boundary the gate REFUSED to adjudicate. Both used to end the loop the same way — {@code null}, "no
+     *  policy forbids it there" — so `fix` reported "nothing to fix" and `fix-gate` reported {@code ok:true}
+     *  over a report the gate exits 2 on. The remedy premised on the refused evidence is the mirror harm and
+     *  is measured in {@link #fixGate}: over `deny Unknown[unresolved] app` and an entry whose `Unknown` is
+     *  INHERITED with no reason reachable, the gate refused while `fix-gate --strict` returned a full hoist
+     *  plan for `app.inherits` and exit 1.
+     *
+     *  @param withheld {@link #unanswerableScopedFilters}'s triples; {@code Set.of()} means "nothing was
+     *                  withheld", which is the scan route and every answerable report */
+    static String deniedLayer(String fn, String effect, Policy.GateInput gi, Set<String> withheld) {
         Effect e = Effect.fromSpecName(effect);
         for (var r : AnalysisState.ctx().denyRules) {
             boolean denies = r.effects().isEmpty() ? !effect.equals("Unknown") : r.effects().toNames().contains(effect);
             if (!denies || !Policy.scopeMatches(fn, r.scope())) continue;
+            if (Policy.withheldAt(withheld, r, fn)) continue;                      // the gate could not judge it
             if (e != null && !Policy.classNarrowingFires(r, gi, fn, e)) continue;  // outside the rule's classes
             return r.scope();
         }
@@ -1449,10 +1463,17 @@ public final class Query {
 
     /** The cut itself — pure over the report graph. `start` performs `effect` and sits in the deny-`effect`
      *  layer `layer`; `cg` is caller→callees (the sidecar), `rev` its inverse, `byName` the effector index.
-     *  Returns the direct site(s), the denied span, and the hoist frontier. Shared by `fix` and `fix-gate`. */
+     *  Returns the direct site(s), the denied span, and the hoist frontier. Shared by `fix` and `fix-gate`.
+     *
+     *  <p>⟨0.24⟩ {@code withheld} rides all the way in, because the SPAN and the FRONTIER are the same
+     *  question as the entry: a caller the gate could not judge must not be named as the allowed layer to
+     *  hoist the effect INTO. In practice the entry guard has already fired for the whole chain — a report
+     *  that dropped the `netClass`/reason channel dropped it for every entry, and {@code
+     *  Policy#gateInputFromReport} reads those fields VERBATIM rather than propagating them — but the
+     *  predicate is one predicate, so it is passed rather than approximated here. */
     static Remedy computeRemedy(String start, String effect, String layer,
                                 Map<String, List<String>> cg, Map<String, List<String>> rev,
-                                Map<String, Effector> byName, Policy.GateInput gi) {
+                                Map<String, Effector> byName, Policy.GateInput gi, Set<String> withheld) {
         // direct site(s) S: forward BFS from `start` through effect-carrying callees to the DIRECT source(s).
         TreeSet<String> sites = new TreeSet<>();
         TreeSet<String> fseen = new TreeSet<>();
@@ -1477,7 +1498,7 @@ public final class Query {
         TreeSet<String> hoist = new TreeSet<>();
         Deque<String> up = new ArrayDeque<>();
         for (String a : anchors) {
-            if (deniedLayer(a, effect, gi) != null) deniedSpan.add(a); // a site that is itself in the denied layer
+            if (deniedLayer(a, effect, gi, withheld) != null) deniedSpan.add(a); // a site that is itself in the denied layer
             up.add(a);
         }
         while (!up.isEmpty()) {
@@ -1488,7 +1509,7 @@ public final class Query {
                 // callgraph-only node never carries the effect). Skipping the absent case matches candor-swift
                 // and avoids naming a pure node as a hoist target. (/code-review — was `ce != null && !…`.)
                 if (ce == null || !ce.inferred().toNames().contains(effect)) continue;
-                if (deniedLayer(caller, effect, gi) != null) {
+                if (deniedLayer(caller, effect, gi, withheld) != null) {
                     if (deniedSpan.add(caller)) up.add(caller); // denied → part of the span; keep climbing
                 } else {
                     hoist.add(caller); // allowed → the boundary; the effect should originate here
@@ -1510,7 +1531,7 @@ public final class Query {
             for (String caller : rev.getOrDefault(cur, List.of())) {
                 Effector ce = byName.get(caller);
                 if (ce == null || !ce.inferred().toNames().contains(effect)) continue;
-                if (deniedLayer(caller, effect, gi) != null) {
+                if (deniedLayer(caller, effect, gi, withheld) != null) {
                     sandwiched = true;
                 } else if (hseen.add(caller)) {
                     higher.add(caller);
@@ -1525,12 +1546,15 @@ public final class Query {
     }
 
     /** Load a policy into the thread-local deny rules, fail-loud (exit 2) on an unreadable path — the same
-     *  contract as `whatif`. Returns true on success; on failure prints the reason and the caller returns 2. */
-    private static boolean loadPolicyOrFail(String policyPath, String who) {
+     *  contract as `whatif`. Returns the RESOLVED policy path on success (the argument, or {@code
+     *  CANDOR_POLICY} when it was absent — the advisory verbs quote it in their ⟨0.24⟩ `unevaluated` rows,
+     *  and quoting the unresolved `null` would print a re-run instruction that does not work); on failure
+     *  prints the reason, returns null, and the caller returns 2. */
+    private static String loadPolicyOrFail(String policyPath, String who) {
         if (policyPath == null) policyPath = System.getenv("CANDOR_POLICY");
         if (policyPath == null) {
             System.err.println("candor " + who + ": a policy is required (pass a policy file or set CANDOR_POLICY) — the fix is the refactor that restores the boundary the edit crossed.");
-            return false;
+            return null;
         }
         AnalysisState.ctx().denyRules.clear();
         // ⟨0.24⟩ POLICY VOCABULARY, anchored at the policy file (SPEC §3.1) — as `whatif` and the two gate
@@ -1546,9 +1570,9 @@ public final class Query {
             // from how it was written) is right; only the noun was borrowed from the sibling verb.
             System.err.println("candor " + who + ": " + Policy.policyFailure(policyPath) + " — "
                     + ("unverified".equals(who) ? "nothing was checked" : "no fix computed") + ".");
-            return false;
+            return null;
         }
-        return true;
+        return policyPath;
     }
 
     private static Map<String, List<String>> reverseGraph(Map<String, List<String>> cg) {
@@ -1581,7 +1605,7 @@ public final class Query {
             System.err.println("candor: unknown effect `" + effect + "` (expected one of " + Rules.KNOWN_EFFECTS + " or Unknown)");
             return 2;
         }
-        if (!loadPolicyOrFail(policyPath, "fix")) return 2;
+        if (loadPolicyOrFail(policyPath, "fix") == null) return 2;
 
         Map<String, Effector> byName = new HashMap<>();
         for (Effector f : fns) byName.put(f.fn(), f);
@@ -1590,6 +1614,8 @@ public final class Query {
         // ⟨0.24⟩ the reason/destination channel a NARROWED rule is evaluated over — built by the same
         // Policy#gateInputFromReport the gate itself uses, never a second copy (SPEC §6.2).
         Policy.GateInput gi = Policy.gateInputFromReport(fns, rawUnknownWhy(reportPath));
+        // ⟨0.24⟩ SPEC §3.2 — and the (rule, fn, effect) triples the GATE would refuse over these same bytes.
+        Unanswerable scoped = unanswerableScopedFilters(gi);
 
         // Resolve `fn` among the best-tier matches, PREFERRING one that performs the effect (so a bare leaf
         // resolves to the violating fn, not a same-named pure sibling). Must match candor-query/ts/swift — a
@@ -1608,13 +1634,33 @@ public final class Query {
             System.out.println("candor fix: `" + start + "` does not perform " + effect + " — nothing to hoist.");
             return 0;
         }
-        String layer = deniedLayer(start, effect, gi);
+        // ⟨0.24⟩ SPEC §3.2 — THE REFUSAL COMES FIRST, because "no policy forbids it there" and "the gate
+        // could not tell" are different sentences and only one of them is true here. Answered before
+        // `deniedLayer` returns null for the second reason, so the two never collapse into the first.
+        List<Withheld> here = scoped.functions().stream()
+                .filter(w -> w.fn().equals(start) && w.effect().equals(effect)).toList();
+        if (!here.isEmpty()) {
+            for (Withheld w : here) System.err.println("candor fix: " + w.why());
+            System.err.println("candor fix: no remedy computed — a hoist plan for a boundary the gate "
+                    + "REFUSED to adjudicate would be a confident instruction resting on a guess. Widen the "
+                    + "rule or gate at scan time, then re-run.");
+            if (json) {
+                Map<String, Object> out = new LinkedHashMap<>();
+                out.put("fn", start);
+                out.put("effect", effect);
+                out.put("unevaluated", Candor.unevaluatedJson(
+                        here.stream().map(w -> new String[]{w.rule(), w.why()}).toList()));
+                emit(out);
+            }
+            return 2;
+        }
+        String layer = deniedLayer(start, effect, gi, scoped.triples());
         if (layer == null) {
             System.out.println("candor fix: `" + start + "` performs " + effect
                     + ", but no policy forbids it there — the boundary isn't crossed, nothing to fix.");
             return 0;
         }
-        Remedy plan = computeRemedy(start, effect, layer, cg, rev, byName, gi);
+        Remedy plan = computeRemedy(start, effect, layer, cg, rev, byName, gi, scoped.triples());
         if (json) {
             emit(plan.toJson());
             return 0;
@@ -1629,9 +1675,23 @@ public final class Query {
     /** fix-gate <report> [policy] — a remedy for EVERY deny/`pure` (AS-EFF-006) boundary crossing in the
      *  report, collapsing the inheritors of one root cause to a single plan. The edit-time loop folds this
      *  into the block message so the agent gets the FIX, not just the finding. Scope is AS-EFF-006 only —
-     *  the one refactor candor can compute; allowlist/layering findings are a different shape. */
+     *  the one refactor candor can compute; allowlist/layering findings are a different shape.
+     *
+     *  <p>⟨0.24⟩ <b>AND NO REMEDY PREMISED ON EVIDENCE THE GATE REFUSED TO READ</b> (SPEC §3.2). MEASURED
+     *  on this engine before the repair, one hand-built report — an entry whose {@code Unknown} is INHERITED
+     *  with no reason reachable, under {@code deny Unknown[unresolved] app}:
+     *  <pre>
+     *    gate --report        exit 2, refused — it CANNOT judge `app.inherits`
+     *    fix-gate             ok:false + a full hoist plan for `app.inherits`
+     *    fix-gate --strict    exit 1 — a red CI check and an instruction to restructure code around a
+     *                         boundary the gate declined to adjudicate
+     *  </pre>
+     *  The mechanism is the one {@link #deniedLayer} names: {@code reasonClassesOf} floors an absent class
+     *  set to {@code unresolved}, so the narrowing FIRED on the fail-closed default for the very datum the
+     *  gate refused to read — right for the gate (which then refuses), a fabricated premise for a remedy. */
     static int fixGate(List<Effector> fns, String reportPath, String policyPath, boolean json, boolean strict) {
-        if (!loadPolicyOrFail(policyPath, "fix-gate")) return 2;
+        String pol = loadPolicyOrFail(policyPath, "fix-gate");
+        if (pol == null) return 2;
 
         Map<String, Effector> byName = new HashMap<>();
         for (Effector f : fns) byName.put(f.fn(), f);
@@ -1639,31 +1699,51 @@ public final class Query {
         Map<String, List<String>> rev = reverseGraph(cg);
         // ⟨0.24⟩ as `fix` — the SAME gate input, so a narrowed rule names the same boundary in both verbs.
         Policy.GateInput gi = Policy.gateInputFromReport(fns, rawUnknownWhy(reportPath));
+        // ⟨0.24⟩ …and the SAME withholding, from the same producer the gate reads (SPEC §3.2).
+        Unanswerable scoped = unanswerableScopedFilters(gi);
+        List<String[]> unevaluated = new ArrayList<>(policyKindUnevaluated(pol));
+        unevaluated.addAll(scoped.disclosures());
 
         Map<String, Remedy> plans = new TreeMap<>();
         for (Effector f : fns) {
             for (String effect : f.inferred().toNames()) {
-                String layer = deniedLayer(f.fn(), effect, gi);
+                String layer = deniedLayer(f.fn(), effect, gi, scoped.triples());
                 if (layer != null) {
-                    Remedy p = computeRemedy(f.fn(), effect, layer, cg, rev, byName, gi);
+                    Remedy p = computeRemedy(f.fn(), effect, layer, cg, rev, byName, gi, scoped.triples());
                     plans.putIfAbsent(p.dedupKey(), p);
                 }
             }
         }
+        // ⟨0.24⟩ `ok` IS THE CLAIM, and it is bounded above by the gate's. With a rule left unevaluated,
+        // "no outstanding boundary crossings" is a statement about the rules this verb could read, not
+        // about the policy — the same green-over-a-refusal the gate itself refuses to print.
+        boolean clean = plans.isEmpty() && unevaluated.isEmpty();
         if (json) {
             Map<String, Object> out = new LinkedHashMap<>();
-            out.put("ok", plans.isEmpty());
+            out.put("ok", clean);
             List<Map<String, Object>> rem = new ArrayList<>();
             for (Remedy p : plans.values()) rem.add(p.toJson());
             out.put("remedies", rem);
+            if (!unevaluated.isEmpty()) out.put("unevaluated", Candor.unevaluatedJson(unevaluated));
             emit(out);
             // Advisory by default (exit 0 — the agent fix-loop reads the remedy and edits); `--strict` makes
             // the exit follow `ok`, so CI can REQUIRE zero outstanding crossings (mirrors `unverified --strict`).
+            // ⟨0.24⟩ 2, not 1, when a rule went unevaluated: SPEC §3.2 pins the exit to the GATE's, and a
+            // refusal is not a crossing the operator can go and fix.
+            if (strict && !unevaluated.isEmpty()) return 2;
             return strict && !plans.isEmpty() ? 1 : 0;
         }
+        for (String[] u : unevaluated) System.err.println("candor fix-gate: " + u[1]);
         if (plans.isEmpty()) {
-            System.out.println("candor fix-gate: no deny/pure boundary crossings in this report ✓");
-            return 0;
+            if (unevaluated.isEmpty()) {
+                System.out.println("candor fix-gate: no deny/pure boundary crossings in this report ✓");
+                return 0;
+            }
+            System.out.println("candor fix-gate: no remedy — " + unevaluated.size() + " policy rule(s) could "
+                    + "not be evaluated against this report (above), and `gate --report` refuses over them. "
+                    + "NOT an all-clear: a hoist plan premised on evidence the gate declined to read would "
+                    + "be a confident instruction resting on a guess.");
+            return strict ? 2 : 0;
         }
         int n = plans.size();
         System.out.println("candor fix — " + n + " boundary " + (n == 1 ? "remedy" : "remedies") + " for this change:\n");
@@ -1676,6 +1756,11 @@ public final class Query {
         }
         System.out.println("\n  (Advisory: candor names the shape, you write the code; the gate re-scan verifies each fix.)");
         if (strict) {
+            if (!unevaluated.isEmpty()) {
+                System.out.println("  (--strict: " + n + " outstanding boundary crossing(s), AND "
+                        + unevaluated.size() + " rule(s) the gate could not evaluate → exit 2, as the gate)");
+                return 2;
+            }
             System.out.println("  (--strict: " + n + " outstanding boundary crossing(s) → exit 1)");
             return 1;
         }
@@ -1686,10 +1771,37 @@ public final class Query {
      *  candor-query). A `pure`/`deny E` layer PASSES a function that carries none of its forbidden effects —
      *  but if that function is Unknown (an unresolvable call), the pass is UNVERIFIED: the Unknown could hide
      *  the very effect the rule forbids (the fn/closure-port hole). Names each such function + the
-     *  `deny E Unknown <scope>` upgrade. Advisory (exit 0); `--strict` → exit 1. The gate verdict is untouched. */
+     *  `deny E Unknown <scope>` upgrade. Advisory (exit 0); `--strict` → exit 1. The gate verdict is untouched.
+     *
+     *  <p>⟨0.24⟩ <b>…AND EVERY FUNCTION THE GATE COULD NOT JUDGE</b> (SPEC §3.2, the ADVISORY-VERB
+     *  CONFIDENCE LAW). A function the gate WITHHELD on is an unverified hole in the strongest sense this
+     *  verb has: it is literally <i>"your green gate is not provably green"</i>, and it is the one case
+     *  where the verb was silent. MEASURED on this engine before the repair, the conformance R11 report —
+     *  {@code hosts} present, {@code netClass} absent — under {@code deny Net[unknown-host] app}:
+     *  <pre>
+     *    gate --report   exit 2   §3.1 answerability refusal — it CANNOT judge `app.noClass`
+     *    unverified      exit 0   names `app.nativeHole` (a DIFFERENT hole) and clears `app.noClass`
+     *  </pre>
+     *  and on a report whose {@code Unknown} is INHERITED with no reason reachable, under
+     *  {@code deny Unknown[unresolved] app}, the same defect with nothing left to hide behind:
+     *  {@code gate --report} exit 2, {@code unverified} {@code ok:true, unverified: []}.
+     *
+     *  <p>The mechanism was not one bug but the ABSENCE of a question. This verb's hole predicate asks "does
+     *  the gate PASS this function while it is Unknown?", and both halves of that quietly assume the gate
+     *  reached a verdict at all: {@code app.noClass} carries no {@code Unknown} so it was never a candidate,
+     *  and {@code app.inherits} had its narrowing FIRE on {@code reasonClassesOf}'s fail-closed
+     *  {@code unresolved} floor — a class derived from the very field the gate refused to read. Naming the
+     *  derived class is what §3.2 forbids; the reason recorded is the ABSENT FIELD ({@link #withheldWhy}).
+     *
+     *  <p><b>The `--class` filter is NOT applied to these entries</b>, and that is the point rather than an
+     *  omission: {@code --class} selects on the reason-class channel, and a withheld entry is precisely one
+     *  whose channel the gate could not read. Filtering it on a class derived from the absent field is the
+     *  fallback derivation this law removes, one level over — and it would drop the entry silently, which is
+     *  the direction that costs a disclosure. */
     static int unverified(List<Effector> fns, String reportPath, String policyPath, boolean json,
                           boolean strict, Set<ReasonClass> classFilter) {
-        if (!loadPolicyOrFail(policyPath, "unverified")) return 2;
+        String pol = loadPolicyOrFail(policyPath, "unverified");
+        if (pol == null) return 2;
         List<PolicyRule.Deny> deny = AnalysisState.ctx().denyRules;
         record Hole(Effector fn, PolicyRule.Deny rule) {}
         // `--class <c,…>` (SPEC §6.2 ⟨0.24⟩): keep the holes whose reason classes intersect the filter,
@@ -1738,14 +1850,29 @@ public final class Query {
             }
         }
         final Policy.GateInput gi = Policy.gateInputFromReport(fns, rawWhy);
+        // ⟨0.24⟩ SPEC §3.2 — WHAT THE GATE WOULD REFUSE OVER THESE BYTES, from the gate's own producer.
+        Unanswerable scoped = unanswerableScopedFilters(gi);
+        List<String[]> unevaluated = new ArrayList<>(policyKindUnevaluated(pol));
+        unevaluated.addAll(scoped.disclosures());
         java.util.function.Predicate<Effector> classMatch =
                 f -> Policy.reasonClassMatches(gi, f.fn(), classFilter);
         List<Hole> holes = new ArrayList<>();
         for (Effector e : fns) {
             // Same predicate as the gate note (Policy.unverifiedHoleRule) — one definition of a hole.
-            PolicyRule.Deny r = Policy.unverifiedHoleRule(e.fn(), e.inferred(), deny, gi);
+            PolicyRule.Deny r = Policy.unverifiedHoleRule(e.fn(), e.inferred(), deny, gi, scoped.triples());
             if (r != null && classMatch.test(e)) holes.add(new Hole(e, r));
         }
+        // ⟨0.24⟩ …AND THE FUNCTIONS THE GATE COULD NOT JUDGE. Sorted by code point over (fn, rule, effect)
+        // — locale-independent (§2), and a total order so the list is byte-stable whatever order the rules
+        // and entries arrived in. Deduped on the same triple: two rules withholding the same effect at the
+        // same function are two rows, one rule twice is one.
+        List<Withheld> unjudged = scoped.functions().stream()
+                .sorted(Comparator.comparing(Withheld::fn).thenComparing(Withheld::rule)
+                        .thenComparing(Withheld::effect))
+                .distinct().toList();
+        // `ok` IS THE CLAIM, and §3.2 bounds it above by the gate's: a run in which the gate refused cannot
+        // report a clean bill here, whether the refusal named functions (`unjudged`) or a whole rule kind.
+        boolean clean = holes.isEmpty() && unjudged.isEmpty() && unevaluated.isEmpty();
         if (json) {
             List<Map<String, Object>> items = new ArrayList<>();
             for (Hole h : holes) {
@@ -1757,17 +1884,47 @@ public final class Query {
                 m.put("upgrade", ru[1]);
                 items.add(m);
             }
+            // The withheld entries ride the SAME array — a consumer asking "which functions are not provably
+            // clean" must not have to know about a second key to get the ones the gate could not judge, which
+            // are the least provable of all. They are told apart by `why`, present only here, and the rule is
+            // quoted VERBATIM (never reconstructed through #ruleUpgrade, whose job is to name a filter this
+            // engine could evaluate).
+            for (Withheld w : unjudged) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("fn", w.fn());
+                m.put("rule", w.rule());
+                m.put("unknownWhy", List.of());
+                m.put("why", w.why());
+                m.put("upgrade", w.widen());
+                items.add(m);
+            }
             Map<String, Object> out = new LinkedHashMap<>();
-            out.put("ok", holes.isEmpty());
+            out.put("ok", clean);
             out.put("unverified", items);
+            if (!unevaluated.isEmpty()) out.put("unevaluated", Candor.unevaluatedJson(unevaluated));
             emit(out);
+            // ⟨0.24⟩ 2, not 1, when the gate would have refused — SPEC §3.2 pins the exit to the gate's.
+            if (strict && !unevaluated.isEmpty()) return 2;
             return strict && !holes.isEmpty() ? 1 : 0;
         }
-        if (holes.isEmpty()) {
-            System.out.println("candor unverified: every function in a pure/deny layer is PROVABLY clean (no Unknown holes) ✓");
-            return 0;
+        // THE PROSE CHANNEL CARRIES THE SAME DISCLOSURE, for the reason `whatif` states one verb over: a
+        // qualifier that exists only in `--json` leaves the human reading the identical all-clear.
+        for (Withheld w : unjudged) System.err.println("candor unverified: " + w.why());
+        for (String[] u : unevaluated)
+            if (unjudged.stream().noneMatch(w -> w.rule().equals(u[0])))
+                System.err.println("candor unverified: " + u[1]);
+        if (holes.isEmpty() && unjudged.isEmpty()) {
+            if (unevaluated.isEmpty()) {
+                System.out.println("candor unverified: every function in a pure/deny layer is PROVABLY clean (no Unknown holes) ✓");
+                return 0;
+            }
+            System.out.println("candor unverified: no Unknown holes among the rules this report can answer — "
+                    + "but " + unevaluated.size() + " rule(s) went unevaluated (above) and `gate --report` "
+                    + "refuses over them. NOT an all-clear.");
+            return strict ? 2 : 0;
         }
-        System.out.println("candor unverified — " + holes.size() + " function(s) PASS their policy but aren't PROVABLY clean:\n");
+        int n = holes.size() + unjudged.size();
+        System.out.println("candor unverified — " + n + " function(s) are not PROVABLY clean under this policy:\n");
         TreeSet<String> upgrades = new TreeSet<>();
         for (Hole h : holes) {
             String[] ru = Policy.ruleUpgrade(h.rule(), Policy.reasonClassesOf(gi, h.fn().fn()));
@@ -1780,8 +1937,26 @@ public final class Query {
             System.out.println("     → make it provable:  add  `" + ru[1] + "`");
             System.out.println();
         }
-        System.out.println("  The gate still PASSES — this is advisory. To REQUIRE provable purity, add:");
+        for (Withheld w : unjudged) {
+            System.out.println("  `" + w.fn() + "`  (under `" + w.rule() + "`)");
+            System.out.println("     is UNJUDGED — `gate --report` could not evaluate that rule here at all, so");
+            System.out.println("     nothing about this function's compliance has been established either way.");
+            System.out.println("     → " + w.why());
+            System.out.println("     → make the rule answerable HERE:  `" + w.widen() + "`");
+            System.out.println();
+        }
+        if (!holes.isEmpty())
+            System.out.println("  The gate PASSES the function(s) above — that part is advisory. To REQUIRE "
+                    + "provable purity, add:");
         for (String u : upgrades) System.out.println("      " + u);
+        if (!unjudged.isEmpty())
+            System.out.println("  The gate does NOT pass the UNJUDGED function(s): it exits 2 over this report. "
+                    + "This verb cannot be more certain than the gate it stands beside.");
+        // The same tail as the `--json` path, reached by BOTH shapes of the run. A policy that mixes a HOLE
+        // (exit 1) with a rule the gate REFUSED (exit 2) is the case where a `return` inside the block above
+        // would have given 1 in this channel and 2 in the other, over identical input. The refusal wins: it
+        // is the gate's own code, and a rule that was never evaluated is not a crossing anyone can go and fix.
+        if (strict && !unevaluated.isEmpty()) return 2;
         return strict ? 1 : 0;
     }
 
@@ -1844,12 +2019,24 @@ public final class Query {
     }
 
     /** ⟨0.24⟩ {@code triples} holds one {@link Policy#unanswerableKey} per (rule, function, EFFECT) the
-     *  gate must withhold — never per (rule, function): see {@link Policy#gate}. */
-    record Unanswerable(List<String[]> disclosures, Set<String> triples) {}
+     *  gate must withhold — never per (rule, function): see {@link Policy#gate}.
+     *
+     *  <p>{@code functions} is the SAME withholding, listed PER FUNCTION rather than per (rule, cause).
+     *  The gate needs the set (to withhold) and the per-cause rows (to disclose); the two advisory verbs
+     *  beside it need the per-FUNCTION form, because SPEC §3.2 requires them to NAME the function the gate
+     *  could not judge. One producer, three shapes of the one answer — never a second scan of the report. */
+    record Unanswerable(List<String[]> disclosures, Set<String> triples, List<Withheld> functions) {}
+
+    /** ⟨0.24⟩ One function the gate could NOT judge, and WHY — {@code why} names the ABSENT FIELD, never
+     *  the class that field would have carried. SPEC §3.2: "the reason recorded is the missing evidence,
+     *  never the derived class." A derived class here would be the second opinion the law forbids: it is
+     *  exactly the value the gate declined to invent. */
+    record Withheld(String fn, String rule, String effect, String why, String widen) {}
 
     static Unanswerable unanswerableScopedFilters(Policy.GateInput gi) {
         List<String[]> out = new ArrayList<>();
         Set<String> triples = new java.util.LinkedHashSet<>();
+        List<Withheld> perFn = new ArrayList<>();
         for (PolicyRule.Deny r : AnalysisState.ctx().denyRules) {
             List<String> netless = new ArrayList<>(), reasonless = new ArrayList<>();
             for (var e : new TreeMap<>(gi.inferred()).entrySet()) {
@@ -1866,11 +2053,16 @@ public final class Query {
                         && gi.netClasses().getOrDefault(fn, List.of()).isEmpty()) {
                     netless.add(fn);
                     triples.add(Policy.unanswerableKey(r, fn, Effect.NET));
+                    perFn.add(new Withheld(fn, r.src().trim(), "Net", withheldWhy(r, fn, "Net",
+                            "`netClass`", "the Net destination class"), widen(r, "Net")));
                 }
                 if (!r.unknownClasses().isEmpty() && names.contains("Unknown")
                         && gi.reasonClasses().getOrDefault(fn, new TreeSet<>()).isEmpty()) {
                     reasonless.add(fn);
                     triples.add(Policy.unanswerableKey(r, fn, Effect.UNKNOWN));
+                    perFn.add(new Withheld(fn, r.src().trim(), "Unknown", withheldWhy(r, fn, "Unknown",
+                            "`unknownWhy` (its own, or one reachable over `calls`)", "the Unknown reason class"),
+                            widen(r, "Unknown")));
                 }
             }
             // One disclosure row per (rule, cause), naming EVERY function it withheld — not just the first.
@@ -1896,7 +2088,59 @@ public final class Query {
                         + "functions; any other effect it names is decided on its own evidence and still "
                         + "fires. Use the bare `deny Unknown`, or gate at scan time."});
         }
-        return new Unanswerable(out, triples);
+        return new Unanswerable(out, triples, perFn);
+    }
+
+    /** ⟨0.24⟩ SPEC §3.2 — the per-function reason: WHICH FIELD WAS ABSENT, and that the gate WITHHELD
+     *  rather than passed. Deliberately says nothing about which class the fn would have been in: that
+     *  value is precisely the one the gate declined to invent, and repeating a derivation of it beside a
+     *  refusal is the second opinion §3.2 rules out. */
+    /** ⟨0.24⟩ The rule REWRITTEN so this report can answer it: the bare, unnarrowed form. It is what the
+     *  gate's own refusal already recommends ("Use the bare `deny Net`, or gate at scan time"), and it is
+     *  the only edit that turns a refusal into a verdict without inventing the missing datum — the narrowed
+     *  rule cannot be evaluated here at ALL, so there is no narrower ask to offer. */
+    private static String widen(PolicyRule.Deny r, String effect) {
+        return ("deny " + effect + " " + r.scope()).trim();
+    }
+
+    private static String withheldWhy(PolicyRule.Deny r, String fn, String effect, String field, String what) {
+        return "`gate --report` could NOT evaluate `" + r.src().trim() + "` at `" + fn + "`: the rule narrows "
+                + "on " + what + ", and this entry carries " + effect + " with no " + field + " in this report. "
+                + "The rule's " + effect + " part is WITHHELD there, not passed — so this function is "
+                + "UNJUDGED, and any verdict about it from this verb would be more confident than the gate's "
+                + "over identical bytes. Use the bare `deny " + effect + "`, or gate at scan time.";
+    }
+
+    /**
+     * ⟨0.24⟩ THE RULE KINDS {@code gate --report} CANNOT EVALUATE AT ALL over a report, whatever the report
+     * says — {@code forbid} (needs the FULL call graph) and {@code allow} (needs the AS-EFF-008
+     * surface-completeness marker, which does not ride the wire). One {@code {rule, why}} row per rule, the
+     * raw policy line verbatim; see {@link #gate} for why the shape is per-RULE and not a kind aggregate.
+     *
+     * <p><b>Hoisted here because SPEC §3.2 makes it three consumers, not one.</b> An advisory verb that
+     * answers over a policy whose {@code allow} rules the gate REFUSED is more confident than the gate over
+     * identical bytes — the same law, one rule-kind over from the per-function case. {@code unverified} and
+     * {@code fix-gate} evaluate neither kind, so they cannot name a function for these; what they can do,
+     * and now do, is carry the rows and decline to claim a clean bill beside them. NON-DESTRUCTIVE: the
+     * caller decides whether to clear the rules from the context, and only the gate has reason to.
+     */
+    static List<String[]> policyKindUnevaluated(String policyPath) {
+        List<String[]> out = new ArrayList<>();
+        for (PolicyRule.Forbid f : AnalysisState.ctx().forbidRules)
+            out.add(new String[]{f.src().trim(),
+                    "`" + f.src().trim() + "` is a `forbid` rule, which `gate --report` cannot evaluate — "
+                    + "a report's `calls` graph is EFFECT-RELEVANT, so a crossing into a wholly pure unit "
+                    + "is invisible in it and the rule would read green where a scan fails. Gate layering "
+                    + "at scan time: candor <classes> --policy " + policyPath});
+        for (PolicyRule.Allow a : AnalysisState.ctx().allowRules)
+            out.add(new String[]{a.src().trim(),
+                    "`" + a.src().trim() + "` is an `allow` rule, which `gate --report` cannot evaluate — "
+                    + "the AS-EFF-008 surface-completeness marker does not ride the report wire, so a "
+                    + "benign visible literal beside a runtime-computed endpoint would be CERTIFIED here "
+                    + "and flagged by a scan. (`netClass: unknown-host` is NOT that marker — it also names "
+                    + "a merely unrecognised host.) Gate allowlists at scan time: candor <classes> "
+                    + "--policy " + policyPath});
+        return out;
     }
 
     /** `a`, `a` and `b`, `a`, `b` and `c` — the withheld functions, all of them, in report order. */
@@ -2099,27 +2343,12 @@ public final class Query {
         // which. Two distinct `forbid` lines collapsed into one entry and the operator could not tell from
         // the document which of their boundaries had gone unchecked. The scoped-filter disclosures below
         // already emitted `r.src()`, so this is the shape the rest of the list was already in.
-        List<String[]> unevaluated = new ArrayList<>();   // {rule, why}
-        if (!AnalysisState.ctx().forbidRules.isEmpty()) {
-            for (PolicyRule.Forbid f : AnalysisState.ctx().forbidRules)
-                unevaluated.add(new String[]{f.src().trim(),
-                        "`" + f.src().trim() + "` is a `forbid` rule, which `gate --report` cannot evaluate — "
-                        + "a report's `calls` graph is EFFECT-RELEVANT, so a crossing into a wholly pure unit "
-                        + "is invisible in it and the rule would read green where a scan fails. Gate layering "
-                        + "at scan time: candor <classes> --policy " + policyPath});
-            AnalysisState.ctx().forbidRules.clear();
-        }
-        if (!AnalysisState.ctx().allowRules.isEmpty()) {
-            for (PolicyRule.Allow a : AnalysisState.ctx().allowRules)
-                unevaluated.add(new String[]{a.src().trim(),
-                        "`" + a.src().trim() + "` is an `allow` rule, which `gate --report` cannot evaluate — "
-                        + "the AS-EFF-008 surface-completeness marker does not ride the report wire, so a "
-                        + "benign visible literal beside a runtime-computed endpoint would be CERTIFIED here "
-                        + "and flagged by a scan. (`netClass: unknown-host` is NOT that marker — it also names "
-                        + "a merely unrecognised host.) Gate allowlists at scan time: candor <classes> "
-                        + "--policy " + policyPath});
-            AnalysisState.ctx().allowRules.clear();
-        }
+        List<String[]> unevaluated = new ArrayList<>(policyKindUnevaluated(policyPath));
+        // The rules are REMOVED from the evaluation once disclosed — whole-policy, per §3.1's granularity
+        // rule. Only the gate does this; the advisory verbs read the same list without mutating the context,
+        // because they never evaluate a `forbid`/`allow` rule in the first place.
+        AnalysisState.ctx().forbidRules.clear();
+        AnalysisState.ctx().allowRules.clear();
 
         // Load EVERY report the locator named, and refuse the whole run if ANY of them fails to load.
         // §3.1: "a report that cannot be parsed is corrupt input, not an effect-free package … A located

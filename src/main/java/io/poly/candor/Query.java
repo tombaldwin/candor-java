@@ -1283,13 +1283,39 @@ public final class Query {
     /** The deny/`pure` scope (the "layer") that forbids `effect` at `fn`, or null if performing it there is
      *  allowed. Mirrors the gate's own AS-EFF-006 predicate (Policy.checkPolicy): a `deny` fires when it
      *  names the effect; a `pure` rule (empty effects) forbids every real effect but not Unknown. Reads the
-     *  parsed deny rules from the thread-local context (the caller must have parsed a policy first). */
-    static String deniedLayer(String fn, String effect) {
+     *  parsed deny rules from the thread-local context (the caller must have parsed a policy first).
+     *
+     *  <p>⟨0.24⟩ …AND THE RULE'S OWN {@code Unknown[class…]} / {@code Net[dest…]} NARROWING, through the
+     *  gate's {@link Policy#classNarrowingFires}. "Mirrors the gate's predicate" was true when written and
+     *  stopped being true when the rung landed: naming the effect is not the same as forbidding it HERE.
+     *  MEASURED — {@code deny Unknown[reflect,unresolved] app} over a report whose only hole is
+     *  {@code native:dlopen} produced a full hoist plan and {@code --strict} exit 1 for a boundary the gate
+     *  (correctly, exit 0) does not draw: a red CI check and an instruction to restructure code around a
+     *  line the policy does not contain. */
+    static String deniedLayer(String fn, String effect, Policy.GateInput gi) {
+        Effect e = Effect.fromSpecName(effect);
         for (var r : AnalysisState.ctx().denyRules) {
             boolean denies = r.effects().isEmpty() ? !effect.equals("Unknown") : r.effects().toNames().contains(effect);
-            if (denies && Policy.scopeMatches(fn, r.scope())) return r.scope();
+            if (!denies || !Policy.scopeMatches(fn, r.scope())) continue;
+            if (e != null && !Policy.classNarrowingFires(r, gi, fn, e)) continue;  // outside the rule's classes
+            return r.scope();
         }
         return null;
+    }
+
+    /** The report's RAW {@code unknownWhy} channel — what §6.2's class matching resolves over — or an empty
+     *  map when there is no readable report beside the entries, which makes
+     *  {@link Policy#gateInputFromReport} fall back to the PARSED reasons the entries already carry. The
+     *  raw form matters only for a colon-free tag ({@code missing-config}), which {@code UnknownReason.parse}
+     *  drops; the fallback therefore loses a `setup` classification and floors to `unresolved`, which is the
+     *  conservative direction for both verbs that call this (a hole named rather than missed). */
+    static Map<String, List<String>> rawUnknownWhy(String reportPath) {
+        if (reportPath == null) return Map.of();
+        try {
+            return readEnvelope(reportPath).rawUnknownWhy();
+        } catch (Exception e) {
+            return Map.of();
+        }
     }
 
     /** A computed boundary remedy (integrations/FIX-SPEC.md) — the deterministic cut between "must stay
@@ -1387,7 +1413,7 @@ public final class Query {
      *  Returns the direct site(s), the denied span, and the hoist frontier. Shared by `fix` and `fix-gate`. */
     static Remedy computeRemedy(String start, String effect, String layer,
                                 Map<String, List<String>> cg, Map<String, List<String>> rev,
-                                Map<String, Effector> byName) {
+                                Map<String, Effector> byName, Policy.GateInput gi) {
         // direct site(s) S: forward BFS from `start` through effect-carrying callees to the DIRECT source(s).
         TreeSet<String> sites = new TreeSet<>();
         TreeSet<String> fseen = new TreeSet<>();
@@ -1412,7 +1438,7 @@ public final class Query {
         TreeSet<String> hoist = new TreeSet<>();
         Deque<String> up = new ArrayDeque<>();
         for (String a : anchors) {
-            if (deniedLayer(a, effect) != null) deniedSpan.add(a); // a site that is itself in the denied layer
+            if (deniedLayer(a, effect, gi) != null) deniedSpan.add(a); // a site that is itself in the denied layer
             up.add(a);
         }
         while (!up.isEmpty()) {
@@ -1423,7 +1449,7 @@ public final class Query {
                 // callgraph-only node never carries the effect). Skipping the absent case matches candor-swift
                 // and avoids naming a pure node as a hoist target. (/code-review — was `ce != null && !…`.)
                 if (ce == null || !ce.inferred().toNames().contains(effect)) continue;
-                if (deniedLayer(caller, effect) != null) {
+                if (deniedLayer(caller, effect, gi) != null) {
                     if (deniedSpan.add(caller)) up.add(caller); // denied → part of the span; keep climbing
                 } else {
                     hoist.add(caller); // allowed → the boundary; the effect should originate here
@@ -1445,7 +1471,7 @@ public final class Query {
             for (String caller : rev.getOrDefault(cur, List.of())) {
                 Effector ce = byName.get(caller);
                 if (ce == null || !ce.inferred().toNames().contains(effect)) continue;
-                if (deniedLayer(caller, effect) != null) {
+                if (deniedLayer(caller, effect, gi) != null) {
                     sandwiched = true;
                 } else if (hseen.add(caller)) {
                     higher.add(caller);
@@ -1522,6 +1548,9 @@ public final class Query {
         for (Effector f : fns) byName.put(f.fn(), f);
         Map<String, List<String>> cg = fixGraph(reportPath, fns);
         Map<String, List<String>> rev = reverseGraph(cg);
+        // ⟨0.24⟩ the reason/destination channel a NARROWED rule is evaluated over — built by the same
+        // Policy#gateInputFromReport the gate itself uses, never a second copy (SPEC §6.2).
+        Policy.GateInput gi = Policy.gateInputFromReport(fns, rawUnknownWhy(reportPath));
 
         // Resolve `fn` among the best-tier matches, PREFERRING one that performs the effect (so a bare leaf
         // resolves to the violating fn, not a same-named pure sibling). Must match candor-query/ts/swift — a
@@ -1540,13 +1569,13 @@ public final class Query {
             System.out.println("candor fix: `" + start + "` does not perform " + effect + " — nothing to hoist.");
             return 0;
         }
-        String layer = deniedLayer(start, effect);
+        String layer = deniedLayer(start, effect, gi);
         if (layer == null) {
             System.out.println("candor fix: `" + start + "` performs " + effect
                     + ", but no policy forbids it there — the boundary isn't crossed, nothing to fix.");
             return 0;
         }
-        Remedy plan = computeRemedy(start, effect, layer, cg, rev, byName);
+        Remedy plan = computeRemedy(start, effect, layer, cg, rev, byName, gi);
         if (json) {
             emit(plan.toJson());
             return 0;
@@ -1569,13 +1598,15 @@ public final class Query {
         for (Effector f : fns) byName.put(f.fn(), f);
         Map<String, List<String>> cg = fixGraph(reportPath, fns);
         Map<String, List<String>> rev = reverseGraph(cg);
+        // ⟨0.24⟩ as `fix` — the SAME gate input, so a narrowed rule names the same boundary in both verbs.
+        Policy.GateInput gi = Policy.gateInputFromReport(fns, rawUnknownWhy(reportPath));
 
         Map<String, Remedy> plans = new TreeMap<>();
         for (Effector f : fns) {
             for (String effect : f.inferred().toNames()) {
-                String layer = deniedLayer(f.fn(), effect);
+                String layer = deniedLayer(f.fn(), effect, gi);
                 if (layer != null) {
-                    Remedy p = computeRemedy(f.fn(), effect, layer, cg, rev, byName);
+                    Remedy p = computeRemedy(f.fn(), effect, layer, cg, rev, byName, gi);
                     plans.putIfAbsent(p.dedupKey(), p);
                 }
             }
@@ -1640,36 +1671,46 @@ public final class Query {
         // reason by construction and the direct-only read is CORRECT there. Resolving transitively would
         // pull in exactly the units that verb is defined to exclude. One verb's definition is the other
         // verb's bug — a shared code path would be a shared defect here.
-        Policy.GateInput gi = null;
-        if (classFilter != null) {
+        //
+        // ⟨0.24⟩ THE GATE INPUT IS NOW BUILT UNCONDITIONALLY, not only under `--class`. The HOLE PREDICATE
+        // itself needs the reason/destination channel: a `deny E Unknown[c…]` / `deny Net[dest…]` rule that
+        // does not fire at this function PASSES it, and a pass while Unknown is the hole this verb exists to
+        // name. While the channel was `--class`-only, `unverified` computed from the effect set alone and
+        // reported ok:true over exactly that layer — see Policy#classNarrowingFires for the measurement.
+        Map<String, List<String>> rawWhy = Map.of();
+        if (reportPath != null) {
             // The RAW `unknownWhy` strings, for the reason Policy#gateInputFromReport documents: a
             // colon-free tag (`missing-config`) is dropped by `UnknownReason.parse`, so reading the parsed
             // reasons would silently reclassify a `setup` entry as `unresolved` and put it back inside
             // `--class dynamic`, which by definition excludes `setup`.
-            Envelope env;
             try {
-                env = readEnvelope(reportPath);
+                rawWhy = readEnvelope(reportPath).rawUnknownWhy();
             } catch (Exception e) {
-                String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                System.err.println("candor unverified: --class needs the report's reason channel, but "
-                        + reportPath + " could not be re-read (" + why + ")");
-                return 2;
+                // `--class` keeps its loud contract: the user NAMED a class channel, so answering over a
+                // fallback would silently answer a narrower question. Without the flag the parsed reasons
+                // the entries already carry are the same data minus the colon-free tags, and that loss
+                // floors to `unresolved` — the direction that names a hole rather than missing one.
+                if (classFilter != null) {
+                    String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                    System.err.println("candor unverified: --class needs the report's reason channel, but "
+                            + reportPath + " could not be re-read (" + why + ")");
+                    return 2;
+                }
             }
-            gi = Policy.gateInputFromReport(fns, env.rawUnknownWhy());
         }
-        final Policy.GateInput gin = gi;
+        final Policy.GateInput gi = Policy.gateInputFromReport(fns, rawWhy);
         java.util.function.Predicate<Effector> classMatch =
-                f -> Policy.reasonClassMatches(gin, f.fn(), classFilter);
+                f -> Policy.reasonClassMatches(gi, f.fn(), classFilter);
         List<Hole> holes = new ArrayList<>();
         for (Effector e : fns) {
             // Same predicate as the gate note (Policy.unverifiedHoleRule) — one definition of a hole.
-            PolicyRule.Deny r = Policy.unverifiedHoleRule(e.fn(), e.inferred(), deny);
+            PolicyRule.Deny r = Policy.unverifiedHoleRule(e.fn(), e.inferred(), deny, gi);
             if (r != null && classMatch.test(e)) holes.add(new Hole(e, r));
         }
         if (json) {
             List<Map<String, Object>> items = new ArrayList<>();
             for (Hole h : holes) {
-                String[] ru = Policy.ruleUpgrade(h.rule());
+                String[] ru = Policy.ruleUpgrade(h.rule(), Policy.reasonClassesOf(gi, h.fn().fn()));
                 Map<String, Object> m = new LinkedHashMap<>();
                 m.put("fn", h.fn().fn());
                 m.put("rule", ru[0]);
@@ -1690,7 +1731,7 @@ public final class Query {
         System.out.println("candor unverified — " + holes.size() + " function(s) PASS their policy but aren't PROVABLY clean:\n");
         TreeSet<String> upgrades = new TreeSet<>();
         for (Hole h : holes) {
-            String[] ru = Policy.ruleUpgrade(h.rule());
+            String[] ru = Policy.ruleUpgrade(h.rule(), Policy.reasonClassesOf(gi, h.fn().fn()));
             upgrades.add(ru[1]);
             String why = h.fn().unknownWhy().isEmpty() ? "an unresolvable call"
                     : h.fn().unknownWhy().stream().sorted().map(UnknownReason::format).collect(Collectors.joining(", "));

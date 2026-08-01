@@ -1180,10 +1180,26 @@ public final class Query {
                 for (var r : AnalysisState.ctx().denyRules) {
                     boolean denies = r.effects().isEmpty() || r.effects().toNames().contains(effect);
                     if (denies && Policy.scopeMatches(f, r.scope())) {
-                        String desc = r.effects().isEmpty()
-                                ? "pure" + (r.scope().isEmpty() ? "" : " " + r.scope())
-                                : "deny " + effect + (r.scope().isEmpty() ? "" : " " + r.scope());
-                        violations.add(new String[]{f, desc});
+                        // ⟨0.24⟩ THE OPERATOR'S OWN LINE, QUOTED — not one rebuilt from `effect`, which is
+                        // the effect they ASKED ABOUT rather than the rule's own set. `src` is already
+                        // comment-stripped and end-trimmed by #parsePolicy, so this is exactly what they
+                        // wrote. MEASURED before the change, and every row names a rule nobody wrote:
+                        //   `deny Unknown[reflect] app`   printed back as  `deny Unknown app`
+                        //   `deny Net[unknown-host] app`  printed back as  `deny Net app`
+                        //   `deny Net Db  app`            printed back as  `deny Net app`
+                        // The first two are the sharp ones — a NARROWED rule shown as the WIDE one, in the
+                        // verb an agent reads BEFORE editing, so the operator's own scoping is invisible at
+                        // exactly the moment they are deciding whether it protects them. The third has no
+                        // filter in sight and the same root cause: rebuilding from the question dropped the
+                        // operator's other denied effect too.
+                        //
+                        // …AND THE ORDER MATTERS: quoting `src` while the verdict stayed filter-blind would
+                        // be WORSE than the bug it fixes — the same unconditional "WOULD VIOLATE", now
+                        // attributed to the narrowed line, reading as though candor had evaluated a filter
+                        // it did not. So the unevaluated narrowing is named beside it (SPEC §3.1: an
+                        // unanswerable condition is DISCLOSED, never scored as a failed one). See
+                        // Policy#narrowingCondition for why this does NOT reuse #classNarrowingFires.
+                        violations.add(new String[]{f, r.src(), Policy.narrowingCondition(r, effect)});
                         break;
                     }
                 }
@@ -1213,7 +1229,20 @@ public final class Query {
             out.put("effect", effect);
             out.put("affected", new ArrayList<>(affected));
             List<Map<String, String>> vs = new ArrayList<>();
-            for (String[] v : violations) vs.add(Map.of("fn", v[0], "rule", v[1]));
+            for (String[] v : violations) {
+                // ⟨0.24⟩ `conditional` is PER-VIOLATION and a STRING (SPEC §3.1, candor-spec 901f14d —
+                // which corrects an earlier pin written from a description of rust's behaviour rather than
+                // its output). The condition qualifies THIS finding, so it belongs on this finding and not
+                // in a parallel list a consumer has to re-join. OMITTED when the rule does not narrow: a
+                // `conditional` on every violation would train the reader to ignore it, which is the same
+                // failure as naming a config that changed nothing — so its ABSENCE has to keep meaning
+                // "this verdict rests on nothing candor could not evaluate".
+                Map<String, String> m = new LinkedHashMap<>();
+                m.put("fn", v[0]);
+                m.put("rule", v[1]);
+                if (v[2] != null) m.put("conditional", v[2]);
+                vs.add(m);
+            }
             out.put("violations", vs);
             // ⟨0.24⟩ **OVER AN INCOMPLETE REPORT, `ok` IS OMITTED — not `true`, and not `false` either.**
             // Measured independently by candor-rust and this engine: `whatif` answered `ok: true` over a
@@ -1276,7 +1305,17 @@ public final class Query {
             return 0;
         }
         System.out.println("  ⚠ WOULD VIOLATE policy (" + violations.size() + ") — run BEFORE the edit:");
-        for (String[] v : violations) System.out.println("      [AS-EFF-006] `" + v[0] + "`  (rule: `" + v[1] + "`)");
+        for (String[] v : violations) {
+            System.out.println("      [AS-EFF-006] `" + v[0] + "`  (rule: `" + v[1] + "`)");
+            // ⟨0.24⟩ THE PROSE CHANNEL CARRIES THE SAME QUALIFIER. A condition disclosed only in `--json`
+            // leaves the human reading the identical unconditional verdict beside the identical narrowed
+            // line — the exact defect, in the channel that is consulted more.
+            if (v[2] != null) {
+                System.out.println("          …IF " + v[2] + ".");
+                System.out.println("          This rule NARROWS, and the effect you have not written yet has no class to");
+                System.out.println("          match — candor charges it fail-closed rather than guessing which you'd add.");
+            }
+        }
         return 1;
     }
 

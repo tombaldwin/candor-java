@@ -8,6 +8,49 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⟨0.24⟩ `whatif` QUOTES THE OPERATOR'S OWN RULE, AND NAMES THE NARROWING IT COULD NOT EVALUATE**
+  (SPEC §3.1, candor-spec `6f30540` + its correction `901f14d`). `whatif` REBUILT the rule it printed, from
+  `scope` plus the effect being ASKED ABOUT rather than the rule's own set. MEASURED on this engine, and
+  every row names a rule nobody wrote:
+
+  | written | printed back |
+  |---|---|
+  | `deny Unknown[reflect] app` | `deny Unknown app` |
+  | `deny Net[unknown-host] app` | `deny Net app` |
+  | `deny Net Db  app  # keep the app pure` | `deny Net app` |
+
+  The first two are the sharp ones — **a NARROWED rule shown as the WIDE one, in the verb an agent reads
+  BEFORE editing**, so the operator's own scoping is invisible at exactly the moment they are deciding
+  whether it protects them. The third has no filter in sight and the same root cause: rebuilding from the
+  question dropped the operator's other denied effect too.
+
+  **AND THE ORDER MATTERED, which is why the second half is not optional.** Quoting the raw line while the
+  verdict stayed filter-blind would be *worse than the bug* — the same unconditional "WOULD VIOLATE", now
+  attributed to the narrowed line, reading as though candor had evaluated a filter it did not. `whatif` asks
+  about an effect the code **does not have yet**, so a `Net[dest…]`/`Unknown[class…]` filter quantifies over
+  the class of something that does not exist: there is nothing to match and the question is genuinely
+  unanswerable. §3.1's rule for exactly this shape is that **an unanswerable condition is DISCLOSED, never
+  scored as a failed one** — so the verdict stays fail-closed (a pre-edit gate must not guess which class the
+  edit lands in) and the condition rides beside it, per-violation, in **both** channels:
+
+  ```
+  [AS-EFF-006] `app.nat`  (rule: `deny Net[unknown-host] app`)
+      …IF the `Net` you introduce reaches destination class unknown-host.
+  ```
+  ```json
+  "violations": [{"fn": "app.nat", "rule": "deny Net[unknown-host] app",
+                  "conditional": "the `Net` you introduce reaches destination class unknown-host"}]
+  ```
+
+  This does **not** reuse the `classNarrowingFires` predicate the sibling fix above shares: `unverified` and
+  `fix-gate` read a signature that EXISTS, so their filter has something to match. `Policy#narrowingCondition`
+  is the sibling for the case where it does not. **`conditional` is OMITTED when the rule does not narrow** —
+  one on every violation would train the reader to ignore it — and it keys on the effect being INTRODUCED,
+  never on the rule merely carrying a bracket (`deny Net[unknown-host] Fs app` asked about `Fs` charges `Fs`
+  unconditionally). Verified against **candor-rust's emitted JSON**, which is the normative form here: 10
+  rule/effect shapes, `rule` and `conditional` byte-identical in both the JSON and the prose channel,
+  mirrors included. Pinned by `WhatifConditionalTest`.
+
 - **⟨0.24⟩ A NARROWED RULE IS A NARROWER RULE FOR `unverified` AND `fix-gate` TOO** (SPEC §6.2, "THE GATE
   AND THE DISCLOSURE MUST APPLY THE SAME RULE, AND SHOULD SHARE THE SAME CODE"). `deny E Unknown[c…]` and
   `deny Net[dest…]` carry a class filter the gate has always honoured; the two advisory verbs beside it

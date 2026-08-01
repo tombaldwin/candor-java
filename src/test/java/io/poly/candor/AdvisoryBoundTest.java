@@ -202,6 +202,24 @@ class AdvisoryBoundTest {
         return buf.toString();
     }
 
+    /** ⟨0.24⟩ the HUMAN verdict line — stdout, where the tick lives (the disclosures go to stderr). */
+    private static String stdoutOf(Path report, Path pol, String verb, String... more) {
+        List<String> a = new ArrayList<>(List.of(verb, "--report", report.toString(),
+                "--policy", pol.toString()));
+        a.addAll(List.of(more));
+        PrintStream o = System.out, e = System.err;
+        ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        System.setOut(new PrintStream(buf));
+        System.setErr(new PrintStream(new ByteArrayOutputStream()));
+        try {
+            cli(a.toArray(new String[0]));
+        } finally {
+            System.setOut(o);
+            System.setErr(e);
+        }
+        return buf.toString();
+    }
+
     private static List<String> unverifiedFns(JsonObject o) {
         List<String> out = new ArrayList<>();
         for (var el : o.getAsJsonArray("unverified")) out.add(el.getAsJsonObject().get("fn").getAsString());
@@ -245,8 +263,10 @@ class AdvisoryBoundTest {
         assertEquals(List.of("app.noClass"), unjudgedFns(uv),
                 "…as UNJUDGED, not as a pass: `app.nativeHole` beside it is a genuine PASS-but-Unknown hole "
                 + "and must not be relabelled");
-        assertFalse(uv.get("ok").getAsBoolean(),
-                "`ok` is the claim, and it is bounded above by the gate's — which exited 2");
+        assertFalse(uv.has("ok"),
+                "`ok` is the claim, it is bounded above by the gate's — which exited 2 — and ⟨0.24⟩ "
+                + "`142740a` rules it OMITTED here rather than `false`: see "
+                + "#okIsOmittedNotFalsedWhereTheGateWithheldARule. DOC:\n" + uv);
     }
 
     /** The reason recorded is the MISSING EVIDENCE, never the derived class. {@code app.noClass} would
@@ -343,7 +363,7 @@ class AdvisoryBoundTest {
         assertEquals(2, exitOf(rep, pol, "gate"));
         JsonObject uv = json(rep, pol, "unverified");
         assertEquals(List.of("app.inherits"), unjudgedFns(uv), "the one function the gate could not judge");
-        assertFalse(uv.get("ok").getAsBoolean());
+        assertFalse(uv.has("ok"), "⟨0.24⟩ `142740a`: the claim is WITHDRAWN, not flipped — " + uv);
         assertEquals(2, exitOf(rep, pol, "unverified", "--strict"));
 
         // THE PROSE CHANNEL CARRIES THE SAME DISCLOSURE. A qualifier that exists only under `--json` leaves
@@ -477,7 +497,8 @@ class AdvisoryBoundTest {
         assertEquals(2, exitOf(rep, pol, "gate"), "`allow` is refused by `gate --report`");
         for (String verb : List.of("unverified", "fix-gate")) {
             JsonObject o = json(rep, pol, verb);
-            assertFalse(o.get("ok").getAsBoolean(), verb + " cannot report a clean bill over a refused rule");
+            assertFalse(o.has("ok"), verb + " cannot report a clean bill over a refused rule — and ⟨0.24⟩ "
+                    + "`142740a` withdraws the field rather than flipping it: " + o);
             assertTrue(o.has("unevaluated"), verb + " names the rule the gate could not evaluate");
             assertEquals("allow Net app api.example.com",
                     o.getAsJsonArray("unevaluated").get(0).getAsJsonObject().get("rule").getAsString());
@@ -505,5 +526,120 @@ class AdvisoryBoundTest {
         // which is the precedence harm one level down (see Policy#gate).
         assertEquals(List.of("app.nativeHole"),
                 unverifiedFns(json(rep, pol, "unverified")), "the native-class hole survives the refusal");
+    }
+
+    // ── 6. …AND THE CLAIM IS WITHDRAWN, NOT FLIPPED — SPEC §3.2, candor-spec `142740a` ────────────────
+
+    /**
+     * <b>{@code ok} IS OMITTED FOR THE WITHHELD-RULE TRIGGER, NOT SET TO {@code false}.</b> {@code 4fd140c}
+     * argued the {@code false} deliberately and it was wrong by its own reasoning one paragraph earlier: on
+     * an ADVISORY verb {@code ok: false} asserts <i>"a hole exists, here it is"</i> — and where a rule was
+     * WITHHELD no hole was found, the question was DECLINED. That is the fabrication mirror, which is
+     * exactly why the INCOMPLETENESS trigger omits the field ({@code ec1a441}, {@link
+     * AdvisoryIncompletenessTest}). The two triggers are the same shape and take the same answer; they
+     * looked different only because they were ruled in two clauses a day apart.
+     *
+     * <p><b>MEASURED on the jar built from the commit before this one</b>, on the fixture below — a report
+     * carrying {@code Net}+{@code hosts} with NO {@code netClass} beside an {@code Unknown} hole, under
+     * {@code deny Net[unknown-host] app}:
+     * <pre>
+     *   rust  ok: &lt;omitted&gt;    java  ok: false    ts  ok: &lt;omitted&gt;    swift  ok: &lt;omitted&gt;
+     * </pre>
+     * a 1-against-3 split against a clause shipping in 0.24 — and the sibling of the 2-against-2 split this
+     * rung spent the previous round closing on the incompleteness trigger.
+     *
+     * <p>The body is UNCHANGED by the repair and is asserted so: {@code unevaluated} still ships, the
+     * {@code unverified} array still names both the genuine hole and the unjudged function, {@code --strict}
+     * still exits 2. This moves ONE field.
+     */
+    @Test
+    void okIsOmittedNotFalsedWhereTheGateWithheldARule() throws Exception {
+        Path rep = r11Report();
+        Path pol = policy("deny Net[unknown-host] app\n");
+        assertEquals(2, exitOf(rep, pol, "gate"), "the gate itself refuses — the bound this is measured against");
+
+        for (String verb : List.of("unverified", "fix-gate")) {
+            JsonObject o = json(rep, pol, verb);
+            assertFalse(o.has("ok"), verb + ": `ok` is OMITTED — `false` would assert a finding beside a "
+                    + "question nobody answered, and `true` would certify over it. DOC:\n" + o);
+            assertTrue(o.has("unevaluated"), verb + ": …and the rule that went unevaluated is still named — "
+                    + "withdrawing the claim must not withdraw the disclosure that explains it");
+            assertEquals(0, exitOf(rep, pol, verb), verb + ": advisory by default, unchanged");
+            assertEquals(2, exitOf(rep, pol, verb, "--strict"), verb + " --strict: the gate's own code");
+            assertEquals(2, exitOf(rep, pol, verb, "--strict", "--json"), verb + " --strict --json: the same");
+        }
+        // the findings still ship, both kinds: a partial answer that says it is partial beats a refusal.
+        JsonObject uv = json(rep, pol, "unverified");
+        assertTrue(unverifiedFns(uv).contains("app.nativeHole"), "the genuine PASS-but-Unknown hole: " + uv);
+        assertEquals(List.of("app.noClass"), unjudgedFns(uv), "and the UNJUDGED function: " + uv);
+    }
+
+    /**
+     * <b>THE MIRROR, and it is the one that matters:</b> the way to get a field-omitting repair wrong is to
+     * omit the field ALWAYS — and every absence-assert above would still pass. So a run with NOTHING
+     * withheld and NOTHING unanalyzed must still carry {@code ok}, in BOTH polarities. Written and run
+     * before the repair was believed; see the CHANGELOG for the before/after.
+     *
+     * <p>Both polarities, because {@code true} and {@code false} are reached by different code: a mirror
+     * asserting only the clean one cannot see a repair that deletes the field wherever a finding exists,
+     * which is exactly the shape of the defect being fixed.
+     */
+    @Test
+    void aRunWithNothingWithheldStillCarriesOk() throws Exception {
+        // (a) ok: FALSE — an answerable rule with a genuine finding. `netClass` is PRESENT, so nothing is
+        //     withheld; the verbs found something and say so.
+        Path present = netClassPresentReport();
+        Path bites = policy("deny Net[unknown-host] app\n");
+        JsonObject uv = json(present, bites, "unverified");
+        assertFalse(uv.has("unevaluated"), "control: the rule IS answerable here — " + uv);
+        assertTrue(uv.has("ok"), "`ok` SURVIVES: omitting it unconditionally passes every absence-assert "
+                + "in this class and deletes the field for everyone. DOC:\n" + uv);
+        assertFalse(uv.get("ok").getAsBoolean(), "…and it is false: `app.nativeHole` is a real hole");
+        JsonObject fg = json(present, bites, "fix-gate");
+        assertTrue(fg.has("ok"), "fix-gate mirror: " + fg);
+        assertFalse(fg.get("ok").getAsBoolean(), "…and false: `app.noClass` has a remedy");
+        assertEquals(1, exitOf(present, bites, "unverified", "--strict"), "found-a-hole is still 1, not 2");
+        assertEquals(1, exitOf(present, bites, "fix-gate", "--strict"), "found-a-crossing is still 1");
+
+        // (b) ok: TRUE — nothing withheld, nothing found. The whole point of the field.
+        Path clean = report("clean.jvm.json", List.of(
+                entry("app.writes", List.of("Fs"), List.of("Fs"), Map.of("paths", List.of("/etc/hosts")))));
+        Path misses = policy("deny Net app\n");
+        for (String verb : List.of("unverified", "fix-gate")) {
+            JsonObject o = json(clean, misses, verb);
+            assertTrue(o.has("ok"), verb + ": a complete report + a fully evaluated policy still answers: " + o);
+            assertTrue(o.get("ok").getAsBoolean(), verb + ": …and the answer is yes: " + o);
+            assertEquals(0, exitOf(clean, misses, verb, "--strict"), verb + " --strict is green");
+        }
+    }
+
+    /** THE OTHER CHANNEL, for the reason §3.2 gives twice: a limit stated only under {@code --json} leaves
+     *  the human reading the unqualified verdict. The tick was already withdrawn here; what is added is the
+     *  sentence saying WHICH field went and why, so the two channels describe the same document.
+     *
+     *  <p>Driven by the rule-KIND refusal rather than the scoped one, and that is forced rather than chosen:
+     *  a SCOPED withholding always names the function it withheld, so {@code unverified} takes its
+     *  found-something branch — which carries its own qualification ("the gate does NOT pass the UNJUDGED
+     *  function(s)") and no tick to withdraw. The tick branch is reachable only where the refusal has no
+     *  function to name, which is exactly the {@code allow}/{@code forbid} kind. */
+    @Test
+    void theProseChannelSaysTheClaimWasWithdrawn() throws Exception {
+        Path rep = netClassPresentReport();
+        Path pol = policy("allow Net app api.example.com\n");
+        String uv = stdoutOf(rep, pol, "unverified");
+        assertFalse(uv.contains("PROVABLY clean (no Unknown holes) ✓"), "the tick stays withdrawn: " + uv);
+        assertTrue(uv.contains("`ok` is OMITTED"), "…and the prose names the omission: " + uv);
+
+        String fg = stdoutOf(rep, pol, "fix-gate");
+        assertFalse(fg.contains("no deny/pure boundary crossings in this report ✓"), "tick withdrawn: " + fg);
+        assertTrue(fg.contains("`ok` is OMITTED"), "…and named: " + fg);
+
+        // MIRROR: over an answerable policy with nothing to say, the tick is back and the note is NOT.
+        Path clean = report("clean2.jvm.json", List.of(
+                entry("app.writes", List.of("Fs"), List.of("Fs"), Map.of("paths", List.of("/etc/hosts")))));
+        Path misses = policy("deny Net app\n");
+        String ok = stdoutOf(clean, misses, "unverified");
+        assertTrue(ok.contains("PROVABLY clean"), "the tick is not deleted for everyone: " + ok);
+        assertFalse(ok.contains("`ok` is OMITTED"), "…and the note is not printed for everyone: " + ok);
     }
 }

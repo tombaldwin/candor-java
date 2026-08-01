@@ -8,6 +8,54 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⟨0.24⟩ ⚠ …AND IT BINDS THE WITHHELD-RULE TRIGGER TOO: `ok` IS OMITTED, NOT `false`** (SPEC §3.2,
+  ruled in candor-spec `142740a`). The entry below closed the INCOMPLETENESS trigger; this closes its twin.
+  `4fd140c` argued the `false` deliberately and it was wrong by its own reasoning one paragraph earlier: on
+  an ADVISORY verb `ok: false` asserts *"a hole exists, here it is"* — and where a rule was WITHHELD **no
+  hole was found; the question was declined.** That is the fabrication mirror, which is precisely why the
+  incompleteness trigger omits the field. The two triggers are the same shape and take the same answer;
+  they looked different only because they were ruled in two clauses a day apart.
+
+  **MEASURED four-way on a jar built from the previous commit**, on a report carrying `Net` + `hosts` with
+  **no** `netClass` beside an `Unknown` hole, under `deny Net[unknown-host] app`, `unverified --json`:
+
+  | engine | `ok` |
+  |---|---|
+  | rust | *omitted* |
+  | **java** | **`false`** |
+  | ts | *omitted* |
+  | swift | *omitted* |
+
+  A 1-against-3 split against a clause shipping in 0.24 — the sibling of the 2-against-2 split the entry
+  below spent a round closing. (The `candor-query` on `PATH` is a 20 Jul build and still answers `false`;
+  the rust engine's own tree does not — measure the tree, not the installed binary.)
+
+  | verb (java, that fixture) | before | after |
+  |---|---|---|
+  | `unverified --json` | `{"ok": false, "unverified": […], "unevaluated": […]}` | `ok` OMITTED, both arrays unchanged |
+  | `fix-gate --json` | `{"ok": false, "remedies": [], "unevaluated": […]}` | `ok` OMITTED, both arrays unchanged |
+  | either, `--strict` | exit 2 | unchanged |
+  | either, no `--strict` | exit 0 | unchanged |
+  | *(prose)* | tick already withdrawn | + the sentence naming the omission |
+
+  **ONE PATH, REUSED — `Query#advisoryAnswer` now decides BOTH triggers and writes `unevaluated` itself**,
+  rather than each caller putting the disclosure in its body while the omission rule lives elsewhere. A
+  trigger whose disclosure is emitted in one place and whose consequence is decided in another is exactly
+  how these two clauses drifted apart: `whatif` held the first rule inline and its siblings never got it.
+  `unjudged` is non-empty only when `unevaluated` is (one producer emits the per-function and the per-rule
+  form), so the scoped and rule-kind refusals reach the same answer by construction.
+
+  **THE MIRROR WAS WRITTEN AND RUN FIRST**, because the way to get a field-omitting repair wrong is to omit
+  the field ALWAYS — and every absence-assert in the new class would still pass. Over a complete report
+  under a fully evaluated policy both verbs still carry `ok`, in **both polarities**: `true` with nothing
+  to find (exit 0) and `false` with a real hole/remedy (exit 1 under `--strict`). Asserting only the clean
+  polarity cannot see a repair that deletes the field wherever a finding exists, which is the shape of the
+  defect being fixed. Of the 3 new tests and 3 amended assertions, 5 fail on the previous commit; the
+  mirror passes on both, which is its job. Everything else is unchanged: `unevaluated` still ships, the
+  `unverified` array still names both the genuine hole and the unjudged function, `--strict` still exits 2.
+  Suite 654 → 657 pass, smoke 444/444, four-way conformance OK (PART 27 R11 `advisory-bound` and
+  `advisory-incomplete` OK on all four engines; R10 waived as before).
+
 - **⟨0.24⟩ ⚠ THE OMIT-`ok` RULE BINDS EVERY ADVISORY VERB, AND THE DISCLOSURE REACHES EVERY CHANNEL**
   (SPEC §3.2, ruled in candor-spec `ec1a441`, resting on `93cef40`). `0075987` ruled it for `whatif` and
   this engine implemented it for `whatif`; `unverified`, `fix-gate` and `fix` never got it. MEASURED here

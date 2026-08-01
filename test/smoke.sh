@@ -1896,10 +1896,18 @@ def call(i, m, p=None):
     srv.stdin.flush()
     return json.loads(srv.stdout.readline())
 call(1, "initialize", {})
-r = call(2, "tools/call", {"name": "candor_effects", "arguments": {"function": "Fx.reads"}})["result"]
+tools = [t["name"] for t in call(2, "tools/list")["result"]["tools"]]
+# argv[5] (optional): the tool + its argument, so one driver covers `candor_effects` and `candor_where`.
+tool = sys.argv[5] if len(sys.argv) > 5 else "candor_effects"
+args = ({"function": sys.argv[6]} if tool != "candor_where" else {"effect": sys.argv[6]}) \
+    if len(sys.argv) > 6 else {"function": "Fx.reads"}
+r = call(3, "tools/call", {"name": tool, "arguments": args})["result"]
 srv.stdin.close(); srv.wait()
+print("TOOLS=%s" % ",".join(tools))
 print("ISERROR=%s" % bool(r.get("isError")))
-print(r["content"][0]["text"])
+print("BLOCKS=%d" % len(r["content"]))
+for b in r["content"]:
+    print(b["text"])
 PY
 MCPSRV="$ROOT/integrations/mcp/candor-mcp.py"
 mcp1="$(python3 "$W/mcp-drive.py" "$MCPW" "$MCPW/good.jar" "$MCPW/.candor/report.json" "$MCPSRV" 2>&1)"
@@ -1918,6 +1926,51 @@ echo 'deny Fs Fx' > "$MCPW/p.policy"
 mcp3="$(CANDOR_POLICY="$MCPW/p.policy" python3 "$W/mcp-drive.py" "$MCPW" "$MCPW/good.jar" "$MCPW/.candor/report.json" "$MCPSRV" 2>&1)"
 want "MIRROR: a GATING scan (exit 1) still serves its valid report" "$mcp3" 'ISERROR=False'
 want "…with the real effect set"                                    "$mcp3" '"Fs"'
+
+# ── ⟨0.21⟩ THE COMPLETENESS MANIFEST HAS TO REACH THE AGENT ──────────────────────────────────────
+# candor-ts found its MCP `candor_gate` implementing NO ⟨0.21⟩ incompleteness rule — `{"ok":true}` over a
+# report declaring `unanalyzed` where the CLI exits 2. This server exposes NO gate tool (the TOOLS= line
+# below is that check, asserted rather than assumed), so there is no `ok` to be wrong. The sibling defect
+# it DOES have is a silently short ANSWER: MEASURED, two classes — one performing Fs, one performing Net
+# with its bytecode major version bumped past what ASM reads — and `candor_where(Net)` replied
+# `{"directly": [], "inherited": []}`, isError unset. *Nobody performs Net*, over a report that names the
+# Net-performing class as unread. The report held the answer; the verb dropped it.
+echo "== MCP surface (⟨0.21⟩ incompleteness reaches the agent) =="
+IW="$W/mcpinc"; mkdir -p "$IW/.candor" "$IW/src/app"
+cat > "$IW/src/app/A.java" <<'J'
+package app;
+public class A { public void reads(){ try { java.nio.file.Files.readAllBytes(java.nio.file.Path.of("/tmp/x")); } catch (Exception e) {} } }
+J
+cat > "$IW/src/app/B.java" <<'J'
+package app;
+public class B { public void fetch() throws Exception { new java.net.URL("http://example.com").openStream().close(); } }
+J
+javac -d "$IW/classes" "$IW/src/app/A.java" "$IW/src/app/B.java" 2>/dev/null
+# CONTROL FIRST, while every class is readable: the answer is complete and the response is ONE block —
+# byte-identical to a pre-⟨0.21⟩ one, so the extra block means something when it appears.
+mcpc="$(python3 "$W/mcp-drive.py" "$IW" "$IW/classes" "$IW/.candor/report.json" "$MCPSRV" candor_where Net 2>&1)"
+want    "CONTROL: a complete report finds the Net performer"        "$mcpc" 'app.B.fetch'
+want    "…and answers in ONE content block"                         "$mcpc" 'BLOCKS=1'
+wantnot "…with no incompleteness claim it does not have"            "$mcpc" 'INCOMPLETE ANALYSIS'
+want    "…and this server exposes NO gate tool, so there is no ok field to be wrong" \
+        "$mcpc" 'TOOLS=candor_effects,candor_where,candor_callers,candor_whatif'
+# Now bump B.class past the major version ASM reads. Same source, same tool, one unreadable class.
+python3 - "$IW/classes/app/B.class" <<'PY'
+import sys
+p = sys.argv[1]
+b = bytearray(open(p, "rb").read()); b[6] = 0; b[7] = 99
+open(p, "wb").write(b)
+PY
+sleep 1; touch "$IW/classes/app/B.class"
+mcpi="$(python3 "$W/mcp-drive.py" "$IW" "$IW/classes" "$IW/.candor/report.json" "$MCPSRV" candor_where Net 2>&1)"
+wantnot "the Net performer is now INVISIBLE (the premise — an empty answer)" "$mcpi" 'app.B.fetch'
+want    "…so the answer carries the completeness manifest"                   "$mcpi" 'INCOMPLETE ANALYSIS'
+want    "…naming the unit that was never read"                               "$mcpi" 'B.class'
+want    "…and WHY, so it is actionable"                                      "$mcpi" 'major version 99'
+want    "…as a SECOND block, leaving content[0] the parseable payload"       "$mcpi" 'BLOCKS=2'
+# NOT isError: a partial answer that says it is partial beats a refusal (SPEC §3.2) — these verbs are
+# consulted BEFORE an edit, where the alternative is the agent guessing.
+want    "…and NOT as an error: the answer is partial, not absent"            "$mcpi" 'ISERROR=False'
 
 # ── --agents: the self-describing engine (the contract is a jar resource) ────────────────────────
 echo "== --agents =="

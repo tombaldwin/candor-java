@@ -122,18 +122,60 @@ def ensure_report():
             f"trustworthy to answer from.{had}\n{why}")
 
 
+def incompleteness_note():
+    """⟨0.21⟩/⟨0.24⟩ THE COMPLETENESS MANIFEST HAS TO REACH THE AGENT (SPEC §2, §3.2).
+
+    Returns a disclosure string when the served report declares `unanalyzed` units, else None.
+
+    MEASURED on this server: two classes, one performing `Fs` and one performing `Net`, the second with its
+    bytecode major version bumped past what ASM reads. The scan discloses it — the report carries
+    `unanalyzed: [{path: app/B.class, reason: Unsupported class file major version 99}]` — and then
+    `candor_where(effect="Net")` answered `{"directly": [], "inherited": []}` with `isError` unset. *Nobody
+    performs Net*, confidently, over a report that names the Net-performing class as unread. That is the
+    cardinal sin on the channel an agent trusts most, and the report already held the answer: the verb
+    dropped it.
+
+    This is the java sibling of candor-ts's `candor_gate` finding, at the only place it can occur here —
+    **this server exposes no gate tool at all** (four read-only queries; `tools/list` is the proof), so
+    there is no `{"ok": true}` to be wrong. What there is instead is a silently short ANSWER, and the fix
+    is the same one: ship the partial answer, and say it is partial.
+
+    The note is a SEPARATE content block rather than prose glued onto the payload, so `content[0].text`
+    stays exactly the JSON an agent may parse. It is not `isError`: a partial answer that says it is partial
+    beats a refusal (SPEC §3.2), and these verbs are consulted before an edit, where the alternative is the
+    agent guessing.
+    """
+    try:
+        with open(REPORT) as fh:
+            un = json.load(fh).get("unanalyzed") or []
+    except Exception:  # noqa: BLE001 — a report that will not parse is ensure_report's problem, not this one
+        return None
+    if not un:
+        return None
+    shown = un[:10]
+    lines = "\n".join(f"  - {u.get('path', '?')} ({u.get('reason', 'no reason given')})" for u in shown)
+    more = f"\n  … and {len(un) - len(shown)} more" if len(un) > len(shown) else ""
+    return (f"⚠ INCOMPLETE ANALYSIS — the report this answer comes from declares {len(un)} unit(s) candor "
+            f"could not analyze. Their effects are absent because they were NEVER SEEN, not because they "
+            f"are pure, so the answer above is a LOWER BOUND: an empty or short result does NOT mean the "
+            f"effect is absent from this codebase.\n{lines}{more}\n"
+            f"Fix the build (a class candor cannot parse is usually a toolchain/version mismatch) and "
+            f"re-run before treating any result from this report as complete.")
+
+
 def run_query(args):
-    """Run a query. Returns (text, is_error) — `is_error` is the MCP-protocol analog of the gate's `ok`,
-    and it is set on exit 2 (COULD NOT EVALUATE) but never on exit 1 (a violation, which IS the answer)."""
+    """Run a query. Returns (text, is_error, note) — `is_error` is the MCP-protocol analog of the gate's
+    `ok`, and it is set on exit 2 (COULD NOT EVALUATE) but never on exit 1 (a violation, which IS the
+    answer). `note` is the ⟨0.21⟩ incompleteness disclosure, or None."""
     err = ensure_report()
     if err:
-        return err, True
+        return err, True, None
     try:
         r = subprocess.run([WRAPPER, *args], capture_output=True, text=True, timeout=300)
         text = r.stdout.strip() or r.stderr.strip() or "(no output)"
-        return text, r.returncode >= 2
+        return text, r.returncode >= 2, incompleteness_note()
     except Exception as e:  # noqa: BLE001 — surface any failure to the agent as text
-        return f"candor: query failed ({e})", True
+        return f"candor: query failed ({e})", True, None
 
 
 def arg(args, key):
@@ -163,7 +205,7 @@ def dispatch(name, args):
             q.append("--json")
             return run_query(q)
     except ValueError as e:
-        return f"candor: {e}", True
+        return f"candor: {e}", True, None
     return None
 
 
@@ -209,8 +251,15 @@ def main():
                 # ⟨0.24⟩ `isError` is this protocol's `ok`, and the naive read of it has to be the safe one:
                 # a refusal handed back with the same status as an answer is a could-not-evaluate presented
                 # as a result. Set on exit 2 only — a gate VIOLATION (exit 1) is the answer, not an error.
-                text, is_error = got
-                r = {"content": [{"type": "text", "text": text}]}
+                text, is_error, note = got
+                blocks = [{"type": "text", "text": text}]
+                # ⟨0.21⟩ …and the completeness manifest travels WITH the answer, in its own block so
+                # `content[0].text` stays exactly the payload an agent may json-parse. NOT `isError`:
+                # the answer is partial, not absent, and §3.2's ruling is that a partial answer which
+                # says it is partial beats a refusal. See #incompleteness_note.
+                if note:
+                    blocks.append({"type": "text", "text": note})
+                r = {"content": blocks}
                 if is_error:
                     r["isError"] = True
                 send(mid, result=r)

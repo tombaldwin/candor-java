@@ -8,6 +8,20 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⟨0.21⟩ THE COMPLETENESS MANIFEST NOW REACHES THE AGENT ACROSS THE MCP SURFACE.** candor-ts found its
+  MCP `candor_gate` implementing no ⟨0.21⟩ incompleteness rule — `{"ok":true}` over a report declaring
+  `unanalyzed` where the CLI exits 2. **This server exposes no gate tool at all** (four read-only queries;
+  `tools/list` now asserts it), so there was no `ok` to be wrong. The sibling defect it did have is a
+  silently short ANSWER: measured, two classes — one performing `Fs`, one performing `Net` with its
+  bytecode major version bumped past what ASM reads — and `candor_where(effect="Net")` replied
+  `{"directly": [], "inherited": []}` with `isError` unset. *Nobody performs Net*, confidently, over a
+  report that names the `Net`-performing class as unread. The report already held the answer; the verb
+  dropped it. Every tool response now carries the manifest as a SECOND content block (so `content[0].text`
+  stays exactly the payload an agent may parse), and **not** as `isError` — a partial answer that says it
+  is partial beats a refusal, and these verbs are consulted before an edit. A complete report is unchanged:
+  one block, no claim. `candor_whatif` inherits the `ok`-omission below for free, since these tools shell
+  out to the real CLI. `ensure_report()`'s stale-artifact rule re-verified end-to-end and holds.
+
 - **⚠ ⟨0.24⟩ `whatif` OVER AN INCOMPLETE REPORT OMITS `ok` — it does not answer `true`, and it does not
   answer `false` either** (SPEC §3.2, candor-spec `0075987`). Measured independently by candor-rust and this
   engine: `whatif` returned `ok: true` over a report declaring `unanalyzed` units. Its `affected` set is a

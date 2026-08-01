@@ -503,6 +503,47 @@ final class Policy {
     }
 
     /**
+     * ⟨0.24⟩ <b>THE CONDITION A {@code whatif} VERDICT RESTS ON</b> when the matched rule NARROWS the effect
+     * being INTRODUCED — {@code null} when it does not, which is the ordinary case. SPEC §3.1 (candor-spec
+     * {@code 6f30540}, shape corrected by {@code 901f14d}).
+     *
+     * <p><b>This is the SIBLING of {@link #classNarrowingFires}, not a second copy of it, and the difference
+     * is the whole reason it exists.</b> That predicate asks "does this narrowing FIRE at this function?" —
+     * answerable, because the function's signature EXISTS and carries a reason/destination class to match.
+     * {@code whatif} asks about an effect the code <b>has not got yet</b>, so a
+     * {@code deny Net[unknown-host]} / {@code deny Unknown[reflect]} filter quantifies over the class of
+     * something that does not exist. There is nothing to match, and the question is genuinely unanswerable.
+     *
+     * <p>Charging it anyway is the right default for a PRE-EDIT gate — fail-closed, because the edit could
+     * land in any class and guessing which is not this verb's job — and that verdict is unchanged. What was
+     * wrong was showing that unconditional verdict beside a rule reconstructed WITHOUT its filter: the
+     * operator read a wide rule, got a wide answer, and never saw their own narrowing. And quoting the raw
+     * line without THIS would be worse still — the same unconditional verdict, now attributed to the
+     * narrowed line, which reads as candor having evaluated a filter it did not. §3.1's rule for exactly
+     * this shape is that <b>an unanswerable condition is DISCLOSED, never scored as a failed one</b>, so the
+     * verdict stands and the condition rides beside it.
+     *
+     * <p>Keyed on the effect being INTRODUCED, never on the rule merely carrying a bracket:
+     * {@code deny Net[unknown-host] Fs app} asked about {@code Fs} charges {@code Fs} unconditionally,
+     * because a {@code Net} filter says nothing about an introduced {@code Fs}. The wording and the sorted
+     * {@code " / "} join are candor-rust's emitted string verbatim — this is a machine-consumed field, so a
+     * second spelling is a conformance failure rather than a synonym.
+     *
+     * @param effect the SPEC effect name being hypothetically introduced (not an {@link Effect}: `whatif`
+     *               accepts any name the report vocabulary carries, and an unrecognised one narrows nothing)
+     */
+    static String narrowingCondition(PolicyRule.Deny r, String effect) {
+        if ("Unknown".equals(effect) && !r.unknownClasses().isEmpty())
+            return "the `Unknown` you introduce is of reason class "
+                    + r.unknownClasses().stream().map(ReasonClass::token).sorted()
+                            .collect(Collectors.joining(" / "));
+        if ("Net".equals(effect) && !r.netClasses().isEmpty())
+            return "the `Net` you introduce reaches destination class "
+                    + r.netClasses().stream().sorted().collect(Collectors.joining(" / "));
+        return null;
+    }
+
+    /**
      * ⟨0.24⟩ Apply the parsed §6.2 policy to an already-accumulated signature. THE ONLY matching code in
      * this engine — {@code scan --policy} and {@code gate --report} both land here, which is what makes
      * "the same verdict from the same signature" a property of the code rather than of two consistent

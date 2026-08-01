@@ -448,6 +448,28 @@ final class Policy {
         return r.src().trim() + "\0" + fn + "\0" + effect.specName();
     }
 
+    /**
+     * ⟨0.24⟩ <b>DID THE GATE WITHHOLD RULE {@code r} AT {@code fn}?</b> — i.e. was this (rule, function)
+     * pair one where the gate could not evaluate the rule's narrowing AT ALL, for want of the field the
+     * filter reads. The set is {@link Query#unanswerableScopedFilters}'s {@code triples}, keyed by
+     * {@link #unanswerableKey}; it is EMPTY on the scan route, which recomputes every field itself.
+     *
+     * <p><b>The SIBLING of {@link #classNarrowingFires}, and the difference is the whole point (SPEC §3.2).</b>
+     * That one asks <i>does the filter FIRE here</i> — a question with an answer. This one asks <i>can the
+     * filter be EVALUATED here at all</i>, and a "no" is not a pass: the gate refuses (exit 2) rather than
+     * letting an absent optional field relax a fail-closed rule. Every consumer of {@code classNarrowingFires}
+     * therefore needs this one beside it, because a `false` from that predicate over a MISSING field and a
+     * `false` over a field that says "different class" are the same boolean and opposite statements.
+     *
+     * <p>Only {@code Net} and {@code Unknown} can be narrowed, so only those two can be withheld.
+     */
+    static boolean withheldAt(Set<String> withheld, PolicyRule.Deny r, String fn) {
+        if (withheld.isEmpty()) return false;                       // the scan route, and the common case
+        for (Effect w : List.of(Effect.NET, Effect.UNKNOWN))
+            if (withheld.contains(unanswerableKey(r, fn, w))) return true;
+        return false;
+    }
+
     /** ⟨0.24⟩ SPEC §6.2 — THE match rule: a function is selected by a reason-class filter when its
      *  {@link #reasonClassesOf} set INTERSECTS the filter. A null filter is "no filter" (every function
      *  matches), which is how {@code --class '*'} and an absent flag are spelled. Shared by the gate's
@@ -677,7 +699,10 @@ final class Policy {
         List<String[]> holes = new ArrayList<>();
         for (var e : new TreeMap<>(inferred).entrySet()) {
             // Same predicate + upgrade reconstruction as `candor unverified` (Query) — one source of truth.
-            PolicyRule.Deny r = unverifiedHoleRule(e.getKey(), e.getValue(), ctx().denyRules, gi);
+            // `Set.of()` — the SCAN route withholds nothing: it recomputes every field the narrowing reads
+            // from source, so there is no absent channel for a filter to succeed on. See SPEC §3.1's note
+            // that neither unanswerable state is reachable in a report this engine WROTE.
+            PolicyRule.Deny r = unverifiedHoleRule(e.getKey(), e.getValue(), ctx().denyRules, gi, Set.of());
             if (r != null) holes.add(new String[]{e.getKey(), ruleUpgrade(r, reasonClassesOf(gi, e.getKey()))[1]});
         }
         if (!holes.isEmpty()) {
@@ -1299,15 +1324,29 @@ final class Policy {
      *  forbids; the classic case is a fn/closure-injected port). A *real* violation is the gate's job, not
      *  this. Returns the first governing rule under which the method is such a hole, or null. Shared by the
      *  gate note ({@link #checkPolicy}) and `candor unverified` (Query) so "what a hole is" has ONE
-     *  definition — the two disclosure paths cannot drift (conformance PART 12d pins their agreement). */
+     *  definition — the two disclosure paths cannot drift (conformance PART 12d pins their agreement).
+     *
+     *  @param withheld the (rule, function, EFFECT) triples the gate could NOT evaluate over this input
+     *         ({@link Query#unanswerableScopedFilters}); EMPTY on the scan route, which recomputes every
+     *         field itself. A rule the gate WITHHELD at {@code fn} did not PASS it — see below. */
     static PolicyRule.Deny unverifiedHoleRule(String fn, EffectSet inferred, List<PolicyRule.Deny> deny,
-                                              GateInput gi) {
+                                              GateInput gi, Set<String> withheld) {
         if (!inferred.toNames().contains("Unknown")) return null;
         for (PolicyRule.Deny r : deny) {
             if (!scopeMatches(fn, r.scope())) continue;
             EffectSet bad = r.effects().isEmpty()
                     ? inferred.without(Effect.UNKNOWN)   // pure: any real effect is a violation
                     : inferred.intersect(r.effects());   // deny: a named effect is a violation
+            // ⟨0.24⟩ SPEC §3.2 — THE WITHHELD EFFECT COMES OUT EXACTLY AS #gate TAKES IT OUT, and BEFORE the
+            // narrowing below for the reason #gate gives (the narrowing reads the very field that is
+            // missing). But a `bad` emptied BY THAT REMOVAL is not a PASS: the gate did not clear the pair,
+            // it REFUSED it, and returning `r` here would file the function under "PASSES `<rule>` but is
+            // not provably clean" — a hole attributed to a rule that was never evaluated, which reads as
+            // candor having applied a filter it declined to apply. The function is still named, one channel
+            // over, with the MISSING EVIDENCE as its reason (Query#unverified).
+            boolean anyWithheld = false;
+            for (Effect w : List.of(Effect.NET, Effect.UNKNOWN))
+                if (withheld.contains(unanswerableKey(r, fn, w))) { bad = bad.without(w); anyWithheld = true; }
             // ⟨0.24⟩ …AS THE GATE WOULD COMPUTE IT — through the same #classNarrowingFires. A rule that
             // names `Unknown[reflect,unresolved]` does NOT deny a `native:` hole, so a function carrying
             // one PASSES that rule, and a pass while Unknown is precisely what this predicate is for.
@@ -1316,7 +1355,7 @@ final class Policy {
             // green with an unproven Unknown in it and NEITHER channel said so.
             for (Effect w : List.of(Effect.UNKNOWN, Effect.NET))
                 if (bad.contains(w) && !classNarrowingFires(r, gi, fn, w)) bad = bad.without(w);
-            if (bad.isEmpty()) return r;
+            if (bad.isEmpty() && !anyWithheld) return r;
         }
         return null;
     }

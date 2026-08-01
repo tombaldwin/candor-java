@@ -8,6 +8,47 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⟨0.24⟩ ⚠ AN ADVISORY VERB MAY BE LESS CERTAIN THAN THE GATE, NEVER MORE** (SPEC §3.2, ruled in
+  candor-spec `4fd140c`; conformance PART 27 row **R11**). Where `gate --report` REFUSES for want of
+  evidence, `unverified` now NAMES the function, `fix-gate` offers no remedy, both carry the gate's own
+  `unevaluated: [{rule, why}]`, and `--strict` exits **2** to match the gate. MEASURED on this engine
+  against a jar built from the previous commit, two mechanisms:
+
+  | report | policy | `gate --report` | before | after |
+  |---|---|---|---|---|
+  | `hosts`, **no `netClass`** | `deny Net[unknown-host] app` | exit 2 — cannot judge `app.noClass` | `unverified` names a *different* hole and clears it | names `app.noClass` as **UNJUDGED** |
+  | `Unknown` **inherited**, no reason | `deny Unknown[unresolved] app` | exit 2 — cannot judge `app.inherits` | `unverified` `ok:true`, list **empty**; `fix-gate --strict` **exit 1 + a full hoist plan** | names it; no remedy; exit 2 |
+
+  The second row names the mechanism. There was no single bug — there was no QUESTION. The hole predicate
+  asks *"does the gate PASS this while it is Unknown?"*, and both halves assume the gate reached a verdict:
+  `app.noClass` carries no `Unknown` so it was never a candidate, and `app.inherits` had its narrowing FIRE
+  on `reasonClassesOf`'s fail-closed `unresolved` floor — **a class derived from the very field the gate
+  refused to read**. A hedge does beat a hole; a derivation is not a hedge. The reason recorded is the
+  ABSENT FIELD, never the class it would have held.
+
+  **AT SCALE, on an external corpus** — `aws-java-sdk-s3-1.12.395` (2157 entries; 696 `Net`-bearing, **689
+  of them carrying `hosts`**; 821 `Unknown`-bearing), re-served with one channel dropped as a pre-rung or
+  foreign producer writes it. Population = in-scope functions carrying an effect the rule names; each must
+  land in exactly one of three channels, and a function in none is one nothing said anything about:
+
+  | report | rule | | VIOLATION | UNVERIFIED pass | UNJUDGED | **in NO channel** |
+  |---|---|---|---|---|---|---|
+  | `netClass` present | `deny Net[unknown-host]` | before / after | 696 / 696 | 0 / 0 | 0 / 0 | **0 / 0** ← the mirror |
+  | `netClass` stripped | `deny Net[unknown-host]` | before → after | 0 → 0 | 686 → 0 | 0 → **696** | **10 → 0** |
+  | `netClass` stripped | `deny Net` (control) | before / after | 696 / 696 | 0 / 0 | 0 / 0 | **0 / 0** ← unmoved |
+  | reason present | `deny Unknown[dispatch,unresolved]` | before / after | 693 / 693 | 128 / 128 | 0 / 0 | **0 / 0** ← the mirror |
+  | reason stripped | `deny Unknown[dispatch,unresolved]` | before → after | 0 → 0 | 0 → 0 | 0 → **821** | **821 → 0** |
+  | reason stripped | `deny Unknown` (control) | before / after | 821 / 821 | 0 / 0 | 0 / 0 | **0 / 0** ← unmoved |
+
+  The 686 were not a silence but a **misattribution** — filed as passing a rule that was never evaluated.
+  The 821-row is the defect with nothing left to hide behind: a whole corpus in no channel at all. The
+  unnarrowed CONTROLS do not move over the same stripped bytes, so what moved is the NARROWING, not the
+  stripping. **Every gate verdict is byte-identical across the change** — this moves what is disclosed,
+  never what is decided.
+
+  ⚠ marks the exit code: a `--strict` CI step on `unverified`/`fix-gate` that read green (or amber at 1)
+  over a report `gate --report` refuses now exits 2. That is the row working — the green was the defect.
+
 - **⟨0.24⟩ `whatif` QUOTES THE OPERATOR'S OWN RULE, AND NAMES THE NARROWING IT COULD NOT EVALUATE**
   (SPEC §3.1, candor-spec `6f30540` + its correction `901f14d`). `whatif` REBUILT the rule it printed, from
   `scope` plus the effect being ASKED ABOUT rather than the rule's own set. MEASURED on this engine, and

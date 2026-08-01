@@ -812,7 +812,9 @@ final class Policy {
      * into a different policy" — the rewritten policy is the one without that line, a bigger rewrite than
      * a narrowed filter, not a smaller one.
      *
-     * @param kind     the vocabulary or shape that failed — {@code rule kind}, {@code effect name}, …
+     * @param kind     the vocabulary or shape that failed, drawn from the CLOSED five SPEC §3.1 pins
+     *                 (candor-spec {@code f735b16}): {@code reason-class/alias}, {@code Net
+     *                 destination-class}, {@code effect-name}, {@code rule-kind}, {@code rule-form}
      * @param token    the thing not recognised, or {@code ""} where the FORM failed rather than a token
      * @param accepted the admissible set, or empty where there is no fixed one (an `allow` needs at least
      *                 one value; the values themselves are free text)
@@ -1108,7 +1110,14 @@ final class Policy {
                     if (t.length >= 4 && t[2].equals("->")) {
                         ctx().forbidRules.add(new PolicyRule.Forbid(t[1], t[3], line));
                     } else {
-                        warnPolicy(line, "forbid form", t.length > 1 ? t[1] : "",
+                        // ⟨0.24⟩ `rule-form` — the FIFTH member of the closed `kind` set (candor-spec
+                        // f735b16), and the one this engine's two FORM rows always needed. `forbid` IS a
+                        // known rule kind; what failed is the LINE'S FORM. Mapping it onto `rule-kind`
+                        // would tell a consumer `forbid` is unrecognised, which is FALSE, and a false
+                        // disclosure is the defect class this rung exists to remove. The set was closed
+                        // over its author's sample rather than over the domain. Hyphenated deliberately:
+                        // the hyphen is what makes the value machine-comparable across engines.
+                        warnPolicy(line, "rule-form", t.length > 1 ? t[1] : "",
                                 List.of("<scope> -> <scope>"), "want `forbid <scope> -> <scope>`");
                     }
                     break;
@@ -1117,7 +1126,9 @@ final class Policy {
                     // SPEC §6.2: `allow <Effect> [in <scope>] <value…>` — the effect MUST be one of the
                     // three that carry a literal surface; an `allow` for any other effect is dropped.
                     if (t.length < 3) {
-                        warnPolicy(line, "allow values", "", List.of(), "allow names no values");
+                        // ⟨0.24⟩ `rule-form` — same reasoning as the `forbid` arm above. `allow` is a known
+                        // rule kind; the line simply names no values.
+                        warnPolicy(line, "rule-form", "", List.of(), "allow names no values");
                         break;
                     }
                     if (!ALLOW_EFFECTS.contains(t[1])) {
@@ -1141,7 +1152,7 @@ final class Policy {
                     TreeSet<String> values = new TreeSet<>(); // sorted: the wire surface order
                     for (int i = vi; i < t.length; i++) values.add(t[i]);
                     if (values.isEmpty()) {
-                        warnPolicy(line, "allow values", "", List.of(), "allow names no values");
+                        warnPolicy(line, "rule-form", "", List.of(), "allow names no values");
                         break;
                     }
                     ctx().allowRules.add(new PolicyRule.Allow(Effect.fromSpecName(t[1]), scope, values, line));
@@ -1149,8 +1160,10 @@ final class Policy {
                 }
                 default:
                     // ⟨0.24⟩ `rule-kind`, hyphenated — the closed `kind` vocabulary SPEC §3.1 pins
-                    // (candor-spec 901f14d) is `reason-class/alias | Net destination-class | effect-name |
-                    // rule-kind`, and this engine spelled two of the four with a space.
+                    // (candor-spec f735b16) is `reason-class/alias | Net destination-class | effect-name |
+                    // rule-kind | rule-form`, and this engine spelled three of the five with a space.
+                    // THIS row is the genuine `rule-kind`: the head token names no rule at all, so saying
+                    // the KIND is unrecognised is true here and false on the two FORM arms above.
                     warnPolicy(line, "rule-kind", t[0], List.of("deny", "pure", "forbid", "allow"),
                             "unknown rule kind `" + t[0] + "`");
                     break;

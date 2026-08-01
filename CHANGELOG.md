@@ -8,6 +8,19 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⟨0.24⟩ `errors[].kind` NORMALISED ONTO THE CLOSED FIVE — `forbid form`/`allow values` → `rule-form`**
+  (SPEC §3.1, candor-spec `f735b16`). The pinned set gained a fifth member, `rule-form`, because it had been
+  closed over its author's sample rather than over the domain: this engine emitted two rows for a rule whose
+  KIND is recognised (`forbid`, `allow`) but whose FORM is malformed, and none of the four values described
+  them. Reporting them under their own spellings rather than folding them into `rule-kind` was the right
+  call — `rule-kind` on `forbid glued->arrow` tells a consumer that `forbid` is not a known rule kind, which
+  is false — but the spellings were unhyphenated and outside the set, so no consumer could compare them with
+  another engine's answer. **The hyphen is not decoration**: it is what makes the value machine-comparable.
+  `rule-form` did NOT swallow `rule-kind` — `frobid a -> b` names no rule at all and still reports
+  `rule-kind`, because respelling the head token and fixing the line's shape are different remedies. (The
+  three space-spelled values `effect name` / `allow effect` / `rule kind` were normalised at `74fd040`;
+  these two were the remainder.)
+
 - **⚠ ⟨0.24⟩ PRECEDENCE BINDS THE VERDICT, NOT THE POLICY GATE — a certain BASELINE regression was deleted
   from the machine channel by an unrelated policy refusal** (SPEC §3.1, candor-spec `4c79958`). Measured, a
   pure function gaining an `Fs` call against a frozen baseline: `CANDOR_BASELINE=b --gate-json g` → exit 1

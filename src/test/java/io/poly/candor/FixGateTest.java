@@ -59,7 +59,7 @@ class FixGateTest {
         Path pol = dir.resolve("arch.policy");
         Files.writeString(pol, "deny Net domain\n");
 
-        String out = capture(() -> Query.fixGate(orderflowFns(), report, pol.toString(), true, false));
+        String out = capture(() -> Query.fixGate(orderflowFns(), report, report, pol.toString(), true, false));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
         assertFalse(o.get("ok").getAsBoolean(), "a crossing exists → not ok");
         JsonArray rem = o.getAsJsonArray("remedies");
@@ -79,7 +79,7 @@ class FixGateTest {
         Path pol = dir.resolve("arch.policy");
         Files.writeString(pol, "deny Net domain\n");
 
-        String out = capture(() -> Query.fix(orderflowFns(), report, "priceQuote", "Net", pol.toString(), true));
+        String out = capture(() -> Query.fix(orderflowFns(), report, report, "priceQuote", "Net", pol.toString(), true));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
         assertEquals("of.domain.Pricing.priceQuote", o.get("fn").getAsString());
         assertEquals("of.infra.Rates.fetchRate", o.getAsJsonArray("site").get(0).getAsString());
@@ -106,7 +106,7 @@ class FixGateTest {
         Path pol = dir.resolve("arch.policy");
         Files.writeString(pol, "deny Net domain\n");
 
-        String out = capture(() -> Query.fix(fns, report, "priceQuote", "Net", pol.toString(), true));
+        String out = capture(() -> Query.fix(fns, report, report, "priceQuote", "Net", pol.toString(), true));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
         assertEquals("of.api.Api.getQuote", o.getAsJsonArray("hoistTo").get(0).getAsString(), "minimal frontier unchanged");
         assertEquals("Main.run", o.getAsJsonArray("hoistHigher").get(0).getAsString(), "Main.run is the higher option");
@@ -122,7 +122,7 @@ class FixGateTest {
                 eff("Repo.save", EffectSet.of(Effect.NET), EffectSet.of(Effect.NET), List.of()));
         Path pol = dir.resolve("arch.policy");
         Files.writeString(pol, "deny Net Repo\n");
-        String out = capture(() -> Query.fix(fns, report, "save", "Net", pol.toString(), true));
+        String out = capture(() -> Query.fix(fns, report, report, "save", "Net", pol.toString(), true));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
         assertEquals("Repo.save", o.get("fn").getAsString(), "must resolve to the effectful, denied match");
     }
@@ -141,7 +141,7 @@ class FixGateTest {
                 eff("infra.Infra.fetch", EffectSet.of(Effect.NET), EffectSet.of(Effect.NET), List.of()));
         Path pol = dir.resolve("arch.policy");
         Files.writeString(pol, "deny Net domain\n");
-        String out = capture(() -> Query.fix(fns, report, "inner", "Net", pol.toString(), true));
+        String out = capture(() -> Query.fix(fns, report, report, "inner", "Net", pol.toString(), true));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
         assertEquals(false, o.get("cleanHoist").getAsBoolean(), "a sandwiched frontier is NOT a clean hoist");
     }
@@ -152,7 +152,7 @@ class FixGateTest {
         Path pol = dir.resolve("arch.policy");
         Files.writeString(pol, "deny Net nonexistentlayer\n");
 
-        String out = capture(() -> Query.fixGate(orderflowFns(), report, pol.toString(), true, false));
+        String out = capture(() -> Query.fixGate(orderflowFns(), report, report, pol.toString(), true, false));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
         assertTrue(o.get("ok").getAsBoolean(), "no crossing → ok");
         assertEquals(0, o.getAsJsonArray("remedies").size());
@@ -162,14 +162,14 @@ class FixGateTest {
         // Same fail-loud contract as whatif: a specified-but-unreadable policy must exit 2, never emit a plan.
         String report = orderflowGraph(dir);
         String bogus = dir.resolve("does-not-exist.policy").toString();
-        int rc = Query.fix(orderflowFns(), report, "priceQuote", "Net", bogus, true);
+        int rc = Query.fix(orderflowFns(), report, report, "priceQuote", "Net", bogus, true);
         assertEquals(2, rc, "an unreadable policy must exit 2");
     }
 
     @Test void fixNoPolicyExits2(@TempDir Path dir) throws Exception {
         // No policy (and no CANDOR_POLICY) → a fix has no boundary to restore; exit 2, not an empty plan.
         String report = orderflowGraph(dir);
-        int rc = Query.fix(orderflowFns(), report, "priceQuote", "Net", null, true);
+        int rc = Query.fix(orderflowFns(), report, report, "priceQuote", "Net", null, true);
         // Only assert when the environment doesn't supply a fallback policy (CI sets none).
         if (System.getenv("CANDOR_POLICY") == null) assertEquals(2, rc, "no policy must exit 2");
     }
@@ -182,7 +182,7 @@ class FixGateTest {
                 eff("domain.calc", EffectSet.empty(), EffectSet.empty(), List.of()));
         Path pol = dir.resolve("p.policy");
         Files.writeString(pol, "pure domain\n");
-        String out = capture(() -> Query.unverified(fns, null, pol.toString(), true, false, null));
+        String out = capture(() -> Query.unverified(fns, null, null, pol.toString(), true, false, null));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
         assertFalse(o.get("ok").getAsBoolean());
         JsonArray items = o.getAsJsonArray("unverified");
@@ -190,7 +190,7 @@ class FixGateTest {
         assertEquals("domain.price", items.get(0).getAsJsonObject().get("fn").getAsString());
         assertEquals("deny Unknown domain", items.get(0).getAsJsonObject().get("upgrade").getAsString());
         // --strict → exit 1
-        assertEquals(1, Query.unverified(fns, null, pol.toString(), false, true, null));
+        assertEquals(1, Query.unverified(fns, null, null, pol.toString(), false, true, null));
     }
 
     /**
@@ -206,7 +206,7 @@ class FixGateTest {
         Path pol = dir.resolve("p.policy");
         Files.writeString(pol, "deny Unknown[dispatch,nativ] domain\n");   // `nativ` — a typo among valid tokens
 
-        String unv = captureErr(() -> Query.unverified(fns, null, pol.toString(), false, false, null));
+        String unv = captureErr(() -> Query.unverified(fns, null, null, pol.toString(), false, false, null));
         assertTrue(unv.contains("nothing was checked"),
                 "`unverified` must name ITS consequence — it computes no fix, so an unhonourable policy "
                 + "costs it the CHECK: " + unv);
@@ -215,11 +215,11 @@ class FixGateTest {
         assertTrue(unv.startsWith("candor unverified:"),
                 "…under the verb's own name, as the missing-policy branch of the same loader already does: " + unv);
         Candor.resetState();
-        assertEquals(2, exitOf(() -> Query.unverified(fns, null, pol.toString(), false, false, null)),
+        assertEquals(2, exitOf(() -> Query.unverified(fns, null, null, pol.toString(), false, false, null)),
                 "the POSTURE is unchanged — an unhonourable policy still refuses (exit 2)");
 
         Candor.resetState();
-        String fx = captureErr(() -> Query.fixGate(fns, dir.resolve("r.json").toString(), pol.toString(), false, false));
+        String fx = captureErr(() -> Query.fixGate(fns, dir.resolve("r.json").toString(), dir.resolve("r.json").toString(), pol.toString(), false, false));
         assertTrue(fx.contains("no fix computed"),
                 "CONTROL: the verb that DOES compute a fix keeps the noun — the repair is per-verb wording, "
                 + "not the deletion of a sentence: " + fx);
@@ -269,15 +269,15 @@ class FixGateTest {
         String report = orderflowGraph(dir);
         Path pol = dir.resolve("arch.policy");
         Files.writeString(pol, "deny Net domain\n");
-        assertEquals(0, exitOf(() -> Query.fixGate(orderflowFns(), report, pol.toString(), false, false)),
+        assertEquals(0, exitOf(() -> Query.fixGate(orderflowFns(), report, report, pol.toString(), false, false)),
                 "advisory default exits 0");
-        assertEquals(1, exitOf(() -> Query.fixGate(orderflowFns(), report, pol.toString(), false, true)),
+        assertEquals(1, exitOf(() -> Query.fixGate(orderflowFns(), report, report, pol.toString(), false, true)),
                 "--strict with an outstanding crossing exits 1");
-        assertEquals(1, exitOf(() -> Query.fixGate(orderflowFns(), report, pol.toString(), true, true)),
+        assertEquals(1, exitOf(() -> Query.fixGate(orderflowFns(), report, report, pol.toString(), true, true)),
                 "--strict --json with a crossing exits 1");
         // clean policy → exit 0 even with --strict (no crossing to fail on)
         Files.writeString(pol, "deny Net nonexistentlayer\n");
-        assertEquals(0, exitOf(() -> Query.fixGate(orderflowFns(), report, pol.toString(), false, true)),
+        assertEquals(0, exitOf(() -> Query.fixGate(orderflowFns(), report, report, pol.toString(), false, true)),
                 "--strict over a clean report exits 0");
     }
 

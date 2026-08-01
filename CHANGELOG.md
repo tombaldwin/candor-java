@@ -8,6 +8,50 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [Unreleased]
 
+- **⟨0.24⟩ ⚠ THE OMIT-`ok` RULE BINDS EVERY ADVISORY VERB, AND THE DISCLOSURE REACHES EVERY CHANNEL**
+  (SPEC §3.2, ruled in candor-spec `ec1a441`, resting on `93cef40`). `0075987` ruled it for `whatif` and
+  this engine implemented it for `whatif`; `unverified`, `fix-gate` and `fix` never got it. MEASURED here
+  on a jar built from the previous commit, over a release reviewer's fixture — one report declaring a
+  single `unanalyzed` unit, **no holes at all**, and a `deny Net app` that nothing violates:
+
+  | verb | before | after |
+  |---|---|---|
+  | `gate --report` | exit **2**, `ok:false`, `incomplete:true` + the manifest | unchanged ← already right |
+  | `unverified --strict` | exit **0**, `{"ok": true, "unverified": []}` | exit **2**, `ok` OMITTED, `incomplete:true` + the manifest |
+  | `fix-gate --strict` | exit **0**, `{"ok": true, "remedies": []}` | exit **2**, `ok` OMITTED, `incomplete:true` + the manifest |
+  | *(prose)* | `every function in a pure/deny layer is PROVABLY clean ✓` | the tick is WITHDRAWN; the unread unit is named with its reason |
+
+  That fixture is the sharp one and no existing test had an analogue: every prior incompleteness fixture
+  pairs the unread file with something the verb DOES find, so the behaviour on *"nothing to report, but I
+  could not see everything"* — the only shape where the false all-clear is the whole output — was never
+  exercised. `unverified` is the sharpest verb in the family for the same reason: **it exists to say "your
+  green gate is not provably green", and it was certifying a set it knows it cannot see all of.** A
+  function in an unparsed file is absent from `functions`, so it cannot be enumerated as an unverified
+  pass — and that absence is exactly what the verb would have to report.
+
+  **`ok: false` is NOT the repair**, for the reason §3.2 gives in `whatif`: on an ADVISORY verb `false`
+  asserts *"a hole exists, here it is"* beside an empty array — the fabrication mirror, worse than the
+  silence it replaces. So `ok` is omitted, `incomplete:true` + the manifest take its place, `if (r.ok)`
+  fails safe, and the verb's own array still ships (a partial answer that says it is partial beats a
+  refusal). One producer for all four verbs — `Query#advisoryAnswer` — because a copy of the rule sitting
+  inline in `whatif` is precisely why the siblings did not have it.
+
+  **THE PROSE TICK IS THE PROSE `ok: true`**, and the clause requires both channels because a test that
+  reads one channel is evidence about one channel: candor-rust built a mutant keeping the whole JSON fix
+  and deleting only the printed line, and it survived that engine's entire suite. `fix` carries neither
+  `ok` nor `--strict`, so what it withdraws is the sentence — `no policy forbids it there — nothing to
+  fix` — and its hoist frontier is disclosed as the lower bound it is.
+
+  **AND THE MANIFEST IS READ OVER THE REPORT SET THE LOCATOR NAMES**, not the one file `expandPrefix`
+  picks (`93cef40`: the advisory verb's incompleteness verdict must be at least as pessimistic as the
+  gate's **over the same bytes**). Measured: two sibling reports under one prefix with the manifest in the
+  second — `gate --report <prefix>` exits 2 while `unverified --strict` answered clean, the same
+  under-report one resolution step out. The ELEMENT rule was already right here (a member counts the
+  moment it is an object, so one with no `path` still trips it) and is now pinned.
+
+  ⚠ marks the exit code: a `--strict` CI step on `unverified`/`fix-gate` over a partially-parsed tree now
+  exits 2 where it read green. That is the clause working — the green was the defect.
+
 - **⟨0.24⟩ ⚠ AN ADVISORY VERB MAY BE LESS CERTAIN THAN THE GATE, NEVER MORE** (SPEC §3.2, ruled in
   candor-spec `4fd140c`; conformance PART 27 row **R11**). Where `gate --report` REFUSES for want of
   evidence, `unverified` now NAMES the function, `fix-gate` offers no remedy, both carry the gate's own

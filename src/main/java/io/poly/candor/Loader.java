@@ -601,7 +601,21 @@ final class Loader {
                                 }
                             }
                         }
-                        if (!de.effects.isEmpty()) ctx().crossDeps.put(h, de);
+                        // UNION on collision, never overwrite — see DepFn#unionWith for what
+                        // last-non-empty-wins cost (a stale {Unknown} erasing a trusted Fs, `deny Fs`
+                        // exit 1 -> 0) and why the order-independence matters.
+                        //
+                        // THE `!isEmpty()` GATE IS UNCHANGED, deliberately. It decides WHETHER AN ENTRY IS
+                        // RECORDED AT ALL, which is a different question from how two recorded entries
+                        // reconcile, and this commit is only answering the second. Admitting empty entries
+                        // would make a key that is currently ABSENT resolve as present-and-pure, which is a
+                        // new purity claim on a path nothing here has measured — exactly the kind of tail
+                        // that turns a soundness fix into its mirror.
+                        if (!de.effects.isEmpty()) {
+                            DepFn prev = ctx().crossDeps.get(h);
+                            if (prev == null) ctx().crossDeps.put(h, de);
+                            else prev.unionWith(de);
+                        }
                         // Entry-level coverage fallback (reports with no package field): the hash's
                         // package prefix gives the EXACT package. The spec join key is `pkg#qual`
                         // (Rust/TS) — take what's before `#`; this engine's own hash is the

@@ -34,4 +34,54 @@ final class DepFn {
     /// graph — which is where an INHERITED Unknown's reason lives, `unknownWhy` being direct-by-contract.
     /// See {@link Candor#depTransitiveWhy}.
     String fn;
+
+    /** Fold another entry loaded under the SAME {@code crossDeps} key into this one — the family-wide
+     *  entry-collision rule (candor-spec/ENTRY-COLLISION-DECISION.md), replacing last-non-empty-wins.
+     *
+     *  <p>WHAT LAST-NON-EMPTY-WINS COST. The old rule was {@code if (!de.effects.isEmpty()) put(h, de)},
+     *  and the {@code !isEmpty()} guard was read for a long time as a safety property: a pure claim
+     *  ({@code []}) can never erase an effectful one, so the rule looked like a precision loss and never
+     *  a purity claim. <b>{@code Unknown} IS NON-EMPTY.</b> §2.1's staleness downgrade turns every entry
+     *  of an untrusted report into exactly {@code {Unknown}}, which sails through the guard and
+     *  overwrites a trusted report's concrete effects — measured in both file orders, a trusted report
+     *  carrying {@code Fs} plus a stale one for the same package gives the consumer {@code ['Unknown']}
+     *  and {@code deny Fs} goes <b>exit 1 to exit 0</b>. A report the engine explicitly refused to trust
+     *  got to erase a fact from one it does.
+     *
+     *  <p>AND IT WAS ORDER-DEPENDENT: the same two reports gave {@code ['Net']} as {@code a-Exec.json} +
+     *  {@code z-Net.json} and {@code ['Exec']} as {@code z-Exec.json} + {@code a-Net.json}. Rename a
+     *  file, change the effect. A union is commutative, associative and idempotent, so the index no
+     *  longer depends on the order the reports happen to load in.
+     *
+     *  <p>THE RULE HAD BEEN DESCRIBED THREE TIMES AND WAS WRONG TWICE — reported as plain last-wins,
+     *  corrected to last-non-empty-wins with the guard over-read as safety, and only a third review
+     *  found the {@code Unknown} path through it. That history is itself part of the argument: a rule
+     *  nobody can state correctly on three attempts is not one a policy gate should rest on. The union
+     *  discards nothing, so there is no discard rule left to state wrongly.
+     *
+     *  <p>EVERY FIELD, not just {@code effects} — measured across three real dep trees, the coverage
+     *  ledger and the call edges disagree far more often than the effects do, and a union that covered
+     *  only effects would keep closing the gate flip while still dropping the disclosure.
+     */
+    void unionWith(DepFn other) {
+        effects.addAll(other.effects);
+        addAllMissing(hosts, other.hosts);
+        addAllMissing(cmds, other.cmds);
+        addAllMissing(paths, other.paths);
+        addAllMissing(tables, other.tables);
+        addAllMissing(netClass, other.netClass);
+        addAllMissing(unknownWhy, other.unknownWhy);
+        // STALE ONLY IF EVERY CONTRIBUTOR WAS. This flag decides how a synthesized reason is SPELLED
+        // (`dep-stale:<pkg>` vs `dep:<hash>`; both project to `unresolved`, so no gate turns on it), and
+        // once a trusted report has contributed to this entry, "this report is not the one this build
+        // produced" is no longer the accurate thing to tell the reader about it.
+        stale = stale && other.stale;
+        if (fn == null) fn = other.fn;
+    }
+
+    /** Append without duplicating — these surfaces are Lists on the wire but sets in meaning, and the
+     *  union must stay idempotent so that chaining one report twice is not observable. */
+    private static void addAllMissing(List<String> into, List<String> from) {
+        for (String s : from) if (!into.contains(s)) into.add(s);
+    }
 }

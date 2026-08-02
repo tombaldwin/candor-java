@@ -641,8 +641,24 @@ final class ReportWriter {
             TreeSet<String> sup = new TreeSet<>();
             if (cn.superName != null && !cn.superName.equals("java/lang/Object")) sup.add(cn.superName.replace('/', '.'));
             if (cn.interfaces != null) for (String i : cn.interfaces) sup.add(i.replace('/', '.'));
+            // ⟨0.26⟩ EMIT A KEY FOR EVERY TYPE INDEXED, `[]` INCLUDED — the key set IS the manifest.
+            //
+            // This was `if (!sup.isEmpty())`, so a project type with NO supertypes was OMITTED — and so was
+            // a type this loop never considered, because it walks `projectClasses` only. Absence therefore
+            // meant BOTH "no supertypes" and "never indexed", and a consumer asking `isSubtypeOf(t, owner)`
+            // about an unindexed `t` got a `false` indistinguishable from a true negative.
+            //
+            // MEASURED on the `callers --include-unknown` frontier fixture, scanning for real and doctoring
+            // only the sidecar: removing the REACHING implementor's entry silently dropped the dispatcher
+            // from the frontier ([] where the control gives [Dispatcher.run]) — while removing the sidecar
+            // ENTIRELY left it correct, because the ⟨0.24⟩ per-file rule over-lists. Removing MORE
+            // information gave a SAFER answer than removing one entry. Same in candor-ts, which is what
+            // says the defect was the FORMAT and not either engine.
+            //
+            // SPEC §2.2's own example has always shown `"app.Base": []`, so this producer contradicted the
+            // document it implements. Emitting the empty entry is what makes ABSENT mean exactly one thing.
+            h.put(cn.name.replace('/', '.'), new ArrayList<>(sup));
             if (!sup.isEmpty()) {
-                h.put(cn.name.replace('/', '.'), new ArrayList<>(sup));
                 // ASM reports `java/lang/Object` as an INTERFACE's superName too, and that is dropped above,
                 // so an absent entry here means "every listed supertype is an interface" for a class and an
                 // interface alike. That is a fact, not a default — which is what lets the consumer trust it.

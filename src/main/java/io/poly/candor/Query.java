@@ -897,20 +897,48 @@ public final class Query {
         }
     }
 
-    /** Is `type` a subtype of (or equal to) `owner`, per the hierarchy sidecar? Reflexive + transitive
-     *  over recorded direct supertypes/interfaces. */
-    static boolean isSubtypeOf(String type, String owner, Map<String, List<String>> hier) {
-        if (type.equals(owner)) return true;
+    /** ⟨0.26⟩ The three answers the hierarchy sidecar can give. `UNANSWERABLE` is the one the format could
+     *  not express before: a type ABSENT from a present sidecar is one the pass never indexed, and reading
+     *  that as "no supertypes" is a positive claim about a type nobody looked at. */
+    enum Subtype { YES, NO, UNANSWERABLE }
+
+    /** Is `type` a subtype of (or equal to) `owner`, per the hierarchy sidecar? Reflexive + transitive over
+     *  recorded direct supertypes/interfaces.
+     *
+     *  <p>⟨0.26⟩ THREE-VALUED, and the ordering matters: a POSITIVE answer dominates. If a known path
+     *  reaches `owner` the answer is YES even when some other branch ran into an unindexed type — the
+     *  subtype relation is established, and the unknown branch cannot un-establish it. Only when no path
+     *  proves it AND the walk met a type the sidecar has no key for is the answer UNANSWERABLE. NO is
+     *  reserved for a walk that stayed entirely inside types the sidecar can answer for.
+     *
+     *  <p>SPEC §2.2 ⟨0.26⟩ makes the key set the manifest: a producer emits a key for every type it indexed,
+     *  `[]` included. So `containsKey` is exactly "the pass answered for this type", and its absence is the
+     *  disclosure trigger — same rule as §3.1's dot-free `dispatch:` detail and §2's unreadable manifest. */
+    static Subtype subtypeOf(String type, String owner, Map<String, List<String>> hier) {
+        if (type.equals(owner)) return Subtype.YES;
+        boolean sawUnindexed = false;
         Set<String> seen = new HashSet<>();
         Deque<String> st = new ArrayDeque<>();
         st.push(type);
         while (!st.isEmpty()) {
-            for (String s : hier.getOrDefault(st.pop(), List.of())) {
-                if (s.equals(owner)) return true;
+            String cur = st.pop();
+            // The KEY SET IS THE MANIFEST (§2.2 ⟨0.26⟩): no key means the pass never indexed this type, so
+            // its supertypes are unknown rather than absent. `getOrDefault(..., List.of())` treated the two
+            // alike, which is the whole defect — a frontier entry silently dropped by a sidecar that merely
+            // did not cover one type.
+            if (!hier.containsKey(cur)) { sawUnindexed = true; continue; }
+            for (String s : hier.get(cur)) {
+                if (s.equals(owner)) return Subtype.YES;   // positive dominates
                 if (seen.add(s)) st.push(s);
             }
         }
-        return false;
+        return sawUnindexed ? Subtype.UNANSWERABLE : Subtype.NO;
+    }
+
+    /** The two-valued form, for callers that must collapse. UNANSWERABLE collapses to TRUE — disclose,
+     *  never drop — which is the direction §2.2 ⟨0.26⟩ requires and the opposite of what absence used to do. */
+    static boolean isSubtypeOf(String type, String owner, Map<String, List<String>> hier) {
+        return subtypeOf(type, owner, hier) != Subtype.NO;
     }
 
     /** Load the call-graph sidecar (`<report-minus-.json>.callgraph.json`), or null if absent/unreadable.

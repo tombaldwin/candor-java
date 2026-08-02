@@ -40,8 +40,24 @@ class QueryIncludeUnknownTest {
         return cg;
     }
 
+    /** ⟨0.26⟩ A CONFORMING sidecar: a key for EVERY type the pass indexed, `[]` where it has no
+     *  supertypes. This used to be `Map.of("app.Impl", List.of("app.Base"))` alone, which is the
+     *  PRE-⟨0.26⟩ shape — and under the new consumer rule that shape is legitimately UNANSWERABLE, because
+     *  a walk from `Impl` reaches `Base` and finds no key for it. SPEC §2.2 ⟨0.26⟩ makes the key set the
+     *  manifest, so precision now REQUIRES the empty entries: with them `Impl <: Unrelated` is a confident
+     *  NO, without them it is "I never indexed Base, so I cannot say". */
     private static Map<String, List<String>> hierarchy() {
-        return Map.of("app.Impl", List.of("app.Base")); // Impl <: Base
+        return Map.of("app.Impl", List.of("app.Base"),
+                      "app.Base", List.of(),          // indexed, no supertypes — NOT "unknown"
+                      "app.Unrelated", List.of(),
+                      "app.Sink", List.of(),
+                      "app.Frontier", List.of());
+    }
+
+    /** The PRE-⟨0.26⟩ shape, kept deliberately: supertypeless types omitted, so the consumer cannot tell
+     *  "no supertypes" from "never indexed". Used by the row that pins the adoption cost below. */
+    private static Map<String, List<String>> legacyHierarchy() {
+        return Map.of("app.Impl", List.of("app.Base"));
     }
 
     @Test void disclosesFrontierWhenDispatchOwnerMatches() {
@@ -56,6 +72,27 @@ class QueryIncludeUnknownTest {
         assertEquals(1, poss.size(), "the broad-dispatch frontier function is disclosed");
         assertEquals("app.Frontier.go", poss.get(0).getAsJsonObject().get("fn").getAsString());
         assertEquals("run", poss.get(0).getAsJsonObject().get("viaDispatchOn").getAsString());
+    }
+
+    /** ⟨0.26⟩ THE ADOPTION COST, PINNED RATHER THAN DISCOVERED: a PRE-⟨0.26⟩ sidecar over-lists.
+     *
+     *  <p>The same query that is a confident NO against a conforming sidecar is UNANSWERABLE against one
+     *  that omits supertypeless types, because the walk from `app.Impl` reaches `app.Base` and finds no key
+     *  for it. Absence is exactly the ambiguity ⟨0.26⟩ removes, and until a producer is re-run the consumer
+     *  must take the safe side: DISCLOSE, never drop.
+     *
+     *  <p>This is a real cost and it is the right one. The measured alternative — reading absence as "no
+     *  supertypes" — silently dropped a frontier entry whenever the sidecar merely failed to cover one
+     *  type, while a WHOLLY MISSING sidecar answered correctly. Trading a silent under-report for a
+     *  disclosed over-list is the direction §2.2 requires; the noise ends when the sidecar is regenerated. */
+    @Test void aPreRungSidecarOverListsRatherThanDroppingSilently() {
+        Map<String, Set<String>> broad = Map.of("app.Frontier.go", Set.of("app.Unrelated.run"));
+        String out = capture(() ->
+                Query.callersViaCallgraph(graph(), "app.Sink.touch", true, broad, legacyHierarchy()));
+        JsonObject o = JsonParser.parseString(out).getAsJsonObject();
+        assertEquals(1, o.getAsJsonArray("possibleViaUnknownDispatch").size(),
+                "a sidecar that cannot answer must DISCLOSE — the pre-rung shape omits `app.Base`, so "
+                + "`Impl <: Unrelated` is unanswerable rather than false");
     }
 
     @Test void precisionDropsUnrelatedSameNamedDispatch() {

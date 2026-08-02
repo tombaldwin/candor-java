@@ -832,9 +832,27 @@ class CrossScanBoundaryTest {
         String sidecar = capturedSidecar(
                 Map.of("lib/Flat.java", "package lib;\npublic class Flat { public void go(){ System.getenv(\"HOME\"); } }\n"),
                 Map.of("app/S.java", "package app;\npublic class S { public void go(){ new lib.Flat().go(); } }\n"));
-        assertEquals(0, com.google.gson.JsonParser.parseString(sidecar).getAsJsonObject().size(),
-                "a sidecar naming no type must be exactly `{}` — a metadata key alone flips two engines' "
-                        + "non-empty gate off the documented over-listing fallback; got " + sidecar);
+        // ⟨0.26⟩ THE ASSERTION MOVED WITH THE CONTRACT, and both halves are kept.
+        //
+        // It used to require exactly `{}` here, because the project's one type has no supertype and the
+        // pre-rung producer omitted such types — so "names no type" and "has nothing to say" were the same
+        // file. SPEC §2.2 ⟨0.26⟩ makes the KEY SET THE MANIFEST: an indexed type appears with `[]`, and
+        // ABSENCE is what now means "never indexed". `lib.Flat` IS indexed, so naming it is the point, not
+        // a regression — and naming it is precisely what lets a consumer answer about it without guessing.
+        //
+        // THE ORIGINAL HAZARD IS UNCHANGED AND STILL ASSERTED: `@superclass` must never be the file's ONLY
+        // key. candor-ts (`Object.keys(h).length > 0`) and candor-rust (`!hier.is_empty()`) take the
+        // PRECISE frontier iff the map is non-empty, so a metadata key alone would flip them off the
+        // over-listing fallback onto a precise walk over an empty hierarchy — a disclosure withdrawn on
+        // zero information, in another engine. That is what this row exists for and it survives the rung.
+        var obj = com.google.gson.JsonParser.parseString(sidecar).getAsJsonObject();
+        assertTrue(obj.has("lib.Flat") && obj.getAsJsonArray("lib.Flat").isEmpty(),
+                "⟨0.26⟩ an INDEXED type with no supertypes must appear with `[]` — the key set is the "
+                        + "manifest, and omitting it is what made absence ambiguous; got " + sidecar);
+        var typeKeys = obj.keySet().stream().filter(k -> !k.startsWith("@")).count();
+        assertTrue(typeKeys > 0,
+                "the metadata key must never be the file's ONLY key — two engines gate the precise "
+                        + "frontier on non-emptiness; got " + sidecar);
     }
 
     @Test

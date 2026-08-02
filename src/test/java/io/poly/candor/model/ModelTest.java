@@ -106,8 +106,25 @@ class ModelTest {
         assertNull(UnknownReason.Kind.fromPrefix("ambiguous:"), "fromPrefix matches the PREFIX, not a tag");
         assertNull(UnknownReason.parse("ambiguity:x").kind());
         assertNull(UnknownReason.parse("deps:x").kind());
-        // no colon → not a tag
-        assertNull(UnknownReason.parse("nocolon"));
+        // A COLON-FREE TAG IS A TAG WITH NO DETAIL, NOT A NON-TAG. This row asserted the opposite
+        // ("no colon → not a tag") and that reading was a SILENT UNDER-REPORT: SPEC §6.2's projection
+        // table registers `missing-config`, `no-tsconfig` and `no-node_modules`, all detail-less, all
+        // classed `setup`. `ReportJson.parseEntries` maps every tag through `parse` and drops the nulls,
+        // so those three were deleted on the way IN and `blindspots` could never list a setup-only
+        // source — 2 sources where the setup fixture has 3, and `--class setup` returning nothing.
+        for (String bare : new String[] { "missing-config", "no-tsconfig", "no-node_modules" }) {
+            UnknownReason r = UnknownReason.parse(bare);
+            assertNotNull(r, "a detail-less §6.2 token must survive parsing: " + bare);
+            assertEquals("", r.detail(), "no colon means no detail: " + bare);
+            assertEquals(bare, r.format(),
+                    "…and it must round-trip WITHOUT a trailing colon, or the wire is corrupted: " + bare);
+            assertEquals(ReasonClass.SETUP, ReasonClass.classify(r.format()),
+                    "the whole point of keeping it — it classifies `setup`: " + bare);
+        }
+        // Only a BLANK string is not a tag: there is nothing to record.
+        assertNull(UnknownReason.parse(""));
+        assertNull(UnknownReason.parse("   "));
+        assertNull(UnknownReason.parse(null));
         // of(kind, detail) builds the same as parse
         assertEquals("dispatch:A.b", UnknownReason.of(UnknownReason.Kind.DISPATCH, "A.b").format());
     }

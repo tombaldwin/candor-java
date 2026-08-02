@@ -1120,4 +1120,74 @@ class CrossScanBoundaryTest {
             "public class S { public String concat(Entry e){ return \"x\" + e; } }")));
         assertFalse(env(r, "app.S.concat"), "with no dep report there is nothing to inherit");
     }
+
+    // ---- the entry collision: two reports, one key -----------------------------------------------------
+
+    /** Scan `app` with lib's report chained TWICE — once as produced (trusted) and once with the producing
+     *  version rewritten so §2.1 refuses it. Both land in one deps DIRECTORY, so both are walked and both
+     *  resolve to the same {@code crossDeps} key: the collision, in the shape a real dep directory produces
+     *  it. {@code order} decides which filename sorts first, because the defect being pinned was
+     *  order-dependent and a fixture that fixes the order cannot see that. */
+    private static Map<String, EffectSet> scanChainedTwice(Map<String, String> lib, Map<String, String> app,
+            boolean staleFirst) throws Exception {
+        Path appDir = compileApp(lib, app);
+        Path base = appDir.getParent();
+        Config saved = Candor.config;
+        try {
+            Path deps = base.resolve("deps");
+            Files.createDirectories(deps);
+            Path fresh = deps.resolve((staleFirst ? "b-" : "a-") + "fresh.json");
+            Candor.config = Config.empty();
+            ReportWriter.writeReport(Candor.runScan(base.resolve("lib")), fresh.toString(), null);
+            // The SAME report, with only the producing build rewritten — so the two entries are identical
+            // but for the trust level, and anything that changes is the collision rule and nothing else.
+            String staleText = Files.readString(fresh)
+                    .replaceAll("\"version\"\\s*:\\s*\"[^\"]*\"", "\"version\": \"candor-0.0.1-ancient\"");
+            Files.writeString(deps.resolve((staleFirst ? "a-" : "b-") + "stale.json"), staleText);
+            Files.createDirectories(base.resolve(".candor"));
+            Files.writeString(base.resolve(".candor/config"), "deps " + deps + "\n");
+            Candor.config = Config.forTarget(appDir);
+            return Candor.runScan(appDir);
+        } finally {
+            Candor.config = saved;
+            rm(base);
+        }
+    }
+
+    /** A TRUSTED REPORT'S EFFECT SURVIVES A STALE ONE BESIDE IT — the gate flip that
+     *  candor-spec/ENTRY-COLLISION-DECISION.md measured, in both file orders.
+     *
+     *  <p>The old rule was {@code if (!de.effects.isEmpty()) crossDeps.put(h, de)} — last non-empty wins.
+     *  The guard was read for a long time as a safety property, on the grounds that a pure claim
+     *  ({@code []}) can never erase an effectful one. <b>{@code Unknown} is non-empty.</b> §2.1 downgrades
+     *  every entry of an untrusted report to exactly {@code {Unknown}}, which passes the guard and
+     *  OVERWRITES the trusted report's concrete effect — so the consumer saw {@code ['Unknown']}, the
+     *  {@code Fs} was gone, and {@code deny Fs} went exit 1 to exit 0. A report the engine explicitly
+     *  refused to trust erased a fact from one it does.
+     *
+     *  <p>BOTH ORDERS ARE ASSERTED because the defect was order-dependent: the same two reports gave
+     *  {@code ['Net']} one way round and {@code ['Exec']} the other. Rename a file, change the effect. A
+     *  fixture that pins one order would pass over half the bug. */
+    @org.junit.jupiter.api.Test
+    void aStaleReportBesideATrustedOneCannotEraseItsEffect() throws Exception {
+        Map<String, String> lib = Map.of("lib/Entry.java", String.join("\n",
+            "package lib;",
+            "public class Entry { public static void touch() throws Exception {",
+            "  java.nio.file.Files.readString(java.nio.file.Path.of(\"/etc/hosts\")); } }"));
+        Map<String, String> app = Map.of("app/S.java", String.join("\n",
+            "package app; import lib.Entry;",
+            "public class S { public void run() throws Exception { Entry.touch(); } }"));
+        for (boolean staleFirst : new boolean[] { false, true }) {
+            Map<String, EffectSet> r = scanChainedTwice(lib, app, staleFirst);
+            java.util.List<String> got = r.getOrDefault("app.S.run", EffectSet.empty()).toNames();
+            String where = " (stale report sorting " + (staleFirst ? "FIRST" : "SECOND") + "), got " + got;
+            assertTrue(got.contains("Fs"),
+                    "the TRUSTED report's Fs was erased by a stale report beside it — this is the `deny Fs` "
+                            + "exit 1 -> 0 flip, and the union exists to stop it" + where);
+            assertTrue(got.contains("Unknown"),
+                    "the stale report's §2.1 downgrade must ALSO survive: the union adds, it does not pick, "
+                            + "and dropping the Unknown would hide that one of the two reports is not "
+                            + "believable" + where);
+        }
+    }
 }

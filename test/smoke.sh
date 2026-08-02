@@ -47,7 +47,7 @@ rep="$(cat "$W/r.json")"
 want "report is the v0.2 envelope"            "$rep" '"candor"'
 want "envelope carries a version"             "$rep" '"version"'
 want "envelope carries a toolchain"           "$rep" '"toolchain"'
-want "envelope declares the spec contract 0.24" "$rep" '"spec": "0.25"'
+want "envelope declares the spec contract 0.26" "$rep" '"spec": "0.26"'
 want "functions array present"               "$rep" '"functions"'
 want "reads performs Fs"                      "$rep" '"Fx.reads"'
 want "dyn is Unknown (reflection, trust §4)"  "$rep" '"Unknown"'
@@ -1668,7 +1668,7 @@ else echo "  FAIL --help exit $hprc (want 0)"; fail=$((fail+1)); fi
 hs="$("$CJ" -h 2>&1)"
 want "-h is the same surface"                      "$hs" 'USAGE'
 vv="$("$CJ" --version 2>&1)"; vvrc=$?
-want    "--version prints the release + spec"      "$vv" '(spec 0.25)'
+want    "--version prints the release + spec"      "$vv" '(spec 0.26)'
 want    "--version prints the upgrade line"        "$vv" 'jbang --fresh'
 wantnot "--version release is baked (not the 'unknown' fallback)" "$vv" 'candor-java unknown'
 if [ "$vvrc" -eq 0 ]; then echo "  ok   --version exits 0"; pass=$((pass+1));

@@ -6,6 +6,19 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
+## Unreleased — ⟨spec 0.26⟩
+
+### ⟨0.26⟩ THE HIERARCHY SIDECAR'S KEY SET IS ITS MANIFEST — both halves
+
+SPEC §2.2 `78aad6d`. PRODUCER: `ReportWriter` emits a key for every indexed type, `[]` included.
+CONSUMER: `Query.subtypeOf` is three-valued (`YES`/`NO`/`UNANSWERABLE`), and `isSubtypeOf` collapses
+UNANSWERABLE to true — disclose, never drop. `getOrDefault(t, List.of())` had read an unindexed type as
+"has no supertypes", a positive claim about a type nobody analysed.
+
+MEASURED with only the sidecar doctored: one entry removed → `[]`; the whole sidecar removed → correct.
+Partial information was worse than none. candor-ts behaved identically, which is evidence about the
+FORMAT rather than either engine — neither had a third answer available.
+
 ## [0.25.0] — 2026-08-02
 
 ⟨spec 0.25⟩ **Floor bump only — no behaviour change in this engine.** SPEC §2 chaining rule 1 now states
@@ -13,7 +26,6 @@ that an ambiguous join key is UNIONED rather than dropped; this engine already i
 (conformance PARTs 25/26 pin it four-way), so 0.25 records the contract catching up with the code. See
 candor-spec/CHANGELOG.md for the measurement and the reversal note.
 
-## [Unreleased]
 
 - **⟨0.24⟩ ⚠ …AND IT BINDS THE WITHHELD-RULE TRIGGER TOO: `ok` IS OMITTED, NOT `false`** (SPEC §3.2,
   ruled in candor-spec `142740a`). The entry below closed the INCOMPLETENESS trigger; this closes its twin.

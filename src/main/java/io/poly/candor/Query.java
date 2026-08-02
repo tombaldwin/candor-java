@@ -2385,6 +2385,26 @@ public final class Query {
                 JsonObject a = o.getAsJsonObject("analyzed");
                 if (a.has("count") && a.get("count").isJsonPrimitive()) analyzed = a.get("count").getAsInt();
             }
+            // PRESENT BUT UNREADABLE IS NOT ABSENT — SPEC §2 ⟨0.24⟩'s signature-key rule: "SIGNATURE keys
+            // — `functions`, `inferred`, `direct`, `unknownWhy`, `netClass`, `analyzed`, `unanalyzed` —
+            // carry the claim. One unreadable among them means the document's claim cannot be trusted,
+            // whatever this particular policy happens to ask. Refuse."
+            //
+            // This read was `has(…) && isJsonArray()`, so a present-but-non-array `unanalyzed` failed the
+            // condition and was SILENTLY SKIPPED — the manifest whose whole job is to say "there is code I
+            // could not analyze" was read as "there is none". MEASURED against the other three engines,
+            // on a report whose `unanalyzed` is a string and which has nothing else to report:
+            //
+            //     rust exit 2    ts exit 2    swift exit 2       java exit 0   <- trusted it
+            //
+            // Throwing routes it to the caller's existing `refuse(…)`, which is the §3.1 refusal shape the
+            // other three already emit. ABSENT STAYS ABSENT: a report with no `unanalyzed` key is a
+            // complete scan (or a pre-⟨0.21⟩ producer) and is untouched — the distinction this turns on is
+            // present-and-garbled, never missing.
+            if (o.has("unanalyzed") && !o.get("unanalyzed").isJsonArray())
+                throw new IllegalStateException(
+                        "`unanalyzed` is present but is not an array — a SIGNATURE key that cannot be read "
+                        + "impeaches the whole document (§2), so this gate cannot certify it");
             if (o.has("unanalyzed") && o.get("unanalyzed").isJsonArray())
                 for (JsonElement e : o.getAsJsonArray("unanalyzed"))
                     if (e.isJsonObject()) {

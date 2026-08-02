@@ -223,4 +223,55 @@ class CompletenessManifestTest {
                     "…the incompleteness is named instead: " + human.stdout());
         } finally { rm(app.getParent()); }
     }
+
+    /**
+     * AN UNREADABLE SIGNATURE KEY IMPEACHES THE DOCUMENT — SPEC §2 ⟨0.24⟩: *"SIGNATURE keys — `functions`,
+     * `inferred`, `direct`, `unknownWhy`, `netClass`, `analyzed`, `unanalyzed` — carry the claim. One
+     * unreadable among them means the document's claim cannot be trusted, whatever this particular policy
+     * happens to ask. **Refuse.**"*
+     *
+     * <p>{@code readEnvelope} tested {@code has("unanalyzed") && isJsonArray()}, so a PRESENT but non-array
+     * manifest failed the condition and was SILENTLY SKIPPED: the key whose entire job is to say "there is
+     * code I could not analyze" was read as "there is none". Measured against the other three engines on
+     * the same report, with nothing else to report — rust, ts and swift all exit 2; java exited <b>0</b>.
+     *
+     * <p>BOTH CONTROLS MATTER MORE THAN THE ROW. Refusing on any odd byte is the mirror defect, and this
+     * rule turns on present-AND-GARBLED, never on missing: a report with NO {@code unanalyzed} key is a
+     * complete scan (or a pre-⟨0.21⟩ producer) and must still gate normally, while a WELL-FORMED
+     * {@code unanalyzed} must fail closed as INCOMPLETE rather than be refused as corrupt. Those are
+     * different exits for different reasons and a fix that collapsed them would pass the first assertion.
+     */
+    @Test void anUnreadableUnanalyzedKeyImpeachesTheReport() throws Exception {
+        Path dir = Files.createTempDirectory("candor-impeach");
+        try {
+            String base = "{\"candor\":{\"version\":\"x\",\"toolchain\":\"t\",\"spec\":\"0.24\"},"
+                    + "\"package\":\"p\",\"analyzed\":{\"count\":3,\"digest\":\"d\"},%s"
+                    + "\"functions\":[{\"fn\":\"pure\",\"inferred\":[],\"hash\":\"p#pure\"}]}";
+            Path pol = dir.resolve("p.txt");
+            Files.writeString(pol, "deny Net\n");
+
+            // (a) THE ROW: present but unreadable -> the document is impeached, so the gate must refuse.
+            Path bad = dir.resolve("bad.scan.json");
+            Files.writeString(bad, String.format(base, "\"unanalyzed\":\"not-an-array\","));
+            Run r = runCli("gate", "--report", bad.toString(), "--policy", pol.toString());
+            assertEquals(2, r.exit(), "an unreadable SIGNATURE key must impeach the document: " + r.stderr());
+            assertTrue(r.stderr().contains("unanalyzed"), "and the refusal must name the key: " + r.stderr());
+
+            // (b) CONTROL — ABSENT is not unreadable. A complete scan carries no `unanalyzed` at all.
+            Path none = dir.resolve("none.scan.json");
+            Files.writeString(none, String.format(base, ""));
+            assertEquals(0, runCli("gate", "--report", none.toString(), "--policy", pol.toString()).exit(),
+                    "a report with no `unanalyzed` key is a COMPLETE scan and must gate normally");
+
+            // (c) CONTROL — a WELL-FORMED manifest fails closed as INCOMPLETE, which is a different exit
+            //     for a different reason. Collapsing (a) and (c) would satisfy (a) and lose the distinction.
+            Path decl = dir.resolve("decl.scan.json");
+            Files.writeString(decl, String.format(base,
+                    "\"unanalyzed\":[{\"path\":\"src/x\",\"reason\":\"failed to parse\"}],"));
+            Run d = runCli("gate", "--report", decl.toString(), "--policy", pol.toString());
+            assertEquals(2, d.exit(), "a declared-incomplete report must still fail closed: " + d.stderr());
+            assertFalse(d.stderr().contains("cannot read report"),
+                    "…but as INCOMPLETE, not as an impeached document: " + d.stderr());
+        } finally { rm(dir); }
+    }
 }

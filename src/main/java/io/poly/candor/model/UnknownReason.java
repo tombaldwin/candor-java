@@ -77,19 +77,37 @@ public record UnknownReason(String prefix, String detail) implements Comparable<
         return Kind.fromPrefix(prefix);
     }
 
-    /** The wire tag, e.g. {@code "dispatch:Foo.bar"}. */
+    /** The wire tag, e.g. {@code "dispatch:Foo.bar"} — or just the prefix for a DETAIL-LESS tag such as
+     *  {@code missing-config}, which must NOT round-trip as {@code "missing-config:"}. */
     public String format() {
-        return prefix + ":" + detail;
+        return detail.isEmpty() ? prefix : prefix + ":" + detail;
     }
 
     /**
-     * Parse a wire tag, splitting on the FIRST {@code ':'}; {@code null} only if there is no colon
-     * (not a tag). An unrecognized prefix is preserved verbatim (round-trips), with {@link #kind()}
-     * returning {@code null}.
+     * Parse a wire tag, splitting on the FIRST {@code ':'}. A tag with NO colon is a tag with no detail,
+     * not a non-tag: it parses to an empty {@link #detail}. An unrecognized prefix is preserved verbatim
+     * (round-trips), with {@link #kind()} returning {@code null}. {@code null} only for a blank string,
+     * where there is nothing to record.
+     *
+     * <p><b>THIS RETURNED {@code null} FOR EVERY COLON-FREE TAG, AND THAT WAS A SILENT UNDER-REPORT.</b>
+     * The doc here used to assert that a colon-free string was "not a tag" — the model was wrong, and the
+     * spec says so: §6.2's projection table registers {@code missing-config}, {@code no-tsconfig} and
+     * {@code no-node_modules}, all detail-less, all classed {@code setup}. {@code ReportJson.parseEntries}
+     * maps every tag through here and drops the nulls, so those three were deleted on the way in and
+     * {@code blindspots} could never list a setup-only source: 2 sources where the fixture has 3, and
+     * {@code blindspots --class setup} returned nothing at all.
+     *
+     * <p>The UNFILTERED list was already wrong, so this is older than the ⟨0.24⟩ {@code --class} rung and
+     * independent of it. {@code unverified --class} escaped only because it reads the RAW strings through
+     * {@code readEnvelope} — a choice made for an unrelated reason that happened to route around this.
+     *
+     * <p>The shape to remember: <b>a parser that models {@code kind:detail} drops the token that has no
+     * detail</b>, and the vocabulary it is parsing contains exactly such tokens.
      */
     public static UnknownReason parse(String tag) {
+        if (tag == null || tag.isBlank()) return null;
         int i = tag.indexOf(':');
-        if (i < 0) return null;
+        if (i < 0) return new UnknownReason(tag, "");
         return new UnknownReason(tag.substring(0, i), tag.substring(i + 1));
     }
 

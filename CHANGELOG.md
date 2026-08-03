@@ -8,6 +8,30 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased — ⟨spec 0.26⟩
 
+### ⚠ κ breadth: an S3 transfer naming a LOCAL FILE is `Fs` as well as `Net`
+
+`s3.getObject(request, File)` WRITES that file; `putObject(bucket, key, File)` READS it. The AWS service
+rule returns `Net` and `Classifier.classify` returns ONE effect, so the Fs half had nowhere to go — a
+`deny Fs` gate over an S3 archival path saw nothing.
+
+**This is not the "bytes through a caller-opened handle" caveat** that keeps `serde_json::from_reader`
+and `tracing_subscriber`'s File writer uncharged. That caveat holds because the caller's own `open`
+already carries the Fs. `new java.io.File(path)` OPENS NOTHING in Java — it is a path wrapper, and candor
+rightly treats it as pure — so the write happens ONLY inside the SDK, and charging nobody loses it.
+
+Co-emitted the way `Llm` co-emits `Net`: `dir` is a set, so the Fs is ADDITIVE and the service rule's Net
+is never displaced. Gated on the s3 service packages plus a `File`/`Path` in the DESCRIPTOR, so a
+metadata call keeps its Net alone and a pure same-named value type (`AmazonS3URI.getBucket`) cannot match.
+
+    download(c.getObject("r", new File(…)))   Net  ->  Fs + Net
+    upload(c.putObject("b","k", new File(…))) Net  ->  Fs + Net
+    meta(c.getBucketLocation("b"))            Net  ->  Net        (CONTROL — no File, no Fs)
+
+commons-io was on the same filing and needed nothing: `org.apache.commons.io` already carries the
+source/sink descriptor stance (File/Path → Fs, URL/URI → Net) with the pure path-arithmetic helpers
+carved out.
+
+
 ### ⟨0.26⟩ THE HIERARCHY SIDECAR'S KEY SET IS ITS MANIFEST — both halves
 
 SPEC §2.2 `78aad6d`. PRODUCER: `ReportWriter` emits a key for every indexed type, `[]` included.

@@ -323,6 +323,52 @@ class CoverageEnvelopeTest {
      *  and moves the pinned scan-completeness threshold — measured, it nearly doubled a 49-call fixture and
      *  put two existing tests red. So the package joins the LIST (so `invisible` can never name a package
      *  `coverage.uncovered` omits) while the `calls` tally keeps meaning call volume. */
+    /** An S3 TRANSFER THAT NAMES A LOCAL FILE performs Fs as well as Net — and only Net was reported.
+     *
+     *  `s3.getObject(request, File)` WRITES that file and `putObject(bucket, key, File)` READS it. The
+     *  service rule returns NET and `Classifier.classify` returns ONE effect, so the Fs half had nowhere
+     *  to go: a `deny Fs` gate over an S3 archival path saw nothing.
+     *
+     *  NOT the "library moves bytes through a caller-opened handle" caveat, which says a library must not
+     *  be charged for I/O the caller's own `open` already carries. `new java.io.File(path)` OPENS NOTHING
+     *  in Java — it is a path wrapper, and candor rightly treats it as pure — so the write happens ONLY
+     *  inside the SDK and charging nobody loses it entirely.
+     *
+     *  `meta` is the control and it is what keeps the rule off every AWS call: `getBucketLocation` takes no
+     *  File, so it stays Net-only. Without that row a rule that simply added Fs to every S3 call would pass. */
+    @Test
+    void anS3TransferNamingALocalFileIsAlsoFs() throws Exception {
+        Path app = compileApp(
+            Map.of("AmazonS3Client.java", "package com.amazonaws.services.s3; import java.io.File;"
+                + " public class AmazonS3Client {"
+                + " public Object getObject(String r, File d){ return null; }"
+                + " public Object putObject(String b, String k, File s){ return null; }"
+                + " public String getBucketLocation(String b){ return b; } }"),
+            Map.of("S3.java", String.join("\n",
+                "package app;",
+                "import com.amazonaws.services.s3.AmazonS3Client;",
+                "import java.io.File;",
+                "public class S3 {",
+                "  public static Object download(AmazonS3Client c){ return c.getObject(\"r\", new File(\"/tmp/x\")); }",
+                "  public static Object upload(AmazonS3Client c){ return c.putObject(\"b\", \"k\", new File(\"/tmp/x\")); }",
+                "  public static String meta(AmazonS3Client c){ return c.getBucketLocation(\"b\"); }",
+                "}")));
+        JsonObject root = scanToJson(app, "s3-transfer.json");
+
+        for (String fn : List.of("app.S3.download", "app.S3.upload")) {
+            JsonObject f = fnOrNull(root, fn);
+            assertNotNull(f, fn + " must be in the report");
+            String eff = f.getAsJsonArray("inferred").toString();
+            assertTrue(eff.contains("Fs"), fn + " names a local File — the SDK reads/writes it, so Fs: " + eff);
+            assertTrue(eff.contains("Net"), fn + " must KEEP its Net — the Fs is additive, not a swap: " + eff);
+        }
+        String meta = fnOrNull(root, "app.S3.meta").getAsJsonArray("inferred").toString();
+        assertTrue(meta.contains("Net"), "CONTROL: a metadata call is still Net: " + meta);
+        assertFalse(meta.contains("Fs"),
+            "CONTROL: `getBucketLocation` takes no File and must NOT gain Fs — otherwise the rule is "
+            + "'every S3 call touches the disk', which is a fabrication: " + meta);
+    }
+
     /** IMPLICIT STRINGIFICATION of a value from an unscanned package — the sibling of the static-read case.
      *
      *  `"v=" + w` compiles to `String.valueOf(w)` followed by a concat invokedynamic, so the JDK sink

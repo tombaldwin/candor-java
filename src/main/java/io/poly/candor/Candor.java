@@ -1628,6 +1628,29 @@ public class Candor {
             dir.add(Effect.NET);
             if (effect == null) effect = Effect.LLM;
         }
+        // S3 TRANSFERS THAT NAME A LOCAL FILE ALSO TOUCH THE FILESYSTEM — Net was never the whole answer.
+        // `s3.getObject(GetObjectRequest, File)` / `TransferManager.download(...)` WRITE that file, and
+        // `putObject(bucket, key, File)` / `upload(...)` READ it. The service rule in Classifier already
+        // returns NET, and `classify` returns ONE effect, so the Fs half had nowhere to go and was
+        // invisible: a `deny Fs` gate over an S3 archival path saw nothing.
+        //
+        // THIS IS NOT THE `serde_json::from_reader` CAVEAT, and the difference is why it belongs here. That
+        // caveat says: a library moving bytes through a handle the CALLER opened must not be charged,
+        // because the caller's `File::open` already carries the Fs. But `new java.io.File(path)` in Java
+        // OPENS NOTHING — it is a path wrapper, and candor rightly treats it as pure. So when the SDK
+        // writes that file, the Fs happens ONLY inside the SDK, and charging nobody loses it entirely.
+        //
+        // Co-emitted the way `Llm` co-emits `Net` above: `dir` is a set, so this is additive and the NET
+        // the service rule found is never displaced. Gated on the SAME owner shape the Net rule uses plus
+        // a File/Path in the DESCRIPTOR, so a pure same-named value type (`AmazonS3URI.getBucket`) cannot
+        // match — it takes no File and is not a client.
+        if (isS3TransferOwner(owner) && !min.name.equals("<init>")) {
+            String p = Classifier.paramsOf(min.desc);
+            if (p.contains("Ljava/io/File;") || p.contains("Ljava/nio/file/Path;")) {
+                dir.add(Effect.FS);
+                if (effect == null) effect = Effect.FS;
+            }
+        }
         opaqueTaskHandoff(ctx, s, min, owner);
         namedFunctionalToHof(ctx, s, min);
         xmlParseFilePrecision(s, min);
@@ -4440,6 +4463,15 @@ public class Candor {
             if (pkg.equals(p) || (pkg.length() > p.length() && pkg.charAt(p.length()) == '.' && pkg.startsWith(p))) return true;
         }
         return false;
+    }
+
+    /** An S3 transfer surface: the v1/v2 S3 service clients and the high-level TransferManager, whose
+     *  File/Path overloads move bytes between the object store and the LOCAL filesystem. Deliberately
+     *  narrower than the Net service rule — it gates on the s3 service package specifically, because the
+     *  Fs claim is about S3's file overloads and not about every AWS client that happens to take a File. */
+    static boolean isS3TransferOwner(String owner) {
+        return owner.startsWith("software.amazon.awssdk.services.s3.")
+                || owner.startsWith("com.amazonaws.services.s3.");
     }
 
     /** A Spring type whose NAME follows the framework's "this class performs I/O" convention — the *Template

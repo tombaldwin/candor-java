@@ -362,6 +362,26 @@ class CoverageEnvelopeTest {
             assertTrue(eff.contains("Fs"), fn + " names a local File — the SDK reads/writes it, so Fs: " + eff);
             assertTrue(eff.contains("Net"), fn + " must KEEP its Net — the Fs is additive, not a swap: " + eff);
         }
+        // REGRESSION, caught in review: the first version of this rule gated on the s3 PACKAGE, so a pure
+        // VALUE TYPE that takes a File matched — `PutObjectRequest.withFile(f)` is a builder that performs
+        // nothing, and it reported Fs. The Net rule beside it had already learned this ("FABRICATED Net on
+        // same-named PURE value types"); the gate now mirrors it (Client/TransferManager owners only).
+        Path model = compileApp(
+            Map.of("PutObjectRequest.java", "package com.amazonaws.services.s3.model; import java.io.File;"
+                + " public class PutObjectRequest { private File f;"
+                + " public PutObjectRequest withFile(File file){ this.f = file; return this; } }"),
+            Map.of("B.java", String.join("\n",
+                "package app;",
+                "import com.amazonaws.services.s3.model.PutObjectRequest;",
+                "import java.io.File;",
+                "public class B {",
+                "  public static PutObjectRequest build(){ return new PutObjectRequest().withFile(new File(\"/tmp/x\")); }",
+                "}")));
+        JsonObject mroot = scanToJson(model, "s3-model.json");
+        JsonObject b = fnOrNull(mroot, "app.B.build");
+        assertTrue(b == null || !b.getAsJsonArray("inferred").toString().contains("Fs"),
+            "a pure S3 model BUILDER taking a File must not gain Fs — it performs nothing: " + b);
+
         String meta = fnOrNull(root, "app.S3.meta").getAsJsonArray("inferred").toString();
         assertTrue(meta.contains("Net"), "CONTROL: a metadata call is still Net: " + meta);
         assertFalse(meta.contains("Fs"),

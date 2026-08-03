@@ -4470,8 +4470,16 @@ public class Candor {
      *  narrower than the Net service rule — it gates on the s3 service package specifically, because the
      *  Fs claim is about S3's file overloads and not about every AWS client that happens to take a File. */
     static boolean isS3TransferOwner(String owner) {
-        return owner.startsWith("software.amazon.awssdk.services.s3.")
-                || owner.startsWith("com.amazonaws.services.s3.");
+        boolean s3Pkg = owner.startsWith("software.amazon.awssdk.services.s3.")
+                || owner.startsWith("com.amazonaws.services.s3.")
+                || owner.startsWith("software.amazon.awssdk.transfer.s3.");
+        // THE OWNER GATE IS THE WHOLE RULE, and the Net rule beside this one already learned why: the
+        // package is full of PURE value types that take a `File` and perform nothing —
+        // `PutObjectRequest.withFile(f)` is a builder, not a transfer. Gating on the package alone
+        // FABRICATED Fs on it (measured on a fixture: `build() -> ['Fs']`). The service rule's comment
+        // records the same defect for Net on `AmazonS3URI.getBucket`; I read it and repeated it one rule
+        // over, which is why this now mirrors its gate rather than inventing a looser one.
+        return s3Pkg && (owner.endsWith("Client") || owner.endsWith("TransferManager"));
     }
 
     /** A Spring type whose NAME follows the framework's "this class performs I/O" convention — the *Template

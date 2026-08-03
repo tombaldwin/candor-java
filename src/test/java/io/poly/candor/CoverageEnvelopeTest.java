@@ -7,6 +7,7 @@ import com.google.gson.JsonParser;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static io.poly.candor.TestCompiler.compileApp;
 import static io.poly.candor.TestCompiler.rm;
@@ -322,6 +323,45 @@ class CoverageEnvelopeTest {
      *  and moves the pinned scan-completeness threshold — measured, it nearly doubled a 49-call fixture and
      *  put two existing tests red. So the package joins the LIST (so `invisible` can never name a package
      *  `coverage.uncovered` omits) while the `calls` tally keeps meaning call volume. */
+    /** IMPLICIT STRINGIFICATION of a value from an unscanned package — the sibling of the static-read case.
+     *
+     *  `"v=" + w` compiles to `String.valueOf(w)` followed by a concat invokedynamic, so the JDK sink
+     *  re-enters `w.toString()`. When `w`'s type is neither a project class nor covered by a chained
+     *  report, `reentryTargets` is empty and `nearestDepFn` is null, so the site emitted NOTHING and the
+     *  concatenating method dropped out of `functions` — a ⟨0.21⟩ purity claim over a body that runs.
+     *
+     *  MEASURED beside the other spellings of the same reach: `w.doThing()` and `w.toString()` both
+     *  carried `invisible`, and only the implicit form was silent. The reach was disclosed or not by
+     *  whether it happened to be written as a call.
+     *
+     *  The JDK-operand row is the control, and it is what keeps this from being a disclosure flood:
+     *  `"v=" + anInt + aString` re-enters nothing outside a κ-COVERED package, so it records nothing and
+     *  the method stays absent. Without it the fix would pass by disclosing on every concatenation. */
+    @Test
+    void implicitStringificationOfAnUnscannedTypeIsDisclosed() throws Exception {
+        Path app = compileApp(
+            Map.of("W.java", "package ext.lib; public class W {"
+                + " public String toString(){ try { java.nio.file.Files.readAllBytes("
+                + "java.nio.file.Path.of(\"/etc/hosts\")); } catch (Exception e) {} return \"w\"; } }"),
+            Map.of("S.java", String.join("\n",
+                "package app;",
+                "public class S {",
+                "  public static String viaImplicit(ext.lib.W w){ return \"v=\" + w; }",
+                "  public static String jdkOperandsOnly(int n, String s){ return \"v=\" + n + s; }",
+                "}")));
+        JsonObject root = scanToJson(app, "implicit-conv.json");
+
+        JsonObject f = fnOrNull(root, "app.S.viaImplicit");
+        assertNotNull(f, "the concatenating method must be IN the report — `\"v=\" + w` RUNS w.toString(), "
+            + "so absence is a ⟨0.21⟩ purity claim over a body this scan never saw");
+        assertTrue(f.has("invisible") && f.getAsJsonArray("invisible").toString().contains("ext.lib"),
+            "it must carry invisible:[ext.lib], got " + f);
+
+        assertNull(fnOrNull(root, "app.S.jdkOperandsOnly"),
+            "CONTROL: concatenating only κ-COVERED operands re-enters nothing unseen and must stay "
+            + "absent — otherwise this fix discloses on every string concatenation in the codebase");
+    }
+
     @Test
     void aStaticReadIntoAnUnscannedPackageIsDisclosedButNotCounted() throws Exception {
         Path app = compileApp(

@@ -1973,15 +1973,15 @@ public class Candor {
                     reentryFormatVarargs(id, mn, min, provFrames);
                 } else {
                     // valueOf/Objects.toString/append(Object)/print(Object): the lone Object arg.
-                    for (ProvValue a : callArgs(rf, min)) reentryEdge(id, a, C_TOSTRING);
+                    for (ProvValue a : callArgs(rf, min)) reentryEdgeOrDisclose(id, a, C_TOSTRING);
                 }
             }
             if (isEqualsHashSink(min.owner, min.name)) {
                 // The KEY/element argument — for Map.* it is the FIRST arg (the key); for the
                 // collection verbs it is the lone element arg. Reenter both equals AND hashCode.
                 ProvValue key = callArg(rf, min, 0);
-                reentryEdge(id, key, C_EQUALS);
-                reentryEdge(id, key, C_HASHCODE);
+                reentryEdgeOrDisclose(id, key, C_EQUALS);
+                reentryEdgeOrDisclose(id, key, C_HASHCODE);
             }
             if (isCompareToSink(min.owner, min.name)) {
                 // The element whose compareTo orders the collection. For the COLLECTION-typed sinks
@@ -4089,16 +4089,37 @@ public class Candor {
     /** Edge `callerId` to the LOCAL override(s) of `contract` on `argVal`'s declared type — the implicit
      *  reentry of a JDK sink. No-op when the arg type is external/Object-default/non-overriding (empty CHA),
      *  so a String/Integer/pure-override argument adds nothing. */
-    static void reentryEdge(String callerId, ProvValue argVal, String contract) {
-        reentryEdge(callerId, argVal, contract, true);
+    static boolean reentryEdge(String callerId, ProvValue argVal, String contract) {
+        return reentryEdge(callerId, argVal, contract, true);
+    }
+
+    /** {@link #reentryEdge}, plus the κ DISCLOSURE when it resolved NOTHING.
+     *
+     *  A JDK sink re-entering user code (`"x" + w` compiles to `String.valueOf(w)` then a concat indy)
+     *  runs the argument's `toString()`. If that type is neither a project class nor covered by a chained
+     *  report, `reentryTargets` returns empty and `nearestDepFn` is null, so the site emitted NOTHING —
+     *  and the concatenating method dropped out of `functions` altogether, a ⟨0.21⟩ purity claim over a
+     *  body this scan never saw. Same defect as the static-read/`<clinit>` one, same repair: record the κ
+     *  blind spot with the SAME predicate the call path uses, so a `java/lang/String` operand (κ-covered)
+     *  records nothing and this cannot become a disclosure flood.
+     *
+     *  Only where `crossBoundary` holds — that flag marks the argument as provably the value whose
+     *  contract runs, and disclosing against a value that may not be would over-report. */
+    static void reentryEdgeOrDisclose(String callerId, ProvValue argVal, String contract) {
+        if (!reentryEdge(callerId, argVal, contract, true) && argVal != null)
+            kappaBlindOwner(callerId, argVal.declType);
     }
 
     /** {@link #reentryEdge}, with the cross-boundary half suppressible. {@code crossBoundary=false} keeps the
      *  in-scan CHA and skips the dependency join, for a sink whose argument is NOT provably the value whose
      *  contract runs (see {@link #comparesArgZero}). */
-    static void reentryEdge(String callerId, ProvValue argVal, String contract, boolean crossBoundary) {
-        if (argVal == null) return;
-        for (String t : reentryTargets(argVal.declType, contract)) ctx().edges.get(callerId).add(t);
+    static boolean reentryEdge(String callerId, ProvValue argVal, String contract, boolean crossBoundary) {
+        if (argVal == null) return false;
+        boolean resolved = false;
+        for (String t : reentryTargets(argVal.declType, contract)) {
+            ctx().edges.get(callerId).add(t);
+            resolved = true;
+        }
         // ACROSS THE SCAN BOUNDARY. `reentryTargets` ends in `chaTargets`, which scans PROJECT classes only
         // — so when the argument's declared type belongs to a chained DEPENDENCY it returns empty and the
         // site emitted nothing at all. `"x" + entry` on a dep type whose `toString()` reads the environment,
@@ -4113,12 +4134,21 @@ public class Candor {
         // (toString/hashCode/equals) have an exact hash; the by-NAME contracts (compareTo/append/write/read)
         // resolve over ANY descriptor, so they enumerate the type's reported surface under that name
         // instead — see {@link #nearestDepFnsNamed} for the three guards that keeps it off a leaf-name join.
-        if (!crossBoundary) return;
+        if (!crossBoundary) return resolved;
         String depDesc = contract.equals(C_TOSTRING) ? "()Ljava/lang/String;"
                 : contract.equals(C_HASHCODE) ? "()I"
                 : contract.equals(C_EQUALS) ? "(Ljava/lang/Object;)Z" : null;
-        if (depDesc != null) inheritDepFn(callerId, nearestDepFn(argVal.declType, contract, depDesc));
-        else for (DepFn d : nearestDepFnsNamed(argVal.declType, contract)) inheritDepFn(callerId, d);
+        if (depDesc != null) {
+            DepFn d = nearestDepFn(argVal.declType, contract, depDesc);
+            inheritDepFn(callerId, d);
+            resolved |= d != null;
+        } else {
+            for (DepFn d : nearestDepFnsNamed(argVal.declType, contract)) {
+                inheritDepFn(callerId, d);
+                resolved = true;
+            }
+        }
+        return resolved;
     }
 
     /** The ProvValue of argument `argPos` (0-based, in source order) of the call `min` in frame `f`, or null.

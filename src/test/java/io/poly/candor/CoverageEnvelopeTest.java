@@ -308,6 +308,48 @@ class CoverageEnvelopeTest {
         return null;
     }
 
+    /** A STATIC FIELD READ into an unscanned package is a blind spot, and was disclosed in NEITHER channel.
+     *
+     *  `Object o = dep.Cls.V` forces that class's `<clinit>`, which may do anything. The κ ledger is driven
+     *  from a CALL instruction, so a field read never reached it: `clinitEdge` found no project class and no
+     *  chained report, emitted nothing, and the forcing method was omitted from `functions` — under ⟨0.21⟩
+     *  a POSITIVE PURITY CLAIM over an initializer this scan never saw. MEASURED beside the call spellings
+     *  of the same reach, which were both present carrying `invisible`: the blind spot was disclosed or not
+     *  purely by whether the shape happened to be written as a call.
+     *
+     *  The `calls: 0` assertion is the OTHER half, and it is why this is not simply counted into the ledger.
+     *  `Cls.INSTANCE.m()` is ONE reach compiled as a GETSTATIC plus a call; counting both double-counts it
+     *  and moves the pinned scan-completeness threshold — measured, it nearly doubled a 49-call fixture and
+     *  put two existing tests red. So the package joins the LIST (so `invisible` can never name a package
+     *  `coverage.uncovered` omits) while the `calls` tally keeps meaning call volume. */
+    @Test
+    void aStaticReadIntoAnUnscannedPackageIsDisclosedButNotCounted() throws Exception {
+        Path app = compileApp(
+            Map.of("Cls.java", "package ext.lib; public class Cls {"
+                + " public static final Object V = init();"
+                + " static Object init(){ try { java.nio.file.Files.readAllBytes(java.nio.file.Path.of(\"/etc/hosts\")); }"
+                + " catch (Exception e) {} return new Object(); } }"),
+            Map.of("F.java", String.join("\n",
+                "package app;",
+                "public class F {",
+                "  public static void forcer(){ Object o = ext.lib.Cls.V; }",
+                "}")));
+        JsonObject root = scanToJson(app, "static-read.json");
+
+        JsonObject f = fnOrNull(root, "app.F.forcer");
+        assertNotNull(f, "the forcing method must be IN the report — touching `ext.lib.Cls` runs its "
+            + "<clinit>, so absence is a ⟨0.21⟩ purity claim over a body this scan never saw");
+        assertTrue(f.has("invisible") && f.getAsJsonArray("invisible").toString().contains("ext.lib"),
+            "it must carry invisible:[ext.lib], got " + f);
+
+        JsonArray unc = root.getAsJsonObject("coverage").getAsJsonArray("uncovered");
+        assertEquals(1, unc.size(), "exactly the one unscanned package, got " + unc);
+        assertEquals("ext.lib", unc.get(0).getAsJsonObject().get("name").getAsString());
+        assertEquals(0, unc.get(0).getAsJsonObject().get("calls").getAsInt(),
+            "NO call went into that package — the tally means call volume and drives the completeness "
+            + "threshold, so a non-call reach must not inflate it; the disclosure rides `invisible`");
+    }
+
     @Test
     void aClassifiedCallMustNotClearTheHedgeOnAnUnrelatedCallIntoTheSamePackage() throws Exception {
         Path plain = armApp(false), withHit = armApp(true);

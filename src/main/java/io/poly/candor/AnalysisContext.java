@@ -117,6 +117,11 @@ final class AnalysisContext {
     // The κ-coverage ledger: external packages this code calls where the classifier never fires are
     // INVISIBLE, not Unknown — counted here, named in the receipt.
     final Map<String, Integer> kappaSeen = new TreeMap<>();        // external package -> call count
+    /** Packages reached by a NON-CALL site (a static read forcing an unseen `<clinit>`). Kept apart from
+     *  `kappaSeen` because that map's wire field is literally `calls` and its SUM drives the pinned
+     *  scan-completeness threshold: counting `Cls.INSTANCE.m()` as two reaches (the GETSTATIC and the call)
+     *  double-counts one reach and moved that threshold — measured, it nearly doubled a 49-call fixture. */
+    final java.util.Set<String> kappaBlindPkgs = new TreeSet<>();
     // fn -> external packages it DIRECTLY calls into where κ floored the call; post-filtered to genuinely
     // blind packages + propagated transitively -> the per-method `invisible` disclosure.
     final Map<String, TreeSet<String>> blindDirect = new HashMap<>();

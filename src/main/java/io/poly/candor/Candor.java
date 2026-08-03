@@ -832,7 +832,11 @@ public class Candor {
      *  which someone reviewed. `blindDirect` already records the per-call-site datum and `literalFixpoint`
      *  already propagates it, so the per-method truth was present all along and only this filter hid it. */
     static List<Map.Entry<String, Integer>> kappaUncovered() {
-        return ctx().kappaSeen.entrySet().stream()
+        // Packages reached ONLY by a non-call site carry a count of 0 — truthful (no call went there) and
+        // it keeps the list a superset of every package a function's `invisible` can name.
+        Map<String, Integer> all = new TreeMap<>(ctx().kappaSeen);
+        for (String p : ctx().kappaBlindPkgs) all.putIfAbsent(p, 0);
+        return all.entrySet().stream()
                 .filter(e -> !ctx().depCoveredPkgs.contains(e.getKey()))
                 .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()
                         .thenComparing(Map.Entry.comparingByKey()))
@@ -2922,10 +2926,12 @@ public class Candor {
      *  Only project classes that actually have a `<clinit>` (so the edge isn't dangling). */
 
     /** Inherit a DEPENDENCY class's `<clinit>` effects from a chained report (see {@link #clinitEdge}). */
-    static void inheritDepClinit(String callerId, String internalOwner) {
+    static boolean inheritDepClinit(String callerId, String internalOwner) {
         AnalysisContext c = ctx();
-        if (c.projectClasses.contains(internalOwner)) return;   // a project class edges locally instead
-        inheritDepFn(callerId, c.crossDeps.get(internalOwner + ".<clinit>()V"));
+        if (c.projectClasses.contains(internalOwner)) return true;   // a project class edges locally instead
+        DepFn d = c.crossDeps.get(internalOwner + ".<clinit>()V");
+        inheritDepFn(callerId, d);
+        return d != null;
     }
 
     /** Fold a chained dependency unit's effects + literal surfaces into `callerId`. The cross-jar
@@ -3275,9 +3281,15 @@ public class Candor {
         // the other side of the scan boundary (candor-spec SOUNDNESS-VEIN-initializer-edge.md, the JVM
         // sibling of candor-ts's module-import edge). Inheritance, not an edge, because the dep's unit lives
         // in another report. Superclasses too: JVMS §5.5 initializes those first.
-        inheritDepClinit(callerId, internalOwner);
+        boolean resolved = ctx().classesWithClinit.contains(internalOwner);
+        resolved |= inheritDepClinit(callerId, internalOwner);
         for (String sup : transSupers(internalOwner))
-            if (!sup.equals(internalOwner)) inheritDepClinit(callerId, sup);
+            if (!sup.equals(internalOwner)) resolved |= inheritDepClinit(callerId, sup);
+        // NOTHING RESOLVED — not a project class, and no chained report carries its `<clinit>`. Touching
+        // the class still RUNS that initializer, so this site reaches code the scan cannot see. Disclose it
+        // as a κ blind spot, exactly as a direct CALL into the same package already is; without this the
+        // forcing method is omitted from the report entirely, i.e. claimed pure.
+        if (!resolved) kappaBlindOwner(callerId, internalOwner);
         // JVMS §5.5: initializing a class FIRST initializes its superclasses — so touching `Sub` runs
         // `Base.<clinit>` too. Edge to every project SUPERCLASS's <clinit> as well, else an effect in a base
         // class's static initializer is silently dropped when only the subclass is touched (round-13 hole;
@@ -4354,6 +4366,44 @@ public class Candor {
         return List.of();
     }
 
+
+    /** Record a κ BLIND SPOT for a NON-CALL site that provably reaches code this scan cannot see.
+     *
+     *  {@link #kappaLedger} is driven from a {@code MethodInsnNode}, so it only ever sees CALLS — and a
+     *  STATIC FIELD READ is not one. {@code Object o = dep.Cls.V} forces the owner's {@code <clinit>}, and
+     *  when that owner is neither a project class nor covered by a chained report, {@link #clinitEdge}
+     *  resolved nothing and emitted nothing: the forcing method stayed ABSENT from {@code functions},
+     *  which under ⟨0.21⟩ is a POSITIVE PURITY CLAIM over an initializer that may do anything.
+     *
+     *  MEASURED, app-only scan of a fixture whose dep class is absent: {@code viaDirectCall} and
+     *  {@code viaExplicitToString} were PRESENT carrying {@code invisible:["dep"]} while the static-read
+     *  forcer was absent altogether — the same blind spot, disclosed or not purely by whether the shape
+     *  happened to be spelled as a call.
+     *
+     *  Deliberately the SAME predicate and the SAME accumulators the call path uses, so the tally keeps
+     *  meaning "reaches whose effects this scan could not see", and the covered-prefix list keeps doing the
+     *  work — a static read of {@code java.lang.Integer.MAX_VALUE} names a κ-COVERED package and records
+     *  nothing, which is what stops this becoming a disclosure flood.
+     *
+     *  Only called where the site resolved NOTHING. A reach whose effects ARE on the record must not also
+     *  be called invisible.
+     *
+     *  @return true if a blind spot was recorded. */
+    static boolean kappaBlindOwner(String callerId, String internalOwner) {
+        AnalysisContext c = ctx();
+        if (internalOwner == null || internalOwner.isEmpty() || internalOwner.charAt(0) == '['
+                || c.projectClasses.contains(internalOwner)) return false;
+        int slash = internalOwner.lastIndexOf('/');
+        String pkg = slash > 0 ? internalOwner.substring(0, slash).replace('/', '.') : "";
+        if (pkg.isEmpty() || kappaCovers(pkg)) return false;
+        // The PER-FUNCTION attribution is the point: without it the forcing method is omitted from
+        // `functions` entirely, which under ⟨0.21⟩ claims it pure. The package also joins the report-level
+        // ledger's LIST so `invisible` can never name a package `coverage.uncovered` omits — but NOT the
+        // `calls` tally, which means call volume and drives the pinned completeness threshold.
+        c.kappaBlindPkgs.add(pkg);
+        c.blindDirect.computeIfAbsent(callerId, k -> new TreeSet<>()).add(pkg);
+        return true;
+    }
 
     static boolean kappaCovers(String pkg) {
         for (String p : KAPPA_COVERED_PREFIXES) {

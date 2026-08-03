@@ -8,6 +8,14 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased — ⟨spec 0.26⟩
 
+### the S3 Fs rule gates on the CLIENT, not the package — the first version fabricated
+
+Review of the rule below, same day. It gated on the s3 PACKAGE, so a pure VALUE TYPE taking a `File`
+matched: `PutObjectRequest.withFile(f)` is a builder that performs nothing, and it reported `Fs`
+(measured: `build() -> [Fs]`). The Net rule directly above it had already learned this exact lesson —
+its comment records fabricating Net on `AmazonS3URI.getBucket` — and the fix is to mirror its gate:
+`Client`/`TransferManager` owners only. Pinned by a regression test.
+
 ### ⚠ κ breadth: an S3 transfer naming a LOCAL FILE is `Fs` as well as `Net`
 
 `s3.getObject(request, File)` WRITES that file; `putObject(bucket, key, File)` READS it. The AWS service

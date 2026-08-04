@@ -137,7 +137,9 @@ class CoverageEnvelopeTest {
         assertEquals(0, r.exit(), r.stderr());
         assertFalse(r.stderr().contains("classifier doesn't cover"), "no stderr ledger when fully covered");
         JsonObject root = JsonParser.parseString(Files.readString(report)).getAsJsonObject();
-        assertEquals(Set.of("candor", "packages", "analyzed", "functions"), new TreeSet<>(root.keySet()),
+        // <0.27> `resolves` is unconditional -- a producer declares what it COMPUTES, regardless of what
+        // any given scan found -- unlike `coverage`, which is what this test is actually about.
+        assertEquals(Set.of("candor", "packages", "analyzed", "resolves", "functions"), new TreeSet<>(root.keySet()),
             "a fully-covered report has NO coverage key; ⟨0.21⟩ `analyzed` (completeness manifest) is always present");
     }
 

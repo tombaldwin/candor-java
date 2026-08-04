@@ -6,7 +6,9 @@ include behavioural changes (always in the soundness-increasing direction — th
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
 after upgrading; review policies and regenerate baselines with the new build.
 
-## Unreleased — ⟨spec 0.26⟩
+## Unreleased
+
+## [0.26.0] — 2026-08-04 ⟨spec 0.26⟩
 
 ### the S3 Fs rule gates on the CLIENT, not the package — the first version fabricated
 

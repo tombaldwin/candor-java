@@ -38,7 +38,11 @@ class SchemaShapeTest {
     /** Envelope: the v0.2 self-describing header (SPEC §2.1) + coverage + entries. */
     // ⟨0.21⟩ `analyzed` (the completeness-manifest summary) is ALWAYS present; `coverage`/`unanalyzed` are
     // conditional (omitted when fully covered / fully analyzed — this fixture is both).
-    private static final Set<String> TOP_KEYS = Set.of("candor", "packages", "analyzed", "functions");
+    // ⟨0.27⟩ `resolves` joins the contract field set DELIBERATELY. This pin is why an envelope field cannot
+    // arrive by accident: the assertion below fails on any undeclared key, so adding one is a decision
+    // recorded in two places at once (the spec and this list) rather than a diff nobody reads.
+    private static final Set<String> TOP_KEYS =
+            Set.of("candor", "packages", "analyzed", "resolves", "functions");
     private static final Set<String> PROVENANCE_KEYS = Set.of("version", "toolchain", "spec");
     /** Every key a functions[] entry may carry (the Effector surface). Optional members (calls/fs/
      *  hosts/cmds/paths/tables/invisible/unknownWhy/unitKind) are omitted when empty — allowed, never

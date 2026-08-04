@@ -55,6 +55,12 @@ public final class ReportJson {
             cov.put("uncovered", unc);
             envelope.put("coverage", cov);
         }
+        // ⟨0.27⟩ SPEC §2.1 `resolves`: the OPTIONAL refinement surfaces this producer computes. Without it
+        // the absence of such a field is overloaded between "does not compute this" and "computed and could
+        // not determine it", and a consumer cannot read the omission. candor-java resolves `fs` read/write
+        // kinds, so it says so. A producer MUST NOT list a surface it does not compute — that turns
+        // "unimplemented" into a false "undetermined", the inversion the field exists to prevent.
+        envelope.put("resolves", java.util.List.of("fs"));
         // ⟨0.21⟩ COMPLETENESS MANIFEST (Gap 1): the analyzed-universe summary, so a consumer of the bare
         // envelope tells analyzed-pure from never-seen (pure count = analyzed.count − |functions|). Emitted
         // whenever the engine could enumerate its analyzed set (always, here); omitted only if it couldn't.

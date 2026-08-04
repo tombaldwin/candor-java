@@ -2138,7 +2138,16 @@ public class Candor {
                     .add(UnknownReason.of(UnknownReason.Kind.REFLECT, owner + "." + min.name));
         if (effect == Effect.FS) { // non-breaking read/write refinement of Fs
             List<String> k = fsKind(owner, min.name);
-            if (!k.isEmpty()) ctx.fsDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(k);
+            // A verb that reveals no direction must POISON the fixpoint, not merely abstain. Recording
+            // nothing let a caller of this function inherit a neighbour's ["write"] and thereby claim
+            // "writes but never reads" over a reach whose kind was never determined — the partial claim §2
+            // forbids. FS_UNKNOWN was injected only for CROSS-JAR Fs (`viaCross`); a LOCAL call whose verb
+            // is mode-dependent (`new RandomAccessFile(path, "rw")`, `open`) is exactly the same
+            // situation and was silently absent from the guard.
+            //
+            // Found by conformance PART 31 on its first run: `mixed()`, calling one writer and one
+            // undetermined-kind callee, reported fs=["write"].
+            ctx.fsDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(k.isEmpty() ? List.of(FS_UNKNOWN) : k);
         }
     }
 

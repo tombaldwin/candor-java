@@ -47,7 +47,11 @@ rep="$(cat "$W/r.json")"
 want "report is the v0.2 envelope"            "$rep" '"candor"'
 want "envelope carries a version"             "$rep" '"version"'
 want "envelope carries a toolchain"           "$rep" '"toolchain"'
-want "envelope declares the spec contract 0.26" "$rep" '"spec": "0.26"'
+# DERIVED from the engine's own constant, not hardcoded. The literal form broke on the 0.27 bump — a
+# version-coupled assertion whose fix each release is to re-edit a literal, which is the class that has now
+# cost an edit in every repo in the family.
+SPEC_DECLARED="$(grep -oE 'SPEC_VERSION = "[0-9.]+"' "$ROOT/src/main/java/io/poly/candor/Candor.java" | grep -oE '[0-9]+\.[0-9]+')"
+want "envelope declares the spec contract $SPEC_DECLARED" "$rep" "\"spec\": \"$SPEC_DECLARED\""
 want "functions array present"               "$rep" '"functions"'
 want "reads performs Fs"                      "$rep" '"Fx.reads"'
 want "dyn is Unknown (reflection, trust §4)"  "$rep" '"Unknown"'
@@ -1668,7 +1672,7 @@ else echo "  FAIL --help exit $hprc (want 0)"; fail=$((fail+1)); fi
 hs="$("$CJ" -h 2>&1)"
 want "-h is the same surface"                      "$hs" 'USAGE'
 vv="$("$CJ" --version 2>&1)"; vvrc=$?
-want    "--version prints the release + spec"      "$vv" '(spec 0.26)'
+want    "--version prints the release + spec"      "$vv" "(spec $SPEC_DECLARED)"
 want    "--version prints the upgrade line"        "$vv" 'jbang --fresh'
 wantnot "--version release is baked (not the 'unknown' fallback)" "$vv" 'candor-java unknown'
 if [ "$vvrc" -eq 0 ]; then echo "  ok   --version exits 0"; pass=$((pass+1));

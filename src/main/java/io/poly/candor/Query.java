@@ -2563,6 +2563,21 @@ public final class Query {
         // ⟨0.24⟩ `Config.policyVocabulary` IS this anchor, named — and the SCAN route now calls the same
         // method for the same reason, so the two routes cannot expand a rule differently (SPEC §3.1).
         Config vocab = Config.policyVocabulary(Path.of(policyPath));
+        // ⟨0.28⟩ THE `engine` PIN IS DISCLOSED HERE, NEVER ENFORCED. `gate` applies a policy to a report
+        // SOMEONE ELSE PRODUCED — possibly another engine entirely — so refusing because THIS build is
+        // not the pinned one would fail a perfectly valid evaluation, and §3.4 scopes the pin to a
+        // producer that ANALYSES code. But silence is not right either: policy SEMANTICS move with engine
+        // versions (⟨0.24⟩ was the first rung that could turn a green gate red), so a verdict computed by
+        // an unpinned build is one the operator should be told about before trusting it. Same posture as
+        // the UNDETERMINED pin on the scan route — say it once, change nothing. Raised by review, which
+        // argued the gate is the enforcement surface and deserved more than the silence it had.
+        String gatePin = vocab.enginePinForThisEngine();
+        if (Config.pinVerdict(gatePin, ReportWriter.release()) == Config.PinVerdict.MISMATCH) {
+            System.err.println("candor gate: " + (vocab.source() != null ? vocab.source() : ".candor/config")
+                    + " pins engine " + gatePin + " and this is candor-java " + ReportWriter.release()
+                    + ". The verdict stands — `gate` evaluates a report it did not produce — but the policy"
+                    + " semantics applied are this build's, not the pinned build's.");
+        }
         AnalysisState.ctx().unknownAliases.putAll(vocab.unknownAliases());
         AnalysisState.ctx().vocabularySource = !vocab.unknownAliases().isEmpty() && vocab.source() != null
                 ? vocab.source().toString() : null;

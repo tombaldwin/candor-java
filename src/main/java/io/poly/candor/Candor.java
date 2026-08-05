@@ -155,13 +155,22 @@ public class Candor {
      * <ul>
      *   <li>{@code ABSENT} — no pin, or a pin naming another implementation. Today's behaviour, exactly.
      *       The feature is opt-in by construction: a config without an {@code engine} line is untouched.</li>
-     *   <li>{@code UNDETERMINED} — the pin is well-formed and this build does not know its own release
-     *       (a source build; {@code build-info.properties} carries {@code unknown}). The condition is
-     *       UNANSWERABLE, and ⟨0.24⟩ §3.1's rule is that an unanswerable condition is DISCLOSED, never
-     *       scored as a failed one — nor, which is the trap, as a satisfied one. Failing here would break
-     *       every developer running from a source build; passing silently would make the pin evaporate
-     *       exactly where it is least observed. So it says so, once, and does not touch the exit code.</li>
+     *   <li>{@code UNDETERMINED} — the pin is well-formed and this build cannot state its own release,
+     *       because the {@code build-info.properties} resource is absent (a repackaged jar, a classpath
+     *       run without resources). The condition is UNANSWERABLE, and ⟨0.24⟩ §3.1's rule is that an
+     *       unanswerable condition is DISCLOSED, never scored as a failed one — nor, which is the trap,
+     *       as a satisfied one. So it says so, once, and does not touch the exit code.</li>
      * </ul>
+     *
+     * <p><b>A LIMITATION THIS CANNOT SEE, stated because an earlier draft claimed the opposite.</b>
+     * {@code build.gradle.kts} bakes {@code release = project.version} into EVERY build, so a jar built
+     * from an unreleased working tree reports the release version and MATCHes a pin naming it. The
+     * comment here used to say a source build carries {@code unknown} and lands in UNDETERMINED; it does
+     * not. The pin therefore distinguishes RELEASES, not builds — a developer's local jar, which may
+     * resolve more dispatch than the released one, satisfies the pin for the whole inter-release window.
+     * The §2.1 provenance build id (a git hash) is what separates those, and {@link Policy}'s AS-EFF-005
+     * path already compares it against the baseline. The two checks answer different questions and the
+     * pin is the coarser one.
      * A MISMATCH or a MALFORMED pin exits 2 (misconfiguration — the §3.4 fail-closed posture), not 1: the
      * run is UNEVALUABLE, not violating. A machine consumer distinguishing the two must not read
      * "I could not trust this result" as "your code broke a rule".

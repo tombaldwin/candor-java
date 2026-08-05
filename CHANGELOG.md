@@ -8,6 +8,31 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### ⟨0.27⟩ `resolves` — declare which optional refinement surfaces this producer computes
+
+SPEC §2's optional per-function fields are omitted when the engine cannot determine an answer, which
+means absence carries two different meanings that a consumer cannot tell apart: *"I looked and the
+answer is undetermined"* and *"I do not compute this field at all"*. `resolves` is a top-level envelope
+array naming the surfaces this producer DOES compute, so absence under a listed surface is a real
+undetermined and absence under an unlisted one is a capability gap. Same construction as `extensions`,
+different scope. A producer MUST NOT list a surface it does not compute.
+
+### SPEC §2 `fs` — kinds travel the call graph, and one undetermined contributor suppresses the field
+
+`fs` refines an `Fs` effect into `read` / `write`. The kinds now PROPAGATE over call edges, so a function
+that reaches a writer three frames down reports `["write"]` rather than nothing. The rule that makes that
+safe is the poison marker: if ANY contributing `Fs` had an undetermined kind, the whole field is
+suppressed rather than emitted partially. §2 is explicit about why — *"an empty or partial `fs` would be
+read as a positive claim (reads but never writes)"* — and a partial answer here is worse than none.
+
+The recording site previously poisoned only on a cross-jar `Fs`. A LOCAL mode-dependent verb recorded
+nothing at all, so a function mixing a determined write with an undetermined read reported `["write"]`:
+a positive claim that it never reads, from evidence that could not support it. Now an empty kind set
+poisons like an unknown one.
+
+Pinned four-way by conformance PART 31.
+
+
 ## [0.26.0] — 2026-08-04 ⟨spec 0.26⟩
 
 ### the S3 Fs rule gates on the CLIENT, not the package — the first version fabricated

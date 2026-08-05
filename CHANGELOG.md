@@ -8,6 +8,8 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+## [0.27.0] — 2026-08-05
+
 ### ⟨0.27⟩ `resolves` — declare which optional refinement surfaces this producer computes
 
 SPEC §2's optional per-function fields are omitted when the engine cannot determine an answer, which

@@ -48,7 +48,17 @@ public final class Config {
      *  misspelt {@code policy} must not silently drop the gate. candor-java implements all seven + the
      *  MULTI-VALUE {@code unknown-alias} (⟨0.19⟩, reason-scoped Unknown). */
     private static final java.util.Set<String> KNOWN_KEYS = java.util.Set.of(
-            "policy", "baseline", "strict", "no-ambient", "closed-world", "taint", "deps", "unknown-alias", "net-partner", "unknown-ratchet");
+            "policy", "baseline", "strict", "no-ambient", "closed-world", "taint", "deps", "unknown-alias",
+            "net-partner", "unknown-ratchet", "engine");
+
+    /** The implementation names an {@code engine} pin may be qualified by. The family releases on a
+     *  LADDER, not in lockstep — one engine can legitimately lead a rung — so a bare version in a
+     *  polyglot repo would fail whichever engine had not caught up yet. The qualified form pins each. */
+    private static final java.util.Set<String> ENGINE_IMPLS =
+            java.util.Set.of("java", "rust", "ts", "swift", "agents");
+
+    /** This build's implementation name, matched against a qualified {@code engine <impl> <version>}. */
+    static final String THIS_IMPL = "java";
 
     /** The keys whose value is a PATH (list) — the ones anchor-resolution applies to. */
     private static final java.util.Set<String> PATH_KEYS = java.util.Set.of("policy", "baseline", "deps");
@@ -64,6 +74,10 @@ public final class Config {
      *  declared partner classifies {@code known-partner}, not {@code unknown-host}. Lowercased, matched
      *  subdomain-aware like {@link Literals#TELEMETRY_HOSTS}. */
     private final java.util.Set<String> netPartners;
+    /** {@code engine [<impl>] <version>} — the ENGINE VERSION this repo's committed artifacts were
+     *  produced with. Keyed by implementation name, or {@code *} for the unqualified form. MULTI-VALUE:
+     *  a polyglot repo pins one line per engine. */
+    private final Map<String, String> enginePins;
 
     /** ⟨0.24⟩ The file this config was read from, or null when none was found. SPEC §3.1 requires the
      *  {@code --gate-json} document to NAME a config file that supplied POLICY VOCABULARY participating in
@@ -72,14 +86,15 @@ public final class Config {
     private final Path source;
 
     private Config(Map<String, String> values) {
-        this(values, new LinkedHashMap<>(), new java.util.LinkedHashSet<>(), null);
+        this(values, new LinkedHashMap<>(), new java.util.LinkedHashSet<>(), new LinkedHashMap<>(), null);
     }
 
     private Config(Map<String, String> values, Map<String, java.util.Set<ReasonClass>> unknownAliases,
-                   java.util.Set<String> netPartners, Path source) {
+                   java.util.Set<String> netPartners, Map<String, String> enginePins, Path source) {
         this.values = values;
         this.unknownAliases = unknownAliases;
         this.netPartners = netPartners;
+        this.enginePins = enginePins;
         this.source = source;
     }
 
@@ -97,9 +112,106 @@ public final class Config {
         return unknownAliases;
     }
 
+    /** The {@code engine} pins this config declares, keyed by implementation ({@code *} = unqualified). */
+    Map<String, String> enginePins() {
+        return enginePins;
+    }
+
+    /** The pin that APPLIES to this build: the {@code java}-qualified one if present, else the
+     *  unqualified one, else null. A qualified line naming another implementation is not ours to check —
+     *  one config serves the whole family. */
+    String enginePinForThisEngine() {
+        String q = enginePins.get(THIS_IMPL);
+        return q != null ? q : enginePins.get("*");
+    }
+
+    /**
+     * The four answers an {@code engine} pin can have. Kept as data rather than as a print-and-exit so
+     * every branch is testable — including the two that must NOT change the exit code.
+     */
+    enum PinVerdict {
+        /** No pin, or a pin naming another implementation. Today's behaviour, exactly. */
+        ABSENT,
+        /** The pin names the running build. */
+        MATCH,
+        /** The pin names a different version — the engine↔baseline coupling is broken. Exit 2. */
+        MISMATCH,
+        /** The pin is unreadable: empty, or not a version. Exit 2 — a pin that cannot be checked must
+         *  not read as a pin that passed. */
+        MALFORMED,
+        /** The pin is well-formed and the RUNNING version is unknowable (a source build, whose
+         *  build-info resource carries no release). The condition is UNANSWERABLE, so it is DISCLOSED
+         *  and never scored — ⟨0.24⟩ §3.1's rule, applied to configuration. */
+        UNDETERMINED
+    }
+
+    /** {@link PinVerdict} for {@code pin} against {@code running}. Pure: no printing, no exit. */
+    static PinVerdict pinVerdict(String pin, String running) {
+        if (pin == null) return PinVerdict.ABSENT;
+        String want = normalizeVersion(pin);
+        if (want == null) return PinVerdict.MALFORMED;
+        if (running == null || running.isBlank() || running.equals("unknown")) return PinVerdict.UNDETERMINED;
+        return want.equals(normalizeVersionLoose(running)) ? PinVerdict.MATCH : PinVerdict.MISMATCH;
+    }
+
+    /** A pin token → its comparable form, or null when it is not a version at all. A leading {@code v} is
+     *  optional (the GitHub-tag spelling `v0.26.0` and the jar-filename spelling `0.26.0` are the same
+     *  pin), and a two-part `0.26` is accepted as `0.26.0`. Anything else — `latest`, `main`, a git
+     *  hash, an empty value — is MALFORMED rather than a version that will never match: the difference
+     *  decides whether the operator is told "wrong version" or "that is not a version". */
+    private static String normalizeVersion(String raw) {
+        String s = raw == null ? "" : raw.strip();
+        if (s.startsWith("v") || s.startsWith("V")) s = s.substring(1);
+        if (!s.matches("\\d+\\.\\d+(\\.\\d+)?")) return null;
+        return s.chars().filter(c -> c == '.').count() == 1 ? s + ".0" : s;
+    }
+
+    /** The running version, made comparable. Unlike a PIN this is not operator input, so a build id that
+     *  does not look like a release ({@code 0.27.0-dirty}, a git hash) keeps its own spelling and simply
+     *  fails to equal the pin — reported as a MISMATCH naming both, which is the truth. */
+    private static String normalizeVersionLoose(String raw) {
+        String n = normalizeVersion(raw);
+        return n != null ? n : raw.strip();
+    }
+
     /** The config-declared {@code net-partner} hosts (lowercased); empty when none. */
     java.util.Set<String> netPartners() {
         return netPartners;
+    }
+
+    /**
+     * Parse an {@code engine} value into the pin map. Two forms:
+     * <pre>
+     *   engine v0.26.0          → applies to whichever engine reads it   (key `*`)
+     *   engine java v0.26.0     → applies to candor-java only            (key `java`)
+     * </pre>
+     * <p><b>An unrecognised value is recorded, never dropped.</b> Every other malformed line in this file
+     * warns and skips, which is right for a key that ADDS something — a bad {@code net-partner} costs one
+     * host's classification. It is wrong here: skipping a pin the operator cannot spell turns a gate they
+     * believe is on into one that is off, and the enforcement site would then see ABSENT and pass. So a
+     * value that is not a version is stored as-is and classified {@link PinVerdict#MALFORMED} downstream,
+     * where it exits 2 naming the line. The rule is the same one the whole file follows: a configured
+     * gate source must not vanish quietly.
+     *
+     * <p>The one-token case is ambiguous by construction — {@code engine java} could be an impl with a
+     * missing version or a version spelled `java`. It is read as the former, because a bare impl name is
+     * the typo a human actually makes, and both readings end at MALFORMED anyway.
+     */
+    private static void addEnginePin(Map<String, String> pins, String val) {
+        String v = val == null ? "" : val.strip();
+        if (v.isEmpty()) { pins.put("*", ""); return; }                    // bare `engine` → MALFORMED
+        String[] parts = v.split("\\s+");
+        String head = parts[0].toLowerCase(Locale.ROOT);
+        if (ENGINE_IMPLS.contains(head)) {
+            // `engine java v0.26.0`, or `engine java` — the second is an impl with no version, MALFORMED.
+            pins.put(head, parts.length > 1 ? parts[1] : "");
+            return;
+        }
+        // The head is not an impl, so the line is unqualified and parts[0] must BE the version. Anything
+        // after it is not a second field this grammar has — `engine 0.26.0 oops` keeps the whole value so
+        // the message can quote what was written. Keying on parts[0] here would have filed the pin under
+        // an implementation named "0.26.0", where THIS engine never looks: a pin silently switched off.
+        pins.put("*", parts.length > 1 ? v : parts[0]);
     }
 
     /** Parse an {@code unknown-alias} value {@code <name> = <c1,c2,…>} into the map, warning-and-skipping a
@@ -227,6 +339,7 @@ public final class Config {
         Map<String, String> m = new LinkedHashMap<>();
         Map<String, java.util.Set<ReasonClass>> aliases = new LinkedHashMap<>();
         java.util.Set<String> partners = new java.util.LinkedHashSet<>();
+        Map<String, String> pins = new LinkedHashMap<>();
         Path anchor = anchorFor(path);
         try {
             for (String raw : Files.readAllLines(path)) {
@@ -247,6 +360,10 @@ public final class Config {
                     if (!val.isEmpty()) partners.add(Literals.hostPart(val).toLowerCase(Locale.ROOT));
                     continue;
                 }
+                if ("engine".equals(key)) {          // MULTI-VALUE: `engine [<impl>] <version>`
+                    addEnginePin(pins, val);
+                    continue;
+                }
                 if ("deps".equals(key) && !val.isEmpty()) {
                     // a path LIST → the DEPS form, each element anchor-resolved
                     val = java.util.Arrays.stream(val.split("\\s+"))
@@ -265,7 +382,7 @@ public final class Config {
             }
             return empty();
         }
-        return new Config(m, aliases, partners, path.toAbsolutePath().normalize());
+        return new Config(m, aliases, partners, pins, path.toAbsolutePath().normalize());
     }
 
     private static Config parse(Path path) {

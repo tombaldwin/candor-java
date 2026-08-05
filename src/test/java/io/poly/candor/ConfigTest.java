@@ -153,4 +153,119 @@ class ConfigTest {
         assertNull(a.get("reflect"), "a config alias may not shadow a class token");
         assertNull(a.get("empty"), "an alias naming no valid class is dropped");
     }
+
+    // ── SPEC §3.4 `engine` — the engine↔baseline coupling ────────────────────────────────────────────
+    // The pin exists because a newer engine resolves more dispatch, so its report is not comparable with
+    // a baseline the pinned engine wrote — and until now nothing enforced "regenerate the baseline when
+    // you bump the engine". Every branch is asserted through the PURE verdict rather than the printing
+    // enforcement site, because the two verdicts that matter most are the ones that must NOT exit.
+
+    @Test
+    void enginePinParsesBothTheQualifiedAndUnqualifiedForms() throws Exception {
+        Config c = write("""
+            # the family releases on a LADDER, so a polyglot repo pins per implementation
+            engine rust v0.26.0
+            engine java v0.27.0
+            """);
+        assertEquals("v0.27.0", c.enginePinForThisEngine(), "the java-qualified pin is the one that applies");
+        assertEquals("v0.26.0", c.enginePins().get("rust"));
+
+        Config bare = write("engine v0.27.0\n");
+        assertEquals("v0.27.0", bare.enginePinForThisEngine(), "an unqualified pin applies to whichever engine reads it");
+    }
+
+    @Test
+    void aQualifiedPinForAnotherEngineIsNotOursToCheck() throws Exception {
+        // One config serves the whole family. candor-java must not fail a run because the SWIFT pin is
+        // stale — that is candor-swift's to enforce when candor-swift reads this same file.
+        Config c = write("engine swift v0.26.0\n");
+        assertNull(c.enginePinForThisEngine());
+        assertEquals(Config.PinVerdict.ABSENT, Config.pinVerdict(c.enginePinForThisEngine(), "0.27.0"));
+    }
+
+    @Test
+    void aQualifiedPinWinsOverTheUnqualifiedOne() throws Exception {
+        Config c = write("""
+            engine v0.20.0
+            engine java v0.27.0
+            """);
+        assertEquals(Config.PinVerdict.MATCH, Config.pinVerdict(c.enginePinForThisEngine(), "0.27.0"),
+                "the specific pin decides; the wildcard is the fallback");
+    }
+
+    @Test
+    void theTagAndJarFilenameSpellingsAreTheSamePin() {
+        // `v0.27.0` is the GitHub tag, `0.27.0` is the jar filename. A consumer copies whichever is in
+        // front of them, and being told those disagree would be a defect in the check, not in the repo.
+        assertEquals(Config.PinVerdict.MATCH, Config.pinVerdict("v0.27.0", "0.27.0"));
+        assertEquals(Config.PinVerdict.MATCH, Config.pinVerdict("0.27.0", "0.27.0"));
+        assertEquals(Config.PinVerdict.MATCH, Config.pinVerdict("0.27", "0.27.0"), "a two-part pin means .0");
+    }
+
+    @Test
+    void aDifferentEngineVersionIsAMismatch() {
+        assertEquals(Config.PinVerdict.MISMATCH, Config.pinVerdict("v0.26.0", "0.27.0"));
+        assertEquals(Config.PinVerdict.MISMATCH, Config.pinVerdict("v0.27.1", "0.27.0"), "patch versions differ too");
+    }
+
+    @Test
+    void anUnreadablePinIsMalformedRatherThanAMismatchThatNeverMatches() {
+        // The distinction decides which sentence the operator reads: "wrong version" sends them to the
+        // pin, "that is not a version" sends them to the spelling. `latest` is the one a human writes.
+        assertEquals(Config.PinVerdict.MALFORMED, Config.pinVerdict("latest", "0.27.0"));
+        assertEquals(Config.PinVerdict.MALFORMED, Config.pinVerdict("", "0.27.0"), "a bare `engine` line");
+        assertEquals(Config.PinVerdict.MALFORMED, Config.pinVerdict("main", "0.27.0"));
+    }
+
+    @Test
+    void aMalformedPinIsRecordedNotDroppedAsAnUnparsedLine() throws Exception {
+        // THE FAILURE MODE THIS GUARDS. Every other malformed line in this file warns and skips, which is
+        // right for a key that ADDS something. Here, skipping would hand the enforcement site ABSENT — and
+        // ABSENT passes. A pin the operator cannot spell would become a guard they believe is on and is not.
+        assertEquals("latest", write("engine latest\n").enginePinForThisEngine());
+        assertEquals("", write("engine\n").enginePinForThisEngine(), "a bare `engine` line is recorded, not skipped");
+        // And the shape that keyed the map on the VERSION, filing the pin under an implementation named
+        // `0.26.0` where this engine never looks — silently switching the pin off.
+        assertEquals(Config.PinVerdict.MALFORMED,
+                Config.pinVerdict(write("engine 0.26.0 oops\n").enginePinForThisEngine(), "0.27.0"));
+        assertEquals(Config.PinVerdict.MALFORMED,
+                Config.pinVerdict(write("engine java\n").enginePinForThisEngine(), "0.27.0"),
+                "an impl name with no version");
+    }
+
+    @Test
+    void aSourceBuildCannotCheckThePinAndMustNotScoreIt() {
+        // ⟨0.24⟩ §3.1 applied to configuration: an UNANSWERABLE condition is disclosed, never scored — and
+        // the trap is scoring it as SATISFIED. Failing here breaks every developer on a source build;
+        // passing silently makes the pin evaporate exactly where nobody is watching for it.
+        assertEquals(Config.PinVerdict.UNDETERMINED, Config.pinVerdict("v0.27.0", "unknown"));
+        assertEquals(Config.PinVerdict.UNDETERMINED, Config.pinVerdict("v0.27.0", null));
+        assertEquals(Config.PinVerdict.UNDETERMINED, Config.pinVerdict("v0.27.0", "  "));
+        // …but an unreadable pin is still unreadable on a source build: the spelling can be checked
+        // without knowing the running version, so that answer is available and is given.
+        assertEquals(Config.PinVerdict.MALFORMED, Config.pinVerdict("latest", "unknown"));
+    }
+
+    @Test
+    void noEngineLineIsTodaysBehaviourExactly() throws Exception {
+        Config c = write("policy .candor/arch.policy\nbaseline .candor/baseline.json\n");
+        assertTrue(c.enginePins().isEmpty());
+        assertEquals(Config.PinVerdict.ABSENT, Config.pinVerdict(c.enginePinForThisEngine(), "0.27.0"));
+    }
+
+    @Test
+    void engineIsInTheKnownVocabularySoItDoesNotWarnAsATypo() throws Exception {
+        // A key outside the vocabulary is reported as unknown. If `engine` were left out, every consumer
+        // adopting the pin would get "ignoring unknown config key 'engine'" — the FALSE-disclosure class
+        // (the `net-partner` finding): told a key was ignored while it was being honoured.
+        java.io.ByteArrayOutputStream err = new java.io.ByteArrayOutputStream();
+        java.io.PrintStream orig = System.err;
+        try {
+            System.setErr(new java.io.PrintStream(err));
+            write("engine v0.27.0\n");
+        } finally {
+            System.setErr(orig);
+        }
+        assertFalse(err.toString().contains("unknown config key"), "`engine` is a known key: " + err);
+    }
 }

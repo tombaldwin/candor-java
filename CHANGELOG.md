@@ -8,6 +8,45 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### ⚠ ⟨0.28 PROPOSED⟩ `engine` — the engine↔baseline coupling, enforced instead of hoped for
+
+`.candor/config` gains an `engine [<impl>] <version>` key (SPEC §3.4). A build that is not the pinned
+one FAILS with **exit 2** rather than producing a verdict it cannot stand behind. Marked ⚠ because a
+repo that adopts the key can now fail a run that previously passed — which is the point.
+
+The committed `baseline` is a snapshot of what one engine build reported. A newer engine that resolves
+more dispatch legitimately reports more effects, so the AS-EFF-005 ratchet fires on functions nobody
+touched — and the reflex, under CI pressure, is to regenerate the baseline, which re-blesses whatever
+else moved with it. The engine version lived in the consumer's CI YAML, decoupled from the baseline it
+is married to, and nothing enforced *"regenerate the baseline when you bump the engine"*.
+
+**Two of the five verdicts must not change the exit code, and that is the design.** No pin, or a pin
+naming another implementation, behaves exactly as before — the key is opt-in by construction. A pin the
+running build cannot check, because a source build does not know its own release version, is
+UNANSWERABLE: ⟨0.24⟩ §3.1's rule is that such a condition is disclosed and never scored, *including as
+satisfied*. Failing there would break every developer on a source build; passing silently would delete
+the pin exactly where nobody is watching for it.
+
+Exit **2**, not 1: the run is unevaluable, not violating, and a machine consumer must not read "I could
+not trust this result" as "your code broke a rule".
+
+An unreadable pin (`engine latest`, a bare `engine`) also exits 2 rather than being skipped as a
+malformed line. **This is the one place the §6.2 warn-and-skip posture inverts**, and getting it wrong
+was the first defect here: every other malformed line in this file warns and skips, which is right for a
+key that ADDS something — a bad `net-partner` costs one host's classification. Skipping a PIN hands the
+enforcement site "absent", and absent passes, so a pin the operator could not spell would have become a
+guard they believed was on. The parser's first draft made it worse: `engine 0.26.0 oops` was keyed on an
+implementation named `0.26.0`, where this engine never looks.
+
+The qualified form (`engine java v0.27.0`) exists because the family versions as a LADDER, not in
+lockstep — one engine may lead a rung, so a bare version in a polyglot repo would fail whichever engine
+had not caught up. A pin qualified for another implementation is ignored: one config serves the family.
+
+There is deliberately no `CANDOR_ENGINE` env var and no `--ignore-engine-pin`. Every other key
+configures what the run *does*; this one asserts what the run *is*, and an assertion an ambient
+environment can switch off is not one. The deliberate act is editing the pin, in the same change that
+regenerates the baseline — which is the discipline being enforced.
+
 ## [0.27.0] — 2026-08-05
 
 ### ⟨0.27⟩ `resolves` — declare which optional refinement surfaces this producer computes

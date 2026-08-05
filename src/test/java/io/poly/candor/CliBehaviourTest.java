@@ -580,6 +580,66 @@ class CliBehaviourTest {
                 + "STDERR:\n" + r.stderr() + "\nSTDOUT:\n" + r.stdout());
     }
 
+    // ── SPEC §3.4 `engine` — the pin, end to end ─────────────────────────────────────────────────────
+    // ConfigTest asserts every verdict through the pure function. These rows assert what only a real
+    // process can show: the EXIT CODE, and that the verdicts which must NOT fail really do not.
+
+    /** A compiled fixture with {@code .candor/config} above it, carrying {@code body}. */
+    private Path netFixtureUnderConfig(String body) throws Exception {
+        Path classes = compileNetFixture();                       // <scratch>/net
+        Files.createDirectories(scratch.resolve(".candor"));
+        Files.writeString(scratch.resolve(".candor/config"), body);
+        return classes;
+    }
+
+    @Test
+    void aMismatchedEnginePinFailsTheRunAsUnevaluable() throws Exception {
+        Run r = runCli(netFixtureUnderConfig("engine v0.0.1\n").toString());
+        assertEquals(2, r.exit(), "a broken engine↔baseline coupling is exit 2 (unevaluable), never 1 "
+                + "(violating) and never 0\nSTDERR:\n" + r.stderr());
+        assertTrue(r.stderr().contains("pins engine v0.0.1"), "the message quotes the pin\n" + r.stderr());
+        assertTrue(r.stderr().contains("regenerate the baseline"), "and says what to do\n" + r.stderr());
+        assertNoStackTrace(r);
+    }
+
+    @Test
+    void aMatchingEnginePinIsInvisible() throws Exception {
+        // A pin that holds must cost nothing: no line, no changed exit code.
+        String running = ReportWriter.release();
+        Assumptions.assumeTrue(running != null && !running.equals("unknown"),
+                "a source build with no release id cannot exercise MATCH — that is the UNDETERMINED row");
+        Run r = runCli(netFixtureUnderConfig("engine " + running + "\n").toString());
+        assertEquals(0, r.exit(), "a satisfied pin changes nothing\nSTDERR:\n" + r.stderr());
+        assertFalse(r.stderr().contains("pins engine"), "a holding pin says nothing\n" + r.stderr());
+    }
+
+    @Test
+    void aPinForAnotherImplementationIsIgnoredEntirely() throws Exception {
+        // One config serves the whole family, and the family releases on a LADDER — candor-java must not
+        // fail because the SWIFT pin names a version candor-java has never had.
+        Run r = runCli(netFixtureUnderConfig("engine swift v0.0.1\nengine rust v0.0.2\n").toString());
+        assertEquals(0, r.exit(), "another engine's pin is not ours to enforce\nSTDERR:\n" + r.stderr());
+    }
+
+    @Test
+    void anUnreadablePinFailsRatherThanEvaporating() throws Exception {
+        // `engine latest` is the spelling a human reaches for. Skipping it as a malformed line would leave
+        // the operator with a guard they believe is on, so it exits 2 and says it is not a version.
+        Run r = runCli(netFixtureUnderConfig("engine latest\n").toString());
+        assertEquals(2, r.exit(), "an unreadable pin must not read as an absent one\nSTDERR:\n" + r.stderr());
+        assertTrue(r.stderr().contains("not an engine version"), r.stderr());
+        assertNoStackTrace(r);
+    }
+
+    @Test
+    void aConfigWithoutTheEngineKeyIsUntouched() throws Exception {
+        // The backward-compatibility claim, asserted rather than assumed.
+        Run r = runCli(netFixtureUnderConfig("# no engine line here\n").toString());
+        assertEquals(0, r.exit(), "adding the key to the vocabulary changed a run that does not use it\n"
+                + "STDERR:\n" + r.stderr());
+        assertFalse(r.stderr().contains("unknown config key"), r.stderr());
+    }
+
     @Test
     void gainsCorruptBaselineDisclosesOnStderrAndKeepsStdoutEmpty() throws Exception {
         // `gains --json` stdout is a MACHINE channel: a corrupt baseline must be exit 2 with the

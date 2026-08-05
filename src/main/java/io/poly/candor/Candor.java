@@ -126,6 +126,67 @@ public class Candor {
         return runScan(target, null);
     }
 
+    /** Guards {@link #enforceEnginePin} against saying the same thing once per {@code --parallel} target. */
+    private static final java.util.Set<String> pinNoticesSaid = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * SPEC §3.4 {@code engine <version>} — the ENGINE↔BASELINE COUPLING, enforced instead of hoped for.
+     *
+     * <p>The committed {@code baseline} is a snapshot of what THIS engine reported. A newer engine that
+     * resolves more dispatch legitimately reports more effects, so the AS-EFF-005 ratchet fires on
+     * functions nobody touched — and the reflex, under CI pressure, is to regenerate the baseline, which
+     * silently re-blesses whatever else moved with it. Until now the engine version lived in the
+     * consumer's CI YAML, decoupled from the baseline it is married to, and NOTHING enforced "regenerate
+     * the baseline when you bump the engine". This makes it a tool-enforced invariant.
+     *
+     * <p><b>Two of the five verdicts must not change the exit code</b>, and that is the whole design:
+     * <ul>
+     *   <li>{@code ABSENT} — no pin, or a pin naming another implementation. Today's behaviour, exactly.
+     *       The feature is opt-in by construction: a config without an {@code engine} line is untouched.</li>
+     *   <li>{@code UNDETERMINED} — the pin is well-formed and this build does not know its own release
+     *       (a source build; {@code build-info.properties} carries {@code unknown}). The condition is
+     *       UNANSWERABLE, and ⟨0.24⟩ §3.1's rule is that an unanswerable condition is DISCLOSED, never
+     *       scored as a failed one — nor, which is the trap, as a satisfied one. Failing here would break
+     *       every developer running from a source build; passing silently would make the pin evaporate
+     *       exactly where it is least observed. So it says so, once, and does not touch the exit code.</li>
+     * </ul>
+     * A MISMATCH or a MALFORMED pin exits 2 (misconfiguration — the §3.4 fail-closed posture), not 1: the
+     * run is UNEVALUABLE, not violating. A machine consumer distinguishing the two must not read
+     * "I could not trust this result" as "your code broke a rule".
+     */
+    static void enforceEnginePin(Config cfg) {
+        String pin = cfg.enginePinForThisEngine();
+        String running = release();
+        String where = cfg.source() != null ? cfg.source().toString() : ".candor/config";
+        switch (Config.pinVerdict(pin, running)) {
+            case ABSENT, MATCH -> { }
+            case MALFORMED -> {
+                System.err.println("candor: " + where + " has `engine " + pin + "`, which is not an engine version.");
+                System.err.println("        want `engine <version>` (e.g. `engine v0.27.0`) or `engine <impl> <version>`");
+                System.err.println("        (e.g. `engine java v0.27.0`) for a repo scanned by more than one engine.");
+                System.err.println("        Failing (exit 2) rather than ignoring it: a pin that cannot be read is a");
+                System.err.println("        guard the operator believes is on.");
+                System.exit(2);
+            }
+            case MISMATCH -> {
+                System.err.println("candor: " + where + " pins engine " + pin + " but this build is candor-java " + running + ".");
+                System.err.println("        The pin and the committed baseline move together — a newer engine resolves more");
+                System.err.println("        dispatch, so its report is not comparable with a baseline the pinned engine wrote.");
+                System.err.println("        Either run the pinned engine, or update the pin and regenerate the baseline in the");
+                System.err.println("        same change. Exit 2 (unevaluable), not 1 — this is not a policy violation.");
+                System.exit(2);
+            }
+            case UNDETERMINED -> {
+                if (pinNoticesSaid.add(where)) {
+                    System.err.println("candor: " + where + " pins engine " + pin + ", and this build does not know its own");
+                    System.err.println("        release version (a source build, not a published jar), so the pin CANNOT be");
+                    System.err.println("        checked. Disclosed, not scored — neither passed nor failed. A released jar");
+                    System.err.println("        enforces it.");
+                }
+            }
+        }
+    }
+
     /** {@link #runScan(Path)} with an EXPLICIT {@code .candor/config} layer instead of the process-wide
      *  {@link #config} static.
      *
@@ -317,6 +378,9 @@ public class Candor {
                       CANDOR_REPORT             report locator for queries when --report is absent
                       .candor/config            the declarative layer for the same settings, anchored to
                                                 the scan target; the env vars override it
+                                                `engine v0.27.0` pins the engine this repo's baseline was
+                                                generated with — a different build exits 2 rather than
+                                                comparing a report against a baseline it cannot match
 
                     Docs: candor.poly.io   ·   Verify an install: candor doctor""");
             System.exit(0);
@@ -393,7 +457,14 @@ public class Candor {
                     Path out = outDir.resolve(baseOf.apply(t) + ".json");
                     try {
                         if (!Files.exists(t)) { failures.add(t + " (no such path)"); return; }
-                        writeReport(runScan(t, Config.forTarget(t)), out.toString(), null);  // own thread → own ctx() + own config (LB-1b)
+                        Config perTarget = Config.forTarget(t);
+                        // Each --parallel target resolves its OWN config, so each carries its own pin. The
+                        // check runs per target for the same reason the config load does; the disclosure
+                        // path dedups so N targets under one repo root say it once, and the failure path
+                        // exits the process, which is right — a broken engine↔baseline coupling is not a
+                        // per-target result to be collected and summarised.
+                        enforceEnginePin(perTarget);
+                        writeReport(runScan(t, perTarget), out.toString(), null);  // own thread → own ctx() + own config (LB-1b)
                         System.out.println("  " + t + " -> " + out);
                     } catch (Throwable e) {
                         // Record ANY failure — incl. a RuntimeException/Error from a phase outside runScan's
@@ -538,6 +609,7 @@ public class Candor {
         // with the code" promise depend on where the command was launched from. The layer sits UNDER the
         // env vars (which sit under the CLI flags); configured-but-unreadable fails loud (exit 2).
         config = Config.forTarget(scanTarget);
+        enforceEnginePin(config);
         if (!Files.exists(scanTarget)) {
             System.err.println("candor: no such path: " + args[0]);
             System.err.println("        point candor at COMPILED classes (target/classes · build/classes/java/main) or a built .jar.");

@@ -234,6 +234,41 @@ class ConfigTest {
     }
 
     @Test
+    void twoEngineLinesThatDisagreeAreMALFORMED_notLastWins() throws Exception {
+        // Found by adversarial review. `Map.put` meant last-wins SILENTLY: the operator wrote 0.26.0,
+        // the file also said 0.27.0, and the run exited 0 MATCH having discarded the first. A pin the
+        // operator wrote being thrown away without a word is the failure class this key exists to stop,
+        // which is why it does NOT follow the file's ordinary last-wins convention. Two lines disagreeing
+        // about which engine to run is not a preference to resolve; it is a question the config leaves
+        // unanswered — so it fails, quoting both spellings back.
+        Config c = write("engine java 0.26.0\nengine java 0.27.0\n");
+        assertEquals(Config.PinVerdict.MALFORMED, Config.pinVerdict(c.enginePinForThisEngine(), "0.27.0"));
+        assertTrue(c.enginePinForThisEngine().contains("0.26.0")
+                && c.enginePinForThisEngine().contains("0.27.0"), "both lines are shown: " + c.enginePinForThisEngine());
+        // An IDENTICAL repeat is harmless — it states the same thing twice and answers the question.
+        Config same = write("engine v0.27.0\nengine v0.27.0\n");
+        assertEquals(Config.PinVerdict.MATCH, Config.pinVerdict(same.enginePinForThisEngine(), "0.27.0"));
+        // …and a conflict between the QUALIFIED and UNQUALIFIED forms is not a conflict at all: §3.4
+        // says the qualified pin wins, so this stays a legitimate polyglot config.
+        Config mixed = write("engine v0.20.0\nengine java v0.27.0\n");
+        assertEquals(Config.PinVerdict.MATCH, Config.pinVerdict(mixed.enginePinForThisEngine(), "0.27.0"));
+    }
+
+    @Test
+    void trailingJunkIsMALFORMED_inTheQualifiedFormToo() throws Exception {
+        // One grammar, two answers: `engine 0.26.0 0.27.0` correctly refused while
+        // `engine java 0.26.0 0.27.0` took parts[1] and silently pinned 0.26.0 — the qualified arm was
+        // the forgiving one, on the half where a second version is most obviously a mistake.
+        assertEquals(Config.PinVerdict.MALFORMED,
+                Config.pinVerdict(write("engine java 0.26.0 0.27.0\n").enginePinForThisEngine(), "0.27.0"));
+        assertEquals(Config.PinVerdict.MALFORMED,
+                Config.pinVerdict(write("engine java 0.27.0 junk\n").enginePinForThisEngine(), "0.27.0"));
+        // The good qualified form still works.
+        assertEquals(Config.PinVerdict.MATCH,
+                Config.pinVerdict(write("engine java v0.27.0\n").enginePinForThisEngine(), "0.27.0"));
+    }
+
+    @Test
     void aSourceBuildCannotCheckThePinAndMustNotScoreIt() {
         // ⟨0.24⟩ §3.1 applied to configuration: an UNANSWERABLE condition is disclosed, never scored — and
         // the trap is scoring it as SATISFIED. Failing here breaks every developer on a source build;

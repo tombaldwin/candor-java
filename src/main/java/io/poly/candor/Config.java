@@ -197,21 +197,40 @@ public final class Config {
      * missing version or a version spelled `java`. It is read as the former, because a bare impl name is
      * the typo a human actually makes, and both readings end at MALFORMED anyway.
      */
+    /** Record a pin, turning a CONFLICTING redefinition into one that cannot parse.
+     *
+     *  <p>Plain {@code put} meant last-wins, silently: {@code engine java 0.26.0} followed by
+     *  {@code engine java 0.27.0} discarded the first and exited 0 MATCH. That is a pin the operator
+     *  WROTE being thrown away without a word — the same failure class as the two bugs already fixed
+     *  here, and the reason this key does not follow the file's ordinary last-wins convention. Two
+     *  lines disagreeing about which engine to run is not a preference to resolve; it is a question the
+     *  config does not answer. Keeping BOTH spellings in the value makes it fail {@code normalizeVersion}
+     *  downstream, so the operator is shown the two lines they wrote. An identical repeat is harmless
+     *  and stays a no-op. */
+    private static void putPin(Map<String, String> pins, String key, String val) {
+        String prev = pins.get(key);
+        pins.put(key, prev == null || prev.equals(val) ? val : prev + " / " + val);
+    }
+
     private static void addEnginePin(Map<String, String> pins, String val) {
         String v = val == null ? "" : val.strip();
-        if (v.isEmpty()) { pins.put("*", ""); return; }                    // bare `engine` → MALFORMED
+        if (v.isEmpty()) { putPin(pins, "*", ""); return; }                // bare `engine` → MALFORMED
         String[] parts = v.split("\\s+");
         String head = parts[0].toLowerCase(Locale.ROOT);
         if (ENGINE_IMPLS.contains(head)) {
             // `engine java v0.26.0`, or `engine java` — the second is an impl with no version, MALFORMED.
-            pins.put(head, parts.length > 1 ? parts[1] : "");
+            // TRAILING JUNK IS MALFORMED TOO, and taking `parts[1]` and dropping the rest was wrong in a
+            // way the unqualified arm below already got right: `engine java 0.26.0 0.27.0` silently
+            // pinned 0.26.0, while the unqualified `engine 0.26.0 0.27.0` correctly refused. One grammar,
+            // two answers, and the qualified half was the forgiving one.
+            putPin(pins, head, parts.length == 2 ? parts[1] : (parts.length == 1 ? "" : v));
             return;
         }
         // The head is not an impl, so the line is unqualified and parts[0] must BE the version. Anything
         // after it is not a second field this grammar has — `engine 0.26.0 oops` keeps the whole value so
         // the message can quote what was written. Keying on parts[0] here would have filed the pin under
         // an implementation named "0.26.0", where THIS engine never looks: a pin silently switched off.
-        pins.put("*", parts.length > 1 ? v : parts[0]);
+        putPin(pins, "*", parts.length > 1 ? v : parts[0]);
     }
 
     /** Parse an {@code unknown-alias} value {@code <name> = <c1,c2,…>} into the map, warning-and-skipping a

@@ -49,6 +49,26 @@ enforcement site "absent", and absent passes, so a pin the operator could not sp
 guard they believed was on. The parser's first draft made it worse: `engine 0.26.0 oops` was keyed on an
 implementation named `0.26.0`, where this engine never looks.
 
+**Two more ways a written pin could stop being a pin, found by adversarial review after the above:**
+duplicate lines for the same key were plain last-wins, so `engine java 0.26.0` followed by
+`engine java 0.27.0` discarded the operator's first line and exited 0 MATCH; and trailing junk was
+dropped in the *qualified* arm only, so `engine java 0.26.0 0.27.0` silently pinned 0.26.0 while the
+unqualified spelling of the same mistake correctly refused. Conflicting duplicates are now MALFORMED
+(quoting both lines back — two lines disagreeing about which engine to run is not a preference to
+resolve), and trailing junk is MALFORMED in both arms. An identical repeat stays a harmless no-op.
+
+**A limitation the pin cannot see, stated rather than implied:** `build.gradle.kts` bakes
+`release = project.version` into *every* build, so a jar built from an unreleased working tree reports
+the release version and satisfies a pin naming it. The pin therefore distinguishes RELEASES, not builds;
+the §2.1 provenance build id is what separates those, and the AS-EFF-005 path already compares it. An
+earlier draft of this entry claimed source builds land in UNDETERMINED — they do not.
+
+**`gate --report` discloses the pin without enforcing it.** It applies a policy to a report it did not
+produce, so refusing because this build is not the pinned one would fail a valid evaluation. But policy
+semantics move with engine versions (⟨0.24⟩ could turn a green gate red), so a mismatch now prints one
+line saying the verdict stands while the semantics applied are this build's. Same posture as the
+UNDETERMINED pin: say it once, change nothing.
+
 The qualified form (`engine java v0.27.0`) exists because the family versions as a LADDER, not in
 lockstep — one engine may lead a rung, so a bare version in a polyglot repo would fail whichever engine
 had not caught up. A pin qualified for another implementation is ignored: one config serves the family.

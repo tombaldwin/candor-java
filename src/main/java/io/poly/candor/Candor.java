@@ -132,12 +132,24 @@ public class Candor {
     /**
      * SPEC §3.4 {@code engine <version>} — the ENGINE↔BASELINE COUPLING, enforced instead of hoped for.
      *
-     * <p>The committed {@code baseline} is a snapshot of what THIS engine reported. A newer engine that
-     * resolves more dispatch legitimately reports more effects, so the AS-EFF-005 ratchet fires on
-     * functions nobody touched — and the reflex, under CI pressure, is to regenerate the baseline, which
-     * silently re-blesses whatever else moved with it. Until now the engine version lived in the
-     * consumer's CI YAML, decoupled from the baseline it is married to, and NOTHING enforced "regenerate
-     * the baseline when you bump the engine". This makes it a tool-enforced invariant.
+     * <p><b>WHAT THIS ADDS, stated against what already existed — because the first draft of this comment
+     * claimed more than was true.</b> {@link Policy}'s AS-EFF-005 path ALREADY refuses when the baseline's
+     * producing build differs from the running one ("an engine swap is baseline-invalidating"), so it is
+     * not the case that nothing enforced the coupling. What it cannot do is the part a consumer needs:
+     *
+     * <ul>
+     *   <li>It compares the §2.1 provenance BUILD ID — a git hash like {@code b8589ac}. That is not
+     *       something a human can pin, and there was nowhere to declare an intended version at all. The
+     *       operator learns of a mismatch only after running the wrong engine.</li>
+     *   <li>It lives INSIDE the baseline path, so a policy-only gate, or any scan with no {@code baseline}
+     *       configured, has no coupling check whatsoever.</li>
+     *   <li>It can only DETECT. A declared pin is also an instruction: {@code .candor/run} and the
+     *       generated CI step read this same key to decide which engine to FETCH, which is what collapses
+     *       the version to one place instead of restating it in CI YAML.</li>
+     * </ul>
+     *
+     * The two are complementary and this one runs FIRST — at config load, before the scan — so a wrong
+     * engine costs a message rather than a full analysis followed by a refusal.
      *
      * <p><b>Two of the five verdicts must not change the exit code</b>, and that is the whole design:
      * <ul>

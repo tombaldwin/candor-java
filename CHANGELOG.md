@@ -14,11 +14,22 @@ after upgrading; review policies and regenerate baselines with the new build.
 one FAILS with **exit 2** rather than producing a verdict it cannot stand behind. Marked ⚠ because a
 repo that adopts the key can now fail a run that previously passed — which is the point.
 
-The committed `baseline` is a snapshot of what one engine build reported. A newer engine that resolves
-more dispatch legitimately reports more effects, so the AS-EFF-005 ratchet fires on functions nobody
-touched — and the reflex, under CI pressure, is to regenerate the baseline, which re-blesses whatever
-else moved with it. The engine version lived in the consumer's CI YAML, decoupled from the baseline it
-is married to, and nothing enforced *"regenerate the baseline when you bump the engine"*.
+**What this adds over what already existed**, stated precisely because the first draft of this entry
+overclaimed. The AS-EFF-005 path ALREADY refuses when the baseline's producing build differs from the
+running one — *"an engine swap is baseline-invalidating"* — so it is not true that nothing enforced the
+coupling. Three things it cannot do:
+
+- It compares the §2.1 provenance **build id**, a git hash like `b8589ac`. A human cannot pin that, and
+  there was nowhere to declare an intended version at all; a mismatch is discovered only after running
+  the wrong engine.
+- It lives **inside the baseline path**, so a policy-only gate — or any scan with no `baseline` wired —
+  had no coupling check at all. That is the gap this closes.
+- It can only **detect**. A declared pin is also an instruction: `.candor/run` and the generated CI step
+  read this same key to decide which engine to *fetch*, which is what collapses the version to one place
+  instead of restating it in CI YAML beside a baseline it is married to.
+
+The two are complementary, and the pin runs **first** — at config load, before the scan — so a wrong
+engine costs a message rather than a full analysis followed by a refusal.
 
 **Two of the five verdicts must not change the exit code, and that is the design.** No pin, or a pin
 naming another implementation, behaves exactly as before — the key is opt-in by construction. A pin the

@@ -745,7 +745,54 @@ final class Policy {
                 }
             }
         }
+        discloseZeroMatchRules(gi);
         return v;
+    }
+
+    /**
+     * ⟨0.27⟩ SPEC §4 — <b>A RULE WHOSE SCOPE BINDS NO FUNCTION IS UNANSWERABLE, AND IS DISCLOSED RATHER
+     * THAN SCORED AS SATISFIED.</b>
+     *
+     * <p>MEASURED on this engine before the fix, with a package `app.orders` performing `Fs`:
+     * <pre>
+     *   deny Fs orders   → exit 1   (the violation)
+     *   deny Fs ordrs    → exit 0   silently — and `unverified` then calls the layer "PROVABLY clean"
+     * </pre>
+     * A one-character typo in a layer name is a permanently green gate. The asymmetry is the tell: a
+     * typo'd EFFECT token already exits 2 naming the accepted vocabulary, while a typo'd LAYER token
+     * binds nothing and passes. Same file, same rule, opposite treatment.
+     *
+     * <p><b>The remedy is DISCLOSURE, not refusal, and exit 2 would be wrong here.</b> A zero-match rule
+     * is legitimate when one policy is shared across repositories and a layer exists in only some of
+     * them — refusing would make a shared policy unusable. So every such rule is reported verbatim (so
+     * the reader can see the typo) and the verdict MUST NOT change.
+     *
+     * <p>Counted over the same key set the gate iterates, so "bound nothing" means here what it means to
+     * the gate. A {@code deny} with an EMPTY scope applies to every function and cannot be a typo of this
+     * kind, so it is excluded; {@code pure <layer>} parses as a deny WITH a scope and is included. A
+     * {@code forbid} counts a match on either endpoint, over the call-graph key set it binds across.
+     */
+    static void discloseZeroMatchRules(GateInput gi) {
+        Map<String, Integer> matches = new TreeMap<>();
+        for (PolicyRule.Deny r : ctx().denyRules) if (!r.scope().isEmpty()) matches.putIfAbsent(r.src(), 0);
+        for (PolicyRule.Forbid r : ctx().forbidRules) matches.putIfAbsent(r.src(), 0);
+        if (matches.isEmpty()) return;
+        Set<String> fns = new TreeSet<>(gi.inferred().keySet());
+        fns.addAll(gi.edges().keySet());
+        for (String fn : fns) {
+            for (PolicyRule.Deny r : ctx().denyRules) {
+                if (!r.scope().isEmpty() && scopeMatches(fn, r.scope())) matches.merge(r.src(), 1, Integer::sum);
+            }
+            for (PolicyRule.Forbid r : ctx().forbidRules) {
+                if (scopeMatches(fn, r.from()) || scopeMatches(fn, r.to())) matches.merge(r.src(), 1, Integer::sum);
+            }
+        }
+        for (var e : matches.entrySet()) {
+            if (e.getValue() != 0) continue;
+            System.err.println("candor: policy rule matched NO function — `" + e.getKey() + "`. It was "
+                    + "evaluated and bound nothing, so it cannot have caught anything. Legitimate when one "
+                    + "policy is shared across repos; a typo'd layer name otherwise.");
+        }
     }
 
     /**

@@ -580,6 +580,30 @@ public class Candor {
         var scanFlags = java.util.Set.of("--json", "--policy", "--gate-json"); // --agents handled above; the rest are unknown here
         rejectUnknownFlag(args[0], java.util.Set.of(), "candor <dir-or-jar> [--json <file>] [--policy <file>] [--gate-json <file>] | candor --agents");
         String jsonOut = null, policyArg = null, gateJson = null;
+        // ── SPEC §3.3.1 ⟨0.27⟩ ARM FIRST. This pre-pass learns the sink and the run's inputs with NO side
+        // effects, so that (a) the collision check can run before anything is written, and (b) arming
+        // happens before EVERY other exit — including an unknown flag, which §3.3 names as a broken-gate-
+        // config exit-2 cause that must leave a refusal.
+        //
+        // Arming used to happen INSIDE the loop below, at the moment `--gate-json` was parsed. That made
+        // the contract depend on argv ORDER: `--gate-json G --frobnicate` wrote a refusal into G, while
+        // `--frobnicate --gate-json G` exited on the unknown flag first and left the PREVIOUS run's green
+        // document sitting at G. The operator's intent is identical in both spellings.
+        String preGate = null, prePolicy = null;
+        for (int i = 1; i < args.length; i++) {
+            boolean hasVal = i + 1 < args.length;
+            if (args[i].equals("--gate-json") && hasVal && (args[i + 1].equals("-") || !args[i + 1].startsWith("-")))
+                preGate = args[++i];
+            else if (args[i].equals("--policy") && hasVal && !args[i + 1].startsWith("-"))
+                prePolicy = args[++i];
+        }
+        if (preGate != null) {
+            refuseGateJsonOverInput(preGate, prePolicy, "--policy");
+            refuseGateJsonOverInput(preGate, System.getenv("CANDOR_POLICY"), "CANDOR_POLICY");
+            refuseGateJsonOverInput(preGate, System.getenv("CANDOR_CONFIG"), "CANDOR_CONFIG");
+            refuseGateJsonAtConfig(preGate);
+            armGateJson(preGate);
+        }
         for (int i = 1; i < args.length; i++) {
             if (args[i].equals("--gate-json")) {
                 // Re-emit the gate verdict as machine JSON (the structured analog of the AS-EFF console
@@ -594,7 +618,8 @@ public class Candor {
                 gateCapture = true;
                 gateViolations.clear();   // clear HERE (single-threaded, before runScan) — not in resetState,
                                           // which --parallel calls concurrently across a thread pool.
-                armGateJson(gateJson);    // ⟨0.24⟩ fail-closed from the first instant — see the method
+                // (armed already by the pre-pass above — SPEC §3.3.1 ⟨0.27⟩ "arm at the instant the
+                // sink is known"; arming here made the contract depend on argv order.)
             } else if (args[i].equals("--json")) {
                 // `--json <file>` (a following non-flag arg) writes the report file + sidecars; bare
                 // `--json` (last arg, or the next arg is a flag) streams the report ENVELOPE to stdout
@@ -1087,6 +1112,84 @@ public class Candor {
      * a placeholder there would put two in a consumer's pipe. A placeholder that cannot be WRITTEN is a
      * warning, not a refusal — the end-of-run write hits the same path and fails loudly and specifically.
      */
+    /**
+     * SPEC §3.3.1 ⟨0.27⟩ — is {@code a} the SAME ARTIFACT as {@code b}?
+     *
+     * <p>Not a string comparison. {@code --policy /w/P --gate-json ./P} run from {@code /w} names one
+     * file twice, and candor-rust shipped a guard that compared path components and was defeated by
+     * exactly that spelling. Where both sides exist this is device+inode via {@link Files#isSameFile},
+     * which also catches a symlink and a hard link; where the sink does not exist yet (the normal case —
+     * we are about to create it) the parent directory is resolved instead and the file name appended.
+     *
+     * <p>Fails CLOSED on error in the sense that matters: an exception means "cannot prove they differ"
+     * only for exotic paths, and returning false there preserves the previous behaviour rather than
+     * refusing a legitimate run. The collision this guards against is a mistake, not an attack.
+     */
+    static boolean sameArtifact(String a, String b) {
+        if (a == null || b == null || a.equals("-") || b.equals("-")) return false;
+        try {
+            Path pa = Path.of(a), pb = Path.of(b);
+            if (Files.exists(pa) && Files.exists(pb)) return Files.isSameFile(pa, pb);
+            return resolveForCompare(pa).equals(resolveForCompare(pb));
+        } catch (IOException | RuntimeException e) {
+            return false;
+        }
+    }
+
+    /** Absolute, symlink-resolved as far as the filesystem allows — the parent when the leaf is absent. */
+    private static Path resolveForCompare(Path p) throws IOException {
+        Path abs = p.toAbsolutePath();
+        Path parent = abs.getParent(), name = abs.getFileName();
+        if (parent == null || name == null) return abs.normalize();
+        Path base = Files.exists(parent) ? parent.toRealPath() : parent.normalize();
+        return base.resolve(name);
+    }
+
+    /**
+     * SPEC §3.3.1 ⟨0.27⟩ — refuse a {@code --gate-json} sink that names an INPUT of this run.
+     *
+     * <p>Arming writes to the path before the run knows its answer, so pointing it at the policy file
+     * destroys the policy. Measured here before the guard existed: {@code --policy P --gate-json P} on
+     * code that violates {@code deny Net} exited **0** with {@code "ok": true} — the JSON refusal
+     * overwrote {@code P}, every line of it parsed as an unknown rule, and the gate ran over zero rules.
+     * A machine-readable all-clear produced by deleting the question.
+     *
+     * <p>Writes NOTHING and exits 2. This is the one exempt cause in the arming rule, and it is exempt
+     * because the path was never a sink: there is no verdict at it to go stale.
+     */
+    static void refuseGateJsonOverInput(String gateJson, String other, String flag) {
+        if (!sameArtifact(gateJson, other)) return;
+        System.err.println("candor: --gate-json " + gateJson + " names the same file as " + flag + " "
+                + other + " — writing the verdict there would destroy the input this run reads. "
+                + "Nothing was written; give --gate-json a different path.");
+        System.exit(2);
+    }
+
+    /**
+     * SPEC §3.3.1 ⟨0.27⟩ — `.candor/config` is never a verdict sink, wherever it is.
+     *
+     * <p>The per-input checks above can only name inputs the run has already been TOLD about, and the
+     * config is DISCOVERED by walking up from the target — so by the time its path is known, arming has
+     * already destroyed it. Measured on candor-swift: `--gate-json <target>/.candor/config` deleted the
+     * config that declared the policy, and the run then exited 0 with no gate at all.
+     *
+     * <p>This is a check on the SHAPE rather than on a discovered path, deliberately: it needs no
+     * discovery, so it can run before the first write, and it covers a config found anywhere up the
+     * tree. There is no legitimate run that writes a gate verdict to a file named `config` inside a
+     * `.candor` directory.
+     */
+    static void refuseGateJsonAtConfig(String gateJson) {
+        if (gateJson == null || gateJson.equals("-")) return;
+        Path p = Path.of(gateJson).toAbsolutePath().normalize();
+        Path parent = p.getParent(), name = p.getFileName();
+        if (name == null || parent == null || parent.getFileName() == null) return;
+        if (!name.toString().equals("config") || !parent.getFileName().toString().equals(".candor")) return;
+        System.err.println("candor: --gate-json " + gateJson + " is a .candor/config — refusing (exit 2). "
+                + "The verdict is armed before the config is read, so this would destroy the config that "
+                + "configures this run. Nothing was written; give the verdict its own path.");
+        System.exit(2);
+    }
+
     static void armGateJson(String path) {
         if (path == null || path.equals("-")) return;
         var out = new java.util.LinkedHashMap<String, Object>();

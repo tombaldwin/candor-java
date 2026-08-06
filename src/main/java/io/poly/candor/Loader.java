@@ -469,7 +469,27 @@ final class Loader {
                     JsonArray fns = obj != null && obj.has("functions") && obj.get("functions").isJsonArray()
                             ? obj.getAsJsonArray("functions")
                             : (root.isJsonArray() ? root.getAsJsonArray() : null);
-                    if (fns == null) continue;
+                    if (fns == null) {
+                        // NOT SILENTLY. A chained dep report with no `functions` grants NO coverage, so
+                        // every call into that dep resolves to nothing and its callers read PURE — and
+                        // the operator, who configured the dep precisely so that would not happen, saw
+                        // no sign of it. `continue` on its own is the cardinal sin with the evidence
+                        // sitting right there in CANDOR_DEPS.
+                        //
+                        // The SIDECARS are the legitimate case and they are identifiable by name, so
+                        // they stay silent; anything else is named. Disclosed rather than exit 2 (the
+                        // posture the unreadable-dep sibling above takes) because a deps DIRECTORY can
+                        // legitimately hold unrelated JSON, and turning that into a red gate would be a
+                        // false failure — but it can never be a silent one.
+                        String fn = f.getFileName().toString();
+                        if (!fn.endsWith(".hierarchy.json") && !fn.endsWith(".callgraph.json")) {
+                            System.err.println("candor: chained dep " + f + " has no `functions` — it is not"
+                                    + " a candor report, so it grants NO coverage and calls into it stay"
+                                    + " Unknown rather than reading pure. Scan that dependency to close"
+                                    + " the gap, or remove it from CANDOR_DEPS.");
+                        }
+                        continue;
+                    }
                     String depVer = null;
                     if (obj != null && obj.has("candor") && obj.get("candor").isJsonObject()) {
                         JsonElement v = obj.getAsJsonObject("candor").get("version");

@@ -8,6 +8,23 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **The gate verdict could be written over the gate's own inputs.** `--policy P --gate-json P` armed the
+  refusal over `P`; the now-JSON policy parsed as zero rules and a run that exits 1 on the same code
+  exited **0 with `"ok": true`** — an all-clear produced by deleting the question. The reference engine
+  had no guard for this at all. Now refused (exit 2, nothing written), with sameness resolved as
+  artifacts (device+inode, symlinks, `./` spellings) rather than path strings, and `.candor/config`
+  refused as a sink by shape wherever it is.
+- **Arming depended on argv ORDER.** It happened mid-flag-loop, so `--gate-json G --frobnicate` wrote a
+  refusal into `G` and `--frobnicate --gate-json G` left the previous run's green there — the operator's
+  intent identical in both. A pre-pass now learns the sink before anything can exit or write.
+- **A NO-BREAK SPACE hid a config key.** `String.split("\\s+")` is ASCII-only in Java, so
+  `engine\u00A00.26.0` became one token, was reported as an "unknown config key 'engine '", and the pin
+  went silently unenforced while a MISMATCHED version passed at exit 0 — a false disclosure over a
+  fail-open. Now `(?U)\\s+`, matching the other four engines.
+- **A chained dep report with no `functions` was skipped in silence** — it grants no coverage, so every
+  call into that dep reads pure, and the operator who configured it saw no sign. Now named on stderr
+  (sidecars, which legitimately have none, stay silent).
+
 ## [0.27.0] — 2026-08-05
 
 - **The reference engine was the sole non-conformer on the pin, 5-to-1.** `engine 0.26.0 oops` beside a

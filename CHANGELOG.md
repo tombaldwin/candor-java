@@ -8,7 +8,9 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
-### ⚠ ⟨0.28 PROPOSED⟩ `engine` — the engine↔baseline coupling, enforced instead of hoped for
+## [0.27.0] — 2026-08-05
+
+### ⚠ ⟨0.27⟩ `engine` — the engine↔baseline coupling, enforced instead of hoped for
 
 `.candor/config` gains an `engine [<impl>] <version>` key (SPEC §3.4). A build that is not the pinned
 one FAILS with **exit 2** rather than producing a verdict it cannot stand behind. Marked ⚠ because a
@@ -78,7 +80,6 @@ configures what the run *does*; this one asserts what the run *is*, and an asser
 environment can switch off is not one. The deliberate act is editing the pin, in the same change that
 regenerates the baseline — which is the discipline being enforced.
 
-## [0.27.0] — 2026-08-05
 
 ### ⟨0.27⟩ `resolves` — declare which optional refinement surfaces this producer computes
 

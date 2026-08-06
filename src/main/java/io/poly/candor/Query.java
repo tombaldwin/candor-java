@@ -319,6 +319,32 @@ public final class Query {
         boolean strict = false;         // `unverified --strict`: exit 1 on an unverified-purity hole
         boolean stats = false;          // `blindspots --stats`: the reason-class distribution, not the source list
         String classFlag = null;        // `blindspots --class <c,…>`: keep only Unknown sources of these reason classes
+        // ── SPEC §3.3.1 ⟨0.27⟩ ARM FIRST, AND NEVER OVER AN INPUT.
+        //
+        // THE ⟨0.27⟩ SWEEP ADDED THIS TO `Candor.main` AND MISSED THIS VERB ENTIRELY, so the reference
+        // engine's supply-chain gate still reproduced §3.3.1's own worked example verbatim:
+        // `gate --report R --policy P --gate-json P` exited **0** with `"ok": true` after overwriting P
+        // (control, different sink: exit 1). It also still armed mid-flag-loop, so an unknown flag BEFORE
+        // `--gate-json` left the previous run's green on disk while the same mistake spelled the other
+        // way round wrote a refusal — the argv-order dependence the rule exists to forbid. A pre-pass
+        // learns the sink and this run's inputs with no side effects, before anything can exit or write.
+        {
+            String preGate = null, prePolicy = null, preReport = null;
+            for (int i = 0; i < args.length; i++) {
+                boolean hasVal = i + 1 < args.length;
+                if (args[i].equals("--gate-json") && hasVal
+                        && (args[i + 1].equals("-") || !args[i + 1].startsWith("-"))) preGate = args[++i];
+                else if (args[i].equals("--policy") && hasVal && !args[i + 1].startsWith("-")) prePolicy = args[++i];
+                else if (args[i].equals("--report") && hasVal && !args[i + 1].startsWith("-")) preReport = args[++i];
+            }
+            if (preGate != null) {
+                // §3.3.1 names "a report being read (`gate --report`)" as an input. Writing the verdict
+                // there destroys the very report the gate was asked to judge.
+                Candor.refuseGateJsonOverInput(preGate, preReport, "--report");
+                Candor.refuseGateJsonOverAnyInput(preGate, preReport != null ? preReport : ".", prePolicy);
+                Candor.armGateJson(preGate);
+            }
+        }
         String reportFlag = null;       // --report <locator> (canonical §3.3.1)
         String policyFlag = null;       // --policy <file> (canonical §3.3.1)
         String gateJsonFlag = null;     // --gate-json <file|-> (⟨0.24⟩ `gate`, the scan path's own flag)
@@ -365,7 +391,7 @@ public final class Query {
                     boolean ok = i + 1 < args.length && (args[i + 1].equals("-") || !args[i + 1].startsWith("-"));
                     if (!ok) { System.err.println("candor: --gate-json requires a value (a path, or `-` for stdout)"); return 2; }
                     gateJsonFlag = args[++i];
-                    Candor.armGateJson(gateJsonFlag);   // ⟨0.24⟩ fail-closed from the first instant
+                    // (armed by the pre-pass above — arming HERE made the contract depend on argv order.)
                 }
                 default -> {
                     // an unknown --flag must FAIL, not be swallowed as a query positional (a typo'd

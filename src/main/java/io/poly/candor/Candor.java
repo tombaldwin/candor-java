@@ -856,7 +856,8 @@ public class Candor {
                 ? checkConformance(ccFull, strict)        // reuse the report's full conformance
                 : checkConformance(inferred, strict);     // gate-only: scope-filtered declared
         if (noAmbient != null) violations += checkNoAmbient(inferred, noAmbient);
-        if (baseline != null) violations += checkBaseline(inferred, baseline);
+        if (baseline != null) violations += checkBaseline(inferred, baseline,
+                config.fromFile("baseline", Mode.BASELINE.envVar()));
         // ⟨0.24⟩ PRECEDENCE BINDS THE VERDICT, NOT THE POLICY GATE (SPEC §3.1). The three producers above
         // record into THIS verdict and run BEFORE the policy by design, so a policy the engine cannot
         // honour must not delete what they already established: the refusal is REPORTED back here

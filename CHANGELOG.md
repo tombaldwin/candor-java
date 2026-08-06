@@ -10,6 +10,12 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.27.0] — 2026-08-05
 
+- **The reference engine was the sole non-conformer on the pin, 5-to-1.** `engine 0.26.0 oops` beside a
+  valid `engine java v0.27.0` exited 0 here and 2 everywhere else: precedence returned the qualified pin
+  without ever looking at the unreadable unqualified line, so its malformedness never reached a verdict.
+  §3.4 says an unqualified line "is yours to read, and MUST be MALFORMED if it is unreadable" —
+  precedence decides which *version* applies, not whether a line you were supposed to read parses.
+
 - **A baseline DECLARED in `.candor/config` but missing is now exit 2, not a green pass.** An adopter
   review measured this as the second-likeliest first-commit mistake (`.candor/` committed, the baseline
   not) and found every engine printing a note and exiting **0** — the gate quietly not gating. The split

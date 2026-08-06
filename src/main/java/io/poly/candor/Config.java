@@ -372,7 +372,13 @@ public final class Config {
             for (String raw : Files.readAllLines(path)) {
                 String line = raw.split("#", 2)[0].strip();     // strip an inline comment (§6.2 lexical)
                 if (line.isEmpty()) continue;
-                String[] kv = line.split("\\s+", 2);
+                // (?U) — UNICODE whitespace, matching the other four engines. Java's bare `\s` is
+                // ASCII-only, so a NO-BREAK SPACE (U+00A0, the ordinary artifact of pasting a config
+                // out of a rendered doc) left `engine\u00A0` as ONE token: not the key `engine`, so
+                // the line was reported as an "unknown config key 'engine '" — a FALSE disclosure,
+                // since the pin it names was silently NOT ENFORCED and a MISMATCHED pin passed at
+                // exit 0. rust/ts/agents all split on Unicode whitespace and exit 2 here.
+                String[] kv = line.split("(?U)\\s+", 2);
                 String key = kv[0].toLowerCase(Locale.ROOT);    // ROOT: 'I'→'i' even under a Turkish locale
                 if (!KNOWN_KEYS.contains(key)) {
                     System.err.println("candor: ignoring unknown config key '" + key + "' in " + path);

@@ -65,6 +65,19 @@ final class Policy {
 
     /** AS-EFF-005: flag a function that gained an effect versus a saved baseline report. */
     static int checkBaseline(Map<String, EffectSet> inferred, String path) {
+        return checkBaseline(inferred, path, false);
+    }
+
+    /**
+     * @param declaredInConfig the path came from a checked-in {@code .candor/config} `baseline` line
+     *        rather than from {@code CANDOR_BASELINE}. A MISSING file then means something different —
+     *        see {@link Config#fromFile}: the env var is set unconditionally by the adopt workflow, so an
+     *        absent path there is "not adopted yet"; a config line is a declaration that this repo HAS a
+     *        baseline, so an absent path is one deleted or never committed, and passing green over it is
+     *        the gateless-green class. Found by an adopter review: deleting the committed baseline left
+     *        every engine printing a note and exiting 0, on the second-likeliest first-commit mistake.
+     */
+    static int checkBaseline(Map<String, EffectSet> inferred, String path, boolean declaredInConfig) {
         Map<String, EffectSet> base = loadBaseline(path);
         if (base == null) {
             // Distinguish ABSENT (ratchet not adopted — a note, exit 0) from PRESENT-BUT-UNLOADABLE
@@ -72,6 +85,14 @@ final class Policy {
             // old code conflated both into a fail-OPEN note, so a corrupt baseline silently disabled the
             // guard while a versionless one failed closed — inverted severity (review §2.1 gap).
             if (!java.nio.file.Files.exists(java.nio.file.Path.of(path))) {
+                if (declaredInConfig) {
+                    System.err.println("candor-java: .candor/config declares `baseline " + path + "` but that "
+                            + "file is not there — failing (exit 2). A checked-in declaration says this repo HAS "
+                            + "a baseline, so an absent one was deleted or never committed, and the guard "
+                            + "passing green over it is a gate that silently stopped gating. Commit it, or "
+                            + "record one: candor <target> --json " + path);
+                    System.exit(2);
+                }
                 System.err.println("candor-java: CANDOR_BASELINE " + path + " does not exist — the "
                         + "regression guard is not active (record one: candor <target> --json " + path + ").");
                 return 0;

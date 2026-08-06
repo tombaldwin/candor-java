@@ -413,6 +413,18 @@ public final class Config {
         return load(path, false);
     }
 
+    /** Did this key's value come from the CHECKED-IN FILE rather than the environment?
+     *
+     *  <p>The two are not interchangeable for a MISSING file. `CANDOR_BASELINE` is set unconditionally by
+     *  the adopt workflow, so a path that does not exist there means "the ratchet is not adopted yet" —
+     *  a note. A `baseline` line in `.candor/config` is a CHECKED-IN DECLARATION that this repo has one,
+     *  so a missing file there means it was deleted or never committed, and the gate quietly not gating
+     *  is the §6.2 gateless-green class. Same absence, opposite meanings; only the SOURCE separates them.
+     */
+    boolean fromFile(String key, String envVar) {
+        return System.getenv(envVar) == null && values.containsKey(key);
+    }
+
     /** A value with env-override: the env var if set (one-off override), else the config file's value —
      *  which MAY be the empty string (a bare key line: "enabled with the empty value", the set-but-empty
      *  env analog; for `strict`/`no-ambient` that means the whole unit). Null only when genuinely absent. */

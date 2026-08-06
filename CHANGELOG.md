@@ -8,6 +8,29 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ The `gate` verb got none of the ⟨0.27⟩ guard, so the reference engine still reproduced §3.3.1's own
+  worked example.** `gate --report R --policy P --gate-json P` exited **0 with `"ok": true`** after
+  overwriting `P` (control, separate sink: exit 1) — the supply-chain surface, the one a consumer points
+  at a report someone else produced. The sweep touched `Candor.java` and skipped `Query.java`. It also
+  still armed mid-flag-loop, so an unknown flag BEFORE `--gate-json` left the previous run's green while
+  the same mistake spelled the other way wrote a refusal.
+- **⚠ The collision guard keyed on the FLAG, so a policy from `.candor/config` was invisible to it** —
+  the checked-in form, i.e. the one CI actually uses. `--gate-json <that policy>` destroyed it and exited
+  0 with `"ok": true`, in all four engines. `Config`'s own ⟨0.24⟩ note forty lines away says exactly this:
+  *"a policy does not change what it is according to how the operator handed it over."* The guard now
+  enumerates every channel — flag, env, the config's `policy`/`baseline`/`deps`, `CANDOR_DEPS`, and the
+  config file itself — reading the config leniently so it cannot pre-empt the real load's refusal.
+- **⚠ `--gate-json` before the target left a stale green.** `rejectUnknownFlag(args[0], …)` ran before the
+  pre-pass and java's grammar forced the target into `args[0]`, so `candor --gate-json G <target>` exited
+  2 as an "unknown flag" with yesterday's verdict still at `G`. The target may now appear anywhere in
+  argv, matching rust, ts and swift — one contract, four grammars is what this family exists not to be.
+- **The `(?U)` whitespace fix stopped one line short and became a FALSE REFUSAL.** `engine<NBSP>java<NBSP>v0.27.0`
+  — a correct qualified pin — still reached `addEnginePin` as one token and failed MALFORMED, so this
+  engine exited 2 where the other four exited 0; the same for a trailing NBSP on any value, since
+  `String.strip()` uses `Character.isWhitespace`, which excludes U+00A0 by definition. Fixing a fail-open
+  by breaking a working config is the mirror defect, not a stricter reading. `deps` values stay
+  ASCII-split: those are PATHS, and a path may legitimately contain a non-breaking space.
+
 - **The gate verdict could be written over the gate's own inputs.** `--policy P --gate-json P` armed the
   refusal over `P`; the now-JSON policy parsed as zero rules and a run that exits 1 on the same code
   exited **0 with `"ok": true`** — an all-clear produced by deleting the question. The reference engine

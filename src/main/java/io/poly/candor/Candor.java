@@ -578,7 +578,6 @@ public class Candor {
         // The first arg is the scan target (a dir/jar) — a flag there is a typo or a newer-doc flag
         // an older jar doesn't know; fail loudly rather than scan a path named after it.
         var scanFlags = java.util.Set.of("--json", "--policy", "--gate-json"); // --agents handled above; the rest are unknown here
-        rejectUnknownFlag(args[0], java.util.Set.of(), "candor <dir-or-jar> [--json <file>] [--policy <file>] [--gate-json <file>] | candor --agents");
         String jsonOut = null, policyArg = null, gateJson = null;
         // ── SPEC §3.3.1 ⟨0.27⟩ ARM FIRST. This pre-pass learns the sink and the run's inputs with NO side
         // effects, so that (a) the collision check can run before anything is written, and (b) arming
@@ -589,22 +588,36 @@ public class Candor {
         // the contract depend on argv ORDER: `--gate-json G --frobnicate` wrote a refusal into G, while
         // `--frobnicate --gate-json G` exited on the unknown flag first and left the PREVIOUS run's green
         // document sitting at G. The operator's intent is identical in both spellings.
-        String preGate = null, prePolicy = null;
-        for (int i = 1; i < args.length; i++) {
+        // FROM INDEX 0, and BEFORE the unknown-flag rejection below. java's grammar puts the target in
+        // `args[0]`, so `rejectUnknownFlag(args[0], …)` fired on the ordinary spelling
+        // `--gate-json G <target> --policy P` and exited 2 with the PREVIOUS run's green still at G,
+        // while rust/ts/swift wrote a refusal. Flags-before-positional is not an exotic spelling, and
+        // §3.3 names an unknown flag as an exit-2 cause that must leave a refusal.
+        String preGate = null, prePolicy = null, preTarget = null;
+        for (int i = 0; i < args.length; i++) {
             boolean hasVal = i + 1 < args.length;
             if (args[i].equals("--gate-json") && hasVal && (args[i + 1].equals("-") || !args[i + 1].startsWith("-")))
                 preGate = args[++i];
             else if (args[i].equals("--policy") && hasVal && !args[i + 1].startsWith("-"))
                 prePolicy = args[++i];
+            else if (args[i].equals("--json") && hasVal && !args[i + 1].startsWith("-")) i++;
+            else if (!args[i].startsWith("-") && preTarget == null) preTarget = args[i];
         }
         if (preGate != null) {
-            refuseGateJsonOverInput(preGate, prePolicy, "--policy");
-            refuseGateJsonOverInput(preGate, System.getenv("CANDOR_POLICY"), "CANDOR_POLICY");
-            refuseGateJsonOverInput(preGate, System.getenv("CANDOR_CONFIG"), "CANDOR_CONFIG");
-            refuseGateJsonAtConfig(preGate);
+            refuseGateJsonOverAnyInput(preGate, preTarget != null ? preTarget : ".", prePolicy);
             armGateJson(preGate);
         }
-        for (int i = 1; i < args.length; i++) {
+        // THE TARGET NEED NOT COME FIRST. It used to have to — `rejectUnknownFlag(args[0], emptySet, …)`
+        // rejected any leading flag — so `candor --gate-json G <target> --policy P` failed as an "unknown
+        // flag" while rust, ts and swift all scanned it. One contract, four grammars is the thing this
+        // family exists not to be, and the spelling is an ordinary one.
+        if (preTarget == null) {
+            System.err.println("candor: no scan target (usage: candor <dir-or-jar> [--json <file>] "
+                    + "[--policy <file>] [--gate-json <file>])");
+            System.exit(2);
+        }
+        boolean tookTarget = false;              // the single positional, wherever in argv it sits
+        for (int i = 0; i < args.length; i++) {
             if (args[i].equals("--gate-json")) {
                 // Re-emit the gate verdict as machine JSON (the structured analog of the AS-EFF console
                 // lines) → `{ spec, ok, violations:[{rule,fn,effects,detail}] }`. Powers the PR-native SARIF
@@ -633,11 +646,13 @@ public class Candor {
                     System.exit(2);
                 }
                 policyArg = args[++i];
+            } else if (!args[i].startsWith("-") && !tookTarget) {
+                tookTarget = true;                       // the single positional, wherever it sits
             } else {
                 rejectUnknownFlag(args[i], scanFlags, "candor <dir-or-jar> [--json <file>] [--policy <file>] [--gate-json <file>]");
                 // A BARE unexpected token is the same failure class as an unknown flag: candor's scan
-                // grammar has exactly ONE positional (args[0], the target), so a stray bare token here is
-                // a displaced value (a flag above swallowed its neighbour) or a typo — silently dropping
+                // grammar has exactly ONE positional (the target), so a SECOND bare token here is a
+                // displaced value (a flag above swallowed its neighbour) or a typo — silently dropping
                 // it is how `--gate-json --policy arch.policy` ran gateless. FAIL, never ignore.
                 System.err.println("candor: unexpected argument " + args[i]
                         + " (usage: candor <dir-or-jar> [--json <file>] [--policy <file>] [--gate-json <file>])");
@@ -649,7 +664,7 @@ public class Candor {
         // dump a stack trace and exit 1 — the archive layer throws raw NoSuchFileException / ZipException
         // / ProviderNotFoundException (a RuntimeException, not IOException). Match the unreadable-policy
         // posture: a clean one-line diagnostic and exit 2.
-        Path scanTarget = Path.of(args[0]);
+        Path scanTarget = Path.of(preTarget);
         // Load `.candor/config` for this run, ANCHORED TO THE SCAN TARGET (walk up from target/classes to
         // the repo root's .candor/config) — never to the process CWD, which would make the "config travels
         // with the code" promise depend on where the command was launched from. The layer sits UNDER the
@@ -1157,6 +1172,78 @@ public class Candor {
      * <p>Writes NOTHING and exits 2. This is the one exempt cause in the arming rule, and it is exempt
      * because the path was never a sink: there is no verdict at it to go stale.
      */
+    /**
+     * SPEC §3.3.1 ⟨0.27⟩ — every path this run READS, whatever channel it arrived through.
+     *
+     * <p>THE FIRST VERSION OF THIS GUARD KEYED ON THE FLAG, and {@code Config}'s own ⟨0.24⟩ note says
+     * why that is wrong, forty lines from where the check was written: <i>"a policy does not change what
+     * it is according to how the operator handed it over; keying on the flag made the fail-open case the
+     * one CI actually uses."</i> Measured: with the policy declared by {@code .candor/config} — which is
+     * the checked-in form, i.e. the one a CI job has — {@code --gate-json <that policy>} destroyed it and
+     * exited 0 with {@code "ok": true} in ALL FOUR ENGINES, because the pre-pass only ever looked at
+     * {@code --policy} and {@code CANDOR_POLICY}.
+     *
+     * <p>The config is read LENIENTLY here — no exit, no diagnostic — because this runs before the real
+     * config load and must not pre-empt its refusal. If the config cannot be read we simply learn
+     * nothing from it; the load a moment later will fail loudly on its own terms. This read decides only
+     * whether a path is an INPUT, never what the run does with it.
+     */
+    static java.util.List<String[]> runInputs(String target, String policyFlag) {
+        var out = new java.util.ArrayList<String[]>();
+        if (policyFlag != null) out.add(new String[]{policyFlag, "--policy"});
+        for (var e : new String[][]{{"CANDOR_POLICY", "CANDOR_POLICY"}, {"CANDOR_BASELINE", "CANDOR_BASELINE"},
+                                    {"CANDOR_CONFIG", "CANDOR_CONFIG"}}) {
+            String v = System.getenv(e[0]);
+            if (v != null && !v.isEmpty()) out.add(new String[]{v, e[1]});
+        }
+        String deps = System.getenv("CANDOR_DEPS");
+        if (deps != null) for (String d : deps.split(java.io.File.pathSeparator))
+            if (!d.isEmpty()) out.add(new String[]{d, "a CANDOR_DEPS report"});
+        // …and the config's own keys, resolved the way the config layer resolves them (relative values
+        // anchor to the config's HOME dir).
+        try {
+            Path cfg = null;
+            String override = System.getenv("CANDOR_CONFIG");
+            if (override != null) { Path o = Path.of(override); if (Files.isRegularFile(o)) cfg = o; }
+            if (cfg == null) {
+                Path d = Path.of(target).toAbsolutePath().normalize();
+                if (!Files.isDirectory(d)) d = d.getParent();
+                for (; d != null; d = d.getParent()) {
+                    Path c = d.resolve(".candor/config");
+                    if (Files.exists(c)) { cfg = c; break; }
+                }
+            }
+            if (cfg != null) {
+                out.add(new String[]{cfg.toString(), "the discovered .candor/config"});
+                Path home = cfg.getParent() != null ? cfg.getParent().getParent() : null;
+                for (String raw : Files.readAllLines(cfg)) {
+                    String line = raw.split("#", 2)[0].strip();
+                    if (line.isEmpty()) continue;
+                    String[] kv = line.split("(?U)\s+", 2);
+                    if (kv.length < 2) continue;
+                    String key = kv[0].toLowerCase(Locale.ROOT), val = kv[1].strip();
+                    if (!key.equals("policy") && !key.equals("baseline") && !key.equals("deps")) continue;
+                    for (String one : key.equals("deps") ? val.split("[" + java.io.File.pathSeparator + ",\s]+")
+                                                         : new String[]{val}) {
+                        if (one.isEmpty()) continue;
+                        Path abs = Path.of(one).isAbsolute() || home == null ? Path.of(one) : home.resolve(one);
+                        out.add(new String[]{abs.toString(), "the config's `" + key + "`"});
+                    }
+                }
+            }
+        } catch (IOException | RuntimeException e) {
+            // Lenient by design — see the javadoc.
+        }
+        return out;
+    }
+
+    /** Refuse the sink if it names ANY input of this run, whatever channel that input arrived through. */
+    static void refuseGateJsonOverAnyInput(String gateJson, String target, String policyFlag) {
+        if (gateJson == null || gateJson.equals("-")) return;
+        for (String[] in : runInputs(target, policyFlag)) refuseGateJsonOverInput(gateJson, in[0], in[1]);
+        refuseGateJsonAtConfig(gateJson);
+    }
+
     static void refuseGateJsonOverInput(String gateJson, String other, String flag) {
         if (!sameArtifact(gateJson, other)) return;
         System.err.println("candor: --gate-json " + gateJson + " names the same file as " + flag + " "

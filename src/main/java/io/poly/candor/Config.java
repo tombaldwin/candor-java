@@ -220,10 +220,26 @@ public final class Config {
         pins.put(key, prev == null || prev.equals(val) ? val : prev + " / " + val);
     }
 
+    /** {@code String.strip()} plus U+00A0, which {@code Character.isWhitespace} excludes by definition
+     *  (it is a NO-BREAK space — non-breaking is the point) and which every other engine's trim removes. */
+    static String trimUnicode(String s) {
+        int a = 0, b = s.length();
+        while (a < b && (Character.isWhitespace(s.charAt(a)) || s.charAt(a) == '\u00A0')) a++;
+        while (b > a && (Character.isWhitespace(s.charAt(b - 1)) || s.charAt(b - 1) == '\u00A0')) b--;
+        return s.substring(a, b);
+    }
+
     private static void addEnginePin(Map<String, String> pins, String val) {
-        String v = val == null ? "" : val.strip();
+        // `(?U)` and an explicit Unicode trim, for the reason the KEY split has it: a NO-BREAK SPACE is
+        // what pasting a config out of a rendered doc produces. Fixing only the key/value split left
+        // `engine<NBSP>java<NBSP>v0.27.0` — a CORRECT qualified pin — reaching here as one token and
+        // failing MALFORMED, so this engine exited 2 where the other four exited 0. A fix for a
+        // fail-open that turns a working config into a refusal is the mirror defect, not a stricter
+        // reading. `String.strip()` is not enough: it uses `Character.isWhitespace`, which EXCLUDES
+        // U+00A0, so a trailing NBSP survived into the version.
+        String v = val == null ? "" : trimUnicode(val);
         if (v.isEmpty()) { putPin(pins, "*", ""); return; }                // bare `engine` → MALFORMED
-        String[] parts = v.split("\\s+");
+        String[] parts = v.split("(?U)\\s+");
         String head = parts[0].toLowerCase(Locale.ROOT);
         if (ENGINE_IMPLS.contains(head)) {
             // `engine java v0.26.0`, or `engine java` — the second is an impl with no version, MALFORMED.
@@ -384,7 +400,7 @@ public final class Config {
                     System.err.println("candor: ignoring unknown config key '" + key + "' in " + path);
                     continue;
                 }
-                String val = kv.length > 1 ? kv[1].strip() : "";
+                String val = kv.length > 1 ? trimUnicode(kv[1]) : "";
                 if ("unknown-alias".equals(key)) {   // ⟨0.19⟩ MULTI-VALUE: many names, kept out of `values`
                     addAlias(aliases, val, path);
                     continue;
@@ -399,7 +415,11 @@ public final class Config {
                 }
                 if ("deps".equals(key) && !val.isEmpty()) {
                     // a path LIST → the DEPS form, each element anchor-resolved
-                    val = java.util.Arrays.stream(val.split("\\s+"))
+                    // ASCII whitespace ONLY, deliberately, and NOT `(?U)`: these are PATHS, and a
+                    // path may legitimately contain a NO-BREAK SPACE. Splitting there loses half of it —
+                    // candor-ts drops such a dep and stays green, candor-swift refuses at exit 2, and both
+                    // are wrong in different directions. The separator is a space; the value is a filename.
+                    val = java.util.Arrays.stream(val.split("[ \\t]+"))
                             .map(v -> resolveAgainst(anchor, v))
                             .collect(java.util.stream.Collectors.joining(File.pathSeparator));
                 } else if (PATH_KEYS.contains(key)) {

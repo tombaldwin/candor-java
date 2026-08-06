@@ -121,8 +121,16 @@ public final class Config {
      *  unqualified one, else null. A qualified line naming another implementation is not ours to check —
      *  one config serves the whole family. */
     String enginePinForThisEngine() {
+        // AN UNREADABLE UNQUALIFIED LINE IS STILL OURS TO READ, even when a qualified pin exists.
+        // Returning the qualified pin first hid it: `engine 0.26.0 oops` beside `engine java v0.27.0`
+        // exited 0 here and 2 in the other four engines — the reference engine as the sole
+        // non-conformer, on the "one config, one meaning" property this rung is about. §3.4 is explicit
+        // that an unqualified line "is yours to read, and MUST be MALFORMED if it is unreadable";
+        // precedence decides which VERSION applies, not whether a line you were supposed to read parses.
+        String wild = enginePins.get("*");
+        if (wild != null && normalizeVersion(wild) == null) return wild;
         String q = enginePins.get(THIS_IMPL);
-        return q != null ? q : enginePins.get("*");
+        return q != null ? q : wild;
     }
 
     /**

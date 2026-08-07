@@ -113,6 +113,13 @@ public final class Config {
     }
 
     /** The {@code engine} pins this config declares, keyed by implementation ({@code *} = unqualified). */
+    /** Every value this config supplies, already anchor-resolved. For the §3.3.1 sink guard, which must
+     *  know which FILES this run reads without re-deriving how a config is parsed — see
+     *  {@link Candor#runInputs}. */
+    Map<String, String> valuesView() {
+        return java.util.Collections.unmodifiableMap(values);
+    }
+
     Map<String, String> enginePins() {
         return enginePins;
     }
@@ -222,10 +229,19 @@ public final class Config {
 
     /** {@code String.strip()} plus U+00A0, which {@code Character.isWhitespace} excludes by definition
      *  (it is a NO-BREAK space — non-breaking is the point) and which every other engine's trim removes. */
+    static boolean isSpaceLike(char c) {
+        // `Character.isWhitespace` excludes the NON-BREAKING spaces BY DEFINITION — non-breaking is the
+        // point — so each has to be named. Adding only U+00A0 left U+2007 (figure space) and U+202F
+        // (narrow no-break space) behind: `policy gate.policy\u202F` refused at exit 2 here while the
+        // other four engines trimmed it and ran, which is the false-refusal mirror of the fail-open this
+        // trim was added to close. `\p{Zs}` is the whole category, so there is no next one.
+        return Character.isWhitespace(c) || Character.getType(c) == Character.SPACE_SEPARATOR;
+    }
+
     static String trimUnicode(String s) {
         int a = 0, b = s.length();
-        while (a < b && (Character.isWhitespace(s.charAt(a)) || s.charAt(a) == '\u00A0')) a++;
-        while (b > a && (Character.isWhitespace(s.charAt(b - 1)) || s.charAt(b - 1) == '\u00A0')) b--;
+        while (a < b && isSpaceLike(s.charAt(a))) a++;
+        while (b > a && isSpaceLike(s.charAt(b - 1))) b--;
         return s.substring(a, b);
     }
 
@@ -239,7 +255,7 @@ public final class Config {
         // U+00A0, so a trailing NBSP survived into the version.
         String v = val == null ? "" : trimUnicode(val);
         if (v.isEmpty()) { putPin(pins, "*", ""); return; }                // bare `engine` → MALFORMED
-        String[] parts = v.split("(?U)\\s+");
+        String[] parts = v.split("[\\p{Zs}\\s]+");
         String head = parts[0].toLowerCase(Locale.ROOT);
         if (ENGINE_IMPLS.contains(head)) {
             // `engine java v0.26.0`, or `engine java` — the second is an impl with no version, MALFORMED.
@@ -359,7 +375,7 @@ public final class Config {
      *  fallback (the spec-§3.4 contradiction the family deleted): it fired only when the CWD was OUTSIDE
      *  the target's ancestry — i.e. it applied an UNRELATED repo's config (and its policy/gates) to the
      *  scan. Discovery is target-anchored only; {@code CANDOR_CONFIG} is the only override. */
-    private static Path discover(Path scanTarget) {
+    static Path discover(Path scanTarget) {
         try {
             Path p = scanTarget.toAbsolutePath().normalize();
             if (!Files.isDirectory(p)) p = p.getParent();               // a jar/file → search from its dir
@@ -386,7 +402,11 @@ public final class Config {
         Path anchor = anchorFor(path);
         try {
             for (String raw : Files.readAllLines(path)) {
-                String line = raw.split("#", 2)[0].strip();     // strip an inline comment (§6.2 lexical)
+                // `trimUnicode`, not `strip()`: a LEADING U+00A0/U+2007/U+202F survived `strip()`, so the
+                // key/value split produced an EMPTY first token and the line vanished as "unknown config
+                // key ''" — a `policy` line silently dropped (gateless green) and a MISMATCHED `engine`
+                // pin silently passed, where the other four engines refused.
+                String line = trimUnicode(raw.split("#", 2)[0]);   // strip an inline comment (§6.2 lexical)
                 if (line.isEmpty()) continue;
                 // (?U) — UNICODE whitespace, matching the other four engines. Java's bare `\s` is
                 // ASCII-only, so a NO-BREAK SPACE (U+00A0, the ordinary artifact of pasting a config
@@ -394,7 +414,7 @@ public final class Config {
                 // the line was reported as an "unknown config key 'engine '" — a FALSE disclosure,
                 // since the pin it names was silently NOT ENFORCED and a MISMATCHED pin passed at
                 // exit 0. rust/ts/agents all split on Unicode whitespace and exit 2 here.
-                String[] kv = line.split("(?U)\\s+", 2);
+                String[] kv = line.split("[\\p{Zs}\\s]+", 2);
                 String key = kv[0].toLowerCase(Locale.ROOT);    // ROOT: 'I'→'i' even under a Turkish locale
                 if (!KNOWN_KEYS.contains(key)) {
                     System.err.println("candor: ignoring unknown config key '" + key + "' in " + path);

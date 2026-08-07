@@ -2740,6 +2740,7 @@ public final class Query {
         Candor.diagOut = human;
         Candor.gateCapture = true;
         Candor.gateViolations.clear();
+        Candor.gateZeroMatch.clear();
         int violations;
         try {
             violations = Policy.gate(gi, scoped.triples());

@@ -82,6 +82,12 @@ public class Candor {
      *  `--parallel`/reentrant paths don't set it. */
     static boolean gateCapture = false;
     static final java.util.List<java.util.Map<String, Object>> gateViolations = new java.util.ArrayList<>();
+    /** ⟨0.27⟩ SPEC §4 `zeroMatch` — the raw text of every policy rule whose SCOPE bound no function,
+     *  recorded by {@link Policy#discloseZeroMatchRules} on BOTH gate routes and emitted onto the verdict
+     *  document by {@link #writeGateJson}. The stderr lines alone left a machine consumer unable to see
+     *  that a rule bound nothing — the typo'd-scope silent green, one channel over. Disclosure only:
+     *  {@code ok} and the exit code never consult it. Cleared beside {@link #gateViolations}. */
+    static final java.util.List<String> gateZeroMatch = new java.util.ArrayList<>();
 
     /** The `.candor/config` layer (declarative alternative to the CANDOR_* env vars; env overrides it).
      *  Loaded in scan mode; an empty default so a direct runScan (tests, --parallel) reads no config file. */
@@ -606,6 +612,9 @@ public class Candor {
         if (preGate != null) {
             refuseGateJsonOverAnyInput(preGate, preTarget != null ? preTarget : ".", prePolicy);
             armGateJson(preGate);
+            // ⟨0.27⟩ the stream sink's analog of arming — a hook, because a stream cannot hold a
+            // placeholder. See armGateJsonStream.
+            if (preGate.equals("-")) armGateJsonStream();
         }
         // THE TARGET NEED NOT COME FIRST. It used to have to — `rejectUnknownFlag(args[0], emptySet, …)`
         // rejected any leading flag — so `candor --gate-json G <target> --policy P` failed as an "unknown
@@ -631,6 +640,7 @@ public class Candor {
                 gateCapture = true;
                 gateViolations.clear();   // clear HERE (single-threaded, before runScan) — not in resetState,
                                           // which --parallel calls concurrently across a thread pool.
+                gateZeroMatch.clear();
                 // (armed already by the pre-pass above — SPEC §3.3.1 ⟨0.27⟩ "arm at the instant the
                 // sink is known"; arming here made the contract depend on argv order.)
             } else if (args[i].equals("--json")) {
@@ -930,7 +940,8 @@ public class Candor {
         // exit codes and --gate-json verdict are untouched (append-only, human channel only).
         if (violations > 0) gate.println("→ candor fix-gate names the remedy for each");
         // …and the MIRROR of the fix above: exit 1 must not read as "the policy ran and this is all it
-        // found". Say on the human channel what the document says under `refused`/`reason`/`unevaluated`.
+        // found". Say on the human channel what the document says under `unevaluated` (⟨0.27⟩ — the
+        // composed document is a VERDICT and carries no `refused`/`reason`; see writeGateJson).
         if (policyRefusal != null)
             gate.println("candor-java: exiting 1 on the violation(s) above — they were established BEFORE "
                     + "the policy was read and their evidence does not depend on it, so the refusal cannot "
@@ -1016,17 +1027,21 @@ public class Candor {
     }
 
     /**
-     * ⟨0.24⟩ As above, plus {@code refusal} — the reason a policy could NOT be honoured on a run whose
-     * verdict a violation nevertheless decides (SPEC §3.1: <b>precedence binds the VERDICT, not the policy
-     * gate</b>). Null on every other path, and the two keys are omitted when it is, so every verdict that
-     * is not this case stays byte-identical to a pre-⟨0.24⟩ one — including {@code gate --report}'s, which
-     * cannot reach this state (it refuses before any rule can fire) and so cannot drift from the scan's.
+     * ⟨0.27⟩ As above, on the run whose verdict a violation decides while a policy refusal stands beside
+     * it (SPEC §3.1: <b>precedence binds the VERDICT, not the policy gate</b>).
      *
-     * <p>The document carries BOTH: {@code violations} (the finding the run is certain of, whatever
-     * subsystem produced it) AND {@code refused}/{@code reason}/{@code unevaluated} (the part it could not
-     * read). Dropping either half is a measured defect — dropping the first deletes a baseline regression
-     * from CI, and dropping the second publishes an exit 1 that reads as a policy that ran clean.
-     * {@code ok} is false and a naive reader lands on FAIL under any of the three keys.
+     * <p><b>The {@code refused}/{@code reason} keys this overload used to emit are GONE, and that is the
+     * ⟨0.27⟩ composed-document ruling, not a cleanup.</b> This engine put {@code refused: true} beside
+     * {@code violations} — and the four engines wrote four spellings of this one document. But
+     * {@code refused} is the refusal document's DISCRIMINATOR, and its pinned meaning is <i>"the gate is
+     * making no claim about violations"</i> — precisely the claim a violations-bearing document IS
+     * making. A consumer keying on {@code refused} (which the refusal-document clause invites) filed a
+     * certain violation under "no claim". The earlier javadoc here argued dropping the refusal half
+     * "publishes an exit 1 that reads as a policy that ran clean" — right about the harm, wrong about the
+     * channel: the disclosure is {@code unevaluated}, one entry PER RULE of the refused policy
+     * ({@link Policy#unhonouredRules}), so no rule silently reads as evaluated-and-passed and no key
+     * carries two contradictory meanings. {@code refusal} is still taken as a parameter only to keep the
+     * call site honest about which case it is in; it decides nothing but the stderr sentence there.
      */
     static void writeGateJson(String path, int violations, GateFacts facts,
                               java.util.List<String[]> unevaluated, String refusal) {
@@ -1038,13 +1053,6 @@ public class Candor {
         // "passes" over them is a false-pure. `ok` requires BOTH no violation AND a complete analysis.
         boolean incomplete = !facts.unanalyzed().isEmpty();
         out.put("ok", violations == 0 && !incomplete);
-        // ⟨0.24⟩ …and the policy this run could not honour, in the SAME two keys and the SAME position the
-        // pure-refusal document uses (writeRefusedGateJson), so one consumer reads one shape whichever
-        // outcome dominated. Omitted when null — i.e. on every path but the one §3.1's fifth mirror names.
-        if (refusal != null) {
-            out.put("refused", true);
-            out.put("reason", refusal);
-        }
         // ⟨0.21⟩ (Gap 1) the analyzed-universe count, so a --gate-json consumer sees the scan's scope from the
         // verdict alone (mirrors the report envelope's `analyzed`).
         var an = new java.util.LinkedHashMap<String, Object>();
@@ -1057,6 +1065,15 @@ public class Candor {
         // here, in the same document, rather than only on a stderr line a CI wrapper discards. Omitted when
         // empty, so every other route's verdict is byte-identical to a pre-⟨0.24⟩ one.
         if (!unevaluated.isEmpty()) out.put("unevaluated", unevaluatedJson(unevaluated));
+        // ⟨0.27⟩ SPEC §4 `zeroMatch` — the rules whose scope bound NO function, verbatim: the same list
+        // the stderr lines carry, in the machine channel. Code-point sorted + deduplicated (the
+        // `viaDispatchOn` collation — Query.BY_CODE_POINT, because String.compareTo is UTF-16 order and
+        // the raw line is built from user identifiers). Omitted when empty; never consulted for `ok`.
+        if (!gateZeroMatch.isEmpty()) {
+            var zm = new java.util.TreeSet<String>(Query.BY_CODE_POINT);
+            zm.addAll(gateZeroMatch);
+            out.put("zeroMatch", new ArrayList<>(zm));
+        }
         // ⟨0.21⟩ (Gap 2) the machine-legible incompleteness: the units candor couldn't analyze, so a CI/agent
         // reading the JSON learns WHY the gate can't certify — the stderr warning alone used to hide this from
         // a machine. `incomplete:true` + the list; the caller exits 2 (could-not-fully-evaluate). Tom's call
@@ -1090,6 +1107,7 @@ public class Candor {
             String json = io.poly.candor.model.ReportJson.pretty(out);
             if (path.equals("-")) System.out.println(json);
             else Files.writeString(Path.of(path), json + "\n");
+            gateDocEmitted = true;   // the stream-sink hook must not add a second document
         } catch (IOException e) {
             // FAIL-CLOSED: the verdict file is what a CI consumer (the SARIF reporter) reads — a clean
             // gate whose verdict could not be WRITTEN must not exit 0, or the pipeline reads "green, no
@@ -1286,6 +1304,42 @@ public class Candor {
         System.exit(2);
     }
 
+    /** Has a gate document (verdict or refusal) been emitted by this run? Consulted only by the
+     *  stream-sink shutdown hook below; set by {@link #writeGateJson} and {@link #writeRefusedGateJson}. */
+    static volatile boolean gateDocEmitted = false;
+
+    /**
+     * ⟨0.27⟩ <b>THE STREAM SINK GETS THE FAIL-CLOSED DOCUMENT ON EVERY EXIT-2 CAUSE TOO — SPEC §3.1's
+     * stream-sink clause.</b> {@code --gate-json -} cannot be ARMED: a stream has no previous document to
+     * go stale, and a placeholder would put two documents in a consumer's pipe. But the
+     * document-on-every-exit rule applies in full, and this engine had quietly re-created the
+     * write-nothing carve-out on the stream, selected by CAUSE: an unhonourable policy wrote the refusal
+     * to stdout while an unknown flag exited 2 leaving stdout EMPTY — the same operator mistake, answered
+     * or not according to which early exit fired. An empty stream throws the consumer back to scraping
+     * stderr, the distinction that made the incomplete-analysis defect a defect.
+     *
+     * <p>A shutdown hook rather than a write at each exit site, for the same reason {@link #armGateJson}
+     * is not threaded into twenty {@code System.exit(2)} calls: the rule is over the RUN, not over the
+     * sites anyone enumerated. Every completed gate run writes its document through
+     * {@link #writeGateJson}/{@link #writeRefusedGateJson} (which set {@link #gateDocEmitted}), so the
+     * hook fires exactly on the runs that exited before a verdict existed — and stdout then carries one
+     * fail-closed refusal as its only content, keeping §3.3's pure-JSON rule.
+     */
+    static void armGateJsonStream() {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            if (gateDocEmitted) return;
+            var out = new java.util.LinkedHashMap<String, Object>();
+            out.put("spec", SPEC_VERSION);
+            out.put("ok", false);
+            out.put("refused", true);
+            out.put("reason", "the gate did not complete — this run exited before a verdict could be "
+                    + "decided (a broken gate config, an unknown flag, or a crash). It is NOT a verdict "
+                    + "about the code; see the run's stderr for the cause.");
+            System.out.println(io.poly.candor.model.ReportJson.pretty(out));
+            System.out.flush();
+        }));
+    }
+
     static void armGateJson(String path) {
         if (path == null || path.equals("-")) return;
         var out = new java.util.LinkedHashMap<String, Object>();
@@ -1358,6 +1412,7 @@ public class Candor {
             String json = io.poly.candor.model.ReportJson.pretty(out);
             if (path.equals("-")) System.out.println(json);
             else Files.writeString(Path.of(path), json + "\n");
+            gateDocEmitted = true;   // the stream-sink hook must not add a second document
         } catch (IOException e) {
             // The caller is already exiting 2; say why the document is missing so the stale-file hazard
             // this method exists to close is at least AUDIBLE when the write itself fails.

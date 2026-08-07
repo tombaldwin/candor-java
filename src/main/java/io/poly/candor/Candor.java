@@ -1197,42 +1197,51 @@ public class Candor {
             if (v != null && !v.isEmpty()) out.add(new String[]{v, e[1]});
         }
         String deps = System.getenv("CANDOR_DEPS");
-        if (deps != null) for (String d : deps.split(java.io.File.pathSeparator))
+        if (deps != null) for (String d : deps.split("[" + java.io.File.pathSeparator + ",\\s]+"))
             if (!d.isEmpty()) out.add(new String[]{d, "a CANDOR_DEPS report"});
-        // …and the config's own keys, resolved the way the config layer resolves them (relative values
-        // anchor to the config's HOME dir).
+        // …AND THE CONFIG'S OWN KEYS, THROUGH THE ENGINE'S OWN LOADER.
+        //
+        // This used to re-derive the parse — walk for `.candor/config`, split each line, resolve values
+        // against a directory computed here — and a review took it apart on exactly that. Three separate
+        // holes, all from the SAME cause: a second parser that has to agree with the first and does not.
+        //
+        //   * the split was `"(?U)\s+"`. In a Java string literal `\s` is JEP-368's SPACE escape, so
+        //     the regex was `(?U) +` — spaces only. A TAB-separated `policy` line was not recognised
+        //     here while the real loader read it fine, so `--gate-json <that policy>` destroyed it and
+        //     the run exited 0 with `"ok": true`.
+        //   * the config's home directory was taken as parent-of-parent unconditionally; the real loader
+        //     only steps out of a trailing `.candor/` segment. A `CANDOR_CONFIG` outside a `.candor` dir
+        //     therefore resolved relative values one level too high, and the guard protected a path the
+        //     run never reads.
+        //   * `deps` was split on the path separator only, where the real loader splits on whitespace
+        //     too, so a space-separated list registered as one unresolvable token and NO dep was covered.
+        //
+        // Calling the real loader is the fix for the class, not for the three instances. `load(path,
+        // false)` is the LENIENT arm — it never exits — which matters because this runs before the real
+        // config load and must not pre-empt its refusal, and its values are already anchor-resolved.
         try {
             Path cfg = null;
             String override = System.getenv("CANDOR_CONFIG");
             if (override != null) { Path o = Path.of(override); if (Files.isRegularFile(o)) cfg = o; }
-            if (cfg == null) {
-                Path d = Path.of(target).toAbsolutePath().normalize();
-                if (!Files.isDirectory(d)) d = d.getParent();
-                for (; d != null; d = d.getParent()) {
-                    Path c = d.resolve(".candor/config");
-                    if (Files.exists(c)) { cfg = c; break; }
-                }
-            }
+            if (cfg == null) cfg = Config.discover(Path.of(target));
             if (cfg != null) {
                 out.add(new String[]{cfg.toString(), "the discovered .candor/config"});
-                Path home = cfg.getParent() != null ? cfg.getParent().getParent() : null;
-                for (String raw : Files.readAllLines(cfg)) {
-                    String line = raw.split("#", 2)[0].strip();
-                    if (line.isEmpty()) continue;
-                    String[] kv = line.split("(?U)\s+", 2);
-                    if (kv.length < 2) continue;
-                    String key = kv[0].toLowerCase(Locale.ROOT), val = kv[1].strip();
-                    if (!key.equals("policy") && !key.equals("baseline") && !key.equals("deps")) continue;
-                    for (String one : key.equals("deps") ? val.split("[" + java.io.File.pathSeparator + ",\s]+")
-                                                         : new String[]{val}) {
-                        if (one.isEmpty()) continue;
-                        Path abs = Path.of(one).isAbsolute() || home == null ? Path.of(one) : home.resolve(one);
-                        out.add(new String[]{abs.toString(), "the config's `" + key + "`"});
+                Config c = Config.load(cfg, false);
+                for (var e : c.valuesView().entrySet()) {
+                    String key = e.getKey(), val = e.getValue();
+                    if (val == null || val.isEmpty()) continue;
+                    if (key.equals("policy") || key.equals("baseline")) {
+                        out.add(new String[]{val, "the config's `" + key + "`"});
+                    } else if (key.equals("deps")) {
+                        // already anchor-resolved and joined on the path separator by the loader
+                        for (String one : val.split(java.util.regex.Pattern.quote(java.io.File.pathSeparator)))
+                            if (!one.isEmpty()) out.add(new String[]{one, "the config's `deps`"});
                     }
                 }
             }
-        } catch (IOException | RuntimeException e) {
-            // Lenient by design — see the javadoc.
+        } catch (RuntimeException e) {
+            // Lenient by design: a config this cannot read teaches the guard nothing, and the real load a
+            // moment later fails on its own terms.
         }
         return out;
     }

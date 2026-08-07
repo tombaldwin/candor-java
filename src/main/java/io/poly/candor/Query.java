@@ -341,7 +341,10 @@ public final class Query {
                 // §3.3.1 names "a report being read (`gate --report`)" as an input. Writing the verdict
                 // there destroys the very report the gate was asked to judge.
                 Candor.refuseGateJsonOverInput(preGate, preReport, "--report");
-                Candor.refuseGateJsonOverAnyInput(preGate, preReport != null ? preReport : ".", prePolicy);
+                // Anchored at the CWD, not the report: this verb's policy ladder discovers the config
+                // from the CWD, so asking the report's directory was a different question and left a
+                // config-declared policy unguarded.
+                Candor.refuseGateJsonOverAnyInput(preGate, ".", prePolicy);
                 Candor.armGateJson(preGate);
             }
         }
@@ -637,6 +640,33 @@ public final class Query {
 
     static int bestTier(java.util.stream.Stream<String> names, String q) {
         return names.mapToInt(n -> matchTier(n, q)).max().orElse(0);
+    }
+
+    /**
+     * The policy ladder BELOW {@code --policy}: {@code CANDOR_POLICY}, then the {@code policy} key of
+     * the discovered {@code .candor/config} — SPEC §3.3.1, "a QUERY verb inherits the scan grammar
+     * unchanged … the same `--policy` fallback".
+     *
+     * <p>THE CONFIG RUNG WAS MISSING HERE. rust, ts and swift all read it, so `gate --report R` with a
+     * checked-in `policy` key gated in three engines and refused with "a policy is required" in this
+     * one — a 3-vs-1 split on the family's own "one config, one meaning" claim, on the surface a
+     * supply-chain consumer uses. Found by a conformance row added the same day, which asserted the
+     * config-declared policy GATES before asserting anything about the sink guard: the control was what
+     * caught it.
+     *
+     * <p>Anchored at the CWD, which is where this verb's discovery starts — it has no scan target.
+     */
+    static String resolvePolicyFallback() {
+        String env = System.getenv("CANDOR_POLICY");
+        if (env != null) return env;
+        try {
+            java.nio.file.Path cfg = Config.discover(java.nio.file.Path.of("."));
+            if (cfg == null) return null;
+            String p = Config.load(cfg, false).valuesView().get("policy");
+            return p == null || p.isEmpty() ? null : p;
+        } catch (RuntimeException e) {
+            return null;   // the loader refuses for real on the routes that must
+        }
     }
 
     /** The parsed CANDOR_POLICY (Candor.{deny,allow,forbid}Rules) as canonical JSON, for the cross-impl
@@ -1361,7 +1391,7 @@ public final class Query {
             for (String c : rev.getOrDefault(n, List.of())) if (affected.add(c)) stack.push(c);
         }
 
-        if (policyPath == null) policyPath = System.getenv("CANDOR_POLICY");
+        if (policyPath == null) policyPath = resolvePolicyFallback();
         List<String[]> violations = new ArrayList<>(); // {fn, rule-desc}
         if (policyPath != null) {
             AnalysisState.ctx().denyRules.clear();
@@ -1734,7 +1764,7 @@ public final class Query {
      *  and quoting the unresolved `null` would print a re-run instruction that does not work); on failure
      *  prints the reason, returns null, and the caller returns 2. */
     private static String loadPolicyOrFail(String policyPath, String who) {
-        if (policyPath == null) policyPath = System.getenv("CANDOR_POLICY");
+        if (policyPath == null) policyPath = resolvePolicyFallback();
         if (policyPath == null) {
             System.err.println("candor " + who + ": a policy is required (pass a policy file or set CANDOR_POLICY) — the fix is the refactor that restores the boundary the edit crossed.");
             return null;
@@ -2572,7 +2602,7 @@ public final class Query {
                     + "--report <locator> --policy <file> [--json] [--gate-json <file>])");
             return 2;
         }
-        if (policyPath == null) policyPath = System.getenv("CANDOR_POLICY");
+        if (policyPath == null) policyPath = resolvePolicyFallback();
         if (policyPath == null) {
             System.err.println("candor gate: a policy is required — pass `--policy <file>` or set CANDOR_POLICY. "
                     + "`gate` applies a policy to an existing report; with no policy there is no verdict to give.");

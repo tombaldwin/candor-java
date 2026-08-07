@@ -8,6 +8,28 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ `"(?U)\\s+"` written as `"(?U)\\s+"` — one backslash — made the sink guard blind to a TAB.** In a
+  Java string literal `\\s` is JEP-368's SPACE escape, so the guard's regex was `(?U) +`. A
+  `policy\\tgate.policy` config was read fine by the real loader and not recognised by the guard, so
+  `--gate-json <that policy>` destroyed it and the run exited **0 with `"ok": true"`** while the gate was
+  live. The `deps` split had the same escape and covered no dep after the first.
+- **The guard now calls the engine's own config loader instead of re-deriving it.** That is the fix for
+  the class rather than for the three instances: the hand-written pre-pass also computed the config's
+  home directory as parent-of-parent unconditionally (the loader only steps out of a trailing `.candor/`
+  segment, so an out-of-tree `CANDOR_CONFIG` anchored one level too high and the guard protected a path
+  the run never reads), and split `deps` on the path separator alone. A second parser is a second set of
+  holes.
+- **⚠ The `gate` verb never read the config-declared `policy` at all** — rust, ts and swift all do, so a
+  checked-in `policy` key gated in three engines and refused with "a policy is required" here: a 3-vs-1
+  split on the family's own "one config, one meaning" claim, on the supply-chain surface. Caught by a
+  new conformance row whose *control* — assert the config policy GATES before asserting anything about
+  the sink — is what found it.
+- **`trimUnicode` named U+00A0 and missed the rest of `\\p{Zs}`.** `policy gate.policy\\u202F` refused at
+  exit 2 here while four engines trimmed it and ran; and a LEADING no-break space left an empty first
+  token, so the key became `''` and the whole line vanished as "unknown config key" — a `policy` line
+  silently dropped and a MISMATCHED `engine` pin silently passed. Now the whole space-separator category.
+- **The scan target may appear anywhere in argv**, matching the other three engines.
+
 - **⚠ The `gate` verb got none of the ⟨0.27⟩ guard, so the reference engine still reproduced §3.3.1's own
   worked example.** `gate --report R --policy P --gate-json P` exited **0 with `"ok": true`** after
   overwriting `P` (control, separate sink: exit 1) — the supply-chain surface, the one a consumer points

@@ -159,12 +159,17 @@ class VerdictPrecedenceTest {
                 + "\nSTDERR:\n" + r.stderr());
         assertFalse(v.get("ok").getAsBoolean(), "ok is false either way");
 
-        // THE MIRROR: exit 1 must NOT read as "the policy ran and this is all it found". The document says
-        // the policy was refused, why, and which of its rules therefore went unevaluated — ALL of them.
-        assertTrue(v.has("refused") && v.get("refused").getAsBoolean(),
-                "the refusal is still disclosed beside the violation\nDOC:\n" + v);
-        assertTrue(v.has("reason") && v.get("reason").getAsString().contains("corp"),
-                "`reason` names the cause\nDOC:\n" + v);
+        // THE MIRROR: exit 1 must NOT read as "the policy ran and this is all it found". ⟨0.27⟩ The
+        // channel for that is `unevaluated` — one entry per rule of the refused policy — and NOT the
+        // refusal document's `refused`/`reason` keys, which this test used to require here. SPEC §3.1's
+        // composed-document clause: `refused` is the refusal document's DISCRIMINATOR, whose pinned
+        // meaning ("the gate is making no claim about violations") contradicts a document that carries
+        // them; a consumer keying on `refused` filed this certain violation under "no claim". The two
+        // shapes are disjoint on `refused`, and that disjointness is what makes keying on it safe.
+        assertFalse(v.has("refused"),
+                "a violations-bearing document is a VERDICT and must not carry the refusal document's "
+                + "discriminator (SPEC §3.1 ⟨0.27⟩)\nDOC:\n" + v);
+        assertFalse(v.has("reason"), "`reason` is the refusal document's key too\nDOC:\n" + v);
         JsonArray un = v.getAsJsonArray("unevaluated");
         List<String> rules = new ArrayList<>();
         for (JsonElement e : un) rules.add(e.getAsJsonObject().get("rule").getAsString());
@@ -173,6 +178,9 @@ class VerdictPrecedenceTest {
                 + "a refused policy is evaluated as a whole or not at all\nDOC:\n" + v);
         for (JsonElement e : un)
             assertTrue(e.getAsJsonObject().has("why"), "each unevaluated row carries a `why`");
+        assertTrue(un.get(0).getAsJsonObject().get("why").getAsString().contains("corp"),
+                "the offending rule's `why` names the token that could not be honoured — the cause the "
+                + "old `reason` key carried must not be lost with the key\nDOC:\n" + v);
     }
 
     /**

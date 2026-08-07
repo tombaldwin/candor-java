@@ -8,6 +8,15 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⟨0.27⟩ The three verdict-document cells (SPEC §3.1/§4, conformance PART 36).** (1) The composed
+  document no longer carries `refused`/`reason` beside `violations` — the refusal document's
+  discriminator must not ride a verdict; the disclosure is `unevaluated` (this engine already listed
+  every rule; an unreadable policy now gets one whole-file entry instead of an empty list). (2) The
+  stream sink: `--gate-json -` gains a shutdown-hook analog of arming, so ANY exit-2 cause (an unknown
+  flag, a broken config, a crash) leaves the fail-closed refusal as stdout's only content instead of an
+  empty stream. (3) `zeroMatch`: the §4 zero-match list now rides the verdict document on BOTH routes,
+  code-point sorted (`Query.BY_CODE_POINT`) and deduplicated; it was stderr-only.
+
 - **⚠ `"(?U)\\s+"` written as `"(?U)\\s+"` — one backslash — made the sink guard blind to a TAB.** In a
   Java string literal `\\s` is JEP-368's SPACE escape, so the guard's regex was `(?U) +`. A
   `policy\\tgate.policy` config was read fine by the real loader and not recognised by the guard, so
@@ -70,7 +79,7 @@ after upgrading; review policies and regenerate baselines with the new build.
   call into that dep reads pure, and the operator who configured it saw no sign. Now named on stderr
   (sidecars, which legitimately have none, stay silent).
 
-## [0.27.0] — 2026-08-05
+## [0.27.0] — 2026-08-07
 
 - **The reference engine was the sole non-conformer on the pin, 5-to-1.** `engine 0.26.0 oops` beside a
   valid `engine java v0.27.0` exited 0 here and 2 everywhere else: precedence returned the qualified pin

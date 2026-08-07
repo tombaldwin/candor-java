@@ -304,13 +304,21 @@ final class Policy {
      * this is every non-comment line in the file, not just the ones carrying the offending token: a
      * document naming only the typo'd rule reads as though the others were evaluated and passed.
      *
-     * <p>Empty when the file could not be READ at all — there is no parse to report, and the row's `rule`
-     * is pinned to a policy LINE, so there is nothing honest to put there. That case is carried by the
-     * verdict's {@code reason} instead, which is why the violation-dominates document keeps it.
+     * <p>⟨0.27⟩ When the file could not be READ at all there is no line to name, so the list carries ONE
+     * entry naming the whole policy (candor-ts's spelling, the spec's model). This used to return empty
+     * on the reasoning that the verdict's {@code reason} carried the refusal — but the composed document
+     * no longer has a {@code reason} (§3.1's composed-document clause: {@code refused}/{@code reason} are
+     * the refusal document's keys), so an empty list here would publish an exit-1 verdict that claims the
+     * policy ran and passed.
      */
     static List<String[]> unhonouredRules(String path) {
         List<String[]> out = new ArrayList<>();
-        if (policyUnreadable) return out;
+        if (policyUnreadable) {
+            out.add(new String[]{"(entire policy " + path + " — unreadable, no rules parsed)",
+                    "the policy could not be read — the gate was NOT enforced from it; no rule in it was "
+                    + "evaluated"});
+            return out;
+        }
         Map<String, String> fatalBy = new java.util.LinkedHashMap<>();
         for (PolicyTokenError e : policyErrors)
             if (e.fatal()) fatalBy.putIfAbsent(e.rule(), e.message());
@@ -327,9 +335,10 @@ final class Policy {
             out.add(new String[]{line, own != null
                     ? own + " — this rule is NOT evaluated; the policy is refused rather than silently "
                       + "rewritten into a different one"
-                    : "NOT evaluated — a rule elsewhere in this policy cannot be honoured as written (see "
-                      + "the refusal reason), and a policy is evaluated as a whole or not at all: a verdict "
-                      + "from its readable subset would be a verdict on a policy nobody wrote"});
+                    : "NOT evaluated — a rule elsewhere in this policy cannot be honoured as written "
+                      + "(named beside its own entry in this list), and a policy is evaluated as a whole "
+                      + "or not at all: a verdict from its readable subset would be a verdict on a policy "
+                      + "nobody wrote"});
         }
         return out;
     }
@@ -794,6 +803,10 @@ final class Policy {
      * {@code forbid} counts a match on either endpoint, over the call-graph key set it binds across.
      */
     static void discloseZeroMatchRules(GateInput gi) {
+        // ⟨0.27⟩ this evaluation's list REPLACES any earlier one: each gated run calls the gate exactly
+        // once, and an in-process harness (the byte-equality test runs both routes in one JVM) must not
+        // see one route's zero-match rules accumulate into the other's verdict document.
+        Candor.gateZeroMatch.clear();
         Map<String, Integer> matches = new TreeMap<>();
         for (PolicyRule.Deny r : ctx().denyRules) if (!r.scope().isEmpty()) matches.putIfAbsent(r.src(), 0);
         for (PolicyRule.Forbid r : ctx().forbidRules) matches.putIfAbsent(r.src(), 0);
@@ -813,6 +826,10 @@ final class Policy {
             System.err.println("candor: policy rule matched NO function — `" + e.getKey() + "`. It was "
                     + "evaluated and bound nothing, so it cannot have caught anything. Legitimate when one "
                     + "policy is shared across repos; a typo'd layer name otherwise.");
+            // ⟨0.27⟩ …and the SAME list rides the verdict document as `zeroMatch` (SPEC §4): stderr is
+            // not the machine channel. Recorded here — the one place both gate routes compute the list —
+            // and emitted by writeGateJson, so the two routes cannot disagree on it.
+            Candor.gateZeroMatch.add(e.getKey());
         }
     }
 

@@ -346,6 +346,23 @@ public final class Query {
                 // config-declared policy unguarded.
                 Candor.refuseGateJsonOverAnyInput(preGate, ".", prePolicy);
                 Candor.armGateJson(preGate);
+                // ⟨0.27⟩ …AND THE STREAM SINK'S ANALOG, which this pre-pass was missing while the SCAN
+                // path had it. `armGateJson` writes a fail-closed placeholder to a FILE; a stream cannot
+                // hold one, so `armGateJsonStream` installs the shutdown hook that emits the refusal on
+                // any exit-2 path instead.
+                //
+                // Measured, same verb, same flag, both exit 2:
+                //   gate --report R --policy P --gate-json - --frobnicate   0 bytes on stdout
+                //   gate --report R --policy <missing> --gate-json -      164 bytes, the refusal
+                // The second worked because `gate()` is reached and refuses from inside; the first is
+                // rejected during arg parsing, before any of that runs. A machine consumer reading an
+                // empty stream after exit 2 has nothing to distinguish it from a clean gate, which is
+                // the exact channel §3.3.1 arming exists to close.
+                //
+                // Found by the 0.27 go/no-go panel, testing this engine's own changelog claim that ANY
+                // exit-2 cause leaves the refusal as stdout's only content. PART 36's stream rows run
+                // the SCAN route only, so conformance passed straight over it.
+                if (preGate.equals("-")) Candor.armGateJsonStream();
             }
         }
         String reportFlag = null;       // --report <locator> (canonical §3.3.1)

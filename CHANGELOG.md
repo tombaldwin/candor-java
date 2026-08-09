@@ -10,6 +10,12 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 
 
+
+- **…and the guard now enumerates a dep directory exactly as the LOADER does.** The first repair
+  registered the directory's files with a FLAT read beside a RECURSIVE loader walk, so a report one
+  level down stayed unguarded — and for `--deps`, which writes one subdirectory per `name@version`, the
+  nested layout is the ORDINARY one. A guard that enumerates differently from the loader guards a
+  different set of files. One enumeration now serves both.
 - **⚠ A `--gate-json` sink INSIDE a `deps` DIRECTORY destroyed the operator's dep report.** `deps`
   accepts a directory — `--workspace` writes `.candor/deps/` and hands that back, so it is the common
   spelling — and the loader walks it and reads each report inside. The §3.3.1 sink-over-input guard

@@ -1224,14 +1224,16 @@ public class Candor {
                 // `functions` and carried on at exit 0 regardless — the loudest of the four, and still
                 // a green run over a destroyed input. Expanded HERE, not in `sameArtifact`: the scan
                 // TARGET is an input too, and a verdict written into the scanned tree is ordinary.
+                // `Files.walk`, matching Loader's own enumeration — NOT `Files.list`. The first repair
+                // used the flat form beside the loader's RECURSIVE one, so a report a level down stayed
+                // unguarded. A guard that enumerates differently from the loader guards a different set
+                // of files, which is the whole defect one level in.
                 try {
                     Path dp = Path.of(d);
                     if (Files.isDirectory(dp)) {
-                        try (var st = Files.list(dp)) {
-                            st.filter(f -> {
-                                String n = f.getFileName().toString();
-                                return n.endsWith(".json") && !n.contains("callgraph") && !n.contains("hierarchy");
-                            }).forEach(f -> out.add(new String[]{f.toString(), "a CANDOR_DEPS report"}));
+                        try (var st = Files.walk(dp)) {
+                            st.filter(f -> f.toString().endsWith(".json"))
+                              .forEach(f -> out.add(new String[]{f.toString(), "a CANDOR_DEPS report"}));
                         }
                     }
                 } catch (IOException | RuntimeException ignored) { /* token itself is registered above */ }

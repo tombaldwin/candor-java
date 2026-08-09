@@ -9,6 +9,9 @@ after upgrading; review policies and regenerate baselines with the new build.
 ## Unreleased
 ## [0.27.0] — 2026-08-07
 
+- **The jbang catalog pin moves to 0.27.0**, after the release it names exists. 0.24 shipped a jbang
+  pin to a release that did not — which is why the pins move in a separate, later step.
+
 
 
 

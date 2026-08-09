@@ -8,6 +8,14 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+
+- **The `gate` verb arms its `--gate-json -` stream sink, and one sink is written once.** Arming was
+  wired into the SCAN pre-pass only, so on the supply-chain surface an exit-2 during argument parsing
+  left stdout EMPTY while the same verb refusing later streamed the document — one operator mistake,
+  two answers, decided by how early it was caught. Separately, `--json --gate-json -` names ONE artifact
+  twice and both were written, putting two concatenated JSON objects on a stream SPEC §3.1 requires to
+  carry the fail-closed document "exactly once, as the streams only content". Both fixed; conformance
+  PART 36 gained rows (b4)-(b6), which is why they were found at all.
 - **⟨0.27⟩ The three verdict-document cells (SPEC §3.1/§4, conformance PART 36).** (1) The composed
   document no longer carries `refused`/`reason` beside `violations` — the refusal document's
   discriminator must not ride a verdict; the disclosure is `unevaluated` (this engine already listed

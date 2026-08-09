@@ -2319,9 +2319,25 @@ public final class Query {
     /** ⟨0.24⟩ SPEC §3.1: a refusal writes its {@code --gate-json} document (to BOTH sinks when both were
      *  asked for — {@code --json} is {@code --gate-json -}) and then exits 2. Returning the exit code from
      *  here rather than beside each call keeps "refused" and "wrote the refusal" from ever separating. */
+    /** The verdict's sink dedupe — see {@link #refuse}: `--json` IS `--gate-json -`, so naming both
+     *  wrote one document twice onto one stream. */
+    private static void writeGateVerdictOnce(boolean json, String gateJsonPath, int violations,
+                                             Candor.GateFacts facts, List<String[]> unevaluated) {
+        java.util.LinkedHashSet<String> sinks = new java.util.LinkedHashSet<>();
+        if (json) sinks.add("-");
+        if (gateJsonPath != null) sinks.add(gateJsonPath);
+        for (String sink : sinks) Candor.writeGateJson(sink, violations, facts, unevaluated);
+    }
+
     private static int refuse(boolean json, String gateJsonPath, String reason, List<String[]> unevaluated) {
-        if (json) Candor.writeRefusedGateJson("-", reason, unevaluated);
-        if (gateJsonPath != null) Candor.writeRefusedGateJson(gateJsonPath, reason, unevaluated);
+        // ONE ARTIFACT, ONE DOCUMENT. §3.1 says `--json` IS `--gate-json -`, so `--json --gate-json -`
+        // names the SAME sink twice — and writing both put TWO concatenated JSON objects on one stream,
+        // which is unparseable to exactly the machine consumer the "exactly once, as the stream's only
+        // content" clause serves. Dedupe by artifact, not by flag.
+        java.util.LinkedHashSet<String> sinks = new java.util.LinkedHashSet<>();
+        if (json) sinks.add("-");
+        if (gateJsonPath != null) sinks.add(gateJsonPath);
+        for (String sink : sinks) Candor.writeRefusedGateJson(sink, reason, unevaluated);
         return 2;
     }
 
@@ -2812,8 +2828,7 @@ public final class Query {
                         + "(PAPER3 Lemma 2), so however the " + unevaluated.size() + " unevaluated rule(s) "
                         + "would have resolved cannot un-reject it. The verdict document names them under "
                         + "`unevaluated`.");
-            if (json) Candor.writeGateJson("-", violations, facts, unevaluated);
-            if (gateJsonPath != null) Candor.writeGateJson(gateJsonPath, violations, facts, unevaluated);
+            writeGateVerdictOnce(json, gateJsonPath, violations, facts, unevaluated);
             return 1;
         }
         // No rule fired. NOW the refusal is the answer — the gate could not be evaluated as written, and
@@ -2821,8 +2836,7 @@ public final class Query {
         if (!unevaluated.isEmpty())
             return refuse(json, gateJsonPath, unevaluated.size()
                     + " policy rule(s) could not be evaluated against this report", unevaluated);
-        if (json) Candor.writeGateJson("-", violations, facts, unevaluated);
-        if (gateJsonPath != null) Candor.writeGateJson(gateJsonPath, violations, facts, unevaluated);
+        writeGateVerdictOnce(json, gateJsonPath, violations, facts, unevaluated);
         // ⟨0.21⟩ COMPLETENESS MANIFEST: a gate cannot be green over code candor never analyzed. The scan
         // path exits 2 on its own `unanalyzed`; here the same manifest travels ON the report, so the same
         // verdict follows from it. A real violation (exit 1, above) dominates, as it does there.

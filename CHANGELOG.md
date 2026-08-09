@@ -7,6 +7,8 @@ include behavioural changes (always in the soundness-increasing direction — th
 after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
+## [0.27.0] — 2026-08-07
+
 
 
 
@@ -102,7 +104,6 @@ after upgrading; review policies and regenerate baselines with the new build.
   call into that dep reads pure, and the operator who configured it saw no sign. Now named on stderr
   (sidecars, which legitimately have none, stay silent).
 
-## [0.27.0] — 2026-08-07
 
 - **The reference engine was the sole non-conformer on the pin, 5-to-1.** `engine 0.26.0 oops` beside a
   valid `engine java v0.27.0` exited 0 here and 2 everywhere else: precedence returned the qualified pin

@@ -610,7 +610,9 @@ public class Candor {
             else if (!args[i].startsWith("-") && preTarget == null) preTarget = args[i];
         }
         if (preGate != null) {
-            refuseGateJsonOverAnyInput(preGate, preTarget != null ? preTarget : ".", prePolicy);
+            // ⟨0.28⟩ The DUPLICATE case is decided first: this single-sink guard acts on `preGate` alone
+            // — the LAST sink — so `--gate-json - --gate-json <the policy>` exited on the policy before
+            // the STREAM was told anything (measured: exit 2, stdout zero bytes).
             // ⟨0.28⟩ A REPEATED --gate-json IS REFUSED, AND EVERY PATH NAMED GETS THE REFUSAL. The loop
             // above keeps the LAST, which is what the parse honours — and that is exactly the behaviour
             // this rung refuses: measured, this engine wrote the verdict to the last path and left the
@@ -634,8 +636,21 @@ public class Candor {
             }
             if (namedSinks.size() > 1) {
                 String list = String.join(", ", namedSinks);
+                // ⟨0.28⟩ THE INPUT EXEMPTION COVERS THE PATH, NOT THE RUN. `refuseGateJsonOverAnyInput`
+                // exits having written nothing — right for the offending path, but it used to take the
+                // run with it, leaving the OTHER named sink publishing whatever it held. Ask without
+                // exiting, then write to every path that is not an input.
+                var offending = new java.util.LinkedHashSet<String>();
                 for (String sNamed : namedSinks)
-                    refuseGateJsonOverAnyInput(sNamed, preTarget != null ? preTarget : ".", prePolicy);
+                    if (gateJsonIsInput(sNamed, preTarget != null ? preTarget : ".", prePolicy)) offending.add(sNamed);
+                if (offending.size() == namedSinks.size()) {
+                    // Every named sink is an input: refuse, having written nothing anywhere.
+                    refuseGateJsonOverAnyInput(namedSinks.get(0), preTarget != null ? preTarget : ".", prePolicy);
+                    System.exit(2);
+                }
+                for (String sNamed : offending)
+                    System.err.println("candor: --gate-json " + sNamed + " names an INPUT of this run — "
+                            + "refusing (exit 2), and nothing was written there.");
                 System.err.println("candor: --gate-json given more than once (" + list + ") — refusing "
                         + "(exit 2). A gate publishes ONE verdict. Naming two sinks says where it goes "
                         + "twice, and the reader of the path that loses cannot tell it lost. Name one, "
@@ -648,6 +663,7 @@ public class Candor {
                         + "one verdict to one sink");
                 String text = io.poly.candor.model.ReportJson.pretty(doc);
                 for (String sNamed : namedSinks) {
+                    if (offending.contains(sNamed)) continue;      // exemption scoped to this path
                     if (sNamed.equals("-")) { System.out.println(text); continue; }
                     try {
                         Files.writeString(Path.of(sNamed), text + "\n");
@@ -658,6 +674,8 @@ public class Candor {
                 }
                 System.exit(2);
             }
+            // Exactly one sink: the ordinary guard, which exits having written nothing.
+            refuseGateJsonOverAnyInput(preGate, preTarget != null ? preTarget : ".", prePolicy);
             armGateJson(preGate);
             // ⟨0.27⟩ the stream sink's analog of arming — a hook, because a stream cannot hold a
             // placeholder. See armGateJsonStream.
@@ -1333,6 +1351,15 @@ public class Candor {
     }
 
     /** Refuse the sink if it names ANY input of this run, whatever channel that input arrived through. */
+    /** ⟨0.28⟩ Is this sink an input? Non-exiting, so the duplicate path can ask without taking the run
+     *  down — the exemption covers the offending PATH, and the other sinks still have readers. */
+    static boolean gateJsonIsInput(String gateJson, String target, String policyFlag) {
+        if (gateJson == null || gateJson.equals("-")) return false;
+        for (String[] in : runInputs(target, policyFlag))
+            if (in[0] != null && sameArtifact(gateJson, in[0])) return true;
+        return gateJsonIsAtConfig(gateJson);
+    }
+
     static void refuseGateJsonOverAnyInput(String gateJson, String target, String policyFlag) {
         if (gateJson == null || gateJson.equals("-")) return;
         for (String[] in : runInputs(target, policyFlag)) refuseGateJsonOverInput(gateJson, in[0], in[1]);
@@ -1360,12 +1387,17 @@ public class Candor {
      * tree. There is no legitimate run that writes a gate verdict to a file named `config` inside a
      * `.candor` directory.
      */
-    static void refuseGateJsonAtConfig(String gateJson) {
-        if (gateJson == null || gateJson.equals("-")) return;
+    /** The SHAPE test alone, so the refusing and the probing form share one copy. */
+    static boolean gateJsonIsAtConfig(String gateJson) {
+        if (gateJson == null || gateJson.equals("-")) return false;
         Path p = Path.of(gateJson).toAbsolutePath().normalize();
         Path parent = p.getParent(), name = p.getFileName();
-        if (name == null || parent == null || parent.getFileName() == null) return;
-        if (!name.toString().equals("config") || !parent.getFileName().toString().equals(".candor")) return;
+        if (name == null || parent == null || parent.getFileName() == null) return false;
+        return name.toString().equals("config") && parent.getFileName().toString().equals(".candor");
+    }
+
+    static void refuseGateJsonAtConfig(String gateJson) {
+        if (!gateJsonIsAtConfig(gateJson)) return;
         System.err.println("candor: --gate-json " + gateJson + " is a .candor/config — refusing (exit 2). "
                 + "The verdict is armed before the config is read, so this would destroy the config that "
                 + "configures this run. Nothing was written; give the verdict its own path.");

@@ -345,6 +345,49 @@ public final class Query {
                 // from the CWD, so asking the report's directory was a different question and left a
                 // config-declared policy unguarded.
                 Candor.refuseGateJsonOverAnyInput(preGate, ".", prePolicy);
+                // ⟨0.28⟩ THE RUNG BINDS EVERY ROUTE. It shipped on the scan CLI only, so this verb kept
+                // last-wins: a gate that FIRED wrote red to the last sink and left the first holding a
+                // previous run's {"ok": true}. Every named sink gets the input checks too, and the input
+                // exemption covers THAT PATH, not the run.
+                var namedSinks = new java.util.ArrayList<String>();
+                for (int i = 0; i < args.length; i++) {
+                    if (args[i].equals("--gate-json") && i + 1 < args.length
+                            && (args[i + 1].equals("-") || !args[i + 1].startsWith("-"))) {
+                        String v = args[++i];
+                        boolean seen = false;
+                        for (String k : namedSinks)
+                            if (k.equals(v) || (!k.equals("-") && !v.equals("-") && Candor.sameArtifact(k, v))) seen = true;
+                        if (!seen) namedSinks.add(v);
+                    }
+                }
+                for (String sNamed : namedSinks) {
+                    if (sNamed.equals("-")) continue;
+                    Candor.refuseGateJsonOverInput(sNamed, preReport, "--report");
+                    Candor.refuseGateJsonOverAnyInput(sNamed, ".", prePolicy);
+                }
+                if (namedSinks.size() > 1) {
+                    String list = String.join(", ", namedSinks);
+                    System.err.println("candor: --gate-json given more than once (" + list + ") — refusing "
+                            + "(exit 2). A gate publishes ONE verdict. Naming two sinks says where it goes "
+                            + "twice, and the reader of the path that loses cannot tell it lost.");
+                    var doc = new java.util.LinkedHashMap<String, Object>();
+                    doc.put("spec", Candor.SPEC_VERSION);
+                    doc.put("ok", false);
+                    doc.put("refused", true);
+                    doc.put("reason", "--gate-json was given more than once (" + list + ") — a run "
+                            + "publishes one verdict to one sink");
+                    String text = io.poly.candor.model.ReportJson.pretty(doc);
+                    for (String sNamed : namedSinks) {
+                        if (sNamed.equals("-")) { System.out.println(text); continue; }
+                        try {
+                            java.nio.file.Files.writeString(java.nio.file.Path.of(sNamed), text + "\n");
+                        } catch (java.io.IOException | RuntimeException e) {
+                            System.err.println("candor: could not write the refusal to --gate-json " + sNamed
+                                    + " (" + e.getMessage() + ")");
+                        }
+                    }
+                    System.exit(2);
+                }
                 Candor.armGateJson(preGate);
                 // ⟨0.27⟩ …AND THE STREAM SINK'S ANALOG, which this pre-pass was missing while the SCAN
                 // path had it. `armGateJson` writes a fail-closed placeholder to a FILE; a stream cannot

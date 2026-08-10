@@ -3463,7 +3463,7 @@ public final class Query {
             if (total > 0 && unknown * 3 >= total) {
                 System.out.println("candor: no surprising reaches — but " + unknown + " of " + total
                     + " function(s) are Unknown (unresolved calls; their transitive effects are NOT analyzed). "
-                    + "Run `candor blindspots`; unresolvable imports or missing project config are the usual cause.");
+                    + "Run `candor blindspots` — the report records a reason for each.");
                 return 0;
             }
             System.out.println("candor: nothing hidden — every effect sits where its name says it should.");

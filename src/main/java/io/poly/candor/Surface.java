@@ -350,7 +350,7 @@ final class Surface {
                 if (total > 0 && unknown * 3 >= total) {
                     err.println("candor: no surprising reaches — but " + unknown + " of " + total
                         + " function(s) are Unknown (unresolved calls; their transitive effects are NOT analyzed). "
-                        + "Run `candor blindspots`; unresolvable imports or missing project config are the usual cause.");
+                        + "Run `candor blindspots`; unresolvable imports are the usual cause.");
                     return;
                 }
                 err.println("candor: nothing hidden — every effect sits where its name says it should.");

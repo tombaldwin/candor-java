@@ -7,6 +7,17 @@ include behavioural changes (always in the soundness-increasing direction — th
 after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
+
+- **⟨0.28⟩ a repeated `--gate-json` is refused, and every path named gets the refusal** (SPEC §3.3.1).
+  Before this rung the last sink won and the first was left exactly as found, so a previous run's
+  `{"ok": true}` survived a gate that FIRED — the ⟨0.27⟩ stale green reached by a spelling nobody had
+  considered, and worse than the case arming was built for: the run did not fail, the gate did fire, and
+  the operator's own command named the path that lies. Two spellings of one path stay ONE sink, and a sink
+  that is an input is still refused having written nothing.
+- **The mostly-Unknown note stops naming a cause it cannot know.** `tour --report R` reads a report it did
+  not produce, so "missing project config" was a guess about a build it never ran; it now points at the
+  reasons the report records. Four-way, pinned by conformance PART 4l — which until now checked the COUNTS
+  only, which is how all four engines drifted here without anything noticing.
 ## [0.27.0] — 2026-08-07
 
 - **The jbang catalog pin moves to 0.27.0**, after the release it names exists. 0.24 shipped a jbang

@@ -600,15 +600,27 @@ public class Candor {
         // while rust/ts/swift wrote a refusal. Flags-before-positional is not an exotic spelling, and
         // §3.3 names an unknown flag as an exit-2 cause that must leave a refusal.
         String preGate = null, prePolicy = null, preTarget = null;
+        // ⟨0.28⟩ Was `--json` requested in STDOUT form (bare, or followed by a flag)? And was any
+        // `--gate-json -` in the argv (which would also claim stdout)? Learned in this same pre-pass so
+        // `armReportStream` can fire below, BEFORE every downstream exit-2 — including an unknown flag.
+        boolean preWantJsonStream = false, preAnyGateJsonStream = false;
         for (int i = 0; i < args.length; i++) {
             boolean hasVal = i + 1 < args.length;
-            if (args[i].equals("--gate-json") && hasVal && (args[i + 1].equals("-") || !args[i + 1].startsWith("-")))
+            if (args[i].equals("--gate-json") && hasVal && (args[i + 1].equals("-") || !args[i + 1].startsWith("-"))) {
+                if (args[i + 1].equals("-")) preAnyGateJsonStream = true;
                 preGate = args[++i];
+            }
             else if (args[i].equals("--policy") && hasVal && !args[i + 1].startsWith("-"))
                 prePolicy = args[++i];
-            else if (args[i].equals("--json") && hasVal && !args[i + 1].startsWith("-")) i++;
+            else if (args[i].equals("--json") && hasVal && !args[i + 1].startsWith("-")) i++;   // --json <file>
+            else if (args[i].equals("--json")) preWantJsonStream = true;                        // bare / --json <-flag>
             else if (!args[i].startsWith("-") && preTarget == null) preTarget = args[i];
         }
+        // ⟨0.28⟩ Arm the report-stream shutdown hook so `--json` never leaves stdout empty on an exit-2
+        // (unknown flag, unreadable input, misconfiguration, crash). Not armed when `--gate-json -` is
+        // also present: that stream is already claimed by the verdict (or by the two-stream refusal doc
+        // just below), and a second write from this hook would put two JSON documents on one pipe.
+        if (preWantJsonStream && !preAnyGateJsonStream) armReportStream();
         if (preGate != null) {
             // ⟨0.28⟩ `--json` BESIDE `--gate-json -`: a report and a verdict cannot share one stream.
             // Decided in the pre-pass so the refusal is stdout's ONLY content — refusing after the report
@@ -1454,6 +1466,11 @@ public class Candor {
      *  stream-sink shutdown hook below; set by {@link #writeGateJson} and {@link #writeRefusedGateJson}. */
     static volatile boolean gateDocEmitted = false;
 
+    /** ⟨0.28⟩ Has a REPORT document been emitted to stdout by this run? Consulted only by the
+     *  {@link #armReportStream} shutdown hook; set by {@link ReportWriter#writeJson} on the {@code "-"}
+     *  branch so a completed {@code --json} stdout print isn't followed by a fail-closed placeholder. */
+    static volatile boolean reportDocEmitted = false;
+
     /**
      * ⟨0.27⟩ <b>THE STREAM SINK GETS THE FAIL-CLOSED DOCUMENT ON EVERY EXIT-2 CAUSE TOO — SPEC §3.1's
      * stream-sink clause.</b> {@code --gate-json -} cannot be ARMED: a stream has no previous document to
@@ -1482,6 +1499,53 @@ public class Candor {
                     + "decided (a broken gate config, an unknown flag, or a crash). It is NOT a verdict "
                     + "about the code; see the run's stderr for the cause.");
             System.out.println(io.poly.candor.model.ReportJson.pretty(out));
+            System.out.flush();
+        }));
+    }
+
+    /**
+     * ⟨0.28⟩ <b>THE REPORT STREAM SINK GETS THE FAIL-CLOSED DOCUMENT ON EVERY EXIT-2 CAUSE TOO — SPEC
+     * §3.3.1 (4).</b> Mirror of {@link #armGateJsonStream} for the report stream, one hop upstream.
+     * Measured on this engine 2026-08-10: {@code candor <target> --json --zzz-not-a-flag} exited 2 with
+     * <b>stdout empty</b>; a downstream JSON consumer keying on stdout throws a parse error and is thrown
+     * back to scraping stderr — the exact distinction that made the incomplete-analysis defect a defect.
+     *
+     * <p>The shape is the ⟨0.21⟩ Row-1 manifest-carrying empty: {@code functions: []} plus
+     * {@code analyzed.count: 0} plus {@code unanalyzed} naming the run itself as un-analyzable. A ⟨0.24⟩
+     * consumer already reads that combination as "no purity licence" — no new reader logic is needed. The
+     * naive read of what a report format emits has to be the safe one; here that is FAIL.
+     *
+     * <p>A shutdown hook rather than a write threaded through every one of the ~30 {@code System.exit(2)}
+     * sites, for the same reason {@link #armGateJsonStream} is: the rule is over the RUN, not over the
+     * sites anyone enumerated (a crash, an OOM, a future exit path). The successful stdout print in
+     * {@link ReportWriter#writeJson} sets {@link #reportDocEmitted}, so the hook fires exactly on the
+     * runs that exited before a report existed.
+     *
+     * <p>Not installed when {@code --gate-json -} is also on the command line: that stream is already
+     * claimed by the verdict document (or by the two-stream refusal doc), and a second write from this
+     * hook would put two JSON documents on one pipe — the shape §3.3's stream refusal exists to prevent.
+     */
+    static void armReportStream() {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            if (reportDocEmitted) return;
+            String[] prov = ReportWriter.provenance();
+            var candor = new java.util.LinkedHashMap<String, Object>();
+            candor.put("version", prov[0]);
+            candor.put("toolchain", prov[1]);
+            candor.put("spec", SPEC_VERSION);
+            var analyzed = new java.util.LinkedHashMap<String, Object>();
+            analyzed.put("count", 0);
+            var un = new java.util.LinkedHashMap<String, Object>();
+            un.put("path", "<run>");
+            un.put("reason", "refused: the report did not complete — this run exited before a scan "
+                    + "could produce one (a broken flag, unreadable input, misconfiguration, or a crash). "
+                    + "It is NOT a claim the code is pure; see the run's stderr for the cause.");
+            var envelope = new java.util.LinkedHashMap<String, Object>();
+            envelope.put("candor", candor);
+            envelope.put("functions", java.util.List.of());
+            envelope.put("analyzed", analyzed);
+            envelope.put("unanalyzed", java.util.List.of(un));
+            System.out.println(io.poly.candor.model.ReportJson.pretty(envelope));
             System.out.flush();
         }));
     }

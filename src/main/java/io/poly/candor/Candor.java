@@ -604,6 +604,11 @@ public class Candor {
         // `--gate-json -` in the argv (which would also claim stdout)? Learned in this same pre-pass so
         // `armReportStream` can fire below, BEFORE every downstream exit-2 — including an unknown flag.
         boolean preWantJsonStream = false, preAnyGateJsonStream = false;
+        // ⟨0.28⟩ Was `--json <file>` requested? The file sink is the analog of `--gate-json <file>` for
+        // the report, and takes the same arming + input-exemption treatment one hop upstream: a scan
+        // that exits 2 must not leave the PREVIOUS run's report byte-identical on disk, and a `--json`
+        // path naming an INPUT of this run must be refused with nothing written.
+        String preJsonFile = null;
         for (int i = 0; i < args.length; i++) {
             boolean hasVal = i + 1 < args.length;
             if (args[i].equals("--gate-json") && hasVal && (args[i + 1].equals("-") || !args[i + 1].startsWith("-"))) {
@@ -612,7 +617,7 @@ public class Candor {
             }
             else if (args[i].equals("--policy") && hasVal && !args[i + 1].startsWith("-"))
                 prePolicy = args[++i];
-            else if (args[i].equals("--json") && hasVal && !args[i + 1].startsWith("-")) i++;   // --json <file>
+            else if (args[i].equals("--json") && hasVal && !args[i + 1].startsWith("-")) preJsonFile = args[++i];   // --json <file>
             else if (args[i].equals("--json")) preWantJsonStream = true;                        // bare / --json <-flag>
             else if (!args[i].startsWith("-") && preTarget == null) preTarget = args[i];
         }
@@ -621,6 +626,14 @@ public class Candor {
         // also present: that stream is already claimed by the verdict (or by the two-stream refusal doc
         // just below), and a second write from this hook would put two JSON documents on one pipe.
         if (preWantJsonStream && !preAnyGateJsonStream) armReportStream();
+        // ⟨0.28⟩ FILE FORM: refuse a `--json <file>` that names an input of this run FIRST (writing
+        // nothing would-be-destroyed), then arm the file with the fail-closed report so every downstream
+        // exit-2 leaves that document in place rather than the previous run's green. Mirror of the
+        // `refuseGateJsonOverAnyInput` + `armGateJson` sequence used for the verdict sink at line ~715.
+        if (preJsonFile != null) {
+            refuseJsonOverAnyInput(preJsonFile, preTarget != null ? preTarget : ".", prePolicy);
+            armReportJson(preJsonFile);
+        }
         if (preGate != null) {
             // ⟨0.28⟩ `--json` BESIDE `--gate-json -`: a report and a verdict cannot share one stream.
             // Decided in the pre-pass so the refusal is stdout's ONLY content — refusing after the report
@@ -1460,6 +1473,79 @@ public class Candor {
                 + "The verdict is armed before the config is read, so this would destroy the config that "
                 + "configures this run. Nothing was written; give the verdict its own path.");
         System.exit(2);
+    }
+
+    /**
+     * ⟨0.28⟩ SPEC §3.3.1 (3) — a {@code --json <file>} sink that names an INPUT of this run is refused
+     * having written NOTHING to that path. Arming (below) writes before the run knows its answer, so
+     * pointing the sink at the policy or the discovered {@code .candor/config} would destroy the input
+     * this run reads — the exact defect the verdict-sink twin exists to prevent, on the report sink one
+     * hop upstream. Reuses {@link #runInputs} and {@link #sameArtifact} so the input set and the
+     * artifact resolution can never disagree between the two sinks.
+     */
+    static void refuseJsonOverAnyInput(String jsonFile, String target, String policyFlag) {
+        if (jsonFile == null || jsonFile.equals("-")) return;
+        for (String[] in : runInputs(target, policyFlag)) refuseJsonOverInput(jsonFile, in[0], in[1]);
+        refuseJsonAtConfig(jsonFile);
+    }
+
+    static void refuseJsonOverInput(String jsonFile, String other, String flag) {
+        if (!sameArtifact(jsonFile, other)) return;
+        System.err.println("candor: --json " + jsonFile + " names the same file as " + flag + " "
+                + other + " — writing the report there would destroy the input this run reads. "
+                + "Nothing was written; give --json a different path.");
+        System.exit(2);
+    }
+
+    static void refuseJsonAtConfig(String jsonFile) {
+        if (!gateJsonIsAtConfig(jsonFile)) return;  // shape test is generic — .candor/config is never a sink
+        System.err.println("candor: --json " + jsonFile + " is a .candor/config — refusing (exit 2). "
+                + "The report is armed before the config is read, so this would destroy the config that "
+                + "configures this run. Nothing was written; give the report its own path.");
+        System.exit(2);
+    }
+
+    /**
+     * ⟨0.28⟩ SPEC §3.3.1 (1)+(2) — <b>ARM THE REPORT SINK.</b> Mirror of {@link #armGateJson} for the
+     * report sink one hop upstream: write the ⟨0.21⟩ Row-1 fail-closed manifest-carrying empty at the
+     * instant the sink is known, before anything else can exit. Every subsequent exit then leaves that
+     * document in place unless {@link ReportWriter#writeJson}'s atomic write replaces it with a real
+     * report. Without this, a scan that exits 2 (unknown flag, unreadable config, target missing) left
+     * the previous run's report BYTE-IDENTICAL on disk — measured on this engine 2026-08-10, 648 bytes
+     * unchanged before and after — and a downstream {@code gate --report <that>} then went green over a
+     * document the failed run never produced.
+     *
+     * <p>The shape is exactly what a ⟨0.24⟩ consumer already reads as "not covered, no purity licence":
+     * {@code functions: []} plus {@code analyzed.count: 0} plus {@code unanalyzed} naming the run. No new
+     * reader logic — the naive read of what a report emits has to be the safe one.
+     */
+    static void armReportJson(String path) {
+        if (path == null || path.equals("-")) return;
+        String[] prov = ReportWriter.provenance();
+        var candor = new java.util.LinkedHashMap<String, Object>();
+        candor.put("version", prov[0]);
+        candor.put("toolchain", prov[1]);
+        candor.put("spec", SPEC_VERSION);
+        var analyzed = new java.util.LinkedHashMap<String, Object>();
+        analyzed.put("count", 0);
+        var un = new java.util.LinkedHashMap<String, Object>();
+        un.put("path", "<run>");
+        un.put("reason", "armed: the scan did not complete — this document was written when the run "
+                + "STARTED and was never replaced by a real report, so the run failed, crashed or was "
+                + "killed before it could decide. It is NOT a claim about the code; see the run's stderr "
+                + "for the cause.");
+        var out = new java.util.LinkedHashMap<String, Object>();
+        out.put("candor", candor);
+        out.put("functions", new java.util.ArrayList<>());
+        out.put("analyzed", analyzed);
+        out.put("unanalyzed", java.util.List.of(un));
+        try {
+            Files.writeString(Path.of(path), io.poly.candor.model.ReportJson.pretty(out) + "\n");
+        } catch (IOException | RuntimeException e) {
+            System.err.println("candor: could not arm --json " + path + " fail-closed ("
+                    + e.getMessage() + ") — if this run does not complete, that path may still hold a "
+                    + "PREVIOUS run's report");
+        }
     }
 
     /** Has a gate document (verdict or refusal) been emitted by this run? Consulted only by the

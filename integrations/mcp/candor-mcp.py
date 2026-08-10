@@ -104,7 +104,14 @@ def ensure_report():
         return (f"candor: nothing to analyse at '{CLASSES}'. Build first (e.g. `gradle classes`), or set "
                 f"CANDOR_CLASSES to your classes dir / jar.")
     newest = newest_class_mtime(CLASSES)
-    fresh = os.path.exists(REPORT) and os.path.getmtime(REPORT) >= newest
+    # ⟨0.28⟩ Freshness is BOTH mtime AND `analyzed.count > 0`. Before the ⟨0.28⟩ report-sink arming
+    # landed, a failed scan left the previous report on disk BYTE-IDENTICAL, so mtime alone was
+    # enough — the previous mtime was < the new class mtime and the check fired. With arming, a failed
+    # scan REWRITES the report at parse-time as a ⟨0.21⟩ Row-1 manifest-carrying empty (functions:[]
+    # + analyzed.count:0 + unanalyzed), and its mtime is fresh. That is the correct machine signal
+    # for "nothing was judged" — but only if this surface HONOURS it. Reading it here means an agent
+    # never gets served an armed placeholder as if it were a real report.
+    fresh = os.path.exists(REPORT) and os.path.getmtime(REPORT) >= newest and _report_has_content(REPORT)
     if fresh:
         return None
     os.makedirs(os.path.dirname(REPORT) or ".", exist_ok=True)
@@ -113,13 +120,26 @@ def ensure_report():
         why = (r.stderr or r.stdout or "").strip()
     except Exception as e:  # noqa: BLE001
         why = str(e)
-    if os.path.exists(REPORT) and os.path.getmtime(REPORT) >= newest:
+    if os.path.exists(REPORT) and os.path.getmtime(REPORT) >= newest and _report_has_content(REPORT):
         return None
     had = " A PREVIOUS report is on disk and is NOT being served: it describes bytecode that has since " \
           "changed, and answering from it would be a stale answer presented as a current one." \
         if os.path.exists(REPORT) else ""
     return (f"candor: the scan of '{CLASSES}' did not produce a current report, so there is nothing "
             f"trustworthy to answer from.{had}\n{why}")
+
+
+def _report_has_content(path):
+    """⟨0.24⟩ Row 1 — a report with `analyzed.count == 0` is "nothing was judged", not "nothing to judge",
+    and it never licenses a purity claim. On this surface it also never licenses a query answer: the
+    caller is asking about the code, and the armed placeholder makes no claim about the code."""
+    try:
+        with open(path) as fh:
+            d = json.load(fh)
+    except Exception:  # noqa: BLE001
+        return False
+    count = (d.get("analyzed") or {}).get("count")
+    return isinstance(count, int) and count > 0
 
 
 def incompleteness_note():

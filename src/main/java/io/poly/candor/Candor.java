@@ -611,6 +611,53 @@ public class Candor {
         }
         if (preGate != null) {
             refuseGateJsonOverAnyInput(preGate, preTarget != null ? preTarget : ".", prePolicy);
+            // ⟨0.28⟩ A REPEATED --gate-json IS REFUSED, AND EVERY PATH NAMED GETS THE REFUSAL. The loop
+            // above keeps the LAST, which is what the parse honours — and that is exactly the behaviour
+            // this rung refuses: measured, this engine wrote the verdict to the last path and left the
+            // first holding a previous run's {"ok": true} while the gate FIRED. The ⟨0.27⟩ stale green,
+            // reached by a spelling nobody had considered, and worse than the case arming was built for
+            // because the run did not fail and the operator's own command named the path that lies.
+            //
+            // After the input-collision guard, before arming: a sink that is an INPUT is refused having
+            // written nothing, and that exemption outranks this one.
+            var namedSinks = new java.util.ArrayList<String>();
+            for (int i = 0; i < args.length; i++) {
+                if (args[i].equals("--gate-json") && i + 1 < args.length
+                        && (args[i + 1].equals("-") || !args[i + 1].startsWith("-"))) {
+                    String v = args[++i];
+                    // Two spellings of one path are ONE sink (the §3.3.1 artifact rule), not a duplicate.
+                    boolean seen = false;
+                    for (String k : namedSinks)
+                        if (k.equals(v) || (!k.equals("-") && !v.equals("-") && sameArtifact(k, v))) seen = true;
+                    if (!seen) namedSinks.add(v);
+                }
+            }
+            if (namedSinks.size() > 1) {
+                String list = String.join(", ", namedSinks);
+                for (String sNamed : namedSinks)
+                    refuseGateJsonOverAnyInput(sNamed, preTarget != null ? preTarget : ".", prePolicy);
+                System.err.println("candor: --gate-json given more than once (" + list + ") — refusing "
+                        + "(exit 2). A gate publishes ONE verdict. Naming two sinks says where it goes "
+                        + "twice, and the reader of the path that loses cannot tell it lost. Name one, "
+                        + "or run the gate twice.");
+                var doc = new java.util.LinkedHashMap<String, Object>();
+                doc.put("spec", SPEC_VERSION);
+                doc.put("ok", false);
+                doc.put("refused", true);
+                doc.put("reason", "--gate-json was given more than once (" + list + ") — a run publishes "
+                        + "one verdict to one sink");
+                String text = io.poly.candor.model.ReportJson.pretty(doc);
+                for (String sNamed : namedSinks) {
+                    if (sNamed.equals("-")) { System.out.println(text); continue; }
+                    try {
+                        Files.writeString(Path.of(sNamed), text + "\n");
+                    } catch (IOException | RuntimeException e) {
+                        System.err.println("candor: could not write the refusal to --gate-json " + sNamed
+                                + " (" + e.getMessage() + ")");
+                    }
+                }
+                System.exit(2);
+            }
             armGateJson(preGate);
             // ⟨0.27⟩ the stream sink's analog of arming — a hook, because a stream cannot hold a
             // placeholder. See armGateJsonStream.

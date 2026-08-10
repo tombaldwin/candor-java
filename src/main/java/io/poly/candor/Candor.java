@@ -610,6 +610,31 @@ public class Candor {
             else if (!args[i].startsWith("-") && preTarget == null) preTarget = args[i];
         }
         if (preGate != null) {
+            // ⟨0.28⟩ `--json` BESIDE `--gate-json -`: a report and a verdict cannot share one stream.
+            // Decided in the pre-pass so the refusal is stdout's ONLY content — refusing after the report
+            // has gone out is the defect rather than the fix. BARE `--json` only: `--json <file>` writes
+            // the report somewhere else, which is two artifacts in two places and exactly what was asked.
+            if (preGate.equals("-")) {
+                boolean bareJson = false;
+                for (int i = 0; i < args.length; i++) {
+                    if (!args[i].equals("--json")) continue;
+                    if (i + 1 >= args.length || args[i + 1].startsWith("-")) bareJson = true;
+                }
+                if (bareJson) {
+                    System.err.println("candor: --json and --gate-json - both name STDOUT — refusing "
+                            + "(exit 2). `--json` writes the REPORT there and `--gate-json -` the VERDICT, "
+                            + "so this would put two JSON documents on one stream and a consumer parsing "
+                            + "it gets neither. Send one to a file, or run the scan twice.");
+                    var d = new java.util.LinkedHashMap<String, Object>();
+                    d.put("spec", SPEC_VERSION);
+                    d.put("ok", false);
+                    d.put("refused", true);
+                    d.put("reason", "--json and --gate-json - both name stdout — a report and a verdict "
+                            + "cannot share one stream");
+                    System.out.println(io.poly.candor.model.ReportJson.pretty(d));
+                    System.exit(2);
+                }
+            }
             // ⟨0.28⟩ The DUPLICATE case is decided first: this single-sink guard acts on `preGate` alone
             // — the LAST sink — so `--gate-json - --gate-json <the policy>` exited on the policy before
             // the STREAM was told anything (measured: exit 2, stdout zero bytes).

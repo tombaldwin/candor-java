@@ -284,4 +284,128 @@ class VerdictPrecedenceTest {
         assertFalse(v.has("reason"), "byte-identical to a pre-⟨0.24⟩ verdict\nDOC:\n" + v);
         assertFalse(v.has("unevaluated"), "byte-identical to a pre-⟨0.24⟩ verdict\nDOC:\n" + v);
     }
+
+    // ── ⟨0.28⟩ A CONFIGURED POLICY THAT YIELDED ZERO RULES REFUSES (SPEC §6.2) ────────────────────────
+
+    /**
+     * ⟨0.28⟩ SPEC §6.2. MEASURED four-way 2026-08-10, and on this engine at 0.27.0: {@code --policy <a
+     * README>} exited 0 and wrote {@code {"ok":true,"violations":[]}} — byte-identical to a gate that ran
+     * and found nothing, AND to the no-gate-configured verdict, so the one consumer the document exists for
+     * could not tell <i>your code is clean</i> from <i>your gate had no rules</i>. The per-line "ignoring
+     * policy rule" warnings went to stderr, which is not that channel.
+     *
+     * <p>All three input forms reach the harm through a file that READS PERFECTLY, which is why the ⟨0.24⟩
+     * unreadable-file clause did not cover them.
+     */
+    @Test
+    void aConfiguredPolicyThatYieldsZeroRulesRefusesWithTheFailClosedDocument() throws Exception {
+        Path after = regressedFixture();
+        Path verdict = scratch.resolve("verdict.json");
+
+        Path readme = scratch.resolve("README.md");
+        Files.writeString(readme, "# Project README\n\nDocumentation, not a policy.\nSomeone typo'd --policy.\n");
+        Path empty = scratch.resolve("empty.policy");
+        Files.writeString(empty, "");
+        Path comments = scratch.resolve("comments.policy");
+        Files.writeString(comments, "# just a comment\n\n# another\n");
+
+        for (Path pol : List.of(readme, empty, comments)) {
+            Files.deleteIfExists(verdict);
+            Run r = runCli(Map.of(), after.toString(), "--policy", pol.toString(),
+                    "--gate-json", verdict.toString());
+            String who = pol.getFileName().toString();
+            assertEquals(2, r.exit(), who + ": a configured policy with no rules refuses\nSTDERR:\n" + r.stderr());
+            JsonObject v = doc(verdict);
+            assertFalse(v.get("ok").getAsBoolean(), who + ": ok:false\nDOC:\n" + v);
+            assertTrue(v.get("refused").getAsBoolean(), who + ": refused:true\nDOC:\n" + v);
+            assertFalse(v.has("violations"),
+                    who + ": a refusal makes NO claim about violations — an empty array here is exactly the "
+                    + "byte string this rung exists to stop being emitted\nDOC:\n" + v);
+            // §3.1's whole-policy row: there is no rule LINE to name, and an empty list would read as
+            // "the policy ran and passed".
+            JsonArray un = v.getAsJsonArray("unevaluated");
+            assertEquals(1, un.size(), who + ": one entry naming the whole policy\nDOC:\n" + v);
+            assertTrue(un.get(0).getAsJsonObject().get("rule").getAsString().contains("entire policy"),
+                    who + ": …and it names the policy, not a rule\nDOC:\n" + v);
+        }
+    }
+
+    /**
+     * ⟨0.28⟩ <b>THE CONTROL, and it never skips.</b> There is already a way to say "I am not gating": do
+     * not configure a policy. An engine that refuses HERE has broken the no-gate case, which is a worse
+     * defect than the one the rung closes — and it is what makes a configured zero-rule policy never a
+     * legitimate expression of that intent.
+     */
+    @Test
+    void noPolicyConfiguredAtAllStaysGreen() throws Exception {
+        Path after = regressedFixture();
+        Path verdict = scratch.resolve("verdict.json");
+        Run r = runCli(Map.of(), after.toString(), "--gate-json", verdict.toString());
+        assertEquals(0, r.exit(), "a run that never asked for a gate is exit 0\nSTDERR:\n" + r.stderr());
+        JsonObject v = doc(verdict);
+        assertTrue(v.get("ok").getAsBoolean(), "…and its verdict is the ordinary green\nDOC:\n" + v);
+        assertFalse(v.has("refused"), "…carrying none of the refusal keys\nDOC:\n" + v);
+    }
+
+    /**
+     * ⟨0.28⟩ <b>THE TRAP, WRITTEN AS A TEST.</b> The four rule kinds land in THREE lists — {@code
+     * denyRules} (`deny` and `pure`), {@code allowRules}, {@code forbidRules}. The rust sibling's first
+     * draft of this check read only the first, which made {@code allow Net api.stripe.com} — an ordinary
+     * allowlist gate — refuse as though it had no rules. A zero-rule check that inspects a SUBSET of the
+     * kinds is the same false-answer shape this rung exists to close, pointed the other way, so each kind
+     * gets its own row here and each asserts NOT-2 rather than a specific code: what is pinned is "this is
+     * a real gate", not what that gate happens to find.
+     */
+    @Test
+    void aPolicyOfOnlyOneRuleKindIsARealGateAndNeverRefusesAsEmpty() throws Exception {
+        Path after = regressedFixture();
+        Path verdict = scratch.resolve("verdict.json");
+
+        Path allowOnly = scratch.resolve("allow-only.policy");
+        Files.writeString(allowOnly, "allow Fs /nowhere\n");
+        Path forbidOnly = scratch.resolve("forbid-only.policy");
+        Files.writeString(forbidOnly, "forbid app -> nowhere\n");
+        Path pureOnly = scratch.resolve("pure-only.policy");
+        Files.writeString(pureOnly, "pure nowhere\n");
+
+        for (Path pol : List.of(allowOnly, forbidOnly, pureOnly)) {
+            Files.deleteIfExists(verdict);
+            Run r = runCli(Map.of(), after.toString(), "--policy", pol.toString(),
+                    "--gate-json", verdict.toString());
+            String who = pol.getFileName().toString();
+            assertFalse(r.exit() == 2,
+                    who + ": a policy holding rules of ONE kind is a gate, not an absent one — the "
+                    + "zero-rule refusal must not fire on it (exit " + r.exit() + ")\nSTDERR:\n" + r.stderr());
+            JsonObject v = doc(verdict);
+            assertFalse(v.has("refused"),
+                    who + ": …and its document is a verdict, not a refusal\nDOC:\n" + v);
+        }
+    }
+
+    /**
+     * ⟨0.28⟩ THE PRECEDENCE, inherited unchanged from the ⟨0.24⟩ branch beside it: a violation an EARLIER
+     * producer established on evidence this run carries dominates the refusal (violation 1 &gt; refusal 2).
+     * No POLICY violation can exist alongside zero rules, so the dominating finding always comes from
+     * elsewhere — here the AS-EFF-005 baseline ratchet.
+     */
+    @Test
+    void aBaselineRegressionDominatesTheZeroRuleRefusal() throws Exception {
+        Path before = pureFixture(), after = regressedFixture();
+        Path baseline = scratch.resolve("baseline.json");
+        assertEquals(0, runCli(Map.of(), before.toString(), "--json", baseline.toString()).exit(),
+                "the baseline scan must succeed");
+        Path readme = scratch.resolve("README.md");
+        Files.writeString(readme, "# not a policy\n\nprose\n");
+        Path verdict = scratch.resolve("verdict.json");
+        Run r = runCli(Map.of("CANDOR_BASELINE", baseline.toString()),
+                after.toString(), "--policy", readme.toString(), "--gate-json", verdict.toString());
+        assertEquals(1, r.exit(), "the certain regression dominates\nSTDERR:\n" + r.stderr());
+        JsonObject v = doc(verdict);
+        assertEquals(List.of("AS-EFF-005"), ruleIds(v),
+                "…and it is IN the document, not only on stderr\nDOC:\n" + v);
+        assertFalse(v.has("refused"),
+                "a violations-bearing document is a VERDICT and carries no refusal discriminator\nDOC:\n" + v);
+        assertEquals(1, v.getAsJsonArray("unevaluated").size(),
+                "…while `unevaluated` still says the policy itself was never evaluated\nDOC:\n" + v);
+    }
 }

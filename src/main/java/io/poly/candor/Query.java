@@ -2721,6 +2721,17 @@ public final class Query {
             // refusal documents cannot drift (SPEC §3.1's byte-equality MUST).
             return refuse(json, gateJsonPath, why, Policy.unhonouredRules(policyPath));
         }
+        // ⟨0.28⟩ SPEC §6.2 — a CONFIGURED policy that yielded ZERO RULES refuses exactly as an unreadable
+        // one does, and THIS ROUTE GETS IT TOO: the clause was measured on `gate --report` as well as on
+        // the scan, and a route is not covered by its sibling. Same words, same whole-policy `unevaluated`
+        // row, same sink handling as the branch directly above, so the two routes' refusal documents
+        // cannot drift (§3.1's byte-equality MUST). Placed BEFORE the `forbid`/`allow` rules are removed
+        // from the evaluation below — an allow-only policy is an ordinary gate and must NOT refuse here.
+        if (Policy.policyYieldedNoRules()) {
+            String why = Policy.zeroRulePolicyFailure(policyPath);
+            System.err.println("candor gate: " + why);
+            return refuse(json, gateJsonPath, why, Policy.zeroRuleUnevaluated(policyPath));
+        }
         // ⟨0.24⟩ THE ANSWERABILITY REFUSALS ARE COLLECTED, NOT RETURNED ON — SPEC §3.1's corrected
         // precedence is **violation (1) > refusal (2) > incomplete (2)**. If some other rule FIRES on
         // evidence this report carries, the policy is REJECTED, and because `Reject` is upward-closed

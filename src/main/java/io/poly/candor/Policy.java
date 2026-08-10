@@ -295,6 +295,15 @@ final class Policy {
             String why = policyFailure(path);
             return new PolicyOutcome(0, why, unhonouredRules(path));
         }
+        // ⟨0.28⟩ …and a policy that READ perfectly but yielded NO RULES takes the SAME posture, for the
+        // reason §6.2 already gives for the unreadable one — "a typo'd policy path that runs green is a
+        // gate that silently passes everything". Reported, never taken here, so it inherits the ⟨0.24⟩
+        // precedence above unchanged: a violation an earlier producer established (AS-EFF-005 and friends)
+        // still dominates with exit 1. No POLICY violation can exist alongside zero rules, so the
+        // dominating finding always comes from elsewhere in the verdict. See {@link #zeroRulePolicyFailure}.
+        if (policyYieldedNoRules()) {
+            return new PolicyOutcome(0, zeroRulePolicyFailure(path), zeroRuleUnevaluated(path));
+        }
         return new PolicyOutcome(gate(gateInputFromScan(inferred)), null, List.of());
     }
 
@@ -1107,6 +1116,69 @@ final class Policy {
     static boolean policyUnreadable;
 
     /**
+     * ⟨0.28⟩ HOW MANY RULES THE LAST {@link #parsePolicy} PRODUCED, <b>across EVERY rule kind</b> — the
+     * input to {@link #policyYieldedNoRules}. Recorded as a DELTA over the parse rather than read off the
+     * context afterwards, so a caller that did not clear the rule lists first cannot let a previous
+     * policy's rules answer for this one (that direction fails OPEN — it would miss a refusal).
+     *
+     * <p><b>EVERY KIND IS THE WHOLE POINT.</b> The four kinds land in three lists — {@code denyRules}
+     * (`deny` AND `pure`), {@code allowRules}, {@code forbidRules} — and the rust sibling's first draft of
+     * this check read only its equivalent of the first, which made {@code allow Net api.stripe.com} (an
+     * ordinary allowlist gate, not an absent one) refuse as though it had no rules. A zero-rule test that
+     * inspects a SUBSET of the rule kinds is the same false-answer shape this rung exists to close,
+     * pointed the other way. Any new rule kind must be summed in here too.
+     */
+    static int policyRulesParsed;
+
+    /**
+     * ⟨0.28⟩ SPEC §6.2 — <b>a CONFIGURED policy that yielded ZERO RULES is a broken gate, not an absent
+     * one.</b> True when the last {@link #parsePolicy} read the file fine and produced no rule of any
+     * kind: every line was ignored (a README), the file is empty, or it holds only comments/blanks.
+     */
+    static boolean policyYieldedNoRules() {
+        return policyRulesParsed == 0;
+    }
+
+    /**
+     * ⟨0.28⟩ The exit-2 diagnostic for a configured policy that parsed to NO RULES — the {@link
+     * #policyFailure} of this rung, and deliberately shaped like it: one sentence naming the POSTURE
+     * (never an exit code — a violation an earlier producer established dominates and the run exits 1,
+     * SPEC §3.1), then why, then the remedy.
+     *
+     * <p>MEASURED four-way 2026-08-10: {@code --policy <a README>} wrote {@code {"ok":true,
+     * "violations":[]}} and exited 0 — byte-identical to a gate that ran and found nothing, AND to the
+     * no-gate-configured verdict, so the one consumer the format exists for cannot tell <i>your code is
+     * clean</i> from <i>your gate had no rules</i>. The per-line "ignoring policy rule" warnings go to
+     * stderr, which is not that channel.
+     *
+     * <p>The line-level ignore-with-a-warning leniency is UNTOUCHED and still right (an engine meeting a
+     * rule kind from a newer rung must not refuse the file over it); this is about what that leniency
+     * COMPOSES TO. And it is not a blanket: reaching a gate route at all means a policy was CONFIGURED, so
+     * a run that configured no gate never asks this question and stays exit 0 — that is the honest way to
+     * say "I am not gating", and it is exactly why a configured zero-rule policy is never a legitimate
+     * expression of that intent.
+     */
+    static String zeroRulePolicyFailure(String path) {
+        return "policy " + path + " yielded NO RULES — REFUSING, the gate is NOT enforced from it"
+             + "\n        Every line was ignored (see any `ignoring policy rule` warnings above), the file"
+             + " is empty, or it holds only comments/blank lines. A gate with no rules cannot have caught"
+             + " anything, and answering `ok: true` here would be indistinguishable from a gate that ran"
+             + " and found nothing (SPEC §6.2 ⟨0.28⟩)."
+             + "\n        Fix the path or the rules — or, if you did not mean to gate this run, REMOVE the"
+             + " policy setting rather than pointing it at a file with no rules in it.";
+    }
+
+    /** ⟨0.28⟩ The {@code unevaluated} list for a zero-rule refusal: ONE entry naming the whole policy —
+     *  the shape SPEC §3.1 pins for a policy with no lines to name, the same one {@link #unhonouredRules}
+     *  already emits for a policy that could not be read. There is no per-rule row to emit here by
+     *  construction, and an EMPTY list would publish a verdict that reads as "the policy ran and passed". */
+    static List<String[]> zeroRuleUnevaluated(String path) {
+        return List.<String[]>of(new String[]{"(entire policy " + path + " — no rules parsed)",
+                "the configured policy yielded zero rules, so nothing was evaluated and no rule in it "
+                + "can have passed"});
+    }
+
+    /**
      * ⟨0.24⟩ SPEC §6.2 — <b>AN UNRECOGNISED CLASS TOKEN IS A POLICY ERROR, not a warning.</b> The clause
      * used to justify the query/policy asymmetry by asserting that dropping such a token on the policy side
      * can only WIDEN the rule, so the failure is loud. Measured four-way, it does both, and the second
@@ -1162,7 +1234,11 @@ final class Policy {
     static boolean parsePolicy(String path) {
         policyErrors.clear();
         policyUnreadable = false;
+        policyRulesParsed = 0;
         ctx().vocabularyUsed.clear();   // ⟨0.24⟩ recomputed per parse — the disclosure is about THIS policy
+        // ⟨0.28⟩ EVERY RULE KIND, counted as a DELTA over THIS parse — see {@link #policyRulesParsed}.
+        int denyBefore = ctx().denyRules.size(), allowBefore = ctx().allowRules.size(),
+            forbidBefore = ctx().forbidRules.size();
         List<String> lines;
         try {
             lines = Files.readAllLines(Path.of(path));
@@ -1363,6 +1439,9 @@ final class Policy {
         // ⟨0.24⟩ FATAL only. `policyErrors` now also carries the lines the parser DROPPED (§3.1 owes the
         // machine consumer every unhonoured line), but making a dropped line refuse the GATE would be a
         // grammar change — deliberately still open, see the #policyErrors note.
+        policyRulesParsed = (ctx().denyRules.size() - denyBefore)
+                          + (ctx().allowRules.size() - allowBefore)
+                          + (ctx().forbidRules.size() - forbidBefore);
         return !policyUnhonourable();
     }
 

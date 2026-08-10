@@ -204,6 +204,10 @@ final class ReportWriter {
         // rather than writing a file. The progress line stays on stderr so stdout carries ONLY the report.
         if ("-".equals(out)) {
             System.out.println(ReportJson.serialize(report));
+            // ⟨0.28⟩ Latch: a real report went to stdout, so the report-stream shutdown hook
+            // (Candor#armReportStream) MUST NOT also write a fail-closed placeholder on exit —
+            // two documents on one stream is the shape §3.3's stream refusal exists to prevent.
+            Candor.reportDocEmitted = true;
             System.err.println("candor-java: wrote " + effectors.size() + " entries (@" + prov[0] + ") to stdout");
         } else {
             writeAtomic(Path.of(out), ReportJson.serialize(report));

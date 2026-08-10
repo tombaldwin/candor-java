@@ -1228,10 +1228,31 @@ public class Candor {
         try {
             Path pa = Path.of(a), pb = Path.of(b);
             if (Files.exists(pa) && Files.exists(pb)) return Files.isSameFile(pa, pb);
-            return resolveForCompare(pa).equals(resolveForCompare(pb));
+            // ⟨0.28⟩ A DANGLING SYMLINK STILL NAMES ITS TARGET. `Files.exists` FOLLOWS the link, so a link
+            // whose target does not exist yet answered false above and fell to the parent-resolved form,
+            // which compares the LINK's own path — so `--gate-json dl.json --gate-json target.json` was
+            // refused as two sinks when it is one artifact and one verdict. A false refusal of a legal
+            // command, and the mirror of the stale green.
+            return resolveForCompare(resolveSinkArtifact(pa)).equals(resolveForCompare(resolveSinkArtifact(pb)));
         } catch (IOException | RuntimeException e) {
             return false;
         }
+    }
+
+    /** ⟨0.28⟩ Follow a chain of symlinks to the artifact finally named, target-need-not-exist. */
+    static Path resolveSinkArtifact(Path p) {
+        Path cur = p;
+        for (int i = 0; i < 32; i++) {
+            if (!Files.isSymbolicLink(cur)) return cur;
+            try {
+                Path t = Files.readSymbolicLink(cur);
+                cur = t.isAbsolute() ? t
+                        : (cur.getParent() == null ? t : cur.getParent().resolve(t));
+            } catch (IOException e) {
+                return cur;
+            }
+        }
+        return cur;
     }
 
     /** Absolute, symlink-resolved as far as the filesystem allows — the parent when the leaf is absent. */

@@ -8,6 +8,18 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ ⟨0.28⟩ never reached the `gate --report` verb.** The rung landed on the scan CLI and nowhere else, so
+  the route a CI job uses when it scans once and gates many times kept last-wins: `gate … --gate-json A
+  --gate-json B` exited 1, wrote the red verdict to B, and left A holding a pre-seeded `{"ok": true}`.
+  Found by a release panel the same day the rung was written. Conformance PART 36 (b21) pins it, with a
+  firing control so the row cannot pass vacuously.
+- **⚠ The §3.3.1 (2) input exemption took the whole run down.** Refusing a sink that names an input having
+  written nothing is right for THAT PATH — but every other named sink still has a reader, and a `-` among
+  them has no input to destroy. Measured: exit 2, the policy correctly intact, and an innocent second sink
+  still publishing a previous run's green. The exemption is now scoped to the offending path (b22).
+- The duplicate case is decided BEFORE the single-sink guard, which acts on the last sink alone and was
+  exiting on it before the stream could be told anything (measured: exit 2, stdout zero bytes).
+
 - **⟨0.28⟩ a repeated `--gate-json` is refused, and every path named gets the refusal** (SPEC §3.3.1).
   Before this rung the last sink won and the first was left exactly as found, so a previous run's
   `{"ok": true}` survived a gate that FIRED — the ⟨0.27⟩ stale green reached by a spelling nobody had

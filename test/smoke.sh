@@ -758,6 +758,62 @@ else echo "  FAIL corrupt dep report — got exit $dcc"; fail=$((fail+1)); fi
 qd="$("$CJ" show "$W/no-such-report.json" x 2>&1)"
 want "query relays the load-failure reason in parens"           "$qd" "($W/no-such-report.json)"
 
+# ── ⟨0.28⟩ SPEC §3.3.1: THE §2.2 SIDECARS GO WITH THE ARMED REPORT ────────────────────────────────
+# An armed report beside a LIVE sidecar is a pair that contradicts itself. It is not decorative on this
+# engine: `callers` is answered FROM the callgraph sidecar (a pure fn is absent from the report by §2
+# rule 3), so the stale half answers confidently and wrongly. Measured before the fix — baseline `f`
+# pure reached by `g`+`main`; the new version gives `f` an effect and adds `h`; the run exits 2 on an
+# unknown flag — `callers f` said "reached by 2 function(s) (the blast radius…): g, main", exit 0, with
+# `h` missing. An agent reads that as safe-to-edit. The cardinal sin, through the half report-arming
+# did not touch.
+echo "== ⟨0.28⟩ the §2.2 sidecars are removed with the armed report (and the VERDICT beside it is not) =="
+mkdir -p "$W/sc/src" "$W/sc/cls"
+cat > "$W/sc/src/Sc.java" <<'J'
+public class Sc { static void f() {} static void g() { f(); } public static void main(String[] a) { g(); } }
+J
+javac -d "$W/sc/cls" "$W/sc/src/Sc.java" 2>/dev/null
+"$CJ" "$W/sc/cls" --json "$W/sc/rep.json" --gate-json "$W/sc/rep.gate.json" >/dev/null 2>&1
+cp "$W/sc/rep.callgraph.json" "$W/sc/cg0" 2>/dev/null; cp "$W/sc/rep.hierarchy.json" "$W/sc/h0" 2>/dev/null
+if [ -f "$W/sc/rep.callgraph.json" ] && [ -f "$W/sc/rep.hierarchy.json" ]; then
+  echo "  ok   the clean run wrote both sidecars (the premise this row needs)"; pass=$((pass+1))
+else
+  echo "  FAIL a clean --json run wrote no sidecar — the rows below would pass vacuously"; fail=$((fail+1))
+fi
+"$CJ" "$W/sc/cls" --json "$W/sc/rep.json" --gate-json "$W/sc/rep.gate.json" --zzz-not-a-flag >/dev/null 2>&1
+for seg in callgraph hierarchy; do
+  if [ -e "$W/sc/rep.$seg.json" ]; then
+    echo "  FAIL rep.$seg.json still sits beside an ARMED report — the contradicting pair"; fail=$((fail+1))
+  else echo "  ok   rep.$seg.json was removed with the armed report"; pass=$((pass+1)); fi
+done
+# …AND `<stem>.gate.json` IS NOT ONE OF THEM. It is the VERDICT sink's own document, separately armed;
+# deleting it from the report sink is §3.3.1's measured cross-sink harm, and a consumer that reads a
+# missing verdict as "nothing to report" goes green.
+if [ -e "$W/sc/rep.gate.json" ]; then
+  echo "  ok   the .gate.json VERDICT beside it survived (a report sink must not delete a verdict)"; pass=$((pass+1))
+else
+  echo "  FAIL the armed report deleted rep.gate.json — the verdict sink's document, which fails OPEN when absent"; fail=$((fail+1))
+fi
+# THE BLAST-RADIUS QUERY DISCLOSES instead of answering from the stale half.
+br="$("$CJ" callers --report "$W/sc/rep.json" Sc.f 2>&1)"
+want "callers over an armed report discloses rather than answering" "$br" 'no call graph in the report'
+absent "…and does NOT name a blast radius from the stale sidecar"   "$br" 'blast radius'
+# RECOVERY: the next clean run brings the pair back, byte-identical.
+"$CJ" "$W/sc/cls" --json "$W/sc/rep.json" >/dev/null 2>&1
+if cmp -s "$W/sc/rep.callgraph.json" "$W/sc/cg0" && cmp -s "$W/sc/rep.hierarchy.json" "$W/sc/h0"; then
+  echo "  ok   a recovering run restores both sidecars byte-identically"; pass=$((pass+1))
+else
+  echo "  FAIL the recovering run did not restore the sidecars to their previous bytes"; fail=$((fail+1))
+fi
+# THE INPUT EXEMPTION COVERS THE SIDECARS TOO — never delete a path this run READS, whatever it is named.
+cp "$W/sc/rep.callgraph.json" "$W/sc/cg1"
+ie="$(CANDOR_DEPS="$W/sc/rep.callgraph.json" "$CJ" "$W/sc/cls" --json "$W/sc/rep.json" --zzz-not-a-flag 2>&1)"
+want "a sidecar that is also an INPUT is named, not deleted"     "$ie" 'INPUT of this run'
+if cmp -s "$W/sc/rep.callgraph.json" "$W/sc/cg1"; then
+  echo "  ok   …and it is still byte-identical on disk"; pass=$((pass+1))
+else
+  echo "  FAIL the sidecar naming a CANDOR_DEPS input was destroyed by arming"; fail=$((fail+1))
+fi
+
 echo "== .candor/config: target-anchored discovery + config-anchored relative paths (spec §3.4) =="
 # a checked-in config with a RELATIVE policy path, scanned from a foreign CWD: discovery walks UP from
 # the TARGET, and the relative `policy .candor/arch.policy` resolves against the repo root holding

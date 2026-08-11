@@ -8,6 +8,21 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ ⟨0.28⟩ the §2.2 sidecars go with the armed report — deleted, not emptied** (SPEC §3.3.1). Arming a
+  `--json <file>` report left `<stem>.callgraph.json` and `<stem>.hierarchy.json` live beside it: a pair
+  that contradicts itself, with no provenance on the sidecar to arbitrate. Not decorative here, because
+  `callers`/`whatif`/`rewire` are answered FROM the callgraph — a currently-pure function is absent from
+  the report by §2 rule 3, so only the sidecar records it. Measured: baseline `f` pure, reached by `g` and
+  `main`; the new version gives `f` an effect and adds a caller `h`; the run exits 2 on an unknown flag —
+  and `callers f` answered *"reached by 2 function(s) (the blast radius if it gained an effect): g, main"*,
+  exit 0, with `h` missing. Confident, labelled the blast radius, and wrong; an agent reads it as
+  safe-to-edit. It now discloses "no call graph in the report", and a recovering run answers all three.
+  Deleted rather than `{}` because ⟨0.24⟩ has already ruled empty ≡ absent ≡ unparseable for a sidecar,
+  so `{}` is a file this family has declared meaningless. **`<stem>.gate.json` is deliberately NOT taken**
+  — it is the verdict sink's own document, separately armed, and a consumer that reads a missing verdict
+  as "nothing to report" goes green. The input exemption covers the sidecars too: one that names a
+  `CANDOR_DEPS` report, a `--policy` or the discovered config is left in place and disclosed. Conformance
+  PART 37 (d).
 - **⚠ ⟨0.28⟩ never reached the `gate --report` verb.** The rung landed on the scan CLI and nowhere else, so
   the route a CI job uses when it scans once and gates many times kept last-wins: `gate … --gate-json A
   --gate-json B` exited 1, wrote the red verdict to B, and left A holding a pre-seeded `{"ok": true}`.

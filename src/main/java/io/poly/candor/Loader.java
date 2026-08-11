@@ -136,6 +136,33 @@ final class Loader {
             Set.of("callgraph", "hierarchy", "calibrated", "layerreach", "locs", "gate");
 
     /**
+     * ⟨0.28⟩ The reserved segments that name A REPORT'S OWN §2.2 SIDECARS — the set
+     * {@link Candor#removeArmedReportSidecars} deletes when it arms that report. DERIVED from the one
+     * list above rather than restated, because a second copy is a copy that drifts (which is what
+     * {@code SourceHygieneTest.theReservedSidecarSegmentsAreListedExactlyOnce} counts, and it caught
+     * this method's first draft doing exactly that).
+     *
+     * <p><b>{@code gate} is excluded, and that exclusion is the whole content of this method.</b> The
+     * other five are DERIVED FROM the report and carry no provenance of their own, which is why §2.2
+     * says to read them together with it and why arming the report has to take them along. A
+     * {@code <stem>.gate.json} is not that: it is the VERDICT SINK's document, with its own
+     * operator-named flag, its own ⟨0.27⟩ arming and its own fail-closed shape. Deleting it here would
+     * be the report sink destroying the verdict sink's document beside it — the harm §3.3.1 records as
+     * MEASURED ("a three-suffix carve-out overwrote … {@code <prefix>.gate.json}, a gate verdict") — and
+     * it would fail OPEN in the way {@link Candor#writeRefusedGateJson} explicitly refuses to: a CI
+     * wrapper that reads a missing verdict as "nothing to report" goes green. The deletion argument for
+     * the five turns on NO consumer treating their absence as a claim; for a verdict, absence is
+     * precisely the claim that gets misread. (candor-rust's reference lists five literals and does not
+     * say why; this engine's canonical list has six, so the reason has to be written down.)
+     */
+    static java.util.List<String> reportSidecarSegments() {
+        var segs = new java.util.ArrayList<>(RESERVED_SIDECAR_SEGMENTS);
+        segs.remove("gate");
+        java.util.Collections.sort(segs);   // deterministic, so a failure's stderr is stable across runs
+        return segs;
+    }
+
+    /**
      * Is this file name a SIDECAR rather than a report? The ONE rule, for every locator glob in this engine
      * — {@link Query#prefixHits}, {@link Query#quietPrefixMatches} and the CANDOR_DEPS directory walk all
      * ask here, because two lists that can drift apart is exactly how this started.

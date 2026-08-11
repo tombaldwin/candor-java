@@ -56,7 +56,7 @@ class TourTest {
 
     @Test void tourNamesTheBenignDeepReach(@TempDir Path dir) throws Exception {
         String report = benignDeepGraph(dir);
-        String out = capture(() -> Query.tour(benignDeepFns(), report, null, true));
+        String out = capture(() -> Query.tour(benignDeepFns(), report, null, true, Query.ReportRef.NONE));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
         JsonArray reaches = o.getAsJsonArray("reaches");
         assertFalse(reaches.isEmpty(), "the benign-deep reach should surface");
@@ -74,7 +74,7 @@ class TourTest {
 
     @Test void tourHumanOutputMatchesFormat(@TempDir Path dir) throws Exception {
         String report = benignDeepGraph(dir);
-        String out = capture(() -> Query.tour(benignDeepFns(), report, null, false));
+        String out = capture(() -> Query.tour(benignDeepFns(), report, null, false, Query.ReportRef.NONE));
         // Header: "the 2 most surprising reaches in r.json:" — settings.Settings.load AND the plain-named
         // core.refresh both clear the bar (crate = report basename; plural "reaches" for >= 2).
         assertTrue(out.contains("candor tour — the 2 most surprising reaches in r.json:"),
@@ -90,14 +90,14 @@ class TourTest {
     @Test void tourNThatCapsToOne(@TempDir Path dir) throws Exception {
         // N == 1 caps the list to one distinct function — byte-identical to the scan-note winner.
         String report = benignDeepGraph(dir);
-        String out = capture(() -> Query.tour(benignDeepFns(), report, "1", true));
+        String out = capture(() -> Query.tour(benignDeepFns(), report, "1", true, Query.ReportRef.NONE));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
         assertEquals(1, o.getAsJsonArray("reaches").size(), "N=1 caps the list");
     }
 
     @Test void tourNonIntegerNIsUsageError(@TempDir Path dir) throws Exception {
         String report = benignDeepGraph(dir);
-        int rc = Query.tour(benignDeepFns(), report, "notanint", false);
+        int rc = Query.tour(benignDeepFns(), report, "notanint", false, Query.ReportRef.NONE);
         assertEquals(2, rc, "a non-integer N is a usage error (exit 2)");
     }
 
@@ -107,7 +107,7 @@ class TourTest {
         String report = dir.resolve("r.json").toString();
         List<Effector> fns = List.of(
                 eff("net.client.send", EffectSet.of(Effect.NET), EffectSet.of(Effect.NET), List.of(), ""));
-        String out = capture(() -> Query.tour(fns, report, null, false));
+        String out = capture(() -> Query.tour(fns, report, null, false, Query.ReportRef.NONE));
         assertTrue(out.contains("candor: nothing hidden — every effect sits where its name says it should."),
                 "expected the honest fallback:\n" + out);
     }

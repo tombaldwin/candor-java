@@ -578,18 +578,23 @@ public final class Query {
 
         String a0 = pos.size() > 0 ? pos.get(0) : null; // first verb arg
         String a1 = pos.size() > 1 ? pos.get(1) : null; // second verb arg
+        // ⟨0.28⟩ SPEC §2 — the DESCRIPTIVE verbs take the locator beside the resolved path for the same
+        // reason the advisory ones do (see #advisoryUnanalyzed): the manifest that qualifies their answer
+        // travels on the report SET, and reading only the lexicographically-first file would answer flat
+        // over a manifest sitting in the sibling.
+        ReportRef ref = new ReportRef(reportLocator, report);
         return switch (cmd) {
             case "show" -> show(fns, a0, json);
-            case "where" -> where(fns, a0, json);
+            case "where" -> where(fns, a0, json, ref);
             case "callers" -> callers(fns, report, a0, json, includeUnknown);
-            case "map" -> map(fns, json);
+            case "map" -> map(fns, json, ref);
             case "diff" -> diff2(a0, a1, json);
-            case "containment" -> containment(fns, a0, json);
-            case "reachable" -> reachable(fns, json);
+            case "containment" -> containment(fns, a0, json, ref);
+            case "reachable" -> reachable(fns, json, ref);
             case "path" -> path(fns, a0, a1, json);
             case "impact" -> impact(fns, a0, json);
-            case "blindspots" -> blindspots(fns, json, stats, classFilter);
-            case "tour" -> tour(fns, report, a0, json);
+            case "blindspots" -> blindspots(fns, json, stats, classFilter, ref);
+            case "tour" -> tour(fns, report, a0, json, ref);
             case "gains" -> gains2(a0, a1, json, strict, policyFlag);
             // ⟨0.24⟩ the ADVISORY verbs take the LOCATOR beside the resolved path: SPEC §3.2 bounds their
             // incompleteness verdict by the GATE's over the same bytes, and the gate reads the report SET
@@ -841,7 +846,7 @@ public final class Query {
     }
 
     /** Which functions perform an effect — direct sources split from inheritors. */
-    static int where(List<Effector> fns, String eff, boolean json) {
+    static int where(List<Effector> fns, String eff, boolean json, ReportRef ref) {
         if (eff == null) return usage("where <Effect> [--report <locator>] [--json]");
         // A typo'd/unknown effect NAME is a LOUD error (exit 2) — never a false-empty 0-result at exit 0 that
         // reads as an authoritative "nothing performs Net" when the user actually typed "Network" (corpus-audit
@@ -855,15 +860,32 @@ public final class Query {
         List<String> direct = fns.stream().filter(f -> f.direct().toNames().contains(eff)).map(f -> f.fn()).sorted().toList();
         List<String> inherit = fns.stream()
                 .filter(f -> f.inferred().toNames().contains(eff) && !f.direct().toNames().contains(eff)).map(f -> f.fn()).sorted().toList();
+        // ⟨0.28⟩ SPEC §2 names this verb's `{"directly":[],"inherited":[]}` by measurement. AFTER the
+        // usage/unknown-effect exit above, so a mistyped effect is still a plain usage error.
+        ReportCompleteness comp = ref.completeness("where");
         if (json) {
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("effect", eff);
             m.put("directly", direct);
             m.put("inherited", inherit);
+            comp.writeJson(m);
             emit(m);
             return 0;
         }
+        // BEFORE the answer: a function in an unread unit performs `eff` or it does not, and NEITHER list
+        // below can say which — so the caveat qualifies a populated answer exactly as much as an empty one.
+        comp.printNote("the function(s) named below are only those candor could SEE perform " + eff,
+                "A function in one of those is ABSENT from the report, so it cannot appear in either "
+                + "list. " + comp.gateLine() + " Re-scan for a complete answer.");
         if (direct.isEmpty() && inherit.isEmpty()) {
+            if (comp.mustHedge()) {
+                // NOT "no function performs Fs" — that sentence is the prose spelling of the empty JSON
+                // pair, and over these bytes candor has not examined enough to say it.
+                System.out.println("candor: no function candor COULD SEE performs " + eff
+                        + " — but see the INCOMPLETE note above; this is NOT \"nothing performs "
+                        + eff + "\".");
+                return 0;
+            }
             System.out.println("candor: no function performs " + eff + " in the report.");
             return 0;
         }
@@ -1331,19 +1353,194 @@ public final class Query {
      *  same relation: a member is counted the moment it is an object, because a manifest member that
      *  cannot be read is still a member saying something was not analysed. */
     static List<String[]> advisoryUnanalyzed(String locator, String resolved, String who) {
+        return reportCompleteness(locator, resolved, who).unanalyzed();
+    }
+
+    // ── ⟨0.28⟩ SPEC §2: …AND "EVERY ADVISORY VERB" WAS ITSELF THE SCOPING MISTAKE ──────────────────────
+    //
+    // The block above says the completeness manifest is what an ADVISORY verb must read, and the
+    // DESCRIPTIVE verbs — the ones that answer a question rather than render a verdict — were never sent
+    // back for it. SPEC §2 ⟨0.28⟩ corrects the clause to the condition that makes it true: the obligation
+    // binds "any verb whose output could be read as a NEGATIVE FINDING about the code — a verdict, an
+    // empty result set, or a zero count". An empty result set is precisely what these verbs produce.
+    // MEASURED on the jar built from the commit before this one, over a report declaring
+    // `analyzed.count: 0` and a non-empty `unanalyzed` — the standard post-failure artifact since the
+    // ⟨0.28⟩ arming rung, i.e. what is on disk after a failed run:
+    //
+    //     blindspots   {"sources":[],"totalUnknown":0}                exit 0, no hedge on either channel
+    //     containment  {"layerPrefix":"","contained":[],"ambient":{}} exit 0, no hedge
+    //     reachable    {"entryPoints":0,"effects":{}}                 exit 0, no hedge
+    //     map          {}                                             exit 0, no hedge
+    //     tour         {"reaches":[]}                                 exit 0, no hedge
+    //     where Fs     {"effect":"Fs","directly":[],"inherited":[]}   exit 0, no hedge
+    //
+    // "no blind spots" out of a report whose own manifest names a file it could not read. A consumer
+    // cannot tell *nobody performs `Fs`* from *nothing was examined*. The SAME reader, the same two
+    // channels, the same no-op-when-complete rule — a second mechanism would be the two-copies mistake
+    // {@link #advisoryAnswer} exists to prevent, one level out.
+
+    /** ⟨0.28⟩ The ⟨0.21⟩ manifest as far as it could be READ, unioned over the report SET a locator names.
+     *
+     *  <p><b>THREE CAUSES, NOT THREE SPELLINGS OF ONE.</b> {@code unanalyzed} names source the producing
+     *  scan could not READ. {@code judgedNothing} is SPEC §2's {@code analyzed.count: 0} row — a scan that
+     *  read whatever it read and reached no conclusion about any of it, so there is no file to name and
+     *  the manifest is legitimately ABSENT; without this arm the reader saw a complete report and every
+     *  verb answered {@code {}} over it just the same. {@code unreadable} is a report file this verb could
+     *  not re-read at all. Only the union covers both the post-failure artifact (which carries the first
+     *  two) and the facade/re-export report (which carries only the second).
+     *
+     *  @param unanalyzed the ⟨0.21⟩ manifest rows, {@code {path, reason}}
+     *  @param judgedNothing one label per report file declaring {@code analyzed.count: 0}
+     *  @param unreadable one path per report file this verb could not re-read (already disclosed on stderr
+     *      by {@link #reportCompleteness}) */
+    record ReportCompleteness(List<String[]> unanalyzed, List<String> judgedNothing, List<String> unreadable) {
+        /** Nothing to disclose — for a caller with no report locator at all (a unit test driving a verb
+         *  over an in-memory entry list). Every channel below is a no-op on it. */
+        static final ReportCompleteness NONE = new ReportCompleteness(List.of(), List.of(), List.of());
+
+        /** Is the universe this verb reasoned over known-partial in the way the GATE also refuses over?
+         *  {@code judgedNothing} is deliberately NOT an arm — see {@link #mustHedge}. */
+        boolean incomplete() { return !unanalyzed.isEmpty() || !unreadable.isEmpty(); }
+
+        /** ⟨0.28⟩ <b>Is there anything at all to disclose — the trigger for an ANSWER, where
+         *  {@link #incomplete} is the trigger for a VERDICT.</b>
+         *
+         *  <p>{@code analyzed.count: 0} reaches both DISCLOSURE channels and stops at the exit code, and
+         *  the split is load-bearing. ⟨0.24⟩ ruled count-0 explicitly the other way for exit codes — "a
+         *  disclosure, not an exit code" — because {@code gate --report} exits 0 over a facade package,
+         *  and a verb exiting 2 there would claim it got LESS far than the gate on identical bytes, which
+         *  is the mirror of the over-claim {@code --strict} exists to prevent. A descriptive verb asks
+         *  THIS: its empty set is a negative finding under all three causes, and it has no exit code for
+         *  the distinction to matter to. */
+        boolean mustHedge() { return incomplete() || !judgedNothing.isEmpty(); }
+
+        /** Union in a SECOND locator's manifest, for a verb that reads two — {@code containment
+         *  <baseline>}, whose answer is a DIFFERENCE and is therefore unsound if EITHER side is partial,
+         *  in opposite directions: a leak living in an unread unit of the CURRENT tree is missed, while
+         *  one living in an unread unit of the BASELINE reads as newly appeared, at exit 1. One
+         *  {@code ReportCompleteness} rather than two notes, because {@link #writeJson} writes fixed key
+         *  names and calling it twice would have the second locator's manifest overwrite the first's. */
+        ReportCompleteness absorb(ReportCompleteness other) {
+            List<String[]> u = new ArrayList<>(unanalyzed); u.addAll(other.unanalyzed);
+            List<String> j = new ArrayList<>(judgedNothing); j.addAll(other.judgedNothing);
+            List<String> r = new ArrayList<>(unreadable); r.addAll(other.unreadable);
+            return new ReportCompleteness(u, j, r);
+        }
+
+        /** What {@code gate --report} does over THESE SAME BYTES, as one sentence for the note's tail — a
+         *  method and not a constant, because the two causes get OPPOSITE answers. Every pre-⟨0.28⟩ note
+         *  in this file closes with "`gate --report` exits 2 over it", which is true of {@code unanalyzed}
+         *  (§3.3 makes an incomplete analysis of the target's own code an exit-2 cause) and FALSE of
+         *  {@code analyzed.count: 0}. A warning that sends the reader to a CI job which then passes
+         *  teaches them the warning is noise — the disclosure discrediting itself. The count-0 sentence
+         *  says the opposite, and says why it is the more urgent of the two: nothing downstream fails
+         *  closed on these bytes, so this note is the whole of the warning. */
+        String gateLine() {
+            return incomplete()
+                    ? "`gate --report` exits 2 over these bytes."
+                    : "NOTHING DOWNSTREAM WILL CATCH THIS FOR YOU — `gate --report` exits 0 over a "
+                      + "judged-nothing report (⟨0.24⟩: a disclosure, not an exit code), so this note is "
+                      + "the whole of the warning.";
+        }
+
+        /** The key names {@link #writeJson} is about to write — asked of the fields ACTUALLY going out,
+         *  never of a hardcoded list, so {@code map}'s collision check below cannot report a displacement
+         *  that did not happen (the {@code net-partner} failure this family already paid for: a key
+         *  reported ignored while being honoured, pointed the other way). Empty on a complete report. */
+        List<String> keys() {
+            if (!mustHedge()) return List.of();
+            List<String> k = new ArrayList<>(List.of("incomplete"));
+            if (!unanalyzed.isEmpty()) k.add("unanalyzed");
+            if (!judgedNothing.isEmpty()) k.add("judgedNothing");
+            return k;
+        }
+
+        /** The MACHINE half — a NO-OP on a complete report, so an ordinary run is byte-identical.
+         *  {@code incomplete: true} is the one flag EVERY cause raises, so a consumer that only branches
+         *  on it is safe under all of them; the arrays name WHICH, because the causes want different
+         *  repairs (a scan that can READ a file vs a scan that reaches a conclusion) and each is omitted
+         *  when empty, so a document raised by {@code unanalyzed} alone stays byte-identical to a
+         *  pre-⟨0.28⟩ one. Appends to a LinkedHashMap/TreeMap the caller already built — never
+         *  {@code toJson}-and-reparse, which is where candor-rust's first draft silently RE-SORTED the
+         *  answers it was disclosing about. */
+        void writeJson(Map<String, Object> out) {
+            if (!mustHedge()) return;
+            out.put("incomplete", true);
+            if (!unanalyzed.isEmpty()) out.put("unanalyzed", manifestJson(unanalyzed));
+            if (!judgedNothing.isEmpty()) out.put("judgedNothing", List.copyOf(judgedNothing));
+        }
+
+        /** The HUMAN half, BEFORE the answer — it qualifies a NON-empty result as much as an empty one.
+         *  On STDOUT, beside the answer it qualifies (never stderr: these verbs' human output IS stdout,
+         *  and a caveat on the other stream is one `2>/dev/null` from gone), and only ever reached on the
+         *  human channel — the {@code --json} branches return above it. A no-op on a complete report. */
+        void printNote(String soWhat, String tail) {
+            if (!mustHedge()) return;
+            List<String> causes = new ArrayList<>();
+            int units = unanalyzed.size() + unreadable.size();
+            if (units > 0) causes.add(units + " unit(s) candor could not analyze");
+            if (!judgedNothing.isEmpty())
+                causes.add(judgedNothing.size() + " report(s) that JUDGED NOTHING (`analyzed.count: 0`)");
+            System.out.println("  ⚠ INCOMPLETE — the report(s) under this locator declare "
+                    + String.join(", and ", causes) + ",");
+            System.out.println("      so " + soWhat + ":");
+            for (String[] u : unanalyzed) System.out.println("      " + u[0] + " — " + u[1]);
+            for (String p : unreadable)
+                System.out.println("      " + p + " — this report could not be re-read (see stderr)");
+            for (String p : judgedNothing)
+                System.out.println("      " + p + " — `analyzed.count: 0`: this report judged NOTHING, so "
+                        + "it names no function at all and its silence is not a purity claim");
+            System.out.println("      " + tail);
+        }
+    }
+
+    /** The label the judged-nothing disclosures use for one report file: its §2 package name (the thing
+     *  the operator recognises) plus the path (the thing they can re-scan). One spelling, so the gate
+     *  route's advisory and the descriptive verbs' manifest name the same report the same way. */
+    static String judgedNothingLabel(Envelope env, String path) {
+        return (env.packageName() != null ? env.packageName() : "<unnamed package>") + " (" + path + ")";
+    }
+
+    /** ⟨0.28⟩ Read {@link ReportCompleteness} over the report SET a locator names — the same set, through
+     *  the same {@link #readEnvelope}, that {@link #advisoryUnanalyzed} has always used, now also
+     *  answering SPEC §2's {@code analyzed.count: 0} row. LENIENT per file for the reason given above: a
+     *  report this verb cannot re-read is DISCLOSED on stderr and recorded as {@code unreadable} (which
+     *  hedges the answer) rather than dropped — a dropped file is exactly the evidence this rule is about. */
+    static ReportCompleteness reportCompleteness(String locator, String resolved, String who) {
         List<String> set = new ArrayList<>(locatorReportSet(locator));
         if (set.isEmpty() && resolved != null) set.add(resolved);
         List<String[]> un = new ArrayList<>();
+        List<String> jn = new ArrayList<>();
+        List<String> bad = new ArrayList<>();
         for (String r : set) {
+            Envelope env;
             try {
-                un.addAll(readEnvelope(r).unanalyzed());
+                env = readEnvelope(r);
             } catch (Exception e) {
                 System.err.println("candor " + who + ": report " + r + " could not be re-read ("
                         + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName())
                         + ") — its completeness manifest is OMITTED from this answer");
+                bad.add(r);
+                continue;
             }
+            un.addAll(env.unanalyzed());
+            // The PATH, not {@link #judgedNothingLabel}'s package-qualified form: this list goes on the
+            // MACHINE channel, where the actionable identifier is the file to re-scan, and it is the
+            // shape candor-rust's `judgedNothing` already publishes. (The label form stays on the gate
+            // route's stderr advisory, where a human is reading and `<unnamed package>` is prose, not a
+            // value a consumer keys on.)
+            if (env.judgedNothing()) jn.add(r);
         }
-        return un;
+        return new ReportCompleteness(un, jn, bad);
+    }
+
+    /** The report a DESCRIPTIVE verb is answering over: the LOCATOR (which may name a report SET, §2 "a
+     *  single analysis world") beside the single path the verb's own answer was computed from. Threaded so
+     *  the six verbs can read the manifest that travels WITH their input; {@link #NONE} for a caller that
+     *  has no locator at all. */
+    record ReportRef(String locator, String resolved) {
+        static final ReportRef NONE = new ReportRef(null, null);
+        ReportCompleteness completeness(String who) { return reportCompleteness(locator, resolved, who); }
     }
 
     /** The ⟨0.21⟩ manifest as wire rows — one spelling, shared by every verb that discloses it. */
@@ -2548,8 +2745,15 @@ public final class Query {
      *  only the {@code functions} array): the ⟨0.21⟩ completeness manifest, the ⟨0.15⟩ κ-coverage ledger,
      *  and the RAW {@code unknownWhy} strings (see {@link Policy#gateInputFromReport}). Read from the SAME
      *  file, in one pass — no sidecar, no second locator. */
+    /** @param judgedNothing ⟨0.24⟩ SPEC §2 — does this report say it JUDGED NOTHING (`analyzed.count: 0`)?
+     *      Decided by {@link Loader#claimsToHaveJudgedNothing}, the SHARED predicate the chained-dep join
+     *      already uses, so a report cannot be judged-nothing on one route and not on another. It is NOT
+     *      `analyzedCount() == 0`, which this verb's gate route used to ask inline and which gets the
+     *      manifest-ABSENT row wrong: a legacy bare-array report has no `analyzed` key, reads back as 0
+     *      here, and would be called judged-nothing while LISTING functions it demonstrably judged
+     *      (⟨0.24⟩ row 3 — absent manifest ⇒ judged-nothing iff `functions` is empty). */
     record Envelope(int analyzedCount, List<String[]> unanalyzed, List<Map.Entry<String, Integer>> uncovered,
-                    Map<String, List<String>> rawUnknownWhy, String packageName) {}
+                    Map<String, List<String>> rawUnknownWhy, String packageName, boolean judgedNothing) {}
 
     static Envelope readEnvelope(String path) throws Exception {
         JsonElement root = JsonParser.parseString(Files.readString(Path.of(path)));
@@ -2559,8 +2763,10 @@ public final class Query {
         int analyzed = 0;
         String pkg = null;                 // §2 `package`/`packages` — for the judged-nothing advisory
         JsonArray fns = null;
+        JsonObject envObj = null;          // the §2 envelope, or null for the legacy v0.1 bare array
         if (root.isJsonObject()) {
             JsonObject o = root.getAsJsonObject();
+            envObj = o;
             if (o.has("package") && o.get("package").isJsonPrimitive())
                 pkg = o.get("package").getAsString();
             else if (o.has("packages") && o.get("packages").isJsonArray()) {
@@ -2626,7 +2832,8 @@ public final class Query {
                     if (w.isJsonPrimitive()) ws.add(w.getAsString());
                 if (!ws.isEmpty()) raw.put(o.get("fn").getAsString(), ws);
             }
-        return new Envelope(analyzed, unanalyzed, uncovered, raw, pkg);
+        return new Envelope(analyzed, unanalyzed, uncovered, raw, pkg,
+                Loader.claimsToHaveJudgedNothing(envObj, fns));
     }
 
     /**
@@ -2822,9 +3029,12 @@ public final class Query {
             // A repeated `fn` across reports joins by UNION here too — same direction as the entry join.
             for (var e : env.rawUnknownWhy().entrySet())
                 rawWhy.computeIfAbsent(e.getKey(), k -> new ArrayList<>()).addAll(e.getValue());
-            if (env.analyzedCount() == 0)
-                judgedNothing.add((env.packageName() != null ? env.packageName() : "<unnamed package>")
-                        + " (" + reportPath + ")");
+            // ⟨0.28⟩ Via {@link Envelope#judgedNothing} — the SHARED predicate — and no longer the inline
+            // `analyzedCount() == 0` this line used to ask. The descriptive verbs now read the same row
+            // (see {@link #reportCompleteness}); two spellings of "judged nothing" in one file is exactly
+            // how a report comes to be judged-nothing on one route and not on the other.
+            if (env.judgedNothing())
+                judgedNothing.add(judgedNothingLabel(env, reportPath));
         }
         if (reportPaths.size() > 1)
             System.err.println("candor gate: locator names " + reportPaths.size()
@@ -2980,7 +3190,7 @@ public final class Query {
     }
 
     /** A class -> effects overview of the whole report, most-effectful first. */
-    static int map(List<Effector> fns, boolean json) {
+    static int map(List<Effector> fns, boolean json, ReportRef ref) {
         Map<String, TreeSet<String>> mods = new HashMap<>();
         Map<String, Integer> counts = new HashMap<>();
         for (Effector f : fns) {
@@ -2990,6 +3200,10 @@ public final class Query {
                     .addAll(f.inferred().without(Effect.UNKNOWN).toNames());
             counts.merge(mod, 1, Integer::sum);
         }
+        // ⟨0.28⟩ `map` answers `{}`, which SPEC §2 makes the strongest determined negative there is: every
+        // key a consumer reads defaults to empty, so `doc.get("app.Db", {})` cannot tell an empty overview
+        // from an unexamined one.
+        ReportCompleteness comp = ref.completeness("map");
         if (json) {
             Map<String, Object> out = new TreeMap<>();
             for (var m : mods.keySet()) {
@@ -2998,10 +3212,31 @@ public final class Query {
                 v.put("functions", counts.get(m));
                 out.put(m, v);
             }
+            // THE ONE DOCUMENT WHOSE TOP LEVEL IS A USER NAMESPACE, so a disclosure key can in principle
+            // land on a real class (`class incomplete`). It cannot be dodged by nesting — a consumer
+            // branching on `"incomplete" in doc` never sees a nested one — and `put` OVERWRITES, so a
+            // silently displaced class row would be the dropped row this whole rung exists to remove. So
+            // the collision is DISCLOSED, loudly and by name, and the hedge still wins: a lost row the
+            // operator has been told about beats a false all-clear nobody has.
+            for (String k : comp.keys())
+                if (out.containsKey(k))
+                    System.err.println("candor map: this report has a class literally named `" + k
+                            + "`, which collides with the ⟨0.28⟩ incompleteness disclosure this answer "
+                            + "must carry — the disclosure wins and that class's row is NOT in the JSON "
+                            + "below. Its effects are in the text output (drop --json).");
+            comp.writeJson(out);
             emit(out);
             return 0;
         }
+        comp.printNote("the class rows below cover only the source candor read",
+                "A class living wholly in one of those is MISSING from the overview, and one that IS "
+                + "listed may be missing functions. " + comp.gateLine() + " Re-scan for a complete map.");
         if (mods.isEmpty()) {
+            if (comp.mustHedge()) {
+                System.out.println("candor: no effectful function candor COULD SEE — but see the "
+                        + "INCOMPLETE note above; this is NOT \"the code performs no effects\".");
+                return 0;
+            }
             System.out.println("candor: no effectful functions in the report.");
             return 0;
         }
@@ -3364,7 +3599,17 @@ public final class Query {
         return out;
     }
 
-    static int blindspots(List<Effector> fns, boolean json, boolean stats, Set<ReasonClass> classFilter) {
+    static int blindspots(List<Effector> fns, boolean json, boolean stats, Set<ReasonClass> classFilter,
+                          ReportRef ref) {
+        // ⟨0.28⟩ THE SHARPEST INSTANCE IN SPEC §2's LIST, and the one that names this verb: over a report
+        // whose own manifest names a file it could not read, `blindspots` answered
+        // `{"sources":[],"totalUnknown":0}` — *no blind spots* — at exit 0. The unread unit IS a blind
+        // spot, of the one kind this verb exists to enumerate, and it is the one kind that cannot appear
+        // in `sources`: there is no report entry for it to carry an `unknownWhy`.
+        ReportCompleteness comp = ref.completeness("blindspots");
+        String bsSoWhat = "the Unknown source(s) below are only those inside the source candor read";
+        String bsTail = "An unread unit is a blind spot too, and it carries no `unknownWhy` to be listed "
+                + "under — so it is HERE and not below. " + comp.gateLine() + " Re-scan for the full picture.";
         Map<String, List<String>> rev = new HashMap<>();
         for (Effector f : fns) for (String c : f.calls()) rev.computeIfAbsent(c, k -> new ArrayList<>()).add(f.fn());
         // `--class <c,…>` (SPEC §3.1 ⟨0.20⟩): keep only Unknown SOURCES whose reason classes intersect the
@@ -3393,10 +3638,20 @@ public final class Query {
                 out.put("byClass", byClass);           // ALL six classes, stable order (0 when absent)
                 out.put("sources", sources);
                 out.put("totalUnknown", totalUnknown);
+                // ⟨0.28⟩ `--stats` is the same answer summarised, so it takes the same hedge: sizing the
+                // blind-spot cost off an all-zero distribution computed over nothing is exactly the
+                // decision this rung is here to stop.
+                comp.writeJson(out);
                 emit(out);
                 return 0;
             }
+            comp.printNote(bsSoWhat, bsTail);
             if (sources == 0) {
+                if (comp.mustHedge()) {
+                    System.out.println("  no Unknown source inside what candor COULD SEE — but see the "
+                            + "INCOMPLETE note above; this distribution is not a measure of the whole crate.");
+                    return 0;
+                }
                 System.out.println("  no Unknown sources — nothing to classify (no direct-Unknown in this report).");
                 return 0;
             }
@@ -3434,10 +3689,18 @@ public final class Query {
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("sources", sources);
             out.put("totalUnknown", totalUnknown);
+            comp.writeJson(out);
             emit(out);
             return 0;
         }
+        comp.printNote(bsSoWhat, bsTail);
         if (sources.isEmpty()) {
+            if (comp.mustHedge()) {
+                // NOT "every call resolved". Over these bytes candor did not see every call.
+                System.out.println("  no Unknown source inside what candor COULD SEE — but see the "
+                        + "INCOMPLETE note above; this is NOT \"no blind spots\".");
+                return 0;
+            }
             System.out.println("  no Unknown sources — every call resolved (or no Unknown in this report).");
             return 0;
         }
@@ -3457,7 +3720,7 @@ public final class Query {
      *
      *  <p>{@code arg} is the optional positional N; a non-integer is a usage error (exit 2). {@code report}
      *  is the resolved report path (its {@code .callgraph.json} sidecar drives the transitive walk). */
-    static int tour(List<Effector> fns, String reportPath, String arg, boolean json) {
+    static int tour(List<Effector> fns, String reportPath, String arg, boolean json, ReportRef ref) {
         // The lone optional positional is N (how many to list); default 10. It MUST be a positive integer —
         // a non-integer OR zero is a usage error (exit 2). `tour 0` must never print the honest-sounding
         // "nothing hidden" over an effectful crate: that would be a false all-clear (the §4 cardinal sin).
@@ -3502,6 +3765,16 @@ public final class Query {
         String pkg = reportPackage(reportPath);
         String crateName = pkg != null ? pkg : basename;
 
+        // ⟨0.28⟩ AND THE SAME ARGUMENT AS THE `unknown` FIELD BELOW, ONE CAUSE OVER. That field exists
+        // because a bare `{"reaches":[]}` read as clean to the agent loop over a mostly-Unknown graph; a
+        // report that judged nothing, or that names a file it could not read, produces the IDENTICAL
+        // empty array from strictly less evidence — and the ⅓-Unknown threshold cannot see it, because an
+        // unread unit contributes no entry and so moves neither `unknown` nor `total`.
+        ReportCompleteness comp = ref.completeness("tour");
+        String tSoWhat = "the reaches below are ranked over only the call graph candor could see";
+        String tTail = "A surprising reach whose path runs through an unread unit is not ranked here at "
+                + "all, and cannot be. " + comp.gateLine() + " Re-scan for the full tour.";
+
         if (json) {
             List<Map<String, Object>> reaches = new ArrayList<>();
             for (Surface.Find f : finds) {
@@ -3529,12 +3802,14 @@ public final class Query {
                 u.put("count", unk); u.put("total", tot);
                 out.put("unknown", u);
             }
+            comp.writeJson(out);
             // Pure JSON to stdout, compact (no pretty-printing) — matches the Rust reference's
             // serde_json::to_string. The shared JSON serializer here pretty-prints, so build a compact one.
             System.out.println(new GsonBuilder().create().toJson(out));
             return 0;
         }
 
+        comp.printNote(tSoWhat, tTail);
         if (finds.isEmpty()) {
             // Effectful-but-nothing-surprising vs genuinely-pure both land here; either way the honest line
             // is the useful answer (never a manufactured surprise) — mirrors the scan-note fallback. BUT never
@@ -3546,6 +3821,14 @@ public final class Query {
                 System.out.println("candor: no surprising reaches — but " + unknown + " of " + total
                     + " function(s) are Unknown (unresolved calls; their transitive effects are NOT analyzed). "
                     + "Run `candor blindspots` — the report records a reason for each.");
+                return 0;
+            }
+            if (comp.mustHedge()) {
+                // "nothing hidden" is the single most reassuring sentence this binary prints, and over a
+                // report that judged nothing it is the false all-clear in plain English. The ⅓-Unknown
+                // branch above cannot catch this case, for the reason given where `comp` is read.
+                System.out.println("candor: nothing hidden in what candor COULD SEE — but see the "
+                        + "INCOMPLETE note above; this is NOT \"nothing is hidden\".");
                 return 0;
             }
             System.out.println("candor: nothing hidden — every effect sits where its name says it should.");
@@ -3724,13 +4007,19 @@ public final class Query {
      *  per-method dump can't, since most effectful methods are never called by project code directly.
      *  Lists each effect with how many entry points reach it (+ a few examples); Unknown flagged as the
      *  visibility caveat it is. No entry points → says so (nothing is marked runtime-invoked). */
-    static int reachable(List<Effector> fns, boolean json) {
+    static int reachable(List<Effector> fns, boolean json, ReportRef ref) {
         List<Effector> entries = fns.stream().filter(f -> f.entryPoint())
                 .sorted(Comparator.comparing(f -> f.fn())).toList();
         TreeMap<String, List<String>> byEffect = new TreeMap<>();
         for (Effector f : entries)
             for (String e : f.inferred().toNames()) byEffect.computeIfAbsent(e, k -> new ArrayList<>()).add(f.fn());
 
+        // ⟨0.28⟩ `{"entryPoints":0,"effects":{}}` is the strongest claim this tool can make — *the program
+        // performs no effect at runtime* — and over a report that judged nothing it rests on no evidence
+        // at all. It is also the one answer here that stays a determined negative on GOOD data (a library
+        // has no entry points), which is exactly why the caveat must be a KEY and not something the
+        // consumer is expected to infer from the emptiness.
+        ReportCompleteness comp = ref.completeness("reachable");
         if (json) {
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("entryPoints", entries.size());
@@ -3742,13 +4031,23 @@ public final class Query {
                 effects.put(e, m);
             });
             out.put("effects", effects);
+            comp.writeJson(out);
             System.out.println(JSON.toJson(out));
             return 0;
         }
 
+        comp.printNote("the runtime effect set below is a union over only the entry points candor could see",
+                "An entry point in an unread unit contributes NOTHING to this union, and neither does any "
+                + "effect it reaches. " + comp.gateLine()
+                + " Re-scan before treating this as the program's runtime surface.");
         System.out.println("candor reachable — effects the program performs at runtime "
                 + "(union over " + entries.size() + " entry point" + (entries.size() == 1 ? "" : "s") + ")");
         if (entries.isEmpty()) {
+            if (comp.mustHedge()) {
+                System.out.println("  (no entry point in what candor COULD SEE — see the INCOMPLETE note "
+                        + "above; this is NOT \"nothing is marked runtime-invoked\")");
+                return 0;
+            }
             System.out.println("  (no entry points in this report — nothing is marked runtime-invoked)");
             return 0;
         }
@@ -3786,7 +4085,11 @@ public final class Query {
      *  effect appears in a layer it wasn't in before — "DB must not leak into a new module". Ambient
      *  effects (Log/Clock/…) are reported but not scored (cross-cutting is expected). This is a
      *  diagnostic + ratchet, deliberately NOT a single gameable "score". */
-    static int containment(List<Effector> fns, String basePath, boolean json) {
+    static int containment(List<Effector> fns, String basePath, boolean json, ReportRef ref) {
+        // ⟨0.28⟩ `{"contained":[],"ambient":{}}` reads as *this codebase performs no boundary effect and
+        // therefore has perfect containment*, and over a report that judged nothing it is a statement
+        // about nothing. The BASELINE's manifest is folded in below when the ratchet runs.
+        ReportCompleteness comp = ref.completeness("containment");
         String[] prefix = commonPrefix(fns);
         int pl = prefix.length;
         // effect -> (layer -> count of methods performing it DIRECTLY)
@@ -3804,6 +4107,11 @@ public final class Query {
                 System.err.println("candor: cannot read baseline " + basePath + " (" + why + ")");
                 return 2;
             }
+            // ⟨0.28⟩ A DIFFERENCE IS UNSOUND IF EITHER SIDE IS PARTIAL, and the two sides fail in OPPOSITE
+            // directions: a leak living in an unread unit of the CURRENT tree is missed (a false
+            // all-clear at exit 0), while one living in an unread unit of the BASELINE reads as newly
+            // appeared (a fabricated leak, at exit 1). So both are read — see ReportCompleteness#absorb.
+            comp = comp.absorb(reportCompleteness(basePath, basePath, "containment (baseline)"));
             int bpl = commonPrefix(base).length;
             Map<String, Set<String>> baseLayers = new HashMap<>();
             for (Effector f : base)
@@ -3820,9 +4128,22 @@ public final class Query {
             Collections.sort(leaks);
             Collections.sort(cleanups);
             if (json) {
-                emit(Map.of("leaks", leaks, "cleanups", cleanups));
+                // A LinkedHashMap and no longer `Map.of`, which has no defined iteration order: with two
+                // entries `Map.of` is a salted `MapN`, so this document's key order FLIPPED between JVM
+                // runs (measured — 8 runs of the identical command gave `{cleanups,leaks}` 6 times and
+                // `{leaks,cleanups}` twice). Fixed to leaks-then-cleanups, matching candor-rust's
+                // serialization order, so the ⟨0.28⟩ keys have a stable place to land after them.
+                Map<String, Object> out = new LinkedHashMap<>();
+                out.put("leaks", leaks);
+                out.put("cleanups", cleanups);
+                comp.writeJson(out);
+                emit(out);
                 return leaks.isEmpty() ? 0 : 1;
             }
+            comp.printNote("the leak/cleanup lists below are a difference between two partially-read trees",
+                    "A leak in one of those unread units is MISSING from this ratchet, and one that was "
+                    + "always there but sat in an unread BASELINE unit would read as new. This verb's own "
+                    + "EXIT CODE is unchanged — the rung adds a caveat, it does not refuse. " + comp.gateLine());
             if (!leaks.isEmpty()) {
                 System.out.println("[AS-EFF-010] a boundary effect leaked into a layer it wasn't in:");
                 for (String l : leaks) System.out.println("  " + l);
@@ -3835,7 +4156,12 @@ public final class Query {
             if (leaks.isEmpty() && cleanups.isEmpty())
                 System.out.println("candor containment: unchanged vs " + basePath + " (no leaks, no cleanups).");
             else if (leaks.isEmpty())
-                System.out.println("\ncandor containment: no regressions ✓");
+                // NO `✓` over a partial difference: the tick is the prose spelling of an empty `leaks`,
+                // and the note above has just named units neither side was read over.
+                System.out.println(comp.mustHedge()
+                        ? "\ncandor containment: no regression IN WHAT CANDOR COULD SEE — see the "
+                          + "INCOMPLETE note above"
+                        : "\ncandor containment: no regressions ✓");
             if (!leaks.isEmpty())
                 System.out.println("\nfix: keep the call in its boundary layer, or refresh the baseline if intended.");
             return leaks.isEmpty() ? 0 : 1;
@@ -3863,9 +4189,13 @@ public final class Query {
             out.put("layerPrefix", String.join(".", prefix));
             out.put("contained", contained);
             out.put("ambient", ambient);
+            comp.writeJson(out);
             emit(out);
             return 0;
         }
+        comp.printNote("the containment percentages below are computed over only the source candor read",
+                "A boundary call in an unread unit is in NOBODY's layer here, so a 100% is a share of a "
+                + "partial denominator. " + comp.gateLine() + " Re-scan before ratcheting.");
         System.out.println("candor containment — how well each boundary effect stays in one layer");
         System.out.println("(layers = the segment after the common root `" + String.join(".", prefix) + "`;"
                 + " the signal is dispersion, NOT effect count)\n");
@@ -3885,7 +4215,9 @@ public final class Query {
             System.out.printf("  %-7s %8d%% %7d   %s%n", eff, 100 * owner.getValue() / tot, layers.size(),
                     owner.getKey() + " (" + owner.getValue() + ")" + (leaks.isEmpty() ? "" : "  ← " + leaks));
         }
-        if (!any) System.out.println("  (no boundary effects in the report)");
+        if (!any) System.out.println(comp.mustHedge()
+                ? "  (no boundary effect in what candor COULD SEE — see the INCOMPLETE note above)"
+                : "  (no boundary effects in the report)");
         String amb = AMBIENT.stream().filter(byEff::containsKey)
                 .map(e -> e + " " + byEff.get(e).size() + "L").collect(Collectors.joining(", "));
         if (!amb.isEmpty())

@@ -45,7 +45,7 @@ class ContainmentRatchetTest {
     void leakIntoNewLayerFailsTheRatchet() throws Exception {
         Path base = write("cbase", BASE);
         Path cur = write("ccur", LEAK);
-        assertEquals(1, Query.containment(Query.load(cur.toString()), base.toString(), false),
+        assertEquals(1, Query.containment(Query.load(cur.toString()), base.toString(), false, Query.ReportRef.NONE),
             "Fs leaking into `svc` (absent in the baseline) must fail the ratchet (exit 1)");
     }
 
@@ -54,7 +54,7 @@ class ContainmentRatchetTest {
     void noNewLayerPassesTheRatchet() throws Exception {
         Path base = write("cbase2", LEAK);
         Path cur = write("ccur2", LEAK);
-        assertEquals(0, Query.containment(Query.load(cur.toString()), base.toString(), false),
+        assertEquals(0, Query.containment(Query.load(cur.toString()), base.toString(), false, Query.ReportRef.NONE),
             "an unchanged layer map must pass the ratchet (exit 0)");
     }
 
@@ -63,7 +63,7 @@ class ContainmentRatchetTest {
     void cleanupOnlyPassesTheRatchet() throws Exception {
         Path base = write("cbase3", LEAK);   // baseline had Fs in repo+svc
         Path cur = write("ccur3", BASE);     // now Fs only in repo — improved
-        assertEquals(0, Query.containment(Query.load(cur.toString()), base.toString(), false),
+        assertEquals(0, Query.containment(Query.load(cur.toString()), base.toString(), false, Query.ReportRef.NONE),
             "an effect leaving a layer (no new leak) must not fail the ratchet (exit 0)");
     }
 
@@ -71,7 +71,7 @@ class ContainmentRatchetTest {
     @Test
     void unreadableBaselineReturns2() throws Exception {
         Path cur = write("ccur4", LEAK);
-        assertEquals(2, Query.containment(Query.load(cur.toString()), "/no/such/baseline.json", false),
+        assertEquals(2, Query.containment(Query.load(cur.toString()), "/no/such/baseline.json", false, Query.ReportRef.NONE),
             "an unreadable baseline must surface as exit 2, not a silent clean pass");
     }
 }

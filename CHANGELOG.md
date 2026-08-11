@@ -8,6 +8,36 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ ⟨0.28⟩ the DESCRIPTIVE query verbs carry the ⟨0.21⟩ completeness manifest too** (SPEC §2, which
+  widens the re-disclosure MUST from *"a verb whose VERDICT could change"* to **"any verb whose output
+  could be read as a negative finding about the code — a verdict, an empty result set, or a zero
+  count"**). The engine's completeness reader was written for the narrow reading and only the
+  `ok`-answering advisory verbs were ever sent back for it. Measured on the previous build, over a report
+  declaring `analyzed.count: 0` and a non-empty `unanalyzed` — the standard post-failure artifact since
+  the arming rung, i.e. what is on disk after a failed run — `blindspots` answered
+  `{"sources":[],"totalUnknown":0}`, `map` `{}`, `where Fs` `{"directly":[],"inherited":[]}`, `reachable`
+  `{"entryPoints":0,"effects":{}}`, `containment` `{"contained":[],"ambient":{}}` and `tour`
+  `{"reaches":[]}`, all at exit 0 with no hedge on either channel: *no blind spots*, out of a report whose
+  own manifest names a file it could not read. A consumer could not tell *nobody performs `Fs`* from
+  *nothing was examined*. All six now carry `incomplete: true` + the manifest on `--json` and an
+  `⚠ INCOMPLETE` note above the answer on stdout, and the reassuring sentences that ARE the all-clear in
+  English ("no blind spots", "nothing hidden", "no regressions ✓") are withdrawn with them. **Exit codes
+  are unchanged everywhere** — this is a caveat, not a refusal (verified over 440 (state × verb × mode)
+  cells). Two additions make it work: `analyzed.count: 0` is now a SECOND trigger beside `unanalyzed` (a
+  report that judged nothing carries no manifest — there is no unread FILE to name — so the reader saw a
+  complete report and every verb answered over it just the same), decided by the SHARED
+  `Loader.claimsToHaveJudgedNothing` that the chained-dep join and now the `gate --report` route both use;
+  and it reaches the two DISCLOSURE channels only — ⟨0.24⟩ ruled count-0 explicitly the other way for exit
+  codes, so `unverified --strict` / `fix-gate --strict` are untouched over a facade report, and the note
+  says so rather than sending the reader to a CI job that will pass. `containment <baseline>` folds in the
+  BASELINE's manifest as well: its answer is a difference, unsound if either side is partial and in
+  opposite directions (a missed leak vs a fabricated one, at exit 1). **`show` is deliberately NOT
+  hedged** — its document is a top-level JSON array with nowhere to carry a key, and fixing only its human
+  channel would move the false all-clear rather than remove it; it needs a shape ruling.
+- **`containment <baseline> --json` has a stable key order.** It was built with `Map.of`, whose iteration
+  order is salted per JVM: eight runs of the identical command gave `{cleanups,leaks}` six times and
+  `{leaks,cleanups}` twice. A machine document whose key order changes between runs cannot be diffed. Now
+  `leaks` then `cleanups`, matching candor-rust.
 - **⚠ ⟨0.28⟩ `callers` discloses unanswerability in the MACHINE channel, not just in stdout prose**
   (SPEC §3.3.1). Over an armed pair — report armed, sidecars deleted by the rung below — `callers <f>
   --json` printed `{}` at exit 0 while the human arm correctly said "no call graph in the report".

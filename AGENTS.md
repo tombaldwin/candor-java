@@ -50,6 +50,16 @@ means *nothing calls this function*; over an armed pair candor does not know tha
 So never default the key (`d.get("direct", [])`): a missing `direct`, or a non-zero exit, is
 "unanswerable — re-scan", never "safe to edit".
 
+**And the QUESTION-ANSWERING verbs say so too — check `incomplete` before you believe an empty
+answer.** `where` / `map` / `blindspots` / `reachable` / `containment` / `tour` still exit **0** over
+such a report (this is a caveat, not a refusal), but their document now carries `"incomplete": true`
+plus `unanalyzed` (the units candor could not read) and/or `judgedNothing` (the reports that judged
+nothing at all), and the text arm prints an `⚠ INCOMPLETE` note above the answer.
+`{"sources": [], "totalUnknown": 0}` **with** that key means *nothing was examined*, not *no blind
+spots* — treat every empty list and zero count in such a document as unknown, never as a finding.
+`show --json` is the one exception: its document is a bare array with nowhere to carry the key, so do
+not read an empty `show` as a purity claim without checking the report's own `analyzed.count`.
+
 ## Already installed? Report the version and ask before upgrading — before you scan
 
 If this project already has candor-java (a `.candor/` report directory, or the fat jar /

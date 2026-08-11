@@ -836,6 +836,49 @@ want   "CONTROL: a nonexistent fn over a REAL graph is still the match error"   
 absent "…not the unanswerable disclosure (a graph WAS read; the name is not in it)" "$nf" 'unanswerable'
 if [ "$nfc" = 2 ]; then echo "  ok   …at exit 2"; pass=$((pass+1))
 else echo "  FAIL a nonexistent fn over a real graph exited $nfc, not 2"; fail=$((fail+1)); fi
+
+echo "== ⟨0.28⟩ SPEC §2: the DESCRIPTIVE verbs carry the ⟨0.21⟩ manifest too =="
+# The re-disclosure MUST binds "any verb whose output could be read as a NEGATIVE FINDING about the code
+# — a verdict, an empty result set, or a zero count", not only the `ok`-answering advisory verbs. Over an
+# ARMED report (`functions: []`, `analyzed.count: 0`, a non-empty `unanalyzed`) — the standard
+# post-failure artifact, i.e. what is on disk after a failed run — every one of these answered flat at
+# exit 0 with no hedge on either channel: `blindspots` said `{"sources":[],"totalUnknown":0}`, i.e. NO
+# BLIND SPOTS, over a report whose own manifest names a file it could not read. A consumer could not tell
+# *nobody performs Fs* from *nothing was examined*.
+"$CJ" "$W/sc/cls" --json "$W/sc/darm.json" >/dev/null 2>&1
+"$CJ" "$W/sc/cls" --json "$W/sc/darm.json" --zzz-not-a-flag >/dev/null 2>&1
+want "the armed report is the premise these rows need" "$(cat "$W/sc/darm.json")" '"unanalyzed"'
+for v in "where Fs" "map" "blindspots" "blindspots --stats" "reachable" "containment" "tour"; do
+  dj="$("$CJ" $v --report "$W/sc/darm.json" --json 2>/dev/null)"; djc=$?
+  # `"incomplete"` and not `"incomplete": true` — `tour --json` is COMPACT (it mirrors the Rust
+  # reference's to_string, not to_string_pretty), so the spaced form matches six verbs and misses one.
+  want "\`$v --json\` over an armed report carries \`incomplete\`" "$dj" '"incomplete"'
+  want "…and names WHICH unit went unread (the ⟨0.21⟩ manifest)"   "$dj" '"unanalyzed"'
+  dh="$("$CJ" $v --report "$W/sc/darm.json" 2>/dev/null)"
+  want "…and the HUMAN channel carries it too (both, or the fix is half)" "$dh" '⚠ INCOMPLETE'
+  if [ "$djc" = 0 ]; then echo "  ok   …at an UNCHANGED exit 0 — this rung adds a caveat, it does not refuse"; pass=$((pass+1))
+  else echo "  FAIL $v --json over an armed report exited $djc — the caveat became a refusal"; fail=$((fail+1)); fi
+done
+# THE SENTENCES THAT *ARE* THE ALL-CLEAR are withdrawn: dropping the key while leaving the prose standing
+# MOVES the false all-clear rather than removing it ("no blind spots" IS the empty JSON pair, in English).
+absent "…\`blindspots\` no longer claims every call resolved" \
+  "$("$CJ" blindspots --report "$W/sc/darm.json" 2>/dev/null)" 'every call resolved'
+absent "…\`tour\` no longer prints the unqualified 'nothing hidden'" \
+  "$("$CJ" tour --report "$W/sc/darm.json" 2>/dev/null)" 'nothing hidden — every effect'
+# THE MIRROR, and it is the load-bearing half: over the INTACT report (restored above) this rung is a
+# NO-OP. An implementation that hedges unconditionally passes every row above and destroys the ordinary
+# answer. `Sc` is effect-free, so this is also the ⟨0.24⟩ row that separates the two count-0 SHAPES: an
+# all-pure package (`functions: []`, count > 0) is a CLAIM chaining rule 3 requires a consumer to believe,
+# NOT a blind spot — the trigger is keyed on the ⟨0.21⟩ COUNT and never on the emptiness of `functions`.
+for v in "where Fs" "map" "blindspots" "reachable" "containment" "tour"; do
+  ij="$("$CJ" $v --report "$W/sc/rep.json" --json 2>/dev/null)"
+  absent "CONTROL: \`$v --json\` over the INTACT report says nothing about completeness" "$ij" 'incomplete'
+done
+# …and `show`, whose document is a top-level JSON ARRAY, is deliberately NOT hedged: an array has nowhere
+# to hang a key, and fixing only its human channel would MOVE the false all-clear. It needs a shape ruling.
+absent "show --json stays a bare array (the one exempt verb, pending a shape ruling)" \
+  "$("$CJ" show Sc.f --report "$W/sc/darm.json" --json 2>/dev/null)" 'incomplete'
+
 # THE INPUT EXEMPTION COVERS THE SIDECARS TOO — never delete a path this run READS, whatever it is named.
 cp "$W/sc/rep.callgraph.json" "$W/sc/cg1"
 ie="$(CANDOR_DEPS="$W/sc/rep.callgraph.json" "$CJ" "$W/sc/cls" --json "$W/sc/rep.json" --zzz-not-a-flag 2>&1)"

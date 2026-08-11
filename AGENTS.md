@@ -37,6 +37,13 @@ in the report; pure methods are omitted** — a method present in the callgraph 
 from `.functions[]` is pure (as far as the engine resolved). In *neither* file = never analyzed;
 conclude nothing.
 
+**A report with `analyzed.count: 0` is a run that FAILED, not a clean codebase.** A scan that exits 2
+leaves that fail-closed shape (`functions: []`, `analyzed.count: 0`, a non-empty `unanalyzed`) at the
+`--json` path, and it deletes that report's sidecars with it — so `callers`/`whatif` over it answer
+"no call graph in the report" rather than a blast radius computed from the last successful run. Read
+the two together: **a sidecar whose report is one of these empties tells you nothing, whatever it
+says.** Re-scan; do not conclude from either half.
+
 ## Already installed? Report the version and ask before upgrading — before you scan
 
 If this project already has candor-java (a `.candor/` report directory, or the fat jar /

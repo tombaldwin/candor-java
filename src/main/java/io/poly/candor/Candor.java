@@ -630,9 +630,11 @@ public class Candor {
         // nothing would-be-destroyed), then arm the file with the fail-closed report so every downstream
         // exit-2 leaves that document in place rather than the previous run's green. Mirror of the
         // `refuseGateJsonOverAnyInput` + `armGateJson` sequence used for the verdict sink at line ~715.
+        // Arming also removes that report's §2.2 sidecars (see armReportJson), which is why the target
+        // and policy travel with it — the input exemption covers the sidecars as well.
         if (preJsonFile != null) {
             refuseJsonOverAnyInput(preJsonFile, preTarget != null ? preTarget : ".", prePolicy);
-            armReportJson(preJsonFile);
+            armReportJson(preJsonFile, preTarget != null ? preTarget : ".", prePolicy);
         }
         if (preGate != null) {
             // ⟨0.28⟩ `--json` BESIDE `--gate-json -`: a report and a verdict cannot share one stream.
@@ -1518,8 +1520,13 @@ public class Candor {
      * <p>The shape is exactly what a ⟨0.24⟩ consumer already reads as "not covered, no purity licence":
      * {@code functions: []} plus {@code analyzed.count: 0} plus {@code unanalyzed} naming the run. No new
      * reader logic — the naive read of what a report emits has to be the safe one.
+     *
+     * <p>⟨0.28⟩ <b>And the report's §2.2 sidecars go with it</b> — see
+     * {@link #removeArmedReportSidecars}. Arming and removing are ONE act, which is why the removal lives
+     * inside this method rather than beside its call site: an armed report with a live sidecar is the
+     * pair the rung exists to prevent, and a second call site is a second chance to forget.
      */
-    static void armReportJson(String path) {
+    static void armReportJson(String path, String target, String policyFlag) {
         if (path == null || path.equals("-")) return;
         String[] prov = ReportWriter.provenance();
         var candor = new java.util.LinkedHashMap<String, Object>();
@@ -1545,6 +1552,91 @@ public class Candor {
             System.err.println("candor: could not arm --json " + path + " fail-closed ("
                     + e.getMessage() + ") — if this run does not complete, that path may still hold a "
                     + "PREVIOUS run's report");
+            // ARMING FAILED, SO THE SIDECARS STAY. The rule is "no live sidecar beside an ARMED report";
+            // this path still holds the PREVIOUS run's report, so removing its sidecars would produce a
+            // stale report with no call graph — a pair no run has ever written, and strictly worse than
+            // the pre-rung state this failure has left in place. (Deliberately unlike the rust reference,
+            // which ignores the write result; java can see the failure, so it acts on it.)
+            return;
+        }
+        removeArmedReportSidecars(path, target, policyFlag);
+    }
+
+    /**
+     * ⟨0.28⟩ SPEC §3.3.1 — <b>THE §2.2 SIDECARS GO WITH THE ARMED REPORT, DELETED NOT EMPTIED.</b>
+     *
+     * <p>An armed report beside a LIVE sidecar is a pair that contradicts itself, and §2.2 gives the
+     * sidecar no provenance of its own to arbitrate with. Not theoretical on this engine:
+     * {@code callers}/{@code whatif}/{@code rewire} are answered FROM the {@code .callgraph.json}
+     * sidecar, because a currently-pure function is absent from the report by §2 rule 3 and only the
+     * sidecar records it. MEASURED here 2026-08-11 — baseline {@code App.f} pure, reached by {@code g}
+     * (and {@code main}); the new version gives {@code f} an effect and adds a caller {@code h}; the run
+     * exits 2 on an unknown flag with the report armed:
+     *
+     * <pre>  callers f → exit 0, "`App.f` is reached by 2 function(s)
+     *                       (the blast radius if it gained an effect): App.g, App.main"</pre>
+     *
+     * Confident, exit-0, labelled the blast radius, and WRONG — {@code h} calls {@code f} too. An agent
+     * reads it as safe-to-edit. That is the cardinal sin, reached through the half of the pair the
+     * report-arming rung had not touched.
+     *
+     * <p><b>Deleted rather than {@code {}}</b>, and NOT by reading the report's own anti-deletion rule
+     * across: §3.3.1 forbids deleting a REPORT because a consumer that reads a missing file as "nothing
+     * to report" fails open, and no sidecar consumer has that failure mode — §2.2 makes the sidecar
+     * OPTIONAL, so every consumer was forced to define an absence arm from the start and every specified
+     * arm is safe. ⟨0.24⟩ has already ruled an empty, an absent and an unparseable HIERARCHY sidecar to
+     * be the same input, and the one cell that rule does not cover — an empty-but-valid baseline
+     * CALLGRAPH — was measured four-way to answer {@code origin: "unknown"} on all four engines. So
+     * {@code {}} buys nothing deletion does not, and absence is the state the consumers were built for.
+     *
+     * <p><b>The guess runs the OPPOSITE way from the armer's, on purpose.</b> {@link #armReportJson}
+     * writes only a path the operator named, because there a miss leaves a stale report and an over-reach
+     * destroys a file. Here a miss merely leaves a sidecar behind — the pre-rung state, and the ⟨0.28⟩
+     * pairing rule catches it consumer-side — while an over-reach would delete something that is not
+     * ours. So this identifies by the §2.2 RESERVED SEGMENT NAMES, scoped to this one report's stem —
+     * asked of {@link Loader#reportSidecarSegments()}, the engine's ONE list, which also carries the
+     * argument for the one segment it withholds ({@code gate}, the verdict sink's own document).
+     * Both directions are chosen so the WRONG guess costs the least.
+     *
+     * <p><b>The input exemption applies here too</b> ((3): the exemption covers the PATH, not the run).
+     * A sidecar path that is also an input of this run — a chained {@code CANDOR_DEPS} report's own
+     * sidecar living under the report's stem, say — is left alone and the operator is told, because
+     * <i>do not touch what this run reads</i> outranks the pairing invariant. {@link #runInputs} is
+     * asked ONCE and {@link #sameArtifact} does the comparing, so this can never disagree with the two
+     * sink guards about what an input is.
+     */
+    static void removeArmedReportSidecars(String path, String target, String policyFlag) {
+        if (path == null || path.equals("-")) return;
+        // The same stem arithmetic ReportWriter#writeCallgraph/#writeHierarchy use to CHOOSE these names,
+        // trailing `.json` dropped if present — so the set removed is exactly the set a clean run writes.
+        String stem = path.endsWith(".json") ? path.substring(0, path.length() - 5) : path;
+        java.util.List<String[]> inputs = null;
+        for (String seg : Loader.reportSidecarSegments()) {
+            String side = stem + "." + seg + ".json";
+            Path sp;
+            try {
+                sp = Path.of(side);
+                if (!Files.exists(sp)) continue;
+            } catch (RuntimeException e) { continue; }   // not even a path on this filesystem
+            if (inputs == null) inputs = runInputs(target, policyFlag);   // once, and only if there is work
+            String reads = null;
+            for (String[] in : inputs)
+                if (in[0] != null && sameArtifact(side, in[0])) { reads = in[1]; break; }
+            if (reads != null) {
+                System.err.println("candor: " + side + " is a §2.2 sidecar of the armed report --json "
+                        + path + " AND names " + reads + ", an INPUT of this run — leaving it in place. "
+                        + "Read it together with that report (an armed report makes its sidecar "
+                        + "unanswerable, whatever the sidecar says).");
+                continue;
+            }
+            try {
+                Files.deleteIfExists(sp);
+            } catch (IOException | RuntimeException e) {
+                System.err.println("candor: could not remove " + side + ", the §2.2 sidecar of the armed "
+                        + "report --json " + path + " (" + e.getMessage() + ") — it now sits beside a "
+                        + "fail-closed report and describes a PREVIOUS run. Delete it, or ignore it: a "
+                        + "sidecar whose report is a manifest-carrying empty is unanswerable input.");
+            }
         }
     }
 

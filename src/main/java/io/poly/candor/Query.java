@@ -665,7 +665,11 @@ public final class Query {
         // sibling report's graph as "new". ENGINE-OWNED matches only (resolveReportLocatorAll): a foreign
         // engine's sidecar beside ours is non-evidence, and an empty union means the graph is ABSENT.
         List<String> baseReports = baseLoc == null ? List.of() : resolveReportLocatorAll(baseLoc);
-        return gains(curFns, cur, base, baseReports, json, strict);
+        // ⟨0.28⟩ the LOCATORS travel beside the resolved paths, for the reason the descriptive verbs take
+        // them (see #reportCompleteness): the ⟨0.21⟩ manifest that qualifies this answer rides the report
+        // SET, and reading only the file the single-report pick chose would answer flat over a manifest
+        // sitting in its sibling. Both may be null (a missing baseline is the usage error inside).
+        return gains(curFns, new ReportRef(curLoc, cur), new ReportRef(baseLoc, base), baseReports, json, strict);
     }
 
     static int usage(String u) {
@@ -1463,11 +1467,34 @@ public final class Query {
          *  pre-⟨0.28⟩ one. Appends to a LinkedHashMap/TreeMap the caller already built — never
          *  {@code toJson}-and-reparse, which is where candor-rust's first draft silently RE-SORTED the
          *  answers it was disclosing about. */
-        void writeJson(Map<String, Object> out) {
+        void writeJson(Map<String, Object> out) { writeJson(out, ""); }
+
+        /** ⟨0.28⟩ The same machine half under a NAMESPACE PREFIX, for a verb that reads TWO reports which
+         *  fail in DIFFERENT DIRECTIONS and must therefore be disclosed SEPARATELY — {@code gains}, whose
+         *  answer rests on a current and a baseline. An incomplete CURRENT means the gained set may be
+         *  SHORT (effects the reader is not being told about); an incomplete BASELINE means the comparison
+         *  FLOOR is soft, so the existing-vs-new {@code origin} split this verb exists for is unreliable.
+         *  Collapsing them into one flag would say "something here is incomplete" and leave a supply-chain
+         *  reviewer unable to act on it. The prefixed spelling ({@code baselineIncomplete},
+         *  {@code baselineUnanalyzed}) is a CROSS-ENGINE WIRE SURFACE — candor-rust fe5d831 publishes
+         *  exactly these names — and it mirrors the shape this verb already uses for the weaker caveat
+         *  ({@code coverage} for the current, {@code coverageDelta} for the difference) rather than
+         *  inventing a second one. {@link #absorb} is the OTHER answer to two reports and is not
+         *  interchangeable: it is right for {@code containment}, whose single verdict is unsound if either
+         *  side is partial, and wrong here, where which side is soft changes what the reader should do. */
+        void writeJson(Map<String, Object> out, String prefix) {
             if (!mustHedge()) return;
-            out.put("incomplete", true);
-            if (!unanalyzed.isEmpty()) out.put("unanalyzed", manifestJson(unanalyzed));
-            if (!judgedNothing.isEmpty()) out.put("judgedNothing", List.copyOf(judgedNothing));
+            out.put(prefixed(prefix, "incomplete"), true);
+            if (!unanalyzed.isEmpty()) out.put(prefixed(prefix, "unanalyzed"), manifestJson(unanalyzed));
+            if (!judgedNothing.isEmpty())
+                out.put(prefixed(prefix, "judgedNothing"), List.copyOf(judgedNothing));
+        }
+
+        /** {@code ""} → the bare key (byte-identical to every pre-prefix caller); otherwise
+         *  {@code baseline} + {@code Incomplete}/{@code Unanalyzed}/{@code JudgedNothing}. */
+        private static String prefixed(String prefix, String name) {
+            return prefix.isEmpty() ? name
+                    : prefix + Character.toUpperCase(name.charAt(0)) + name.substring(1);
         }
 
         /** The HUMAN half, BEFORE the answer — it qualifies a NON-empty result as much as an empty one.
@@ -3414,7 +3441,8 @@ public final class Query {
      *  between releases. {gained:[Effect], byFunction:[{effect,fn,origin}]} — the cross-engine
      *  machine-readable form. Always exit 0 (candor-ts parity: the gained-effect exit-1 contract belongs to
      *  `diff` alone; gains is a pure disclosure whose consumers read the JSON, not the exit code). */
-    static int gains(List<Effector> cur, String curPath, String basePath, List<String> baseReports, boolean json, boolean strict) {
+    static int gains(List<Effector> cur, ReportRef curRef, ReportRef baseRef, List<String> baseReports, boolean json, boolean strict) {
+        String curPath = curRef.resolved(), basePath = baseRef.resolved();
         if (basePath == null) return usage("gains <report.json> <baseline.json> [--json] [--strict]");
         // An EMPTY union is meaningful, not a gap to paper over: the locator expanded to no ENGINE-OWNED
         // report (e.g. only a foreign engine's report matched the prefix), so the baseline graph is
@@ -3507,6 +3535,26 @@ public final class Query {
                 delta.put("noLongerUncovered", baseNames.stream().filter(n -> !curNames.contains(n)).toList());
                 out.put("coverageDelta", delta);
             }
+            // ⟨0.28⟩ SPEC §2 — AND THE SAME MUST CARRIES THE ⟨0.21⟩ MANIFEST, which is the STRONGER
+            // caveat and the one that was not travelling. The three lines above have carried the CURRENT
+            // report's `coverage` since ⟨0.15⟩, for the reason §2 gives — a "no gains" over an uncovered
+            // dep reads clean with false confidence. Measured, THIS verb, on THAT report, in THIS output,
+            // dropped `unanalyzed`: `coverage.uncovered` says "I could not see into this dependency",
+            // `unanalyzed` says "I could not read this file of your OWN code", and `analyzed.count: 0`
+            // says "I judged nothing at all". The mechanism was already here and pointed at the weaker
+            // field, so this reuses it (#reportCompleteness, the one reader the descriptive and advisory
+            // verbs share) rather than growing a second one.
+            //
+            // BOTH SIDES, SEPARATELY — see ReportCompleteness#writeJson(Map, String) for why one combined
+            // flag would be unactionable. Read through the LOCATORS, not the two resolved paths: a locator
+            // may name a report SET (§2 "a single analysis world") and the manifest that qualifies this
+            // answer can sit in the sibling the single-file pick above did not choose.
+            //
+            // JSON-only and verdict-preserving, on the same terms as the coverage block: the human
+            // `fn\teffect` TSV is a pinned consumer surface, and the exit below is untouched — `gains` is
+            // advisory by default and `--strict` keys on the GAINED SET, which this does not touch.
+            curRef.completeness("gains").writeJson(out);
+            baseRef.completeness("gains (baseline)").writeJson(out, "baseline");
             emit(out);
             // Advisory by default (exit 0 — gains is a diff view); `--strict` fails on ANY gained effect so a
             // supply-chain CI job can require a bump introduce no new capability (mirrors `unverified --strict`).

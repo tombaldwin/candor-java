@@ -515,6 +515,57 @@ gj="$("$CJ" gains "$W/gcur_dup.json" "$W/gbase1.json" --json)"
 want   "gains: a genuine new effect is still reported"   "$gj" '"Db"'
 want   "gains: dup cur rows do not double-count byFunction" "$(printf '%s' "$gj" | grep -c '"effect"')" '1'
 
+echo "== ⟨0.28⟩ gains carries the ⟨0.21⟩ MANIFEST, on BOTH SIDES, disclosed separately (SPEC §2) =="
+# §2's re-disclosure MUST is stated over `coverage` and was implemented over `coverage` alone. The SAME
+# verb, on the SAME report, dropped `unanalyzed` — the stronger caveat: `coverage.uncovered` says "I could
+# not see into this dependency", `unanalyzed` says "I could not read this file of your OWN code", and
+# `analyzed.count: 0` says "I judged nothing at all". BOTH SIDES SEPARATELY because a gains answer rests
+# on two reports that fail differently — an incomplete CURRENT means the gained set may be SHORT, an
+# incomplete BASELINE means the comparison floor is soft, so the existing-vs-new `origin` split is
+# unreliable. Every row asserts the OTHER side is silent: one combined flag would pass a one-sided check.
+gm_report() { # $1 out ; $2 effect ; $3 analyzed.count ; $4 unanalyzed json or -
+  printf '{"candor":{"version":"t1","toolchain":"jvm","spec":"test"},"packages":["app"],"analyzed":{"count":%s},%s"functions":[{"fn":"app.A.f","inferred":["%s"],"direct":["%s"],"hash":"h"}]}\n' \
+    "$3" "$([ "$4" = - ] || printf '"unanalyzed":%s,' "$4")" "$2" "$2" > "$1"
+}
+GM_UNREAD='[{"path":"src/Broken.java","reason":"parse error"}]'
+gm_report "$W/gm_base.json" Fs  3 "$GM_UNREAD"
+gm_report "$W/gm_cur.json"  Net 3 -
+gmb="$("$CJ" gains "$W/gm_cur.json" "$W/gm_base.json" --json)"
+want   "gains: an incomplete BASELINE is disclosed"                "$gmb" '"baselineIncomplete": true'
+want   "gains: …naming the file the baseline could not read"       "$gmb" 'src/Broken.java'
+want   "gains: …under the baseline's own key"                      "$gmb" '"baselineUnanalyzed"'
+absent "gains: …and NOT as the current's (a whole current stays silent)" "$gmb" '"incomplete"'
+want   "gains: the verdict body is untouched beside the caveat"    "$gmb" '"Net"'
+gm_report "$W/gm_base2.json" Fs  3 -
+gm_report "$W/gm_cur2.json"  Net 3 "$GM_UNREAD"
+gmc="$("$CJ" gains "$W/gm_cur2.json" "$W/gm_base2.json" --json)"
+want   "gains: an incomplete CURRENT is disclosed (the gained set may be SHORT)" "$gmc" '"incomplete": true'
+want   "gains: …with the manifest rows"                            "$gmc" '"unanalyzed"'
+absent "gains: …and NOT as the baseline's (a whole baseline stays silent)" "$gmc" '"baselineIncomplete"'
+# ⟨0.24⟩'s SECOND cause: `analyzed.count: 0` carries NO `unanalyzed` — there is no unread FILE to name —
+# so a consumer keyed on the array alone reads a report that judged nothing as complete.
+gm_report "$W/gm_base3.json" Fs  0 -
+gm_report "$W/gm_cur3.json"  Net 0 -
+gmz="$("$CJ" gains "$W/gm_cur3.json" "$W/gm_base3.json" --json)"
+want   "gains: a JUDGED-NOTHING current discloses"                 "$gmz" '"judgedNothing"'
+want   "gains: a JUDGED-NOTHING baseline discloses under its key"  "$gmz" '"baselineJudgedNothing"'
+absent "gains: count-0 names no unread file — the array is omitted, not invented" "$gmz" '"unanalyzed"'
+# CONTROL: two INTACT reports disclose NOTHING — an ordinary run is byte-identical to a pre-⟨0.28⟩ one.
+gm_report "$W/gm_base4.json" Fs  3 -
+gm_report "$W/gm_cur4.json"  Net 3 -
+gmi="$("$CJ" gains "$W/gm_cur4.json" "$W/gm_base4.json" --json)"
+absent "gains: two whole reports disclose nothing at all"          "$gmi" 'ncomplete'
+absent "gains: …not even an empty manifest"                        "$gmi" 'nalyzed'
+# CONTROL: the exit code does not move. `--strict` keys on the GAINED SET, which this does not touch.
+"$CJ" gains "$W/gm_cur3.json" "$W/gm_base3.json" --json --strict >/dev/null 2>&1; rc=$?
+want   "gains --strict: an incomplete pair WITH a gain still exits 1" "$rc" '1'
+"$CJ" gains "$W/gm_base3.json" "$W/gm_base3.json" --json --strict >/dev/null 2>&1; rc=$?
+want   "gains --strict: an incomplete pair with NO gain still exits 0" "$rc" '0'
+# the human TSV is a pinned consumer surface (whole-line matched by candor-run.sh's dedup)
+want   "gains: the human TSV is byte-stable under the manifest" \
+       "$("$CJ" gains "$W/gm_cur3.json" "$W/gm_base3.json" 2>/dev/null)" 'app.A.f	Net'
+absent "gains: …carrying no caveat lines"                          "$("$CJ" gains "$W/gm_cur3.json" "$W/gm_base3.json" 2>/dev/null)" 'ncomplete'
+
 echo "== diff/gains: §2.1 stale-baseline DISCLOSURE (queries answer + warn; only the GUARD fails closed) =="
 # a baseline from a DIFFERENT producing build: the delta may be the ENGINE reclassifying, not the code.
 # candor-ts is the reference: unconditional baseline_version/engine_version JSON fields ("" when unknown),

@@ -8,6 +8,26 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⟨0.28⟩ `gains` carries the ⟨0.21⟩ completeness manifest too, on BOTH SIDES** (SPEC §2, *"AND THE SAME
+  MUST CARRIES THE ⟨0.21⟩ MANIFEST, WHICH IS THE STRONGER CAVEAT AND THE ONE THAT DOES NOT TRAVEL"*). This
+  verb has carried the current report's `coverage` ledger since ⟨0.15⟩, for the reason §2 gives — a *no
+  gains* over an uncovered dep reads clean with false confidence. Measured, the same verb, on the same
+  report, in the same output, dropped `unanalyzed`: `coverage.uncovered` says *I could not see into this
+  dependency*, `unanalyzed` says *I could not read this file of your own code*, and `analyzed.count: 0`
+  says *I judged nothing at all*. The mechanism was already here and pointed at the weaker field, so this
+  reuses the one completeness reader the descriptive and advisory verbs share. **Both sides, disclosed
+  separately**, because a gains answer rests on two reports that fail differently: an incomplete CURRENT
+  (`incomplete` + `unanalyzed`/`judgedNothing`) means the `gained` set may be **short** — new capability
+  the reader is not being told about; an incomplete BASELINE (`baselineIncomplete` +
+  `baselineUnanalyzed`/`baselineJudgedNothing`) means the comparison **floor** is soft, so the
+  existing-vs-new `origin` split this verb exists for is unreliable. One combined flag would say
+  *something here is incomplete* and leave a supply-chain reviewer unable to act; the prefixed names are
+  candor-rust's (fe5d831), and the shape mirrors the one already used for the weaker caveat (`coverage`
+  for the current, `coverageDelta` for the difference). **JSON-only and verdict-preserving**: the human
+  `fn\teffect` TSV is a pinned consumer surface and stays byte-stable, exit codes do not move anywhere
+  (`--strict` still keys on the gained set alone), and two INTACT reports produce byte-identical output —
+  the control that caught candor-rust's BTreeMap re-sort and this engine's own `Map.of` salting. Closes
+  the last open cell of the §2 re-disclosure MUST here (conformance PART 39 (ii): candor-java SKIP → PASS).
 - **⚠ ⟨0.28⟩ the DESCRIPTIVE query verbs carry the ⟨0.21⟩ completeness manifest too** (SPEC §2, which
   widens the re-disclosure MUST from *"a verb whose VERDICT could change"* to **"any verb whose output
   could be read as a negative finding about the code — a verdict, an empty result set, or a zero

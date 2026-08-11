@@ -60,6 +60,14 @@ spots* — treat every empty list and zero count in such a document as unknown, 
 `show --json` is the one exception: its document is a bare array with nowhere to carry the key, so do
 not read an empty `show` as a purity claim without checking the report's own `analyzed.count`.
 
+**`gains` reads TWO reports, so it discloses TWO — and which one is soft changes what you do.**
+`gains --json` carries `incomplete` + `unanalyzed`/`judgedNothing` for the CURRENT report and
+`baselineIncomplete` + `baselineUnanalyzed`/`baselineJudgedNothing` for the BASELINE. An incomplete
+**current** means the `gained` list may be **short** — there may be new capability you are not being
+shown, so "no gains" is not an all-clear. An incomplete **baseline** means the comparison floor is
+soft, so the `origin` split (`existing` vs `new`) is unreliable — the supply-chain signal this verb
+exists for. Exit codes are unchanged either way (`--strict` still keys on the gained set alone).
+
 ## Already installed? Report the version and ask before upgrading — before you scan
 
 If this project already has candor-java (a `.candor/` report directory, or the fat jar /

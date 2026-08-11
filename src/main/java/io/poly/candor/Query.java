@@ -1164,9 +1164,37 @@ public final class Query {
             // 0, which reads as an authoritative "nothing calls it" for a fn that doesn't exist (corpus-audit
             // #3). Gated on a non-empty call graph so a report without one isn't misreported as "no such fn".
             if (names.isEmpty()) {
-                if (json) emit(new LinkedHashMap<>());
-                else System.out.println("candor: no call graph in the report.");
-                return 0;
+                // ⟨0.28⟩ UNANSWERABLE MUST REACH THE MACHINE CHANNEL (SPEC §3.3.1). This printed `{}` at
+                // exit 0 while the human arm said "no call graph in the report" — human-fine,
+                // machine-silent, which is the split that makes a defect a cardinal sin. A consumer
+                // reading `direct`, or defaulting it (the fail-open idiom ⟨0.24⟩ names on every key in
+                // this format), was told NOBODY CALLS this function: a blast radius of "safe to edit"
+                // over a pair whose honest answer is "this run judged nothing". The ⟨0.28⟩ sidecar rule
+                // one rung up did not create the hole — an absent sidecar always answered this way — it
+                // aimed traffic at it, by making no-sidecar the STANDARD state after a failed run.
+                //
+                // BOTH CHANNELS FAIL CLOSED: the document names itself unanswerable AND the exit is
+                // non-zero. §3.3.1 permits either, but each alone leaves a naive reader exposed — the key
+                // alone still lets `d.get("direct", [])` read as a determined negative, and the exit alone
+                // leaves a JSON consumer holding `{}`.
+                //
+                // ONLY THIS BRANCH. `names.isEmpty()` means there is NO GRAPH AT ALL (no sidecar and no
+                // report entry to fall back on), which is the unanswerable case. A function with no
+                // callers over a REAL graph still answers `direct: []` at exit 0 below — that is a
+                // determined negative and it is correct — and a name absent from a real graph still exits
+                // 2 as "no function matching", which is the branch below this one.
+                String why = "no call graph in the report — the §2.2 sidecar is absent and the report "
+                        + "carries no call edges either, so who calls this function is UNANSWERABLE, "
+                        + "not empty (SPEC §3.3.1 ⟨0.28⟩)";
+                if (json) {
+                    Map<String, Object> out = new LinkedHashMap<>();
+                    out.put("of", List.of(q));
+                    out.put("unanswerable", why);
+                    emit(out);
+                } else {
+                    System.out.println("candor: " + why);
+                }
+                return 2;
             }
             System.err.println("candor callers: no function matching `" + q + "` in the call graph");
             return 2;

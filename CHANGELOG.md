@@ -8,6 +8,21 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ ⟨0.28⟩ `callers` discloses unanswerability in the MACHINE channel, not just in stdout prose**
+  (SPEC §3.3.1). Over an armed pair — report armed, sidecars deleted by the rung below — `callers <f>
+  --json` printed `{}` at exit 0 while the human arm correctly said "no call graph in the report".
+  Human-fine, machine-silent, which is the split that makes a defect a cardinal sin. A consumer reading
+  `direct`, or defaulting it (the fail-open idiom ⟨0.24⟩ names on every key in this format), was told
+  NOBODY CALLS this function: a blast radius of "safe to edit" over a pair whose honest answer is "this
+  run judged nothing". The sidecar rung did not create the hole — an absent sidecar has always answered
+  this way — it aimed traffic at it, by making no-sidecar the standard state after a failed run. Both
+  channels now fail closed: the document carries `{"of": […], "unanswerable": "<why>"}` **and** the exit
+  is 2. §3.3.1 permits either, but each alone leaves a naive reader exposed — the key alone still lets
+  `d.get("direct", [])` read as a determined negative, and the exit alone leaves a JSON consumer holding
+  `{}`. **Only "no graph at all" is unanswerable**: a function with genuinely no callers over a complete
+  graph still answers `direct: []` at exit 0 (a determined negative — withdrawing it would be the mirror
+  defect), and a name absent from a real graph is still the `no function matching` error at exit 2. The
+  MCP surface inherits it: `run_query` sets `isError` on exit ≥ 2. Conformance PART 37 (e).
 - **⚠ ⟨0.28⟩ the §2.2 sidecars go with the armed report — deleted, not emptied** (SPEC §3.3.1). Arming a
   `--json <file>` report left `<stem>.callgraph.json` and `<stem>.hierarchy.json` live beside it: a pair
   that contradicts itself, with no provenance on the sidecar to arbitrate. Not decorative here, because

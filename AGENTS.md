@@ -44,6 +44,12 @@ leaves that fail-closed shape (`functions: []`, `analyzed.count: 0`, a non-empty
 the two together: **a sidecar whose report is one of these empties tells you nothing, whatever it
 says.** Re-scan; do not conclude from either half.
 
+**And that disclosure reaches `--json`, so parse it.** `callers <f> --json` over such a pair emits
+`{"of": […], "unanswerable": "<why>"}` and exits **2** — it does NOT emit `direct`. An empty `direct`
+means *nothing calls this function*; over an armed pair candor does not know that and will not say it.
+So never default the key (`d.get("direct", [])`): a missing `direct`, or a non-zero exit, is
+"unanswerable — re-scan", never "safe to edit".
+
 ## Already installed? Report the version and ask before upgrading — before you scan
 
 If this project already has candor-java (a `.candor/` report directory, or the fat jar /

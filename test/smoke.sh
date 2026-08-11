@@ -794,9 +794,24 @@ else
   echo "  FAIL the armed report deleted rep.gate.json — the verdict sink's document, which fails OPEN when absent"; fail=$((fail+1))
 fi
 # THE BLAST-RADIUS QUERY DISCLOSES instead of answering from the stale half.
-br="$("$CJ" callers --report "$W/sc/rep.json" Sc.f 2>&1)"
+br="$("$CJ" callers --report "$W/sc/rep.json" Sc.f 2>&1)"; brc=$?
 want "callers over an armed report discloses rather than answering" "$br" 'no call graph in the report'
 absent "…and does NOT name a blast radius from the stale sidecar"   "$br" 'blast radius'
+# ── ⟨0.28⟩ …AND THE DISCLOSURE REACHES THE MACHINE CHANNEL. Deleting the sidecar removes the confidently
+# WRONG answer; it does not by itself produce an honest one. `callers --json` printed `{}` at exit 0 here
+# while the human arm above said "no call graph in the report" — human-fine, machine-silent, the split
+# that makes a defect a cardinal sin. A consumer reading `direct`, or DEFAULTING it (the fail-open idiom
+# ⟨0.24⟩ names on every key in this format), is told NOBODY CALLS `Sc.f`: "safe to edit" over a pair whose
+# honest answer is "this run judged nothing". SPEC §3.3.1 permits an `unanswerable` key OR a non-zero exit;
+# both are asserted, because each alone leaves a naive reader exposed — the key alone still lets
+# `d.get("direct", [])` read as a determined negative, the exit alone leaves a JSON consumer holding `{}`.
+brj="$("$CJ" callers --report "$W/sc/rep.json" Sc.f --json 2>&1)"; brjc=$?
+want   "callers --json over an armed pair carries the \`unanswerable\` key" "$brj" '"unanswerable"'
+absent "…and emits NO \`direct\` key a consumer could read as a negative"   "$brj" '"direct"'
+if [ "$brjc" != 0 ]; then echo "  ok   …and exits non-zero ($brjc), so an exit-only consumer fails closed too"; pass=$((pass+1))
+else echo "  FAIL callers --json over an armed pair exited 0 — the machine channel says the query succeeded"; fail=$((fail+1)); fi
+if [ "$brc" != 0 ]; then echo "  ok   the human arm exits non-zero too ($brc) — one verdict, both channels"; pass=$((pass+1))
+else echo "  FAIL the human arm disclosed but exited 0 — the exit code still reads as a successful query"; fail=$((fail+1)); fi
 # RECOVERY: the next clean run brings the pair back, byte-identical.
 "$CJ" "$W/sc/cls" --json "$W/sc/rep.json" >/dev/null 2>&1
 if cmp -s "$W/sc/rep.callgraph.json" "$W/sc/cg0" && cmp -s "$W/sc/rep.hierarchy.json" "$W/sc/h0"; then
@@ -804,6 +819,23 @@ if cmp -s "$W/sc/rep.callgraph.json" "$W/sc/cg0" && cmp -s "$W/sc/rep.hierarchy.
 else
   echo "  FAIL the recovering run did not restore the sidecars to their previous bytes"; fail=$((fail+1))
 fi
+# THE CONTROLS ON THE RECOVERED PAIR, and they are the load-bearing half of the row above: ONLY "no graph
+# at all" is unanswerable. A fn that really has no callers over a COMPLETE graph must still answer
+# `direct: []` at exit 0 — that is a DETERMINED negative and withdrawing it would be the mirror defect —
+# and a name absent from a real graph must still be the "no function matching" error, because a graph WAS
+# read. Without these three rows the fix above is indistinguishable from `callers` refusing everything.
+ok0="$("$CJ" callers --report "$W/sc/rep.json" Sc.main --json 2>&1)"; ok0c=$?
+want   "CONTROL: over an INTACT pair a callerless fn still answers \`direct: []\`" "$ok0" '"direct": []'
+absent "…and is NOT relabelled unanswerable"                                       "$ok0" 'unanswerable'
+if [ "$ok0c" = 0 ]; then echo "  ok   …at exit 0 (a determined negative, not a refusal)"; pass=$((pass+1))
+else echo "  FAIL a determined negative over a complete graph exited $ok0c — the mirror defect"; fail=$((fail+1)); fi
+ok1="$("$CJ" callers --report "$W/sc/rep.json" Sc.f --json 2>&1)"
+want "CONTROL: over an INTACT pair the real blast radius still answers" "$ok1" '"Sc.g"'
+nf="$("$CJ" callers --report "$W/sc/rep.json" zzzNoSuchFn --json 2>&1)"; nfc=$?
+want   "CONTROL: a nonexistent fn over a REAL graph is still the match error"      "$nf" 'no function matching'
+absent "…not the unanswerable disclosure (a graph WAS read; the name is not in it)" "$nf" 'unanswerable'
+if [ "$nfc" = 2 ]; then echo "  ok   …at exit 2"; pass=$((pass+1))
+else echo "  FAIL a nonexistent fn over a real graph exited $nfc, not 2"; fail=$((fail+1)); fi
 # THE INPUT EXEMPTION COVERS THE SIDECARS TOO — never delete a path this run READS, whatever it is named.
 cp "$W/sc/rep.callgraph.json" "$W/sc/cg1"
 ie="$(CANDOR_DEPS="$W/sc/rep.callgraph.json" "$CJ" "$W/sc/cls" --json "$W/sc/rep.json" --zzz-not-a-flag 2>&1)"

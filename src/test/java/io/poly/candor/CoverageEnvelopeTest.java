@@ -207,6 +207,10 @@ class CoverageEnvelopeTest {
         return p;
     }
 
+    /** A single-FILE locator: the report SET a full `.json` path names is itself (§3.3.1 rule 2), so the
+     *  locator and the resolved path coincide — which is also how the CLI reaches these fixtures. */
+    static Query.ReportRef ref(Path p) { return new Query.ReportRef(p.toString(), p.toString()); }
+
     private static String capture(Runnable r) {
         ByteArrayOutputStream buf = new ByteArrayOutputStream();
         PrintStream orig = System.out;
@@ -221,7 +225,7 @@ class CoverageEnvelopeTest {
         Path base = reportFile("gbase.json", null);
         List<io.poly.candor.model.Effector> curFns = Query.load(cur.toString());
         String out = capture(() ->
-            Query.gains(curFns, cur.toString(), base.toString(), List.of(), true, false));
+            Query.gains(curFns, ref(cur), ref(base), List.of(), true, false));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
         // the CURRENT envelope's block, verbatim
         assertTrue(o.has("coverage"), "gains re-discloses the current report's coverage: " + out);
@@ -243,7 +247,7 @@ class CoverageEnvelopeTest {
         Path bareBase = reportFile("nb-base.json", null);
         List<io.poly.candor.model.Effector> bareFns = Query.load(bare.toString());
         String out = capture(() ->
-            Query.gains(bareFns, bare.toString(), bareBase.toString(), List.of(), true, false));
+            Query.gains(bareFns, ref(bare), ref(bareBase), List.of(), true, false));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
         assertFalse(o.has("coverage"), "pre-⟨0.15⟩ / fully-covered reports → no coverage key in gains");
         assertFalse(o.has("coverageDelta"), "equal (empty) uncovered sets → no delta");
@@ -253,7 +257,7 @@ class CoverageEnvelopeTest {
         Path base = reportFile("eq-base.json", cov);
         List<io.poly.candor.model.Effector> curFns = Query.load(cur.toString());
         String out2 = capture(() ->
-            Query.gains(curFns, cur.toString(), base.toString(), List.of(), true, false));
+            Query.gains(curFns, ref(cur), ref(base), List.of(), true, false));
         JsonObject o2 = JsonParser.parseString(out2).getAsJsonObject();
         assertTrue(o2.has("coverage"), "the current ledger still travels");
         assertFalse(o2.has("coverageDelta"), "same uncovered names → no delta");
@@ -265,10 +269,156 @@ class CoverageEnvelopeTest {
         Path base = reportFile("hbase.json", null, "Fs");   // baseline does Fs → cur GAINS Net (a TSV row)
         List<io.poly.candor.model.Effector> curFns = Query.load(cur.toString());
         String out = capture(() ->
-            Query.gains(curFns, cur.toString(), base.toString(), List.of(), false, false));
+            Query.gains(curFns, ref(cur), ref(base), List.of(), false, false));
         assertFalse(out.contains("coverage") || out.contains("okio"),
             "the human TSV is a pinned consumer surface — byte-stable, no coverage lines: " + out);
         assertTrue(out.contains("app.A.f\tNet"), "the TSV rows themselves are intact");
+    }
+
+    // ── 4. ⟨0.28⟩ gains carries the ⟨0.21⟩ MANIFEST too, on BOTH SIDES, disclosed separately ───────
+    //
+    // SPEC §2: "AND THE SAME MUST CARRIES THE ⟨0.21⟩ MANIFEST, WHICH IS THE STRONGER CAVEAT AND THE ONE
+    // THAT DOES NOT TRAVEL." Section 3 above is the live precedent the clause argues from — the mechanism
+    // existed and was pointed at the weaker field. `coverage.uncovered` says *I could not see into this
+    // dependency*; `unanalyzed` says *I could not read this file of your own code*; `analyzed.count: 0`
+    // says *I judged nothing at all*.
+    //
+    // BOTH SIDES SEPARATELY, because a gains answer rests on two reports that fail differently: an
+    // incomplete CURRENT means the gained set may be SHORT, an incomplete BASELINE means the comparison
+    // floor is soft so the existing-vs-new `origin` split is unreliable. Every row below asserts the
+    // OTHER side's keys are ABSENT — a single combined flag would pass a one-sided assertion.
+
+    /** A report with an explicit ⟨0.21⟩ manifest — `analyzed.count` and `unanalyzed` written verbatim, so
+     *  a row can put each cause on either side without the fixture builder guessing. */
+    private Path manifestReport(String name, String effect, int analyzed, String unanalyzedJson)
+            throws Exception {
+        Path p = tmp.resolve(name);
+        Files.writeString(p, "{\"candor\":{\"version\":\"t1\",\"toolchain\":\"jvm\",\"spec\":\"test\"},"
+                + "\"packages\":[\"app\"],\"analyzed\":{\"count\":" + analyzed + "},"
+                + (unanalyzedJson == null ? "" : "\"unanalyzed\":" + unanalyzedJson + ",")
+                + "\"functions\":[{\"fn\":\"app.A.f\",\"loc\":\"?\",\"inferred\":[\"" + effect + "\"],"
+                + "\"direct\":[\"" + effect + "\"],"
+                + "\"declared\":[],\"undeclared\":[],\"overdeclared\":[],\"entryPoint\":false,"
+                + "\"unresolved\":false,\"hash\":\"h\"}]}");
+        return p;
+    }
+
+    private static final String ONE_UNREAD = "[{\"path\":\"src/Broken.java\",\"reason\":\"parse error\"}]";
+
+    private JsonObject gainsJson(Path cur, Path base) throws Exception {
+        List<io.poly.candor.model.Effector> curFns = Query.load(cur.toString());
+        return JsonParser.parseString(
+                capture(() -> Query.gains(curFns, ref(cur), ref(base), List.of(), true, false)))
+                .getAsJsonObject();
+    }
+
+    /** CONTROL A — an incomplete BASELINE is disclosed under the `baseline…` names, and ONLY those. This
+     *  is conformance PART 39 (ii)'s exact shape: the baseline carries the manifest, the current is
+     *  whole, and pre-⟨0.28⟩ the output carried `coverage` while dropping this. */
+    @Test
+    void gainsDisclosesAnIncompleteBaselineUnderItsOwnKeys() throws Exception {
+        Path base = manifestReport("mb1.json", "Fs", 3, ONE_UNREAD);
+        Path cur = manifestReport("mc1.json", "Net", 3, null);
+        JsonObject o = gainsJson(cur, base);
+        assertTrue(o.get("baselineIncomplete").getAsBoolean(), "the comparison FLOOR is soft: " + o);
+        assertEquals("src/Broken.java", o.getAsJsonArray("baselineUnanalyzed").get(0)
+                .getAsJsonObject().get("path").getAsString());
+        assertFalse(o.has("incomplete") || o.has("unanalyzed"),
+            "the CURRENT report is whole — a combined flag here would misdirect the repair: " + o);
+        assertTrue(o.getAsJsonArray("gained").toString().contains("Net"), "the verdict body is intact");
+    }
+
+    /** CONTROL B — an incomplete CURRENT is disclosed under the bare names, and ONLY those. Different
+     *  harm, different repair: the GAINED SET may be short, so a reader must not treat it as the whole
+     *  list of new capability. */
+    @Test
+    void gainsDisclosesAnIncompleteCurrentUnderTheBareKeys() throws Exception {
+        Path base = manifestReport("mb2.json", "Fs", 3, null);
+        Path cur = manifestReport("mc2.json", "Net", 3, ONE_UNREAD);
+        JsonObject o = gainsJson(cur, base);
+        assertTrue(o.get("incomplete").getAsBoolean(), "the gained set may be SHORT: " + o);
+        assertEquals("src/Broken.java", o.getAsJsonArray("unanalyzed").get(0)
+                .getAsJsonObject().get("path").getAsString());
+        assertFalse(o.has("baselineIncomplete") || o.has("baselineUnanalyzed"),
+            "the BASELINE is whole: " + o);
+    }
+
+    /** ⟨0.24⟩'s SECOND CAUSE reaches this verb too: `analyzed.count: 0` carries NO `unanalyzed` (there is
+     *  no unread FILE to name), so a reader keyed only on the manifest array sees a complete report. Both
+     *  sides at once, to pin that the two halves do not overwrite each other. */
+    @Test
+    void gainsDisclosesJudgedNothingOnEitherSide() throws Exception {
+        Path base = manifestReport("mb3.json", "Fs", 0, null);
+        Path cur = manifestReport("mc3.json", "Net", 0, null);
+        JsonObject o = gainsJson(cur, base);
+        assertTrue(o.get("incomplete").getAsBoolean() && o.get("baselineIncomplete").getAsBoolean(), "" + o);
+        assertTrue(o.getAsJsonArray("judgedNothing").get(0).getAsString().endsWith("mc3.json"), "" + o);
+        assertTrue(o.getAsJsonArray("baselineJudgedNothing").get(0).getAsString().endsWith("mb3.json"),
+            "the baseline's own count-0 keeps its own key: " + o);
+        assertFalse(o.has("unanalyzed") || o.has("baselineUnanalyzed"),
+            "count-0 names no unread file — the array is omitted, never invented: " + o);
+    }
+
+    /** CONTROL C — TWO INTACT REPORTS: not one disclosure key, so an ordinary run is byte-identical to a
+     *  pre-⟨0.28⟩ one. The control that caught candor-rust's BTreeMap re-sort and this engine's own
+     *  `Map.of` salting in the descriptive-verb rung. */
+    @Test
+    void gainsOverTwoIntactReportsIsUnchanged() throws Exception {
+        Path base = manifestReport("mb4.json", "Fs", 3, null);
+        Path cur = manifestReport("mc4.json", "Net", 3, null);
+        JsonObject o = gainsJson(cur, base);
+        assertEquals(List.of("baseline_version", "byFunction", "engine_version", "gained"),
+            new ArrayList<>(new TreeSet<>(o.keySet())),
+            "a whole pair discloses NOTHING — no key, not even `incomplete: false`: " + o);
+    }
+
+    /** CONTROL D — the exit code does not move, in the one place it could: `--strict` keys on the GAINED
+     *  SET, which this rung does not touch. An incomplete pair with a gain still exits 1 and an
+     *  incomplete pair with no gain still exits 0 — this is a caveat, not a refusal. */
+    @Test
+    void gainsExitCodesAreUntouchedByTheManifest() throws Exception {
+        Path base = manifestReport("mb5.json", "Fs", 0, ONE_UNREAD);
+        Path cur = manifestReport("mc5.json", "Net", 0, ONE_UNREAD);
+        List<io.poly.candor.model.Effector> curFns = Query.load(cur.toString());
+        List<io.poly.candor.model.Effector> baseFns = Query.load(base.toString());
+        int[] rc = new int[4];
+        capture(() -> rc[0] = Query.gains(curFns, ref(cur), ref(base), List.of(), true, true));
+        capture(() -> rc[1] = Query.gains(curFns, ref(cur), ref(base), List.of(), false, true));
+        // no gain: the current does exactly what the baseline did
+        capture(() -> rc[2] = Query.gains(baseFns, ref(base), ref(base), List.of(), true, true));
+        capture(() -> rc[3] = Query.gains(baseFns, ref(base), ref(base), List.of(), false, true));
+        assertEquals(List.of(1, 1, 0, 0), List.of(rc[0], rc[1], rc[2], rc[3]),
+            "--strict follows the gained set alone, on both channels");
+    }
+
+    /** The human TSV is a pinned consumer surface (whole-line matched by candor-run.sh's seen-file dedup),
+     *  so the manifest rides the MACHINE channel only — the same ruling the coverage block above got. */
+    @Test
+    void gainsHumanTsvIsUnchangedByTheManifest() throws Exception {
+        Path base = manifestReport("mb6.json", "Fs", 0, ONE_UNREAD);
+        Path cur = manifestReport("mc6.json", "Net", 0, ONE_UNREAD);
+        List<io.poly.candor.model.Effector> curFns = Query.load(cur.toString());
+        String out = capture(() -> Query.gains(curFns, ref(cur), ref(base), List.of(), false, false));
+        assertEquals("app.A.f\tNet\n", out, "the TSV is byte-stable: " + out);
+    }
+
+    /** The manifest is read through the LOCATOR, not the single resolved path: a locator may name a report
+     *  SET (§2 "a single analysis world"), and the file the single-report pick chooses need not be the one
+     *  carrying the manifest. Here the baseline prefix matches two reports and only the SECOND is
+     *  incomplete — reading the pick alone would answer flat. */
+    @Test
+    void gainsReadsTheManifestOverTheWholeBaselineReportSet() throws Exception {
+        Path dir = Files.createDirectories(tmp.resolve("set"));
+        Path whole = manifestReport("set/b.aaa.jvm.json", "Fs", 3, null);
+        manifestReport("set/b.zzz.jvm.json", "Fs", 3, ONE_UNREAD);
+        Path cur = manifestReport("set/c.aaa.jvm.json", "Net", 3, null);
+        List<io.poly.candor.model.Effector> curFns = Query.load(cur.toString());
+        String basePrefix = dir.resolve("b").toString();
+        JsonObject o = JsonParser.parseString(capture(() -> Query.gains(curFns,
+                ref(cur), new Query.ReportRef(basePrefix, whole.toString()), List.of(), true, false)))
+                .getAsJsonObject();
+        assertTrue(o.has("baselineIncomplete"),
+            "the sibling's manifest qualifies this answer as much as the chosen file's: " + o);
     }
 
     // ── 5. coverage is a REVIEW claim, not a resolution outcome ───────────────────────────────────

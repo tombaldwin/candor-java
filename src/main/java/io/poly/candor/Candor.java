@@ -341,6 +341,16 @@ public class Candor {
         }
         // The agent contract for THE INSTALLED BUILD, baked into the jar as a resource — doc and
         // engine cannot drift (the §2.1 version-trust rule applied to documentation).
+        //
+        // §3.3: this summary lists every flag the parser ACCEPTS. Two omissions, measured by the P8
+        // sink-surface matrix 2026-08-12: the `verify` verb — a whole value-taking flag family
+        // (--run/--report/--scope) reachable from argv but absent from this text — and `--class`,
+        // which the query loop accepts on every action (refusing it a value like any real flag)
+        // while only this text's silence said otherwise. An undocumented accepted flag is a small
+        // instance of the thing this project exists to catch. `--class` is DOCUMENTED rather than
+        // rejected on the actions that ignore it: measured the same day, candor-rust and candor-ts
+        // both run `tour --class dynamic` to exit 0 (the shared-grammar posture) and document the
+        // flag — rejecting here would split the family in the other direction.
         if (args[0].equals("-h") || args[0].equals("--help")) {
             System.out.println("""
                     candor-java — the JVM effect analyzer. Compiled bytecode in, a capability map out.
@@ -357,6 +367,11 @@ public class Candor {
                       candor <action> [args] [options]          query the discovered report (.candor/ walk-up,
                                                                 $CANDOR_REPORT, or --report)
                       candor --parallel <out-dir> <target>...   scan many targets concurrently, one report each
+                      candor verify [<classes-or-jar>] --run "<cmd>" [--report <json>] [--scope direct|all]
+                                                                run the program under this jar's recording agent
+                                                                and check the report's claims against the observed
+                                                                effect trace — the dynamic honesty oracle (exit 1
+                                                                on a divergence; `candor verify --help` for detail)
                       candor parsepolicy <policy-file>          print a parsed policy file as canonical JSON
 
                     COMMON ACTIONS
@@ -383,6 +398,9 @@ public class Candor {
                       --policy <file>           enforce a policy file (deny/pure/allow/forbid) — exit 1
                                                 on a violation, 2 if unreadable; honours $CANDOR_POLICY
                                                 when the flag is absent
+                      --class <c,…>             blindspots/unverified: drill down by Unknown reason class
+                                                (SPEC §6.2 ⟨0.24⟩) — ONE comma-separated list, accepted on
+                                                every action, not repeatable
                       --json [<file>]           machine-readable output (the form an agent / MCP server
                                                 consumes); on a scan, --json <file> writes the report there,
                                                 bare --json prints it to stdout (pipeable — `candor <classes>

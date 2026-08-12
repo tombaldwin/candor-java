@@ -293,6 +293,37 @@ class CliBehaviourTest {
         }
     }
 
+    /** SPEC §3.3: the usage summary lists the flags the engine ACCEPTS. Two omissions measured by the
+     *  P8 sink-surface matrix (2026-08-12): the query loop accepted a value-taking `--class` on every
+     *  action (refusing it a value like any real flag) while --help never named it, and the `verify`
+     *  verb — value-taking --run/--report/--scope — was absent from the top-level help entirely. An
+     *  undocumented accepted flag is a small instance of the thing this project exists to catch. Each
+     *  half asserts the PAIR (parser accepts + help discloses), not the help string alone — a future
+     *  edit that drops the flag from the parser must update the help, and this test, together. */
+    @Test
+    void helpDisclosesTheAcceptedFlagSurfaceClassAndVerify() throws Exception {
+        Run help = runCli("--help");
+        assertEquals(0, help.exit());
+        // Half 1: `--class` — accepted by the shared query loop on every action…
+        Run cls = runCli("tour", "--report", "nonexistent.json", "--class", "--json");
+        assertEquals(2, cls.exit(), "--class is a real value-taking flag (given no value → usage error)");
+        assertTrue(cls.stderr().contains("--class was given no value"),
+                "the parser accepts --class as value-taking\nSTDERR:\n" + cls.stderr());
+        // …so the usage summary must disclose it. (Documented, not rejected: candor-rust and candor-ts
+        // both run `tour --class dynamic` at exit 0 and document the flag — the family posture.)
+        assertTrue(help.stdout().contains("--class"),
+                "--help must document the accepted --class flag\nSTDOUT:\n" + help.stdout());
+        // Half 2: `verify` — the jar answers the verb (its own --help), so the top level must name it
+        // and its value-taking flags.
+        Run vh = runCli("verify", "--help");
+        assertTrue(vh.stdout().contains("--run") || vh.stderr().contains("--run"),
+                "the jar answers `verify --help` with the --run grammar");
+        for (String tok : new String[] {"verify", "--run", "--scope"}) {
+            assertTrue(help.stdout().contains(tok),
+                    "top-level --help must disclose `" + tok + "` (the verify surface)\nSTDOUT:\n" + help.stdout());
+        }
+    }
+
     // ── unknown-flag rejection ───────────────────────────────────────────────────────────────────────
 
     @Test

@@ -434,4 +434,89 @@ class AdvisoryIncompletenessTest {
         assertEquals(2, run(prefix, pol, "unverified", "--strict").exit());
         assertEquals(2, run(prefix, pol, "fix-gate", "--strict").exit());
     }
+
+    // ── 6. ⟨0.28⟩ THE JUDGED-NOTHING CAUSE — SPEC §2's `analyzed.count: 0` row ──────────────────────────
+    //
+    // A ⟨0.21⟩ Row-1 report (`functions: []`, `analyzed.count: 0`) is "I judged NOTHING", not "I found
+    // nothing" — and it carries no `unanalyzed` (there is no unread FILE to name), so the manifest-only
+    // read above saw a complete report. MEASURED on the jar built before this rung, via candor-spec's
+    // key-shape harvest (conformance/gen_key_shapes.py, 2026-08-12):
+    //
+    //     unverified --json   exit 0   {"ok": true, "unverified": []}   stdout: "… PROVABLY clean ✓"
+    //     fix-gate   --json   exit 0   {"ok": true, "remedies":   []}   stdout: "no … crossings ✓"
+    //
+    // while this engine's OWN `where`/`map`/`blindspots` over the same bytes answered `incomplete: true`
+    // + `judgedNothing` — and rust, ts and swift all hedge here. The wire form is SPEC §2 ⟨0.28⟩'s ("AND
+    // HERE IS WHAT THE TRAVELLING CAVEAT IS CALLED"): `incomplete: true` + `judgedNothing` as an ARRAY of
+    // report paths (never a boolean — ts shipped `true` and a consumer doing `.length` threw), each key
+    // omitted when not applicable. The EXITS DO NOT MOVE: ⟨0.24⟩ ruled count-0 "a disclosure, not an exit
+    // code" — `gate --report` exits 0 over a facade package, and a verb exiting 2 there would claim it
+    // got LESS far than the gate on identical bytes.
+
+    /** The ⟨0.21⟩ Row-1 artifact: nothing judged, nothing unanalyzed — the facade/`pub use` shape, and
+     *  what a consumer holds after chaining a package whose scan reached no conclusion. */
+    private Path judgedNothingReport() throws Exception {
+        return report("facade.jvm.json", List.of(), null);
+    }
+
+    @Test
+    void judgedNothingWithdrawsOkAndCarriesTheArrayCaveat() throws Exception {
+        Path rep = judgedNothingReport();
+        Path pol = policy("deny Net app\n");
+        for (String verb : List.of("unverified", "fix-gate")) {
+            Run r = run(rep, pol, verb, "--json");
+            JsonObject doc = jsonOf(r);
+            assertEquals(0, r.exit(), verb + ": count-0 is a disclosure, not an exit code (⟨0.24⟩)");
+            assertFalse(doc.has("ok"), verb + " must not answer `ok` over a report that judged nothing — "
+                    + "`true` is the false all-clear this rung closes, `false` asserts a finding nobody "
+                    + "found: " + r.stdout());
+            assertTrue(doc.has("incomplete") && doc.get("incomplete").getAsBoolean(),
+                    verb + ": `incomplete: true` is the one flag every cause raises");
+            assertTrue(doc.has("judgedNothing") && doc.get("judgedNothing").isJsonArray(),
+                    verb + ": `judgedNothing` is an ARRAY of report paths, never a boolean (SPEC §2 ⟨0.28⟩)");
+            assertTrue(doc.get("judgedNothing").getAsJsonArray().get(0).getAsString()
+                            .endsWith("facade.jvm.json"),
+                    verb + ": the array names WHICH report judged nothing — that is the actionable content");
+            assertFalse(doc.has("unanalyzed"),
+                    verb + ": no unread file to name here — the key is omitted when not applicable");
+            assertEquals(0, run(rep, pol, verb, "--json", "--strict").exit(),
+                    verb + " --strict: unchanged — a verb exiting non-zero here would claim it got LESS "
+                    + "far than the gate over identical bytes");
+        }
+    }
+
+    @Test
+    void judgedNothingWithdrawsTheTickOnTheHumanChannel() throws Exception {
+        Path rep = judgedNothingReport();
+        Path pol = policy("deny Net app\n");
+        Run uv = run(rep, pol, "unverified");
+        assertEquals(0, uv.exit());
+        assertFalse(uv.stdout().contains("PROVABLY clean (no Unknown holes) ✓"),
+                "the tick IS the prose `ok: true` — it is withdrawn, not annotated: " + uv.stdout());
+        assertTrue(uv.stderr().contains("JUDGED NOTHING"),
+                "the human channel names the cause (the JSON-only mutant survived rust's whole suite)");
+        Run fg = run(rep, pol, "fix-gate");
+        assertEquals(0, fg.exit());
+        assertFalse(fg.stdout().contains("no deny/pure boundary crossings in this report ✓"),
+                "fix-gate's tick likewise: " + fg.stdout());
+        assertTrue(fg.stderr().contains("JUDGED NOTHING"));
+    }
+
+    /** The BOTH-CAUSES artifact — what the ⟨0.28⟩ arming rung leaves on disk after a failed run:
+     *  {@code analyzed.count: 0} AND a non-empty {@code unanalyzed}. Both arrays ride the document, and
+     *  the {@code --strict} exit still moves — from the {@code unanalyzed} cause, exactly as before. */
+    @Test
+    void theArmedArtifactCarriesBothCausesAndKeepsItsStrictExit() throws Exception {
+        Path rep = report("armed.jvm.json", List.of(), ONE_HOLE);
+        Path pol = policy("deny Net app\n");
+        Run r = run(rep, pol, "unverified", "--json");
+        JsonObject doc = jsonOf(r);
+        assertFalse(doc.has("ok"));
+        assertTrue(doc.has("unanalyzed"), "the unread file is still named");
+        assertTrue(doc.has("judgedNothing") && doc.get("judgedNothing").isJsonArray(),
+                "…and the count-0 cause is no longer shadowed by it: the two want different repairs");
+        assertEquals(0, r.exit());
+        assertEquals(2, run(rep, pol, "unverified", "--json", "--strict").exit(),
+                "--strict still exits 2 here — from the `unanalyzed` cause, unchanged by this rung");
+    }
 }

@@ -8,6 +8,18 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⟨0.28⟩ `gate --report`: the input guard covers what the locator EXPANDS to** (SPEC §3.3.1 (3),
+  *"AND AN INPUT LOCATOR NAMES A SET — COMPARE THE EXPANSION, NEVER THE TOKEN"*). The guard compared
+  `--gate-json` against the raw `--report` token while the loader reads the token's expansion, so
+  `gate --report r --policy P --gate-json r.app.jvm.json` destroyed the operator's report at exit 2 —
+  measured, with the diagnostic blaming the report ("object has no 'functions' array") for the
+  corruption the run inflicted — and the no-`--report` discovery spelling destroyed the discovered
+  `.candor/` report identically. The §2.2 sidecars are covered too: `--gate-json <the callgraph>` wrote
+  a REAL verdict over the pair's other half at a success exit. `Query.gateReportInputFiles` enumerates
+  the exact files by the loader's own rule (`locatorReportSet` + `Loader.reportSidecarSegments`), kept
+  adjacent so guard and loader cannot drift; `<stem>.gate.json` stays a permitted sink (the
+  beside-the-report verdict layout), pinned by the control test.
+
 - **⟨0.28⟩ `gains` carries the ⟨0.21⟩ completeness manifest too, on BOTH SIDES** (SPEC §2, *"AND THE SAME
   MUST CARRIES THE ⟨0.21⟩ MANIFEST, WHICH IS THE STRONGER CAVEAT AND THE ONE THAT DOES NOT TRAVEL"*). This
   verb has carried the current report's `coverage` ledger since ⟨0.15⟩, for the reason §2 gives — a *no

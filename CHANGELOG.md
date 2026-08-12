@@ -8,6 +8,25 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⟨0.28⟩ the BASELINE locator's expansion is guarded on the scan side, and the report sink's OWN
+  sidecar writes are part of the sink** (SPEC §3.3.1 (3), *"AND AN INPUT LOCATOR NAMES A SET — COMPARE
+  THE EXPANSION, NEVER THE TOKEN"* / *"THE SIDECARS EXPAND TOO"*). Two measured defects, both live at
+  HEAD on 2026-08-12. (1) `checkBaseline` answers the ⟨0.16⟩ pure→effectful ratchet FROM the baseline's
+  `.callgraph.json` sidecar while `runInputs` registered only the token the operator typed — so
+  `CANDOR_BASELINE=base.json candor cls --json base.callgraph.json` wrote the report OVER the ratchet's
+  sidecar (98 → 1180 bytes), read the wreckage back and blamed it ("corrupt/unreadable") at exit 2;
+  the `.candor/config` `baseline` spelling destroyed it identically through `--gate-json` (98 → 326,
+  the armed verdict where the callgraph belongs). `runInputs` now registers each report-shaped input
+  (baseline and deps, both spellings) with its on-disk §2.2 sidecars via `Loader.reportSidecarSegments`
+  — the `gate` exclusion rides along, so `<stem>.gate.json` stays a permitted sink. (2) A file-mode
+  `--json <stem>` also WRITES `<stem>.callgraph.json`/`<stem>.hierarchy.json`, and only the token was
+  compared — so `CANDOR_BASELINE=base.json … --json base` replaced the ratchet's sidecar with the
+  CURRENT call graph at a success exit (the exact defect candor-scan fixed as `baseline_artifact_files`,
+  one spelling over): the next run gates against a baseline half it never produced.
+  `refuseJsonOverAnyInput` now compares the sink's full write set. Four `SinkArmingIntegrityTest` rows
+  pin it on bytes (three fail at the parent commit; the drifted-code fixture exists because an
+  identical tree made the byte assertion vacuous — measured on this test's first draft).
+
 - **⟨0.28⟩ `containment` emits `layerPrefix` when, and only when, a prefix was actually collapsed**
   (SPEC §6.1, *"`layerPrefix` IS THE ONE THAT MUST CHANGE"*). The key was emitted UNCONDITIONALLY —
   `"layerPrefix": ""` when nothing was collapsed — while the other three engines emit no such key at

@@ -1405,12 +1405,24 @@ public class Candor {
         for (var e : new String[][]{{"CANDOR_POLICY", "CANDOR_POLICY"}, {"CANDOR_BASELINE", "CANDOR_BASELINE"},
                                     {"CANDOR_CONFIG", "CANDOR_CONFIG"}}) {
             String v = System.getenv(e[0]);
-            if (v != null && !v.isEmpty()) out.add(new String[]{v, e[1]});
+            if (v == null || v.isEmpty()) continue;
+            // ⟨0.28⟩ THE BASELINE IS A REPORT LOCATOR, AND ITS LOADER READS THE PAIR. checkBaseline
+            // loads `<stem>.callgraph.json` through Query.loadCallgraphSignalled — the ⟨0.16⟩
+            // pure→effectful ratchet is answered FROM the sidecar — while this list carried only the
+            // token the operator typed (SPEC §3.3.1 (3): "AND AN INPUT LOCATOR NAMES A SET — COMPARE
+            // THE EXPANSION, NEVER THE TOKEN"). Measured on this engine 2026-08-12:
+            //   CANDOR_BASELINE=base.json candor cls --json base.callgraph.json
+            //     → the run wrote its report OVER the ratchet's sidecar (98 → 1180 bytes), then read
+            //       the wreckage back and blamed it ("the baseline call-graph sidecar beside base.json
+            //       is corrupt/unreadable") — exit 2 with the operator's baseline pair destroyed. The
+            //       config `baseline` spelling destroyed it identically through --gate-json.
+            if (e[0].equals("CANDOR_BASELINE")) addReportInput(out, v, e[1]);
+            else out.add(new String[]{v, e[1]});
         }
         String deps = System.getenv("CANDOR_DEPS");
         if (deps != null) for (String d : deps.split("[" + java.io.File.pathSeparator + ",\\s]+"))
             if (!d.isEmpty()) {
-                out.add(new String[]{d, "a CANDOR_DEPS report"});
+                addReportInput(out, d, "a CANDOR_DEPS report");
                 // A DIRECTORY DEP IS EVERY REPORT INSIDE IT — the loader walks it, so registering only
                 // the DIRECTORY left those files unnamed and `--gate-json <depdir>/lib.json` destroyed
                 // the operator's report. This engine printed a note that the clobbered file had no
@@ -1426,7 +1438,7 @@ public class Candor {
                     if (Files.isDirectory(dp)) {
                         try (var st = Files.walk(dp)) {
                             st.filter(f -> f.toString().endsWith(".json"))
-                              .forEach(f -> out.add(new String[]{f.toString(), "a CANDOR_DEPS report"}));
+                              .forEach(f -> addReportInput(out, f.toString(), "a CANDOR_DEPS report"));
                         }
                     }
                 } catch (IOException | RuntimeException ignored) { /* token itself is registered above */ }
@@ -1462,12 +1474,18 @@ public class Candor {
                 for (var e : c.valuesView().entrySet()) {
                     String key = e.getKey(), val = e.getValue();
                     if (val == null || val.isEmpty()) continue;
-                    if (key.equals("policy") || key.equals("baseline")) {
-                        out.add(new String[]{val, "the config's `" + key + "`"});
+                    if (key.equals("policy")) {
+                        out.add(new String[]{val, "the config's `policy`"});
+                    } else if (key.equals("baseline")) {
+                        // The config spelling of CANDOR_BASELINE — SPEC records that a policy declared
+                        // via `.candor/config` rather than a flag was the spelling that defeated the
+                        // FIRST version of this guard in all four engines, so the sidecar expansion
+                        // rides BOTH spellings, not the one in front of the author.
+                        addReportInput(out, val, "the config's `baseline`");
                     } else if (key.equals("deps")) {
                         // already anchor-resolved and joined on the path separator by the loader
                         for (String one : val.split(java.util.regex.Pattern.quote(java.io.File.pathSeparator)))
-                            if (!one.isEmpty()) out.add(new String[]{one, "the config's `deps`"});
+                            if (!one.isEmpty()) addReportInput(out, one, "the config's `deps`");
                     }
                 }
             }
@@ -1476,6 +1494,31 @@ public class Candor {
             // moment later fails on its own terms.
         }
         return out;
+    }
+
+    /**
+     * ⟨0.28⟩ Register a report-shaped input PLUS its on-disk §2.2 sidecars — SPEC §3.3.1 (3), "THE
+     * SIDECARS EXPAND TOO": a report locator that resolves to {@code <stem>.json} also reaches
+     * {@code <stem>.callgraph.json} and the rest of the reserved family, and a guard that protects the
+     * report and not its sidecars leaves the pair destroyable one half at a time. The stem arithmetic is
+     * the same one {@code ReportWriter#writeCallgraph} and {@link Query#loadCallgraphSignalled} use
+     * (trailing {@code .json} dropped if present), and the segment list is
+     * {@link Loader#reportSidecarSegments()} — the engine's ONE list, which is also where the {@code
+     * gate} exclusion lives ({@code <stem>.gate.json} is the verdict sink's own beside-the-report
+     * layout and must stay a permitted sink). EXISTING regular files only: the guard protects data, and
+     * a sidecar not on disk has none to lose — the same boundary {@code Query.gateReportInputFiles}
+     * draws for the query-side twin of this list.
+     */
+    static void addReportInput(java.util.List<String[]> out, String path, String label) {
+        out.add(new String[]{path, label});
+        String stem = path.endsWith(".json") ? path.substring(0, path.length() - 5) : path;
+        for (String seg : Loader.reportSidecarSegments()) {
+            String side = stem + "." + seg + ".json";
+            try {
+                if (Files.isRegularFile(Path.of(side)))
+                    out.add(new String[]{side, "the §2.2 `" + seg + "` sidecar of " + label + " " + path});
+            } catch (RuntimeException ignored) { /* not a path on this filesystem — nothing to protect */ }
+        }
     }
 
     /** Refuse the sink if it names ANY input of this run, whatever channel that input arrived through. */
@@ -1542,7 +1585,30 @@ public class Candor {
      */
     static void refuseJsonOverAnyInput(String jsonFile, String target, String policyFlag) {
         if (jsonFile == null || jsonFile.equals("-")) return;
-        for (String[] in : runInputs(target, policyFlag)) refuseJsonOverInput(jsonFile, in[0], in[1]);
+        java.util.List<String[]> inputs = runInputs(target, policyFlag);
+        for (String[] in : inputs) refuseJsonOverInput(jsonFile, in[0], in[1]);
+        // ⟨0.28⟩ THE SINK EXPANDS TOO — the report sink is a SET, not one file. A file-mode `--json
+        // <out>` also writes `<stem>.callgraph.json` / `<stem>.hierarchy.json` (and arming deletes the
+        // whole reserved family at that stem), so comparing only the token the operator typed leaves
+        // every collision between the sink's OWN sidecars and an input unguarded. Measured on this
+        // engine 2026-08-12 — the exact defect candor-scan fixed as `baseline_artifact_files`
+        // (`CANDOR_BASELINE=base … --out base`), one spelling over:
+        //   CANDOR_BASELINE=base.json candor cls --json base
+        //     → the run wrote `base` and REPLACED the ratchet's `base.callgraph.json` with the CURRENT
+        //       call graph (98 → 138 bytes) at a success exit — the pure→effectful baseline silently
+        //       half-updated, so the next run gates against a sidecar the baseline never produced.
+        String stem = jsonFile.endsWith(".json") ? jsonFile.substring(0, jsonFile.length() - 5) : jsonFile;
+        for (String seg : Loader.reportSidecarSegments()) {
+            String side = stem + "." + seg + ".json";
+            for (String[] in : inputs) {
+                if (in[0] == null || !sameArtifact(side, in[0])) continue;
+                System.err.println("candor: --json " + jsonFile + " also writes its §2.2 sidecar " + side
+                        + ", which names the same file as " + in[1] + " " + in[0]
+                        + " — writing the report set there would destroy the input this run reads. "
+                        + "Nothing was written; give --json a different path.");
+                System.exit(2);
+            }
+        }
         refuseJsonAtConfig(jsonFile);
     }
 

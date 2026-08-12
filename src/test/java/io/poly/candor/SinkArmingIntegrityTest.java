@@ -56,9 +56,19 @@ class SinkArmingIntegrityTest {
         return runCliIn(null, args);
     }
 
+    /** {@link #runCli} with extra environment — the baseline-pair rows need CANDOR_BASELINE set, which
+     *  the scrub below would otherwise remove. */
+    private static Run runCliEnv(java.util.Map<String, String> env, String... args) throws Exception {
+        return runCliIn(null, env, args);
+    }
+
+    private static Run runCliIn(Path dir, String... args) throws Exception {
+        return runCliIn(dir, java.util.Map.of(), args);
+    }
+
     /** {@link #runCli} with a working directory — the ⟨0.28⟩ discovery spelling has no report anywhere
      *  in argv, so the test can only pose it by standing WHERE the engine will discover one. */
-    private static Run runCliIn(Path dir, String... args) throws Exception {
+    private static Run runCliIn(Path dir, java.util.Map<String, String> env, String... args) throws Exception {
         String javaBin = System.getProperty("java.home") + "/bin/java";
         String cp = System.getProperty("java.class.path");
         List<String> cmd = new ArrayList<>(List.of(javaBin, "-cp", cp, "io.poly.candor.Candor"));
@@ -70,6 +80,7 @@ class SinkArmingIntegrityTest {
         // run (a clean-gate control with a CANDOR_BASELINE set would gate against it).
         for (String k : List.of("CANDOR_POLICY", "CANDOR_CONFIG", "CANDOR_BASELINE", "CANDOR_REPORT"))
             pb.environment().remove(k);
+        pb.environment().putAll(env);
         Process p = pb.start();
         String out = drain(p.getInputStream()), err = drain(p.getErrorStream());
         int code = p.waitFor();
@@ -407,5 +418,106 @@ class SinkArmingIntegrityTest {
                 "the sink carries the verdict, not the armed placeholder:\n" + verdict);
         assertArrayEquals(reportBefore, Files.readAllBytes(report),
                 "…and the reports the gate read are byte-identical after the control run");
+    }
+
+    // ── defect 5: the BASELINE pair on the SCAN side (SPEC §3.3.1 (3), measured 2026-08-12) ─────────
+    //
+    // checkBaseline reads `<baseline-stem>.callgraph.json` (the ⟨0.16⟩ pure→effectful ratchet answers
+    // FROM the sidecar) while runInputs registered only the token — so a sink naming the sidecar
+    // destroyed the ratchet's other half. And the sink is a SET too: a file-mode `--json <stem>` also
+    // writes `<stem>.callgraph.json`, the exact defect candor-scan fixed as `baseline_artifact_files`
+    // (`CANDOR_BASELINE=base … --out base`), reproduced here at a SUCCESS exit before the fix.
+
+    /** Scan the fixture once into {@code <scratch>/base.json} so the baseline PAIR exists on disk. */
+    private Path scanBaselinePair(Path cls) throws Exception {
+        Path base = scratch.resolve("base.json");
+        Run r = runCli(cls.toString(), "--json", base.toString());
+        assertEquals(0, r.exit(), "the baseline-producing scan must succeed\nSTDERR:\n" + r.stderr());
+        assertTrue(Files.isRegularFile(scratch.resolve("base.callgraph.json")),
+                "the file-mode scan writes the callgraph sidecar the ratchet reads");
+        return base;
+    }
+
+    @Test
+    void jsonSinkNamingTheBaselinesCallgraphSidecarIsRefusedBytesUnchanged() throws Exception {
+        Path cls = compileNetFixture();
+        Path base = scanBaselinePair(cls);
+        Path sidecar = scratch.resolve("base.callgraph.json");
+        byte[] before = Files.readAllBytes(sidecar);
+        Run r = runCliEnv(java.util.Map.of("CANDOR_BASELINE", base.toString()),
+                cls.toString(), "--json", sidecar.toString());
+        assertArrayEquals(before, Files.readAllBytes(sidecar),
+                "--json <the baseline's callgraph sidecar> DESTROYED it: before the fix the run wrote "
+                + "its report over the ratchet's sidecar (98 → 1180 bytes measured), then read the "
+                + "wreckage back and called the baseline corrupt\nSTDERR:\n" + r.stderr());
+        assertEquals(2, r.exit(), "a sink naming an input's expansion is refused, exit 2\nSTDERR:\n" + r.stderr());
+        assertTrue(r.stderr().contains("sidecar"),
+                "the refusal names the sidecar relationship, so the operator learns WHY a file they "
+                + "never typed is protected\nSTDERR:\n" + r.stderr());
+    }
+
+    @Test
+    void gateJsonSinkNamingTheConfigDeclaredBaselinesSidecarIsRefusedBytesUnchanged() throws Exception {
+        // The config spelling — SPEC records that a gate declared via `.candor/config` rather than a
+        // flag is the spelling that defeated the FIRST version of this guard in all four engines.
+        Path cls = compileNetFixture();
+        Path base = scanBaselinePair(cls);
+        Path dotCandor = scratch.resolve(".candor");
+        Files.createDirectories(dotCandor);
+        Files.writeString(dotCandor.resolve("config"), "baseline " + base + "\n");
+        Path sidecar = scratch.resolve("base.callgraph.json");
+        byte[] before = Files.readAllBytes(sidecar);
+        Run r = runCli(cls.toString(), "--gate-json", sidecar.toString());
+        assertArrayEquals(before, Files.readAllBytes(sidecar),
+                "--gate-json <the config-declared baseline's sidecar> DESTROYED it (the armed verdict "
+                + "landed where the callgraph belongs; 98 → 326 bytes measured)\nSTDERR:\n" + r.stderr());
+        assertEquals(2, r.exit(), "refused, exit 2\nSTDERR:\n" + r.stderr());
+    }
+
+    @Test
+    void jsonSinkStemWhoseSidecarIsTheBaselinesSidecarIsRefusedBytesUnchanged() throws Exception {
+        // THE SINK EXPANDS TOO: `--json base` (no .json) writes `base` AND `base.callgraph.json` — with
+        // CANDOR_BASELINE=base.json that second write replaces the ratchet's sidecar with the CURRENT
+        // call graph at a success exit, so the next run gates against a baseline half it never produced.
+        Path cls = compileNetFixture();
+        Path base = scanBaselinePair(cls);
+        // DRIFT the code before the attack run — with an identical tree the overwrite writes the SAME
+        // bytes back and the byte assertion is vacuous (measured: this test's first draft failed only
+        // on the exit code). A new caller changes the current call graph, so a sidecar overwrite is
+        // byte-visible.
+        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
+        Path extra = scratch.resolve("Extra.java");
+        Files.writeString(extra, "package app;\npublic class Extra { void go() { new Svc(); } }\n");
+        assertEquals(0, jc.run(null, null, null, "-d", cls.toString(), "-cp", cls.toString(),
+                extra.toString()), "drift fixture must compile");
+        Path sidecar = scratch.resolve("base.callgraph.json");
+        byte[] sideBefore = Files.readAllBytes(sidecar);
+        byte[] baseBefore = Files.readAllBytes(base);
+        Path stemSink = scratch.resolve("base");
+        Run r = runCliEnv(java.util.Map.of("CANDOR_BASELINE", base.toString()),
+                cls.toString(), "--json", stemSink.toString());
+        assertArrayEquals(sideBefore, Files.readAllBytes(sidecar),
+                "the sink's OWN sidecar write replaced the baseline's callgraph — the half-updated pair "
+                + "silently narrows the pure→effectful ratchet from the next run on\nSTDERR:\n" + r.stderr());
+        assertArrayEquals(baseBefore, Files.readAllBytes(base), "the baseline report is untouched too");
+        assertEquals(2, r.exit(), "refused, exit 2\nSTDERR:\n" + r.stderr());
+        assertFalse(Files.exists(stemSink),
+                "NOTHING was written to the refused sink's stem either — refusal writes nothing");
+    }
+
+    @Test
+    void jsonSinkBesideTheBaselineStaysPermitted() throws Exception {
+        // CONTROL — the recommended layout: report and baseline side by side under `.candor/`. A guard
+        // that refused any stem NEAR the baseline would break the default, not implement the rule.
+        Path cls = compileNetFixture();
+        Path base = scanBaselinePair(cls);
+        Path out = scratch.resolve("report.json");
+        Run r = runCliEnv(java.util.Map.of("CANDOR_BASELINE", base.toString()),
+                cls.toString(), "--json", out.toString());
+        assertEquals(0, r.exit(),
+                "a distinct sink beside the baseline is ordinary usage (same code → no AS-EFF-005)"
+                + "\nSTDERR:\n" + r.stderr());
+        assertTrue(Files.isRegularFile(out) && Files.isRegularFile(scratch.resolve("report.callgraph.json")),
+                "the report pair was written where asked");
     }
 }

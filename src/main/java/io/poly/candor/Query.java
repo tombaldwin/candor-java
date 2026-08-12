@@ -312,6 +312,15 @@ public final class Query {
         }
     }
 
+    /** SPEC §3.2 ⟨0.28⟩ — a dash-prefixed token (except the bare {@code -} stream form) is a FLAG,
+     *  never a value: a value-taking flag followed by one has been GIVEN NO VALUE, a usage error at
+     *  exit 2. Consuming it instead is the silent reinterpretation §6.2 forbids, and it can swallow a
+     *  sink (`--policy --gate-json -` read the verdict sink as a policy filename). A file genuinely
+     *  named like a flag is spelled {@code ./--weird}. */
+    private static boolean flagShaped(String t) {
+        return t.startsWith("-") && !t.equals("-");
+    }
+
     static int run(String[] args) {
         String cmd = args[0];
         boolean json = false;
@@ -334,15 +343,19 @@ public final class Query {
                 boolean hasVal = i + 1 < args.length;
                 if (args[i].equals("--gate-json") && hasVal
                         && (args[i + 1].equals("-") || !args[i + 1].startsWith("-"))) preGate = args[++i];
-                // ⟨0.28⟩ `--policy`/`--report` CONSUME THE NEXT TOKEN WHATEVER ITS SHAPE — the flag loop
-                // below does (only `--gate-json` carries a dash-check there), and the pre-pass must agree
-                // with the loop about which tokens consume a value or it arms a sink the parse never
-                // accepts. Same defect, same fix as `Candor.main`'s pre-pass: with the dash-check here,
-                // `gate --report R --policy --gate-json G` armed G while the loop consumed `--gate-json`
-                // as the policy path — G's previous verdict became a placeholder under a flag this run
-                // never honoured, and no completion can ever replace it.
-                else if (args[i].equals("--policy") && hasVal) prePolicy = args[++i];
-                else if (args[i].equals("--report") && hasVal) preReport = args[++i];
+                // ⟨0.28⟩ `--policy`/`--report` CONSUME THE NEXT TOKEN ONLY WHEN IT IS VALUE-SHAPED
+                // (`-`, or not dash-prefixed) — the SPEC §3.2 "given no value" ruling, and the flag
+                // loop below agrees token-for-token. A flag-shaped token is NOT a value: the loop
+                // refuses the run there (exit 2), and this pre-pass leaves the token LIVE so a sink
+                // named after the broken flag is still registered and armed — the run has a broken
+                // command line, not a redefined one. The previous shape of this agreement (both sides
+                // consuming whatever follows) was the fail-open half the alignment exposed:
+                // `gate … --policy --gate-json G` read the operator's verdict sink as a policy
+                // FILENAME, so G was silently not a sink (conformance §3.1 (b13)'s gate-verb sibling).
+                else if (args[i].equals("--policy") && hasVal
+                        && (args[i + 1].equals("-") || !args[i + 1].startsWith("-"))) prePolicy = args[++i];
+                else if (args[i].equals("--report") && hasVal
+                        && (args[i + 1].equals("-") || !args[i + 1].startsWith("-"))) preReport = args[++i];
             }
             if (preGate != null) {
                 // §3.3.1 names "a report being read (`gate --report`)" as an input. Writing the verdict
@@ -433,6 +446,9 @@ public final class Query {
                 case "--stats" -> stats = true;
                 case "--class" -> {
                     if (i + 1 >= args.length) { System.err.println("candor: --class needs <class,…> (usage: " + usage + ")"); return 2; }
+                    // SPEC §3.2 ⟨0.28⟩ — the same "given no value" rule every value-taking flag on this
+                    // loop carries; see the `--policy` arm for the measurement that forced it.
+                    if (flagShaped(args[i + 1])) { System.err.println("candor: --class was given no value — the next token " + args[i + 1] + " is a flag, not a <class,…> list (usage: " + usage + ")"); return 2; }
                     // ⟨0.24⟩ SPEC §6.2: `--class <c>[,<c>…]` takes ONE comma-separated list and is NOT
                     // repeatable — a second occurrence is a usage error, not a union. Unioning would answer
                     // a question the user did not ask (they wrote two filters and got neither); taking the
@@ -449,10 +465,20 @@ public final class Query {
                 }
                 case "--report" -> {
                     if (i + 1 >= args.length) { System.err.println("candor: --report needs a <locator> (usage: " + usage + ")"); return 2; }
+                    if (flagShaped(args[i + 1])) { System.err.println("candor: --report was given no value — the next token " + args[i + 1] + " is a flag, not a <locator> (usage: " + usage + ")"); return 2; }
                     reportFlag = args[++i];
                 }
                 case "--policy" -> {
                     if (i + 1 >= args.length) { System.err.println("candor: --policy needs a <file> (usage: " + usage + ")"); return 2; }
+                    // SPEC §3.2 ⟨0.28⟩: a flag-shaped next token means --policy was GIVEN NO VALUE —
+                    // consuming it as a filename made that cause unreachable AND swallowed the sink the
+                    // token named: `gate … --policy --gate-json -` returned 2 with nothing on the
+                    // stream where the refusal document belongs (conformance §3.1 (b13)'s gate-verb
+                    // sibling). The pre-pass above left the token live, so the sink it names is already
+                    // armed and the exit-2 return below leaves the refusal there (the file placeholder,
+                    // or the `-` shutdown hook). A bare `-` stays a value and fails loud as an
+                    // unreadable policy file.
+                    if (flagShaped(args[i + 1])) { System.err.println("candor: --policy was given no value — the next token " + args[i + 1] + " is a flag, not a <file> (a file really named that is spelled ./" + args[i + 1] + ")"); return 2; }
                     policyFlag = args[++i];
                 }
                 case "--gate-json" -> {

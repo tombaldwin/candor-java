@@ -37,10 +37,16 @@ import org.junit.jupiter.api.Test;
  *      the stale data readable under the target's other name and severing the operator's layout. The
  *      family ruling (rust and swift already hold it): leave the link alone, disclose the pair.
  *
- *   3. THE PRE-PASS MUST AGREE WITH THE PARSE LOOP. `--policy --json X` — the loop consumes `--json` as
- *      the policy path and rejects X as a surplus positional, but the pre-pass read `--json X` as the
+ *   3. THE PRE-PASS MUST AGREE WITH THE PARSE LOOP. `--policy --json X` — the loop consumed `--json` as
+ *      the policy path and rejected X as a surplus positional, but the pre-pass read `--json X` as the
  *      report sink and armed X. SPEC (1)'s "parsed and accepted" precondition was false, and the run can
- *      never complete, so X's previous report became a PERMANENT placeholder.
+ *      never complete, so X's previous report became a PERMANENT placeholder. That alignment then
+ *      exposed WHICH side of the disagreement was wrong: the loop was fail-open, reading a flag-shaped
+ *      token as a filename — so `--policy --gate-json -` swallowed the operator's verdict sink and
+ *      exited 2 with nothing on the stream (conformance §3.1 (b13)). SPEC §3.2 ⟨0.28⟩ ruled: a
+ *      value-taking flag whose next token is flag-shaped has been GIVEN NO VALUE (usage error, exit 2),
+ *      and the sinks named elsewhere in that argv are STILL SINKS — the pre-pass now leaves the
+ *      flag-shaped token live, and the defect-3 tests below pin the ruling's side of the agreement.
  */
 class SinkArmingIntegrityTest {
 
@@ -51,7 +57,13 @@ class SinkArmingIntegrityTest {
         String cp = System.getProperty("java.class.path");
         List<String> cmd = new ArrayList<>(List.of(javaBin, "-cp", cp, "io.poly.candor.Candor"));
         cmd.addAll(List.of(args));
-        Process p = new ProcessBuilder(cmd).start();
+        ProcessBuilder pb = new ProcessBuilder(cmd);
+        // The conformance rows these tests mirror run env-scrubbed (`env -u CANDOR_…`); a policy or
+        // baseline inherited from the HARNESS environment must not turn one of these into a different
+        // run (a clean-gate control with a CANDOR_BASELINE set would gate against it).
+        for (String k : List.of("CANDOR_POLICY", "CANDOR_CONFIG", "CANDOR_BASELINE", "CANDOR_REPORT"))
+            pb.environment().remove(k);
+        Process p = pb.start();
         String out = drain(p.getInputStream()), err = drain(p.getErrorStream());
         int code = p.waitFor();
         return new Run(code, out, err);
@@ -198,20 +210,51 @@ class SinkArmingIntegrityTest {
     // ── defect 3: the pre-pass arming a sink the parse loop never accepts ────────────────────────────
 
     @Test
-    void policySwallowedJsonFlagDoesNotArmTheDisplacedValue() throws Exception {
+    void aReportSinkNamedAfterABrokenFlagIsStillArmed() throws Exception {
+        // SPEC §3.2 ⟨0.28⟩ — the successor to a test that pinned the OPPOSITE. While the loop consumed
+        // a flag-shaped token as a value, `--policy --json X` meant *policy = the file named `--json`*,
+        // X was never a sink, and this test asserted its previous report had to survive untouched. The
+        // ruling overturned the premise: `--policy` followed by a flag-shaped token was GIVEN NO VALUE
+        // (usage error, exit 2), `--json X` is parsed as itself, and X IS this run's report sink — so
+        // what stands there after the refusal is the fail-closed placeholder, never the previous run's
+        // report presented as current.
         Path cls = compileNetFixture();
         Path prev = scratch.resolve("X.json");
-        byte[] previous = "{\"previous\": \"run's report\"}\n".getBytes();
-        Files.write(prev, previous);
-        // The parse loop consumes `--json` as --policy's value and rejects X.json as a surplus
-        // positional; no `--json` is ever accepted, so nothing may be armed at X.json.
+        Files.writeString(prev, "{\"previous\": \"run's report\"}\n");
         Run r = runCli(cls.toString(), "--policy", "--json", prev.toString());
-        assertEquals(2, r.exit(), "the surplus positional still fails the run\nSTDERR:\n" + r.stderr());
-        assertArrayEquals(previous, Files.readAllBytes(prev),
-                "the pre-pass armed a sink the parse loop never accepted: `--policy --json X` consumed "
-                + "`--json` as the policy path, so X was NOT a sink of this run — arming it turns X's "
-                + "previous report into a PERMANENT placeholder (the run can never complete to replace "
-                + "it)\nSTDERR:\n" + r.stderr());
+        assertEquals(2, r.exit(), "--policy was given no value — a usage error\nSTDERR:\n" + r.stderr());
+        assertTrue(r.stderr().contains("--policy"),
+                "the refusal names the broken flag, not the sink\nSTDERR:\n" + r.stderr());
+        String now = Files.readString(prev);
+        assertTrue(now.contains("armed") || now.contains("refused"),
+                "X is still this run's --json sink (the broken command line does not un-name it) — it "
+                + "must hold the fail-closed placeholder, not the previous run's report\nCONTENT:\n" + now);
+    }
+
+    @Test
+    void b13FlagShapedPolicyValueIsRefusedWithTheDocumentOnTheSwallowedStreamSink() throws Exception {
+        // Conformance §3.1 (b13), SPEC §3.2 ⟨0.28⟩. `--policy --gate-json -`: the loop used to read
+        // `--gate-json` as the policy FILENAME, so the verdict sink the operator named was never a sink
+        // — measured on this engine as exit 2 with NOTHING on the stream where the fail-closed refusal
+        // document belongs. BOTH halves are asserted: the exit-code half alone passes against the
+        // broken behaviour, which also exited 2.
+        Path cls = compileNetFixture();
+        Run r = runCli(cls.toString(), "--policy", "--gate-json", "-");
+        assertEquals(2, r.exit(), "a flag-shaped --policy value is a usage error\nSTDERR:\n" + r.stderr());
+        assertTrue(r.stdout().contains("\"refused\": true") && r.stdout().contains("\"ok\": false"),
+                "the `--gate-json -` stream sink must carry the fail-closed refusal document — it was "
+                + "swallowed as the policy filename and the stream stayed EMPTY\nSTDOUT:\n" + r.stdout()
+                + "\nSTDERR:\n" + r.stderr());
+        assertTrue(r.stderr().contains("--policy") && r.stderr().contains("--gate-json"),
+                "stderr names the flag given no value AND the token that is not one\nSTDERR:\n" + r.stderr());
+        // The boundary the rule must not eat: a bare `-` stays a legitimate VALUE, so the stream form
+        // still works on an intact command line (a clean policy → a real verdict on stdout, exit 0).
+        Path pol = scratch.resolve("deny-exec.policy");
+        Files.writeString(pol, "deny Exec\n");
+        Run ok = runCli(cls.toString(), "--policy", pol.toString(), "--gate-json", "-");
+        assertEquals(0, ok.exit(), "the intact stream form still gates\nSTDERR:\n" + ok.stderr());
+        assertTrue(ok.stdout().contains("\"ok\": true"),
+                "`--gate-json -` still streams the real verdict\nSTDOUT:\n" + ok.stdout());
     }
 
     @Test
@@ -231,19 +274,30 @@ class SinkArmingIntegrityTest {
     }
 
     @Test
-    void gateVerbPolicySwallowedGateJsonDoesNotArmTheDisplacedValue() throws Exception {
-        // THE SIBLING ROUTE: `gate --report …` has its own pre-pass in Query.run, and it carried the
-        // same dash-check on `--policy` that Candor.main's did — the rule fixed on the scan CLI and
-        // nowhere else is this project's recorded habit, so the fix and the test both walk the sibling.
+    void gateVerbSinkNamedAfterABrokenPolicyFlagStillGetsTheRefusal() throws Exception {
+        // THE SIBLING ROUTE: `gate --report …` has its own pre-pass and flag loop in Query.run — the
+        // rule fixed on the scan CLI and nowhere else is this project's recorded habit, so the ruling
+        // and the test both walk the sibling. Successor to a test that pinned the pre-ruling behaviour
+        // (G untouched because the loop had swallowed `--gate-json` as the policy path): under SPEC
+        // §3.2 ⟨0.28⟩ the broken `--policy` is a usage error and `--gate-json G` — parsed, not
+        // swallowed — is STILL A SINK, so G must hold the fail-closed refusal, never a previous run's
+        // green presented as current.
         Path prev = scratch.resolve("G.json");
-        byte[] previous = "{\"ok\": true, \"previous\": \"verdict\"}\n".getBytes();
-        Files.write(prev, previous);
+        Files.writeString(prev, "{\"ok\": true, \"previous\": \"verdict\"}\n");
         Run r = runCli("gate", "--report", scratch.resolve("no-such-report.json").toString(),
                 "--policy", "--gate-json", prev.toString());
-        assertArrayEquals(previous, Files.readAllBytes(prev),
-                "the gate verb's pre-pass armed a sink its flag loop never accepted: `--policy` consumes "
-                + "`--gate-json` as the policy path, so G was NOT a sink of this run — arming it turns "
-                + "G's previous verdict into a PERMANENT placeholder\nSTDERR:\n" + r.stderr());
-        assertTrue(r.exit() != 0, "the mis-spelled command still fails\nSTDERR:\n" + r.stderr());
+        assertEquals(2, r.exit(), "--policy was given no value — a usage error\nSTDERR:\n" + r.stderr());
+        String now = Files.readString(prev);
+        assertTrue(now.contains("\"refused\": true") && now.contains("\"ok\": false"),
+                "the sink the broken command line still named must hold the fail-closed refusal, not "
+                + "the stale green\nCONTENT:\n" + now + "\nSTDERR:\n" + r.stderr());
+        // …and the stream spelling of the same sibling (b13's gate-verb form): the refusal document
+        // reaches `-` via the shutdown hook the pre-pass armed.
+        Run s = runCli("gate", "--report", scratch.resolve("no-such-report.json").toString(),
+                "--policy", "--gate-json", "-");
+        assertEquals(2, s.exit(), "STDERR:\n" + s.stderr());
+        assertTrue(s.stdout().contains("\"refused\": true"),
+                "the gate verb's `--gate-json -` stream must carry the refusal document on this exit-2 "
+                + "cause too, not 0 bytes\nSTDOUT:\n" + s.stdout() + "\nSTDERR:\n" + s.stderr());
     }
 }

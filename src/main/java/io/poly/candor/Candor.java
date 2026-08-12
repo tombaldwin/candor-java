@@ -571,7 +571,10 @@ public class Candor {
         // diverges from a fresh-process scan of <real-target> — which soundness/reentrancy.sh diffs.
         if (args[0].equals("selftest-reentrant")) {
             String rj = null;
-            for (int i = 3; i < args.length; i++) if (args[i].equals("--json") && i + 1 < args.length) rj = args[++i];
+            // The ⟨0.28⟩ value-shape rule reaches this harness verb too: a flag-shaped token after
+            // `--json` is not a filename, so it is skipped and rj stays null → the usage error below.
+            for (int i = 3; i < args.length; i++)
+                if (args[i].equals("--json") && i + 1 < args.length && !args[i + 1].startsWith("-")) rj = args[++i];
             if (args.length < 3 || rj == null) {
                 System.err.println("usage: candor selftest-reentrant <dirty-target> <real-target> --json <file>");
                 System.exit(2);
@@ -615,15 +618,19 @@ public class Candor {
                 if (args[i + 1].equals("-")) preAnyGateJsonStream = true;
                 preGate = args[++i];
             }
-            // ⟨0.28⟩ `--policy` CONSUMES THE NEXT TOKEN WHATEVER ITS SHAPE, because that is what the parse
-            // loop below does — and the pre-pass must agree with the loop about which tokens consume a
-            // value, or it arms a sink the parse never accepts. Measured with the dash-check this line
-            // used to carry: `--policy --json X` — the loop takes `--json` as the policy path and rejects
-            // X as a surplus positional (exit 2), while this pre-pass read `--json X` as the report sink
-            // and armed X. SPEC §3.3.1 (1)'s precondition ("parsed and accepted") was FALSE for that
-            // argv, so X's previous report became a PERMANENT placeholder: the run can never complete to
-            // replace it, under a flag the parse never honoured.
-            else if (args[i].equals("--policy") && hasVal)
+            // ⟨0.28⟩ `--policy` CONSUMES THE NEXT TOKEN ONLY WHEN IT IS VALUE-SHAPED (`-`, or not
+            // dash-prefixed) — the SPEC §3.2 "given no value" ruling — and the parse loop below agrees
+            // token-for-token. A flag-shaped token is NOT a value: the loop refuses the run there
+            // (exit 2, a usage error), and this pre-pass leaves the token LIVE so a sink named after
+            // the broken flag is still registered and armed. Both halves of that agreement have been
+            // measured as defects. Consuming HERE what the loop refused armed a sink the parse never
+            // accepted (`--policy --json X` armed X as a permanent placeholder, SPEC §3.3.1 (1)'s
+            // "parsed and accepted" precondition false). Consuming in BOTH places was the fail-open
+            // half that alignment then exposed: `--policy --gate-json -` read the operator's verdict
+            // sink as a policy FILENAME, measured as exit 2 with NOTHING on the stream where the
+            // refusal document belongs (conformance §3.1 (b13)).
+            else if (args[i].equals("--policy") && hasVal
+                    && (args[i + 1].equals("-") || !args[i + 1].startsWith("-")))
                 prePolicy = args[++i];
             else if (args[i].equals("--json") && hasVal && !args[i + 1].startsWith("-")) preJsonFile = args[++i];   // --json <file>
             else if (args[i].equals("--json")) preWantJsonStream = true;                        // bare / --json <-flag>
@@ -778,6 +785,18 @@ public class Candor {
             } else if (args[i].equals("--policy")) {
                 if (i + 1 >= args.length) { // same posture as --json: a valueless gate flag must FAIL,
                     System.err.println("candor: --policy requires a value"); // never silently run gateless
+                    System.exit(2);
+                }
+                // SPEC §3.2 ⟨0.28⟩: a flag-shaped next token means --policy was GIVEN NO VALUE — the
+                // §6.2 unknown-flag rule one position over. Consuming it as a filename made that cause
+                // unreachable (no argv could produce it) and swallowed the sink the token named:
+                // `--policy --gate-json -` exited 2 with NOTHING on the stream where the refusal
+                // document belongs (conformance §3.1 (b13)). The pre-pass left the token live, so the
+                // sink it names is already armed and this exit leaves the refusal there. A bare `-`
+                // stays a value (it fails a moment later as an unreadable policy file, loudly).
+                if (args[i + 1].startsWith("-") && !args[i + 1].equals("-")) {
+                    System.err.println("candor: --policy was given no value — the next token " + args[i + 1]
+                            + " is a flag, not a file (a file really named that is spelled ./" + args[i + 1] + ")");
                     System.exit(2);
                 }
                 policyArg = args[++i];

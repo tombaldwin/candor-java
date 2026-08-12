@@ -597,29 +597,32 @@ public final class Query {
             if (reportLocator == null) return 2;
         }
 
-        // ⟨0.24⟩ THE REPORT SET, and why only `gate` reads it. §2: "A consumer SHOULD treat all reports
-        // under one prefix as a single analysis world" — a PREFIX locator names a report SET, not a file.
-        // {@link #expandPrefix} picks the lexicographically-first and DISCLOSES the choice on stderr, which
-        // is a narrowing a human reading prose is told about. `gate` is the one verb whose output is a
-        // MACHINE VERDICT — an exit code and a `--gate-json` document — and there a narrowing is invisible:
-        // a violating sibling the locator named and the verb never opened comes back `ok: true`, exit 0.
-        // That is the §4 false all-clear, so this verb reads EVERY report the locator names and gates over
-        // the union. See {@link #gate} for the join rule and for why the other verbs are NOT changed here.
+        // ⟨0.28⟩ THE REPORT SET, for EVERY single-report verb — SPEC §3.1 "AND HERE IS WHAT EACH LOCATOR
+        // FORM RESOLVES TO": a PREFIX locator resolves to the whole matching set, UNIONED; a FILE locator
+        // to that file (and its §2.2 sidecars) and never its prefix siblings; a DIRECTORY to the reports
+        // discovered inside it. ⟨0.24⟩ ruled the union for the gate and this engine stopped there:
+        // {@link #expandPrefix} picked the lexicographically-FIRST file for every other verb and disclosed
+        // the choice on stderr. MEASURED on the jar before this change, two sibling reports under one
+        // prefix with the Exec-performing function in the second:
+        //     where Exec --report <prefix> --json → {"effect":"Exec","directly":[],"inherited":[]}, exit 0
+        //     map        --report <prefix> --json → the FIRST report's classes only
+        // — a locator that means "the set" for `gate` and "whichever sorts first" for `where` is two
+        // contracts wearing one flag, and the quiet one under-reports by construction. The resolution
+        // below is {@link #locatorReportSet}, the gate's OWN resolver, so the two cannot drift.
         List<String> reportSet = List.of();
         if (!TWO_REPORT.contains(cmd)) {
-            if (cmd.equals("gate")) {
-                reportSet = locatorReportSet(reportLocator);
-                if (reportSet.isEmpty()) {
-                    Path lp = Path.of(reportLocator);
-                    reportNotFound(Files.isDirectory(lp)
-                            ? lp.resolve(".candor").resolve("report").toString() : reportLocator, reportLocator);
-                    return 2;
-                }
-                report = reportSet.get(0);
-            } else {
-                report = resolveReportLocator(reportLocator);
-                if (report == null) return 2;
+            reportSet = locatorReportSet(reportLocator);
+            if (reportSet.isEmpty()) {
+                Path lp = Path.of(reportLocator);
+                reportNotFound(Files.isDirectory(lp)
+                        ? lp.resolve(".candor").resolve("report").toString() : reportLocator, reportLocator);
+                return 2;
             }
+            report = reportSet.get(0);
+            if (!cmd.equals("gate") && reportSet.size() > 1)
+                System.err.println("candor: locator `" + reportLocator + "` names " + reportSet.size()
+                        + " reports — answering over all of them as one analysis world (§2): "
+                        + String.join(", ", reportSet));
         }
 
         // DEPRECATED: a trailing POSITIONAL policy on the policy verbs, when --policy wasn't given. whatif
@@ -645,18 +648,40 @@ public final class Query {
         }
 
         // The comparative verbs load their reports themselves (two positionals); `gate` loads the whole
-        // report SET itself (above); the rest load `report`.
+        // report SET itself (in {@link #gate}, fail-loud per member — it is CERTIFYING); the rest load the
+        // UNION of the set resolved above. LENIENT per member, matching {@link #reportCompleteness}'s
+        // standing rule for these verbs: a sibling that cannot be read is DISCLOSED and the answer is
+        // hedged INCOMPLETE (comp.unreadable, which #79 also feeds into the advisory `--strict` exits),
+        // because refusing to answer at all is strictly less than the partial answer §3.2 asks for. Only
+        // when NOTHING loaded is there no answer to hedge — that stays the pre-⟨0.28⟩ loud exit 2, so a
+        // FILE locator naming one unreadable report fails with the identical message.
         List<Effector> fns = List.of();
+        List<String> loaded = List.of();     // the members that loaded — the sidecar consumers' set
         if (!TWO_REPORT.contains(cmd) && !cmd.equals("gate")) {
-            try {
-                fns = load(report);
-            } catch (Exception e) {
-                // load() throws PRECISE reasons ("not a candor report: object has no 'functions' array",
-                // NoSuchFileException, a JSON syntax error) — relay them, don't discard the diagnostic.
-                String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                System.err.println("candor: cannot read report " + report + " (" + why + ")");
+            List<Effector> all = new ArrayList<>();
+            List<String> ok = new ArrayList<>();
+            List<String[]> failed = new ArrayList<>();
+            for (String r : reportSet) {
+                try {
+                    all.addAll(load(r));
+                    ok.add(r);
+                } catch (Exception e) {
+                    // load() throws PRECISE reasons ("not a candor report: object has no 'functions'
+                    // array", NoSuchFileException, a JSON syntax error) — relay them, don't discard.
+                    failed.add(new String[]{r, e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()});
+                }
+            }
+            if (ok.isEmpty()) {
+                for (String[] f : failed)
+                    System.err.println("candor: cannot read report " + f[0] + " (" + f[1] + ")");
                 return 2;
             }
+            for (String[] f : failed)
+                System.err.println("candor: cannot read report " + f[0] + " (" + f[1] + ") — answering "
+                        + "over the " + ok.size() + " sibling report(s) that loaded; this answer is "
+                        + "reported INCOMPLETE, never clean");
+            fns = all;
+            loaded = ok;
         }
 
         // ⟨0.24⟩ SPEC §6.2 THE FLAG'S VALUE GRAMMAR, parsed ONCE for every verb that takes `--class`, so a
@@ -677,10 +702,15 @@ public final class Query {
         // travels on the report SET, and reading only the lexicographically-first file would answer flat
         // over a manifest sitting in the sibling.
         ReportRef ref = new ReportRef(reportLocator, report);
+        // ⟨0.28⟩ SPEC §3.1 — the verbs that read per-report SIDECARS (`callers`/`tour`/`whatif`/`fix`/
+        // `fix-gate` via loadCallgraph/fixGraph, `unverified` via the envelope's reason channel) take the
+        // LOADED SET, not the first member: unioning the entries while anchoring the graph on one report
+        // would answer "no callers" for every sibling's function — the under-report the old scoping note
+        // here predicted, which is why the union and the sidecars travel together.
         return switch (cmd) {
             case "show" -> show(fns, a0, json, ref);
             case "where" -> where(fns, a0, json, ref);
-            case "callers" -> callers(fns, report, a0, json, includeUnknown);
+            case "callers" -> callers(fns, loaded, a0, json, includeUnknown);
             case "map" -> map(fns, json, ref);
             case "diff" -> diff2(a0, a1, json);
             case "containment" -> containment(fns, a0, json, ref);
@@ -688,15 +718,15 @@ public final class Query {
             case "path" -> path(fns, a0, a1, json);
             case "impact" -> impact(fns, a0, json);
             case "blindspots" -> blindspots(fns, json, stats, classFilter, ref);
-            case "tour" -> tour(fns, report, a0, json, ref);
+            case "tour" -> tour(fns, loaded, a0, json, ref);
             case "gains" -> gains2(a0, a1, json, strict, policyFlag);
-            // ⟨0.24⟩ the ADVISORY verbs take the LOCATOR beside the resolved path: SPEC §3.2 bounds their
+            // ⟨0.24⟩ the ADVISORY verbs take the LOCATOR beside the resolved set: SPEC §3.2 bounds their
             // incompleteness verdict by the GATE's over the same bytes, and the gate reads the report SET
             // the locator names (see #advisoryUnanalyzed).
-            case "whatif" -> whatif(reportLocator, report, a0, a1, policyFlag, json);
-            case "fix" -> fix(fns, reportLocator, report, a0, a1, policyFlag, json);
-            case "fix-gate" -> fixGate(fns, reportLocator, report, policyFlag, json, strict);
-            case "unverified" -> unverified(fns, reportLocator, report, policyFlag, json, strict, classFilter);
+            case "whatif" -> whatif(reportLocator, loaded, a0, a1, policyFlag, json);
+            case "fix" -> fix(fns, reportLocator, loaded, a0, a1, policyFlag, json);
+            case "fix-gate" -> fixGate(fns, reportLocator, loaded, policyFlag, json, strict);
+            case "unverified" -> unverified(fns, reportLocator, loaded, policyFlag, json, strict, classFilter);
             case "rewire" -> rewire2(a0, a1, json);
             case "gate" -> gate(reportSet, a0, policyFlag, json, gateJsonFlag);
             default -> 2;
@@ -1040,12 +1070,17 @@ public final class Query {
 
     /** Who calls a function — inverts the report's `calls` effect graph (no re-analysis). */
     static int callers(List<Effector> fns, String reportPath, String q, boolean json, boolean includeUnknown) {
+        return callers(fns, reportPath == null ? List.of() : List.of(reportPath), q, json, includeUnknown);
+    }
+
+    /** ⟨0.28⟩ SPEC §3.1 — over the loaded report SET: the sidecars union with the entries. */
+    static int callers(List<Effector> fns, List<String> reportPaths, String q, boolean json, boolean includeUnknown) {
         if (q == null) return usage("callers <function-substring> [--report <locator>] [--json] [--include-unknown]");
         // Prefer the full call-graph sidecar (written beside the report): it records EVERY function's
         // callees, including pure ones, so we can answer "who TRANSITIVELY calls X" for any function —
         // the blast radius an agent needs BEFORE adding an effect to X. The report alone only has
         // effect-relevant edges (it can't see a pure X), the old gap an agent-use eval surfaced.
-        Map<String, List<String>> cg = loadCallgraph(reportPath);
+        Map<String, List<String>> cg = loadCallgraph(reportPaths);
         // Fallback (no sidecar): build a graph from the report's effect-relevant `calls` edges and run
         // the SAME query, so the output shape ({of,direct,transitive}) and JSON contract are identical
         // to the sidecar path (a /code-review finding: the old fallback emitted a {callee:[callers]} map
@@ -1076,7 +1111,7 @@ public final class Query {
                     }
                 }
             }
-            hier = loadHierarchy(reportPath); // null → the query falls back to a simple-name match (over-lists)
+            hier = loadHierarchy(reportPaths); // null → the query falls back to a simple-name match (over-lists)
         }
         return callersViaCallgraph(cg, q, json, broadByFn, hier);
     }
@@ -1172,6 +1207,24 @@ public final class Query {
         }
     }
 
+    /** ⟨0.28⟩ SPEC §3.1 — the hierarchy of a report SET, unioned like {@link #loadCallgraph(List)} (supers
+     *  concatenate per type, deduplicated). Null when no member has one — the callers' simple-name
+     *  fallback is then correct, exactly as for one report. */
+    static Map<String, List<String>> loadHierarchy(List<String> reportPaths) {
+        Map<String, java.util.LinkedHashSet<String>> merged = null;
+        for (String r : reportPaths) {
+            Map<String, List<String>> h = loadHierarchy(r);
+            if (h == null) continue;
+            if (merged == null) merged = new LinkedHashMap<>();
+            for (var e : h.entrySet())
+                merged.computeIfAbsent(e.getKey(), k -> new java.util.LinkedHashSet<>()).addAll(e.getValue());
+        }
+        if (merged == null) return null;
+        Map<String, List<String>> out = new LinkedHashMap<>();
+        for (var e : merged.entrySet()) out.put(e.getKey(), new ArrayList<>(e.getValue()));
+        return out;
+    }
+
     /** ⟨0.26⟩ The three answers the hierarchy sidecar can give. `UNANSWERABLE` is the one the format could
      *  not express before: a type ABSENT from a present sidecar is one the pass never indexed, and reading
      *  that as "no supertypes" is a positive claim about a type nobody looked at. */
@@ -1223,6 +1276,27 @@ public final class Query {
      *  gate verdict under-report (the §4 cardinal sin). Never silently drop graph edges a verdict depends on. */
     static Map<String, List<String>> loadCallgraph(String reportPath) {
         return loadCallgraphSignalled(reportPath).graph();
+    }
+
+    /** ⟨0.28⟩ SPEC §3.1 — the call graph of a report SET: each member's own `.callgraph.json` sidecar,
+     *  UNIONED (edges concatenate per caller, deduplicated, first-seen order). A prefix locator resolves
+     *  to the whole matching set, and a graph anchored on one member answers "no callers" for every
+     *  sibling's function — the union and the sidecars have to travel together. Null when NO member has a
+     *  sidecar (the callers' inline-`calls` fallback is then correct, exactly as for one report); a member
+     *  without a sidecar contributes nothing here and its inline edges are already in the entry union. */
+    static Map<String, List<String>> loadCallgraph(List<String> reportPaths) {
+        Map<String, java.util.LinkedHashSet<String>> merged = null;
+        for (String r : reportPaths) {
+            Map<String, List<String>> g = loadCallgraph(r);
+            if (g == null) continue;
+            if (merged == null) merged = new LinkedHashMap<>();
+            for (var e : g.entrySet())
+                merged.computeIfAbsent(e.getKey(), k -> new java.util.LinkedHashSet<>()).addAll(e.getValue());
+        }
+        if (merged == null) return null;
+        Map<String, List<String>> out = new LinkedHashMap<>();
+        for (var e : merged.entrySet()) out.put(e.getKey(), new ArrayList<>(e.getValue()));
+        return out;
     }
 
     /** A signalled call-graph load: the graph (null when absent/unreadable) PLUS whether the load was
@@ -1873,6 +1947,14 @@ public final class Query {
      *  Reuses Policy.parsePolicy/scopeMatches so the verdict matches what the real gate would do. */
     static int whatif(String reportLocator, String reportPath, String fn, String effect, String policyPath,
                       boolean json) {
+        return whatif(reportLocator, reportPath == null ? List.of() : List.of(reportPath),
+                fn, effect, policyPath, json);
+    }
+
+    /** ⟨0.28⟩ SPEC §3.1 — over the loaded report SET (callgraph sidecars unioned, each member's envelope
+     *  held to the same loud-read contract the single file had). */
+    static int whatif(String reportLocator, List<String> reportPaths, String fn, String effect,
+                      String policyPath, boolean json) {
         if (fn == null || effect == null) return usage("whatif <fn> <Effect> [--report <locator>] [--policy <file>] [--json]");
         // Validate the effect against the vocabulary: a typo'd/lowercase effect (`net`) matches no deny
         // rule and would print an authoritative-looking clean verdict — a false green light for the very
@@ -1882,7 +1964,7 @@ public final class Query {
                     + Rules.KNOWN_EFFECTS + " or Unknown)");
             return 2;
         }
-        Map<String, List<String>> cg = loadCallgraph(reportPath);
+        Map<String, List<String>> cg = loadCallgraph(reportPaths);
         if (cg == null || cg.isEmpty()) {
             System.out.println("candor: no call-graph sidecar beside the report (re-run analysis with --json).");
             return 2;
@@ -1929,7 +2011,8 @@ public final class Query {
             // a policy that asked nothing supports none of it), exit unchanged. A run with NO policy
             // configured keeps its plain blast-radius answer — that is the honest way to say "not gating".
             if (Policy.policyYieldedNoRules())
-                return advisoryZeroRulePolicy("whatif", policyPath, reportLocator, reportPath, json);
+                return advisoryZeroRulePolicy("whatif", policyPath, reportLocator,
+                        reportPaths.isEmpty() ? null : reportPaths.get(0), json);
             for (String f : affected) {
                 for (var r : AnalysisState.ctx().denyRules) {
                     boolean denies = r.effects().isEmpty() || r.effects().toNames().contains(effect);
@@ -1966,14 +2049,16 @@ public final class Query {
         // A report that cannot be parsed at all is corrupt input, not an effect-free package (§3.1) — and
         // this verb reads only the callgraph SIDECAR, so it would otherwise answer over a report it never
         // opened. Fail loud instead.
-        try {
-            readEnvelope(reportPath);
-        } catch (Exception e) {
-            System.err.println("candor: cannot read report " + reportPath + " ("
-                    + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName())
-                    + ") — verdict NOT computed. A blast radius answered from the call-graph sidecar alone "
-                    + "would be a pre-edit all-clear over a report nothing checked.");
-            return 2;
+        for (String rp : reportPaths) {
+            try {
+                readEnvelope(rp);
+            } catch (Exception e) {
+                System.err.println("candor: cannot read report " + rp + " ("
+                        + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName())
+                        + ") — verdict NOT computed. A blast radius answered from the call-graph sidecar alone "
+                        + "would be a pre-edit all-clear over a report nothing checked.");
+                return 2;
+            }
         }
         // ⟨0.24⟩ …and over the whole report SET the locator names, which is the set the gate reads — see
         // {@link #advisoryUnanalyzed}. The loud read above stays: it is about THIS verb's own input (it
@@ -1982,7 +2067,8 @@ public final class Query {
         // ⟨0.28⟩ The WHOLE record, not `.unanalyzed()` alone — the count-0 and unreadable causes reach
         // {@link #advisoryAnswer} too (its javadoc carries the measurement); the exit stays on the
         // violations found, per the comment at the emit below.
-        ReportCompleteness comp = reportCompleteness(reportLocator, reportPath, "whatif");
+        ReportCompleteness comp = reportCompleteness(reportLocator,
+                reportPaths.isEmpty() ? null : reportPaths.get(0), "whatif");
         List<String[]> unanalyzed = comp.unanalyzed();
 
         if (json) {
@@ -2112,6 +2198,18 @@ public final class Query {
         } catch (Exception e) {
             return Map.of();
         }
+    }
+
+    /** ⟨0.28⟩ SPEC §3.1 — the reason channel of a report SET, merged exactly as the gate's own loader
+     *  merges it (a repeated `fn` joins by UNION — the direction that cannot turn a violation into a
+     *  pass). A prefix locator names the set, and a narrowed rule adjudicated over one member's reasons
+     *  while the entries came from all of them would answer a different question than the gate. */
+    static Map<String, List<String>> rawUnknownWhy(List<String> reportPaths) {
+        Map<String, List<String>> merged = new HashMap<>();
+        for (String r : reportPaths)
+            for (var e : rawUnknownWhy(r).entrySet())
+                merged.computeIfAbsent(e.getKey(), k -> new ArrayList<>()).addAll(e.getValue());
+        return merged;
     }
 
     /** A computed boundary remedy (integrations/FIX-SPEC.md) — the deterministic cut between "must stay
@@ -2331,7 +2429,13 @@ public final class Query {
      *  candor-query (which never reads the sidecar) and candor-swift's fallback; the `callers` command falls
      *  back the same way. (/code-review — Java/TS previously emitted `no clean hoist` here.) */
     static Map<String, List<String>> fixGraph(String reportPath, List<Effector> fns) {
-        Map<String, List<String>> cg = loadCallgraph(reportPath);
+        return fixGraph(reportPath == null ? List.<String>of() : List.of(reportPath), fns);
+    }
+
+    /** ⟨0.28⟩ SPEC §3.1 — over the loaded report SET: the sidecar graphs union (see
+     *  {@link #loadCallgraph(List)}); only when NO member has one does the inline fallback apply. */
+    static Map<String, List<String>> fixGraph(List<String> reportPaths, List<Effector> fns) {
+        Map<String, List<String>> cg = loadCallgraph(reportPaths);
         if (cg != null && !cg.isEmpty()) return cg;
         Map<String, List<String>> inline = new LinkedHashMap<>();
         for (Effector f : fns) inline.put(f.fn(), f.calls());
@@ -2344,6 +2448,13 @@ public final class Query {
      *  Advisory: candor names the structure, you write the code; the gate re-scan stays the ground truth. */
     static int fix(List<Effector> fns, String reportLocator, String reportPath, String fn, String effect,
                    String policyPath, boolean json) {
+        return fix(fns, reportLocator, reportPath == null ? List.<String>of() : List.of(reportPath),
+                fn, effect, policyPath, json);
+    }
+
+    /** ⟨0.28⟩ SPEC §3.1 — over the loaded report SET (graph + reason channel unioned). */
+    static int fix(List<Effector> fns, String reportLocator, List<String> reportPaths, String fn,
+                   String effect, String policyPath, boolean json) {
         if (fn == null || effect == null) return usage("fix <fn> <Effect> [--report <locator>] [--policy <file>] [--json]");
         if (!Rules.KNOWN_EFFECTS.contains(effect) && !effect.equals("Unknown")) {
             System.err.println("candor: unknown effect `" + effect + "` (expected one of " + Rules.KNOWN_EFFECTS + " or Unknown)");
@@ -2354,18 +2465,19 @@ public final class Query {
         // `--strict`, so it has no field to withdraw and no exit to fail. What it DOES have is the same
         // sentence: `no policy forbids it there — nothing to fix` over a report declaring source candor
         // could not read is the prose all-clear, in the channel §3.2 says a test cannot see.
-        List<String[]> unanalyzed = advisoryUnanalyzed(reportLocator, reportPath, "fix");
+        List<String[]> unanalyzed = advisoryUnanalyzed(reportLocator,
+                reportPaths.isEmpty() ? null : reportPaths.get(0), "fix");
         advisoryIncompleteNote("fix", unanalyzed,
                 "(this verb answers about ONE function and carries no `ok` and no `--strict` — what it loses "
                 + "is REACH: a caller inside an unanalyzed unit is invisible to the hoist below)");
 
         Map<String, Effector> byName = new HashMap<>();
         for (Effector f : fns) byName.put(f.fn(), f);
-        Map<String, List<String>> cg = fixGraph(reportPath, fns);
+        Map<String, List<String>> cg = fixGraph(reportPaths, fns);
         Map<String, List<String>> rev = reverseGraph(cg);
         // ⟨0.24⟩ the reason/destination channel a NARROWED rule is evaluated over — built by the same
         // Policy#gateInputFromReport the gate itself uses, never a second copy (SPEC §6.2).
-        Policy.GateInput gi = Policy.gateInputFromReport(fns, rawUnknownWhy(reportPath));
+        Policy.GateInput gi = Policy.gateInputFromReport(fns, rawUnknownWhy(reportPaths));
         // ⟨0.24⟩ SPEC §3.2 — and the (rule, fn, effect) triples the GATE would refuse over these same bytes.
         Unanswerable scoped = unanswerableScopedFilters(gi);
 
@@ -2547,27 +2659,36 @@ public final class Query {
      *  gate refused to read — right for the gate (which then refuses), a fabricated premise for a remedy. */
     static int fixGate(List<Effector> fns, String reportLocator, String reportPath, String policyPath,
                        boolean json, boolean strict) {
+        return fixGate(fns, reportLocator, reportPath == null ? List.<String>of() : List.of(reportPath),
+                policyPath, json, strict);
+    }
+
+    /** ⟨0.28⟩ SPEC §3.1 — over the loaded report SET (graph + reason channel unioned). */
+    static int fixGate(List<Effector> fns, String reportLocator, List<String> reportPaths, String policyPath,
+                       boolean json, boolean strict) {
         String pol = loadPolicyOrFail(policyPath, "fix-gate");
         if (pol == null) return 2;
         // ⟨0.28⟩ SPEC §2 — a configured policy that parsed to ZERO RULES: the caveat document, result keys
         // withheld, exit unchanged. See {@link #advisoryZeroRulePolicy}.
         if (Policy.policyYieldedNoRules())
-            return advisoryZeroRulePolicy("fix-gate", pol, reportLocator, reportPath, json);
+            return advisoryZeroRulePolicy("fix-gate", pol, reportLocator,
+                    reportPaths.isEmpty() ? null : reportPaths.get(0), json);
         // ⟨0.24⟩ SPEC §3.2 (`ec1a441`) — is the report this remedy is computed from COMPLETE? See
         // {@link #advisoryUnanalyzed} / {@link #advisoryAnswer}: `ok: true` here reads "no crossings left
         // to fix", which over an unread file is a claim about a universe this verb cannot enumerate.
         // ⟨0.28⟩ The whole record: a judged-nothing report has NO crossing in it by construction, so over
         // one this verb's `ok: true` was the purest form of the false all-clear (measurement at
         // {@link #advisoryAnswer}). The strict exits below still read `unanalyzed`/`unevaluated` alone.
-        ReportCompleteness comp = reportCompleteness(reportLocator, reportPath, "fix-gate");
+        ReportCompleteness comp = reportCompleteness(reportLocator,
+                reportPaths.isEmpty() ? null : reportPaths.get(0), "fix-gate");
         List<String[]> unanalyzed = comp.unanalyzed();
 
         Map<String, Effector> byName = new HashMap<>();
         for (Effector f : fns) byName.put(f.fn(), f);
-        Map<String, List<String>> cg = fixGraph(reportPath, fns);
+        Map<String, List<String>> cg = fixGraph(reportPaths, fns);
         Map<String, List<String>> rev = reverseGraph(cg);
         // ⟨0.24⟩ as `fix` — the SAME gate input, so a narrowed rule names the same boundary in both verbs.
-        Policy.GateInput gi = Policy.gateInputFromReport(fns, rawUnknownWhy(reportPath));
+        Policy.GateInput gi = Policy.gateInputFromReport(fns, rawUnknownWhy(reportPaths));
         // ⟨0.24⟩ …and the SAME withholding, from the same producer the gate reads (SPEC §3.2).
         Unanswerable scoped = unanswerableScopedFilters(gi);
         List<String[]> unevaluated = new ArrayList<>(policyKindUnevaluated(pol));
@@ -2697,12 +2818,20 @@ public final class Query {
      *  the direction that costs a disclosure. */
     static int unverified(List<Effector> fns, String reportLocator, String reportPath, String policyPath,
                           boolean json, boolean strict, Set<ReasonClass> classFilter) {
+        return unverified(fns, reportLocator, reportPath == null ? List.<String>of() : List.of(reportPath),
+                policyPath, json, strict, classFilter);
+    }
+
+    /** ⟨0.28⟩ SPEC §3.1 — over the loaded report SET (reason channel unioned, as the gate unions it). */
+    static int unverified(List<Effector> fns, String reportLocator, List<String> reportPaths, String policyPath,
+                          boolean json, boolean strict, Set<ReasonClass> classFilter) {
         String pol = loadPolicyOrFail(policyPath, "unverified");
         if (pol == null) return 2;
         // ⟨0.28⟩ SPEC §2 — a configured policy that parsed to ZERO RULES: the caveat document, result keys
         // withheld, exit unchanged. See {@link #advisoryZeroRulePolicy}.
         if (Policy.policyYieldedNoRules())
-            return advisoryZeroRulePolicy("unverified", pol, reportLocator, reportPath, json);
+            return advisoryZeroRulePolicy("unverified", pol, reportLocator,
+                    reportPaths.isEmpty() ? null : reportPaths.get(0), json);
         // ⟨0.24⟩ SPEC §3.2 (`ec1a441`) — THE SHARPEST CASE IN THE FAMILY. This is the verb that exists to
         // say "your green gate is not provably green", and it was certifying a set it knows it cannot see
         // all of: a function in an unanalyzed file is absent from `functions`, so it cannot be enumerated
@@ -2711,7 +2840,8 @@ public final class Query {
         // ⟨0.28⟩ The whole record: a judged-nothing report enumerates NO function, so "every function in a
         // pure/deny layer is PROVABLY clean" over one was a certification of an empty universe (the
         // measurement is at {@link #advisoryAnswer}). The strict exits below are untouched.
-        ReportCompleteness comp = reportCompleteness(reportLocator, reportPath, "unverified");
+        ReportCompleteness comp = reportCompleteness(reportLocator,
+                reportPaths.isEmpty() ? null : reportPaths.get(0), "unverified");
         List<String[]> unanalyzed = comp.unanalyzed();
         List<PolicyRule.Deny> deny = AnalysisState.ctx().denyRules;
         record Hole(Effector fn, PolicyRule.Deny rule) {}
@@ -2739,14 +2869,16 @@ public final class Query {
         // does not fire at this function PASSES it, and a pass while Unknown is the hole this verb exists to
         // name. While the channel was `--class`-only, `unverified` computed from the effect set alone and
         // reported ok:true over exactly that layer — see Policy#classNarrowingFires for the measurement.
-        Map<String, List<String>> rawWhy = Map.of();
-        if (reportPath != null) {
+        Map<String, List<String>> rawWhy = new HashMap<>();
+        for (String rp : reportPaths) {
             // The RAW `unknownWhy` strings, for the reason Policy#gateInputFromReport documents: a
             // colon-free tag (`missing-config`) is dropped by `UnknownReason.parse`, so reading the parsed
             // reasons would silently reclassify a `setup` entry as `unresolved` and put it back inside
-            // `--class dynamic`, which by definition excludes `setup`.
+            // `--class dynamic`, which by definition excludes `setup`. Unioned over the SET, joining a
+            // repeated `fn` exactly as the gate's loader joins it (⟨0.28⟩ §3.1 — same bytes, same channel).
             try {
-                rawWhy = readEnvelope(reportPath).rawUnknownWhy();
+                for (var e : readEnvelope(rp).rawUnknownWhy().entrySet())
+                    rawWhy.computeIfAbsent(e.getKey(), k -> new ArrayList<>()).addAll(e.getValue());
             } catch (Exception e) {
                 // `--class` keeps its loud contract: the user NAMED a class channel, so answering over a
                 // fallback would silently answer a narrower question. Without the flag the parsed reasons
@@ -2755,10 +2887,19 @@ public final class Query {
                 if (classFilter != null) {
                     String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
                     System.err.println("candor unverified: --class needs the report's reason channel, but "
-                            + reportPath + " could not be re-read (" + why + ")");
+                            + rp + " could not be re-read (" + why + ")");
                     return 2;
                 }
             }
+        }
+        // ⟨0.28⟩ …and the loud contract covers a SET MEMBER that never loaded at all: under `--class` a
+        // sibling this run could not read means the reason channel the user named is partial, and a
+        // silently narrower answer is the defect one resolution step out.
+        if (classFilter != null && !comp.unreadable().isEmpty()) {
+            System.err.println("candor unverified: --class needs the report's reason channel, but "
+                    + comp.unreadable().size() + " report(s) under this locator could not be read "
+                    + "(named on stderr above)");
+            return 2;
         }
         final Policy.GateInput gi = Policy.gateInputFromReport(fns, rawWhy);
         // ⟨0.24⟩ SPEC §3.2 — WHAT THE GATE WOULD REFUSE OVER THESE BYTES, from the gate's own producer.
@@ -4114,6 +4255,12 @@ public final class Query {
      *  <p>{@code arg} is the optional positional N; a non-integer is a usage error (exit 2). {@code report}
      *  is the resolved report path (its {@code .callgraph.json} sidecar drives the transitive walk). */
     static int tour(List<Effector> fns, String reportPath, String arg, boolean json, ReportRef ref) {
+        return tour(fns, reportPath == null ? List.<String>of() : List.of(reportPath), arg, json, ref);
+    }
+
+    /** ⟨0.28⟩ SPEC §3.1 — over the loaded report SET (callgraph sidecars unioned; the header label is the
+     *  packages' common prefix across the set). */
+    static int tour(List<Effector> fns, List<String> reportPaths, String arg, boolean json, ReportRef ref) {
         // The lone optional positional is N (how many to list); default 10. It MUST be a positive integer —
         // a non-integer OR zero is a usage error (exit 2). `tour 0` must never print the honest-sounding
         // "nothing hidden" over an effectful crate: that would be a false all-clear (the §4 cardinal sin).
@@ -4141,7 +4288,7 @@ public final class Query {
             if (!e.loc().isEmpty()) loc.put(e.fn(), e.loc());
         }
         Map<String, Set<String>> calls = new HashMap<>();
-        Map<String, List<String>> cg = loadCallgraph(reportPath);
+        Map<String, List<String>> cg = loadCallgraph(reportPaths);
         if (cg == null || cg.isEmpty()) {
             for (Effector e : fns) if (!e.calls().isEmpty()) calls.put(e.fn(), new HashSet<>(e.calls()));
         } else {
@@ -4153,9 +4300,17 @@ public final class Query {
         // The header names the report's PACKAGE (from the §2 envelope) — meaningful and locator-independent,
         // so every engine and every --report form print the same crate. Falls back to the report/prefix
         // basename (matches the Rust reference's report_package(pre).unwrap_or_else(prefix_base)).
-        String basename = Path.of(reportPath).getFileName() != null
-                ? Path.of(reportPath).getFileName().toString() : reportPath;
-        String pkg = reportPackage(reportPath);
+        String first = reportPaths.isEmpty() ? "" : reportPaths.get(0);
+        String basename = !first.isEmpty() && Path.of(first).getFileName() != null
+                ? Path.of(first).getFileName().toString() : first;
+        // The label over a SET is the members' common dotted package prefix — the same rule one member's
+        // plural `packages` already takes (packagesLabel) — falling back to the first member's basename.
+        List<String> pkgs = new ArrayList<>();
+        for (String rp : reportPaths) {
+            String one = reportPackage(rp);
+            if (one != null) pkgs.add(one);
+        }
+        String pkg = packagesLabel(pkgs);
         String crateName = pkg != null ? pkg : basename;
 
         // ⟨0.28⟩ AND THE SAME ARGUMENT AS THE `unknown` FIELD BELOW, ONE CAUSE OVER. That field exists

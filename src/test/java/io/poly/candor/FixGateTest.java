@@ -182,7 +182,7 @@ class FixGateTest {
                 eff("domain.calc", EffectSet.empty(), EffectSet.empty(), List.of()));
         Path pol = dir.resolve("p.policy");
         Files.writeString(pol, "pure domain\n");
-        String out = capture(() -> Query.unverified(fns, null, null, pol.toString(), true, false, null));
+        String out = capture(() -> Query.unverified(fns, null, (String) null, pol.toString(), true, false, null));
         JsonObject o = JsonParser.parseString(out).getAsJsonObject();
         assertFalse(o.get("ok").getAsBoolean());
         JsonArray items = o.getAsJsonArray("unverified");
@@ -190,7 +190,7 @@ class FixGateTest {
         assertEquals("domain.price", items.get(0).getAsJsonObject().get("fn").getAsString());
         assertEquals("deny Unknown domain", items.get(0).getAsJsonObject().get("upgrade").getAsString());
         // --strict → exit 1
-        assertEquals(1, Query.unverified(fns, null, null, pol.toString(), false, true, null));
+        assertEquals(1, Query.unverified(fns, null, (String) null, pol.toString(), false, true, null));
     }
 
     /**
@@ -206,7 +206,7 @@ class FixGateTest {
         Path pol = dir.resolve("p.policy");
         Files.writeString(pol, "deny Unknown[dispatch,nativ] domain\n");   // `nativ` — a typo among valid tokens
 
-        String unv = captureErr(() -> Query.unverified(fns, null, null, pol.toString(), false, false, null));
+        String unv = captureErr(() -> Query.unverified(fns, null, (String) null, pol.toString(), false, false, null));
         assertTrue(unv.contains("nothing was checked"),
                 "`unverified` must name ITS consequence — it computes no fix, so an unhonourable policy "
                 + "costs it the CHECK: " + unv);
@@ -215,7 +215,7 @@ class FixGateTest {
         assertTrue(unv.startsWith("candor unverified:"),
                 "…under the verb's own name, as the missing-policy branch of the same loader already does: " + unv);
         Candor.resetState();
-        assertEquals(2, exitOf(() -> Query.unverified(fns, null, null, pol.toString(), false, false, null)),
+        assertEquals(2, exitOf(() -> Query.unverified(fns, null, (String) null, pol.toString(), false, false, null)),
                 "the POSTURE is unchanged — an unhonourable policy still refuses (exit 2)");
 
         Candor.resetState();

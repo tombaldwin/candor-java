@@ -2353,6 +2353,15 @@ public final class Query {
         }
         Effector se = byName.get(start);
         if (se == null || !se.inferred().toNames().contains(effect)) {
+            // ⟨0.28⟩ SPEC §6.1 — `crossing` is PINNED: a determined negative is `crossing: false` +
+            // `reason` in the DOCUMENT, never prose on a `--json` stdout (§3.3.1 purity). MEASURED on the
+            // jar before this change: `fix A.pureAdd Fs --json` printed `candor fix: … does not perform …`
+            // as stdout's only content — unparseable text on the machine channel, and the arm ts/swift
+            // already answer as `{crossing: false, reason: "does-not-perform"}` (the shipped MCP contract).
+            if (json) {
+                emit(noCrossingJson(start, effect, "does-not-perform", unanalyzed));
+                return 0;
+            }
             System.out.println("candor fix: `" + start + "` does not perform " + effect + " — nothing to hoist."
                     + (unanalyzed.isEmpty() ? "" : " (NOT an all-clear: the report declares "
                         + unanalyzed.size() + " unanalyzed unit(s), above.)"));
@@ -2384,6 +2393,13 @@ public final class Query {
         }
         String layer = deniedLayer(start, effect, gi, scoped.triples());
         if (layer == null) {
+            // ⟨0.28⟩ SPEC §6.1 — the other no-crossing arm, same rule: `crossing: false` +
+            // `reason: "not-forbidden"` in the document (the two reason tokens are the ones ts and swift
+            // already publish), prose only on the human channel.
+            if (json) {
+                emit(noCrossingJson(start, effect, "not-forbidden", unanalyzed));
+                return 0;
+            }
             System.out.println("candor fix: `" + start + "` performs " + effect
                     + ", but no policy forbids it there — the boundary isn't crossed, nothing to fix."
                     + (unanalyzed.isEmpty() ? "" : " (NOT an all-clear: the report declares "
@@ -2397,7 +2413,12 @@ public final class Query {
             // for the reason §3.2 gives about the hoist FRONTIER: a caller inside an unanalyzed unit is
             // absent from `functions`, so the computed frontier is a lower bound and the agent editing to
             // it deserves to know which file it could not see.
-            Map<String, Object> out = new LinkedHashMap<>(plan.toJson());
+            // ⟨0.28⟩ SPEC §6.1 `crossing: true` — present exactly when the verb ANSWERED (both no-crossing
+            // arms above carry `false`; the withheld-rule refusal above carries NO key, which is the arm
+            // the MCP contract's check-`refused`-first ordering exists for). First key, as candor-ts emits it.
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("crossing", true);
+            out.putAll(plan.toJson());
             if (!unanalyzed.isEmpty()) {
                 out.put("incomplete", true);
                 out.put("unanalyzed", manifestJson(unanalyzed));
@@ -2413,6 +2434,27 @@ public final class Query {
             System.out.println("  ⚠ the hoist frontier is a LOWER BOUND — the report declares "
                     + unanalyzed.size() + " unanalyzed unit(s) (above); a caller in one is invisible to it.");
         return 0;
+    }
+
+    /** ⟨0.28⟩ SPEC §6.1 — the `fix` verb's DETERMINED-NEGATIVE document: `{fn, effect, crossing: false,
+     *  reason}`, the shape candor-ts (`query-core.mjs` coreFix) and candor-swift (`Fix.notACrossing`)
+     *  already publish and the MCP `candor_fix` contract instructs agents to read. `reason` is one of the
+     *  two family tokens: {@code does-not-perform} (the fn does not carry the effect) or
+     *  {@code not-forbidden} (it does, and no rule denies it there). The §3.2 incompleteness disclosure
+     *  rides it exactly as it rides the plan document: `crossing: false` is a CLAIM over the report, and a
+     *  claim over a report declaring unread source travels with the manifest that qualifies it. */
+    static Map<String, Object> noCrossingJson(String fn, String effect, String reason,
+                                              List<String[]> unanalyzed) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("fn", fn);
+        out.put("effect", effect);
+        out.put("crossing", false);
+        out.put("reason", reason);
+        if (!unanalyzed.isEmpty()) {
+            out.put("incomplete", true);
+            out.put("unanalyzed", manifestJson(unanalyzed));
+        }
+        return out;
     }
 
     /** fix-gate <report> [policy] — a remedy for EVERY deny/`pure` (AS-EFF-006) boundary crossing in the

@@ -635,7 +635,10 @@ printf '[{"inferred":["Db"]}]\n' > "$W/emptyfn.json"
 want "loader: an empty-fn entry is dropped loudly, no %-0s crash" "$("$CJ" show "$W/emptyfn.json" '' 2>&1)" "report entr"
 # a legitimately-empty report (functions:[]) is STILL a clean pure report, not an error
 printf '{"candor":{"version":"x"},"functions":[]}\n' > "$W/empty.json"
-want "loader: a legit empty report is clean-pure (not an error)" "$("$CJ" show "$W/empty.json" x 2>&1)" 'pure functions are omitted'
+# ⟨0.28⟩ this fixture has NO `analyzed` key — SPEC §2 ⟨0.24⟩ ROW 3, "no manifest, no claim", NOT row 1.
+# It must not read as an error, and it must not read as a clean purity claim either: the verb hedges and
+# says WHY. The row asserted the clean answer because it predates ⟨0.21⟩'s manifest entirely.
+want "loader: a no-manifest report hedges rather than claiming purity (⟨0.24⟩ row 3)" "$("$CJ" show "$W/empty.json" x 2>&1)" 'no manifest at all'
 
 echo "== @PostConstruct/@PreDestroy lifecycle callbacks are entry points =="
 # Container-invoked init/shutdown hooks — no project call site, so an init that reads config or a
@@ -925,9 +928,11 @@ for v in "where Fs" "map" "blindspots" "reachable" "containment" "tour"; do
   ij="$("$CJ" $v --report "$W/sc/rep.json" --json 2>/dev/null)"
   absent "CONTROL: \`$v --json\` over the INTACT report says nothing about completeness" "$ij" 'incomplete'
 done
-# …and `show`, whose document is a top-level JSON ARRAY, is deliberately NOT hedged: an array has nowhere
-# to hang a key, and fixing only its human channel would MOVE the false all-clear. It needs a shape ruling.
-absent "show --json stays a bare array (the one exempt verb, pending a shape ruling)" \
+# ⟨0.28⟩ …and `show` NO LONGER EXEMPT — the shape ruling was made (SPEC §2, "the caveat document REPLACES
+# the result document"). Its array has nowhere to hang a key, so when it hedges it emits the caveat OBJECT
+# instead of the array. The type change is the point: a consumer doing `for (x of doc)` gets a TypeError
+# rather than a silent zero-iteration loop over a report whose own manifest names a file it could not read.
+want "show hedging emits the caveat DOCUMENT, not a bare array (⟨0.28⟩ Rung A)" \
   "$("$CJ" show Sc.f --report "$W/sc/darm.json" --json 2>/dev/null)" 'incomplete'
 
 # THE INPUT EXEMPTION COVERS THE SIDECARS TOO — never touch a path this run READS, whatever it is named.

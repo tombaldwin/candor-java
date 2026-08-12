@@ -1721,7 +1721,17 @@ public final class Query {
             int units = unanalyzed.size() + unreadable.size();
             if (units > 0) causes.add(units + " unit(s) candor could not analyze");
             if (!judgedNothing.isEmpty())
-                causes.add(judgedNothing.size() + " report(s) that JUDGED NOTHING (`analyzed.count: 0`)");
+                // ⟨0.28⟩ "…or NO MANIFEST AT ALL" — SPEC §2 ⟨0.24⟩ has THREE rows and this list holds
+                // two of them: row 1 (`count: 0`, nothing was judged) and row 3 (no `analyzed` key,
+                // a pre-⟨0.21⟩ producer, "no manifest, no claim"). Both hedge and this predicate is
+                // right to hold both, but saying they all DECLARE `count: 0` is FALSE of row 3 — a
+                // false disclosure, which this family rates worse than a missing one. candor-rust's
+                // GATE note has always said "0, or absent with no entries"; this is that wording, on
+                // the route that asserted the wrong one. Splitting the two into `judgedNothing` and
+                // `noManifest` per SPEC §2 ⟨0.28⟩ is the full fix and is tracked separately — this
+                // stops the sentence lying in the meantime.
+                causes.add(judgedNothing.size() + " report(s) that JUDGED NOTHING (`analyzed.count: 0`, "
+                        + "or no manifest at all)");
             System.out.println("  ⚠ INCOMPLETE — the report(s) under this locator declare "
                     + String.join(", and ", causes) + ",");
             System.out.println("      so " + soWhat + ":");
@@ -1729,8 +1739,9 @@ public final class Query {
             for (String p : unreadable)
                 System.out.println("      " + p + " — this report could not be re-read (see stderr)");
             for (String p : judgedNothing)
-                System.out.println("      " + p + " — `analyzed.count: 0`: this report judged NOTHING, so "
-                        + "it names no function at all and its silence is not a purity claim");
+                System.out.println("      " + p + " — `analyzed.count: 0`, or no `analyzed` manifest at "
+                        + "all: this report judged NOTHING or does not say, so it names no function and "
+                        + "its silence is not a purity claim");
             System.out.println("      " + tail);
         }
     }

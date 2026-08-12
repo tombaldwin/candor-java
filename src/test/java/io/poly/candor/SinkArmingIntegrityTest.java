@@ -53,11 +53,18 @@ class SinkArmingIntegrityTest {
     private record Run(int exit, String stdout, String stderr) {}
 
     private static Run runCli(String... args) throws Exception {
+        return runCliIn(null, args);
+    }
+
+    /** {@link #runCli} with a working directory — the ⟨0.28⟩ discovery spelling has no report anywhere
+     *  in argv, so the test can only pose it by standing WHERE the engine will discover one. */
+    private static Run runCliIn(Path dir, String... args) throws Exception {
         String javaBin = System.getProperty("java.home") + "/bin/java";
         String cp = System.getProperty("java.class.path");
         List<String> cmd = new ArrayList<>(List.of(javaBin, "-cp", cp, "io.poly.candor.Candor"));
         cmd.addAll(List.of(args));
         ProcessBuilder pb = new ProcessBuilder(cmd);
+        if (dir != null) pb.directory(dir.toFile());
         // The conformance rows these tests mirror run env-scrubbed (`env -u CANDOR_…`); a policy or
         // baseline inherited from the HARNESS environment must not turn one of these into a different
         // run (a clean-gate control with a CANDOR_BASELINE set would gate against it).
@@ -299,5 +306,106 @@ class SinkArmingIntegrityTest {
         assertTrue(s.stdout().contains("\"refused\": true"),
                 "the gate verb's `--gate-json -` stream must carry the refusal document on this exit-2 "
                 + "cause too, not 0 bytes\nSTDOUT:\n" + s.stdout() + "\nSTDERR:\n" + s.stderr());
+    }
+
+    // ── SPEC §3.3.1 (3) ⟨0.28⟩: the gate's input guard covers what the `--report` locator EXPANDS to ──
+    //
+    // The guard compared the sink against the raw locator TOKEN while the loader reads the token's
+    // EXPANSION (Query.locatorReportSet). MEASURED on this engine 2026-08-12, each at the bytes because
+    // each also "failed" with a plausible exit code:
+    //
+    //   gate --report r --policy P --gate-json r.app.jvm.json   → exit 2, the operator's report replaced
+    //       by the armed refusal — and the diagnostic blamed the report ("object has no 'functions'
+    //       array") for the corruption this run inflicted;
+    //   the discovery spelling (no --report, sink = the discovered .candor report) — identical;
+    //   gate … --gate-json r.app.jvm.callgraph.json              → the §2.2 sidecar half of the pair,
+    //       destroyed at a SUCCESS exit: the report loads fine, the gate runs, and a REAL verdict lands
+    //       where the callgraph belongs.
+
+    /** A minimal hand-written §2 report + callgraph sidecar under {@code <scratch>/r} — the stable wire
+     *  shape the gate consumes, so no compile is needed. Returns the report path. */
+    private Path writeGateReportPair() throws Exception {
+        Path report = scratch.resolve("r.app.jvm.json");
+        Files.writeString(report, """
+            {"candor":{"version":"t","toolchain":"t","spec":"0.28"},"package":"app",
+             "functions":[{"fn":"app.Store.save","loc":"Store.java:3","inferred":["Fs"],"hash":"h"}],
+             "analyzed":{"count":1,"digest":"0"}}
+            """);
+        Files.writeString(scratch.resolve("r.app.jvm.callgraph.json"), "{\"app.Store.save\":[]}\n");
+        Files.writeString(scratch.resolve("deny-fs.policy"), "deny Fs\n");
+        return report;
+    }
+
+    @Test
+    void gateJsonNamingAnExpandedReportIsRefusedWithTheReportIntact() throws Exception {
+        Path report = writeGateReportPair();
+        byte[] before = Files.readAllBytes(report);
+        Run r = runCli("gate", "--report", scratch.resolve("r").toString(),
+                "--policy", scratch.resolve("deny-fs.policy").toString(),
+                "--gate-json", report.toString());
+        assertArrayEquals(before, Files.readAllBytes(report),
+                "--gate-json <one of the locator's expanded reports> DESTROYED the report the gate was "
+                + "asked to judge (SPEC §3.3.1 (3) ⟨0.28⟩ — compare the EXPANSION, never the token)"
+                + "\nSTDERR:\n" + r.stderr());
+        assertEquals(2, r.exit(), "a sink naming an input is refused, exit 2\nSTDERR:\n" + r.stderr());
+        assertTrue(r.stderr().contains("a file this gate reads"),
+                "the refusal names the collision — not a downstream 'cannot read report' over the "
+                + "wreckage\nSTDERR:\n" + r.stderr());
+    }
+
+    @Test
+    void gateJsonNamingADiscoveredReportIsRefusedWithTheReportIntact() throws Exception {
+        // The no-`--report` spelling: nothing in argv names the report at all, and the reports this
+        // gate is about to read from the discovered `.candor/` are inputs just the same.
+        Path candor = scratch.resolve(".candor");
+        Files.createDirectories(candor);
+        Path report = candor.resolve("report.app.jvm.json");
+        Files.writeString(report, """
+            {"candor":{"version":"t","toolchain":"t","spec":"0.28"},"package":"app",
+             "functions":[{"fn":"app.Store.save","loc":"Store.java:3","inferred":["Fs"],"hash":"h"}],
+             "analyzed":{"count":1,"digest":"0"}}
+            """);
+        Files.writeString(scratch.resolve("deny-fs.policy"), "deny Fs\n");
+        byte[] before = Files.readAllBytes(report);
+        Run r = runCliIn(scratch, "gate", "--policy", "deny-fs.policy",
+                "--gate-json", ".candor/report.app.jvm.json");
+        assertArrayEquals(before, Files.readAllBytes(report),
+                "the DISCOVERED report is an input too — this spelling destroyed it before the fix"
+                + "\nSTDERR:\n" + r.stderr());
+        assertEquals(2, r.exit(), "refused, exit 2\nSTDERR:\n" + r.stderr());
+    }
+
+    @Test
+    void gateJsonNamingTheReportsSidecarIsRefusedAndAGateJsonSiblingStillGates() throws Exception {
+        Path report = writeGateReportPair();
+        Path sidecar = scratch.resolve("r.app.jvm.callgraph.json");
+        byte[] sideBefore = Files.readAllBytes(sidecar);
+        Run r = runCli("gate", "--report", scratch.resolve("r").toString(),
+                "--policy", scratch.resolve("deny-fs.policy").toString(),
+                "--gate-json", sidecar.toString());
+        assertArrayEquals(sideBefore, Files.readAllBytes(sidecar),
+                "the pair's other half is part of what the locator names — before the fix a REAL "
+                + "verdict landed here at a success exit, and every later `callers`/`rewire` read a "
+                + "verdict document where the graph belongs\nSTDERR:\n" + r.stderr());
+        assertEquals(2, r.exit(), "refused, exit 2\nSTDERR:\n" + r.stderr());
+
+        // THE CONTROL, and it is load-bearing: `<report-stem>.gate.json` is a sibling matching
+        // `<stem>.*.json` — the exact file a fix that guarded "everything sharing the stem" would
+        // refuse — and it is the beside-the-report verdict layout (`gate` is excluded from
+        // Loader.reportSidecarSegments for the same reason). It must still gate, with a REAL verdict.
+        Path sink = scratch.resolve("r.app.jvm.gate.json");
+        byte[] reportBefore = Files.readAllBytes(report);
+        Run c = runCli("gate", "--report", scratch.resolve("r").toString(),
+                "--policy", scratch.resolve("deny-fs.policy").toString(),
+                "--gate-json", sink.toString());
+        assertEquals(1, c.exit(),
+                "deny Fs over the Fs fixture is a VIOLATION verdict, never a refusal — a guard that "
+                + "reddens the beside-the-report layout has broken the default, not implemented the rule"
+                + "\nSTDERR:\n" + c.stderr());
+        String verdict = Files.readString(sink);
+        assertTrue(verdict.contains("\"violations\"") && !verdict.contains("\"refused\""),
+                "the sink carries the verdict, not the armed placeholder:\n" + verdict);
+        assertArrayEquals(reportBefore, Files.readAllBytes(report),
+                "…and the reports the gate read are byte-identical after the control run");
     }
 }

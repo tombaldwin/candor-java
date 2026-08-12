@@ -231,6 +231,46 @@ public final class Query {
         return prefixHits(prefix);
     }
 
+    /** ⟨0.28⟩ SPEC §3.3.1 (3) — the FILES the gate verb's `--report` locator names, for the sink guard:
+     *  {@link #locatorReportSet}'s expansion (the loader's own three-way rule — the SET the gate reads,
+     *  kept adjacent so the guard and the loader cannot drift), or the DISCOVERED locator's when no
+     *  `--report` was given, plus each report's §2.2 sidecars.
+     *
+     *  <p>Exists because the guard compared the sink against the raw LOCATOR token while the loader
+     *  reads the token's EXPANSION. MEASURED on this engine 2026-08-12:
+     *
+     *  <pre>  gate --report r --policy P --gate-json r.app.jvm.json
+     *      → armGateJson wrote the refusal placeholder OVER the operator's report, the load then failed
+     *        on the wreckage, and the exit-2 refusal document was written over it AGAIN — with a
+     *        diagnostic blaming the report ("not a candor report: object has no 'functions' array")
+     *        for the corruption this run inflicted. The discovery spelling (no --report, sink =
+     *        .candor/report.app.jvm.json) destroyed the discovered report identically.</pre>
+     *
+     *  <p>THE SIDECARS RIDE ALONG (same clause: a report locator names the PAIR). The gate opens no
+     *  sidecar — that MUST NOT is the gate loader's — but a sink on the pair's other half is WORSE than
+     *  the report case: the report loads fine, the gate runs, and a REAL verdict lands on the callgraph
+     *  at a success exit; every later `callers`/`rewire` then reads a verdict document where the graph
+     *  belongs. {@link Loader#reportSidecarSegments} is the derived list (`gate` excluded there, and the
+     *  exclusion matters here too: `<stem>.gate.json` is the verdict sink's own beside-the-report
+     *  layout, and refusing it would break the exact spelling `--gate-json` exists for). Existing files
+     *  only — the guard protects data, and a sidecar not on disk has none to lose. */
+    static List<String> gateReportInputFiles(String locator) {
+        String loc = locator != null ? locator : discoverReportLocatorQuiet();
+        if (loc == null) return List.of();
+        List<String> out = new ArrayList<>();
+        for (String r : locatorReportSet(loc)) {
+            if (r.endsWith(".json")) {
+                String stem = r.substring(0, r.length() - ".json".length());
+                for (String seg : Loader.reportSidecarSegments()) {
+                    String side = stem + "." + seg + ".json";
+                    if (Files.isRegularFile(Path.of(side))) out.add(side);
+                }
+            }
+            out.add(r);
+        }
+        return out;
+    }
+
     /** The `looked for …` line {@link #expandPrefix} prints when a dir/prefix locator names no report —
      *  shared so the SET resolver ({@link #locatorReportSet}) fails with the same words as the single one. */
     static void reportNotFound(String prefix, String original) {
@@ -248,6 +288,17 @@ public final class Query {
      *  discovered PREFIX can name a report SET, and expanding it to one file first would throw the rest
      *  away before the verb ever saw them. */
     static String discoverReportLocator() {
+        String loc = discoverReportLocatorQuiet();
+        if (loc == null)
+            System.err.println("candor: no report given and no `.candor/` directory found walking up from the CWD "
+                    + "— pass --report <locator> or set CANDOR_REPORT.");
+        return loc;
+    }
+
+    /** The same discovery with no stderr — for the ⟨0.28⟩ sink guard's pre-pass, which runs before the
+     *  verb and must not pre-empt the verb's own "no report" diagnostic (the real run prints it a moment
+     *  later, through {@link #discoverReportLocator}; two copies of the line would read as two failures). */
+    static String discoverReportLocatorQuiet() {
         String override = System.getenv("CANDOR_REPORT");
         if (override != null && !override.isEmpty()) return override;
         Path p = Path.of("").toAbsolutePath();
@@ -255,8 +306,6 @@ public final class Query {
             Path candor = p.resolve(".candor");
             if (Files.isDirectory(candor)) return candor.resolve("report").toString();
         }
-        System.err.println("candor: no report given and no `.candor/` directory found walking up from the CWD "
-                + "— pass --report <locator> or set CANDOR_REPORT.");
         return null;
     }
 
@@ -361,6 +410,14 @@ public final class Query {
                 // §3.3.1 names "a report being read (`gate --report`)" as an input. Writing the verdict
                 // there destroys the very report the gate was asked to judge.
                 Candor.refuseGateJsonOverInput(preGate, preReport, "--report");
+                // ⟨0.28⟩ …AND THE FILES THE LOCATOR EXPANDS TO, because the raw flag value above is not
+                // what this verb READS: a locator is a prefix/dir (or a discovery, when absent), and the
+                // gate reads its expansion — so a sink naming one of the expanded reports, or one of
+                // their §2.2 sidecars, named an input the token comparison could not see. Enumerated by
+                // the loader-adjacent {@link #gateReportInputFiles}; the measurement lives there.
+                List<String> expandedInputs = gateReportInputFiles(preReport);
+                for (String f : expandedInputs)
+                    Candor.refuseGateJsonOverInput(preGate, f, "a file this gate reads —");
                 // Anchored at the CWD, not the report: this verb's policy ladder discovers the config
                 // from the CWD, so asking the report's directory was a different question and left a
                 // config-declared policy unguarded.
@@ -383,6 +440,10 @@ public final class Query {
                 for (String sNamed : namedSinks) {
                     if (sNamed.equals("-")) continue;
                     Candor.refuseGateJsonOverInput(sNamed, preReport, "--report");
+                    // ⟨0.28⟩ the expanded report set (and its sidecars), exactly as the single-sink path
+                    // asks it above — a duplicate must not smuggle an expanded input past the guard.
+                    for (String f : expandedInputs)
+                        Candor.refuseGateJsonOverInput(sNamed, f, "a file this gate reads —");
                     Candor.refuseGateJsonOverAnyInput(sNamed, ".", prePolicy);
                 }
                 if (namedSinks.size() > 1) {

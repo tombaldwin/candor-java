@@ -8,6 +8,20 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⟨0.28⟩ `unverified`/`fix-gate` answer a judged-nothing report with the pinned caveat, not
+  `{"ok": true}`** (SPEC §2, *"AND HERE IS WHAT THE TRAVELLING CAVEAT IS CALLED"*). Measured via
+  candor-spec's key-shape harvest over a ⟨0.21⟩ Row-1 report (`functions: []`, `analyzed.count: 0` —
+  the facade artifact): both verbs answered `ok: true` at exit 0, stdout `"… PROVABLY clean ✓"` / `"no
+  … crossings ✓"`, while this engine's own `where`/`map`/`blindspots` hedged over the same bytes and
+  rust/ts/swift all withdraw `ok` there. `advisoryAnswer` now reads the whole `ReportCompleteness`
+  (count-0 and unreadable-sibling causes included): `ok` is omitted, `incomplete: true` +
+  `judgedNothing` (an ARRAY of report paths) ride the document through the same `writeJson` the
+  descriptive verbs use, the ✓ ticks are withdrawn on the human channel, and `whatif` takes the same
+  arm. Exit codes are UNCHANGED (⟨0.24⟩: count-0 is *"a disclosure, not an exit code"*) — byte-verified
+  old-jar-vs-new over intact and armed states in every mode; an intact report's output is
+  byte-identical. Also: a locator-rule-2 path that does not exist on disk is the pre-scan case, not an
+  `unreadable` report — absent input no longer hedges an answer the caller already fails loudly on.
+
 - **⟨0.28⟩ `gate --report`: the input guard covers what the locator EXPANDS to** (SPEC §3.3.1 (3),
   *"AND AN INPUT LOCATOR NAMES A SET — COMPARE THE EXPANSION, NEVER THE TOKEN"*). The guard compared
   `--gate-json` against the raw `--report` token while the loader reads the token's expansion, so

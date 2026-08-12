@@ -50,9 +50,12 @@ public final class VerifyCli {
         for (int i = 1; i < args.length; i++) {
             String a = args[i];
             switch (a) {
-                case "--run" -> runCmd = i + 1 < args.length ? args[++i] : null;
-                case "--report" -> reportArg = i + 1 < args.length ? args[++i] : null;
-                case "--scope" -> scope = i + 1 < args.length ? args[++i] : scope;
+                // SPEC §3.2 ⟨0.28⟩ "given no value": a flag-shaped next token is NOT a value — refuse it
+                // (usage exits 2) rather than consume it, the same rule the scan CLI and the gate verb
+                // carry. `--run --json` used to take `--json` as the command to execute.
+                case "--run" -> { requireValue(args, i, a); runCmd = args[++i]; }
+                case "--report" -> { requireValue(args, i, a); reportArg = args[++i]; }
+                case "--scope" -> { requireValue(args, i, a); scope = args[++i]; }
                 case "--json" -> wantJson = true;
                 // A non-zero --run exit means the run did not complete cleanly — its trace may be PARTIAL, so a
                 // clean all-clear cannot be certified over it (fail-closed by default, below). --allow-run-failure
@@ -368,6 +371,17 @@ public final class VerifyCli {
             System.err.println("  note: `" + runCmd + "` exited " + programExit
                     + " — the trace may be partial (fewer functions exercised).");
         }
+    }
+
+    /** SPEC §3.2 ⟨0.28⟩ — a value-taking flag whose next token is dash-prefixed (bare {@code -}
+     *  excepted) has been GIVEN NO VALUE; consuming the token instead is the silent reinterpretation
+     *  §6.2 forbids. Exits via {@link #usage} naming both the flag and the token that is not a value. */
+    private static void requireValue(String[] args, int i, String flag) {
+        if (i + 1 >= args.length) usage(flag + " was given no value");
+        String v = args[i + 1];
+        if (v.startsWith("-") && !v.equals("-"))
+            usage(flag + " was given no value — the next token " + v + " is a flag (a value really "
+                    + "named that is spelled ./" + v + ")");
     }
 
     private static void usage(String msg) {

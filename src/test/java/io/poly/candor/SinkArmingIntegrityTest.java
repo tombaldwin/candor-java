@@ -158,4 +158,40 @@ class SinkArmingIntegrityTest {
         assertTrue(Files.exists(report), "the report was written where asked");
     }
 
+    // ── defect 2: the symlinked sidecar ──────────────────────────────────────────────────────────────
+
+    @Test
+    void armingLeavesASymlinkedSidecarAloneAndSaysSo() throws Exception {
+        Path cls = compileNetFixture();
+        Path report = scratch.resolve("r.json");
+        Files.writeString(report, "{\"previous\": \"report\"}\n");
+        // The operator's layout: the callgraph sidecar is a LINK to a file kept elsewhere.
+        Path elsewhere = scratch.resolve("kept");
+        Files.createDirectories(elsewhere);
+        Path linkTarget = elsewhere.resolve("real.callgraph.json");
+        byte[] kept = "{\"app.Svc.fetch\": []}\n".getBytes();
+        Files.write(linkTarget, kept);
+        Path link = scratch.resolve("r.callgraph.json");
+        try {
+            Files.createSymbolicLink(link, linkTarget);
+        } catch (UnsupportedOperationException | java.io.IOException e) {
+            Assumptions.assumeTrue(false, "filesystem does not support symlinks — skip");
+        }
+        // A regular sidecar beside it: the ruling is scoped to LINKS, deletion stays the rule otherwise.
+        Path regular = scratch.resolve("r.hierarchy.json");
+        Files.writeString(regular, "{}\n");
+        // A failing run (unknown flag) isolates ARM time: the report is armed, then the run exits 2.
+        Run r = runCli(cls.toString(), "--json", report.toString(), "--zzz-not-a-flag");
+        assertEquals(2, r.exit(), "the unknown flag still fails the run\nSTDERR:\n" + r.stderr());
+        assertTrue(Files.isSymbolicLink(link),
+                "arming CONSUMED the symlinked sidecar — the link is the operator's layout, not this "
+                + "run's artifact (the family ruling: leave it alone)\nSTDERR:\n" + r.stderr());
+        assertArrayEquals(kept, Files.readAllBytes(linkTarget),
+                "the link's target was modified — it may have other readers and is outside the report's stem");
+        assertFalse(Files.exists(regular),
+                "CONTROL: a REGULAR sidecar beside the armed report is still deleted — the symlink "
+                + "ruling must not disarm sidecar removal itself");
+        assertTrue(r.stderr().contains("SYMLINK"),
+                "leaving the pair in place is DISCLOSED, not silent\nSTDERR:\n" + r.stderr());
+    }
 }

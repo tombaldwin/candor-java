@@ -1018,8 +1018,15 @@ final class Policy {
      */
     static void warnPolicy(String line, String kind, String token, List<String> accepted, String reason) {
         System.err.println("candor: ignoring policy rule (" + reason + "): " + line);
-        policyErrors.add(new PolicyTokenError(kind, token, accepted, reason, line, false));
+        policyErrors.add(new PolicyTokenError(kind, token, accepted, reason, line, false,
+                curLineNo, curRawLine != null ? curRawLine : line));
     }
+
+    /** ⟨0.28⟩ The source position {@link #parsePolicy}'s loop is currently at, for the `ignored` rows —
+     *  1-based line number plus the line VERBATIM (the trimmed/comment-stripped form the parser matches
+     *  on is NOT what §6.2 pins; the operator diffs the document against the file they wrote). */
+    private static int curLineNo;
+    private static String curRawLine;
 
     /** The effect names a `deny`/`pure` rule may spell — the same set the parser tests, so the accepted
      *  set the witness publishes cannot drift from the one that decided the drop. */
@@ -1045,7 +1052,7 @@ final class Policy {
      *              where the gate's behaviour is deliberately unchanged (see {@link #policyErrors}).
      */
     record PolicyTokenError(String kind, String token, List<String> accepted, String known, String rule,
-                            boolean fatal) {
+                            boolean fatal, int lineNo, String rawText) {
         /** The one-line diagnostic — the same words on the gate route and in the witness's `errors`. */
         String message() {
             return fatal ? "unknown " + kind + " `" + token + "` (known: " + known + ")"
@@ -1140,6 +1147,36 @@ final class Policy {
     }
 
     /**
+     * ⟨0.28⟩ SPEC §6.2 — <b>the lines the parse DROPPED, as verdict-document rows:</b>
+     * {@code ignored: [ { line, text, reason }, … ]}, omitted entirely when nothing was dropped.
+     *
+     * <p>The zero-rule refusal fires only at ZERO survivors, so its discontinuity was stark and the wrong
+     * way round: 0 of 10 rules parse → exit 2 refusal; 1 of 10 → {@code {"ok": true, "violations": []}}
+     * and the document says nothing about the nine gates that were never asked — a 90%-gateless green,
+     * arriving at every fraction below 100%. Refusal there would break the forward-compat leniency §6.2
+     * defends (a line stays ignored-with-a-warning); DISCLOSURE is the remedy, and the human channel
+     * already had it (all four engines warn per line) while the verdict document was silent.
+     *
+     * <p>Distinct from {@code unevaluated}, and the distinction is load-bearing: {@code unevaluated}
+     * carries rules that PARSED and could not be answered; {@code ignored} carries text that never became
+     * a rule at all. A consumer that sees neither is entitled to believe the policy on disk is the policy
+     * that ran. FATAL token errors are excluded — they refuse the whole run at exit 2 and never reach a
+     * verdict document.
+     */
+    static java.util.List<java.util.Map<String, Object>> ignoredLinesJson() {
+        var rows = new ArrayList<java.util.Map<String, Object>>();
+        for (PolicyTokenError e : policyErrors) {
+            if (e.fatal()) continue;
+            var m = new java.util.LinkedHashMap<String, Object>();
+            m.put("line", e.lineNo());
+            m.put("text", e.rawText());
+            m.put("reason", e.known());
+            rows.add(m);
+        }
+        return rows;
+    }
+
+    /**
      * ⟨0.28⟩ The exit-2 diagnostic for a configured policy that parsed to NO RULES — the {@link
      * #policyFailure} of this rung, and deliberately shaped like it: one sentence naming the POSTURE
      * (never an exit code — a violation an earlier producer established dominates and the run exits 1,
@@ -1200,7 +1237,8 @@ final class Policy {
      * gate refuses on the first — it does not matter which token defeated it.
      */
     static void policyError(String line, String kind, String token, List<String> accepted, String known) {
-        policyErrors.add(new PolicyTokenError(kind, token, accepted, known, line, true));
+        policyErrors.add(new PolicyTokenError(kind, token, accepted, known, line, true,
+                curLineNo, curRawLine != null ? curRawLine : line));
     }
 
     /**
@@ -1246,7 +1284,15 @@ final class Policy {
             policyUnreadable = true;
             return false;
         }
+        int lineNo = 0;
         for (String raw : lines) {
+            // ⟨0.28⟩ SPEC §6.2 `ignored` — the verdict document carries {line, text, reason} for every
+            // line the parse dropped, so the current 1-based line number and the VERBATIM source line
+            // ride beside the parse for {@link #warnPolicy} to record. Statics, matching every other
+            // per-parse channel in this class (policyErrors itself, policyRulesParsed).
+            lineNo++;
+            curLineNo = lineNo;
+            curRawLine = raw;
             // SPEC §6.2 lexical: `#` begins a comment to end-of-line (strip it, mirroring the Rust
             // parser's `raw_line.split('#').next()`); blank/comment-only lines are ignored. A bare
             // `startsWith("#")` check left an INLINE comment's tokens in the rule — `deny Exec # x`

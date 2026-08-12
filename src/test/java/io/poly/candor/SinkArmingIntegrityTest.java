@@ -194,4 +194,39 @@ class SinkArmingIntegrityTest {
         assertTrue(r.stderr().contains("SYMLINK"),
                 "leaving the pair in place is DISCLOSED, not silent\nSTDERR:\n" + r.stderr());
     }
+
+    // ── defect 3: the pre-pass arming a sink the parse loop never accepts ────────────────────────────
+
+    @Test
+    void policySwallowedJsonFlagDoesNotArmTheDisplacedValue() throws Exception {
+        Path cls = compileNetFixture();
+        Path prev = scratch.resolve("X.json");
+        byte[] previous = "{\"previous\": \"run's report\"}\n".getBytes();
+        Files.write(prev, previous);
+        // The parse loop consumes `--json` as --policy's value and rejects X.json as a surplus
+        // positional; no `--json` is ever accepted, so nothing may be armed at X.json.
+        Run r = runCli(cls.toString(), "--policy", "--json", prev.toString());
+        assertEquals(2, r.exit(), "the surplus positional still fails the run\nSTDERR:\n" + r.stderr());
+        assertArrayEquals(previous, Files.readAllBytes(prev),
+                "the pre-pass armed a sink the parse loop never accepted: `--policy --json X` consumed "
+                + "`--json` as the policy path, so X was NOT a sink of this run — arming it turns X's "
+                + "previous report into a PERMANENT placeholder (the run can never complete to replace "
+                + "it)\nSTDERR:\n" + r.stderr());
+    }
+
+    @Test
+    void valuelessTrailingPolicyStillArmsTheAcceptedJsonSink() throws Exception {
+        // CONTROL — the fix must not weaken arming where `--json X` IS parsed and accepted: here the
+        // failure is --policy's own (valueless, exit 2), and X must hold the fail-closed placeholder,
+        // not the previous run's report.
+        Path cls = compileNetFixture();
+        Path prev = scratch.resolve("X.json");
+        Files.writeString(prev, "{\"previous\": \"run's report\"}\n");
+        Run r = runCli(cls.toString(), "--json", prev.toString(), "--policy");
+        assertEquals(2, r.exit(), "a valueless --policy fails the run\nSTDERR:\n" + r.stderr());
+        String now = Files.readString(prev);
+        assertTrue(now.contains("armed"),
+                "an ACCEPTED --json sink on a failed run must hold the fail-closed placeholder, not "
+                + "the previous run's report\nCONTENT:\n" + now);
+    }
 }

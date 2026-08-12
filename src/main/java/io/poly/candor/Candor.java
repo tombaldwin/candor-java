@@ -630,6 +630,9 @@ public class Candor {
         // that exits 2 must not leave the PREVIOUS run's report byte-identical on disk, and a `--json`
         // path naming an INPUT of this run must be refused with nothing written.
         String preJsonFile = null;
+        // ⟨0.28⟩ every `--json` sink spelling in argv, in order — `-` for the stream form. A run publishes
+        // ONE report to ONE sink; see the repeated-sink refusal below the loop.
+        var preJsonSinks = new java.util.ArrayList<String>();
         for (int i = 0; i < args.length; i++) {
             boolean hasVal = i + 1 < args.length;
             if (args[i].equals("--gate-json") && hasVal && (args[i + 1].equals("-") || !args[i + 1].startsWith("-"))) {
@@ -650,8 +653,13 @@ public class Candor {
             else if (args[i].equals("--policy") && hasVal
                     && (args[i + 1].equals("-") || !args[i + 1].startsWith("-")))
                 prePolicy = args[++i];
-            else if (args[i].equals("--json") && hasVal && !args[i + 1].startsWith("-")) preJsonFile = args[++i];   // --json <file>
-            else if (args[i].equals("--json")) preWantJsonStream = true;                        // bare / --json <-flag>
+            else if (args[i].equals("--json") && hasVal && !args[i + 1].startsWith("-")) {
+                preJsonFile = args[++i];                                                        // --json <file>
+                preJsonSinks.add(preJsonFile);
+            } else if (args[i].equals("--json")) {
+                preWantJsonStream = true;                                                       // bare / --json <-flag>
+                preJsonSinks.add("-");
+            }
             else if (!args[i].startsWith("-") && preTarget == null) preTarget = args[i];
         }
         // ⟨0.28⟩ Arm the report-stream shutdown hook so `--json` never leaves stdout empty on an exit-2
@@ -665,6 +673,42 @@ public class Candor {
         // `refuseGateJsonOverAnyInput` + `armGateJson` sequence used for the verdict sink at line ~715.
         // Arming also removes that report's §2.2 sidecars (see armReportJson), which is why the target
         // and policy travel with it — the input exemption covers the sidecars as well.
+        // ⟨0.28⟩ A REPEATED `--json` IS REFUSED, the same rule as the repeated `--gate-json` below and for
+        // the same reason — two spellings of one rule is the habit this rung has paid for six times.
+        // MEASURED on this engine before the change: `--json one.json --json two.json` wrote the report to
+        // the LAST path and left the first holding a previous run's document at exit 0 — the ⟨0.27⟩ stale
+        // green, arriving through the report sink because the refusal was written for the verdict sink and
+        // never extended. Two spellings of one artifact are ONE sink (sameArtifact); the file-and-stream
+        // mix is two. Every non-input FILE sink gets the fail-closed ARMED report (the §3.3.1 (2) shape —
+        // a report sink's refusal document IS the manifest-carrying empty); the stream form is covered by
+        // the armReportStream hook armed above, so stdout carries the same fail-closed document on exit.
+        {
+            var namedJson = new java.util.ArrayList<String>();
+            for (String v : preJsonSinks) {
+                boolean seen = false;
+                for (String k : namedJson)
+                    if (k.equals(v) || (!k.equals("-") && !v.equals("-") && sameArtifact(k, v))) seen = true;
+                if (!seen) namedJson.add(v);
+            }
+            if (namedJson.size() > 1) {
+                String tgt = preTarget != null ? preTarget : ".";
+                var offending = new java.util.LinkedHashSet<String>();
+                for (String sNamed : namedJson)
+                    if (!sNamed.equals("-") && gateJsonIsInput(sNamed, tgt, prePolicy)) offending.add(sNamed);
+                for (String sNamed : offending)
+                    System.err.println("candor: --json " + sNamed + " names an INPUT of this run — "
+                            + "refusing (exit 2), and nothing was written there.");
+                System.err.println("candor: --json given more than once ("
+                        + String.join(", ", namedJson) + ") — refusing (exit 2). A scan publishes ONE "
+                        + "report. Naming two sinks says where it goes twice, and the reader of the path "
+                        + "that loses cannot tell it lost. Name one, or run the scan twice.");
+                for (String sNamed : namedJson) {
+                    if (sNamed.equals("-") || offending.contains(sNamed)) continue;
+                    armReportJson(sNamed, tgt, prePolicy);   // the fail-closed report, sidecars removed
+                }
+                System.exit(2);
+            }
+        }
         if (preJsonFile != null) {
             refuseJsonOverAnyInput(preJsonFile, preTarget != null ? preTarget : ".", prePolicy);
             armReportJson(preJsonFile, preTarget != null ? preTarget : ".", prePolicy);
@@ -1343,6 +1387,75 @@ public class Candor {
         }
     }
 
+    /**
+     * ⟨0.28⟩ SPEC §3.3.1 "AND THE SCAN TARGET EXPANDS TO THE FILES THE RUN WILL PARSE" — is {@code sink}
+     * a path UNDER the (directory) scan target bearing an extension this engine parses
+     * ({@link Loader#parseableSourceName})?
+     *
+     * <p>The exact-artifact input rule refuses a sink that IS the target and permits everything else,
+     * which left this residual: MEASURED on this engine before the change, {@code candor clsA --json
+     * clsA/evil.class} ARMED the placeholder into the class tree, the walk then read the JSON bytes as
+     * bytecode ("skipped 1 unparseable class file(s) … Unsupported class file major version 24942" — the
+     * major version is the placeholder's own text), and the run finished GREEN with the report sitting at
+     * a {@code .class} path. Had a real class of the operator's code lived there, arming would have
+     * destroyed it AND the scan silently skipped the wreckage. The full file set is unknowable at arming
+     * time (arming precedes the walk, deliberately — §3.3.1 (1)); the engine's own source extensions are
+     * not, and that is the whole of the check. NEVER containment in general: {@code <dir>/.candor/
+     * report.json} is under the target, is not a source file, and stays permitted — the control that
+     * separates this from the containment rule the spec explicitly rejects.
+     */
+    static boolean sinkParseableUnderTarget(String sink, String target) {
+        if (sink == null || sink.equals("-") || target == null) return false;
+        try {
+            Path t = Path.of(target);
+            if (!Files.isDirectory(t)) return false;   // a jar/zip target has no "under"; exact-artifact covers it
+            Path resolved = resolveSinkArtifact(Path.of(sink));
+            Path name = resolved.getFileName();
+            if (name == null || !Loader.parseableSourceName(name.toString())) return false;
+            return realishPath(resolved).startsWith(t.toRealPath());
+        } catch (IOException | RuntimeException e) {
+            return false;
+        }
+    }
+
+    /** Symlink-resolved as far as the filesystem allows, for a path whose TAIL may not exist yet: the
+     *  nearest EXISTING ancestor is resolved really, the missing remainder re-appended lexically. The
+     *  parent-only {@link #resolveForCompare} is not enough for the under-target check: a sink named in a
+     *  not-yet-existing SUBDIRECTORY of the target (`--gate-json <target>/lib/x.jar`) kept its unresolved
+     *  spelling while the target resolved really, so on a symlinked temp root (macOS `/var` →
+     *  `/private/var`) the containment test silently failed — MEASURED: the test-suite reproduction was
+     *  "protected" only by the write failing on the missing directory, the accident-is-not-an-
+     *  implementation arm the spec names. */
+    private static Path realishPath(Path p) {
+        Path abs = p.toAbsolutePath().normalize();
+        Path cur = abs, rest = null;
+        while (cur != null && !Files.exists(cur)) {
+            Path leaf = cur.getFileName();
+            if (leaf == null) return abs;
+            rest = rest == null ? leaf : leaf.resolve(rest);
+            cur = cur.getParent();
+        }
+        if (cur == null) return abs;
+        try {
+            cur = cur.toRealPath();
+        } catch (IOException | RuntimeException e) {
+            return abs;
+        }
+        return rest == null ? cur : cur.resolve(rest);
+    }
+
+    /** The refusal for {@link #sinkParseableUnderTarget} — writes NOTHING and exits 2 (the sink was never
+     *  armed; the input exemption's own posture, because by expansion the path IS an input). */
+    static void refuseSinkUnderTarget(String flag, String sink, String target) {
+        if (!sinkParseableUnderTarget(sink, target)) return;
+        System.err.println("candor: " + flag + " " + sink + " lies under the scan target " + target
+                + " and ends in an extension this engine parses (.class/.jar/.zip) — the scan would read "
+                + "the report back as a source file, and arming would destroy any real one at that path. "
+                + "Refusing (exit 2); nothing was written. A report inside the tree is fine at a non-source "
+                + "path — the recommended " + target + "/.candor/report.json layout stays permitted.");
+        System.exit(2);
+    }
+
     /** ⟨0.28⟩ Follow a chain of symlinks to the artifact finally named, target-need-not-exist. */
     static Path resolveSinkArtifact(Path p) {
         Path cur = p;
@@ -1533,6 +1646,8 @@ public class Candor {
      *  down — the exemption covers the offending PATH, and the other sinks still have readers. */
     static boolean gateJsonIsInput(String gateJson, String target, String policyFlag) {
         if (gateJson == null || gateJson.equals("-")) return false;
+        // ⟨0.28⟩ a sink under the target with a parseable extension IS an input, by the target's expansion.
+        if (sinkParseableUnderTarget(gateJson, target)) return true;
         for (String[] in : runInputs(target, policyFlag))
             if (in[0] != null && sameArtifact(gateJson, in[0])) return true;
         return gateJsonIsAtConfig(gateJson);
@@ -1541,6 +1656,9 @@ public class Candor {
     static void refuseGateJsonOverAnyInput(String gateJson, String target, String policyFlag) {
         if (gateJson == null || gateJson.equals("-")) return;
         for (String[] in : runInputs(target, policyFlag)) refuseGateJsonOverInput(gateJson, in[0], in[1]);
+        // ⟨0.28⟩ the target's EXPANSION — see #sinkParseableUnderTarget; a rule bound to one sink and not
+        // its sibling is the recurring defect this rung keeps paying for.
+        refuseSinkUnderTarget("--gate-json", gateJson, target);
         refuseGateJsonAtConfig(gateJson);
     }
 
@@ -1594,6 +1712,7 @@ public class Candor {
         if (jsonFile == null || jsonFile.equals("-")) return;
         java.util.List<String[]> inputs = runInputs(target, policyFlag);
         for (String[] in : inputs) refuseJsonOverInput(jsonFile, in[0], in[1]);
+        refuseSinkUnderTarget("--json", jsonFile, target);
         // ⟨0.28⟩ THE SINK EXPANDS TOO — the report sink is a SET, not one file. A file-mode `--json
         // <out>` also writes `<stem>.callgraph.json` / `<stem>.hierarchy.json` (and arming deletes the
         // whole reserved family at that stem), so comparing only the token the operator typed leaves

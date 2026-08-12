@@ -1628,6 +1628,21 @@ public class Candor {
                 sp = Path.of(side);
                 if (!Files.exists(sp)) continue;
             } catch (RuntimeException e) { continue; }   // not even a path on this filesystem
+            // A SYMLINKED sidecar is LEFT ALONE (the family ruling; rust and swift already hold it). The
+            // link is the OPERATOR'S layout, not this run's artifact: `deleteIfExists` here removed the
+            // LINK while the stale data stayed readable under the target's other name — the layout
+            // severed, the hazard intact. Deleting the TARGET instead reaches outside the report's stem
+            // and destroys a file that may have other readers. And even the benign-looking cycle —
+            // delete, scan, rewrite by bytes — converts a link into a regular file on the SUCCESS path.
+            // None of those is ours to do, so this discloses the pair and moves on, the same posture as
+            // the input-exempt arm below: an armed report makes its sidecar unanswerable either way.
+            if (Files.isSymbolicLink(sp)) {
+                System.err.println("candor: " + side + " is a SYMLINK and a §2.2 sidecar of the armed "
+                        + "report --json " + path + " — leaving the link in place (it is the operator's "
+                        + "layout, and what it points at may have other readers). Treat it as "
+                        + "unanswerable: an armed report makes its sidecar describe a PREVIOUS run.");
+                continue;
+            }
             if (inputs == null) inputs = runInputs(target, policyFlag);   // once, and only if there is work
             String reads = null;
             for (String[] in : inputs)

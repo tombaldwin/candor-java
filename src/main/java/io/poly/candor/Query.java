@@ -761,11 +761,26 @@ public final class Query {
             deny.add(m);
         }
         List<Map<String, Object>> allow = new ArrayList<>();
-        for (var r : AnalysisState.ctx().allowRules)
-            allow.add(Map.of("effect", r.effect().specName(), "scope", r.scope(), "values", new ArrayList<>(r.values())));
+        // LinkedHashMap for these rows too, and DOUBLY so: `Map.of` iterates in a per-JVM-launch SALTED
+        // order (the top-level comment below records the same defect one scope out), and the `byJson`
+        // comparator four lines down sorts the rows BY THEIR SERIALIZED STRING — so with two or more
+        // allow rules the salt decided the ROW order as well as the key order within each row. The same
+        // policy file dumped differently on different launches of the same build, which is exactly what
+        // a canonical dump for the four-way differential must never do.
+        for (var r : AnalysisState.ctx().allowRules) {
+            var m = new java.util.LinkedHashMap<String, Object>();
+            m.put("effect", r.effect().specName());
+            m.put("scope", r.scope());
+            m.put("values", new ArrayList<>(r.values()));
+            allow.add(m);
+        }
         List<Map<String, Object>> forbid = new ArrayList<>();
-        for (var r : AnalysisState.ctx().forbidRules)
-            forbid.add(Map.of("from", r.from(), "to", r.to()));
+        for (var r : AnalysisState.ctx().forbidRules) {
+            var m = new java.util.LinkedHashMap<String, Object>();
+            m.put("from", r.from());
+            m.put("to", r.to());
+            forbid.add(m);
+        }
         Comparator<Map<String, Object>> byJson = Comparator.comparing(JSON::toJson);
         deny.sort(byJson); allow.sort(byJson); forbid.sort(byJson);
         // LinkedHashMap, not Map.of: `Map.of` iterates in a per-JVM-run SALTED order, so the dump's TOP-LEVEL
@@ -3197,7 +3212,15 @@ public final class Query {
         }
         if (json) {
             List<Map<String, Object>> ds = new ArrayList<>();
-            for (var e : dropped.entrySet()) ds.add(Map.of("caller", e.getKey(), "no_longer_calls", e.getValue()));
+            // LinkedHashMap, not `Map.of` — the containment fix's reasoning applies row by row: a two-pair
+            // `Map.of` is a salted MapN, so these rows' key order flipped between JVM launches of the same
+            // build. caller-then-callees, the order the human arm below prints them in.
+            for (var e : dropped.entrySet()) {
+                var row = new LinkedHashMap<String, Object>();
+                row.put("caller", e.getKey());
+                row.put("no_longer_calls", e.getValue());
+                ds.add(row);
+            }
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("dropped", ds);
             out.put("ok", dropped.isEmpty());
@@ -3963,6 +3986,19 @@ public final class Query {
         return 0;
     }
 
+    /** The `path --json` document — fn, effect, path (then `note`, when the source is not locally
+     *  traceable), the order the question was asked in. ONE builder for the verb's three emits, so they
+     *  cannot disagree about the key order the way three separate literals already had (see the salted
+     *  `Map.of` note at the no-effect emit). */
+    private static Map<String, Object> pathDoc(String fn, String effect, List<?> path, String note) {
+        var m = new LinkedHashMap<String, Object>();
+        m.put("fn", fn);
+        m.put("effect", effect);
+        m.put("path", path);
+        if (note != null) m.put("note", note);
+        return m;
+    }
+
     /** path — the call chain by which a function comes to perform an effect: a shortest-path BFS over the
      *  effect-relevant `calls` graph from <fn> to the nearest method that performs <effect> DIRECTLY (the
      *  source). Answers "this method touches Net — through WHAT?", the chain `where` (who performs it) and
@@ -3983,7 +4019,11 @@ public final class Query {
             // to stderr so it doesn't precede the JSON object on stdout.
             (json ? System.err : System.out).println(start.fn() + " does not perform " + effect
                     + "  (inferred: " + start.inferred().toNames() + ")");
-            if (json) emit(Map.of("fn", start.fn(), "effect", effect, "path", List.of()));
+            // LinkedHashMap in all three of this verb's emits, not `Map.of` — the containment fix (and its
+            // measurement) sits in this same file: a 3+-pair `Map.of` iterates in a per-JVM-launch SALTED
+            // order, so the same build emitted `{fn,effect,path}` or `{path,fn,effect}` according to the
+            // launch. fn-effect-path, the order the question was asked in.
+            if (json) emit(pathDoc(start.fn(), effect, List.of(), null));
             return 0;
         }
         // BFS following `calls`, only through callees that carry the effect, to the first DIRECT source.
@@ -4013,8 +4053,7 @@ public final class Query {
                     + "— not statically traceable.";
             // --json: stdout JSON-only, the human note goes to stderr (see the no-effect branch above).
             (json ? System.err : System.out).println(msg);
-            if (json) emit(Map.of("fn", start.fn(), "effect", effect, "path", List.of(),
-                    "note", "source not locally traceable"));
+            if (json) emit(pathDoc(start.fn(), effect, List.of(), "source not locally traceable"));
             return 0;
         }
         List<String> chain = new ArrayList<>();
@@ -4031,7 +4070,7 @@ public final class Query {
                 m.put("source", i == chain.size() - 1);
                 steps.add(m);
             }
-            emit(Map.of("fn", start.fn(), "effect", effect, "path", steps));
+            emit(pathDoc(start.fn(), effect, steps, null));
             return 0;
         }
         System.out.println("candor path — how `" + start.fn() + "` comes to perform " + effect + ":\n");

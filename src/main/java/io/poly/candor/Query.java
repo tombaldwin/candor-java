@@ -2721,7 +2721,13 @@ public final class Query {
             // ⟨0.24⟩ 2, not 1, when a rule went unevaluated OR the report is incomplete: SPEC §3.2 pins the
             // exit to the GATE's, and neither a refusal nor an unread file is a crossing the operator can go
             // and fix. Could-not-fully-evaluate OUTRANKS found-a-crossing, for the same reason.
-            if (strict && (!unevaluated.isEmpty() || !unanalyzed.isEmpty())) return 2;
+            // ⟨0.28⟩ #79: `comp.incomplete()`, not `unanalyzed` alone — an UNREADABLE set member is the
+            // incompleteness cause the gate exits 2 over (measured: `gate --report` exit 2 while this
+            // verb's `--strict` exited 0 over identical bytes, the caveat KEYS already travelling
+            // correctly — only the exit was short), and the §3.2 pessimism relation makes exit 0 a claim
+            // of having got further than the gate. count-0 (judgedNothing) stays OUT of this condition:
+            // the gate exits 0 there, and ⟨0.24⟩ pinned it "a disclosure, not an exit code".
+            if (strict && (!unevaluated.isEmpty() || comp.incomplete())) return 2;
             return strict && !plans.isEmpty() ? 1 : 0;
         }
         for (String[] u : unevaluated) System.err.println("candor fix-gate: " + u[1]);
@@ -2750,7 +2756,10 @@ public final class Query {
                 System.out.println("candor fix-gate: no crossing among the functions candor could SEE — NOT "
                         + "an all-clear: the report(s) named on stderr judged nothing (or could not be "
                         + "re-read), so there was nothing here a crossing could be found IN.");
-                return 0;
+                // ⟨0.28⟩ #79: an UNREADABLE member is the incomplete cause the gate refuses over, so
+                // `--strict` follows the gate to 2; count-0 ALONE still stops at the disclosure (the
+                // gate exits 0 there).
+                return strict && comp.incomplete() ? 2 : 0;
             }
             return strict ? 2 : 0;
         }
@@ -2771,12 +2780,14 @@ public final class Query {
             System.out.println("  ⚠ NOT the whole list — the report declares " + unanalyzed.size()
                     + " unanalyzed unit(s) (above); a crossing inside one is invisible here.");
         if (strict) {
-            if (!unevaluated.isEmpty() || !unanalyzed.isEmpty()) {
+            // ⟨0.28⟩ #79: an unreadable set member joins the could-not-fully-evaluate causes, as the gate.
+            if (!unevaluated.isEmpty() || comp.incomplete()) {
+                List<String> causes = new ArrayList<>();
+                if (!unevaluated.isEmpty()) causes.add(unevaluated.size() + " rule(s) the gate could not evaluate");
+                if (!unanalyzed.isEmpty()) causes.add(unanalyzed.size() + " unit(s) candor could not analyze");
+                if (!comp.unreadable().isEmpty()) causes.add(comp.unreadable().size() + " report(s) that could not be read");
                 System.out.println("  (--strict: " + n + " outstanding boundary crossing(s), AND "
-                        + (unevaluated.isEmpty() ? "" : unevaluated.size() + " rule(s) the gate could not evaluate")
-                        + (unevaluated.isEmpty() || unanalyzed.isEmpty() ? "" : " AND ")
-                        + (unanalyzed.isEmpty() ? "" : unanalyzed.size() + " unit(s) candor could not analyze")
-                        + " → exit 2, as the gate)");
+                        + String.join(" AND ", causes) + " → exit 2, as the gate)");
                 return 2;
             }
             System.out.println("  (--strict: " + n + " outstanding boundary crossing(s) → exit 1)");
@@ -2959,7 +2970,13 @@ public final class Query {
             emit(advisoryAnswer(clean, comp, unevaluated, body));
             // ⟨0.24⟩ 2, not 1, when the gate would have refused OR the report is incomplete — SPEC §3.2
             // pins the exit to the gate's, and could-not-fully-evaluate outranks found-a-hole.
-            if (strict && (!unevaluated.isEmpty() || !unanalyzed.isEmpty())) return 2;
+            // ⟨0.28⟩ #79: `comp.incomplete()`, not `unanalyzed` alone — an UNREADABLE set member is the
+            // incompleteness cause the gate exits 2 over (measured: `gate --report` exit 2 while this
+            // verb's `--strict` exited 0 over identical bytes, the caveat KEYS already travelling
+            // correctly — only the exit was short), and the §3.2 pessimism relation makes exit 0 a claim
+            // of having got further than the gate. count-0 (judgedNothing) stays OUT of this condition:
+            // the gate exits 0 there, and ⟨0.24⟩ pinned it "a disclosure, not an exit code".
+            if (strict && (!unevaluated.isEmpty() || comp.incomplete())) return 2;
             return strict && !holes.isEmpty() ? 1 : 0;
         }
         // THE PROSE CHANNEL CARRIES THE SAME DISCLOSURE, for the reason `whatif` states one verb over: a
@@ -2991,7 +3008,10 @@ public final class Query {
                 System.out.println("candor unverified: nothing here is PROVABLY clean and nothing is a hole — "
                         + "the report(s) named on stderr judged nothing (or could not be re-read), so there "
                         + "was no function here to certify.");
-                return 0;
+                // ⟨0.28⟩ #79: an UNREADABLE member is the incomplete cause the gate refuses over, so
+                // `--strict` follows the gate to 2; count-0 ALONE still stops at the disclosure (the
+                // gate exits 0 there).
+                return strict && comp.incomplete() ? 2 : 0;
             }
             return strict ? 2 : 0;
         }
@@ -3035,7 +3055,8 @@ public final class Query {
         // would have given 1 in this channel and 2 in the other, over identical input. The refusal wins: it
         // is the gate's own code, and a rule that was never evaluated is not a crossing anyone can go and fix.
         // An unread FILE ranks with it, for the reason §3.2 gives: neither is a finding anyone can act on.
-        if (strict && (!unevaluated.isEmpty() || !unanalyzed.isEmpty())) return 2;
+        // ⟨0.28⟩ #79: including a set MEMBER this verb could not re-read — comp.incomplete(), as the gate.
+        if (strict && (!unevaluated.isEmpty() || comp.incomplete())) return 2;
         return strict ? 1 : 0;
     }
 

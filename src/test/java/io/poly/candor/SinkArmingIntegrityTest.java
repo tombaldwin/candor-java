@@ -505,6 +505,106 @@ class SinkArmingIntegrityTest {
                 "NOTHING was written to the refused sink's stem either — refusal writes nothing");
     }
 
+    // ── ⟨0.28⟩ the scan target EXPANDS to the files the run will parse ───────────────────────────────
+
+    @Test
+    void jsonSinkWithAParseableExtensionUnderTheTargetIsRefused() throws Exception {
+        // MEASURED before the change: `--json <target>/evil.class` ARMED the placeholder into the class
+        // tree, the walk read the JSON bytes back as bytecode ("Unsupported class file major version
+        // 24942" — the placeholder's own text), and the run finished GREEN with a report at a .class
+        // path. A real class there would have been destroyed AND silently skipped.
+        Path cls = compileNetFixture();
+        Path evil = cls.resolve("app").resolve("Svc.class");   // a REAL class of the operator's code
+        byte[] before = Files.readAllBytes(evil);
+        Run r = runCli(cls.toString(), "--json", evil.toString());
+        assertArrayEquals(before, Files.readAllBytes(evil),
+                "arming destroyed a source file of the tree being scanned\nSTDERR:\n" + r.stderr());
+        assertEquals(2, r.exit(), "refused at parse time, nothing written\nSTDERR:\n" + r.stderr());
+        assertTrue(r.stderr().contains("extension this engine parses"),
+                "the refusal names the rule (under the target + a parseable extension)\nSTDERR:\n" + r.stderr());
+    }
+
+    @Test
+    void gateJsonSinkWithAParseableExtensionUnderTheTargetIsRefusedToo() throws Exception {
+        // The sibling route, asserted separately — the rule is about the SINK, not one flag; `.jar` and a
+        // not-yet-existing path exercise the extension set and the target-need-not-contain-it arm.
+        Path cls = compileNetFixture();
+        Run r = runCli(cls.toString(), "--gate-json", cls.resolve("lib").resolve("x.jar").toString());
+        assertEquals(2, r.exit(), "refused\nSTDERR:\n" + r.stderr());
+        assertFalse(Files.exists(cls.resolve("lib").resolve("x.jar")), "nothing was written there");
+        assertTrue(r.stderr().contains("extension this engine parses"), r.stderr());
+    }
+
+    @Test
+    void aParseableExtensionOutsideTheTargetStaysPermitted() throws Exception {
+        // CONTROL — the rule is under-the-target AND parseable, never extension alone: an odd sink name
+        // OUTSIDE the tree is the operator's business (nothing this run will parse lives there).
+        Path cls = compileNetFixture();
+        Path odd = scratch.resolve("odd.class");
+        Run r = runCli(cls.toString(), "--json", odd.toString());
+        assertEquals(0, r.exit(), "an out-of-tree sink is permitted whatever its name\nSTDERR:\n" + r.stderr());
+        assertTrue(Files.isRegularFile(odd), "the report was written where asked");
+    }
+
+    @Test
+    void aJsonSinkUnderTheTargetStaysPermitted() throws Exception {
+        // CONTROL — `<dir>/.candor/report.json` is under the target and is NOT a source file: the
+        // recommended layout, the control the ruling says this fix must not break (exact-artifact /
+        // extension, never containment — one engine tried containment and it "took 33 tests with it").
+        Path cls = compileNetFixture();
+        Files.createDirectories(cls.resolve(".candor"));
+        Run r = runCli(cls.toString(), "--json", cls.resolve(".candor").resolve("report.json").toString());
+        assertEquals(0, r.exit(), "the recommended in-tree layout is ordinary usage\nSTDERR:\n" + r.stderr());
+        assertTrue(Files.isRegularFile(cls.resolve(".candor").resolve("report.json")));
+    }
+
+    // ── ⟨0.28⟩ a repeated `--json` is one rule with the repeated `--gate-json`, not two spellings ─────
+
+    @Test
+    void repeatedJsonSinksAreRefusedAndBothFailClosed() throws Exception {
+        // MEASURED before the change: `--json one.json --json two.json` wrote the report to the LAST
+        // path and left the first byte-identical at exit 0 — a previous run's document standing as
+        // current, the ⟨0.27⟩ stale green through the report sink.
+        Path cls = compileNetFixture();
+        Path one = scratch.resolve("one.json"), two = scratch.resolve("two.json");
+        Files.writeString(one, "{\"stale\": true}");
+        Run r = runCli(cls.toString(), "--json", one.toString(), "--json", two.toString());
+        assertEquals(2, r.exit(), "a run publishes ONE report to ONE sink\nSTDERR:\n" + r.stderr());
+        assertTrue(r.stderr().contains("--json given more than once"), r.stderr());
+        String oneAfter = Files.readString(one);
+        assertFalse(oneAfter.contains("stale"),
+                "the losing sink must NOT keep a previous run's document — it gets the fail-closed "
+                + "armed report: " + oneAfter);
+        assertTrue(oneAfter.contains("\"analyzed\"") && oneAfter.contains("armed:"),
+                "…the §3.3.1 (2) manifest-carrying empty, not a bare refusal: " + oneAfter);
+        assertTrue(Files.readString(two).contains("armed:"), "every named sink fails closed");
+    }
+
+    @Test
+    void theSameArtifactNamedTwiceIsOneSink() throws Exception {
+        // CONTROL — two spellings of one path are ONE sink (the §3.3.1 artifact rule), exactly as the
+        // repeated --gate-json guard treats them: the run proceeds and writes the real report.
+        Path cls = compileNetFixture();
+        Path out = scratch.resolve("r.json");
+        Run r = runCli(cls.toString(), "--json", out.toString(),
+                "--json", scratch.resolve(".").resolve("r.json").toString());
+        assertEquals(0, r.exit(), "one artifact, one sink — not a duplicate\nSTDERR:\n" + r.stderr());
+        assertTrue(Files.readString(out).contains("app.Svc.fetch"), "the real report landed");
+    }
+
+    @Test
+    void aFileSinkAndTheStreamFormAreTwoSinks() throws Exception {
+        // `--json r.json --json` names a file AND stdout — two places for one report. The stream half of
+        // the refusal is the armReportStream hook: stdout carries the fail-closed document, exactly once.
+        Path cls = compileNetFixture();
+        Path out = scratch.resolve("r.json");
+        Run r = runCli(cls.toString(), "--json", out.toString(), "--json");
+        assertEquals(2, r.exit(), r.stderr());
+        assertTrue(r.stderr().contains("--json given more than once"), r.stderr());
+        assertTrue(r.stdout().contains("\"count\": 0") && r.stdout().contains("NOT a claim"),
+                "the stream form's fail-closed document reaches stdout (the hook)\nSTDOUT:\n" + r.stdout());
+    }
+
     @Test
     void jsonSinkBesideTheBaselineStaysPermitted() throws Exception {
         // CONTROL — the recommended layout: report and baseline side by side under `.candor/`. A guard

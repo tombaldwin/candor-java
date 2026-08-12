@@ -22,6 +22,22 @@ import static io.poly.candor.Policy.*;
  *  `import static io.poly.candor.Loader.*`; reads shared state via the static imports. See
  *  REFACTOR_PLAN.md. */
 final class Loader {
+
+    /** ⟨0.28⟩ SPEC §3.3.1 — <b>the file extensions this engine PARSES</b>, the set the under-target sink
+     *  refusal keys on ("a sink that lies under the target AND bears an extension the engine parses is
+     *  refused"). Kept HERE, beside the two walks that define it, so the guard and the loader cannot
+     *  drift: {@link #collectClasses} reads {@code .class} files under a directory target, and
+     *  {@link #load} mounts a {@code .jar}/{@code .zip} when it IS the target. The archive extensions are
+     *  included even though a directory walk skips them — the set is the ENGINE's parseable surface, known
+     *  before the file list is (which is the whole of what makes the check possible at arming time), and a
+     *  report sink legitimately named {@code *.jar} does not exist. Case-INSENSITIVE, unlike the walk's
+     *  own case-sensitive {@code .class} filter: this feeds a REFUSAL, where over-matching costs a rename
+     *  and under-matching plants a JSON file in the operator's class tree.  */
+    static boolean parseableSourceName(String fileName) {
+        String n = fileName.toLowerCase(Locale.ROOT);
+        return n.endsWith(".class") || n.endsWith(".jar") || n.endsWith(".zip");
+    }
+
     static List<ClassNode> load(Path root) throws IOException {
         List<ClassNode> out = new ArrayList<>();
         // A `.jar`/`.zip` is an ARCHIVE, not a directory: `Files.walk` over it yields only the archive

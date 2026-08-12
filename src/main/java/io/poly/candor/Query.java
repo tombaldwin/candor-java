@@ -1464,7 +1464,14 @@ public final class Query {
      *  rather than dropped silently (candor-ts's reader is silent here; a dropped file is exactly the
      *  evidence this rule is about). The ELEMENT rule lives in {@link #readEnvelope} and follows from the
      *  same relation: a member is counted the moment it is an object, because a manifest member that
-     *  cannot be read is still a member saying something was not analysed. */
+     *  cannot be read is still a member saying something was not analysed.
+     *
+     *  <p>⟨0.28⟩ This used to be the advisory verbs' WHOLE read — {@code unanalyzed()} alone, the other
+     *  two causes of {@link ReportCompleteness} thrown away at this line — which is how {@code unverified}
+     *  and {@code fix-gate} answered {@code {"ok": true}} over a judged-nothing report (measured at
+     *  {@link #advisoryAnswer}). The verbs now hold the whole record; this wrapper survives for {@code
+     *  fix}, whose document carries neither {@code ok} nor the caveat keys and whose inline prose
+     *  qualifier is pinned to the {@code unanalyzed} cause. */
     static List<String[]> advisoryUnanalyzed(String locator, String resolved, String who) {
         return reportCompleteness(locator, resolved, who).unanalyzed();
     }
@@ -1649,6 +1656,15 @@ public final class Query {
         List<String> jn = new ArrayList<>();
         List<String> bad = new ArrayList<>();
         for (String r : set) {
+            // ⟨0.28⟩ ABSENT is not UNREADABLE. Locator rule 2 returns a `.json` path VERBATIM whether or
+            // not it exists, and a report that is not there is the ordinary pre-scan case every caller
+            // already fails on loudly before answering — candor-rust `report_completeness` draws the same
+            // line ("treating 'no manifest' as 'incomplete' would put the hedge on every run and train
+            // the reader to ignore it"). Measured when the ⟨0.28⟩ rung made `unreadable` reach the
+            // advisory documents: two FixGateTest fixtures that stage only a callgraph sidecar had `ok`
+            // withdrawn over a report that was never claimed to exist. A file that IS there and cannot
+            // be read stays `unreadable` — that is corrupt input, the case the hedge is for.
+            if (!Files.isRegularFile(Path.of(r))) continue;
             Envelope env;
             try {
                 env = readEnvelope(r);
@@ -1723,17 +1739,39 @@ public final class Query {
      *  <p><b>{@code unevaluated} IS WRITTEN HERE, not by the caller.</b> A trigger whose disclosure is
      *  emitted in one place and whose consequence is decided in another is precisely how these two clauses
      *  drifted apart in the first place — {@code whatif} held the incompleteness rule inline and its
-     *  siblings never got it. One producer decides both. */
-    static Map<String, Object> advisoryAnswer(boolean ok, List<String[]> unanalyzed,
+     *  siblings never got it. One producer decides both.
+     *
+     *  <p>⟨0.28⟩ <b>AND THIS PRODUCER READ ONE OF {@link ReportCompleteness}'s THREE CAUSES.</b> The
+     *  descriptive verbs got all three through {@link ReportCompleteness#writeJson}; this took the
+     *  {@code unanalyzed} list alone, so the two causes with no manifest row to carry — a report
+     *  declaring {@code analyzed.count: 0}, a sibling this verb could not re-read — never reached it.
+     *  MEASURED on the jar built before this change, over a report with {@code functions: []} and
+     *  {@code analyzed.count: 0} (SPEC §2's "I judged nothing" row, the ⟨0.21⟩ facade artifact):
+     *
+     *  <pre>
+     *    unverified --strict  exit 0   {"ok": true, "unverified": []}   stdout: "… PROVABLY clean ✓"
+     *    fix-gate   --strict  exit 0   {"ok": true, "remedies":   []}   stdout: "no … crossings ✓"
+     *  </pre>
+     *
+     *  while {@code where}/{@code map}/{@code blindspots} over the SAME bytes answered
+     *  {@code incomplete: true} + {@code judgedNothing} — the engine hedging its descriptions and
+     *  certifying its verdicts, over input it knows judged nothing. rust, ts and swift all omit
+     *  {@code ok} and carry the ⟨0.28⟩ caveat keys here (SPEC §2, "AND HERE IS WHAT THE TRAVELLING
+     *  CAVEAT IS CALLED"); the key set is {@link ReportCompleteness#writeJson}'s, defined once, so this
+     *  producer and the descriptive verbs cannot drift into two manifests. The EXIT CODES are untouched:
+     *  ⟨0.24⟩ ruled count-0 "a disclosure, not an exit code" ({@code gate --report} exits 0 over a
+     *  facade package, and a verb exiting 2 there would claim it got LESS far than the gate on identical
+     *  bytes), so the callers' {@code --strict} arms still read the {@code unanalyzed}/{@code
+     *  unevaluated} causes alone. */
+    static Map<String, Object> advisoryAnswer(boolean ok, ReportCompleteness comp,
                                               List<String[]> unevaluated, Map<String, Object> body) {
         Map<String, Object> out = new LinkedHashMap<>();
-        if (unanalyzed.isEmpty() && unevaluated.isEmpty()) out.put("ok", ok);
+        if (!comp.mustHedge() && unevaluated.isEmpty()) out.put("ok", ok);
         out.putAll(body);
         if (!unevaluated.isEmpty()) out.put("unevaluated", Candor.unevaluatedJson(unevaluated));
-        if (!unanalyzed.isEmpty()) {
-            out.put("incomplete", true);
-            out.put("unanalyzed", manifestJson(unanalyzed));
-        }
+        // `incomplete: true` + the arrays, each omitted when empty — a document raised by `unanalyzed`
+        // alone stays byte-identical to its pre-⟨0.28⟩ form, and an intact report adds nothing at all.
+        comp.writeJson(out);
         return out;
     }
 
@@ -1758,6 +1796,38 @@ public final class Query {
         for (String[] u : unanalyzed)
             System.err.println("    " + u[0] + (u[1] == null || u[1].isEmpty() ? "" : "  (" + u[1] + ")"));
         System.err.println("  " + tail);
+    }
+
+    /** ⟨0.28⟩ The prose channel for the OTHER two causes — a report declaring {@code analyzed.count: 0},
+     *  a sibling this verb could not re-read. A separate note rather than a fourth parameter on
+     *  {@link #advisoryIncompleteNote}, because that note's closing sentence ("`gate --report` exits 2
+     *  over it … `--strict` exits 2") is TRUE of {@code unanalyzed} and FALSE here: ⟨0.24⟩ ruled count-0
+     *  a disclosure, not an exit code, so nothing downstream fails closed on these bytes and a note
+     *  claiming otherwise sends the reader to a CI job that passes and teaches them the warning is noise
+     *  (the {@code gateLine()} lesson, one channel over). A no-op when neither cause fired, so the
+     *  existing verbs' stderr is byte-identical on every input measured before this change. */
+    static void advisoryJudgedNothingNote(String who, ReportCompleteness comp) {
+        if (!comp.judgedNothing().isEmpty()) {
+            System.err.println("candor " + who + ": " + comp.judgedNothing().size() + " report(s) under "
+                    + "this locator say they JUDGED NOTHING (`analyzed.count: 0`) — a silence that names "
+                    + "no function and licenses no purity claim about any unit:");
+            for (String p : comp.judgedNothing()) System.err.println("    " + p);
+            // The closing sentence is TRUE only when count-0 stands ALONE: beside an `unanalyzed` cause
+            // the gate DOES exit 2 and `--strict` DOES move (from that cause, disclosed above), and a
+            // warning whose factual claim the reader can watch fail teaches them the warning is noise —
+            // the same one-sentence-per-cause split {@link ReportCompleteness#gateLine} exists for.
+            System.err.println(comp.incomplete()
+                    ? "  (`ok` is OMITTED — neither value is a statement this input licenses. Re-scan the "
+                      + "sources you meant to check.)"
+                    : "  (`ok` is OMITTED — neither value is a statement this input licenses. NOTHING "
+                      + "DOWNSTREAM WILL CATCH THIS FOR YOU: `gate --report` exits 0 over a judged-nothing "
+                      + "report and `--strict` does not move either, so this note is the whole of the "
+                      + "warning. Re-scan the sources you meant to check.)");
+        }
+        if (!comp.unreadable().isEmpty())
+            System.err.println("candor " + who + ": " + comp.unreadable().size() + " report(s) under this "
+                    + "locator could not be re-read (named on stderr above) — this answer is reported "
+                    + "INCOMPLETE rather than clean.");
     }
 
     /** The {@link #advisoryIncompleteNote} tail for the two verbs that answer `ok` and take `--strict`. */
@@ -1879,7 +1949,11 @@ public final class Query {
         // {@link #advisoryUnanalyzed}. The loud read above stays: it is about THIS verb's own input (it
         // reads only the callgraph sidecar, so without it the verb answers over a report it never opened),
         // whereas the manifest is about what the gate would refuse over the same bytes.
-        List<String[]> unanalyzed = advisoryUnanalyzed(reportLocator, reportPath, "whatif");
+        // ⟨0.28⟩ The WHOLE record, not `.unanalyzed()` alone — the count-0 and unreadable causes reach
+        // {@link #advisoryAnswer} too (its javadoc carries the measurement); the exit stays on the
+        // violations found, per the comment at the emit below.
+        ReportCompleteness comp = reportCompleteness(reportLocator, reportPath, "whatif");
+        List<String[]> unanalyzed = comp.unanalyzed();
 
         if (json) {
             Map<String, Object> body = new LinkedHashMap<>();
@@ -1912,7 +1986,7 @@ public final class Query {
             // run can still answer, and this verb has no `--strict` for §3.2 to rule an exit for.
             // No `unevaluated` list here: this verb discloses an unanswerable narrowing PER VIOLATION, as
             // `conditional` (§3.1) — see the `violations` loop above. It has no rule-level channel to pass.
-            emit(advisoryAnswer(violations.isEmpty(), unanalyzed, List.of(), body));
+            emit(advisoryAnswer(violations.isEmpty(), comp, List.of(), body));
             return violations.isEmpty() ? 0 : 1;
         }
         System.out.println("whatif: adding `" + effect + "` to `" + String.join(", ", targets) + "`");
@@ -1927,12 +2001,17 @@ public final class Query {
                     + unanalyzed.stream().limit(5).map(u -> "\n      " + u[0] + " (" + u[1] + ")")
                             .reduce("", String::concat)
                     + (unanalyzed.size() > 5 ? "\n      … and " + (unanalyzed.size() - 5) + " more" : ""));
+        // ⟨0.28⟩ …and the other two causes, on the same channel for the same reason.
+        advisoryJudgedNothingNote("whatif", comp);
         if (policyPath == null) {
             System.out.println("  (no policy given — pass a policy file or set CANDOR_POLICY for the gate verdict)");
             return 0;
         }
         if (violations.isEmpty()) {
-            System.out.println(unanalyzed.isEmpty()
+            // ⟨0.28⟩ `mustHedge`, not `unanalyzed.isEmpty()`: the tick is the prose `ok: true`, and a
+            // judged-nothing or unreadable sibling withdraws the JSON field above — one channel must not
+            // keep the claim the other just withdrew.
+            System.out.println(!comp.mustHedge()
                     ? "  ✓ within policy — this edit introduces no `deny`/`pure` boundary violation."
                     : "  · no `deny`/`pure` violation among the functions candor could SEE — NOT an "
                       + "all-clear, since the report is incomplete (above).");
@@ -2360,7 +2439,11 @@ public final class Query {
         // ⟨0.24⟩ SPEC §3.2 (`ec1a441`) — is the report this remedy is computed from COMPLETE? See
         // {@link #advisoryUnanalyzed} / {@link #advisoryAnswer}: `ok: true` here reads "no crossings left
         // to fix", which over an unread file is a claim about a universe this verb cannot enumerate.
-        List<String[]> unanalyzed = advisoryUnanalyzed(reportLocator, reportPath, "fix-gate");
+        // ⟨0.28⟩ The whole record: a judged-nothing report has NO crossing in it by construction, so over
+        // one this verb's `ok: true` was the purest form of the false all-clear (measurement at
+        // {@link #advisoryAnswer}). The strict exits below still read `unanalyzed`/`unevaluated` alone.
+        ReportCompleteness comp = reportCompleteness(reportLocator, reportPath, "fix-gate");
+        List<String[]> unanalyzed = comp.unanalyzed();
 
         Map<String, Effector> byName = new HashMap<>();
         for (Effector f : fns) byName.put(f.fn(), f);
@@ -2394,7 +2477,7 @@ public final class Query {
             List<Map<String, Object>> rem = new ArrayList<>();
             for (Remedy p : plans.values()) rem.add(p.toJson());
             body.put("remedies", rem);
-            emit(advisoryAnswer(clean, unanalyzed, unevaluated, body));
+            emit(advisoryAnswer(clean, comp, unevaluated, body));
             // Advisory by default (exit 0 — the agent fix-loop reads the remedy and edits); `--strict` makes
             // the exit follow `ok`, so CI can REQUIRE zero outstanding crossings (mirrors `unverified --strict`).
             // ⟨0.24⟩ 2, not 1, when a rule went unevaluated OR the report is incomplete: SPEC §3.2 pins the
@@ -2405,8 +2488,9 @@ public final class Query {
         }
         for (String[] u : unevaluated) System.err.println("candor fix-gate: " + u[1]);
         advisoryIncompleteNote("fix-gate", unanalyzed, INCOMPLETE_TAIL_STRICT);
+        advisoryJudgedNothingNote("fix-gate", comp);
         if (plans.isEmpty()) {
-            if (unevaluated.isEmpty() && unanalyzed.isEmpty()) {
+            if (unevaluated.isEmpty() && !comp.mustHedge()) {
                 System.out.println("candor fix-gate: no deny/pure boundary crossings in this report ✓");
                 return 0;
             }
@@ -2421,6 +2505,15 @@ public final class Query {
                         + "could SEE — NOT an all-clear: " + unanalyzed.size() + " unit(s) went unanalyzed "
                         + "(above), and a crossing inside one is absent from `functions`, so this verb cannot "
                         + "enumerate it at all.");
+            // ⟨0.28⟩ count-0/unreadable ALONE: the tick above is withdrawn, and the exit does not move —
+            // ⟨0.24⟩ ruled count-0 "a disclosure, not an exit code" (`gate --report` exits 0 over a facade
+            // package; a verb exiting 2 there would claim it got LESS far than the gate on the same bytes).
+            if (unevaluated.isEmpty() && unanalyzed.isEmpty()) {
+                System.out.println("candor fix-gate: no crossing among the functions candor could SEE — NOT "
+                        + "an all-clear: the report(s) named on stderr judged nothing (or could not be "
+                        + "re-read), so there was nothing here a crossing could be found IN.");
+                return 0;
+            }
             return strict ? 2 : 0;
         }
         int n = plans.size();
@@ -2494,7 +2587,11 @@ public final class Query {
         // all of: a function in an unanalyzed file is absent from `functions`, so it cannot be enumerated
         // as an unverified pass — and that absence is exactly what this verb would have to report. See
         // {@link #advisoryUnanalyzed} / {@link #advisoryAnswer}.
-        List<String[]> unanalyzed = advisoryUnanalyzed(reportLocator, reportPath, "unverified");
+        // ⟨0.28⟩ The whole record: a judged-nothing report enumerates NO function, so "every function in a
+        // pure/deny layer is PROVABLY clean" over one was a certification of an empty universe (the
+        // measurement is at {@link #advisoryAnswer}). The strict exits below are untouched.
+        ReportCompleteness comp = reportCompleteness(reportLocator, reportPath, "unverified");
+        List<String[]> unanalyzed = comp.unanalyzed();
         List<PolicyRule.Deny> deny = AnalysisState.ctx().denyRules;
         record Hole(Effector fn, PolicyRule.Deny rule) {}
         // `--class <c,…>` (SPEC §6.2 ⟨0.24⟩): keep the holes whose reason classes intersect the filter,
@@ -2597,7 +2694,7 @@ public final class Query {
             }
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("unverified", items);
-            emit(advisoryAnswer(clean, unanalyzed, unevaluated, body));
+            emit(advisoryAnswer(clean, comp, unevaluated, body));
             // ⟨0.24⟩ 2, not 1, when the gate would have refused OR the report is incomplete — SPEC §3.2
             // pins the exit to the gate's, and could-not-fully-evaluate outranks found-a-hole.
             if (strict && (!unevaluated.isEmpty() || !unanalyzed.isEmpty())) return 2;
@@ -2610,8 +2707,9 @@ public final class Query {
             if (unjudged.stream().noneMatch(w -> w.rule().equals(u[0])))
                 System.err.println("candor unverified: " + u[1]);
         advisoryIncompleteNote("unverified", unanalyzed, INCOMPLETE_TAIL_STRICT);
+        advisoryJudgedNothingNote("unverified", comp);
         if (holes.isEmpty() && unjudged.isEmpty()) {
-            if (unevaluated.isEmpty() && unanalyzed.isEmpty()) {
+            if (unevaluated.isEmpty() && !comp.mustHedge()) {
                 System.out.println("candor unverified: every function in a pure/deny layer is PROVABLY clean (no Unknown holes) ✓");
                 return 0;
             }
@@ -2625,6 +2723,14 @@ public final class Query {
                 System.out.println("candor unverified: no Unknown holes among the functions candor could SEE — "
                         + "NOT an all-clear: " + unanalyzed.size() + " unit(s) went unanalyzed (above), and a "
                         + "hole inside one is absent from `functions`, so this verb cannot enumerate it at all.");
+            // ⟨0.28⟩ count-0/unreadable ALONE: the tick is withdrawn and the exit does not move (⟨0.24⟩,
+            // "a disclosure, not an exit code" — the fix-gate branch above carries the full argument).
+            if (unevaluated.isEmpty() && unanalyzed.isEmpty()) {
+                System.out.println("candor unverified: nothing here is PROVABLY clean and nothing is a hole — "
+                        + "the report(s) named on stderr judged nothing (or could not be re-read), so there "
+                        + "was no function here to certify.");
+                return 0;
+            }
             return strict ? 2 : 0;
         }
         int n = holes.size() + unjudged.size();

@@ -260,8 +260,15 @@ class DescriptiveVerbCompletenessTest {
     /** <b>C/D.</b> …and it STOPS at the exit code. ⟨0.24⟩ ruled count-0 explicitly the other way for exits
      *  — "a disclosure, not an exit code" — because {@code gate --report} exits 0 over a facade package,
      *  and an advisory verb exiting 2 there would claim it got LESS far than the gate on identical bytes.
-     *  So {@code --strict} is unmoved, and {@code ok} is still answered: this rung did not widen
-     *  {@link Query.ReportCompleteness#incomplete}, which is what those two exits are computed from. */
+     *  So {@code --strict} is unmoved: this rung did not widen
+     *  {@link Query.ReportCompleteness#incomplete}, which is what those two exits are computed from.
+     *
+     *  <p>⟨0.28⟩ {@code ok}, though, is WITHDRAWN — this assert used to pin the opposite ("`ok` is still
+     *  answered — the omit-`ok` rule is keyed on `unanalyzed`"), which pinned the false all-clear itself:
+     *  {@code {"ok": true}} over a report that judged NOTHING is a determination the run is not entitled
+     *  to make, and rust, ts and swift all omit the field here (measured 2026-08-12, candor-spec
+     *  {@code conformance/gen_key_shapes.py} harvest). The document hedges; the exit does not move —
+     *  the two halves of ⟨0.24⟩'s ruling, each on its own channel. */
     @Test void theCountZeroCauseNeverReachesAStrictExitCode() throws Exception {
         Path rep = report("facade2.app.jvm.json", List.of(), 0, List.of());
         Path pol = tmp.resolve("p.policy");
@@ -273,8 +280,11 @@ class DescriptiveVerbCompletenessTest {
             assertEquals(0, rc, "`" + verb + " --strict` must stay at 0 over a judged-nothing report: "
                     + "the gate route exits 0 over the same bytes, and a verb that got LESS far than the "
                     + "gate is the mirror of the over-claim --strict exists to prevent");
-            assertTrue(JsonParser.parseString(out.toString()).getAsJsonObject().has("ok"),
-                    "…and `ok` is still answered — the ⟨0.24⟩ omit-`ok` rule is keyed on `unanalyzed`");
+            JsonObject o = JsonParser.parseString(out.toString()).getAsJsonObject();
+            assertFalse(o.has("ok"), "`" + verb + "` must not answer `ok` over a judged-nothing report — "
+                    + "neither boolean is a statement this input licenses (SPEC §2 ⟨0.28⟩): " + out);
+            assertTrue(o.has("judgedNothing") && o.get("judgedNothing").isJsonArray(),
+                    "…the caveat that takes its place names WHICH report judged nothing, as an ARRAY");
         }
     }
 

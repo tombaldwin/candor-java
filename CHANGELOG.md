@@ -8,6 +8,16 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⟨0.28⟩ `containment` emits `layerPrefix` when, and only when, a prefix was actually collapsed**
+  (SPEC §6.1, *"`layerPrefix` IS THE ONE THAT MUST CHANGE"*). The key was emitted UNCONDITIONALLY —
+  `"layerPrefix": ""` when nothing was collapsed — while the other three engines emit no such key at
+  all: a divergence a consumer sees, and the present-but-always-empty shape `field_audit.py`'s header
+  documents. Absence now means no prefix was collapsed (§2's omit-rather-than-guess); the field still
+  carries the collapsed root verbatim whenever there is one, where it is load-bearing (`owner` and
+  `placement` are layer names relative to it). A run that collapses a prefix is byte-identical to
+  before. Pinned by conformance PART 45 (both directions, plus the answered-document control) and
+  `LayerPrefixConditionalTest`.
+
 - **⟨0.28⟩ `unverified`/`fix-gate` answer a judged-nothing report with the pinned caveat, not
   `{"ok": true}`** (SPEC §2, *"AND HERE IS WHAT THE TRAVELLING CAVEAT IS CALLED"*). Measured via
   candor-spec's key-shape harvest over a ⟨0.21⟩ Row-1 report (`functions: []`, `analyzed.count: 0` —

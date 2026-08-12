@@ -4473,7 +4473,10 @@ public final class Query {
             Map<String, Object> ambient = new LinkedHashMap<>();
             for (String eff : AMBIENT) if (byEff.containsKey(eff)) ambient.put(eff, byEff.get(eff).size());
             Map<String, Object> out = new LinkedHashMap<>();
-            out.put("layerPrefix", String.join(".", prefix));
+            // ⟨0.28⟩ SPEC §6.1: emitted when, and ONLY when, a prefix was actually collapsed. Absence
+            // means none was — the unconditional `""` was the `fs: Vec::new()` defect (a key always
+            // present and usually empty), and the other three engines rightly emit no key at all.
+            if (prefix.length > 0) out.put("layerPrefix", String.join(".", prefix));
             out.put("contained", contained);
             out.put("ambient", ambient);
             comp.writeJson(out);

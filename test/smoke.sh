@@ -930,14 +930,21 @@ done
 absent "show --json stays a bare array (the one exempt verb, pending a shape ruling)" \
   "$("$CJ" show Sc.f --report "$W/sc/darm.json" --json 2>/dev/null)" 'incomplete'
 
-# THE INPUT EXEMPTION COVERS THE SIDECARS TOO — never delete a path this run READS, whatever it is named.
+# THE INPUT EXEMPTION COVERS THE SIDECARS TOO — never touch a path this run READS, whatever it is named.
+# ⟨0.28⟩ contract upgrade (2026-08-12): this used to arm the report and have the sidecar REMOVER leave
+# the input in place with a disclosure — which protected the arming deletion and left the SUCCESS path
+# to destroy the dep (writeCallgraph writes `<stem>.callgraph.json` unconditionally on a clean run).
+# The sink is a SET, so a sink whose own sidecar write names an input is now REFUSED up front, exit 2,
+# having written NOTHING (§3.3.1 (3): the exemption is asked first).
 cp "$W/sc/rep.callgraph.json" "$W/sc/cg1"
-ie="$(CANDOR_DEPS="$W/sc/rep.callgraph.json" "$CJ" "$W/sc/cls" --json "$W/sc/rep.json" --zzz-not-a-flag 2>&1)"
-want "a sidecar that is also an INPUT is named, not deleted"     "$ie" 'INPUT of this run'
-if cmp -s "$W/sc/rep.callgraph.json" "$W/sc/cg1"; then
-  echo "  ok   …and it is still byte-identical on disk"; pass=$((pass+1))
+cp "$W/sc/rep.json" "$W/sc/rj1"
+ie="$(CANDOR_DEPS="$W/sc/rep.callgraph.json" "$CJ" "$W/sc/cls" --json "$W/sc/rep.json" --zzz-not-a-flag 2>&1)"; iec=$?
+want "a sink whose OWN sidecar names an INPUT is refused, naming both" "$ie" 'destroy the input this run reads'
+if [ "$iec" = 2 ]; then echo "  ok   …at exit 2"; pass=$((pass+1)); else echo "  FAIL refusal exited $iec, want 2"; fail=$((fail+1)); fi
+if cmp -s "$W/sc/rep.callgraph.json" "$W/sc/cg1" && cmp -s "$W/sc/rep.json" "$W/sc/rj1"; then
+  echo "  ok   …and BOTH halves are byte-identical on disk (nothing was written, not even the arm)"; pass=$((pass+1))
 else
-  echo "  FAIL the sidecar naming a CANDOR_DEPS input was destroyed by arming"; fail=$((fail+1))
+  echo "  FAIL a file in the refused sink's set was written or destroyed"; fail=$((fail+1))
 fi
 
 echo "== .candor/config: target-anchored discovery + config-anchored relative paths (spec §3.4) =="

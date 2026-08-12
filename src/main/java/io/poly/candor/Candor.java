@@ -615,7 +615,15 @@ public class Candor {
                 if (args[i + 1].equals("-")) preAnyGateJsonStream = true;
                 preGate = args[++i];
             }
-            else if (args[i].equals("--policy") && hasVal && !args[i + 1].startsWith("-"))
+            // ⟨0.28⟩ `--policy` CONSUMES THE NEXT TOKEN WHATEVER ITS SHAPE, because that is what the parse
+            // loop below does — and the pre-pass must agree with the loop about which tokens consume a
+            // value, or it arms a sink the parse never accepts. Measured with the dash-check this line
+            // used to carry: `--policy --json X` — the loop takes `--json` as the policy path and rejects
+            // X as a surplus positional (exit 2), while this pre-pass read `--json X` as the report sink
+            // and armed X. SPEC §3.3.1 (1)'s precondition ("parsed and accepted") was FALSE for that
+            // argv, so X's previous report became a PERMANENT placeholder: the run can never complete to
+            // replace it, under a flag the parse never honoured.
+            else if (args[i].equals("--policy") && hasVal)
                 prePolicy = args[++i];
             else if (args[i].equals("--json") && hasVal && !args[i + 1].startsWith("-")) preJsonFile = args[++i];   // --json <file>
             else if (args[i].equals("--json")) preWantJsonStream = true;                        // bare / --json <-flag>

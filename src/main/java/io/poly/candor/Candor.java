@@ -1236,6 +1236,13 @@ public class Candor {
             zm.addAll(gateZeroMatch);
             out.put("zeroMatch", new ArrayList<>(zm));
         }
+        // ⟨0.28⟩ SPEC §6.2 `ignored` — the policy lines the parse DROPPED, {line, text, reason} verbatim:
+        // the same lines the per-line stderr warnings name, in the machine channel, so a consumer can see
+        // that the gate it is reading is smaller than the gate that was written (the 90%-gateless green).
+        // Omitted when nothing was dropped, so a clean policy's verdict stays byte-identical. Distinct
+        // from `unevaluated` (rules that PARSED and could not be answered); never consulted for `ok`.
+        var ignored = Policy.ignoredLinesJson();
+        if (!ignored.isEmpty()) out.put("ignored", ignored);
         // ⟨0.21⟩ (Gap 2) the machine-legible incompleteness: the units candor couldn't analyze, so a CI/agent
         // reading the JSON learns WHY the gate can't certify — the stderr warning alone used to hide this from
         // a machine. `incomplete:true` + the list; the caller exits 2 (could-not-fully-evaluate). Tom's call

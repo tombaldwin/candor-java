@@ -678,7 +678,7 @@ public final class Query {
         // over a manifest sitting in the sibling.
         ReportRef ref = new ReportRef(reportLocator, report);
         return switch (cmd) {
-            case "show" -> show(fns, a0, json);
+            case "show" -> show(fns, a0, json, ref);
             case "where" -> where(fns, a0, json, ref);
             case "callers" -> callers(fns, report, a0, json, includeUnknown);
             case "map" -> map(fns, json, ref);
@@ -906,12 +906,26 @@ public final class Query {
     }
 
     /** A function's effects, instant — `*` marks an effect performed in its own body. */
-    static int show(List<Effector> fns, String q, boolean json) {
+    static int show(List<Effector> fns, String q, boolean json, ReportRef ref) {
         if (q == null) return usage("show <function-substring> [--report <locator>] [--json]");
         int tier = bestTier(fns.stream().map(f -> f.fn()), q);
         List<Effector> hits = tier == 0 ? List.of()
                 : fns.stream().filter(f -> matchTier(f.fn(), q) >= tier).collect(Collectors.toList());
+        // ⟨0.28⟩ SPEC §2 — this verb's pinned output is a top-level ARRAY, so it was a KNOWN-OPEN CELL:
+        // nowhere to put the travelling caveat, and it answered `[]` flat over a report whose own manifest
+        // names source candor could not read ("nothing performs this effect", asserted about code nobody
+        // examined). The ruling: a verb whose pinned shape cannot carry the caveat emits the CAVEAT
+        // DOCUMENT INSTEAD of its result document — not an array with the caveat omitted. The type change
+        // is LOUD on purpose (a consumer's `for (const x of doc)` throws instead of silently iterating
+        // zero times), and healthy output below stays byte-identical.
+        ReportCompleteness comp = ref.completeness("show");
         if (json) {
+            if (comp.mustHedge()) {
+                Map<String, Object> caveat = new LinkedHashMap<>();
+                comp.writeJson(caveat);
+                emit(caveat);
+                return 0;
+            }
             List<Map<String, Object>> out = new ArrayList<>();
             for (Effector f : hits) {
                 Map<String, Object> m = new LinkedHashMap<>();
@@ -934,7 +948,17 @@ public final class Query {
             emit(out);
             return 0;
         }
+        // The HUMAN half of the same disclosure, before the answer — the channel split every other
+        // descriptive verb already has (⟨0.28⟩ SPEC §2); a no-op on a complete report.
+        comp.printNote("the row(s) below cover only the source candor read",
+                "A function in one of those is ABSENT from the report entirely. " + comp.gateLine()
+                + " Re-scan for a complete answer.");
         if (hits.isEmpty()) {
+            if (comp.mustHedge()) {
+                System.out.println("candor: no effectful function candor COULD SEE matching `" + q
+                        + "` — but see the INCOMPLETE note above; this is NOT \"no such function\".");
+                return 0;
+            }
             System.out.println("candor: no effectful function matching `" + q + "` (pure functions are omitted).");
             return 0;
         }
@@ -1900,6 +1924,12 @@ public final class Query {
                 System.err.println("candor: " + Policy.policyFailure(policyPath) + " — verdict NOT computed.");
                 return 2;
             }
+            // ⟨0.28⟩ SPEC §2 — a configured policy that parsed to ZERO RULES: the caveat document, result
+            // keys withheld (the blast radius too: this verb's answer is a verdict-relative document, and
+            // a policy that asked nothing supports none of it), exit unchanged. A run with NO policy
+            // configured keeps its plain blast-radius answer — that is the honest way to say "not gating".
+            if (Policy.policyYieldedNoRules())
+                return advisoryZeroRulePolicy("whatif", policyPath, reportLocator, reportPath, json);
             for (String f : affected) {
                 for (var r : AnalysisState.ctx().denyRules) {
                     boolean denies = r.effects().isEmpty() || r.effects().toNames().contains(effect);
@@ -2436,6 +2466,47 @@ public final class Query {
         return 0;
     }
 
+    /** ⟨0.28⟩ SPEC §2 "AND AN ADVISORY VERB OVER A ZERO-RULE POLICY ANSWERS THE SAME WAY" — the shared
+     *  answer for {@code whatif}/{@code fix-gate}/{@code unverified} (the three that share the policy
+     *  loader) over a CONFIGURED policy that parsed to NO RULES AT ALL.
+     *
+     *  <p>§6.2 makes this an exit-2 REFUSAL for the GATE, because {@code ok: true} there is a claim about
+     *  the code no such run is entitled to make. These verbs are ADVISORY — they set no verdict, so the
+     *  refusal posture is the wrong import — but what they produce is an answer <i>relative to a policy</i>,
+     *  and relative to no rules that answer is not a finding, it is an absence of questions. MEASURED on
+     *  the jar before this change, over an all-comments policy:
+     *  <pre>
+     *    unverified --json   {"ok": true, "unverified": []}   exit 0
+     *    fix-gate   --json   {"ok": true, "remedies":   []}   exit 0
+     *    whatif     --json   {"ok": true, …, "violations": []} exit 0
+     *  </pre>
+     *  — three empty result sets certifying against a gate that asked nothing. So: the CAVEAT DOCUMENT,
+     *  and the result keys WITHHELD ({@code unverified} does not emit an empty list over a policy that
+     *  asked nothing, for the same reason ⟨0.27⟩'s refusal document must not carry {@code violations});
+     *  {@code ok} is omitted by {@link #advisoryAnswer}'s standing rule; the {@code unevaluated} row is the
+     *  gate's own whole-policy row from the same producer ({@link Policy#zeroRuleUnevaluated}), so the two
+     *  routes cannot drift. <b>The EXIT is UNCHANGED — 0, on the plain AND the {@code --strict} arm</b>
+     *  (measured pre-change: both 0): the clause pins this as a disclosure per ⟨0.24⟩'s standing ruling
+     *  that count-0 reaches both disclosure channels and stops at the exit code, and deliberately rejects
+     *  the gate's refusal posture. */
+    static int advisoryZeroRulePolicy(String who, String pol, String reportLocator, String reportPath,
+                                      boolean json) {
+        List<String[]> whole = Policy.zeroRuleUnevaluated(pol);
+        ReportCompleteness comp = reportCompleteness(reportLocator, reportPath, who);
+        System.err.println("candor " + who + ": policy " + pol + " yielded NO RULES — every line was "
+                + "ignored, the file is empty, or it holds only comments. Nothing was asked of this "
+                + "report, so no finding and no all-clear is possible; `gate --report` REFUSES over this "
+                + "policy (exit 2). Fix the rules, or remove the policy setting if you did not mean to gate.");
+        if (json) {
+            emit(advisoryAnswer(true, comp, whole, Map.of()));
+            return 0;
+        }
+        advisoryJudgedNothingNote(who, comp);
+        System.out.println("candor " + who + ": no answer — the configured policy asked nothing of this "
+                + "report (zero rules; see stderr). NOT an all-clear.");
+        return 0;
+    }
+
     /** ⟨0.28⟩ SPEC §6.1 — the `fix` verb's DETERMINED-NEGATIVE document: `{fn, effect, crossing: false,
      *  reason}`, the shape candor-ts (`query-core.mjs` coreFix) and candor-swift (`Fix.notACrossing`)
      *  already publish and the MCP `candor_fix` contract instructs agents to read. `reason` is one of the
@@ -2478,6 +2549,10 @@ public final class Query {
                        boolean json, boolean strict) {
         String pol = loadPolicyOrFail(policyPath, "fix-gate");
         if (pol == null) return 2;
+        // ⟨0.28⟩ SPEC §2 — a configured policy that parsed to ZERO RULES: the caveat document, result keys
+        // withheld, exit unchanged. See {@link #advisoryZeroRulePolicy}.
+        if (Policy.policyYieldedNoRules())
+            return advisoryZeroRulePolicy("fix-gate", pol, reportLocator, reportPath, json);
         // ⟨0.24⟩ SPEC §3.2 (`ec1a441`) — is the report this remedy is computed from COMPLETE? See
         // {@link #advisoryUnanalyzed} / {@link #advisoryAnswer}: `ok: true` here reads "no crossings left
         // to fix", which over an unread file is a claim about a universe this verb cannot enumerate.
@@ -2624,6 +2699,10 @@ public final class Query {
                           boolean json, boolean strict, Set<ReasonClass> classFilter) {
         String pol = loadPolicyOrFail(policyPath, "unverified");
         if (pol == null) return 2;
+        // ⟨0.28⟩ SPEC §2 — a configured policy that parsed to ZERO RULES: the caveat document, result keys
+        // withheld, exit unchanged. See {@link #advisoryZeroRulePolicy}.
+        if (Policy.policyYieldedNoRules())
+            return advisoryZeroRulePolicy("unverified", pol, reportLocator, reportPath, json);
         // ⟨0.24⟩ SPEC §3.2 (`ec1a441`) — THE SHARPEST CASE IN THE FAMILY. This is the verb that exists to
         // say "your green gate is not provably green", and it was certifying a set it knows it cannot see
         // all of: a function in an unanalyzed file is absent from `functions`, so it cannot be enumerated
@@ -3497,6 +3576,20 @@ public final class Query {
         // from an unexamined one.
         ReportCompleteness comp = ref.completeness("map");
         if (json) {
+            // ⟨0.28⟩ SPEC §2 "AND HERE IS THAT RULING" — this verb's top level is a USER NAMESPACE (keyed
+            // by the operator's own class names), so a caveat key CANNOT ride the result: `incomplete` is
+            // a name a real class can own, and the earlier fix here — write the caveat keys INTO the
+            // object and disclose a collision on stderr — was exactly the deferred collision the ruling
+            // rejects (`put` overwrites, so the colliding class's row was silently displaced from the
+            // machine channel). The ruling: the CAVEAT DOCUMENT REPLACES the result document. Healthy
+            // output is untouched; a hedging run emits `{incomplete: true, …}` and nothing else, so no
+            // reserved-key convention is needed at all.
+            if (comp.mustHedge()) {
+                Map<String, Object> caveat = new LinkedHashMap<>();
+                comp.writeJson(caveat);
+                emit(caveat);
+                return 0;
+            }
             Map<String, Object> out = new TreeMap<>();
             for (var m : mods.keySet()) {
                 Map<String, Object> v = new LinkedHashMap<>();
@@ -3504,19 +3597,6 @@ public final class Query {
                 v.put("functions", counts.get(m));
                 out.put(m, v);
             }
-            // THE ONE DOCUMENT WHOSE TOP LEVEL IS A USER NAMESPACE, so a disclosure key can in principle
-            // land on a real class (`class incomplete`). It cannot be dodged by nesting — a consumer
-            // branching on `"incomplete" in doc` never sees a nested one — and `put` OVERWRITES, so a
-            // silently displaced class row would be the dropped row this whole rung exists to remove. So
-            // the collision is DISCLOSED, loudly and by name, and the hedge still wins: a lost row the
-            // operator has been told about beats a false all-clear nobody has.
-            for (String k : comp.keys())
-                if (out.containsKey(k))
-                    System.err.println("candor map: this report has a class literally named `" + k
-                            + "`, which collides with the ⟨0.28⟩ incompleteness disclosure this answer "
-                            + "must carry — the disclosure wins and that class's row is NOT in the JSON "
-                            + "below. Its effects are in the text output (drop --json).");
-            comp.writeJson(out);
             emit(out);
             return 0;
         }

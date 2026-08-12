@@ -1346,6 +1346,16 @@ public class Candor {
      */
     static java.util.List<String[]> runInputs(String target, String policyFlag) {
         var out = new java.util.ArrayList<String[]>();
+        // ⟨0.28⟩ THE TARGET IS AN INPUT. SPEC §3.3.1 (3) lists "the target's own source tree" among the
+        // paths arming must not touch, the CANDOR_DEPS note below says the scan target is an input too —
+        // and the target was in neither list. Measured: `candor app.jar --json app.jar` overwrote the jar
+        // with the fail-closed placeholder and then diagnosed its own act ("cannot read scan target
+        // app.jar: zip END header not found") — the run destroyed the thing it was asked to scan, and
+        // `--gate-json app.jar` destroyed it identically. EXACT artifact, not containment: a report
+        // written into `.candor/` INSIDE the scanned tree is ordinary usage, and `sameArtifact` compares
+        // the path the operator named, so that stays permitted while `--json <the target itself>` is
+        // refused. Registered HERE so both sinks — and the sidecar remover — inherit it from the one list.
+        if (target != null) out.add(new String[]{target, "the scan target"});
         if (policyFlag != null) out.add(new String[]{policyFlag, "--policy"});
         for (var e : new String[][]{{"CANDOR_POLICY", "CANDOR_POLICY"}, {"CANDOR_BASELINE", "CANDOR_BASELINE"},
                                     {"CANDOR_CONFIG", "CANDOR_CONFIG"}}) {

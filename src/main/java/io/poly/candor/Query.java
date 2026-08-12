@@ -334,8 +334,15 @@ public final class Query {
                 boolean hasVal = i + 1 < args.length;
                 if (args[i].equals("--gate-json") && hasVal
                         && (args[i + 1].equals("-") || !args[i + 1].startsWith("-"))) preGate = args[++i];
-                else if (args[i].equals("--policy") && hasVal && !args[i + 1].startsWith("-")) prePolicy = args[++i];
-                else if (args[i].equals("--report") && hasVal && !args[i + 1].startsWith("-")) preReport = args[++i];
+                // ⟨0.28⟩ `--policy`/`--report` CONSUME THE NEXT TOKEN WHATEVER ITS SHAPE — the flag loop
+                // below does (only `--gate-json` carries a dash-check there), and the pre-pass must agree
+                // with the loop about which tokens consume a value or it arms a sink the parse never
+                // accepts. Same defect, same fix as `Candor.main`'s pre-pass: with the dash-check here,
+                // `gate --report R --policy --gate-json G` armed G while the loop consumed `--gate-json`
+                // as the policy path — G's previous verdict became a placeholder under a flag this run
+                // never honoured, and no completion can ever replace it.
+                else if (args[i].equals("--policy") && hasVal) prePolicy = args[++i];
+                else if (args[i].equals("--report") && hasVal) preReport = args[++i];
             }
             if (preGate != null) {
                 // §3.3.1 names "a report being read (`gate --report`)" as an input. Writing the verdict

@@ -229,4 +229,21 @@ class SinkArmingIntegrityTest {
                 "an ACCEPTED --json sink on a failed run must hold the fail-closed placeholder, not "
                 + "the previous run's report\nCONTENT:\n" + now);
     }
+
+    @Test
+    void gateVerbPolicySwallowedGateJsonDoesNotArmTheDisplacedValue() throws Exception {
+        // THE SIBLING ROUTE: `gate --report …` has its own pre-pass in Query.run, and it carried the
+        // same dash-check on `--policy` that Candor.main's did — the rule fixed on the scan CLI and
+        // nowhere else is this project's recorded habit, so the fix and the test both walk the sibling.
+        Path prev = scratch.resolve("G.json");
+        byte[] previous = "{\"ok\": true, \"previous\": \"verdict\"}\n".getBytes();
+        Files.write(prev, previous);
+        Run r = runCli("gate", "--report", scratch.resolve("no-such-report.json").toString(),
+                "--policy", "--gate-json", prev.toString());
+        assertArrayEquals(previous, Files.readAllBytes(prev),
+                "the gate verb's pre-pass armed a sink its flag loop never accepted: `--policy` consumes "
+                + "`--gate-json` as the policy path, so G was NOT a sink of this run — arming it turns "
+                + "G's previous verdict into a PERMANENT placeholder\nSTDERR:\n" + r.stderr());
+        assertTrue(r.exit() != 0, "the mis-spelled command still fails\nSTDERR:\n" + r.stderr());
+    }
 }

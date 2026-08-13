@@ -58,15 +58,14 @@ jobs:
       #   (1) the analyzer core (verify excluded) — no Net/Db/Exec/Ipc;  (2) the whole tool — no Net/Db/Ipc.
       # An effect-gate vendor whose own gate is red has no business gating anyone else.
       - name: Self-gate (candor-java on candor-java)
+        # Two halves, because a prefix deny can't say "deny Exec everywhere except io.poly.candor.verify":
+        # the WHOLE tool under .candor/policy (`deny Net Db Ipc`, no package excluded), plus an assertion
+        # that the Exec-performing methods are EXACTLY the two declared ones. This step used to make the
+        # strict policy pass by copying build/classes and DELETING io/poly/candor/verify, which left that
+        # whole package outside the Exec gate entirely. See ci/self-gate.sh.
         run: |
           ./gradlew --no-daemon -q shadowJar
-          JAR=$(ls build/libs/candor-java-*-all.jar)
-          # (1) analyzer core — the one sanctioned subprocess surface (io.poly.candor.verify) removed — must not Exec.
-          rm -rf /tmp/candor-core && cp -r build/classes/java/main /tmp/candor-core && rm -rf /tmp/candor-core/io/poly/candor/verify
-          CANDOR_POLICY=.candor/policy java -jar "$JAR" /tmp/candor-core
-          # (2) the whole tool (verify included) must still never reach the network, a database, or IPC.
-          printf 'deny Net Db Ipc\n' > /tmp/candor-policy-notexec
-          CANDOR_POLICY=/tmp/candor-policy-notexec java -jar "$JAR" build/classes/java/main
+          bash ci/self-gate.sh
 
       # Kotlin-bytecode lane: Kotlin compiles the same semantics through different shapes (suspend/CPS,
       # indy lambdas, object/companion <clinit>, $default wrappers, callable refs, property getters,

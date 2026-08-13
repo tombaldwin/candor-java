@@ -349,4 +349,129 @@ class DescriptiveVerbCompletenessTest {
         assertTrue(run(empty, new String[]{"where", "Fs"}, true)[0].contains("incomplete"),
                 "…while an EMPTY bare array falls back to the unchained reading and does hedge");
     }
+
+    // ── ⟨0.28⟩ THE THIRD ROW IS NOT THE FIRST ROW — `noManifest` (SPEC §2) ─────────────────────────────
+
+    /** A report carrying NO {@code analyzed} key — SPEC §2's row 3, a pre-⟨0.21⟩ producer — hedges under
+     *  the pinned {@code noManifest} key, NOT under {@code judgedNothing}.
+     *
+     *  <p>MEASURED on the jar built before this split, over {@code {"candor":…,"functions":[]}} with no
+     *  {@code analyzed} key: every verb here emitted {@code judgedNothing: ["<path>"]} and the note said
+     *  the report <i>"JUDGED NOTHING (`analyzed.count: 0`, or no manifest at all)"</i>. <b>The report
+     *  declares nothing.</b> The hedge is the right DIRECTION — row 3's own instruction is <i>no manifest,
+     *  no claim</i> — but ⟨0.28⟩ pins {@code judgedNothing} to <i>reports declaring `analyzed.count:
+     *  0`</i>, so filing row 3 there makes one key mean two things and loses the distinction §2's table
+     *  exists to draw. The repairs differ: row 1 wants a scan that reaches a conclusion, row 3 wants a
+     *  producer that emits a manifest at all. */
+    @Test void aReportWithNoAnalyzedManifestHedgesUnderNoManifestNotJudgedNothing() throws Exception {
+        Path row3 = tmp.resolve("row3.app.jvm.json");
+        Files.writeString(row3, "{\"candor\":{\"version\":\"test\",\"spec\":\"0.20\"},"
+                + "\"packages\":[\"app\"],\"functions\":[]}\n");
+        for (String[] v : verbs(intact("nmbase.app.jvm.json"))) {
+            String[] r = run(row3, v, true);
+            JsonObject o = JsonParser.parseString(r[0]).getAsJsonObject();
+            String who = String.join(" ", v);
+            assertTrue(o.has("incomplete") && o.get("incomplete").getAsBoolean(),
+                    "`" + who + "`: row 3's own instruction is `no manifest, no claim`: " + r[0]);
+            assertTrue(o.has("noManifest"),
+                    "`" + who + "`: SPEC §2 pins `noManifest: [\"<report path>\", …]` verbatim for a "
+                    + "report carrying no `analyzed` key — this document has no such key: " + r[0]);
+            assertEquals(1, o.getAsJsonArray("noManifest").size(),
+                    "`" + who + "`: one entry per row-3 report: " + r[0]);
+            assertEquals(row3.toString(), o.getAsJsonArray("noManifest").get(0).getAsString(), r[0]);
+            assertFalse(o.has("judgedNothing"),
+                    "`" + who + "`: the report DECLARES nothing — filing it under `judgedNothing` asserts "
+                    + "an `analyzed.count: 0` that is not on the wire: " + r[0]);
+            assertEquals("0", r[2], "row 3 is a DISCLOSURE, not an exit code — the gate exits 0 too");
+
+            // The PROSE half, from the same trigger, or the mutant that deletes one channel survives.
+            String prose = run(row3, v, false)[0];
+            assertTrue(prose.contains("NO `analyzed` manifest"),
+                    "`" + who + "`: the note must name the real cause: " + prose);
+            assertFalse(prose.contains("judged NOTHING") || prose.contains("analyzed.count: 0"),
+                    "`" + who + "`: …and must not re-assert row 1's claim in prose after removing it from "
+                    + "the wire: " + prose);
+        }
+    }
+
+    /** <b>CONTROL, and the split goes both ways or it is a rename.</b> Row 1 ({@code analyzed.count: 0})
+     *  keeps {@code judgedNothing} and never becomes {@code noManifest}; row 2 ({@code count: 7},
+     *  {@code functions: []}) is a legitimate all-pure claim §2 rule 3 requires a consumer to BELIEVE and
+     *  MUST NOT hedge at all. A fix that hedges all three rows has disabled the feature rather than
+     *  implemented the rule — measured over 1997 JVM dependency jars, a predicate keyed on
+     *  {@code functions} being empty withdraws 104 real claims to catch 6. */
+    @Test void rowOneKeepsJudgedNothingAndRowTwoDoesNotHedgeAtAll() throws Exception {
+        Path row1 = report("nmrow1.app.jvm.json", List.of(), 0, List.of());
+        JsonObject o1 = JsonParser.parseString(run(row1, new String[]{"where", "Fs"}, true)[0])
+                .getAsJsonObject();
+        assertTrue(o1.has("judgedNothing"),
+                "row 1 (`analyzed.count: 0`) keeps `judgedNothing` — the split goes both ways or it is a "
+                + "rename: " + o1);
+        assertEquals(1, o1.getAsJsonArray("judgedNothing").size(), o1.toString());
+        assertFalse(o1.has("noManifest"), "row 1 HAS a manifest; it declares 0: " + o1);
+        assertTrue(run(row1, new String[]{"where", "Fs"}, false)[0].contains("`analyzed.count: 0`"),
+                "…and its prose says exactly that, with the stopgap `or no manifest at all` gone");
+
+        Path row2 = report("nmrow2.app.jvm.json", List.of(), 7, List.of());
+        String[] r2 = run(row2, new String[]{"where", "Fs"}, true);
+        assertEquals("{\n  \"effect\": \"Fs\",\n  \"directly\": [],\n  \"inherited\": []\n}\n", r2[0],
+                "row 2 MUST NOT hedge — hedging all three rows disables the feature: " + r2[0]);
+        assertEquals("", r2[1], "…on either channel: " + r2[1]);
+    }
+
+    /** <b>THE TRAP THE ROW-3 SPLIT SETS, PINNED.</b> {@link Loader#claimsToHaveJudgedNothing} is not only a
+     *  disclosure predicate — {@link Loader#loadCrossDeps} reads it to decide COVERAGE
+     *  ({@code depCoveredPkgs}, the set that silences the κ ledger's {@code invisible} hedge) and
+     *  {@code gate --report} reads it through {@link Query.Envelope}. Row 3's own instruction is <i>no
+     *  manifest, no claim</i>, so an absent manifest must keep granting NONE. The tempting fix for the
+     *  false label — make that predicate answer {@code false} for a manifest-less report — would turn
+     *  every pre-⟨0.21⟩ report into a COVERED one: a silent under-report introduced by a disclosure fix.
+     *  So the split adds a SECOND predicate and this asserts the first is unmoved. */
+    @Test void theRowThreeSplitDoesNotMoveTheCoveragePredicate() {
+        com.google.gson.Gson g = new com.google.gson.Gson();
+        com.google.gson.JsonArray none = new com.google.gson.JsonArray();
+        com.google.gson.JsonArray one = g.fromJson("[{\"fn\":\"app.f\"}]", com.google.gson.JsonArray.class);
+        JsonObject row3 = g.fromJson("{\"package\":\"legacy\"}", JsonObject.class);
+        assertTrue(Loader.claimsToHaveJudgedNothing(row3, none),
+                "an absent manifest must STILL grant no coverage — row 3 is `no manifest, no claim`");
+        assertTrue(Loader.hasNoManifest(row3), "…and it is row 3, not row 1");
+        JsonObject row1 = g.fromJson("{\"package\":\"facade\",\"analyzed\":{\"count\":0}}", JsonObject.class);
+        assertTrue(Loader.claimsToHaveJudgedNothing(row1, none));
+        assertFalse(Loader.hasNoManifest(row1), "row 1 HAS a manifest; it declares 0");
+        JsonObject row2 = g.fromJson("{\"package\":\"pure\",\"analyzed\":{\"count\":7}}", JsonObject.class);
+        assertFalse(Loader.claimsToHaveJudgedNothing(row2, none),
+                "the row-2 control: a believed all-pure claim");
+        assertFalse(Loader.hasNoManifest(row2));
+        // A manifest-less report that LISTS entries judged something: not row-3-hedged (the disclosure ANDs
+        // the two predicates), and it grants coverage exactly as it did before this rung.
+        assertFalse(Loader.claimsToHaveJudgedNothing(row3, one));
+        assertTrue(Loader.hasNoManifest(row3));
+        // The legacy BARE ARRAY has no envelope at all, so it is row 3 too — and row-3-hedged only when it
+        // is also empty.
+        assertTrue(Loader.hasNoManifest(null));
+        assertTrue(Loader.claimsToHaveJudgedNothing(null, none));
+        assertFalse(Loader.claimsToHaveJudgedNothing(null, one));
+    }
+
+    /** A locator naming ONE OF EACH discloses them under SEPARATE keys — one key meaning two things is
+     *  exactly what loses the distinction the three-row table exists to draw. */
+    @Test void aLocatorNamingBothRowsDisclosesThemSeparately() throws Exception {
+        Path dir = tmp.resolve("both");
+        Files.createDirectories(dir);
+        Files.writeString(dir.resolve("r.aa.jvm.json"),
+                "{\"candor\":{\"version\":\"test\",\"spec\":\"0.28\"},\"packages\":[\"app\"],"
+                + "\"analyzed\":{\"count\":0,\"digest\":\"0\"},\"functions\":[]}\n");
+        Files.writeString(dir.resolve("r.bb.jvm.json"),
+                "{\"candor\":{\"version\":\"test\",\"spec\":\"0.20\"},\"packages\":[\"app\"],"
+                + "\"functions\":[]}\n");
+        String[] r = run(dir.resolve("r"), new String[]{"where", "Fs"}, true);
+        JsonObject o = JsonParser.parseString(r[0]).getAsJsonObject();
+        assertTrue(o.has("judgedNothing") && o.has("noManifest"),
+                "a locator naming one of each must disclose them under SEPARATE keys — one key meaning "
+                + "two things loses the distinction the three-row table exists to draw: " + r[0]);
+        assertEquals(1, o.getAsJsonArray("judgedNothing").size(), r[0]);
+        assertEquals(1, o.getAsJsonArray("noManifest").size(), r[0]);
+        assertTrue(o.getAsJsonArray("judgedNothing").get(0).getAsString().endsWith("r.aa.jvm.json"), r[0]);
+        assertTrue(o.getAsJsonArray("noManifest").get(0).getAsString().endsWith("r.bb.jvm.json"), r[0]);
+    }
 }

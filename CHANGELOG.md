@@ -8,6 +8,48 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⟨0.28⟩ the third row is not the first row: `noManifest`** (SPEC §2, *"AND THE THIRD ROW IS NOT THE
+  FIRST ROW — measured, two engines report it as one"*). §2's ⟨0.24⟩ table has THREE rows, and this
+  engine filed the third under the first's name. MEASURED on the jar built before this change, over
+  `{"candor":…,"functions":[]}` with **no `analyzed` key at all** (a pre-⟨0.21⟩ producer): `where`,
+  `map`, `blindspots`, `reachable`, `tour`, `containment`, `show`, `unverified`, `fix-gate` and `gains`
+  all emitted `judgedNothing: ["<path>"]`, and the `gate --report` note said the report *"declare[s]
+  `analyzed.count: 0`, i.e. they JUDGED NOTHING"*. **The report declares nothing.** The hedge is the
+  right DIRECTION — row 3's own instruction is *no manifest, no claim* — but the disclosure was false,
+  and this family rates a false disclosure worse than a missing one (§3.4's `net-partner` finding: an
+  engine reported "ignoring unknown config key" *while honouring it*). It was also a hole in ⟨0.28⟩'s
+  own pin, which defines `judgedNothing` as *reports declaring `analyzed.count: 0`*: filing row 3 there
+  made one key mean two things and lost the distinction the table exists to draw.
+
+  Row 3 now carries its own SPEC-pinned key, `noManifest: ["<report path>", …]`, everywhere the caveat
+  rides — `ReportCompleteness.writeJson` (so every descriptive verb, the Rung A caveat document, the
+  advisory verbs and `gains`' `baselineNoManifest` get it from one place), its own clause in the
+  `⚠ INCOMPLETE` banner, its own per-report line, its own `advisoryJudgedNothingNote` paragraph with
+  `ok` still withdrawn, and its own `gate --report` NOTE. It raises `incomplete` like its siblings, is
+  omitted when empty, and — like `judgedNothing` — reaches `mustHedge()` and **not** `incomplete()`, so
+  no exit code moves. The stopgap wording that made the old sentence merely *truthful*
+  (*"`analyzed.count: 0`, or no manifest at all"*) is gone: row 1's note is back to the precise claim it
+  can support, and row 3 has its own.
+
+  **THE SPLIT ADDS A PREDICATE, IT DOES NOT INVERT ONE.** `Loader.claimsToHaveJudgedNothing` is not only
+  a disclosure predicate: `Loader.loadCrossDeps` reads it to decide COVERAGE (`depCoveredPkgs`, the set
+  that silences the κ ledger's `invisible` hedge) and `gate --report` reads it through
+  `Query.Envelope`. An absent manifest must keep granting NONE — that is row 3's own instruction — so
+  making it answer `false` for a manifest-less report to fix the LABEL would have turned every
+  pre-⟨0.21⟩ report into a covered one: a silent under-report introduced by a disclosure fix. A second,
+  disclosure-only `Loader.hasNoManifest` chooses the KEY for a hedge that was already happening, and a
+  test asserts the coverage predicate is unmoved (the mutant that inverts it fails there, in
+  `StaleDepTrustTest`'s shape table, and in the legacy-bare-array row).
+
+  **BOTH CONTROLS ARE ASSERTED.** Row 1 (`analyzed.count: 0`) keeps `judgedNothing` and never becomes
+  `noManifest` — the split goes both ways or it is a rename. Row 2 (`count: 7`, `functions: []`) is a
+  legitimate all-pure claim §2 rule 3 requires a consumer to BELIEVE and MUST NOT hedge; a fix that
+  hedges all three has disabled the feature rather than implemented the rule (over 1997 JVM dependency
+  jars, a predicate keyed on `functions` being empty withdraws 104 real claims to catch 6). Four new
+  JUnit tests and seven new `test/smoke.sh` rows; measured before/after across ten verb invocations per
+  row, the row-2, manifest-less-with-entries and intact-report output is **byte-identical**, and row 1
+  changes only in the tightened prose.
+
 - **⟨0.28⟩ the BASELINE locator's expansion is guarded on the scan side, and the report sink's OWN
   sidecar writes are part of the sink** (SPEC §3.3.1 (3), *"AND AN INPUT LOCATOR NAMES A SET — COMPARE
   THE EXPANSION, NEVER THE TOKEN"* / *"THE SIDECARS EXPAND TOO"*). Two measured defects, both live at

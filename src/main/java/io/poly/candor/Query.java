@@ -1607,17 +1607,31 @@ public final class Query {
      *  not re-read at all. Only the union covers both the post-failure artifact (which carries the first
      *  two) and the facade/re-export report (which carries only the second).
      *
+     *  <p>⟨0.28⟩ <b>AND FOUR, BECAUSE THE THIRD ROW IS NOT THE FIRST ROW.</b> {@code noManifest} is SPEC
+     *  §2's row 3 — a report carrying no {@code analyzed} key at all, a pre-⟨0.21⟩ producer. MEASURED on
+     *  the jar built before this split: it landed in {@code judgedNothing}, and the note said the report
+     *  <i>"JUDGED NOTHING (`analyzed.count: 0`, or no manifest at all)"</i>. The hedge is the right
+     *  DIRECTION — row 3's own instruction is <i>no manifest, no claim</i> — but the report DECLARES
+     *  nothing, and ⟨0.28⟩ pins {@code judgedNothing} to <i>"reports declaring `analyzed.count: 0`"</i>,
+     *  so filing row 3 there makes one key mean two things and loses the distinction §2's table exists to
+     *  draw. The repairs differ too: row 1 wants a scan that reaches a conclusion, row 3 wants a producer
+     *  that emits a manifest at all.
+     *
      *  @param unanalyzed the ⟨0.21⟩ manifest rows, {@code {path, reason}}
      *  @param judgedNothing one label per report file declaring {@code analyzed.count: 0}
      *  @param unreadable one path per report file this verb could not re-read (already disclosed on stderr
-     *      by {@link #reportCompleteness}) */
-    record ReportCompleteness(List<String[]> unanalyzed, List<String> judgedNothing, List<String> unreadable) {
+     *      by {@link #reportCompleteness})
+     *  @param noManifest ⟨0.28⟩ one path per report file carrying NO {@code analyzed} key at all (SPEC §2
+     *      row 3) — DISJOINT from {@code judgedNothing}, which is why the split is not a rename */
+    record ReportCompleteness(List<String[]> unanalyzed, List<String> judgedNothing, List<String> unreadable,
+                              List<String> noManifest) {
         /** Nothing to disclose — for a caller with no report locator at all (a unit test driving a verb
          *  over an in-memory entry list). Every channel below is a no-op on it. */
-        static final ReportCompleteness NONE = new ReportCompleteness(List.of(), List.of(), List.of());
+        static final ReportCompleteness NONE =
+                new ReportCompleteness(List.of(), List.of(), List.of(), List.of());
 
         /** Is the universe this verb reasoned over known-partial in the way the GATE also refuses over?
-         *  {@code judgedNothing} is deliberately NOT an arm — see {@link #mustHedge}. */
+         *  {@code judgedNothing} and {@code noManifest} are deliberately NOT arms — see {@link #mustHedge}. */
         boolean incomplete() { return !unanalyzed.isEmpty() || !unreadable.isEmpty(); }
 
         /** ⟨0.28⟩ <b>Is there anything at all to disclose — the trigger for an ANSWER, where
@@ -1630,7 +1644,13 @@ public final class Query {
          *  is the mirror of the over-claim {@code --strict} exists to prevent. A descriptive verb asks
          *  THIS: its empty set is a negative finding under all three causes, and it has no exit code for
          *  the distinction to matter to. */
-        boolean mustHedge() { return incomplete() || !judgedNothing.isEmpty(); }
+        boolean mustHedge() {
+            // ⟨0.28⟩ `noManifest` is an arm of THIS and not of `incomplete()`, for the identical reason
+            // count-0 is: the gate exits 0 over a manifest-less report too, so a verb exiting 2 there
+            // would claim it got LESS far than the gate on the same bytes. The row-3 split re-routes a
+            // hedge that was already happening; it must not also move an exit code.
+            return incomplete() || !judgedNothing.isEmpty() || !noManifest.isEmpty();
+        }
 
         /** Union in a SECOND locator's manifest, for a verb that reads two — {@code containment
          *  <baseline>}, whose answer is a DIFFERENCE and is therefore unsound if EITHER side is partial,
@@ -1642,7 +1662,8 @@ public final class Query {
             List<String[]> u = new ArrayList<>(unanalyzed); u.addAll(other.unanalyzed);
             List<String> j = new ArrayList<>(judgedNothing); j.addAll(other.judgedNothing);
             List<String> r = new ArrayList<>(unreadable); r.addAll(other.unreadable);
-            return new ReportCompleteness(u, j, r);
+            List<String> n = new ArrayList<>(noManifest); n.addAll(other.noManifest);
+            return new ReportCompleteness(u, j, r, n);
         }
 
         /** What {@code gate --report} does over THESE SAME BYTES, as one sentence for the note's tail — a
@@ -1654,11 +1675,18 @@ public final class Query {
          *  says the opposite, and says why it is the more urgent of the two: nothing downstream fails
          *  closed on these bytes, so this note is the whole of the warning. */
         String gateLine() {
-            return incomplete()
-                    ? "`gate --report` exits 2 over these bytes."
-                    : "NOTHING DOWNSTREAM WILL CATCH THIS FOR YOU — `gate --report` exits 0 over a "
-                      + "judged-nothing report (⟨0.24⟩: a disclosure, not an exit code), so this note is "
-                      + "the whole of the warning.";
+            if (incomplete()) return "`gate --report` exits 2 over these bytes.";
+            // ⟨0.28⟩ A ROW-3-ONLY HEDGE GETS THE SAME EXIT REPORTED WITHOUT THE WRONG NOUN. The gate exits
+            // 0 over a manifest-less report too, so the urgency is identical; but calling the report
+            // *judged-nothing* in a sentence printed under the row-3 disclosure would re-assert, in prose,
+            // the exact claim the split was made to stop making.
+            if (judgedNothing.isEmpty())
+                return "NOTHING DOWNSTREAM WILL CATCH THIS FOR YOU — `gate --report` exits 0 over a report "
+                       + "carrying no `analyzed` manifest (⟨0.24⟩: a disclosure, not an exit code), so this "
+                       + "note is the whole of the warning.";
+            return "NOTHING DOWNSTREAM WILL CATCH THIS FOR YOU — `gate --report` exits 0 over a "
+                   + "judged-nothing report (⟨0.24⟩: a disclosure, not an exit code), so this note is "
+                   + "the whole of the warning.";
         }
 
         /** The key names {@link #writeJson} is about to write — asked of the fields ACTUALLY going out,
@@ -1670,6 +1698,7 @@ public final class Query {
             List<String> k = new ArrayList<>(List.of("incomplete"));
             if (!unanalyzed.isEmpty()) k.add("unanalyzed");
             if (!judgedNothing.isEmpty()) k.add("judgedNothing");
+            if (!noManifest.isEmpty()) k.add("noManifest");
             return k;
         }
 
@@ -1702,10 +1731,19 @@ public final class Query {
             if (!unanalyzed.isEmpty()) out.put(prefixed(prefix, "unanalyzed"), manifestJson(unanalyzed));
             if (!judgedNothing.isEmpty())
                 out.put(prefixed(prefix, "judgedNothing"), List.copyOf(judgedNothing));
+            // ⟨0.28⟩ SPEC §2 row 3, pinned verbatim in the rung that introduced it:
+            //     "noManifest": [ "<report path>", … ]   // consulted reports carrying no `analyzed` key
+            // Its own key rather than a third member of `judgedNothing`, because that key is defined as
+            // "reports declaring `analyzed.count: 0`" and a row-3 report declares nothing. Omitted when
+            // empty like its siblings, so a document raised by either of them alone is byte-identical to
+            // its pre-row-3 form. The `baseline` prefix is applied by the same rule as the others.
+            if (!noManifest.isEmpty())
+                out.put(prefixed(prefix, "noManifest"), List.copyOf(noManifest));
         }
 
         /** {@code ""} → the bare key (byte-identical to every pre-prefix caller); otherwise
-         *  {@code baseline} + {@code Incomplete}/{@code Unanalyzed}/{@code JudgedNothing}. */
+         *  {@code baseline} + {@code Incomplete}/{@code Unanalyzed}/{@code JudgedNothing}/
+         *  {@code NoManifest}. */
         private static String prefixed(String prefix, String name) {
             return prefix.isEmpty() ? name
                     : prefix + Character.toUpperCase(name.charAt(0)) + name.substring(1);
@@ -1720,28 +1758,37 @@ public final class Query {
             List<String> causes = new ArrayList<>();
             int units = unanalyzed.size() + unreadable.size();
             if (units > 0) causes.add(units + " unit(s) candor could not analyze");
+            // ⟨0.28⟩ ONE SENTENCE PER CAUSE, AND ONLY TRUE ONES. This list used to hold TWO of §2's rows
+            // under one clause — row 1 (`count: 0`, nothing was judged) and row 3 (no `analyzed` key, a
+            // pre-⟨0.21⟩ producer) — reading "JUDGED NOTHING (`analyzed.count: 0`, or no manifest at
+            // all)". Truthful once widened, but still one clause for two facts with two different
+            // repairs: row 1 wants a scan that reaches a conclusion, row 3 wants a producer that emits a
+            // manifest. Now they are separate lists and separate clauses, and row 1's sentence is back to
+            // the precise wording it can support.
             if (!judgedNothing.isEmpty())
-                // ⟨0.28⟩ "…or NO MANIFEST AT ALL" — SPEC §2 ⟨0.24⟩ has THREE rows and this list holds
-                // two of them: row 1 (`count: 0`, nothing was judged) and row 3 (no `analyzed` key,
-                // a pre-⟨0.21⟩ producer, "no manifest, no claim"). Both hedge and this predicate is
-                // right to hold both, but saying they all DECLARE `count: 0` is FALSE of row 3 — a
-                // false disclosure, which this family rates worse than a missing one. candor-rust's
-                // GATE note has always said "0, or absent with no entries"; this is that wording, on
-                // the route that asserted the wrong one. Splitting the two into `judgedNothing` and
-                // `noManifest` per SPEC §2 ⟨0.28⟩ is the full fix and is tracked separately — this
-                // stops the sentence lying in the meantime.
-                causes.add(judgedNothing.size() + " report(s) that JUDGED NOTHING (`analyzed.count: 0`, "
-                        + "or no manifest at all)");
-            System.out.println("  ⚠ INCOMPLETE — the report(s) under this locator declare "
-                    + String.join(", and ", causes) + ",");
+                causes.add(judgedNothing.size() + " report(s) that JUDGED NOTHING (`analyzed.count: 0`)");
+            // The row-3 clause carries its OWN verb: a report with no manifest DECLARES nothing, which is
+            // the entire point, so it cannot ride the shared "declare". Appended rather than folded in, so
+            // that with no row-3 report present this line is character-for-character what it was.
+            String head = causes.isEmpty() ? "" : "declare " + String.join(", and ", causes);
+            if (!noManifest.isEmpty()) {
+                String nm = "include " + noManifest.size() + " report(s) carrying NO `analyzed` manifest "
+                        + "at all (SPEC §2 row 3, a pre-⟨0.21⟩ producer)";
+                head = head.isEmpty() ? nm : head + ", and " + nm;
+            }
+            System.out.println("  ⚠ INCOMPLETE — the report(s) under this locator " + head + ",");
             System.out.println("      so " + soWhat + ":");
             for (String[] u : unanalyzed) System.out.println("      " + u[0] + " — " + u[1]);
             for (String p : unreadable)
                 System.out.println("      " + p + " — this report could not be re-read (see stderr)");
             for (String p : judgedNothing)
-                System.out.println("      " + p + " — `analyzed.count: 0`, or no `analyzed` manifest at "
-                        + "all: this report judged NOTHING or does not say, so it names no function and "
-                        + "its silence is not a purity claim");
+                System.out.println("      " + p + " — `analyzed.count: 0`: this report judged NOTHING, so "
+                        + "it names no function and its silence is not a purity claim");
+            for (String p : noManifest)
+                System.out.println("      " + p + " — NO `analyzed` manifest at all (SPEC §2 row 3, a "
+                        + "pre-⟨0.21⟩ producer): it DECLARES nothing about what was judged, so its silence "
+                        + "licenses no purity claim either. Re-scan with a current engine so the report "
+                        + "carries its manifest");
             System.out.println("      " + tail);
         }
     }
@@ -1764,6 +1811,7 @@ public final class Query {
         List<String[]> un = new ArrayList<>();
         List<String> jn = new ArrayList<>();
         List<String> bad = new ArrayList<>();
+        List<String> nm = new ArrayList<>();
         for (String r : set) {
             // ⟨0.28⟩ ABSENT is not UNREADABLE. Locator rule 2 returns a `.json` path VERBATIM whether or
             // not it exists, and a report that is not there is the ordinary pre-scan case every caller
@@ -1790,9 +1838,20 @@ public final class Query {
             // shape candor-rust's `judgedNothing` already publishes. (The label form stays on the gate
             // route's stderr advisory, where a human is reading and `<unnamed package>` is prose, not a
             // value a consumer keys on.)
-            if (env.judgedNothing()) jn.add(r);
+            //
+            // ⟨0.28⟩ …AND THEN SPLIT BY WHICH ROW OF SPEC §2's TABLE IT IS, which is a SECOND question
+            // asked of the same envelope, never an edit to the answer above. `claimsToHaveJudgedNothing`
+            // decides COVERAGE on two other routes ({@link Loader#loadCrossDeps}'s `depCoveredPkgs`, the
+            // gate), where a manifest-less report must keep granting none — row 3's own instruction is
+            // *no manifest, no claim*. Flipping it here to correct a LABEL would make every pre-⟨0.21⟩
+            // report read as covered: a silent under-report introduced by a disclosure fix. So the hedge
+            // stands and only its KEY is chosen, by the disclosure-only `Loader.hasNoManifest`.
+            if (env.judgedNothing()) {
+                if (env.noManifest()) nm.add(r);
+                else jn.add(r);
+            }
         }
-        return new ReportCompleteness(un, jn, bad);
+        return new ReportCompleteness(un, jn, bad, nm);
     }
 
     /** The report a DESCRIPTIVE verb is answering over: the LOCATOR (which may name a report SET, §2 "a
@@ -1932,6 +1991,24 @@ public final class Query {
                       + "DOWNSTREAM WILL CATCH THIS FOR YOU: `gate --report` exits 0 over a judged-nothing "
                       + "report and `--strict` does not move either, so this note is the whole of the "
                       + "warning. Re-scan the sources you meant to check.)");
+        }
+        // ⟨0.28⟩ SPEC §2's THIRD ROW gets its OWN sentence, because the one above was FALSE of it: a
+        // report carrying no `analyzed` key does not "say it JUDGED NOTHING (`analyzed.count: 0`)" — it
+        // says nothing, and a reader sent to re-run a scan that already reached a conclusion goes to the
+        // wrong repair. `ok` is withdrawn for the same reason it is above: an advisory verb's `ok` is a
+        // claim about the CODE, and a report that never emitted a manifest cannot support it.
+        if (!comp.noManifest().isEmpty()) {
+            System.err.println("candor " + who + ": " + comp.noManifest().size() + " report(s) under this "
+                    + "locator carry NO `analyzed` manifest at all (SPEC §2 row 3, a pre-⟨0.21⟩ producer) "
+                    + "— they make no claim about what was judged, so their silence licenses none either:");
+            for (String p : comp.noManifest()) System.err.println("    " + p);
+            System.err.println(comp.incomplete()
+                    ? "  (`ok` is OMITTED — neither value is a statement this input licenses. Re-scan with "
+                      + "a current engine so the report carries its manifest.)"
+                    : "  (`ok` is OMITTED — neither value is a statement this input licenses. `gate "
+                      + "--report` exits 0 over these bytes and `--strict` does not move either, so this "
+                      + "note is the whole of the warning. Re-scan with a current engine so the report "
+                      + "carries its manifest.)");
         }
         if (!comp.unreadable().isEmpty())
             System.err.println("candor " + who + ": " + comp.unreadable().size() + " report(s) under this "
@@ -3308,8 +3385,16 @@ public final class Query {
      *      manifest-ABSENT row wrong: a legacy bare-array report has no `analyzed` key, reads back as 0
      *      here, and would be called judged-nothing while LISTING functions it demonstrably judged
      *      (⟨0.24⟩ row 3 — absent manifest ⇒ judged-nothing iff `functions` is empty). */
+    /** @param noManifest ⟨0.28⟩ SPEC §2's THIRD ROW — does this report carry NO `analyzed` key at all?
+     *      Decided by {@link Loader#hasNoManifest}, a SECOND predicate beside `judgedNothing` and never an
+     *      inversion of it: both rows hedge, and `judgedNothing` must keep saying so because it decides
+     *      COVERAGE on two other routes. This chooses only WHICH key the hedge is disclosed under —
+     *      `judgedNothing` is pinned to *reports declaring `analyzed.count: 0`*, which a row-3 report does
+     *      not do. Meaningful only alongside `judgedNothing`: a manifest-less report that LISTS functions
+     *      is not hedging at all. */
     record Envelope(int analyzedCount, List<String[]> unanalyzed, List<Map.Entry<String, Integer>> uncovered,
-                    Map<String, List<String>> rawUnknownWhy, String packageName, boolean judgedNothing) {}
+                    Map<String, List<String>> rawUnknownWhy, String packageName, boolean judgedNothing,
+                    boolean noManifest) {}
 
     static Envelope readEnvelope(String path) throws Exception {
         JsonElement root = JsonParser.parseString(Files.readString(Path.of(path)));
@@ -3389,7 +3474,7 @@ public final class Query {
                 if (!ws.isEmpty()) raw.put(o.get("fn").getAsString(), ws);
             }
         return new Envelope(analyzed, unanalyzed, uncovered, raw, pkg,
-                Loader.claimsToHaveJudgedNothing(envObj, fns));
+                Loader.claimsToHaveJudgedNothing(envObj, fns), Loader.hasNoManifest(envObj));
     }
 
     /**
@@ -3565,6 +3650,9 @@ public final class Query {
         List<Map.Entry<String, Integer>> uncovered = new ArrayList<>();
         Map<String, List<String>> rawWhy = new HashMap<>();
         List<String> judgedNothing = new ArrayList<>();
+        // ⟨0.28⟩ SPEC §2's THIRD ROW, kept apart from the list above on THIS route too — the note below
+        // said such a report "declare[s] `analyzed.count: 0`", and it declares nothing.
+        List<String> noManifest = new ArrayList<>();
         for (String reportPath : reportPaths) {
             Envelope env;
             try {
@@ -3589,8 +3677,13 @@ public final class Query {
             // `analyzedCount() == 0` this line used to ask. The descriptive verbs now read the same row
             // (see {@link #reportCompleteness}); two spellings of "judged nothing" in one file is exactly
             // how a report comes to be judged-nothing on one route and not on the other.
-            if (env.judgedNothing())
-                judgedNothing.add(judgedNothingLabel(env, reportPath));
+            // ⟨0.28⟩ …and split by ROW, by the disclosure-only `Loader.hasNoManifest`. The hedge itself is
+            // unchanged — `env.judgedNothing()` still decides that, and still decides coverage everywhere
+            // else it is read — only the sentence the operator gets is now the true one for their report.
+            if (env.judgedNothing()) {
+                if (env.noManifest()) noManifest.add(judgedNothingLabel(env, reportPath));
+                else judgedNothing.add(judgedNothingLabel(env, reportPath));
+            }
         }
         if (reportPaths.size() > 1)
             System.err.println("candor gate: locator names " + reportPaths.size()
@@ -3657,6 +3750,20 @@ public final class Query {
                     + "about an empty set, not a purity claim about the package — nothing here was checked. "
                     + "(Advisory: the exit code and the verdict document are unchanged; re-run the producing "
                     + "scan over the package's own sources if you meant to gate it.)");
+        // ⟨0.28⟩ SPEC §2's THIRD ROW — its own sentence, because the one above was FALSE of it. A report
+        // with no `analyzed` key does not "declare `analyzed.count: 0`"; it declares nothing, and this
+        // family rates a false disclosure worse than a missing one (§3.4's `net-partner` finding: an
+        // engine reported "ignoring unknown config key" while honouring it). The HEDGE is identical —
+        // same predicate, same withheld coverage, same untouched verdict and exit — and the REPAIR is
+        // not: row 1 wants a scan that reaches a conclusion, row 3 wants a producer that emits a manifest.
+        if (!noManifest.isEmpty())
+            System.err.println("candor gate: NOTE — " + noManifest.size() + " of the "
+                    + reportPaths.size() + " report(s) gated carry NO `analyzed` manifest at all (SPEC §2 "
+                    + "row 3, a pre-⟨0.21⟩ producer): " + String.join(", ", noManifest) + ". They DECLARE "
+                    + "nothing about what was judged, so a verdict over them is a statement about an empty "
+                    + "set, not a purity claim about the package. (Advisory: the exit code and the verdict "
+                    + "document are unchanged; re-scan with a current engine so the report carries its "
+                    + "manifest.)");
 
         // ⟨0.24⟩ THE DISCLOSURE THE PRECEDENCE RULE OWES. Whatever the verdict, every rule this run could
         // not evaluate is named — on stderr for the operator, and (below) in the verdict document for the

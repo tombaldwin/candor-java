@@ -461,6 +461,35 @@ final class Loader {
         return c.getAsInt() <= 0;
     }
 
+    /** ⟨0.28⟩ SPEC §2 — <b>THE THIRD ROW IS NOT THE FIRST ROW.</b> Does this report carry NO
+     *  {@code analyzed} manifest at all?
+     *
+     *  <p><b>A SECOND, DISCLOSURE-ONLY PREDICATE, AND IT IS NOT AN INVERSION OF THE ONE ABOVE.</b> §2's
+     *  table has THREE rows and {@link #claimsToHaveJudgedNothing} correctly answers {@code true} for two
+     *  of them: row 1 ({@code analyzed.count: 0} — a claim the report MAKES) and row 3 ({@code analyzed}
+     *  ABSENT with no entries — a pre-⟨0.21⟩ producer, which makes no claim at all). Both must keep
+     *  hedging, and that predicate must keep saying so, because it is what {@link #loadCrossDeps} reads to
+     *  decide COVERAGE ({@code depCoveredPkgs}, the set that silences the κ ledger's {@code invisible}
+     *  disclosure) and what {@code Query.Envelope} carries into {@code gate --report}. Row 3's own
+     *  instruction is <i>no manifest, no claim</i>, so an absent manifest must go on granting NONE:
+     *  making that predicate answer {@code false} here to fix a LABEL would turn every pre-⟨0.21⟩ report
+     *  into a COVERED one — a silent under-report introduced by a disclosure fix.
+     *
+     *  <p>So this asks a DIFFERENT question — <i>is there a manifest?</i> — and only the DISCLOSURE path
+     *  ({@code Query.ReportCompleteness}) consults it, to route a hedge that is already happening to the
+     *  right key. {@code judgedNothing} is PINNED to <i>"reports declaring {@code analyzed.count: 0}"</i>,
+     *  which a row-3 report is not, and the two want different repairs: row 1 wants a scan that reaches a
+     *  conclusion, row 3 wants a producer that emits a manifest at all.
+     *
+     *  <p>A legacy BARE ARRAY report has no envelope and therefore no manifest either — row 3 as well
+     *  ({@code obj} is {@code null} for it). It is only ever HEDGED when it also lists nothing, because
+     *  every caller ANDs this with {@link #claimsToHaveJudgedNothing}: a manifest-less report that LISTS
+     *  entries judged something and said so the only way it could, and keeps the standing §2's
+     *  manifest-absent row has always given it. */
+    static boolean hasNoManifest(JsonObject obj) {
+        return obj == null || !obj.has("analyzed");
+    }
+
     static void loadCrossDeps(String spec, String ownVersion) {
         if (spec == null || spec.isBlank()) return;
         for (String tok : spec.split("[\\s:,]+")) {

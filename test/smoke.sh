@@ -638,7 +638,22 @@ printf '{"candor":{"version":"x"},"functions":[]}\n' > "$W/empty.json"
 # ⟨0.28⟩ this fixture has NO `analyzed` key — SPEC §2 ⟨0.24⟩ ROW 3, "no manifest, no claim", NOT row 1.
 # It must not read as an error, and it must not read as a clean purity claim either: the verb hedges and
 # says WHY. The row asserted the clean answer because it predates ⟨0.21⟩'s manifest entirely.
-want "loader: a no-manifest report hedges rather than claiming purity (⟨0.24⟩ row 3)" "$("$CJ" show "$W/empty.json" x 2>&1)" 'no manifest at all'
+#
+# ⟨0.28⟩ AND THE WHY IS NOW ROW 3's OWN. This row used to accept `no manifest at all` because the note
+# then read "JUDGED NOTHING (`analyzed.count: 0`, or no manifest at all)" — two of §2's rows under one
+# clause. `judgedNothing` is pinned to *reports declaring `analyzed.count: 0`*, which this report does
+# not do, so the causes are split and the sentence is now the true one for these bytes.
+want "loader: a no-manifest report hedges rather than claiming purity (SPEC §2 row 3)" "$("$CJ" show "$W/empty.json" x 2>&1)" 'NO `analyzed` manifest at all'
+wantnot "loader: …and does NOT say it declared \`analyzed.count: 0\` — the report declares nothing" "$("$CJ" show "$W/empty.json" x 2>&1)" 'analyzed.count: 0'
+want "loader: …and the machine channel files it under the pinned \`noManifest\` key" "$("$CJ" where Net --report "$W/empty.json" --json 2>&1)" '"noManifest"'
+wantnot "loader: …never under \`judgedNothing\`, which names a DIFFERENT row" "$("$CJ" where Net --report "$W/empty.json" --json 2>&1)" '"judgedNothing"'
+# CONTROL, both ways: row 1 keeps `judgedNothing`, and row 2 (`count: n>0`, `functions: []`) is a
+# legitimate all-pure claim §2 rule 3 requires a consumer to BELIEVE and hedges NOT AT ALL.
+printf '{"candor":{"version":"x"},"analyzed":{"count":0,"digest":"0"},"functions":[]}\n' > "$W/row1.json"
+want "loader: row 1 (\`analyzed.count: 0\`) keeps \`judgedNothing\` — the split goes both ways or it is a rename" "$("$CJ" where Net --report "$W/row1.json" --json 2>&1)" '"judgedNothing"'
+wantnot "loader: …and is not \`noManifest\`: it HAS a manifest, and it declares 0" "$("$CJ" where Net --report "$W/row1.json" --json 2>&1)" '"noManifest"'
+printf '{"candor":{"version":"x"},"analyzed":{"count":7,"digest":"0"},"functions":[]}\n' > "$W/row2.json"
+wantnot "loader: row 2 (\`count: 7\`, \`functions: []\`) does not hedge — hedging all three rows disables the feature" "$("$CJ" where Net --report "$W/row2.json" --json 2>&1)" 'incomplete'
 
 echo "== @PostConstruct/@PreDestroy lifecycle callbacks are entry points =="
 # Container-invoked init/shutdown hooks — no project call site, so an init that reads config or a

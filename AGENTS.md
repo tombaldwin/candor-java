@@ -6,6 +6,13 @@ candor-java — the family's reference engine (spec 0.27) — reports, for every
 [candor-spec/AGENTS.md](https://github.com/tombaldwin/candor-spec/blob/main/AGENTS.md); this file is
 the JVM-specific production + query surface.
 
+> **If the repository is not JVM-only, start at the umbrella:**
+> [candor/AGENTS.md](https://github.com/tombaldwin/candor/blob/main/AGENTS.md). `candor` is one
+> command in front of every engine (JVM, Rust, TypeScript, Swift, agent fleets) — it picks the right
+> one per target, `candor update` installs and upgrades them, and `candor doctor` checks that every
+> installed engine agrees on a spec version. A polyglot repo scanned with this engine alone gets an
+> answer about its JVM code and nothing that says so.
+
 > **This document ships inside the jar.** `java -jar candor-java-*-all.jar --agents` prints the
 > contract for the *installed* build — always prefer that over a vendored or fetched copy, which
 > can describe a different candor-java than the one you are running.

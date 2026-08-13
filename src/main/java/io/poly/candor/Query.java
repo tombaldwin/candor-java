@@ -2471,7 +2471,27 @@ public final class Query {
             System.err.println("candor: unknown effect `" + effect + "` (expected one of " + Rules.KNOWN_EFFECTS + " or Unknown)");
             return 2;
         }
-        if (loadPolicyOrFail(policyPath, "fix") == null) return 2;
+        String fixPol = loadPolicyOrFail(policyPath, "fix");
+        if (fixPol == null) return 2;
+        // ⟨0.28⟩ Phase 1b — `fix` TAKES THE ZERO-RULE WITHHOLDING TOO. SPEC §2's first version named
+        // three verbs (`whatif`/`fix-gate`/`unverified`) because those were the three in front of the
+        // author; `fix` shares the same policy loader and its answer is equally policy-relative.
+        // MEASURED here before this change, over an all-comments policy:
+        //     fix <fn> Fs --json   {"crossing": false, "reason": "not-forbidden"}   exit 0
+        // and NOT-FORBIDDEN BY A POLICY THAT FORBIDS NOTHING is vacuously true — an all-clear produced
+        // by deleting the question, the same shape the other three were fixed for. The clause now states
+        // the rule over the CONDITION (every verb answering relative to a CONFIGURED policy) and records
+        // that naming three verbs is what split candor-rust, which extended it, from this engine and
+        // candor-swift, which read the list as closed. Composed with §6.1's `crossing` ruling — present
+        // exactly when the verb ANSWERED — the key is absent here, which the caveat document gives for
+        // free by carrying no result keys at all.
+        // The predicate is fix-gate's, verbatim — `Policy.policyYieldedNoRules()` is set by the load
+        // above and one spelling serves every route. My first draft re-derived it from
+        // `zeroRuleUnevaluated`, which is a second spelling of one rule inside the change made because
+        // a rule had two spellings.
+        if (Policy.policyYieldedNoRules())
+            return advisoryZeroRulePolicy("fix", fixPol, reportLocator,
+                    reportPaths.isEmpty() ? null : reportPaths.get(0), json);
         // ⟨0.24⟩ SPEC §3.2 (`ec1a441`) — this verb answers about ONE function and carries neither `ok` nor
         // `--strict`, so it has no field to withdraw and no exit to fail. What it DOES have is the same
         // sentence: `no policy forbids it there — nothing to fix` over a report declaring source candor

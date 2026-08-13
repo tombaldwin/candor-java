@@ -4,8 +4,16 @@
 # It spawns a subprocess in exactly ONE place: `candor verify`, the dynamic honesty oracle, which
 # runs YOUR program under a -javaagent to check candor's static claim against reality. That Exec is
 # the feature, not a hidden effect. Prefix scopes can't say "deny Exec everywhere except one
-# sub-package", so the CI self-gate proves the two halves separately (see .github/workflows/ci.yml):
-#   (1) the analyzer CORE (io.poly.candor.verify excluded) under THIS policy — also no Exec;
-#   (2) the WHOLE tool (verify included) under `deny Net Db Ipc` — still no network/db/ipc.
-# Together: candor reaches the network / a database / IPC nowhere, and spawns a process ONLY in verify.
-deny Net Db Exec Ipc
+# sub-package", so `ci/self-gate.sh` proves the two halves separately:
+#   (1) the WHOLE tool under THIS policy — no Net/Db/Ipc, with no package excluded;
+#   (2) the Exec-performing methods are EXACTLY the two declared in that script
+#       (`Candor.main`, `verify.VerifyCli.main`) — so a new subprocess anywhere fails the gate,
+#       io.poly.candor.verify included.
+#
+# WHY `deny Net Db Ipc` AND NOT `deny Net Db Exec Ipc`. The stricter string used to live here, and CI
+# made it pass by COPYING build/classes and DELETING io/poly/candor/verify first — carving the
+# exemption out a whole PACKAGE at a time, so everything in it sat outside the Exec gate and a new
+# subprocess there was caught by nothing. The weaker rule over the WHOLE tool, plus a method-level
+# declaration, is the stronger gate. A policy is only as strong as the scope it is actually evaluated
+# over.
+deny Net Db Ipc

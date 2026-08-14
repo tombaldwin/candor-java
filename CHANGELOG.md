@@ -8,6 +8,18 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+## [0.28.0] — 2026-08-14
+
+- **Self-gate: the two subprocess METHODS are declared, not the package they live in.** The old half (1)
+  proved the analyzer core clean by copying `build/classes` and DELETING `io/poly/candor/verify` — carving
+  the Exec exemption out a whole PACKAGE at a time, so every class in it sat outside the Exec gate while
+  half (2) asked only about Net/Db/Ipc. Now the whole tool is scanned with nothing excluded under
+  `deny Net Db Ipc`, plus an assertion that the Exec methods are exactly `Candor.main` and
+  `verify.VerifyCli.main`. A new subprocess anywhere fails, and so does a declared entry that STOPS
+  performing Exec — a stale exemption is a gate that has quietly stopped asserting. The policy string got
+  weaker and the gate got stronger: a policy is only as strong as the scope it is evaluated over.
+- **AGENTS.md points at the umbrella**, with the jar's embedded copy re-synced in the same commit.
+
 - **⟨0.28⟩ the third row is not the first row: `noManifest`** (SPEC §2, *"AND THE THIRD ROW IS NOT THE
   FIRST ROW — measured, two engines report it as one"*). §2's ⟨0.24⟩ table has THREE rows, and this
   engine filed the third under the first's name. MEASURED on the jar built before this change, over

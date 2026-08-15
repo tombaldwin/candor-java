@@ -10,6 +10,21 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.28.0] — 2026-08-14
 
+- **Review follow-ups on the self-gate.** Five, none of them green-when-it-should-be-red, all of them
+  the gate misreporting or resolving the wrong thing: the jar was picked **newest-by-mtime** across
+  every version in `build/libs`, so a refreshed older `-all.jar` would have run a STALE ANALYZER over
+  fresh classes (now named from the project version); **exit 2 was reported as a violation** and
+  collapsed to exit 1, when it is the ⟨0.21⟩ *could not evaluate* verdict and this codebase treats that
+  distinction as load-bearing (preserved as 2 — and the same collapse was in candor-ts's and
+  candor-swift's self-gates, fixed there too); the advisory trim `^    \`` also swallowed the ⟨0.23⟩
+  **`interfaceUnion` rows**, which name synthetic entries that MATCHED a policy rule, so a chained-dep
+  dispatch surface reaching a denied effect reached CI as a bare count; a declared method that gains an
+  **overload** becomes parameter-qualified and was reported as STALE with the opposite remedy; and the
+  workflow's block comment still described the excluded-package arrangement this rework deleted.
+- **`## Status` in the README said `v0.19.x`** — nine releases stale, because every bump edited the
+  spec number on that exact line and nothing gated the version half. Now `v0.28.0`, and `test/smoke.sh`
+  derives the expected version from `build.gradle.kts` so it cannot rot again (falsified).
+
 - **jbang catalog pinned to v0.28.0** — the `script-ref` names a published release artifact, so it moves
   after the release exists, never with the version bump.
 

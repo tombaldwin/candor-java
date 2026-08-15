@@ -54,8 +54,10 @@ jobs:
       # SELF-GATE (candor-spec §7.12): candor-java analyzes ITSELF and holds its own declared policy —
       # the analyzer reads bytecode and writes reports (Fs/Env). It must reach the network / a database /
       # IPC NOWHERE, and spawn a subprocess ONLY in `candor verify` (the honesty oracle runs your program).
-      # Prefix scopes can't exclude one sub-package from a deny, so we prove the two halves separately:
-      #   (1) the analyzer core (verify excluded) — no Net/Db/Exec/Ipc;  (2) the whole tool — no Net/Db/Ipc.
+      # Prefix scopes can't exclude one sub-package from a deny, so we prove the two halves separately —
+      # see the step comment below and ci/self-gate.sh for the arrangement now in force. (This used to
+      # read "(1) the analyzer core, verify EXCLUDED", which is the arrangement the self-gate rework
+      # deleted precisely because excluding the package put it outside the Exec gate.)
       # An effect-gate vendor whose own gate is red has no business gating anyone else.
       - name: Self-gate (candor-java on candor-java)
         # Two halves, because a prefix deny can't say "deny Exec everywhere except io.poly.candor.verify":

@@ -88,7 +88,11 @@ fi
 # including in this script's own preconditions. Reporting it as "violates its own boundary" sends the
 # reader hunting for a subprocess that does not exist, and collapsing it to exit 1 tells CI a violation
 # was ESTABLISHED. Preserved as 2.
-if [ "$gate_rc" -eq 2 ]; then
+# …and ONLY when half (2) is clean. This branch used to fire regardless, so an ESTABLISHED
+# AS-EFF-006 violation was announced as "not a violation, the boundary was never judged" and
+# the FAILED line below became unreachable — the could-not-evaluate collapse INVERTED, by the
+# change that fixed it in the other direction.
+if [ "$gate_rc" -eq 2 ] && [ "$exec_rc" -eq 0 ]; then
   echo "self-gate: COULD NOT EVALUATE — candor-java exited 2 over its own classes (unanalyzable input,"
   echo "  not a violation: the boundary was never judged). Fix the input, then re-run."
   exit 2

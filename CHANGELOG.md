@@ -10,6 +10,9 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.28.0] — 2026-08-14
 
+- **jbang catalog pinned to v0.28.0** — the `script-ref` names a published release artifact, so it moves
+  after the release exists, never with the version bump.
+
 - **Self-gate: the two subprocess METHODS are declared, not the package they live in.** The old half (1)
   proved the analyzer core clean by copying `build/classes` and DELETING `io/poly/candor/verify` — carving
   the Exec exemption out a whole PACKAGE at a time, so every class in it sat outside the Exec gate while

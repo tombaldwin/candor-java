@@ -17,3 +17,42 @@
 # declaration, is the stronger gate. A policy is only as strong as the scope it is actually evaluated
 # over.
 deny Net Db Ipc
+
+# ── THE ARCHITECTURE HALF (§6.2 AS-EFF-009) ─────────────────────────────────────────────────────────
+# candor ships an architecture gate and, until now, never pointed it at candor. The effects half above
+# has been gated since the self-gate landed; the layering half — the capability the JVM case studies are
+# about — was exercised only as a QUERY verb in smoke tests. Same omission shape as the code defects this
+# project keeps finding: the rule was applied where the work was and never to its sibling.
+#
+# Every rule below was MEASURED against build/classes before being written (0 violations each), and the
+# gate was proved live by inverting one: `forbid io.poly.candor.Candor -> io.poly.candor.model` reports
+# 79. A rule nobody has seen fire is not evidence.
+
+# The typed vocabulary is a FOUNDATION: model/ realizes MODEL.md's Effect/EffectSet/Effector/PolicyRule
+# and must not reach back into the engine that uses it. Enumerated per class because of a limitation
+# noted below, not because these are the only ones that matter.
+forbid io.poly.candor.model -> io.poly.candor.Candor
+forbid io.poly.candor.model -> io.poly.candor.Query
+forbid io.poly.candor.model -> io.poly.candor.Classifier
+forbid io.poly.candor.model -> io.poly.candor.Policy
+forbid io.poly.candor.model -> io.poly.candor.Interp
+forbid io.poly.candor.model -> io.poly.candor.Cha
+
+# `verify` is the DYNAMIC oracle — it runs your program under a -javaagent and checks candor's static
+# claim against reality. An oracle that imported the analyzer it audits would be marking its own work.
+forbid io.poly.candor.verify -> io.poly.candor.Candor
+forbid io.poly.candor.verify -> io.poly.candor.Classifier
+
+# The read surface must not reach into analysis internals: `Query` consumes a REPORT, and a query path
+# that could re-derive facts from the analyzer would be a second answer to a question the report already
+# answers — the two-copies-drift vein that has produced defects here repeatedly.
+forbid io.poly.candor.Query -> io.poly.candor.Interp
+forbid io.poly.candor.Query -> io.poly.candor.Cha
+
+# LIMITATION FOUND BY WRITING THIS, and worth more than the rules above. `forbid A -> B` states a
+# PROHIBITION; there is no way to state a PERMISSION ("model may depend on nothing but model"). The
+# natural spelling `forbid io.poly.candor.model -> io.poly.candor` self-fires — 58 violations — because
+# the scope is a prefix and model sits under it. So a leaf package can only be protected by enumerating
+# what it must not touch, and that list ROTS: a new engine class is not covered by it, silently. That is
+# the allowlist-versus-denylist hazard the classifier has a standing rule about, in the policy language
+# itself. Filed in the umbrella backlog.

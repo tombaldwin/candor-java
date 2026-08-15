@@ -8,6 +8,14 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+
+- **The self-gate now holds BOTH halves of the product.** `.candor/policy` gains ten AS-EFF-009
+  `forbid` rules — model may not reach back into the engine, `verify` (the dynamic oracle) may not
+  import the analyzer it audits, `Query` may not reach analysis internals. Each measured at 0
+  violations before being written, and the gate proved live by inverting one (79). candor shipped an
+  architecture gate and had never pointed it at candor; `containment` appeared in smoke tests only as
+  a query verb. Writing it also surfaced a spec limitation — `forbid` cannot express a permission, so
+  a leaf package can only be protected by an enumerated list that rots (filed in the umbrella backlog).
 ## [0.28.2] — 2026-08-15
 
 _A cardinal-sin fix. 0.28.1's body-less-declaration pass reopened, in two shapes, the hole it was

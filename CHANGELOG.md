@@ -14,6 +14,8 @@ _Post-release review fixes. 0.28.0 shipped, then a high-effort review of that wo
 defects in it — three of them a defect of the same class as the fix that introduced them. The
 spec floor is UNCHANGED at 0.28: no contract moved, so this is a build-version patch._
 
+
+- **jbang catalog pinned to v0.28.1** — it names a published artifact, so it moves after the release exists.
 - **The README-version gate fired on the very next release, which is the point of it.** `release-stage.sh` bumped `build.gradle.kts` to 0.28.1 and left `## Status` at 0.28.0 — the same
   drift that reached `v0.19.x`, caught this time in CI instead of nine releases later. The umbrella's
   `release-stage.sh` now stages that line too, so the gate is the backstop rather than the process.

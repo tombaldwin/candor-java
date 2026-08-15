@@ -14,6 +14,8 @@ _A cardinal-sin fix. 0.28.1's body-less-declaration pass reopened, in two shapes
 written to close — both found by a max-effort review of that patch, both live on npm and crates.io
 until this release. The spec floor is unchanged at 0.28._
 
+- **jbang catalog pinned to v0.28.2** — it names a published artifact, so it moves after the release.
+
 - **The self-gate's exit-2 branch is gated on the Exec verdict.** It fired before the subprocess check
   was reported, so an ESTABLISHED violation was announced as "could not evaluate" and the FAILED line
   below it was unreachable — the could-not-evaluate collapse this release fixed, inverted.

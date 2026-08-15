@@ -8,7 +8,11 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
-## [0.28.0] — 2026-08-14
+## [0.28.1] — 2026-08-15
+
+_Post-release review fixes. 0.28.0 shipped, then a high-effort review of that work found
+defects in it — three of them a defect of the same class as the fix that introduced them. The
+spec floor is UNCHANGED at 0.28: no contract moved, so this is a build-version patch._
 
 - **Review follow-ups on the self-gate.** Five, none of them green-when-it-should-be-red, all of them
   the gate misreporting or resolving the wrong thing: the jar was picked **newest-by-mtime** across
@@ -21,9 +25,12 @@ after upgrading; review policies and regenerate baselines with the new build.
   dispatch surface reaching a denied effect reached CI as a bare count; a declared method that gains an
   **overload** becomes parameter-qualified and was reported as STALE with the opposite remedy; and the
   workflow's block comment still described the excluded-package arrangement this rework deleted.
+
 - **`## Status` in the README said `v0.19.x`** — nine releases stale, because every bump edited the
   spec number on that exact line and nothing gated the version half. Now `v0.28.0`, and `test/smoke.sh`
   derives the expected version from `build.gradle.kts` so it cannot rot again (falsified).
+
+## [0.28.0] — 2026-08-14
 
 - **jbang catalog pinned to v0.28.0** — the `script-ref` names a published release artifact, so it moves
   after the release exists, never with the version bump.

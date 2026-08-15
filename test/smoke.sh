@@ -2207,6 +2207,16 @@ if [ -n "$BSPEC" ]; then echo "  ok   docs gate reads the spec floor off the bin
 else echo "  FAIL could not read the binary's declared spec for the docs drift gate"; fail=$((fail+1)); fi
 want    "README names candor-java the family's reference engine" "$README_TXT" "the family's reference engine"
 want    "README pins the spec floor (spec $BSPEC)"               "$README_TXT" "spec $BSPEC"
+# …and the BUILD VERSION beside it. Only the spec half was gated, so `## Status: beta (v0.19.x, spec …)`
+# survived NINE releases — every bump edited the spec number on that exact line and left the version.
+# A reader of Status concluded the current build was 0.19.x. Derived from build.gradle.kts, like BSPEC
+# is derived from the binary: a literal here would rot the same way the thing it is checking did.
+BVER="$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' "$ROOT/build.gradle.kts" | head -1)"
+if [ -n "$BVER" ]; then
+  want  "README Status names the CURRENT build version (v$BVER)"  "$README_TXT" "v$BVER"
+else
+  echo "  FAIL could not read the project version from build.gradle.kts"; fail=$((fail+1))
+fi
 wantnot "README does not call Rust the reference"                "$README_TXT" "Rust reference"
 want    "AGENTS names candor-java the reference engine"          "$AGENTS_TXT" "reference engine"
 want    "AGENTS pins the spec floor (spec $BSPEC)"               "$AGENTS_TXT" "spec $BSPEC"

@@ -455,6 +455,7 @@ public class Candor {
         // producer reading the policy, not the gate alone, so the key stays ABSENT unless the parse stood.
         boolean[] answered = {false};
         int[] peekFailures = {0};
+        int[] peekPartial = {0};
         boolean[] peekReadAll = {false};
         boolean[] timedOut = {false};
         List<Path> archives = List.copyOf(ctx().archives);
@@ -477,7 +478,7 @@ public class Candor {
                 Set<String> denied = new TreeSet<>();
                 for (PolicyRule.Deny d : ctx().denyRules) denied.addAll(d.effects().toNames());
                 if (denied.isEmpty()) return;   // `pure`/allow-only: nothing named, so nothing to look for
-                int[] readOk = {0}, readFail = {0};
+                int[] readOk = {0}, readFail = {0}, readPartial = {0};
                 for (Path jar : archives) {
                     Map<String, EffectSet> peeked;
                     try {
@@ -497,6 +498,14 @@ public class Candor {
                         continue;
                     }
                     readOk[0]++;
+                    // ⟨0.29⟩ OPENING THE ARCHIVE IS NOT READING IT. `runScan` records every class it could
+                    // not analyze in this thread's `unanalyzed` (the ⟨0.21⟩ completeness manifest), and it
+                    // was thrown away — so a jar that opened fine and whose classes failed to analyze was
+                    // indistinguishable from one read cover to cover, and `peeked: true` shipped over both.
+                    // Exactly the distinction the `catch` above already draws one level out; a partial read
+                    // is the same overclaim as no read at all (⟨0.26⟩). `newContext()` gives each `runScan`
+                    // a clean slate, so this is THIS jar's count and no other's.
+                    if (!ctx().unanalyzed.isEmpty()) readPartial[0]++;
                     String where = root == null ? jar.toString() : relativeTo(root, jar);
                     for (var e : new java.util.TreeMap<>(peeked).entrySet()) {
                         if (judged.contains(e.getKey())) continue;   // the gate DID judge this one
@@ -518,8 +527,9 @@ public class Candor {
                 // through `ctx()` here files it against a context nobody reads and the flag stays false
                 // on every run. Caught by the flag reading `false` on a peek that had just produced a
                 // finding, which is the one observation that separates the two.
-                peekReadAll[0] = readOk[0] > 0 && readFail[0] == 0;
+                peekReadAll[0] = readOk[0] > 0 && readFail[0] == 0 && readPartial[0] == 0;
                 peekFailures[0] = readFail[0];
+                peekPartial[0] = readPartial[0];
             }, "candor-peek");
             t.start();
             // ⟨0.29⟩ A DEADLINE, because the peek re-parses exactly the bytecode this engine has never
@@ -562,6 +572,11 @@ public class Candor {
             System.err.println("candor-java: " + peekFailures[0] + " archive(s) under the scan root could "
                     + "not be opened for the peek — they are counted in `excluded` and their class is "
                     + "marked `peeked: false`, so the empty `outOfScope` below makes no claim about them.");
+        }
+        if (peekPartial[0] > 0) {
+            System.err.println("candor-java: " + peekPartial[0] + " archive(s) opened for the peek held "
+                    + "class(es) that could not be analyzed — the class is marked `peeked: false`, so the "
+                    + "`outOfScope` below makes no claim about what those classes do.");
         }
         // SAY IT ON STDERR, ABOVE THE VERDICT. The report block is for machines; an operator reading
         // `no violations` needs to know in the same breath that a file this scan did not judge holds the

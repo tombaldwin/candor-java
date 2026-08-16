@@ -8,6 +8,12 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⟨0.29⟩ `resolves` now declares `incomplete`** (SPEC §2.1). An absent `incomplete` is overloaded
+  between "this producer does not compute undetermined locators" and "it computed them and found none" —
+  exactly the ambiguity `resolves` was built for, one field over from the `fs` case that motivated it. A
+  producer that computes the surface declares it; one that does not MUST NOT, since listing it would turn
+  "unimplemented" into a false "nothing undetermined". Pinned by conformance PART 50, which checks the
+  declaration BEFORE reading any absence as meaningful.
 - **⚠ ⟨0.29⟩ SPEC §2 `incomplete` — the effects whose LOCATOR a unit could not determine, now PUBLISHED
   and CHAINED.** This engine computed the fact (`surfaceIncomplete`, transitive through the same
   `literalFixpoint` the literal surfaces use) and kept it internal, so a consumer chaining its reports had

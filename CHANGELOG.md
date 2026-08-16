@@ -32,6 +32,14 @@ after upgrading; review policies and regenerate baselines with the new build.
   - `archive-under-the-scan-root` (`peeked: true`) is what the peek actually reads: a `.jar`/`.zip` under
     the scan root is bytecode this engine reads perfectly well and that a `.class`-filtering walk never
     opens. `build/libs/app.jar` beside `build/classes` is the ordinary shape.
+  - `build-output-archive` (`peeked: false`) — a jar under `build/` · `target/` · `out/` · `.gradle/` ·
+    `node_modules/` is DERIVED output; its contents come from the sources the gate already judges.
+    MEASURED on this engine's own repo: peeking them charged one gson class six times, once per fat jar
+    in `build/libs`, beside the single real finding — the checked-in `gradle/wrapper/gradle-wrapper.jar`,
+    which fetches over the network on every `./gradlew` and which no gate here had ever mentioned. The
+    test is on the path RELATIVE to the scan root, so pointing the scan into the build tree makes them
+    ordinary archives again; otherwise it would be a rule that silently exempts whatever the operator
+    most wanted looked at.
   - `multi-release-override` (`peeked: false`) — the base class of each is analyzed, the versioned copy
     is not, so an effect present only in the override is outside the verdict.
 

@@ -905,13 +905,22 @@ public final class Query {
             m.put("to", r.to());
             forbid.add(m);
         }
+        // ⟨0.29⟩ the PERMISSION form rides the witness too. `parsepolicy` exists so a consumer can diff
+        // what an engine made of a policy; a rule kind missing from the dump is a rule the diff cannot see.
+        List<Map<String, Object>> only = new ArrayList<>();
+        for (var r : AnalysisState.ctx().onlyRules) {
+            var m = new java.util.LinkedHashMap<String, Object>();
+            m.put("from", r.from());
+            m.put("to", new ArrayList<>(r.to()));
+            only.add(m);
+        }
         Comparator<Map<String, Object>> byJson = Comparator.comparing(JSON::toJson);
-        deny.sort(byJson); allow.sort(byJson); forbid.sort(byJson);
+        deny.sort(byJson); allow.sort(byJson); forbid.sort(byJson); only.sort(byJson);
         // LinkedHashMap, not Map.of: `Map.of` iterates in a per-JVM-run SALTED order, so the dump's TOP-LEVEL
         // key order varied between runs of the same engine on the same file. Nothing byte-compares it today
         // (PART 4 parses the JSON), but a witness whose output is not reproducible is a poor witness.
         var out = new java.util.LinkedHashMap<String, Object>();
-        out.put("deny", deny); out.put("allow", allow); out.put("forbid", forbid);
+        out.put("deny", deny); out.put("allow", allow); out.put("forbid", forbid); out.put("only", only);
         // ⟨0.24⟩ SPEC §3.1 — `parsepolicy` MUST NOT REFUSE: it reports the parse AND what it could not
         // honour, so the unrecognised token APPEARS here instead of being dropped. A diff that cannot tell
         // "dropped" (the pre-⟨0.24⟩ behaviour) from "rejected" (the gate's posture, §6.2) cannot pin this
@@ -3356,6 +3365,19 @@ public final class Query {
                     + "a report's `calls` graph is EFFECT-RELEVANT, so a crossing into a wholly pure unit "
                     + "is invisible in it and the rule would read green where a scan fails. Gate layering "
                     + "at scan time: candor <classes> --policy " + policyPath});
+        // ⟨0.29⟩ `only` IS AS UNANSWERABLE AS `forbid`, and for a STRICTER reason. Both match on NAME,
+        // which a report's effect-relevant wire cannot settle — but `forbid` asks whether ONE named
+        // crossing is present, while `only` asks whether EVERYTHING reached is on a list. A report that
+        // omits a crossing makes `forbid` read green; it makes `only` read green as a claim of
+        // COMPLETENESS, which is the stronger false statement.
+        for (PolicyRule.Only o : AnalysisState.ctx().onlyRules)
+            out.add(new String[]{o.src().trim(),
+                    "`" + o.src().trim() + "` is an `only` rule, which `gate --report` cannot evaluate — "
+                    + "it asks whether EVERYTHING a scope reaches is on a list, and a report carries an "
+                    + "effect-relevant call surface rather than the complete dependency graph a "
+                    + "NAME-matching rule needs. Answering it here would certify completeness from "
+                    + "evidence that is not complete. Gate permissions at scan time: candor <classes> "
+                    + "--policy " + policyPath});
         for (PolicyRule.Allow a : AnalysisState.ctx().allowRules)
             out.add(new String[]{a.src().trim(),
                     "`" + a.src().trim() + "` is an `allow` rule, which `gate --report` cannot evaluate — "
@@ -3563,6 +3585,7 @@ public final class Query {
         AnalysisState.ctx().denyRules.clear();
         AnalysisState.ctx().allowRules.clear();
         AnalysisState.ctx().forbidRules.clear();
+        AnalysisState.ctx().onlyRules.clear();   // ⟨0.29⟩ a stale permission rule would gate the NEXT policy
         // ⟨0.19⟩ `unknown-alias` expansion for an `Unknown[<alias>]` filter. Anchored to the POLICY file, as
         // `parsepolicy` anchors it — an alias is part of the policy's own vocabulary, not of the report. The
         // ⟨0.20⟩ `net-partner` list is deliberately NOT loaded: `netClass` is read verbatim from the report,
@@ -3637,6 +3660,13 @@ public final class Query {
         // because they never evaluate a `forbid`/`allow` rule in the first place.
         AnalysisState.ctx().forbidRules.clear();
         AnalysisState.ctx().allowRules.clear();
+        // ⟨0.29⟩ …AND THE PERMISSION FORM, which is the whole reason this line is separate from the two
+        // above rather than folded in. Disclosing a rule and then leaving it in the context is not a
+        // refusal: the gate below walks `gi.edges()` and would have EVALUATED `only` from a report, which
+        // is the §3.1 MUST this very block exists to enforce. Caught by noticing that the report route
+        // printed a zero-match disclosure for an `only` rule and none for a `forbid` — the disclosure was
+        // the symptom, the evaluation was the defect, and the two sites were one `clear()` apart.
+        AnalysisState.ctx().onlyRules.clear();
 
         // Load EVERY report the locator named, and refuse the whole run if ANY of them fails to load.
         // §3.1: "a report that cannot be parsed is corrupt input, not an effect-free package … A located

@@ -791,6 +791,7 @@ public class Candor {
         if (args[0].equals("parsepolicy")) {
             if (args.length < 2) { System.err.println("usage: candor parsepolicy <policy-file>"); System.exit(2); }
             ctx().denyRules.clear(); ctx().allowRules.clear(); ctx().forbidRules.clear();
+            ctx().onlyRules.clear();   // ⟨0.29⟩ same reason as its siblings — a stale rule gates the next policy
             // ⟨0.19⟩ config-aware: discover `.candor/config` (or CANDOR_CONFIG) anchored to the policy file so
             // an `Unknown[<alias>]` resolves via a checked-in `unknown-alias` — the dump reflects real gate
             // resolution (and the four-way parsepolicy differential pins the expansion).

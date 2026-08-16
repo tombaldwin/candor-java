@@ -8,6 +8,24 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⟨0.29⟩ `only <A> -> <B> [<C> …]` — the PERMISSION form (SPEC §6.2, AS-EFF-009).** A method in scope
+  `A` may reach `A` itself and the listed scopes, and nothing else. **`forbid` FAILS OPEN — a dependency
+  you forgot to prohibit is silently permitted — so "this package is a leaf" could only be spelled as an
+  enumeration of what it must not reach, a list that does not cover a package added tomorrow and says
+  nothing about it.** `only` fails SAFE. Found by pointing this engine's own architecture gate at candor,
+  where the natural `forbid io.poly.candor.model -> io.poly.candor` self-fires at 58 violations.
+  The walk STOPS at a permitted scope (a permitted callee's own dependencies answer to the rules about
+  IT); `A -> A` is implicit; zero-match is measured on `from`, since that is the scope the rule makes a
+  promise about; the rule kind counts toward the ⟨0.28⟩ zero-rule check, so an `only`-only policy is armed
+  rather than refused; and `parsepolicy` carries an `only` block, because a kind missing from the witness
+  is a kind a consumer's diff cannot see.
+- **⟨0.29⟩ …and a report route REFUSES it (exit 2), rather than evaluating it.** Stricter than `forbid`'s
+  case: `forbid` asks whether ONE named crossing is present, `only` asks whether EVERYTHING reached is on
+  a list, so a report that omits a crossing turns a green into a claim of COMPLETENESS. **Caught during
+  the port**: the gate discloses the unanswerable kinds and then REMOVES them from the evaluation, and the
+  new kind was disclosed without being removed — so the gate would have walked it anyway. The symptom was
+  a stray zero-match line the `forbid` path does not print; the defect was the evaluation, one `clear()`
+  away.
 - **⟨0.29⟩ ⚠ The report declares what the scan chose not to open, and READS what it can.**
   `analyzed.count` is a NUMERATOR; the file selection that produced it appeared nowhere, so a consumer
   could not tell whether the answer was to the question they asked. Measured on this engine 2026-08-15:

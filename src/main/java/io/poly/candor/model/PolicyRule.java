@@ -19,7 +19,8 @@ import java.util.SortedSet;
  * {@code LayerRule}). {@code values} on {@link Allow} is a {@link SortedSet} — the wire surface order is
  * encoded in the type, not just promised in prose.
  */
-public sealed interface PolicyRule permits PolicyRule.Deny, PolicyRule.Allow, PolicyRule.Forbid {
+public sealed interface PolicyRule permits PolicyRule.Deny, PolicyRule.Allow, PolicyRule.Forbid,
+        PolicyRule.Only {
 
     /**
      * {@code deny <Effect…> [Unknown[<class…>]] [Net[<dest…>]] [scope]} / {@code pure [scope]}.
@@ -51,4 +52,23 @@ public sealed interface PolicyRule permits PolicyRule.Deny, PolicyRule.Allow, Po
      * answers "how many" where the operator asked "which".
      */
     record Forbid(String from, String to, String src) implements PolicyRule {}
+
+    /**
+     * ⟨0.29⟩ {@code only <A> -> <B> [<C> …]} — the PERMISSION form (AS-EFF-009). A method in scope
+     * {@code from} may reach {@code from} itself and the scopes in {@code to}, and NOTHING else.
+     *
+     * <p><b>{@link Forbid} FAILS OPEN; this FAILS SAFE, and that is the whole reason it exists.</b> A
+     * dependency you forgot to prohibit is silently permitted, so "this package is a leaf" can only be
+     * spelled by enumerating what it must not reach — a list that does not cover a package added
+     * tomorrow, and nothing says so. That is the allowlist hazard candor refuses everywhere in the
+     * analysis, living in the POLICY LANGUAGE instead. Found by pointing candor's own architecture gate
+     * at candor: the natural {@code forbid io.poly.candor.model -> io.poly.candor} SELF-FIRES at 58
+     * violations, because a scope matches a contiguous run of segments and {@code model} sits under the
+     * prefix it is trying to protect itself from.
+     *
+     * <p>{@code to} is a LIST — every token after the arrow is a permitted scope — which is the one
+     * ergonomic difference from {@link Forbid}, and the reason an empty tail is DROPPED rather than read
+     * as "A may reach nothing".
+     */
+    record Only(String from, java.util.List<String> to, String src) implements PolicyRule {}
 }

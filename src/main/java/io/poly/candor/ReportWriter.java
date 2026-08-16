@@ -162,7 +162,15 @@ final class ReportWriter {
                             reasons,
                             ctx().hashOf.getOrDefault(fn, ""), // cross-jar join key (SPEC §2)
                             calls,
-                            fsKinds, hosts, cmds, paths, tables, netClass));
+                            fsKinds, hosts, cmds, paths, tables, netClass,
+                            // ⟨0.29⟩ SPEC §2 `incomplete` — the effects whose LOCATOR this unit could not
+                            // determine, TRANSITIVE (the same `literalFixpoint` the literal surfaces use,
+                            // so it travels the call graph exactly as the literals it qualifies do). The
+                            // engine has computed this all along and kept it internal; publishing it is
+                            // what lets a CHAINED consumer carry it, which §2's join clause requires.
+                            incompleteAcc.containsKey(fn)
+                                    ? new ArrayList<>(incompleteAcc.get(fn)) : List.<String>of(),
+                            false));   // not a synthetic ⟨0.23⟩ interface-union entry
                 });
         // ⟨0.23, gated⟩ the synthetic INTERFACE-UNION entries. Appended last so the ordinary entries above
         // are untouched; a no-op unless CANDOR_WORKSPACE_CHAIN is set.
@@ -495,7 +503,14 @@ final class ReportWriter {
                         inf.contains(Effect.EXEC) ? new ArrayList<>(cmds) : List.of(),
                         inf.contains(Effect.FS) ? new ArrayList<>(paths) : List.of(),
                         inf.contains(Effect.DB) ? new ArrayList<>(tables) : List.of(),
-                        netClass, true));
+                        netClass,
+                        // ⟨0.29⟩ A SYNTHETIC UNION ENTRY CARRIES NO `incomplete` OF ITS OWN. It publishes
+                        // the union over an interface's implementers so a chained consumer's dispatch
+                        // resolves; each implementer's OWN entry carries its own undetermined locators,
+                        // and asserting one here would be this entry claiming a fact about a body it is
+                        // not. Empty is the honest value, not a placeholder — the union widens `inferred`,
+                        // and the surfaces it cannot vouch for it already omits (see the `fs` note below).
+                        List.<String>of(), true));
             }
         }
         if (unions.isEmpty() && merged == 0) return;
@@ -569,6 +584,10 @@ final class ReportWriter {
                 wide.contains(Effect.FS) ? new ArrayList<>(pathsW) : real.paths(),
                 wide.contains(Effect.DB) ? new ArrayList<>(tablesW) : real.tables(),
                 hasNet ? new ArrayList<>(netW) : real.netClass(),
+                // ⟨0.29⟩ the real entry's own `incomplete` SURVIVES the merge. The union widens what the
+                // entry reaches; it cannot make a locator this body could not determine determinable, and
+                // dropping it here would be the merge quietly certifying what the body declared uncertain.
+                real.incomplete(),
                 real.interfaceUnion());
     }
 

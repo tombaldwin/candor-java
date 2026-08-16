@@ -59,7 +59,11 @@ class SchemaShapeTest {
     static {
         Set<String> all = new TreeSet<>(FN_REQUIRED);
         all.addAll(Set.of("calls", "fs", "hosts", "cmds", "paths", "tables",
-                "invisible", "unknownWhy", "unitKind", "netClass"));
+                // ⟨0.29⟩ `incomplete` — the effects whose LOCATOR a unit could not determine (SPEC §2).
+                // The fixture below gained `writesParam` to EXERCISE it: this pin passed the whole time
+                // the field was being added, because nothing in the fixture had an undetermined locator,
+                // and a schema pin that never sees a field is not pinning it.
+                "invisible", "unknownWhy", "unitKind", "netClass", "incomplete"));
         FN_ALLOWED = all;
     }
     /** --gate-json: { spec, ok, violations:[{rule, fn, effects, detail}] } — the SARIF reporter's input. */
@@ -114,6 +118,7 @@ class SchemaShapeTest {
                 static void spawns() { try { new ProcessBuilder("curl", "http://x").start(); } catch (Exception e) {} }
                 static void dyn() { try { Class.forName("X"); } catch (Exception e) {} }
                 static void caller() { reads(); spawns(); }
+                static void writesParam(String p) { try { java.nio.file.Files.write(java.nio.file.Path.of(p), new byte[0]); } catch (Exception e) {} }
             }
             """);
         Path out = scratch.resolve("cls");

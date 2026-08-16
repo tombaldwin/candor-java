@@ -8,6 +8,16 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⟨0.29⟩ ⚠ `excluded[].peeked` claimed a read the peek had not finished.** The rung already made
+  the flag an OUTCOME rather than a lookup on the exclusion class, and stopped one level short. The peek
+  reuses this engine's own entry point, so it produces its own ⟨0.21⟩ `unanalyzed` manifest — and
+  the peek read only `functions` and discarded it. An archive that OPENED and whose classes ASM could not analyze therefore published
+  `peeked: true` beside `outOfScope: []`, byte-identical to a clean peek, on ALL FOUR engines. The
+  ⟨0.26⟩ partial-manifest rule failing inside the rung built to enforce it, in the same field, twice.
+  The claim is withdrawn PER CLASS — a parse failure is a fact about one file — and an unread file that
+  cannot be attributed to a class withdraws the claim for all of them. SPEC §2, conformance PART 52,
+  calibrated in both directions: reverting the fix fails shape A, and publishing the SAFE value
+  unconditionally fails the control that notices the feature has been deleted.
 - **⟨0.29⟩ ⚠ `only` violations carry their OWN code, `AS-EFF-011`** — not `forbid`'s `AS-EFF-009`. A rule
   code is the handle a CI suppression, a dashboard link and an alert filter key on, and the two forms are
   opposite constructs: must-not-reach versus must-be-on-the-list, with opposite remedies. **The decisive

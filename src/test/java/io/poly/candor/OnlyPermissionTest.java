@@ -88,7 +88,11 @@ class OnlyPermissionTest {
         try {
             Run bad = runCli(cls.toString(), "--policy", policy("a.pol", "only app.M -> app.util").toString());
             assertEquals(1, bad.exit(), bad.stderr());
-            assertTrue(bad.out().contains("AS-EFF-009"), bad.out());
+            // ⟨0.29⟩ ITS OWN CODE, both halves: 011 present AND 009 absent. A rule code is what a CI
+            // suppression keys on, and a suppression written for a `forbid` crossing must not mute this.
+            assertTrue(bad.out().contains("AS-EFF-011"), bad.out());
+            assertFalse(bad.out().contains("AS-EFF-009"),
+                "an `only` violation must not also carry `forbid`'s code: " + bad.out());
             assertTrue(bad.out().contains("app.infra.I.dbRead"),
                 "the message must name what was reached, not just that something was: " + bad.out());
             assertTrue(bad.out().contains("only app.M -> app.util"),

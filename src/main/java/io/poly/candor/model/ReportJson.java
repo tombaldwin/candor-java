@@ -83,6 +83,38 @@ public final class ReportJson {
             }
             envelope.put("unanalyzed", un);
         }
+        // ⟨0.29⟩ THE SCOPE: what the scan chose not to OPEN, by class. ALWAYS emitted, `[]` included —
+        // ⟨0.27⟩ makes a zero-match a positive statement ("I looked and excluded nothing"), and ⟨0.26⟩
+        // makes an ABSENT key mean "this producer cannot answer", a different claim. That is the OPPOSITE
+        // rule from `coverage`/`unanalyzed` directly above, deliberately: for a LEDGER, empty and absent
+        // can mean the same thing; for a SCOPE they cannot.
+        List<Map<String, Object>> exc = new ArrayList<>();
+        for (Report.ExcludedClass c
+                : report.excluded() == null ? List.<Report.ExcludedClass>of() : report.excluded()) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("class", c.cls());
+            m.put("count", c.count());
+            m.put("peeked", c.peeked());
+            m.put("reason", c.reason());
+            exc.add(m);
+        }
+        envelope.put("excluded", exc);
+        // ⟨0.29⟩ …and what the PEEK found in them. OMITTED when null — no policy was configured, so nothing
+        // was asked and `[]` would be a claim. Present-and-empty means asked-and-clear, and it is a claim
+        // about the classes marked `peeked` above and only those.
+        if (report.outOfScope() != null) {
+            List<Map<String, Object>> oos = new ArrayList<>();
+            for (Report.OutOfScope f : report.outOfScope()) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("fn", f.fn());
+                m.put("path", f.path());
+                m.put("effects", f.effects());
+                m.put("class", f.cls());
+                m.put("reason", f.reason());
+                oos.add(m);
+            }
+            envelope.put("outOfScope", oos);
+        }
         List<Map<String, Object>> entries = new ArrayList<>();
         for (Effector e : report.functions()) entries.add(entry(e));
         envelope.put("functions", entries);

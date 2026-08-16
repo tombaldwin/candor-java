@@ -59,12 +59,24 @@ final class Loader {
         int[] skipped = {0};
         String[] firstErr = {null};
         try (Stream<Path> s = Files.walk(root)) {
-            for (Path p : (Iterable<Path>) s.filter(x -> x.toString().endsWith(".class"))::iterator) {
+            for (Path p : (Iterable<Path>) s::iterator) {
+                // ⟨0.29⟩ THE SCOPE — everything this walk passes over, recorded AT THE SKIP. Deriving it
+                // afterwards would be a SECOND WALK that could disagree with this one, and a block
+                // describing an exclusion that did not happen is a worse kind of wrong than saying
+                // nothing. The `.class` filter used to sit in the stream, where the walk could not see
+                // what it was dropping; it is a branch here for exactly that reason.
+                if (!p.toString().endsWith(".class")) {
+                    if (Files.isRegularFile(p)) recordUnopened(root, p);
+                    continue;
+                }
                 // A MULTI-RELEASE jar ships version-specific overrides under META-INF/versions/<N>/; analyse
                 // the BASE classes (the runtime picks the override; the base is the portable surface) and
                 // skip the versioned copies — they are duplicates of the same class, and the newest ones may
                 // be a bytecode version even a current ASM can't read.
-                if (p.toString().replace('\\', '/').contains("/META-INF/versions/")) continue;
+                if (p.toString().replace('\\', '/').contains("/META-INF/versions/")) {
+                    ctx().excluded.put(rel(root, p), "multi-release-override");
+                    continue;
+                }
                 // TOLERATE a class ASM can't parse (a future-major-version class, a corrupt entry): skip it
                 // and DISCLOSE the count, never ABORT the whole scan on one bad class (the old behaviour —
                 // one Java-25 entry in a multi-release jar threw IllegalArgumentException and killed the run).
@@ -86,6 +98,65 @@ final class Loader {
         if (skipped[0] > 0) {
             System.err.println("candor-java: skipped " + skipped[0] + " unparseable class file(s) — their effects are"
                 + " INVISIBLE, not analysed (e.g. " + firstErr[0] + "). A newer bytecode version may need an ASM bump.");
+        }
+    }
+
+    /** ⟨0.29⟩ A file the walk reached and did not open, filed under the class that says WHY.
+     *
+     *  <p>THIS ENGINE'S EXCLUSION IS NOT A SCOPE CHOICE LIKE THE OTHER THREE'S. candor-rust skips
+     *  `build.rs` because a build script is not the crate's runtime behaviour; candor-ts takes the
+     *  tsconfig program; candor-swift takes the SwiftPM targets. Each of those is a decision about
+     *  WHICH of the code it can read it should judge. candor-java reads BYTECODE, so a `.java` with no
+     *  compiled class is not a scope decision at all — it is closer to an operator error, "you pointed
+     *  me at 300 sources and 3 classes", and it gets its own reason and its own nudge rather than being
+     *  filed beside a deliberate skip.
+     *
+     *  <p>An ARCHIVE is the opposite: bytecode this engine reads perfectly well, under the scan root,
+     *  that a directory walk filters out because it is looking for `.class`. That one the PEEK reads.
+     *
+     *  <p>Everything else — a `.properties`, a `.png`, a shell script — is a language this engine has no
+     *  competence over, and is NOT recorded. That silence is deliberate and it matches the other three
+     *  arms, none of which enumerate the files they do not parse: what would be gained is a count, and
+     *  what would be lost is the bound on this block's size (candor-spec/FILE-SET-DESIGN.md §3, N3).
+     *  The shell script that runs `curl | sh` is a real hazard and it is NOT covered by this rung. */
+    private static void recordUnopened(Path root, Path p) {
+        String name = p.getFileName().toString();
+        String lower = name.toLowerCase(Locale.ROOT);
+        if (lower.endsWith(".jar") || lower.endsWith(".zip")) {
+            ctx().excluded.put(rel(root, p), "archive-under-the-scan-root");
+            ctx().archives.add(p);
+            return;
+        }
+        if (!(lower.endsWith(".java") || lower.endsWith(".kt")
+                || lower.endsWith(".scala") || lower.endsWith(".groovy"))) return;
+        // Deferred, NOT excluded yet: whether this source has a compiled class cannot be asked until
+        // there IS an analyzed set. Classified in Candor#classifySourceScope after the scan.
+        ctx().sourceFiles.add(rel(root, p) + "\0" + sourcePackage(p));
+    }
+
+    /** The `package a.b.c` declaration of a JVM source file, or "" — used ONLY to ask whether a compiled
+     *  class for this file exists, never to classify an effect. Read from the head of the file: a package
+     *  declaration that appears 200 lines in is not one. */
+    private static String sourcePackage(Path p) {
+        try (Stream<String> lines = Files.lines(p)) {
+            return lines.limit(80)
+                    .map(String::trim)
+                    .filter(l -> l.startsWith("package "))
+                    .findFirst()
+                    .map(l -> l.substring("package ".length()).replace(";", "").trim())
+                    .orElse("");
+        } catch (Exception e) {
+            return "";      // unreadable, or not text — the caller falls back to a name-only match
+        }
+    }
+
+    /** A scan-root-relative path for the disclosure. An absolute path in a report says where the CI
+     *  runner's checkout happened to live, which is noise to everyone reading it later. */
+    private static String rel(Path root, Path p) {
+        try {
+            return root.relativize(p).toString();
+        } catch (IllegalArgumentException e) {
+            return p.toString();    // different roots (a zip filesystem entry vs a disk path)
         }
     }
 

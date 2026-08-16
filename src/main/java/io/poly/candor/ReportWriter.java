@@ -199,6 +199,8 @@ final class ReportWriter {
                 coverage,
                 analyzed,
                 unanalyzed,
+                Candor.excludedClasses(),   // ⟨0.29⟩ THE SCOPE — always present, `[]` included
+                ctx().outOfScope,           // ⟨0.29⟩ THE PEEK — null (key omitted) when no policy was set
                 effectors);
         // "-" is the --json-stdout pipe form: emit the report JSON to stdout (pure — `| jq .` parses it)
         // rather than writing a file. The progress line stays on stderr so stdout carries ONLY the report.

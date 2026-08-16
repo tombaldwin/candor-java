@@ -8,6 +8,46 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⟨0.29⟩ ⚠ The report declares what the scan chose not to open, and READS what it can.**
+  `analyzed.count` is a NUMERATOR; the file selection that produced it appeared nowhere, so a consumer
+  could not tell whether the answer was to the question they asked. Measured on this engine 2026-08-15:
+  pointed at a REPO ROOT under `deny Exec` — exit 0, `no violations`, `analyzed {count: 3}` — over a tree
+  holding `src/com/x/Deploy.java` calling `Runtime.exec("curl … | sh")`, present and never compiled, so
+  no class existed and nothing said so. Two halves, per candor-spec/FILE-SET-DESIGN.md §5.2:
+  - `excluded` — one entry per class, with a count, a `peeked` flag and the engine's own reason. ALWAYS
+    emitted, `[]` included: ⟨0.27⟩ makes a zero-match a positive statement, and ⟨0.26⟩ makes an absent
+    key mean "this producer cannot answer". Counts, never file lists.
+  - `outOfScope` — THE PEEK. An effect the policy DENIES, found in a file the gate did not judge,
+    reported as its own kind. The verdict does not move: exit unchanged, `violations` untouched, the
+    function absent from `functions`. Policy-SCOPED (no policy ⇒ the key is absent, because nothing was
+    asked) and BOUNDED by the policy (`deny Net` says nothing about an `Exec` in a jar).
+
+  **THIS ENGINE'S EXCLUSION IS A DIFFERENT KIND, and the rung is shaped by it.** The other three arms
+  make a SCOPE decision among files they can read — a build script, a tsconfig program, a SwiftPM target
+  — and their peek reads what they skipped. candor-java reads BYTECODE. So:
+  - `source-without-class` (`peeked: false`) is not a scope decision at all; it is closer to an operator
+    error, and it gets a NUDGE — how many JVM sources have no compiled class, how many classes there
+    were, and what to scan instead — because "1 class from 300 sources" is a fact about how much of the
+    project the verdict is *not* about.
+  - `archive-under-the-scan-root` (`peeked: true`) is what the peek actually reads: a `.jar`/`.zip` under
+    the scan root is bytecode this engine reads perfectly well and that a `.class`-filtering walk never
+    opens. `build/libs/app.jar` beside `build/classes` is the ordinary shape.
+  - `multi-release-override` (`peeked: false`) — the base class of each is analyzed, the versioned copy
+    is not, so an effect present only in the override is outside the verdict.
+
+  A recursive `runScan` over the archive — `load()` already reads a jar, so the peek is this engine's own
+  entry point over a different file rather than a second pass, and "same classifier, different file set"
+  is true by construction rather than by review. It runs ON A THREAD because `runScan` calls
+  `resetState()` and the analysis context is thread-local: peeking on the calling thread would destroy
+  the analysis whose report it is about to join. A qual the gate ALREADY judged is never reported as
+  out-of-scope — "the gate did not judge this" is a claim, and a repo root holding both `build/classes`
+  and `build/libs/app.jar` holds the same code twice. A policy this engine REFUSES leaves the key ABSENT
+  rather than `[]`: §3.1's answerability binds every producer that reads the policy, not the gate alone.
+- **⟨0.29⟩ `peeked` on every `excluded` entry, family-wide.** An empty `outOfScope` says "I read the
+  excluded files and none held a denied effect", and it may claim that only about the classes it actually
+  read. candor-rust and candor-ts answer `true` throughout (their peek is an exact complement of their
+  scan); this engine and candor-swift do not, and without the flag their `[]` would certify files nobody
+  opened — the ⟨0.26⟩ partial-manifest failure, where a partial answer is worse than an absent one.
 - **⚠ stdout could truncate in TOTAL SILENCE, and `--agents` was the sharp case.** `PrintStream` swallows
   `IOException` — documented behaviour — and there were **zero `checkError` calls in `src/main`**.
   MEASURED inside Linux against a 4096-byte pipe (`F_SETPIPE_SZ`) whose reader closes mid-write:

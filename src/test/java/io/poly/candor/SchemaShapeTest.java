@@ -41,8 +41,13 @@ class SchemaShapeTest {
     // ⟨0.27⟩ `resolves` joins the contract field set DELIBERATELY. This pin is why an envelope field cannot
     // arrive by accident: the assertion below fails on any undeclared key, so adding one is a decision
     // recorded in two places at once (the spec and this list) rather than a diff nobody reads.
+    // ⟨0.29⟩ `excluded` joined the set, and it belongs with the ALWAYS-emitted keys rather than the
+    // optional ones: `[]` is the positive statement "I looked and excluded nothing", and an absent key
+    // would mean "this producer cannot answer" (⟨0.26⟩). This pin failing on the rung's first build is the
+    // row doing its job. `outOfScope` is NOT here — this fixture configures no policy, so nothing was
+    // asked and the key is correctly absent.
     private static final Set<String> TOP_KEYS =
-            Set.of("candor", "packages", "analyzed", "resolves", "functions");
+            Set.of("candor", "packages", "analyzed", "resolves", "excluded", "functions");
     private static final Set<String> PROVENANCE_KEYS = Set.of("version", "toolchain", "spec");
     /** Every key a functions[] entry may carry (the Effector surface). Optional members (calls/fs/
      *  hosts/cmds/paths/tables/invisible/unknownWhy/unitKind) are omitted when empty — allowed, never

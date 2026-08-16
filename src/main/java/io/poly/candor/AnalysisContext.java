@@ -66,6 +66,28 @@ final class AnalysisContext {
     // absent NOT because pure but because never seen; carried into the report + the gate verdict (a gate over
     // skipped classes must fail closed, never green). LinkedHashMap: disclosure order = discovery order.
     final java.util.LinkedHashMap<String, String> unanalyzed = new java.util.LinkedHashMap<>();
+    // ⟨0.29⟩ THE SCOPE (candor-spec/FILE-SET-DESIGN.md): what the walk chose not to OPEN — as opposed to
+    // `unanalyzed` above, which is what it opened and could not read. A consumer cannot tell those two
+    // apart from `analyzed.count` alone, because the denominator is this engine's file selector and the
+    // selector is invisible. Recorded AT THE SKIP (Loader#collectClasses) plus the source sweep, which
+    // cannot run earlier because "has this source got a compiled class?" needs the analyzed set. path →
+    // class token; disclosed as a COUNT per class, never a file list.
+    final java.util.LinkedHashMap<String, String> excluded = new java.util.LinkedHashMap<>();
+    // ⟨0.29⟩ the ARCHIVES the walk passed over. A directory walk filters `.class`, so a `.jar` under the
+    // scan root (`build/libs/app.jar`, a vendored `libs/*.jar`) is bytecode this engine reads perfectly
+    // well and never opened. THE PEEK's target: `load()` already reads a jar, so peeking one is this
+    // engine's own entry point over a different file rather than a second pass.
+    final java.util.List<java.nio.file.Path> archives = new java.util.ArrayList<>();
+    // ⟨0.29⟩ JVM-language SOURCE seen during the walk, as `path\0package` (package empty when undeclared).
+    // The java arm of the ⟨0.29⟩ measurement is a source whose class was never built: candor-java reads
+    // BYTECODE, so such a file is invisible to it and to the peek alike.
+    final java.util.List<String> sourceFiles = new java.util.ArrayList<>();
+    // ⟨0.29⟩ what this scan was pointed AT — so the scope block and the peek's findings can name a file
+    // the way the operator does. An absolute path in a report says where the CI runner's checkout was.
+    java.nio.file.Path scanRoot;
+    // ⟨0.29⟩ what THE PEEK found: an effect the policy DENIES, in a file the gate did not judge. Its own
+    // kind, never a violation — it moves no verdict. Null when no policy was configured (nothing asked).
+    java.util.List<Report.OutOfScope> outOfScope = null;
     final Set<String> entryPoints = new HashSet<>();               // framework-invoked methods
     final Set<String> projectClasses = new HashSet<>();
     final Set<String> repoTypes = new HashSet<>();                 // Spring Data repository interfaces (internal names)

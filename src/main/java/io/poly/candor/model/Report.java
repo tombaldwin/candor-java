@@ -13,7 +13,31 @@ import java.util.List;
  * fully-covered report stays byte-identical to a pre-⟨0.15⟩ one.
  */
 public record Report(Provenance candor, List<String> packages, Coverage coverage,
-                     Analyzed analyzed, List<UnanalyzedUnit> unanalyzed, List<Effector> functions) {
+                     Analyzed analyzed, List<UnanalyzedUnit> unanalyzed,
+                     List<ExcludedClass> excluded, List<OutOfScope> outOfScope,
+                     List<Effector> functions) {
+    /** ⟨0.29⟩ THE SCOPE (candor-spec/FILE-SET-DESIGN.md): one class of file this scan chose not to OPEN,
+     *  with a count and the engine's own reason. {@code unanalyzed} above names what was opened and could
+     *  not be read; this names what was never opened at all, and a consumer could not tell the two apart,
+     *  because {@code analyzed.count} is a numerator whose denominator — the file selector — is invisible.
+     *
+     *  <p>COUNTS, NEVER FILE LISTS: an excluded set that can hold a build tree is unbounded, and a gate
+     *  that prints thousands of paths is one people scroll past.
+     *
+     *  <p>{@code peeked} is the load-bearing half of the pair with {@link OutOfScope}. An empty
+     *  {@code outOfScope} says "I read the excluded files and none held an effect this policy denies" — a
+     *  claim it may make only about the classes it actually read. candor-java reads BYTECODE, so it can
+     *  peek an ARCHIVE and cannot peek a {@code .java} that was never compiled; without this flag the pair
+     *  would answer {@code []} over files nobody opened, which is the ⟨0.26⟩ partial-manifest failure
+     *  exactly — a partial answer being worse than an absent one. */
+    public record ExcludedClass(String cls, int count, boolean peeked, String reason) {}
+    /** ⟨0.29⟩ AN EFFECT FOUND IN A FILE THE GATE DID NOT JUDGE.
+     *
+     *  <p>Its own kind, beside {@code functions} and never inside it: folding these into the gate would
+     *  move verdicts and make an exit code depend on a file the gate declined to judge, which is the
+     *  opposite of what this rung promises. Emitted only when a policy is configured, and only for effects
+     *  that policy DENIES — that bound is what keeps it from becoming the noise it would otherwise be. */
+    public record OutOfScope(String fn, String path, List<String> effects, String cls, String reason) {}
     /** ⟨0.21⟩ the analyzed-universe summary (COMPLETENESS-MANIFEST-DESIGN.md Gap 1): {@code count} = the
      *  functions candor formed an effect judgment for (effectful + pure), so a consumer reading the bare
      *  envelope computes {@code count − |functions|} = the pure count and distinguishes analyzed-pure from

@@ -139,7 +139,11 @@ class CoverageEnvelopeTest {
         JsonObject root = JsonParser.parseString(Files.readString(report)).getAsJsonObject();
         // <0.27> `resolves` is unconditional -- a producer declares what it COMPUTES, regardless of what
         // any given scan found -- unlike `coverage`, which is what this test is actually about.
-        assertEquals(Set.of("candor", "packages", "analyzed", "resolves", "functions"), new TreeSet<>(root.keySet()),
+        // ⟨0.29⟩ `excluded` is unconditional for the same reason `resolves` is, and for one more: for a
+        // LEDGER (which is what `coverage` is) empty and absent can mean the same thing, and for a SCOPE
+        // they cannot — `[]` says "I looked and excluded nothing", absence says "I cannot answer".
+        assertEquals(Set.of("candor", "packages", "analyzed", "resolves", "excluded", "functions"),
+            new TreeSet<>(root.keySet()),
             "a fully-covered report has NO coverage key; ⟨0.21⟩ `analyzed` (completeness manifest) is always present");
     }
 

@@ -235,6 +235,7 @@ public class Candor {
         // single-target path; both are idempotent putAll/addAll into a just-created context.
         ctx().unknownAliases.putAll(cfg.unknownAliases());
         ctx().netPartners.addAll(cfg.netPartners());
+        ctx().scanRoot = target;   // ⟨0.29⟩ so the scope block and the peek can name files as the operator does
         List<ClassNode> classes = load(target);
         ctx().ALL = classes;
         for (ClassNode cn : classes) {
@@ -322,7 +323,202 @@ public class Candor {
             }
         }
 
+        classifySourceScope();
         return fixpoint();
+    }
+
+    /** ⟨0.29⟩ WHICH JVM SOURCES UNDER THE SCAN ROOT HAVE NO COMPILED CLASS (candor-spec/FILE-SET-DESIGN.md).
+     *
+     *  <p>Runs here rather than in the walk because the question cannot be asked before there is an
+     *  analyzed set. Called at the end of every {@link #runScan}, so the {@code --parallel} arm and a
+     *  direct test call disclose the same scope as the single-target path — a per-arm disclosure is how
+     *  three of four arms end up correct.
+     *
+     *  <p>THE JAVA ARM OF THE ⟨0.29⟩ MEASUREMENT. Pointed at a REPO ROOT under {@code deny Exec}, this
+     *  engine reported `no violations`, exit 0, `analyzed {count: 3}` over a tree holding
+     *  {@code src/com/x/Deploy.java} calling {@code Runtime.exec("curl … | sh")} — present, never
+     *  compiled, so no class exists and nothing said so.
+     *
+     *  <p>UNCERTAINTY DISCLOSES. A source is called compiled only on a POSITIVE match against the analyzed
+     *  class names, so a matching rule this misses over-reports the exclusion ("I did not read this")
+     *  rather than under-reporting it. That is the denylist direction the family requires: an allowlist's
+     *  omissions go silent, and a silent omission here is the claim that a file was judged when it was
+     *  not. */
+    static void classifySourceScope() {
+        if (ctx().sourceFiles.isEmpty()) return;
+        java.util.Set<String> compiled = new HashSet<>();
+        for (String internal : ctx().projectClasses) {
+            String dotted = internal.replace('/', '.');
+            int nested = dotted.indexOf('$');   // an inner class is compiled FROM its outer's source file
+            compiled.add(nested < 0 ? dotted : dotted.substring(0, nested));
+        }
+        for (String rec : ctx().sourceFiles) {
+            int nul = rec.indexOf('\0');
+            String path = rec.substring(0, nul).replace('\\', '/'), pkg = rec.substring(nul + 1);
+            String file = path.substring(path.lastIndexOf('/') + 1);
+            int dot = file.lastIndexOf('.');
+            String stem = dot < 0 ? file : file.substring(0, dot);
+            String qual = pkg.isEmpty() ? stem : pkg + "." + stem;
+            // `FooKt` is Kotlin's file class for top-level declarations — a `.kt` whose only content is
+            // top-level functions compiles to that name and to no class called `Foo` at all. Without this
+            // arm every such file would be disclosed as never-compiled, and a disclosure that fires on
+            // ordinary Kotlin is one an operator learns to ignore.
+            boolean built = compiled.contains(qual) || compiled.contains(qual + "Kt");
+            if (!built && pkg.isEmpty()) {
+                // No package declaration read (an unreadable head, or the default package): fall back to
+                // the simple name anywhere. Widens what counts as compiled, which is the direction that
+                // does not invent an exclusion.
+                String suffix = "." + stem;
+                built = compiled.stream().anyMatch(c -> c.equals(stem) || c.endsWith(suffix));
+            }
+            if (!built) ctx().excluded.put(path, "source-without-class");
+        }
+    }
+
+    /** ⟨0.29⟩ WHY EACH EXCLUSION CLASS EXISTS, in the engine's own words, and whether THE PEEK reads it.
+     *
+     *  <p>The reason is a VALUE, not a presence: a consumer reads it to decide whether the exclusion
+     *  matches the question they are asking, so conformance asserts on what it SAYS. Paraphrasing the
+     *  rationale into something vaguer would defeat the block. */
+    private static final Map<String, String[]> EXCLUDED_REASON = Map.of(
+            "source-without-class", new String[]{"false",
+                "candor-java reads BYTECODE, and these JVM sources have no compiled class under the "
+                + "scanned path — so nothing in them was judged, and the peek cannot read them either. "
+                + "This is not a scope decision like a build script's: it usually means the scan was "
+                + "pointed at a repo root instead of compiled output. Build the project and scan "
+                + "target/classes · build/classes/java/main, or a built .jar."},
+            "archive-under-the-scan-root", new String[]{"true",
+                "a `.jar`/`.zip` under the scan root is bytecode this engine reads perfectly well, and a "
+                + "directory walk looking for `.class` files never opens it. The gate did not judge its "
+                + "contents; the peek reads them."},
+            "multi-release-override", new String[]{"false",
+                "a multi-release jar ships version-specific overrides under META-INF/versions/<N>/. The "
+                + "BASE class of each is analyzed (the portable surface), and the override is not — so an "
+                + "effect present ONLY in a versioned copy is outside this verdict."});
+
+    /** ⟨0.29⟩ THE PEEK — read the files this scan deliberately did NOT judge, and say so when they hold an
+     *  effect the policy DENIES (candor-spec/FILE-SET-DESIGN.md §5.2, rung 2 of the ladder).
+     *
+     *  <p>THE VERDICT DOES NOT MOVE. The findings ride the report as {@code outOfScope}, their own kind,
+     *  never {@code violations}: a file the gate declined to judge must not decide an exit code, and
+     *  folding these in would make one depend on exactly that.
+     *
+     *  <p>A RECURSIVE {@link #runScan} over the archive, not a hand-written second pass. {@code load()}
+     *  already reads a jar — it is the same entry point, the same ASM parse, the same classifier, over a
+     *  different file. That identity is the design constraint and not a convenience: a bespoke walk would
+     *  be a SECOND OPINION, and a drifted second opinion reported as a warning is worse than no warning,
+     *  because the reader cannot tell a real finding from two code paths disagreeing.
+     *
+     *  <p>ON A THREAD, because {@code runScan} calls {@code resetState()} and {@link AnalysisState#ctx()}
+     *  is thread-local: peeking on the calling thread would destroy the analysis whose report this is
+     *  about to join. The thread is this engine's existing isolation mechanism — {@code --parallel} scans
+     *  N targets the same way — so the peek needs no new one.
+     *
+     *  <p>POLICY-SCOPED AND POLICY-BOUNDED, which is what keeps it quiet: no policy ⇒ no peek and NO KEY,
+     *  because nothing was asked and {@code []} would be a claim; with one, only effects that policy
+     *  DENIES are reported, so the noise floor is "things you have already said you care about" rather
+     *  than "everything in the jars under your repo".
+     *
+     *  <p>AND NEVER A FUNCTION THE GATE ALREADY JUDGED. A repo root commonly holds both
+     *  {@code build/classes} and {@code build/libs/app.jar} — the same code twice — so without this filter
+     *  the peek would report every effect in the project as out-of-scope while the gate was judging it.
+     *  "The gate did not judge this" is a claim, and it is false for any qual already in the analyzed set. */
+    static void peekExcluded(String policyPath) {
+        if (policyPath == null || policyPath.isEmpty()) return;   // nothing asked, so nothing claimed
+        List<Report.OutOfScope> found = new ArrayList<>();
+        // ANSWERED, not "a policy was configured". A policy this engine REFUSES — unreadable, or naming a
+        // token it does not know — is a policy the gate evaluates nothing under, and `outOfScope: []`
+        // beside a refusal would certify a look that never happened. §3.1's answerability MUST binds every
+        // producer reading the policy, not the gate alone, so the key stays ABSENT unless the parse stood.
+        boolean[] answered = {false};
+        List<Path> archives = List.copyOf(ctx().archives);
+        Set<String> judged = Set.copyOf(ctx().edges.keySet());
+        Path root = ctx().scanRoot;
+        // The peek's own stderr is DISCARDED for its duration. It parses the policy (to learn what is
+        // denied) and scans jars, and both are chatty — an ignored-policy-line warning printed once by the
+        // peek and again by the gate reads as two problems, and a jar's unparseable-class notice is about
+        // a file set the operator did not ask about. Restored in the finally, before any gate output.
+        PrintStream saved = System.err;
+        try {
+            System.setErr(new PrintStream(java.io.OutputStream.nullOutputStream()));
+            Thread t = new Thread(() -> {
+                // THE SAME PARSER THE GATE USES, over the same bytes — one extra read, not a second
+                // interpretation of the grammar. It runs on this thread because `parsePolicy` fills the
+                // THREAD-LOCAL ctx().denyRules, and a parse on the main thread would leave the gate's own
+                // parse appending to a list that already held these rules.
+                if (!Policy.parsePolicy(policyPath)) return;   // unreadable/erroring — the GATE's refusal to make
+                answered[0] = true;
+                Set<String> denied = new TreeSet<>();
+                for (PolicyRule.Deny d : ctx().denyRules) denied.addAll(d.effects().toNames());
+                if (denied.isEmpty()) return;   // `pure`/allow-only: nothing named, so nothing to look for
+                for (Path jar : archives) {
+                    Map<String, EffectSet> peeked;
+                    try {
+                        // Read BEFORE runScan's resetState wipes this thread's context: `denied` is already
+                        // a local, which is the whole reason it is one.
+                        peeked = runScan(jar, Config.empty());
+                    } catch (Throwable e) {
+                        // A PEEK THAT CANNOT RUN MUST NOT FAIL THE GATE — it is advisory by construction,
+                        // and turning an unreadable jar into a red gate would make adding a policy, the
+                        // safest thing an operator can do, the thing that breaks their build.
+                        continue;
+                    }
+                    String where = root == null ? jar.toString() : relativeTo(root, jar);
+                    for (var e : new java.util.TreeMap<>(peeked).entrySet()) {
+                        if (judged.contains(e.getKey())) continue;   // the gate DID judge this one
+                        List<String> hits = e.getValue().toNames().stream().filter(denied::contains).toList();
+                        if (hits.isEmpty()) continue;
+                        found.add(new Report.OutOfScope(e.getKey(), where, hits,
+                                "archive-under-the-scan-root",
+                                "OUTSIDE this scan's scope (archive-under-the-scan-root) — the gate did "
+                                + "NOT judge it. The effect is real; the verdict does not account for it."));
+                    }
+                }
+            }, "candor-peek");
+            t.start();
+            t.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            System.setErr(saved);
+        }
+        if (!answered[0]) return;   // the policy did not stand — see `answered`
+        ctx().outOfScope = found;
+        // SAY IT ON STDERR, ABOVE THE VERDICT. The report block is for machines; an operator reading
+        // `no violations` needs to know in the same breath that a file this scan did not judge holds the
+        // effect they denied. A caveat printed below a green verdict is a caveat nobody reaches.
+        for (Report.OutOfScope f : found) {
+            System.err.println("candor-java: ⚠ " + f.fn() + " performs " + String.join("+", f.effects())
+                    + " — OUTSIDE this scan's scope (" + f.cls() + "), so the gate did NOT judge it.");
+            System.err.println("             " + f.path());
+        }
+        if (!found.isEmpty()) {
+            System.err.println("             The verdict below does not account for "
+                    + (found.size() == 1 ? "it." : "these " + found.size() + "."));
+        }
+    }
+
+    /** A scan-root-relative path for a disclosure — an absolute path names the CI runner's checkout. */
+    private static String relativeTo(Path root, Path p) {
+        try {
+            return root.relativize(p).toString();
+        } catch (IllegalArgumentException e) {
+            return p.toString();
+        }
+    }
+
+    /** ⟨0.29⟩ The scope block for the report: one entry per class, with its count and reason. ALWAYS
+     *  returns a list — `[]` is the positive statement "I looked and excluded nothing" (⟨0.27⟩), and an
+     *  absent key would mean "this producer cannot answer" (⟨0.26⟩). */
+    static List<Report.ExcludedClass> excludedClasses() {
+        Map<String, Integer> byClass = new java.util.TreeMap<>();
+        for (String cls : ctx().excluded.values()) byClass.merge(cls, 1, Integer::sum);
+        List<Report.ExcludedClass> out = new ArrayList<>();
+        for (var e : byClass.entrySet()) {
+            String[] r = EXCLUDED_REASON.getOrDefault(e.getKey(), new String[]{"false", "excluded (" + e.getKey() + ")"});
+            out.add(new Report.ExcludedClass(e.getKey(), e.getValue(), Boolean.parseBoolean(r[0]), r[1]));
+        }
+        return out;
     }
 
     /// Set by any site that has ALREADY reported a truncated stdout, so the shutdown hook below does not
@@ -993,6 +1189,27 @@ public class Candor {
             System.err.println("        no build yet? run `mvn -q compile` or `./gradlew classes` first.");
             System.exit(2);
         }
+
+        // ⟨0.29⟩ THE NUDGE, and it is this engine's whole answer for its own exclusion kind. The other
+        // three arms exclude by a SCOPE decision — a build script, a tsconfig program, a SwiftPM target —
+        // and the peek reads what they skipped. candor-java reads BYTECODE, so a `.java` with no compiled
+        // class is not a scope decision and cannot be peeked at all; it is closer to an operator error,
+        // and the honest response is to say plainly how much of the tree the verdict is NOT about. The
+        // report carries the same fact as an `excluded` class with `peeked: false`, so an empty
+        // `outOfScope` cannot be misread as "and I checked those too".
+        long uncompiled = ctx().excluded.values().stream().filter("source-without-class"::equals).count();
+        if (uncompiled > 0) {
+            System.err.println("candor-java: " + uncompiled + " JVM source file(s) under " + args[0]
+                    + " have no compiled class — candor reads BYTECODE, so nothing in them was judged.");
+            System.err.println("             " + ctx().ALL.size() + " class(es) were. If that ratio is a surprise,"
+                    + " this scan is answering about a fraction of the project:");
+            System.err.println("             build it and scan target/classes · build/classes/java/main, or a built .jar.");
+        }
+        // ⟨0.29⟩ THE PEEK, before the report is serialised — see peekExcluded. Placed HERE and not in the
+        // gate block below because the gate runs AFTER the report is written: computing it there would put
+        // the finding on stderr and leave it out of the artifact, which is the split ⟨0.26⟩ calls worse
+        // than saying nothing.
+        peekExcluded(policyPath);
 
         // JSON output is orthogonal — write first so `--json` can snapshot a baseline. The report needs
         // the all-classes ClassConformance; compute it once here so the gate below can reuse it rather

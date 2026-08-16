@@ -8,6 +8,21 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ stdout could truncate in TOTAL SILENCE, and `--agents` was the sharp case.** `PrintStream` swallows
+  `IOException` — documented behaviour — and there were **zero `checkError` calls in `src/main`**.
+  MEASURED inside Linux against a 4096-byte pipe (`F_SETPIPE_SZ`) whose reader closes mid-write:
+  candor-java exited 0 with an **empty stderr**, while candor-ts on the identical setup reported
+  *"--agents output was cut short at 4096 of 24110 bytes"*. An agent piping the contract into its context
+  read a fraction of its own instructions with nothing to distinguish that from the whole document.
+  (macOS never reproduced it — its pipe buffers grow past the 20 KB payload — which is why a local check
+  said the path was fine.)
+  ONE check at exit rather than 148 at the call sites: `PrintStream`'s error flag LATCHES, so a shutdown
+  hook catches a failed write anywhere in the run, and guarding call sites individually is how 147 of
+  them would have stayed unguarded. `--agents` keeps its own more specific message and suppresses the
+  generic one. **Exit 0 is deliberate** — `candor-java … | head` must not be a failure; the reader
+  leaving is not our error, but the truncation has to be stated. Verified to fire on a bulk scan report
+  into a closing pipe and to stay silent on the same scan to a normal sink.
+
 
 - **The self-gate now holds BOTH halves of the product.** `.candor/policy` gains ten AS-EFF-009
   `forbid` rules — model may not reach back into the engine, `verify` (the dynamic oracle) may not

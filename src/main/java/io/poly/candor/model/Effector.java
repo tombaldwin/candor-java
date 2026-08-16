@@ -37,6 +37,17 @@ public record Effector(
         List<String> paths,
         List<String> tables,
         List<String> netClass,
+        /** ⟨0.29⟩ SPEC §2 `incomplete` — the effects whose LOCATOR this unit could not determine (its own
+         *  `Fs` write whose path is a parameter, its own exec whose command is computed). Omitted when
+         *  empty, so a scan that determined everything stays byte-identical to a pre-rung report.
+         *
+         *  <p>DISTINCT FROM an empty {@code paths}: absent `paths` is overloaded between "reaches no path"
+         *  and "reaches a path I could not see", and this field is the only thing that separates them. It
+         *  is what §2's chained-join clause requires a consumer to carry — "a join that carries the effect
+         *  and drops `incomplete` lets a benign literal in the consumer certify what the dependency
+         *  declared uncertifiable". This engine computed it internally and never published it, so a
+         *  consumer chaining its reports had nothing to carry. */
+        List<String> incomplete,
         boolean interfaceUnion) {
 
     /** The pre-⟨0.23⟩ arity: an ordinary entry, never a synthetic {@code interfaceUnion} union. Keeps the
@@ -47,7 +58,8 @@ public record Effector(
             List<String> calls, List<String> fs, List<String> hosts, List<String> cmds,
             List<String> paths, List<String> tables, List<String> netClass) {
         this(fn, loc, inferred, invisible, direct, declared, undeclared, overdeclared, entryPoint,
-                unresolved, kind, unknownWhy, hash, calls, fs, hosts, cmds, paths, tables, netClass, false);
+                unresolved, kind, unknownWhy, hash, calls, fs, hosts, cmds, paths, tables, netClass,
+                List.of(), false);
     }
 
     /**
@@ -71,5 +83,6 @@ public record Effector(
         paths = List.copyOf(paths);
         tables = List.copyOf(tables);
         netClass = List.copyOf(netClass);
+        incomplete = List.copyOf(incomplete);
     }
 }

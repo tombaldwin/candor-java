@@ -4250,6 +4250,14 @@ public class Candor {
         if (!d.tables.isEmpty()) c.tablesDirect.computeIfAbsent(callerId, k -> new TreeSet<>()).addAll(d.tables);
         if (d.netClass.contains("unknown-host"))
             c.surfaceIncomplete.computeIfAbsent(callerId, k -> new TreeSet<>()).add("Net");
+        // ⟨0.29⟩ …AND EVERY OTHER EFFECT THE DEPENDENCY COULD NOT LOCATE. `Net` has had its wire form
+        // since ⟨0.20⟩ (`netClass ∋ unknown-host`, the line above); `Fs`/`Exec`/`Db` had none, so the
+        // join copied a dependency's paths and dropped its "I could not see where". Measured: a consumer
+        // writing ONE allowed literal beside a call into a dep whose path is a runtime value certified
+        // clean under `allow Fs <literal>`, where candor-rust — which has published `incomplete` all
+        // along — charges AS-EFF-008 on the same shape.
+        for (String eff : d.incomplete)
+            c.surfaceIncomplete.computeIfAbsent(callerId, k -> new TreeSet<>()).add(eff);
         // The REASON CLASS travels with the Unknown. §2's transitive rule already carries the effect; the
         // class has to ride with it or a reason-scoped gate silently degrades to "some Unknown, cause
         // unknown" exactly at the boundary. Only meaningful when the dep actually contributed an Unknown —

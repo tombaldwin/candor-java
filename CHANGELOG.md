@@ -8,6 +8,18 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ ⟨0.29⟩ SPEC §2 `incomplete` — the effects whose LOCATOR a unit could not determine, now PUBLISHED
+  and CHAINED.** This engine computed the fact (`surfaceIncomplete`, transitive through the same
+  `literalFixpoint` the literal surfaces use) and kept it internal, so a consumer chaining its reports had
+  nothing to carry. MEASURED, and it is a false all-clear rather than a wire nicety: a dependency whose
+  `Fs` path is a runtime value published nothing to say so, and a consumer that ALSO wrote ONE allowed
+  literal joined `paths: ["/tmp/lit"]` with no marker — `allow Fs /tmp/lit` answered **`no violations`**
+  where candor-rust charges AS-EFF-008 on identical code. An absent `paths` is overloaded between "reaches
+  no path" and "reaches a path I could not see"; this field is the only thing separating them. `Net` was
+  already covered — ⟨0.20⟩ gave it a wire form (`netClass ∋ unknown-host`) — and `Fs`/`Exec`/`Db` had
+  none. Emitted on the entry, read on a chained dep (`DepFn#incomplete`), applied at `inheritDepFn`, and
+  pinned four-way by conformance PART 50. A synthetic ⟨0.23⟩ union entry carries none of its own, and a
+  merge preserves the real entry's.
 - **⟨0.29⟩ `only <A> -> <B> [<C> …]` — the PERMISSION form (SPEC §6.2, AS-EFF-009).** A method in scope
   `A` may reach `A` itself and the listed scopes, and nothing else. **`forbid` FAILS OPEN — a dependency
   you forgot to prohibit is silently permitted — so "this package is a leaf" could only be spelled as an

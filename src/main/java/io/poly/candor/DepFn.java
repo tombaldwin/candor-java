@@ -16,6 +16,15 @@ final class DepFn {
     // resolved hosts flow across (above) but that ALSO reached a masked/runtime host must taint the consumer
     // fail-closed — its unresolved host never appears in `hosts`, so without this the consumer under-reports.
     List<String> netClass = new ArrayList<>();
+    /// ⟨0.29⟩ SPEC §2 `incomplete` — the effects whose LOCATOR the dependency could not determine. §2's
+    /// chained-join clause names it in the same breath as the four literal surfaces above: "a join that
+    /// carries the effect and drops `incomplete` lets a benign literal in the consumer certify what the
+    /// dependency declared uncertifiable". MEASURED before this field existed: a dep whose `Fs` path is a
+    /// runtime value published nothing to say so, so a consumer that ALSO wrote one allowed literal
+    /// joined `paths: ['/tmp/lit']` with no marker and `allow Fs /tmp/lit` answered `no violations` —
+    /// a false all-clear on a configured gate, one package boundary along. `Net` already had its wire
+    /// form in `netClass ∋ unknown-host`; the other three effects had none.
+    List<String> incomplete = new ArrayList<>();
     /// ⟨0.19⟩ the dep's own `unknownWhy` tags. Without these an inherited `Unknown` reaches the consumer
     /// with NO reason class, so it classifies as bare `unresolved` and a reason-scoped gate —
     /// `deny Net Unknown[reflect]` — cannot bite across a scan boundary. Measured: the gate exits 1 on the
@@ -70,6 +79,7 @@ final class DepFn {
         addAllMissing(paths, other.paths);
         addAllMissing(tables, other.tables);
         addAllMissing(netClass, other.netClass);
+        addAllMissing(incomplete, other.incomplete);
         addAllMissing(unknownWhy, other.unknownWhy);
         // STALE ONLY IF EVERY CONTRIBUTOR WAS. This flag decides how a synthesized reason is SPELLED
         // (`dep-stale:<pkg>` vs `dep:<hash>`; both project to `unresolved`, so no gate turns on it), and

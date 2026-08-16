@@ -60,7 +60,11 @@ public final class ReportJson {
         // not determine it", and a consumer cannot read the omission. candor-java resolves `fs` read/write
         // kinds, so it says so. A producer MUST NOT list a surface it does not compute — that turns
         // "unimplemented" into a false "undetermined", the inversion the field exists to prevent.
-        envelope.put("resolves", java.util.List.of("fs"));
+        // ⟨0.29⟩ `incomplete` joins the list: an optional per-function refinement surface whose absence
+        // is overloaded exactly the way `fs`'s was — "does not compute undetermined locators" vs
+        // "computed them and found none". Same rule as ever governs membership: this engine computes it,
+        // so it declares it, and a producer that did not must not.
+        envelope.put("resolves", java.util.List.of("fs", "incomplete"));
         // ⟨0.21⟩ COMPLETENESS MANIFEST (Gap 1): the analyzed-universe summary, so a consumer of the bare
         // envelope tells analyzed-pure from never-seen (pure count = analyzed.count − |functions|). Emitted
         // whenever the engine could enumerate its analyzed set (always, here); omitted only if it couldn't.

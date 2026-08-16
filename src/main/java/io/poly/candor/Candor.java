@@ -325,7 +325,34 @@ public class Candor {
         return fixpoint();
     }
 
+    /// Set by any site that has ALREADY reported a truncated stdout, so the shutdown hook below does not
+    /// say it twice with less detail.
+    private static boolean stdoutLossReported = false;
+
     public static void main(String[] args) throws IOException {
+        // ── ONE CHECK AT EXIT, COVERING ALL ~148 `System.out` SITES ──────────────────────────────────
+        // `PrintStream` swallows `IOException` — documented behaviour — and its internal error flag
+        // LATCHES: once a write fails, `checkError()` stays true for the life of the stream. So a single
+        // check on the way out catches a failed write ANYWHERE in the run, which is the only tractable
+        // shape here; guarding 148 call sites individually is how 147 of them would end up unguarded.
+        //
+        // MEASURED, inside Linux against a 4096-byte pipe (F_SETPIPE_SZ) whose reader closes mid-write:
+        // candor-java exited 0 with an EMPTY stderr while candor-ts on the identical setup reported
+        // "output was cut short at 4096 of 24110 bytes". A machine consumer read a fraction of the
+        // document and had nothing to tell it apart from a complete one. Before this change there were
+        // ZERO `checkError` calls in src/main.
+        //
+        // EXIT 0 IS KEPT. `candor-java … | head` must not be a failure, and the ruling is candor-ts's:
+        // the reader leaving is not our error, but the truncation has to be STATED. A shutdown hook
+        // rather than a wrapper because this class exits through `System.exit` from many branches.
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.flush();
+            if (System.out.checkError() && !stdoutLossReported) {
+                System.err.println("candor-java: stdout reported a WRITE ERROR — the output above is "
+                        + "INCOMPLETE (the reader closed the pipe, or the sink failed). Re-run to a file "
+                        + "if you need the whole document.");
+            }
+        }));
         if (args.length < 1) {
             System.err.println("usage: candor <dir-or-jar-of-classes> [--json <file>] [--policy <file>] [--gate-json <file>]");
             System.err.println(
@@ -436,10 +463,30 @@ public class Candor {
                     System.err.println("candor: the AGENTS.md resource is missing from this build");
                     System.exit(2);
                 }
+                byte[] doc = in.readAllBytes();
                 System.out.println("<!-- candor-java " + provenance()[0]
                         + " · the agent contract for this installed version -->");
-                System.out.write(in.readAllBytes());
+                System.out.write(doc);
                 System.out.flush();
+                // checkError(), because PrintStream SWALLOWS IOException — that is its documented
+                // behaviour, and it is why this path could truncate in total silence. MEASURED inside
+                // Linux against a 4096-byte pipe (F_SETPIPE_SZ) with a reader that closes mid-write:
+                // candor-java exited 0 with an EMPTY stderr, while candor-ts on the identical setup said
+                // "--agents output was cut short at 4096 of 24110 bytes". An agent piping this into its
+                // context read a fraction of its own instructions and had no way to know — the cardinal
+                // sin on the documentation channel. There are zero other checkError calls in src/main.
+                //
+                // EXIT 0 IS KEPT DELIBERATELY. `candor-java --agents | head` is a legitimate thing to
+                // type and must not be a failure; candor-ts made the same ruling for the same reason.
+                // The reader leaving is not our error — but a truncated contract with exit 0 and an
+                // empty stderr is exactly the defect, so the truncation is STATED. stderr may be closed
+                // for the same reason stdout is, so this is best-effort by construction.
+                if (System.out.checkError()) {
+                    stdoutLossReported = true;
+                    System.err.println("candor-java: --agents output was cut short (the reader closed the "
+                            + "pipe, or the write failed). This contract is INCOMPLETE — " + doc.length
+                            + " bytes were offered and an unknown number arrived.");
+                }
             }
             System.exit(0);
         }

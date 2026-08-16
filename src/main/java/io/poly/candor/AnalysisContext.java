@@ -212,7 +212,7 @@ final class AnalysisContext {
     final List<PolicyRule.Deny> denyRules = new ArrayList<>();               // CANDOR_POLICY deny/pure (AS-EFF-006)
     final List<PolicyRule.Allow> allowRules = new ArrayList<>();             // CANDOR_POLICY allow (AS-EFF-008)
     final List<PolicyRule.Forbid> forbidRules = new ArrayList<>();           // CANDOR_POLICY forbid (AS-EFF-009)
-    // ⟨0.29⟩ CANDOR_POLICY `only` (AS-EFF-009) — the PERMISSION form. Its own list, not folded into
+    // ⟨0.29⟩ CANDOR_POLICY `only` (AS-EFF-011) — the PERMISSION form. Its own list, not folded into
     // `forbidRules`, because the two read OPPOSITE ways: a `forbid` names what must not happen, an `only`
     // names the complete set of what may, so a route handling one as the other inverts the verdict.
     final List<PolicyRule.Only> onlyRules = new ArrayList<>();

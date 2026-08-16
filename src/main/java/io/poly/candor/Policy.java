@@ -784,7 +784,7 @@ final class Policy {
                 }
             }
         }
-        // ⟨0.29⟩ AS-EFF-009 — `only A -> B …`: a method in A may reach A and the listed scopes, NOTHING
+        // ⟨0.29⟩ AS-EFF-011 — `only A -> B …`: a method in A may reach A and the listed scopes, NOTHING
         // else. The same walk as the `forbid` arm above with the test INVERTED, and the inversion is the
         // point: `forbid` fails OPEN, so a leaf can only be protected by enumerating what it must not
         // reach — a list that does not cover a package added tomorrow. `only` fails SAFE.
@@ -799,7 +799,8 @@ final class Policy {
                 if (!scopeMatches(fn, r.from())) continue;
                 String hit = reachesUnpermitted(gi.edges(), fn, r);
                 if (hit != null) {
-                    diag(DiagnosticCode.AS_EFF_009, "`%s` reaches `%s`, which this permission rule does "
+                    // ⟨0.29⟩ ITS OWN CODE — see DiagnosticCode.AS_EFF_011.
+                    diag(DiagnosticCode.AS_EFF_011, "`%s` reaches `%s`, which this permission rule does "
                             + "not permit: `%s`", fn, hit, r.src().trim());
                     v++;
                 }

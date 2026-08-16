@@ -784,8 +784,53 @@ final class Policy {
                 }
             }
         }
+        // ⟨0.29⟩ AS-EFF-009 — `only A -> B …`: a method in A may reach A and the listed scopes, NOTHING
+        // else. The same walk as the `forbid` arm above with the test INVERTED, and the inversion is the
+        // point: `forbid` fails OPEN, so a leaf can only be protected by enumerating what it must not
+        // reach — a list that does not cover a package added tomorrow. `only` fails SAFE.
+        //
+        // THE WALK STOPS AT A PERMITTED SCOPE. A permitted callee's own dependencies are governed by the
+        // rules about IT; descending past it would make `only` demand the transitive closure of
+        // everything you permit, which is the same enumeration-that-rots one level down. `from` IS
+        // descended through — a method in A calling another method in A that reaches infra is still A
+        // reaching infra.
+        for (PolicyRule.Only r : ctx().onlyRules) {
+            for (String fn : new TreeSet<>(gi.edges().keySet())) {
+                if (!scopeMatches(fn, r.from())) continue;
+                String hit = reachesUnpermitted(gi.edges(), fn, r);
+                if (hit != null) {
+                    diag(DiagnosticCode.AS_EFF_009, "`%s` reaches `%s`, which this permission rule does "
+                            + "not permit: `%s`", fn, hit, r.src().trim());
+                    v++;
+                }
+            }
+        }
         discloseZeroMatchRules(gi);
         return v;
+    }
+
+    /** ⟨0.29⟩ The first function {@code start} transitively reaches that an {@code only} rule permits
+     *  NEITHER as its own scope nor in its list — or null when everything reached is permitted.
+     *
+     *  <p>BFS like {@link #reachesScope}, so the name reported is the NEAREST offender rather than
+     *  whichever the traversal happened to reach first — an operator fixes the closest edge.
+     *
+     *  <p>A permitted node is NOT descended into: its dependencies answer to the rules about IT. */
+    static String reachesUnpermitted(Map<String, Set<String>> edges, String start, PolicyRule.Only r) {
+        Deque<String> q = new ArrayDeque<>(sortedCallees(edges, start));
+        Set<String> seen = new HashSet<>();
+        while (!q.isEmpty()) {
+            String n = q.poll();
+            if (!seen.add(n)) continue;
+            boolean permitted = false;
+            for (String to : r.to()) {
+                if (scopeMatches(n, to)) { permitted = true; break; }
+            }
+            if (permitted) continue;                   // allowed, and its callees are not this rule's business
+            if (!scopeMatches(n, r.from())) return n;   // reached something no clause of the rule names
+            for (String cc : sortedCallees(edges, n)) if (!seen.contains(cc)) q.add(cc);
+        }
+        return null;
     }
 
     /**
@@ -819,6 +864,7 @@ final class Policy {
         Map<String, Integer> matches = new TreeMap<>();
         for (PolicyRule.Deny r : ctx().denyRules) if (!r.scope().isEmpty()) matches.putIfAbsent(r.src(), 0);
         for (PolicyRule.Forbid r : ctx().forbidRules) matches.putIfAbsent(r.src(), 0);
+        for (PolicyRule.Only r : ctx().onlyRules) matches.putIfAbsent(r.src(), 0);
         if (matches.isEmpty()) return;
         Set<String> fns = new TreeSet<>(gi.inferred().keySet());
         fns.addAll(gi.edges().keySet());
@@ -828,6 +874,13 @@ final class Policy {
             }
             for (PolicyRule.Forbid r : ctx().forbidRules) {
                 if (scopeMatches(fn, r.from()) || scopeMatches(fn, r.to())) matches.merge(r.src(), 1, Integer::sum);
+            }
+            // ⟨0.29⟩ ON `from` ONLY, deliberately NOT either endpoint the way a `forbid` counts. A
+            // forbid's subject is the pair; an `only`'s subject is the scope it makes a PROMISE about, so
+            // a rule whose destinations all resolve while its `from` names nothing has bound nothing —
+            // and that is exactly the typo that leaves an operator believing a leaf is protected.
+            for (PolicyRule.Only r : ctx().onlyRules) {
+                if (scopeMatches(fn, r.from())) matches.merge(r.src(), 1, Integer::sum);
             }
         }
         for (var e : matches.entrySet()) {
@@ -1276,7 +1329,7 @@ final class Policy {
         ctx().vocabularyUsed.clear();   // ⟨0.24⟩ recomputed per parse — the disclosure is about THIS policy
         // ⟨0.28⟩ EVERY RULE KIND, counted as a DELTA over THIS parse — see {@link #policyRulesParsed}.
         int denyBefore = ctx().denyRules.size(), allowBefore = ctx().allowRules.size(),
-            forbidBefore = ctx().forbidRules.size();
+            forbidBefore = ctx().forbidRules.size(), onlyBefore = ctx().onlyRules.size();
         List<String> lines;
         try {
             lines = Files.readAllLines(Path.of(path));
@@ -1432,6 +1485,21 @@ final class Policy {
                     }
                     break;
                 }
+                // ⟨0.29⟩ `only <A> -> <B> [<C> …]` — the PERMISSION form (SPEC §6.2). Everything after the
+                // arrow is a permitted scope, so this takes a LIST where `forbid` takes one destination.
+                // An EMPTY tail is dropped rather than read as "A may reach nothing at all": that is a
+                // different rule, and one a reader is far likelier to have typed by accident than meant.
+                case "only": {
+                    if (t.length >= 4 && t[2].equals("->")) {
+                        ctx().onlyRules.add(new PolicyRule.Only(
+                                t[1], List.of(Arrays.copyOfRange(t, 3, t.length)), line));
+                    } else {
+                        warnPolicy(line, "rule-form", t.length > 1 ? t[1] : "",
+                                List.of("<scope> -> <scope> [<scope> …]"),
+                                "want `only <scope> -> <scope> [<scope> …]`");
+                    }
+                    break;
+                }
                 case "allow": {
                     // SPEC §6.2: `allow <Effect> [in <scope>] <value…>` — the effect MUST be one of the
                     // three that carry a literal surface; an `allow` for any other effect is dropped.
@@ -1474,7 +1542,7 @@ final class Policy {
                     // rule-kind | rule-form`, and this engine spelled three of the five with a space.
                     // THIS row is the genuine `rule-kind`: the head token names no rule at all, so saying
                     // the KIND is unrecognised is true here and false on the two FORM arms above.
-                    warnPolicy(line, "rule-kind", t[0], List.of("deny", "pure", "forbid", "allow"),
+                    warnPolicy(line, "rule-kind", t[0], List.of("deny", "pure", "forbid", "only", "allow"),
                             "unknown rule kind `" + t[0] + "`");
                     break;
             }
@@ -1487,7 +1555,11 @@ final class Policy {
         // grammar change — deliberately still open, see the #policyErrors note.
         policyRulesParsed = (ctx().denyRules.size() - denyBefore)
                           + (ctx().allowRules.size() - allowBefore)
-                          + (ctx().forbidRules.size() - forbidBefore);
+                          + (ctx().forbidRules.size() - forbidBefore)
+                          // ⟨0.29⟩ an `only`-only policy is ARMED. Omitting it here would make the
+                          // zero-rule refusal fire on a live gate — the fail-closed guard turned into a
+                          // false refusal by the rung that added the rule kind.
+                          + (ctx().onlyRules.size() - onlyBefore);
         return !policyUnhonourable();
     }
 

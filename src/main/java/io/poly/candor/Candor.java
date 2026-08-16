@@ -391,6 +391,12 @@ public class Candor {
                 "a `.jar`/`.zip` under the scan root is bytecode this engine reads perfectly well, and a "
                 + "directory walk looking for `.class` files never opens it. The gate did not judge its "
                 + "contents; the peek reads them."},
+            "build-output-archive", new String[]{"false",
+                "a `.jar`/`.zip` under build/ · target/ · out/ · .gradle/ · node_modules/ is DERIVED "
+                + "output — its contents come from the sources this gate already judges, so the peek "
+                + "does not read it. MEASURED on this engine's own repo: peeking them charged one "
+                + "dependency class six times, once per fat jar in build/libs, beside the single real "
+                + "finding. Point the scan into the build tree and these are ordinary archives again."},
             "multi-release-override", new String[]{"false",
                 "a multi-release jar ships version-specific overrides under META-INF/versions/<N>/. The "
                 + "BASE class of each is analyzed (the portable surface), and the override is not — so an "

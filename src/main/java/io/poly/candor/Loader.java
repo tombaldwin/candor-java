@@ -123,7 +123,32 @@ final class Loader {
         String name = p.getFileName().toString();
         String lower = name.toLowerCase(Locale.ROOT);
         if (lower.endsWith(".jar") || lower.endsWith(".zip")) {
-            ctx().excluded.put(rel(root, p), "archive-under-the-scan-root");
+            String where = rel(root, p);
+            // BUILD OUTPUT IS NOT PEEKED, and this was MEASURED rather than reasoned about. Pointed at its
+            // own repo root under `deny Net`, this engine's peek reported ONE genuine finding — the
+            // checked-in `gradle/wrapper/gradle-wrapper.jar` fetches over the network on every `./gradlew`
+            // — beside SIX copies of one gson class, one per fat jar sitting in `build/libs`. That is the
+            // noise floor FILE-SET-DESIGN §5.2 exists to keep out: a derived artifact's contents come from
+            // the sources the gate is already judging, so charging them again as "outside the scope" buys
+            // nothing and teaches the reader to scroll past. Its own class, counted, `peeked:false` — the
+            // same call candor-swift makes for `.build/`, for the same reason.
+            //
+            // RELATIVE to the scan root, deliberately: `candor build/classes` has no `build` segment in
+            // any relative path, so pointing the scan INTO the build tree does not silently exempt it.
+            boolean derived = false;
+            for (Path seg : Path.of(where.replace('\\', '/'))) {
+                String s = seg.toString();
+                if (s.equals("build") || s.equals("target") || s.equals("out")
+                        || s.equals(".gradle") || s.equals("node_modules") || s.equals(".git")) {
+                    derived = true;
+                    break;
+                }
+            }
+            if (derived) {
+                ctx().excluded.put(where, "build-output-archive");
+                return;
+            }
+            ctx().excluded.put(where, "archive-under-the-scan-root");
             ctx().archives.add(p);
             return;
         }

@@ -272,6 +272,55 @@ class FileSetScopeTest {
     }
 
     /**
+     * A DERIVED ARCHIVE IS NOT PEEKED, and this row exists because the alternative was MEASURED. Pointed
+     * at its own repo root under {@code deny Net}, this engine's peek reported one genuine finding — the
+     * checked-in {@code gradle/wrapper/gradle-wrapper.jar} fetches over the network on every
+     * {@code ./gradlew} — beside SIX copies of one gson class, one per fat jar in {@code build/libs}. A
+     * build artifact's contents come from the sources the gate is already judging, so charging them again
+     * as out-of-scope buys nothing and teaches the reader to scroll past.
+     *
+     * <p>And the CONTROL for that exemption, in the same row: pointing the scan INTO the build tree makes
+     * them ordinary archives again, because the test is on the path RELATIVE to the scan root. Without it
+     * this could be a rule that silently exempts whatever the operator most wanted looked at.
+     */
+    @Test void aDerivedArchiveIsCountedButNotPeeked() throws Exception {
+        Path jarCls = compile(Map.of("Tool.java", String.join("\n",
+            "package com.t;",
+            "public class Tool { public static void go() throws Exception { new ProcessBuilder(\"ls\").start(); } }")));
+        Path classes = compile(Map.of("App.java", String.join("\n",
+            "package com.x;",
+            "public class App { public static int add(int a){ return a + 1; } }")));
+        // The compiled classes live INSIDE the build tree too — the ordinary Gradle shape, and the reason
+        // the control below can scan `build/` and get a real scan rather than the empty-scan refusal.
+        Path root = tmp.resolve("derived");
+        Files.createDirectories(root.resolve("build/classes"));
+        copyTree(classes, root.resolve("build/classes"));
+        jarUp(jarCls, root.resolve("build/libs/app.jar"));
+        rm(classes.getParent());
+        rm(jarCls.getParent());
+
+        Path out = tmp.resolve("g.json");
+        Run r = runCli(root.toString(), "--json", out.toString(),
+                       "--policy", policy("exec3.policy", "deny Exec\n").toString());
+        assertEquals(0, r.exit(), r.stderr());
+        JsonObject rpt = report(out);
+        JsonObject derived = excludedClass(rpt, "build-output-archive");
+        assertNotNull(derived, "a jar under build/ must be its own class: " + rpt.get("excluded"));
+        assertFalse(derived.get("peeked").getAsBoolean(), "…and must be declared UNPEEKED: " + derived);
+        assertEquals(0, rpt.getAsJsonArray("outOfScope").size(),
+            "the derived jar's Exec must not be reported: " + rpt.get("outOfScope"));
+
+        // THE CONTROL: scanned FROM inside the build tree, the same jar has no `build` segment relative to
+        // the root and is peeked like any other — the exemption is about where you pointed the scan.
+        Path inner = tmp.resolve("h.json");
+        Run r2 = runCli(root.resolve("build").toString(), "--json", inner.toString(),
+                        "--policy", policy("exec4.policy", "deny Exec\n").toString());
+        assertEquals(0, r2.exit(), r2.stderr());
+        assertEquals(1, report(inner).getAsJsonArray("outOfScope").size(),
+            "scanned from inside build/, it is an ordinary archive: " + report(inner).get("outOfScope"));
+    }
+
+    /**
      * THE CONTROL, and it is the row that matters most: a scan with nothing to exclude must still EMIT the
      * key, as an empty list — ⟨0.27⟩'s zero-match rule, and ⟨0.26⟩'s reading that an absent key means
      * "this producer cannot answer". Without it the rows above pass against an engine that declares

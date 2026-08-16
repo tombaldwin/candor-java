@@ -88,6 +88,11 @@ final class AnalysisContext {
     // ⟨0.29⟩ what THE PEEK found: an effect the policy DENIES, in a file the gate did not judge. Its own
     // kind, never a violation — it moves no verdict. Null when no policy was configured (nothing asked).
     java.util.List<Report.OutOfScope> outOfScope = null;
+    // ⟨0.29⟩ the exclusion classes THE PEEK ACTUALLY READ this run. `excluded[].peeked` is derived from
+    // this rather than from a per-class table, so a peek that never ran, or one whose files could not be
+    // opened, cannot publish `peeked: true` beside an empty `outOfScope` — which would be byte-identical
+    // to a clean peek and is the overclaim the flag exists to prevent.
+    final Set<String> peekedClasses = new HashSet<>();
     final Set<String> entryPoints = new HashSet<>();               // framework-invoked methods
     final Set<String> projectClasses = new HashSet<>();
     final Set<String> repoTypes = new HashSet<>();                 // Spring Data repository interfaces (internal names)

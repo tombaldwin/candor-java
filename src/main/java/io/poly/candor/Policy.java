@@ -824,7 +824,9 @@ final class Policy {
             if (!seen.add(n)) continue;
             boolean permitted = false;
             for (String to : r.to()) {
-                if (scopeMatches(n, to)) { permitted = true; break; }
+                // ⟨0.29⟩ EXACT segment match on a PERMITTED scope — see scopeMatchesPermitted. The shared
+                // prefix matcher is fail-CLOSED for every other rule kind and fail-OPEN here.
+                if (scopeMatchesPermitted(n, to)) { permitted = true; break; }
             }
             if (permitted) continue;                   // allowed, and its callees are not this rule's business
             if (!scopeMatches(n, r.from())) return n;   // reached something no clause of the rule names
@@ -1571,6 +1573,37 @@ final class Policy {
      *  boundary (the ladder already pins `Svc.act` matching `Cases$Svc.act`), so `deny Net client` /
      *  `forbid app -> repo` bite on a function in a nested class (`q.L$app.entry`) exactly as a rust
      *  module or swift enum-namespace member matches. */
+    /** ⟨0.29⟩ SCOPE MATCHING FOR A <b>PERMISSION</b>, where the prefix rule is FAIL-OPEN.
+     *
+     *  <p>{@link #scopeMatches}'s last segment is a PREFIX of its name-segment, so `util` matches
+     *  `utilities`. For {@code deny}/{@code pure}/{@code forbid} that widening is FAIL-CLOSED — a scope
+     *  matching more forbids more — and it is why the rule exists. For the {@code to} list of an
+     *  {@code only} rule it is the exact inverse: a permitted scope that matches more PERMITS more, so
+     *  the matcher that keeps every other rule kind safe silently widens the one form whose entire
+     *  purpose is to fail safe.
+     *
+     *  <p>MEASURED on the shipped ⟨0.29⟩ implementation, before this method existed: {@code only model ->
+     *  util} let {@code model.go} reach {@code utilities_untrusted.exfil} at {@code no violations}, while
+     *  {@code forbid model -> util} charged AS-EFF-009 on the identical reach. The operator wrote a
+     *  complete permission list and the matcher quietly extended it to anything sharing a prefix.
+     *
+     *  <p>THE {@code from} SIDE KEEPS THE PREFIX RULE: {@code from} selects which methods the rule BINDS,
+     *  so matching more constrains more. Each side takes the matcher whose over-approximation errs toward
+     *  the gate firing. */
+    static boolean scopeMatchesPermitted(String name, String scope) {
+        if (scope.isEmpty()) return false;   // an empty permitted scope permits nothing, never everything
+        String[] segs = nameSegments(name);
+        String[] parts = nameSegments(scope);
+        if (parts.length == 0 || parts.length > segs.length) return false;
+        for (int i = 0; i + parts.length <= segs.length; i++) {
+            boolean ok = true;
+            for (int j = 0; j < parts.length; j++)
+                if (!segs[i + j].equals(parts[j])) { ok = false; break; }
+            if (ok) return true;
+        }
+        return false;
+    }
+
     static boolean scopeMatches(String name, String scope) {
         if (scope.isEmpty()) return true;
         String[] segs = nameSegments(name);

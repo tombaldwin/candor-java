@@ -124,6 +124,17 @@ final class Loader {
         String lower = name.toLowerCase(Locale.ROOT);
         if (lower.endsWith(".jar") || lower.endsWith(".zip")) {
             String where = rel(root, p);
+            // ⟨0.29⟩ AN ARCHIVE INSIDE AN ARCHIVE CANNOT BE PEEKED, AND CLAIMING OTHERWISE SHIPS A FALSE
+            // ALL-CLEAR OVER THE CANONICAL JVM ARTIFACT. When the scan TARGET is a jar, `load()` mounts it
+            // as a zip FileSystem and CLOSES it on the way out — so a nested `BOOT-INF/lib/*.jar` recorded
+            // here is a Path into a filesystem that no longer exists, every peek of it throws
+            // `ClosedFileSystemException`, the failure is swallowed, and `peeked:true` + `outOfScope:[]`
+            // ships. A Spring Boot fat jar is exactly that shape. Recorded as its own class instead, so
+            // the count is still disclosed and the flag says plainly that nothing read it.
+            if (p.getFileSystem() != FileSystems.getDefault()) {
+                ctx().excluded.put(where, "archive-inside-the-archive");
+                return;
+            }
             // BUILD OUTPUT IS NOT PEEKED, and this was MEASURED rather than reasoned about. Pointed at its
             // own repo root under `deny Net`, this engine's peek reported ONE genuine finding — the
             // checked-in `gradle/wrapper/gradle-wrapper.jar` fetches over the network on every `./gradlew`

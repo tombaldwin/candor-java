@@ -364,6 +364,18 @@ public class Candor {
             // arm every such file would be disclosed as never-compiled, and a disclosure that fires on
             // ordinary Kotlin is one an operator learns to ignore.
             boolean built = compiled.contains(qual) || compiled.contains(qual + "Kt");
+            // ⟨0.29⟩ ONLY `.java` GUARANTEES filename == class name. That is a JAVA rule, not a JVM-language
+            // one: a Kotlin file may declare `class Foo` in `Bar.kt` or several classes in one file, Scala
+            // compiles a file to any number of classes plus `$` companions, and Groovy the same. So for
+            // every other language the name test can only ever produce a FALSE "never compiled", which
+            // would fire the operator-error nudge on ordinary, fully-compiled code — and a nudge that
+            // fires on healthy projects is one people learn to scroll past, which costs the java arm the
+            // only disclosure it has. Their PACKAGE is evidence enough: if this package produced classes,
+            // the file was compiled by something, and this engine cannot say more than that honestly.
+            if (!built && !path.endsWith(".java")) {
+                String prefix = pkg.isEmpty() ? "" : pkg + ".";
+                built = compiled.stream().anyMatch(c -> pkg.isEmpty() || c.startsWith(prefix));
+            }
             if (!built && pkg.isEmpty()) {
                 // No package declaration read (an unreadable head, or the default package): fall back to
                 // the simple name anywhere. Widens what counts as compiled, which is the direction that
@@ -397,6 +409,11 @@ public class Candor {
                 + "does not read it. MEASURED on this engine's own repo: peeking them charged one "
                 + "dependency class six times, once per fat jar in build/libs, beside the single real "
                 + "finding. Point the scan into the build tree and these are ordinary archives again."},
+            "archive-inside-the-archive", new String[]{"false",
+                "a `.jar`/`.zip` nested inside the archive being scanned. The outer archive is mounted as "
+                + "a zip filesystem and closed when the walk ends, so a nested entry cannot be reopened "
+                + "afterwards and the peek does not read it. Scan the nested jar directly, or scan the "
+                + "exploded directory, to judge its contents."},
             "multi-release-override", new String[]{"false",
                 "a multi-release jar ships version-specific overrides under META-INF/versions/<N>/. The "
                 + "BASE class of each is analyzed (the portable surface), and the override is not — so an "
@@ -437,6 +454,9 @@ public class Candor {
         // beside a refusal would certify a look that never happened. §3.1's answerability MUST binds every
         // producer reading the policy, not the gate alone, so the key stays ABSENT unless the parse stood.
         boolean[] answered = {false};
+        int[] peekFailures = {0};
+        boolean[] peekReadAll = {false};
+        boolean[] timedOut = {false};
         List<Path> archives = List.copyOf(ctx().archives);
         Set<String> judged = Set.copyOf(ctx().edges.keySet());
         Path root = ctx().scanRoot;
@@ -457,6 +477,7 @@ public class Candor {
                 Set<String> denied = new TreeSet<>();
                 for (PolicyRule.Deny d : ctx().denyRules) denied.addAll(d.effects().toNames());
                 if (denied.isEmpty()) return;   // `pure`/allow-only: nothing named, so nothing to look for
+                int[] readOk = {0}, readFail = {0};
                 for (Path jar : archives) {
                     Map<String, EffectSet> peeked;
                     try {
@@ -467,8 +488,15 @@ public class Candor {
                         // A PEEK THAT CANNOT RUN MUST NOT FAIL THE GATE — it is advisory by construction,
                         // and turning an unreadable jar into a red gate would make adding a policy, the
                         // safest thing an operator can do, the thing that breaks their build.
+                        //
+                        // ⟨0.29⟩ …BUT IT MUST NOT PASS FOR ONE EITHER. This was a bare `continue`, so a
+                        // jar that could not be opened was indistinguishable from a jar that was read and
+                        // held nothing — and `peeked:true` shipped over both. Counted now, and the count
+                        // decides the flag below.
+                        readFail[0]++;
                         continue;
                     }
+                    readOk[0]++;
                     String where = root == null ? jar.toString() : relativeTo(root, jar);
                     for (var e : new java.util.TreeMap<>(peeked).entrySet()) {
                         if (judged.contains(e.getKey())) continue;   // the gate DID judge this one
@@ -480,16 +508,61 @@ public class Candor {
                                 + "NOT judge it. The effect is real; the verdict does not account for it."));
                     }
                 }
+                // ⟨0.29⟩ THE CLASS IS `peeked` ONLY IF EVERY FILE OF IT WAS READ. One unreadable jar means
+                // the class was not fully examined, and a partial read publishing `peeked:true` is the
+                // same overclaim as no read at all — ⟨0.26⟩'s rule that a partial manifest answers worse
+                // than an absent one.
+                //
+                // RECORDED IN THE CAPTURED ARRAYS, NOT IN `ctx()`. This thread has its OWN thread-local
+                // context — that is the entire reason the peek runs on a thread — so writing the result
+                // through `ctx()` here files it against a context nobody reads and the flag stays false
+                // on every run. Caught by the flag reading `false` on a peek that had just produced a
+                // finding, which is the one observation that separates the two.
+                peekReadAll[0] = readOk[0] > 0 && readFail[0] == 0;
+                peekFailures[0] = readFail[0];
             }, "candor-peek");
             t.start();
-            t.join();
+            // ⟨0.29⟩ A DEADLINE, because the peek re-parses exactly the bytecode this engine has never
+            // parsed — a vendored jar, a shaded artifact, whatever sat under the scan root — i.e. the
+            // inputs least likely to have been exercised. An unbounded join turns one pathological
+            // archive into a hung SCAN and a hung CI job, with `System.err` pointed at the null stream for
+            // the whole window so it hangs SILENTLY. That contradicts this feature's own rule that a peek
+            // which cannot run must not fail the gate: hanging is the one failure that stops the gate
+            // completing at all.
+            t.join(120_000);
+            if (t.isAlive()) {
+                // The thread is left to die with the process rather than stopped — `Thread.stop` is
+                // unsafe and there is nothing here worth an interrupt protocol. What matters is that this
+                // thread stops WAITING, and that nothing downstream claims the peek read anything: the
+                // `peekReadAll` flag is still false, so every class stays `peeked: false`.
+                timedOut[0] = true;
+                return;
+            }
         } catch (InterruptedException e) {
+            // ⟨0.29⟩ RETURN, do not fall through. This caught the interrupt and carried on to publish
+            // `found` while the peek thread was still alive and still appending to it — a live data race
+            // on a list the report is about to serialize. An interrupted wait means the answer is not
+            // ready, which is exactly the case the `answered` flag exists to express.
             Thread.currentThread().interrupt();
+            return;
         } finally {
             System.setErr(saved);
         }
+        if (timedOut[0]) {
+            System.err.println("candor-java: the peek did not finish within 120s and was abandoned — "
+                    + "`excluded` marks its classes NOT peeked, so nothing claims they were read. "
+                    + "The gate below is unaffected.");
+            return;
+        }
         if (!answered[0]) return;   // the policy did not stand — see `answered`
         ctx().outOfScope = found;
+        // …applied HERE, on the MAIN thread, whose context is the one the report is written from.
+        if (peekReadAll[0]) ctx().peekedClasses.add("archive-under-the-scan-root");
+        if (peekFailures[0] > 0) {
+            System.err.println("candor-java: " + peekFailures[0] + " archive(s) under the scan root could "
+                    + "not be opened for the peek — they are counted in `excluded` and their class is "
+                    + "marked `peeked: false`, so the empty `outOfScope` below makes no claim about them.");
+        }
         // SAY IT ON STDERR, ABOVE THE VERDICT. The report block is for machines; an operator reading
         // `no violations` needs to know in the same breath that a file this scan did not judge holds the
         // effect they denied. A caveat printed below a green verdict is a caveat nobody reaches.
@@ -522,7 +595,14 @@ public class Candor {
         List<Report.ExcludedClass> out = new ArrayList<>();
         for (var e : byClass.entrySet()) {
             String[] r = EXCLUDED_REASON.getOrDefault(e.getKey(), new String[]{"false", "excluded (" + e.getKey() + ")"});
-            out.add(new Report.ExcludedClass(e.getKey(), e.getValue(), Boolean.parseBoolean(r[0]), r[1]));
+            // ⟨0.29⟩ `peeked` IS AN OUTCOME, NOT A PROPERTY OF THE CLASS. It was read out of the table
+            // beside the reason, so a peek that never ran — no policy, no denied effect — or one whose
+            // every jar failed to open still published `peeked: true` beside `outOfScope: []`, which is
+            // byte-identical to a clean peek. That is the ⟨0.26⟩ partial-manifest failure inside the rung
+            // built to prevent it: this flag exists so `[]` cannot overclaim, and a lookup table cannot
+            // do that job. A class is `peeked` only if this run actually READ a file of it.
+            boolean peeked = Boolean.parseBoolean(r[0]) && ctx().peekedClasses.contains(e.getKey());
+            out.add(new Report.ExcludedClass(e.getKey(), e.getValue(), peeked, r[1]));
         }
         return out;
     }

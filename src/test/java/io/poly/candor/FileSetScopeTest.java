@@ -168,7 +168,14 @@ class FileSetScopeTest {
         JsonObject jar = excludedClass(rpt, "archive-under-the-scan-root");
         assertNotNull(jar, "the jar under the scan root must be declared as excluded: " + rpt.get("excluded"));
         assertEquals(1, jar.get("count").getAsInt());
-        assertTrue(jar.get("peeked").getAsBoolean(), "…and this one the peek DOES read");
+        // ⟨0.29⟩ `peeked` IS AN OUTCOME. This run configures NO POLICY, so no peek ran and nothing was
+        // read — `false` is the honest answer even for the class the peek is willing to read. The row
+        // asserted `true` here while the flag was a per-class constant, which is precisely the overclaim
+        // the flag exists to prevent: `peeked:true` beside an absent/empty `outOfScope` reads as "I looked
+        // and found nothing" about files nobody opened. The TRUE case is asserted in the peek row, where
+        // a policy is configured and the read actually happens.
+        assertFalse(jar.get("peeked").getAsBoolean(),
+            "no policy was configured, so no peek ran and no class may claim to have been read: " + jar);
 
         // …and the excluded files really are absent from the analyzed set — otherwise the block would be
         // describing an exclusion that did not happen, which is a different and worse kind of wrong.
@@ -206,6 +213,11 @@ class FileSetScopeTest {
             "named scan-root-relative — an absolute path says where the CI checkout was");
         assertTrue(f.get("reason").getAsString().contains("did NOT judge"),
             "the reason must say the gate did not judge it: " + f.get("reason"));
+        // ⟨0.29⟩ …and NOW the class may claim to have been read, because it was.
+        JsonObject jarCls = excludedClass(rpt, "archive-under-the-scan-root");
+        assertNotNull(jarCls, rpt.get("excluded").toString());
+        assertTrue(jarCls.get("peeked").getAsBoolean(),
+            "the peek read this class on this run, so the flag must say so: " + jarCls);
 
         // THE VERDICT DOES NOT MOVE. This is the promise of the chosen rung: a file the gate declined to
         // judge must not decide an exit code, and must not appear among the judged functions.

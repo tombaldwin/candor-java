@@ -436,7 +436,12 @@ final class ReportWriter {
                 // `chaTargets`' targets, and only the rest is news to a claimed entry.
                 EffectSet fromOthers = EffectSet.empty();
                 TreeSet<String> inv = new TreeSet<>(), hosts = new TreeSet<>(), cmds = new TreeSet<>(),
-                        paths = new TreeSet<>(), tables = new TreeSet<>(), classes = new TreeSet<>();
+                        paths = new TreeSet<>(), tables = new TreeSet<>(), classes = new TreeSet<>(),
+                        // ⟨0.29⟩ the implementers' UNDETERMINED locators, unioned exactly as their
+                        // determined ones are three lines down. A union that widens the surface must widen
+                        // the doubt that qualifies it, or one implementer's benign literal certifies
+                        // another's unseen one at every consumer that joins this entry.
+                        incUnion = new TreeSet<>();
                 // UNKNOWN, not silence. Dropping the broad union and publishing nothing would be the other
                 // half of the same defect: a dep report omits its pure functions, so an absent entry IS a
                 // purity claim (§2 rule 3), and twelve pure implementers do not make the thirteenth pure.
@@ -466,6 +471,7 @@ final class ReportWriter {
                     cmds.addAll(cmdsAcc.getOrDefault(impl, new TreeSet<>()));
                     paths.addAll(pathsAcc.getOrDefault(impl, new TreeSet<>()));
                     tables.addAll(tablesAcc.getOrDefault(impl, new TreeSet<>()));
+                    incUnion.addAll(incompleteAcc.getOrDefault(impl, new TreeSet<>()));
                     // ⟨0.20⟩ Net destination-class, classified PER IMPLEMENTER — the fail-closed rule is
                     // "a Net with no visible host, or a masked surface, is unknown-host", and it has to be
                     // asked of each body separately. Merging the host SETS first and classifying afterwards
@@ -490,7 +496,7 @@ final class ReportWriter {
                 }
                 if (real != null) {
                     Effector wide = mergeUnionInto(real, inf, fromOthers, inv, hosts, cmds, paths, tables,
-                            netClass, why, broad);
+                            netClass, why, broad, incUnion);
                     if (wide != real) { effectors.set(at, wide); merged++; }
                     continue;
                 }
@@ -504,13 +510,16 @@ final class ReportWriter {
                         inf.contains(Effect.FS) ? new ArrayList<>(paths) : List.of(),
                         inf.contains(Effect.DB) ? new ArrayList<>(tables) : List.of(),
                         netClass,
-                        // ⟨0.29⟩ A SYNTHETIC UNION ENTRY CARRIES NO `incomplete` OF ITS OWN. It publishes
-                        // the union over an interface's implementers so a chained consumer's dispatch
-                        // resolves; each implementer's OWN entry carries its own undetermined locators,
-                        // and asserting one here would be this entry claiming a fact about a body it is
-                        // not. Empty is the honest value, not a placeholder — the union widens `inferred`,
-                        // and the surfaces it cannot vouch for it already omits (see the `fs` note below).
-                        List.<String>of(), true));
+                        // ⟨0.29⟩ THE UNION CARRIES THE IMPLEMENTERS' INCOMPLETENESS, and the comment that
+                        // used to sit here — "a synthetic union entry carries no `incomplete` of its own"
+                        // — reasoned itself into the exact defect this field was added to close, one hop
+                        // over. The entry PUBLISHES the union of its implementers' `paths`/`cmds`/`tables`
+                        // three lines up; a consumer joining it therefore sees implementer B's benign
+                        // literal with no marker that implementer A could not determine its own. That is
+                        // the false all-clear of B3, reached through the ⟨0.23⟩ dispatch entry instead of
+                        // through an ordinary one. If the union is allowed to widen the surface, it must
+                        // widen the doubt that qualifies it.
+                        new ArrayList<>(incUnion), true));
             }
         }
         if (unions.isEmpty() && merged == 0) return;
@@ -546,7 +555,9 @@ final class ReportWriter {
      */
     static Effector mergeUnionInto(Effector real, EffectSet inf, EffectSet fromOthers,
             TreeSet<String> inv, TreeSet<String> hosts, TreeSet<String> cmds, TreeSet<String> paths,
-            TreeSet<String> tables, List<String> netClass, List<UnknownReason> why, boolean broad) {
+            TreeSet<String> tables, List<String> netClass, List<UnknownReason> why, boolean broad,
+            /** ⟨0.29⟩ the OTHER implementers' undetermined locators — see the call site. */
+            TreeSet<String> incFromOthers) {
         EffectSet wide = real.inferred().join(inf);
         TreeSet<UnknownReason> whyBase = new TreeSet<>(real.unknownWhy());
         TreeSet<String> invBase = new TreeSet<>(real.invisible());
@@ -569,13 +580,20 @@ final class ReportWriter {
         // no kinds, so once ANOTHER implementer contributes Fs the body's own kinds stop being the whole
         // story — drop the field rather than half-publish it (empty = unknown = the gate fails closed).
         List<String> fsW = fromOthers.contains(Effect.FS) ? List.of() : real.fs();
-        boolean unchanged = wide.equals(real.inferred())
+        boolean incUnchanged = new TreeSet<>(real.incomplete()).containsAll(incFromOthers);
+        boolean unchanged = incUnchanged && wide.equals(real.inferred())
                 && invW.equals(invBase) && hostsW.equals(hostsBase)
                 && cmdsW.equals(cmdsBase) && pathsW.equals(pathsBase)
                 && tablesW.equals(tablesBase) && netW.equals(netBase)
                 && fsW.equals(real.fs()) && whyW.equals(whyBase);
         if (unchanged) return real;
         boolean hasNet = wide.contains(Effect.NET);
+        List<String> incMerged;
+        {
+            TreeSet<String> m = new TreeSet<>(real.incomplete());
+            m.addAll(incFromOthers);
+            incMerged = new ArrayList<>(m);
+        }
         return new Effector(real.fn(), real.loc(), wide, new ArrayList<>(invW), real.direct(),
                 real.declared(), real.undeclared(), real.overdeclared(), real.entryPoint(),
                 wide.hasUnknown(), real.kind(), new ArrayList<>(whyW), real.hash(), real.calls(), fsW,
@@ -584,10 +602,11 @@ final class ReportWriter {
                 wide.contains(Effect.FS) ? new ArrayList<>(pathsW) : real.paths(),
                 wide.contains(Effect.DB) ? new ArrayList<>(tablesW) : real.tables(),
                 hasNet ? new ArrayList<>(netW) : real.netClass(),
-                // ⟨0.29⟩ the real entry's own `incomplete` SURVIVES the merge. The union widens what the
-                // entry reaches; it cannot make a locator this body could not determine determinable, and
-                // dropping it here would be the merge quietly certifying what the body declared uncertain.
-                real.incomplete(),
+                // ⟨0.29⟩ the real entry's own `incomplete` survives the merge AND the union's is added.
+                // Dropping the entry's own would let the merge certify what the body declared uncertain;
+                // dropping the union's would let another implementer's literal certify what THIS one
+                // could not see — the same defect from the two sides, so the merge takes both.
+                incMerged,
                 real.interfaceUnion());
     }
 

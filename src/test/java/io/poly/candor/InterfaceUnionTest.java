@@ -884,7 +884,7 @@ class InterfaceUnionTest {
                 io.poly.candor.model.EffectSet.empty(), io.poly.candor.model.EffectSet.empty(),
                 new java.util.TreeSet<>(List.of("dup.pkg", "brand.new.pkg")),
                 new java.util.TreeSet<>(), new java.util.TreeSet<>(), new java.util.TreeSet<>(),
-                new java.util.TreeSet<>(), List.of(), List.of(), false);
+                new java.util.TreeSet<>(), List.of(), List.of(), false, new java.util.TreeSet<>());
         assertTrue(wide.invisible().contains("brand.new.pkg"),
                 "a duplicate in the entry's own list must not make a real widening read as 'no change' — "
                         + "the union's blind package was dropped, got " + wide.invisible());
@@ -895,7 +895,7 @@ class InterfaceUnionTest {
                 io.poly.candor.model.EffectSet.empty(), io.poly.candor.model.EffectSet.empty(),
                 new java.util.TreeSet<>(List.of("dup.pkg")),
                 new java.util.TreeSet<>(), new java.util.TreeSet<>(), new java.util.TreeSet<>(),
-                new java.util.TreeSet<>(), List.of(), List.of(), false);
+                new java.util.TreeSet<>(), List.of(), List.of(), false, new java.util.TreeSet<>());
         assertTrue(same == real, "a union that adds nothing must return the SAME entry, not a copy");
     }
 }

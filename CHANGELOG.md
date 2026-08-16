@@ -8,6 +8,32 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ ⟨0.29⟩ Four review findings, three of them false all-clears.**
+  - **`only`'s permitted scopes used the fail-OPEN matcher.** `scopeMatches` makes the last segment a
+    PREFIX, which is fail-CLOSED for deny/forbid and the exact inverse for a PERMISSION: measured,
+    `only app.M -> app.util` permitted `app.utilities_untrusted.U.exfil`. Permitted scopes now match by
+    exact segment run (`scopeMatchesPermitted`); `from` keeps the prefix rule, since matching more there
+    constrains more.
+  - **`excluded[].peeked` was read out of a per-class table**, so a scan with no policy, or one whose
+    every jar failed to open, published `peeked: true` beside an empty `outOfScope` — "I looked and found
+    nothing" about files nobody opened. It is an OUTCOME now, and a jar that could not be opened is
+    counted and disclosed rather than skipped by a bare `continue`.
+  - **A jar INSIDE the scanned jar could never be peeked**, because `load()` closes the zip filesystem on
+    the way out and every later read throws `ClosedFileSystemException` — swallowed, leaving
+    `peeked: true` + `outOfScope: []` over a Spring Boot fat jar, the canonical JVM artifact. Its own
+    class now, `peeked: false`, with a reason that says to scan it directly.
+  - **The synthetic ⟨0.23⟩ union entry published other implementers' `paths`/`cmds`/`tables` while
+    hard-coding `incomplete` to empty** — reintroducing, one hop over, the false all-clear the ⟨0.29⟩
+    `incomplete` field was added to close. A union that widens the surface must widen the doubt that
+    qualifies it; the merge path had the same hole from the other side.
+- **⟨0.29⟩ `source-without-class` no longer fires on ordinary Kotlin/Scala/Groovy.** Filename == class
+  name is a JAVA rule, not a JVM-language one, so the nudge fired on fully-compiled code — and a nudge
+  that fires on healthy projects is one people learn to scroll past, which costs this arm the only
+  disclosure it has.
+- **⟨0.29⟩ The peek thread has a deadline, and an interrupted join no longer falls through.** It joined
+  unbounded with `System.err` pointed at the null stream, so a pathological archive hung the scan SILENTLY;
+  and an interrupt was caught and execution carried on to publish a list the peek thread was still
+  appending to.
 - **⟨0.29⟩ `resolves` now declares `incomplete`** (SPEC §2.1). An absent `incomplete` is overloaded
   between "this producer does not compute undetermined locators" and "it computed them and found none" —
   exactly the ambiguity `resolves` was built for, one field over from the `fs` case that motivated it. A

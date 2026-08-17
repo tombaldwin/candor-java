@@ -3017,7 +3017,7 @@ public class Candor {
         }
         opaqueTaskHandoff(ctx, s, min, owner);
         namedFunctionalToHof(ctx, s, min);
-        xmlParseFilePrecision(s, min);
+        xmlParseFilePrecision(ctx, s, min);
         entryAbstractStream(ctx, s, min, owner, effect);
         externalStreamUtility(ctx, s, min, owner, effect);
         contractReentry(s, min);
@@ -3136,7 +3136,7 @@ public class Candor {
 
     /** XML parse(File) precision: the File overload definitely reads the file — add Fs beside the
      *  XXE Unknown classify() already yields. */
-    static void xmlParseFilePrecision(MethodScan s, MethodInsnNode min) {
+    static void xmlParseFilePrecision(AnalysisContext ctx, MethodScan s, MethodInsnNode min) {
         EffectSet dir = s.dir;
         // XML parse(File) PRECISION: the parser's `parse` already classifies as the XXE/external-
         // entity Unknown (security disclosure, see classify ~4367). The File overload ALSO
@@ -3146,7 +3146,24 @@ public class Candor {
         // get no Fs. Added in the call handler because classify()'s single slot is the Unknown.
         if ((min.owner.equals("javax/xml/parsers/DocumentBuilder")
                 || min.owner.equals("javax/xml/parsers/SAXParser"))
-                && min.name.equals("parse") && min.desc.startsWith("(Ljava/io/File;")) dir.add(Effect.FS);
+                && min.name.equals("parse") && min.desc.startsWith("(Ljava/io/File;")) {
+            dir.add(Effect.FS);
+            // ⟨0.29⟩ …AND ITS DIRECTION. This branch adds `Fs` OUTSIDE `effectMetadata`, the single place
+            // that refines a classified effect, so `fs` came back ABSENT here — and absent is not neutral.
+            // `effectMetadata`'s own comment states the harm: "Recording nothing let a caller of this
+            // function inherit a neighbour's ["write"] and thereby claim 'writes but never reads' over a
+            // reach whose kind was never determined — the partial claim §2 forbids", and it names the
+            // fixture PART 31 caught it with: `mixed()`, one writer plus one undetermined-kind callee.
+            //
+            // MEASURED, the same fixture and the same wrong answer, reintroduced through this branch:
+            //     parseFile  fs=None        generalWrite fs=["write"]
+            //     mixed (calls both)  ->  fs=["write"]      ← "writes but never reads", falsely
+            //
+            // `read`, not the FS_UNKNOWN poison, because the comment above already proves the direction:
+            // the File overload "reads this file for sure". That is strictly better than abstaining and
+            // is decided by the same condition that selected the branch.
+            ctx.fsDirect.computeIfAbsent(s.id, x -> new java.util.TreeSet<>()).add("read");
+        }
     }
 
     /** R17: a rooted entry point reading an externally-provided ABSTRACT java.io stream — real I/O of

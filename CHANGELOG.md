@@ -8,6 +8,15 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⟨0.29⟩ a JDBC PARAMETER BINDER's value was read as a query, fabricating a table.**
+  `PreparedStatement.setString(1, v)` and its siblings take a VALUE, never SQL, but they sit on a
+  SQL-bearing owner with a `String` in the descriptor — so the table-literal window read them, and a value
+  that happens to parse as SQL became a table. MEASURED: `p.setString(1, "SELECT * FROM audit_log")` on a
+  statement whose SQL is a RUNTIME value published `tables: ["audit_log"]`, a table that query may never
+  touch. The verdict stayed safe (the `prepareStatement(runtimeSql)` call marks `incomplete` on its own),
+  so this is a fabricated SURFACE rather than a certification — candor-ts had the same shape WITHOUT the
+  hedge, and there it certified. Excluded by the `set…` prefix, which is JDBC's own closed naming boundary
+  for the whole binder family rather than a curated list that rots.
 - **⟨0.29⟩ `gate --report`'s `allow` refusal stated a premise this rung made false.** The message said the
   AS-EFF-008 surface-completeness marker *"does not ride the report wire"*. It rides now: `incomplete` is
   published per function and declared in `resolves`. MEASURED — reports carry

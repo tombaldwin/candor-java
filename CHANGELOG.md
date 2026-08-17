@@ -8,6 +8,8 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+## [0.29.0] — 2026-08-17
+
 - **⟨0.29⟩ REVIEW FIX — the `forbid`/`only` boundary disclosure was silent for an ALL-PURE dependency.**
   It was gated on `crossDeps` (entries JOINED), not on a report being READ — the exact distinction its own
   commit message had specified. A dependency whose reached functions are pure contributes no entry, and a

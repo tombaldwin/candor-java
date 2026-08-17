@@ -167,6 +167,12 @@ final class AnalysisContext {
     // ['Unknown'] -> []) with no `invisible` to replace them, because `ch.qos.logback` is a κ-CURATED
     // covered prefix so the ledger is silent there either way. See StaleDepTrustTest.
     final Set<String> depChainedPkgs = new HashSet<>();
+    /** ⟨0.29⟩ How many CANDOR_DEPS reports this run actually READ — independent of what they contained.
+     *  `crossDeps` counts entries JOINED and `depChainedPkgs` counts packages a report NAMED; an ALL-PURE
+     *  dependency has neither (no effectful entry to join, and a class-directory report carries no
+     *  `package` key), so both left the ⟨0.29⟩ `forbid`/`only` boundary disclosure silent in exactly the
+     *  case it exists for. The operator chained a dep either way. */
+    int depReportsRead = 0;
     // A chained dependency's OWN effect-relevant call graph and direct Unknown reasons, keyed by the §2
     // report QUAL (`fn`) — which is what `calls` names. Together they let a consumer recover the reason
     // class of an Unknown the dep INHERITED rather than emitted, which `unknownWhy` cannot carry because

@@ -8,6 +8,12 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⟨0.29⟩ REVIEW FIX — the `forbid`/`only` boundary disclosure was silent for an ALL-PURE dependency.**
+  It was gated on `crossDeps` (entries JOINED), not on a report being READ — the exact distinction its own
+  commit message had specified. A dependency whose reached functions are pure contributes no entry, and a
+  class-directory report carries no `package` key either, so `depChainedPkgs` was empty too; only a count
+  of reports READ answers the question. MEASURED four-way with an all-pure dep: rust and ts warned, java
+  and swift did not.
 - **⟨0.29⟩ `forbid`/`only` stop at the SCAN BOUNDARY, and now say so.** Both are matched over the call
   graph; a chained dependency contributes EFFECTS, not EDGES, so a function calling into a dep has an
   empty adjacency and the crossing is invisible to them. MEASURED with a dep chained:

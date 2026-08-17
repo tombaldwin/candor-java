@@ -903,7 +903,20 @@ final class Policy {
         // operator to enumerate third-party scopes in an `only` list, the enumeration-that-rots the form
         // exists to escape.
         int namedRules = ctx().forbidRules.size() + ctx().onlyRules.size();
-        if (namedRules > 0 && !ctx().crossDeps.isEmpty()) {
+        // ⟨0.29⟩ `depChainedPkgs` (written on every dep report READ), NOT `crossDeps` (written only when
+        // an entry is JOINED). REVIEW FINDING, and it is this commit's own stated design violated by this
+        // commit: "Keyed on a dep report being READ, not on an entry being joined: a dependency whose
+        // reached function is PURE yields no entry at all, which is the fixture that caught this twice."
+        // `crossDeps` is populated in Loader only `if (!de.effects.isEmpty())`, so an ALL-PURE dependency
+        // — a report that is read and contributes nothing — left this silent in exactly the case the
+        // disclosure exists for. MEASURED against a real all-pure dep report with `only model -> util`:
+        // rust and ts warned, java and swift did not.
+        //
+        // `depReportsRead`, NOT `crossDeps` (entries JOINED) and NOT `depChainedPkgs` (packages the
+        // report NAMED — empty for a class-directory report, which carries no `package` key). Found in
+        // review: with an ALL-PURE dependency, java and swift were silent while rust and ts warned, in the
+        // exact case this commit's own message said the signal must cover.
+        if (namedRules > 0 && ctx().depReportsRead > 0) {
             System.err.println("candor: ⚠ " + namedRules + " name-matching rule(s) (`forbid`/`only`) were "
                     + "matched over THIS scan's call graph only — a chained dependency contributes "
                     + "effects, not call edges, so a crossing INTO a dependency is invisible to them. "

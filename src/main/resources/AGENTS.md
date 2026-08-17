@@ -159,7 +159,7 @@ Name queries resolve exact > segment-suffix (`Svc.save` matches `com.example.Svc
   READ from the report instead of recomputed. It reads that file and nothing else — no callgraph sidecar,
   no chained dep, no re-classification — so an entry the report OMITS is pure, per the ⟨0.21⟩ claim.
   **A rule whose evidence the report does not carry is REFUSED (exit 2), naming it — never evaluated
-  half-blind, because half-blind here always fails OPEN.** Three cases: `forbid A -> B` (needs the full
+  half-blind, because half-blind here always fails OPEN.** Four cases: `forbid A -> B` (needs the full
   call graph; `calls` is effect-relevant, so a crossing into a wholly pure unit is invisible); `allow <E>`
   (needs the AS-EFF-008 surface-completeness marker, which rides the wire for no effect); and a
   CLASS-SCOPED `deny` — `Net[dest…]` / `Unknown[class…]` — over an entry missing `netClass`, or whose

@@ -8,6 +8,15 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⟨0.29⟩ a malformed `net-partner` line was kept as a junk host instead of being disclosed.** The
+  grammar is `net-partner <host>`; the `=` spelling an operator reaches for by habit
+  (`net-partner = partner.example`) parsed as the HOST `"= partner.example"`, entered the partner set, and
+  matched nothing for the rest of the run. **The direction is SAFE** — the gate stays armed, so nothing is
+  certified that should not be — which is exactly why it sat unnoticed in ALL FOUR engines: the operator
+  believes a partner is declared, the verdict disagrees, and no line connects the two. ⟨0.28⟩ gave POLICY
+  files an `ignored` block for this shape; config files had no equivalent anywhere. Now warns and skips,
+  which is the contract candor-java's own config doc already claimed for *"every other malformed line in
+  this file"*. A well-formed line stays silent.
 - **⟨0.29⟩ a JDBC PARAMETER BINDER's value was read as a query, fabricating a table.**
   `PreparedStatement.setString(1, v)` and its siblings take a VALUE, never SQL, but they sit on a
   SQL-bearing owner with a `String` in the descriptor — so the table-literal window read them, and a value

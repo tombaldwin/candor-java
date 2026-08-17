@@ -426,7 +426,23 @@ public final class Config {
                     continue;
                 }
                 if ("net-partner".equals(key)) {     // ⟨0.20⟩ MULTI-VALUE: declared Net partner hosts
-                    if (!val.isEmpty()) partners.add(Literals.hostPart(val).toLowerCase(Locale.ROOT));
+                    // ⟨0.29⟩ …and a MALFORMED value is DISCLOSED, not kept as junk. The grammar is
+                    // `net-partner <host>`; the `=` spelling an operator reaches for by habit
+                    // (`net-partner = partner.example`) parsed as the HOST "= partner.example", entered
+                    // the set, and matched nothing for the rest of the run. The direction is SAFE — the
+                    // gate stays armed — which is exactly why it sat unnoticed: the operator believes a
+                    // partner is declared, the verdict disagrees, and no line connects the two. This
+                    // file's own contract, stated a hundred lines up, is that *every other malformed line
+                    // here warns and skips*; this key was the exception.
+                    if (!val.isEmpty()) {
+                        if (val.chars().anyMatch(Character::isWhitespace) || val.startsWith("=")) {
+                            System.err.println("candor: net-partner takes a bare host — `net-partner "
+                                    + "<host>`, one per line; '" + val + "' is not one and was IGNORED "
+                                    + "(an '=' or extra words is the usual cause)");
+                        } else {
+                            partners.add(Literals.hostPart(val).toLowerCase(Locale.ROOT));
+                        }
+                    }
                     continue;
                 }
                 if ("engine".equals(key)) {          // MULTI-VALUE: `engine [<impl>] <version>`

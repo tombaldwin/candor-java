@@ -8,6 +8,16 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⟨0.29⟩ ⚠ the XML `parse(File)` precision branch reintroduced the false PARTIAL `fs` claim PART 31
+  caught.** That branch adds `Fs` outside `effectMetadata` — the single place a classified effect is
+  refined — so `fs` came back ABSENT, and absent is not neutral here. `effectMetadata`'s own comment
+  states the harm and names the fixture: *"Recording nothing let a caller of this function inherit a
+  neighbour's ["write"] and thereby claim 'writes but never reads' … Found by conformance PART 31 on its
+  first run: `mixed()`, calling one writer and one undetermined-kind callee, reported fs=["write"]."*
+  MEASURED, same fixture, same wrong answer: `parseFile` `fs: None` + `generalWrite` `fs: ["write"]` →
+  `mixed` `fs: ["write"]`. Now records `read` — not the `FS_UNKNOWN` poison — because the branch's own
+  comment already proves the direction (*"reads this file for sure"*), which is strictly better than
+  abstaining. `mixed` reports `["read","write"]`; the pure-writer control is unchanged.
 - **⟨0.29⟩ ⚠ `excluded[].peeked` claimed a read the peek had not finished.** The rung already made
   the flag an OUTCOME rather than a lookup on the exclusion class, and stopped one level short. The peek
   reuses this engine's own entry point, so it produces its own ⟨0.21⟩ `unanalyzed` manifest — and

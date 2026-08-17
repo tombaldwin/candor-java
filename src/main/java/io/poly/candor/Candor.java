@@ -3715,7 +3715,20 @@ public class Candor {
         // Table literals from THIS SQL-bearing call's OWN argument (the executed/prepared SQL) —
         // same per-call attribution. tablesInSql needs a leading SQL keyword so a non-SQL arg
         // yields nothing; a SQL-shaped log line in another statement is no longer mis-attributed.
-        if (isSqlBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;")) {
+        // ⟨0.29⟩ …but NOT from a PARAMETER BINDER. `PreparedStatement.setString(1, v)` and its siblings
+        // take a VALUE, never a query, and they sit on a SQL-bearing owner with a `String` in the
+        // descriptor — so the window read them and any value that happens to parse as SQL became a table.
+        // MEASURED: `p.setString(1, "SELECT * FROM audit_log")` on a statement whose SQL is a RUNTIME
+        // value published `tables: ["audit_log"]` — a table this query may never touch. The verdict stayed
+        // safe because the `prepareStatement(runtimeSql)` call marks `incomplete` on its own, so this is a
+        // fabricated SURFACE rather than a certification (candor-ts had the same shape WITHOUT the hedge,
+        // and there it certified); a report that names the wrong table is still a report nobody can act on.
+        //
+        // The same carve-out shape as `FS_USE_VERBS`/`EXEC_USE_VERBS`: a method on a bearing owner whose
+        // argument is data. Forgetting a binder here fabricates; wrongly listing a query-bearing method
+        // would UNDER-report — so the set is the JDBC binder prefix, which is closed and named by the API.
+        if (isSqlBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;")
+                && !isSqlParameterBinder(min.name)) {
             boolean anySqlLiteral = false;
             for (String lit : literalArgsInWindow(min, constLocals)) {
                 anySqlLiteral = true;
@@ -5133,6 +5146,15 @@ public class Candor {
     /** Owners whose string arg is genuinely SQL (so a table extraction is meaningful) — JDBC + JPA + the
      *  SQL templates. Excludes Android SQLite execSQL/rawQuery? No — those ARE SQL; but a non-SQL Db client
      *  (a KV store classified Db) is excluded. */
+    /** ⟨0.29⟩ A JDBC PARAMETER BINDER — `setString`/`setObject`/`setNull`/… — whose String argument
+     *  is a VALUE bound into a placeholder, never the query. Excluded from the table-literal window;
+     *  see the call site for the measurement. `set…` is the closed JDBC naming convention for the
+     *  whole family, and `setNull`/`setObject` are in it, so the prefix is the API's own boundary
+     *  rather than a curated list that rots. */
+    static boolean isSqlParameterBinder(String method) {
+        return method.startsWith("set");
+    }
+
     static boolean isSqlBearingOwner(String internalOwner) {
         return internalOwner.startsWith("java/sql/") || internalOwner.startsWith("javax/persistence/")
                 || internalOwner.startsWith("jakarta/persistence/") || internalOwner.startsWith("org/hibernate/")

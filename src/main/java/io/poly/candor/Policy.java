@@ -886,6 +886,30 @@ final class Policy {
                 if (scopeMatches(fn, r.from())) matches.merge(r.src(), 1, Integer::sum);
             }
         }
+        // ⟨0.29⟩ THE NAME RULES STOP AT THE SCAN BOUNDARY, AND NOW SAY SO. `forbid A -> B` and
+        // `only A -> B …` match over the call graph; a chained dependency contributes EFFECTS, not EDGES,
+        // so a method calling into a dep has an EMPTY adjacency and the crossing is invisible to them.
+        // MEASURED in candor-ts and candor-rust with a dep chained: `only model -> util` answered
+        // `policy ✓` over a call into the dependency while a LOCAL unpermitted scope in the same run fired
+        // AS-EFF-011 — the rule was armed; the boundary was the gap.
+        //
+        // WORSE FOR `only`: `forbid` asks whether ONE named crossing is present, so a missed dep crossing
+        // under-reports one prohibition; `only` asserts A reaches the listed scopes AND NOTHING ELSE — a
+        // COMPLETENESS claim — and exists because `forbid` fails open. A package that calls a third-party
+        // library is not a leaf, and without this the gate called it one.
+        //
+        // DISCLOSURE, NOT A VERDICT CHANGE — the ⟨0.29⟩ `outOfScope` posture: say what was not judged and
+        // leave the exit code alone. Making the rules cross needs dep-report EDGES and would force an
+        // operator to enumerate third-party scopes in an `only` list, the enumeration-that-rots the form
+        // exists to escape.
+        int namedRules = ctx().forbidRules.size() + ctx().onlyRules.size();
+        if (namedRules > 0 && !ctx().crossDeps.isEmpty()) {
+            System.err.println("candor: ⚠ " + namedRules + " name-matching rule(s) (`forbid`/`only`) were "
+                    + "matched over THIS scan's call graph only — a chained dependency contributes "
+                    + "effects, not call edges, so a crossing INTO a dependency is invisible to them. "
+                    + "`deny`/`allow` still cross (effects propagate); an `only` rule cannot certify that "
+                    + "a package is a leaf when it calls into one of its dependencies.");
+        }
         for (var e : matches.entrySet()) {
             if (e.getValue() != 0) continue;
             System.err.println("candor: policy rule matched NO function — `" + e.getKey() + "`. It was "

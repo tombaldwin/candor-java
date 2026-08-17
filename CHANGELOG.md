@@ -10,6 +10,10 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.29.0] — 2026-08-17
 
+- **`jbang-catalog.json`'s DESCRIPTION names the current contract (candor-spec 0.29).** Its
+  `script-ref` URL is a release PIN and deliberately still names 0.28.2 — it may only move once the
+  release it points at exists, which is the 404 that `release-preflight [3]` exists to prevent.
+
 - **⟨0.29⟩ REVIEW FIX — the `forbid`/`only` boundary disclosure was silent for an ALL-PURE dependency.**
   It was gated on `crossDeps` (entries JOINED), not on a report being READ — the exact distinction its own
   commit message had specified. A dependency whose reached functions are pure contributes no entry, and a

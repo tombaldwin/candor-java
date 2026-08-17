@@ -705,6 +705,7 @@ final class Loader {
                     // chained-ness fact keeps its own, ungated set. `depCoveredPkgs` = whose silence we
                     // trust; `depChainedPkgs` = for whom a report was configured.
                     ctx().depChainedPkgs.addAll(reportPackages(obj));
+                    ctx().depReportsRead++;   // ⟨0.29⟩ see AnalysisContext.depReportsRead
                     if (stale) {
                         System.err.println("candor: CANDOR_DEPS report " + f + " was produced by build '"
                                 + depVer + "', not this one ('" + ownVersion + "') — its effects are"

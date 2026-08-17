@@ -8,6 +8,16 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⟨0.29⟩ `gate --report`'s `allow` refusal stated a premise this rung made false.** The message said the
+  AS-EFF-008 surface-completeness marker *"does not ride the report wire"*. It rides now: `incomplete` is
+  published per function and declared in `resolves`. MEASURED — reports carry
+  `resolves: ["fs","incomplete"]` and `incomplete: ["Fs"]` on the masked unit, and the verb still refuses.
+  **Refusing remains correct** (a producer that does not declare the marker cannot be gated on, and
+  answering per-report would make one engine evaluate where its siblings refuse, splitting the verb), so
+  only the stated reason changes and exit 2 is unchanged. SPEC §6.2 had already corrected this same
+  wording for itself in ⟨0.24⟩ — *"This clause first said the marker 'does not ride the wire', flatly.
+  That is FALSE…"* — while the engines kept shipping the flat version. A user-facing message describing a
+  limitation the code has since removed is worse than a stale code comment: operators read this one.
 - **⟨0.29⟩ ⚠ the XML `parse(File)` precision branch reintroduced the false PARTIAL `fs` claim PART 31
   caught.** That branch adds `Fs` outside `effectMetadata` — the single place a classified effect is
   refined — so `fs` came back ABSENT, and absent is not neutral here. `effectMetadata`'s own comment

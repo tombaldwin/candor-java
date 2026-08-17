@@ -3381,10 +3381,13 @@ public final class Query {
         for (PolicyRule.Allow a : AnalysisState.ctx().allowRules)
             out.add(new String[]{a.src().trim(),
                     "`" + a.src().trim() + "` is an `allow` rule, which `gate --report` cannot evaluate — "
-                    + "the AS-EFF-008 surface-completeness marker does not ride the report wire, so a "
-                    + "benign visible literal beside a runtime-computed endpoint would be CERTIFIED here "
-                    + "and flagged by a scan. (`netClass: unknown-host` is NOT that marker — it also names "
-                    + "a merely unrecognised host.) Gate allowlists at scan time: candor <classes> "
+                    + "the AS-EFF-008 surface-completeness marker WAS said not to ride the report wire; "
+                + "⟨0.29⟩ made it ride, but only when the producing report declares `incomplete` in "
+                + "`resolves`. This verb refuses UNIFORMLY rather than answering per-report, because an "
+                + "engine that evaluated where its siblings refuse would SPLIT THE VERB — a benign "
+                + "visible literal beside a runtime-computed endpoint would be CERTIFIED here and "
+                + "flagged by a scan. (`netClass: unknown-host` is NOT that marker — it also names a "
+                + "merely unrecognised host.) Gate allowlists at scan time: candor <classes> "
                     + "--policy " + policyPath});
         return out;
     }

@@ -8,6 +8,8 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+## [0.29.1] — 2026-08-18
+
 - **An UNCOVERED package whose key could not be formed was dropped instead of disclosed.** The κ ledger
   keys on the package name, derived as `owner.substring(0, lastIndexOf('/'))` — so a class in the
   DEFAULT package has no slash, yielded `""`, and the `!pkg.isEmpty()` guard skipped BOTH the

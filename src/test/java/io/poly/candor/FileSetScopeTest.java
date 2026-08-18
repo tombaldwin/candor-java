@@ -359,4 +359,80 @@ class FileSetScopeTest {
             rm(app.getParent());
         }
     }
+
+    /**
+     * ⟨0.30⟩ THE PEEK READS MULTI-RELEASE OVERRIDES, AND A DENIED EFFECT IN ONE MOVES THE VERDICT.
+     *
+     * <p>A multi-release jar ships version-specific overrides under {@code META-INF/versions/<N>/}. The
+     * scan analyses the BASE class — the portable surface — and skips the override, so an effect present
+     * ONLY in a versioned copy sat outside every verdict. That exclusion declared itself
+     * {@code peeked: false} and said exactly this in its own reason: an honest hole, and one this engine
+     * can close, because an override IS bytecode and {@code load()} already reads it.
+     *
+     * <p><b>MEASURED BEFORE THE PASS EXISTED, on log4j-api 2.23.1</b> (4 real class overrides, not just a
+     * {@code module-info}): scanning the base copies against base-with-overrides-applied — what any JVM 9+
+     * actually runs — gave <b>21 functions a materially different verdict</b> and left <b>5 that exist
+     * only in the versioned copy</b> unjudged. On that jar the divergence is over-statement, so it is not
+     * itself a cardinal sin; the MECHANISM is symmetric, and this fixture is the other direction: a base
+     * class that is pure and an override that Execs.
+     *
+     * <p><b>THE CONTROL IS THE SECOND ARM.</b> A jar whose override is CLEAN must stay exit 0 with an
+     * empty out-of-scope block and {@code peeked: true} — the ⟨0.27⟩ asked-and-clear answer. Without it a
+     * pass that reddened every multi-release jar would satisfy the first arm, and nearly every modern
+     * dependency ships one.
+     */
+    @Test void aDeniedEffectInAMultiReleaseOverrideIsPeekedAndMovesTheVerdict() throws Exception {
+        Path base = compile(Map.of("B.java", String.join("\n",
+            "package com.x;",
+            "public class B { public static int f(int i) { return i + 1; } }")));
+        Path over = compile(Map.of("B.java", String.join("\n",
+            "package com.x;",
+            "public class B {",
+            "  public static int f(int i) throws Exception { new ProcessBuilder(\"ls\").start(); return i; }",
+            "}")));
+        Path tree = tmp.resolve("mr");
+        Files.createDirectories(tree.resolve("META-INF/versions/9"));
+        copyTree(base, tree);
+        copyTree(over, tree.resolve("META-INF/versions/9"));
+        Path jar = tmp.resolve("mr.jar");
+        jarUp(tree, jar);
+
+        Run r = runCli(jar.toString(), "--json", tmp.resolve("mr.json").toString(),
+                       "--policy", policy("mrexec.policy", "deny Exec\n").toString());
+        JsonObject rpt = report(tmp.resolve("mr.json"));
+        var oos = rpt.getAsJsonArray("outOfScope");
+        assertEquals(1, oos.size(),
+            "the override's Exec was not reported — the BASE class is pure, so nothing else in this jar "
+            + "could produce a finding, and its absence means the versioned copy was never read: " + oos);
+        assertEquals("multi-release-override", oos.get(0).getAsJsonObject().get("class").getAsString(),
+            "the finding must be filed under the class that excluded it: " + oos);
+        assertEquals(2, r.exit(),
+            "a peeked fn performing the denied effect makes the verdict INCOMPLETE. Exit 0 here is the "
+            + "false all-clear this pass exists to close: the base is pure and the code that RUNS execs. "
+            + r.stderr());
+        JsonObject cls = excludedClass(rpt, "multi-release-override");
+        assertNotNull(cls, "the class must still be declared in the scope block: " + rpt.get("excluded"));
+        assertTrue(cls.get("peeked").getAsBoolean(),
+            "…and now declared PEEKED, because every override was read on this run: " + cls);
+
+        // THE CONTROL: same shape, clean override. A pass that reddened every multi-release jar would
+        // satisfy the arm above, and nearly every modern dependency ships one.
+        Path overClean = compile(Map.of("B.java", String.join("\n",
+            "package com.x;",
+            "public class B { public static int f(int i) { return i + 2; } }")));
+        Path tree2 = tmp.resolve("mr2");
+        Files.createDirectories(tree2.resolve("META-INF/versions/9"));
+        copyTree(base, tree2);
+        copyTree(overClean, tree2.resolve("META-INF/versions/9"));
+        Path jar2 = tmp.resolve("mr2.jar");
+        jarUp(tree2, jar2);
+        Run r2 = runCli(jar2.toString(), "--json", tmp.resolve("mr2.json").toString(),
+                        "--policy", policy("mrexec2.policy", "deny Exec\n").toString());
+        JsonObject rpt2 = report(tmp.resolve("mr2.json"));
+        assertEquals(0, rpt2.getAsJsonArray("outOfScope").size(),
+            "a CLEAN override produced a finding: " + rpt2.get("outOfScope"));
+        assertEquals(0, r2.exit(), "…and must leave the verdict alone: " + r2.stderr());
+        assertTrue(excludedClass(rpt2, "multi-release-override").get("peeked").getAsBoolean(),
+            "present-and-empty is asked-and-clear, and it is a claim only if the class was READ");
+    }
 }

@@ -73,8 +73,15 @@ final class Loader {
                 // the BASE classes (the runtime picks the override; the base is the portable surface) and
                 // skip the versioned copies — they are duplicates of the same class, and the newest ones may
                 // be a bytecode version even a current ASM can't read.
-                if (p.toString().replace('\\', '/').contains("/META-INF/versions/")) {
-                    ctx().excluded.put(rel(root, p), "multi-release-override");
+                boolean versioned = p.toString().replace('\\', '/').contains("/META-INF/versions/");
+                // ⟨0.30⟩ THE PEEK'S VERSIONED PASS INVERTS THIS. Ordinarily the base class is analysed and
+                // the override skipped; under `peekVersioned` the override is analysed and the base is
+                // skipped, because the ordinary scan has already judged the base and this pass exists to
+                // read exactly what that scan did not. Neither side is recorded as `excluded` on the peek
+                // pass — its `excluded` block is discarded with its context; the SCAN's block is the one
+                // the report carries.
+                if (ctx().peekVersioned != versioned) {
+                    if (!ctx().peekVersioned) ctx().excluded.put(rel(root, p), "multi-release-override");
                     continue;
                 }
                 // TOLERATE a class ASM can't parse (a future-major-version class, a corrupt entry): skip it

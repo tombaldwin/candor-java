@@ -806,13 +806,25 @@ final class Loader {
                         // last-non-empty-wins cost (a stale {Unknown} erasing a trusted Fs, `deny Fs`
                         // exit 1 -> 0) and why the order-independence matters.
                         //
-                        // THE `!isEmpty()` GATE IS UNCHANGED, deliberately. It decides WHETHER AN ENTRY IS
-                        // RECORDED AT ALL, which is a different question from how two recorded entries
-                        // reconcile, and this commit is only answering the second. Admitting empty entries
-                        // would make a key that is currently ABSENT resolve as present-and-pure, which is a
-                        // new purity claim on a path nothing here has measured — exactly the kind of tail
-                        // that turns a soundness fix into its mirror.
-                        if (!de.effects.isEmpty()) {
+                        // THE GATE DECIDES WHETHER AN ENTRY IS RECORDED AT ALL, which is a different
+                        // question from how two recorded entries reconcile. It admitted only entries with
+                        // EFFECTS, and the reasoning was that admitting empty ones "would make a key that
+                        // is currently ABSENT resolve as present-and-pure, which is a new purity claim on
+                        // a path nothing here has measured".
+                        //
+                        // ⟨0.29⟩ …WHICH LEFT AN EFFECT-LESS `incomplete` ENTRY DROPPED BEFORE ITS MARKER
+                        // COULD PROPAGATE, and SPEC §2 makes carrying it a MUST: "a join that carries the
+                        // effect and drops `incomplete` lets a benign literal in the consumer certify what
+                        // the dependency declared uncertifiable". This engine's own writer began emitting
+                        // that shape at 0.29.1, so our own reports held entries this path could not carry.
+                        //
+                        // The condition is widened to `|| !de.incomplete.isEmpty()` and no further, which
+                        // is what keeps the original reasoning intact: a marker is a HEDGE, never a purity
+                        // claim, so nothing newly admitted can certify anything. An entry with neither
+                        // effects nor a marker is still dropped. Pinned by CrossScanBoundaryTest
+                        // #anEffectLessDepEntrysIncompleteReachesTheCaller, whose second arm requires that
+                        // no marker is INVENTED for an entry that published none.
+                        if (!de.effects.isEmpty() || !de.incomplete.isEmpty()) {
                             DepFn prev = ctx().crossDeps.get(h);
                             if (prev == null) ctx().crossDeps.put(h, de);
                             else prev.unionWith(de);

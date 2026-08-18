@@ -28,10 +28,12 @@ import org.junit.jupiter.api.Test;
  * an EFFECT alongside the marker — a runtime-SQL call yields {@code Db} AND {@code incomplete:[Db]}, and
  * a method carrying both is admitted by the very first arm of the filter, so it cannot distinguish a
  * fixed writer from a broken one. The real instances came from sqlite-jdbc's {@code declared}/
- * {@code overdeclared} machinery, and the dependency route cannot supply one either: {@code Loader}
- * records a dep entry only {@code if (!de.effects.isEmpty())}, deliberately, so an incomplete-only dep
- * function is dropped before its marker can propagate (filed separately — it is this same defect one
- * layer over). Injecting into {@code surfaceIncomplete} reproduces the exact state the fixpoint hands
+ * {@code overdeclared} machinery, and the dependency route could not supply one either: {@code Loader}
+ * recorded a dep entry only {@code if (!de.effects.isEmpty())}, so an incomplete-only dep function was
+ * dropped before its marker could propagate — this same defect one layer over. That half is now FIXED
+ * (the gate also admits an entry carrying {@code incomplete}) and pinned by
+ * {@link CrossScanBoundaryTest#anEffectLessDepEntrysIncompleteReachesTheCaller}; injection is still the
+ * right fixture HERE, because this row is about the serialization boundary rather than the chain. Injecting into {@code surfaceIncomplete} reproduces the exact state the fixpoint hands
  * the writer, which is the state under test; the row would be untestable otherwise, and an unguarded fix
  * in this codebase is one that comes back.
  */

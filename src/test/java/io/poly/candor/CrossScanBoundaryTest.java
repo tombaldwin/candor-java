@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeSet;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -1207,5 +1208,118 @@ class CrossScanBoundaryTest {
                             + "and dropping the Unknown would hide that one of the two reports is not "
                             + "believable" + where);
         }
+    }
+
+    // ── ⟨0.29⟩ AN EFFECT-LESS DEP ENTRY'S `incomplete` MUST REACH ITS CALLER ────────────────────────────
+
+    /** {@link #scanChained}, rewriting the dep REPORT (not its sidecar) between the two scans — the only
+     *  way to pose a dep entry shape whose natural producers all attach an effect alongside the marker. */
+    private static Map<String, EffectSet> scanChainedRewritingReport(Map<String, String> lib,
+            Map<String, String> app, java.util.function.UnaryOperator<String> rewrite) throws Exception {
+        Path appDir = compileApp(lib, app);
+        Path base = appDir.getParent();
+        Config saved = Candor.config;
+        try {
+            Path depReport = base.resolve("dep.json");
+            Candor.config = Config.empty();
+            ReportWriter.writeReport(Candor.runScan(base.resolve("lib")), depReport.toString(), null);
+            Files.writeString(depReport, rewrite.apply(Files.readString(depReport)));
+            Files.createDirectories(base.resolve(".candor"));
+            Files.writeString(base.resolve(".candor/config"), "deps " + depReport + "\n");
+            Candor.config = Config.forTarget(appDir);
+            return Candor.runScan(appDir);
+        } finally {
+            Candor.config = saved;
+            rm(base);
+        }
+    }
+
+    /** Blank every entry's effects, optionally leaving `incomplete:["Db"]` behind. JSON-AWARE on purpose:
+     *  a string-replace fixture here silently matched nothing when the writer's indentation differed, and
+     *  a rewrite that does not apply makes the row pass for the wrong reason. */
+    private static String reshape(String json, boolean keepMarker) {
+        com.google.gson.JsonObject o = new Gson().fromJson(json, com.google.gson.JsonObject.class);
+        for (com.google.gson.JsonElement e : o.getAsJsonArray("functions")) {
+            com.google.gson.JsonObject f = e.getAsJsonObject();
+            f.add("inferred", new com.google.gson.JsonArray());
+            f.add("direct", new com.google.gson.JsonArray());
+            if (keepMarker) {
+                com.google.gson.JsonArray inc = new com.google.gson.JsonArray();
+                inc.add("Db");
+                f.add("incomplete", inc);
+            }
+        }
+        return new Gson().toJson(o);
+    }
+
+    /**
+     * A DEPENDENCY'S DISCLOSED UNCERTAINTY MUST REACH ITS CALLERS EVEN WHEN IT CARRIES NO EFFECT.
+     *
+     * <p>SPEC §2 makes this a MUST: the chained join applies <b>every</b> surface the ordinary join
+     * applies — {@code hosts}/{@code cmds}/{@code paths}/{@code tables}/{@code invisible}/{@code
+     * incomplete} — because <i>"a join that carries the effect and drops `incomplete` lets a benign
+     * literal in the consumer certify what the dependency declared uncertifiable"</i>.
+     *
+     * <p><b>WHY THE SHAPE HAD TO BE INJECTED.</b> Every natural producer attaches an EFFECT beside the
+     * marker (a runtime-SQL call yields {@code Db} AND {@code incomplete:[Db]}), and such an entry is
+     * admitted by the effects arm, so it cannot tell a fixed loader from a broken one. This engine's own
+     * report writer began emitting the effect-less shape at 0.29.1 (see
+     * {@link IncompleteOnlyReachesTheReportTest}), so our own reports contain entries the chaining path
+     * could not carry — the defect was measured on its own output, not hypothesised.
+     *
+     * <p><b>THE CONTROL IS THAT NO MARKER IS INVENTED.</b> The fix widens {@code Loader}'s admission gate
+     * from {@code !effects.isEmpty()} to also admit an entry carrying {@code incomplete} — so the failure
+     * mode to guard is a join that hedges everything it now admits, which would drown every consumer of
+     * every chained report. The second arm poses an entry with an EFFECT and NO marker and requires the
+     * caller to come back unhedged.
+     *
+     * <p><b>WHAT IS DELIBERATELY NOT ASSERTED, because it was MEASURED not to manifest.</b> The gate's own
+     * comment records the hazard that kept it narrow: admitting EMPTY entries "would make a key that is
+     * currently ABSENT resolve as present-and-pure, which is a new purity claim". That was checked here
+     * both ways — with the gate shipped, with the gate opened to everything — and the caller reads the
+     * same either way, because the dep report's PACKAGE registration already covers the call and the
+     * caller is pure before any entry is admitted. An assertion on it would be a control with no teeth,
+     * and this suite has measured enough of those to prefer saying so to shipping one. The narrow
+     * condition still holds the line: only an entry carrying a marker is newly admitted, and a marker is
+     * a hedge, never a purity claim.
+     */
+    @Test
+    void anEffectLessDepEntrysIncompleteReachesTheCaller() throws Exception {
+        // The lib function is EFFECTFUL so the writer emits a real entry, with the real `hash` the join
+        // keys on; the rewrite below then strips the effect and leaves only the marker. Posing it as a
+        // pure function instead does not work — java omits effect-less functions from the report
+        // entirely, so there would be no entry to rewrite and the row would pass for the wrong reason.
+        Map<String, String> lib = Map.of("lib/L.java", String.join("\n",
+            "package lib;",
+            "public class L {",
+            "  public static byte[] f() throws Exception {",
+            "    return java.nio.file.Files.readAllBytes(java.nio.file.Path.of(\"/tmp/x\"));",
+            "  }",
+            "}"));
+        Map<String, String> app = Map.of("app/A.java", String.join("\n",
+            "package app;",
+            "public class A { public static byte[] run() throws Exception { return lib.L.f(); } }"));
+
+        // (1) THE DEFECT: strip the effect, keep the marker — no effects, `incomplete:["Db"]`.
+        scanChainedRewritingReport(lib, app, j -> reshape(j, true));
+        assertTrue(AnalysisState.ctx().surfaceIncomplete.getOrDefault("app.A.run", new TreeSet<>())
+                        .contains("Db"),
+            "an effect-less dep entry's `incomplete` was DROPPED before it could propagate — the caller "
+            + "reads certainly-nothing about a callee that declared it could not be fully seen, which is "
+            + "the propagation invariant SPEC §2 states as a MUST. Got: "
+            + AnalysisState.ctx().surfaceIncomplete.get("app.A.run"));
+
+        // (2) THE OVER-CHARGE CONTROL: an entry with an EFFECT and NO marker must join as it always did,
+        // and must NOT acquire a hedge. A fix that hedged everything it newly admits would pass the arm
+        // above and make every consumer of every chained report read uncertain.
+        Map<String, EffectSet> plain = scanChainedRewritingReport(lib, app, j -> j);
+        assertTrue(AnalysisState.ctx().surfaceIncomplete.getOrDefault("app.A.run", new TreeSet<>()).isEmpty(),
+            "the caller of a dep entry that declared NO uncertainty came back hedged — the join is "
+            + "inventing a marker the dependency never published: "
+            + AnalysisState.ctx().surfaceIncomplete.get("app.A.run"));
+        assertTrue(plain.getOrDefault("app.A.run", EffectSet.empty()).toNames().contains("Fs"),
+            "fixture precondition: the ordinary chained join must still carry the dep's Fs, or the arm "
+            + "above passes because nothing joined at all. Got: "
+            + plain.getOrDefault("app.A.run", EffectSet.empty()).toNames());
     }
 }

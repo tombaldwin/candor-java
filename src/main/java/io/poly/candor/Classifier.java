@@ -264,6 +264,17 @@ final class Classifier {
         // 14k Env — and `getProperty("os.name")` is not an env read in any case). Properties are
         // low-signal config, left unclassified like console writes (§1).
         if (owner.equals("java.lang.System") && method.equals("getenv")) return Effect.ENV;
+        // `ProcessHandle.Info.arguments()/command()/commandLine()` — the process's OWN startup state,
+        // which is the same channel as `getenv`. §1 defines Env as "reading environment variables / THE
+        // PROCESS ENVIRONMENT", and argv arrives through the same `exec` as envp; secrets reach a program
+        // that way (`--token=…`) exactly as they do through a variable. candor-rust has always charged
+        // `std::env::args()`; candor-ts and candor-swift were moved to match on 2026-08-18 after a
+        // cross-engine parity sweep found one question answered two ways, and this is java's spelling of
+        // it. NOT the `System.getProperty` case excluded above: that is JVM `-D` config read pervasively
+        // at class-init (a measured 14k spurious Env on a scala-library scan), where this is read once.
+        if (owner.equals("java.lang.ProcessHandle$Info")
+                && (method.equals("arguments") || method.equals("command") || method.equals("commandLine")))
+            return Effect.ENV;
         // ProcessBuilder.environment() returns the live child-process env map — reading it surfaces the
         // same OS environment as getenv (an Env disclosure), writing it sets a subprocess env var.
         if (owner.equals("java.lang.ProcessBuilder") && method.equals("environment")) return Effect.ENV;

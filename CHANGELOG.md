@@ -8,6 +8,22 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ CARDINAL-SIN CLASS — uncertainty was computed and then DISCARDED at the report boundary.** The
+  serialization filter admitted a method for four reasons (it has effects, is an entry point, is blind,
+  or its class declares a capability) and `incomplete` was not one of them. Absence from `functions`
+  MEANS PURE, so a method whose only signal was "candor could not fully see this" was serialized as
+  certainly-nothing. The `incompleteAcc` fixpoint had already computed it correctly — this was a loss on
+  the way out, not a propagation failure. MEASURED on sqlite-jdbc 3.46.0.0 in a corpus round:
+  `org.sqlite.JDBC.getPropertyInfo` and `JDBC3ResultSet.getColumnCount` both read PURE while calling
+  callees disclosed `incomplete: [Db]`; `check_honesty.py` said DISHONEST and says `honest ✓` with the
+  fix. Both callees were in the report only by luck (their class declares a capability, so the fourth arm
+  caught them) — their callers had no such luck. **This is the shape that was a cardinal sin in
+  candor-swift on Alamofire (2026-08-13), reached here through serialization rather than propagation.**
+  OVER-CHARGE CONTROL: +0 functions on gson, commons-lang3, jackson-core and joda-time — it admits the
+  uncertain, not the merely uninteresting. Gated by pinning sqlite-jdbc into the standing corpus, where
+  TWO independent oracles catch it: the honesty invariant, and oracle [2] (1708/1710 propagated against
+  the published jar, 1713/1713 with the fix).
+
 ## [0.29.0] — 2026-08-17
 
 - **`jbang-catalog.json` names v0.29.0.** Its DESCRIPTION carries the current contract

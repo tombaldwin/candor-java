@@ -25,6 +25,15 @@ after upgrading; review policies and regenerate baselines with the new build.
   It now asserts the two things that matter separately: no `Fs` is INHERITED across the boundary, and
   the boundary is DISCLOSED (`invisible` names the unseen package). Found while fixing the above.
 
+- **…and that fix is now PINNED.** A pre-release reviewer confirmed by reverting that it shipped with no
+  regression coverage at all: the arm could be deleted and candor-java's entire suite stayed green, its
+  only evidence being a corpus measurement no CI workflow runs. `IncompleteOnlyReachesTheReportTest`
+  closes that, and is calibrated — it FAILS with the arm removed. The fixture injects into
+  `surfaceIncomplete` rather than provoking the marker, because every natural producer attaches an EFFECT
+  alongside it (a runtime-SQL call yields `Db` AND `incomplete:[Db]`), and a method carrying both is
+  admitted by the filter's FIRST arm — so it cannot tell a fixed writer from a broken one. The reasoning
+  is in the test's header, including why the dependency route cannot supply the shape either.
+
 - **⚠ CARDINAL-SIN CLASS — uncertainty was computed and then DISCARDED at the report boundary.** The
   serialization filter admitted a method for four reasons (it has effects, is an entry point, is blind,
   or its class declares a capability) and `incomplete` was not one of them. Absence from `functions`

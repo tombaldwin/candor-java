@@ -8,6 +8,23 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **An UNCOVERED package whose key could not be formed was dropped instead of disclosed.** The κ ledger
+  keys on the package name, derived as `owner.substring(0, lastIndexOf('/'))` — so a class in the
+  DEFAULT package has no slash, yielded `""`, and the `!pkg.isEmpty()` guard skipped BOTH the
+  `coverage.uncovered` ledger and `blindDirect`. A floored call into an external default-package class
+  was therefore invisible twice over: no uncovered entry, and no blind marker propagated to its callers.
+  Every package-QUALIFIED owner discloses at a single call; only the one whose key could not be formed
+  vanished. Now disclosed under the stand-in `(default package)` — chosen after `<default>` reached the
+  report as `"\u003cdefault\u003e"`, the serializer HTML-escaping it; a real Java package can contain
+  neither parentheses nor a space, so the stand-in cannot collide with one. OVER-CHARGE CONTROL: on
+  hadoop-common and kafka-clients the uncovered count (72, 18) and the effectful-function count (15439,
+  30912) are unchanged, and no `(default package)` entry appears.
+
+- **`test/smoke.sh`'s boundary row is STRENGTHENED rather than deleted.** It asserted the consumer is
+  ABSENT from the report without `CANDOR_DEPS` — which pinned the silent half of exactly this defect.
+  It now asserts the two things that matter separately: no `Fs` is INHERITED across the boundary, and
+  the boundary is DISCLOSED (`invisible` names the unseen package). Found while fixing the above.
+
 - **⚠ CARDINAL-SIN CLASS — uncertainty was computed and then DISCARDED at the report boundary.** The
   serialization filter admitted a method for four reasons (it has effects, is an entry point, is blind,
   or its class declares a capability) and `incomplete` was not one of them. Absence from `functions`

@@ -3470,7 +3470,16 @@ public class Candor {
         // curated coverage list is a named blind spot at every call shape κ floors.
         if (!ctx.projectClasses.contains(min.owner) && min.owner.charAt(0) != '[') {
             int slash = min.owner.lastIndexOf('/');
-            String pkg = slash > 0 ? min.owner.substring(0, slash).replace('/', '.') : "";
+            // AN UNFORMABLE KEY IS DISCLOSED UNDER A STAND-IN, NEVER DROPPED. A class in the DEFAULT
+            // package has no slash, so this yielded "" and the `!pkg.isEmpty()` guard below skipped the
+            // ledger AND `blindDirect` — a floored call into an external default-package class was
+            // silently invisible, with no uncovered entry and no blind propagation to its callers. Every
+            // package-qualified owner discloses at a single call; only the one whose key could not be
+            // formed vanished, which is the shape the family's could-not-form-a-key rule exists for.
+            // The stand-in avoids `<>`: the serializer HTML-escapes them, and the ledger key reached the report
+            // as "\u003cdefault\u003e". A real Java package cannot contain parentheses or a space, so this
+            // cannot collide with one and needs no escaping.
+            String pkg = slash > 0 ? min.owner.substring(0, slash).replace('/', '.') : "(default package)";
             if (!pkg.isEmpty() && !kappaCovers(pkg)) {
                 // A FLOORED call (classifier returned pure) into an uncurated external package is a
                 // per-method blind spot, propagated to callers. A call κ actually CLASSIFIED is not — its

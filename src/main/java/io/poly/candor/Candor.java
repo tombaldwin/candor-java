@@ -1532,6 +1532,17 @@ public class Candor {
                     + " class(es) could not be analyzed (see above); a gate cannot be green over unanalyzed code");
             System.exit(2);
         }
+        // ⟨0.30⟩ THE SCOPE HALF OF THE SAME POSTURE, and the same exit. EXIT 2, NOT 1: these functions are
+        // not in `violations` and not in `functions`, because the gate did not judge them — exit 1 would
+        // claim "I judged your code and it breaks the policy", which is false in the other direction. The
+        // violation exit above still dominates: certain beats unevaluable.
+        var oosFindings = ctx().outOfScope;
+        if (gateConfigured && oosFindings != null && !oosFindings.isEmpty()) {
+            System.err.println("candor-java: gate NOT certified — " + oosFindings.size()
+                    + " function(s) OUTSIDE this scan's scope perform an effect this policy denies (named "
+                    + "above); the gate did not judge them, so the verdict is incomplete rather than a pass");
+            System.exit(2);
+        }
     }
 
     /** ⟨0.15 staged⟩ The κ-coverage ledger, computed the ONE shared way for its three consumers — the
@@ -1575,12 +1586,19 @@ public class Candor {
      *  them out is what lets ONE verdict writer serve both routes, so the two documents cannot drift in
      *  shape and a consumer cannot tell a scanned verdict from a report-gated one. */
     record GateFacts(int analyzedCount, java.util.List<String[]> unanalyzed,
-                     java.util.List<Map.Entry<String, Integer>> uncovered) {}
+                     java.util.List<Map.Entry<String, Integer>> uncovered,
+                     java.util.List<io.poly.candor.model.Report.OutOfScope> outOfScope) {}
 
     static GateFacts scanGateFacts() {
         java.util.List<String[]> un = new ArrayList<>();
         for (var e : ctx().unanalyzed.entrySet()) un.add(new String[]{e.getKey(), e.getValue()});
-        return new GateFacts(ctx().edges.keySet().size(), un, kappaUncovered());
+        // ⟨0.30⟩ the peek's findings travel with the other three, for the reason the doc above gives: ONE
+        // verdict writer serves both routes, so the two documents cannot drift. A scan reads them from
+        // live state; `gate --report` reads them from the report envelope it was handed.
+        var oos = ctx().outOfScope == null
+                ? java.util.List.<io.poly.candor.model.Report.OutOfScope>of()
+                : java.util.List.copyOf(ctx().outOfScope);
+        return new GateFacts(ctx().edges.keySet().size(), un, kappaUncovered(), oos);
     }
 
     static void writeGateJson(String path, int violations, GateFacts facts) {
@@ -1623,7 +1641,14 @@ public class Candor {
         // ⟨0.21⟩ COMPLETENESS MANIFEST (Gap 2): a gate over code candor could NOT fully analyze (skipped
         // unparseable classes) must NOT read green — their effects are invisible, so a `deny`/`pure` that
         // "passes" over them is a false-pure. `ok` requires BOTH no violation AND a complete analysis.
-        boolean incomplete = !facts.unanalyzed().isEmpty();
+        // ⟨0.30⟩ THE SECOND CAUSE. `unanalyzed` is "I opened this class and could not read it";
+        // `outOfScope` is "I never opened it, and when the peek looked afterwards it performed the effect
+        // this policy denies". Both mean the gate could not see enough of the tree to certify it, so both
+        // suppress `ok`. Reverses ⟨0.29⟩'s "the verdict does not move" on the measurement that the peek
+        // resolves a CONCRETE denied effect rather than uncertainty.
+        var oos = facts.outOfScope();
+        boolean scopeIncomplete = oos != null && !oos.isEmpty();
+        boolean incomplete = !facts.unanalyzed().isEmpty() || scopeIncomplete;
         out.put("ok", violations == 0 && !incomplete);
         // ⟨0.21⟩ (Gap 1) the analyzed-universe count, so a --gate-json consumer sees the scan's scope from the
         // verdict alone (mirrors the report envelope's `analyzed`).
@@ -1660,15 +1685,21 @@ public class Candor {
         // "no ok:true GUESS" — ok:false + incomplete:true is honest, never a fabricated pass).
         if (incomplete) {
             out.put("incomplete", true);
-            List<Map<String, Object>> un = new ArrayList<>();
-            for (String[] e : facts.unanalyzed()) {
-                var m = new java.util.LinkedHashMap<String, Object>();
-                m.put("path", e[0]);
-                m.put("reason", e[1]);
-                un.add(m);
+            if (!facts.unanalyzed().isEmpty()) {
+                List<Map<String, Object>> un = new ArrayList<>();
+                for (String[] e : facts.unanalyzed()) {
+                    var m = new java.util.LinkedHashMap<String, Object>();
+                    m.put("path", e[0]);
+                    m.put("reason", e[1]);
+                    un.add(m);
+                }
+                out.put("unanalyzed", un);
             }
-            out.put("unanalyzed", un);
         }
+        // ⟨0.30⟩ …and WHICH functions made it incomplete, in the machine channel — the same entries the
+        // report carries, so `gate --report` re-emits them from the report and §3.1's byte-equality holds
+        // by construction. Omitted when empty, so a clean verdict stays byte-identical to a ⟨0.29⟩ one.
+        if (scopeIncomplete) out.put("outOfScope", io.poly.candor.model.ReportJson.outOfScopeJson(oos));
         // ⟨0.15 staged⟩ the coverage ADVISORY (COVERAGE-DESIGN §3): when the κ ledger is non-empty the
         // verdict discloses it — a gate verdict over partially-covered code must not read as total.
         // VERDICT-PRESERVING (the ⟨0.9⟩ provable-purity auto-disclosure precedent): ok/violations/exit

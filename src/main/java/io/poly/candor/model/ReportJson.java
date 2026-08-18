@@ -106,19 +106,7 @@ public final class ReportJson {
         // ⟨0.29⟩ …and what the PEEK found in them. OMITTED when null — no policy was configured, so nothing
         // was asked and `[]` would be a claim. Present-and-empty means asked-and-clear, and it is a claim
         // about the classes marked `peeked` above and only those.
-        if (report.outOfScope() != null) {
-            List<Map<String, Object>> oos = new ArrayList<>();
-            for (Report.OutOfScope f : report.outOfScope()) {
-                Map<String, Object> m = new LinkedHashMap<>();
-                m.put("fn", f.fn());
-                m.put("path", f.path());
-                m.put("effects", f.effects());
-                m.put("class", f.cls());
-                m.put("reason", f.reason());
-                oos.add(m);
-            }
-            envelope.put("outOfScope", oos);
-        }
+        if (report.outOfScope() != null) envelope.put("outOfScope", outOfScopeJson(report.outOfScope()));
         List<Map<String, Object>> entries = new ArrayList<>();
         for (Effector e : report.functions()) entries.add(entry(e));
         envelope.put("functions", entries);
@@ -222,5 +210,24 @@ public final class ReportJson {
             for (JsonElement e : o.getAsJsonArray(k))
                 if (e.isJsonPrimitive()) r.add(e.getAsString());
         return r;
+    }
+
+    /** ⟨0.30⟩ The peek's findings as wire maps. SHARED by the report envelope above and the `--gate-json`
+     *  verdict (Candor.writeGateJson), because ⟨0.30⟩ makes a non-empty {@code outOfScope} suppress
+     *  {@code ok} and §3.1 makes byte-equality between `scan --policy` and `gate --report` the acceptance
+     *  test — two hand-written serializers of the same records is exactly how those two documents drift.
+     */
+    public static List<Map<String, Object>> outOfScopeJson(List<Report.OutOfScope> findings) {
+        List<Map<String, Object>> oos = new ArrayList<>();
+        for (Report.OutOfScope f : findings) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("fn", f.fn());
+            m.put("path", f.path());
+            m.put("effects", f.effects());
+            m.put("class", f.cls());
+            m.put("reason", f.reason());
+            oos.add(m);
+        }
+        return oos;
     }
 }

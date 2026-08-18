@@ -196,7 +196,7 @@ class FileSetScopeTest {
      * {@code deny Exec} finds it, {@code deny Net} over the SAME tree says nothing (bounded by the
      * policy), and no policy at all says nothing (policy-scoped). The exit does not move in any of them.
      */
-    @Test void thePeekReportsADeniedEffectOutsideTheScopeWithoutMovingTheVerdict() throws Exception {
+    @Test void thePeekReportsADeniedEffectOutsideTheScopeAndTheVerdictGoesIncomplete() throws Exception {
         Path root = repoRoot();
         Path out = tmp.resolve("a.json");
         Run r = runCli(root.toString(), "--json", out.toString(),
@@ -219,9 +219,12 @@ class FileSetScopeTest {
         assertTrue(jarCls.get("peeked").getAsBoolean(),
             "the peek read this class on this run, so the flag must say so: " + jarCls);
 
-        // THE VERDICT DOES NOT MOVE. This is the promise of the chosen rung: a file the gate declined to
-        // judge must not decide an exit code, and must not appear among the judged functions.
-        assertEquals(0, r.exit(), "an out-of-scope finding must not change the exit code: " + r.stderr());
+        // ⟨0.30⟩ THE VERDICT IS INCOMPLETE. ⟨0.29⟩ asserted the opposite here — "a file the gate declined
+        // to judge must not decide an exit code" — and ⟨0.30⟩ reverses that half on the measurement that
+        // the peek resolves a CONCRETE denied effect rather than uncertainty. The membership half below is
+        // UNCHANGED, and is why the code is 2 and not 1: the gate did not judge this unit, so claiming a
+        // violation over it would be false in the other direction.
+        assertEquals(2, r.exit(), "a peeked fn performing the denied effect makes the verdict incomplete: " + r.stderr());
         assertFalse(rpt.getAsJsonArray("functions").toString().contains("com.t.Tool"),
             "the out-of-scope function must NOT be folded into the report's functions");
         assertTrue(r.stderr().contains("OUTSIDE this scan's scope"),
@@ -327,7 +330,10 @@ class FileSetScopeTest {
         Path inner = tmp.resolve("h.json");
         Run r2 = runCli(root.resolve("build").toString(), "--json", inner.toString(),
                         "--policy", policy("exec4.policy", "deny Exec\n").toString());
-        assertEquals(0, r2.exit(), r2.stderr());
+        // ⟨0.30⟩ …and because it IS peeked here and DOES perform the denied effect, the verdict goes
+        // incomplete — the exact contrast this test draws, now visible in the exit code: the arm above
+        // stays 0 precisely because that jar was never peeked, so nothing was found to be incomplete about.
+        assertEquals(2, r2.exit(), r2.stderr());
         assertEquals(1, report(inner).getAsJsonArray("outOfScope").size(),
             "scanned from inside build/, it is an ordinary archive: " + report(inner).get("outOfScope"));
     }

@@ -146,7 +146,19 @@ mkdir -p "$W/app"
 echo 'public class App { public void run() { Fx.reads(); } }' > "$W/app/App.java"
 javac -cp "$W/cls" -d "$W/acls" "$W/app/App.java"
 bare="$("$CJ" "$W/acls" --json "$W/a0.json" 2>/dev/null; cat "$W/a0.json")"
-absent "consumer is pure without CANDOR_DEPS" "$bare" '"App.run"'
+# STRENGTHENED, deliberately. This asserted `App.run` is ABSENT without CANDOR_DEPS — i.e. the
+# consumer reads pure across the boundary. It is now LISTED, with `inferred: []` and an
+# `invisible: ["(default package)"]` blind marker naming the package the scan could not see, which is what
+# candor-rust and candor-ts already do at the same boundary (they list the caller AND publish a
+# `coverage.uncovered` entry). The old assertion pinned the SILENT half of that behaviour: `Fx` is in
+# the DEFAULT package, whose ledger key could not be formed, so the call was dropped from the ledger
+# and from `blindDirect` alike. The intent of the row is preserved and sharpened — no Fs is inherited
+# without the dep, AND the reason is on the record.
+absent "consumer does not INHERIT Fs without CANDOR_DEPS" "$bare" '"inferred": ["Fs"]'
+# The report is PRETTY-PRINTED, so the key and its member sit on different lines — match them
+# separately rather than as one string (a single-line pattern silently missed a marker that was there).
+want   "…and the boundary is DISCLOSED, not silent (an `invisible` marker is emitted)" "$bare" '"invisible"'
+want   "…and the marker NAMES the unseen package under a stand-in key" "$bare" '(default package)'
 dep="$(CANDOR_DEPS="$W/r.json" "$CJ" "$W/acls" --json "$W/a1.json" 2>/dev/null; cat "$W/a1.json")"
 want "consumer inherits Fs across the jar"    "$dep" '"App.run"'
 # version-trust: a dep report from a different engine → inherited effect downgraded to Unknown

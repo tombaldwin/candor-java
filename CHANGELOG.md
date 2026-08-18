@@ -8,6 +8,9 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- ** names v0.29.1**, after the URL was RESOLVED (HTTP 200, 1142085 bytes,
+  byte-matching the release asset). A pin naming a URL is not the URL existing.
+
 ## [0.29.1] — 2026-08-18
 
 - **An UNCOVERED package whose key could not be formed was dropped instead of disclosed.** The κ ledger

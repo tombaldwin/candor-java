@@ -141,6 +141,12 @@ final class AnalysisContext {
     // fn -> effects whose literal SURFACE is INCOMPLETE (a structurally-invisible reach); fail-closed so a
     // benign visible literal can't MASK an invisible forbidden endpoint. Propagated like the literal surfaces.
     final Map<String, TreeSet<String>> surfaceIncomplete = new HashMap<>();
+
+    /** ⟨0.30⟩ THE PEEK'S VERSIONED PASS. When true, {@link Loader} INVERTS its multi-release rule: the
+     *  base classes are skipped (the ordinary scan already judged them) and only the
+     *  {@code META-INF/versions/<N>/} overrides are analysed. That is the same "ordinary path over a
+     *  different FILE SET" the rest of the peek uses — not a second walk — so the two cannot drift. */
+    boolean peekVersioned = false;
     // The κ-coverage ledger: external packages this code calls where the classifier never fires are
     // INVISIBLE, not Unknown — counted here, named in the receipt.
     final Map<String, Integer> kappaSeen = new TreeMap<>();        // external package -> call count

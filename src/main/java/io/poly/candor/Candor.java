@@ -228,7 +228,16 @@ public class Candor {
      *  <p>The config rides the THREAD-LOCAL {@link AnalysisContext} rather than the static, so N concurrent
      *  targets each get their own — which is the reason a static could not simply be assigned in the task. */
     static Map<String, EffectSet> runScan(Path target, Config perScan) throws IOException {
+        return runScan(target, perScan, false);
+    }
+
+    /** ⟨0.30⟩ {@link #runScan(Path, Config)} with the peek's VERSIONED file selection — see
+     *  {@link AnalysisContext#peekVersioned}. The flag is applied after {@code resetState()} installs the
+     *  fresh context and before {@code load()} reads anything, which is the only window where it can bind. */
+    static Map<String, EffectSet> runScan(Path target, Config perScan, boolean peekVersioned)
+            throws IOException {
         resetState();
+        ctx().peekVersioned = peekVersioned;
         Config cfg = perScan != null ? perScan : config;
         // ⟨0.19⟩/⟨0.20⟩ the gate-facing config maps, applied AFTER resetState (which installs the fresh
         // context) so they survive into the report + gate. main() also applies them from the static on the
@@ -414,17 +423,23 @@ public class Candor {
                 + "a zip filesystem and closed when the walk ends, so a nested entry cannot be reopened "
                 + "afterwards and the peek does not read it. Scan the nested jar directly, or scan the "
                 + "exploded directory, to judge its contents."},
-            "multi-release-override", new String[]{"false",
+            "multi-release-override", new String[]{"true",
                 "a multi-release jar ships version-specific overrides under META-INF/versions/<N>/. The "
-                + "BASE class of each is analyzed (the portable surface), and the override is not — so an "
-                + "effect present ONLY in a versioned copy is outside this verdict."});
+                + "BASE class of each is analyzed (the portable surface) and the override is not, so an "
+                + "effect present ONLY in a versioned copy is outside this verdict — and the versioned "
+                + "copy is the one a JVM of that version actually runs. ⟨0.30⟩ the peek READS the "
+                + "overrides and reports what it finds; the flag here says whether every one of them was "
+                + "read on THIS run."});
 
     /** ⟨0.29⟩ THE PEEK — read the files this scan deliberately did NOT judge, and say so when they hold an
      *  effect the policy DENIES (candor-spec/FILE-SET-DESIGN.md §5.2, rung 2 of the ladder).
      *
-     *  <p>THE VERDICT DOES NOT MOVE. The findings ride the report as {@code outOfScope}, their own kind,
-     *  never {@code violations}: a file the gate declined to judge must not decide an exit code, and
-     *  folding these in would make one depend on exactly that.
+     *  <p>⟨0.30⟩ THE VERDICT GOES INCOMPLETE. The findings ride the report as {@code outOfScope}, their
+     *  own kind, and are never {@code violations} — the gate did not JUDGE these units, so a violation
+     *  claim would be false in the other direction. A non-empty block makes the verdict
+     *  {@code ok:false, incomplete:true} at exit 2: "I could not see enough of this tree to answer",
+     *  which is what happened. ⟨0.29⟩ required the exit code to stay put; that was reversed on the
+     *  measurement that the peek resolves a CONCRETE denied effect rather than uncertainty.
      *
      *  <p>A RECURSIVE {@link #runScan} over the archive, not a hand-written second pass. {@code load()}
      *  already reads a jar — it is the same entry point, the same ASM parse, the same classifier, over a
@@ -457,6 +472,7 @@ public class Candor {
         int[] peekFailures = {0};
         int[] peekPartial = {0};
         boolean[] peekReadAll = {false};
+        boolean[] peekVersionedAll = {false};   // ⟨0.30⟩ the multi-release pass's own read result
         boolean[] timedOut = {false};
         List<Path> archives = List.copyOf(ctx().archives);
         Set<String> judged = Set.copyOf(ctx().edges.keySet());
@@ -517,6 +533,53 @@ public class Candor {
                                 + "NOT judge it. The effect is real; the verdict does not account for it."));
                     }
                 }
+                // ⟨0.30⟩ THE MULTI-RELEASE PASS. A multi-release jar ships version-specific overrides under
+                // META-INF/versions/<N>/; the ordinary scan analyses the BASE class and skips the override,
+                // so an effect present ONLY in a versioned copy sat outside every verdict. That exclusion
+                // declared itself `peeked: false` and said exactly this in its own reason — an honest
+                // hole, and one this engine can close, because a versioned override IS bytecode and
+                // `load()` already reads it.
+                //
+                // MEASURED on log4j-api 2.23.1 before this pass existed: scanning the BASE copies against
+                // the base-with-overrides-applied — which is what any JVM 9+ actually runs — gave 21
+                // functions a materially different verdict and left 5 that exist ONLY in the versioned
+                // copy unjudged. On that jar the divergence is over-statement, but the mechanism is
+                // symmetric: an override may ADD an effect the base does not have.
+                //
+                // THE TARGET ITSELF IS INCLUDED, not just nested archives — the log4j case IS the target.
+                // `runScan(…, true)` inverts the file selection rather than walking a second way, so this
+                // is the same parse and the same classifier over a different file set (§2's MUST).
+                int[] vOk = {0}, vFail = {0}, vPartial = {0};
+                List<Path> versionedTargets = new ArrayList<>(archives);
+                if (root != null && !versionedTargets.contains(root)) versionedTargets.add(root);
+                for (Path jar : versionedTargets) {
+                    Map<String, EffectSet> over;
+                    try {
+                        over = runScan(jar, Config.empty(), true);
+                    } catch (Throwable e) {
+                        vFail[0]++;
+                        continue;
+                    }
+                    if (over.isEmpty()) continue;          // no versioned entries here — not a read failure
+                    vOk[0]++;
+                    if (!ctx().unanalyzed.isEmpty()) vPartial[0]++;
+                    String where = root == null ? jar.toString() : relativeTo(root, jar);
+                    for (var e : new java.util.TreeMap<>(over).entrySet()) {
+                        // NOT filtered by `judged`: the base copy of the SAME qualified name is judged, and
+                        // that is exactly the case this pass exists for — the override is different code
+                        // under the same name, and skipping it because the base was judged would silently
+                        // drop every finding this pass can make.
+                        List<String> hits = e.getValue().toNames().stream().filter(denied::contains).toList();
+                        if (hits.isEmpty()) continue;
+                        found.add(new Report.OutOfScope(e.getKey(), where, hits,
+                                "multi-release-override",
+                                "OUTSIDE this scan's scope (multi-release-override) — the gate judged the "
+                                + "BASE class and did NOT judge this versioned override, which is the copy "
+                                + "a JVM of that version actually runs."));
+                    }
+                }
+                peekVersionedAll[0] = vFail[0] == 0 && vPartial[0] == 0;
+
                 // ⟨0.29⟩ THE CLASS IS `peeked` ONLY IF EVERY FILE OF IT WAS READ. One unreadable jar means
                 // the class was not fully examined, and a partial read publishing `peeked:true` is the
                 // same overclaim as no read at all — ⟨0.26⟩'s rule that a partial manifest answers worse
@@ -568,6 +631,10 @@ public class Candor {
         ctx().outOfScope = found;
         // …applied HERE, on the MAIN thread, whose context is the one the report is written from.
         if (peekReadAll[0]) ctx().peekedClasses.add("archive-under-the-scan-root");
+        // ⟨0.30⟩ …and the versioned class, on the same rule: `peeked: true` means every file of it was
+        // READ on this run, so one unreadable or partially-analysed override withdraws the claim for the
+        // whole class (⟨0.29⟩ PART 52).
+        if (peekVersionedAll[0]) ctx().peekedClasses.add("multi-release-override");
         if (peekFailures[0] > 0) {
             System.err.println("candor-java: " + peekFailures[0] + " archive(s) under the scan root could "
                     + "not be opened for the peek — they are counted in `excluded` and their class is "

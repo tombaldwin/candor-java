@@ -78,6 +78,27 @@ final class ReportWriter {
                     if (!e.getValue().isEmpty() || ctx().entryPoints.contains(e.getKey())) return true;
                     if (blindAcc.getOrDefault(e.getKey(), new TreeSet<>()).stream().anyMatch(globalBlind::contains))
                         return true;
+                    // …OR IT IS DISCLOSED-INCOMPLETE. `incompleteAcc` above is a FIXPOINT, so a caller of an
+                    // uncertain function already carries that uncertainty here — and until this line the
+                    // filter threw it away, because a method whose ONLY signal is incompleteness has no
+                    // effects, is not an entry point, is not blind, and need not be in a declaring class.
+                    // Absence from `functions` means PURE, so the report said "certainly nothing" about a
+                    // method candor had already concluded it could not fully see. The uncertainty was
+                    // computed and then discarded at the report boundary.
+                    //
+                    // MEASURED on sqlite-jdbc 3.46.0.0 (corpus round, 2026-08-18):
+                    //   org.sqlite.JDBC.getPropertyInfo            pure, calls getDriverPropertyInfo [inc Db]
+                    //   JDBC3ResultSet.getColumnCount              pure, calls CoreResultSet.checkCol  [inc Db]
+                    // `check_honesty.py` said DISHONEST — 2 violations of the propagation invariant — and
+                    // says `honest ✓` with this line. Both callees were in the report only by luck: their
+                    // class declares a capability, so the fourth arm caught them. Their callers had no such
+                    // luck. This is the shape that was a CARDINAL SIN in candor-swift on Alamofire
+                    // (2026-08-13, callers reading CERTAIN off an uncertain callee), reachable here through
+                    // serialization rather than through propagation.
+                    //
+                    // OVER-CHARGE CONTROL, measured before shipping: +0 functions on gson, commons-lang3,
+                    // jackson-core and joda-time. This admits the uncertain, not the merely uninteresting.
+                    if (!incompleteAcc.getOrDefault(e.getKey(), new TreeSet<>()).isEmpty()) return true;
                     String dc = fnToClass.get(e.getKey());
                     return dc != null && !declaredByClass.getOrDefault(dc, EffectSet.empty()).isEmpty();
                 })

@@ -3419,13 +3419,14 @@ public final class Query {
      *      is not hedging at all. */
     record Envelope(int analyzedCount, List<String[]> unanalyzed, List<Map.Entry<String, Integer>> uncovered,
                     Map<String, List<String>> rawUnknownWhy, String packageName, boolean judgedNothing,
-                    boolean noManifest) {}
+                    boolean noManifest, List<io.poly.candor.model.Report.OutOfScope> outOfScope) {}
 
     static Envelope readEnvelope(String path) throws Exception {
         JsonElement root = JsonParser.parseString(Files.readString(Path.of(path)));
         Map<String, List<String>> raw = new HashMap<>();
         List<String[]> unanalyzed = new ArrayList<>();
         List<Map.Entry<String, Integer>> uncovered = new ArrayList<>();
+        List<io.poly.candor.model.Report.OutOfScope> outOfScope = new ArrayList<>();
         int analyzed = 0;
         String pkg = null;                 // §2 `package`/`packages` — for the judged-nothing advisory
         JsonArray fns = null;
@@ -3473,6 +3474,30 @@ public final class Query {
                                 u.has("path") ? u.get("path").getAsString() : "",
                                 u.has("reason") ? u.get("reason").getAsString() : ""});
                     }
+            // ⟨0.30⟩ THE PEEK'S FINDINGS, read as strictly as `unanalyzed` above and for the identical
+            // reason: non-emptiness IS a fail-closed trigger, so a present-but-garbled key coerced to its
+            // empty default becomes the claim "I looked and nothing was there" — the safe-LOOKING value.
+            // ABSENT STAYS ABSENT (⟨0.26⟩ cannot-answer): a report produced with no policy was never asked
+            // the question, and must not become exit 2 on contact.
+            if (o.has("outOfScope") && !o.get("outOfScope").isJsonArray())
+                throw new IllegalStateException(
+                        "`outOfScope` is present but is not an array — a SIGNATURE key that cannot be read "
+                        + "impeaches the whole document (§2), so this gate cannot certify it");
+            if (o.has("outOfScope") && o.get("outOfScope").isJsonArray())
+                for (JsonElement e : o.getAsJsonArray("outOfScope"))
+                    if (e.isJsonObject()) {
+                        JsonObject f = e.getAsJsonObject();
+                        List<String> effs = new ArrayList<>();
+                        if (f.has("effects") && f.get("effects").isJsonArray())
+                            for (JsonElement x : f.getAsJsonArray("effects"))
+                                if (x.isJsonPrimitive()) effs.add(x.getAsString());
+                        outOfScope.add(new io.poly.candor.model.Report.OutOfScope(
+                                f.has("fn") ? f.get("fn").getAsString() : "",
+                                f.has("path") ? f.get("path").getAsString() : "",
+                                effs,
+                                f.has("class") ? f.get("class").getAsString() : "",
+                                f.has("reason") ? f.get("reason").getAsString() : ""));
+                    }
             if (o.has("coverage") && o.get("coverage").isJsonObject()) {
                 JsonObject c = o.getAsJsonObject("coverage");
                 if (c.has("uncovered") && c.get("uncovered").isJsonArray())
@@ -3499,7 +3524,7 @@ public final class Query {
                 if (!ws.isEmpty()) raw.put(o.get("fn").getAsString(), ws);
             }
         return new Envelope(analyzed, unanalyzed, uncovered, raw, pkg,
-                Loader.claimsToHaveJudgedNothing(envObj, fns), Loader.hasNoManifest(envObj));
+                Loader.claimsToHaveJudgedNothing(envObj, fns), Loader.hasNoManifest(envObj), outOfScope);
     }
 
     /**
@@ -3681,6 +3706,9 @@ public final class Query {
         int analyzedCount = 0;
         List<String[]> unanalyzed = new ArrayList<>();
         List<Map.Entry<String, Integer>> uncovered = new ArrayList<>();
+        // ⟨0.30⟩ the peek's findings, off the REPORT — this route cannot peek (it has no target, only a
+        // document), which is why the field rides the report and why §3.1 byte-equality holds here.
+        List<io.poly.candor.model.Report.OutOfScope> outOfScope = new ArrayList<>();
         Map<String, List<String>> rawWhy = new HashMap<>();
         List<String> judgedNothing = new ArrayList<>();
         // ⟨0.28⟩ SPEC §2's THIRD ROW, kept apart from the list above on THIS route too — the note below
@@ -3703,6 +3731,7 @@ public final class Query {
             analyzedCount += env.analyzedCount();
             unanalyzed.addAll(env.unanalyzed());
             uncovered.addAll(env.uncovered());
+            outOfScope.addAll(env.outOfScope());
             // A repeated `fn` across reports joins by UNION here too — same direction as the entry join.
             for (var e : env.rawUnknownWhy().entrySet())
                 rawWhy.computeIfAbsent(e.getKey(), k -> new ArrayList<>()).addAll(e.getValue());
@@ -3804,7 +3833,7 @@ public final class Query {
         // the same deleted-disclosure defect one level down.
         for (String[] u : unevaluated) System.err.println("candor gate: " + u[1]);
 
-        var facts = new Candor.GateFacts(analyzedCount, unanalyzed, uncovered);
+        var facts = new Candor.GateFacts(analyzedCount, unanalyzed, uncovered, outOfScope);
         // `--json` IS `--gate-json -`: the verb's machine output is the gate verdict, the same document and
         // the same builder the scan writes, so a consumer cannot tell the two routes apart from the output.
         if (violations > 0) {
@@ -3831,6 +3860,15 @@ public final class Query {
         if (!unanalyzed.isEmpty()) {
             System.err.println("candor gate: NOT certified — the report declares " + unanalyzed.size()
                     + " unit(s) candor could not analyze; a gate cannot be green over unanalyzed code");
+            return 2;
+        }
+        // ⟨0.30⟩ the SCOPE half of the same posture, and the same exit. Named separately from the
+        // `unanalyzed` arm because the repairs differ: that one wants a scan that can read a file, this
+        // one wants a scan whose selector reaches the code the policy is about.
+        if (!outOfScope.isEmpty()) {
+            System.err.println("candor gate: NOT certified — the report names " + outOfScope.size()
+                    + " function(s) OUTSIDE the scan's scope performing an effect this policy denies; the "
+                    + "gate did not judge them, so the verdict is incomplete rather than a pass");
             return 2;
         }
         return 0;

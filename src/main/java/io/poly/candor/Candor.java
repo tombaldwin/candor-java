@@ -431,6 +431,22 @@ public class Candor {
                 + "overrides and reports what it finds; the flag here says whether every one of them was "
                 + "read on THIS run."});
 
+    /** ⟨0.30⟩ What the DENY rules charge this peeked function — the same decision {@link Policy}'s
+     *  AS-EFF-006 arm makes for a judged one: scope test per rule, then `pure` (empty effects) means
+     *  every effect EXCEPT Unknown, and a named rule means the intersection. Shared rather than
+     *  re-derived because §6.2 requires the gate and the disclosure to apply the same rule, and the flat
+     *  effect-name set this replaced was wrong in both directions (see the call site). */
+    private static List<String> peekHits(List<PolicyRule.Deny> rules, String fn, EffectSet inferred) {
+        EffectSet bad = EffectSet.empty();
+        for (PolicyRule.Deny r : rules) {
+            if (!Policy.scopeMatches(fn, r.scope())) continue;
+            bad = bad.join(r.effects().isEmpty()
+                    ? inferred.without(Effect.UNKNOWN)
+                    : inferred.intersect(r.effects()));
+        }
+        return bad.toNames();
+    }
+
     /** ⟨0.29⟩ THE PEEK — read the files this scan deliberately did NOT judge, and say so when they hold an
      *  effect the policy DENIES (candor-spec/FILE-SET-DESIGN.md §5.2, rung 2 of the ladder).
      *
@@ -491,9 +507,25 @@ public class Candor {
                 // parse appending to a list that already held these rules.
                 if (!Policy.parsePolicy(policyPath)) return;   // unreadable/erroring — the GATE's refusal to make
                 answered[0] = true;
-                Set<String> denied = new TreeSet<>();
-                for (PolicyRule.Deny d : ctx().denyRules) denied.addAll(d.effects().toNames());
-                if (denied.isEmpty()) return;   // `pure`/allow-only: nothing named, so nothing to look for
+                // ⟨0.30⟩ THE TRIGGER IS "ARE THERE DENY RULES", and the charge below is the GATE'S OWN
+                // decision, per (rule, function). This built a flat set of effect NAMES and returned when
+                // it was empty — which §6.2 already forbids ("THE GATE AND THE DISCLOSURE MUST APPLY THE
+                // SAME RULE, AND SHOULD SHARE THE SAME CODE") and which was wrong BOTH ways once ⟨0.30⟩
+                // made the block verdict-bearing. Both MEASURED four-way in review:
+                //
+                //   UNDER-REPORT: `pure` is a deny rule with an EMPTY effect list meaning "every effect
+                //   except Unknown" (see Policy's AS-EFF-006 loop). Flattened it named NOTHING, so this
+                //   returned early and the STRICTEST policy silently disarmed the peek — exit 0 where the
+                //   weaker `deny Exec` exits 2 on the same tree. A four-way false all-clear, and the old
+                //   comment here ("`pure`/allow-only: nothing named, so nothing to look for") documented
+                //   it as intended.
+                //
+                //   OVER-CHARGE: a `deny Net[known-partner]` denies ONE destination class, but the name
+                //   set held bare `Net`, so a peeked fn reaching an unknown host — which that rule does
+                //   not deny — turned the verdict red while the same code in scope passed. Rule SCOPES
+                //   were dropped the same way.
+                List<PolicyRule.Deny> peekRules = List.copyOf(ctx().denyRules);
+                if (peekRules.isEmpty()) return;   // allow-only: nothing denied, so nothing to look for
                 int[] readOk = {0}, readFail = {0}, readPartial = {0};
                 for (Path jar : archives) {
                     Map<String, EffectSet> peeked;
@@ -525,7 +557,7 @@ public class Candor {
                     String where = root == null ? jar.toString() : relativeTo(root, jar);
                     for (var e : new java.util.TreeMap<>(peeked).entrySet()) {
                         if (judged.contains(e.getKey())) continue;   // the gate DID judge this one
-                        List<String> hits = e.getValue().toNames().stream().filter(denied::contains).toList();
+                        List<String> hits = peekHits(peekRules, e.getKey(), e.getValue());
                         if (hits.isEmpty()) continue;
                         found.add(new Report.OutOfScope(e.getKey(), where, hits,
                                 "archive-under-the-scan-root",
@@ -560,16 +592,25 @@ public class Candor {
                         vFail[0]++;
                         continue;
                     }
-                    if (over.isEmpty()) continue;          // no versioned entries here — not a read failure
+                    // ⟨0.30⟩ THE PARTIAL-READ CHECK COMES FIRST, and the order is the whole of it. This read
+                    // `if (over.isEmpty()) continue;` BEFORE asking whether anything failed to parse, so a
+                    // jar whose versioned copies ALL fail to parse was indistinguishable from one with
+                    // none — and the class then shipped `peeked: true` beside `outOfScope: []`, which is
+                    // the sentence "I read every override and none performs a denied effect" over an
+                    // override nobody read. MEASURED: a versioned copy at bytecode major 99 (the case this
+                    // exclusion's own comment warned about) performing Exec answered exit 0, `peeked:true`,
+                    // `outOfScope:[]` under `deny Exec`. A false all-clear inside the pass that closes
+                    // false all-clears.
+                    if (!ctx().unanalyzed.isEmpty()) { vPartial[0]++; continue; }
+                    if (over.isEmpty()) continue;          // genuinely no versioned entries — not a failure
                     vOk[0]++;
-                    if (!ctx().unanalyzed.isEmpty()) vPartial[0]++;
                     String where = root == null ? jar.toString() : relativeTo(root, jar);
                     for (var e : new java.util.TreeMap<>(over).entrySet()) {
                         // NOT filtered by `judged`: the base copy of the SAME qualified name is judged, and
                         // that is exactly the case this pass exists for — the override is different code
                         // under the same name, and skipping it because the base was judged would silently
                         // drop every finding this pass can make.
-                        List<String> hits = e.getValue().toNames().stream().filter(denied::contains).toList();
+                        List<String> hits = peekHits(peekRules, e.getKey(), e.getValue());
                         if (hits.isEmpty()) continue;
                         found.add(new Report.OutOfScope(e.getKey(), where, hits,
                                 "multi-release-override",

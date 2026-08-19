@@ -1633,15 +1633,25 @@ public final class Query {
      *  @param noManifest ⟨0.28⟩ one path per report file carrying NO {@code analyzed} key at all (SPEC §2
      *      row 3) — DISJOINT from {@code judgedNothing}, which is why the split is not a rename */
     record ReportCompleteness(List<String[]> unanalyzed, List<String> judgedNothing, List<String> unreadable,
-                              List<String> noManifest) {
+                              List<String> noManifest,
+                              /** ⟨0.30⟩ the peek's findings — functions OUTSIDE the scan's scope performing
+                               *  an effect the policy DENIES. An arm of {@link #incomplete()} because ⟨0.24⟩
+                               *  binds it: an advisory verb must never be LESS sensitive to incompleteness
+                               *  than the gate over the same bytes, and that rule names `unverified`,
+                               *  `fix-gate` "and any later sibling". ⟨0.30⟩ moved the gate and left these
+                               *  behind — MEASURED, the gate exited 2 while `unverified --strict` answered
+                               *  PROVABLY clean at 0 over the same report. */
+                              List<Report.OutOfScope> outOfScope) {
         /** Nothing to disclose — for a caller with no report locator at all (a unit test driving a verb
          *  over an in-memory entry list). Every channel below is a no-op on it. */
         static final ReportCompleteness NONE =
-                new ReportCompleteness(List.of(), List.of(), List.of(), List.of());
+                new ReportCompleteness(List.of(), List.of(), List.of(), List.of(), List.of());
 
         /** Is the universe this verb reasoned over known-partial in the way the GATE also refuses over?
          *  {@code judgedNothing} and {@code noManifest} are deliberately NOT arms — see {@link #mustHedge}. */
-        boolean incomplete() { return !unanalyzed.isEmpty() || !unreadable.isEmpty(); }
+        boolean incomplete() {
+            return !unanalyzed.isEmpty() || !unreadable.isEmpty() || !outOfScope.isEmpty();
+        }
 
         /** ⟨0.28⟩ <b>Is there anything at all to disclose — the trigger for an ANSWER, where
          *  {@link #incomplete} is the trigger for a VERDICT.</b>
@@ -1672,7 +1682,8 @@ public final class Query {
             List<String> j = new ArrayList<>(judgedNothing); j.addAll(other.judgedNothing);
             List<String> r = new ArrayList<>(unreadable); r.addAll(other.unreadable);
             List<String> n = new ArrayList<>(noManifest); n.addAll(other.noManifest);
-            return new ReportCompleteness(u, j, r, n);
+            List<Report.OutOfScope> o = new ArrayList<>(outOfScope); o.addAll(other.outOfScope);
+            return new ReportCompleteness(u, j, r, n, o);
         }
 
         /** What {@code gate --report} does over THESE SAME BYTES, as one sentence for the note's tail — a
@@ -1821,6 +1832,8 @@ public final class Query {
         List<String> jn = new ArrayList<>();
         List<String> bad = new ArrayList<>();
         List<String> nm = new ArrayList<>();
+        // ⟨0.30⟩ the peek's findings, unioned across the reports under this locator.
+        List<Report.OutOfScope> oos = new ArrayList<>();
         for (String r : set) {
             // ⟨0.28⟩ ABSENT is not UNREADABLE. Locator rule 2 returns a `.json` path VERBATIM whether or
             // not it exists, and a report that is not there is the ordinary pre-scan case every caller
@@ -1859,8 +1872,9 @@ public final class Query {
                 if (env.noManifest()) nm.add(r);
                 else jn.add(r);
             }
+            oos.addAll(env.outOfScope());
         }
-        return new ReportCompleteness(un, jn, bad, nm);
+        return new ReportCompleteness(un, jn, bad, nm, oos);
     }
 
     /** The report a DESCRIPTIVE verb is answering over: the LOCATOR (which may name a report SET, §2 "a
@@ -3484,8 +3498,17 @@ public final class Query {
                         "`outOfScope` is present but is not an array — a SIGNATURE key that cannot be read "
                         + "impeaches the whole document (§2), so this gate cannot certify it");
             if (o.has("outOfScope") && o.get("outOfScope").isJsonArray())
-                for (JsonElement e : o.getAsJsonArray("outOfScope"))
-                    if (e.isJsonObject()) {
+                for (JsonElement e : o.getAsJsonArray("outOfScope")) {
+                    // A NON-OBJECT ELEMENT IS CORRUPT, NOT SKIPPABLE. This dropped it silently, so
+                    // `"outOfScope": [123]` answered exit 0 / `ok:true` over a report whose peek had found
+                    // a denied effect — the mirror of candor-ts's top-level hole, and the same fail-open
+                    // coercion in the opposite position. rust and swift refuse this shape. (Review, MEASURED.)
+                    if (!e.isJsonObject())
+                        throw new IllegalStateException(
+                                "an `outOfScope` member is not an object — a SIGNATURE key that cannot be "
+                                + "read impeaches the whole document (§2); read as an empty list it turns "
+                                + "NOT-certified into `policy ✓`");
+                    {
                         JsonObject f = e.getAsJsonObject();
                         List<String> effs = new ArrayList<>();
                         if (f.has("effects") && f.get("effects").isJsonArray())
@@ -3498,6 +3521,7 @@ public final class Query {
                                 f.has("class") ? f.get("class").getAsString() : "",
                                 f.has("reason") ? f.get("reason").getAsString() : ""));
                     }
+                }
             if (o.has("coverage") && o.get("coverage").isJsonObject()) {
                 JsonObject c = o.getAsJsonObject("coverage");
                 if (c.has("uncovered") && c.get("uncovered").isJsonArray())

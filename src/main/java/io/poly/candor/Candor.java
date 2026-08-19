@@ -587,9 +587,9 @@ public class Candor {
                         found.add(new Report.OutOfScope(e.getKey(), where, hits,
                                 "archive-under-the-scan-root",
                                 "OUTSIDE this scan's scope (archive-under-the-scan-root) — the gate did "
-                                + "NOT judge it. The effect is real, and the verdict is INCOMPLETE "
-                                + "because of it — the gate did not judge this unit, so it cannot "
-                                + "certify the tree."));
+                                + "NOT judge it. candor's ANALYSIS of that file reaches this effect, "
+                                + "so the verdict is INCOMPLETE rather than a pass (an analysis result, "
+                                + "not a claim about what the code does at runtime)."));
                     }
                 }
                 // ⟨0.30⟩ THE MULTI-RELEASE PASS. A multi-release jar ships version-specific overrides under

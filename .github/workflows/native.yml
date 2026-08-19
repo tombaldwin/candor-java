@@ -26,6 +26,11 @@ jobs:
           # completes, stalling every release's native job (0.16 + 0.17). Apple Silicon + Linux cover
           # what `candor update` fetches; add it back only if an Intel binary is actually requested.
     runs-on: ${{ matrix.os }}
+    # A deadline. With no `timeout-minutes` GitHub's 6-hour default applies, so a stuck runner
+    # blocks the release gate (release-preflight [10] reads CI green on HEAD) while looking
+    # exactly like a slow job — measured twice on 2026-08-19, at 3h45m and 54m. Gated by
+    # release-preflight [7b], which asks every workflow in every released repo.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 

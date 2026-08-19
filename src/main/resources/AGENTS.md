@@ -1,7 +1,7 @@
 <!-- MAINTAINERS: this is the canonical doc. After editing it, re-sync the embedded jar copy in the SAME commit or CI's drift gate (test/smoke.sh) fails: cp AGENTS.md src/main/resources/AGENTS.md -->
 # Using candor-java (instructions for an AI coding agent)
 
-candor-java — the family's reference engine (spec 0.29) — reports, for every method in a JVM codebase
+candor-java — the family's reference engine (spec 0.30) — reports, for every method in a JVM codebase
 (Java, Kotlin, Scala, Groovy — it reads bytecode), which side effects it performs, transitively. The language-agnostic consumption contract is
 [candor-spec/AGENTS.md](https://github.com/tombaldwin/candor-spec/blob/main/AGENTS.md); this file is
 the JVM-specific production + query surface.
@@ -81,7 +81,7 @@ If this project already has candor-java (a `.candor/` report directory, or the f
 `jbang candor@tombaldwin/candor-java` available), do this **first**, before scanning:
 
 1. **Tell the user which version they're on.** Run the offline version flag and state it plainly —
-   e.g. *"This project is on candor-java <version> (spec 0.29)."*
+   e.g. *"This project is on candor-java <version> (spec 0.30)."*
    ```sh
    candor --version        # i.e. java -jar candor-java-*-all.jar --version — offline, no network
    ```

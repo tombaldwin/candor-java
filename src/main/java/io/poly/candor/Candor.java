@@ -436,13 +436,24 @@ public class Candor {
      *  every effect EXCEPT Unknown, and a named rule means the intersection. Shared rather than
      *  re-derived because §6.2 requires the gate and the disclosure to apply the same rule, and the flat
      *  effect-name set this replaced was wrong in both directions (see the call site). */
-    private static List<String> peekHits(List<PolicyRule.Deny> rules, String fn, EffectSet inferred) {
+    private static List<String> peekHits(List<PolicyRule.Deny> rules, String fn, EffectSet inferred,
+                                        Policy.GateInput gi) {
         EffectSet bad = EffectSet.empty();
         for (PolicyRule.Deny r : rules) {
             if (!Policy.scopeMatches(fn, r.scope())) continue;
-            bad = bad.join(r.effects().isEmpty()
+            EffectSet h = r.effects().isEmpty()
                     ? inferred.without(Effect.UNKNOWN)
-                    : inferred.intersect(r.effects()));
+                    : inferred.intersect(r.effects());
+            // ⟨0.30⟩ …AND THE RULE'S CLASS NARROWING, through the SHARED §6.2 definition the gate uses.
+            // Without it the peek charged the whole effect for a rule that denies ONE class: MEASURED,
+            // `deny Net[unknown-host]` reddened a DECLARED partner and `deny Net[known-partner]` reddened
+            // with no partners configured, while the identical code IN SCOPE passed both. The same defect
+            // was closed in ts and rust a round earlier and the hand-port missed it here — which is what
+            // the generated policy matrix exists to catch, and did.
+            for (Effect w : List.of(Effect.UNKNOWN, Effect.NET))
+                if (h.contains(w) && !Policy.classNarrowingFires(r, gi, fn, w))
+                    h = h.without(w);
+            bad = bad.join(h);
         }
         return bad.toNames();
     }
@@ -489,6 +500,9 @@ public class Candor {
         int[] peekPartial = {0};
         boolean[] peekReadAll = {false};
         boolean[] peekVersionedAll = {false};   // ⟨0.30⟩ the multi-release pass's own read result
+        // ⟨0.30⟩ read on the CALLING thread, before the peek thread's resetState: the peek must classify
+        // destinations against the same `net-partner` set the gate uses.
+        final Config peekConfig = config;
         boolean[] timedOut = {false};
         List<Path> archives = List.copyOf(ctx().archives);
         Set<String> judged = Set.copyOf(ctx().edges.keySet());
@@ -532,7 +546,15 @@ public class Candor {
                     try {
                         // Read BEFORE runScan's resetState wipes this thread's context: `denied` is already
                         // a local, which is the whole reason it is one.
-                        peeked = runScan(jar, Config.empty());
+                        // ⟨0.30⟩ THE PROJECT'S CONFIG, not an empty one. `Config.empty()` left the peek
+                        // with no `net-partner` set, so every host classified as unknown-host and the
+                        // rule's class narrowing answered against a set that was always empty —
+                        // MEASURED: `deny Net[known-partner]` MISSED a declared partner (a false
+                        // all-clear) while `deny Net[unknown-host]` reddened that same partner. The
+                        // config is what the gate reads; the peek is the same rule over a different file
+                        // set, so it must read it too. (candor-ts had this exact defect via its child
+                        // process; found there first, then here by the generated matrix.)
+                        peeked = runScan(jar, peekConfig);
                     } catch (Throwable e) {
                         // A PEEK THAT CANNOT RUN MUST NOT FAIL THE GATE — it is advisory by construction,
                         // and turning an unreadable jar into a red gate would make adding a policy, the
@@ -546,6 +568,9 @@ public class Candor {
                         continue;
                     }
                     readOk[0]++;
+                    // ⟨0.30⟩ the peek thread's OWN derived classes, built right after its runScan while
+                    // that context is still current — the same shape the scan gate builds for itself.
+                    Policy.GateInput peekGi = Policy.gateInputFromScan(peeked);
                     // ⟨0.29⟩ OPENING THE ARCHIVE IS NOT READING IT. `runScan` records every class it could
                     // not analyze in this thread's `unanalyzed` (the ⟨0.21⟩ completeness manifest), and it
                     // was thrown away — so a jar that opened fine and whose classes failed to analyze was
@@ -557,7 +582,7 @@ public class Candor {
                     String where = root == null ? jar.toString() : relativeTo(root, jar);
                     for (var e : new java.util.TreeMap<>(peeked).entrySet()) {
                         if (judged.contains(e.getKey())) continue;   // the gate DID judge this one
-                        List<String> hits = peekHits(peekRules, e.getKey(), e.getValue());
+                        List<String> hits = peekHits(peekRules, e.getKey(), e.getValue(), peekGi);
                         if (hits.isEmpty()) continue;
                         found.add(new Report.OutOfScope(e.getKey(), where, hits,
                                 "archive-under-the-scan-root",
@@ -589,7 +614,7 @@ public class Candor {
                 for (Path jar : versionedTargets) {
                     Map<String, EffectSet> over;
                     try {
-                        over = runScan(jar, Config.empty(), true);
+                        over = runScan(jar, peekConfig, true);
                     } catch (Throwable e) {
                         vFail[0]++;
                         continue;
@@ -603,16 +628,28 @@ public class Candor {
                     // exclusion's own comment warned about) performing Exec answered exit 0, `peeked:true`,
                     // `outOfScope:[]` under `deny Exec`. A false all-clear inside the pass that closes
                     // false all-clears.
-                    if (!ctx().unanalyzed.isEmpty()) { vPartial[0]++; continue; }
+                    // COUNT THE PARTIAL READ, DO NOT SKIP THE FINDINGS. The `continue` here was itself a
+                    // false all-clear, and a trivially triggerable one: ONE unreadable `.class` anywhere
+                    // under META-INF/versions/ suppressed the findings from every override that DID read.
+                    // MEASURED — a multi-release jar whose versioned copy performs `Exec` answers exit 2
+                    // under `deny Exec`; add a single junk file beside it and the same jar answers exit 0
+                    // with `outOfScope: []` and no disclosure on any channel. Introduced while fixing the
+                    // ORDERING defect above, which is the shape this project keeps measuring: the repair
+                    // for one false all-clear opening the next.
+                    //
+                    // The two facts are INDEPENDENT and both must travel: an unreadable file withdraws the
+                    // `peeked` claim for the class (⟨0.29⟩ PART 52), and what WAS read is still evidence.
+                    if (!ctx().unanalyzed.isEmpty()) vPartial[0]++;
                     if (over.isEmpty()) continue;          // genuinely no versioned entries — not a failure
                     vOk[0]++;
+                    Policy.GateInput peekGi = Policy.gateInputFromScan(over);
                     String where = root == null ? jar.toString() : relativeTo(root, jar);
                     for (var e : new java.util.TreeMap<>(over).entrySet()) {
                         // NOT filtered by `judged`: the base copy of the SAME qualified name is judged, and
                         // that is exactly the case this pass exists for — the override is different code
                         // under the same name, and skipping it because the base was judged would silently
                         // drop every finding this pass can make.
-                        List<String> hits = peekHits(peekRules, e.getKey(), e.getValue());
+                        List<String> hits = peekHits(peekRules, e.getKey(), e.getValue(), peekGi);
                         if (hits.isEmpty()) continue;
                         found.add(new Report.OutOfScope(e.getKey(), where, hits,
                                 "multi-release-override",

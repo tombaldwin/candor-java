@@ -8,6 +8,8 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+## [0.30.0] — 2026-08-19
+
 - **Spec floor 0.30.** The declaration this build emits as `candor.spec` moves with the family; see
   candor-spec's changelog for the rung.
 

@@ -1653,7 +1653,12 @@ public class Candor {
         }
         // AS-EFF-007 is a heuristic ADVISORY (spec §6): emit findings but never fail CI on its own.
         int advisories = ctx().taintEnabled ? checkTaint(inferred) : 0;
-        if (violations == 0 && advisories == 0) gate.println("candor-java: no violations");
+        // THE GREEN LINE IS PRINTED BELOW, AFTER THE EXIT-2 ARMS — not here. Measured 2026-08-19: this
+        // printed `candor-java: no violations` and the run then exited 2, NOT certified, because a file
+        // outside the scan performs a denied effect (⟨0.30⟩) or a class could not be analyzed (⟨0.21⟩).
+        // Exit code and verdict document were correct; the human channel said pass. rust and ts reach
+        // their green line only after both arms have returned, so this was a four-way divergence too.
+        boolean gateGreen = violations == 0 && advisories == 0;
         // FAILURE-only pointer at the engine's own remedy verb: appended AFTER the AS-EFF lines, on the
         // SAME stream (`gate`), so a clean run stays byte-identical and the pinned violation-line shapes,
         // exit codes and --gate-json verdict are untouched (append-only, human channel only).
@@ -1690,6 +1695,9 @@ public class Candor {
                     + "above); the gate did not judge them, so the verdict is incomplete rather than a pass");
             System.exit(2);
         }
+        // …and only NOW is the gate green: every exit-2 arm above has been passed, so `no violations` is
+        // a claim this run can support. See the note at its old position for what printing it earlier said.
+        if (gateGreen) gate.println("candor-java: no violations");
     }
 
     /** ⟨0.15 staged⟩ The κ-coverage ledger, computed the ONE shared way for its three consumers — the

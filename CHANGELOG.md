@@ -8,6 +8,18 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **`CANDOR_TIMING=1` — opt-in phase timings on stderr.** Added to answer one question with a
+  measurement instead of an intuition: the agent edit-time loop re-analyses everything when one class
+  changed, and the proposed fix is a per-class cache, which is only worth building if the time is
+  actually spent per class. Over three independent targets the closure is **1.3–3.4%**, while
+  `analyze+edges` is 72% on a 2,602-class tree and 2–4× the parse everywhere — parse plus analyze is
+  ~90% of the run, and that is exactly what a per-class cache skips.
+
+  Off by default and stderr-only, because this engine promises byte-equality between the scan route and
+  the gate route: a diagnostic that could reach a report or a verdict is a defect, not a diagnostic. It
+  is pinned in both directions, with a third assertion requiring the timings to actually appear — the
+  two obvious rows are each satisfied by a timer that does nothing.
+
 - **Pinned: the multi-release peek does not put a partner host in `netPartners`.** The equivalent defect
   was measured in candor-rust the day the key landed. This engine is safe for a structural reason rather
   than a guard — its peek runs on its own thread and so owns its own `ThreadLocal` context — and that is

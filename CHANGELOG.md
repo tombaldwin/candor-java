@@ -10,6 +10,9 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.31.0] — 2026-08-20
 
+- The jbang catalog's DESCRIPTION said `candor-spec 0.30`. It is a contract claim and moves with the
+  floor; the `script-ref` URL beside it is a release pin and moves after publish, when the asset exists.
+
 - **`CANDOR_TIMING=1` — opt-in phase timings on stderr.** Added to answer one question with a
   measurement instead of an intuition: the agent edit-time loop re-analyses everything when one class
   changed, and the proposed fix is a per-class cache, which is only worth building if the time is

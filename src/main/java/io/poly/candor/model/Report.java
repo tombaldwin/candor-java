@@ -15,7 +15,22 @@ import java.util.List;
 public record Report(Provenance candor, List<String> packages, Coverage coverage,
                      Analyzed analyzed, List<UnanalyzedUnit> unanalyzed,
                      List<ExcludedClass> excluded, List<OutOfScope> outOfScope,
+                     NetPartners netPartners,
                      List<Effector> functions) {
+
+    /** ⟨0.31⟩ The ambient {@code net-partner} declaration that MOVED a {@code netClass} — the config file
+     *  that declared it, and the declared hosts that actually PARTICIPATED in this scan.
+     *
+     *  <p>{@code hosts} is what participated, not what was declared: a config listing twenty partners of
+     *  which one matched discloses the one, because a list of everything written down buries the line that
+     *  moved the verdict. NULL (key omitted) when nothing participated, so a project declaring no partners
+     *  — or declaring some that never matched — is byte-identical to a pre-rung report.
+     *
+     *  <p>Recorded by the PRODUCER because {@code gate --report} cannot compute it: {@code net-partner}
+     *  anchors at the TARGET and that route has no target, so re-classifying through the consumer's own
+     *  config would make a verdict depend on the reader's working directory — the re-derivation ⟨0.24⟩
+     *  forbids. Both routes copy this one record, which is what makes §3.1's byte-equality hold. */
+    public record NetPartners(String config, List<String> hosts) {}
     /** ⟨0.29⟩ THE SCOPE (candor-spec/FILE-SET-DESIGN.md): one class of file this scan chose not to OPEN,
      *  with a count and the engine's own reason. {@code unanalyzed} above names what was opened and could
      *  not be read; this names what was never opened at all, and a consumer could not tell the two apart,

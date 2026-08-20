@@ -40,6 +40,18 @@ final class ReportWriter {
     /** As {@link #writeJson(Map, String)} but reusing a precomputed {@link ClassConformance}. The report
      *  needs the all-classes form; {@link Candor#main} computes it once and shares it with the gate so the
      *  two-pass class/method/field walk isn't repeated on a {@code --json} + {@code CANDOR_STRICT} run. */
+    /** ⟨0.31⟩ The ambient `net-partner` provenance for this scan, or null when nothing participated.
+     *
+     *  <p>Null rather than an empty record: a declaration that changed nothing is not provenance, and an
+     *  always-present key would make every pre-rung report differ. The path is the one recorded when the
+     *  partners were LOADED, from the same {@code Config} object, so the disclosure cannot name a
+     *  different file from the one that supplied the vocabulary. */
+    private static Report.NetPartners netPartnersRecord() {
+        if (ctx().netPartnersUsed.isEmpty()) return null;
+        if (ctx().netPartnersSource == null) return null;
+        return new Report.NetPartners(ctx().netPartnersSource, new ArrayList<>(ctx().netPartnersUsed));
+    }
+
     static void writeJson(Map<String, EffectSet> inferred, String out, ClassConformance cc) throws IOException {
         // Per-class conformance (candor-spec §5), computed the ONE shared way (see classConformance):
         // declared = effects the class's injected dependency types can supply; performed = union over
@@ -154,15 +166,14 @@ final class ReportWriter {
                     // literal match (Literals.netDestClass); a masked Net surface OR a Net with NO visible host
                     // (runtime-computed endpoint) fails closed to `unknown-host` — candor never guesses a host
                     // onto a safe class. Omitted when the fn has no Net.
+                    // ⟨0.31⟩ ONE IMPLEMENTATION, TWO CALLERS. This block used to be a hand copy of
+                    // Policy.netClassesOf — identical logic, maintained twice. It was found because the
+                    // ⟨0.31⟩ partner accumulation was added to Policy's copy and the report came back with
+                    // `known-partner` and NO provenance: the class a reader sees was decided here, by the
+                    // other copy. Two implementations of one decision is the defect this whole rung is
+                    // about, sitting inside the engine implementing it.
                     List<String> netClass = List.of();
-                    if (inf.contains(Effect.NET)) {
-                        TreeSet<String> classes = new TreeSet<>();
-                        if (hk != null) for (String h : hk) classes.add(Literals.netDestClass(h, ctx().netPartners));
-                        TreeSet<String> inc = incompleteAcc.get(fn);
-                        boolean masked = inc != null && inc.contains("Net");
-                        if (masked || hk == null || hk.isEmpty()) classes.add("unknown-host");
-                        netClass = new ArrayList<>(classes);
-                    }
+                    if (inf.contains(Effect.NET)) netClass = Policy.netClassesOf(fn, hostsAcc, incompleteAcc);
                     // Why Unknown was emitted HERE (not inherited): native:/reflect:/dispatch:/… tags.
                     TreeSet<UnknownReason> uw = ctx().unknownWhy.get(fn);
                     List<UnknownReason> reasons = uw == null ? List.of() : new ArrayList<>(uw);
@@ -230,6 +241,7 @@ final class ReportWriter {
                 unanalyzed,
                 Candor.excludedClasses(),   // ⟨0.29⟩ THE SCOPE — always present, `[]` included
                 ctx().outOfScope,           // ⟨0.29⟩ THE PEEK — null (key omitted) when no policy was set
+                netPartnersRecord(),        // ⟨0.31⟩ the ambient config that MOVED a class — null when none did
                 effectors);
         // "-" is the --json-stdout pipe form: emit the report JSON to stdout (pure — `| jq .` parses it)
         // rather than writing a file. The progress line stays on stderr so stdout carries ONLY the report.

@@ -619,8 +619,25 @@ final class Literals {
      *  null/unresolved host is {@code unknown-host}: never fabricated onto a safe class. */
     static String netDestClass(String hostLiteral, Set<String> partners) {
         if (isTelemetryHost(hostLiteral)) return "known-telemetry";
-        if (hostInSet(hostLiteral, partners) || isModelHost(hostLiteral)) return "known-partner";
+        if (partnerFor(hostLiteral, partners) != null || isModelHost(hostLiteral)) return "known-partner";
         return "unknown-host";
+    }
+
+    /** ⟨0.31⟩ WHICH declared partner a host matched, or {@code null} — the SAME match {@link
+     *  #netDestClass} decides on, extracted so the DISCLOSURE and the DECISION cannot use different rules.
+     *
+     *  <p>Not a stylistic preference. The reverted first attempt at the {@code net-partner} disclosure
+     *  re-implemented this match against a normalisation that KEEPS the port, so an observed
+     *  {@code partner.example:443} never equalled a declared {@code partner.example} and the disclosure
+     *  came back SILENTLY EMPTY on every real run — while the verdicts it reported on had flipped. A
+     *  disclosure normalised differently from the decision it reports can only be wrong; one method with
+     *  two callers is what makes writing one impossible. */
+    static String partnerFor(String hostLiteral, Set<String> partners) {
+        if (hostLiteral == null || partners == null || partners.isEmpty()) return null;
+        String host = hostPart(hostLiteral).toLowerCase(Locale.ROOT);
+        if (partners.contains(host)) return host;
+        for (String p : partners) if (host.endsWith("." + p)) return p;
+        return null;
     }
 
     /** ⟨0.20⟩ The closed `Net` destination-class vocabulary, for the `deny Net[<dest…>]` policy filter. */

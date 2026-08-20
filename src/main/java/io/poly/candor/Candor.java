@@ -244,6 +244,8 @@ public class Candor {
         // single-target path; both are idempotent putAll/addAll into a just-created context.
         ctx().unknownAliases.putAll(cfg.unknownAliases());
         ctx().netPartners.addAll(cfg.netPartners());
+        if (!cfg.netPartners().isEmpty() && cfg.source() != null)
+            ctx().netPartnersSource = cfg.source().toString();   // ⟨0.31⟩ same object, so same file
         ctx().scanRoot = target;   // ⟨0.29⟩ so the scope block and the peek can name files as the operator does
         List<ClassNode> classes = load(target);
         ctx().ALL = classes;
@@ -1040,6 +1042,8 @@ public class Candor {
             Config pcfg = Config.policyVocabulary(Path.of(args[1]));   // ⟨0.24⟩ the named anchor (§3.1)
             ctx().unknownAliases.putAll(pcfg.unknownAliases());
             ctx().netPartners.addAll(pcfg.netPartners());
+        if (!pcfg.netPartners().isEmpty() && pcfg.source() != null)
+            ctx().netPartnersSource = pcfg.source().toString();   // ⟨0.31⟩ same object, so same file
             // ⟨0.24⟩ SPEC §3.1 — **THE WITNESS MUST NOT REFUSE.** An unrecognised class token is a policy
             // error at the GATE (§6.2, exit 2, policy NOT evaluated) — but the gate is the thing that must
             // not enforce a policy it cannot honour, and this verb is not the gate. Its whole job is to
@@ -1425,7 +1429,9 @@ public class Candor {
         ctx().unknownAliases.putAll(vocab.unknownAliases());
         if (!vocab.unknownAliases().isEmpty() && vocab.source() != null)
             ctx().vocabularySource = vocab.source().toString();
-        ctx().netPartners.addAll(config.netPartners()); // ⟨0.20⟩ Net destination-class known-partner hosts
+        ctx().netPartners.addAll(config.netPartners());
+        if (!config.netPartners().isEmpty() && config.source() != null)
+            ctx().netPartnersSource = config.source().toString();   // ⟨0.31⟩ same object, so same file // ⟨0.20⟩ Net destination-class known-partner hosts
 
         // Fail loud on an EMPTY scan: a path that exists but holds no .class files (a source dir, an
         // unbuilt module, or a failed build) would otherwise report "0 functions reach effects" — which
@@ -1811,6 +1817,7 @@ public class Candor {
         an.put("count", facts.analyzedCount());
         out.put("analyzed", an);
         policyVocabularyJson(out);
+        netPartnersJson(out);
         out.put("violations", gateViolations);
         // ⟨0.24⟩ THE RULES THIS RUN COULD NOT EVALUATE. A verdict that exits 1 over a policy one of whose
         // rules was refused is CERTAIN about the violation and silent about the rest — so the rest is said
@@ -2651,6 +2658,22 @@ public class Candor {
      * disclose the same bytes; {@code config} keeps its position and its meaning, since the content the
      * object adds is in addition to the source, not instead of it.
      */
+    /** ⟨0.31⟩ The ambient `net-partner` declaration that MOVED a classification, for the VERDICT — a LIST
+     *  of {@code {config, hosts}} records, matching the shape candor-ts and candor-rust emit (a
+     *  {@code --report} prefix can match several reports, so the verdict key is a list even though one
+     *  report carries one record).
+     *
+     *  <p>Omitted when nothing participated, so every verdict without ambient partner vocabulary stays
+     *  byte-identical. Same position on both routes, because §3.1 makes byte-equality between the scan
+     *  verdict and the `gate --report` verdict the acceptance test. */
+    static void netPartnersJson(java.util.LinkedHashMap<String, Object> out) {
+        if (ctx().netPartnersSource == null || ctx().netPartnersUsed.isEmpty()) return;
+        var rec = new java.util.LinkedHashMap<String, Object>();
+        rec.put("config", ctx().netPartnersSource);
+        rec.put("hosts", new java.util.ArrayList<>(ctx().netPartnersUsed));
+        out.put("netPartners", java.util.List.of(rec));
+    }
+
     static void policyVocabularyJson(java.util.LinkedHashMap<String, Object> out) {
         if (ctx().vocabularySource == null || ctx().vocabularyUsed.isEmpty()) return;
         var v = new java.util.LinkedHashMap<String, Object>();

@@ -1873,6 +1873,15 @@ public final class Query {
                 else jn.add(r);
             }
             oos.addAll(env.outOfScope());
+            // ⟨0.31⟩ adopt the PRODUCER's partner provenance so the shared verdict writer emits the same
+            // bytes on this route as the scan route did. Copied, never recomputed — §3.1's byte-equality
+            // is the acceptance test, and the first attempt at this disclosure was reverted for computing
+            // it on one route only. First writer wins: a prefix can match several reports, and a second
+            // record naming a different config is a shape the verdict key cannot express today.
+            if (env.netPartners() != null && AnalysisState.ctx().netPartnersSource == null) {
+                AnalysisState.ctx().netPartnersSource = env.netPartners().config();
+                AnalysisState.ctx().netPartnersUsed.addAll(env.netPartners().hosts());
+            }
         }
         return new ReportCompleteness(un, jn, bad, nm, oos);
     }
@@ -3433,7 +3442,8 @@ public final class Query {
      *      is not hedging at all. */
     record Envelope(int analyzedCount, List<String[]> unanalyzed, List<Map.Entry<String, Integer>> uncovered,
                     Map<String, List<String>> rawUnknownWhy, String packageName, boolean judgedNothing,
-                    boolean noManifest, List<io.poly.candor.model.Report.OutOfScope> outOfScope) {}
+                    boolean noManifest, List<io.poly.candor.model.Report.OutOfScope> outOfScope,
+                    io.poly.candor.model.Report.NetPartners netPartners) {}
 
     static Envelope readEnvelope(String path) throws Exception {
         JsonElement root = JsonParser.parseString(Files.readString(Path.of(path)));
@@ -3441,6 +3451,11 @@ public final class Query {
         List<String[]> unanalyzed = new ArrayList<>();
         List<Map.Entry<String, Integer>> uncovered = new ArrayList<>();
         List<io.poly.candor.model.Report.OutOfScope> outOfScope = new ArrayList<>();
+        // ⟨0.31⟩ the PRODUCER's ambient-partner provenance, carried through verbatim. This route has no
+        // target to anchor `net-partner` at, and re-classifying the report's hosts through THIS machine's
+        // config is the re-derivation ⟨0.24⟩ forbids — it would make the verdict depend on the reader's
+        // working directory. Absent is the ordinary case and stays absent.
+        io.poly.candor.model.Report.NetPartners netPartners = null;
         int analyzed = 0;
         String pkg = null;                 // §2 `package`/`packages` — for the judged-nothing advisory
         JsonArray fns = null;
@@ -3493,6 +3508,21 @@ public final class Query {
             // empty default becomes the claim "I looked and nothing was there" — the safe-LOOKING value.
             // ABSENT STAYS ABSENT (⟨0.26⟩ cannot-answer): a report produced with no policy was never asked
             // the question, and must not become exit 2 on contact.
+            // ⟨0.31⟩ `netPartners` — read as written, shape-checked like every other §2 key: a present
+            // key that cannot be read impeaches the document rather than being quietly dropped.
+            if (o.has("netPartners")) {
+                if (!o.get("netPartners").isJsonObject())
+                    throw new IllegalStateException(
+                            "`netPartners` is present but is not an object — a SIGNATURE key that cannot "
+                            + "be read impeaches the whole document (§2), so this gate cannot certify it");
+                JsonObject np = o.getAsJsonObject("netPartners");
+                if (np.has("config") && np.has("hosts") && np.get("hosts").isJsonArray()) {
+                    List<String> hs = new ArrayList<>();
+                    for (JsonElement h : np.getAsJsonArray("hosts")) hs.add(h.getAsString());
+                    netPartners = new io.poly.candor.model.Report.NetPartners(
+                            np.get("config").getAsString(), hs);
+                }
+            }
             if (o.has("outOfScope") && !o.get("outOfScope").isJsonArray())
                 throw new IllegalStateException(
                         "`outOfScope` is present but is not an array — a SIGNATURE key that cannot be read "
@@ -3548,7 +3578,7 @@ public final class Query {
                 if (!ws.isEmpty()) raw.put(o.get("fn").getAsString(), ws);
             }
         return new Envelope(analyzed, unanalyzed, uncovered, raw, pkg,
-                Loader.claimsToHaveJudgedNothing(envObj, fns), Loader.hasNoManifest(envObj), outOfScope);
+                Loader.claimsToHaveJudgedNothing(envObj, fns), Loader.hasNoManifest(envObj), outOfScope, netPartners);
     }
 
     /**
@@ -3756,6 +3786,15 @@ public final class Query {
             unanalyzed.addAll(env.unanalyzed());
             uncovered.addAll(env.uncovered());
             outOfScope.addAll(env.outOfScope());
+            // ⟨0.31⟩ adopt the PRODUCER's partner provenance here too. TWO envelope consumers exist on
+            // this verb's paths and the disclosure has to be adopted at BOTH, or the route that skipped it
+            // emits a verdict missing a key the other has — which is the byte-equality failure this whole
+            // key was reverted for once already. Measured: adopting at only the first left `gate --report`
+            // without it while `scan --policy` had it.
+            if (env.netPartners() != null && AnalysisState.ctx().netPartnersSource == null) {
+                AnalysisState.ctx().netPartnersSource = env.netPartners().config();
+                AnalysisState.ctx().netPartnersUsed.addAll(env.netPartners().hosts());
+            }
             // A repeated `fn` across reports joins by UNION here too — same direction as the entry join.
             for (var e : env.rawUnknownWhy().entrySet())
                 rawWhy.computeIfAbsent(e.getKey(), k -> new ArrayList<>()).addAll(e.getValue());

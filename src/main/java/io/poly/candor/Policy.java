@@ -1661,11 +1661,19 @@ final class Policy {
      *  `netClass` field: an exact host-literal match (Literals.netDestClass) for the visible hosts, plus the
      *  fail-closed `unknown-host` when the Net surface is masked (AS-EFF-008) OR carries no visible host (a
      *  runtime-computed endpoint). Call only for an fn known to have Net; returns a sorted list. */
-    private static List<String> netClassesOf(String fn, Map<String, TreeSet<String>> hostsAcc,
+    static List<String> netClassesOf(String fn, Map<String, TreeSet<String>> hostsAcc,
                                              Map<String, TreeSet<String>> incompleteAcc) {
         java.util.TreeSet<String> classes = new java.util.TreeSet<>();
         TreeSet<String> hk = hostsAcc.get(fn);
-        if (hk != null) for (String h : hk) classes.add(Literals.netDestClass(h, ctx().netPartners));
+        if (hk != null) for (String h : hk) {
+            // ⟨0.31⟩ record WHICH declared partner participated, at the point the class is decided.
+            // `partnerFor` is the method `netDestClass` itself asks, so the disclosure and the decision
+            // cannot use different rules — the reverted first attempt re-matched and normalised
+            // differently, and came back silently empty on every real run.
+            String pm = Literals.partnerFor(h, ctx().netPartners);
+            if (pm != null) ctx().netPartnersUsed.add(pm);
+            classes.add(Literals.netDestClass(h, ctx().netPartners));
+        }
         TreeSet<String> inc = incompleteAcc.get(fn);
         if ((inc != null && inc.contains("Net")) || hk == null || hk.isEmpty()) classes.add("unknown-host");
         return new ArrayList<>(classes);

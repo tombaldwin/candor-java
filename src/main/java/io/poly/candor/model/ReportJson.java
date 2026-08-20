@@ -107,6 +107,14 @@ public final class ReportJson {
         // was asked and `[]` would be a claim. Present-and-empty means asked-and-clear, and it is a claim
         // about the classes marked `peeked` above and only those.
         if (report.outOfScope() != null) envelope.put("outOfScope", outOfScopeJson(report.outOfScope()));
+        // ⟨0.31⟩ the ambient `net-partner` that MOVED a class — after `outOfScope`, before `functions`, the
+        // position ts and rust also use, so key order does not depend on which engine produced the report.
+        // NULL (omitted) when nothing participated: a declaration that changed nothing is not provenance,
+        // and an always-present key would make every pre-rung report differ.
+        if (report.netPartners() != null)
+            envelope.put("netPartners", new java.util.LinkedHashMap<>(java.util.Map.of(
+                    "config", report.netPartners().config(),
+                    "hosts", report.netPartners().hosts())));
         List<Map<String, Object>> entries = new ArrayList<>();
         for (Effector e : report.functions()) entries.add(entry(e));
         envelope.put("functions", entries);

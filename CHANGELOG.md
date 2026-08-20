@@ -8,6 +8,27 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⟨0.31⟩ `netPartners` — the ambient config that moved a verdict is named in it.** Under
+  `deny Net[unknown-host]`, a call to `partner.example` exits 1; adding `net-partner partner.example` to
+  an ambient `.candor/config` exits 0, and nothing named the file, its path, or the host. The report
+  envelope now carries `netPartners: { config, hosts }` — which config declared partners and which of them
+  **participated** — and both `scan --policy` and `gate --report` put the list of those records in the
+  verdict. Verified byte-equal. Additive: no declaration, or one that never matched, carries the key
+  nowhere.
+
+  The path is recorded where the partners are LOADED, from the same `Config` object, exactly as
+  `vocabularySource` is for `unknown-alias` — so the disclosure cannot name a different file from the one
+  that supplied the vocabulary. `gate --report` **copies** the producer's record rather than recomputing
+  it: that route has no target to anchor `net-partner` at.
+
+- **`ReportWriter` had its own copy of the `netClass` computation — deleted.** It was a hand duplicate of
+  `Policy.netClassesOf`, identical logic maintained twice. Found because the ⟨0.31⟩ accumulation went into
+  Policy's copy and the report came back carrying `known-partner` with **no** provenance: the class a
+  reader sees was decided by the other copy. `ReportWriter` now calls the one implementation. Two
+  implementations of one decision is the defect this rung exists to disclose, and it was in this engine.
+
+## Unreleased
+
 ## [0.30.0] — 2026-08-19
 
 - **jbang catalog → v0.30.0.** `jbang candor@tombaldwin/candor-java` now resolves the 0.30.0 fat jar.

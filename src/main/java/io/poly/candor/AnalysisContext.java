@@ -61,6 +61,14 @@ final class AnalysisContext {
     // Net destination-class classifier (Literals.netDestClass) to refine a visible host to `known-partner`.
     // Populated alongside unknownAliases (before parsePolicy / after runScan). Empty = telemetry-only asserts.
     final Set<String> netPartners = new HashSet<>();
+    /** ⟨0.31⟩ the declared partners that actually MOVED a classification in this run — the provenance the
+     *  report's `netPartners` key discloses. A declaration that changed nothing is not provenance, so this
+     *  holds what PARTICIPATED rather than what was written down. */
+    final java.util.TreeSet<String> netPartnersUsed = new java.util.TreeSet<>();
+    /** ⟨0.31⟩ the config file the partners were READ FROM — taken from the same {@code Config} object,
+     *  exactly as {@code vocabularySource} is for `unknown-alias`, so the disclosure cannot name a
+     *  different file from the one that supplied the vocabulary. */
+    String netPartnersSource;
     // ⟨0.21⟩ COMPLETENESS MANIFEST (Gap 2): the TARGET's own class files candor could NOT analyze — a .class
     // ASM couldn't parse (a future-major bytecode version, a corrupt entry). path → reason. Their effects are
     // absent NOT because pure but because never seen; carried into the report + the gate verdict (a gate over

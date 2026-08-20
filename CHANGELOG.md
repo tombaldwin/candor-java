@@ -10,6 +10,10 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.30.0] — 2026-08-19
 
+- **jbang catalog → v0.30.0.** `jbang candor@tombaldwin/candor-java` now resolves the 0.30.0 fat jar.
+  The pin moves after the release exists, never before it — until this commit the catalog pointed at the
+  0.29.1 jar while its own description named spec 0.30.
+
 - **Spec floor 0.30.** The declaration this build emits as `candor.spec` moves with the family; see
   candor-spec's changelog for the rung.
 

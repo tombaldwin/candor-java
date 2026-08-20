@@ -8,6 +8,12 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **Pinned: the multi-release peek does not put a partner host in `netPartners`.** The equivalent defect
+  was measured in candor-rust the day the key landed. This engine is safe for a structural reason rather
+  than a guard — its peek runs on its own thread and so owns its own `ThreadLocal` context — and that is
+  the kind of reason that stops being true quietly, so it is pinned behaviourally now, with the
+  over-charge control (the partner reached from the JUDGED class) in the same test.
+
 - **⟨0.31⟩ `netPartners` — the ambient config that moved a verdict is named in it.** Under
   `deny Net[unknown-host]`, a call to `partner.example` exits 1; adding `net-partner partner.example` to
   an ambient `.candor/config` exits 0, and nothing named the file, its path, or the host. The report
@@ -26,8 +32,6 @@ after upgrading; review policies and regenerate baselines with the new build.
   Policy's copy and the report came back carrying `known-partner` with **no** provenance: the class a
   reader sees was decided by the other copy. `ReportWriter` now calls the one implementation. Two
   implementations of one decision is the defect this rung exists to disclose, and it was in this engine.
-
-## Unreleased
 
 ## [0.30.0] — 2026-08-19
 

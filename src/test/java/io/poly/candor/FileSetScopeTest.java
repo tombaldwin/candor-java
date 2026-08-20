@@ -102,6 +102,102 @@ class FileSetScopeTest {
         return root;
     }
 
+    /**
+     * ⟨0.31⟩ THE PEEK MUST NOT PUT A HOST IN {@code netPartners} THAT ONLY THE EXCLUDED COPY USED.
+     *
+     * <p>Written after the identical defect was MEASURED in candor-rust the day the key landed: on a
+     * crate whose only mention of the declared partner was in {@code build.rs}, the verdict said
+     * {@code netPartners: [{hosts:["partner.example"]}]} and the report it had just written said null.
+     * Both halves of that are the failure the first net-partner attempt was reverted for — §3.1 route
+     * equality breaks, because {@code gate --report} reads the report and can only ever answer null, and
+     * the disclosure over-claims by saying an ambient declaration moved a classification the gate never
+     * made.
+     *
+     * <p>This engine is believed safe for a STRUCTURAL reason rather than a guard: its peek runs on its
+     * own thread and therefore owns its own {@link ThreadLocal} context, so the override's partner use
+     * accumulates into a context nobody reads. That is exactly the kind of reason that stops being true
+     * quietly — the peek moving back onto the calling thread for speed would reintroduce this with no
+     * other symptom — so it is pinned behaviourally here rather than left as a note.
+     *
+     * <p>BOTH DIRECTIONS, in one test on purpose. The absent-key assertion alone is satisfied by an
+     * engine that never emits the key at all, which is the safe value that passes the assertion while
+     * deleting the feature; the second half re-runs the same jar with the partner call in the BASE class
+     * and requires the key to appear.
+     */
+    @Test
+    void the_peek_does_not_name_a_partner_only_the_excluded_copy_used() throws Exception {
+        Path root = tmp.resolve("np");
+        Files.createDirectories(root.resolve(".candor"));
+        Files.writeString(root.resolve(".candor/config"), "net-partner partner.example\n");
+        String callsPartner =
+            "    HttpClient.newHttpClient().send(HttpRequest.newBuilder("
+            + "URI.create(\"https://partner.example/v1\")).build(), HttpResponse.BodyHandlers.ofString());";
+
+        // ARM 1 — the partner is reached ONLY from the versioned override, which the gate does not judge.
+        Path base = compile(Map.of("B.java", String.join("\n",
+            "package com.x;",
+            "public class B { public static int f(int i) { return i + 1; } }")));
+        Path over = compile(Map.of("B.java", String.join("\n",
+            "package com.x;",
+            "import java.net.*; import java.net.http.*;",
+            "public class B {",
+            "  public static int f(int i) throws Exception {",
+            callsPartner,
+            "    return i;",
+            "  }",
+            "}")));
+        Path tree = root.resolve("mrnp");
+        Files.createDirectories(tree.resolve("META-INF/versions/9"));
+        copyTree(base, tree);
+        copyTree(over, tree.resolve("META-INF/versions/9"));
+        Path jar = root.resolve("mrnp.jar");
+        jarUp(tree, jar);
+
+        Run r = runCli(jar.toString(), "--json", root.resolve("np.json").toString(),
+                       "--policy", policy("npmr.policy", "deny Net\n").toString());
+        JsonObject rpt = report(root.resolve("np.json"));
+
+        // THE CONTROL FOR THE SETUP. Without this the arm below passes on a run where the peek never
+        // read the override at all, which proves nothing about what it records.
+        JsonArray oos = rpt.getAsJsonArray("outOfScope");
+        assertNotNull(oos, "the peek reported nothing at all — the base class is pure, so its silence "
+            + "means the versioned copy was never read and this test cannot answer its question");
+        assertEquals(1, oos.size(), "expected exactly the override's Net: " + oos);
+        assertEquals(2, r.exit(), "a peeked fn performing the denied effect makes the verdict INCOMPLETE");
+
+        assertTrue(!rpt.has("netPartners") || rpt.get("netPartners").isJsonNull(),
+            "the report names a partner host that only the EXCLUDED copy reached. The gate judged the "
+            + "BASE class, which never touches it, so this claims an ambient config moved a "
+            + "classification that was never made — and `gate --report` reading this report cannot "
+            + "reproduce the scan route's verdict: " + rpt.get("netPartners"));
+
+        // ARM 2 — THE OVER-CHARGE CONTROL. Same jar shape, partner call in the BASE class this time. An
+        // engine that simply never emits the key would satisfy arm 1 while shipping nothing.
+        Path base2 = compile(Map.of("B.java", String.join("\n",
+            "package com.x;",
+            "import java.net.*; import java.net.http.*;",
+            "public class B {",
+            "  public static int f(int i) throws Exception {",
+            callsPartner,
+            "    return i;",
+            "  }",
+            "}")));
+        Path tree2 = root.resolve("mrnp2");
+        Files.createDirectories(tree2);
+        copyTree(base2, tree2);
+        Path jar2 = root.resolve("mrnp2.jar");
+        jarUp(tree2, jar2);
+        runCli(jar2.toString(), "--json", root.resolve("np2.json").toString(),
+               "--policy", policy("npmr2.policy", "deny Net\n").toString());
+        JsonObject rpt2 = report(root.resolve("np2.json"));
+        assertTrue(rpt2.has("netPartners") && !rpt2.get("netPartners").isJsonNull(),
+            "the partner is reached from the JUDGED class here, so the ambient config demonstrably moved "
+            + "this run's classification and §3.1 requires the verdict to name it. Arm 1 above is "
+            + "vacuous without this: " + rpt2);
+        assertTrue(rpt2.getAsJsonObject("netPartners").get("hosts").toString().contains("partner.example"),
+            "…and it must name the host that PARTICIPATED: " + rpt2.get("netPartners"));
+    }
+
     private static void copyTree(Path from, Path to) throws Exception {
         try (Stream<Path> s = Files.walk(from)) {
             for (Path p : (Iterable<Path>) s::iterator) {

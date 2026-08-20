@@ -247,7 +247,9 @@ public class Candor {
         if (!cfg.netPartners().isEmpty() && cfg.source() != null)
             ctx().netPartnersSource = cfg.source().toString();   // ⟨0.31⟩ same object, so same file
         ctx().scanRoot = target;   // ⟨0.29⟩ so the scope block and the peek can name files as the operator does
+        phase("start");
         List<ClassNode> classes = load(target);
+        phase("load+parse");
         ctx().ALL = classes;
         for (ClassNode cn : classes) {
             ctx().projectClasses.add(cn.name);
@@ -266,12 +268,15 @@ public class Candor {
                 ctx().overloadDescs.computeIfAbsent(dc + "." + mn.name, k -> new HashSet<>()).add(mn.desc);
             }
         }
+        phase("index-methods");
         buildSubtypeIndex(classes);
         computeSpringTypes(classes);
         computeStreamFieldOrigins(classes); // VALUE-PROVENANCE Phase 2: which stream fields are provably all-concrete
         // Cross-jar inheritance (candor-spec §2): load dependency reports named by CANDOR_DEPS BEFORE
         // analyze, so a call into an already-analyzed dependency inherits its effects (vs assumed-pure).
+        phase("subtype+spring+stream");
         loadCrossDeps(cfg.value("deps", "CANDOR_DEPS"), provenance()[0]);
+        phase("cross-deps");
         ctx().taintEnabled = cfg.flag("taint", Mode.TAINT.envVar()); // read before analyze (the pass runs per method)
         ctx().closedWorld = forceClosedWorld || cfg.flag("closed-world", "CANDOR_CLOSED_WORLD"); // opt-in: scanned set is complete
         ctx().unknownRatchet = cfg.flag("unknown-ratchet", "CANDOR_UNKNOWN_RATCHET"); // opt-in: a NEW Unknown vs baseline fails
@@ -334,8 +339,12 @@ public class Candor {
             }
         }
 
+        phase("analyze+edges");
         classifySourceScope();
-        return fixpoint();
+        phase("classify-scope");
+        Map<String, EffectSet> fx = fixpoint();
+        phase("fixpoint");
+        return fx;
     }
 
     /** ⟨0.29⟩ WHICH JVM SOURCES UNDER THE SCAN ROOT HAVE NO COMPILED CLASS (candor-spec/FILE-SET-DESIGN.md).
@@ -5964,6 +5973,32 @@ public class Candor {
             }
         }
         return fs;
+    }
+
+    /** ⟨timing⟩ OPT-IN PHASE TIMING, `CANDOR_TIMING=1`, stderr only.
+     *
+     *  <p>Written to answer one question with a measurement instead of an intuition: the agent
+     *  edit-time loop pays a full re-analysis when one class changed, and the proposed fix is a
+     *  per-class cache. That is only worth building if the time is actually spent PER CLASS. If the
+     *  fixpoint dominates, a per-class cache buys little and the answer is elsewhere — so the phases
+     *  must be separable before anyone writes a cache key.
+     *
+     *  <p>Off by default and on stderr, because this engine's contract is byte-equality between two
+     *  routes: a timing line that could reach a report or a verdict would be a defect, not a
+     *  diagnostic. Nanos, printed as millis, and it never throws — a broken timer must not fail a scan.
+     */
+    private static long timingMark = 0L;
+    static boolean timingOn() {
+        String v = System.getenv("CANDOR_TIMING");
+        return v != null && !v.isEmpty() && !v.equals("0");
+    }
+    static void phase(String name) {
+        if (!timingOn()) return;
+        long now = System.nanoTime();
+        if (timingMark != 0L) {
+            System.err.printf("candor-timing  %-22s %8.1f ms%n", name, (now - timingMark) / 1e6);
+        }
+        timingMark = now;
     }
 
     static Map<String, EffectSet> fixpoint() {

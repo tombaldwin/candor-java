@@ -470,6 +470,51 @@ class CliBehaviourTest {
     }
 
     @Test
+    void phaseTimingIsOffByDefaultAndNeverTouchesTheDocument() throws Exception {
+        // ⟨timing⟩ `CANDOR_TIMING=1` prints phase durations, and the ONLY safe place for them is stderr
+        // with the flag off by default. This engine's contract is byte-equality between the scan route
+        // and the gate route, so a diagnostic that could reach a report or a verdict is a defect and not
+        // a diagnostic — and "I put it on stderr" is the kind of claim that stays true until someone
+        // adds a println.
+        //
+        // Both directions, because each alone is satisfied by something useless: silence-by-default is
+        // satisfied by a timer that never works, and identical documents are satisfied by a timer that
+        // prints nothing at all. So the third assertion requires the timing lines to actually appear.
+        Path classes = comparePureFixture();
+        String javaBin = System.getProperty("java.home") + "/bin/java";
+        String cp = System.getProperty("java.class.path");
+
+        // A FILE, not `--json -`: this engine's --json takes a path, and the first version of this test
+        // passed `-`. Both runs then refused IDENTICALLY, so the two assertions below were satisfied by
+        // two error messages and the whole test proved nothing. Only the third assertion caught it,
+        // which is the reason it is there.
+        Path offRep = scratch.resolve("timing-off.json"), onRep = scratch.resolve("timing-on.json");
+        ProcessBuilder off = new ProcessBuilder(javaBin, "-cp", cp, "io.poly.candor.Candor",
+                                                classes.toString(), "--json", offRep.toString());
+        Process po = off.start();
+        String offErr = drain(po.getErrorStream());
+        assertEquals(0, po.waitFor(), "the plain run must succeed for this comparison to mean anything:\n" + offErr);
+
+        ProcessBuilder on = new ProcessBuilder(javaBin, "-cp", cp, "io.poly.candor.Candor",
+                                               classes.toString(), "--json", onRep.toString());
+        on.environment().put("CANDOR_TIMING", "1");
+        Process pn = on.start();
+        String onErr = drain(pn.getErrorStream());
+        assertEquals(0, pn.waitFor(), "the timed run must succeed too:\n" + onErr);
+
+        String offOut = Files.readString(offRep), onOut = Files.readString(onRep);
+
+        assertFalse(offErr.contains("candor-timing"),
+            "phase timing must be OFF unless asked for; it appeared on a plain run:\n" + offErr);
+        assertEquals(offOut, onOut,
+            "the report differs when CANDOR_TIMING is set. Timing is a diagnostic and must not be able "
+            + "to reach a document this engine promises byte-equal across two routes.");
+        assertTrue(onErr.contains("candor-timing") && onErr.contains("fixpoint"),
+            "…and with it set the phases must actually be reported, or the two assertions above are "
+            + "both satisfied by a timer that does nothing:\n" + onErr);
+    }
+
+    @Test
     void gateJsonValuelessFailsClosed() throws Exception {
         // A valueless gate flag must FAIL (exit 2), never silently run without emitting — like --policy/--json.
         Run r = runCli(comparePureFixture().toString(), "--gate-json");

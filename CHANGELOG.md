@@ -8,6 +8,13 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **A refusal's `--gate-json` document described a crash.** This engine's stderr on an unevaluable target
+  is the family's model (it names the build command), but the machine document still held the arming stub
+  — "the run failed, crashed or was killed" — for a run that deliberately refused. ⟨0.24⟩ pins that field
+  as a string naming the cause, and whoever reads the document is exactly whoever cannot go and look at
+  stderr. Both refusal sites (no such path, and a path holding no `.class`) now replace the stub with the
+  real cause and carry the remedy in it.
+
 ## [0.31.0] — 2026-08-20
 
 - The jbang catalog's DESCRIPTION said `candor-spec 0.30`. It is a contract claim and moves with the

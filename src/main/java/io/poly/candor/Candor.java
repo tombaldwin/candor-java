@@ -1396,6 +1396,8 @@ public class Candor {
             System.err.println("candor: no such path: " + args[0]);
             System.err.println("        point candor at COMPILED classes (target/classes · build/classes/java/main) or a built .jar.");
             System.err.println("        no build yet? run `mvn -q compile` or `./gradlew classes` first.");
+            refuseGateJson("no such path: " + args[0] + " — point candor-java at compiled classes "
+                    + "(target/classes, build/classes/java/main) or a built .jar.");
             System.exit(2);
         }
         Map<String, EffectSet> inferred;
@@ -1451,6 +1453,9 @@ public class Candor {
             System.err.println("        candor reads BYTECODE, not source — point it at COMPILED output");
             System.err.println("        (target/classes · build/classes/java/main) or a built .jar.");
             System.err.println("        no build yet? run `mvn -q compile` or `./gradlew classes` first.");
+            refuseGateJson("no .class files found under " + args[0] + " — candor-java reads BYTECODE, not "
+                    + "source; point it at compiled output (target/classes, build/classes/java/main) or a "
+                    + "built .jar. Exit 2 (unevaluable): a target this engine cannot read is not a clean scan.");
             System.exit(2);
         }
 
@@ -2558,8 +2563,43 @@ public class Candor {
         }));
     }
 
+    /** ⟨0.31⟩ The `--gate-json` file this run armed, so a later refusal can replace its stub in place.
+     *  Remembered here rather than threaded through: the refusal sites are deep in `main` and the sink
+     *  is decided during pre-parse, and passing it down four call layers to reach them is how one of the
+     *  sites gets missed. */
+    private static String ARMED_GATE_JSON = null;
+
+    /** ⟨0.31⟩ Replace the ARMING STUB with the real reason when this run DECIDES to refuse.
+     *
+     *  <p>{@link #armGateJson} writes a stub saying the run "failed, crashed or was killed" — correct
+     *  while the run's fate is unknown, and FALSE the moment it deliberately refuses. MEASURED: a target
+     *  holding no {@code .class} exited 2 with excellent stderr (this engine's remedy is the family's
+     *  model) while its {@code --gate-json} document still described a crash. A machine consumer reads
+     *  only that document, and ⟨0.24⟩ pins its {@code reason} as a string NAMING THE CAUSE — this family
+     *  rates a false description worse than a missing one, because it sends the reader after a crash
+     *  that never happened.
+     *
+     *  <p>The remedy travels IN the reason, for the same audience: whoever reads the document is exactly
+     *  whoever cannot go and look at stderr. */
+    static void refuseGateJson(String why) {
+        String path = ARMED_GATE_JSON;
+        if (path == null || path.equals("-")) return;
+        var out = new java.util.LinkedHashMap<String, Object>();
+        out.put("spec", SPEC_VERSION);
+        out.put("ok", false);
+        out.put("refused", true);
+        out.put("reason", why);
+        try {
+            Files.writeString(Path.of(path), io.poly.candor.model.ReportJson.pretty(out) + "\n");
+        } catch (IOException | RuntimeException e) {
+            System.err.println("candor: could not write the refusal to --gate-json " + path
+                    + " (" + e.getMessage() + ") — that path may still hold this run's arming stub");
+        }
+    }
+
     static void armGateJson(String path) {
         if (path == null || path.equals("-")) return;
+        ARMED_GATE_JSON = path;
         var out = new java.util.LinkedHashMap<String, Object>();
         out.put("spec", SPEC_VERSION);
         out.put("ok", false);

@@ -3443,7 +3443,9 @@ public final class Query {
     record Envelope(int analyzedCount, List<String[]> unanalyzed, List<Map.Entry<String, Integer>> uncovered,
                     Map<String, List<String>> rawUnknownWhy, String packageName, boolean judgedNothing,
                     boolean noManifest, List<io.poly.candor.model.Report.OutOfScope> outOfScope,
-                    io.poly.candor.model.Report.NetPartners netPartners) {}
+                    io.poly.candor.model.Report.NetPartners netPartners,
+                    /** ⟨0.33⟩ `excluded[].peeked == false` — the classes the producing scan never READ. */
+                    List<String> unpeeked) {}
 
     static Envelope readEnvelope(String path) throws Exception {
         JsonElement root = JsonParser.parseString(Files.readString(Path.of(path)));
@@ -3577,8 +3579,26 @@ public final class Query {
                     if (w.isJsonPrimitive()) ws.add(w.getAsString());
                 if (!ws.isEmpty()) raw.put(o.get("fn").getAsString(), ws);
             }
+        // ⟨0.33⟩ the exclusion classes the PRODUCING scan did not read. Read from the document, so
+        // `gate --report` reaches the same verdict as `scan --policy` without needing a target to
+        // re-derive anything from — the constraint that defeated the `net-partner` disclosure.
+        List<String> unpeeked = new ArrayList<>();
+        if (envObj != null && envObj.has("excluded") && envObj.get("excluded").isJsonArray())
+            for (JsonElement x : envObj.getAsJsonArray("excluded")) {
+                if (!x.isJsonObject()) continue;
+                var xo = x.getAsJsonObject();
+                // ABSENT `peeked` counts as NOT peeked. A producer that does not carry the key cannot be
+                // read as having opened the files — that would be the fail-open reading of a missing
+                // disclosure, which is the failure this whole key exists to prevent.
+                boolean peeked = xo.has("peeked") && xo.get("peeked").isJsonPrimitive()
+                        && xo.get("peeked").getAsBoolean();
+                if (!peeked && xo.has("class")
+                        && !Candor.DERIVED_EXCLUSIONS.contains(xo.get("class").getAsString()))
+                    unpeeked.add(xo.get("class").getAsString());
+            }
         return new Envelope(analyzed, unanalyzed, uncovered, raw, pkg,
-                Loader.claimsToHaveJudgedNothing(envObj, fns), Loader.hasNoManifest(envObj), outOfScope, netPartners);
+                Loader.claimsToHaveJudgedNothing(envObj, fns), Loader.hasNoManifest(envObj), outOfScope,
+                netPartners, unpeeked);
     }
 
     /**
@@ -3763,6 +3783,8 @@ public final class Query {
         // ⟨0.30⟩ the peek's findings, off the REPORT — this route cannot peek (it has no target, only a
         // document), which is why the field rides the report and why §3.1 byte-equality holds here.
         List<io.poly.candor.model.Report.OutOfScope> outOfScope = new ArrayList<>();
+        // ⟨0.33⟩ accumulated across every report gated, exactly as the other three facts are.
+        List<String> unpeeked = new ArrayList<>();
         Map<String, List<String>> rawWhy = new HashMap<>();
         List<String> judgedNothing = new ArrayList<>();
         // ⟨0.28⟩ SPEC §2's THIRD ROW, kept apart from the list above on THIS route too — the note below
@@ -3786,6 +3808,7 @@ public final class Query {
             unanalyzed.addAll(env.unanalyzed());
             uncovered.addAll(env.uncovered());
             outOfScope.addAll(env.outOfScope());
+            unpeeked.addAll(env.unpeeked());
             // ⟨0.31⟩ adopt the PRODUCER's partner provenance here too. TWO envelope consumers exist on
             // this verb's paths and the disclosure has to be adopted at BOTH, or the route that skipped it
             // emits a verdict missing a key the other has — which is the byte-equality failure this whole
@@ -3896,7 +3919,7 @@ public final class Query {
         // the same deleted-disclosure defect one level down.
         for (String[] u : unevaluated) System.err.println("candor gate: " + u[1]);
 
-        var facts = new Candor.GateFacts(analyzedCount, unanalyzed, uncovered, outOfScope);
+        var facts = new Candor.GateFacts(analyzedCount, unanalyzed, uncovered, outOfScope, unpeeked);
         // `--json` IS `--gate-json -`: the verb's machine output is the gate verdict, the same document and
         // the same builder the scan writes, so a consumer cannot tell the two routes apart from the output.
         if (violations > 0) {
@@ -3932,6 +3955,20 @@ public final class Query {
             System.err.println("candor gate: NOT certified — the report names " + outOfScope.size()
                     + " function(s) OUTSIDE the scan's scope performing an effect this policy denies; the "
                     + "gate did not judge them, so the verdict is incomplete rather than a pass");
+            return 2;
+        }
+        // ⟨0.33⟩ THE THIRD CAUSE, on this route, from the DOCUMENT. `excluded[].peeked == false` is the
+        // producing scan stating it never opened those files; their effects are absent because nothing
+        // looked, not because there are none. The ⟨0.30⟩ arm above keys on what the peek FOUND, and a
+        // peek that could not open a file finds nothing — byte-identical to finding it clean.
+        //
+        // Reachable identically on both routes because `excluded` rides the REPORT: this route needs no
+        // target to re-derive it from, which is exactly what the `net-partner` disclosure could not
+        // manage and why that attempt broke §3.1 route equality and this one does not.
+        if (!unpeeked.isEmpty()) {
+            System.err.println("candor gate: NOT certified — the report says the scan did not READ "
+                    + String.join(", ", unpeeked) + ". Their effects are absent because nothing looked, "
+                    + "not because there are none, so the verdict is INCOMPLETE rather than a pass.");
             return 2;
         }
         return 0;

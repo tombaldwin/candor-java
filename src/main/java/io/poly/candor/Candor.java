@@ -802,6 +802,21 @@ public class Candor {
     /** ⟨0.29⟩ The scope block for the report: one entry per class, with its count and reason. ALWAYS
      *  returns a list — `[]` is the positive statement "I looked and excluded nothing" (⟨0.27⟩), and an
      *  absent key would mean "this producer cannot answer" (⟨0.26⟩). */
+    /** ⟨0.33⟩ THE EXCLUSION CLASSES THAT DO NOT HIDE UNJUDGED CODE — the carve-out for the
+     *  incomplete-verdict rule, and a DENYLIST on purpose.
+     *
+     *  <p>`peeked: false` is nearly the right discriminator: it is this engine saying it did not open
+     *  those files. But one class is unread precisely BECAUSE its contents were already judged —
+     *  `build-output-archive` is a jar under build/ · target/ · out/, i.e. a DERIVED copy of the classes
+     *  the scan just analysed. Failing a gate on it would redden every project that builds a jar, over
+     *  code that was in fact judged.
+     *
+     *  <p>Stated as what is proven SAFE to skip rather than as what must fail: an allowlist of
+     *  "classes that fail closed" under-reports whatever nobody thought of, and what nobody thought of
+     *  is exactly the unjudged code this rule exists to catch. A new exclusion class therefore fails
+     *  CLOSED by default and someone has to argue it onto this list. */
+    static final Set<String> DERIVED_EXCLUSIONS = Set.of("build-output-archive");
+
     static List<Report.ExcludedClass> excludedClasses() {
         Map<String, Integer> byClass = new java.util.TreeMap<>();
         for (String cls : ctx().excluded.values()) byClass.merge(cls, 1, Integer::sum);
@@ -1761,6 +1776,32 @@ public class Candor {
                     + "above); the gate did not judge them, so the verdict is incomplete rather than a pass");
             System.exit(2);
         }
+        // ⟨0.33⟩ THE THIRD CAUSE — CODE THIS RUN ADMITS IT NEVER READ. See the verdict writer for the
+        // measurement: `deny Exec` answered ✓ at exit 0 over a tree holding an UNCOMPILED `Deploy.java`
+        // calling `Runtime.exec("curl … | sh")`, because this engine reads bytecode and the peek cannot
+        // open a source file. The ⟨0.30⟩ arm above keys on what the peek FOUND, and a peek that could
+        // not open the file finds nothing — indistinguishable from finding it clean.
+        //
+        // AFTER the ⟨0.30⟩ arm and after the violation exit, deliberately: certain beats unevaluable, and
+        // a CONCRETE denied effect outside the scan is a better message than "something went unread".
+        // NOT over a REFUSED policy. A refusal is not a verdict — §3.1 binds "any report a scan
+        // produced", and a run that could not read its policy has no verdict for incompleteness to
+        // qualify. Saying "NOT certified because files went unread" over a run that never evaluated
+        // anything would replace the operator's actual problem (their policy did not parse) with a
+        // downstream one. The refusal already owns the exit.
+        if (gateConfigured && policyRefusal == null) {
+            java.util.List<String> unread = new ArrayList<>();
+            for (var c : excludedClasses())
+                if (!c.peeked() && !DERIVED_EXCLUSIONS.contains(c.cls()))
+                    unread.add(c.cls() + " (" + c.count() + ")");
+            if (!unread.isEmpty()) {
+                System.err.println("candor-java: gate NOT certified — this scan did not READ "
+                        + String.join(", ", unread) + ". Their effects are absent because nothing looked, "
+                        + "not because there are none, so the verdict is INCOMPLETE rather than a pass. "
+                        + "Build the sources and scan the compiled output, or narrow the policy's scope.");
+                System.exit(2);
+            }
+        }
         // …and only NOW is the gate green: every exit-2 arm above has been passed, so `no violations` is
         // a claim this run can support. See the note at its old position for what printing it earlier said.
         if (gateGreen) gate.println("candor-java: no violations");
@@ -1808,7 +1849,9 @@ public class Candor {
      *  shape and a consumer cannot tell a scanned verdict from a report-gated one. */
     record GateFacts(int analyzedCount, java.util.List<String[]> unanalyzed,
                      java.util.List<Map.Entry<String, Integer>> uncovered,
-                     java.util.List<io.poly.candor.model.Report.OutOfScope> outOfScope) {}
+                     java.util.List<io.poly.candor.model.Report.OutOfScope> outOfScope,
+                     /** ⟨0.33⟩ exclusion classes this run did NOT read — `excluded[].peeked == false`. */
+                     java.util.List<String> unpeeked) {}
 
     static GateFacts scanGateFacts() {
         java.util.List<String[]> un = new ArrayList<>();
@@ -1819,7 +1862,12 @@ public class Candor {
         var oos = ctx().outOfScope == null
                 ? java.util.List.<io.poly.candor.model.Report.OutOfScope>of()
                 : java.util.List.copyOf(ctx().outOfScope);
-        return new GateFacts(ctx().edges.keySet().size(), un, kappaUncovered(), oos);
+        // ⟨0.33⟩ the exclusion classes this run did not READ. Derived from the same builder the report
+        // publishes, so the verdict and the document cannot disagree about which classes were opened.
+        java.util.List<String> unpeeked = new ArrayList<>();
+        for (var c : excludedClasses())
+            if (!c.peeked() && !DERIVED_EXCLUSIONS.contains(c.cls())) unpeeked.add(c.cls());
+        return new GateFacts(ctx().edges.keySet().size(), un, kappaUncovered(), oos, unpeeked);
     }
 
     static void writeGateJson(String path, int violations, GateFacts facts) {
@@ -1869,7 +1917,25 @@ public class Candor {
         // resolves a CONCRETE denied effect rather than uncertainty.
         var oos = facts.outOfScope();
         boolean scopeIncomplete = oos != null && !oos.isEmpty();
-        boolean incomplete = !facts.unanalyzed().isEmpty() || scopeIncomplete;
+        // ⟨0.33⟩ THE THIRD CAUSE — CODE THE ENGINE ADMITS IT NEVER READ.
+        //
+        // ⟨0.30⟩ suppressed `ok` when the PEEK FOUND a denied effect outside the judged set. That keys the
+        // verdict on what the peek found, and a peek that could not open a file finds nothing — which is
+        // byte-identical to finding it clean. MEASURED: `deny Exec` answered ✓ at exit 0 over a tree
+        // holding `Deploy.java` calling `Runtime.exec("curl … | sh")`, uncompiled, because candor-java
+        // reads BYTECODE and the peek cannot open a source file. `excluded` said `peeked: false` — this
+        // engine stating plainly that it did not read those files — and that flag moved nothing.
+        //
+        // It is the THREE-ROW RULE at file-set scale: absence under a key licenses a claim only if the key
+        // COULD have had a body. `peeked: false` is exactly the case where it could not, so the verdict is
+        // INCOMPLETE rather than a pass — the same reading ⟨0.30⟩ gave `outOfScope`, and the same one
+        // candor-swift already gave `unanalyzed` ("a gate cannot be green over unanalyzed code").
+        //
+        // Both routes reach it identically: `excluded` rides the REPORT, so `gate --report` re-derives
+        // this from the document rather than needing a target — which is what the `net-partner` attempt
+        // could not do, and why that one broke §3.1 route equality and this one does not.
+        boolean unread = facts.unpeeked() != null && !facts.unpeeked().isEmpty();
+        boolean incomplete = !facts.unanalyzed().isEmpty() || scopeIncomplete || unread;
         out.put("ok", violations == 0 && !incomplete);
         // ⟨0.21⟩ (Gap 1) the analyzed-universe count, so a --gate-json consumer sees the scan's scope from the
         // verdict alone (mirrors the report envelope's `analyzed`).

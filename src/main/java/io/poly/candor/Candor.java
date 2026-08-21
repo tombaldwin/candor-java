@@ -2581,7 +2581,13 @@ public class Candor {
      *
      *  <p>The remedy travels IN the reason, for the same audience: whoever reads the document is exactly
      *  whoever cannot go and look at stderr. */
+    /** ⟨0.31⟩ The cause of a refusal this run DECIDED, if it decided one — read by the file-sink
+     *  shutdown hook so a deliberate refusal is not described as a crash. Null means the run either
+     *  completed or died without deciding, and the hook says exactly that instead of guessing. */
+    static volatile String decidedRefusal = null;
+
     static void refuseGateJson(String why) {
+        decidedRefusal = why;
         String path = ARMED_GATE_JSON;
         if (path == null || path.equals("-")) return;
         var out = new java.util.LinkedHashMap<String, Object>();
@@ -2597,9 +2603,51 @@ public class Candor {
         }
     }
 
+    /** ⟨0.31⟩ THE FILE SINK GETS THE SAME SHUTDOWN HOOK THE STREAM SINK HAS HAD SINCE ⟨0.28⟩.
+     *
+     *  <p>{@link #armGateJsonStream} states the principle: "a shutdown hook rather than a write at each
+     *  exit site … the rule is over the RUN, not over the sites anyone enumerated." The stream sink
+     *  followed it; the FILE sink did not, and the gap shows — this class has <b>37 raw
+     *  {@code System.exit(2)} calls</b> against 3 that write a refusal document, so on 37 paths the file
+     *  sink keeps the ARMING STUB.
+     *
+     *  <p>That stub is a guess made before the run started: "the run failed, crashed or was killed before
+     *  it could decide". For a crash that is right. For a deliberate refusal it is false, and ⟨0.24⟩ pins
+     *  this field as a string NAMING the cause — a wrong one sends the operator after a failure that
+     *  never happened.
+     *
+     *  <p>The hook knows one thing the stub cannot: the run is OVER. So it replaces the guess with a
+     *  fact, and with the decided cause when {@link #decidedRefusal} holds one. Enumerating exit sites
+     *  was considered and rejected for the reason quoted above — the next one added would be missed. */
+    private static void armGateJsonFileHook(String path) {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            if (gateDocEmitted) return;                      // a real verdict was written; leave it
+            try {
+                String now = Files.readString(Path.of(path));
+                if (!now.contains("\"refused\": true")) return;   // not our document — never clobber it
+                if (decidedRefusal == null && !now.contains("written when the run STARTED")) return;
+            } catch (IOException | RuntimeException e) {
+                return;   // unreadable: leave whatever is there rather than guess
+            }
+            var out = new java.util.LinkedHashMap<String, Object>();
+            out.put("spec", SPEC_VERSION);
+            out.put("ok", false);
+            out.put("refused", true);
+            out.put("reason", decidedRefusal != null ? decidedRefusal
+                    : "the gate did not complete — this run EXITED before a verdict could be decided. "
+                    + "It is NOT a verdict about the code; see the run's stderr for the cause.");
+            try {
+                Files.writeString(Path.of(path), io.poly.candor.model.ReportJson.pretty(out) + "\n");
+            } catch (IOException | RuntimeException e) {
+                // the armed stub stands — still fail-closed, just less specific
+            }
+        }));
+    }
+
     static void armGateJson(String path) {
         if (path == null || path.equals("-")) return;
         ARMED_GATE_JSON = path;
+        armGateJsonFileHook(path);
         var out = new java.util.LinkedHashMap<String, Object>();
         out.put("spec", SPEC_VERSION);
         out.put("ok", false);

@@ -470,6 +470,54 @@ class CliBehaviourTest {
     }
 
     @Test
+    void aRawExitStillLeavesAnAccurateRefusalDocument() throws Exception {
+        // ⟨0.31⟩ THE FILE SINK GETS THE SHUTDOWN HOOK THE STREAM SINK HAS HAD SINCE ⟨0.28⟩.
+        //
+        // This class has 37 raw {@code System.exit(2)} calls against 3 that write a refusal document, so
+        // on 37 paths the file sink kept the ARMING STUB — a guess made before the run started, saying
+        // the run "failed, crashed or was killed". ⟨0.24⟩ pins that field as a string NAMING the cause,
+        // and a wrong one sends the operator after a failure that never happened.
+        //
+        // Enumerating the 37 was considered and rejected, for the reason armGateJsonStream already
+        // states: "the rule is over the RUN, not over the sites anyone enumerated" — the next site added
+        // would be missed. The hook knows the one thing the stub cannot: the run is OVER.
+        //
+        // THREE ROWS, and the third is the control. A hook that rewrote every document would satisfy the
+        // first two while destroying real verdicts.
+        Path classes = comparePureFixture();
+        String javaBin = System.getProperty("java.home") + "/bin/java";
+        String cp = System.getProperty("java.class.path");
+        Path raw = scratch.resolve("raw.json"), decided = scratch.resolve("decided.json"),
+             real = scratch.resolve("real.json");
+
+        // (a) a RAW exit site — an unknown flag, one of the 37
+        new ProcessBuilder(javaBin, "-cp", cp, "io.poly.candor.Candor", classes.toString(),
+                           "--gate-json", raw.toString(), "--zzz-not-a-flag").start().waitFor();
+        String rawDoc = Files.readString(raw);
+        assertFalse(rawDoc.contains("written when the run STARTED"),
+            "a raw exit left the ARMING STUB, which describes a crash that did not happen: " + rawDoc);
+        assertTrue(rawDoc.contains("EXITED before a verdict"),
+            "the document does not say what actually happened: " + rawDoc);
+
+        // (b) a DECIDED refusal still names its own cause rather than the generic one
+        new ProcessBuilder(javaBin, "-cp", cp, "io.poly.candor.Candor",
+                           scratch.resolve("no-such-dir").toString(),
+                           "--gate-json", decided.toString()).start().waitFor();
+        assertTrue(Files.readString(decided).contains("no such path"),
+            "a decided refusal lost its specific cause to the generic hook message: "
+            + Files.readString(decided));
+
+        // (c) CONTROL — a real verdict must survive the hook untouched
+        Process ok = new ProcessBuilder(javaBin, "-cp", cp, "io.poly.candor.Candor",
+                                        classes.toString(), "--gate-json", real.toString()).start();
+        assertEquals(0, ok.waitFor(), "the control run must succeed for this row to mean anything");
+        String okDoc = Files.readString(real);
+        assertFalse(okDoc.contains("refused"),
+            "the hook overwrote a REAL verdict — every row above is satisfied by a hook that rewrites "
+            + "everything, and this is the row that stops it: " + okDoc);
+    }
+
+    @Test
     void phaseTimingIsOffByDefaultAndNeverTouchesTheDocument() throws Exception {
         // ⟨timing⟩ `CANDOR_TIMING=1` prints phase durations, and the ONLY safe place for them is stderr
         // with the flag off by default. This engine's contract is byte-equality between the scan route

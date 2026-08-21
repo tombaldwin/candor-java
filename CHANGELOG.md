@@ -8,6 +8,19 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **The `--gate-json` FILE sink gets the shutdown hook the stream sink has had since ⟨0.28⟩.** This class
+  has **37 raw `System.exit(2)` calls** against 3 that write a refusal document, so on 37 paths the file
+  sink kept the arming stub — a guess made *before* the run started, saying the run "failed, crashed or
+  was killed". ⟨0.24⟩ pins that field as a string naming the cause, and a wrong one sends the operator
+  after a failure that never happened.
+
+  Enumerating the 37 was considered and rejected, for the reason `armGateJsonStream` already gives:
+  *"a shutdown hook rather than a write at each exit site … the rule is over the RUN, not over the sites
+  anyone enumerated."* The next site added would escape the enumeration. The hook knows the one thing the
+  stub cannot — that the run is over — so a raw exit now reports "this run EXITED before a verdict could
+  be decided", a decided refusal keeps its own specific cause, and a real verdict is left untouched. That
+  last one is the control: every other assertion is satisfied by a hook that rewrites everything.
+
 ## [0.31.0] — 2026-08-20
 
 - The jbang catalog's `script-ref` moves to the v0.31.0 jar, now that the release asset exists and

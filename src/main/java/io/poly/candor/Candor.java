@@ -1519,15 +1519,17 @@ public class Candor {
         // the finding on stderr and leave it out of the artifact, which is the split ⟨0.26⟩ calls worse
         // than saying nothing.
         peekExcluded(policyPath);
+        phase("peek");
 
         // JSON output is orthogonal — write first so `--json` can snapshot a baseline. The report needs
         // the all-classes ClassConformance; compute it once here so the gate below can reuse it rather
         // than recompute (the §5 two-pass walk) on a --json + CANDOR_STRICT run.
         ClassConformance ccFull = (jsonOut != null) ? classConformance(inferred) : null;
+        phase("class-conformance");
         if (jsonOut != null) {
             try {
                 writeReport(inferred, jsonOut, ccFull);
-            phase("report-write");
+                phase("report-write");
             } catch (IOException e) {
                 // Same one-line-diagnostic + exit 2 posture as an unreadable scan target above: an
                 // unwritable report path (a missing directory, a permission wall) is a misconfiguration,
@@ -1700,7 +1702,9 @@ public class Candor {
         String policyRefusal = null;                                  // set only when a violation dominates it
         java.util.List<String[]> unevaluated = new ArrayList<>();     // ⟨0.24⟩ {rule, why}, one row per rule
         if (policy != null) {
+            phase("gate-pre");
             Policy.PolicyOutcome po = Policy.checkPolicyOutcome(inferred, policy);
+            phase("gate-policy");
             violations += po.violations();
             if (po.refusal() != null) {
                 System.err.println("candor-java: " + po.refusal());
@@ -1719,6 +1723,7 @@ public class Candor {
         // outside the scan performs a denied effect (⟨0.30⟩) or a class could not be analyzed (⟨0.21⟩).
         // Exit code and verdict document were correct; the human channel said pass. rust and ts reach
         // their green line only after both arms have returned, so this was a four-way divergence too.
+        phase("gate-evaluate");
         boolean gateGreen = violations == 0 && advisories == 0;
         // FAILURE-only pointer at the engine's own remedy verb: appended AFTER the AS-EFF lines, on the
         // SAME stream (`gate`), so a clean run stays byte-identical and the pinned violation-line shapes,

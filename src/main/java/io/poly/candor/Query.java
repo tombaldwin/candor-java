@@ -4776,6 +4776,21 @@ public final class Query {
     static int path(List<Effector> fns, String fnArg, String effect, boolean json) {
         if (fnArg == null || effect == null)
             return usage("path <fn-substring> <Effect> [--report <locator>] [--json]");
+        // A TYPO'D EFFECT NAME IS A LOUD ERROR HERE TOO. `where` has refused an unknown effect since the
+        // corpus audit; `path` did not, and answered "<fn> does not perform Fsz" at exit 0 — a typo
+        // scored as a confident NEGATIVE, in the verb people reach for to check one specific claim. It is
+        // the same asymmetry the policy layer-token has: the vocabulary check lived in one verb and not
+        // its neighbour, so what to look for is a vocabulary any verb can be handed.
+        //
+        // Same rule as `where`, deliberately: a KNOWN effect that is simply absent is a legitimate
+        // negative answer, and an unknown name that is PRESENT in the report (a spec extension effect
+        // from another engine) is allowed. The error is only for a name NEITHER known NOR present.
+        if (!Rules.KNOWN_EFFECTS.contains(effect) && !effect.equals("Unknown")
+                && fns.stream().noneMatch(f -> f.inferred().toNames().contains(effect))) {
+            System.err.println("candor path: unknown effect `" + effect + "` (known: "
+                    + String.join(", ", new java.util.TreeSet<>(Rules.KNOWN_EFFECTS)) + ", Unknown)");
+            return 2;
+        }
         Map<String, Effector> byName = new HashMap<>();
         for (Effector f : fns) byName.putIfAbsent(f.fn(), f);
         Effector start = fns.stream().filter(f -> f.fn().equals(fnArg)).findFirst()

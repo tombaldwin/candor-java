@@ -96,7 +96,9 @@ final class Refresh {
             Files.createDirectories(dir);
             r = new Refresh(dir.resolve(FORMAT + ".json"), hashes);
             r.digest = wholeProgramDigest(classes);
+            Candor.phase("cache-digest");
             r.load();
+            Candor.phase("cache-load");
         } catch (Exception e) {
             warn("cache unusable (" + e + ") — scanning in full");
             return DISABLED;
@@ -189,6 +191,7 @@ final class Refresh {
             Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
             Files.writeString(tmp, root.toString());
             Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            Candor.phase("cache-write");
         } catch (Exception e) {
             warn("could not write the cache (" + e + ") — this scan's results are unaffected");
         }

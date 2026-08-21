@@ -234,7 +234,15 @@ public class Candor {
     /** ⟨0.30⟩ {@link #runScan(Path, Config)} with the peek's VERSIONED file selection — see
      *  {@link AnalysisContext#peekVersioned}. The flag is applied after {@code resetState()} installs the
      *  fresh context and before {@code load()} reads anything, which is the only window where it can bind. */
-    static Map<String, EffectSet> runScan(Path target, Config perScan, boolean peekVersioned)
+    /** Everything a scan does BEFORE the per-class analyze loop: load, index, the whole-program
+     *  pre-passes, the dependency join and the flags.
+     *
+     *  <p>Extracted so a measurement can drive the REAL preparation rather than a replica of it.
+     *  RefreshBodyIndependenceTest needs a fully-prepared context in order to analyse one class against
+     *  a program whose other bodies have been stripped, and a hand-rebuilt pipeline would answer a
+     *  question about the replica instead of about the engine — it would drift, and it would drift
+     *  silently, in a test whose whole job is to be trusted about staleness. */
+    static List<ClassNode> prepareScan(Path target, Config perScan, boolean peekVersioned)
             throws IOException {
         resetState();
         ctx().peekVersioned = peekVersioned;
@@ -285,6 +293,13 @@ public class Candor {
         // re-surfaced via an overloaded-name path the desc.startsWith("(") guard doesn't catch) must NOT
         // abort the WHOLE scan and silently zero EVERY other class's analysis (a DoS). Skip + disclose the
         // one bad class, mirroring collectClasses's tolerance.
+        return classes;
+    }
+
+    static Map<String, EffectSet> runScan(Path target, Config perScan, boolean peekVersioned)
+            throws IOException {
+        List<ClassNode> classes = prepareScan(target, perScan, peekVersioned);
+        Config cfg = perScan != null ? perScan : config;
         int analyzeSkipped = 0; String firstAnalyzeErr = null;
         // THE REFRESH SPLIT. Each class is analysed into an OVERLAY whose accumulators start empty, so
         // what it leaves behind is precisely that class's contribution, which is then folded into the
@@ -1512,6 +1527,7 @@ public class Candor {
         if (jsonOut != null) {
             try {
                 writeReport(inferred, jsonOut, ccFull);
+            phase("report-write");
             } catch (IOException e) {
                 // Same one-line-diagnostic + exit 2 posture as an unreadable scan target above: an
                 // unwritable report path (a missing directory, a permission wall) is a misconfiguration,

@@ -330,7 +330,14 @@ class FileSetScopeTest {
         Path netOut = tmp.resolve("b.json");
         Run net = runCli(root.toString(), "--json", netOut.toString(),
                          "--policy", policy("net.policy", "deny Net\n").toString());
-        assertEquals(0, net.exit(), net.stderr());
+        // ⟨0.33⟩ EXIT 2, not 0 — and the point of THIS arm is unchanged. `outOfScope` is still empty
+        // (below): the peek is bounded by the policy, so a `deny Net` run says nothing about an Exec.
+        // What moved is the VERDICT, for a different reason entirely — this fixture's repo root also
+        // holds a JVM source with no compiled class, i.e. code this scan never read. ⟨0.30⟩ suppressed
+        // `ok` when the peek FOUND a denied effect; a peek that cannot open a file finds nothing, which
+        // is byte-identical to finding it clean, so unread code now makes the verdict INCOMPLETE too.
+        assertEquals(2, net.exit(), "the tree holds a source with no compiled class, so `deny Net` "
+                + "cannot certify it either: " + net.stderr());
         JsonArray netOos = report(netOut).getAsJsonArray("outOfScope");
         assertNotNull(netOos, "a configured policy still answers — with []");
         assertEquals(0, netOos.size(), "`deny Net` must not report an Exec in an excluded file: " + netOos);

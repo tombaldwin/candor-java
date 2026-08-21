@@ -24,6 +24,18 @@ final class AnalysisState {
         TL.set(new AnalysisContext());
     }
 
+    /** Install a specific context on the current thread. The refresh analyses one class at a time into
+     *  an OVERLAY (see {@link AnalysisContext}'s overlay constructor) and needs that overlay to be what
+     *  {@code ctx()} returns for the duration — including inside the helpers that reach the context
+     *  statically rather than through a parameter. Installing it is what makes those reads impossible to
+     *  miss: threading a parameter through instead would cover only the call sites someone remembered to
+     *  change, and one helper still reaching the master would write a class's effects somewhere that
+     *  class's delta cannot see them — which is the silent under-report the whole split is arranged
+     *  to prevent. */
+    static void install(AnalysisContext c) {
+        TL.set(c);
+    }
+
     /** Release the current thread's context once a scan's outputs are fully written. A {@link ThreadLocal}
      *  that is only ever {@code set} pins the last scan's whole state (call graph + every ClassNode) for
      *  the thread's lifetime — a retention leak on a pooled/long-lived thread (the {@code --parallel} pool,

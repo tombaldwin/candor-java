@@ -286,9 +286,32 @@ public class Candor {
         // abort the WHOLE scan and silently zero EVERY other class's analysis (a DoS). Skip + disclose the
         // one bad class, mirroring collectClasses's tolerance.
         int analyzeSkipped = 0; String firstAnalyzeErr = null;
+        // THE REFRESH SPLIT. Each class is analysed into an OVERLAY whose accumulators start empty, so
+        // what it leaves behind is precisely that class's contribution, which is then folded into the
+        // master. Run sequentially that is the same computation as writing into the master directly —
+        // union is union, and the fold happens in the same class order — but it makes the per-class
+        // delta a first-class object, and the delta is what a refresh caches and replays. See the
+        // overlay section at the foot of AnalysisContext.
+        //
+        // ONE PATH, NOT TWO. It would be cheaper to build the overlay only when caching is switched on.
+        // That is also how three of four engines end up correct and the fourth does not: the cached and
+        // uncached routes would drift, and the drift would surface as a wrong report only for the people
+        // using the cache. So the split runs always, and the cache decides one thing only — whether a
+        // delta is computed or read back.
+        AnalysisContext master = ctx();
+        Refresh refresh = Refresh.forScan(cfg, classes);
+        List<Integer> inputsBefore = Refresh.verifying() ? master.inputSizes() : null;
         for (ClassNode cn : classes) {
             try {
-                analyze(cn);
+                AnalysisContext overlay = new AnalysisContext(master);
+                AnalysisState.install(overlay);
+                try {
+                    if (!refresh.replayInto(cn, overlay)) analyze(cn);
+                } finally {
+                    AnalysisState.install(master);   // before the merge, and before any throw escapes
+                }
+                refresh.record(cn, overlay);
+                overlay.mergeInto(master);
             } catch (Throwable t) {
                 analyzeSkipped++;
                 if (firstAnalyzeErr == null) firstAnalyzeErr = cn.name + ": " + t;
@@ -297,6 +320,8 @@ public class Candor {
                 ctx().unanalyzed.put(cn.name, "class failed to analyze: " + t);
             }
         }
+        if (inputsBefore != null) AnalysisContext.assertNoInputGrowth(inputsBefore, master.inputSizes());
+        refresh.finish();
         if (analyzeSkipped > 0)
             System.err.printf("candor-java: skipped %d unanalyzable class(es) (e.g. %s)%n",
                     analyzeSkipped, firstAnalyzeErr);

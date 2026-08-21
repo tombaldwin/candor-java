@@ -89,8 +89,14 @@ final class Loader {
                 // one Java-25 entry in a multi-release jar threw IllegalArgumentException and killed the run).
                 try {
                     ClassNode cn = new ClassNode();
-                    new ClassReader(Files.readAllBytes(p)).accept(cn, 0);
+                    byte[] raw = Files.readAllBytes(p);
+                    new ClassReader(raw).accept(cn, 0);
                     out.add(cn);
+                    // The refresh cache's per-class key, taken HERE because this is the only point at
+                    // which the bytes exist: once ASM has parsed them, recovering the content would mean
+                    // re-reading the file, and a hash taken from a second read is a hash of a different
+                    // moment than the one that was analysed.
+                    ctx().classHash.put(cn.name, Refresh.sha256(raw));
                 } catch (Exception | LinkageError e) {
                     skipped[0]++;
                     if (firstErr[0] == null) firstErr[0] = p.getFileName() + ": " + e.getMessage();

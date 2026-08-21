@@ -10,6 +10,9 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.31.0] — 2026-08-20
 
+- The jbang catalog's `script-ref` moves to the v0.31.0 jar, now that the release asset exists and
+  resolves (200). It is a pin to a published artifact, so it moves after the publish, never with it.
+
 - **A refusal's `--gate-json` document described a crash.** This engine's stderr on an unevaluable target
   is the family's model (it names the build command), but the machine document still held the arming stub
   — "the run failed, crashed or was killed" — for a run that deliberately refused. ⟨0.24⟩ pins that field

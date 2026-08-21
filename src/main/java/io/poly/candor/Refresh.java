@@ -64,6 +64,10 @@ final class Refresh {
     private int reused, total;
     private boolean poisoned;                 // a delta refused to serialise: store nothing this run
     private boolean dirty;                    // a class was analysed afresh, so the file must be rewritten
+    /** class CONTENT hash -> that class's structural digest, carried in the cache file. Keyed on the
+     *  content hash rather than the class NAME so it stays correct across a rename, and so a class that
+     *  merely moved is not re-rendered. */
+    private final Map<String, String> structOf = new HashMap<>();
 
     private static final Refresh DISABLED = new Refresh(null, Map.of());
 
@@ -95,10 +99,11 @@ final class Refresh {
             Path dir = Path.of(spec);
             Files.createDirectories(dir);
             r = new Refresh(dir.resolve(FORMAT + ".json"), hashes);
-            r.digest = wholeProgramDigest(classes);
+            r.readFile();                       // entries + the structural digests they carry
+            Candor.phase("cache-read");
+            r.digest = r.wholeProgramDigest(classes);
             Candor.phase("cache-digest");
-            r.load();
-            Candor.phase("cache-load");
+            r.keepIfCurrent();
         } catch (Exception e) {
             warn("cache unusable (" + e + ") — scanning in full");
             return DISABLED;
@@ -106,22 +111,45 @@ final class Refresh {
         return r;
     }
 
-    private void load() {
+    /** Read the cache file, keeping only what a mismatched FORMAT or ENGINE would not invalidate.
+     *
+     *  <p>Split from {@link #keepIfCurrent} because the structural digests inside have to be available
+     *  BEFORE the whole-program digest is computed — they are what makes computing it cheap. They are
+     *  keyed on content hashes, so they are valid regardless of whether the program digest ends up
+     *  matching; only the DELTAS depend on that. */
+    private JsonObject pending;
+    private String storedProgram;
+
+    private void readFile() {
         if (!Files.isReadable(file)) return;
         try {
             JsonObject root = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
-            // THE THREE INVALIDATIONS, all whole-cache. A partial invalidation would need a rule for
-            // which entries a given change can reach, and getting that rule subtly wrong is precisely
-            // how a cache serves a stale answer.
             if (!FORMAT.equals(str(root, "format"))) return;
+            // A different ENGINE BUILD discards everything, structural digests included: a classifier
+            // fix must not be silently skipped, the same rule §2.1 applies to dep reports and baselines.
             if (!ReportWriter.release().equals(str(root, "engine"))) return;
-            if (!digest.equals(str(root, "program"))) return;
             JsonObject cs = root.getAsJsonObject("classes");
             if (cs == null) return;
-            for (var e : cs.entrySet()) loaded.put(e.getKey(), e.getValue().getAsJsonObject());
+            pending = cs;
+            storedProgram = str(root, "program");
+            for (var e : cs.entrySet()) {
+                JsonObject o = e.getValue().getAsJsonObject();
+                String h = str(o, "hash"), sd = str(o, "struct");
+                if (h != null && sd != null) structOf.put(h, sd);
+            }
         } catch (Exception e) {
-            loaded.clear();   // an unreadable or malformed cache is simply no cache
+            pending = null;
+            structOf.clear();   // an unreadable or malformed cache is simply no cache
         }
+    }
+
+    /** Admit the stored DELTAS only if the whole-program digest matches. Whole-cache, because a partial
+     *  invalidation would need a rule for which entries a given change can reach, and getting that rule
+     *  subtly wrong is precisely how a cache serves a stale answer. */
+    private void keepIfCurrent() {
+        if (pending == null) return;
+        if (!digest.equals(storedProgram)) return;
+        for (var e : pending.entrySet()) loaded.put(e.getKey(), e.getValue().getAsJsonObject());
     }
 
     /** True when this class's delta came from the cache and {@code analyze} can be skipped. */
@@ -153,6 +181,8 @@ final class Refresh {
         try {
             JsonObject e = new JsonObject();
             e.addProperty("hash", h);
+            String sd = structOf.get(h);
+            if (sd != null) e.addProperty("struct", sd);
             e.add("delta", Delta.encode(overlay));
             out.add(cn.name, e);
             dirty = true;
@@ -216,31 +246,66 @@ final class Refresh {
      *  analysing every class twice, once against the real program and once against a program whose
      *  other bodies have been stripped, and requiring the two deltas to be equal.
      */
-    private static String wholeProgramDigest(List<ClassNode> classes) {
+    /** The structural rendering of ONE class, hashed.
+     *
+     *  <p>Split out and cached because rendering all of them is 150 ms on the field case — the second
+     *  largest cost of a warm run — and streaming it into the hash did not help, which said the cost is
+     *  the RENDERING (sorting every method and field, joining interfaces, flattening annotations) rather
+     *  than the accumulation. Since a class's structure is a function of its own bytes and nothing else,
+     *  it can be keyed on the content hash we already compute, so an unchanged class is never rendered
+     *  twice. Changed classes still pay, which is correct and is a handful of classes.
+     *
+     *  <p>This is sound for exactly the reason the cache is: same bytes, same structure. It would NOT be
+     *  sound to key it on anything weaker, which is the same rule as everywhere else here. */
+    private static String classStructureDigest(ClassNode c, StringBuilder sb, Digest scratch) {
+        sb.setLength(0);
+        sb.append(c.name).append(SEP).append(c.superName).append(SEP)
+          .append(c.access).append(SEP).append(String.join(",", c.interfaces)).append(SEP)
+          .append(c.signature).append(SEP);
+        annos(sb, c.visibleAnnotations); annos(sb, c.invisibleAnnotations);
+        List<MethodNode> ms = new ArrayList<>(c.methods);
+        ms.sort(Comparator.<MethodNode, String>comparing(m -> m.name).thenComparing(m -> m.desc));
+        for (MethodNode m : ms) {
+            sb.append('\u0002').append(m.access).append(':').append(m.name).append(':')
+              .append(m.desc).append(':').append(m.signature).append(':')
+              .append(m.exceptions == null ? "" : String.join(",", m.exceptions));
+            annos(sb, m.visibleAnnotations); annos(sb, m.invisibleAnnotations);
+        }
+        List<FieldNode> fs = new ArrayList<>(c.fields);
+        fs.sort(Comparator.<FieldNode, String>comparing(f -> f.name).thenComparing(f -> f.desc));
+        for (FieldNode f : fs) {
+            sb.append('\u0003').append(f.access).append(':').append(f.name).append(':')
+              .append(f.desc).append(':').append(f.signature).append(':').append(f.value);
+            annos(sb, f.visibleAnnotations); annos(sb, f.invisibleAnnotations);
+        }
+        scratch.reset();
+        scratch.feed(sb);
+        return scratch.hex();
+    }
+
+    private String wholeProgramDigest(List<ClassNode> classes) {
+        // STREAMED, one class at a time. The first version built the whole ~15 MB rendering in a
+        // StringBuilder and then ran the identity-hash regex across all of it: 127 ms, most of it the
+        // allocation and the single huge scan. Feeding the digest per class costs the same rendering
+        // and none of the accumulation, and the guard sees every chunk exactly as before.
+        Digest digest = new Digest();
         StringBuilder sb = new StringBuilder();
         List<ClassNode> sorted = new ArrayList<>(classes);
         sorted.sort(Comparator.comparing(c -> c.name));
+        Digest scratch = new Digest(false);
         for (ClassNode c : sorted) {
-            sb.append(c.name).append('\u0001').append(c.superName).append('\u0001')
-              .append(c.access).append('\u0001').append(String.join(",", c.interfaces)).append('\u0001')
-              .append(c.signature).append('\u0001');
-            annos(sb, c.visibleAnnotations); annos(sb, c.invisibleAnnotations);
-            List<MethodNode> ms = new ArrayList<>(c.methods);
-            ms.sort(Comparator.<MethodNode, String>comparing(m -> m.name).thenComparing(m -> m.desc));
-            for (MethodNode m : ms) {
-                sb.append('\u0002').append(m.access).append(':').append(m.name).append(':')
-                  .append(m.desc).append(':').append(m.signature).append(':')
-                  .append(m.exceptions == null ? "" : String.join(",", m.exceptions));
-                annos(sb, m.visibleAnnotations); annos(sb, m.invisibleAnnotations);
+            // Reuse the STORED structural digest whenever this class's bytes are unchanged, and render
+            // only what actually moved. On an unchanged tree that is the whole point: nothing is
+            // rendered at all, and the digest costs one hash over 2,602 short lines.
+            String h = hashes.get(c.name);
+            String sd = h == null ? null : structOf.get(h);
+            if (sd == null) {
+                sd = classStructureDigest(c, sb, scratch);
+                if (h != null) structOf.put(h, sd);
             }
-            List<FieldNode> fs = new ArrayList<>(c.fields);
-            fs.sort(Comparator.<FieldNode, String>comparing(f -> f.name).thenComparing(f -> f.desc));
-            for (FieldNode f : fs) {
-                sb.append('\u0003').append(f.access).append(':').append(f.name).append(':')
-                  .append(f.desc).append(':').append(f.signature).append(':').append(f.value);
-                annos(sb, f.visibleAnnotations); annos(sb, f.invisibleAnnotations);
-            }
-            sb.append('\n');
+            sb.setLength(0);
+            sb.append(c.name).append(SEP).append(sd).append('\n');
+            digest.feed(sb);
         }
         AnalysisContext c = AnalysisState.ctx();
         sb.append("prepass");
@@ -266,21 +331,14 @@ final class Refresh {
           .append(c.denyRules).append(c.allowRules).append(c.forbidRules).append(c.onlyRules);
         // CANDOR_REFRESH_DEBUG=<file>: dump the digest's INPUT, so a cache that misses can be diffed
         // instead of theorised about. A digest tells you two runs disagree and nothing about where.
-        String dbg = System.getenv("CANDOR_REFRESH_DEBUG");
-        if (dbg != null && !dbg.isEmpty()) {
-            try { Files.writeString(Path.of(dbg), sb.toString()); } catch (Exception ignored) { }
-        }
         // A DIGEST CONTAINING AN IDENTITY HASH IS NOT A DIGEST. Every value folded in above must be
         // value-based, and the one that was not — ASM's String[] enum encoding — cost a debugging
         // session and would have been read as "the cache works" on any run whose allocation order
         // happened to repeat. Rather than re-audit each field whenever one is added, look for the
         // shape: `ClassName@1b6d3586` is what Object.toString() produces and nothing else here does.
         // Finding one abandons the cache for a full scan, which is always correct and always available.
-        java.util.regex.Matcher m = IDENTITY_HASH.matcher(sb);
-        if (m.find()) throw new IllegalStateException("the whole-program digest contains an identity "
-                + "hash (" + m.group() + "): some value is rendered by Object.toString(), so the digest "
-                + "would differ on every JVM run and the cache could never hit. Render it structurally.");
-        return sha256(sb.toString().getBytes(StandardCharsets.UTF_8));
+        digest.feed(sb);
+        return digest.hex();
     }
 
     private static final char SEP = '\u0001';
@@ -331,6 +389,61 @@ final class Refresh {
             return b.append('}').toString();
         }
         return String.valueOf(v);   // primitives, String, org.objectweb.asm.Type — all value-based
+    }
+
+    /** An incremental SHA-256 over the digest's rendering, with the identity-hash guard applied to each
+     *  chunk as it goes.
+     *
+     *  <p>Keeping the guard per chunk rather than over the finished string is what lets the rendering be
+     *  streamed at all — and it is strictly the same check, because the pattern cannot span a chunk
+     *  boundary: chunks end at a class boundary, and an identity hash is emitted inside one value. It
+     *  also reports better, since the chunk that carries the offending value is small enough to read.
+     *
+     *  <p>{@code feed} CLEARS the builder it is given: the caller reuses one buffer for every class, so
+     *  nothing accumulates and the peak allocation is one class's rendering rather than the program's.
+     *  Also re-dumps to CANDOR_REFRESH_DEBUG when set, appending, since a digest that will not match is
+     *  diagnosed by diffing the input and there is nothing left to diff once it has been hashed. */
+    private static final class Digest {
+        private final MessageDigest md;
+        private final java.io.Writer dbg;
+
+        /** {@code debug=false} for the per-class scratch instance: both would otherwise open and
+         *  truncate the same CANDOR_REFRESH_DEBUG file, and the dump that survived would be whichever
+         *  wrote last — a debugging aid that lies is worse than none. */
+        Digest() { this(true); }
+
+        Digest(boolean debug) {
+            try { md = MessageDigest.getInstance("SHA-256"); }
+            catch (Exception e) { throw new IllegalStateException("SHA-256 unavailable", e); }
+            String d = debug ? System.getenv("CANDOR_REFRESH_DEBUG") : null;
+            java.io.Writer w = null;
+            if (d != null && !d.isEmpty()) {
+                try { w = Files.newBufferedWriter(Path.of(d)); } catch (Exception ignored) { }
+            }
+            dbg = w;
+        }
+
+        /** Start a fresh hash — this instance is reused as scratch for per-class digests. */
+        void reset() { md.reset(); }
+
+        void feed(StringBuilder sb) {
+            String chunk = sb.toString();
+            sb.setLength(0);
+            java.util.regex.Matcher m = IDENTITY_HASH.matcher(chunk);
+            if (m.find()) throw new IllegalStateException("the whole-program digest contains an identity "
+                    + "hash (" + m.group() + "): some value is rendered by Object.toString(), so the digest "
+                    + "would differ on every JVM run and the cache could never hit. Render it structurally. "
+                    + "The chunk was: " + chunk.substring(0, Math.min(200, chunk.length())));
+            md.update(chunk.getBytes(StandardCharsets.UTF_8));
+            if (dbg != null) { try { dbg.write(chunk); } catch (Exception ignored) { } }
+        }
+
+        String hex() {
+            if (dbg != null) { try { dbg.close(); } catch (Exception ignored) { } }
+            StringBuilder sb = new StringBuilder();
+            for (byte x : md.digest()) sb.append(Character.forDigit((x >> 4) & 0xf, 16)).append(Character.forDigit(x & 0xf, 16));
+            return sb.toString();
+        }
     }
 
     static String sha256(byte[] b) {

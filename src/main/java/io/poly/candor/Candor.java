@@ -830,7 +830,10 @@ public class Candor {
             // built to prevent it: this flag exists so `[]` cannot overclaim, and a lookup table cannot
             // do that job. A class is `peeked` only if this run actually READ a file of it.
             boolean peeked = Boolean.parseBoolean(r[0]) && ctx().peekedClasses.contains(e.getKey());
-            out.add(new Report.ExcludedClass(e.getKey(), e.getValue(), peeked, r[1]));
+            // ⟨0.33⟩ THIS engine knows which of its own exclusions are derived duplicates; it says so in
+            // the report rather than leaving each consumer to guess from a token it does not own.
+            out.add(new Report.ExcludedClass(e.getKey(), e.getValue(), peeked,
+                    DERIVED_EXCLUSIONS.contains(e.getKey()), r[1]));
         }
         return out;
     }
@@ -1792,8 +1795,7 @@ public class Candor {
         if (gateConfigured && policyRefusal == null) {
             java.util.List<String> unread = new ArrayList<>();
             for (var c : excludedClasses())
-                if (!c.peeked() && !DERIVED_EXCLUSIONS.contains(c.cls()))
-                    unread.add(c.cls() + " (" + c.count() + ")");
+                if (!c.peeked() && !c.judgedElsewhere()) unread.add(c.cls() + " (" + c.count() + ")");
             if (!unread.isEmpty()) {
                 System.err.println("candor-java: gate NOT certified — this scan did not READ "
                         + String.join(", ", unread) + ". Their effects are absent because nothing looked, "
@@ -1866,7 +1868,7 @@ public class Candor {
         // publishes, so the verdict and the document cannot disagree about which classes were opened.
         java.util.List<String> unpeeked = new ArrayList<>();
         for (var c : excludedClasses())
-            if (!c.peeked() && !DERIVED_EXCLUSIONS.contains(c.cls())) unpeeked.add(c.cls());
+            if (!c.peeked() && !c.judgedElsewhere()) unpeeked.add(c.cls());
         return new GateFacts(ctx().edges.keySet().size(), un, kappaUncovered(), oos, unpeeked);
     }
 

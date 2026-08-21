@@ -3592,8 +3592,14 @@ public final class Query {
                 // disclosure, which is the failure this whole key exists to prevent.
                 boolean peeked = xo.has("peeked") && xo.get("peeked").isJsonPrimitive()
                         && xo.get("peeked").getAsBoolean();
-                if (!peeked && xo.has("class")
-                        && !Candor.DERIVED_EXCLUSIONS.contains(xo.get("class").getAsString()))
+                // ⟨0.33⟩ read the PRODUCER's own statement. Keying on the class token instead would
+                // gate another engine's report differently from the engine that wrote it: the same
+                // concept is `build-output-archive` here and `build-output` in rust and swift, and
+                // rust's `build-script` is real code that runs and must fail closed either way.
+                boolean judgedElsewhere = xo.has("judgedElsewhere")
+                        && xo.get("judgedElsewhere").isJsonPrimitive()
+                        && xo.get("judgedElsewhere").getAsBoolean();
+                if (!peeked && !judgedElsewhere && xo.has("class"))
                     unpeeked.add(xo.get("class").getAsString());
             }
         return new Envelope(analyzed, unanalyzed, uncovered, raw, pkg,

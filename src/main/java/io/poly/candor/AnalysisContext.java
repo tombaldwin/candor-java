@@ -229,6 +229,11 @@ final class AnalysisContext {
     // of `depSplitKnown` with no `depSuperclass` entry is a FACT — every listed supertype is an interface.
     Set<String> depSplitKnown = new HashSet<>();
     Map<String, String> depSuperclass = new HashMap<>();
+    // The SHA-256 of each class's bytes AS READ, keyed by internal name — the refresh cache's per-class
+    // key. Filled by the loader at the one point where bytes exist, because after ASM has parsed them
+    // the bytes are gone and only a re-read could recover them. CONTENT, never mtime: a wrong hit here
+    // does not self-correct the way the Stop-hook's mtime skip does.
+    Map<String, String> classHash = new HashMap<>();
     List<PolicyRule.Deny> denyRules = new ArrayList<>();               // CANDOR_POLICY deny/pure (AS-EFF-006)
     List<PolicyRule.Allow> allowRules = new ArrayList<>();             // CANDOR_POLICY allow (AS-EFF-008)
     List<PolicyRule.Forbid> forbidRules = new ArrayList<>();           // CANDOR_POLICY forbid (AS-EFF-009)
@@ -291,7 +296,8 @@ final class AnalysisContext {
         depCoveredPkgs = master.depCoveredPkgs;             depChainedPkgs = master.depChainedPkgs;
         depCallsByFn = master.depCallsByFn;                 depWhyByFn = master.depWhyByFn;
         depSupers = master.depSupers;                       depSplitKnown = master.depSplitKnown;
-        depSuperclass = master.depSuperclass;               denyRules = master.denyRules;
+        depSuperclass = master.depSuperclass;               classHash = master.classHash;
+        denyRules = master.denyRules;
         allowRules = master.allowRules;                     forbidRules = master.forbidRules;
         onlyRules = master.onlyRules;                       excluded = master.excluded;
         archives = master.archives;                         sourceFiles = master.sourceFiles;
@@ -311,7 +317,7 @@ final class AnalysisContext {
     /** The accumulator fields: every {@code final} instance field, i.e. everything the overlay
      *  constructor did NOT point at the master. The inversion above means this set grows by itself when
      *  someone adds a field, which is exactly the maintenance burden it exists to remove. */
-    private static java.lang.reflect.Field[] outputFields() {
+    static java.lang.reflect.Field[] outputFields() {
         if (OUTPUTS == null) {
             List<java.lang.reflect.Field> fs = new ArrayList<>();
             for (var f : AnalysisContext.class.getDeclaredFields()) {

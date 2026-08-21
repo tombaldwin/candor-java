@@ -123,7 +123,13 @@ class JsonEmitDeterminismTest {
         assertKeyOrder(out, "fn", "effect", "path");
         assertTrue(out.contains("fetch"), "the chain reaches the Net source\n" + out);
         // The no-such-effect emit ({fn, effect, path: []}) is a separate literal in the verb.
-        String none = capture("path", "caller", "Time", "--report", report.toString(), "--json");
+        //
+        // `Db`, not `Time`. This line used to say `Time`, which is not a candor effect at all (the
+        // vocabulary has `Clock`) — so it was reaching the empty emit through a TYPO, and pinning the
+        // defect PART 61 closes: `path` scored an unknown effect name as a confident "does not perform"
+        // at exit 0. A known effect the report genuinely lacks is the real shape of this case, and it
+        // still exercises exactly what this test is about — that the empty emit is launch-stable.
+        String none = capture("path", "caller", "Db", "--report", report.toString(), "--json");
         assertKeyOrder(none, "fn", "effect", "path");
     }
 

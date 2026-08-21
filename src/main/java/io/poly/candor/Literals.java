@@ -188,7 +188,16 @@ final class Literals {
      *  a method that reaches the effect only through a callee still sees the callee's literals — the scale
      *  path for AS-EFF-008 (the literal often lives in a deep, even cross-layer, callee). */
     static Map<String, TreeSet<String>> literalFixpoint(Map<String, TreeSet<String>> direct) {
-        return literalFixpoint(direct, ctx().edges);
+        // Memoized on the live scan's graph — see AnalysisContext#literalFixpointMemo for the
+        // measurement. Only this arm memoizes: the explicit-graph overload below serves `gate --report`,
+        // which has no scan behind it and can be handed a DIFFERENT graph for the same `direct` map, so
+        // caching there would be keyed on half the input.
+        var memo = ctx().literalFixpointMemo;
+        var hit = memo.get(direct);
+        if (hit != null) return hit;
+        var computed = literalFixpoint(direct, ctx().edges);
+        memo.put(direct, computed);
+        return computed;
     }
 
     /** As {@link #literalFixpoint(Map)}, over an EXPLICIT call graph rather than the live scan's

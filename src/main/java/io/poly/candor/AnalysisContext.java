@@ -234,6 +234,13 @@ final class AnalysisContext {
     // the bytes are gone and only a re-read could recover them. CONTENT, never mtime: a wrong hit here
     // does not self-correct the way the Stop-hook's mtime skip does.
     Map<String, String> classHash = new HashMap<>();
+    /** Memo for {@link Literals#literalFixpoint} over the LIVE scan graph, keyed by the identity of the
+     *  `*Direct` map it propagates. MEASURED (JFR, uflexi): literalFixpoint is the hottest frame of a
+     *  warm gate run — six of these fixpoints (hosts, cmds, paths, tables, blind, surfaceIncomplete) run
+     *  over the whole call graph, and the report path and the gate path each computed their own set, so
+     *  a `--json --policy` run did all twelve. Identity-keyed because the inputs are the context's own
+     *  accumulators, and they are finished before any of this runs. */
+    Map<Map<String, TreeSet<String>>, Map<String, TreeSet<String>>> literalFixpointMemo = new IdentityHashMap<>();
     List<PolicyRule.Deny> denyRules = new ArrayList<>();               // CANDOR_POLICY deny/pure (AS-EFF-006)
     List<PolicyRule.Allow> allowRules = new ArrayList<>();             // CANDOR_POLICY allow (AS-EFF-008)
     List<PolicyRule.Forbid> forbidRules = new ArrayList<>();           // CANDOR_POLICY forbid (AS-EFF-009)
@@ -297,6 +304,7 @@ final class AnalysisContext {
         depCallsByFn = master.depCallsByFn;                 depWhyByFn = master.depWhyByFn;
         depSupers = master.depSupers;                       depSplitKnown = master.depSplitKnown;
         depSuperclass = master.depSuperclass;               classHash = master.classHash;
+        literalFixpointMemo = master.literalFixpointMemo;
         denyRules = master.denyRules;
         allowRules = master.allowRules;                     forbidRules = master.forbidRules;
         onlyRules = master.onlyRules;                       excluded = master.excluded;
@@ -393,7 +401,7 @@ final class AnalysisContext {
     private static final Set<String> MEMOS = Set.of(
             "transSupersCache", "chaTargetsCache", "annoMetaCache", "sealedClosedMemo",
             "sealedUnseenMemo", "externalSupersCache", "resolutionOrderCache", "depTransWhyMemo",
-            "provFramesCache", "depOwnersBySig");
+            "provFramesCache", "depOwnersBySig", "literalFixpointMemo");
 
     /** Sizes of the shared inputs, for {@link #assertNoInputGrowth}.
      *

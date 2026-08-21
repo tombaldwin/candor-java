@@ -1792,10 +1792,35 @@ final class Policy {
      *  class (`deny Net client` vs `q.L$client.entry`) was silently inert on the JVM while the same
      *  policy bit on the rust/swift engines. Mirrors the Rust impl's `name_segments` (splits on `.`/`:`),
      *  extended with the JVM-only boundary. */
+    /** Split a qualified name into its segments on {@code . : $}, dropping empties.
+     *
+     *  <p>MEASURED: this was the single largest cost of a gate-only run — `Policy.checkPolicyOutcome`
+     *  was 207 ms of a ~900 ms warm scan on the field case (uflexi, 21k units). The cause was not the
+     *  splitting but the REGEX: {@code String.split} has a fast path only for a single literal
+     *  character, and {@code "[.:$]"} is a character class, so every call compiled a fresh
+     *  {@link java.util.regex.Pattern}. It is called once per function per rule.
+     *
+     *  <p>So: a plain character scan, and a memo because the same qualified names are re-split for every
+     *  rule and every scope check. The function is pure — same string, same segments — so the memo can
+     *  never answer differently from the computation it replaces. Bounded by the number of distinct
+     *  names a process sees, which is the report's own size. */
+    private static final Map<String, String[]> SEGMENTS = new java.util.concurrent.ConcurrentHashMap<>();
+
     static String[] nameSegments(String s) {
+        String[] hit = SEGMENTS.get(s);
+        if (hit != null) return hit;
         List<String> out = new ArrayList<>();
-        for (String seg : s.split("[.:$]")) if (!seg.isEmpty()) out.add(seg);
-        return out.toArray(new String[0]);
+        int start = 0;
+        for (int i = 0; i <= s.length(); i++) {
+            char c = i == s.length() ? '.' : s.charAt(i);
+            if (c == '.' || c == ':' || c == '$') {
+                if (i > start) out.add(s.substring(start, i));
+                start = i + 1;
+            }
+        }
+        String[] segs = out.toArray(new String[0]);
+        SEGMENTS.put(s, segs);
+        return segs;
     }
 
     /** Forward reachability over the project call graph: the NEAREST method `start` transitively reaches

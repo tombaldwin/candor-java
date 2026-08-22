@@ -2312,11 +2312,18 @@ public final class Query {
      *                  withheld", which is the scan route and every answerable report */
     static String deniedLayer(String fn, String effect, Policy.GateInput gi, Set<String> withheld) {
         Effect e = Effect.fromSpecName(effect);
+        // ⟨0.33⟩ `fn` arrives as a NAME here — a report entry's `fn`, or a call-graph sidecar node; the
+        // sidecar names its nodes by bare `fn` whatever the gate keys by. Everything below is keyed by the
+        // UNIT KEY: the withhold triples (built over the gate's own key set) and the class accumulators
+        // alike. Normalize ONCE, at the top, so the scope test still sees the NAME and no lookup below
+        // silently misses — a miss here reads as "no policy forbids it there — nothing to fix".
+        String key = gi.key(fn);
+        String name = gi.disp(key);
         for (var r : AnalysisState.ctx().denyRules) {
             boolean denies = r.effects().isEmpty() ? !effect.equals("Unknown") : r.effects().toNames().contains(effect);
-            if (!denies || !Policy.scopeMatches(fn, r.scope())) continue;
-            if (Policy.withheldAt(withheld, r, fn)) continue;                      // the gate could not judge it
-            if (e != null && !Policy.classNarrowingFires(r, gi, fn, e)) continue;  // outside the rule's classes
+            if (!denies || !Policy.scopeMatches(name, r.scope())) continue;
+            if (Policy.withheldAt(withheld, r, key)) continue;                      // the gate could not judge it
+            if (e != null && !Policy.classNarrowingFires(r, gi, key, e)) continue;  // outside the rule's classes
             return r.scope();
         }
         return null;
@@ -3312,10 +3319,13 @@ public final class Query {
         List<Withheld> perFn = new ArrayList<>();
         for (PolicyRule.Deny r : AnalysisState.ctx().denyRules) {
             List<String> netless = new ArrayList<>(), reasonless = new ArrayList<>();
-            for (var e : new TreeMap<>(gi.inferred()).entrySet()) {
-                String fn = e.getKey();
+            for (String key : gi.inDisplayOrder(gi.inferred().keySet())) {
+                // ⟨0.33⟩ the TRIPLES are keyed by the unit KEY (the gate looks them up that way), while the
+                // scope test and every string that reaches a document use the NAME — SPEC §3.2 requires
+                // these rows to NAME the function the gate could not judge, and a unit key is not a name.
+                String fn = gi.disp(key);
                 if (!Policy.scopeMatches(fn, r.scope())) continue;
-                List<String> names = e.getValue().toNames();
+                List<String> names = gi.inferred().get(key).toNames();
                 // TWO INDEPENDENT CAUSES, TESTED INDEPENDENTLY — `if`, never `else if`. Under the old
                 // per-(rule, function) key the two collapsed harmlessly, because either one withheld the
                 // whole pair. Per EFFECT they cannot: a `deny Net[…] Unknown[…]` rule over a function that
@@ -3323,16 +3333,16 @@ public final class Query {
                 // `Unknown` fire on `reasonClassesOf`'s `unresolved` floor — the exact fabrication the
                 // Unknown branch exists to prevent, reintroduced by the granularity fix for its mirror.
                 if (!r.netClasses().isEmpty() && names.contains("Net")
-                        && gi.netClasses().getOrDefault(fn, List.of()).isEmpty()) {
+                        && gi.netClasses().getOrDefault(key, List.of()).isEmpty()) {
                     netless.add(fn);
-                    triples.add(Policy.unanswerableKey(r, fn, Effect.NET));
+                    triples.add(Policy.unanswerableKey(r, key, Effect.NET));
                     perFn.add(new Withheld(fn, r.src().trim(), "Net", withheldWhy(r, fn, "Net",
                             "`netClass`", "the Net destination class"), widen(r, "Net")));
                 }
                 if (!r.unknownClasses().isEmpty() && names.contains("Unknown")
-                        && gi.reasonClasses().getOrDefault(fn, new TreeSet<>()).isEmpty()) {
+                        && gi.reasonClasses().getOrDefault(key, new TreeSet<>()).isEmpty()) {
                     reasonless.add(fn);
-                    triples.add(Policy.unanswerableKey(r, fn, Effect.UNKNOWN));
+                    triples.add(Policy.unanswerableKey(r, key, Effect.UNKNOWN));
                     perFn.add(new Withheld(fn, r.src().trim(), "Unknown", withheldWhy(r, fn, "Unknown",
                             "`unknownWhy` (its own, or one reachable over `calls`)", "the Unknown reason class"),
                             widen(r, "Unknown")));

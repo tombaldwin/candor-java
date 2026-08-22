@@ -377,6 +377,24 @@ final class Policy {
      *                          They stay in {@code inferred}, so a `calls` edge naming one still propagates
      *                          its effects to a real caller, but they are never REPORTED as violators.
      *                          Always EMPTY on the scan route, which has no such entries. See {@link #gate}.
+     * @param display           KEY -> the name to MATCH a policy scope against and to PRINT. EMPTY means the
+     *                          keys ARE names, which is the scan route and every pre-⟨0.33⟩ caller.
+     *                          <p>It exists because the multi-report merge cannot simply swap its key. SPEC
+     *                          §2.2 requires a consumer to "join across reports by `hash`, never by bare
+     *                          `fn` (names may legitimately repeat across packages)" — and joining by name
+     *                          was MEASURED here turning a refusal into `policy ✓` when one member borrowed
+     *                          an unrelated same-named sibling's Unknown reason class. But a hash is not a
+     *                          name (on this engine it is `owner/name(desc)ret`), while a POLICY SCOPE is
+     *                          written against the name (`deny Exec app::`), so keying the accumulators by
+     *                          hash WITHOUT this map silently stops every scope matching: a false green
+     *                          introduced while fixing a false green. Identity is the default, so the scan
+     *                          route is untouched by construction.
+     * @param keyOf             the inverse, NAME -> key, and only for a name exactly ONE unit declares. It
+     *                          serves the consumers that hold a NAME rather than an entry — {@code fix}'s
+     *                          hoist walk reads a call-graph SIDECAR, which names nodes by bare `fn`. A name
+     *                          two units declare is deliberately ABSENT: there is no single unit to answer
+     *                          for it, and {@link #reasonClassesOf}'s fail-closed floor is the right answer
+     *                          to "which unit did you mean".
      */
     record GateInput(Map<String, EffectSet> inferred,
                      Map<String, TreeSet<String>> reasonClasses,
@@ -387,7 +405,33 @@ final class Policy {
                      Map<String, TreeSet<String>> tables,
                      Map<String, TreeSet<String>> surfaceIncomplete,
                      Map<String, Set<String>> edges,
-                     Set<String> synthetic) {}
+                     Set<String> synthetic,
+                     Map<String, String> display,
+                     Map<String, String> keyOf) {
+
+        /** The name to match a policy scope against, and to print. Identity when no map was supplied. */
+        String disp(String key) {
+            return display.getOrDefault(key, key);
+        }
+
+        /** The unit KEY for something that may be either a key already or a bare NAME. Identity when no map
+         *  was supplied, and identity again for a name no single unit declares — so this can only ever
+         *  return what the caller passed or the one unit that owns it, never a guess between two. */
+        String key(String nameOrKey) {
+            return display.containsKey(nameOrKey) ? nameOrKey : keyOf.getOrDefault(nameOrKey, nameOrKey);
+        }
+
+        /** The gate's key set in DISPLAY order — the order the violation rows are emitted in, and therefore
+         *  the order §3.3.1's byte-equality between {@code scan --policy} and {@code gate --report} is
+         *  measured on. Sorting by the KEY instead would reorder the rows the moment the keys stopped being
+         *  names, breaking that equality in the OTHER direction from the defect this map exists for. The key
+         *  is the tie-break, so the order is total whatever the display map does. */
+        List<String> inDisplayOrder(Collection<String> keys) {
+            List<String> out = new ArrayList<>(keys);
+            out.sort(Comparator.<String, String>comparing(this::disp).thenComparing(Comparator.naturalOrder()));
+            return out;
+        }
+    }
 
     /** The scan route into the gate: accumulate the classifier's direct maps over the live call graph.
      *  Byte-for-byte the fixpoints {@code checkPolicy} used to run inline. */
@@ -433,7 +477,11 @@ final class Policy {
                 literalFixpoint(ctx().tablesDirect),
                 netIncompleteAcc,
                 ctx().edges,
-                Set.of());   // the scan gates BODIES; synthetic union entries exist only in a written report
+                Set.of(),   // the scan gates BODIES; synthetic union entries exist only in a written report
+                // ⟨0.33⟩ IDENTITY, both ways: a scan gates ONE analysis world and its keys are already the
+                // names a policy scope is written against. The maps exist for the multi-report route, where
+                // the keys MUST be hashes (SPEC §2.2) and the names have to travel beside them.
+                Map.of(), Map.of());
     }
 
     /**
@@ -463,7 +511,12 @@ final class Policy {
      * refuse. (Unreachable today: every token here comes from {@code ReasonClass.classify().token()}.)
      */
     static Set<ReasonClass> reasonClassesOf(GateInput gi, String fn) {
-        TreeSet<String> tokens = gi.reasonClasses().get(fn);
+        // ⟨0.33⟩ THE LOOKUP IS BY UNIT KEY, and the argument may be either a key or a bare NAME — the gate
+        // holds keys, the advisory verbs beside it hold report entries and call-graph nodes, which are
+        // named. This is the shape that failed QUIETLY in candor-rust when the merge moved to `hash`: a
+        // name-keyed lookup into a key-keyed map does not error, it returns null — so `--class dispatch`
+        // selected nothing at all and read as "nothing to report" rather than as a break.
+        TreeSet<String> tokens = gi.reasonClasses().get(gi.key(fn));
         if (tokens == null || tokens.isEmpty()) return Set.of(ReasonClass.UNRESOLVED);
         Set<ReasonClass> out = java.util.EnumSet.noneOf(ReasonClass.class);
         for (String t : tokens) {
@@ -559,7 +612,9 @@ final class Policy {
         // ONLY if the fn reaches one of those destination classes. Fail-closed upstream: a masked surface
         // or a Net with no visible host is already `unknown-host` by the time it lands in `gi`.
         if (effect == Effect.NET && !r.netClasses().isEmpty())
-            return gi.netClasses().getOrDefault(fn, List.of()).stream().anyMatch(r.netClasses()::contains);
+            // ⟨0.33⟩ by unit KEY — `fn` may arrive as a name; see #reasonClassesOf for why a miss here is
+            // the dangerous kind of failure (silent, and it reads as an answer).
+            return gi.netClasses().getOrDefault(gi.key(fn), List.of()).stream().anyMatch(r.netClasses()::contains);
         return true;
     }
 
@@ -623,16 +678,19 @@ final class Policy {
         Map<String, TreeSet<String>> reasonClassAcc = gi.reasonClasses();
         List<String[]> synthHits = new ArrayList<>();   // ⟨0.23⟩ union entries a rule matched — DISCLOSED below
         // AS-EFF-006: a method in scope must not perform (transitively) a denied effect.
-        for (var e : new TreeMap<>(inferred).entrySet()) {
-            String fn = e.getKey();
+        for (String fn : gi.inDisplayOrder(inferred.keySet())) {
+            // ⟨0.33⟩ `fn` is the unit KEY; `name` is what a policy scope matches and what a row says. The
+            // two are the same string on the scan route and wherever no display map was supplied.
+            String name = gi.disp(fn);
+            EffectSet fnEffects = inferred.get(fn);
             for (PolicyRule.Deny r : ctx().denyRules) {
-                if (!scopeMatches(fn, r.scope())) continue;
+                if (!scopeMatches(name, r.scope())) continue;
                 // pure rule (empty effects) ⇒ any effect except Unknown (handled by AS-EFF-003);
                 // deny rule ⇒ the inferred effects that intersect the denied set. Test the EnumSet
                 // directly; only materialize the sorted names on an actual violation (rare).
                 EffectSet bad = r.effects().isEmpty()
-                        ? e.getValue().without(Effect.UNKNOWN)
-                        : e.getValue().intersect(r.effects());
+                        ? fnEffects.without(Effect.UNKNOWN)
+                        : fnEffects.intersect(r.effects());
                 // ⟨0.24⟩ A (rule, function, EFFECT) triple the caller has declared UNANSWERABLE is neither a
                 // violation nor a pass for THAT EFFECT — it is withheld, and disclosed as such (SPEC §3.1,
                 // candor-spec b3748ed). Empty on the scan route, so nothing there moves.
@@ -697,7 +755,7 @@ final class Policy {
                     // producer's own gate verdict. It is disclosed, not dropped: the note below names each
                     // one and the rule it matched, so nothing the gate saw goes unsaid.
                     if (gi.synthetic().contains(fn)) {
-                        synthHits.add(new String[]{fn, String.join(", ", bad.toNames()), r.src().trim()});
+                        synthHits.add(new String[]{name, String.join(", ", bad.toNames()), r.src().trim()});
                         continue;
                     }
                     List<String> bn = bad.toNames();
@@ -711,8 +769,10 @@ final class Policy {
                     List<String> netClass = bn.contains("Net")
                             ? gi.netClasses().getOrDefault(fn, List.of())
                             : java.util.List.of();
+                    // ⟨0.33⟩ the NAME, never the unit key: §3.3.1 pins `gate --report`'s violation rows
+                    // byte-equal to `scan --policy`'s, and the scan route has only names to print.
                     diag(DiagnosticCode.AS_EFF_006, bn, reasonClass, netClass, "`%s` performs { %s }, forbidden by policy%s: `%s`",
-                            fn, String.join(", ", bn),
+                            name, String.join(", ", bn),
                             r.scope().isEmpty() ? "" : " (scope `" + r.scope() + "`)", r.src());
                     v++;
                 }
@@ -736,13 +796,13 @@ final class Policy {
         // pure/deny scope that PASS but are Unknown (the Unknown could hide the forbidden effect — a
         // fn/closure-injected port). Surfaces the gap automatically (eval/fixloop/DISPATCH-NOTE.md).
         List<String[]> holes = new ArrayList<>();
-        for (var e : new TreeMap<>(inferred).entrySet()) {
+        for (String fn : gi.inDisplayOrder(inferred.keySet())) {
             // Same predicate + upgrade reconstruction as `candor unverified` (Query) — one source of truth.
             // `Set.of()` — the SCAN route withholds nothing: it recomputes every field the narrowing reads
             // from source, so there is no absent channel for a filter to succeed on. See SPEC §3.1's note
             // that neither unanswerable state is reachable in a report this engine WROTE.
-            PolicyRule.Deny r = unverifiedHoleRule(e.getKey(), e.getValue(), ctx().denyRules, gi, Set.of());
-            if (r != null) holes.add(new String[]{e.getKey(), ruleUpgrade(r, reasonClassesOf(gi, e.getKey()))[1]});
+            PolicyRule.Deny r = unverifiedHoleRule(fn, inferred.get(fn), ctx().denyRules, gi, Set.of());
+            if (r != null) holes.add(new String[]{gi.disp(fn), ruleUpgrade(r, reasonClassesOf(gi, fn))[1]});
         }
         if (!holes.isEmpty()) {
             System.err.println("candor-java: note — " + holes.size()
@@ -757,29 +817,30 @@ final class Policy {
         // so a benign visible literal can't MASK an invisible forbidden endpoint.
         Map<String, TreeSet<String>> incomplete = gi.surfaceIncomplete();
         Map<String, TreeSet<String>> hostFixpoint = gi.hosts();
-        v += checkAllowlist(inferred, "Net", hostFixpoint, incomplete,
+        v += checkAllowlist(gi, "Net", hostFixpoint, incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> hostPart(a).equals(hostPart(reached))));
         // `Llm` ⟨0.13⟩ rides Net's host literal (SPEC §1) — `allow Llm <host…>` restricts which MODEL
         // hosts a scope may reach, matched by hostname like Net. The reached surface is the SAME hostsDirect
         // (an Llm host WAS captured as a Net host literal); the incompleteness gate keys off "Net" (a
         // runtime/masked host marks the Net surface incomplete → `allow Llm` fails closed too, so a benign
         // visible model host can't MASK an invisible forbidden one).
-        v += checkAllowlist(inferred, "Llm", hostFixpoint, incompleteAsLlm(incomplete),
+        v += checkAllowlist(gi, "Llm", hostFixpoint, incompleteAsLlm(incomplete),
                 (allowed, reached) -> allowed.stream().anyMatch(a -> hostPart(a).equals(hostPart(reached))));
-        v += checkAllowlist(inferred, "Exec", gi.cmds(), incomplete,
+        v += checkAllowlist(gi, "Exec", gi.cmds(), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> cmdBase(a).equals(cmdBase(reached))));
-        v += checkAllowlist(inferred, "Fs", gi.paths(), incomplete,
+        v += checkAllowlist(gi, "Fs", gi.paths(), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> pathCovered(a, reached)));
-        v += checkAllowlist(inferred, "Db", gi.tables(), incomplete,
+        v += checkAllowlist(gi, "Db", gi.tables(), incomplete,
                 (allowed, reached) -> allowed.stream().anyMatch(a -> tableCovered(a, reached)));
         // AS-EFF-009: a method in scope A must not transitively reach into scope B (over the call graph).
         for (PolicyRule.Forbid r : ctx().forbidRules) {
-            for (String fn : new TreeSet<>(gi.edges().keySet())) {
-                if (!scopeMatches(fn, r.from())) continue;
-                String hit = reachesScope(gi.edges(), fn, r.to());
+            for (String fn : gi.inDisplayOrder(gi.edges().keySet())) {
+                if (!scopeMatches(gi.disp(fn), r.from())) continue;
+                String hit = reachesScope(gi, fn, r.to());
                 if (hit != null) {
                     diag(DiagnosticCode.AS_EFF_009, "`%s` reaches into a forbidden layer (via `%s`), "
-                            + "violating policy: `forbid %s -> %s`", fn, hit, r.from(), r.to());
+                            + "violating policy: `forbid %s -> %s`", gi.disp(fn), gi.disp(hit),
+                            r.from(), r.to());
                     v++;
                 }
             }
@@ -795,13 +856,13 @@ final class Policy {
         // descended through — a method in A calling another method in A that reaches infra is still A
         // reaching infra.
         for (PolicyRule.Only r : ctx().onlyRules) {
-            for (String fn : new TreeSet<>(gi.edges().keySet())) {
-                if (!scopeMatches(fn, r.from())) continue;
-                String hit = reachesUnpermitted(gi.edges(), fn, r);
+            for (String fn : gi.inDisplayOrder(gi.edges().keySet())) {
+                if (!scopeMatches(gi.disp(fn), r.from())) continue;
+                String hit = reachesUnpermitted(gi, fn, r);
                 if (hit != null) {
                     // ⟨0.29⟩ ITS OWN CODE — see DiagnosticCode.AS_EFF_011.
                     diag(DiagnosticCode.AS_EFF_011, "`%s` reaches `%s`, which this permission rule does "
-                            + "not permit: `%s`", fn, hit, r.src().trim());
+                            + "not permit: `%s`", gi.disp(fn), gi.disp(hit), r.src().trim());
                     v++;
                 }
             }
@@ -817,21 +878,24 @@ final class Policy {
      *  whichever the traversal happened to reach first — an operator fixes the closest edge.
      *
      *  <p>A permitted node is NOT descended into: its dependencies answer to the rules about IT. */
-    static String reachesUnpermitted(Map<String, Set<String>> edges, String start, PolicyRule.Only r) {
-        Deque<String> q = new ArrayDeque<>(sortedCallees(edges, start));
+    static String reachesUnpermitted(GateInput gi, String start, PolicyRule.Only r) {
+        Deque<String> q = new ArrayDeque<>(sortedCallees(gi, start));
         Set<String> seen = new HashSet<>();
         while (!q.isEmpty()) {
             String n = q.poll();
             if (!seen.add(n)) continue;
+            // ⟨0.33⟩ every scope test is against the NAME — a graph node is a unit KEY once the merge is
+            // hash-keyed, and a hash matches no scope an operator would write.
+            String nName = gi.disp(n);
             boolean permitted = false;
             for (String to : r.to()) {
                 // ⟨0.29⟩ EXACT segment match on a PERMITTED scope — see scopeMatchesPermitted. The shared
                 // prefix matcher is fail-CLOSED for every other rule kind and fail-OPEN here.
-                if (scopeMatchesPermitted(n, to)) { permitted = true; break; }
+                if (scopeMatchesPermitted(nName, to)) { permitted = true; break; }
             }
             if (permitted) continue;                   // allowed, and its callees are not this rule's business
-            if (!scopeMatches(n, r.from())) return n;   // reached something no clause of the rule names
-            for (String cc : sortedCallees(edges, n)) if (!seen.contains(cc)) q.add(cc);
+            if (!scopeMatches(nName, r.from())) return n;   // reached something no clause of the rule names
+            for (String cc : sortedCallees(gi, n)) if (!seen.contains(cc)) q.add(cc);
         }
         return null;
     }
@@ -869,9 +933,10 @@ final class Policy {
         for (PolicyRule.Forbid r : ctx().forbidRules) matches.putIfAbsent(r.src(), 0);
         for (PolicyRule.Only r : ctx().onlyRules) matches.putIfAbsent(r.src(), 0);
         if (matches.isEmpty()) return;
-        Set<String> fns = new TreeSet<>(gi.inferred().keySet());
-        fns.addAll(gi.edges().keySet());
-        for (String fn : fns) {
+        Set<String> keys = new TreeSet<>(gi.inferred().keySet());
+        keys.addAll(gi.edges().keySet());
+        for (String key : keys) {
+            String fn = gi.disp(key);   // ⟨0.33⟩ a rule binds a NAME; a key would make every scope zero-match
             for (PolicyRule.Deny r : ctx().denyRules) {
                 if (!r.scope().isEmpty() && scopeMatches(fn, r.scope())) matches.merge(r.src(), 1, Integer::sum);
             }
@@ -1038,7 +1103,11 @@ final class Policy {
         }
         synthetic.removeAll(real);   // a name a REAL entry also claims is a real unit — see the note above
         return new GateInput(inferred, literalFixpoint(whyDirect, edges), netClasses,
-                hosts, cmds, paths, tables, incomplete, edges, synthetic);
+                hosts, cmds, paths, tables, incomplete, edges, synthetic,
+                // ⟨0.33⟩ EMPTY for now — the keys above are still bare `fn`, so they ARE names. Populated by
+                // the commit that moves the merge to `hash`; plumbed first, and separately, because the two
+                // halves fail in OPPOSITE directions and each has to be measured on its own.
+                Map.of(), Map.of());
     }
 
     /** Re-key the surface-incompleteness map so an incomplete "Net" surface ALSO reads incomplete for
@@ -1058,22 +1127,23 @@ final class Policy {
      *  (and the Rust gate checks per rule), so two half-covering rules don't pass by union. A method
      *  whose reached surface is EMPTY is a violation too — "a literal it cannot see" can't be
      *  certified (lits_e(f) = ∅ in the predicate). No matching `allow` rule ⇒ unchecked. */
-    static int checkAllowlist(Map<String, EffectSet> inferred, String effect,
+    static int checkAllowlist(GateInput gi, String effect,
             Map<String, TreeSet<String>> reachedAcc, Map<String, TreeSet<String>> incompleteAcc,
             java.util.function.BiPredicate<Set<String>, String> covered) {
         int v = 0;
-        for (var e : new TreeMap<>(inferred).entrySet()) {
-            String fn = e.getKey();
-            if (!e.getValue().contains(Effect.fromSpecName(effect))) continue;
+        Map<String, EffectSet> inferred = gi.inferred();
+        for (String fn : gi.inDisplayOrder(inferred.keySet())) {
+            String name = gi.disp(fn);   // ⟨0.33⟩ scopes MATCH the name and rows PRINT it; `fn` is the key
+            if (!inferred.get(fn).contains(Effect.fromSpecName(effect))) continue;
             for (PolicyRule.Allow r : ctx().allowRules) {
-                if (!effect.equals(r.effect().specName()) || !scopeMatches(fn, r.scope())) continue;
+                if (!effect.equals(r.effect().specName()) || !scopeMatches(name, r.scope())) continue;
                 TreeSet<String> reached = reachedAcc.getOrDefault(fn, new TreeSet<>());
                 // Empty surface OR an INCOMPLETE one (a structurally-invisible reach — a host-less Net owner
                 // or a runtime-host call) can't be certified: fail-closed. Without the incompleteness gate a
                 // benign visible literal would MASK the invisible forbidden endpoint (the gate EVASION).
                 if (reached.isEmpty() || incompleteAcc.getOrDefault(fn, new TreeSet<>()).contains(effect)) {
                     diag(DiagnosticCode.AS_EFF_008, List.of(effect), "`%s` performs %s with no visible literal "
-                            + "— the surface cannot be certified: `allow %s%s %s`", fn, effect, effect,
+                            + "— the surface cannot be certified: `allow %s%s %s`", name, effect, effect,
                             r.scope().isEmpty() ? "" : " in " + r.scope(),
                             String.join(" ", r.values()));
                     v++;
@@ -1083,7 +1153,7 @@ final class Policy {
                         .filter(x -> !covered.test(r.values(), x)).sorted().collect(Collectors.toList());
                 if (!bad.isEmpty()) {
                     diag(DiagnosticCode.AS_EFF_008, List.of(effect), "`%s` reaches { %s } outside the allowlist, "
-                            + "forbidden by policy%s: `allow %s … %s`", fn, String.join(", ", bad),
+                            + "forbidden by policy%s: `allow %s … %s`", name, String.join(", ", bad),
                             r.scope().isEmpty() ? "" : " (scope `" + r.scope() + "`)", effect,
                             String.join(" ", r.values()));
                     v++;
@@ -1693,8 +1763,12 @@ final class Policy {
     static PolicyRule.Deny unverifiedHoleRule(String fn, EffectSet inferred, List<PolicyRule.Deny> deny,
                                               GateInput gi, Set<String> withheld) {
         if (!inferred.toNames().contains("Unknown")) return null;
+        // ⟨0.33⟩ Accepts a unit KEY or a bare NAME — `unverified` holds an entry, the gate holds a key.
+        // The scope test is against the name; the withhold set and the class accumulators are keyed.
+        fn = gi.key(fn);
+        String name = gi.disp(fn);
         for (PolicyRule.Deny r : deny) {
-            if (!scopeMatches(fn, r.scope())) continue;
+            if (!scopeMatches(name, r.scope())) continue;
             EffectSet bad = r.effects().isEmpty()
                     ? inferred.without(Effect.UNKNOWN)   // pure: any real effect is a violation
                     : inferred.intersect(r.effects());   // deny: a named effect is a violation
@@ -1841,14 +1915,14 @@ final class Policy {
      *  exactly like a chosen one. Breadth-first with a SORTED expansion makes it the nearest crossing —
      *  the boundary a reader would actually hoist — with ties broken by name, so the answer is a fact
      *  about the call graph rather than about string hashing. */
-    static String reachesScope(Map<String, Set<String>> edges, String start, String scope) {
-        Deque<String> q = new ArrayDeque<>(sortedCallees(edges, start));
+    static String reachesScope(GateInput gi, String start, String scope) {
+        Deque<String> q = new ArrayDeque<>(sortedCallees(gi, start));
         Set<String> seen = new HashSet<>();
         while (!q.isEmpty()) {
             String n = q.poll();                       // poll, not pop: FIFO == nearest-first
             if (!seen.add(n)) continue;
-            if (scopeMatches(n, scope)) return n;
-            for (String cc : sortedCallees(edges, n)) if (!seen.contains(cc)) q.add(cc);
+            if (scopeMatches(gi.disp(n), scope)) return n;   // ⟨0.33⟩ the NAME — a hash matches no scope
+            for (String cc : sortedCallees(gi, n)) if (!seen.contains(cc)) q.add(cc);
         }
         return null;
     }
@@ -1856,13 +1930,16 @@ final class Policy {
     /** {@code fn}'s callees in a stable order. The graph's values are {@code HashSet}s, so this is
      *  the one place the ordering of a BFS layer is decided; sorting here keeps the tie-break a property of
      *  the NAMES rather than of their hash codes. Returns the shared empty list for a leaf, so the common
-     *  case allocates nothing. */
-    private static List<String> sortedCallees(Map<String, Set<String>> edges, String fn) {
-        Set<String> cs = edges.get(fn);
+     *  case allocates nothing.
+     *
+     *  <p>⟨0.33⟩ Sorted by DISPLAY name, with the key as the tie-break. The witness this decides is printed
+     *  and travels in {@code --gate-json}'s {@code detail}, so ordering by an opaque key would move the
+     *  named crossing the moment the keys stopped being names — the tie-break test in
+     *  {@code LayerWitnessOrderTest} is about exactly this being a fact about the graph. */
+    private static List<String> sortedCallees(GateInput gi, String fn) {
+        Set<String> cs = gi.edges().get(fn);
         if (cs == null || cs.isEmpty()) return List.of();
-        List<String> out = new ArrayList<>(cs);
-        Collections.sort(out);
-        return out;
+        return gi.inDisplayOrder(cs);
     }
 
     static Map<String, EffectSet> loadBaseline(String path) {

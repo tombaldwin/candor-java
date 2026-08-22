@@ -8,6 +8,29 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- ⚠ **`gate --report` over a report SET joined by bare `fn`, so adding an unrelated sibling turned a
+  refusal into `policy ✓`.** SPEC §2.2 requires a consumer to join by `hash` — "names may legitimately
+  repeat across packages" — and this engine keyed every accumulator on `fn`. Measured: gating one member
+  refused a scoped rule at exit 2, and gating that SAME member beside a sibling exited 0. A false green
+  produced by ADDING a report, which is a cardinal sin.
+
+  The harm was not two functions' effects merging. The member carried an `Unknown` with no reachable
+  reason — UNANSWERABLE, so the gate refused; the sibling gave that NAME a reason, the filter saw a class
+  set the rule does not deny, and tolerated. **Union is safe for EFFECTS and unsafe for REASONS**: adding
+  an effect can only add violations, adding a reason turns "I cannot say" into "I checked, it's fine".
+
+  Nodes AND edges: `calls` names callees by bare `fn`, so hash-keying the node table alone would leave the
+  graph joining by name one layer down. A callee resolves against a UNIQUE declarer; a name TWO units
+  declare gets **no edge** (picking would invent a reach) but **contributes `Unknown[dispatch]`** at the
+  caller — dropping it silently reopened the same defect by another route, measured as a red verdict going
+  green by adding a report. Names now travel beside the keys, so policy scopes still match, the zero-match
+  disclosure still binds, `unverified --class` / `fix` / `fix-gate` still resolve, and every violation row
+  still carries the function NAME (§3.3.1 byte-equality with `scan --policy`).
+
+  Ordinary verdicts are unchanged: 5 real jars × 6 policies × 6 verbs — including 1514-row and 489-row
+  verdicts, 6875 `--class dispatch` selections and 913 `fix-gate` remedies — are byte-identical on both
+  routes, and the two routes still agree row-for-row wherever they did before.
+
 - **The `--gate-json` FILE sink gets the shutdown hook the stream sink has had since ⟨0.28⟩.** This class
   has **37 raw `System.exit(2)` calls** against 3 that write a refusal document, so on 37 paths the file
   sink kept the arming stub — a guess made *before* the run started, saying the run "failed, crashed or

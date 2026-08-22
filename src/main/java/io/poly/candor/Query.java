@@ -3583,7 +3583,18 @@ public final class Query {
         // `gate --report` reaches the same verdict as `scan --policy` without needing a target to
         // re-derive anything from — the constraint that defeated the `net-partner` disclosure.
         List<String> unpeeked = new ArrayList<>();
-        if (envObj != null && envObj.has("excluded") && envObj.get("excluded").isJsonArray())
+        // ⟨0.33⟩ ONLY WHEN THE PRODUCING SCAN WAS ASKED. `peeked: false` has two causes and they are not
+        // the same claim: the peek COULD NOT read those files (unread code — what this rule is for), or
+        // NO PEEK RAN AT ALL because no policy was configured, in which case nothing was asked and the
+        // flag records an absence of question rather than an absence of evidence.
+        //
+        // ⟨0.29⟩ already distinguishes them: `outOfScope` is OMITTED when no policy was configured, and
+        // present-and-empty when one was and the peek came back clean. Keying on that is the ⟨0.26⟩
+        // absent-vs-empty rule the rest of this format runs on. Without it, EVERY report written without
+        // a policy — and every pre-⟨0.30⟩ report, which carries neither key — exits 2 the moment a policy
+        // touches it. Caught by conformance, which gates a no-policy report on purpose.
+        boolean scanWasAsked = envObj != null && envObj.has("outOfScope");
+        if (scanWasAsked && envObj.has("excluded") && envObj.get("excluded").isJsonArray())
             for (JsonElement x : envObj.getAsJsonArray("excluded")) {
                 if (!x.isJsonObject()) continue;
                 var xo = x.getAsJsonObject();

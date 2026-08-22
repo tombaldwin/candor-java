@@ -1641,16 +1641,28 @@ public final class Query {
                                *  `fix-gate` "and any later sibling". ⟨0.30⟩ moved the gate and left these
                                *  behind — MEASURED, the gate exited 2 while `unverified --strict` answered
                                *  PROVABLY clean at 0 over the same report. */
-                              List<Report.OutOfScope> outOfScope) {
+                              List<Report.OutOfScope> outOfScope,
+                              /** ⟨0.33⟩ the exclusion classes the producing scan did NOT READ. The
+                               *  SAME rule that put `outOfScope` here, applied to the rung that came
+                               *  after it: ⟨0.24⟩ binds an advisory verb never to be LESS sensitive to
+                               *  incompleteness than the gate over the same bytes, and it names
+                               *  `unverified`, `fix-gate` "and any later sibling". ⟨0.33⟩ moved the gate
+                               *  and left these behind again — MEASURED by the policy matrix, four cells:
+                               *  the gate refused at 2 while `unverified --strict` answered clean at 0
+                               *  over the same report. The comment above records ⟨0.30⟩ doing it; this is
+                               *  the second time, which says the ARM is what a new verdict cause needs,
+                               *  not a note telling the next person to remember. */
+                              List<String> unpeeked) {
         /** Nothing to disclose — for a caller with no report locator at all (a unit test driving a verb
          *  over an in-memory entry list). Every channel below is a no-op on it. */
         static final ReportCompleteness NONE =
-                new ReportCompleteness(List.of(), List.of(), List.of(), List.of(), List.of());
+                new ReportCompleteness(List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
 
         /** Is the universe this verb reasoned over known-partial in the way the GATE also refuses over?
          *  {@code judgedNothing} and {@code noManifest} are deliberately NOT arms — see {@link #mustHedge}. */
         boolean incomplete() {
-            return !unanalyzed.isEmpty() || !unreadable.isEmpty() || !outOfScope.isEmpty();
+            return !unanalyzed.isEmpty() || !unreadable.isEmpty() || !outOfScope.isEmpty()
+                    || !unpeeked.isEmpty();
         }
 
         /** ⟨0.28⟩ <b>Is there anything at all to disclose — the trigger for an ANSWER, where
@@ -1683,7 +1695,8 @@ public final class Query {
             List<String> r = new ArrayList<>(unreadable); r.addAll(other.unreadable);
             List<String> n = new ArrayList<>(noManifest); n.addAll(other.noManifest);
             List<Report.OutOfScope> o = new ArrayList<>(outOfScope); o.addAll(other.outOfScope);
-            return new ReportCompleteness(u, j, r, n, o);
+            List<String> up = new ArrayList<>(unpeeked); up.addAll(other.unpeeked);
+            return new ReportCompleteness(u, j, r, n, o, up);
         }
 
         /** What {@code gate --report} does over THESE SAME BYTES, as one sentence for the note's tail — a
@@ -1834,6 +1847,9 @@ public final class Query {
         List<String> nm = new ArrayList<>();
         // ⟨0.30⟩ the peek's findings, unioned across the reports under this locator.
         List<Report.OutOfScope> oos = new ArrayList<>();
+        // ⟨0.33⟩ accumulated on the same pass as `oos`, from the same envelope, so the advisory
+        // verbs and the gate cannot disagree about which classes went unread.
+        List<String> unpk = new ArrayList<>();
         for (String r : set) {
             // ⟨0.28⟩ ABSENT is not UNREADABLE. Locator rule 2 returns a `.json` path VERBATIM whether or
             // not it exists, and a report that is not there is the ordinary pre-scan case every caller
@@ -1873,6 +1889,7 @@ public final class Query {
                 else jn.add(r);
             }
             oos.addAll(env.outOfScope());
+            unpk.addAll(env.unpeeked());
             // ⟨0.31⟩ adopt the PRODUCER's partner provenance so the shared verdict writer emits the same
             // bytes on this route as the scan route did. Copied, never recomputed — §3.1's byte-equality
             // is the acceptance test, and the first attempt at this disclosure was reverted for computing
@@ -1883,7 +1900,7 @@ public final class Query {
                 AnalysisState.ctx().netPartnersUsed.addAll(env.netPartners().hosts());
             }
         }
-        return new ReportCompleteness(un, jn, bad, nm, oos);
+        return new ReportCompleteness(un, jn, bad, nm, oos, unpk);
     }
 
     /** The report a DESCRIPTIVE verb is answering over: the LOCATOR (which may name a report SET, §2 "a

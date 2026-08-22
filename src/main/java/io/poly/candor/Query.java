@@ -3604,7 +3604,15 @@ public final class Query {
                 List<String> ws = new ArrayList<>();
                 for (JsonElement w : o.getAsJsonArray("unknownWhy"))
                     if (w.isJsonPrimitive()) ws.add(w.getAsString());
-                if (!ws.isEmpty()) raw.put(o.get("fn").getAsString(), ws);
+                // ⟨0.33⟩ keyed by the UNIT KEY (`hash`, else the bare name) — the same key
+                // Policy#gateInputFromReport reads it back under. Keyed by `fn`, this channel was a second
+                // route to the defect the hash-keyed merge closes: two same-named entries in different
+                // reports had their reason strings UNIONED here, so one could hand the other the reason
+                // class that makes an unanswerable `Unknown` answerable.
+                String key = o.has("hash") && o.get("hash").isJsonPrimitive()
+                        && !o.get("hash").getAsString().isEmpty()
+                        ? o.get("hash").getAsString() : o.get("fn").getAsString();
+                if (!ws.isEmpty()) raw.put(key, ws);
             }
         // ⟨0.33⟩ the exclusion classes the PRODUCING scan did not read. Read from the document, so
         // `gate --report` reaches the same verdict as `scan --policy` without needing a target to

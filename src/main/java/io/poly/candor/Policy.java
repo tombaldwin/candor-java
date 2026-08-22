@@ -1054,8 +1054,15 @@ final class Policy {
         Map<String, TreeSet<String>> hosts = new HashMap<>(), cmds = new HashMap<>(),
                 paths = new HashMap<>(), tables = new HashMap<>(), incomplete = new HashMap<>();
         Set<String> synthetic = new HashSet<>(), real = new HashSet<>();
+        Map<String, String> display = new HashMap<>();
+        // ⟨0.33⟩ NAME -> every unit KEY that declares it, so a `calls` edge can be resolved and an
+        // AMBIGUOUS name can be recognised as one. Built in a first pass: an entry may call a name
+        // declared by a report that comes later in the set.
+        Map<String, TreeSet<String>> keysByName = new HashMap<>();
+        for (Effector e : fns) keysByName.computeIfAbsent(e.fn(), k -> new TreeSet<>()).add(entryKey(e));
         for (Effector e : fns) {
-            String fn = e.fn();
+            String fn = entryKey(e);
+            display.put(fn, e.fn());
             // ⟨0.23⟩ An `interfaceUnion: true` entry is not a UNIT — it is a CHA union published under a
             // bodiless declaration's hash so a CHAINED CONSUMER's dispatch resolves across the scan
             // boundary (ReportWriter#appendInterfaceUnions). It records its effects and is tracked here so
@@ -1063,10 +1070,12 @@ final class Policy {
             // duplicate `fn`) is real, and `real` wins below — never the other way round, or a marked
             // sibling could erase a genuine violator.
             if (e.interfaceUnion()) synthetic.add(fn); else real.add(fn);
-            // JOIN on a repeated `fn` rather than overwrite: a duplicate key is malformed input, and taking
-            // the union is the direction that cannot turn a violation into a pass.
+            // UNION on a repeated KEY: two entries sharing a hash are ONE unit by construction, so the
+            // union here is this engine's own unit semantics rather than a guess about two functions.
+            // (Two entries sharing only a NAME are two units and no longer meet — that is the fix.)
             inferred.merge(fn, e.inferred(), EffectSet::join);
-            edges.computeIfAbsent(fn, k -> new HashSet<>()).addAll(e.calls());
+            CallResolution calls = resolveCalls(e, fn, keysByName);
+            edges.computeIfAbsent(fn, k -> new HashSet<>()).addAll(calls.to());
             if (!e.hosts().isEmpty()) hosts.computeIfAbsent(fn, k -> new TreeSet<>()).addAll(e.hosts());
             if (!e.cmds().isEmpty()) cmds.computeIfAbsent(fn, k -> new TreeSet<>()).addAll(e.cmds());
             if (!e.paths().isEmpty()) paths.computeIfAbsent(fn, k -> new TreeSet<>()).addAll(e.paths());
@@ -1074,7 +1083,7 @@ final class Policy {
             if (!e.netClass().isEmpty())
                 netClasses.computeIfAbsent(fn, k -> new ArrayList<>()).addAll(e.netClass());
             // `incomplete` stays empty — see the class note above. Every `allow` rule is refused upstream.
-            List<String> raw = rawUnknownWhy.get(fn);
+            List<String> raw = rawUnknownWhy.get(fn);   // ⟨0.33⟩ keyed by the same unit key — see Query#readEnvelope
             if (raw == null || raw.isEmpty())
                 raw = e.unknownWhy().stream().map(UnknownReason::format).collect(Collectors.toList());
             // Classify via the STRING path, identical to the scan route (which deliberately uses
@@ -1100,14 +1109,99 @@ final class Policy {
             // fail-closed empty-set rule in `reasonClassesOf`, which keeps it rather than drops it.
             if (e.direct().hasUnknown() && raw.isEmpty())
                 whyDirect.computeIfAbsent(fn, k -> new TreeSet<>()).add(ReasonClass.UNRESOLVED.token());
+            // ⟨0.33⟩ …AND THE SECOND CONTRIBUTION, beside the one above and for the same reason: an
+            // AMBIGUOUS callee is CONTRIBUTED as evidence here, at the caller's entry, BEFORE the fixpoint.
+            // Dropping the edge is right — picking between two declarers would invent a reach — but
+            // dropping it SILENTLY reopens the very defect the hash key closes, by another route: the
+            // caller loses the reason class it would have INHERITED while staying ANSWERABLE through a
+            // reason of its own, so a narrowed filter tolerates it and a red verdict goes green BY ADDING
+            // A REPORT. Measured in candor-rust as `a+c -> exit 1, a+b+c -> exit 0`.
+            //
+            // `dispatch` is the right class by the vocabulary's own definition — "unresolved
+            // virtual/dynamic dispatch, SAME-NAME AMBIGUITY" — and it is evidence the MERGE holds, having
+            // seen two declarers, never a class borrowed from another function's body. So it cannot make
+            // some other function's Unknown answerable, which is exactly what the name join did.
+            if (calls.ambiguous()) {
+                inferred.merge(fn, EffectSet.of(Effect.UNKNOWN), EffectSet::join);
+                whyDirect.computeIfAbsent(fn, k -> new TreeSet<>()).add(ReasonClass.DISPATCH.token());
+            }
         }
-        synthetic.removeAll(real);   // a name a REAL entry also claims is a real unit — see the note above
+        synthetic.removeAll(real);   // a key a REAL entry also claims is a real unit — see the note above
+        // ⟨0.33⟩ NAME -> key, for the consumers that hold a name (see GateInput#keyOf). A name TWO units
+        // declare is omitted deliberately: there is no single unit to answer for it.
+        Map<String, String> keyOf = new HashMap<>();
+        for (var en : keysByName.entrySet())
+            if (en.getValue().size() == 1) keyOf.put(en.getKey(), en.getValue().first());
         return new GateInput(inferred, literalFixpoint(whyDirect, edges), netClasses,
-                hosts, cmds, paths, tables, incomplete, edges, synthetic,
-                // ⟨0.33⟩ EMPTY for now — the keys above are still bare `fn`, so they ARE names. Populated by
-                // the commit that moves the merge to `hash`; plumbed first, and separately, because the two
-                // halves fail in OPPOSITE directions and each has to be measured on its own.
-                Map.of(), Map.of());
+                hosts, cmds, paths, tables, incomplete, edges, synthetic, display, keyOf);
+    }
+
+    /**
+     * ⟨0.33⟩ THE UNIT KEY — {@code hash} when the producer emitted one, else the bare name.
+     *
+     * <p>SPEC §2.2: a consumer must "join across reports by `hash`, never by bare `fn` (names may
+     * legitimately repeat across packages)". MEASURED on this engine at 0.31.0: {@code gate --report} over
+     * one member refused a scoped rule at exit 2, and the SAME member gated beside an unrelated sibling
+     * exited 0 with {@code policy ✓} — a false green produced by ADDING a report.
+     *
+     * <p><b>Union is NOT the safe direction here, which the comment this replaced got wrong.</b> Union IS
+     * safe for EFFECTS — adding effects can only add violations. It is NOT safe for REASON CLASSES,
+     * because a reason set is what makes an {@code Unknown} ANSWERABLE: an {@code Unknown} with no
+     * reachable reason is unanswerable and the gate REFUSES, and borrowing a reason from an unrelated
+     * same-named function converts that refusal into an answer. That is the measured false green exactly.
+     * Union turned "I cannot say" into "I checked, it's fine".
+     *
+     * <p>Exposed because {@link #gateInputFromReport}'s accumulators are keyed by it and the ADVISORY
+     * verbs read those accumulators directly (deliberately — §6.2 requires the gate and the disclosure to
+     * share the code). {@link GateInput#key} is the lookup for a caller holding only a name.
+     */
+    static String entryKey(Effector e) {
+        return e.hash().isEmpty() ? e.fn() : e.hash();
+    }
+
+    /** ⟨0.33⟩ One entry's resolved call EDGES, and whether any callee name was AMBIGUOUS. */
+    record CallResolution(Set<String> to, boolean ambiguous) {}
+
+    /**
+     * ⟨0.33⟩ RESOLVE ONE ENTRY'S CALLEES TO UNIT KEYS — the half that makes this more than a key swap.
+     *
+     * <p>{@code hash} identifies a unit but {@code calls} names callees by BARE {@code fn}, so hash-keying
+     * the NODES alone would leave the call graph joining by name one layer down — the same defect, harder
+     * to see because the node table looks right.
+     *
+     * <p>Four cases, and the last two are the ones that matter:
+     * <ul>
+     *   <li>the caller's own package declares it — taken. Only reachable for a {@code pkg#fn}-shaped hash;
+     *       a hash THIS engine writes is {@code owner/name(desc)ret} and contains no {@code #}, so this
+     *       branch serves FOREIGN and hand-authored reports (which §3.1 says this verb serves) and never
+     *       fires on our own. Stated rather than relied upon: in candor-rust the equivalent branch was the
+     *       only one every fixture exercised, and it was dead in production the whole time.</li>
+     *   <li>exactly ONE unit in the set declares it — taken.</li>
+     *   <li>TWO OR MORE declare it — NO EDGE, and the caller is flagged ambiguous. Picking is what the
+     *       name join did implicitly and it is wrong both ways: right by luck when the guess lands,
+     *       inventing a reach when it does not. The flag is what stops the drop being silent.</li>
+     *   <li>NO unit declares it — the bare NAME is kept as the edge target. It carries no effects and no
+     *       reasons (nothing is keyed under it), so it cannot relax anything; what it preserves is the
+     *       {@code forbid}/{@code only} walks, which match a policy SCOPE against every node they reach.
+     *       A report's {@code calls} may name a callee outside the report, and dropping those would
+     *       silently stop AS-EFF-009/011 seeing a crossing that {@code scan --policy} sees — §3.3.1
+     *       byte-equality broken in the under-reporting direction.</li>
+     * </ul>
+     */
+    static CallResolution resolveCalls(Effector e, String key, Map<String, TreeSet<String>> keysByName) {
+        int hash = key.indexOf('#');
+        String mine = hash > 0 ? key.substring(0, hash) : "";
+        Set<String> to = new HashSet<>();
+        boolean ambiguous = false;
+        for (String c : e.calls()) {
+            TreeSet<String> declarers = keysByName.get(c);
+            if (declarers == null || declarers.isEmpty()) { to.add(c); continue; }
+            String samePkg = mine + "#" + c;
+            if (!mine.isEmpty() && declarers.contains(samePkg)) { to.add(samePkg); continue; }
+            if (declarers.size() == 1) { to.add(declarers.first()); continue; }
+            ambiguous = true;
+        }
+        return new CallResolution(to, ambiguous);
     }
 
     /** Re-key the surface-incompleteness map so an incomplete "Net" surface ALSO reads incomplete for

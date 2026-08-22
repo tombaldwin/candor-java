@@ -103,8 +103,16 @@ final class Loader {
                     // ⟨0.21⟩ COMPLETENESS MANIFEST (Gap 2): record the un-analyzable class so the report + the
                     // gate verdict disclose it to a MACHINE (not just the stderr line below) — its effects are
                     // invisible, so a green gate over it would be a false-pure. path → reason.
-                    ctx().unanalyzed.put(p.toString(), "class file failed to parse: "
-                            + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+                    // RELATIVE, like `excluded` two blocks up and like candor-rust. An absolute path in a
+                    // report records where the CI runner's checkout was — the same objection this file
+                    // already makes about `scanRoot` — and it makes the SAME defect produce DIFFERENT
+                    // BYTES on two machines, which a report-diffing consumer reads as a change.
+                    // The reason is scrubbed too: ASM's message for an unreadable file IS the path, so
+                    // leaving it would put the absolute form back in through the other key.
+                    String relPath = rel(root, p);
+                    String why = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                    if (why.contains(p.toString())) why = why.replace(p.toString(), relPath);
+                    ctx().unanalyzed.put(relPath, "class file failed to parse: " + why);
                 }
             }
         }

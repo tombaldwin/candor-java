@@ -49,7 +49,12 @@ public final class Config {
      *  MULTI-VALUE {@code unknown-alias} (⟨0.19⟩, reason-scoped Unknown). */
     private static final java.util.Set<String> KNOWN_KEYS = java.util.Set.of(
             "policy", "baseline", "strict", "no-ambient", "closed-world", "taint", "deps", "unknown-alias",
-            "net-partner", "unknown-ratchet", "engine");
+            "net-partner", "unknown-ratchet", "engine",
+            // ⟨0.32⟩ the operator-declared classpath the compile-peek derives against. A DECLARATION, in
+            // the same trust class as `net-partner`: candor will not read a project's own pom/lockfile to
+            // find its dependencies, because that would let the scanned tree choose the jars its derived
+            // bytecode is compiled against — an artifact could compile itself innocent.
+            "peek-classpath");
 
     /** The implementation names an {@code engine} pin may be qualified by. The family releases on a
      *  LADDER, not in lockstep — one engine can legitimately lead a rung — so a bare version in a
@@ -61,7 +66,8 @@ public final class Config {
     static final String THIS_IMPL = "java";
 
     /** The keys whose value is a PATH (list) — the ones anchor-resolution applies to. */
-    private static final java.util.Set<String> PATH_KEYS = java.util.Set.of("policy", "baseline", "deps");
+    private static final java.util.Set<String> PATH_KEYS =
+            java.util.Set.of("policy", "baseline", "deps", "peek-classpath");
 
     private final Map<String, String> values;
     /** ⟨0.19⟩ user-defined reason-class aliases (SPEC §6.2): {@code unknown-alias <name> = <class,…>}, a

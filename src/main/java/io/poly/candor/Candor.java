@@ -589,6 +589,11 @@ public class Candor {
         } catch (Exception ignored) { }
     }
 
+    /** ⟨0.32⟩ The operator-declared peek classpath (`--peek-classpath`, or the `.candor/config`
+     *  `peek-classpath` key). Static because the peek runs deep inside a scan that already carries its
+     *  inputs on the context, and this is an INPUT to it in the same sense the policy path is. */
+    static String peekClasspathArg;
+
     static boolean declaresAnnotationProcessor(Path jar) {
         try (java.util.zip.ZipFile z = new java.util.zip.ZipFile(jar.toFile())) {
             return z.getEntry("META-INF/services/javax.annotation.processing.Processor") != null;
@@ -683,6 +688,28 @@ public class Candor {
         Path scanRootForPeek = ctx().scanRoot;
         List<Path> peekClasspath = new ArrayList<>(archives);
         if (scanRootForPeek != null) peekClasspath.add(scanRootForPeek);
+        // ⟨0.32⟩ …plus whatever the operator declared. Appended, never substituted: what is under the
+        // root is still theirs, and dropping it would silently narrow a derivation that already worked.
+        List<Path> declaredPeekEntries = new ArrayList<>();
+        if (peekClasspathArg != null && !peekClasspathArg.isBlank()) {
+            for (String e : peekClasspathArg.split(java.util.regex.Pattern.quote(java.io.File.pathSeparator))) {
+                if (e.isBlank()) continue;
+                Path q = Path.of(e);
+                if (!java.nio.file.Files.exists(q)) {
+                    System.err.println("candor-java: --peek-classpath entry `" + e + "` does not exist — "
+                            + "the peek will run without it, so a source needing it stays NOT peeked.");
+                    continue;
+                }
+                peekClasspath.add(q);
+                declaredPeekEntries.add(q);
+            }
+        }
+        // THE PROCESSOR WITHDRAWAL EXTENDS TO DECLARED JARS. A processor generates code the `-proc:none`
+        // derivation cannot contain, and where the jar came from does not change that.
+        if (!processorPresent)
+            processorPresent = declaredPeekEntries.stream()
+                    .filter(q -> q.toString().endsWith(".jar"))
+                    .anyMatch(Candor::declaresAnnotationProcessor);
         java.util.function.Function<List<Path>, Path> compileSourcesForPeek =
                 javax.tools.ToolProvider.getSystemJavaCompiler() == null || scanRootForPeek == null
                         ? null
@@ -1408,8 +1435,8 @@ public class Candor {
         }
         // The first arg is the scan target (a dir/jar) — a flag there is a typo or a newer-doc flag
         // an older jar doesn't know; fail loudly rather than scan a path named after it.
-        var scanFlags = java.util.Set.of("--json", "--policy", "--gate-json"); // --agents handled above; the rest are unknown here
-        String jsonOut = null, policyArg = null, gateJson = null;
+        var scanFlags = java.util.Set.of("--json", "--policy", "--gate-json", "--peek-classpath"); // --agents handled above; the rest are unknown here
+        String jsonOut = null, policyArg = null, gateJson = null, peekClasspath = null;
         // ── SPEC §3.3.1 ⟨0.27⟩ ARM FIRST. This pre-pass learns the sink and the run's inputs with NO side
         // effects, so that (a) the collision check can run before anything is written, and (b) arming
         // happens before EVERY other exit — including an unknown flag, which §3.3 names as a broken-gate-
@@ -1648,6 +1675,22 @@ public class Candor {
                 // valueless form is no longer an error — it's the pipe form (`candor <classes> --json | jq`).
                 if (i + 1 < args.length && !args[i + 1].startsWith("-")) jsonOut = args[++i];
                 else jsonOut = "-";
+            } else if (args[i].equals("--peek-classpath")) {
+                // ⟨0.32⟩ THE ONLY SAFE WAY TO WIDEN THE PEEK'S CLASSPATH — and the safety is in WHO
+                // CHOOSES. Resolving a tree's own pom/lockfile into ~/.m2 would let the artifact being
+                // scanned pick the jars that shape its derived bytecode: an artifact could compile itself
+                // innocent. Declared here, the choice is the operator's, in the same trust class as
+                // `net-partner` or the policy file itself.
+                //
+                // Jars are READ, never executed (`-proc:none`), and a supplied jar registering an
+                // annotation processor withdraws certification exactly as one under the root does — the
+                // generated code is absent from the derivation wherever the processor came from.
+                if (i + 1 >= args.length || args[i + 1].startsWith("-")) {
+                    System.err.println("candor: --peek-classpath requires a value (a jar, a directory, or "
+                            + "several joined by '" + java.io.File.pathSeparator + "')");
+                    System.exit(2);
+                }
+                peekClasspath = args[++i];
             } else if (args[i].equals("--policy")) {
                 if (i + 1 >= args.length) { // same posture as --json: a valueless gate flag must FAIL,
                     System.err.println("candor: --policy requires a value"); // never silently run gateless
@@ -1735,6 +1778,9 @@ public class Candor {
         // CI actually uses. The resolution ladder itself (flag → env → config `policy`) is unchanged and is
         // read HERE so the anchor and the gate below can never disagree about which file is the policy.
         String policyPath = policyArg != null ? policyArg : config.value("policy", Mode.POLICY.envVar());
+        // ⟨0.32⟩ the peek's declared classpath, flag first then config — the same precedence the policy
+        // takes one line down, so an operator overriding on the command line overrides here too.
+        peekClasspathArg = peekClasspath != null ? peekClasspath : config.value("peek-classpath", "CANDOR_PEEK_CLASSPATH");
         Config vocab = policyVocabularyFor(policyPath, config);
         ctx().unknownAliases.putAll(vocab.unknownAliases());
         if (!vocab.unknownAliases().isEmpty() && vocab.source() != null)

@@ -475,13 +475,18 @@ public class Candor {
      *  matches the question they are asking, so conformance asserts on what it SAYS. Paraphrasing the
      *  rationale into something vaguer would defeat the block. */
     private static final Map<String, String[]> EXCLUDED_REASON = Map.of(
-            "source-without-class", new String[]{"false",
+            "source-without-class", new String[]{"true",
                 "candor-java reads BYTECODE, and these JVM sources have no compiled class under the "
-                + "scanned path — so nothing in them was judged, and the peek cannot read them either. "
+                + "scanned path — so nothing in them was judged directly. ⟨0.32⟩ the peek COMPILES them "
+                + "to a scratch directory (`-proc:none`, classpath from inside the scan root only) and "
+                + "runs candor's ordinary analysis over the result, so `peeked: true` here means every "
+                + "file of this class compiled AND analysed on this run. `peeked: false` means at least "
+                + "one did not — a missing dependency, a processor-generated symbol, a syntax error, or "
+                + "no compiler on this machine — and the verdict is INCOMPLETE rather than a pass. "
                 + "This is not a scope decision like a build script's: it usually means the scan was "
                 + "pointed at a repo root instead of compiled output. Build the project and scan "
                 + "target/classes · build/classes/java/main, or a built .jar."},
-            "source-newer-than-class", new String[]{"false",
+            "source-newer-than-class", new String[]{"true",
                 "this source file is NEWER than the class compiled from it, so what candor read is the "
                 + "code as it stood BEFORE the last edit — the verdict is about a program that no longer "
                 + "exists. Every other disclosure in this report is true of the bytes that were read; it "
@@ -568,6 +573,63 @@ public class Candor {
      *  {@code build/classes} and {@code build/libs/app.jar} — the same code twice — so without this filter
      *  the peek would report every effect in the project as out-of-scope while the gate was judging it.
      *  "The gate did not judge this" is a claim, and it is false for any qual already in the analyzed set. */
+    /** ⟨0.32⟩ Does this archive register an annotation processor? A jar that does can generate code the
+     *  peek's {@code -proc:none} compile will not contain, so its presence withdraws the source arm's
+     *  claim entirely. Read as a jar ENTRY name, never by loading anything from it — this method must not
+     *  give a scanned artifact a way to execute. */
+    static boolean declaresAnnotationProcessor(Path jar) {
+        try (java.util.zip.ZipFile z = new java.util.zip.ZipFile(jar.toFile())) {
+            return z.getEntry("META-INF/services/javax.annotation.processing.Processor") != null;
+        } catch (Exception e) {
+            // Unreadable ⇒ cannot rule it out ⇒ say yes. The arm is a CERTIFICATION path, so doubt costs
+            // the certification rather than the operator a silent pass.
+            return true;
+        }
+    }
+
+    /** ⟨0.32⟩ Compile a source set to a scratch directory and return it, or null if it did not compile.
+     *
+     *  <p>{@code -proc:none} is not a tuning choice: running annotation processors means executing code
+     *  from the tree being scanned, and this is the tool that certifies {@code deny Exec}. The classpath
+     *  is assembled ONLY from inside the scan root — the classes already analysed plus the archives the
+     *  walk already found — so the peek never reaches out to a network or a local repository cache.
+     *
+     *  <p>Returns null on ANY diagnostic of ERROR kind. Partial compilation is refused deliberately: a
+     *  compiler that recovers from an error emits a body that throws in place of the code it could not
+     *  translate, and effects VANISH from that bytecode — a false all-clear with a compiler's authority
+     *  behind it. Null here means the class stays unpeeked and the verdict stays INCOMPLETE, which is the
+     *  posture this arm found rather than one it introduces.
+     *
+     *  <p>Absent on a native image, where jdk.compiler is not in the binary: {@code getSystemJavaCompiler}
+     *  returns null, the arm never runs, and the engine answers exactly as it did before ⟨0.32⟩. */
+    static Path compileForPeek(List<Path> files, List<Path> classpath, Path scratchRoot) {
+        javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
+        if (jc == null) return null;
+        try {
+            Path out = java.nio.file.Files.createTempDirectory(scratchRoot, "candor-peek");
+            List<String> args = new ArrayList<>(List.of("-proc:none", "-nowarn", "-d", out.toString()));
+            if (!classpath.isEmpty()) {
+                args.add("-classpath");
+                args.add(classpath.stream().map(Path::toString)
+                        .collect(java.util.stream.Collectors.joining(java.io.File.pathSeparator)));
+            }
+            for (Path f : files) args.add(f.toString());
+            java.io.StringWriter sink = new java.io.StringWriter();
+            int rc = jc.run(null, java.io.OutputStream.nullOutputStream(),
+                            java.io.OutputStream.nullOutputStream(),
+                            args.toArray(new String[0]));
+            if (rc != 0) return null;
+            // JAVAC'S SILENCE IS NOT SUCCESS: require that a class actually materialised, or an empty
+            // directory would be scanned as "read cover to cover, nothing in it".
+            try (var walk = java.nio.file.Files.walk(out)) {
+                if (walk.noneMatch(q -> q.toString().endsWith(".class"))) return null;
+            }
+            return out;
+        } catch (Throwable e) {
+            return null;
+        }
+    }
+
     static void peekExcluded(String policyPath) {
         if (policyPath == null || policyPath.isEmpty()) return;   // nothing asked, so nothing claimed
         List<Report.OutOfScope> found = new ArrayList<>();
@@ -577,6 +639,11 @@ public class Candor {
         // producer reading the policy, not the gate alone, so the key stays ABSENT unless the parse stood.
         boolean[] answered = {false};
         int[] peekFailures = {0};
+        // ⟨0.32⟩ the source arm's own accounting, kept separate from the archive arm's for the same reason
+        // that one is separate from the versioned pass's: `peeked: true` is per CLASS, and one class's
+        // failure must not withdraw another's claim.
+        int[] srcOk = {0}, srcFail = {0};
+        Set<String> srcPeeked = java.util.concurrent.ConcurrentHashMap.newKeySet();
         int[] peekPartial = {0};
         boolean[] peekReadAll = {false};
         boolean[] peekVersionedAll = {false};   // ⟨0.30⟩ the multi-release pass's own read result
@@ -585,6 +652,33 @@ public class Candor {
         final Config peekConfig = config;
         boolean[] timedOut = {false};
         List<Path> archives = List.copyOf(ctx().archives);
+        // ⟨0.32⟩ the source classes this run may compile, grouped BY EXCLUSION CLASS because `peeked` is
+        // per class. Built on the calling thread, where `excluded` and `scanRoot` are current.
+        Map<String, List<Path>> sourcesToCompile = new java.util.TreeMap<>();
+        // A PROCESSOR ON THE CLASSPATH WITHDRAWS THE WHOLE ARM. The peek compiles with `-proc:none` — it
+        // must not run arbitrary build-time code, since this is the tool that certifies `deny Exec` — and
+        // that means processor-GENERATED sources are absent from what it analyses. Handwritten code that
+        // compiles cleanly while a processor generates an effectful sibling would then be certified on
+        // strictly less evidence than a real build has. Source that DEPENDS on generated symbols fails to
+        // compile and is caught anyway; this covers the residue, in the direction that gives up the claim.
+        boolean processorPresent = archives.stream().anyMatch(Candor::declaresAnnotationProcessor);
+        Path scanRootForPeek = ctx().scanRoot;
+        List<Path> peekClasspath = new ArrayList<>(archives);
+        if (scanRootForPeek != null) peekClasspath.add(scanRootForPeek);
+        java.util.function.Function<List<Path>, Path> compileSourcesForPeek =
+                javax.tools.ToolProvider.getSystemJavaCompiler() == null || scanRootForPeek == null
+                        ? null
+                        : files -> compileForPeek(files, peekClasspath,
+                                                  Path.of(System.getProperty("java.io.tmpdir")));
+        if (!processorPresent && ctx().scanRoot != null) {
+            for (var e : ctx().excluded.entrySet()) {
+                String cls = e.getValue();
+                if (!cls.equals("source-without-class") && !cls.equals("source-newer-than-class")) continue;
+                Path abs = ctx().scanRoot.resolve(e.getKey());
+                if (e.getKey().endsWith(".java") && java.nio.file.Files.isReadable(abs))
+                    sourcesToCompile.computeIfAbsent(cls, k -> new ArrayList<>()).add(abs);
+            }
+        }
         Set<String> judged = Set.copyOf(ctx().edges.keySet());
         Path root = ctx().scanRoot;
         // The peek's own stderr is DISCARDED for its duration. It parses the policy (to learn what is
@@ -688,6 +782,67 @@ public class Candor {
                 // THE TARGET ITSELF IS INCLUDED, not just nested archives — the log4j case IS the target.
                 // `runScan(…, true)` inverts the file selection rather than walking a second way, so this
                 // is the same parse and the same classifier over a different file set (§2's MUST).
+                // ⟨0.32⟩ THE SOURCE ARM — and it is deliberately NOT a source reader. SPEC §2 ⟨0.29⟩ is a
+                // MUST: "The peek MUST reach its finding through the engine's ordinary analysis path over
+                // a different FILE SET, never through a second one." A Java parser would be that second
+                // path, and the counterexamples are not exotic — a same-package `com.x.Math` shadows
+                // `java.lang.Math` so any pure-name table certifies a socket call clean; a static field
+                // read pulls in an effectful <clinit> with no call written anywhere; an implicit
+                // constructor chains to an effectful super; try-with-resources emits close(); `"x=" + obj`
+                // re-enters an effectful toString(). None of those has a source token to be suspicious of.
+                //
+                // So: compile the files to a scratch dir and run THE ORDINARY ANALYSIS over the result.
+                // One semantics, one classifier, resolved receivers — the same shape as the archive arm
+                // above, over a file set this engine produced rather than found.
+                if (compileSourcesForPeek != null && !sourcesToCompile.isEmpty()) {
+                    for (var cls : sourcesToCompile.keySet()) {
+                        List<Path> files = sourcesToCompile.get(cls);
+                        Path out = null;
+                        try {
+                            out = compileSourcesForPeek.apply(files);
+                        } catch (Throwable e) {
+                            out = null;
+                        }
+                        if (out == null) {
+                            // Did not compile — a missing dependency, a processor-generated symbol, a
+                            // syntax error. The class stays NOT peeked, which is exactly the ⟨0.32⟩
+                            // INCOMPLETE posture it had before this arm existed. Never a pass.
+                            srcFail[0]++;
+                            continue;
+                        }
+                        Map<String, EffectSet> peeked;
+                        try {
+                            peeked = runScan(out, peekConfig);
+                        } catch (Throwable e) { srcFail[0]++; continue; }
+                        if (!ctx().unanalyzed.isEmpty()) { srcFail[0]++; continue; }
+                        srcOk[0]++;
+                        Policy.GateInput peekGi = Policy.gateInputFromScan(peeked);
+                        // THE `judged` SKIP DOES NOT APPLY TO A STALE CLASS, and getting this wrong
+                        // reintroduced the exact false all-clear the staleness disclosure exists to stop —
+                        // MEASURED on the first end-to-end run: an edit added `Runtime.exec`, the stale
+                        // `.class` still carried the old pure body, the gate "judged" com.x.App.go from
+                        // those old bytes, and this skip therefore dropped the finding the freshly
+                        // compiled source had just produced. Exit 0.
+                        //
+                        // The skip is right for an ARCHIVE — there, judged means the gate judged THIS
+                        // code, and re-charging it would double-count. For `source-newer-than-class`,
+                        // judged means the gate judged a DIFFERENT PROGRAM: the one that existed before
+                        // the edit. Same word, different fact.
+                        boolean stale = cls.equals("source-newer-than-class");
+                        for (var e : new java.util.TreeMap<>(peeked).entrySet()) {
+                            if (!stale && judged.contains(e.getKey())) continue;   // the gate DID judge this one
+                            List<String> hits = peekHits(peekRules, e.getKey(), e.getValue(), peekGi);
+                            if (hits.isEmpty()) continue;
+                            found.add(new Report.OutOfScope(e.getKey(), cls, hits, cls,
+                                    "OUTSIDE this scan's scope (" + cls + ") — the gate did NOT judge it. "
+                                    + "candor COMPILED the source and ran its ordinary analysis over the "
+                                    + "result, and that analysis reaches this effect, so the verdict is "
+                                    + "INCOMPLETE rather than a pass (an analysis result, not a claim "
+                                    + "about what the code does at runtime)."));
+                        }
+                        srcPeeked.add(cls);
+                    }
+                }
                 int[] vOk = {0}, vFail = {0}, vPartial = {0};
                 List<Path> versionedTargets = new ArrayList<>(archives);
                 if (root != null && !versionedTargets.contains(root)) versionedTargets.add(root);
@@ -795,6 +950,16 @@ public class Candor {
         // READ on this run, so one unreadable or partially-analysed override withdraws the claim for the
         // whole class (⟨0.29⟩ PART 52).
         if (peekVersionedAll[0]) ctx().peekedClasses.add("multi-release-override");
+        // ⟨0.32⟩ …and each source class that compiled AND analysed cleanly, whole. A class here is peeked
+        // only if EVERY file of it made it through both steps: `srcPeeked` is added per class after its
+        // loop completes, and any failure inside skips the add, which is the ⟨0.29⟩ per-class withdrawal
+        // rule (PART 52) rather than a second spelling of it.
+        for (String c : srcPeeked) if (srcFail[0] == 0) ctx().peekedClasses.add(c);
+        if (srcFail[0] > 0) {
+            System.err.println("candor-java: " + srcFail[0] + " uncompiled source file set(s) could not be "
+                    + "compiled for the peek — they stay in `excluded` NOT peeked, so the verdict is "
+                    + "INCOMPLETE rather than a pass. Build the project and re-scan for a certain answer.");
+        }
         if (peekFailures[0] > 0) {
             System.err.println("candor-java: " + peekFailures[0] + " archive(s) under the scan root could "
                     + "not be opened for the peek — they are counted in `excluded` and their class is "

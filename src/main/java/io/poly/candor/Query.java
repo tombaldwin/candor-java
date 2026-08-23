@@ -1642,11 +1642,11 @@ public final class Query {
                                *  behind — MEASURED, the gate exited 2 while `unverified --strict` answered
                                *  PROVABLY clean at 0 over the same report. */
                               List<Report.OutOfScope> outOfScope,
-                              /** ⟨0.33⟩ the exclusion classes the producing scan did NOT READ. The
+                              /** ⟨0.32⟩ the exclusion classes the producing scan did NOT READ. The
                                *  SAME rule that put `outOfScope` here, applied to the rung that came
                                *  after it: ⟨0.24⟩ binds an advisory verb never to be LESS sensitive to
                                *  incompleteness than the gate over the same bytes, and it names
-                               *  `unverified`, `fix-gate` "and any later sibling". ⟨0.33⟩ moved the gate
+                               *  `unverified`, `fix-gate` "and any later sibling". ⟨0.32⟩ moved the gate
                                *  and left these behind again — MEASURED by the policy matrix, four cells:
                                *  the gate refused at 2 while `unverified --strict` answered clean at 0
                                *  over the same report. The comment above records ⟨0.30⟩ doing it; this is
@@ -1847,7 +1847,7 @@ public final class Query {
         List<String> nm = new ArrayList<>();
         // ⟨0.30⟩ the peek's findings, unioned across the reports under this locator.
         List<Report.OutOfScope> oos = new ArrayList<>();
-        // ⟨0.33⟩ accumulated on the same pass as `oos`, from the same envelope, so the advisory
+        // ⟨0.32⟩ accumulated on the same pass as `oos`, from the same envelope, so the advisory
         // verbs and the gate cannot disagree about which classes went unread.
         List<String> unpk = new ArrayList<>();
         for (String r : set) {
@@ -2312,7 +2312,7 @@ public final class Query {
      *                  withheld", which is the scan route and every answerable report */
     static String deniedLayer(String fn, String effect, Policy.GateInput gi, Set<String> withheld) {
         Effect e = Effect.fromSpecName(effect);
-        // ⟨0.33⟩ `fn` arrives as a NAME here — a report entry's `fn`, or a call-graph sidecar node; the
+        // ⟨0.32⟩ `fn` arrives as a NAME here — a report entry's `fn`, or a call-graph sidecar node; the
         // sidecar names its nodes by bare `fn` whatever the gate keys by. Everything below is keyed by the
         // UNIT KEY: the withhold triples (built over the gate's own key set) and the class accumulators
         // alike. Normalize ONCE, at the top, so the scope test still sees the NAME and no lookup below
@@ -3320,7 +3320,7 @@ public final class Query {
         for (PolicyRule.Deny r : AnalysisState.ctx().denyRules) {
             List<String> netless = new ArrayList<>(), reasonless = new ArrayList<>();
             for (String key : gi.inDisplayOrder(gi.inferred().keySet())) {
-                // ⟨0.33⟩ the TRIPLES are keyed by the unit KEY (the gate looks them up that way), while the
+                // ⟨0.32⟩ the TRIPLES are keyed by the unit KEY (the gate looks them up that way), while the
                 // scope test and every string that reaches a document use the NAME — SPEC §3.2 requires
                 // these rows to NAME the function the gate could not judge, and a unit key is not a name.
                 String fn = gi.disp(key);
@@ -3471,7 +3471,7 @@ public final class Query {
                     Map<String, List<String>> rawUnknownWhy, String packageName, boolean judgedNothing,
                     boolean noManifest, List<io.poly.candor.model.Report.OutOfScope> outOfScope,
                     io.poly.candor.model.Report.NetPartners netPartners,
-                    /** ⟨0.33⟩ `excluded[].peeked == false` — the classes the producing scan never READ. */
+                    /** ⟨0.32⟩ `excluded[].peeked == false` — the classes the producing scan never READ. */
                     List<String> unpeeked) {}
 
     static Envelope readEnvelope(String path) throws Exception {
@@ -3604,7 +3604,7 @@ public final class Query {
                 List<String> ws = new ArrayList<>();
                 for (JsonElement w : o.getAsJsonArray("unknownWhy"))
                     if (w.isJsonPrimitive()) ws.add(w.getAsString());
-                // ⟨0.33⟩ keyed by the UNIT KEY (`hash`, else the bare name) — the same key
+                // ⟨0.32⟩ keyed by the UNIT KEY (`hash`, else the bare name) — the same key
                 // Policy#gateInputFromReport reads it back under. Keyed by `fn`, this channel was a second
                 // route to the defect the hash-keyed merge closes: two same-named entries in different
                 // reports had their reason strings UNIONED here, so one could hand the other the reason
@@ -3614,11 +3614,11 @@ public final class Query {
                         ? o.get("hash").getAsString() : o.get("fn").getAsString();
                 if (!ws.isEmpty()) raw.put(key, ws);
             }
-        // ⟨0.33⟩ the exclusion classes the PRODUCING scan did not read. Read from the document, so
+        // ⟨0.32⟩ the exclusion classes the PRODUCING scan did not read. Read from the document, so
         // `gate --report` reaches the same verdict as `scan --policy` without needing a target to
         // re-derive anything from — the constraint that defeated the `net-partner` disclosure.
         List<String> unpeeked = new ArrayList<>();
-        // ⟨0.33⟩ ONLY WHEN THE PRODUCING SCAN WAS ASKED. `peeked: false` has two causes and they are not
+        // ⟨0.32⟩ ONLY WHEN THE PRODUCING SCAN WAS ASKED. `peeked: false` has two causes and they are not
         // the same claim: the peek COULD NOT read those files (unread code — what this rule is for), or
         // NO PEEK RAN AT ALL because no policy was configured, in which case nothing was asked and the
         // flag records an absence of question rather than an absence of evidence.
@@ -3638,7 +3638,7 @@ public final class Query {
                 // disclosure, which is the failure this whole key exists to prevent.
                 boolean peeked = xo.has("peeked") && xo.get("peeked").isJsonPrimitive()
                         && xo.get("peeked").getAsBoolean();
-                // ⟨0.33⟩ read the PRODUCER's own statement. Keying on the class token instead would
+                // ⟨0.32⟩ read the PRODUCER's own statement. Keying on the class token instead would
                 // gate another engine's report differently from the engine that wrote it: the same
                 // concept is `build-output-archive` here and `build-output` in rust and swift, and
                 // rust's `build-script` is real code that runs and must fail closed either way.
@@ -3835,7 +3835,7 @@ public final class Query {
         // ⟨0.30⟩ the peek's findings, off the REPORT — this route cannot peek (it has no target, only a
         // document), which is why the field rides the report and why §3.1 byte-equality holds here.
         List<io.poly.candor.model.Report.OutOfScope> outOfScope = new ArrayList<>();
-        // ⟨0.33⟩ accumulated across every report gated, exactly as the other three facts are.
+        // ⟨0.32⟩ accumulated across every report gated, exactly as the other three facts are.
         List<String> unpeeked = new ArrayList<>();
         Map<String, List<String>> rawWhy = new HashMap<>();
         List<String> judgedNothing = new ArrayList<>();
@@ -4009,7 +4009,7 @@ public final class Query {
                     + "gate did not judge them, so the verdict is incomplete rather than a pass");
             return 2;
         }
-        // ⟨0.33⟩ THE THIRD CAUSE, on this route, from the DOCUMENT. `excluded[].peeked == false` is the
+        // ⟨0.32⟩ THE THIRD CAUSE, on this route, from the DOCUMENT. `excluded[].peeked == false` is the
         // producing scan stating it never opened those files; their effects are absent because nothing
         // looked, not because there are none. The ⟨0.30⟩ arm above keys on what the peek FOUND, and a
         // peek that could not open a file finds nothing — byte-identical to finding it clean.

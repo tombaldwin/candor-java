@@ -99,7 +99,7 @@ public final class ReportJson {
             m.put("class", c.cls());
             m.put("count", c.count());
             m.put("peeked", c.peeked());
-            // ⟨0.33⟩ emitted only when TRUE: false is the default and an always-present key would make
+            // ⟨0.32⟩ emitted only when TRUE: false is the default and an always-present key would make
             // every pre-rung report differ for a fact that changes nothing.
             if (c.judgedElsewhere()) m.put("judgedElsewhere", true);
             m.put("reason", c.reason());

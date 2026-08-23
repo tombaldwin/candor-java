@@ -378,7 +378,7 @@ final class Policy {
      *                          its effects to a real caller, but they are never REPORTED as violators.
      *                          Always EMPTY on the scan route, which has no such entries. See {@link #gate}.
      * @param display           KEY -> the name to MATCH a policy scope against and to PRINT. EMPTY means the
-     *                          keys ARE names, which is the scan route and every pre-⟨0.33⟩ caller.
+     *                          keys ARE names, which is the scan route and every pre-⟨0.32⟩ caller.
      *                          <p>It exists because the multi-report merge cannot simply swap its key. SPEC
      *                          §2.2 requires a consumer to "join across reports by `hash`, never by bare
      *                          `fn` (names may legitimately repeat across packages)" — and joining by name
@@ -478,7 +478,7 @@ final class Policy {
                 netIncompleteAcc,
                 ctx().edges,
                 Set.of(),   // the scan gates BODIES; synthetic union entries exist only in a written report
-                // ⟨0.33⟩ IDENTITY, both ways: a scan gates ONE analysis world and its keys are already the
+                // ⟨0.32⟩ IDENTITY, both ways: a scan gates ONE analysis world and its keys are already the
                 // names a policy scope is written against. The maps exist for the multi-report route, where
                 // the keys MUST be hashes (SPEC §2.2) and the names have to travel beside them.
                 Map.of(), Map.of());
@@ -511,7 +511,7 @@ final class Policy {
      * refuse. (Unreachable today: every token here comes from {@code ReasonClass.classify().token()}.)
      */
     static Set<ReasonClass> reasonClassesOf(GateInput gi, String fn) {
-        // ⟨0.33⟩ THE LOOKUP IS BY UNIT KEY, and the argument may be either a key or a bare NAME — the gate
+        // ⟨0.32⟩ THE LOOKUP IS BY UNIT KEY, and the argument may be either a key or a bare NAME — the gate
         // holds keys, the advisory verbs beside it hold report entries and call-graph nodes, which are
         // named. This is the shape that failed QUIETLY in candor-rust when the merge moved to `hash`: a
         // name-keyed lookup into a key-keyed map does not error, it returns null — so `--class dispatch`
@@ -612,7 +612,7 @@ final class Policy {
         // ONLY if the fn reaches one of those destination classes. Fail-closed upstream: a masked surface
         // or a Net with no visible host is already `unknown-host` by the time it lands in `gi`.
         if (effect == Effect.NET && !r.netClasses().isEmpty())
-            // ⟨0.33⟩ by unit KEY — `fn` may arrive as a name; see #reasonClassesOf for why a miss here is
+            // ⟨0.32⟩ by unit KEY — `fn` may arrive as a name; see #reasonClassesOf for why a miss here is
             // the dangerous kind of failure (silent, and it reads as an answer).
             return gi.netClasses().getOrDefault(gi.key(fn), List.of()).stream().anyMatch(r.netClasses()::contains);
         return true;
@@ -679,7 +679,7 @@ final class Policy {
         List<String[]> synthHits = new ArrayList<>();   // ⟨0.23⟩ union entries a rule matched — DISCLOSED below
         // AS-EFF-006: a method in scope must not perform (transitively) a denied effect.
         for (String fn : gi.inDisplayOrder(inferred.keySet())) {
-            // ⟨0.33⟩ `fn` is the unit KEY; `name` is what a policy scope matches and what a row says. The
+            // ⟨0.32⟩ `fn` is the unit KEY; `name` is what a policy scope matches and what a row says. The
             // two are the same string on the scan route and wherever no display map was supplied.
             String name = gi.disp(fn);
             EffectSet fnEffects = inferred.get(fn);
@@ -769,7 +769,7 @@ final class Policy {
                     List<String> netClass = bn.contains("Net")
                             ? gi.netClasses().getOrDefault(fn, List.of())
                             : java.util.List.of();
-                    // ⟨0.33⟩ the NAME, never the unit key: §3.3.1 pins `gate --report`'s violation rows
+                    // ⟨0.32⟩ the NAME, never the unit key: §3.3.1 pins `gate --report`'s violation rows
                     // byte-equal to `scan --policy`'s, and the scan route has only names to print.
                     diag(DiagnosticCode.AS_EFF_006, bn, reasonClass, netClass, "`%s` performs { %s }, forbidden by policy%s: `%s`",
                             name, String.join(", ", bn),
@@ -884,7 +884,7 @@ final class Policy {
         while (!q.isEmpty()) {
             String n = q.poll();
             if (!seen.add(n)) continue;
-            // ⟨0.33⟩ every scope test is against the NAME — a graph node is a unit KEY once the merge is
+            // ⟨0.32⟩ every scope test is against the NAME — a graph node is a unit KEY once the merge is
             // hash-keyed, and a hash matches no scope an operator would write.
             String nName = gi.disp(n);
             boolean permitted = false;
@@ -936,7 +936,7 @@ final class Policy {
         Set<String> keys = new TreeSet<>(gi.inferred().keySet());
         keys.addAll(gi.edges().keySet());
         for (String key : keys) {
-            String fn = gi.disp(key);   // ⟨0.33⟩ a rule binds a NAME; a key would make every scope zero-match
+            String fn = gi.disp(key);   // ⟨0.32⟩ a rule binds a NAME; a key would make every scope zero-match
             for (PolicyRule.Deny r : ctx().denyRules) {
                 if (!r.scope().isEmpty() && scopeMatches(fn, r.scope())) matches.merge(r.src(), 1, Integer::sum);
             }
@@ -1055,7 +1055,7 @@ final class Policy {
                 paths = new HashMap<>(), tables = new HashMap<>(), incomplete = new HashMap<>();
         Set<String> synthetic = new HashSet<>(), real = new HashSet<>();
         Map<String, String> display = new HashMap<>();
-        // ⟨0.33⟩ NAME -> every unit KEY that declares it, so a `calls` edge can be resolved and an
+        // ⟨0.32⟩ NAME -> every unit KEY that declares it, so a `calls` edge can be resolved and an
         // AMBIGUOUS name can be recognised as one. Built in a first pass: an entry may call a name
         // declared by a report that comes later in the set.
         Map<String, TreeSet<String>> keysByName = new HashMap<>();
@@ -1083,7 +1083,7 @@ final class Policy {
             if (!e.netClass().isEmpty())
                 netClasses.computeIfAbsent(fn, k -> new ArrayList<>()).addAll(e.netClass());
             // `incomplete` stays empty — see the class note above. Every `allow` rule is refused upstream.
-            List<String> raw = rawUnknownWhy.get(fn);   // ⟨0.33⟩ keyed by the same unit key — see Query#readEnvelope
+            List<String> raw = rawUnknownWhy.get(fn);   // ⟨0.32⟩ keyed by the same unit key — see Query#readEnvelope
             if (raw == null || raw.isEmpty())
                 raw = e.unknownWhy().stream().map(UnknownReason::format).collect(Collectors.toList());
             // Classify via the STRING path, identical to the scan route (which deliberately uses
@@ -1109,7 +1109,7 @@ final class Policy {
             // fail-closed empty-set rule in `reasonClassesOf`, which keeps it rather than drops it.
             if (e.direct().hasUnknown() && raw.isEmpty())
                 whyDirect.computeIfAbsent(fn, k -> new TreeSet<>()).add(ReasonClass.UNRESOLVED.token());
-            // ⟨0.33⟩ …AND THE SECOND CONTRIBUTION, beside the one above and for the same reason: an
+            // ⟨0.32⟩ …AND THE SECOND CONTRIBUTION, beside the one above and for the same reason: an
             // AMBIGUOUS callee is CONTRIBUTED as evidence here, at the caller's entry, BEFORE the fixpoint.
             // Dropping the edge is right — picking between two declarers would invent a reach — but
             // dropping it SILENTLY reopens the very defect the hash key closes, by another route: the
@@ -1127,7 +1127,7 @@ final class Policy {
             }
         }
         synthetic.removeAll(real);   // a key a REAL entry also claims is a real unit — see the note above
-        // ⟨0.33⟩ NAME -> key, for the consumers that hold a name (see GateInput#keyOf). A name TWO units
+        // ⟨0.32⟩ NAME -> key, for the consumers that hold a name (see GateInput#keyOf). A name TWO units
         // declare is omitted deliberately: there is no single unit to answer for it.
         Map<String, String> keyOf = new HashMap<>();
         for (var en : keysByName.entrySet())
@@ -1137,7 +1137,7 @@ final class Policy {
     }
 
     /**
-     * ⟨0.33⟩ THE UNIT KEY — {@code hash} when the producer emitted one, else the bare name.
+     * ⟨0.32⟩ THE UNIT KEY — {@code hash} when the producer emitted one, else the bare name.
      *
      * <p>SPEC §2.2: a consumer must "join across reports by `hash`, never by bare `fn` (names may
      * legitimately repeat across packages)". MEASURED on this engine at 0.31.0: {@code gate --report} over
@@ -1159,11 +1159,11 @@ final class Policy {
         return e.hash().isEmpty() ? e.fn() : e.hash();
     }
 
-    /** ⟨0.33⟩ One entry's resolved call EDGES, and whether any callee name was AMBIGUOUS. */
+    /** ⟨0.32⟩ One entry's resolved call EDGES, and whether any callee name was AMBIGUOUS. */
     record CallResolution(Set<String> to, boolean ambiguous) {}
 
     /**
-     * ⟨0.33⟩ RESOLVE ONE ENTRY'S CALLEES TO UNIT KEYS — the half that makes this more than a key swap.
+     * ⟨0.32⟩ RESOLVE ONE ENTRY'S CALLEES TO UNIT KEYS — the half that makes this more than a key swap.
      *
      * <p>{@code hash} identifies a unit but {@code calls} names callees by BARE {@code fn}, so hash-keying
      * the NODES alone would leave the call graph joining by name one layer down — the same defect, harder
@@ -1227,7 +1227,7 @@ final class Policy {
         int v = 0;
         Map<String, EffectSet> inferred = gi.inferred();
         for (String fn : gi.inDisplayOrder(inferred.keySet())) {
-            String name = gi.disp(fn);   // ⟨0.33⟩ scopes MATCH the name and rows PRINT it; `fn` is the key
+            String name = gi.disp(fn);   // ⟨0.32⟩ scopes MATCH the name and rows PRINT it; `fn` is the key
             if (!inferred.get(fn).contains(Effect.fromSpecName(effect))) continue;
             for (PolicyRule.Allow r : ctx().allowRules) {
                 if (!effect.equals(r.effect().specName()) || !scopeMatches(name, r.scope())) continue;
@@ -1857,7 +1857,7 @@ final class Policy {
     static PolicyRule.Deny unverifiedHoleRule(String fn, EffectSet inferred, List<PolicyRule.Deny> deny,
                                               GateInput gi, Set<String> withheld) {
         if (!inferred.toNames().contains("Unknown")) return null;
-        // ⟨0.33⟩ Accepts a unit KEY or a bare NAME — `unverified` holds an entry, the gate holds a key.
+        // ⟨0.32⟩ Accepts a unit KEY or a bare NAME — `unverified` holds an entry, the gate holds a key.
         // The scope test is against the name; the withhold set and the class accumulators are keyed.
         fn = gi.key(fn);
         String name = gi.disp(fn);
@@ -2015,7 +2015,7 @@ final class Policy {
         while (!q.isEmpty()) {
             String n = q.poll();                       // poll, not pop: FIFO == nearest-first
             if (!seen.add(n)) continue;
-            if (scopeMatches(gi.disp(n), scope)) return n;   // ⟨0.33⟩ the NAME — a hash matches no scope
+            if (scopeMatches(gi.disp(n), scope)) return n;   // ⟨0.32⟩ the NAME — a hash matches no scope
             for (String cc : sortedCallees(gi, n)) if (!seen.contains(cc)) q.add(cc);
         }
         return null;
@@ -2026,7 +2026,7 @@ final class Policy {
      *  the NAMES rather than of their hash codes. Returns the shared empty list for a leaf, so the common
      *  case allocates nothing.
      *
-     *  <p>⟨0.33⟩ Sorted by DISPLAY name, with the key as the tie-break. The witness this decides is printed
+     *  <p>⟨0.32⟩ Sorted by DISPLAY name, with the key as the tie-break. The witness this decides is printed
      *  and travels in {@code --gate-json}'s {@code detail}, so ordering by an opaque key would move the
      *  named crossing the moment the keys stopped being names — the tie-break test in
      *  {@code LayerWitnessOrderTest} is about exactly this being a fact about the graph. */

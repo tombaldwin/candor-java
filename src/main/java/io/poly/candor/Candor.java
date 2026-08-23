@@ -802,7 +802,7 @@ public class Candor {
     /** ⟨0.29⟩ The scope block for the report: one entry per class, with its count and reason. ALWAYS
      *  returns a list — `[]` is the positive statement "I looked and excluded nothing" (⟨0.27⟩), and an
      *  absent key would mean "this producer cannot answer" (⟨0.26⟩). */
-    /** ⟨0.33⟩ THE EXCLUSION CLASSES THAT DO NOT HIDE UNJUDGED CODE — the carve-out for the
+    /** ⟨0.32⟩ THE EXCLUSION CLASSES THAT DO NOT HIDE UNJUDGED CODE — the carve-out for the
      *  incomplete-verdict rule, and a DENYLIST on purpose.
      *
      *  <p>`peeked: false` is nearly the right discriminator: it is this engine saying it did not open
@@ -830,7 +830,7 @@ public class Candor {
             // built to prevent it: this flag exists so `[]` cannot overclaim, and a lookup table cannot
             // do that job. A class is `peeked` only if this run actually READ a file of it.
             boolean peeked = Boolean.parseBoolean(r[0]) && ctx().peekedClasses.contains(e.getKey());
-            // ⟨0.33⟩ THIS engine knows which of its own exclusions are derived duplicates; it says so in
+            // ⟨0.32⟩ THIS engine knows which of its own exclusions are derived duplicates; it says so in
             // the report rather than leaving each consumer to guess from a token it does not own.
             out.add(new Report.ExcludedClass(e.getKey(), e.getValue(), peeked,
                     DERIVED_EXCLUSIONS.contains(e.getKey()), r[1]));
@@ -1779,7 +1779,7 @@ public class Candor {
                     + "above); the gate did not judge them, so the verdict is incomplete rather than a pass");
             System.exit(2);
         }
-        // ⟨0.33⟩ THE THIRD CAUSE — CODE THIS RUN ADMITS IT NEVER READ. See the verdict writer for the
+        // ⟨0.32⟩ THE THIRD CAUSE — CODE THIS RUN ADMITS IT NEVER READ. See the verdict writer for the
         // measurement: `deny Exec` answered ✓ at exit 0 over a tree holding an UNCOMPILED `Deploy.java`
         // calling `Runtime.exec("curl … | sh")`, because this engine reads bytecode and the peek cannot
         // open a source file. The ⟨0.30⟩ arm above keys on what the peek FOUND, and a peek that could
@@ -1852,7 +1852,7 @@ public class Candor {
     record GateFacts(int analyzedCount, java.util.List<String[]> unanalyzed,
                      java.util.List<Map.Entry<String, Integer>> uncovered,
                      java.util.List<io.poly.candor.model.Report.OutOfScope> outOfScope,
-                     /** ⟨0.33⟩ exclusion classes this run did NOT read — `excluded[].peeked == false`. */
+                     /** ⟨0.32⟩ exclusion classes this run did NOT read — `excluded[].peeked == false`. */
                      java.util.List<String> unpeeked) {}
 
     static GateFacts scanGateFacts() {
@@ -1864,7 +1864,7 @@ public class Candor {
         var oos = ctx().outOfScope == null
                 ? java.util.List.<io.poly.candor.model.Report.OutOfScope>of()
                 : java.util.List.copyOf(ctx().outOfScope);
-        // ⟨0.33⟩ the exclusion classes this run did not READ. Derived from the same builder the report
+        // ⟨0.32⟩ the exclusion classes this run did not READ. Derived from the same builder the report
         // publishes, so the verdict and the document cannot disagree about which classes were opened.
         java.util.List<String> unpeeked = new ArrayList<>();
         for (var c : excludedClasses())
@@ -1919,7 +1919,7 @@ public class Candor {
         // resolves a CONCRETE denied effect rather than uncertainty.
         var oos = facts.outOfScope();
         boolean scopeIncomplete = oos != null && !oos.isEmpty();
-        // ⟨0.33⟩ THE THIRD CAUSE — CODE THE ENGINE ADMITS IT NEVER READ.
+        // ⟨0.32⟩ THE THIRD CAUSE — CODE THE ENGINE ADMITS IT NEVER READ.
         //
         // ⟨0.30⟩ suppressed `ok` when the PEEK FOUND a denied effect outside the judged set. That keys the
         // verdict on what the peek found, and a peek that could not open a file finds nothing — which is

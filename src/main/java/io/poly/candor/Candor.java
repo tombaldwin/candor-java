@@ -432,9 +432,11 @@ public class Candor {
             // fires on healthy projects is one people learn to scroll past, which costs the java arm the
             // only disclosure it has. Their PACKAGE is evidence enough: if this package produced classes,
             // the file was compiled by something, and this engine cannot say more than that honestly.
+            boolean viaPackageHeuristic = false;
             if (!built && !path.endsWith(".java")) {
                 String prefix = pkg.isEmpty() ? "" : pkg + ".";
                 built = compiled.stream().anyMatch(c -> pkg.isEmpty() || c.startsWith(prefix));
+                viaPackageHeuristic = built;
             }
             if (!built && pkg.isEmpty()) {
                 // No package declaration read (an unreadable head, or the default package): fall back to
@@ -444,6 +446,33 @@ public class Candor {
                 built = compiled.stream().anyMatch(c -> c.equals(stem) || c.endsWith(suffix));
             }
             if (!built) { ctx().excluded.put(path, "source-without-class"); continue; }
+            // ⟨0.32⟩ …BUT THE PACKAGE HEURISTIC MUST NOT CERTIFY ON ITS OWN. Its reasoning — "this package
+            // produced classes, so something compiled this file" — is sound about the PACKAGE and says
+            // nothing about THIS FILE. MEASURED as a cardinal sin: a `Deploy.kt` calling
+            // `Runtime.getRuntime().exec("curl … | sh")`, never compiled, sitting beside a compiled
+            // `Ok.java` in the same package, was not excluded at all — `deny Exec` answered exit 0 and the
+            // compile-peek then published `peeked: true` over a class whose Kotlin member it had never
+            // opened, which is the "every file, or none of the class" condition this rung's own SPEC
+            // clause states.
+            //
+            // The heuristic stays — a name test on Kotlin/Scala/Groovy produces FALSE never-compiled on
+            // healthy code, and a disclosure that fires on healthy projects is one people learn to scroll
+            // past. What is added is POSITIVE EVIDENCE against it: a source NEWER than every class its
+            // package produced cannot have produced any of them. That is the ⟨0.32⟩ staleness comparison
+            // asked of a package rather than of a single class, and it fires only where there is a fact,
+            // never on a hunch.
+            if (viaPackageHeuristic) {
+                Long srcAt = ctx().sourceMtime.get(path);
+                String internalPkg = pkg.isEmpty() ? "" : pkg.replace('.', '/') + "/";
+                long newestInPkg = ctx().classMtime.entrySet().stream()
+                        .filter(en -> internalPkg.isEmpty() || en.getKey().startsWith(internalPkg))
+                        .mapToLong(Map.Entry::getValue)
+                        .max().orElse(Long.MIN_VALUE);
+                if (srcAt != null && newestInPkg != Long.MIN_VALUE && srcAt > newestInPkg) {
+                    ctx().excluded.put(path, "source-newer-than-class");
+                    continue;
+                }
+            }
             // ⟨0.32⟩ COMPILED IS NOT THE SAME QUESTION AS CURRENT. A `.class` older than the `.java` it was
             // compiled from means this scan judged the code as it stood BEFORE the edit: the verdict is
             // about a program that no longer exists, and until this block nothing said so — the file
@@ -678,6 +707,9 @@ public class Candor {
         // ⟨0.32⟩ the source classes this run may compile, grouped BY EXCLUSION CLASS because `peeked` is
         // per class. Built on the calling thread, where `excluded` and `scanRoot` are current.
         Map<String, List<Path>> sourcesToCompile = new java.util.TreeMap<>();
+        // ⟨0.32⟩ classes holding at least one member this arm cannot compile — they never reach
+        // `peeked: true`, however well their other members derive.
+        Set<String> undrivableClasses = new java.util.TreeSet<>();
         // A PROCESSOR ON THE CLASSPATH WITHDRAWS THE WHOLE ARM. The peek compiles with `-proc:none` — it
         // must not run arbitrary build-time code, since this is the tool that certifies `deny Exec` — and
         // that means processor-GENERATED sources are absent from what it analyses. Handwritten code that
@@ -720,8 +752,21 @@ public class Candor {
                 String cls = e.getValue();
                 if (!cls.equals("source-without-class") && !cls.equals("source-newer-than-class")) continue;
                 Path abs = ctx().scanRoot.resolve(e.getKey());
-                if (e.getKey().endsWith(".java") && java.nio.file.Files.isReadable(abs))
+                if (e.getKey().endsWith(".java") && java.nio.file.Files.isReadable(abs)) {
                     sourcesToCompile.computeIfAbsent(cls, k -> new ArrayList<>()).add(abs);
+                } else {
+                    // ⟨0.32⟩ A MEMBER THIS ARM CANNOT DERIVE WITHDRAWS ITS CLASS. `javac` compiles `.java`;
+                    // a Kotlin, Scala or Groovy member of the same exclusion class is not derivable here,
+                    // and "every file, or none of the class" is what this rung's SPEC clause requires —
+                    // `peeked: true` means every file of the class was READ on this run.
+                    //
+                    // MEASURED as a cardinal sin before this line existed: a stale `Deploy.kt` running
+                    // `curl … | sh`, beside a compilable `Ok.java` in the same class, answered exit 0 —
+                    // the `.java` compiled, the class was certified, and the Kotlin file was never opened
+                    // by anything. Silently skipping the member it cannot handle is how an arm certifies
+                    // past its own competence.
+                    undrivableClasses.add(cls);
+                }
             }
         }
         Set<String> judged = Set.copyOf(ctx().edges.keySet());
@@ -1028,7 +1073,8 @@ public class Candor {
         // only if EVERY file of it made it through both steps: `srcPeeked` is added per class after its
         // loop completes, and any failure inside skips the add, which is the ⟨0.29⟩ per-class withdrawal
         // rule (PART 52) rather than a second spelling of it.
-        for (String c : srcPeeked) if (!srcFailed.contains(c)) ctx().peekedClasses.add(c);
+        for (String c : srcPeeked)
+            if (!srcFailed.contains(c) && !undrivableClasses.contains(c)) ctx().peekedClasses.add(c);
         if (srcFail[0] > 0) {
             System.err.println("candor-java: " + srcFail[0] + " uncompiled source file set(s) could not be "
                     + "compiled for the peek — they stay in `excluded` NOT peeked, so the verdict is "

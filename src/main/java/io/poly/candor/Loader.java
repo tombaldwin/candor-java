@@ -100,7 +100,20 @@ final class Loader {
                     // ⟨0.32⟩ …and the file's timestamp, for the same reason and at the same moment: the
                     // staleness question is about THIS file as it was when its bytes were read.
                     try {
-                        ctx().classMtime.put(cn.name, Files.getLastModifiedTime(p).toMillis());
+                        // KEEP THE NEWEST, never the last one read — the fourth time today that a bare
+                        // put over a repeated key was the defect. MEASURED on a real Gradle project: an
+                        // exploded war under build/libs holds a SECOND copy of nearly every class, 14
+                        // months older than the one build/classes/java/main just produced, and whichever
+                        // the walk reached last supplied the timestamp. 374 current sources were reported
+                        // stale against stale COPIES of their own classes — a false disclosure on a tree
+                        // that had just been built successfully, which is the one thing this check must
+                        // never do (see classifySourceScope on why a nudge that fires on healthy projects
+                        // costs the disclosure its readers).
+                        //
+                        // Newest is the safe direction here: staleness is claimed only when EVERY copy of
+                        // the class predates the source, so a duplicate can withdraw the claim but never
+                        // manufacture one.
+                        ctx().classMtime.merge(cn.name, Files.getLastModifiedTime(p).toMillis(), Math::max);
                     } catch (Exception ignored) {
                         // No timestamp ⇒ no staleness CLAIM either way. Absent, never zero: zero would
                         // read as "older than every source" and disclose staleness for every file.

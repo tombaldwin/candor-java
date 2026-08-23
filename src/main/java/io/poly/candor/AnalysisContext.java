@@ -111,9 +111,9 @@ final class AnalysisContext {
      *  judged the code as it was BEFORE the edit. That verdict is about a program that no longer exists,
      *  and nothing in this engine used to say so — the source counted as "compiled" and the gate went
      *  green over stale bytecode. Taken at the read, because that is the moment whose bytes were analysed. */
-    Map<String, Long> classMtime = new HashMap<>();
+    final Map<String, Long> classMtime = new HashMap<>();
     /** ⟨0.32⟩ root-relative source path → its mtime, the other half of the staleness comparison. */
-    Map<String, Long> sourceMtime = new HashMap<>();
+    final Map<String, Long> sourceMtime = new HashMap<>();
     Set<String> repoTypes = new HashSet<>();                 // Spring Data repository interfaces (internal names)
     // JPA's declarative tables: @Table(name="users") names a table (LITERAL name attr only); a repo's
     // generic signature names its entity. Together a Spring-Data call carries its table into `tables`.

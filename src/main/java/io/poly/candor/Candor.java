@@ -577,6 +577,18 @@ public class Candor {
      *  peek's {@code -proc:none} compile will not contain, so its presence withdraws the source arm's
      *  claim entirely. Read as a jar ENTRY name, never by loading anything from it — this method must not
      *  give a scanned artifact a way to execute. */
+    /** ⟨0.32⟩ Remove a scratch tree this run created. Best-effort and silent: a temp directory that
+     *  outlives the process is untidy, while a scan that FAILS because it could not tidy up is a scan
+     *  that stopped answering the question it was asked. */
+    static void deleteTree(Path dir) {
+        if (dir == null) return;
+        try (var walk = java.nio.file.Files.walk(dir)) {
+            walk.sorted(java.util.Comparator.reverseOrder()).forEach(q -> {
+                try { java.nio.file.Files.deleteIfExists(q); } catch (Exception ignored) { }
+            });
+        } catch (Exception ignored) { }
+    }
+
     static boolean declaresAnnotationProcessor(Path jar) {
         try (java.util.zip.ZipFile z = new java.util.zip.ZipFile(jar.toFile())) {
             return z.getEntry("META-INF/services/javax.annotation.processing.Processor") != null;
@@ -643,6 +655,12 @@ public class Candor {
         // that one is separate from the versioned pass's: `peeked: true` is per CLASS, and one class's
         // failure must not withdraw another's claim.
         int[] srcOk = {0}, srcFail = {0};
+        // …and WHICH classes failed, because a shared counter is not per-class accounting. The comment
+        // beside the flag below claimed the ⟨0.29⟩ per-class withdrawal rule (PART 52) while the code
+        // consulted a total: one class failing to compile silently withdrew a DIFFERENT class's honest
+        // `peeked: true`. Safe direction, so nothing failed — which is exactly why it needed reading
+        // rather than testing.
+        Set<String> srcFailed = java.util.concurrent.ConcurrentHashMap.newKeySet();
         Set<String> srcPeeked = java.util.concurrent.ConcurrentHashMap.newKeySet();
         int[] peekPartial = {0};
         boolean[] peekReadAll = {false};
@@ -807,14 +825,21 @@ public class Candor {
                             // Did not compile — a missing dependency, a processor-generated symbol, a
                             // syntax error. The class stays NOT peeked, which is exactly the ⟨0.32⟩
                             // INCOMPLETE posture it had before this arm existed. Never a pass.
-                            srcFail[0]++;
+                            srcFail[0]++; srcFailed.add(cls);
                             continue;
                         }
                         Map<String, EffectSet> peeked;
                         try {
                             peeked = runScan(out, peekConfig);
-                        } catch (Throwable e) { srcFail[0]++; continue; }
-                        if (!ctx().unanalyzed.isEmpty()) { srcFail[0]++; continue; }
+                        } catch (Throwable e) {
+                            srcFail[0]++; srcFailed.add(cls); deleteTree(out); continue;
+                        } finally {
+                            // The scratch tree is this run's, and every scan of a tree with an uncompiled
+                            // source would otherwise leave one behind in the temp dir — unbounded, and
+                            // full of the operator's compiled code.
+                            deleteTree(out);
+                        }
+                        if (!ctx().unanalyzed.isEmpty()) { srcFail[0]++; srcFailed.add(cls); continue; }
                         srcOk[0]++;
                         Policy.GateInput peekGi = Policy.gateInputFromScan(peeked);
                         // THE `judged` SKIP DOES NOT APPLY TO A STALE CLASS, and getting this wrong
@@ -976,7 +1001,7 @@ public class Candor {
         // only if EVERY file of it made it through both steps: `srcPeeked` is added per class after its
         // loop completes, and any failure inside skips the add, which is the ⟨0.29⟩ per-class withdrawal
         // rule (PART 52) rather than a second spelling of it.
-        for (String c : srcPeeked) if (srcFail[0] == 0) ctx().peekedClasses.add(c);
+        for (String c : srcPeeked) if (!srcFailed.contains(c)) ctx().peekedClasses.add(c);
         if (srcFail[0] > 0) {
             System.err.println("candor-java: " + srcFail[0] + " uncompiled source file set(s) could not be "
                     + "compiled for the peek — they stay in `excluded` NOT peeked, so the verdict is "

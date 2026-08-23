@@ -1806,8 +1806,26 @@ final class Policy {
         return false;
     }
 
+    /** A TRAILING SEPARATOR MEANS EXACT SEGMENT — `app::` matches the segment `app` and nothing else,
+     *  while bare `app` keeps the documented prefix behaviour and still matches `application_name`.
+     *
+     *  <p>REPORTED FROM THE FIELD (2026-08-23) and reproduced four-way: `forbid aws -> app` fired 14
+     *  times on honest AWS SDK calls, and writing `app::` did not help because {@link #nameSegments}
+     *  drops empty parts — `app::` segmented to exactly {@code ["app"]} and the separator never
+     *  survived to mean anything. The reporter deleted the rule, which is the real cost: the genuine
+     *  violation it existed to catch will now never fire, and NOTHING in the policy file records that a
+     *  boundary stopped being checked. Delete-the-rule and widen-the-scope end in the same place.
+     *
+     *  <p>ADDITIVE: bare `app` is unchanged, so no existing verdict moves. Only `app::` — which today
+     *  silently behaves as `app` — starts meaning what everyone who writes it intends. */
+    private static boolean scopeIsExact(String scope) {
+        String t = scope.stripTrailing();
+        return t.endsWith("::") || t.endsWith(".");
+    }
+
     static boolean scopeMatches(String name, String scope) {
         if (scope.isEmpty()) return true;
+        boolean exact = scopeIsExact(scope);
         String[] segs = nameSegments(name);
         String[] parts = nameSegments(scope);
         if (parts.length == 0 || parts.length > segs.length) return false;
@@ -1816,7 +1834,8 @@ final class Policy {
             boolean ok = true;
             for (int j = 0; j < parts.length - 1; j++)
                 if (!segs[i + j].equals(parts[j])) { ok = false; break; }
-            if (ok && segs[i + parts.length - 1].startsWith(last)) return true;
+            String tail = segs[i + parts.length - 1];
+            if (ok && (exact ? tail.equals(last) : tail.startsWith(last))) return true;
         }
         return false;
     }

@@ -97,6 +97,14 @@ final class Loader {
                     // re-reading the file, and a hash taken from a second read is a hash of a different
                     // moment than the one that was analysed.
                     ctx().classHash.put(cn.name, Refresh.sha256(raw));
+                    // ⟨0.32⟩ …and the file's timestamp, for the same reason and at the same moment: the
+                    // staleness question is about THIS file as it was when its bytes were read.
+                    try {
+                        ctx().classMtime.put(cn.name, Files.getLastModifiedTime(p).toMillis());
+                    } catch (Exception ignored) {
+                        // No timestamp ⇒ no staleness CLAIM either way. Absent, never zero: zero would
+                        // read as "older than every source" and disclose staleness for every file.
+                    }
                 } catch (Exception | LinkageError e) {
                     skipped[0]++;
                     if (firstErr[0] == null) firstErr[0] = p.getFileName() + ": " + e.getMessage();
@@ -189,6 +197,14 @@ final class Loader {
         // Deferred, NOT excluded yet: whether this source has a compiled class cannot be asked until
         // there IS an analyzed set. Classified in Candor#classifySourceScope after the scan.
         ctx().sourceFiles.add(rel(root, p) + "\0" + sourcePackage(p));
+        // ⟨0.32⟩ the source's timestamp, taken HERE for the same reason the class's is taken at its read:
+        // the file is in hand, and a path reconstructed later from a root-relative record is a second
+        // guess at which file was meant.
+        try {
+            ctx().sourceMtime.put(rel(root, p), Files.getLastModifiedTime(p).toMillis());
+        } catch (Exception ignored) {
+            // No timestamp ⇒ no staleness claim. Absent, never zero.
+        }
     }
 
     /** The `package a.b.c` declaration of a JVM source file, or "" — used ONLY to ask whether a compiled

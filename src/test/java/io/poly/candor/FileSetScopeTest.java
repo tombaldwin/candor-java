@@ -19,6 +19,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Map;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import java.util.stream.Stream;
@@ -300,10 +301,21 @@ class FileSetScopeTest {
         JsonObject rpt = report(out);
         JsonArray oos = rpt.getAsJsonArray("outOfScope");
         assertNotNull(oos, "a configured policy must answer, even with []: " + rpt);
-        assertEquals(1, oos.size(), "the jar's Exec must be reported: " + oos);
+        // ⟨0.32⟩ TWO ARMS ANSWER OVER THIS TREE NOW, and the second one is why the fixture exists. The
+        // archive arm reports the jar's Exec, and the SOURCE arm compiles `src/com/x/Deploy.java` — the
+        // never-compiled file the ⟨0.29⟩ measurement was written around — and finds the Exec that was
+        // invisible to every earlier version of this engine. Asserted by MEMBERSHIP rather than by index:
+        // the two arms run in a fixed order today, and a test that encodes that order fails for a reason
+        // that has nothing to do with what it is checking.
+        assertEquals(2, oos.size(), "the jar's Exec AND the uncompiled source's must be reported: " + oos);
+        Map<String, String> byFn = new java.util.HashMap<>();
+        for (var el : oos) byFn.put(el.getAsJsonObject().get("fn").getAsString(),
+                                    el.getAsJsonObject().get("class").getAsString());
+        assertEquals("archive-under-the-scan-root", byFn.get("com.t.Tool.go"),
+                     "the jar's Exec, from the archive arm: " + oos);
+        assertEquals("source-without-class", byFn.get("com.x.Deploy.run"),
+                     "the uncompiled source's Exec, from the ⟨0.32⟩ compile-peek: " + oos);
         JsonObject f = oos.get(0).getAsJsonObject();
-        assertEquals("com.t.Tool.go", f.get("fn").getAsString());
-        assertEquals("archive-under-the-scan-root", f.get("class").getAsString());
         assertEquals("[\"Exec\"]", f.get("effects").toString());
         assertEquals("libs/tool.jar", f.get("path").getAsString(),
             "named scan-root-relative — an absolute path says where the CI checkout was");

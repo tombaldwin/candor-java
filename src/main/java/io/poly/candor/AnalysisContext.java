@@ -103,6 +103,17 @@ final class AnalysisContext {
     Set<String> peekedClasses = new HashSet<>();
     final Set<String> entryPoints = new HashSet<>();               // framework-invoked methods
     Set<String> projectClasses = new HashSet<>();
+    /** ⟨0.32⟩ internal class name → the mtime of the .class FILE it was read from, for loose class files
+     *  only (a jar entry's timestamp is the packaging moment, not the compile, so it answers a different
+     *  question and is deliberately absent here rather than approximated).
+     *
+     *  <p>Exists for one comparison: a source file NEWER than the class compiled from it means this scan
+     *  judged the code as it was BEFORE the edit. That verdict is about a program that no longer exists,
+     *  and nothing in this engine used to say so — the source counted as "compiled" and the gate went
+     *  green over stale bytecode. Taken at the read, because that is the moment whose bytes were analysed. */
+    Map<String, Long> classMtime = new HashMap<>();
+    /** ⟨0.32⟩ root-relative source path → its mtime, the other half of the staleness comparison. */
+    Map<String, Long> sourceMtime = new HashMap<>();
     Set<String> repoTypes = new HashSet<>();                 // Spring Data repository interfaces (internal names)
     // JPA's declarative tables: @Table(name="users") names a table (LITERAL name attr only); a repo's
     // generic signature names its entity. Together a Spring-Data call carries its table into `tables`.

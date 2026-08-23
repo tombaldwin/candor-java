@@ -443,7 +443,29 @@ public class Candor {
                 String suffix = "." + stem;
                 built = compiled.stream().anyMatch(c -> c.equals(stem) || c.endsWith(suffix));
             }
-            if (!built) ctx().excluded.put(path, "source-without-class");
+            if (!built) { ctx().excluded.put(path, "source-without-class"); continue; }
+            // ⟨0.32⟩ COMPILED IS NOT THE SAME QUESTION AS CURRENT. A `.class` older than the `.java` it was
+            // compiled from means this scan judged the code as it stood BEFORE the edit: the verdict is
+            // about a program that no longer exists, and until this block nothing said so — the file
+            // counted as compiled and a green gate was reported over stale bytecode. That is the cardinal
+            // sin's quietest shape, because every disclosure the report carries is TRUE of the bytes that
+            // were read; it is only the operator's assumption about WHICH bytes those were that is wrong.
+            // It matters most exactly where the engine is most useful — an edit-time loop, where the
+            // source changes between builds by construction.
+            //
+            // NEVER a violation and never silent: an exclusion, so it rides `excluded` and (⟨0.32⟩) makes
+            // the verdict INCOMPLETE rather than a pass, with the same remedy every staleness has —
+            // rebuild.
+            //
+            // MTIME IS A HEURISTIC AND THE DIRECTION IS CHOSEN. A clock skew or a checkout that rewrites
+            // source timestamps produces a FALSE staleness — noise, and the operator rebuilds. The
+            // opposite error, a class that is genuinely stale but carries a newer timestamp, is the
+            // silent one, so the comparison is `>` on the source: any doubt disclosed. Absent timestamps
+            // (jar entries, unreadable attributes) make NO claim in either direction.
+            Long compiledAt = ctx().classMtime.get(qual.replace('.', '/'));
+            Long sourceAt = ctx().sourceMtime.get(path);
+            if (compiledAt != null && sourceAt != null && sourceAt > compiledAt)
+                ctx().excluded.put(path, "source-newer-than-class");
         }
     }
 
@@ -459,6 +481,13 @@ public class Candor {
                 + "This is not a scope decision like a build script's: it usually means the scan was "
                 + "pointed at a repo root instead of compiled output. Build the project and scan "
                 + "target/classes · build/classes/java/main, or a built .jar."},
+            "source-newer-than-class", new String[]{"false",
+                "this source file is NEWER than the class compiled from it, so what candor read is the "
+                + "code as it stood BEFORE the last edit — the verdict is about a program that no longer "
+                + "exists. Every other disclosure in this report is true of the bytes that were read; it "
+                + "is which bytes those are that is stale. Rebuild and re-scan. (Timestamps, so a clock "
+                + "skew or a checkout that rewrites source mtimes can raise this falsely — the direction "
+                + "is deliberate: a doubt is disclosed, never suppressed.)"},
             "archive-under-the-scan-root", new String[]{"true",
                 "a `.jar`/`.zip` under the scan root is bytecode this engine reads perfectly well, and a "
                 + "directory walk looking for `.class` files never opens it. The gate did not judge its "

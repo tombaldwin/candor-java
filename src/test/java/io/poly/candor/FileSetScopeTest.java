@@ -19,6 +19,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Map;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import java.util.stream.Stream;
@@ -300,10 +301,21 @@ class FileSetScopeTest {
         JsonObject rpt = report(out);
         JsonArray oos = rpt.getAsJsonArray("outOfScope");
         assertNotNull(oos, "a configured policy must answer, even with []: " + rpt);
-        assertEquals(1, oos.size(), "the jar's Exec must be reported: " + oos);
+        // ⟨0.32⟩ TWO ARMS ANSWER OVER THIS TREE NOW, and the second one is why the fixture exists. The
+        // archive arm reports the jar's Exec, and the SOURCE arm compiles `src/com/x/Deploy.java` — the
+        // never-compiled file the ⟨0.29⟩ measurement was written around — and finds the Exec that was
+        // invisible to every earlier version of this engine. Asserted by MEMBERSHIP rather than by index:
+        // the two arms run in a fixed order today, and a test that encodes that order fails for a reason
+        // that has nothing to do with what it is checking.
+        assertEquals(2, oos.size(), "the jar's Exec AND the uncompiled source's must be reported: " + oos);
+        Map<String, String> byFn = new java.util.HashMap<>();
+        for (var el : oos) byFn.put(el.getAsJsonObject().get("fn").getAsString(),
+                                    el.getAsJsonObject().get("class").getAsString());
+        assertEquals("archive-under-the-scan-root", byFn.get("com.t.Tool.go"),
+                     "the jar's Exec, from the archive arm: " + oos);
+        assertEquals("source-without-class", byFn.get("com.x.Deploy.run"),
+                     "the uncompiled source's Exec, from the ⟨0.32⟩ compile-peek: " + oos);
         JsonObject f = oos.get(0).getAsJsonObject();
-        assertEquals("com.t.Tool.go", f.get("fn").getAsString());
-        assertEquals("archive-under-the-scan-root", f.get("class").getAsString());
         assertEquals("[\"Exec\"]", f.get("effects").toString());
         assertEquals("libs/tool.jar", f.get("path").getAsString(),
             "named scan-root-relative — an absolute path says where the CI checkout was");
@@ -340,7 +352,30 @@ class FileSetScopeTest {
                 + "cannot certify it either: " + net.stderr());
         JsonArray netOos = report(netOut).getAsJsonArray("outOfScope");
         assertNotNull(netOos, "a configured policy still answers — with []");
-        assertEquals(0, netOos.size(), "`deny Net` must not report an Exec in an excluded file: " + netOos);
+        // ⟨0.32⟩ THE BOUNDEDNESS PROPERTY IS UNCHANGED; THE EFFECT IT IS TESTED WITH HAD TO MOVE. `deny
+        // Net` stopped being the right probe here, and the reason is a fact about the fixture rather than
+        // about the peek: candor infers BOTH Exec and Net from `exec("curl http://x | sh")` — a command
+        // that fetches a URL performs network access — so the source arm reporting Net is what the
+        // ORDINARY analysis of that same class says (measured: scan it directly, exit 1,
+        // `inferred: ["Exec","Net"]`). Asserting 0 here would have pinned the peek to under-report a
+        // finding its own engine makes.
+        //
+        // `deny Fs` is the honest probe: neither fixture touches the filesystem, so a non-empty answer
+        // means the peek charged an effect nothing has — which is the property this row was written for.
+        Path fsOut = tmp.resolve("c-fs.json");
+        Run fs = runCli(root.toString(), "--json", fsOut.toString(),
+                        "--policy", policy("fs.policy", "deny Fs\n").toString());
+        JsonArray fsOos = report(fsOut).getAsJsonArray("outOfScope");
+        assertNotNull(fsOos, "a configured policy still answers — with []");
+        assertEquals(0, fsOos.size(), "`deny Fs` must report nothing: no fixture here touches the "
+                + "filesystem, so anything named is an effect the peek invented: " + fsOos);
+        // ONE, not two: the jar's `exec` names no URL, so only the source fixture's curl-to-a-URL carries
+        // Net. That asymmetry is the point — the peek reports per FUNCTION on the evidence that function
+        // has, not per excluded class.
+        assertEquals(1, netOos.size(), "`deny Net` reaches the uncompiled source's curl-to-a-URL and "
+                + "nothing else: " + netOos);
+        assertEquals("com.x.Deploy.run", netOos.get(0).getAsJsonObject().get("fn").getAsString(),
+                "…and it is the source arm's finding, not the jar's: " + netOos);
 
         // POLICY-SCOPED: no policy, no peek, and the key is ABSENT rather than empty — nothing was asked,
         // so an empty list would be a claim (⟨0.26⟩: absence means "this producer cannot answer").

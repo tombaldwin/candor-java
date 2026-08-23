@@ -8,6 +8,42 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- ⚠ **`deny Exec` did not see a subprocess being ASSEMBLED — only one being launched.** This engine
+  enumerated the launch verbs (`ProcessBuilder.start`/`startPipeline`, `Runtime.exec`, the `Desktop`
+  openers) and the live-child control surface. Everything else on `java.lang.ProcessBuilder` read pure.
+  Measured:
+
+  ```java
+  public ProcessBuilder arm(String[] argv) { return new ProcessBuilder(argv); }
+  public void configure(ProcessBuilder pb) { pb.directory(new java.io.File("/")); }
+  ```
+
+  Scanned under `deny Exec`: **exit 0, `no violations`, `arm` reporting `inferred: []`** — a method that
+  assembles a fully-armed invocation out of caller-supplied argv and hands it back, certified clean.
+  Splitting build from launch across two methods (or two jars) left nobody holding the effect.
+
+  An invocation object carries its own payload — program, argv, environment — and travels fully armed,
+  which is why `cmds` extraction already anchored at `<init>` here: the type was recognised for the
+  LITERAL and not for the EFFECT. SPEC §1 ⟨0.32⟩ now states the rule, and candor-rust (whole-type
+  `std::process::Command`), candor-swift (`Process()`) and candor-ts (whole `child_process` module) were
+  already charging the capability — java was the lone outlier.
+
+  The fix is the shape the spec requires: **the whole type is `Exec`, with the proven-pure surface carved
+  out as a named DENYLIST** — never the inverse, since a wrong carve-out over-charges loudly while a
+  forgotten allowlist entry under-reports silently. Carved out: `environment()` (still `Env` — the child's
+  env map, not an added capability), the NO-ARG read-back overloads (`command()`, `directory()`,
+  `redirect{Input,Output,Error}()`, `redirectErrorStream()` — keyed on the DESCRIPTOR, because each shares
+  its name with the setter and a blanket "takes no argument ⇒ pure" would exempt `start()` and
+  `inheritIO()`), and the §4 Object protocol.
+
+  **Measured for over-charge, which is the half that decides it.** JVM corpus A/B, 933 jars (the Gradle
+  module cache + an exploded production war) scanned under `deny Exec` before and after: **0 artifact-level
+  verdict flips, 0 functions losing an effect, 0 functions newly flagged.** A bytecode census explains that
+  null result rather than leaving it to luck — the corpus holds 21 `ProcessBuilder` member call sites in 9
+  methods, and every one of those 9 launches in the same body. uflexi's `build/classes/java/main`:
+  byte-identical reports, unchanged verdict. Pinned by `ExecInvocationCapabilityTest` (whose four
+  over-charge controls passed before AND after) and four-way by conformance PART 66.
+
 - ⚠ **`gate --report` over a report SET joined by bare `fn`, so adding an unrelated sibling turned a
   refusal into `policy ✓`.** SPEC §2.2 requires a consumer to join by `hash` — "names may legitimately
   repeat across packages" — and this engine keyed every accumulator on `fn`. Measured: gating one member

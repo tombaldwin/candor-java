@@ -2033,15 +2033,29 @@ public class Candor {
         // qualify. Saying "NOT certified because files went unread" over a run that never evaluated
         // anything would replace the operator's actual problem (their policy did not parse) with a
         // downstream one. The refusal already owns the exit.
-        if (gateConfigured && policyRefusal == null) {
+        //
+        // ⟨0.32⟩ …AND ONLY WHEN THE POLICY CARRIES A DENY RULE. `peeked: false` has TWO causes — "opened
+        // it and failed" and "NEVER ASKED" — and the peek returns early when there is nothing denied to
+        // look for, so a `forbid`-only or `only`-only policy leaves every class unpeeked without a
+        // question ever being put. Reading that as unread code refused a tree nobody had asked about.
+        //
+        // MEASURED as a cross-engine divergence: this engine answered 2 where candor-rust answers 0 on
+        // the same tree and the same forbid-only policy — and conformance stayed GREEN, because PART 62's
+        // never-asked control existed in rust's row and not in this one. A control in one engine's row is
+        // how three-of-four ships as four; the java row now carries it too.
+        if (gateConfigured && policyRefusal == null && !ctx().denyRules.isEmpty()) {
             java.util.List<String> unread = new ArrayList<>();
             for (var c : excludedClasses())
                 if (!c.peeked() && !c.judgedElsewhere()) unread.add(c.cls() + " (" + c.count() + ")");
             if (!unread.isEmpty()) {
+                // The remedy names only what WORKS. It used to offer "or narrow the policy's scope",
+                // which does not: this arm never consults rule scopes, so `deny Exec in com.elsewhere.*`
+                // — a scope binding nothing here — still refuses. A user-facing message promising a
+                // remedy that does not work is the stale-message trap, twice recorded in this project.
                 System.err.println("candor-java: gate NOT certified — this scan did not READ "
                         + String.join(", ", unread) + ". Their effects are absent because nothing looked, "
                         + "not because there are none, so the verdict is INCOMPLETE rather than a pass. "
-                        + "Build the sources and scan the compiled output, or narrow the policy's scope.");
+                        + "Build the sources and scan the compiled output.");
                 System.exit(2);
             }
         }

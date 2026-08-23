@@ -45,7 +45,7 @@ public record Report(Provenance candor, List<String> packages, Coverage coverage
      *  peek an ARCHIVE and cannot peek a {@code .java} that was never compiled; without this flag the pair
      *  would answer {@code []} over files nobody opened, which is the ⟨0.26⟩ partial-manifest failure
      *  exactly — a partial answer being worse than an absent one. */
-    /** ⟨0.33⟩ {@code judgedElsewhere} — the files of this class are COPIES of code this same scan
+    /** ⟨0.32⟩ {@code judgedElsewhere} — the files of this class are COPIES of code this same scan
      *  already judged (a jar under build/ is a derived copy of the classes just analysed), so the class
      *  hides nothing and does not make the verdict INCOMPLETE. Only the PRODUCER may set it: a consumer
      *  cannot recover it from the class token, because those tokens are engine-chosen and the same

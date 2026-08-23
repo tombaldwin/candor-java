@@ -330,7 +330,7 @@ class FileSetScopeTest {
         Path netOut = tmp.resolve("b.json");
         Run net = runCli(root.toString(), "--json", netOut.toString(),
                          "--policy", policy("net.policy", "deny Net\n").toString());
-        // ⟨0.33⟩ EXIT 2, not 0 — and the point of THIS arm is unchanged. `outOfScope` is still empty
+        // ⟨0.32⟩ EXIT 2, not 0 — and the point of THIS arm is unchanged. `outOfScope` is still empty
         // (below): the peek is bounded by the policy, so a `deny Net` run says nothing about an Exec.
         // What moved is the VERDICT, for a different reason entirely — this fixture's repo root also
         // holds a JVM source with no compiled class, i.e. code this scan never read. ⟨0.30⟩ suppressed

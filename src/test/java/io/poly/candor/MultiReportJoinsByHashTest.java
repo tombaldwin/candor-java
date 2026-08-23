@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * ⟨0.33⟩ SPEC §2.2 — <b>A MULTI-REPORT GATE JOINS BY {@code hash}, NEVER BY BARE {@code fn}</b> ("names
+ * ⟨0.32⟩ SPEC §2.2 — <b>A MULTI-REPORT GATE JOINS BY {@code hash}, NEVER BY BARE {@code fn}</b> ("names
  * may legitimately repeat across packages").
  *
  * <p><b>MEASURED on this engine at 0.31.0, and it is a cardinal sin.</b> {@code gate --report} over one

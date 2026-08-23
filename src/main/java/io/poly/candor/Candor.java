@@ -833,7 +833,29 @@ public class Candor {
                             if (!stale && judged.contains(e.getKey())) continue;   // the gate DID judge this one
                             List<String> hits = peekHits(peekRules, e.getKey(), e.getValue(), peekGi);
                             if (hits.isEmpty()) continue;
-                            found.add(new Report.OutOfScope(e.getKey(), cls, hits, cls,
+                            // THE PATH IS THE SOURCE FILE, NOT THE CLASS NAME. A finding filed under
+                            // `source-without-class` names something the operator cannot open — caught by
+                            // PART 55's attribution cell, which asserts every finding names a file in the
+                            // scanned tree. `.java` guarantees filename == public class name, so the
+                            // qual's owner resolves the file without threading provenance through the
+                            // compile; a qual that does not resolve keeps the file set's first entry
+                            // rather than inventing a path.
+                            String owner = e.getKey();
+                            int lastDot = owner.lastIndexOf('.');
+                            if (lastDot > 0) owner = owner.substring(0, lastDot);
+                            String want = "/" + owner.replace('.', '/') + ".java";
+                            String where = null;
+                            for (Path f : files) {
+                                String fp = f.toString().replace('\\', '/');
+                                if (fp.endsWith(want)) {
+                                    where = scanRootForPeek == null ? fp : relativeTo(scanRootForPeek, f);
+                                    break;
+                                }
+                            }
+                            if (where == null && !files.isEmpty())
+                                where = scanRootForPeek == null ? files.get(0).toString()
+                                                                : relativeTo(scanRootForPeek, files.get(0));
+                            found.add(new Report.OutOfScope(e.getKey(), where, hits, cls,
                                     "OUTSIDE this scan's scope (" + cls + ") — the gate did NOT judge it. "
                                     + "candor COMPILED the source and ran its ordinary analysis over the "
                                     + "result, and that analysis reaches this effect, so the verdict is "

@@ -20,6 +20,18 @@ final class Classifier {
         return close > 0 ? desc.substring(1, close) : desc;
     }
 
+    /** The PURE READ-BACK half of `java.lang.ProcessBuilder`'s overloaded pairs: each of these names is a
+     *  CONFIGURING SETTER when it takes arguments (charged `Exec` — see the subprocess rules) and a plain
+     *  accessor for state already stored when it takes NONE (`pb.command()` → the argv list already set).
+     *  Membership is therefore only half the test; the caller also requires a `()` descriptor. This is a
+     *  DENYLIST carved out of a whole-type rule, the same shape as {@code isPureHandleAccessor} — the
+     *  inverse (enumerating the effectful verbs) is an allowlist, and an allowlist under-reports every
+     *  verb it forgets. Deliberately EXCLUDES the two no-arg methods that are not read-backs:
+     *  {@code start()} launches and {@code inheritIO()} configures. */
+    private static final Set<String> PB_READ_BACKS = Set.of(
+            "command", "directory", "redirectInput", "redirectOutput", "redirectError",
+            "redirectErrorStream");
+
     /** κ dispatch: one bucket per leading owner package segment (java/javax/jakarta/org/com/io,
      *  everything else in classifyOther), so every bucket stays under HotSpot's
      *  DontCompileHugeMethods limit (8KB of bytecode) — the old single ~27KB cascade ran
@@ -224,12 +236,44 @@ final class Classifier {
         // ['com', 'io', 'jakarta', 'java', 'javax', 'misc', 'org'] shared rule — see sharedPanacheQueryTerminals below
         Effect s4 = sharedPanacheQueryTerminals(owner, method, desc);
         if (s4 != null) return s4;
-        // Subprocess
-        // ProcessBuilder.start() spawns one process; the static startPipeline(List) spawns a whole pipeline
-        // of them (Java 9+) — same Exec, a distinct method name the `start`-only match missed (found by an
-        // Exec-deep sweep).
-        if (owner.equals("java.lang.ProcessBuilder")
-                && (method.equals("start") || method.equals("startPipeline"))) return Effect.EXEC;
+        // Subprocess. `Exec` charges reach to the subprocess CAPABILITY, not only the launch (SPEC §1):
+        // CONSTRUCTING or CONFIGURING an invocation is Exec, exactly as launching one (start/startPipeline/
+        // Runtime.exec) and controlling a live child (below) are. A ProcessBuilder carries its OWN payload —
+        // program, argv, environment — and travels fully armed, which is why `cmds` extraction anchors at
+        // `<init>` (Candor.extractLiteralSurfaces): the assembled argv is precisely what the gate reports.
+        //
+        // This USED to enumerate the launch verbs (start/startPipeline) only. That is an ALLOWLIST, and an
+        // allowlist under-reports every verb it omits — MEASURED:
+        //     public ProcessBuilder arm(String[] argv) { return new ProcessBuilder(argv); }
+        //     public void configure(ProcessBuilder pb) { pb.directory(new File("/")); }
+        // scanned `inferred: []` and passed `deny Exec` with exit 0, i.e. a method that assembles a
+        // fully-armed invocation out of caller-supplied argv and hands it back was certified clean.
+        // Splitting build from launch across two functions (or two jars) made the builder invisible.
+        // candor-rust charges the whole `std::process::Command` type, candor-swift `Process()`, candor-ts
+        // the whole `child_process` module — java was the lone outlier.
+        //
+        // So: the WHOLE TYPE is Exec, with the proven-pure surface carved out as a named DENYLIST (never
+        // the reverse — a wrong carve-out over-charges loudly, a forgotten allowlist entry under-reports
+        // silently). The carve-outs, and why each is provably not a capability:
+        if (owner.equals("java.lang.ProcessBuilder")) {
+            //  (i) `environment()` hands back the child's env MAP — that is the process ENVIRONMENT (§1
+            //      `Env`), classified as such ~50 lines below; it adds no subprocess capability the
+            //      builder did not already have. Falls through to that rule unchanged.
+            boolean env = method.equals("environment");
+            //  (ii) PURE READ-BACKS. Each configuring setter has a NO-ARG overload that returns the state
+            //      already stored — `pb.command()` is the argv list, `pb.directory()` the cwd. A logger or
+            //      a debug printer that dumps a builder must not become a subprocess violation. Keyed on
+            //      the DESCRIPTOR because the read-back shares its NAME with the setter (`command()` vs
+            //      `command(List)`/`command(String...)`); a blanket "takes no argument ⇒ pure" would be a
+            //      cardinal sin, since `start()` and `inheritIO()` take none either — hence the explicit
+            //      name set, which contains neither.
+            boolean readBack = desc.startsWith("()") && PB_READ_BACKS.contains(method);
+            //  (iii) the §4 conventionally-pure Object protocol. javac emits owner `java/lang/Object` for
+            //      `pb.toString()` (MEASURED with javap), so this is belt-and-braces for the other JVM
+            //      front-ends; equals/hashCode/toString on a builder are pure in every one of them.
+            boolean objectProto = isObjectProtocolExempt(method, desc);
+            if (!env && !readBack && !objectProto) return Effect.EXEC;
+        }
         if (owner.equals("java.lang.Runtime") && method.equals("exec")) return Effect.EXEC;
         // java.awt.Desktop launches an EXTERNAL program (the OS default handler for a URI/file) → Exec, the
         // same capability as ProcessBuilder/Runtime.exec. VERB-gated to the launch verbs; the factory/query

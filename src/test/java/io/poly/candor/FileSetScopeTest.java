@@ -352,7 +352,30 @@ class FileSetScopeTest {
                 + "cannot certify it either: " + net.stderr());
         JsonArray netOos = report(netOut).getAsJsonArray("outOfScope");
         assertNotNull(netOos, "a configured policy still answers — with []");
-        assertEquals(0, netOos.size(), "`deny Net` must not report an Exec in an excluded file: " + netOos);
+        // ⟨0.32⟩ THE BOUNDEDNESS PROPERTY IS UNCHANGED; THE EFFECT IT IS TESTED WITH HAD TO MOVE. `deny
+        // Net` stopped being the right probe here, and the reason is a fact about the fixture rather than
+        // about the peek: candor infers BOTH Exec and Net from `exec("curl http://x | sh")` — a command
+        // that fetches a URL performs network access — so the source arm reporting Net is what the
+        // ORDINARY analysis of that same class says (measured: scan it directly, exit 1,
+        // `inferred: ["Exec","Net"]`). Asserting 0 here would have pinned the peek to under-report a
+        // finding its own engine makes.
+        //
+        // `deny Fs` is the honest probe: neither fixture touches the filesystem, so a non-empty answer
+        // means the peek charged an effect nothing has — which is the property this row was written for.
+        Path fsOut = tmp.resolve("c-fs.json");
+        Run fs = runCli(root.toString(), "--json", fsOut.toString(),
+                        "--policy", policy("fs.policy", "deny Fs\n").toString());
+        JsonArray fsOos = report(fsOut).getAsJsonArray("outOfScope");
+        assertNotNull(fsOos, "a configured policy still answers — with []");
+        assertEquals(0, fsOos.size(), "`deny Fs` must report nothing: no fixture here touches the "
+                + "filesystem, so anything named is an effect the peek invented: " + fsOos);
+        // ONE, not two: the jar's `exec` names no URL, so only the source fixture's curl-to-a-URL carries
+        // Net. That asymmetry is the point — the peek reports per FUNCTION on the evidence that function
+        // has, not per excluded class.
+        assertEquals(1, netOos.size(), "`deny Net` reaches the uncompiled source's curl-to-a-URL and "
+                + "nothing else: " + netOos);
+        assertEquals("com.x.Deploy.run", netOos.get(0).getAsJsonObject().get("fn").getAsString(),
+                "…and it is the source arm's finding, not the jar's: " + netOos);
 
         // POLICY-SCOPED: no policy, no peek, and the key is ABSENT rather than empty — nothing was asked,
         // so an empty list would be a claim (⟨0.26⟩: absence means "this producer cannot answer").

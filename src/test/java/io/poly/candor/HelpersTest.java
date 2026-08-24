@@ -268,6 +268,84 @@ class HelpersTest {
         assertNull(Classifier.classify("java.net.HttpURLConnection", "setRequestProperty", "(Ljava/lang/String;Ljava/lang/String;)V"));
     }
 
+    /**
+     * ⟨0.32⟩ <b>THE HEADER GETTERS ARE WIRE VERBS.</b> The lazy-connection arm above enumerated
+     * connect/getInput/getOutputStream/getContent/getResponse{Code,Message} and stopped — so a class that
+     * does nothing but READ HTTP HEADERS passed {@code deny Net} at exit 0 with an EMPTY function list.
+     *
+     * <p>Not an inference: the JDK's own {@code sun/net/www/URLConnection.getHeaderField} opens with
+     * {@code try { getInputStream(); }}, and {@code sun/net/www/protocol/http/HttpURLConnection} does the
+     * same in its {@code getHeaderField(String)}, {@code getHeaderField(int)}, {@code getHeaderFieldKey}
+     * and {@code getHeaderFields} overrides. Everything else in the family is a documented alias for one
+     * of those — {@code getContentType()} <i>is</i> {@code getHeaderField("content-type")},
+     * {@code getContentLengthLong()} is {@code getHeaderFieldLong("content-length", -1)},
+     * {@code getLastModified()} is {@code getHeaderFieldDate("last-modified", 0)}. Reading a header is a
+     * round trip; it just does not look like one at the call site.
+     */
+    @Test
+    void urlConnectionHeaderGettersAreWireVerbs() {
+        for (String owner : new String[]{"java.net.URLConnection", "java.net.HttpURLConnection",
+                                         "javax.net.ssl.HttpsURLConnection"}) {
+            // the getHeaderField* family — each opens with getInputStream() in the real impls
+            assertEquals(Effect.NET, Classifier.classify(owner, "getHeaderField", "(Ljava/lang/String;)Ljava/lang/String;"), owner);
+            assertEquals(Effect.NET, Classifier.classify(owner, "getHeaderField", "(I)Ljava/lang/String;"), owner);
+            assertEquals(Effect.NET, Classifier.classify(owner, "getHeaderFieldKey", "(I)Ljava/lang/String;"), owner);
+            assertEquals(Effect.NET, Classifier.classify(owner, "getHeaderFields", "()Ljava/util/Map;"), owner);
+            assertEquals(Effect.NET, Classifier.classify(owner, "getHeaderFieldInt", "(Ljava/lang/String;I)I"), owner);
+            assertEquals(Effect.NET, Classifier.classify(owner, "getHeaderFieldLong", "(Ljava/lang/String;J)J"), owner);
+            assertEquals(Effect.NET, Classifier.classify(owner, "getHeaderFieldDate", "(Ljava/lang/String;J)J"), owner);
+            // ...and the named aliases the JDK defines AS calls to it
+            assertEquals(Effect.NET, Classifier.classify(owner, "getContentType", "()Ljava/lang/String;"), owner);
+            assertEquals(Effect.NET, Classifier.classify(owner, "getContentEncoding", "()Ljava/lang/String;"), owner);
+            assertEquals(Effect.NET, Classifier.classify(owner, "getContentLength", "()I"), owner);
+            assertEquals(Effect.NET, Classifier.classify(owner, "getContentLengthLong", "()J"), owner);
+            assertEquals(Effect.NET, Classifier.classify(owner, "getDate", "()J"), owner);
+            assertEquals(Effect.NET, Classifier.classify(owner, "getExpiration", "()J"), owner);
+            assertEquals(Effect.NET, Classifier.classify(owner, "getLastModified", "()J"), owner);
+        }
+    }
+
+    /**
+     * THE OVER-CHARGE CONTROL for the header-getter widening, and the half that decides it. Killing a
+     * silent under-report is exactly where a fabrication gets introduced, so the REQUEST-side surface —
+     * every member the JDK source shows returning a field or assigning one — is asserted pure in the same
+     * breath. If any of these ever reads Net, {@code deny Net} starts failing on code that has not touched
+     * a socket, and the arm has to be narrowed rather than the test relaxed.
+     */
+    @Test
+    void urlConnectionRequestSideAccessorsStayPure() {
+        // java.net.URLConnection — verified against the JDK source: each returns or assigns a field.
+        assertNull(Classifier.classify("java.net.URLConnection", "getURL", "()Ljava/net/URL;"));
+        assertNull(Classifier.classify("java.net.URLConnection", "getRequestProperty", "(Ljava/lang/String;)Ljava/lang/String;"));
+        assertNull(Classifier.classify("java.net.URLConnection", "getRequestProperties", "()Ljava/util/Map;"));
+        assertNull(Classifier.classify("java.net.URLConnection", "setRequestProperty", "(Ljava/lang/String;Ljava/lang/String;)V"));
+        assertNull(Classifier.classify("java.net.URLConnection", "addRequestProperty", "(Ljava/lang/String;Ljava/lang/String;)V"));
+        assertNull(Classifier.classify("java.net.URLConnection", "setDoInput", "(Z)V"));
+        assertNull(Classifier.classify("java.net.URLConnection", "setDoOutput", "(Z)V"));
+        assertNull(Classifier.classify("java.net.URLConnection", "getDoInput", "()Z"));
+        assertNull(Classifier.classify("java.net.URLConnection", "setUseCaches", "(Z)V"));
+        assertNull(Classifier.classify("java.net.URLConnection", "getUseCaches", "()Z"));
+        assertNull(Classifier.classify("java.net.URLConnection", "setConnectTimeout", "(I)V"));
+        assertNull(Classifier.classify("java.net.URLConnection", "getConnectTimeout", "()I"));
+        assertNull(Classifier.classify("java.net.URLConnection", "setReadTimeout", "(I)V"));
+        assertNull(Classifier.classify("java.net.URLConnection", "getReadTimeout", "()I"));
+        assertNull(Classifier.classify("java.net.URLConnection", "setIfModifiedSince", "(J)V"));
+        assertNull(Classifier.classify("java.net.URLConnection", "getIfModifiedSince", "()J"));
+        // HttpURLConnection's own request-side surface
+        assertNull(Classifier.classify("java.net.HttpURLConnection", "setRequestMethod", "(Ljava/lang/String;)V"));
+        assertNull(Classifier.classify("java.net.HttpURLConnection", "getRequestMethod", "()Ljava/lang/String;"));
+        assertNull(Classifier.classify("java.net.HttpURLConnection", "setInstanceFollowRedirects", "(Z)V"));
+        assertNull(Classifier.classify("java.net.HttpURLConnection", "getInstanceFollowRedirects", "()Z"));
+        assertNull(Classifier.classify("java.net.HttpURLConnection", "setFixedLengthStreamingMode", "(J)V"));
+        assertNull(Classifier.classify("java.net.HttpURLConnection", "setChunkedStreamingMode", "(I)V"));
+        // A PROJECT type that merely SHARES THE NAME is not the JDK's. The arm matches the fully
+        // qualified owner, and this is the assertion that keeps it that way — an `endsWith("URLConnection")`
+        // repair would read plausible and fabricate Net across every app that names a class this.
+        assertNull(Classifier.classify("app.net.URLConnection", "getContentType", "()Ljava/lang/String;"));
+        assertNull(Classifier.classify("com.example.HttpURLConnection", "getHeaderField", "(Ljava/lang/String;)Ljava/lang/String;"));
+        assertNull(Classifier.classify("URLConnection", "getHeaderFields", "()Ljava/util/Map;"));
+    }
+
     /** ProcessBuilder spawns via start() AND the Java 9+ static startPipeline(List) — both are Exec. */
     @Test
     void processBuilderStartPipelineIsExec() {

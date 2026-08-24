@@ -8,6 +8,83 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- ⚠ **`gate --report` certified code nobody had read, where `scan --policy` over the same tree refused —
+  the ⟨0.32⟩ route split, closed.** Verified fail-open:
+
+  ```
+  <tree: compiled com/x/Ok.class + an UNCOMPILED com/x/Deploy.java calling Runtime.exec("id")>
+  candor <tree> --policy 'deny Exec'                 -> exit 2   (correct)
+  candor <tree> --json nop.json                        (NO policy)
+  candor gate --report nop.json --policy 'deny Exec'  -> exit 0   `no violations`
+  ```
+
+  **Mechanism: the rule was gated on the PRODUCER'S HISTORY instead of on the question being asked now.**
+  The whole unread-code rule sat behind `envObj.has("outOfScope")` — "was that scan asked a policy
+  question?" ⟨0.29⟩ OMITS `outOfScope` when the producing scan carried no policy, and that same report
+  carries `excluded[].peeked: false` on every class for the very same reason (the peek short-circuits
+  when nothing is denied), so a report written by a bare `candor <tree> --json out.json` skipped the rule
+  in exactly the case it exists for. The producer's silence about the QUESTION was read as an answer
+  about the CODE.
+
+  **The rule, now stated once and applied on both routes:** a class the producing scan did not READ
+  licenses nothing, and whether that matters is decided by the policy in force NOW. `peeked: false` does
+  have two causes — "opened it and failed" and "never asked" — but from a REPORT they are
+  indistinguishable and leave the identical hole: that code's effects are absent from `functions` because
+  nothing looked, and ⟨0.21⟩ licenses a purity claim only over units the scan actually judged. `excluded`
+  is MANDATORY from ⟨0.29⟩ (SPEC §2.2), so an ABSENT `excluded` still means what ⟨0.26⟩ says it means —
+  a pre-⟨0.29⟩ producer that cannot answer — and still certifies. The carve-out is about the QUESTION:
+  only a `deny`/`pure` rule's answer depends on code outside the scan's scope, so the condition is "this
+  policy holds a deny rule", read off the RULE LIST and never off a set of effect names (`pure` is a
+  `Deny` with an empty effect set; flattened to names it names nothing, which cost this engine a
+  four-way false all-clear once already).
+
+- **Found beside it, the same split in the opposite direction: the scan route's verdict DOCUMENT and its
+  own EXIT disagreed.** The exit arm asked `!denyRules.isEmpty()`; `scanGateFacts` — which feeds
+  `incomplete`/`ok` in `--gate-json` — recorded the unread classes with no condition at all. Measured: a
+  `forbid`-only policy over a tree with an uncompiled source wrote **`"ok": false, "incomplete": true` AT
+  EXIT 0**. The exit was right, the document was the over-charge, and only a machine reading the JSON
+  could see it. One predicate (`Candor.unreadClasses`) now feeds both halves, and `gate --report` applies
+  the identical condition once to its own accumulated value rather than at its exit arm.
+
+- **`excluded` joins the strictly-read §2 signature keys.** Present-but-unparseable was silently coerced
+  to the empty list — the claim "this scan excluded nothing", the safe-LOOKING value, which deletes the
+  rule. A non-array `excluded`, a non-object member, and a non-boolean `judgedElsewhere` now each impeach
+  the document (exit 2) naming the key. `judgedElsewhere` mattered most: Gson's `getAsBoolean` COERCES,
+  so the STRING `"true"` came back `true` and carved out a class no producer had exempted — the fail-open
+  reading of the one key here that can delete a refusal. An exclusion entry with no `class` name still
+  counts as unread rather than being dropped for want of a label.
+
+  **Corpus A/B — 933 jars** (371 in the Gradle module cache + 562 in an exploded production war) **× 3
+  policies × both routes, before and after**, plus a 22 088-method repo root and its compiled output:
+
+  - **124 of 2 799 gate pairs newly refuse (0 → 2)**, every one of them over a report the producing scan
+    wrote without a policy. That is the rung, not a side effect — the repair is one flag and the message
+    names it. 0 scan-route exits moved.
+  - **0 over-charges and 0 misses across all 2 799 pairs**: exit 2 holds *iff* the report names a
+    non-peeked, non-`judgedElsewhere` class. The 967 pairs with a real violation still exit 1 — a
+    violation dominates INCOMPLETE.
+  - Hand-checked (jackson-core 2.18.3, jackson-databind 2.18.3, ehcache 3.8.1, the uflexi repo root):
+    every newly-refusing class is real unread code — `META-INF/versions/*.class` overrides the base-class
+    walk skips, a nested `sizeof-agent.jar`, 9 stale sources and 3 uncompiled ones — and re-scanning WITH
+    the policy flips `peeked` to `true` and yields a definite answer.
+  - The over-charge control that matters most, on the repo root: its **564 `build-output-archive`
+    exclusions carry `judgedElsewhere: true` and are correctly NOT charged**, while the three classes
+    beside them are.
+  - §3.1 route equality re-measured on 181 artifacts × 4 policies: **708 of 724 verdict pairs byte-equal,
+    724 of 724 exits identical**. The 16 that differ are byte-identical before and after this change — a
+    pre-existing divergence on the zero-readable-files target, where the scan route emits a REFUSAL
+    document and the gate route an INCOMPLETE verdict. Untouched here.
+
+- **A descriptive verb's INCOMPLETE hedge trailed off into an empty clause on both SCOPE causes.**
+  `ReportCompleteness.incomplete()` has counted `outOfScope` since ⟨0.30⟩ and `unpeeked` since ⟨0.32⟩,
+  but the sentence was still built from the three MANIFEST rows alone — so over a report whose only cause
+  was one of them the line read, verbatim, `⚠ INCOMPLETE — the report(s) under this locator ,`. Measured
+  on the previous build for the `outOfScope` cause (live since ⟨0.30⟩); latent for the unread cause only
+  because the rule above could not reach that state. A hedge whose sentence says nothing is the
+  deleted-disclosure defect inside the disclosure itself. Both causes now get a clause and a per-entry
+  line, naming the function and the effect, or the exclusion class. Reports with no scope cause are
+  byte-identical.
+
 - **The ⟨0.32⟩ source peek leaked an empty `candor-peek*` scratch directory into the system temp dir on
   every FAILED compile.** `compileForPeek` creates the directory, and the caller deletes what it is
   *handed* — so the three exits that `return null` (javac errored, javac emitted no class, anything

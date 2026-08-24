@@ -3412,7 +3412,7 @@ public class Candor {
      *  code vocabulary is first-class rather than an inline string literal. {@code format} is the
      *  message body (no code prefix, no trailing newline); render() prepends {@code "[AS-EFF-00x] "}. */
     static void diag(DiagnosticCode code, String format, Object... args) {
-        diagCapture(code, java.util.List.of(), java.util.List.of(), java.util.List.of(), format, args);
+        diagCapture(code, java.util.List.of(), java.util.List.of(), java.util.List.of(), "", format, args);
     }
 
     /** As the effect-bearing {@link #diag(DiagnosticCode, java.util.List, String, Object...)}, but also records
@@ -3420,14 +3420,14 @@ public class Candor {
      *  sees every reason the strict gate bit (SPEC §6.2 ⟨0.19⟩). Empty for any non-Unknown violation. */
     static void diag(DiagnosticCode code, java.util.List<String> effects, java.util.List<String> reasonClass,
                      String format, Object... args) {
-        diagCapture(code, effects, reasonClass, java.util.List.of(), format, args);
+        diagCapture(code, effects, reasonClass, java.util.List.of(), "", format, args);
     }
 
     /** As above, plus the fn's Net destination classes (SPEC §6.2 ⟨0.20⟩) — recorded when {@code Net} is
      *  denied, so a --gate-json consumer sees which destination classes the security gate bit. */
     static void diag(DiagnosticCode code, java.util.List<String> effects, java.util.List<String> reasonClass,
                      java.util.List<String> netClass, String format, Object... args) {
-        diagCapture(code, effects, reasonClass, netClass, format, args);
+        diagCapture(code, effects, reasonClass, netClass, "", format, args);
     }
 
     /** As {@link #diag(DiagnosticCode, String, Object...)}, but records the specific effect(s) the violation
@@ -3436,12 +3436,40 @@ public class Candor {
      *  effect-bearing codes; a layer-flow (009) / unresolved (003) code carries no effect and uses the plain
      *  form. */
     static void diag(DiagnosticCode code, java.util.List<String> effects, String format, Object... args) {
-        diagCapture(code, effects, java.util.List.of(), java.util.List.of(), format, args);
+        diagCapture(code, effects, java.util.List.of(), java.util.List.of(), "", format, args);
+    }
+
+    /** ⟨0.32⟩ <b>As the effect-bearing {@link #diag}, but also records the §2.2 UNIT IDENTITY the row is
+     *  about</b> (SPEC §2: <i>"a verdict row MUST carry enough identity for a consumer to tell two units
+     *  apart"</i>).
+     *
+     *  <p><b>THE DEFECT, MEASURED 2026-08-24.</b> {@code gate --report} over two reports whose members both
+     *  define {@code go} and both violate {@code deny Exec} emitted two BYTE-IDENTICAL rows —
+     *  {@code {rule, fn, effects, detail}}, with nothing attributing either to a package. A reader cannot
+     *  tell two broken members from one listed twice, and a consumer that fingerprints on name alone —
+     *  candor's own SARIF action did — hides one finding behind the other. Names are not unique even
+     *  WITHIN one report.
+     *
+     *  <p><b>{@code hash} AND NOT {@code package}/{@code loc}</b>, because §2.2 already binds a consumer to
+     *  join a verdict row back to its report entry BY HASH; a row that omits it forces exactly the name
+     *  join that clause forbids. <b>BESIDE {@code fn}, NEVER INSTEAD OF IT:</b> the NAME is what a policy
+     *  scope matches ({@link Policy.GateInput#disp}) and what a human reads, so substituting the qualified
+     *  form would silently stop every scoped rule matching — a false green introduced by fixing a false
+     *  green.
+     *
+     *  <p>A SEPARATE METHOD rather than a sixth parameter on {@link #diag}, so the codes that are NOT about
+     *  a unit — the AS-EFF-001/002/003 conformance diagnostics, whose {@code args[0]} is a CLASS — keep
+     *  their exact call shape and their exact row, and cannot acquire an identity nobody computed for
+     *  them. Empty {@code hash} is omitted from the wire. */
+    static void diagUnit(DiagnosticCode code, java.util.List<String> effects,
+                         java.util.List<String> reasonClass, java.util.List<String> netClass,
+                         String hash, String format, Object... args) {
+        diagCapture(code, effects, reasonClass, netClass, hash, format, args);
     }
 
     private static void diagCapture(DiagnosticCode code, java.util.List<String> effects,
                                     java.util.List<String> reasonClass, java.util.List<String> netClass,
-                                    String format, Object... args) {
+                                    String hash, String format, Object... args) {
         String body = String.format(format, args);
         diagOut.println(new Diagnostic(code, body).render());
         // --gate-json capture: EVERY AS-EFF site passes the offending entity (a fn, or a class for the
@@ -3452,6 +3480,10 @@ public class Candor {
             var m = new java.util.LinkedHashMap<String, Object>();
             m.put("rule", code.code());
             m.put("fn", fn);
+            // ⟨0.32⟩ THE UNIT THIS ROW IS ABOUT (SPEC §2) — see #diagUnit. Directly after `fn`, so the row
+            // reads `{rule, fn, hash, …}` in every engine. Omitted when the producer had none to give: a
+            // hand-authored report with no `hash`, and every code that is not about a unit at all.
+            if (!hash.isEmpty()) m.put("hash", hash);
             m.put("effects", effects);
             m.put("detail", body);
             // ⟨0.19⟩ reason-scoped Unknown: the fn's reason classes when Unknown is denied (SPEC §6.2). Omitted

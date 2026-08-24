@@ -203,7 +203,11 @@ final class Policy {
                 // surface DOWN instead of failing everywhere on day one. Grandfather one by regenerating the
                 // baseline. Default OFF preserves the ⟨0.16⟩ advisory posture (Unknown-gains = resolution noise).
                 if (ctx().unknownRatchet) {
-                    diag(DiagnosticCode.AS_EFF_005, List.of("Unknown"), "`%s` gained an unresolved call (Unknown) "
+                    // ⟨0.32⟩ SPEC §2 — every verdict row carries the unit it is about. From the SAME map
+                    // ReportWriter writes into each entry's `hash`, so the row's identity and the report's
+                    // cannot spell one unit two ways.
+                    diagUnit(DiagnosticCode.AS_EFF_005, List.of("Unknown"), List.of(), List.of(),
+                            ctx().hashOf.getOrDefault(e.getKey(), ""), "`%s` gained an unresolved call (Unknown) "
                             + "not in the baseline — a NEW blind spot (unknown-ratchet); resolve it, or regenerate "
                             + "the baseline to grandfather it", e.getKey());
                     v++;
@@ -212,7 +216,9 @@ final class Policy {
                 }
                 continue;
             }
-            diag(DiagnosticCode.AS_EFF_005, gained, "`%s` gained effect { %s } not present in the baseline",
+            diagUnit(DiagnosticCode.AS_EFF_005, gained, List.of(), List.of(),   // ⟨0.32⟩ SPEC §2 — the unit
+                    ctx().hashOf.getOrDefault(e.getKey(), ""),
+                    "`%s` gained effect { %s } not present in the baseline",
                     e.getKey(), String.join(", ", gained));
             v++;
         }
@@ -407,11 +413,27 @@ final class Policy {
                      Map<String, Set<String>> edges,
                      Set<String> synthetic,
                      Map<String, String> display,
-                     Map<String, String> keyOf) {
+                     Map<String, String> keyOf,
+                     /** ⟨0.32⟩ KEY -> the §2.2 UNIT IDENTITY a verdict row carries (SPEC §2). A map of its
+                      *  own rather than a second reading of the key, because the two routes disagree about
+                      *  what the key IS: {@code gate --report} keys by {@code hash} already, the scan route
+                      *  keys by the bare NAME. Reading identity off the key would make the two routes emit
+                      *  DIFFERENT {@code hash} values for one unit — a §3.1 byte-equality break no
+                      *  single-route test could see. Missing means this caller has no identity to give, and
+                      *  the row then OMITS the field. */
+                     Map<String, String> hash) {
 
         /** The name to match a policy scope against, and to print. Identity when no map was supplied. */
         String disp(String key) {
             return display.getOrDefault(key, key);
+        }
+
+        /** ⟨0.32⟩ <b>The §2.2 UNIT IDENTITY this key stands for</b> — what a verdict row carries so a
+         *  consumer can tell two units apart (SPEC §2). EMPTY when the caller has none to give, and empty
+         *  is then omitted from the wire: ⟨0.26⟩'s <i>this producer cannot answer</i> beats a fabricated
+         *  id. See {@link Candor#diagUnit}. */
+        String unit(String key) {
+            return hash.getOrDefault(key, "");
         }
 
         /** The unit KEY for something that may be either a key already or a bare NAME. Identity when no map
@@ -425,7 +447,16 @@ final class Policy {
          *  the order §3.3.1's byte-equality between {@code scan --policy} and {@code gate --report} is
          *  measured on. Sorting by the KEY instead would reorder the rows the moment the keys stopped being
          *  names, breaking that equality in the OTHER direction from the defect this map exists for. The key
-         *  is the tie-break, so the order is total whatever the display map does. */
+         *  is the tie-break, so the order is total whatever the display map does.
+         *
+         *  <p>⟨0.32⟩ <b>AND THAT TIE-BREAK IS ALREADY SPEC §2's "the sort key MUST include that
+         *  identity".</b> On the report route the KEY IS the {@code hash} ({@link #entryKey}), so two
+         *  units sharing a name — the case the clause is about — are ordered by their identity and never
+         *  tie. MEASURED 2026-08-24 on two reports whose members both define {@code go} and both violate
+         *  {@code deny Exec}: the rows come out {@code a#go} then {@code b#go}, in that order, whichever
+         *  order the reports are read in. The scan route gates ONE analysis world, where a name is a unit
+         *  and there are no twins to break, so §3.3.1 byte-equality holds by construction. Unlike
+         *  candor-rust and candor-swift this engine therefore needed no new sort — only the ROW field. */
         List<String> inDisplayOrder(Collection<String> keys) {
             List<String> out = new ArrayList<>(keys);
             out.sort(Comparator.<String, String>comparing(this::disp).thenComparing(Comparator.naturalOrder()));
@@ -481,7 +512,12 @@ final class Policy {
                 // ⟨0.32⟩ IDENTITY, both ways: a scan gates ONE analysis world and its keys are already the
                 // names a policy scope is written against. The maps exist for the multi-report route, where
                 // the keys MUST be hashes (SPEC §2.2) and the names have to travel beside them.
-                Map.of(), Map.of());
+                Map.of(), Map.of(),
+                // ⟨0.32⟩ …but the verdict ROW still carries the unit (SPEC §2), and on this route the value
+                // comes from the SAME map ReportWriter puts in each entry's `hash`. Copied, never
+                // re-derived: `gate --report` reads the producer's string verbatim and §3.1 makes the two
+                // documents byte-equal, so two derivations of one identity is how they would drift.
+                ctx().hashOf);
     }
 
     /**
@@ -771,7 +807,9 @@ final class Policy {
                             : java.util.List.of();
                     // ⟨0.32⟩ the NAME, never the unit key: §3.3.1 pins `gate --report`'s violation rows
                     // byte-equal to `scan --policy`'s, and the scan route has only names to print.
-                    diag(DiagnosticCode.AS_EFF_006, bn, reasonClass, netClass, "`%s` performs { %s }, forbidden by policy%s: `%s`",
+                    diagUnit(DiagnosticCode.AS_EFF_006, bn, reasonClass, netClass,
+                            gi.unit(fn),   // ⟨0.32⟩ SPEC §2 — the unit, BESIDE the name that a scope matches
+                            "`%s` performs { %s }, forbidden by policy%s: `%s`",
                             name, String.join(", ", bn),
                             r.scope().isEmpty() ? "" : " (scope `" + r.scope() + "`)", r.src());
                     v++;
@@ -838,7 +876,8 @@ final class Policy {
                 if (!scopeMatches(gi.disp(fn), r.from())) continue;
                 String hit = reachesScope(gi, fn, r.to());
                 if (hit != null) {
-                    diag(DiagnosticCode.AS_EFF_009, "`%s` reaches into a forbidden layer (via `%s`), "
+                    diagUnit(DiagnosticCode.AS_EFF_009, List.of(), List.of(), List.of(), gi.unit(fn),
+                            "`%s` reaches into a forbidden layer (via `%s`), "
                             + "violating policy: `forbid %s -> %s`", gi.disp(fn), gi.disp(hit),
                             r.from(), r.to());
                     v++;
@@ -861,7 +900,8 @@ final class Policy {
                 String hit = reachesUnpermitted(gi, fn, r);
                 if (hit != null) {
                     // ⟨0.29⟩ ITS OWN CODE — see DiagnosticCode.AS_EFF_011.
-                    diag(DiagnosticCode.AS_EFF_011, "`%s` reaches `%s`, which this permission rule does "
+                    diagUnit(DiagnosticCode.AS_EFF_011, List.of(), List.of(), List.of(), gi.unit(fn),
+                            "`%s` reaches `%s`, which this permission rule does "
                             + "not permit: `%s`", gi.disp(fn), gi.disp(hit), r.src().trim());
                     v++;
                 }
@@ -1132,8 +1172,13 @@ final class Policy {
         Map<String, String> keyOf = new HashMap<>();
         for (var en : keysByName.entrySet())
             if (en.getValue().size() == 1) keyOf.put(en.getKey(), en.getValue().first());
+        // ⟨0.32⟩ KEY -> the producer's OWN `hash`, VERBATIM off the wire, for the verdict row's §2
+        // identity. An entry carrying no `hash` contributes no mapping, so its row omits the field rather
+        // than claiming a made-up id (⟨0.26⟩; §3.1 says this verb serves a hand-authored report).
+        Map<String, String> unitHash = new HashMap<>();
+        for (Effector e : fns) if (!e.hash().isEmpty()) unitHash.put(entryKey(e), e.hash());
         return new GateInput(inferred, literalFixpoint(whyDirect, edges), netClasses,
-                hosts, cmds, paths, tables, incomplete, edges, synthetic, display, keyOf);
+                hosts, cmds, paths, tables, incomplete, edges, synthetic, display, keyOf, unitHash);
     }
 
     /**
@@ -1236,7 +1281,8 @@ final class Policy {
                 // or a runtime-host call) can't be certified: fail-closed. Without the incompleteness gate a
                 // benign visible literal would MASK the invisible forbidden endpoint (the gate EVASION).
                 if (reached.isEmpty() || incompleteAcc.getOrDefault(fn, new TreeSet<>()).contains(effect)) {
-                    diag(DiagnosticCode.AS_EFF_008, List.of(effect), "`%s` performs %s with no visible literal "
+                    diagUnit(DiagnosticCode.AS_EFF_008, List.of(effect), List.of(), List.of(), gi.unit(fn),
+                            "`%s` performs %s with no visible literal "
                             + "— the surface cannot be certified: `allow %s%s %s`", name, effect, effect,
                             r.scope().isEmpty() ? "" : " in " + r.scope(),
                             String.join(" ", r.values()));
@@ -1246,7 +1292,8 @@ final class Policy {
                 List<String> bad = reached.stream()
                         .filter(x -> !covered.test(r.values(), x)).sorted().collect(Collectors.toList());
                 if (!bad.isEmpty()) {
-                    diag(DiagnosticCode.AS_EFF_008, List.of(effect), "`%s` reaches { %s } outside the allowlist, "
+                    diagUnit(DiagnosticCode.AS_EFF_008, List.of(effect), List.of(), List.of(), gi.unit(fn),
+                            "`%s` reaches { %s } outside the allowlist, "
                             + "forbidden by policy%s: `allow %s … %s`", name, String.join(", ", bad),
                             r.scope().isEmpty() ? "" : " (scope `" + r.scope() + "`)", effect,
                             String.join(" ", r.values()));

@@ -8,6 +8,58 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- ⚠ **A verdict row could not say WHICH unit it was about — the ⟨0.32⟩ identity clause, closed.**
+  SPEC §2: *"a verdict row MUST carry enough identity for a consumer to tell two units apart… the sort
+  key MUST include that identity."* MEASURED, `gate --report` over two reports whose members both define
+  `go` and both violate `deny Exec` — two BYTE-IDENTICAL rows:
+
+  ```
+  { "rule": "AS-EFF-006", "fn": "go", "effects": ["Exec"], "detail": "`go` performs { Exec } …" },
+  { "rule": "AS-EFF-006", "fn": "go", "effects": ["Exec"], "detail": "`go` performs { Exec } …" }
+  ```
+
+  A reader cannot tell two broken members from one listed twice, and a consumer that fingerprints on
+  name alone — candor's own SARIF action did — hides one finding behind the other.
+
+  Every row now carries `hash` — §2.2's join key, this engine's `owner/name(desc)ret` — **BESIDE `fn`,
+  never instead of it**: §2.2 already binds a consumer to join a row back to its entry BY HASH, and the
+  NAME is what a policy scope matches, so substituting the qualified form would silently stop every
+  scoped rule matching. `GateInput` gains a `hash` map beside `display` rather than the row reading
+  identity off the KEY, because the two routes disagree about what the key IS (the report route keys by
+  `hash`, the scan route by the bare name) — reading it off the key would make the two routes emit
+  different values for one unit, a §3.1 break no single-route test could see. The report route copies
+  the producer's `hash` verbatim; the scan route reads the SAME `AnalysisContext.hashOf` map
+  `ReportWriter` writes into each entry.
+
+  **THE SORT KEY NEEDED NOTHING HERE, and that is worth recording** because candor-rust and candor-swift
+  both had to add one. `GateInput.inDisplayOrder` already sorts by display name **then by the KEY**, and
+  on the report route the key IS the hash — so the twins order `a#go`, `b#go` whichever order the
+  reports are read in (measured, with the file stems reversed on disk). The scan route gates one
+  analysis world, where a name is a unit and there are no twins to break.
+
+  **NOT ADDITIVE, stated plainly:** a new key on the violation record means a verdict document is no
+  longer byte-identical to a pre-⟨0.32⟩ one. `SchemaShapeTest`'s exact-key-set pin is the evidence and
+  moved with it. Everything that can be additive is: every pre-existing key keeps its name, position and
+  value; `hash` is OMITTED when the producer has none to give (a hand-authored report, which §3.1 says
+  this verb serves) — ⟨0.26⟩'s *cannot answer*, never a fabricated id — and the AS-EFF-001/002/003
+  conformance codes, whose subject is a CLASS rather than a unit, keep their exact row through the
+  original `diag` (the new `diagUnit` is a separate method for precisely that reason). Route
+  byte-equality re-measured on a real scan-then-gate pipeline: identical. Conformance PART 68 pins it
+  four-way.
+
+- **The ⟨0.32⟩ descriptive hedge: this engine was the only one that had it, and it was RIGHT.** Over a
+  report whose `excluded` names a class with `peeked: false`, `tour` here hedged and named the class
+  while candor-rust, candor-ts and candor-swift all printed the bare *"nothing hidden — every effect
+  sits where its name says it should"* at exit 0. **Ruled 2026-08-24; the other three have been brought
+  here** and the argument is now recorded in a comment in all four engines so it is not re-litigated:
+  the hedge is a DISCLOSURE, not a verdict (⟨0.24⟩'s advisory pessimism MUST binds verbs that answer
+  `ok`, and `tour` answers none), and what binds it is §2 ⟨0.28⟩ plus §3.1 ⟨0.18⟩, which already forbids
+  that exact sentence over a ≥⅓-Unknown graph. No behaviour change here; `ReportCompleteness.mustHedge`
+  gains the ruling and one **filed, measured** over-hedge in the other direction: this engine reaches
+  `unpeeked` through the unconditional `incomplete()`, so `fix-gate --policy <forbid-only>` answers
+  `incomplete: true` where candor-rust and candor-swift CLEAR the list (⟨0.32⟩ fires only when the
+  policy in force holds a deny rule). A false disclosure in the safe direction, and a separate clause.
+
 - ⚠ **`gate --report` certified code nobody had read, where `scan --policy` over the same tree refused —
   the ⟨0.32⟩ route split, closed.** Verified fail-open:
 

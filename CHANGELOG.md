@@ -8,6 +8,55 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- ⚠ **A class that did nothing but READ HTTP HEADERS passed `deny Net` at exit 0 with an EMPTY function
+  list.** The `URLConnection`/`HttpURLConnection` arm enumerated the verbs that LOOK like transmission —
+  `connect`, `getInputStream`, `getOutputStream`, `getContent`, `getResponseCode`,
+  `getResponseMessage` — and stopped there. Measured at `dec665f`:
+
+  ```java
+  public String type(URLConnection c) { return c.getContentType(); }
+  public long   size(URLConnection c) { return c.getContentLengthLong(); }
+  public String etag(URLConnection c) { return c.getHeaderField("ETag"); }
+  public long   mod(HttpURLConnection c) { return c.getLastModified(); }
+  ```
+
+  Scanned under `deny Net`: **exit 0, `no violations`, `functions: []`.** `Content-Length` polling,
+  `Last-Modified` cache validation and `ETag` checks — the ordinary reasons to touch a URL *without*
+  reading its body — were the shapes this engine was blindest to.
+
+  The JDK says so in its own source, so this is a fact and not a judgement:
+  `sun/net/www/URLConnection.getHeaderField` opens with `try { getInputStream(); }`, and
+  `sun/net/www/protocol/http/HttpURLConnection` does the same in its `getHeaderField(String)`,
+  `getHeaderField(int)`, `getHeaderFieldKey` and `getHeaderFields` overrides. Every other member is
+  *defined* as a call to one of them in `java.net.URLConnection`: `getContentType()` **is**
+  `getHeaderField("content-type")`, `getContentLengthLong()` **is**
+  `getHeaderFieldLong("content-length", -1)`, `getLastModified()`/`getDate()`/`getExpiration()` are
+  `getHeaderFieldDate(…)`. Reading a header is a round trip; it just does not look like one at the call
+  site.
+
+  The existing owner arm is **extended in place**, never duplicated — the same three owners
+  (`java.net.URLConnection`, `java.net.HttpURLConnection`, `javax.net.ssl.HttpsURLConnection`) answer one
+  question, and a parallel arm is how two lists drift. The REQUEST side stays absent and stays pure:
+  `getURL`, `getRequestMethod`, `get`/`setRequestProperty`, the timeout, cache and streaming-mode setters
+  each return or assign a field in the JDK source, and a whole-owner rule here would fabricate Net on
+  every builder-style HTTP wrapper in the corpus. Owners are matched fully qualified, so a project class
+  that merely shares the simple name is untouched.
+
+  **Corpus A/B, 933 jars** (the Gradle module cache + an exploded production war) under `deny Net`,
+  `deny Exec` and `deny Fs`: **+67 functions reach Net, 0 functions lose any effect, and the Exec and Fs
+  totals are unchanged** (34,392 and 208,950 either side). 9 artifacts moved, every gain hand-traced to a
+  real header-getter call site in the bytecode — `commons-io`'s `CloseableURLConnection` delegating 14
+  getters to a wrapped connection (and again through `jdependency`'s shaded copy), `spring-web`'s
+  `SimpleClientHttpResponse.getHeaders` walking `getHeaderFieldKey(i)`/`getHeaderField(i)` (with 8 more
+  arriving through `ClientHttpResponse.getHeaders`), `jsoup`'s `HttpConnection$Response.createHeaderMap`,
+  `ant`'s `URLResource` last-modified/size lambdas, and `log4j-core`'s `HttpInputStreamUtil`. No
+  artifact-level verdict flipped, because every one of those nine already reached Net elsewhere — the
+  defect bites the project whose ONLY Net is a header read, which is exactly the fixture above. uflexi's
+  repo root and `build/classes/java/main`: unchanged on every policy. Pinned by
+  `UrlConnectionHeaderReadTest` and two `HelpersTest` tables (whose over-charge controls — the
+  request-side surface and a project class named `URLConnection` — passed before AND after), plus nine
+  `test/smoke.sh` rows.
+
 - ⚠ **`--parallel` swallowed the refusal the single route produces, and `gate --report` went GREEN over
   what it wrote.** A target that EXISTS but holds no `.class` — a resources-only jar, a sources jar, a
   merged-away shim, an unbuilt module — is unevaluable, and the single-target route says exactly that:

@@ -2115,11 +2115,45 @@ final class Classifier {
                 // (found by a Net-deep sweep). connect()/getInputStream()/getOutputStream()/getContent()/
                 // getResponseCode()/getResponseMessage() each trigger the request; the pure getters
                 // (getURL/getRequestMethod/setRequestProperty) stay unclassified — no fabrication.
+                //
+                // ⟨0.32⟩ …AND SO DOES READING A HEADER. That first list enumerated the verbs that LOOK
+                // like transmission and stopped, so a class doing nothing but reading HTTP headers passed
+                // `deny Net` at exit 0 with an EMPTY function list — `Content-Length` polling,
+                // `Last-Modified` cache validation and `ETag` checks, i.e. the ordinary reasons to touch a
+                // URL WITHOUT reading its body, were the shapes this was blindest to. Measured in
+                // spring-web, jsoup and commons-io.
+                //
+                // The JDK says it in its own source, so this is a fact and not a judgement:
+                // `sun/net/www/URLConnection.getHeaderField` opens with `try { getInputStream(); }`, and
+                // `sun/net/www/protocol/http/HttpURLConnection` does the same in its getHeaderField(String),
+                // getHeaderField(int), getHeaderFieldKey and getHeaderFields overrides. Every other member
+                // below is DEFINED as a call to one of them in java.net.URLConnection: getContentType() IS
+                // getHeaderField("content-type"), getContentLengthLong() IS getHeaderFieldLong("content-
+                // length", -1), getLastModified()/getDate()/getExpiration() are getHeaderFieldDate(…).
+                // Reading a header is a round trip; it just does not look like one at the call site.
+                //
+                // Extended IN PLACE rather than as a second arm: the same three owners answer one question,
+                // and a parallel arm is how the two lists drift (one gains an owner, the other does not).
+                // The REQUEST side is still absent and still pure — getURL/getRequestMethod/
+                // get+setRequestProperty/the timeout + streaming-mode setters each return or assign a
+                // field in the JDK source, and a whole-owner rule here would fabricate Net on every
+                // builder-style HTTP wrapper in the corpus (pinned by urlConnectionRequestSideAccessorsStayPure
+                // + the Prepare fixture). Owners are matched FULLY QUALIFIED, so a project class that
+                // merely shares the simple name is untouched.
                 || ((owner.equals("java.net.URLConnection") || owner.equals("java.net.HttpURLConnection")
                         || owner.equals("javax.net.ssl.HttpsURLConnection"))
                     && (method.equals("connect") || method.equals("getInputStream")
                         || method.equals("getOutputStream") || method.equals("getContent")
-                        || method.equals("getResponseCode") || method.equals("getResponseMessage")))
+                        || method.equals("getResponseCode") || method.equals("getResponseMessage")
+                        // getHeaderField / getHeaderField(int) / getHeaderFieldKey / getHeaderFields /
+                        // getHeaderFieldInt / getHeaderFieldLong / getHeaderFieldDate — the whole family
+                        // is response-side by construction, and no member of it is pure.
+                        || method.startsWith("getHeaderField")
+                        // the named aliases the JDK defines AS calls to the family above
+                        || method.equals("getContentType") || method.equals("getContentEncoding")
+                        || method.equals("getContentLength") || method.equals("getContentLengthLong")
+                        || method.equals("getDate") || method.equals("getExpiration")
+                        || method.equals("getLastModified")))
                 // JNDI — a naming/directory lookup contacts a remote naming service (LDAP/RMI/DNS/CORBA);
                 // `InitialContext.lookup("ldap://…")` is exactly the hidden network egress an effect checker
                 // exists to surface (the Log4Shell vector). The lookup/bind/search family is the boundary;

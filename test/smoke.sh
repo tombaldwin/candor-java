@@ -1245,6 +1245,44 @@ want   "ZipFile read is Fs"                                   "$("$CJ" show "$W/
 want   "JarFile read is Fs"                                   "$("$CJ" show "$W/jdk2.json" 'Jdk2.jar')"        'Fs'
 absent "ZipEntry data type stays pure"                        "$jdk2"                                          '"Jdk2.zipEntry"'
 
+# ⟨0.32⟩ READING AN HTTP HEADER IS A ROUND TRIP. The lazy-connection arm enumerated the verbs that LOOK
+# like transmission (connect/getInput/getOutputStream/getContent/getResponse*) and stopped, so a class
+# that only reads headers passed `deny Net` at exit 0 with an EMPTY function list. The JDK's own
+# sun/net/www/URLConnection.getHeaderField opens with `try { getInputStream(); }`, and getContentType()
+# IS getHeaderField("content-type"). Measured in spring-web, jsoup and commons-io. The REQUEST side —
+# every member the JDK source shows returning or assigning a field — must stay pure, or `deny Net`
+# starts failing on code that never touched a socket.
+cat > "$W/src/Hdr.java" <<'J'
+import java.net.*;
+public class Hdr {
+  static String type(URLConnection c)      { return c.getContentType(); }        // Net
+  static long   size(URLConnection c)      { return c.getContentLengthLong(); }  // Net
+  static String etag(URLConnection c)      { return c.getHeaderField("ETag"); }  // Net
+  static long   mod(HttpURLConnection c)   { return c.getLastModified(); }       // Net
+  static void   auth(URLConnection c)      { c.setRequestProperty("Authorization", "t"); }  // pure
+  static void   tune(URLConnection c)      { c.setConnectTimeout(5000); c.setUseCaches(false); } // pure
+  static URL    where(URLConnection c)     { return c.getURL(); }                // pure
+  static String verb(HttpURLConnection c)  { return c.getRequestMethod(); }      // pure
+}
+J
+javac -d "$W/hdrcls" "$W/src/Hdr.java" 2>/dev/null
+"$CJ" "$W/hdrcls" --json "$W/hdr.json" >/dev/null 2>&1
+hdr="$(cat "$W/hdr.json")"
+want   "getContentType is a wire verb"                        "$("$CJ" show "$W/hdr.json" 'Hdr.type')"  'Net'
+want   "getContentLengthLong is a wire verb"                  "$("$CJ" show "$W/hdr.json" 'Hdr.size')"  'Net'
+want   "getHeaderField is a wire verb"                        "$("$CJ" show "$W/hdr.json" 'Hdr.etag')"  'Net'
+want   "getLastModified is a wire verb"                       "$("$CJ" show "$W/hdr.json" 'Hdr.mod')"   'Net'
+# the OVER-CHARGE CONTROLS — the half that decides the widening
+absent "setRequestProperty stays pure (no fabrication)"       "$hdr"                                    '"Hdr.auth"'
+absent "timeout/cache setters stay pure"                      "$hdr"                                    '"Hdr.tune"'
+absent "getURL stays pure"                                    "$hdr"                                    '"Hdr.where"'
+absent "getRequestMethod stays pure"                          "$hdr"                                    '"Hdr.verb"'
+# and the CLI-level false all-clear the fix closes: header reads alone must fail `deny Net`
+printf 'deny Net\n' > "$W/hdrpol"
+"$CJ" "$W/hdrcls" --policy "$W/hdrpol" >/dev/null 2>&1; hdrrc=$?
+if [ "$hdrrc" -eq 1 ]; then echo "  ok   a header-only reader FAILS deny Net (was exit 0, functions [])"; pass=$((pass+1));
+else echo "  FAIL header-only reader under deny Net — exit $hdrrc (want 1)"; fail=$((fail+1)); fi
+
 echo "== Clipboard effect (spec §1 vocabulary parity; Rust had it, candor-java did not) =="
 # Clipboard is one of the 10 spec effects (𝔼); candor-java never emitted it. AWT Toolkit hands out the
 # system clipboard; Clipboard get/setContents read/write it. DataFlavor (pure data) must stay pure. And

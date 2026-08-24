@@ -1383,7 +1383,34 @@ public class Candor {
                         // exits the process, which is right — a broken engine↔baseline coupling is not a
                         // per-target result to be collected and summarised.
                         enforceEnginePin(perTarget);
-                        writeReport(runScan(t, perTarget), out.toString(), null);  // own thread → own ctx() + own config (LB-1b)
+                        Map<String, EffectSet> fx = runScan(t, perTarget);   // own thread → own ctx() + own config (LB-1b)
+                        // ⟨0.32⟩ THE REFUSAL CROSSES INTO THIS ARM TOO. A target that EXISTS but holds no
+                        // `.class` is unevaluable, and the single-target path says so — remedy on stderr,
+                        // verdict sink refused, exit 2, no report ever written. This arm ran the same scan,
+                        // found the same nothing and wrote an ORDINARY report (`analyzed.count: 0`,
+                        // `functions: []`, no refusal marker), over which `gate --report` printed a note and
+                        // EXITED 0. A note beside exit 0 is not a verdict; CI reads the exit code. MEASURED:
+                        // 9 of 560 artifacts in the local corpus have exactly that shape.
+                        //
+                        // The nonexistent-path arm three lines up is why this was invisible: bad targets
+                        // LOOKED handled. The one unevaluable kind decided INSIDE runScan had no way back
+                        // out to the collector, so it was the only one that leaked a green report.
+                        //
+                        // The refusal is PER TARGET, not run-wide (the same posture as the missing-target
+                        // arm: "the healthy work isn't thrown away") — a resources-only jar in a multi-module
+                        // sweep must not turn every sibling report INCOMPLETE. And it travels through the
+                        // existing `failures` channel rather than a second exit code: every other unevaluable
+                        // target in this verb already answers 1, and a run mixing 1 and 2 would need a
+                        // precedence rule no one has specified. The load-bearing half is the DOCUMENT, which
+                        // is all the gate ever reads.
+                        if (ctx().ALL.isEmpty()) {
+                            refuseReportJson(out.toString(), t.toString(), null, noClassFilesReason(t));
+                            failures.add(t + " (no .class files found — candor-java reads BYTECODE, not "
+                                    + "source; point it at compiled output or a built .jar. Its report was "
+                                    + "written REFUSED, so `gate --report` over it is INCOMPLETE, not green)");
+                            return;
+                        }
+                        writeReport(fx, out.toString(), null);
                         System.out.println("  " + t + " -> " + out);
                     } catch (Throwable e) {
                         // Record ANY failure — incl. a RuntimeException/Error from a phase outside runScan's
@@ -1844,9 +1871,13 @@ public class Candor {
             System.err.println("        candor reads BYTECODE, not source — point it at COMPILED output");
             System.err.println("        (target/classes · build/classes/java/main) or a built .jar.");
             System.err.println("        no build yet? run `mvn -q compile` or `./gradlew classes` first.");
-            refuseGateJson("no .class files found under " + args[0] + " — candor-java reads BYTECODE, not "
-                    + "source; point it at compiled output (target/classes, build/classes/java/main) or a "
-                    + "built .jar. Exit 2 (unevaluable): a target this engine cannot read is not a clean scan.");
+            refuseGateJson(noClassFilesReason(args[0]));
+            // ⟨0.32⟩ …and the REPORT sink says the same thing, from the same sentence. It already held
+            // the ⟨0.28⟩ arming stub — fail-closed, so the gate downstream was already right — but the
+            // stub's prose says the run "failed, crashed or was killed", which is ⟨0.31⟩'s false
+            // description of a DELIBERATE refusal, on the sink that rung did not reach. Whoever reads
+            // this document is exactly whoever cannot go and look at the four stderr lines above.
+            refuseReportJson(jsonOut, args[0], policyArg, noClassFilesReason(args[0]));
             System.exit(2);
         }
 
@@ -3062,6 +3093,74 @@ public class Candor {
             System.err.println("candor: could not write the refusal to --gate-json " + path
                     + " (" + e.getMessage() + ") — that path may still hold this run's arming stub");
         }
+    }
+
+    /** ⟨0.32⟩ THE ONE SENTENCE both routes and both sinks say about a classless target.
+     *
+     *  <p>Written once because the defect it closes was two routes disagreeing about the same target:
+     *  the single one refused it, {@code --parallel} reported it clean. A reason string copied into the
+     *  second route is a reason string that drifts from the first, and the drift is invisible — nobody
+     *  diffs two prose blocks across 1,700 lines. So the arms share the sentence, and the only thing
+     *  either route decides is WHERE to put it.
+     *
+     *  <p>The remedy travels IN the reason, for the audience that reads the document rather than stderr. */
+    static String noClassFilesReason(Object target) {
+        return "no .class files found under " + target + " — candor-java reads BYTECODE, not source; "
+                + "point it at compiled output (target/classes, build/classes/java/main) or a built .jar. "
+                + "Exit 2 (unevaluable): a target this engine cannot read is not a clean scan.";
+    }
+
+    /**
+     * ⟨0.32⟩ <b>A REFUSAL MUST NOT LEAVE A REPORT THAT READS AS A CLEAN SCAN — SPEC §3.1's "any report a
+     * scan produced".</b> The report-sink twin of {@link #refuseGateJson}, one hop upstream.
+     *
+     * <p>The shape is deliberately NOT new: it is the ⟨0.21⟩ Row-1 manifest-carrying empty that
+     * {@link #armReportJson} already writes — {@code functions: []} + {@code analyzed.count: 0} +
+     * {@code unanalyzed} naming the run. A ⟨0.24⟩ consumer reads that combination as "no purity licence"
+     * and {@code gate --report} over it is INCOMPLETE (exit 2), so no reader learns a new key. What
+     * changes is the SENTENCE: the armer's is a guess made before the run started ("failed, crashed or
+     * was killed"), and ⟨0.31⟩ already ruled that a false description of a DELIBERATE refusal is worse
+     * than a vague one, because it sends the operator after a crash that never happened.
+     *
+     * <p><b>Written, never withheld.</b> Deleting the path — or never writing it — fails open by the
+     * other route: a consumer that reads a missing file as "nothing to report" goes green, and a
+     * PREVIOUS run's clean report left in place goes green louder. That is the §3.1 ruling behind
+     * {@link #writeRefusedGateJson}, and it holds identically here.
+     *
+     * <p><b>And the §2.2 sidecars go with it</b>, for the reason
+     * {@link #removeArmedReportSidecars} gives at length: {@code callers}/{@code whatif} are answered
+     * FROM the call-graph sidecar, so a live sidecar beside a report that read no bytecode hands out a
+     * confident blast radius over nothing. Removing it is part of THIS act rather than the caller's, so
+     * a second call site cannot forget it.
+     */
+    static void refuseReportJson(String path, String target, String policyFlag, String why) {
+        if (path == null || path.equals("-")) return;
+        String[] prov = ReportWriter.provenance();
+        var candor = new java.util.LinkedHashMap<String, Object>();
+        candor.put("version", prov[0]);
+        candor.put("toolchain", prov[1]);
+        candor.put("spec", SPEC_VERSION);
+        var analyzed = new java.util.LinkedHashMap<String, Object>();
+        analyzed.put("count", 0);
+        var un = new java.util.LinkedHashMap<String, Object>();
+        un.put("path", target != null ? target : "<run>");
+        un.put("reason", "refused: " + why);
+        var out = new java.util.LinkedHashMap<String, Object>();
+        out.put("candor", candor);
+        out.put("functions", new java.util.ArrayList<>());
+        out.put("analyzed", analyzed);
+        out.put("unanalyzed", java.util.List.of(un));
+        try {
+            Files.writeString(Path.of(path), io.poly.candor.model.ReportJson.pretty(out) + "\n");
+        } catch (IOException | RuntimeException e) {
+            System.err.println("candor: could not write the refusal to --json " + path + " ("
+                    + e.getMessage() + ") — that path may still hold this run's arming stub or a "
+                    + "PREVIOUS run's report; do not read it as a verdict about " + target);
+            // THE SIDECARS STAY, for armReportJson's reason: this path may still hold the previous
+            // run's report, and a stale report with no call graph is a pair no run has ever written.
+            return;
+        }
+        removeArmedReportSidecars(path, target, policyFlag);
     }
 
     /** ⟨0.31⟩ THE FILE SINK GETS THE SAME SHUTDOWN HOOK THE STREAM SINK HAS HAD SINCE ⟨0.28⟩.

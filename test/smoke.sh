@@ -1788,6 +1788,30 @@ else echo "  FAIL parallel partial failure — exit $pmissrc (want 1)"; fail=$((
 [ -s "$W/par/out4/fx.json" ] && [ -s "$W/par/out4/app.json" ] \
   && { echo "  ok   parallel: the good reports still written"; pass=$((pass+1)); } \
   || { echo "  FAIL parallel: good reports missing after partial failure"; fail=$((fail+1)); }
+# ⟨0.32⟩ A CLASSLESS TARGET IS REFUSED HERE TOO — the sibling route swallowed the refusal the single
+# route produces. `empty.jar` EXISTS and opens; it just holds no `.class`. The single route prints the
+# bytecode-not-source remedy and exits 2 with no report; this arm used to write an ordinary report
+# (analyzed.count 0, functions []) that `gate --report` went GREEN over with only a note on stderr —
+# a note beside exit 0 is not a verdict, and 9 of 560 local corpus artifacts have that shape. Both the
+# EXIT and the DOCUMENT are pinned: the document is what CI's gate actually reads.
+mkdir -p "$W/par/nocls"; echo "no bytecode here" > "$W/par/nocls/readme.txt"
+(cd "$W/par/nocls" && jar cf "$W/par/empty.jar" readme.txt) 2>/dev/null
+pemp="$("$CJ" --parallel "$W/par/out5" "$W/par/fx.jar" "$W/par/empty.jar" 2>&1)"; pemprc=$?
+want "parallel: a classless target is named + remedied"  "$pemp" 'empty.jar (no .class files found'
+if [ "$pemprc" -ne 0 ]; then echo "  ok   parallel classless target does not exit 0 (got $pemprc)"; pass=$((pass+1));
+else echo "  FAIL parallel classless target exited 0 — the refusal was swallowed"; fail=$((fail+1)); fi
+want "parallel: the classless report is REFUSED"         "$(cat "$W/par/out5/empty.json")" '"refused: no .class files found'
+# the CONTROL: the healthy sibling keeps its findings and is NOT marked unanalyzed
+want "parallel: the good sibling still has findings"     "$(cat "$W/par/out5/fx.json")" '"Fx.reads"'
+absent "parallel: the good sibling is not marked unanalyzed" "$(cat "$W/par/out5/fx.json")" 'unanalyzed'
+# and THE POINT: what CI reads over the refused report
+printf 'deny Exec\n' > "$W/par/p.txt"
+"$CJ" gate --report "$W/par/out5/empty" --policy "$W/par/p.txt" >/dev/null 2>&1; pgrc=$?
+if [ "$pgrc" -eq 2 ]; then echo "  ok   gate over the refused parallel report is INCOMPLETE (exit 2)"; pass=$((pass+1));
+else echo "  FAIL gate over the refused parallel report — exit $pgrc (want 2)"; fail=$((fail+1)); fi
+# ⟨0.28⟩ pairing rule: no LIVE call-graph sidecar beside a report that read no bytecode
+if [ ! -e "$W/par/out5/empty.callgraph.json" ]; then echo "  ok   parallel refusal removes its §2.2 sidecars"; pass=$((pass+1));
+else echo "  FAIL parallel refusal left a live callgraph sidecar beside a report that judged nothing"; fail=$((fail+1)); fi
 # usage guard: fewer than 2 args after the flag is a misuse, not a silent no-op
 "$CJ" --parallel "$W/par/only-outdir" >/dev/null 2>&1; purc=$?
 if [ "$purc" -eq 2 ]; then echo "  ok   parallel usage error exits 2"; pass=$((pass+1));

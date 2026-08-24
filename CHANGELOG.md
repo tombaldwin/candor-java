@@ -8,6 +8,52 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- ⚠ **`--parallel` swallowed the refusal the single route produces, and `gate --report` went GREEN over
+  what it wrote.** A target that EXISTS but holds no `.class` — a resources-only jar, a sources jar, a
+  merged-away shim, an unbuilt module — is unevaluable, and the single-target route says exactly that:
+  the bytecode-not-source remedy on stderr, the verdict sink refused, exit 2, no report. Measured at
+  `dec665f`, one argument over:
+
+  ```
+  jar cf empty.jar readme.txt                                  # a jar with NO classes
+  candor empty.jar --policy P --json out.json     -> exit 2, the report sink left fail-closed
+  candor --parallel out/ empty.jar                -> exit 0, out/empty.json written ORDINARY:
+                                                     analyzed.count 0, functions [], no refusal marker
+  candor gate --report out/empty --policy P       -> exit 0
+  ```
+
+  The gate did print a note ("1 of the 1 report(s) gated declare `analyzed.count: 0`"), but **a note
+  beside exit 0 is not a verdict** — CI reads the exit code. It also broke ⟨0.32⟩'s own rule that a
+  refusal must produce no report readable as a scan (SPEC §3.1 binds "any report a scan produced"): the
+  parallel arm produced one whose naive read is PASS.
+
+  A NONEXISTENT path was already collected as a failure, which is precisely why this stayed invisible —
+  bad targets *looked* handled. The one unevaluable kind decided INSIDE `runScan` had no way back out to
+  the arm that collects failures, so it was the only one that leaked a green report.
+
+  The fix propagates the single route's refusal rather than inventing a third behaviour: the document is
+  **written, not withheld** (a consumer that reads a missing file as "nothing to report" fails open by
+  the other route, and a previous run's clean report left in place fails open louder) in the ⟨0.21⟩
+  Row-1 shape arming already uses — `functions: []` + `analyzed.count: 0` + `unanalyzed` naming the
+  target — so `gate --report` over it is INCOMPLETE (exit 2) with no new reader logic. Its §2.2 sidecars
+  go with it (⟨0.28⟩: `callers`/`whatif` are answered FROM the call graph, and a confident blast radius
+  over a scan that read no bytecode is the cardinal sin one file over). The refusal is PER TARGET and
+  travels through the arm's existing failure channel, so a mixed run keeps every healthy target's
+  findings and exits non-zero. Both routes and both sinks now read ONE sentence (`noClassFilesReason`) —
+  the defect was two routes disagreeing about one target, and a copied reason string is one that drifts.
+  The single route's report sink gains the accurate sentence too: it was already fail-closed, but its
+  prose still said the run "crashed or was killed", ⟨0.31⟩'s false description of a deliberate refusal.
+
+  **Corpus A/B, 933 jars** (the Gradle module cache + an exploded production war), `--parallel` before and
+  after: **923 reports byte-identical; exactly 10 changed**, every one holding no analyzable bytecode —
+  `listenablefuture-9999.0-empty-to-avoid-conflict-with-guava` (×2), `kotlin-stdlib-common` (×2, metadata
+  only), `aws-java-sdk` / `aws-java-sdk-models` (aggregator / JSON only), and `kotlin-stdlib-jdk7`/`jdk8`
+  (×4, whose only `.class` is a `META-INF/versions/9/module-info.class` the loader excludes). All 10 move
+  **gate 0 → 2 under `deny Exec`, `deny Net` and `deny Fs`; a 24-artifact control sample and uflexi's repo
+  root and `build/classes/java/main` are unchanged on every policy.** Pinned by `ParallelRefusalTest`
+  (whose over-charge controls — targets that DO have classes, and the mixed run's healthy sibling — passed
+  before AND after) and by eight `test/smoke.sh` rows.
+
 - ⚠ **`deny Exec` did not see a subprocess being ASSEMBLED — only one being launched.** This engine
   enumerated the launch verbs (`ProcessBuilder.start`/`startPipeline`, `Runtime.exec`, the `Desktop`
   openers) and the live-child control surface. Everything else on `java.lang.ProcessBuilder` read pure.

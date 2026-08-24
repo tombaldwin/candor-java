@@ -75,6 +75,80 @@ after upgrading; review policies and regenerate baselines with the new build.
     pre-existing divergence on the zero-readable-files target, where the scan route emits a REFUSAL
     document and the gate route an INCOMPLETE verdict. Untouched here.
 
+- ⚠ **…and the bullet above hardened `judgedElsewhere` while leaving `peeked`, one field up, coercing.
+  A STRING deleted the unread-code refusal outright.** Same report, same policy, only the value's TYPE
+  changed:
+
+  ```
+  "peeked": false    ->  gate --report exits 2   {"ok":false,…,"incomplete":true}   correct
+  "peeked": "true"   ->  gate --report exits 0   {"ok":true,"violations":[]}        refusal DELETED
+  ```
+
+  Four-way on those bytes: **java 0, rust 2, ts 2, swift 2** — java the only engine that coerced.
+  `getAsBoolean` on a JSON string is `Boolean.parseBoolean`, so only a STRING is fail-open; `1`, `0` and
+  `null` coerce to `false` and refused anyway, for the wrong reason. `peeked` now gets the identical
+  treatment its neighbour got — a non-boolean impeaches the document (exit 2) naming the key — and the
+  comment that called `judgedElsewhere` "the ONE key here that can DELETE a refusal" is corrected, since
+  writing that down is part of why nothing looked one line up. A genuine `true` still certifies, a
+  genuine `false` still refuses by the UNREAD arm, and an ABSENT `peeked` is still NOT peeked.
+
+- ⚠ **The sweep that followed it: every remaining coercing read of a §2 key on the gate and query paths.**
+  Gson's accessors CONVERT rather than fail, and every default they fall back to is the SAFE-LOOKING
+  value — an empty `inferred` is a purity claim, an empty `unanalyzed` is "there is no unanalyzed code",
+  a `false` flag is a positive statement. Each row MEASURED on the previous build, one policy
+  (`deny Exec`), one value's type changed:
+
+  ```
+  "inferred": "Exec" / null / [7]     exit 1 -> 0   the violator reads PURE
+  "interfaceUnion": "true"            exit 1 -> 0   an ordinary function exempted as a ⟨0.23⟩ CHA union
+  "fn": { }                           exit 1 -> 0   coerced to "", the entry silently dropped
+  "unanalyzed": [ 123 ]               exit 2 -> 0   a NON-EMPTY manifest of unread code read as empty
+  ```
+
+  One rule now, stated once per reader: **ABSENT takes the default (⟨0.26⟩'s cannot-answer, which must
+  survive), PRESENT-BUT-NOT-§2's-SHAPE impeaches the document.** It covers `ReportJson.parseEntries`
+  (`fn`, `unitKind`; the booleans `entryPoint`/`unresolved`/`interfaceUnion`; and every string-array key
+  — `inferred`, `direct`, `declared`, `undeclared`, `overdeclared`, `invisible`, `unknownWhy`, `calls`,
+  `fs`, `hosts`, `cmds`, `paths`, `tables`, `netClass`, `incomplete` — list AND members) and
+  `Query.readEnvelope`'s member/field reads (`unanalyzed[]` and its `path`/`reason`, `outOfScope[]`'s
+  `fn`/`path`/`class`/`reason`/`effects`, and `netPartners`'s `config`/`hosts` plus its both-or-neither
+  key set). A JSON null is CORRUPT rather than absent here: it is not one of §2's shapes, and `Loader`
+  has always read `"inferred": null` on the chained-dep route as UNTRUSTED — the same key trusted on one
+  route and not the other is how the two drift. The tolerance that REMAINS is about NAMES, never shapes:
+  `unitKind: "some-future-kind"` still answers, `unitKind: { }` refuses.
+
+  **Complete for those readers, and that is a CHECKABLE claim rather than "the ones we found."** All four
+  instances above were found because they MOVED AN EXIT CODE — a biased sample of exactly the wrong kind,
+  because the readers are SHARED and a key with no exit-code consequence sits behind the identical
+  coercion where no exit-driven search will ever reach it. `unitKind`, 14 of the 15 array keys,
+  `entryPoint`, `unresolved` and four of `outOfScope`'s five fields were all in that position after the
+  sweep: the reader was fixed and nothing asserted it for them. `everyKeyTheSharedReadersServeTakesTheRule`
+  now enumerates `parseEntries`'s own argument list, so a key added to one of these readers without a row
+  makes the claim false. It is NOT a claim about every §2 key everywhere — the `Loader` dep route,
+  `Refresh` and the sidecar readers are out of scope, for the reasons below.
+
+  **The pattern, for the next one:** every top-level shape check on these keys had landed and every
+  MEMBER and FIELD read under it kept coercing. `outOfScope` and `excluded` impeached a non-object
+  member; `unanalyzed`, the sibling written first, skipped it. List what the general path does, then diff
+  every carved-out branch against it.
+
+  **AND NOT ONE KEY FURTHER — INCLUDING ONE BACKED OUT OF THIS CHANGE.** SPEC §2 draws the line at the
+  key's ROLE, and its DECORATION side is a ruling too — `loc`, and `hash` on a single-report route,
+  "carry no claim a verdict reads … refusing there drops a hedge to be strict about ornament". Those keep
+  their tolerant read, pinned by a row that a refuse-everything build fails. The first draft of this
+  sweep ALSO hardened `excluded[].class`, and that was wrong: nothing DECIDES on that token (the rule
+  reads the producer's `peeked` flag and never the name — keying on the name would gate another engine's
+  report differently from the engine that wrote it), and it reaches stderr and the hedge sentence, never
+  the verdict document. Refusing there would have been a fail-CLOSED regression shipped inside a
+  fail-open repair. It now WITHHOLDS and answers — a non-string is labelled `(unnamed exclusion class)`
+  rather than rendering a name no producer wrote (`"class": 123` used to print a class called `123`) —
+  and `anUnreadableExclusionClassNameIsWithheldRatherThanRefused` records why, so the next sweep does not
+  repeat it. Deliberately left, with reasons: `analyzed.count`'s `getAsInt` (the
+  TRUST decision is `Loader.claimsToHaveJudgedNothing`, which already hedges on a non-numeric count — no
+  fail-open direction found); the `coverage` ledger's detail (§2 names it a decoration, and candor-rust's
+  relaxation there was ratified); the callgraph/hierarchy SIDECAR readers (a sidecar is not a report);
+  and `Loader`'s chained-dep reader, which already fails CLOSED on every shape this one failed open on.
+
 - **A descriptive verb's INCOMPLETE hedge trailed off into an empty clause on both SCOPE causes.**
   `ReportCompleteness.incomplete()` has counted `outOfScope` since ⟨0.30⟩ and `unpeeked` since ⟨0.32⟩,
   but the sentence was still built from the three MANIFEST rows alone — so over a report whose only cause

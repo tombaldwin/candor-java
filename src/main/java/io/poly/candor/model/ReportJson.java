@@ -169,6 +169,36 @@ public final class ReportJson {
      * empty/default value (never null), unknown {@code unitKind}/effect names are tolerated (spec §2
      * forward compatibility), and a foreign {@code unknownWhy} prefix is preserved verbatim. No
      * filtering or sorting — the caller (Query) drops un-named entries and sorts, as before.
+     *
+     * <p><b>⟨0.32⟩ THE TOLERANCE IS ABOUT NAMES, NEVER ABOUT SHAPES.</b> A key that is ABSENT takes its
+     * default — that is the ⟨0.21⟩/⟨0.26⟩ cannot-answer reading, and it must survive. A key that is
+     * PRESENT but is not of the shape §2 gives it is CORRUPT INPUT and impeaches the whole document
+     * (§2's signature-key rule), because every default here is the SAFE-LOOKING value: an empty
+     * {@code inferred} is a purity claim and a {@code false} boolean is a positive statement. The three
+     * readers below coerced instead, and all three were MEASURED deleting a violation from
+     * {@code gate --report} on a report whose only defect was a value's TYPE:
+     *
+     * <pre>
+     * "inferred": "Exec"            -> exit 1 becomes exit 0   (coerced to [], the entry reads PURE)
+     * "inferred": null              -> exit 1 becomes exit 0   (same, via the null-is-absent reading)
+     * "interfaceUnion": "true"      -> exit 1 becomes exit 0   (Boolean.parseBoolean; a SYNTHETIC entry
+     *                                                           is never reported as a violator)
+     * "fn": { }                     -> exit 1 becomes exit 0   (coerced to "", Query.load drops the entry)
+     * </pre>
+     *
+     * JSON null is corrupt here rather than absent: it is not any of §2's shapes, and {@link
+     * io.poly.candor.Loader} has always read {@code "inferred": null} on the chained-dep route as an
+     * UNTRUSTED claim ({@code Unknown}) — two spellings of the same key disagreeing across routes is how
+     * a claim comes to be trusted on one and not the other.
+     *
+     * <p><b>AND NOT ONE KEY FURTHER.</b> §2 draws the line at the key's ROLE, and its DECORATION side is
+     * a ruling too: {@code loc} and {@code hash} keep their tolerant read (see {@link #decoration}).
+     * Being strict about ornament drops a hedge, which is the same defect with the sign flipped —
+     * measured in this project as a fabrication-fix that deleted a surface.
+     *
+     * @throws IllegalStateException on a present-but-unreadable §2 key. Every caller that can reach a
+     *         verdict already routes this to a §3.1 refusal ({@code Query.gate}'s {@code refuse(…)});
+     *         {@code Policy.loadBaseline} degrades it to "no baseline", which is the strict direction.
      */
     public static List<Effector> parseEntries(JsonArray arr) {
         List<Effector> out = new ArrayList<>();
@@ -177,7 +207,7 @@ public final class ReportJson {
             JsonObject o = el.getAsJsonObject();
             out.add(new Effector(
                     str(o, "fn"),
-                    str(o, "loc"),
+                    decoration(o, "loc"),
                     EffectSet.ofNames(strList(o, "inferred")),
                     strList(o, "invisible"),
                     EffectSet.ofNames(strList(o, "direct")),
@@ -186,10 +216,10 @@ public final class ReportJson {
                     EffectSet.ofNames(strList(o, "overdeclared")),
                     bool(o, "entryPoint"),
                     bool(o, "unresolved"),
-                    EffectorKind.fromWire(has(o, "unitKind") ? str(o, "unitKind") : null),
+                    EffectorKind.fromWire(o.has("unitKind") ? str(o, "unitKind") : null),
                     strList(o, "unknownWhy").stream().map(UnknownReason::parse)
                             .filter(Objects::nonNull).collect(Collectors.toList()),
-                    str(o, "hash"),
+                    decoration(o, "hash"),
                     strList(o, "calls"),
                     strList(o, "fs"),
                     strList(o, "hosts"),
@@ -203,23 +233,66 @@ public final class ReportJson {
         return out;
     }
 
-    private static boolean has(JsonObject o, String k) {
-        return o.has(k) && !o.get(k).isJsonNull();
+    /**
+     * ⟨0.24⟩ SPEC §2's OTHER HALF, and it is not an oversight that it stays tolerant: <i>"DECORATIONS —
+     * a coverage ledger's detail, {@code loc}, and {@code hash} ON A SINGLE-REPORT ROUTE — carry no claim
+     * a verdict reads. Withhold the decoration, disclose it, and answer. Refusing there drops a hedge to
+     * be strict about ornament."</i> So {@code loc} and {@code hash} keep the coercing read they have
+     * always had; hardening them would have been the fail-CLOSED regression that this project has now
+     * twice shipped while repairing a fail-open.
+     *
+     * <p>The ⟨0.32⟩ carve-out — {@code hash} IS a signature key once several reports are MERGED, because
+     * §2.2 makes the join depend on it — is a property of the ROUTE, which this parser does not know and
+     * must not guess at. It belongs to the multi-report merge, beside the rest of that route's rules.
+     */
+    private static String decoration(JsonObject o, String k) {
+        return o.has(k) && o.get(k).isJsonPrimitive() ? o.get(k).getAsString() : "";
+    }
+
+    /** The one refusal, worded once. Names the key, the shape §2 gives it, and what was found — an
+     *  operator holding a report and a red gate needs all three to know which half is broken. */
+    private static IllegalStateException corrupt(String k, String want, JsonElement got) {
+        return new IllegalStateException(
+                "a report entry's `" + k + "` is " + describe(got) + ", not " + want + " — a §2 key that "
+                + "cannot be read impeaches the whole document, because reading it as its default would "
+                + "make the SAFE-LOOKING claim (an empty effect set is a purity claim, a false flag is a "
+                + "positive statement) and that turns a violation into `policy ✓`");
+    }
+
+    private static String describe(JsonElement e) {
+        if (e.isJsonNull()) return "null";
+        if (e.isJsonArray()) return "an array";
+        if (e.isJsonObject()) return "an object";
+        var p = e.getAsJsonPrimitive();
+        return p.isString() ? "the string " + p : p.isBoolean() ? "the boolean " + p : "the number " + p;
     }
 
     private static String str(JsonObject o, String k) {
-        return has(o, k) && o.get(k).isJsonPrimitive() ? o.get(k).getAsString() : "";
+        if (!o.has(k)) return "";   // a JSON null is PRESENT, and therefore corrupt — see above
+        JsonElement v = o.get(k);
+        if (!v.isJsonPrimitive() || !v.getAsJsonPrimitive().isString()) throw corrupt(k, "a string", v);
+        return v.getAsString();
     }
 
     private static boolean bool(JsonObject o, String k) {
-        return has(o, k) && o.get(k).isJsonPrimitive() && o.get(k).getAsBoolean();
+        if (!o.has(k)) return false; // a JSON null is PRESENT, and therefore corrupt — see above
+        JsonElement v = o.get(k);
+        if (!v.isJsonPrimitive() || !v.getAsJsonPrimitive().isBoolean()) throw corrupt(k, "a boolean", v);
+        return v.getAsBoolean();
     }
 
     private static List<String> strList(JsonObject o, String k) {
         List<String> r = new ArrayList<>();
-        if (has(o, k) && o.get(k).isJsonArray())
-            for (JsonElement e : o.getAsJsonArray(k))
-                if (e.isJsonPrimitive()) r.add(e.getAsString());
+        if (!o.has(k)) return r;     // a JSON null is PRESENT, and therefore corrupt — see above
+        JsonElement v = o.get(k);
+        if (!v.isJsonArray()) throw corrupt(k, "an array", v);
+        for (JsonElement e : v.getAsJsonArray()) {
+            // A MEMBER IS THE SAME RULE ONE LEVEL DOWN. Skipping it silently shortens a list whose
+            // LENGTH is the claim — the identical coercion, one nesting in.
+            if (!e.isJsonPrimitive() || !e.getAsJsonPrimitive().isString())
+                throw corrupt(k, "an array of strings", e);
+            r.add(e.getAsString());
+        }
         return r;
     }
 

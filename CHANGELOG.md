@@ -8,6 +8,20 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **The ⟨0.32⟩ source peek leaked an empty `candor-peek*` scratch directory into the system temp dir on
+  every FAILED compile.** `compileForPeek` creates the directory, and the caller deletes what it is
+  *handed* — so the three exits that `return null` (javac errored, javac emitted no class, anything
+  threw) each left one behind. The failure path is the common one here: a source excluded from a scan
+  usually does not compile standalone, so the leak scaled with the arm's normal operation rather than
+  with its errors. Measured on a real repo root — 2 exclusion classes, neither compilable without the
+  project's own dependencies, **2 leaked directories per run, 201 accumulated** on the machine it was
+  found on. Creating the directory and owning its cleanup are now one act, held in the method that
+  creates it, for the same reason arming holds its sidecar removal: a second exit added later is a second
+  chance to forget. The peek's ANSWER is unchanged — a policy-bearing scan of the same repo root produces
+  a byte-identical report apart from the build id, which is exactly why counting was the only way to see
+  this. Pinned by a `test/smoke.sh` row that counts `candor-peek*` before and after a scan (verified to
+  leak 1 against the previous build, 0 against this one).
+
 - ⚠ **A class that did nothing but READ HTTP HEADERS passed `deny Net` at exit 0 with an EMPTY function
   list.** The `URLConnection`/`HttpURLConnection` arm enumerated the verbs that LOOK like transmission —
   `connect`, `getInputStream`, `getOutputStream`, `getContent`, `getResponseCode`,

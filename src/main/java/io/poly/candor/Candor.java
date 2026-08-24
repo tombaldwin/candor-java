@@ -651,8 +651,22 @@ public class Candor {
     static Path compileForPeek(List<Path> files, List<Path> classpath, Path scratchRoot) {
         javax.tools.JavaCompiler jc = javax.tools.ToolProvider.getSystemJavaCompiler();
         if (jc == null) return null;
+        // ⟨0.32⟩ THE SCRATCH TREE IS DELETED ON EVERY EXIT OF THIS METHOD, NOT ONLY THE ONE THAT SUCCEEDS.
+        // The caller deletes what it is HANDED, and it is handed nothing on a `return null` — so the three
+        // failure exits below (javac errored, javac emitted no class, anything threw) each left an empty
+        // `candor-peek*` directory in the system temp dir. MEASURED on a real repo root: 2 exclusion
+        // classes, neither compilable without the project's own dependencies, 2 leaked directories PER RUN
+        // — 201 had accumulated on the machine this was found on. The failure path is the COMMON one here
+        // (a source that compiles standalone is the exception, not the rule), so the leak scaled with the
+        // arm's normal operation rather than with its errors.
+        //
+        // Held here rather than at the caller for the reason arming holds its sidecar removal: creating
+        // the directory and owning its cleanup are one act, and a second exit added later is a second
+        // chance to forget.
+        Path out = null;
+        boolean handedOver = false;
         try {
-            Path out = java.nio.file.Files.createTempDirectory(scratchRoot, "candor-peek");
+            out = java.nio.file.Files.createTempDirectory(scratchRoot, "candor-peek");
             List<String> args = new ArrayList<>(List.of("-proc:none", "-nowarn", "-d", out.toString()));
             if (!classpath.isEmpty()) {
                 args.add("-classpath");
@@ -660,7 +674,6 @@ public class Candor {
                         .collect(java.util.stream.Collectors.joining(java.io.File.pathSeparator)));
             }
             for (Path f : files) args.add(f.toString());
-            java.io.StringWriter sink = new java.io.StringWriter();
             int rc = jc.run(null, java.io.OutputStream.nullOutputStream(),
                             java.io.OutputStream.nullOutputStream(),
                             args.toArray(new String[0]));
@@ -670,9 +683,12 @@ public class Candor {
             try (var walk = java.nio.file.Files.walk(out)) {
                 if (walk.noneMatch(q -> q.toString().endsWith(".class"))) return null;
             }
+            handedOver = true;   // from here the CALLER owns it, and its finally deletes it
             return out;
         } catch (Throwable e) {
             return null;
+        } finally {
+            if (!handedOver && out != null) deleteTree(out);
         }
     }
 

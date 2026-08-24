@@ -1855,6 +1855,32 @@ else echo "  FAIL parallel refusal left a live callgraph sidecar beside a report
 if [ "$purc" -eq 2 ]; then echo "  ok   parallel usage error exits 2"; pass=$((pass+1));
 else echo "  FAIL parallel usage — exit $purc (want 2)"; fail=$((fail+1)); fi
 
+echo "== ⟨0.32⟩ the source peek leaves NO scratch tree behind, on the FAILURE path too =="
+# `compileForPeek` creates a `candor-peek*` temp dir, and the CALLER deletes what it is HANDED — so the
+# three exits that `return null` (javac errored, javac emitted no class, anything threw) each left an
+# empty directory in TMPDIR. The failure path is the COMMON one: a source excluded from a scan usually
+# does not compile standalone. MEASURED on a real repo root — 2 exclusion classes, 2 leaked dirs PER RUN,
+# 201 accumulated on the machine it was found on. Asserted by COUNTING, because the leak is invisible in
+# the report: the peek's answer is identical either way.
+mkdir -p "$W/peekleak/src/com/x"
+cat > "$W/peekleak/src/com/x/NeedsDep.java" <<'J'
+package com.x;
+import com.nowhere.Missing;                       // never resolvable -> the peek's javac FAILS
+public class NeedsDep { public void go(Missing m) { m.use(); } }
+J
+cat > "$W/peekleak/src/com/x/Ok.java" <<'J'
+package com.x;
+public class Ok { public void go() { System.out.println("x"); } }
+J
+javac -d "$W/peekleak/classes" "$W/peekleak/src/com/x/Ok.java" 2>/dev/null
+printf 'deny Exec\n' > "$W/peekleak/pol"
+peektmp="${TMPDIR:-/tmp}"
+pkb=$(find "$peektmp" -maxdepth 1 -name 'candor-peek*' 2>/dev/null | wc -l | tr -d ' ')
+"$CJ" "$W/peekleak" --policy "$W/peekleak/pol" >/dev/null 2>&1
+pka=$(find "$peektmp" -maxdepth 1 -name 'candor-peek*' 2>/dev/null | wc -l | tr -d ' ')
+if [ "$pkb" -eq "$pka" ]; then echo "  ok   a policy-bearing scan leaves no candor-peek* scratch tree ($pkb -> $pka)"; pass=$((pass+1));
+else echo "  FAIL the peek leaked $((pka-pkb)) candor-peek* dir(s) into $peektmp ($pkb -> $pka)"; fail=$((fail+1)); fi
+
 # ── CANDOR_STRICT conformance gate (AS-EFF-001/002/003, SEMANTICS §6 through the DI reading) ─────
 # The gate that shipped for months with zero coverage in ANY harness (TESTING.md §2 pin 1): a class's
 # injected-collaborator fields are its declared capabilities; performing beyond them fires 001, an

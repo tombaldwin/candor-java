@@ -2182,10 +2182,17 @@ public class Candor {
         // the same tree and the same forbid-only policy — and conformance stayed GREEN, because PART 62's
         // never-asked control existed in rust's row and not in this one. A control in one engine's row is
         // how three-of-four ships as four; the java row now carries it too.
-        if (gateConfigured && policyRefusal == null && !ctx().denyRules.isEmpty()) {
+        //
+        // THE CONDITION IS NOT SPELLED HERE. It lives in {@link #unreadClasses}, which is also what
+        // `scanGateFacts` publishes into the verdict DOCUMENT — one predicate, both halves. Spelled at
+        // this arm and nowhere else, it let the two disagree, and that was MEASURED: a `forbid`-only
+        // policy over a tree with an uncompiled source wrote `"ok": false, "incomplete": true` AT EXIT 0,
+        // because the recorder had no condition at all. The exit was right; the document was the
+        // over-charge, and only a machine reading the JSON could see it. (candor-rust `ab505c0` found the
+        // same split in the same direction on the same rung.)
+        if (policyRefusal == null) {
             java.util.List<String> unread = new ArrayList<>();
-            for (var c : excludedClasses())
-                if (!c.peeked() && !c.judgedElsewhere()) unread.add(c.cls() + " (" + c.count() + ")");
+            for (var c : unreadClasses()) unread.add(c.cls() + " (" + c.count() + ")");
             if (!unread.isEmpty()) {
                 // The remedy names only what WORKS. It used to offer "or narrow the policy's scope",
                 // which does not: this arm never consults rule scopes, so `deny Exec in com.elsewhere.*`
@@ -2261,9 +2268,33 @@ public class Candor {
         // ⟨0.32⟩ the exclusion classes this run did not READ. Derived from the same builder the report
         // publishes, so the verdict and the document cannot disagree about which classes were opened.
         java.util.List<String> unpeeked = new ArrayList<>();
-        for (var c : excludedClasses())
-            if (!c.peeked() && !c.judgedElsewhere()) unpeeked.add(c.cls());
+        for (var c : unreadClasses()) unpeeked.add(c.cls());
         return new GateFacts(ctx().edges.keySet().size(), un, kappaUncovered(), oos, unpeeked);
+    }
+
+    /**
+     * ⟨0.32⟩ THE CLASSES THIS RUN DID NOT READ, AND WHETHER THIS RUN'S POLICY CARES — the ONE statement of
+     * that condition on the scan route. {@link #scanGateFacts} publishes it into the verdict DOCUMENT and
+     * the gate's exit arm reads it for the exit code; when the condition was spelled at the exit arm alone
+     * the two disagreed, MEASURED as `"ok": false, "incomplete": true` AT EXIT 0 under a `forbid`-only
+     * policy over a tree with an uncompiled source. `gate --report` applies the identical condition once
+     * to its own accumulated value (see {@link Query#gate}), which is what keeps the two routes'
+     * documents byte-equal under §3.1.
+     *
+     * <p><b>{@code denyRules} IS THE RULE LIST, NEVER A SET OF EFFECT NAMES.</b> {@code pure} parses into
+     * it as a {@code Deny} with an EMPTY effect set, meaning "every effect except Unknown". Flattened to
+     * names it names nothing, and this engine has already paid for that once: the peek short-circuited
+     * under the STRICTEST policy in the family, a four-way false all-clear. {@code allow}/{@code forbid}/
+     * {@code only} live in their own lists and none of them is answered from code outside the scan's
+     * scope, so a policy holding only those never put the peek's question and must not be refused for
+     * want of its answer — the same short-circuit the peek itself applies.
+     */
+    static List<Report.ExcludedClass> unreadClasses() {
+        if (ctx().denyRules.isEmpty()) return List.of();
+        List<Report.ExcludedClass> out = new ArrayList<>();
+        for (var c : excludedClasses())
+            if (!c.peeked() && !c.judgedElsewhere()) out.add(c);
+        return out;
     }
 
     static void writeGateJson(String path, int violations, GateFacts facts) {

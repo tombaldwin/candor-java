@@ -3493,6 +3493,49 @@ public final class Query {
                     /** ⟨0.32⟩ `excluded[].peeked == false` — the classes the producing scan never READ. */
                     List<String> unpeeked) {}
 
+    /**
+     * ⟨0.32⟩ ONE RULE FOR EVERY §2 ENVELOPE FIELD THIS READER TOUCHES: absent takes the default (⟨0.26⟩'s
+     * cannot-answer, which must survive — refusing over a producer that never carried the key would refuse
+     * every report an older engine ever wrote), and PRESENT-BUT-NOT-§2's-SHAPE is corrupt input that
+     * impeaches the document.
+     *
+     * <p>It exists because the shape checks here were each written for ONE key and stopped at the level the
+     * defect of the day had been found at. The top-level check on `unanalyzed`, `outOfScope`, `excluded`
+     * and `netPartners` all landed; the MEMBER and FIELD reads under them kept coercing, and each of those
+     * is the same fail-open one nesting further in. Gson's coercions are exactly the ones that look
+     * harmless: `getAsString` renders a number, `getAsBoolean` is `Boolean.parseBoolean` on a string, and a
+     * shape it cannot read becomes the empty default — which is the SAFE-LOOKING value every time.
+     *
+     * <p>Not applied to {@code loc}/{@code hash}: §2 calls those DECORATIONS and instructs a reader to
+     * withhold and answer rather than refuse. The line is the key's ROLE, and being strict about ornament
+     * is the same defect with the sign flipped.
+     */
+    private static String envStr(JsonObject o, String owner, String k) {
+        if (!o.has(k)) return "";
+        JsonElement v = o.get(k);
+        if (!v.isJsonPrimitive() || !v.getAsJsonPrimitive().isString())
+            throw new IllegalStateException("an `" + owner + "` member's `" + k + "` is not a string — a "
+                    + "SIGNATURE key that cannot be read impeaches the whole document (§2)");
+        return v.getAsString();
+    }
+
+    /** {@link #envStr}'s rule for a list, applied to the list AND to every member. */
+    private static List<String> envStrList(JsonObject o, String owner, String k) {
+        List<String> out = new ArrayList<>();
+        if (!o.has(k)) return out;
+        JsonElement v = o.get(k);
+        if (!v.isJsonArray())
+            throw new IllegalStateException("an `" + owner + "` member's `" + k + "` is not an array — a "
+                    + "SIGNATURE key that cannot be read impeaches the whole document (§2)");
+        for (JsonElement e : v.getAsJsonArray()) {
+            if (!e.isJsonPrimitive() || !e.getAsJsonPrimitive().isString())
+                throw new IllegalStateException("an `" + owner + "` member's `" + k + "` holds a "
+                        + "non-string — read past, it SHORTENS a list whose length is the claim (§2)");
+            out.add(e.getAsString());
+        }
+        return out;
+    }
+
     static Envelope readEnvelope(String path) throws Exception {
         JsonElement root = JsonParser.parseString(Files.readString(Path.of(path)));
         Map<String, List<String>> raw = new HashMap<>();
@@ -3543,14 +3586,28 @@ public final class Query {
                 throw new IllegalStateException(
                         "`unanalyzed` is present but is not an array — a SIGNATURE key that cannot be read "
                         + "impeaches the whole document (§2), so this gate cannot certify it");
+            // …AND ITS MEMBERS BY THE SAME RULE, which the top-level check above was written without.
+            // `outOfScope` and `excluded` below both impeach on a non-object member; this one SKIPPED it,
+            // so the LENGTH of the list — which is the entire claim `unanalyzed` makes — was decided by
+            // how well-formed its members happened to be. MEASURED on the build this repairs, same policy,
+            // same everything else:
+            //
+            //     "unanalyzed": [ { "path": "a.java", "reason": "no class" } ] -> exit 2, incomplete: true
+            //     "unanalyzed": [ 123 ]                                        -> exit 0, ok: true
+            //
+            // A NON-EMPTY manifest of code the scan could not analyze, read as "there is none". This is the
+            // general-path-vs-carved-branch diff: three sibling lists, one rule, and it was applied to two.
             if (o.has("unanalyzed") && o.get("unanalyzed").isJsonArray())
-                for (JsonElement e : o.getAsJsonArray("unanalyzed"))
-                    if (e.isJsonObject()) {
-                        JsonObject u = e.getAsJsonObject();
-                        unanalyzed.add(new String[]{
-                                u.has("path") ? u.get("path").getAsString() : "",
-                                u.has("reason") ? u.get("reason").getAsString() : ""});
-                    }
+                for (JsonElement e : o.getAsJsonArray("unanalyzed")) {
+                    if (!e.isJsonObject())
+                        throw new IllegalStateException(
+                                "an `unanalyzed` member is not an object — a SIGNATURE key that cannot be "
+                                + "read impeaches the whole document (§2); skipped silently it shortens the "
+                                + "very manifest that says there is code nothing looked at");
+                    JsonObject u = e.getAsJsonObject();
+                    unanalyzed.add(new String[]{envStr(u, "unanalyzed", "path"),
+                                                envStr(u, "unanalyzed", "reason")});
+                }
             // ⟨0.30⟩ THE PEEK'S FINDINGS, read as strictly as `unanalyzed` above and for the identical
             // reason: non-emptiness IS a fail-closed trigger, so a present-but-garbled key coerced to its
             // empty default becomes the claim "I looked and nothing was there" — the safe-LOOKING value.
@@ -3563,12 +3620,22 @@ public final class Query {
                     throw new IllegalStateException(
                             "`netPartners` is present but is not an object — a SIGNATURE key that cannot "
                             + "be read impeaches the whole document (§2), so this gate cannot certify it");
+                // …and the SAME rule inside the object. `has(config) && has(hosts) && isJsonArray(hosts)`
+                // meant a garbled inner shape DROPPED the whole disclosure and answered — the failure this
+                // key's own top-level check was added to prevent, one level down. §3.1 binds the two routes
+                // to byte-equal reports, so a silently dropped `netPartners` is a verdict that differs from
+                // `scan --policy`'s over the same facts: the exact byte-equality break this disclosure was
+                // once REVERTED for.
                 JsonObject np = o.getAsJsonObject("netPartners");
-                if (np.has("config") && np.has("hosts") && np.get("hosts").isJsonArray()) {
-                    List<String> hs = new ArrayList<>();
-                    for (JsonElement h : np.getAsJsonArray("hosts")) hs.add(h.getAsString());
+                if (np.has("config") || np.has("hosts")) {
+                    // BOTH OR NEITHER — ⟨0.26⟩'s key-set rule: a PARTIAL disclosure answers worse than an
+                    // absent one, because it looks like a complete answer to a question it did not answer.
+                    if (!np.has("config") || !np.has("hosts"))
+                        throw new IllegalStateException(
+                                "`netPartners` carries only one of `config`/`hosts` — a partial disclosure "
+                                + "reads as a complete one, so it impeaches the document (§2.2)");
                     netPartners = new io.poly.candor.model.Report.NetPartners(
-                            np.get("config").getAsString(), hs);
+                            envStr(np, "netPartners", "config"), envStrList(np, "netPartners", "hosts"));
                 }
             }
             if (o.has("outOfScope") && !o.get("outOfScope").isJsonArray())
@@ -3587,17 +3654,19 @@ public final class Query {
                                 + "read impeaches the whole document (§2); read as an empty list it turns "
                                 + "NOT-certified into `policy ✓`");
                     {
+                        // …and the member's own fields by the same rule. `effects` does not decide THIS
+                        // route's exit — a non-empty `outOfScope` is the trigger, whatever it lists — but
+                        // the list travels verbatim into the verdict DOCUMENT, and §3.1 binds that document
+                        // to `scan --policy`'s over the same facts. Coerced, `"effects": "Exec"` published
+                        // `effects: []` and `[123]` published `["123"]`: a verdict stating something the
+                        // producer did not.
                         JsonObject f = e.getAsJsonObject();
-                        List<String> effs = new ArrayList<>();
-                        if (f.has("effects") && f.get("effects").isJsonArray())
-                            for (JsonElement x : f.getAsJsonArray("effects"))
-                                if (x.isJsonPrimitive()) effs.add(x.getAsString());
                         outOfScope.add(new io.poly.candor.model.Report.OutOfScope(
-                                f.has("fn") ? f.get("fn").getAsString() : "",
-                                f.has("path") ? f.get("path").getAsString() : "",
-                                effs,
-                                f.has("class") ? f.get("class").getAsString() : "",
-                                f.has("reason") ? f.get("reason").getAsString() : ""));
+                                envStr(f, "outOfScope", "fn"),
+                                envStr(f, "outOfScope", "path"),
+                                envStrList(f, "outOfScope", "effects"),
+                                envStr(f, "outOfScope", "class"),
+                                envStr(f, "outOfScope", "reason")));
                     }
                 }
             if (o.has("coverage") && o.get("coverage").isJsonObject()) {
@@ -3677,8 +3746,32 @@ public final class Query {
                 // ABSENT `peeked` counts as NOT peeked. A producer that does not carry the key cannot be
                 // read as having opened the files — that would be the fail-open reading of a missing
                 // disclosure, which is the failure this whole key exists to prevent.
-                boolean peeked = xo.has("peeked") && xo.get("peeked").isJsonPrimitive()
-                        && xo.get("peeked").getAsBoolean();
+                //
+                // …AND A NON-BOOLEAN VALUE IS CORRUPT INPUT, NOT A FALSE — the SAME treatment
+                // `judgedElsewhere` gets below, because this key has the same power and the shape check
+                // was written for its neighbour and not for it. `isJsonPrimitive()` alone let Gson's
+                // `getAsBoolean` COERCE, and on a STRING it is `Boolean.parseBoolean`, so on identical
+                // bytes and an identical policy:
+                //
+                //     "peeked": false    -> gate --report exits 2   (correct)
+                //     "peeked": "true"   -> gate --report exits 0   ok:true, no `incomplete`, no disclosure
+                //
+                // — the ⟨0.32⟩ unread-code refusal DELETED by a value the §2.2 shape does not allow, and
+                // deleted SILENTLY: the verdict document says `ok: true` with nothing hedged. Four-way on
+                // those bytes: java 0, rust 2, ts 2, swift 2. Only a string is fail-open (`1` and `null`
+                // coerce the safe way), which is why the direction had to be measured rather than reasoned
+                // about. JSON null lands here too: it is not a boolean either, and reading it as "the
+                // producer said false" is a guess this engine is not entitled to make.
+                boolean peeked = false;
+                if (xo.has("peeked")) {
+                    var pk = xo.get("peeked");
+                    if (!pk.isJsonPrimitive() || !pk.getAsJsonPrimitive().isBoolean())
+                        throw new IllegalStateException(
+                                "an `excluded` member's `peeked` is not a boolean — the other key here "
+                                + "that can DELETE a refusal, so a value this engine has to guess at "
+                                + "impeaches the whole document (§2)");
+                    peeked = pk.getAsBoolean();
+                }
                 // ⟨0.32⟩ read the PRODUCER's own statement. Keying on the class token instead would
                 // gate another engine's report differently from the engine that wrote it: the same
                 // concept is `build-output-archive` here and `build-output` in rust and swift, and
@@ -3686,15 +3779,18 @@ public final class Query {
                 //
                 // A NON-BOOLEAN VALUE IS CORRUPT INPUT, NOT A FALSE. Gson's `getAsBoolean` COERCES, so
                 // the string `"true"` came back `true` and carved out a class no producer had exempted —
-                // the fail-open reading of the one key here that can DELETE a refusal. rust and ts both
-                // refuse this shape.
+                // the fail-open reading of a key that can DELETE a refusal. rust and ts both refuse this
+                // shape. THIS HARDENING SHIPPED WITH `peeked` STILL COERCING one field up, and the
+                // comment here read "the ONE key that can delete a refusal" — which is why it took a
+                // separate reproduction to find. Both are boolean, both are read from the same object,
+                // and there is exactly one rule for both.
                 boolean judgedElsewhere = false;
                 if (xo.has("judgedElsewhere")) {
                     var je = xo.get("judgedElsewhere");
                     if (!je.isJsonPrimitive() || !je.getAsJsonPrimitive().isBoolean())
                         throw new IllegalStateException(
-                                "an `excluded` member's `judgedElsewhere` is not a boolean — the one key "
-                                + "here that can DELETE a refusal, so a value this engine has to guess at "
+                                "an `excluded` member's `judgedElsewhere` is not a boolean — a key here "
+                                + "that can DELETE a refusal, so a value this engine has to guess at "
                                 + "impeaches the whole document (§2)");
                     judgedElsewhere = je.getAsBoolean();
                 }
@@ -3702,8 +3798,21 @@ public final class Query {
                 // A CLASS WITH NO NAME IS STILL A CLASS THE SCAN DID NOT READ. Dropping the entry for
                 // want of a label would let a malformed report delete its own disclosure — the same
                 // fail-open coercion one field down.
-                unpeeked.add(xo.has("class") && xo.get("class").isJsonPrimitive()
-                        ? xo.get("class").getAsString() : "(unnamed exclusion class)");
+                //
+                // …AND THIS ONE IS A LABEL, SO IT IS WITHHELD AND NOT REFUSED. It is the DECORATION side
+                // of §2's role test, deliberately: nothing DECIDES on the class token — the rule two
+                // lines up reads the producer's `peeked` flag and never the name (keying on the token
+                // would gate another engine's report differently from the engine that wrote it, which is
+                // argued above) — and the name reaches stderr and the hedge sentence, never the verdict
+                // DOCUMENT. Refusing here would be strict about ornament, which §2 forbids in as many
+                // words, and there is no measured fail-open behind it: an unreadable name already left
+                // the entry counted as unread. What changes is only that a non-string is now WITHHELD
+                // and labelled rather than rendered — `"class": 123` printed a class called `123`, which
+                // is a name no producer wrote.
+                String cls = xo.has("class") && xo.get("class").isJsonPrimitive()
+                        && xo.get("class").getAsJsonPrimitive().isString()
+                        ? xo.get("class").getAsString() : "";
+                unpeeked.add(cls.isEmpty() ? "(unnamed exclusion class)" : cls);
             }
         }
         return new Envelope(analyzed, unanalyzed, uncovered, raw, pkg,

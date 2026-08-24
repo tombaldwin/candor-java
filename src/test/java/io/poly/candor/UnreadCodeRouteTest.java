@@ -324,6 +324,79 @@ class UnreadCodeRouteTest {
     // ── CORRUPT INPUT FAILS CLOSED ────────────────────────────────────────────────────────────────────
 
     /**
+     * A NON-BOOLEAN {@code peeked} IS CORRUPT INPUT — <b>the SAME defect as the row below, in the key one
+     * field UP, shipped in the same commit that hardened its neighbour.</b> That commit's own comment
+     * called {@code judgedElsewhere} "the ONE key here that can DELETE a refusal"; it is not, and writing
+     * that down is part of why nothing looked at {@code peeked}.
+     *
+     * <p>MEASURED on the build this repairs — same report, same policy, only the value's TYPE changed:
+     * <pre>
+     * "peeked": false   -> gate --report exits 2   {"ok":false,…,"incomplete":true}
+     * "peeked": "true"  -> gate --report exits 0   {"ok":true,"violations":[]}      no hedge, no disclosure
+     * </pre>
+     * Four-way on those bytes: <b>java 0, rust 2, ts 2, swift 2</b>.
+     *
+     * <p><b>EVERY SHAPE, because only ONE of them was fail-open.</b> {@code getAsBoolean} on a string is
+     * {@code Boolean.parseBoolean}, so {@code "true"} carved the class out while {@code 1}, {@code 0} and
+     * {@code null} coerced to {@code false} and refused ANYWAY — for the wrong reason, and reasoning about
+     * the class instead of enumerating it would have stopped at "this coerces safely". After the fix all
+     * seven refuse and all seven NAME the key, which is the difference between a refusal an operator can
+     * act on and one that reads as unread code they do not have.
+     */
+    @Test void aNonBooleanPeekedIsCorruptInput() throws Exception {
+        // `"false"` is in here deliberately: it exits 2 either way, so only the MESSAGE distinguishes a
+        // document this engine impeached from one it read as an honest unread class.
+        List<String> shapes = List.of("\"true\"", "\"false\"", "1", "0", "null", "{ }", "[ ]");
+        for (String shape : shapes) {
+            String tag = "pk" + Math.abs(shape.hashCode());
+            Path rep = report(tag,
+                    "[ { \"class\": \"build-output-archive\", \"count\": 1, \"peeked\": " + shape
+                    + ", \"reason\": \"r\" } ]");
+            Run r = runCli("gate", "--report", rep.toString(),
+                           "--policy", policy(tag + ".policy", "deny Exec\n").toString());
+            assertEquals(2, r.exit(), "`peeked`: " + shape + " is not a boolean, and coercing it deletes "
+                    + "the unread-code refusal: " + r.stdout() + r.stderr());
+            assertTrue(r.stderr().contains("peeked"),
+                "…and the refusal must NAME the key, or a corrupt document is indistinguishable from an "
+                + "honestly unread class (`peeked`: " + shape + "): " + r.stderr());
+        }
+    }
+
+    /**
+     * THE CONTROLS FOR THE ROW ABOVE, in one place: the SAFE-LOOKING repair (refuse every {@code peeked})
+     * passes every assertion up there while deleting the carve-out the key exists for. A genuine boolean
+     * {@code true} must still suppress, a genuine {@code false} must still refuse, and an ABSENT key must
+     * still read as NOT peeked (never as "the producer opened them").
+     */
+    @Test void aGenuineBooleanPeekedIsUntouched() throws Exception {
+        Path yes = report("pkTrue",
+                "[ { \"class\": \"archive-under-the-scan-root\", \"count\": 3, \"peeked\": true, "
+                + "\"reason\": \"read\" } ]");
+        Run r1 = runCli("gate", "--report", yes.toString(),
+                        "--policy", policy("pk1.policy", "deny Exec\n").toString());
+        assertEquals(0, r1.exit(), "a real `true` still certifies — this is the carve-out, not the defect: "
+                + r1.stdout() + r1.stderr());
+
+        Path no = report("pkFalse",
+                "[ { \"class\": \"build-output-archive\", \"count\": 1, \"peeked\": false, "
+                + "\"reason\": \"r\" } ]");
+        Run r2 = runCli("gate", "--report", no.toString(),
+                        "--policy", policy("pk2.policy", "deny Exec\n").toString());
+        assertEquals(2, r2.exit(), "a real `false` still refuses: " + r2.stdout() + r2.stderr());
+        assertTrue(r2.stderr().contains("did not READ"), "…by the UNREAD arm, not as corrupt input: "
+                + r2.stderr());
+
+        Path absent = report("pkAbsent",
+                "[ { \"class\": \"build-output-archive\", \"count\": 1, \"reason\": \"r\" } ]");
+        Run r3 = runCli("gate", "--report", absent.toString(),
+                        "--policy", policy("pk3.policy", "deny Exec\n").toString());
+        assertEquals(2, r3.exit(), "an ABSENT `peeked` is NOT peeked — a producer that does not carry the "
+                + "key cannot be read as having opened the files: " + r3.stdout() + r3.stderr());
+        assertTrue(r3.stderr().contains("did not READ"),
+            "…and absence is not corruption: it must refuse by the UNREAD arm: " + r3.stderr());
+    }
+
+    /**
      * A NON-BOOLEAN {@code judgedElsewhere} IS CORRUPT INPUT. Gson's {@code getAsBoolean} coerces — the
      * STRING {@code "true"} came back {@code true} — so a report could carve a class out with a value the
      * §2.2 shape does not allow, which is the fail-open reading of a key whose whole job is to be a
@@ -402,5 +475,41 @@ class UnreadCodeRouteTest {
         Run r = runCli("gate", "--report", rep.toString(),
                        "--policy", policy("p7.policy", "deny Exec\n").toString());
         assertEquals(2, r.exit(), "an unnamed exclusion is not an absent one: " + r.stdout() + r.stderr());
+    }
+
+    /**
+     * …AND AN UNREADABLE CLASS NAME IS WITHHELD, NOT REFUSED — the DECORATION side of §2's role test,
+     * held deliberately against the sweep that hardened {@code peeked} beside it.
+     *
+     * <p>Nothing DECIDES on this token: the rule reads the producer's {@code peeked} flag and never the
+     * name (keying on the name would gate another engine's report differently from the engine that wrote
+     * it — the same concept is {@code build-output-archive} here and {@code build-output} in rust and
+     * swift), and the name reaches stderr and the hedge sentence, never the verdict DOCUMENT. So §2's
+     * instruction applies as written: <i>"withhold the decoration, disclose it, and answer. Refusing
+     * there drops a hedge to be strict about ornament."</i> There is no fail-open behind it either — an
+     * unreadable name already left the entry counted as unread.
+     *
+     * <p>The row exists because the FIRST draft of that sweep DID harden this one, and only asking which
+     * side of §2's line it sits on caught it. Without a row, the next sweep makes the same over-reach.
+     */
+    @Test void anUnreadableExclusionClassNameIsWithheldRatherThanRefused() throws Exception {
+        for (String shape : List.of("123", "true", "{ }", "[ ]", "null")) {
+            String tag = "cls" + Math.abs(shape.hashCode());
+            Path rep = report(tag, "[ { \"class\": " + shape + ", \"count\": 1, \"peeked\": false, "
+                    + "\"reason\": \"r\" } ]");
+            Run r = runCli("gate", "--report", rep.toString(),
+                           "--policy", policy(tag + ".policy", "deny Exec\n").toString());
+            // Still exit 2 — but by the UNREAD arm, and that distinction is the whole row: the class is
+            // counted, the document is NOT impeached, and the name is withheld rather than rendered.
+            assertEquals(2, r.exit(), "the class is still unread (`class`: " + shape + "): "
+                    + r.stdout() + r.stderr());
+            assertTrue(r.stderr().contains("did not READ"),
+                "…and it must refuse by the UNREAD arm, not impeach the document over a LABEL (`class`: "
+                + shape + "): " + r.stderr());
+            assertTrue(r.stderr().contains("(unnamed exclusion class)"),
+                "…withholding the unreadable name rather than rendering one no producer wrote — "
+                + "`\"class\": 123` used to print a class called `123` (`class`: " + shape + "): "
+                + r.stderr());
+        }
     }
 }

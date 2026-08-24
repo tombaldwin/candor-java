@@ -1,6 +1,7 @@
 package io.poly.candor;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.file.Files;
@@ -253,5 +254,72 @@ class MultiReportJoinsByHashTest {
                 "the row names the FUNCTION, never the unit key");
         assertTrue(String.valueOf(Candor.gateViolations.get(0).get("detail")).contains("`app.Svc.call`"),
                 "…and so does the human-readable detail the same document carries");
+        // ⟨0.32⟩ …AND THE UNIT TRAVELS BESIDE IT — SPEC §2, the identity clause. The two assertions above
+        // are exactly what a fix that SUBSTITUTED the key would fail, and exactly what a fix that dropped
+        // identity altogether would pass; this is the other side.
+        assertEquals("app/Svc.call()V", Candor.gateViolations.get(0).get("hash"),
+                "the row carries the §2.2 unit BESIDE the name — a reader that cannot attribute a row to "
+                + "a package is not being told which of two same-named units broke");
+        assertEquals(List.of("rule", "fn", "hash", "effects", "detail"),
+                new ArrayList<>(Candor.gateViolations.get(0).keySet()),
+                "…in that ORDER, and no other field: the over-charge control on this rung, so a later "
+                + "one that quietly grows a sixth key fails here instead of passing a by-name assertion");
+    }
+
+    // ── 5. the identity clause, over the case it was written for ───────────────────────────────────────
+
+    /**
+     * ⟨0.32⟩ SPEC §2: <i>"a verdict row MUST carry enough identity for a consumer to tell two units
+     * apart… the sort key MUST include that identity."</i>
+     *
+     * <p><b>THE DEFECT, MEASURED 2026-08-24.</b> Two members whose units share the name {@code go} and
+     * both violate {@code deny Exec} produced two BYTE-IDENTICAL rows. A reader cannot tell two broken
+     * members from one listed twice, and a consumer that fingerprints on name alone — candor's own SARIF
+     * action did — hides one finding behind the other.
+     *
+     * <p><b>AND THE ORDER IS HALF THE CLAUSE.</b> {@code (rule, detail)} ties on the twins ({@code detail}
+     * is built from the NAME), so their order would be whatever the read happened to produce, and §3.3.1
+     * makes the document's ORDER part of the byte-equality between the two routes. This engine needed no
+     * new sort for it: {@link Policy.GateInput#inDisplayOrder} already tie-breaks on the KEY, which on
+     * this route IS the hash. The fixture is written {@code z}-then-{@code a} on disk so a passing row
+     * cannot be crediting file order.
+     */
+    @Test
+    void twoUnitsSharingANameProduceTwoDISTINGUISHABLERows() throws Exception {
+        member("twins", "z", List.of(
+                entry("go", "a#go", List.of("Exec"), List.of("Exec"), List.of(), List.of())));
+        member("twins", "a", List.of(
+                entry("go", "b#go", List.of("Exec"), List.of("Exec"), List.of(), List.of())));
+        Candor.gateCapture = true;
+        assertEquals(1, gate("twins", policy("deny Exec\n")));
+        assertEquals(2, Candor.gateViolations.size(), String.valueOf(Candor.gateViolations));
+        assertEquals(List.of("a#go", "b#go"),
+                Candor.gateViolations.stream().map(m -> m.get("hash")).toList(),
+                "the SORT KEY breaks the tie the (rule, detail) pair leaves — and the file order is z, a");
+        assertEquals(List.of("go", "go"),
+                Candor.gateViolations.stream().map(m -> m.get("fn")).toList(),
+                "`fn` stays the NAME on both rows: identity is ADDED, never substituted");
+        assertNotEquals(Candor.gateViolations.get(0), Candor.gateViolations.get(1),
+                "THE DEFECT: two rows a reader could not tell apart");
+    }
+
+    /**
+     * THE OVER-CHARGE CONTROL for the row above: a producer with NO {@code hash} to give OMITS the field
+     * rather than inventing one. ⟨0.26⟩ — absent is <i>this producer cannot answer</i> — and §3.1 says
+     * this verb serves a hand-authored report. Without this row the cheapest way to pass is to synthesise
+     * an id from the name, which is the very join §2.2 forbids, wearing the new key's clothes.
+     */
+    @Test
+    void aProducerWithNoHashOmitsTheFieldRatherThanInventingOne() throws Exception {
+        Map<String, Object> e = entry("app.Svc.call", "app/Svc.call()V", List.of("Net"), List.of("Net"),
+                List.of(), List.of());
+        e.remove("hash");
+        member("nohash", "a", List.of(e));
+        Candor.gateCapture = true;
+        assertEquals(1, gate("nohash", policy("deny Net\n")));
+        assertEquals(1, Candor.gateViolations.size());
+        assertEquals(List.of("rule", "fn", "effects", "detail"),
+                new ArrayList<>(Candor.gateViolations.get(0).keySet()),
+                "no `hash` on the wire beats a fabricated id: " + Candor.gateViolations);
     }
 }

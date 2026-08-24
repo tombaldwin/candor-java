@@ -1674,7 +1674,45 @@ public final class Query {
          *  and a verb exiting 2 there would claim it got LESS far than the gate on identical bytes, which
          *  is the mirror of the over-claim {@code --strict} exists to prevent. A descriptive verb asks
          *  THIS: its empty set is a negative finding under all three causes, and it has no exit code for
-         *  the distinction to matter to. */
+         *  the distinction to matter to.
+         *
+         *  <p>⟨0.32⟩ <b>AND {@code unpeeked} REACHES THIS THROUGH {@link #incomplete} — WHICH MADE THIS
+         *  ENGINE THE ONLY ONE THAT HEDGED A DESCRIPTIVE ANSWER OVER A CLASS NOTHING OPENED, AND IT WAS
+         *  RIGHT. RULED 2026-08-24; DO NOT RE-LITIGATE IT HERE.</b> Over a report whose {@code excluded}
+         *  names a class the scan never opened, {@code tour} printed the bare <i>"nothing hidden — every
+         *  effect sits where its name says it should"</i> at exit 0 in candor-rust, candor-ts and
+         *  candor-swift; this engine hedged and named the class. All three have been brought here.
+         *
+         *  <p><b>IT IS A DISCLOSURE, NOT A VERDICT.</b> ⟨0.24⟩'s advisory-verb pessimism MUST binds verbs
+         *  that answer {@code ok}; {@code tour} answers none and has no exit-code obligation, so that
+         *  clause does not reach it and the hedge must not move its exit. What reaches it is SPEC §2
+         *  ⟨0.28⟩, which widens the re-disclosure MUST to <i>"any verb whose output could be read as a
+         *  negative finding about the code — a verdict, an empty result set, or a zero count"</i>, and
+         *  SPEC §3.1 ⟨0.18⟩, which already forbids THAT EXACT SENTENCE over a ≥⅓-Unknown graph. An unread
+         *  exclusion class is the same ignorance by another route, and the ⅓ threshold structurally
+         *  CANNOT see it — an unread unit contributes no entry, so it moves neither the numerator nor the
+         *  denominator (the argument this file already makes where {@code tour} reads {@code comp}).
+         *
+         *  <p><b>THE ARGUMENT THE OTHER THREE HELD WAS THE WRONG WAY ROUND</b>, and it is worth recording
+         *  because it is the plausible one: <i>"these verbs carry no policy, so there is no question whose
+         *  answer could depend on the unread code"</i>. The condition ⟨0.32⟩ states is the QUESTION IN
+         *  FORCE, and a verb with no policy is not asking a NARROWER question than {@code deny Exec} — it
+         *  is asking the widest one there is, the whole effect surface.
+         *
+         *  <p><b>KNOWN RESIDUAL, stated rather than asserted away:</b> {@code peeked: true} means the
+         *  class was READ, not ANALYZED — the peek looks only for effects the PRODUCER's policy denied —
+         *  so an undenied effect inside a peeked class is still outside {@code tour}'s graph and outside
+         *  this hedge. That is the gate's residual too (SPEC §2 ⟨0.32⟩ files it), and closing it is a
+         *  rung, not a fix.
+         *
+         *  <p><b>FILED, MEASURED 2026-08-24, NOT FIXED HERE:</b> this engine reaches {@code unpeeked}
+         *  through {@link #incomplete}, which is unconditional, so an ADVISORY verb under a policy with
+         *  NO {@code deny}/{@code pure} rule hedges too — {@code fix-gate --policy <forbid-only>} answers
+         *  {@code incomplete: true} where candor-rust and candor-swift do not (they CLEAR the list when
+         *  the policy asks nothing; {@code cmd_gate} does the same one route over, at
+         *  {@code denyRules.isEmpty()}). ⟨0.32⟩ is explicit that the rule <i>"fires only when the policy
+         *  in force holds at least one deny rule"</i>, so this is an over-hedge — a false disclosure in
+         *  the safe direction, and a separate clause from the ruling above. */
         boolean mustHedge() {
             // ⟨0.28⟩ `noManifest` is an arm of THIS and not of `incomplete()`, for the identical reason
             // count-0 is: the gate exits 0 over a manifest-less report too, so a verb exiting 2 there

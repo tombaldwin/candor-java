@@ -70,7 +70,15 @@ class SchemaShapeTest {
     // ⟨0.21⟩ `analyzed` (count) always present; `incomplete`/`unanalyzed` only on an incomplete gate (this
     // fixture is complete).
     private static final Set<String> VERDICT_KEYS = Set.of("spec", "ok", "analyzed", "violations");
-    private static final Set<String> VIOLATION_KEYS = Set.of("rule", "fn", "effects", "detail");
+    // ⟨0.32⟩ `hash` — SPEC §2: *"a verdict row MUST carry enough identity for a consumer to tell two units
+    // apart"*. **THIS PIN IS THE EVIDENCE THAT THE RUNG IS NOT ADDITIVE**, and it is meant to be: a NEW
+    // key on the violation record means a verdict document is no longer byte-identical to a pre-⟨0.32⟩
+    // one. That is unavoidable — the MUST is that the row carry identity, and no arrangement of the four
+    // existing keys does. Everything that CAN be additive is: every pre-existing key keeps its name, its
+    // position and its value, and `hash` is OMITTED when the producer has none to give (a hand-authored
+    // report), so a row from such a report is byte-identical to its old self. Measured on the two-member
+    // twin fixture: without it, two rows come out byte-identical and a reader cannot attribute either.
+    private static final Set<String> VIOLATION_KEYS = Set.of("rule", "fn", "hash", "effects", "detail");
 
     private record Run(int exit, String stdout, String stderr) {}
 
@@ -174,7 +182,12 @@ class SchemaShapeTest {
         assertTrue(viol.size() >= 1, "at least the denied Fs");
         for (JsonElement e : viol) {
             assertEquals(VIOLATION_KEYS, keysOf(e.getAsJsonObject()),
-                    "violation rows: exactly rule/fn/effects/detail (the SARIF reporter's join keys)");
+                    "violation rows: exactly rule/fn/hash/effects/detail (the SARIF reporter's join keys)");
+            // ⟨0.32⟩ …and `fn` is still the NAME, `hash` the §2.2 unit — BESIDE it, never instead of it.
+            // A row whose `fn` had been replaced by the qualified form would satisfy the key set above
+            // while silently stopping every scoped policy rule matching.
+            assertFalse(e.getAsJsonObject().get("hash").getAsString().isEmpty(),
+                    "a scan-route row's identity comes from the same map the report's `hash` does: " + e);
         }
     }
 

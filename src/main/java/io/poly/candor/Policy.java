@@ -1985,14 +1985,49 @@ final class Policy {
     static String[] ruleUpgrade(PolicyRule.Deny r, Set<ReasonClass> holeClasses) {
         String suffix = r.scope().isEmpty() ? "" : " " + r.scope();
         if (r.effects().isEmpty())
-            return new String[]{"pure" + suffix, "deny Unknown" + suffix};
-        String src = "deny " + denyEffects(r, null) + suffix;
+            return new String[]{canonicalDenyRule(r), "deny Unknown" + suffix};
+        String src = canonicalDenyRule(r);
         if (r.effects().contains(Effect.UNKNOWN) && !r.unknownClasses().isEmpty()) {
             Set<ReasonClass> widened = java.util.EnumSet.copyOf(r.unknownClasses());
             if (holeClasses != null) widened.addAll(holeClasses);
             return new String[]{src, "deny " + denyEffects(r, widened) + suffix};
         }
         return new String[]{src, "deny " + denyEffects(r, null) + " Unknown" + suffix};
+    }
+
+    /**
+     * ⟨0.33⟩ ONE {@code deny}/{@code pure} RULE IN ITS CANONICAL EXPANDED FORM — the §6.2 spelling of the
+     * rule THE MATCHER USED, after alias resolution and after the config's vocabulary was applied.
+     *
+     * <p>This is what SPEC §2 ⟨0.33⟩'s {@code scannedUnder.deny} records, and {@link #ruleUpgrade} quotes
+     * the identical string back to an operator, so the two cannot drift into two spellings of one rule.
+     *
+     * <p>NOT effect NAMES and NOT the raw line. Names lose {@code pure} entirely — it is a {@link
+     * PolicyRule.Deny} with an EMPTY effect set meaning "every effect except Unknown", so a flattened set
+     * makes the STRICTEST policy compare equal to an empty one, which is the four-way false all-clear
+     * ⟨0.30⟩ closed on the peek and this key would re-open one layer out.
+     *
+     * <p>The RAW LINE is wrong for a sharper reason, and it is a FAIL-OPEN. §3.1 already records that
+     * alias expansion breaks byte-equality: two configs defining {@code unknown-alias corp} DIFFERENTLY
+     * give the identical line {@code deny Unknown[corp]} two meanings, so comparing raw text reads a
+     * producer that asked the WEAKER question as having answered the stronger one. The mirror case — one
+     * rule written {@code deny Unknown[corp]} here and {@code deny Unknown[native,reflect]} there — costs
+     * only a refusal, which is the direction this rung is allowed to be wrong in.
+     */
+    static String canonicalDenyRule(PolicyRule.Deny r) {
+        String suffix = r.scope().isEmpty() ? "" : " " + r.scope();
+        return r.effects().isEmpty() ? "pure" + suffix : "deny " + denyEffects(r, null) + suffix;
+    }
+
+    /** ⟨0.33⟩ A rule LIST as a canonical SET — deduplicated and code-point sorted, so one policy produces
+     *  one document however its lines were ordered, and a consumer's subset test is a plain membership
+     *  test rather than an order-sensitive comparison. {@link Query#BY_CODE_POINT} because
+     *  {@code String.compareTo} is UTF-16 order and a rule string is built from user identifiers — the
+     *  same collation the verdict's {@code zeroMatch} list already uses. */
+    static List<String> canonicalDenySet(List<PolicyRule.Deny> rules) {
+        java.util.TreeSet<String> out = new java.util.TreeSet<>(Query.BY_CODE_POINT);
+        for (PolicyRule.Deny r : rules) out.add(canonicalDenyRule(r));
+        return new ArrayList<>(out);
     }
 
     /** The effect list of a {@code deny} rule as §6.2 spells it — canonical {@link Effect} order, with the

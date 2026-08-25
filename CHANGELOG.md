@@ -8,6 +8,16 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **`jbang-catalog.json`'s description is now in the doc spec-claim gate, and the gate reads two more
+  spellings.** The catalog description is a contract claim with its own distribution channel — it is
+  what `jbang candor@tombaldwin/candor-java` and the catalog listing show — and nothing read it. The
+  claim grammar also widened from `spec` + one to FOUR of `[-: "]` to one to EIGHT of `[-: "*)\]]`, so
+  an ALIGNED envelope column (`"spec":    "0.32"`, six separators) and a markdown-linked version
+  (`[candor-spec](…) 0.32`) are visible; both were live in shipped documents in this family. `BSPEC` is
+  still derived from the binary and the control fixture now discriminates the wide grammar from the
+  narrow one. `src/main/resources/AGENTS.md` needs no entry — `cmp -s` already pins it byte-for-byte to
+  the root doc, so it is derived rather than a second literal.
+
 - **The native build and its parity gate now run on `main` and on pull requests, not only on
   `release: published`.** A gate positioned after the irreversible step grades the release; it does not
   guard it. On v0.32.0 this gate did exactly its job — it caught the native image reporting an empty

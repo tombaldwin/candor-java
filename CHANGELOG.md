@@ -478,6 +478,26 @@ after upgrading; review policies and regenerate baselines with the new build.
   be decided", a decided refusal keeps its own specific cause, and a real verdict is left untouched. That
   last one is the control: every other assertion is satisfied by a hook that rewrites everything.
 
+- **The docs drift gate could not see the JSON spelling of the spec version, and the ⟨0.32⟩ sweep proved
+  it.** smoke.sh's family-identity block asserts `README contains "spec $BSPEC"` — a POSITIVE existence
+  check, satisfied by one correct prose mention and structurally blind to a second, STALE claim in the
+  same file. So the bump rewrote the prose everywhere and left README's `--gate-json` example printing
+  `# → { "spec": "0.31", … }`, three lines under a correct `spec 0.32`. That is the literal shape a
+  reader copies into a CI assertion, and it survived the bump, the doc sweep and CI.
+
+  The gate is now UNIVERSAL as well as positive: every `spec <X.Y>` claim in README.md and AGENTS.md —
+  prose, hyphenated, or `"spec": "X.Y"` — must equal the spec the BINARY declares, still derived from
+  `--version` and never written here as a literal. Historical markers keep the family's
+  `(spec X.Y, informative)` exemption rather than a list of tolerated old versions, and a CONTROL runs
+  before the sweep: a broken exemption prints nothing, which is exactly what a clean run prints, so the
+  instrument is calibrated before its silence is read as evidence. candor-swift's `AgentsDocDriftTests`
+  already carried this shape and was clean on the identical line for that reason — this is that check
+  ported, not a third convention.
+
+- The jbang catalog's DESCRIPTION names candor-spec 0.32. The `script-ref` beside it still points at the
+  v0.31.0 jar and moves only after the 0.32.0 release asset exists — the standing split: a description is
+  a CONTRACT CLAIM and moves with the floor, a `script-ref` is a RELEASE PIN and moves after publish.
+
 ## [0.31.0] — 2026-08-20
 
 - The jbang catalog's `script-ref` moves to the v0.31.0 jar, now that the release asset exists and

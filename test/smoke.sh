@@ -2321,6 +2321,67 @@ wantnot "README does not call Rust the reference"                "$README_TXT" "
 want    "AGENTS names candor-java the reference engine"          "$AGENTS_TXT" "reference engine"
 want    "AGENTS pins the spec floor (spec $BSPEC)"               "$AGENTS_TXT" "spec $BSPEC"
 
+# ── …and NO claim the other way, in ANY spelling ─────────────────────────────────────────────────
+# The two assertions above are POSITIVE EXISTENCE checks. One correct prose mention satisfies them, so
+# a SECOND, STALE claim elsewhere in the same file is structurally invisible to them. MEASURED at the
+# ⟨0.32⟩ bump: the prose spelling moved everywhere and README's `--gate-json` example kept
+# `# → { "spec": "0.31", … }` — the literal shape a reader copies into a CI assertion — three lines
+# below a correct `spec 0.32`. It survived the bump, the doc sweep and CI on both engines that spell
+# it that way. candor-swift's AgentsDocDriftTests already asks the UNIVERSAL question and was clean
+# for exactly that reason; this is that check ported, not a third convention.
+#
+# BSPEC is DERIVED from the binary, like the greps above: a literal here would rot precisely as the
+# docs did, and its fix each release would be to edit a literal — the drift it exists to catch, aimed
+# at itself. The `(spec X.Y, informative)` exemption is the family's historical marker: a note naming
+# the rung a field arrived at is true about the past and must NOT move with the floor. It keys on the
+# marker rather than a list of tolerated old versions, so a legitimate annotation never needs this
+# gate edited, and a stale claim cannot hide merely by being old.
+#
+# The checker is written to a FILE and then run, rather than fed to `python3 -` from a heredoc inside a
+# command substitution: bash 3.2 (the /bin/bash every macOS box still ships, and what a local run of this
+# script gets) does not parse a heredoc nested in `$(…)` and dies with `unexpected EOF`. Measured here
+# before this line existed.
+cat > "$W/spec_claims.py" <<'PY'
+import os, re
+spec, root = os.environ["BSPEC"], os.environ["ROOT"]
+# `spec` + one to four of [-: "] + <digits>.<digits>: covers `spec 0.32`, `spec-0.32` and
+# `"spec": "0.32"`, while `spec §6.1` / `SPEC §2.2` — SECTION references — never read as versions.
+claim = re.compile(r'spec[-: "]{1,4}([0-9]+\.[0-9]+)')
+def flag(text):
+    return [(m.group(1), text[m.start():m.end() + 16]) for m in claim.finditer(text)
+            if not text[m.end():m.end() + 16].startswith(", informative)")]
+# THE CONTROL RUNS FIRST. A broken exemption — or a pattern that quietly stops matching — turns the
+# sweep below into a no-op that prints nothing, which is exactly what a CLEAN run prints. Silence has
+# to mean "checked and clean", so the instrument is calibrated before it is read.
+got = [v for v, _ in flag('carrying `unitKind` (spec 0.8, informative); ordinary\n'
+                          'This project is on candor-java 9.9.9 (spec 0.9).\n'
+                          'a section reference, spec §6.1, is not a version\n'
+                          'the gate prints { "spec": "0.7", "ok": true }\n'
+                          'and the hyphenated attributive spec-0.6 form\n')]
+if got != ["0.9", "0.7", "0.6"]:
+    print("CONTROL FAILED — the pattern or the informative-marker exemption no longer "
+          "discriminates (flagged %s, want ['0.9', '0.7', '0.6']); this check is VACUOUS "
+          "until that is fixed" % got)
+else:
+    for doc in ("README.md", "AGENTS.md"):
+        with open(os.path.join(root, doc), encoding="utf-8") as fh:
+            text = fh.read()
+        for v, ctx in flag(text):
+            if v != spec:
+                print('%s claims spec %s but this build declares spec %s — at "%s". If that is a '
+                      'historical marker naming the rung a feature arrived at, write it '
+                      '"(spec %s, informative)"; otherwise bump it.' % (doc, v, spec, ctx, v))
+PY
+STALE_SPEC="$(BSPEC="$BSPEC" ROOT="$ROOT" python3 "$W/spec_claims.py")"
+if [ -z "$STALE_SPEC" ]; then
+  echo "  ok   every spec claim in README/AGENTS matches the binary (spec $BSPEC), in every spelling"
+  pass=$((pass+1))
+else
+  echo "  FAIL a doc states a spec version this build does not speak:"
+  printf '%s\n' "$STALE_SPEC" | sed 's/^/        /'
+  fail=$((fail+1))
+fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

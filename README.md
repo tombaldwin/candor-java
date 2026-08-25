@@ -375,7 +375,7 @@ the PR-native SARIF pipeline
 
 ```sh
 ./candor build/classes/java/main --policy .candor/policy --gate-json verdict.json
-# → { "spec": "0.31", "ok": false, "violations": [ { "rule": "AS-EFF-006", "fn": "…", "effects": ["Db"], "detail": "…" } ] }
+# → { "spec": "0.32", "ok": false, "violations": [ { "rule": "AS-EFF-006", "fn": "…", "effects": ["Db"], "detail": "…" } ] }
 ```
 
 `-` streams the verdict to stdout (the human gate lines move to stderr so the stream stays pure JSON).

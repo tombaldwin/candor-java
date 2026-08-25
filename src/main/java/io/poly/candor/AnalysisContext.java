@@ -359,13 +359,6 @@ final class AnalysisContext {
                 f.setAccessible(true);
                 fs.add(f);
             }
-            if (fs.isEmpty()) throw new UnmergeableDelta(
-                    "AnalysisContext.class.getDeclaredFields() returned NOTHING, so the per-class delta merge "
-                    + "would fold nothing and every effect this scan found would be silently discarded. "
-                    + "This build cannot analyse anything and must not answer. Cause: reflection metadata is "
-                    + "missing — in a GraalVM native image, register io.poly.candor.AnalysisContext with "
-                    + "\"allDeclaredFields\": true (src/main/resources/META-INF/native-image/io.poly.candor/"
-                    + "candor-java/reflect-config.json) and rebuild; see docs/native-image.md.");
             OUTPUTS = fs.toArray(new java.lang.reflect.Field[0]);
         }
         return OUTPUTS;

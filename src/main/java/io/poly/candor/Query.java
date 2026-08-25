@@ -1746,17 +1746,28 @@ public final class Query {
                                *  over the same report. The comment above records ⟨0.30⟩ doing it; this is
                                *  the second time, which says the ARM is what a new verdict cause needs,
                                *  not a note telling the next person to remember. */
-                              List<String> unpeeked) {
+                              List<String> unpeeked,
+                              /** ⟨0.33⟩ the deny rules THIS verb's policy holds that the report's producer
+                               *  was never asked about ({@link #unaskedRules}). THE FOURTH TIME this arm
+                               *  has had to be added — ⟨0.24⟩ `unanalyzed`, ⟨0.30⟩ `outOfScope`, ⟨0.32⟩
+                               *  `excluded[].peeked`, and now this — and the third time the note above
+                               *  says the ARM is what a new verdict cause needs rather than a reminder to
+                               *  the next person. ⟨0.32⟩'s omission shipped four-way in one day and cost
+                               *  conformance PART 67 to catch: `gate --report` exited 2 while `fix-gate
+                               *  --strict` printed "no deny/pure boundary crossings ✓" over the same
+                               *  bytes. Computed by the SAME helper the gate calls, so the two cannot
+                               *  disagree about which rules went unasked. */
+                              List<String> unaskedRules) {
         /** Nothing to disclose — for a caller with no report locator at all (a unit test driving a verb
          *  over an in-memory entry list). Every channel below is a no-op on it. */
-        static final ReportCompleteness NONE =
-                new ReportCompleteness(List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+        static final ReportCompleteness NONE = new ReportCompleteness(
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
 
         /** Is the universe this verb reasoned over known-partial in the way the GATE also refuses over?
          *  {@code judgedNothing} and {@code noManifest} are deliberately NOT arms — see {@link #mustHedge}. */
         boolean incomplete() {
             return !unanalyzed.isEmpty() || !unreadable.isEmpty() || !outOfScope.isEmpty()
-                    || !unpeeked.isEmpty();
+                    || !unpeeked.isEmpty() || !unaskedRules.isEmpty();
         }
 
         /** ⟨0.28⟩ <b>Is there anything at all to disclose — the trigger for an ANSWER, where
@@ -1828,7 +1839,9 @@ public final class Query {
             List<String> n = new ArrayList<>(noManifest); n.addAll(other.noManifest);
             List<Report.OutOfScope> o = new ArrayList<>(outOfScope); o.addAll(other.outOfScope);
             List<String> up = new ArrayList<>(unpeeked); up.addAll(other.unpeeked);
-            return new ReportCompleteness(u, j, r, n, o, up);
+            List<String> ur = new ArrayList<>(unaskedRules);
+            for (String x : other.unaskedRules) if (!ur.contains(x)) ur.add(x);
+            return new ReportCompleteness(u, j, r, n, o, up, ur);
         }
 
         /** What {@code gate --report} does over THESE SAME BYTES, as one sentence for the note's tail — a
@@ -1948,6 +1961,14 @@ public final class Query {
             if (!unpeeked.isEmpty())
                 causes.add(unpeeked.size() + " exclusion class(es) the scan did NOT READ "
                         + "(`excluded[].peeked: false`)");
+            // ⟨0.33⟩ THE FOURTH CAUSE GETS ITS OWN CLAUSE, because the note directly above records what
+            // happens when one does not: a cause that raises `incomplete()` and names nothing here prints
+            // `⚠ INCOMPLETE — the report(s) under this locator ,`. That was MEASURED on the ⟨0.32⟩ cause
+            // and repaired; adding a fifth cause without its sentence is the same defect, and the reason
+            // it is easy to miss twice is that `incomplete()` and this list are two different lists.
+            if (!unaskedRules.isEmpty())
+                causes.add("a peek bounded by a deny set that does not cover " + unaskedRules.size()
+                        + " rule(s) of this policy (" + String.join(", ", unaskedRules) + ")");
             String head = causes.isEmpty() ? "" : "declare " + String.join(", and ", causes);
             if (!noManifest.isEmpty()) {
                 String nm = "include " + noManifest.size() + " report(s) carrying NO `analyzed` manifest "
@@ -2001,6 +2022,12 @@ public final class Query {
         // ⟨0.32⟩ accumulated on the same pass as `oos`, from the same envelope, so the advisory
         // verbs and the gate cannot disagree about which classes went unread.
         List<String> unpk = new ArrayList<>();
+        // ⟨0.33⟩ …and on the same pass, the rules this verb's policy holds that each report's producer was
+        // never asked about — through the SAME {@link #unaskedRules} the gate calls, so an advisory verb
+        // cannot be less pessimistic than the gate over the same bytes (⟨0.24⟩, and the relation PART 67
+        // exists for). DEDUPLICATED across the set: one missing rule reported once per report is a list an
+        // operator scrolls past, and the set is a locator's, not a file's.
+        List<String> unask = new ArrayList<>();
         for (String r : set) {
             // ⟨0.28⟩ ABSENT is not UNREADABLE. Locator rule 2 returns a `.json` path VERBATIM whether or
             // not it exists, and a report that is not there is the ordinary pre-scan case every caller
@@ -2041,6 +2068,10 @@ public final class Query {
             }
             oos.addAll(env.outOfScope());
             unpk.addAll(env.unpeeked());
+            // ⟨0.33⟩ PER REPORT, exactly as the gate route does it: `scannedUnder` and `peeked` are facts
+            // about ONE producing scan, so a union would let a policy-scanned report's deny set answer for
+            // a no-policy sibling's peeked classes.
+            for (String u : unaskedRules(env)) if (!unask.contains(u)) unask.add(u);
             // ⟨0.31⟩ adopt the PRODUCER's partner provenance so the shared verdict writer emits the same
             // bytes on this route as the scan route did. Copied, never recomputed — §3.1's byte-equality
             // is the acceptance test, and the first attempt at this disclosure was reverted for computing
@@ -2051,7 +2082,7 @@ public final class Query {
                 AnalysisState.ctx().netPartnersUsed.addAll(env.netPartners().hosts());
             }
         }
-        return new ReportCompleteness(un, jn, bad, nm, oos, unpk);
+        return new ReportCompleteness(un, jn, bad, nm, oos, unpk, unask);
     }
 
     /** The report a DESCRIPTIVE verb is answering over: the LOCATOR (which may name a report SET, §2 "a
@@ -3623,7 +3654,19 @@ public final class Query {
                     boolean noManifest, List<io.poly.candor.model.Report.OutOfScope> outOfScope,
                     io.poly.candor.model.Report.NetPartners netPartners,
                     /** ⟨0.32⟩ `excluded[].peeked == false` — the classes the producing scan never READ. */
-                    List<String> unpeeked) {}
+                    List<String> unpeeked,
+                    /** ⟨0.33⟩ SPEC §2 `scannedUnder.deny` — the expanded deny rules the PRODUCER held, or
+                     *  NULL when the key is ABSENT (no policy, a refused policy, or a pre-⟨0.33⟩ producer).
+                     *  Null and empty must not collapse: empty is the positive claim *a policy stood and it
+                     *  denied nothing*, while null is ⟨0.26⟩'s *cannot answer* — which the subset test
+                     *  below reads as the empty SET and therefore refuses over. */
+                    List<String> scannedUnder,
+                    /** ⟨0.33⟩ does this report carry ANY `excluded` entry with `peeked: true`? THE
+                     *  PRECONDITION of the cross-policy refusal, and the over-charge control built into the
+                     *  condition rather than bolted beside it: the effect sets of ANALYZED code are
+                     *  policy-independent, so only a class the peek actually READ carries an answer the
+                     *  producer's deny set bounded. ⟨0.32⟩ owns the classes it did NOT read. */
+                    boolean anyPeeked) {}
 
     /**
      * ⟨0.32⟩ ONE RULE FOR EVERY §2 ENVELOPE FIELD THIS READER TOUCHES: absent takes the default (⟨0.26⟩'s
@@ -3838,6 +3881,27 @@ public final class Query {
         // `gate --report` reaches the same verdict as `scan --policy` without needing a target to
         // re-derive anything from — the constraint that defeated the `net-partner` disclosure.
         List<String> unpeeked = new ArrayList<>();
+        // ⟨0.33⟩ …and whether ANY class was read, which is the precondition of the cross-policy refusal.
+        boolean anyPeeked = false;
+        // ⟨0.33⟩ THE QUESTION THE PRODUCER'S PEEK WAS PUT (SPEC §2 ⟨0.33⟩). NULL is ABSENT and stays
+        // distinguishable from an empty list all the way to the subset test: absent is a pre-⟨0.33⟩
+        // producer (or a scan that was never asked), empty is *a policy stood and denied nothing*.
+        //
+        // READ STRICTLY, like every other verdict-bearing §2 key on this route. Coerced, a garbled value
+        // becomes "the producer held no rules" — the SAFE-LOOKING value, which here means REFUSE, so the
+        // fail-open direction is the opposite one: reading a non-object or a non-array `deny` as the
+        // whole rule set (Gson's `getAsString` renders a number, `getAsBoolean` is `Boolean.parseBoolean`)
+        // would manufacture coverage the producer never claimed. `envStrList` applies the list-and-member
+        // rule; an object with NO `deny` key reads as the empty set, which refuses rather than certifies.
+        List<String> scannedUnder = null;
+        if (envObj != null && envObj.has("scannedUnder")) {
+            if (!envObj.get("scannedUnder").isJsonObject())
+                throw new IllegalStateException(
+                        "`scannedUnder` is present but is not an object — a SIGNATURE key that cannot be "
+                        + "read impeaches the whole document (§2); it names the deny set this report's "
+                        + "peek was bounded by, and a gate cannot tell what went unasked without it");
+            scannedUnder = envStrList(envObj.getAsJsonObject("scannedUnder"), "scannedUnder", "deny");
+        }
         // ⟨0.32⟩ THE RULE, stated once and applied on both routes: A CLASS THE PRODUCING SCAN DID NOT
         // READ LICENSES NOTHING, and whether that matters is decided by THE POLICY IN FORCE NOW, never by
         // the producer's history. The deny-rule half of that condition is applied ONCE to the accumulated
@@ -3926,6 +3990,20 @@ public final class Query {
                                 + "impeaches the whole document (§2)");
                     judgedElsewhere = je.getAsBoolean();
                 }
+                // ⟨0.33⟩ RECORDED BEFORE THE CARVE-OUT BELOW, because the `continue` on the next line is
+                // where it would have been lost: a class the peek READ is exactly the class whose clean
+                // answer was BOUNDED by the producer's deny set, and that is this rung's precondition.
+                //
+                // `judgedElsewhere` EXCLUDES IT, and that is a soundness argument rather than leniency.
+                // TRUE means the files are copies of code this same scan already JUDGED, so their effects
+                // are in `functions` with a full, POLICY-INDEPENDENT effect set — the gate can answer any
+                // deny rule from them without the peek, so refusing would be a pure over-charge with no
+                // evidence gained. It is also the same producer statement ⟨0.32⟩ already trusts
+                // completely; reading it one way there and another way here would be two rules over one
+                // field. NOT reachable on this engine today (`build-output-archive` is the only
+                // `judgedElsewhere` class and its peek never opens it, so it is `peeked: false`), and
+                // written anyway because the spec has to be unambiguous for an engine where it IS.
+                if (peeked && !judgedElsewhere) anyPeeked = true;
                 if (peeked || judgedElsewhere) continue;
                 // A CLASS WITH NO NAME IS STILL A CLASS THE SCAN DID NOT READ. Dropping the entry for
                 // want of a label would let a malformed report delete its own disclosure — the same
@@ -3949,7 +4027,63 @@ public final class Query {
         }
         return new Envelope(analyzed, unanalyzed, uncovered, raw, pkg,
                 Loader.claimsToHaveJudgedNothing(envObj, fns), Loader.hasNoManifest(envObj), outOfScope,
-                netPartners, unpeeked);
+                netPartners, unpeeked, scannedUnder, anyPeeked);
+    }
+
+    /**
+     * ⟨0.33⟩ <b>THE RULES THIS GATE HOLDS THAT THE REPORT'S PRODUCER WAS NEVER ASKED ABOUT — SPEC §2
+     * ⟨0.33⟩, stated ONCE and consumed by every route that answers `ok`.</b>
+     *
+     * <p>The hole it closes, MEASURED on candor-java 0.32.1 over a tree whose excluded source runs
+     * {@code Runtime.exec("id")}:
+     * <pre>
+     *   candor &lt;tree&gt; --policy 'deny Net'  --json A   -&gt; exit 0, `excluded[].peeked: true`, `outOfScope: []`
+     *   candor &lt;tree&gt; --policy 'deny Exec'            -&gt; exit 2   (there IS an Exec out there)
+     *   candor gate --report A --policy 'deny Exec'    -&gt; exit 0, `no violations`   &lt;- the fail-open
+     * </pre>
+     * Nothing in the document marked the difference: {@code peeked: true} says the peek OPENED those
+     * files, which it did, so ⟨0.32⟩'s unread-class rule correctly does not fire — and the ⟨0.29⟩ bound
+     * had filtered what the peek LOOKED FOR to the producer's denied effects, so the `Exec` was seen and
+     * discarded as out of that question.
+     *
+     * <p><b>ONE HELPER FOR THE GATE AND FOR {@link ReportCompleteness}, deliberately.</b> ⟨0.24⟩ binds
+     * every verb that answers {@code ok} to be at least as pessimistic as the gate over the same bytes,
+     * and this family has now shipped that relation broken THREE times — ⟨0.24⟩'s {@code unanalyzed},
+     * ⟨0.30⟩'s {@code outOfScope}, ⟨0.32⟩'s {@code excluded[].peeked}, the last of them four-way on one
+     * day (conformance PART 67). A second computation of one condition is how the fourth would happen.
+     *
+     * <p><b>BOTH CARVE-OUTS ARE STRUCTURAL, and spelling either separately would be writing the rule
+     * twice.</b> A gate whose policy holds no {@code deny}/{@code pure} rule has an EMPTY canonical set,
+     * which is a subset of everything, so the loop yields nothing — the ⟨0.32⟩ never-asked carve-out
+     * arriving for free rather than as a second {@code denyRules.isEmpty()} conjunct (this engine has
+     * already measured what happens when one condition is stated at two sites: a {@code forbid}-only
+     * policy wrote {@code "ok": false, "incomplete": true} AT EXIT 0). And a report with no
+     * {@code peeked: true} class never fires, which is the over-charge control: analysed code's effect
+     * sets are policy-independent, so only the PEEK was ever bounded by a deny set.
+     *
+     * <p><b>SUBSET IS VERBATIM OVER THE CANONICAL EXPANDED FORM</b> ({@link Policy#canonicalDenySet}) —
+     * a deliberate SOUND UNDER-APPROXIMATION. A producer's {@code deny Net} genuinely subsumes a
+     * consumer's {@code deny Net app.x} and this refuses it anyway: refusing is the safe direction and
+     * the remedy is exact, while semantic subsumption over scopes and class filters is undecidable in
+     * general and an allowlist of "provably narrower" forms under-reports whatever nobody thought of.
+     *
+     * <p>An ABSENT {@code scannedUnder} is the EMPTY SET here, so a pre-⟨0.33⟩ report carrying
+     * {@code peeked: true} fails closed. That is the rung and not collateral damage — under the ⟨0.29⟩
+     * bound a class reaches {@code peeked: true} only when the producing scan HELD a deny rule, so the
+     * absence identifies a pre-rung producer precisely, and the remedy is to re-scan with a current
+     * engine under the gate's own policy.
+     *
+     * @return the gate's own rules, canonical and sorted, that this report cannot answer for — empty when
+     *         the report is answerable
+     */
+    static List<String> unaskedRules(Envelope env) {
+        if (!env.anyPeeked()) return List.of();
+        java.util.Set<String> theirs = env.scannedUnder() == null
+                ? java.util.Set.<String>of() : new HashSet<>(env.scannedUnder());
+        List<String> missing = new ArrayList<>();
+        for (String r : Policy.canonicalDenySet(AnalysisState.ctx().denyRules))
+            if (!theirs.contains(r)) missing.add(r);
+        return missing;
     }
 
     /**
@@ -4136,6 +4270,10 @@ public final class Query {
         List<io.poly.candor.model.Report.OutOfScope> outOfScope = new ArrayList<>();
         // ⟨0.32⟩ accumulated across every report gated, exactly as the other three facts are.
         List<String> unpeeked = new ArrayList<>();
+        // ⟨0.33⟩ …and the rules NO gated report's producer was asked about. A SET, because a locator can
+        // name several reports and one missing rule reported N times is a list an operator scrolls past;
+        // code-point sorted for the same reason `zeroMatch` is.
+        java.util.TreeSet<String> unasked = new java.util.TreeSet<>(BY_CODE_POINT);
         Map<String, List<String>> rawWhy = new HashMap<>();
         List<String> judgedNothing = new ArrayList<>();
         // ⟨0.28⟩ SPEC §2's THIRD ROW, kept apart from the list above on THIS route too — the note below
@@ -4160,6 +4298,11 @@ public final class Query {
             uncovered.addAll(env.uncovered());
             outOfScope.addAll(env.outOfScope());
             unpeeked.addAll(env.unpeeked());
+            // ⟨0.33⟩ PER REPORT, never over the union: `scannedUnder` and `peeked` are facts about ONE
+            // producing scan, and a locator naming a policy-scanned report beside a no-policy sibling
+            // would, unioned, let the first one's deny set answer for the second one's peeked classes.
+            // Same reason §2.2 makes the multi-report verdict `hash`-keyed rather than name-keyed.
+            unasked.addAll(unaskedRules(env));
             // ⟨0.31⟩ adopt the PRODUCER's partner provenance here too. TWO envelope consumers exist on
             // this verb's paths and the disclosure has to be adopted at BOTH, or the route that skipped it
             // emits a verdict missing a key the other has — which is the byte-equality failure this whole
@@ -4290,7 +4433,11 @@ public final class Query {
         // the same deleted-disclosure defect one level down.
         for (String[] u : unevaluated) System.err.println("candor gate: " + u[1]);
 
-        var facts = new Candor.GateFacts(analyzedCount, unanalyzed, uncovered, outOfScope, unpeeked);
+        // ⟨0.33⟩ `unasked` rides the SAME record the exit arm below reads, so the verdict DOCUMENT's
+        // `incomplete`/`ok` and the exit code are two readings of one value. Stating the condition at the
+        // arm alone is what let this engine ship `"ok": false, "incomplete": true` AT EXIT 0 one rung ago.
+        var facts = new Candor.GateFacts(analyzedCount, unanalyzed, uncovered, outOfScope, unpeeked,
+                new ArrayList<>(unasked));
         // `--json` IS `--gate-json -`: the verb's machine output is the gate verdict, the same document and
         // the same builder the scan writes, so a consumer cannot tell the two routes apart from the output.
         if (violations > 0) {
@@ -4359,6 +4506,30 @@ public final class Query {
                     + "If that report was produced WITHOUT a policy, re-run the producing scan with this "
                     + "one (candor <dir> --policy <file> --json <report>): a scan that was never asked "
                     + "cannot certify what it never opened.");
+            return 2;
+        }
+        // ⟨0.33⟩ THE FOURTH CAUSE — THE REPORT'S PEEK ANSWERED A DIFFERENT QUESTION. The arm above is
+        // about classes the producer never OPENED; this one is about classes it opened and read WITH A
+        // DIFFERENT DENY SET IN HAND. ⟨0.29⟩ bounds the peek to effects the producer's policy denies, so
+        // a class read under `deny Net` says nothing about `Exec` in those same files — and the document
+        // said nothing about the difference until `scannedUnder` existed to record it.
+        //
+        // LAST of the four, deliberately: `unanalyzed` (could not read a file), `outOfScope` (found the
+        // denied effect out there), `unpeeked` (never opened it) each name a MORE concrete gap, and an
+        // operator reading one sentence should get the most specific one their report supports.
+        if (!unasked.isEmpty()) {
+            // THE REMEDY SAYS **THE SAME** POLICY, NOT *A* POLICY, and that wording is part of the rung
+            // rather than prose. ⟨0.32⟩'s remedy — *scan with the policy* — read loosely is what PRODUCES
+            // this hole: the operator DID scan with a policy, and got a report whose peek answered a
+            // different question. A stale user-facing message hid two defects in ⟨0.29⟩, so the sentence
+            // is checked against SPEC §2 ⟨0.33⟩ and not merely written once.
+            System.err.println("candor gate: NOT certified — this report's peek was bounded by the deny "
+                    + "set its producing scan held, and that set does not cover " + unasked.size()
+                    + " rule(s) of this policy: " + String.join(", ", unasked) + ". The excluded files it "
+                    + "reports as read were searched for OTHER effects, so an empty finding there is not "
+                    + "an answer to this question, and the verdict is INCOMPLETE rather than a pass. "
+                    + "Re-run the producing scan under THE SAME policy this gate is applying "
+                    + "(candor <dir> --policy <file> --json <report>) — not merely under a policy.");
             return 2;
         }
         return 0;

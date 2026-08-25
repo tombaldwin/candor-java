@@ -15,8 +15,29 @@ import java.util.List;
 public record Report(Provenance candor, List<String> packages, Coverage coverage,
                      Analyzed analyzed, List<UnanalyzedUnit> unanalyzed,
                      List<ExcludedClass> excluded, List<OutOfScope> outOfScope,
+                     ScannedUnder scannedUnder,
                      NetPartners netPartners,
                      List<Effector> functions) {
+
+    /** ⟨0.33⟩ THE QUESTION THE PEEK WAS PUT — the deny rules this scan held, in the EXPANDED form the
+     *  matcher used.
+     *
+     *  <p>{@link ExcludedClass#peeked} is true only RELATIVE to a deny set: the ⟨0.29⟩ bound filters the
+     *  peek to effects the policy DENIES, so a class read under {@code deny Net} says nothing about
+     *  {@code Exec} in those same files. Without this key a consumer gating with a different deny set
+     *  gets a definite answer to a question nobody asked, and it fails OPEN on {@code gate --report} —
+     *  past every ⟨0.32⟩ control, because the class really WAS read.
+     *
+     *  <p>NULL (key omitted) under exactly {@code outOfScope}'s rule, and deliberately the same one: no
+     *  policy configured, or a policy this engine REFUSED. Present-and-EMPTY is a different claim (a
+     *  policy stood and denied nothing), so the two states must not collapse.
+     *
+     *  <p>EXPANDED, never the raw policy line. Recording effect NAMES would reintroduce the flattening
+     *  defect ⟨0.30⟩ closed one layer out (`pure` names nothing, so the strictest policy would compare
+     *  equal to an empty set); recording raw text would let two configs spelling one rule differently
+     *  compare unequal, and §3.1 already notes alias expansion breaks byte-equality. One element per
+     *  RULE — a rule denying several effects is ONE element — deduplicated and sorted. */
+    public record ScannedUnder(List<String> deny) {}
 
     /** ⟨0.31⟩ The ambient {@code net-partner} declaration that MOVED a {@code netClass} — the config file
      *  that declared it, and the declared hosts that actually PARTICIPATED in this scan.

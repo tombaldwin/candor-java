@@ -110,6 +110,16 @@ public final class ReportJson {
         // was asked and `[]` would be a claim. Present-and-empty means asked-and-clear, and it is a claim
         // about the classes marked `peeked` above and only those.
         if (report.outOfScope() != null) envelope.put("outOfScope", outOfScopeJson(report.outOfScope()));
+        // ⟨0.33⟩ …and THE QUESTION THE PEEK WAS PUT, immediately after the answer it qualifies, so a reader
+        // meets the two together and a porting engine has one position to match. OMITTED under exactly
+        // `outOfScope`'s rule — no policy configured, or one this engine refused — because `{"deny": []}`
+        // is the positive claim *a policy stood and it denied nothing*, which is not something an unasked
+        // scan may say. A report produced without a policy stays byte-identical to a pre-⟨0.33⟩ one.
+        if (report.scannedUnder() != null) {
+            Map<String, Object> su = new LinkedHashMap<>();
+            su.put("deny", report.scannedUnder().deny());
+            envelope.put("scannedUnder", su);
+        }
         // ⟨0.31⟩ the ambient `net-partner` that MOVED a class — after `outOfScope`, before `functions`, the
         // position ts and rust also use, so key order does not depend on which engine produced the report.
         // NULL (omitted) when nothing participated: a declaration that changed nothing is not provenance,

@@ -241,6 +241,7 @@ final class ReportWriter {
                 unanalyzed,
                 Candor.excludedClasses(),   // ⟨0.29⟩ THE SCOPE — always present, `[]` included
                 ctx().outOfScope,           // ⟨0.29⟩ THE PEEK — null (key omitted) when no policy was set
+                ctx().scannedUnder,         // ⟨0.33⟩ …and the QUESTION it was put — same emission rule
                 netPartnersRecord(),        // ⟨0.31⟩ the ambient config that MOVED a class — null when none did
                 effectors);
         // "-" is the --json-stdout pipe form: emit the report JSON to stdout (pure — `| jq .` parses it)

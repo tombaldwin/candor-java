@@ -92,6 +92,20 @@ class UnreadCodeRouteTest {
      *                     (the pre-⟨0.29⟩ producer, which is a different claim — ⟨0.26⟩)
      */
     private Path report(String name, String excludedJson) throws Exception {
+        return report(name, excludedJson, null);
+    }
+
+    /**
+     * ⟨0.33⟩ …and the deny set the producing scan HELD, as the raw text of `scannedUnder`'s value, or null
+     * to OMIT the key — a pre-⟨0.33⟩ producer, which is a DIFFERENT claim and now a refusal wherever a
+     * class came back {@code peeked: true} (SPEC §2 ⟨0.33⟩: absent is the empty set for the subset test).
+     *
+     * <p>Every caller that passes null here is asking about a rule OTHER than this one, and gets the
+     * pre-rung shape unchanged; the two over-charge controls below pass a real set, because what they
+     * assert — a class the producer READ hides nothing — is true only of a producer that was asked THIS
+     * question.
+     */
+    private Path report(String name, String excludedJson, String scannedUnderJson) throws Exception {
         Path dir = Files.createDirectories(tmp.resolve("r-" + name));
         Path f = dir.resolve(name + ".jvm.json");
         Files.writeString(f, "{\n"
@@ -99,6 +113,7 @@ class UnreadCodeRouteTest {
                 + "  \"packages\": [ \"com.x\" ],\n"
                 + "  \"analyzed\": { \"count\": 2, \"digest\": \"0000000000000000\" },\n"
                 + (excludedJson == null ? "" : "  \"excluded\": " + excludedJson + ",\n")
+                + (scannedUnderJson == null ? "" : "  \"scannedUnder\": " + scannedUnderJson + ",\n")
                 + "  \"functions\": []\n"
                 + "}\n");
         return f;
@@ -214,14 +229,201 @@ class UnreadCodeRouteTest {
     // (refuse everything) passes the defect row above while deleting the verb, so these are the half that
     // decides whether the repair is a repair.
 
-    /** A report whose every excluded class was PEEKED — asked and answered — certifies. */
+    /**
+     * A report whose every excluded class was PEEKED — asked and answered — certifies.
+     *
+     * <p>⟨0.33⟩ …AND "ASKED" IS NOW PART OF THE FIXTURE RATHER THAN AN ASSUMPTION. `peeked: true` is true
+     * only relative to the deny set the producer HELD (the ⟨0.29⟩ bound filters the peek to what that
+     * policy denies), so this control only says what it claims when the producer's `scannedUnder` covers
+     * the rule being gated. Before that key existed the fixture could not express the difference, and the
+     * gap it left is the ⟨0.33⟩ hole: `aPeekedReportWithoutScannedUnderRefuses` below drives the same
+     * bytes WITHOUT it and requires exit 2.
+     */
     @Test void aFullyPeekedReportStillCertifies() throws Exception {
         Path rep = report("peeked",
                 "[ { \"class\": \"archive-under-the-scan-root\", \"count\": 3, \"peeked\": true, "
-                + "\"reason\": \"read\" } ]");
+                + "\"reason\": \"read\" } ]",
+                "{ \"deny\": [ \"deny Exec\" ] }");
         Run r = runCli("gate", "--report", rep.toString(),
                        "--policy", policy("p1.policy", "deny Exec\n").toString());
-        assertEquals(0, r.exit(), "a class the producer READ hides nothing: " + r.stdout() + r.stderr());
+        assertEquals(0, r.exit(), "a class the producer READ, under THIS question, hides nothing: "
+                + r.stdout() + r.stderr());
+    }
+
+    /**
+     * ⟨0.33⟩ THE HOLE THE KEY EXISTS FOR — a class the producer READ, but read while holding a deny set
+     * that does not cover this gate's rule. MEASURED on candor-java 0.32.1 over a real tree whose excluded
+     * source runs {@code Runtime.exec("id")}:
+     * <pre>
+     *   candor &lt;tree&gt; --policy 'deny Net'  --json A   -&gt; exit 0, `peeked: true`, `outOfScope: []`
+     *   candor &lt;tree&gt; --policy 'deny Exec'            -&gt; exit 2  (there IS an Exec out there)
+     *   candor gate --report A --policy 'deny Exec'    -&gt; exit 0, `no violations`   &lt;- the fail-open
+     * </pre>
+     * ⟨0.32⟩'s unread-class rule correctly does not fire — the class really was read — and the ⟨0.29⟩
+     * bound had filtered what the peek LOOKED FOR to the producer's denied effects, so the `Exec` was seen
+     * and discarded as out of that question.
+     */
+    @Test void aPeekedReportUnderADifferentDenySetRefuses() throws Exception {
+        Path rep = report("peekedNet",
+                "[ { \"class\": \"archive-under-the-scan-root\", \"count\": 3, \"peeked\": true, "
+                + "\"reason\": \"read\" } ]",
+                "{ \"deny\": [ \"deny Net\" ] }");
+        Run r = runCli("gate", "--report", rep.toString(),
+                       "--policy", policy("p1x.policy", "deny Exec\n").toString());
+        assertEquals(2, r.exit(), "the peek was bounded by `deny Net`, so its empty finding answers "
+                + "nothing about `deny Exec`: " + r.stdout() + r.stderr());
+        assertTrue(r.stderr().contains("deny Exec"),
+            "…and the refusal must NAME the rule that went unasked, or the operator cannot act on it: "
+            + r.stderr());
+        assertTrue(r.stderr().contains("THE SAME policy"),
+            "…and the remedy must say THE SAME policy, not merely A policy — the loose reading is what "
+            + "PRODUCES this hole, because the operator DID scan with a policy: " + r.stderr());
+    }
+
+    /**
+     * ⟨0.33⟩ AN ABSENT {@code scannedUnder} IS THE EMPTY SET, so a pre-⟨0.33⟩ report carrying
+     * {@code peeked: true} fails closed. That is the rung and not collateral damage — the same shape
+     * ⟨0.32⟩ took, where a ⟨0.29⟩-era no-policy report became a refusal. Under the ⟨0.29⟩ bound a class
+     * reaches {@code peeked: true} only when the producing scan HELD a deny rule, so the absence
+     * identifies a pre-rung producer precisely and the remedy is exact: re-scan with a current engine
+     * under this gate's own policy.
+     */
+    @Test void aPeekedReportWithoutScannedUnderRefuses() throws Exception {
+        Path rep = report("peekedNoSU",
+                "[ { \"class\": \"archive-under-the-scan-root\", \"count\": 3, \"peeked\": true, "
+                + "\"reason\": \"read\" } ]");
+        Run r = runCli("gate", "--report", rep.toString(),
+                       "--policy", policy("p1y.policy", "deny Exec\n").toString());
+        assertEquals(2, r.exit(), "a producer that does not say what it was asked cannot be read as having "
+                + "been asked THIS: " + r.stdout() + r.stderr());
+    }
+
+    /**
+     * ⟨0.33⟩ THE COVERAGE CONTROL, and it is why the key is the RULE SET rather than a digest: a producer
+     * that held {@code deny Net} AND {@code deny Exec} fully answers a consumer asking only one of them.
+     * A digest could decide only equality and would refuse this — same implementation cost, strictly
+     * worse answer.
+     */
+    @Test void aSupersetProducerStillCertifies() throws Exception {
+        Path rep = report("peekedBoth",
+                "[ { \"class\": \"archive-under-the-scan-root\", \"count\": 3, \"peeked\": true, "
+                + "\"reason\": \"read\" } ]",
+                "{ \"deny\": [ \"deny Exec\", \"deny Net\" ] }");
+        for (String rule : List.of("deny Exec\n", "deny Net\n", "deny Exec\ndeny Net\n")) {
+            String tag = "su" + Math.abs(rule.hashCode());
+            Run r = runCli("gate", "--report", rep.toString(),
+                           "--policy", policy(tag + ".policy", rule).toString());
+            assertEquals(0, r.exit(), "`" + rule.trim().replace("\n", "; ") + "` is covered by the "
+                    + "producer's set, so refusing it is a pure over-charge: " + r.stdout() + r.stderr());
+        }
+    }
+
+    /**
+     * ⟨0.33⟩ THE OVER-CHARGE CONTROL THE DESIGN NAMES FIRST, because a careless implementation gets it
+     * wrong in the LOUD direction: with NO class peeked, differing policies must still certify. The
+     * effect sets of ANALYZED code are policy-independent — only the PEEK was ever bounded by a deny set
+     * — so refusing here would redden every scan-then-gate pipeline in the family for a difference that
+     * changed no evidence.
+     */
+    @Test void differingPoliciesOverAnUnpeekedNothingStillCertify() throws Exception {
+        Path rep = report("noExcl", "[]", "{ \"deny\": [ \"deny Net\" ] }");
+        Run r = runCli("gate", "--report", rep.toString(),
+                       "--policy", policy("p1z.policy", "deny Exec\n").toString());
+        assertEquals(0, r.exit(), "nothing was peeked, so no answer here was bounded by the producer's "
+                + "deny set: " + r.stdout() + r.stderr());
+    }
+
+    /**
+     * ⟨0.33⟩ {@code judgedElsewhere: true} EXCLUDES A CLASS FROM THE PRECONDITION, even when it is also
+     * {@code peeked}. ⟨0.32⟩ defines the flag as *these files are copies of code this same scan already
+     * judged*, so their effects are in `functions` with a full POLICY-INDEPENDENT effect set: the gate
+     * answers any deny rule from them without the peek, and refusing gains no evidence. Not reachable on
+     * this engine today — `build-output-archive` is its only `judgedElsewhere` class and its peek never
+     * opens it — so this is driven from a hand-built document, which is the only way to reach the state
+     * an engine where it IS reachable would produce.
+     */
+    @Test void aJudgedElsewhereClassIsNotThisRungsPrecondition() throws Exception {
+        Path rep = report("peekedJE",
+                "[ { \"class\": \"build-output\", \"count\": 1, \"peeked\": true, "
+                + "\"judgedElsewhere\": true, \"reason\": \"a derived copy\" } ]",
+                "{ \"deny\": [ \"deny Net\" ] }");
+        Run r = runCli("gate", "--report", rep.toString(),
+                       "--policy", policy("p1je.policy", "deny Exec\n").toString());
+        assertEquals(0, r.exit(), "a class whose files this scan JUDGED carries a policy-independent "
+                + "effect set, so the producer's deny set never bounded it: " + r.stdout() + r.stderr());
+
+        // THE CONTROL, and it is what stops the arm above passing for an engine that ignores `peeked`
+        // entirely: the SAME entry without the producer's carve-out must refuse.
+        Path no = report("peekedNoJE",
+                "[ { \"class\": \"build-output\", \"count\": 1, \"peeked\": true, "
+                + "\"reason\": \"a derived copy\" } ]",
+                "{ \"deny\": [ \"deny Net\" ] }");
+        Run r2 = runCli("gate", "--report", no.toString(),
+                        "--policy", policy("p1je2.policy", "deny Exec\n").toString());
+        assertEquals(2, r2.exit(), "without the carve-out the class is an ordinary peeked class and its "
+                + "empty finding was bounded: " + r2.stdout() + r2.stderr());
+    }
+
+    /**
+     * ⟨0.33⟩ THE FLATTENING TRAP, arriving one layer out from where ⟨0.30⟩ closed it. {@code pure} is a
+     * deny rule with an EMPTY effect list (§2.2 ⟨0.30⟩), so an engine deciding coverage by reducing rules
+     * to effect NAMES gets NOTHING from it — and an empty set is a subset of everything, which lets the
+     * STRICTEST policy in the family certify over a peek that never asked its question. All four engines
+     * made exactly this mistake once already, on the peek itself.
+     */
+    @Test void pureIsARuleAndDoesNotFlattenToNothing() throws Exception {
+        Path rep = report("peekedPure",
+                "[ { \"class\": \"archive-under-the-scan-root\", \"count\": 3, \"peeked\": true, "
+                + "\"reason\": \"read\" } ]",
+                "{ \"deny\": [ \"deny Net\" ] }");
+        Run r = runCli("gate", "--report", rep.toString(),
+                       "--policy", policy("p1p.policy", "pure\n").toString());
+        assertEquals(2, r.exit(), "`pure` denies every effect and the producer was asked about `Net` "
+                + "alone: " + r.stdout() + r.stderr());
+
+        // …and its own control: `pure` against a producer that WAS asked `pure` certifies, so the arm
+        // above is not passing for an engine that refuses every `pure` policy.
+        Path ok = report("peekedPureOk",
+                "[ { \"class\": \"archive-under-the-scan-root\", \"count\": 3, \"peeked\": true, "
+                + "\"reason\": \"read\" } ]",
+                "{ \"deny\": [ \"pure\" ] }");
+        Run r2 = runCli("gate", "--report", ok.toString(),
+                        "--policy", policy("p1q.policy", "pure\n").toString());
+        assertEquals(0, r2.exit(), "the producer held the identical rule: " + r2.stdout() + r2.stderr());
+    }
+
+    /**
+     * ⟨0.33⟩ A GARBLED {@code scannedUnder} MUST NOT MANUFACTURE COVERAGE. The fail-open direction here is
+     * the mirror of {@code peeked}'s: there the safe-looking value was "no exclusions", here it would be
+     * "the producer held these rules". Every shape §2 does not permit is DRIVEN rather than reasoned
+     * about — this codebase has four measured cases of a Gson coercion deleting a refusal — against the
+     * policy the genuine value COVERS, so a shape that certifies is visible as a 0 where the honest
+     * answer is 2.
+     */
+    @Test void aGarbledScannedUnderCannotCertify() throws Exception {
+        List<String> shapes = List.of("\"deny Exec\"", "[ \"deny Exec\" ]", "7", "true", "null", "{ }",
+                "{ \"deny\": \"deny Exec\" }", "{ \"deny\": 7 }", "{ \"deny\": null }",
+                "{ \"deny\": { \"a\": 1 } }", "{ \"deny\": [ \"deny Exec\", 7 ] }",
+                "{ \"deny\": [ [ \"deny Exec\" ] ] }");
+        for (String shape : shapes) {
+            String tag = "su" + Math.abs(shape.hashCode());
+            Path rep = report(tag,
+                    "[ { \"class\": \"archive-under-the-scan-root\", \"count\": 3, \"peeked\": true, "
+                    + "\"reason\": \"read\" } ]", shape);
+            Run r = runCli("gate", "--report", rep.toString(),
+                           "--policy", policy(tag + ".policy", "deny Exec\n").toString());
+            assertEquals(2, r.exit(), "`scannedUnder`: " + shape + " is not the §2 shape, and reading it "
+                    + "as coverage certifies a question the producer was never put: "
+                    + r.stdout() + r.stderr());
+        }
+        // THE CONTROL, and it is half the row: the GENUINE value over the identical bytes must certify,
+        // or every assertion above passes for an engine that refuses every document.
+        Path good = report("suGood",
+                "[ { \"class\": \"archive-under-the-scan-root\", \"count\": 3, \"peeked\": true, "
+                + "\"reason\": \"read\" } ]", "{ \"deny\": [ \"deny Exec\" ] }");
+        Run r = runCli("gate", "--report", good.toString(),
+                       "--policy", policy("suGood.policy", "deny Exec\n").toString());
+        assertEquals(0, r.exit(), r.stdout() + r.stderr());
     }
 
     /** A report that excluded NOTHING certifies — ⟨0.27⟩'s zero-match is a positive statement. */
@@ -369,9 +571,13 @@ class UnreadCodeRouteTest {
      * still read as NOT peeked (never as "the producer opened them").
      */
     @Test void aGenuineBooleanPeekedIsUntouched() throws Exception {
+        // ⟨0.33⟩ the producer's own deny set rides the fixture now, for the reason
+        // `aFullyPeekedReportStillCertifies` gives: `peeked: true` certifies only against the question it
+        // was put, and without the key this arm would be asserting the ⟨0.33⟩ refusal by accident.
         Path yes = report("pkTrue",
                 "[ { \"class\": \"archive-under-the-scan-root\", \"count\": 3, \"peeked\": true, "
-                + "\"reason\": \"read\" } ]");
+                + "\"reason\": \"read\" } ]",
+                "{ \"deny\": [ \"deny Exec\" ] }");
         Run r1 = runCli("gate", "--report", yes.toString(),
                         "--policy", policy("pk1.policy", "deny Exec\n").toString());
         assertEquals(0, r1.exit(), "a real `true` still certifies — this is the carve-out, not the defect: "

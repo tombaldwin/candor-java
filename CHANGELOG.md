@@ -8,6 +8,37 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ ⟨0.33⟩ `scannedUnder`: a report now records the deny set its peek was BOUNDED BY, and
+  `gate --report` refuses when that set does not cover the policy being applied.** `excluded[].peeked:
+  true` is true only relative to the producer's deny set — ⟨0.29⟩ bounds the peek to effects that policy
+  DENIES — so a class read under `deny Net` says nothing about `Exec` in those same files. Measured on
+  this engine at 0.32.1, over a tree whose excluded source runs `Runtime.exec("id")`:
+
+      candor <tree> --policy 'deny Net'  --json A   -> exit 0, `peeked: true`, `outOfScope: []`
+      candor <tree> --policy 'deny Exec'            -> exit 2      (there IS an Exec out there)
+      candor gate --report A --policy 'deny Exec'   -> exit 0, `no violations`      <- the fail-open
+
+  It survives every ⟨0.32⟩ control because the class really WAS read, and it is the SUPPLY-CHAIN route.
+
+  PRODUCER: the envelope carries `scannedUnder: { "deny": [ … ] }` under exactly `outOfScope`'s emission
+  rule — present iff a policy was configured AND honoured, absent otherwise — holding the rules in the
+  canonical EXPANDED form the peek matched with (`Policy.canonicalDenyRule`, the same string
+  `ruleUpgrade` quotes back to an operator). CONSUMER: `gate --report` refuses at exit 2 with
+  `ok: false, incomplete: true` when its own expanded deny set is not a subset of the report's, over a
+  report carrying any `peeked: true` class, naming the rules that went unasked. **A REPORT THIS ENGINE
+  WROTE WITHOUT `scannedUnder` NOW FAILS CLOSED where a class came back `peeked: true`** — the same
+  non-additive shape ⟨0.32⟩ took, with an exact remedy: re-scan under the gate's own policy.
+
+  Both carve-outs are STRUCTURAL rather than spelled twice: an empty consumer rule set is a subset of
+  everything (so a policy with no `deny`/`pure` never fires, and neither does a descriptive verb), and a
+  report with nothing peeked never fires (analysed code's effect sets are policy-independent). The
+  ⟨0.24⟩ advisory verbs reach it through the SAME helper the gate calls, so `fix-gate --strict` and
+  `unverified --strict` cannot be less pessimistic than the gate over the same bytes — the relation that
+  shipped broken four-way one rung ago. §3.1 route equality holds by construction: on `scan --policy P`
+  the producer and consumer are one run, so `P ⊆ P` and the scan route's verdict is byte-unchanged.
+  Conformance PART 69; falsified against a producer-only build, where the four assertion cells go RED
+  and all eight controls stay green.
+
 - **`jbang-catalog.json`'s description is now in the doc spec-claim gate, and the gate reads two more
   spellings.** The catalog description is a contract claim with its own distribution channel — it is
   what `jbang candor@tombaldwin/candor-java` and the catalog listing show — and nothing read it. The

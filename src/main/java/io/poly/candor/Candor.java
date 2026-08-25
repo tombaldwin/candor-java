@@ -707,6 +707,12 @@ public class Candor {
         // beside a refusal would certify a look that never happened. §3.1's answerability MUST binds every
         // producer reading the policy, not the gate alone, so the key stays ABSENT unless the parse stood.
         boolean[] answered = {false};
+        // ⟨0.33⟩ THE QUESTION THE PEEK WAS PUT, captured on the peek thread from the very rule list it
+        // matched with — never re-derived on the main thread from a second parse. SPEC §2 ⟨0.33⟩ records
+        // the rules "the matcher used", and the peek's parse IS that matcher; a main-thread re-read would
+        // be a second opinion about the same file, the shape ⟨0.29⟩ already forbids one level down.
+        java.util.concurrent.atomic.AtomicReference<List<String>> scannedUnder =
+                new java.util.concurrent.atomic.AtomicReference<>();
         int[] peekFailures = {0};
         // ⟨0.32⟩ the source arm's own accounting, kept separate from the archive arm's for the same reason
         // that one is separate from the versioned pass's: `peeked: true` is per CLASS, and one class's
@@ -826,6 +832,12 @@ public class Candor {
                 //   not deny — turned the verdict red while the same code in scope passed. Rule SCOPES
                 //   were dropped the same way.
                 List<PolicyRule.Deny> peekRules = List.copyOf(ctx().denyRules);
+                // ⟨0.33⟩ RECORDED BEFORE THE SHORT-CIRCUIT BELOW, and that is not incidental. A policy
+                // holding only `allow`/`forbid`/`only` denies nothing, so the peek returns without opening
+                // a file — and the report must still say *a policy stood and it denied nothing* rather
+                // than *nothing was asked*. Present-and-empty and ABSENT are different claims (⟨0.26⟩),
+                // and it is the ABSENT one that a consumer must read as a licence for nothing.
+                scannedUnder.set(Policy.canonicalDenySet(peekRules));
                 if (peekRules.isEmpty()) return;   // allow-only: nothing denied, so nothing to look for
                 int[] readOk = {0}, readFail = {0}, readPartial = {0};
                 for (Path jar : archives) {
@@ -1086,6 +1098,12 @@ public class Candor {
         }
         if (!answered[0]) return;   // the policy did not stand — see `answered`
         ctx().outOfScope = found;
+        // ⟨0.33⟩ …and the question it answered, under the SAME emission rule. Null here (key omitted) is
+        // deliberately reachable only where `outOfScope` is also omitted — a timed-out or interrupted peek
+        // returns above, and a refused policy never sets `answered`. If the thread died between setting
+        // `answered` and recording the rules, the key stays ABSENT, which a consumer reads as the empty
+        // set and therefore REFUSES over: the fail-closed direction for a state that should not occur.
+        if (scannedUnder.get() != null) ctx().scannedUnder = new Report.ScannedUnder(scannedUnder.get());
         // …applied HERE, on the MAIN thread, whose context is the one the report is written from.
         if (peekReadAll[0]) ctx().peekedClasses.add("archive-under-the-scan-root");
         // ⟨0.30⟩ …and the versioned class, on the same rule: `peeked: true` means every file of it was
@@ -2261,7 +2279,13 @@ public class Candor {
                      java.util.List<Map.Entry<String, Integer>> uncovered,
                      java.util.List<io.poly.candor.model.Report.OutOfScope> outOfScope,
                      /** ⟨0.32⟩ exclusion classes this run did NOT read — `excluded[].peeked == false`. */
-                     java.util.List<String> unpeeked) {}
+                     java.util.List<String> unpeeked,
+                     /** ⟨0.33⟩ the deny rules THIS gate holds that the gated report's producer was never
+                      *  asked about (SPEC §2 ⟨0.33⟩). ALWAYS EMPTY on the scan route, by construction and
+                      *  not by omission: there the producer and the consumer are one run, so the recorded
+                      *  set IS this policy and `P ⊆ P` holds — which is why §3.1's byte-equality survives
+                      *  this rung with no new anchor, unlike the reverted `net-partner` attempt. */
+                     java.util.List<String> unaskedRules) {}
 
     static GateFacts scanGateFacts() {
         java.util.List<String[]> un = new ArrayList<>();
@@ -2276,7 +2300,11 @@ public class Candor {
         // publishes, so the verdict and the document cannot disagree about which classes were opened.
         java.util.List<String> unpeeked = new ArrayList<>();
         for (var c : unreadClasses()) unpeeked.add(c.cls());
-        return new GateFacts(ctx().edges.keySet().size(), un, kappaUncovered(), oos, unpeeked);
+        // ⟨0.33⟩ EMPTY, and the empty is the ARGUMENT rather than a stub. On this route the producer and
+        // the consumer are the same run over the same policy, so the set the peek was put IS the set the
+        // gate holds and the subset test cannot fail. Computing it here would compute `P ⊆ P`.
+        return new GateFacts(ctx().edges.keySet().size(), un, kappaUncovered(), oos, unpeeked,
+                java.util.List.of());
     }
 
     /**
@@ -2369,7 +2397,14 @@ public class Candor {
         // this from the document rather than needing a target — which is what the `net-partner` attempt
         // could not do, and why that one broke §3.1 route equality and this one does not.
         boolean unread = facts.unpeeked() != null && !facts.unpeeked().isEmpty();
-        boolean incomplete = !facts.unanalyzed().isEmpty() || scopeIncomplete || unread;
+        // ⟨0.33⟩ THE FOURTH CAUSE — a class the producer's peek READ, but read while holding a DIFFERENT
+        // deny set, so its empty finding answers a question this gate is not asking. Unioned into
+        // `incomplete` HERE rather than at the exit arm, for the reason ⟨0.32⟩ recorded in blood one
+        // rung ago: this engine spelled that condition at the exit site alone and shipped a
+        // `"ok": false, "incomplete": true` document AT EXIT 0, visible only to a machine reading the
+        // JSON. One value, one place, both consumers.
+        boolean crossPolicy = facts.unaskedRules() != null && !facts.unaskedRules().isEmpty();
+        boolean incomplete = !facts.unanalyzed().isEmpty() || scopeIncomplete || unread || crossPolicy;
         out.put("ok", violations == 0 && !incomplete);
         // ⟨0.21⟩ (Gap 1) the analyzed-universe count, so a --gate-json consumer sees the scan's scope from the
         // verdict alone (mirrors the report envelope's `analyzed`).

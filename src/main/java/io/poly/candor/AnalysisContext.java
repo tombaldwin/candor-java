@@ -96,6 +96,12 @@ final class AnalysisContext {
     // ⟨0.29⟩ what THE PEEK found: an effect the policy DENIES, in a file the gate did not judge. Its own
     // kind, never a violation — it moves no verdict. Null when no policy was configured (nothing asked).
     java.util.List<Report.OutOfScope> outOfScope = null;
+    // ⟨0.33⟩ …and the QUESTION it was put: the deny rules this scan held, expanded. `peeked: true` is true
+    // only relative to a deny set (the ⟨0.29⟩ bound filters the peek to what the policy DENIES), so a
+    // consumer gating the report with a DIFFERENT deny set is answering a question nobody asked. Null under
+    // exactly `outOfScope`'s rule — no policy, or a policy this engine refused — and set beside it, on the
+    // main thread, from the rules the PEEK THREAD actually matched with.
+    Report.ScannedUnder scannedUnder = null;
     // ⟨0.29⟩ the exclusion classes THE PEEK ACTUALLY READ this run. `excluded[].peeked` is derived from
     // this rather than from a per-class table, so a peek that never ran, or one whose files could not be
     // opened, cannot publish `peeked: true` beside an empty `outOfScope` — which would be byte-identical
@@ -330,7 +336,7 @@ final class AnalysisContext {
         closedWorld = master.closedWorld;                   peekVersioned = master.peekVersioned;
         scanRoot = master.scanRoot;                         vocabularySource = master.vocabularySource;
         netPartnersSource = master.netPartnersSource;       depReportsRead = master.depReportsRead;
-        outOfScope = master.outOfScope;
+        outOfScope = master.outOfScope;                     scannedUnder = master.scannedUnder;
     }
 
     /** The accumulator fields: every {@code final} instance field, i.e. everything the overlay

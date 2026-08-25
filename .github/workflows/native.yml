@@ -55,18 +55,62 @@ jobs:
       - name: Parity — native report == jar report
         run: |
           set -euo pipefail
-          JAR=$(ls build/libs/*-all.jar)
+          # Name the jar rather than trust a glob to hold exactly one entry: a build dir carrying two
+          # `*-all.jar`s makes `ls` expand to two words and compares against whichever the shell put
+          # first — a measurement of the wrong artifact, not a parity result.
+          shopt -s nullglob
+          JARS=(build/libs/*-all.jar)
+          if [ "${#JARS[@]}" -ne 1 ]; then
+            echo "expected exactly one build/libs/*-all.jar, found ${#JARS[@]}: ${JARS[*]:-<none>}" >&2
+            exit 1
+          fi
+          JAR="${JARS[0]}"
           TARGET=build/classes/java/main
           ./build/native/nativeCompile/candor "$TARGET" --json /tmp/native.json
           java -jar "$JAR" "$TARGET" --json /tmp/jar.json
           python3 - <<'PY'
           import json, sys
-          a = json.load(open('/tmp/jar.json'))['functions']
-          b = json.load(open('/tmp/native.json'))['functions']
-          if a != b:
-              print('PARITY FAILED: native functions[] differ from jar', file=sys.stderr)
+          jar = json.load(open('/tmp/jar.json'))
+          nat = json.load(open('/tmp/native.json'))
+
+          # THE CONTROL, AND IT IS NOT OPTIONAL. This gate is an EQUALITY, and two empty documents are
+          # equal — so a defect that zeroes BOTH legs passes it while measuring nothing. The jar leg has
+          # to be shown to have found something before its agreement with native means anything.
+          # candor's own classes reach Fs/Exec/Env/Clock in the hundreds.
+          n = len(jar.get('functions', []))
+          count = jar.get('analyzed', {}).get('count', 0)
+          if n < 100 or count < 500:
+              print(f'PARITY VACUOUS: the jar leg found {n} function(s) / {count} analyzed — this gate '
+                    f'would be comparing two empty reports. Fix the scan, not the gate.', file=sys.stderr)
               sys.exit(1)
-          print(f'parity OK: native functions[] == jar ({len(a)} functions)')
+
+          # THE WHOLE ENVELOPE, not just `functions`. ⟨0.32⟩ shipped a native image whose per-class delta
+          # merge folded nothing: `functions` went to 0, AND `analyzed.count` 1329 -> 0, AND `coverage`
+          # vanished. `functions` caught that one — but a divergence confined to `analyzed`, `excluded`,
+          # `outOfScope` or `netPartners` would have passed a functions-only gate, and a consumer's
+          # verdict reads every one of those keys.
+          bad = [k for k in sorted(set(jar) | set(nat))
+                 if jar.get(k, '<ABSENT>') != nat.get(k, '<ABSENT>')]
+          if bad:
+              print(f'PARITY FAILED: native report differs from jar on {bad}', file=sys.stderr)
+              for k in bad:
+                  a, b = jar.get(k, '<ABSENT>'), nat.get(k, '<ABSENT>')
+                  if k == 'functions' and isinstance(a, list) and isinstance(b, list):
+                      an = {f['fn']: f for f in a}
+                      bn = {f['fn']: f for f in b}
+                      print(f'  functions: jar {len(an)} vs native {len(bn)}', file=sys.stderr)
+                      for fn in sorted(set(an) ^ set(bn))[:10]:
+                          print(f'    only in {"jar" if fn in an else "native"}: {fn}', file=sys.stderr)
+                      for fn in sorted(set(an) & set(bn)):
+                          if an[fn] != bn[fn]:
+                              print(f'    differs: {fn}\n      jar   : {an[fn]}\n      native: {bn[fn]}',
+                                    file=sys.stderr)
+                              break
+                  else:
+                      print(f'  {k}:\n    jar   : {json.dumps(a)[:300]}\n    native: {json.dumps(b)[:300]}',
+                            file=sys.stderr)
+              sys.exit(1)
+          print(f'parity OK: native report == jar, whole envelope ({n} functions, {count} analyzed)')
           PY
 
       - name: Stage binary

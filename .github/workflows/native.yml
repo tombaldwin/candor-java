@@ -1,8 +1,33 @@
 name: native
 
-# Build per-platform native `candor` binaries and attach them to the GitHub release.
-# The jar (jbang) stays the primary artifact; these are for fast-startup CLI use (CI gates, agent loops).
+# Build per-platform native `candor` binaries, PROVE THEM AGAINST THE JAR, and attach them to the
+# GitHub release. The jar (jbang) stays the primary artifact; these are for fast-startup CLI use
+# (CI gates, agent loops).
+#
+# THIS RUNS ON `main` AND ON PULL REQUESTS, NOT ONLY ON A RELEASE — a gate positioned after the
+# irreversible step grades the release, it does not guard it. Until 2026-08-25 this workflow fired
+# only on `release: published`, so the parity check below — the ONLY thing in the project that
+# compares the native image's report against the jar's — first looked at a native binary after the
+# release was public. On v0.32.0 it did its job and withheld two binaries that reported an EMPTY
+# scan at exit 0 (0 functions where the jar found 210, `analyzed.count` 0 vs 1329), but by then
+# v0.32.0 existed without them and the repair cost a second full family cut, 0.32.1, in which five
+# engines were republished with no functional change. On `main` the same check costs one push.
+#
+# THE COST, MEASURED (job wall clock, both legs in parallel, 2026-08-25):
+#   ubuntu-latest / linux-x64   2m47s      macos-latest / macos-arm64   3m40s
+# so the workflow finishes in under four minutes and lands well inside `ci`'s own runtime. The repo
+# is public, so standard runners — including the 10×-billed macOS one — are free. There is no cost
+# argument for a schedule or a dispatch-only positioning here; it runs on every push to `main`.
+#
+# DELIBERATELY NO `paths:` FILTER. The defect this exists to catch was a MISSING RESOURCE FILE
+# (`src/main/resources/META-INF/native-image/.../reflect-config.json`) — a path filter that failed to
+# name that directory would skip precisely the gate that catches it, and a build this cheap does not
+# buy anything by guessing. `push` is narrowed to `main` only because `pull_request` already covers
+# branches; together they leave no route to `main` unmeasured.
 on:
+  push:
+    branches: [main]
+  pull_request:
   release:
     types: [published]
   workflow_dispatch:
@@ -11,6 +36,14 @@ on:
 # write. Scope it minimally to contents (the only write this workflow performs).
 permissions:
   contents: write
+
+# Supersede an in-flight PR build when the branch is pushed again — but NEVER cancel a release or a
+# `main` build. Those two are the ones something downstream waits on: `release-preflight` [10] reads
+# every run on the released commit's SHA, and a cancelled run is not `success`, so cancelling a
+# `main` build would turn this guard into a release blocker on a race.
+concurrency:
+  group: native-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -121,14 +154,22 @@ jobs:
       - name: Smoke-test the binary
         run: ./dist/${{ matrix.asset }} --version
 
+      # The release step is now an UPLOAD OF SOMETHING ALREADY PROVEN: the identical build ran on the
+      # `main` commit this tag points at, and its parity check was green before anyone cut anything.
+      # The build and the parity check above still run here — the upload is the only release-only step
+      # in this file, because uploading is the only thing that genuinely cannot happen before there is
+      # a release to upload to.
       - name: Upload to release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: dist/${{ matrix.asset }}
 
+      # Every non-release run leaves the binary downloadable — a `main` build that a later release
+      # merely re-cuts, or a PR build someone wants to try. Was `== 'workflow_dispatch'`, which under
+      # the new triggers would have thrown away every `main` and PR binary.
       - name: Upload as workflow artifact
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name != 'release'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}

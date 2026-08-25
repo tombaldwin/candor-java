@@ -75,9 +75,16 @@ future change adds reflection, regenerate metadata with the GraalVM tracing agen
 ## Distribution
 
 The jar (jbang) stays the primary, portable artifact. Native binaries are **per-platform** (macOS
-arm64/x64, Linux x64/arm64), built in CI on release (`.github/workflows/native.yml`) and attached to the
-GitHub release. Pick the binary when startup latency matters (CI gate, agent loops); use the jar when you
-want one portable artifact.
+arm64/x64, Linux x64/arm64), built in CI (`.github/workflows/native.yml`) and attached to the GitHub
+release. Pick the binary when startup latency matters (CI gate, agent loops); use the jar when you want
+one portable artifact.
+
+**The build runs on every push to `main` and on every pull request, not only on a release.** It used to
+run only on `release: published`, which meant the parity gate below first looked at a native binary
+*after* the artifacts were public — see the ⟨0.32⟩ failure above, where it correctly withheld two
+binaries but only once v0.32.0 already existed without them, costing a second family cut to repair. The
+release event still builds and still checks; the only thing it does that `main` does not is **upload**.
+Measured cost of the `main` build: 2m47s (linux-x64) / 3m40s (macos-arm64), in parallel, free runners.
 
 ## Parity is gated, not just hoped
 

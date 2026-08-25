@@ -8,6 +8,18 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **The native build and its parity gate now run on `main` and on pull requests, not only on
+  `release: published`.** A gate positioned after the irreversible step grades the release; it does not
+  guard it. On v0.32.0 this gate did exactly its job — it caught the native image reporting an empty
+  scan at exit 0 and refused to upload the binaries — but it fired only once v0.32.0 was public, so the
+  repair cost a second family cut (0.32.1, five engines republished for a one-engine fix). Running the
+  same build on `main` costs 2m47s (linux-x64) / 3m40s (macos-arm64) in parallel on free public-repo
+  runners, so no schedule or dispatch-only positioning is warranted. No `paths:` filter: the ⟨0.32⟩
+  defect was a *missing resource file*, and a path filter that failed to name that directory would skip
+  precisely the gate that catches it. `release: published` still builds and still checks — the upload is
+  now the only release-only step, because it is the only one that cannot happen before there is a
+  release to upload to. Non-release runs keep the binary as a workflow artifact.
+
 ## [0.32.1] — 2026-08-25
 
 - **jbang pinned to v0.32.1** — tag and asset filename together, since a tag-only bump names a jar that does not exist.

@@ -710,13 +710,17 @@ public final class Query {
         return switch (cmd) {
             case "show" -> show(fns, a0, json, ref);
             case "where" -> where(fns, a0, json, ref);
-            case "callers" -> callers(fns, loaded, a0, json, includeUnknown);
+            // ⟨0.32⟩ `ref` REACHES THESE THREE TOO. `callers`, `path` and `impact` were the descriptive
+            // verbs the ⟨0.28⟩ enumeration skipped — they carried no completeness reader at all, so over a
+            // report whose own `excluded` names a class the scan never opened they answered FLAT. See the
+            // javadoc on {@link #callers(List, List, String, boolean, boolean, ReportRef)}.
+            case "callers" -> callers(fns, loaded, a0, json, includeUnknown, ref);
             case "map" -> map(fns, json, ref);
             case "diff" -> diff2(a0, a1, json);
             case "containment" -> containment(fns, a0, json, ref);
             case "reachable" -> reachable(fns, json, ref);
-            case "path" -> path(fns, a0, a1, json);
-            case "impact" -> impact(fns, a0, json);
+            case "path" -> path(fns, a0, a1, json, ref);
+            case "impact" -> impact(fns, a0, json, ref);
             case "blindspots" -> blindspots(fns, json, stats, classFilter, ref);
             case "tour" -> tour(fns, loaded, a0, json, ref);
             case "gains" -> gains2(a0, a1, json, strict, policyFlag);
@@ -1102,11 +1106,49 @@ public final class Query {
 
     /** Who calls a function — inverts the report's `calls` effect graph (no re-analysis). */
     static int callers(List<Effector> fns, String reportPath, String q, boolean json, boolean includeUnknown) {
-        return callers(fns, reportPath == null ? List.of() : List.of(reportPath), q, json, includeUnknown);
+        return callers(fns, reportPath == null ? List.of() : List.of(reportPath), q, json, includeUnknown, null);
     }
 
-    /** ⟨0.28⟩ SPEC §3.1 — over the loaded report SET: the sidecars union with the entries. */
-    static int callers(List<Effector> fns, List<String> reportPaths, String q, boolean json, boolean includeUnknown) {
+    /** ⟨0.28⟩ SPEC §3.1 — over the loaded report SET: the sidecars union with the entries.
+     *
+     *  <p>⟨0.32⟩ <b>AND THE COMPLETENESS READER THIS VERB DID NOT HAVE.</b> The ⟨0.28⟩ rung widened SPEC
+     *  §2's re-disclosure MUST to <i>"any verb whose output could be read as a NEGATIVE FINDING about the
+     *  code — a verdict, an empty result set, or a zero count"</i>, enumerated six verbs, and skipped
+     *  {@code callers}, {@code impact} and {@code path}. The ⟨0.32⟩ unread-class cause then made the gap
+     *  fire on nearly every no-policy report. MEASURED at HEAD 2026-08-25 over a report whose
+     *  {@code excluded} names one class with {@code peeked: false}:
+     *
+     *  <pre>
+     *    callers app.svc.wrapper --json  {"of":[…],"direct":["app.web.top"],"transitive":[…]}  exit 0
+     *    impact  app.svc.wrapper --json  {"fn":…,"affectedCount":1,"affected":[…],…}           exit 0
+     *    path    app.web.top Fs  --json  {"fn":…,"effect":"Fs","path":[…]}                     exit 0
+     *  </pre>
+     *
+     *  — no caveat on either channel, while {@code where} and {@code reachable} read the same bytes
+     *  through the same class and hedged. Reproduced identically in candor-rust and candor-ts, and on
+     *  candor-ts's MCP tools, where the consumer is an agent with no follow-up question available to it.
+     *
+     *  <p><b>This is the SILENT half of the {@code show}/{@code map} class.</b> Those two OVER-hedged
+     *  (⟨0.28⟩ Rung A had them emit the caveat INSTEAD of the result, ruled the other way on 2026-08-25);
+     *  these three UNDER-hedged. An empty {@code direct} says <i>nothing calls this</i>, an
+     *  {@code affectedCount: 0} says <i>safe to edit</i>, an empty {@code path} says <i>this method does
+     *  not reach that effect</i> — three determined negatives over a report that names part of the tree
+     *  unread.
+     *
+     *  <p><b>The remedy is the one this file already uses.</b> All three documents have a FIXED key set at
+     *  their root, so unlike {@code show}/{@code map} nothing nests and no reserved-key collision can
+     *  arise: {@link ReportCompleteness#writeJson} on the machine channel, {@link
+     *  ReportCompleteness#printNote} on the human one, exactly as {@code where} does. The trigger is
+     *  {@link ReportCompleteness#mustHedge} — a DISCLOSURE — and {@code isIncomplete} is untouched, so the
+     *  verbs that answer {@code ok} ({@code gate}, and {@code unverified}/{@code fix-gate}/{@code
+     *  whatif}/{@code fix} under {@code --strict}) still REFUSE over these same bytes: ⟨0.24⟩'s "never
+     *  LESS sensitive than the gate", pinned by conformance PARTs 62 and 67. Healthy output is
+     *  byte-identical — {@code writeJson}/{@code printNote} are no-ops on a complete report.
+     *
+     *  @param ref the report locator + resolved path, or {@code null} for the direct-call overload above
+     *             (a unit caller that holds no locator, and therefore has nothing to disclose). */
+    static int callers(List<Effector> fns, List<String> reportPaths, String q, boolean json,
+                       boolean includeUnknown, ReportRef ref) {
         if (q == null) return usage("callers <function-substring> [--report <locator>] [--json] [--include-unknown]");
         // Prefer the full call-graph sidecar (written beside the report): it records EVERY function's
         // callees, including pure ones, so we can answer "who TRANSITIVELY calls X" for any function —
@@ -1145,7 +1187,10 @@ public final class Query {
             }
             hier = loadHierarchy(reportPaths); // null → the query falls back to a simple-name match (over-lists)
         }
-        return callersViaCallgraph(cg, q, json, broadByFn, hier);
+        // ⟨0.32⟩ Read ONCE here and passed down — this verb has two answering paths through one helper and
+        // the helper is where both emits live, so a caveat attached at the call site could not reach them.
+        return callersViaCallgraph(cg, q, json, broadByFn, hier,
+                ref == null ? null : ref.completeness("callers"));
     }
 
     /** The bare method name of a `pkg.Class.method(desc)`: drop any `(…)` descriptor, then take the
@@ -1409,11 +1454,19 @@ public final class Query {
      *  blast radius if `q` gained an effect). Works for any function, effectful or pure. Mirrors
      *  candor-scan's `callers_via_callgraph`. */
     static int callersViaCallgraph(Map<String, List<String>> cg, String q, boolean json) {
-        return callersViaCallgraph(cg, q, json, null, null);
+        return callersViaCallgraph(cg, q, json, null, null, null);
+    }
+
+    /** ⟨0.7⟩ frontier overload, kept for the unit rows that drive it with no locator — `comp` null there,
+     *  which is "nothing to disclose" and leaves every emit byte-identical. */
+    static int callersViaCallgraph(Map<String, List<String>> cg, String q, boolean json,
+                                   Map<String, Set<String>> broadByFn, Map<String, List<String>> hier) {
+        return callersViaCallgraph(cg, q, json, broadByFn, hier, null);
     }
 
     static int callersViaCallgraph(Map<String, List<String>> cg, String q, boolean json,
-                                   Map<String, Set<String>> broadByFn, Map<String, List<String>> hier) {
+                                   Map<String, Set<String>> broadByFn, Map<String, List<String>> hier,
+                                   ReportCompleteness comp) {
         boolean incl = broadByFn != null; // --include-unknown: disclose the unresolved-dispatch frontier
         Map<String, List<String>> rev = new TreeMap<>(); // callee -> its direct callers
         for (var e : cg.entrySet())
@@ -1537,11 +1590,29 @@ public final class Query {
             out.put("direct", new ArrayList<>(direct));
             out.put("transitive", new ArrayList<>(all));
             if (incl) out.put("possibleViaUnknownDispatch", possible); // present only under --include-unknown
+            // ⟨0.32⟩ The answer is BUILT FIRST and the caveat appended, so the hedged document carries the
+            // same rows the healthy one would — a hedged document that recomputed its own answer would
+            // move the omission rather than remove it. A no-op on a complete report.
+            if (comp != null) comp.writeJson(out);
             emit(out);
             return 0;
         }
+        if (comp != null)
+            comp.printNote("the caller set below covers only the call graph candor could see",
+                    "A caller living in an unread unit is ABSENT from the graph, so it appears in neither "
+                    + "`direct` nor `transitive` — and an EMPTY answer reads as *nothing calls this*, which "
+                    + "is a claim this report cannot support. " + comp.gateLine()
+                    + " Re-scan before treating this as the blast radius.");
         String tgt = String.join(", ", targets);
         if (all.isEmpty() && possible.isEmpty()) {
+            // ⟨0.32⟩ "nothing in this codebase calls it" IS the prose spelling of `direct: []`, so the note
+            // alone is not enough: leaving the sentence standing under it MOVES the false all-clear rather
+            // than removing it. Same shape `where` takes one verb over.
+            if (comp != null && comp.mustHedge()) {
+                System.out.println("  `" + tgt + "` has no callers IN WHAT CANDOR COULD SEE — but see the "
+                        + "INCOMPLETE note above; this is NOT \"nothing calls it\".");
+                return 0;
+            }
             System.out.println("  `" + tgt + "` has no callers (nothing in this codebase calls it).");
             return 0;
         }
@@ -5066,7 +5137,11 @@ public final class Query {
      *  reversing the report's effect-relevant `calls` graph. Scoped to effectful targets (the report's
      *  `calls` only records effect-carrying edges, so a pure fn — omitted from the report — has no blast
      *  radius to trace; that's the honest limit of working from the report). */
-    static int impact(List<Effector> fns, String fnArg, boolean json) {
+    /** ⟨0.32⟩ `ref` may be null (a unit caller with no locator) — see the javadoc on {@link
+     *  #callers(List, List, String, boolean, boolean, ReportRef)} for the defect and the boundary. */
+    static int impact(List<Effector> fns, String fnArg, boolean json) { return impact(fns, fnArg, json, null); }
+
+    static int impact(List<Effector> fns, String fnArg, boolean json, ReportRef ref) {
         if (fnArg == null) return usage("impact <fn-substring> [--report <locator>] [--json]");
         Map<String, Effector> byName = new HashMap<>();
         for (Effector f : fns) byName.putIfAbsent(f.fn(), f);
@@ -5096,6 +5171,11 @@ public final class Query {
         affected.stream().map(byName::get).filter(f -> f != null && f.entryPoint())
                 .sorted(Comparator.comparing(f -> f.fn())).forEach(roots::add);
 
+        // ⟨0.32⟩ `affectedCount: 0` is the strongest claim in this verb's vocabulary — *nothing calls
+        // this, safe to change* — and over a report whose `excluded` names a class nothing opened it rests
+        // on a graph missing whatever lives in that class. AFTER the bad-target exit above, so a typo'd
+        // name stays a plain usage error rather than becoming a hedged answer.
+        ReportCompleteness comp = ref == null ? null : ref.completeness("impact");
         if (json) {
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("fn", target.fn());
@@ -5109,13 +5189,27 @@ public final class Query {
                 rs.add(m);
             }
             out.put("entryPoints", rs);
+            if (comp != null) comp.writeJson(out);   // built first, caveat appended; no-op when complete
             emit(out);
             return 0;
         }
+        if (comp != null)
+            comp.printNote("the blast radius below covers only the callers candor could see",
+                    "A caller living in an unread unit is ABSENT from the graph, so it is missing from this "
+                    + "count and from the entry points below — and a count of 0 reads as *safe to edit*, "
+                    + "which is a claim this report cannot support. " + comp.gateLine()
+                    + " Re-scan before treating this as the blast radius.");
         System.out.println("candor impact — what changing `" + target.fn() + "` affects:\n");
         System.out.println("  " + affected.size() + " effectful function"
                 + (affected.size() == 1 ? "" : "s") + " transitively call it.");
         if (roots.isEmpty()) {
+            // ⟨0.32⟩ "not on a runtime path" is a determined negative about reachability — the sentence the
+            // note above just withdrew, so the hedging arm says less.
+            if (comp != null && comp.mustHedge()) {
+                System.out.println("  No entry point reaches it IN WHAT CANDOR COULD SEE — but see the "
+                        + "INCOMPLETE note above; this is NOT \"not on a runtime path\".");
+                return 0;
+            }
             System.out.println("  No entry point reaches it — not on a runtime path (dead, or a "
                     + "library fn invoked only externally).");
             return 0;
@@ -5131,6 +5225,18 @@ public final class Query {
      *  traceable), the order the question was asked in. ONE builder for the verb's three emits, so they
      *  cannot disagree about the key order the way three separate literals already had (see the salted
      *  `Map.of` note at the no-effect emit). */
+    /** ⟨0.32⟩ The human half of {@code path}'s hedge, shared by its three emit sites — the two that answer
+     *  an EMPTY chain and the one that answers a real one — so a later change cannot qualify one and leave
+     *  the others flat. Reached only on the human channel: under {@code --json} stdout must stay
+     *  JSON-only. */
+    private static void pathNote(ReportCompleteness comp) {
+        comp.printNote("the chain below is traced over only the call graph candor could see",
+                "A hop through an unread unit BREAKS the chain, so `path` can answer EMPTY for a method "
+                + "that really does reach the effect — and an empty `path` reads as *this method does not "
+                + "reach it*, which is a claim this report cannot support. " + comp.gateLine()
+                + " Re-scan before treating an empty chain as an answer.");
+    }
+
     private static Map<String, Object> pathDoc(String fn, String effect, List<?> path, String note) {
         var m = new LinkedHashMap<String, Object>();
         m.put("fn", fn);
@@ -5145,6 +5251,13 @@ public final class Query {
      *  source). Answers "this method touches Net — through WHAT?", the chain `where` (who performs it) and
      *  `callers` (who calls X) describe the ends of but never connect. Read-only over the report. */
     static int path(List<Effector> fns, String fnArg, String effect, boolean json) {
+        return path(fns, fnArg, effect, json, null);
+    }
+
+    /** ⟨0.32⟩ `ref` may be null (a unit caller with no locator) — see the javadoc on {@link
+     *  #callers(List, List, String, boolean, boolean, ReportRef)} for the defect and the boundary. This
+     *  verb has THREE emit sites and TWO of them answer `path: []`, which is its determined negative. */
+    static int path(List<Effector> fns, String fnArg, String effect, boolean json, ReportRef ref) {
         if (fnArg == null || effect == null)
             return usage("path <fn-substring> <Effect> [--report <locator>] [--json]");
         // A TYPO'D EFFECT NAME IS A LOUD ERROR HERE TOO. `where` has refused an unknown effect since the
@@ -5170,16 +5283,29 @@ public final class Query {
             System.err.println("candor path: no function matching '" + fnArg + "'");
             return 2;
         }
+        // ⟨0.32⟩ THE COMPLETENESS READER THIS VERB DID NOT HAVE, read ONCE for all three emit sites below.
+        // A hop through an unread unit BREAKS the chain, so a hedging report can answer `path: []` — *this
+        // method does not reach that effect* — for a method that really does. AFTER the unknown-effect and
+        // bad-target exits, so neither becomes a hedged answer.
+        ReportCompleteness comp = ref == null ? null : ref.completeness("path");
         if (!start.inferred().toNames().contains(effect)) {
             // In --json mode stdout must be JSON-only (a jq/MCP consumer parses it); send the human note
             // to stderr so it doesn't precede the JSON object on stdout.
+            if (comp != null && !json) pathNote(comp);
             (json ? System.err : System.out).println(start.fn() + " does not perform " + effect
-                    + "  (inferred: " + start.inferred().toNames() + ")");
+                    + "  (inferred: " + start.inferred().toNames() + ")"
+                    + (comp != null && comp.mustHedge() && !json
+                       ? "  — but see the INCOMPLETE note above; this is NOT \"" + start.fn()
+                         + " cannot reach " + effect + "\"." : ""));
             // LinkedHashMap in all three of this verb's emits, not `Map.of` — the containment fix (and its
             // measurement) sits in this same file: a 3+-pair `Map.of` iterates in a per-JVM-launch SALTED
             // order, so the same build emitted `{fn,effect,path}` or `{path,fn,effect}` according to the
             // launch. fn-effect-path, the order the question was asked in.
-            if (json) emit(pathDoc(start.fn(), effect, List.of(), null));
+            if (json) {
+                Map<String, Object> out = pathDoc(start.fn(), effect, List.of(), null);
+                if (comp != null) comp.writeJson(out);
+                emit(out);
+            }
             return 0;
         }
         // BFS following `calls`, only through callees that carry the effect, to the first DIRECT source.
@@ -5208,8 +5334,16 @@ public final class Query {
                     + " but its source is not a local method (cross-jar, framework-synthesized, or via Unknown) "
                     + "— not statically traceable.";
             // --json: stdout JSON-only, the human note goes to stderr (see the no-effect branch above).
-            (json ? System.err : System.out).println(msg);
-            if (json) emit(pathDoc(start.fn(), effect, List.of(), "source not locally traceable"));
+            if (comp != null && !json) pathNote(comp);
+            (json ? System.err : System.out).println(msg
+                    + (comp != null && comp.mustHedge() && !json
+                       ? "  — but see the INCOMPLETE note above; this is NOT \"there is no traceable local "
+                         + "source\"." : ""));
+            if (json) {
+                Map<String, Object> out = pathDoc(start.fn(), effect, List.of(), "source not locally traceable");
+                if (comp != null) comp.writeJson(out);
+                emit(out);
+            }
             return 0;
         }
         List<String> chain = new ArrayList<>();
@@ -5226,9 +5360,12 @@ public final class Query {
                 m.put("source", i == chain.size() - 1);
                 steps.add(m);
             }
-            emit(pathDoc(start.fn(), effect, steps, null));
+            Map<String, Object> out = pathDoc(start.fn(), effect, steps, null);
+            if (comp != null) comp.writeJson(out);   // built first, caveat appended; no-op when complete
+            emit(out);
             return 0;
         }
+        if (comp != null) pathNote(comp);
         System.out.println("candor path — how `" + start.fn() + "` comes to perform " + effect + ":\n");
         for (int i = 0; i < chain.size(); i++) {
             Effector f = byName.get(chain.get(i));

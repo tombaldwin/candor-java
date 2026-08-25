@@ -8,6 +8,40 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **`callers`, `impact` and `path` carried NO completeness reader at all — the SILENT half of the same
+  class, closed in the three engines that ship them.** ⟨0.28⟩ widened SPEC §2's re-disclosure MUST to
+  *"any verb whose output could be read as a NEGATIVE FINDING about the code — a verdict, an empty
+  result set, or a zero count"*, enumerated six verbs, and skipped these three; the ⟨0.32⟩ unread-class
+  cause then made the gap fire on nearly every no-policy report. MEASURED at HEAD over a report whose
+  `excluded` names one class with `peeked: false`, on a three-method chain:
+
+  ```
+  callers app.svc.wrapper --json  {"of":[…],"direct":["app.web.top"],"transitive":[…]}  exit 0  no caveat
+  impact  app.svc.wrapper --json  {"fn":…,"affectedCount":1,"affected":[…],…}           exit 0  no caveat
+  path    app.web.top Fs  --json  {"fn":…,"effect":"Fs","path":[…3 steps…]}             exit 0  no caveat
+  ```
+
+  — and nothing on the human channel either, while `where` and `reachable` read the same bytes through
+  the same class and hedged. Reproduced identically in candor-rust and candor-ts, and on candor-ts's MCP
+  tools, where the reader is an agent with no follow-up question available to it. An empty `direct`
+  reads as *nothing calls this*, an `affectedCount: 0` as *safe to edit*, an empty `path` as *this
+  method does not reach that effect*.
+
+  Where `show`/`map` OVER-hedged (the caveat replaced the data, ruled the other way in the entry below),
+  these three UNDER-hedged. **The remedy is the mechanism already in this file, not a fourth spelling:**
+  all three documents have a FIXED key set at their root, so nothing nests and no reserved-key collision
+  can arise — they take `ReportCompleteness.writeJson` on the machine channel and `printNote` on the
+  human one, exactly as `where` does. All three of `path`'s emit sites are covered, including the two
+  that answer an EMPTY chain, and the prose arms withdraw their determined negatives under a hedge
+  (*"nothing in this codebase calls it"*, *"not on a runtime path"*) rather than leaving the calm
+  sentence standing under the note.
+
+  **The boundary does not move.** The trigger is `mustHedge()` — a disclosure — and `isIncomplete` with
+  every exit computed from it is untouched, so `gate`/`gate --report` and
+  `unverified`/`fix-gate`/`whatif`/`fix` under `--strict` still REFUSE over these same bytes (⟨0.24⟩;
+  conformance PARTs 62 and 67). Healthy output is byte-identical, diffed against the pre-change jar on
+  all three verbs and both channels.
+
 - **`show` and `map` returned the WARNING INSTEAD OF THE ANSWER — the ⟨0.32⟩ descriptive hedge, ruled
   the other way and closed four-way.** ⟨0.28⟩ Rung A tells a verb *whose pinned shape cannot carry the
   caveat* to emit the CAVEAT DOCUMENT **instead of** its result document, and yesterday's rung armed

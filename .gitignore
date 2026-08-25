@@ -1,2 +1,13 @@
 .gradle/
 build/
+# candor's own analysis output. `.candor/policy` is an INPUT and stays tracked; the report and its
+# sidecars are generated, so ignore those by name rather than the whole directory (candor-rust draws the
+# same line, for the same reason). Left untracked, a scan run in this repo makes `git status --porcelain`
+# non-empty, and both `release-stage.sh` and `release.sh` step 0 refuse on that — so a stray report from
+# investigating a defect blocks the release that fixes it. candor-ts, candor-swift and candor-agents all
+# ignore theirs; this repo was the outlier.
+.candor/report.*
+.candor/*.scan.json
+.candor/*.callgraph.json
+.candor/*.hierarchy.json
+.DS_Store

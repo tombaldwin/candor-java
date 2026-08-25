@@ -10,6 +10,8 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.32.1] — 2026-08-25
 
+- **jbang pinned to v0.32.1** — tag and asset filename together, since a tag-only bump names a jar that does not exist.
+
 This patch exists to produce the two native binaries v0.32.0 could not. The spec is unchanged (0.32);
 nothing in the jar's analysis moved.
 

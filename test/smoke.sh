@@ -2344,9 +2344,15 @@ want    "AGENTS pins the spec floor (spec $BSPEC)"               "$AGENTS_TXT" "
 cat > "$W/spec_claims.py" <<'PY'
 import os, re
 spec, root = os.environ["BSPEC"], os.environ["ROOT"]
-# `spec` + one to four of [-: "] + <digits>.<digits>: covers `spec 0.32`, `spec-0.32` and
-# `"spec": "0.32"`, while `spec §6.1` / `SPEC §2.2` — SECTION references — never read as versions.
-claim = re.compile(r'spec[-: "]{1,4}([0-9]+\.[0-9]+)')
+# THE FAMILY'S SHARED CLAIM GRAMMAR: `spec` + one to EIGHT of [-: "*)\]] + <digits>.<digits>. Covers
+# `spec 0.32`, `spec-0.32`, `"spec": "0.32"`, the ALIGNED `"spec":    "0.32"` and the markdown-link
+# `[candor-spec](…) 0.32`, while `spec §6.1` / `SPEC §2.2` — SECTION references — never read as
+# versions. The last two spellings are the ⟨0.32⟩ widening and each was live in a shipped doc that
+# every gate in the family read clean over: SPEC.md's own aligned envelope column has a SIX-character
+# separator run that `{1,4}` cannot cross, and candor-swift/README.md line 3 separates the word from
+# the version with `) `. The control below is the same fixture in all five engines, so the copies of
+# this grammar cannot drift apart without a red run.
+claim = re.compile(r'spec[-: "*)\]]{1,8}([0-9]+\.[0-9]+)')
 def flag(text):
     return [(m.group(1), text[m.start():m.end() + 16]) for m in claim.finditer(text)
             if not text[m.end():m.end() + 16].startswith(", informative)")]
@@ -2357,13 +2363,19 @@ got = [v for v, _ in flag('carrying `unitKind` (spec 0.8, informative); ordinary
                           'This project is on candor-java 9.9.9 (spec 0.9).\n'
                           'a section reference, spec §6.1, is not a version\n'
                           'the gate prints { "spec": "0.7", "ok": true }\n'
-                          'and the hyphenated attributive spec-0.6 form\n')]
-if got != ["0.9", "0.7", "0.6"]:
+                          'and the hyphenated attributive spec-0.6 form\n'
+                          'an aligned envelope column, { "spec":    "0.5" }\n'
+                          'a markdown link [candor-spec](https://example.org/candor-spec) 0.4\n')]
+if got != ["0.9", "0.7", "0.6", "0.5", "0.4"]:
     print("CONTROL FAILED — the pattern or the informative-marker exemption no longer "
-          "discriminates (flagged %s, want ['0.9', '0.7', '0.6']); this check is VACUOUS "
-          "until that is fixed" % got)
+          "discriminates (flagged %s, want ['0.9', '0.7', '0.6', '0.5', '0.4']); this check is "
+          "VACUOUS until that is fixed" % got)
 else:
-    for doc in ("README.md", "AGENTS.md"):
+    # jbang-catalog.json's DESCRIPTION is a contract claim with its own distribution channel — it is
+    # what `jbang candor@tombaldwin/candor-java` prints and what the catalog listing shows — and no
+    # gate read it. `src/main/resources/AGENTS.md` needs no entry: the `cmp -s` above pins it
+    # byte-for-byte to the root AGENTS.md, so it is DERIVED, not a second literal.
+    for doc in ("README.md", "AGENTS.md", "jbang-catalog.json"):
         with open(os.path.join(root, doc), encoding="utf-8") as fh:
             text = fh.read()
         for v, ctx in flag(text):
@@ -2374,7 +2386,7 @@ else:
 PY
 STALE_SPEC="$(BSPEC="$BSPEC" ROOT="$ROOT" python3 "$W/spec_claims.py")"
 if [ -z "$STALE_SPEC" ]; then
-  echo "  ok   every spec claim in README/AGENTS matches the binary (spec $BSPEC), in every spelling"
+  echo "  ok   every spec claim in README/AGENTS/jbang-catalog matches the binary (spec $BSPEC), in every spelling"
   pass=$((pass+1))
 else
   echo "  FAIL a doc states a spec version this build does not speak:"

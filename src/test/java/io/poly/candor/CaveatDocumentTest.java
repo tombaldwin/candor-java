@@ -11,6 +11,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -157,6 +158,141 @@ class CaveatDocumentTest {
             JsonObject dv = JsonParser.parseString(d[0]).getAsJsonObject();
             assertTrue(dv.get("incomplete").getAsBoolean(),
                     argv[0] + ": the hedge must still appear over an unread class: " + d[0]);
+        }
+    }
+
+    /** A three-method chain ({@code app.web.top -> app.svc.wrapper -> app.repo.read}, the last the Fs
+     *  source) so {@code callers}/{@code impact}/{@code path} have a real graph to answer over. The
+     *  {@code excluded} class is UNREAD or READ per {@code peeked}, which is the only difference between
+     *  the defect fixture and its control. */
+    private Path chainReport(String name, boolean peeked) throws Exception {
+        Map<String, Object> env = new LinkedHashMap<>();
+        env.put("candor", Map.of("version", "test", "toolchain", "test", "spec", Candor.SPEC_VERSION));
+        env.put("packages", List.of("app"));
+        env.put("analyzed", Map.of("count", 7, "digest", "0"));
+        env.put("excluded", List.of(Map.of("class", "generated-source", "count", 1,
+                                           "peeked", peeked, "reason", "generated")));
+        Map<String, Object> read = new LinkedHashMap<>(entry("app.repo.read", List.of("Fs")));
+        Map<String, Object> wrap = new LinkedHashMap<>(entry("app.svc.wrapper", List.of("Fs")));
+        wrap.put("direct", List.of());
+        wrap.put("calls", List.of("app.repo.read"));
+        Map<String, Object> top = new LinkedHashMap<>(entry("app.web.top", List.of("Fs")));
+        top.put("direct", List.of());
+        top.put("calls", List.of("app.svc.wrapper"));
+        env.put("functions", List.of(read, wrap, top));
+        Path p = tmp.resolve(name);
+        Files.writeString(p, io.poly.candor.model.ReportJson.pretty(env));
+        return p;
+    }
+
+    /**
+     * ⟨0.32⟩ <b>THE SILENT HALF OF THE SAME CLASS: {@code callers}, {@code impact} AND {@code path}
+     * CARRIED NO COMPLETENESS READER AT ALL.</b> {@code show}/{@code map} OVER-hedged (the caveat replaced
+     * the data, ruled the other way in {@link #showHedgingKeepsItsRowsBesideTheCaveat}); these three
+     * UNDER-hedged — over a report whose own {@code excluded} names a class the producing scan never
+     * opened they answered FLAT, at exit 0, with no disclosure on the machine channel and none on the
+     * human one. MEASURED at HEAD 2026-08-25 on the fixture below, and reproduced identically in
+     * candor-rust and candor-ts (and on candor-ts's MCP tools, where the reader is an agent):
+     *
+     * <pre>
+     *   callers app.svc.wrapper --json  {"of":[…],"direct":["app.web.top"],"transitive":[…]}  no caveat
+     *   impact  app.svc.wrapper --json  {"fn":…,"affectedCount":1,"affected":[…],…}           no caveat
+     *   path    app.web.top Fs  --json  {"fn":…,"effect":"Fs","path":[…3 steps…]}             no caveat
+     * </pre>
+     *
+     * <p>The ⟨0.28⟩ rung that widened SPEC §2's re-disclosure MUST to <i>"any verb whose output could be
+     * read as a NEGATIVE FINDING about the code — a verdict, an empty result set, or a zero count"</i>
+     * enumerated six verbs and skipped these three. An empty {@code direct} is <i>nothing calls this</i>;
+     * an {@code affectedCount: 0} is <i>safe to edit</i>; an empty {@code path} is <i>this method does not
+     * reach that effect</i>.
+     *
+     * <p>The boundary is UNMOVED — the verbs that answer {@code ok} still refuse over these same bytes,
+     * pinned by {@link #theVerbsThatAnswerOkStillRefuseOverAnUnreadClass} and conformance PARTs 62 and 67.
+     *
+     * <p>Every assertion is on the ROW NAMES and COUNTS, never on key presence: a hedge that shipped an
+     * empty answer would pass "the key exists" while deleting the feature.
+     */
+    @Test void callersImpactAndPathDiscloseAnUnreadClassBesideTheirAnswer() throws Exception {
+        Path rep = chainReport("cip.app.jvm.json", false);
+
+        String[] c = run("callers", "app.svc.wrapper", "--report", rep.toString(), "--json");
+        assertEquals("0", c[2], "a descriptive verb's hedge is a DISCLOSURE, not an exit code: " + c[0] + c[1]);
+        JsonObject cv = JsonParser.parseString(c[0]).getAsJsonObject();
+        assertTrue(cv.get("incomplete").getAsBoolean(), "callers answered flat: " + c[0]);
+        assertEquals(1, cv.getAsJsonArray("direct").size(), c[0]);
+        assertEquals("app.web.top", cv.getAsJsonArray("direct").get(0).getAsString(),
+                "…BESIDE the answer, never instead of it — the direct callers by NAME: " + c[0]);
+        assertEquals("app.web.top", cv.getAsJsonArray("transitive").get(0).getAsString(), c[0]);
+
+        // The `--include-unknown` frontier arm shares one helper with the plain arm here, unlike the rust
+        // reference where it is a SECOND function — driven anyway, because "shares a helper" is a claim
+        // about the code and this row is the measurement.
+        String[] cu = run("callers", "app.svc.wrapper", "--report", rep.toString(), "--json", "--include-unknown");
+        JsonObject cuv = JsonParser.parseString(cu[0]).getAsJsonObject();
+        assertTrue(cuv.get("incomplete").getAsBoolean(), "--include-unknown must disclose too: " + cu[0]);
+        assertEquals("app.web.top", cuv.getAsJsonArray("direct").get(0).getAsString(), cu[0]);
+
+        String[] i = run("impact", "app.svc.wrapper", "--report", rep.toString(), "--json");
+        assertEquals("0", i[2], i[0] + i[1]);
+        JsonObject iv = JsonParser.parseString(i[0]).getAsJsonObject();
+        assertTrue(iv.get("incomplete").getAsBoolean(), "impact answered flat: " + i[0]);
+        assertEquals(1, iv.get("affectedCount").getAsInt(), i[0]);
+        assertEquals("app.web.top", iv.getAsJsonArray("affected").get(0).getAsString(),
+                "…and the blast radius survives the hedge, by NAME: " + i[0]);
+
+        String[] p = run("path", "app.web.top", "Fs", "--report", rep.toString(), "--json");
+        assertEquals("0", p[2], p[0] + p[1]);
+        JsonObject pv = JsonParser.parseString(p[0]).getAsJsonObject();
+        assertTrue(pv.get("incomplete").getAsBoolean(), "path answered flat: " + p[0]);
+        List<String> chain = new ArrayList<>();
+        pv.getAsJsonArray("path").forEach(s -> chain.add(s.getAsJsonObject().get("fn").getAsString()));
+        assertEquals(List.of("app.web.top", "app.svc.wrapper", "app.repo.read"), chain,
+                "…and the WHOLE chain is still there, in order: " + p[0]);
+
+        // `path`'s EMPTY-answer arm is a SEPARATE emit site and the sharpest cell here: `path: []` is
+        // *this method does not reach that effect*, the precise reassurance a reader asks `path` for.
+        String[] pe = run("path", "app.web.top", "Net", "--report", rep.toString(), "--json");
+        assertEquals("0", pe[2], pe[0] + pe[1]);
+        JsonObject pev = JsonParser.parseString(pe[0]).getAsJsonObject();
+        assertTrue(pev.get("incomplete").getAsBoolean(),
+                "an empty `path` over an unread class is a determined negative and must hedge: " + pe[0]);
+        assertEquals(0, pev.getAsJsonArray("path").size(), pe[0]);
+
+        // THE HUMAN CHANNEL, asserted separately because a mutant that keeps the whole JSON fix and
+        // deletes the printed line survives every absence-assert on the document (candor-spec `ec1a441`).
+        for (String[] argv : List.of(new String[]{"callers", "app.svc.wrapper"},
+                                     new String[]{"impact", "app.svc.wrapper"},
+                                     new String[]{"path", "app.web.top", "Fs"})) {
+            String[] h = argv.length == 3
+                    ? run(argv[0], argv[1], argv[2], "--report", rep.toString())
+                    : run(argv[0], argv[1], "--report", rep.toString());
+            assertTrue(h[0].contains("⚠ INCOMPLETE") && h[0].contains("generated-source"),
+                    argv[0] + ": the prose channel must carry the note ON STDOUT and NAME the class: " + h[0]);
+        }
+
+        // ── THE INTACT CONTROL: the SAME fixture with `peeked: true` — the class was READ, so there is
+        //    nothing to disclose. Without it every row above passes just as well from a verb that hedges
+        //    unconditionally, which makes every ordinary answer read as partial.
+        Path ok = chainReport("cipok.app.jvm.json", true);
+        for (String[] argv : List.of(new String[]{"callers", "app.svc.wrapper"},
+                                     new String[]{"impact", "app.svc.wrapper"},
+                                     new String[]{"path", "app.web.top", "Fs"})) {
+            String[] j = argv.length == 3
+                    ? run(argv[0], argv[1], argv[2], "--report", ok.toString(), "--json")
+                    : run(argv[0], argv[1], "--report", ok.toString(), "--json");
+            assertEquals("0", j[2], argv[0] + ": " + j[0] + j[1]);
+            JsonObject v = JsonParser.parseString(j[0]).getAsJsonObject();
+            assertFalse(v.has("incomplete"), argv[0] + ": a complete report gains NO caveat key: " + j[0]);
+            for (String k : v.keySet())
+                assertTrue(List.of("of", "direct", "transitive", "possibleViaUnknownDispatch", "fn",
+                                   "affectedCount", "affected", "entryPoints", "effect", "path", "note")
+                                .contains(k),
+                        argv[0] + ": the healthy document keeps its pinned key set exactly, got `" + k
+                                + "`: " + j[0]);
+            String[] h = argv.length == 3
+                    ? run(argv[0], argv[1], argv[2], "--report", ok.toString())
+                    : run(argv[0], argv[1], "--report", ok.toString());
+            assertFalse(h[0].contains("INCOMPLETE"), argv[0] + ": healthy prose gains no note: " + h[0]);
         }
     }
 

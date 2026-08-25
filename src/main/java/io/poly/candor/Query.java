@@ -953,18 +953,31 @@ public final class Query {
         // ⟨0.28⟩ SPEC §2 — this verb's pinned output is a top-level ARRAY, so it was a KNOWN-OPEN CELL:
         // nowhere to put the travelling caveat, and it answered `[]` flat over a report whose own manifest
         // names source candor could not read ("nothing performs this effect", asserted about code nobody
-        // examined). The ruling: a verb whose pinned shape cannot carry the caveat emits the CAVEAT
-        // DOCUMENT INSTEAD of its result document — not an array with the caveat omitted. The type change
-        // is LOUD on purpose (a consumer's `for (const x of doc)` throws instead of silently iterating
-        // zero times), and healthy output below stays byte-identical.
+        // examined). The ruling: a verb whose pinned shape cannot carry the caveat CHANGES SHAPE over a
+        // hedging report — not an array with the caveat omitted. The type change is LOUD on purpose (a
+        // consumer's `for (const x of doc)` throws instead of silently iterating zero times), and healthy
+        // output below stays byte-identical.
+        //
+        // ⟨0.32⟩ AND WHAT THE HEDGING DOCUMENT CONTAINS WAS RULED AGAIN ON 2026-08-25: THE ROWS *AND* THE
+        // CAVEAT, NEVER THE CAVEAT INSTEAD OF THE ROWS. Rung A's original wording ("the CAVEAT DOCUMENT
+        // INSTEAD of its result document") was written while the trigger was a manifest a scan had FAILED
+        // to produce — there was little result to lose. ⟨0.32⟩'s unread-class cause then armed the same
+        // substitution on nearly every no-policy report, and MEASURED four-way on 2026-08-25:
+        // `show <fn> --json` answered `{"incomplete": true}` at exit 0 and the rows were GONE.
+        //
+        // THE BOUNDARY, STATED: `show` IS DESCRIPTIVE — IT CERTIFIES NOTHING. No `ok`, no verdict, no
+        // exit-code obligation, so there is no claim for a pessimism rule to protect and withholding the
+        // rows buys no soundness. The verbs on the OTHER side are the ones that answer `ok` — `gate` /
+        // `gate --report`, and `unverified` / `fix-gate` / `whatif` / `fix` under `--strict` — and they
+        // MUST keep refusing over these same bytes (⟨0.24⟩'s "never LESS sensitive than the gate";
+        // conformance PARTs 62 and 67 pin it). Nothing here touches them: `isIncomplete` and the exits
+        // computed from it are untouched by this rung.
+        //
+        // The rows travel under `functions` — the report's own key for the same list — with the caveat
+        // keys beside them at the root. Relative to the shape this replaces the change is purely
+        // ADDITIVE: a consumer that already handles the hedge sees one more key.
         ReportCompleteness comp = ref.completeness("show");
         if (json) {
-            if (comp.mustHedge()) {
-                Map<String, Object> caveat = new LinkedHashMap<>();
-                comp.writeJson(caveat);
-                emit(caveat);
-                return 0;
-            }
             List<Map<String, Object>> out = new ArrayList<>();
             for (Effector f : hits) {
                 Map<String, Object> m = new LinkedHashMap<>();
@@ -983,6 +996,16 @@ public final class Query {
                 if (!f.netClass().isEmpty()) m.put("netClass", f.netClass()); // ⟨0.20⟩ Net destination-class
                 m.put("unresolved", f.unresolved());
                 out.add(m);
+            }
+            // BUILT BEFORE THE BRANCH, so the two arms cannot compute different rows — the hedged
+            // document must carry the SAME answer the healthy one would, or the fix has moved the
+            // omission rather than removed it.
+            if (comp.mustHedge()) {
+                Map<String, Object> doc = new LinkedHashMap<>();
+                doc.put("functions", out);
+                comp.writeJson(doc);
+                emit(doc);
+                return 0;
             }
             emit(out);
             return 0;
@@ -4344,25 +4367,40 @@ public final class Query {
         ReportCompleteness comp = ref.completeness("map");
         if (json) {
             // ⟨0.28⟩ SPEC §2 "AND HERE IS THAT RULING" — this verb's top level is a USER NAMESPACE (keyed
-            // by the operator's own class names), so a caveat key CANNOT ride the result: `incomplete` is
-            // a name a real class can own, and the earlier fix here — write the caveat keys INTO the
-            // object and disclose a collision on stderr — was exactly the deferred collision the ruling
-            // rejects (`put` overwrites, so the colliding class's row was silently displaced from the
-            // machine channel). The ruling: the CAVEAT DOCUMENT REPLACES the result document. Healthy
-            // output is untouched; a hedging run emits `{incomplete: true, …}` and nothing else, so no
-            // reserved-key convention is needed at all.
-            if (comp.mustHedge()) {
-                Map<String, Object> caveat = new LinkedHashMap<>();
-                comp.writeJson(caveat);
-                emit(caveat);
-                return 0;
-            }
+            // by the operator's own class names), so a caveat key CANNOT ride beside the result at that
+            // level: `incomplete` is a name a real class can own, and the earliest fix here — write the
+            // caveat keys INTO the object and disclose a collision on stderr — was exactly the deferred
+            // collision the ruling rejects (`put` overwrites, so the colliding class's row was silently
+            // displaced from the machine channel).
+            //
+            // ⟨0.32⟩ AND THE REMEDY THE RULING CHOSE — the caveat document INSTEAD of the result — WAS
+            // RULED THE WRONG WAY ROUND ON 2026-08-25: RETURN THE DATA AND THE WARNING. That answer was
+            // tolerable while the only triggers were a scan that had FAILED, but ⟨0.32⟩'s unread-class
+            // cause armed it on nearly every no-policy report and `map --json` became `{"incomplete":
+            // true}` — the overview GONE, on the surface an agent uses to ask what a codebase does.
+            //
+            // THE BOUNDARY, STATED: `map` IS DESCRIPTIVE. It certifies nothing — no `ok`, no verdict, no
+            // exit-code obligation — so there is no claim for a pessimism rule to protect. The verbs on
+            // the other side are the ones that answer `ok` (`gate`, and `unverified` / `fix-gate` /
+            // `whatif` / `fix` under `--strict`); they still refuse over these bytes and this rung does
+            // not touch them (⟨0.24⟩; conformance PARTs 62 and 67).
+            //
+            // NESTING IS WHAT LETS BOTH BE TRUE AT ONCE: the class namespace moves under `modules` and
+            // the caveat keys sit at the root, so no reserved-key convention is needed, no row is
+            // displaced, and the answer ships. Healthy output is untouched.
             Map<String, Object> out = new TreeMap<>();
             for (var m : mods.keySet()) {
                 Map<String, Object> v = new LinkedHashMap<>();
                 v.put("effects", new ArrayList<>(mods.get(m)));
                 v.put("functions", counts.get(m));
                 out.put(m, v);
+            }
+            if (comp.mustHedge()) {
+                Map<String, Object> doc = new LinkedHashMap<>();
+                doc.put("modules", out);
+                comp.writeJson(doc);
+                emit(doc);
+                return 0;
             }
             emit(out);
             return 0;

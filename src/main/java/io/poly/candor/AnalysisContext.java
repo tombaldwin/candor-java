@@ -335,7 +335,21 @@ final class AnalysisContext {
 
     /** The accumulator fields: every {@code final} instance field, i.e. everything the overlay
      *  constructor did NOT point at the master. The inversion above means this set grows by itself when
-     *  someone adds a field, which is exactly the maintenance burden it exists to remove. */
+     *  someone adds a field, which is exactly the maintenance burden it exists to remove.
+     *
+     *  <p>AN EMPTY ANSWER IS A BROKEN INSTRUMENT, NOT AN EMPTY DELTA — and it MUST NOT be allowed to
+     *  read as one. {@code getDeclaredFields()} does not fail when reflection is unavailable; it returns
+     *  a ZERO-LENGTH ARRAY. In a GraalVM native image a class with no reflection metadata answers
+     *  exactly that (MEASURED on GraalVM CE 21.0.2: 5 fields on the JVM, 0 in the image, no exception),
+     *  so {@link #mergeInto}'s loop ran zero times, every class's delta was dropped on the floor, and
+     *  the binary reported "0 functions reach effects" over a tree the jar found 210 in — a false
+     *  all-clear, exit 0, with nothing on stderr. That shipped as far as the release's parity gate,
+     *  which is the only thing that caught it (candor-java v0.32.0 native.yml).
+     *
+     *  <p>The type-refusal in {@code mergeInto} covers an accumulator whose TYPE is unrecognised; it
+     *  cannot cover an accumulator that was never enumerated, because a loop over nothing throws
+     *  nothing. This class demonstrably HAS final accumulators, so zero of them means the enumeration
+     *  itself failed — and the delta merge is load-bearing for every effect the scan reports. */
     static java.lang.reflect.Field[] outputFields() {
         if (OUTPUTS == null) {
             List<java.lang.reflect.Field> fs = new ArrayList<>();
@@ -345,6 +359,13 @@ final class AnalysisContext {
                 f.setAccessible(true);
                 fs.add(f);
             }
+            if (fs.isEmpty()) throw new UnmergeableDelta(
+                    "AnalysisContext.class.getDeclaredFields() returned NOTHING, so the per-class delta merge "
+                    + "would fold nothing and every effect this scan found would be silently discarded. "
+                    + "This build cannot analyse anything and must not answer. Cause: reflection metadata is "
+                    + "missing — in a GraalVM native image, register io.poly.candor.AnalysisContext with "
+                    + "\"allDeclaredFields\": true (src/main/resources/META-INF/native-image/io.poly.candor/"
+                    + "candor-java/reflect-config.json) and rebuild; see docs/native-image.md.");
             OUTPUTS = fs.toArray(new java.lang.reflect.Field[0]);
         }
         return OUTPUTS;

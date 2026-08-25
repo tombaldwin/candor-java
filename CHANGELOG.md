@@ -8,6 +8,44 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ The v0.32.0 NATIVE binary answered `0 functions reach effects` over a tree the jar found 210 in —
+  a false all-clear, exit 0, silent.** ⟨0.32⟩'s refresh overlay derives its accumulator set from
+  `AnalysisContext.class.getDeclaredFields()`, the `final`-means-output inversion that makes a new field
+  merged-by-default. **`getDeclaredFields()` does not fail when reflection metadata is missing; it
+  returns a zero-length array** — measured on GraalVM CE 21.0.2, 5 fields on the JVM and 0 in a
+  `--no-fallback` image, no exception. So `mergeInto`'s loop ran zero times, every class's per-class
+  delta was dropped, and the binary reported nothing while looking entirely healthy. Measured at
+  4bb3bb8 on `build/classes/java/main`, same commit both legs:
+
+  ```
+  native  wrote 0   entries    0 functions,  0 classes   analyzed.count 0      coverage absent   exit 0
+  jar     wrote 542 entries  210 functions, 17 classes   analyzed.count 1329   coverage present  exit 0
+  ```
+
+  `mergeInto`'s existing refusal covers an accumulator whose TYPE it does not recognise; it cannot cover
+  one that was never enumerated, because a loop over nothing throws nothing. Fixed both ways:
+  `AnalysisContext` is registered for reflection
+  (`META-INF/native-image/io.poly.candor/candor-java/reflect-config.json`), **and `outputFields()` now
+  refuses an empty field set** rather than merging nothing — a broken instrument must not be
+  indistinguishable from an empty delta. `runScan` asks once, before the first class is analysed, so the
+  failure is one sentence carrying its remedy instead of 542 swallowed ones. Verified by rebuilding the
+  image *without* the config: exit 1, the diagnostic, and the ⟨0.28⟩ arming stub left in place so the
+  verdict reads INCOMPLETE. With the config, native and jar reports are byte-identical again — envelope
+  and both sidecars.
+
+  **No published artifact carries this.** It is native-image-only, and the native binaries were never
+  published: `native.yml`'s parity gate failed the build, which is exactly what it is for, so
+  `candor-linux-x64` and `candor-macos-arm64` are simply absent from the v0.32.0 release. The jar, the
+  jbang catalog entry and every JVM route are unaffected — the jar leg is the one that was right.
+
+- **The parity gate compared only `functions[]`, and an equality gate passes on two empty documents.**
+  Both learned from the failure above: it moved `functions` to 0 *and* `analyzed.count` 1329 → 0 *and*
+  removed `coverage`, so a divergence confined to `analyzed`, `excluded`, `outOfScope` or `netPartners`
+  — keys a consumer's verdict reads — would have passed. `native.yml` now compares the **whole
+  envelope**, **refuses to run vacuously** (the jar leg must be shown to have found something before its
+  agreement with native is allowed to mean anything), names the differing keys in the log instead of
+  printing `functions[] differ`, and checks the jar glob matched exactly one artifact.
+
 ## [0.32.0] — 2026-08-25
 
 - **jbang catalog pinned to v0.32.0** — the release tag and the asset filename both, since

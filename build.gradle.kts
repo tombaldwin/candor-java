@@ -76,8 +76,16 @@ dependencies {
 // GraalVM native-image. candor reads two bundled RESOURCES via getResourceAsStream (AGENTS.md, the
 // build-info.properties provenance) — included below. It does NO reflection on analysed classes (ASM
 // reads bytes), and serializes only Maps/Lists via Gson (whose own native-image metadata ships in the
-// gson jar), so no candor-specific reflection config is needed. --no-fallback makes a missing config a
-// hard error rather than a silent JVM-fallback image.
+// gson jar). --no-fallback makes a missing config a hard error rather than a silent JVM-fallback image.
+//
+// IT DOES REFLECT ON ONE OF ITS OWN CLASSES, and this comment used to end "so no candor-specific
+// reflection config is needed" — accurate when written, false from ⟨0.32⟩ (acd1e0e), and nothing
+// measured it in between. The refresh overlay derives its accumulator set from
+// AnalysisContext.getDeclaredFields(); with no metadata a native image answers ZERO FIELDS and does not
+// throw, so the per-class delta merge folded nothing and the binary reported 0 effects over a tree the
+// jar found 210 in. Registered in
+// src/main/resources/META-INF/native-image/io.poly.candor/candor-java/reflect-config.json; the engine
+// now refuses to run on an empty field set, and native.yml's parity gate is what catches the next one.
 graalvmNative {
     toolchainDetection.set(true)
     // The plugin's bundled GraalVM reachability-metadata repository requires a recent GraalVM. candor

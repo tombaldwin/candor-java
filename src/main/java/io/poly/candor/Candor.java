@@ -314,6 +314,13 @@ public class Candor {
         // using the cache. So the split runs always, and the cache decides one thing only — whether a
         // delta is computed or read back.
         AnalysisContext master = ctx();
+        // ASK THE MERGE WHETHER IT CAN MERGE, ONCE, BEFORE ANY CLASS IS ANALYSED. `mergeInto` is inside
+        // the per-class catch below, so a merge that cannot work would be swallowed 542 times into
+        // `unanalyzed` — fail-closed, but as 542 lines of noise rather than the one sentence that says
+        // what is wrong. Raised here it escapes as a single failure, before a single class has been
+        // analysed into a delta nothing would collect. See AnalysisContext#outputFields for the native
+        // image case that made this reachable.
+        AnalysisContext.outputFields();
         Refresh refresh = Refresh.forScan(cfg, classes);
         List<Integer> inputsBefore = Refresh.verifying() ? master.inputSizes() : null;
         for (ClassNode cn : classes) {

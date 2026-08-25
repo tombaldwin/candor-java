@@ -8,6 +8,11 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+## [0.32.1] — 2026-08-25
+
+This patch exists to produce the two native binaries v0.32.0 could not. The spec is unchanged (0.32);
+nothing in the jar's analysis moved.
+
 - **⚠ The v0.32.0 NATIVE binary answered `0 functions reach effects` over a tree the jar found 210 in —
   a false all-clear, exit 0, silent.** ⟨0.32⟩'s refresh overlay derives its accumulator set from
   `AnalysisContext.class.getDeclaredFields()`, the `final`-means-output inversion that makes a new field

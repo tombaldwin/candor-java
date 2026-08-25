@@ -49,7 +49,7 @@ you can act on it.
 **It maps, too** — a per-method effect audit and instant `show`/`where`/`callers`/`map`/`diff`/
 `containment`/`reachable`/`path`/`impact` queries over the report, for an agent or a human navigating unfamiliar code.
 
-## Status: beta (v0.31.0, spec 0.32 — the family's reference engine)
+## Status: beta (v0.32.0, spec 0.32 — the family's reference engine)
 
 Validated on a real 2,257-class Spring application and on real Kotlin/Scala/Groovy bytecode; holds
 the spec's cross-engine conformance suite (same fixtures and expected effect sets as the Rust

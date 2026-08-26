@@ -8,6 +8,28 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **`diff` carried NO completeness reader at all — SOUNDNESS.md R54, closed.** `diff` answered
+  `{baseline_version, engine_version, changes: []}` with no caveat on either channel over a report
+  declaring an unread `excluded` class, filed rather than fixed alongside the `callers`/`impact`/`path`
+  rung below because it reads TWO locators that fail in OPPOSITE directions: an unread unit in the
+  CURRENT tree can hide a real gain from `changes`, while one in the BASELINE tree can make a
+  longstanding effect read as newly gained. A bare `incomplete: true` cannot say which side was partial,
+  so this reuses `gains`' own PREFIXED shape (`incomplete` + `baselineIncomplete`) rather than a fourth
+  spelling — `gains` already discloses both sides of the identical two-locator shape. MEASURED at HEAD
+  before this fix:
+
+  ```
+  diff cur.json base.json --json   {"baseline_version":…,"engine_version":…,"changes":[…]}  exit 1  no caveat
+  ```
+
+  over a report whose `excluded` names one class with `peeked: false`. Both channels now carry the
+  hedge, disclosed per side (`CURRENT`/`BASELINE`, never combined into one sentence — see `diffNote`),
+  and the human channel withdraws its determined negative ("no effect changes") under a hedge rather
+  than leaving it standing beside the note. `diff` is descriptive (no `ok`, no exit-code obligation), so
+  neither the gain-ratchet exit nor `gain`'s own computation moves. Healthy output is byte-identical,
+  diffed against the pre-change jar on both channels over an intact pair. `receipt` (SOUNDNESS.md R55) is
+  rust-only and has no candor-java verb to close.
+
 - **⚠ ⟨0.33⟩ `scannedUnder`: a report now records the deny set its peek was BOUNDED BY, and
   `gate --report` refuses when that set does not cover the policy being applied.** `excluded[].peeked:
   true` is true only relative to the producer's deny set — ⟨0.29⟩ bounds the peek to effects that policy

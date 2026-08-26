@@ -748,7 +748,12 @@ public final class Query {
     }
 
     /** `diff <current> <baseline>` (§3.3.1 two-positional): resolve each locator, load the current report,
-     *  delegate to {@link #diff}. */
+     *  delegate to {@link #diff}.
+     *
+     *  <p>⟨R54⟩ the LOCATORS travel beside the resolved paths, for the reason {@code gains2} already takes
+     *  them (see #gains2): the ⟨0.21⟩ manifest that qualifies this answer rides the report SET, and reading
+     *  only the file the single-report pick chose would answer flat over a manifest sitting in its
+     *  sibling. */
     static int diff2(String curLoc, String baseLoc, boolean json) {
         if (curLoc == null) return usage("diff <current> <baseline> [--json]");
         String cur = resolveReportLocator(curLoc);
@@ -762,7 +767,7 @@ public final class Query {
         }
         String base = baseLoc == null ? null : resolveReportLocator(baseLoc);
         if (baseLoc != null && base == null) return 2;
-        return diff(curFns, cur, base, json);
+        return diff(curFns, new ReportRef(curLoc, cur), new ReportRef(baseLoc, base), json);
     }
 
     /** `gains <current> <baseline>` (§3.3.1 two-positional): as {@link #diff2}, for the supply-chain gain.
@@ -4734,7 +4739,29 @@ public final class Query {
         return mismatch;
     }
 
-    static int diff(List<Effector> cur, String curPath, String basePath, boolean json) {
+    /** ⟨R54⟩ the human half of {@code diff}'s hedge, printed BEFORE the answer — {@code diff} reads TWO
+     *  locators that fail in OPPOSITE directions (SOUNDNESS.md R54): an unread unit in the CURRENT tree
+     *  can hide a real gain from `changes`, while one in the BASELINE tree can make a longstanding effect
+     *  read as newly gained (or a lost one read as never-had). Both are named, never collapsed into one
+     *  sentence — the reason {@link ReportCompleteness#writeJson(Map, String)} takes a namespace prefix
+     *  instead of one shared flag applies here exactly as it does to {@code gains}. */
+    private static void diffNote(ReportCompleteness comp, String side) {
+        comp.printNote("the changes below are computed against only the " + side + " report candor could see",
+                "A change hiding in an unread unit of the " + side + " tree means `changes` can MISS a real "
+                + "gain, or show a stale effect as newly gained (or lost) — and an empty `changes` reads as "
+                + "*nothing about this codebase's effects changed*, a claim built from two reports where at "
+                + "least one was not read in full. " + comp.gateLine() + " Re-scan before treating this diff "
+                + "as complete.");
+    }
+
+    /** ⟨R54⟩ `ref`s carry the LOCATOR beside the resolved path — see the javadoc on {@link
+     *  #callers(List, List, String, boolean, boolean, ReportRef)} for the shape this reuses. `diff` reads
+     *  TWO reports that fail in opposite directions (SOUNDNESS.md R54), so — like {@code gains} — it takes
+     *  a {@link ReportRef} per side and discloses each SEPARATELY, under the {@code gains}-established
+     *  {@code baseline}-prefixed spelling ({@link ReportCompleteness#writeJson(Map, String)}), rather than
+     *  inventing a fourth one. */
+    static int diff(List<Effector> cur, ReportRef curRef, ReportRef baseRef, boolean json) {
+        String curPath = curRef.resolved(), basePath = baseRef.resolved();
         if (basePath == null) return usage("diff <report.json> <baseline.json> [--json]");
         List<Effector> base;
         try {
@@ -4786,6 +4813,11 @@ public final class Query {
         // always — in candor-ts the exit-1 contract belongs to diff alone.
         boolean gain = !versionMismatch
                 && changes.stream().anyMatch(m -> !((List<?>) m.get("gained")).isEmpty());
+        // ⟨R54⟩ read ONCE for both channels, AFTER the usage/load exits above so a bad baseline path stays
+        // a plain error rather than becoming a hedged answer. `diff` is descriptive (no `ok`, no exit-code
+        // obligation — SOUNDNESS.md's own ⟨0.32⟩ test), so this changes NEITHER `gain` NOR the exit below.
+        ReportCompleteness curComp = curRef.completeness("diff");
+        ReportCompleteness baseComp = baseRef.completeness("diff (baseline)");
         if (json) {
             // The cross-language shape (SPEC §3.1): an envelope with baseline_version/engine_version
             // provenance (unconditional, "" when unknown — the candor-ts/candor-query field set) then
@@ -4795,10 +4827,29 @@ public final class Query {
             out.put("baseline_version", baseV == null ? "" : baseV);
             out.put("engine_version", engineV == null ? "" : engineV);
             out.put("changes", changes);
+            // ⟨R54⟩ built first, the caveat appended — the same rule the descriptive-hedge rung already
+            // states (see the `callers` javadoc): a hedged document that recomputed its own answer would
+            // move the omission rather than remove it. BOTH sides, SEPARATELY, under the SAME
+            // `gains`-established prefix (see ReportCompleteness#writeJson(Map, String)): a bare
+            // `incomplete: true` cannot say WHICH of the two reports was partial, and the two license
+            // opposite readings of the same `changes` list. No-op on an intact pair.
+            curComp.writeJson(out);
+            baseComp.writeJson(out, "baseline");
             emit(out);
             return gain ? 1 : 0;
         }
+        // ⟨R54⟩ BEFORE the answer, one note per side that needs it — never combined into one sentence, for
+        // the reason given on {@link #diffNote}.
+        if (curComp.mustHedge()) diffNote(curComp, "CURRENT");
+        if (baseComp.mustHedge()) diffNote(baseComp, "BASELINE");
         if (changes.isEmpty()) {
+            // ⟨R54⟩ "no effect changes" IS the prose spelling of `changes: []` — the determined negative
+            // this rung exists to withdraw, on the same terms `callers`/`impact` already withdraw theirs.
+            if (curComp.mustHedge() || baseComp.mustHedge()) {
+                System.out.println("candor: no effect changes IN WHAT CANDOR COULD SEE vs " + basePath
+                        + " — but see the INCOMPLETE note(s) above; this is NOT \"nothing changed\".");
+                return 0;
+            }
             System.out.println("candor: no effect changes vs " + basePath + ".");
             return 0;
         }

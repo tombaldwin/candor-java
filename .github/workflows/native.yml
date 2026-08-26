@@ -159,17 +159,29 @@ jobs:
       # The build and the parity check above still run here — the upload is the only release-only step
       # in this file, because uploading is the only thing that genuinely cannot happen before there is
       # a release to upload to.
+      #
+      # ALSO fires on a `workflow_dispatch` run against a TAG ref — the recovery path, not just the
+      # release event. Measured 2026-08-26 on the 0.33.0 cut: a stalled Actions queue orphaned this
+      # workflow's `release`-triggered run (created, never expanded into jobs, uncancellable —
+      # 409 "has not been queued yet" — and unrerunnable), so it was recovered with a manual dispatch
+      # against the release tag. The dispatch went GREEN, but `github.event_name` there is
+      # `workflow_dispatch`, never `release`, so this step's original `== 'release'` condition silently
+      # skipped the only step that mattered: the binary never reached the release. Gating on the REF
+      # SHAPE as well as the event catches exactly that recovery dispatch (its ref is `refs/tags/*`)
+      # while leaving ordinary `main`/PR runs — whose ref is never a tag — unaffected.
       - name: Upload to release
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/${{ matrix.asset }}
 
       # Every non-release run leaves the binary downloadable — a `main` build that a later release
       # merely re-cuts, or a PR build someone wants to try. Was `== 'workflow_dispatch'`, which under
-      # the new triggers would have thrown away every `main` and PR binary.
+      # the new triggers would have thrown away every `main` and PR binary. Kept as the exact
+      # complement of the condition above (event `release` OR a tag ref) — a tag-ref dispatch used to
+      # recover a stalled release should upload to the release, not leave a duplicate workflow artifact.
       - name: Upload as workflow artifact
-        if: github.event_name != 'release'
+        if: github.event_name != 'release' && !startsWith(github.ref, 'refs/tags/')
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}

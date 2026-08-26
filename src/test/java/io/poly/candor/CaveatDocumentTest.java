@@ -296,6 +296,121 @@ class CaveatDocumentTest {
         }
     }
 
+    // ── R54 (SOUNDNESS.md): `diff` reads TWO locators that fail in OPPOSITE directions ─────────────────
+
+    /** A current+baseline pair for `diff`, one function gaining {@code Fs}. `curUnread`/`baseUnread`
+     *  independently control whether EACH SIDE carries an ⟨0.32⟩ unpeeked exclusion class — R54's point is
+     *  that the two fail in opposite directions and must be disclosed (and tested) separately, never
+     *  collapsed into one flag. */
+    private Path[] diffPair(String tag, boolean curUnread, boolean baseUnread, boolean sameEffects)
+            throws Exception {
+        List<Map<String, Object>> unread = List.of(Map.of("class", "generated-source", "count", 1,
+                "peeked", false, "reason", "generated"));
+        Map<String, Object> cur = new LinkedHashMap<>();
+        cur.put("candor", Map.of("version", "test", "toolchain", "test", "spec", Candor.SPEC_VERSION));
+        cur.put("packages", List.of("app"));
+        cur.put("analyzed", Map.of("count", 3, "digest", "0"));
+        if (curUnread) cur.put("excluded", unread);
+        cur.put("functions", List.of(entry("app.svc.act", List.of("Fs"))));
+        Path curP = tmp.resolve("cur." + tag + ".app.jvm.json");
+        Files.writeString(curP, io.poly.candor.model.ReportJson.pretty(cur));
+
+        Map<String, Object> base = new LinkedHashMap<>();
+        base.put("candor", Map.of("version", "test", "toolchain", "test", "spec", Candor.SPEC_VERSION));
+        base.put("packages", List.of("app"));
+        base.put("analyzed", Map.of("count", 3, "digest", "0"));
+        if (baseUnread) base.put("excluded", unread);
+        // `sameEffects`: the baseline already has Fs too, so `changes` comes back EMPTY — the sharpest
+        // cell, because "no effect changes" is the determined negative this rung withdraws.
+        base.put("functions", List.of(entry("app.svc.act", sameEffects ? List.of("Fs") : List.of())));
+        Path baseP = tmp.resolve("base." + tag + ".app.jvm.json");
+        Files.writeString(baseP, io.poly.candor.model.ReportJson.pretty(base));
+        return new Path[]{curP, baseP};
+    }
+
+    /**
+     * ⟨R54⟩ <b>`diff` ANSWERS `{ baseline_version, engine_version, changes: [] }` WITH NO COMPLETENESS
+     * READER AT ALL</b> (SOUNDNESS.md R54) — over TWO reports that fail in OPPOSITE directions: an unread
+     * unit in the CURRENT tree can hide a real gain from {@code changes}; one in the BASELINE tree can
+     * make a longstanding effect read as newly gained. MEASURED at HEAD before this fix, on exactly this
+     * fixture: {@code diff} answered flat on both channels, at exit 0/1, while its sibling {@code gains}
+     * already hedges both sides (the PREFIXED shape this test pins {@code diff} onto instead of a fourth
+     * spelling).
+     *
+     * <p>Every JSON assertion is on the CHANGES themselves (by function name), never on key presence alone
+     * — a hedge that shipped a flat answer would still pass "the key exists".
+     */
+    @Test void diffDisclosesEachUnreadSideSeparately() throws Exception {
+        // Cause: the CURRENT side unread, baseline intact.
+        Path[] curSide = diffPair("cur", true, false, false);
+        String[] c = run("diff", curSide[0].toString(), curSide[1].toString(), "--json");
+        assertEquals("1", c[2], "the gain-ratchet exit is UNCHANGED by the hedge (diff has no exit-code "
+                + "obligation — SOUNDNESS.md's own ⟨0.32⟩ descriptive test): " + c[0] + c[1]);
+        JsonObject cv = JsonParser.parseString(c[0]).getAsJsonObject();
+        assertTrue(cv.get("incomplete").getAsBoolean(), "diff answered flat over an unread CURRENT class: " + c[0]);
+        assertFalse(cv.has("baselineIncomplete"), "the baseline side is intact and must stay unflagged: " + c[0]);
+        assertEquals(1, cv.getAsJsonArray("changes").size(),
+                "…BESIDE the answer, never instead of it: " + c[0]);
+        assertEquals("app.svc.act",
+                cv.getAsJsonArray("changes").get(0).getAsJsonObject().get("fn").getAsString(), c[0]);
+
+        // Cause: the BASELINE side unread, current intact — the OTHER prefix, and it must be THIS one, not
+        // the bare `incomplete` a single-flag design could not tell apart from the case above.
+        Path[] baseSide = diffPair("base", false, true, false);
+        String[] b = run("diff", baseSide[0].toString(), baseSide[1].toString(), "--json");
+        JsonObject bv = JsonParser.parseString(b[0]).getAsJsonObject();
+        assertFalse(bv.has("incomplete"), "the current side is intact and must stay unflagged: " + b[0]);
+        assertTrue(bv.get("baselineIncomplete").getAsBoolean(),
+                "diff answered flat over an unread BASELINE class: " + b[0]);
+        assertEquals(1, bv.getAsJsonArray("changes").size(), b[0]);
+
+        // Cause: BOTH sides unread — both flags present, INDEPENDENTLY (not collapsed into one).
+        Path[] bothSide = diffPair("both", true, true, false);
+        String[] both = run("diff", bothSide[0].toString(), bothSide[1].toString(), "--json");
+        JsonObject bo = JsonParser.parseString(both[0]).getAsJsonObject();
+        assertTrue(bo.get("incomplete").getAsBoolean(), both[0]);
+        assertTrue(bo.get("baselineIncomplete").getAsBoolean(), both[0]);
+
+        // THE SHARPEST CELL: `changes: []` over an unread side is `nothing about this codebase's effects
+        // changed`, asserted from two reports nobody fully read — the determined negative this rung
+        // withdraws, on the human channel (the JSON `changes` array is already empty by construction, so
+        // JSON has nothing further to withdraw — only the prose sentence changes).
+        Path[] emptySide = diffPair("empty", true, true, true);
+        String[] eh = run("diff", emptySide[0].toString(), emptySide[1].toString());
+        assertTrue(eh[0].contains("IN WHAT CANDOR COULD SEE") && eh[0].contains("NOT \"nothing changed\""),
+                "the flat \"no effect changes\" sentence must be WITHDRAWN, not left standing under the "
+                        + "note: " + eh[0]);
+        assertTrue(eh[0].contains("⚠ INCOMPLETE") && eh[0].contains("CURRENT")
+                        && eh[0].contains("⚠ INCOMPLETE") && eh[0].contains("BASELINE"),
+                "both sides get their OWN note, never combined into one sentence: " + eh[0]);
+        assertTrue(eh[0].contains("generated-source"), "…and each note names the class: " + eh[0]);
+        String[] ej = run("diff", emptySide[0].toString(), emptySide[1].toString(), "--json");
+        JsonObject ejv = JsonParser.parseString(ej[0]).getAsJsonObject();
+        assertTrue(ejv.get("incomplete").getAsBoolean() && ejv.get("baselineIncomplete").getAsBoolean(), ej[0]);
+        assertEquals(0, ejv.getAsJsonArray("changes").size(), ej[0]);
+
+        // THE HUMAN CHANNEL on the non-empty cell too, because a mutant that keeps the JSON fix and drops
+        // only the printed note survives every JSON-only assertion above (candor-spec `ec1a441`'s shape).
+        String[] ch = run("diff", curSide[0].toString(), curSide[1].toString());
+        assertTrue(ch[0].contains("⚠ INCOMPLETE") && ch[0].contains("CURRENT") && ch[0].contains("generated-source"),
+                "the prose channel must carry the note ON STDOUT, name the SIDE and the class: " + ch[0]);
+
+        // ── THE INTACT CONTROL: NEITHER side carries an unread class — nothing to disclose. Without it
+        //    every row above would pass just as well from a `diff` that hedges unconditionally, which
+        //    makes every ordinary diff read as partial.
+        Path[] ok = diffPair("ok", false, false, false);
+        String[] okJson = run("diff", ok[0].toString(), ok[1].toString(), "--json");
+        assertEquals("1", okJson[2], okJson[0] + okJson[1]);
+        JsonObject okv = JsonParser.parseString(okJson[0]).getAsJsonObject();
+        assertFalse(okv.has("incomplete") || okv.has("baselineIncomplete"),
+                "a complete pair gains NO caveat key on EITHER side: " + okJson[0]);
+        for (String k : okv.keySet())
+            assertTrue(List.of("baseline_version", "engine_version", "changes").contains(k),
+                    "the healthy document keeps its pinned key set exactly, got `" + k + "`: " + okJson[0]);
+        String[] okHuman = run("diff", ok[0].toString(), ok[1].toString());
+        assertFalse(okHuman[0].contains("INCOMPLETE"), "healthy prose gains no note: " + okHuman[0]);
+    }
+
     // ── show: the ARRAY shape had nowhere to put the caveat and answered [] flat ────────────────────────
 
     @Test void showHedgingKeepsItsRowsBesideTheCaveat() throws Exception {

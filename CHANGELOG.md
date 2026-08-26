@@ -10,6 +10,18 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.33.0] — 2026-08-26
 
+- **`ci.yml` gains `workflow_dispatch`; `native.yml`'s release-upload step no longer needs the
+  `release` event to fire.** Audit of the family's recovery gap after the 0.33.0 cut's Actions stall
+  (three tag-triggered runs across three repos created, never expanded into jobs, `updated_at` equal
+  to `created_at` two hours on — neither cancellable, 409 "has not been queued yet", nor rerunnable).
+  `native.yml` already had `workflow_dispatch` and was used to recover, but went GREEN while silently
+  skipping the binary upload: its `Upload to release` step read `if: github.event_name == 'release'`,
+  and a manual dispatch's event is `workflow_dispatch` even when run against the release tag. It now
+  also fires when `github.ref` is a tag (`startsWith(github.ref, 'refs/tags/')`), which the recovery
+  dispatch is and an ordinary `main`/PR run never is; `Upload as workflow artifact` keeps the exact
+  complement so nothing double-uploads. `ci.yml` had no `workflow_dispatch` at all — added so a
+  stalled push/PR run can be re-triggered without an empty commit.
+
 - **Cross-repo pins move to 0.33.0.** Until they do the release is inert: `candor update` fetches
   `releases/download/v$ENGINE_PIN_*`, `cargo install --version`, and `npx candor-ts@$ENGINE_PIN_TS`,
   so brew, jbang, `adopt/` and both IDE plugins keep serving the previous line however many

@@ -3,6 +3,12 @@ name: ci
 on:
   push:
   pull_request:
+  # Recovery: a stalled Actions queue can orphan a push/PR-triggered run — created, never expanded
+  # into jobs, `updated_at` == `created_at` hours later — and such a run is neither cancellable (409
+  # "has not been queued yet") nor rerunnable. Measured 2026-08-26 on the 0.33.0 cut, where the same
+  # stall hit tag-triggered workflows across three repos; this gate had no tag to delete/re-push, but
+  # it also had no `workflow_dispatch`, so the only recovery was an empty commit to re-trigger `push`.
+  workflow_dispatch:
 
 jobs:
   build-and-test:

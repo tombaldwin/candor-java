@@ -10,6 +10,12 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.33.0] — 2026-08-26
 
+- **Cross-repo pins move to 0.33.0.** Until they do the release is inert: `candor update` fetches
+  `releases/download/v$ENGINE_PIN_*`, `cargo install --version`, and `npx candor-ts@$ENGINE_PIN_TS`,
+  so brew, jbang, `adopt/` and both IDE plugins keep serving the previous line however many
+  artifacts are published. `release.sh` step 7 refuses to cut the umbrella until `ENGINE_PIN`
+  names this version, because the brew tarball carries the pin.
+
 - **MIGRATION — ⟨0.33⟩ IS NOT ADDITIVE, and the cost is measured, not estimated.** If you gate a
   **STORED** report that a pre-0.33 engine produced — committed to a repo, cached between CI jobs, or
   published by a dependency and gated downstream — expect exit 2. Measured over **32 real third-party

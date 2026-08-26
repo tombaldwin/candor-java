@@ -65,7 +65,58 @@ jobs:
     # release-preflight [7b], which asks every workflow in every released repo.
     timeout-minutes: 60
     steps:
+      # DEFECT (code review, 2026-08-26): the upload condition below is `event_name == 'release' ||
+      # startsWith(ref, 'refs/tags/')` — an exact complement with the artifact-upload step, so there is
+      # no double-upload and no gap PROVIDED the operator selects a TAG in the workflow_dispatch ref
+      # dropdown. Its default is `main`, and right after a cut `main`'s tip and the just-cut tag ARE the
+      # same commit — the natural mistake. Left unguarded: build, parity and smoke all pass (they run
+      # against a commit, not a ref), the job goes GREEN, and the upload is silently skipped — exactly
+      # the original bug this trigger was added to fix. Worse, release-preflight [10] keys purely on
+      # `headSha`, never on `ref` or `event_name`, so that green run satisfies the release gate as
+      # evidence `native` passed while no binary reached the release.
+      #
+      # candor-swift's release.yml already has the safer pattern: it derives VER from `GITHUB_REF_NAME`
+      # UNCONDITIONALLY, so a `main` dispatch fails LOUDLY (a branch name can never match
+      # `candor-swift-<version>`). Same idea here — refuse outright, first step, before the ~3-4 minute
+      # GraalVM build, rather than degrade to a silent skip.
+      - name: Refuse a workflow_dispatch that is not against a tag ref
+        if: github.event_name == 'workflow_dispatch' && !startsWith(github.ref, 'refs/tags/')
+        run: |
+          echo "::error::workflow_dispatch was run against '${{ github.ref_name }}' (a branch), not a release tag."
+          echo "::error::The upload step only fires for a tag ref or a 'release' event — dispatching against a branch builds, tests and smokes the binary and then SILENTLY SKIPS the upload, which is the exact recovery bug this trigger exists to fix."
+          echo "::error::Fix: Actions -> native -> Run workflow, and pick the RELEASE TAG (e.g. v0.33.0) in the 'Use workflow from' ref dropdown -- not 'main'."
+          exit 1
+
       - uses: actions/checkout@v6
+
+      # TWO MORE workflow_dispatch-ONLY hazards, flagged in the same review: `softprops/action-gh-release@v2`
+      # defaults to `overwrite_files: true`, so a dispatch against the WRONG (old) tag would silently
+      # replace that historical release's binary with a non-reproducible rebuild made from today's
+      # toolchain; and dispatching against a tag with no Release yet would CREATE one (non-draft, none of
+      # the curated notes `release.sh`'s `rel` step writes) as a side effect of the upload action. Both are
+      # ruled out here rather than accepted: workflow_dispatch is meant to recover an upload that never
+      # completed for an ALREADY-CUT release, and both of those states are visible before the expensive
+      # build runs.
+      - name: Guard workflow_dispatch against the wrong tag
+        if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ github.ref_name }}"
+          REPO="${{ github.repository }}"
+          if ! gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+            echo "::error::no GitHub Release exists yet for tag $TAG."
+            echo "::error::Dispatching here would CREATE one (non-draft, no curated notes) as a side effect of the upload step — this workflow only UPLOADS to a release that already exists."
+            echo "::error::Fix: cut the release first (bin/release.sh), or re-dispatch against the tag that already has one."
+            exit 1
+          fi
+          if gh release view "$TAG" -R "$REPO" --json assets -q '.assets[].name' 2>/dev/null | grep -qx "${{ matrix.asset }}"; then
+            echo "::error::release $TAG already has a '${{ matrix.asset }}' asset."
+            echo "::error::workflow_dispatch here is meant to recover an upload that never completed — this one already did. Re-dispatching would OVERWRITE it with a rebuild made today (softprops/action-gh-release defaults to overwrite_files: true), which is not reproducible and is probably the wrong tag."
+            echo "::error::Fix: delete the asset from the release first if you really intend to replace it, or re-check which tag you meant to select."
+            exit 1
+          fi
 
       - name: Set up GraalVM (JDK 21)
         uses: graalvm/setup-graalvm@v1

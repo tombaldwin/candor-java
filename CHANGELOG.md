@@ -22,6 +22,19 @@ after upgrading; review policies and regenerate baselines with the new build.
   complement so nothing double-uploads. `ci.yml` had no `workflow_dispatch` at all — added so a
   stalled push/PR run can be re-triggered without an empty commit.
 
+- **⚠ `native.yml`'s recovery dispatch above depended on the operator picking the tag ref, and had no
+  guard if they didn't.** Code review found the natural mistake: right after a cut, `main`'s tip and the
+  release tag are the same commit, and the ref dropdown defaults to `main`. Dispatching against it built,
+  tested and smoked the binary — all green — and then silently skipped the upload, the exact bug the
+  `workflow_dispatch` recovery path exists to fix; `release-preflight [10]` keys on `headSha` alone, so
+  that green run would have satisfied the release gate as evidence `native` passed with no binary
+  uploaded. The job now refuses outright, first step, when `workflow_dispatch` is not against a tag ref,
+  naming the fix (select the tag in the ref dropdown). Two further dispatch-only hazards are now also
+  refused rather than accepted: dispatching against a tag with no Release yet (which would CREATE one,
+  non-draft, via `softprops/action-gh-release`'s default) and dispatching against a tag that already
+  carries the asset being built (which would silently OVERWRITE it — `overwrite_files: true` is that
+  action's default — with a non-reproducible rebuild, the signature of the wrong tag having been picked).
+
 - **Cross-repo pins move to 0.33.0.** Until they do the release is inert: `candor update` fetches
   `releases/download/v$ENGINE_PIN_*`, `cargo install --version`, and `npx candor-ts@$ENGINE_PIN_TS`,
   so brew, jbang, `adopt/` and both IDE plugins keep serving the previous line however many

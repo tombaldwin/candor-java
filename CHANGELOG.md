@@ -8,6 +8,23 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **R58 (candor-spec SOUNDNESS.md) measured and CLOSED: separate-file annotation-processor codegen
+  (Dagger/Room/AutoValue/MapStruct-style) is sound, not merely unmeasured.** Built and scanned a real
+  `dagger-compiler` 2.51.1 fixture — a `@Provides` method doing a genuine filesystem write, exposed
+  through generated `AppModule_ProvideLoggerFactory` + `DaggerAppComponent$AppComponentImpl` classes
+  landing in the same `build/classes/java/main` the README tells users to point candor-java at.
+  `Loader.java` has no annotation-processor concept and does not need one: the generated classes were
+  analysed like any other bytecode, the effect propagated through every generated hop with the exact
+  filesystem path preserved end to end, and reached the user's own calling code identically whether
+  called directly or through the generated component (`Main.main`'s `paths` carried both the
+  hand-written and the Dagger-mediated write). `deny Fs` still exited 1 in an ISOLATED tree where the
+  *only* reachable violation ran entirely through generated code — no gate-evasion gap. No over-charge
+  either: a sibling generated method not on the effectful path (`Builder.build()`, the plain `create()`
+  factory) stayed pure, so this is call-graph precision, not a blanket "generated code is suspect"
+  charge. Pinned as a standing regression, `AnnotationProcessorCodegenTest` — reproduces the confirmed
+  generated-code SHAPE as plain compiled fixtures (no Dagger test dependency needed, since the
+  classifier has no annotation-processor concept for a real one to exercise differently).
+
 ## [0.33.1] — 2026-08-27
 
 - **`jbang-catalog.json` moves to 0.33.1 — the tag AND the asset filename, which are two edits, not

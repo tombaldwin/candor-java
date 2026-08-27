@@ -4847,12 +4847,28 @@ public class Candor {
                 // A provably-monomorphic PROJECT receiver (`new T`) has NO polymorphic siblings,
                 // so this resolves to exactly T's method — never its CHA subtypes. `b = new
                 // Base(); b.compute()` must read Base.compute alone, not the sibling Dirty's Net.
-                // No concrete impl in T's own chain (impl in an unloaded super) → an ordinary
-                // external call (no edge). Either way: resolved locally, so skip CHA, the Unknown
-                // branches, AND cross-dep (a project call traces locally, never inherits a dep).
                 String monoTarget = monomorphicTarget(monoRecv, min.name, min.desc);
-                if (monoTarget != null) ctx.edges.get(id).add(monoTarget);
-                return true;   // the original `continue`: resolved locally, skip the Unknown branches AND cross-dep
+                if (monoTarget != null) {
+                    // A concrete impl IS visible in T's own (project) chain: resolved locally, so
+                    // skip CHA, the Unknown branches, AND cross-dep (a project call traces locally,
+                    // never inherits a dep) — the original `continue`.
+                    ctx.edges.get(id).add(monoTarget);
+                    return true;
+                }
+                // No concrete impl in T's own chain — the JVM still resolves this to exactly ONE
+                // body (monomorphic, so CHA's sibling fan-out is still correctly skipped below via
+                // the `monoRecv == null` guard), but that body may live in a DEPENDENCY superclass
+                // never loaded into `byName` (`class T extends lib.Base` where `lib.Base.load()` is
+                // analyzed in a separate scan). Falling through — instead of the old unconditional
+                // `return true` — lets crossDepJoin's `nearestDepFn` walk (min.owner is `T`, a
+                // project class, so its supertype-chain walk sees `lib.Base`) inherit that
+                // dependency body's recorded effects. Returning true here unconditionally was the
+                // 2026-08-27 cardinal sin: `T extends lib.Base` (no override), `new T().load()`
+                // read silent-pure though `lib.Base.load()` does real Fs I/O, because this early
+                // return skipped crossDepJoin (added 2026-07-26, a5b0a416) entirely — the two
+                // fixes were never exercised together. See CrossScanBoundaryTest for the
+                // regression fixture (parameter-receiver already worked via this same
+                // nearestDepFn path; only the `new T()` monomorphic fast path bypassed it).
             }
             // CHA runs ONLY for a genuinely POLYMORPHIC receiver (monoRecv == null). An EXTERNAL
             // monoRecv (`new java.util.ArrayList<>()`) is PROVABLY that exact type, never a

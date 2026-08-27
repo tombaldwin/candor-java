@@ -8,6 +8,8 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+## [0.33.1] — 2026-08-27
+
 - **`ci.yml` gains `workflow_dispatch`; `native.yml`'s release-upload step no longer needs the
   `release` event to fire.** Audit of the family's recovery gap after the 0.33.0 cut's Actions stall
   (three tag-triggered runs across three repos created, never expanded into jobs, `updated_at` equal

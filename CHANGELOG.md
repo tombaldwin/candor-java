@@ -8,8 +8,6 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
-## [0.33.0] — 2026-08-26
-
 - **`ci.yml` gains `workflow_dispatch`; `native.yml`'s release-upload step no longer needs the
   `release` event to fire.** Audit of the family's recovery gap after the 0.33.0 cut's Actions stall
   (three tag-triggered runs across three repos created, never expanded into jobs, `updated_at` equal
@@ -34,6 +32,29 @@ after upgrading; review policies and regenerate baselines with the new build.
   non-draft, via `softprops/action-gh-release`'s default) and dispatching against a tag that already
   carries the asset being built (which would silently OVERWRITE it — `overwrite_files: true` is that
   action's default — with a non-reproducible rebuild, the signature of the wrong tag having been picked).
+
+- **⚠ CARDINAL SIN — `new T().load()` read silent-pure when `T` inherits `load()` from a chained
+  DEPENDENCY superclass without overriding it.** `T extends lib.Base` (no override), `CANDOR_DEPS`
+  pointing at `lib`'s own report, `lib.Base.load()` doing real filesystem I/O: `new T().load()`
+  vanished from `functions` entirely — no effect, no Unknown, no disclosure — while the identical call
+  through a **parameter**-typed receiver (`void run(T t){ t.load(); }`) and through the dependency
+  class directly (`new Base().load()`) both correctly read `Fs`. Root cause: `virtualDispatch`'s
+  provably-monomorphic-receiver fast path (2026-07-09, `5383b9ce`) returned `true` — skip CHA, Unknown,
+  **and cross-dep** — as soon as the receiver resolved locally, even when `monomorphicTarget` found no
+  concrete impl in `T`'s own chain. That unconditionally skipped `crossDepJoin`'s `nearestDepFn` walk,
+  added over two weeks later (2026-07-26, `a5b0a416`) for exactly this "inherited method from a
+  dependency supertype" shape — the two fixes were never exercised together, and
+  `CrossScanBoundaryTest` only ever drove the parameter-receiver form of the shape. The fast path now
+  only returns early when `monomorphicTarget` names a concrete local impl; otherwise it falls through
+  to `crossDepJoin` unchanged. Two new regression tests
+  (`aMonomorphicNewReceiverOfAnInheritedDependencyMethodIsCharged`,
+  `aMonomorphicNewReceiverThatDOESOverrideStillTakesTheFastPath`) pin both directions — the first fails
+  on the pre-fix build, the second proves the fast-path optimisation itself is untouched. A 35-jar
+  real-world corpus (16 + 19 third-party jars, no chained deps) is byte-identical before/after; a
+  second, independently-constructed real-dependency fixture (a project class inheriting
+  `org.apache.commons.net.SocketClient.connect` without overriding it) reproduces the same red→green.
+
+## [0.33.0] — 2026-08-26
 
 - **Cross-repo pins move to 0.33.0.** Until they do the release is inert: `candor update` fetches
   `releases/download/v$ENGINE_PIN_*`, `cargo install --version`, and `npx candor-ts@$ENGINE_PIN_TS`,
@@ -137,27 +158,6 @@ after upgrading; review policies and regenerate baselines with the new build.
   precisely the gate that catches it. `release: published` still builds and still checks — the upload is
   now the only release-only step, because it is the only one that cannot happen before there is a
   release to upload to. Non-release runs keep the binary as a workflow artifact.
-
-- **⚠ CARDINAL SIN — `new T().load()` read silent-pure when `T` inherits `load()` from a chained
-  DEPENDENCY superclass without overriding it.** `T extends lib.Base` (no override), `CANDOR_DEPS`
-  pointing at `lib`'s own report, `lib.Base.load()` doing real filesystem I/O: `new T().load()`
-  vanished from `functions` entirely — no effect, no Unknown, no disclosure — while the identical call
-  through a **parameter**-typed receiver (`void run(T t){ t.load(); }`) and through the dependency
-  class directly (`new Base().load()`) both correctly read `Fs`. Root cause: `virtualDispatch`'s
-  provably-monomorphic-receiver fast path (2026-07-09, `5383b9ce`) returned `true` — skip CHA, Unknown,
-  **and cross-dep** — as soon as the receiver resolved locally, even when `monomorphicTarget` found no
-  concrete impl in `T`'s own chain. That unconditionally skipped `crossDepJoin`'s `nearestDepFn` walk,
-  added over two weeks later (2026-07-26, `a5b0a416`) for exactly this "inherited method from a
-  dependency supertype" shape — the two fixes were never exercised together, and
-  `CrossScanBoundaryTest` only ever drove the parameter-receiver form of the shape. The fast path now
-  only returns early when `monomorphicTarget` names a concrete local impl; otherwise it falls through
-  to `crossDepJoin` unchanged. Two new regression tests
-  (`aMonomorphicNewReceiverOfAnInheritedDependencyMethodIsCharged`,
-  `aMonomorphicNewReceiverThatDOESOverrideStillTakesTheFastPath`) pin both directions — the first fails
-  on the pre-fix build, the second proves the fast-path optimisation itself is untouched. A 35-jar
-  real-world corpus (16 + 19 third-party jars, no chained deps) is byte-identical before/after; a
-  second, independently-constructed real-dependency fixture (a project class inheriting
-  `org.apache.commons.net.SocketClient.connect` without overriding it) reproduces the same red→green.
 
 ## [0.32.1] — 2026-08-25
 

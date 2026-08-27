@@ -10,6 +10,13 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.33.1] — 2026-08-27
 
+- **`jbang-catalog.json` moves to 0.33.1 — the tag AND the asset filename, which are two edits, not
+  one.** Until the pin moves the release is inert for every jbang user: `jbang
+  candor@tombaldwin/candor-java` resolves the `script-ref` URL, so it keeps fetching the 0.33.0 jar
+  however much is published. Bumping only the tag and leaving the filename (or the reverse) produces a
+  URL that 404s rather than one that serves the old build — which is why `release-verify.sh` RESOLVES
+  this URL instead of matching the string it contains.
+
 - **`ci.yml` gains `workflow_dispatch`; `native.yml`'s release-upload step no longer needs the
   `release` event to fire.** Audit of the family's recovery gap after the 0.33.0 cut's Actions stall
   (three tag-triggered runs across three repos created, never expanded into jobs, `updated_at` equal

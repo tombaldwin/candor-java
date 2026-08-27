@@ -138,6 +138,27 @@ after upgrading; review policies and regenerate baselines with the new build.
   now the only release-only step, because it is the only one that cannot happen before there is a
   release to upload to. Non-release runs keep the binary as a workflow artifact.
 
+- **⚠ CARDINAL SIN — `new T().load()` read silent-pure when `T` inherits `load()` from a chained
+  DEPENDENCY superclass without overriding it.** `T extends lib.Base` (no override), `CANDOR_DEPS`
+  pointing at `lib`'s own report, `lib.Base.load()` doing real filesystem I/O: `new T().load()`
+  vanished from `functions` entirely — no effect, no Unknown, no disclosure — while the identical call
+  through a **parameter**-typed receiver (`void run(T t){ t.load(); }`) and through the dependency
+  class directly (`new Base().load()`) both correctly read `Fs`. Root cause: `virtualDispatch`'s
+  provably-monomorphic-receiver fast path (2026-07-09, `5383b9ce`) returned `true` — skip CHA, Unknown,
+  **and cross-dep** — as soon as the receiver resolved locally, even when `monomorphicTarget` found no
+  concrete impl in `T`'s own chain. That unconditionally skipped `crossDepJoin`'s `nearestDepFn` walk,
+  added over two weeks later (2026-07-26, `a5b0a416`) for exactly this "inherited method from a
+  dependency supertype" shape — the two fixes were never exercised together, and
+  `CrossScanBoundaryTest` only ever drove the parameter-receiver form of the shape. The fast path now
+  only returns early when `monomorphicTarget` names a concrete local impl; otherwise it falls through
+  to `crossDepJoin` unchanged. Two new regression tests
+  (`aMonomorphicNewReceiverOfAnInheritedDependencyMethodIsCharged`,
+  `aMonomorphicNewReceiverThatDOESOverrideStillTakesTheFastPath`) pin both directions — the first fails
+  on the pre-fix build, the second proves the fast-path optimisation itself is untouched. A 35-jar
+  real-world corpus (16 + 19 third-party jars, no chained deps) is byte-identical before/after; a
+  second, independently-constructed real-dependency fixture (a project class inheriting
+  `org.apache.commons.net.SocketClient.connect` without overriding it) reproduces the same red→green.
+
 ## [0.32.1] — 2026-08-25
 
 - **jbang pinned to v0.32.1** — tag and asset filename together, since a tag-only bump names a jar that does not exist.

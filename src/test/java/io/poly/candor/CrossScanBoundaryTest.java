@@ -274,6 +274,45 @@ class CrossScanBoundaryTest {
     }
 
     @Test
+    void aMonomorphicNewReceiverOfAnInheritedDependencyMethodIsCharged() throws Exception {
+        // The 2026-08-27 cardinal sin: `callInherited` above only ever exercises the PARAMETER-receiver
+        // shape (`s.load()` where `s` is a param). `new Sub().load()` takes a DIFFERENT branch in
+        // virtualDispatch — the provably-monomorphic-receiver fast path (Candor.java ~4846), which used to
+        // `return true` unconditionally once it proved `monoRecv` locally, even when `monomorphicTarget`
+        // found no concrete impl in Sub's OWN chain (the body lives only in the dependency superclass
+        // Base). That skipped crossDepJoin's nearestDepFn entirely — added 2026-07-26 for exactly this
+        // shape, but never exercised together with the 2026-07-09 fast path — and `new Sub().load()` read
+        // silently pure though Base.load() performs real I/O. Two temporal siblings, never tested together.
+        Map<String, EffectSet> r = scanChained(LIB2, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.Base;",
+            "public class S {",
+            "  public static class Sub extends Base { public void extra(){ } }",
+            "  public void callViaNew(){ Sub s = new Sub(); s.load(); }",
+            "}")));
+        assertTrue(env(r, "app.S.callViaNew"),
+                "new Sub().load() on a dep superclass's inherited method must carry its Env, got "
+                        + r.get("app.S.callViaNew"));
+    }
+
+    @Test
+    void aMonomorphicNewReceiverThatDOESOverrideStillTakesTheFastPath() throws Exception {
+        // The other half of the same audit: the fast path is an OPTIMISATION, not just a bug — a
+        // monomorphic receiver whose type DOES declare a concrete override must still resolve LOCALLY,
+        // never inheriting the shadowed dependency body (the sibling of
+        // aProjectOverrideOfTheInheritedMethodIsNotCharged, but through a `new` receiver instead of a
+        // parameter, so it also proves the fast-path return-true branch itself is untouched).
+        Map<String, EffectSet> r = scanChained(LIB2, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.Base;",
+            "public class S {",
+            "  public static class Sub extends Base { public void load(){ } }",
+            "  public void callViaNew(){ Sub s = new Sub(); s.load(); }",
+            "}")));
+        assertFalse(env(r, "app.S.callViaNew"),
+                "new Sub().load() must resolve to Sub's own PURE override, not inherit the dep's Env, got "
+                        + r.get("app.S.callViaNew"));
+    }
+
+    @Test
     void aDefaultMethodFromADependencyInterfaceIsCharged() throws Exception {
         Map<String, EffectSet> r = scanChained(LIB2, Map.of("app/S.java", String.join("\n",
             "package app; import lib.Iface;",

@@ -25,6 +25,33 @@ after upgrading; review policies and regenerate baselines with the new build.
   generated-code SHAPE as plain compiled fixtures (no Dagger test dependency needed, since the
   classifier has no annotation-processor concept for a real one to exercise differently).
 
+- **⟨0.34⟩ ITEM 1: the ⟨0.33⟩ cross-policy refusal names its actual cause — message-only, no verdict or
+  wire-format change.** The ⟨0.33⟩ sentence ("this report's peek was bounded by a deny set that does not
+  cover N rule(s) of this policy") is true of a ≥⟨0.33⟩ producer that genuinely scanned under a different
+  deny set, and misleading of a report that predates ⟨0.33⟩ entirely — such a producer never had a
+  `scannedUnder` key to hold ANY deny set in, so "does not cover" reads as "chose a different policy"
+  where the truth is "could not yet record one". Both places this engine computes the cause (`gate
+  --report`'s stderr and the descriptive verbs' shared `ReportCompleteness` hedge, via the ONE
+  `Query.unaskedRules` helper both routes already shared) now check the report's own envelope
+  `candor.spec` (new `Query.specPredates`, compared on the major.minor ladder rather than lexicographically
+  — `"0.9"` vs `"0.33"` inverts under a plain string compare) and swap in a sentence naming the real cause
+  and the remedy ("re-scan with a 0.33+ engine under THE SAME policy") whenever EVERY report that
+  contributed to the cause predates the rung. A single ≥⟨0.33⟩ contributor keeps the original sentence,
+  because for that report the narrower deny set is real. The version licenses a REMEDY, never a verdict —
+  SPEC ⟨0.34⟩ ruled a version floor out explicitly, since a pre-⟨0.33⟩ producer's peek was still bounded by
+  SOME policy nobody here can see, so refusing is correct either way the age falls. `candor-scan`'s own
+  `--policy` route cannot raise this cause at all by construction (`scannedUnder` always covers its own
+  run's policy, and `Candor.scanGateFacts` always publishes an empty `unaskedRules`), so §3.1 byte-equality
+  was never at risk. No new `--gate-json`/`whatif --json` key: this route carries no wire key for the cause
+  today, only a stderr/stdout sentence. Two existing `UnreadCodeRouteTest` fixtures paired a pre-⟨0.33⟩
+  `spec` with a `scannedUnder` key no real engine at that spec could have written; the fixture helper now
+  ties the two together instead of leaving them to coincidentally pass. FOUND, NOT FIXED (pre-existing,
+  out of scope for this rung): `--policy` on the descriptive verbs (`show`/`where`/`callers`/`map`/`diff`/
+  `blindspots`/`tour`/`impact`/`path`/`reachable`/`containment`) is accepted syntactically but never
+  forwarded into the deny-rule state those verbs' completeness hedge reads, so the cause (old or new
+  wording) is structurally unreachable through that prose channel today — pinned directly against
+  `ReportCompleteness.printNote` rather than through the CLI.
+
 ## [0.33.1] — 2026-08-27
 
 - **`jbang-catalog.json` moves to 0.33.1 — the tag AND the asset filename, which are two edits, not

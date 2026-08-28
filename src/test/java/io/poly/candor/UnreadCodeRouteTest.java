@@ -104,12 +104,23 @@ class UnreadCodeRouteTest {
      * pre-rung shape unchanged; the two over-charge controls below pass a real set, because what they
      * assert — a class the producer READ hides nothing — is true only of a producer that was asked THIS
      * question.
+     *
+     * <p>⟨0.34⟩ THE {@code spec} FOLLOWS {@code scannedUnderJson}, NEVER STAYS PINNED AT {@code "0.31"} —
+     * a report carrying {@code scannedUnder} cannot have been produced by an engine that predates the
+     * rung which introduced the key, so pairing the two would be a fixture artifact no real producer could
+     * write (the impossible-fixture trap ⟨0.34⟩'s brief warns about, found twice already in rust and ts).
+     * Every row below that passes a real {@code scannedUnderJson} is therefore actually exercising the
+     * ≥⟨0.33⟩, NOT-predates branch of the new cause-naming logic, same as it always implicitly claimed to.
+     * The dedicated ⟨0.34⟩ rows further down build the predates-⟨0.33⟩ shape explicitly instead, with
+     * {@code scannedUnderJson} omitted, which is the only way a real pre-rung producer can look.
      */
     private Path report(String name, String excludedJson, String scannedUnderJson) throws Exception {
         Path dir = Files.createDirectories(tmp.resolve("r-" + name));
         Path f = dir.resolve(name + ".jvm.json");
+        String spec = scannedUnderJson == null ? "0.31" : "0.33";
         Files.writeString(f, "{\n"
-                + "  \"candor\": { \"version\": \"t\", \"toolchain\": \"jdk-21\", \"spec\": \"0.31\" },\n"
+                + "  \"candor\": { \"version\": \"t\", \"toolchain\": \"jdk-21\", \"spec\": \"" + spec
+                + "\" },\n"
                 + "  \"packages\": [ \"com.x\" ],\n"
                 + "  \"analyzed\": { \"count\": 2, \"digest\": \"0000000000000000\" },\n"
                 + (excludedJson == null ? "" : "  \"excluded\": " + excludedJson + ",\n")
@@ -278,6 +289,15 @@ class UnreadCodeRouteTest {
         assertTrue(r.stderr().contains("THE SAME policy"),
             "…and the remedy must say THE SAME policy, not merely A policy — the loose reading is what "
             + "PRODUCES this hole, because the operator DID scan with a policy: " + r.stderr());
+        // ⟨0.34⟩ CONTROL 1 — a ≥⟨0.33⟩ producer's message is BYTE-IDENTICAL to the pre-⟨0.34⟩ text: this
+        // producer genuinely scanned under a different deny set (`spec: "0.33"`, carried by the fixture
+        // helper now that it follows `scannedUnderJson` — see `report`'s doc), so the ORIGINAL "does not
+        // cover" sentence must survive untouched and the new predates-⟨0.33⟩ wording must NOT appear.
+        assertTrue(r.stderr().contains("does not cover"),
+            "a genuinely different deny set (not an old report) keeps the ⟨0.33⟩ sentence verbatim: "
+            + r.stderr());
+        assertFalse(r.stderr().contains("before ⟨0.33⟩"),
+            "…and must NOT claim the report predates the rung — it does not: " + r.stderr());
     }
 
     /**
@@ -296,6 +316,156 @@ class UnreadCodeRouteTest {
                        "--policy", policy("p1y.policy", "deny Exec\n").toString());
         assertEquals(2, r.exit(), "a producer that does not say what it was asked cannot be read as having "
                 + "been asked THIS: " + r.stdout() + r.stderr());
+    }
+
+    /**
+     * ⟨0.34⟩ CONTROL 2 — THE REMEDY NAMES ITS ACTUAL CAUSE. Drives the IDENTICAL bytes as
+     * {@link #aPeekedReportWithoutScannedUnderRefuses} above (`spec: "0.31"`, `peeked: true`, no
+     * `scannedUnder` — the only shape a real pre-⟨0.33⟩ producer can be in), but asserts on the MESSAGE
+     * rather than only the exit: the pre-⟨0.34⟩ text ("does not cover") is TRUE of a ≥⟨0.33⟩ producer that
+     * genuinely scanned under a different deny set, and MISLEADING here, where the producer never had a
+     * `scannedUnder` key to hold ANY deny set in — "does not cover" reads as "chose a different policy"
+     * where the truth is "could not yet record one". FALSIFIED against the pre-⟨0.34⟩ binary: that build
+     * printed the misleading "does not cover" sentence for these identical bytes (confirmed by re-running
+     * this fixture through `git stash` of the ⟨0.34⟩ diff before writing this assertion).
+     */
+    @Test void aPredates033ReportNamesTheRealCauseNotADifferentDenySet() throws Exception {
+        Path rep = report("peekedPredates",
+                "[ { \"class\": \"archive-under-the-scan-root\", \"count\": 3, \"peeked\": true, "
+                + "\"reason\": \"read\" } ]");
+        Run r = runCli("gate", "--report", rep.toString(),
+                       "--policy", policy("p1predates.policy", "deny Exec\n").toString());
+        assertEquals(2, r.exit(), r.stdout() + r.stderr());
+        assertTrue(r.stderr().contains("before ⟨0.33⟩"),
+            "the real cause — this report predates the rung that added `scannedUnder` — must be named: "
+            + r.stderr());
+        assertTrue(r.stderr().contains("0.33+ engine"),
+            "…and the remedy must say to re-scan with a CURRENT engine, not merely under a policy: "
+            + r.stderr());
+        assertTrue(r.stderr().contains("THE SAME policy"),
+            "…and still under THE SAME policy, not merely A policy — SPEC ⟨0.34⟩ pins this wording beside "
+            + "the ⟨0.33⟩ one: " + r.stderr());
+        assertTrue(r.stderr().contains("deny Exec"),
+            "…and still NAME the rule that went unasked: " + r.stderr());
+        assertFalse(r.stderr().contains("does not cover"),
+            "the MISLEADING ⟨0.33⟩ phrasing ('chose a different policy') must not appear over a report "
+            + "that never had a `scannedUnder` key to hold ANY deny set in: " + r.stderr());
+    }
+
+    /**
+     * ⟨0.34⟩ CONTROL 3 — THE JSON ENVELOPE IS BYTE-IDENTICAL EITHER WAY. The version-driven choice is
+     * MESSAGE-ONLY (stderr): `--gate-json` carries no `scannedUnder`/`unaskedRules` wire key on this route
+     * at all today, so the two causes' documents must differ in NOTHING but irrelevant provenance-free
+     * facts already equal by construction (`ok`, `incomplete`, `analyzed.count`) — never a new key.
+     */
+    @Test void theGateJsonDocumentIsByteIdenticalRegardlessOfWhichSentenceFired() throws Exception {
+        Path predates = report("jsonPredates",
+                "[ { \"class\": \"archive-under-the-scan-root\", \"count\": 3, \"peeked\": true, "
+                + "\"reason\": \"read\" } ]");
+        Path current = report("jsonCurrent",
+                "[ { \"class\": \"archive-under-the-scan-root\", \"count\": 3, \"peeked\": true, "
+                + "\"reason\": \"read\" } ]",
+                "{ \"deny\": [ \"deny Net\" ] }");
+        Path vPredates = tmp.resolve("predates.verdict.json");
+        Path vCurrent = tmp.resolve("current.verdict.json");
+        Run rPredates = runCli("gate", "--report", predates.toString(),
+                "--policy", policy("jsonp1.policy", "deny Exec\n").toString(),
+                "--gate-json", vPredates.toString());
+        Run rCurrent = runCli("gate", "--report", current.toString(),
+                "--policy", policy("jsonp2.policy", "deny Exec\n").toString(),
+                "--gate-json", vCurrent.toString());
+        assertEquals(2, rPredates.exit(), rPredates.stderr());
+        assertEquals(2, rCurrent.exit(), rCurrent.stderr());
+        assertEquals(Files.readString(vPredates), Files.readString(vCurrent),
+            "the two causes differ only in a stderr SENTENCE — the --gate-json document must be byte-"
+            + "identical, with no new wire key: predates=" + Files.readString(vPredates) + " current="
+            + Files.readString(vCurrent));
+    }
+
+    /**
+     * ⟨0.34⟩ CONTROL 4 — BOTH READERS AGREE, IN-PROCESS. {@code gate --report} and the descriptive verbs'
+     * {@code printNote} hedge SHARE the identical {@link Query#unaskedRules}/{@link Query#specPredates}
+     * pair (ONE helper, per the ⟨0.33⟩ design doc — this engine has no second copy the way rust/ts do), so
+     * there is no drift to test for at the computation layer. What the descriptive-verb ROUTE cannot
+     * exercise is the CLI wiring: {@code --policy} on `blindspots`/`show`/`where`/`map`/`diff`/`tour`/
+     * `impact`/`path`/`reachable`/`containment`/`callers` is accepted syntactically but never forwarded
+     * into {@code AnalysisState.ctx().denyRules} (only `gate`/`whatif`/`fix`/`fix-gate`/`unverified`/
+     * `gains` thread `policyFlag` through) — MEASURED against the installed jar: {@code blindspots
+     * --report <predates-report> --policy <p> --strict} prints the bare "no Unknown sources" line, never
+     * reaching {@link Query.ReportCompleteness#printNote}'s cause list at all, on EITHER phrasing. That is
+     * a PRE-EXISTING gap in this rung's plumbing (⟨0.33⟩ shipped {@code unaskedRules} on
+     * {@code ReportCompleteness} generically, but no descriptive verb ever loads a policy to populate it),
+     * not something ⟨0.34⟩ introduces or is scoped to close — reported, not fixed, per this task's brief.
+     *
+     * <p>So this control drives {@link Query.ReportCompleteness#printNote} DIRECTLY, the same way the CLI
+     * would if the wiring existed, and pins the two-sentence choice at the one place both routes actually
+     * share it: the record's own field.
+     */
+    @Test void printNoteChoosesTheSameTwoSentencesGateDoes() throws Exception {
+        var predates = new Query.ReportCompleteness(List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of(), List.of("deny Exec"), true);
+        String predatesOut = printNoteOutput(predates);
+        assertTrue(predatesOut.contains("predates ⟨0.33⟩"),
+            "predates033=true must name the real cause: " + predatesOut);
+        assertFalse(predatesOut.contains("does not cover"),
+            "…and never the misleading ⟨0.33⟩ phrasing: " + predatesOut);
+
+        var current = new Query.ReportCompleteness(List.of(), List.of(), List.of(), List.of(), List.of(),
+                List.of(), List.of("deny Exec"), false);
+        String currentOut = printNoteOutput(current);
+        assertTrue(currentOut.contains("does not cover"),
+            "predates033=false keeps the pre-⟨0.34⟩ sentence verbatim: " + currentOut);
+        assertFalse(currentOut.contains("predates ⟨0.33⟩"), currentOut);
+    }
+
+    private static String printNoteOutput(Query.ReportCompleteness comp) {
+        var buf = new ByteArrayOutputStream();
+        java.io.PrintStream old = System.out;
+        System.setOut(new java.io.PrintStream(buf));
+        try {
+            comp.printNote("so what", "tail");
+        } finally {
+            System.setOut(old);
+        }
+        return buf.toString();
+    }
+
+    /**
+     * ⟨0.34⟩ A SINGLE ≥⟨0.33⟩ CONTRIBUTOR KEEPS THE ORIGINAL SENTENCE, even beside a sibling report that
+     * predates the rung — "old-caused" only when EVERY contributing report predates ⟨0.33⟩. Two reports
+     * under ONE locator (a shared directory, matching `<prefix>.<module>.jvm.json`): one from before the
+     * rung (no `scannedUnder`), one that genuinely scanned under a DIFFERENT deny set (`deny Net`, so it
+     * too fails to cover `deny Exec`). For the second report the omission is REAL — it could have recorded
+     * covering `deny Exec` and did not — so the merged answer must not say "before ⟨0.33⟩".
+     */
+    @Test void aSingleCurrentContributorKeepsTheOriginalSentence() throws Exception {
+        Path dir = Files.createDirectories(tmp.resolve("mixed"));
+        Files.writeString(dir.resolve("mix.a.jvm.json"), "{\n"
+                + "  \"candor\": { \"version\": \"t\", \"toolchain\": \"jdk-21\", \"spec\": \"0.31\" },\n"
+                + "  \"packages\": [ \"com.x\" ],\n"
+                + "  \"analyzed\": { \"count\": 2, \"digest\": \"0000000000000000\" },\n"
+                + "  \"excluded\": [ { \"class\": \"a-old\", \"count\": 1, \"peeked\": true, "
+                + "\"reason\": \"read\" } ],\n"
+                + "  \"functions\": []\n"
+                + "}\n");
+        Files.writeString(dir.resolve("mix.b.jvm.json"), "{\n"
+                + "  \"candor\": { \"version\": \"t\", \"toolchain\": \"jdk-21\", \"spec\": \"0.33\" },\n"
+                + "  \"packages\": [ \"com.x\" ],\n"
+                + "  \"analyzed\": { \"count\": 2, \"digest\": \"0000000000000000\" },\n"
+                + "  \"excluded\": [ { \"class\": \"b-current\", \"count\": 1, \"peeked\": true, "
+                + "\"reason\": \"read\" } ],\n"
+                + "  \"scannedUnder\": { \"deny\": [ \"deny Net\" ] },\n"
+                + "  \"functions\": []\n"
+                + "}\n");
+        Run r = runCli("gate", "--report", dir.resolve("mix").toString(),
+                       "--policy", policy("mixed.policy", "deny Exec\n").toString());
+        assertEquals(2, r.exit(), r.stdout() + r.stderr());
+        assertTrue(r.stderr().contains("does not cover"),
+            "one ≥⟨0.33⟩ contributor (`mix.b`) is enough: for it the gap is real, so the merged message "
+            + "must keep the ⟨0.33⟩ sentence: " + r.stderr());
+        assertFalse(r.stderr().contains("before ⟨0.33⟩"),
+            "…and must NOT claim every contributor predates the rung when one genuinely does not: "
+            + r.stderr());
     }
 
     /**

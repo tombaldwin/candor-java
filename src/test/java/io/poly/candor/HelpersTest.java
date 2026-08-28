@@ -841,4 +841,33 @@ class HelpersTest {
         assertEquals("2001:db8::1", Literals.hostPart("2001:db8::1"));
         assertEquals("::1", Literals.hostPart("::1"));
     }
+
+    /** ⟨0.34⟩ {@link Query#specPredates} orders the spec LADDER numerically, never lexicographically —
+     *  {@code "0.9"} vs {@code "0.33"} INVERTS under a plain string compare ({@code "0.9".compareTo(
+     *  "0.33")} is positive; 9 &lt; 33 is the reading the ladder means). Mirrors the identical trap
+     *  candor-rust/candor-ts's own ⟨0.34⟩ unit tests pin. */
+    @Test
+    void specPredatesOrdersTheLadderNumerically() {
+        assertTrue(Query.specPredates("0.32", "0.33"));
+        assertTrue(Query.specPredates("0.9", "0.33"));      // NOT a lexicographic trap: 9 < 33 numerically too
+        assertFalse(Query.specPredates("0.33", "0.33"));
+        assertFalse(Query.specPredates("0.34", "0.33"));
+        assertFalse(Query.specPredates("1.0", "0.33"));
+        assertFalse(Query.specPredates("0.100", "0.33"));   // 100 > 33, not a string-prefix accident
+    }
+
+    /** ⟨0.34⟩ Absent/garbled input answers PREDATES (`true`) — the same "cannot answer ⇒ treat as old"
+     *  direction {@code ReportMeta}/{@code Envelope.spec} already commits to elsewhere in this family.
+     *  MESSAGE-ONLY: this can only ever pick which of two already-true sentences prints, never a verdict. */
+    @Test
+    void specPredatesFailsClosedOnUnparseableInput() {
+        assertTrue(Query.specPredates("", "0.33"));
+        assertTrue(Query.specPredates(null, "0.33"));
+        assertTrue(Query.specPredates("not-a-version", "0.33"));
+        assertTrue(Query.specPredates("0.", "0.33"));
+        assertTrue(Query.specPredates("0.33.1", "0.33"));   // an extra segment does not parse as the ladder
+        // an unparseable FLOOR answers false (defensive; this engine only ever calls it with "0.33") —
+        // never claim "predates" against a floor that is itself meaningless.
+        assertFalse(Query.specPredates("0.32", "not-a-version"));
+    }
 }

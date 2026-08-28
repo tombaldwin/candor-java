@@ -1762,11 +1762,23 @@ public final class Query {
                                *  --strict` printed "no deny/pure boundary crossings ✓" over the same
                                *  bytes. Computed by the SAME helper the gate calls, so the two cannot
                                *  disagree about which rules went unasked. */
-                              List<String> unaskedRules) {
+                              List<String> unaskedRules,
+                              /** ⟨0.34⟩ NAMES THE CAUSE, NEVER MOVES THE VERDICT. {@code true} when
+                               *  {@link #unaskedRules} is non-empty AND every report that contributed to it
+                               *  predates ⟨0.33⟩ ({@link Query#specPredates} against {@code "0.33"}) — i.e.
+                               *  the gap is fully explained by producers that could not yet have WRITTEN
+                               *  {@code scannedUnder} at all, never by one that ran under a genuinely
+                               *  different or narrower deny set. A SINGLE ≥⟨0.33⟩ contributing report is
+                               *  enough to keep this {@code false}, because for that report the omission is
+                               *  real: it COULD have recorded covering this run's rules and did not. Set by
+                               *  {@link #reportCompleteness}, off the SAME per-report pass that builds
+                               *  {@link #unaskedRules} — a second pass over the same files is how this fact
+                               *  drifts from the one it is compared against. */
+                              boolean unaskedRulesPredates033) {
         /** Nothing to disclose — for a caller with no report locator at all (a unit test driving a verb
          *  over an in-memory entry list). Every channel below is a no-op on it. */
         static final ReportCompleteness NONE = new ReportCompleteness(
-                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), false);
 
         /** Is the universe this verb reasoned over known-partial in the way the GATE also refuses over?
          *  {@code judgedNothing} and {@code noManifest} are deliberately NOT arms — see {@link #mustHedge}. */
@@ -1846,7 +1858,18 @@ public final class Query {
             List<String> up = new ArrayList<>(unpeeked); up.addAll(other.unpeeked);
             List<String> ur = new ArrayList<>(unaskedRules);
             for (String x : other.unaskedRules) if (!ur.contains(x)) ur.add(x);
-            return new ReportCompleteness(u, j, r, n, o, up, ur);
+            // ⟨0.34⟩ computed BEFORE the union above is consulted further: a plain `&&`/`||` over the two
+            // flags would let one side's answer, computed against ITS OWN (possibly empty) `unaskedRules`,
+            // veto or paper over the other side's — on a MERGED list neither flag was computed against. A
+            // side that contributed NOTHING (`unaskedRules` empty, flag `false` by construction) must not
+            // move the merged answer either, so the four cases are handled by which side(s) actually had
+            // something to say, not a blanket AND.
+            boolean selfHas = !unaskedRules.isEmpty(), otherHas = !other.unaskedRules.isEmpty();
+            boolean urp = !selfHas && !otherHas ? false
+                    : selfHas && !otherHas ? unaskedRulesPredates033
+                    : !selfHas ? other.unaskedRulesPredates033
+                    : unaskedRulesPredates033 && other.unaskedRulesPredates033;
+            return new ReportCompleteness(u, j, r, n, o, up, ur, urp);
         }
 
         /** What {@code gate --report} does over THESE SAME BYTES, as one sentence for the note's tail — a
@@ -1971,9 +1994,24 @@ public final class Query {
             // `⚠ INCOMPLETE — the report(s) under this locator ,`. That was MEASURED on the ⟨0.32⟩ cause
             // and repaired; adding a fifth cause without its sentence is the same defect, and the reason
             // it is easy to miss twice is that `incomplete()` and this list are two different lists.
-            if (!unaskedRules.isEmpty())
-                causes.add("a peek bounded by a deny set that does not cover " + unaskedRules.size()
-                        + " rule(s) of this policy (" + String.join(", ", unaskedRules) + ")");
+            //
+            // ⟨0.34⟩ TWO SENTENCES FOR ONE CAUSE, chosen by `unaskedRulesPredates033` — SAME `incomplete()`
+            // trigger, SAME exit posture, ONLY this clause's wording moves. The ⟨0.33⟩ text ("does not
+            // cover") is TRUE of a ≥⟨0.33⟩ producer that genuinely scanned under a different deny set, and
+            // MISLEADING of a report that predates ⟨0.33⟩ entirely: such a producer never had a
+            // `scannedUnder` key to hold ANY deny set in, so "does not cover" reads as "chose a different
+            // policy" where the truth is "could not yet record one". The `else` arm is character-for-
+            // character the pre-⟨0.34⟩ text — the control this rung ships with.
+            if (!unaskedRules.isEmpty()) {
+                if (unaskedRulesPredates033)
+                    causes.add("a peek that predates ⟨0.33⟩ — before a producing scan recorded the deny "
+                            + "set it ran under — and so cannot say whether " + unaskedRules.size()
+                            + " rule(s) of this policy (" + String.join(", ", unaskedRules)
+                            + ") were ever asked");
+                else
+                    causes.add("a peek bounded by a deny set that does not cover " + unaskedRules.size()
+                            + " rule(s) of this policy (" + String.join(", ", unaskedRules) + ")");
+            }
             String head = causes.isEmpty() ? "" : "declare " + String.join(", and ", causes);
             if (!noManifest.isEmpty()) {
                 String nm = "include " + noManifest.size() + " report(s) carrying NO `analyzed` manifest "
@@ -2033,6 +2071,11 @@ public final class Query {
         // exists for). DEDUPLICATED across the set: one missing rule reported once per report is a list an
         // operator scrolls past, and the set is a locator's, not a file's.
         List<String> unask = new ArrayList<>();
+        // ⟨0.34⟩ did ANY report ≥⟨0.33⟩ ALSO fail to cover a rule that ends up in `unask`? One such report
+        // is enough: for it the gap is real (it could have recorded covering this run's rules and did
+        // not), so a message naming "before ⟨0.33⟩ producers recorded their deny set" would be false of it
+        // even if every OTHER contributing report predates the rung.
+        boolean unaskFromCurrentSpec = false;
         for (String r : set) {
             // ⟨0.28⟩ ABSENT is not UNREADABLE. Locator rule 2 returns a `.json` path VERBATIM whether or
             // not it exists, and a report that is not there is the ordinary pre-scan case every caller
@@ -2076,7 +2119,12 @@ public final class Query {
             // ⟨0.33⟩ PER REPORT, exactly as the gate route does it: `scannedUnder` and `peeked` are facts
             // about ONE producing scan, so a union would let a policy-scanned report's deny set answer for
             // a no-policy sibling's peeked classes.
-            for (String u : unaskedRules(env)) if (!unask.contains(u)) unask.add(u);
+            //
+            // ⟨0.34⟩ …and this report's own declared spec, read from the SAME `env` rather than a second
+            // parse of the file — see `Envelope.spec`'s doc for why.
+            List<String> missingHere = unaskedRules(env);
+            if (!missingHere.isEmpty() && !specPredates(env.spec(), "0.33")) unaskFromCurrentSpec = true;
+            for (String u : missingHere) if (!unask.contains(u)) unask.add(u);
             // ⟨0.31⟩ adopt the PRODUCER's partner provenance so the shared verdict writer emits the same
             // bytes on this route as the scan route did. Copied, never recomputed — §3.1's byte-equality
             // is the acceptance test, and the first attempt at this disclosure was reverted for computing
@@ -2087,7 +2135,8 @@ public final class Query {
                 AnalysisState.ctx().netPartnersUsed.addAll(env.netPartners().hosts());
             }
         }
-        return new ReportCompleteness(un, jn, bad, nm, oos, unpk, unask);
+        return new ReportCompleteness(un, jn, bad, nm, oos, unpk, unask,
+                !unask.isEmpty() && !unaskFromCurrentSpec);
     }
 
     /** The report a DESCRIPTIVE verb is answering over: the LOCATOR (which may name a report SET, §2 "a
@@ -3671,7 +3720,15 @@ public final class Query {
                      *  condition rather than bolted beside it: the effect sets of ANALYZED code are
                      *  policy-independent, so only a class the peek actually READ carries an answer the
                      *  producer's deny set bounded. ⟨0.32⟩ owns the classes it did NOT read. */
-                    boolean anyPeeked) {}
+                    boolean anyPeeked,
+                    /** ⟨0.34⟩ this report's own declared {@code candor.spec} — verbatim, {@code ""} when
+                     *  absent or unreadable (a legacy bare-array report, or a v0.2+ envelope with no
+                     *  {@code spec} key). NEVER a verdict input: {@link #specPredates} uses it only to pick
+                     *  which of two already-true sentences names the ⟨0.33⟩ cross-policy cause, because a
+                     *  report's age cannot license certification — SPEC ⟨0.34⟩ ruled that out explicitly,
+                     *  since a pre-⟨0.33⟩ producer's peek was still bounded by SOME policy nobody here can
+                     *  see, so refusing is correct either way. */
+                    String spec) {}
 
     /**
      * ⟨0.32⟩ ONE RULE FOR EVERY §2 ENVELOPE FIELD THIS READER TOUCHES: absent takes the default (⟨0.26⟩'s
@@ -3729,6 +3786,13 @@ public final class Query {
         io.poly.candor.model.Report.NetPartners netPartners = null;
         int analyzed = 0;
         String pkg = null;                 // §2 `package`/`packages` — for the judged-nothing advisory
+        // ⟨0.34⟩ the report's own declared `candor.spec` — verbatim, empty for a legacy bare-array report
+        // or a v0.2+ envelope with no `spec` key. Read LENIENTLY, unlike `unanalyzed`/`outOfScope`/
+        // `scannedUnder` above and below: this is a MESSAGE-ONLY fact ({@link #specPredates} names the
+        // real cause of the ⟨0.33⟩ cross-policy refusal, never moves a verdict), so a garbled value must
+        // not impeach a document over a field the refusal logic never reads — it just falls back to the
+        // same "cannot answer ⇒ predates" reading an absent key gets.
+        String spec = "";
         JsonArray fns = null;
         JsonObject envObj = null;          // the §2 envelope, or null for the legacy v0.1 bare array
         if (root.isJsonObject()) {
@@ -3741,6 +3805,11 @@ public final class Query {
                 for (JsonElement e : o.getAsJsonArray("packages"))
                     if (e.isJsonPrimitive()) ps.add(e.getAsString());
                 if (!ps.isEmpty()) pkg = String.join("+", ps);
+            }
+            if (o.has("candor") && o.get("candor").isJsonObject()) {
+                JsonElement sv = o.getAsJsonObject("candor").get("spec");
+                if (sv != null && sv.isJsonPrimitive() && sv.getAsJsonPrimitive().isString())
+                    spec = sv.getAsString();
             }
             if (o.has("analyzed") && o.get("analyzed").isJsonObject()) {
                 JsonObject a = o.getAsJsonObject("analyzed");
@@ -4032,7 +4101,7 @@ public final class Query {
         }
         return new Envelope(analyzed, unanalyzed, uncovered, raw, pkg,
                 Loader.claimsToHaveJudgedNothing(envObj, fns), Loader.hasNoManifest(envObj), outOfScope,
-                netPartners, unpeeked, scannedUnder, anyPeeked);
+                netPartners, unpeeked, scannedUnder, anyPeeked, spec);
     }
 
     /**
@@ -4089,6 +4158,49 @@ public final class Query {
         for (String r : Policy.canonicalDenySet(AnalysisState.ctx().denyRules))
             if (!theirs.contains(r)) missing.add(r);
         return missing;
+    }
+
+    /**
+     * ⟨0.34⟩ Parse a candor-spec contract version ({@code "0.33"}, {@code "0.9"}) as {@code [major, minor]}
+     * FOR ORDERING ONLY — the spec ladder is major.minor (SPEC has no patch component; that lives on the
+     * engine/crate version instead, see {@link #reportVersion}). {@code null} on anything that does not
+     * parse: a stray extra segment ({@code "0.33.1"}), trailing garbage ({@code "0."}), or the empty string
+     * {@link Envelope#spec} carries for a pre-spec-field report.
+     */
+    private static int[] parseSpecLadder(String spec) {
+        if (spec == null) return null;
+        String[] parts = spec.trim().split("\\.", -1);
+        if (parts.length != 2) return null;
+        try {
+            return new int[]{Integer.parseInt(parts[0]), Integer.parseInt(parts[1])};
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /**
+     * ⟨0.34⟩ Does {@code spec} sit STRICTLY BEFORE {@code floor} on the spec ladder? Compared NUMERICALLY
+     * component by component, NEVER lexicographically — {@code "0.9"} vs {@code "0.33"} INVERTS under a
+     * plain string compare ({@code "0.9".compareTo("0.33")} is positive; {@code 9 < 33}, and the numeric
+     * reading is the one the ladder means). Unparseable input — including the empty string a pre-spec-field
+     * report reads as ({@link Envelope#spec}) — answers {@code true}: the same "absent ⇒ predates" reading
+     * this engine already gives every other version-shaped envelope field.
+     *
+     * <p><b>MESSAGE-ONLY, NEVER A VERDICT INPUT.</b> SPEC ⟨0.34⟩ explicitly ruled OUT a version floor for
+     * the VERDICT: a report's age cannot license certification, because a pre-⟨0.33⟩ producer's peek was
+     * still bounded by SOME policy nobody here can see, so refusing is correct either way the age falls.
+     * What the age licenses is naming the actual cause in a REMEDY sentence — "this report predates
+     * ⟨0.33⟩, before producers recorded their deny set" is a true, actionable statement a report that
+     * simply scanned under a narrower or different policy cannot make. Callers must not let this method's
+     * answer move an exit code, {@code ok}, or any {@code --gate-json} field — only which of two
+     * already-true sentences a human channel prints.
+     */
+    static boolean specPredates(String spec, String floor) {
+        int[] f = parseSpecLadder(floor);
+        if (f == null) return false;
+        int[] s = parseSpecLadder(spec);
+        if (s == null) return true;
+        return s[0] < f[0] || (s[0] == f[0] && s[1] < f[1]);
     }
 
     /**
@@ -4279,6 +4391,11 @@ public final class Query {
         // name several reports and one missing rule reported N times is a list an operator scrolls past;
         // code-point sorted for the same reason `zeroMatch` is.
         java.util.TreeSet<String> unasked = new java.util.TreeSet<>(BY_CODE_POINT);
+        // ⟨0.34⟩ did ANY gated report ≥⟨0.33⟩ ALSO fail to cover a rule that ends up in `unasked`? Mirrors
+        // `reportCompleteness`'s `unaskFromCurrentSpec` — this route is that method's independently-coded
+        // twin (`gate --report`'s own reader), so the two must keep computing the identical predicate
+        // rather than drift into two answers for one SPEC §2 ⟨0.34⟩ fact.
+        boolean unaskedFromCurrentSpec = false;
         Map<String, List<String>> rawWhy = new HashMap<>();
         List<String> judgedNothing = new ArrayList<>();
         // ⟨0.28⟩ SPEC §2's THIRD ROW, kept apart from the list above on THIS route too — the note below
@@ -4307,7 +4424,12 @@ public final class Query {
             // producing scan, and a locator naming a policy-scanned report beside a no-policy sibling
             // would, unioned, let the first one's deny set answer for the second one's peeked classes.
             // Same reason §2.2 makes the multi-report verdict `hash`-keyed rather than name-keyed.
-            unasked.addAll(unaskedRules(env));
+            //
+            // ⟨0.34⟩ …and this report's own declared spec, read from the SAME `env` rather than a second
+            // parse — see `Envelope.spec`'s doc.
+            List<String> missingHere = unaskedRules(env);
+            if (!missingHere.isEmpty() && !specPredates(env.spec(), "0.33")) unaskedFromCurrentSpec = true;
+            unasked.addAll(missingHere);
             // ⟨0.31⟩ adopt the PRODUCER's partner provenance here too. TWO envelope consumers exist on
             // this verb's paths and the disclosure has to be adopted at BOTH, or the route that skipped it
             // emits a verdict missing a key the other has — which is the byte-equality failure this whole
@@ -4528,13 +4650,32 @@ public final class Query {
             // this hole: the operator DID scan with a policy, and got a report whose peek answered a
             // different question. A stale user-facing message hid two defects in ⟨0.29⟩, so the sentence
             // is checked against SPEC §2 ⟨0.33⟩ and not merely written once.
-            System.err.println("candor gate: NOT certified — this report's peek was bounded by the deny "
-                    + "set its producing scan held, and that set does not cover " + unasked.size()
-                    + " rule(s) of this policy: " + String.join(", ", unasked) + ". The excluded files it "
-                    + "reports as read were searched for OTHER effects, so an empty finding there is not "
-                    + "an answer to this question, and the verdict is INCOMPLETE rather than a pass. "
-                    + "Re-run the producing scan under THE SAME policy this gate is applying "
-                    + "(candor <dir> --policy <file> --json <report>) — not merely under a policy.");
+            //
+            // ⟨0.34⟩ TWO SENTENCES, ONE CAUSE, SAME VERDICT AND EXIT — `unaskedFromCurrentSpec` (computed
+            // above, per report, never re-derived here) picks the wording. When every contributing report
+            // predates ⟨0.33⟩ the "does not cover" framing names the wrong culprit — the producer never
+            // had a way to WRITE `scannedUnder` at all, so it did not "hold" a narrower deny set, it simply
+            // predates the field. A single ≥⟨0.33⟩ contributor is enough to fall back to the `else`, which
+            // is character-for-character the pre-⟨0.34⟩ text — the control this rung ships with.
+            if (!unaskedFromCurrentSpec) {
+                System.err.println("candor gate: NOT certified — this report was produced before ⟨0.33⟩, "
+                        + "when a producing scan did not yet record the deny set its peek ran under "
+                        + "(`scannedUnder`), so it cannot say whether " + unasked.size()
+                        + " rule(s) of this policy were ever asked: " + String.join(", ", unasked)
+                        + ". The excluded files it reports as read may have been searched for OTHER "
+                        + "effects, or for none at all — there is no way to tell from a report this old — "
+                        + "so the verdict is INCOMPLETE rather than a pass. Re-scan with a 0.33+ engine "
+                        + "under THE SAME policy this gate is applying "
+                        + "(candor <dir> --policy <file> --json <report>) — not merely under a policy.");
+            } else {
+                System.err.println("candor gate: NOT certified — this report's peek was bounded by the deny "
+                        + "set its producing scan held, and that set does not cover " + unasked.size()
+                        + " rule(s) of this policy: " + String.join(", ", unasked) + ". The excluded files it "
+                        + "reports as read were searched for OTHER effects, so an empty finding there is not "
+                        + "an answer to this question, and the verdict is INCOMPLETE rather than a pass. "
+                        + "Re-run the producing scan under THE SAME policy this gate is applying "
+                        + "(candor <dir> --policy <file> --json <report>) — not merely under a policy.");
+            }
             return 2;
         }
         return 0;

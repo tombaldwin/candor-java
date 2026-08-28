@@ -99,6 +99,27 @@ public final class Query {
     /** The verbs that honour `--policy` (SPEC §3.3.1): whatif/fix/fix-gate/unverified. */
     static final Set<String> POLICY_VERBS = Set.of("whatif", "fix", "fix-gate", "unverified");
 
+    /** ⟨0.34⟩ BACKLOG "java `--policy` accept-and-drop": the verbs with NO policy-relative verdict at
+     *  all. Each is purely descriptive — it answers from the report's own fields, and none of §3.1's
+     *  PINNED JSON shapes (`show`/`where`/`callers`/`map`/`containment`/`reachable`/`path`/`impact`/
+     *  `blindspots`/`tour`) or `diff`'s carries a policy-derived key; `rewire` (§3.2) is the structural
+     *  de-wiring check, run ALONGSIDE the policy gate, never through it. The shared parser above still
+     *  ACCEPTS `--policy` on every verb (the §3.3.1 grammar line), but before this fix these twelve
+     *  parsed it into `policyFlag` and then never read the variable again — accepted with no report at
+     *  all, while dropped, the config-disclosure class inverted. `gains` has the identical shape (a
+     *  report-reading verb with no policy hook) and ALREADY rejects `--policy` with its own tailored
+     *  message ({@link #gains2}); this set gets the same ⟨0.18⟩ treatment ("a typo'd or a not-applicable
+     *  flag stays an exit-2 error … never a silent swallow", SPEC §3.3.1) with one shared message,
+     *  because the underlying reason — no policy-dependent field anywhere in the pinned shape — is the
+     *  same for all twelve, not a coincidence of one blanket answer. Live-swept against rust/ts/swift
+     *  2026-08-28: rust and ts have the identical accept-and-drop bug on this same set (`diff`/`rewire`
+     *  already correctly reject in rust; ts does not expose `rewire`); swift exposes only `tour`/`path`
+     *  from this set and already rejects `--policy` on both (an unrecognised flag, `fixDie`). Reported,
+     *  not fixed, in the sibling repos — this file owns candor-java only. */
+    static final Set<String> DESCRIPTIVE_NO_POLICY = Set.of(
+            "show", "where", "callers", "map", "diff", "containment", "reachable",
+            "path", "impact", "blindspots", "tour", "rewire");
+
     /** Each verb's CANONICAL positional arity (SPEC §3.3.1 verb-args), the count of its OWN args — NOT the
      *  report (a flag, never a positional). This is the ARITY GATE for the deprecated leading-report /
      *  trailing-policy peels: an alias is claimed only from a SURPLUS positional (count &gt; arity), never
@@ -557,6 +578,23 @@ public final class Query {
                     pos.add(args[i]);
                 }
             }
+        }
+
+        // ⟨0.34⟩ BACKLOG "java `--policy` accept-and-drop": `--policy` is accepted (above) for every verb —
+        // the §3.3.1 grammar line requires that — but a DESCRIPTIVE verb (see #DESCRIPTIVE_NO_POLICY) has
+        // no policy-relative verdict to give it: none of §3.1's pinned JSON shapes carries a policy-derived
+        // key, so before this check the flag parsed into `policyFlag` and was never read again — the user
+        // passes a policy, gets an answer computed WITHOUT it, and nothing discloses the difference. `gains`
+        // already refuses this shape with its own tailored message (below); this is the same ⟨0.18⟩ rule
+        // ("a not-applicable flag is an exit-2 error, never a silent swallow") for its eleven siblings.
+        // FIRST, before any report resolution/loading — a usage error should not pay for work it discards.
+        if (policyFlag != null && DESCRIPTIVE_NO_POLICY.contains(cmd)) {
+            System.err.println("candor " + cmd + ": unknown flag `--policy` — `" + cmd + "` is a descriptive "
+                    + "query with no policy-relative verdict (its SPEC §3.1 JSON shape carries no "
+                    + "policy-derived field); apply a policy to this report with `candor gate --report "
+                    + "<locator> --policy <file>`, or use `whatif`/`fix`/`fix-gate`/`unverified` for a "
+                    + "policy-relative pre-edit check.");
+            return 2;
         }
 
         // ── DEPRECATED-ALIAS DETECTION (back-compat, §3.3.1) ────────────────────────────────────────────

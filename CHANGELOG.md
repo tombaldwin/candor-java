@@ -8,6 +8,28 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ `--policy` is now a usage error (exit 2) on twelve descriptive/comparative verbs that never
+  honoured it: `show`/`where`/`callers`/`map`/`diff`/`containment`/`reachable`/`path`/`impact`/
+  `blindspots`/`tour`/`rewire`.** BACKLOG "candor-java: `--policy` is ACCEPTED and silently ignored on
+  every descriptive verb": the shared arg parser accepted `--policy <file>` on every verb (the §3.3.1
+  grammar line requires that), but these twelve never forwarded it into `AnalysisState.ctx().denyRules`
+  — verified at HEAD, `show`/`where`/`blindspots`/… produced BYTE-IDENTICAL output with and without
+  `--policy`, no diagnostic either way. None of §3.1's pinned JSON shapes for these verbs carries a
+  policy-derived field (checked each one against SPEC.md, not assumed), so there is nothing for
+  `--policy` to do here — the same shape `gains` already carries and already refuses with its own
+  message. This applies the identical ⟨0.18⟩ rule ("a not-applicable flag is an exit-2 error, never a
+  silent swallow") to its eleven siblings, naming `gate --report`/`whatif`/`fix`/`fix-gate`/`unverified`
+  as the policy-relative alternatives. **Control, falsified against the pre-fix binary**: every verb
+  that already threads `--policy` (`gains`, `whatif`, `fix`, `fix-gate`, `unverified`, `gate`) is
+  byte-identical pre- and post-fix, with and without `--policy`; every one of the twelve newly-rejecting
+  verbs is byte-identical to the pre-fix binary when `--policy` is ABSENT (only the `--policy`-present
+  case changes, from a silent wrong answer to a loud refusal). **Four-engine sweep** (read-only; those
+  repos are owned by other agents, reported not fixed): candor-rust and candor-ts have the IDENTICAL
+  accept-and-drop bug on the same eleven descriptive verbs — rust's own `diff`/`rewire` already reject
+  loud (the pattern this fix follows), ts's `gains` already rejects but `diff` does not (ts has no
+  `rewire`); candor-swift exposes only `tour`/`path`/`gains` of this set and already rejects `--policy`
+  on all three (an unrecognised flag) — swift was already conformant on its narrower surface.
+
 - **R58 (candor-spec SOUNDNESS.md) measured and CLOSED: separate-file annotation-processor codegen
   (Dagger/Room/AutoValue/MapStruct-style) is sound, not merely unmeasured.** Built and scanned a real
   `dagger-compiler` 2.51.1 fixture — a `@Provides` method doing a genuine filesystem write, exposed

@@ -8,6 +8,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.reflect.TypeToken;
 import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.ConstantDynamic;
 import org.objectweb.asm.Handle;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
@@ -4063,6 +4064,8 @@ public class Candor {
                     clinitEdge(id, fin.owner);
                 } else if (insn instanceof InvokeDynamicInsnNode idin) {
                     handleInvokeDynamic(ctx, s, idin);
+                } else if (insn instanceof LdcInsnNode ldc && ldc.cst instanceof ConstantDynamic condy) {
+                    handleConstantDynamic(ctx, s, condy);
                 }
             }
         }
@@ -5696,6 +5699,38 @@ public class Candor {
             dir.add(Effect.UNKNOWN);
             ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                     .add(UnknownReason.of(UnknownReason.Kind.INDY, idin.bsm.getOwner().replace('/', '.')));
+        }
+    }
+
+    /** A {@code CONSTANT_Dynamic} (condy) site: ASM surfaces this bytecode form as an
+     *  {@link LdcInsnNode} whose {@code cst} is a {@link ConstantDynamic} — NEVER as an
+     *  {@link InvokeDynamicInsnNode} — so the per-instruction dispatch above, which only ever
+     *  reached {@link #handleInvokeDynamic}, never fired on it at all: a condy `ldc` fell through
+     *  every branch with no edge and no effect, silently. Its bootstrap runs at first resolution
+     *  exactly like an indy's and can perform an arbitrary effect (verified: a hand-built bootstrap
+     *  that execs a subprocess resolved with the exec genuinely firing, while the calling method
+     *  came back with an EMPTY effect set — not {@code Unknown}, not partially resolved, simply
+     *  never touched, so it vanished from {@code functions[]} entirely per §2 rule 3's "absence
+     *  means pure"). {@code javac}/{@code kotlinc}/{@code scalac} do not currently emit condy for
+     *  ordinary source — the realistic vector is ASM-based codegen and bytecode obfuscators, some of
+     *  which reach for condy specifically because it IS an analyzer blind spot elsewhere.
+     *
+     *  <p>Reuses the exact structural/non-structural decision {@link Rules#STRUCTURAL_INDY_BSM}
+     *  already encodes for invokedynamic, rather than a second hand-rolled one: a condy whose
+     *  bootstrap owner is one of the JVM's own factories (notably {@code ConstantBootstraps} —
+     *  {@code nullConstant}, {@code primitiveClass}, {@code enumConstant}, {@code getStaticFinal},
+     *  {@code invoke}, {@code explicitCast}) is precise/inert exactly as the indy case already treats
+     *  that owner, and stays quiet. Any other bootstrap is opaque — it could resolve to anything —
+     *  so it reads honest {@code Unknown} (SPEC §4), never silent-pure. Calibration: reproducing this
+     *  with a bootstrap owner OUTSIDE the allowlist (so the allowlist check, if it ever ran, would
+     *  already say Unknown) still went silent — proving the allowlist was never the cause; this
+     *  branch of the per-instruction dispatch simply never existed. */
+    static void handleConstantDynamic(AnalysisContext ctx, MethodScan s, ConstantDynamic condy) {
+        Handle bsm = condy.getBootstrapMethod();
+        if (bsm != null && !STRUCTURAL_INDY_BSM.contains(bsm.getOwner())) {
+            s.dir.add(Effect.UNKNOWN);
+            ctx.unknownWhy.computeIfAbsent(s.id, k -> new TreeSet<>())
+                    .add(UnknownReason.of(UnknownReason.Kind.INDY, bsm.getOwner().replace('/', '.')));
         }
     }
 

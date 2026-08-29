@@ -210,11 +210,15 @@ final class Rules {
             // co-located Fs literal MASKS it (a gate evasion — the 0.5.27 FileHandler Fs rule without surfacing).
             "java.util.logging.FileHandler");
 
-    /** The JVM's STRUCTURAL invokedynamic bootstrap factories: lambda/method-ref creation, string
+    /** The JVM's STRUCTURAL dynamic-bootstrap factories: lambda/method-ref creation, string
      *  concatenation, record ObjectMethods (equals/hashCode/toString), pattern-switch, and
-     *  constant-dynamic. An indy whose bootstrap is NONE of these is dynamic-language dispatch
-     *  (Groovy `IndyInterface`, JRuby, …) — opaque like reflection, so it raises Unknown rather than
-     *  going silent-pure. */
+     *  constant-dynamic (`ConstantBootstraps`'s own condy factories — nullConstant, primitiveClass,
+     *  enumConstant, getStaticFinal, invoke, explicitCast). Shared by BOTH bootstrap-bearing bytecode
+     *  forms ASM exposes — {@code Candor#handleInvokeDynamic} for an {@code invokedynamic} site, and
+     *  {@code Candor#handleConstantDynamic} for a {@code CONSTANT_Dynamic} `ldc` — ONE decision, not
+     *  two hand-rolled ones that could disagree. A bootstrap that is none of these is opaque dispatch
+     *  (Groovy `IndyInterface`, JRuby, an obfuscator's own condy factory, …) — like reflection, so it
+     *  raises Unknown rather than going silent-pure. */
     static final Set<String> STRUCTURAL_INDY_BSM = Set.of(
             "java/lang/invoke/LambdaMetafactory",
             "java/lang/invoke/StringConcatFactory",

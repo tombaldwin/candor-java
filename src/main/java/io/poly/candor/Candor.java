@@ -5578,6 +5578,31 @@ public class Candor {
             Frame<ProvValue> cf = provFrames[mn.instructions.indexOf(idin)];
             for (ProvValue a : indyArgs(cf, idin)) reentryEdge(id, a, C_TOSTRING);
         }
+        // RECORD ObjectMethods REENTRY: a record's compiler-generated equals/hashCode/toString is a
+        // near-empty body whose ONE instruction is this indy — the per-component comparison/combine/
+        // format runs INSIDE java.lang.runtime.ObjectMethods' bootstrap machinery, not in any bytecode
+        // this method owns. When a component's DECLARED type is a project class with an effectful
+        // equals/hashCode/toString override, that override silently ran with NO edge from here at all:
+        // `rec.equals(other)` / `.hashCode()` / `.toString()` — and every caller up to `main` — read
+        // PURE though the component's override performs a real effect. The exact same shape as the
+        // StringConcatFactory toString-reentry just above (`"x" + obj` -> obj.toString()), and it was
+        // carved OUT of that fix on purpose (the comment below, kept for the crash it still guards
+        // against): the bootstrap's per-component getter Handles are FIELD-kind, whose `desc` is a bare
+        // field descriptor, and idin.name IS the JVM contract name for this call site (`equals`/
+        // `hashCode`/`toString` — see JEP 384 / java.lang.runtime.ObjectMethods), so no name-mapping is
+        // needed. Component TYPE is decoded straight from the getter's field descriptor. `chaTargets`-
+        // backed `reentryTargets` already declines the base cases safely (a `java/lang/String` or
+        // primitive-boxed component, or a component whose override merely calls `super`, contributes
+        // nothing) — so this can only ADD a real reach, never fabricate one.
+        if (idin.bsm != null && idin.bsm.getOwner().equals("java/lang/runtime/ObjectMethods")
+                && (idin.name.equals(C_EQUALS) || idin.name.equals(C_HASHCODE) || idin.name.equals(C_TOSTRING))) {
+            for (Object a : idin.bsmArgs) {
+                if (a instanceof Handle h && h.getTag() == Opcodes.H_GETFIELD) {
+                    String compType = fieldDescToInternalName(h.getDesc());
+                    if (compType != null) reentryEdgeByType(id, compType, idin.name, true);
+                }
+            }
+        }
         // Lambdas & method refs: the functional-interface factory's impl method (a project
         // `lambda$…` synthetic, or a referenced method) carries the body's effects. Edge to
         // it so they propagate here — else passing an effectful lambda looks pure.
@@ -6887,9 +6912,28 @@ public class Candor {
      *  in-scan CHA and skips the dependency join, for a sink whose argument is NOT provably the value whose
      *  contract runs (see {@link #comparesArgZero}). */
     static boolean reentryEdge(String callerId, ProvValue argVal, String contract, boolean crossBoundary) {
-        if (argVal == null) return false;
+        return argVal != null && reentryEdgeByType(callerId, argVal.declType, contract, crossBoundary);
+    }
+
+    /** A FIELD descriptor's object internal name (`Lfoo/Bar;` -> `foo/Bar`), or null for a primitive/array
+     *  field — those have no `equals`/`hashCode`/`toString` OVERRIDE to reenter (a primitive component
+     *  runs no user code; an array component's contract methods are Object's identity-based defaults,
+     *  which reentryTargets already declines via its `java/lang/Object`-yields-nothing base case, but a
+     *  bare array descriptor isn't even a valid CHA input, so decline it here rather than downstream). */
+    static String fieldDescToInternalName(String desc) {
+        if (desc == null || desc.isEmpty() || desc.charAt(0) != 'L' || !desc.endsWith(";")) return null;
+        return desc.substring(1, desc.length() - 1);
+    }
+
+    /** {@link #reentryEdge}, taking the DECLARED TYPE directly rather than a dataflow {@link ProvValue} —
+     *  for a reentry site that has no stack value to read provenance off, e.g. a record's compiler-
+     *  generated equals/hashCode/toString (see {@link #handleInvokeDynamic}'s ObjectMethods branch),
+     *  whose component types come from the bootstrap's field-getter Handles, not a frame. Identical
+     *  behaviour to the ProvValue form for the same declType — {@link #reentryEdge} now delegates here. */
+    static boolean reentryEdgeByType(String callerId, String declType, String contract, boolean crossBoundary) {
+        if (declType == null) return false;
         boolean resolved = false;
-        for (String t : reentryTargets(argVal.declType, contract)) {
+        for (String t : reentryTargets(declType, contract)) {
             ctx().edges.get(callerId).add(t);
             resolved = true;
         }
@@ -6912,11 +6956,11 @@ public class Candor {
                 : contract.equals(C_HASHCODE) ? "()I"
                 : contract.equals(C_EQUALS) ? "(Ljava/lang/Object;)Z" : null;
         if (depDesc != null) {
-            DepFn d = nearestDepFn(argVal.declType, contract, depDesc);
+            DepFn d = nearestDepFn(declType, contract, depDesc);
             inheritDepFn(callerId, d);
             resolved |= d != null;
         } else {
-            for (DepFn d : nearestDepFnsNamed(argVal.declType, contract)) {
+            for (DepFn d : nearestDepFnsNamed(declType, contract)) {
                 inheritDepFn(callerId, d);
                 resolved = true;
             }

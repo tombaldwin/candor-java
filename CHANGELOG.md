@@ -8,6 +8,56 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- ⚠ **CARDINAL SIN, closed: a record's compiler-generated `equals`/`hashCode`/`toString` silently
+  dropped an effectful component override, all the way up to `main`.** A record's own `equals`/
+  `hashCode`/`toString` body is a single `invokedynamic` into `java.lang.runtime.ObjectMethods`
+  (JEP 384) — the per-component comparison/combine/format runs INSIDE that bootstrap's machinery at
+  runtime, never in bytecode the record's own method owns. `handleInvokeDynamic`'s ObjectMethods branch
+  correctly skipped the bootstrap's per-component `H_GETFIELD` handles (they are field descriptors, not
+  call targets — feeding one to `methodId` would crash the scan), but skipped them WITHOUT reentering
+  the component's own contract method either, so a component whose declared type is a project class with
+  an EFFECTFUL `equals`/`hashCode`/`toString` override ran that override with no edge from the record's
+  generated method at all. MEASURED: `record Rec(Sneaky s)` where `Sneaky.equals/hashCode/toString` each
+  perform `Fs` — `Rec.equals`/`Rec.hashCode`/`Rec.toString` read `inferred: []` (silent-pure), and every
+  caller up through a plain `main` that only calls `rec.toString()` read pure too. The exact shape
+  already closed for `StringConcatFactory`'s implicit `toString()` reentry (`"x" + obj`), left open for
+  records specifically. Fixed by reentering the same contract (`idin.name` — `equals`/`hashCode`/
+  `toString`, read directly off the indy's invoked name, matching JEP 384 exactly) on each component's
+  declared type, decoded from its `H_GETFIELD` handle's field descriptor (`reentryEdgeByType`, a small
+  extraction of `reentryEdge`'s body that takes a declared-type `String` instead of a `ProvValue` — there
+  is no stack value to read provenance off at a bootstrap-args site). Two controls, falsified against the
+  pre-fix binary: a record with pure components (`String`/`int`/a no-override project class) stays
+  entirely pure, no fabrication; the over-charge control — candor-java's own compiled `main`+`test`
+  output, and 388 real third-party jars pulled from the local Maven/Gradle caches — is BYTE-IDENTICAL
+  pre/post-fix except ONE (`error_prone_core-2.50.0.jar`, reproduced twice to rule out a run-to-run
+  flake also seen and ruled out on a second jar in the same sweep): 113 newly-surfaced record-contract
+  methods there, every one landing on `inferred: []` with an honest `invisible: ["com.google.common.
+  collect"]` disclosure rather than a fabricated effect — a Guava-typed record component whose contract
+  methods are outside the classifier's coverage, previously invisible by omission (⇒ an unflagged purity
+  claim per §2 rule 3), now honestly flagged incomplete instead. New regression pair in
+  `SoundnessSweepTest` (`recordContractsReenterEffectfulComponentOverride` /
+  `recordWithPureComponentsStaysPure`); the former fails against the pre-fix engine with exactly the
+  silent-pure `[]` this entry describes. `./gradlew test --rerun-tasks` (855 tests, 0 failures),
+  `test/smoke.sh` (547 passed), `soundness/run.sh` (400 seeds, 0 failed), `ci/self-gate.sh` and
+  `soundness/reentrancy.sh` all pass with the fix in place.
+
+- **`soundness/mutation_probe.sh` (the weekly meta-check that its own soundness battery still CATCHES
+  known bug classes) had silently stopped verifying 4 of its 14 curated mutations** — a prior refactor
+  (the P7 `Candor.java` decomposition) re-indented the guards `exec_pb`/`cha_edges`/`cb_unknown`/
+  `deferred` target (one renamed `ctx()` to a plain `ctx` parameter), moving each mutation's exact-text
+  anchor off the source. The harness's own `apply_patch` correctly refused to guess and reported
+  `PATCH-ERROR`, but the run loop's `continue` on that path never added the mutation to `blindspots`, so
+  the script's exit code (`[ "${#blindspots[@]}" -eq 0 ]`) stayed 0 — `soundness-weekly.yml` reported
+  GREEN while a quarter of the battery's teeth had gone unverified with nothing on any channel saying so.
+  (The underlying guards themselves were confirmed still intact throughout, via the passing 400-seed
+  fuzzer run and the other probes — this was a test-harness gap, not a live regression.) Fixed both
+  halves: re-anchored the four mutations to the current source (`exec_pb` also needed retargeting, not
+  just reindenting — its rule was itself upgraded from an allowlist to a whole-owner-with-denylist stance
+  since the mutation was written, so the old anchor text no longer exists at all), and made a
+  PATCH-ERROR or BUILD-FAIL add to `blindspots` like a MISSED mutation does, since either means the
+  probe it names was never actually exercised this run. Detection rate confirmed 14/14 after the fix
+  (was silently 10/14).
+
 - ⚠ **CARDINAL SIN, closed, reproduced TWICE with distinct artifact types: a peek finding was
   scope-matched ONLY against the excluded declaration's own qualified name, so a policy rule scoped to
   the IN-SCOPE CALLER that reaches it could never match, and the effect was never disclosed.**

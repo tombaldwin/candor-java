@@ -90,6 +90,11 @@ final class AnalysisContext {
     // The java arm of the ⟨0.29⟩ measurement is a source whose class was never built: candor-java reads
     // BYTECODE, so such a file is invisible to it and to the peek alike.
     java.util.List<String> sourceFiles = new java.util.ArrayList<>();
+    // ⟨CHA-widening⟩ per-class DIRECTORY ROOTS this scan actually found `.class` files under (see
+    // Loader#collectClasses), derived from each class's own file path rather than assumed from the scan
+    // root — the peek's source-compile arm needs the REAL root(s) to resolve a project symbol, which the
+    // literal scan-root path is not once classes sit under a nested `build/classes/java/main`.
+    java.util.Set<java.nio.file.Path> classpathRoots = new java.util.LinkedHashSet<>();
     // ⟨0.29⟩ what this scan was pointed AT — so the scope block and the peek's findings can name a file
     // the way the operator does. An absolute path in a report says where the CI runner's checkout was.
     java.nio.file.Path scanRoot;
@@ -326,6 +331,7 @@ final class AnalysisContext {
         allowRules = master.allowRules;                     forbidRules = master.forbidRules;
         onlyRules = master.onlyRules;                       excluded = master.excluded;
         archives = master.archives;                         sourceFiles = master.sourceFiles;
+        classpathRoots = master.classpathRoots;
         unanalyzed = master.unanalyzed;                     peekedClasses = master.peekedClasses;
         transSupersCache = master.transSupersCache;         chaTargetsCache = master.chaTargetsCache;
         annoMetaCache = master.annoMetaCache;               sealedClosedMemo = master.sealedClosedMemo;

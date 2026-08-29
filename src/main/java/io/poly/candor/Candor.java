@@ -699,7 +699,257 @@ public class Candor {
         }
     }
 
-    static void peekExcluded(String policyPath) {
+    /** ⟨CHA-widening⟩ Copies every `.class` file under {@code root} — a directory, or a jar/zip mounted
+     *  the same way {@link Loader#load} reads one — into {@code dest}, preserving its path relative to
+     *  {@code root}. Building material for {@link #applyDispatchWidening}'s scratch union tree: file
+     *  copying only, never a second parse or classifier — the union is then read by THE SAME
+     *  {@link #runScan} entry point every other peek arm uses.
+     *
+     *  <p>{@code versionedPrefix} null is the ORDINARY copy, which SKIPS anything under
+     *  {@code META-INF/versions/} — mirroring what the primary scan itself saw (the BASE surface), so a
+     *  context copy of a multi-release jar does not smuggle in an override the primary never judged.
+     *  Non-null (always {@code "META-INF/versions/"} in this file) copies ONLY entries under that prefix,
+     *  stripped of it, so a version-specific override lands at its BASE package path and — copied AFTER
+     *  the context, with {@code REPLACE_EXISTING} — replaces the context's own copy there: exactly the
+     *  class a JVM running that version actually loads. Several version directories are copied in
+     *  ASCENDING numeric order so the newest always wins the collision, the same "assume the newest
+     *  supported JVM" bias the rest of this engine takes when it does not know which one is running. */
+    static void copyClassesForUnion(Path root, Path dest, String versionedPrefix) throws IOException {
+        String name = root.toString().toLowerCase(Locale.ROOT);
+        if (Files.isRegularFile(root) && (name.endsWith(".jar") || name.endsWith(".zip"))) {
+            try (FileSystem fs = FileSystems.newFileSystem(root)) {
+                for (Path r : fs.getRootDirectories()) copyClassesForUnionWalk(r, dest, versionedPrefix);
+            }
+        } else if (Files.isDirectory(root)) {
+            copyClassesForUnionWalk(root, dest, versionedPrefix);
+        }
+        // A regular non-archive path (not one of the roots this is ever called with) has nothing to walk
+        // — silently skipped, matching this pass's advisory posture throughout.
+    }
+
+    private static void copyOneClassFile(Path src, Path destFile) throws IOException {
+        Files.createDirectories(destFile.getParent());
+        Files.copy(src, destFile, StandardCopyOption.REPLACE_EXISTING);
+    }
+
+    private static void copyClassesForUnionWalk(Path root, Path dest, String versionedPrefix) throws IOException {
+        if (versionedPrefix == null) {
+            try (Stream<Path> s = Files.walk(root)) {
+                for (Path p : (Iterable<Path>) s::iterator) {
+                    if (!Files.isRegularFile(p)) continue;
+                    String rel = root.relativize(p).toString().replace('\\', '/');
+                    if (!rel.toLowerCase(Locale.ROOT).endsWith(".class")) continue;
+                    if (rel.contains("META-INF/versions/")) continue;
+                    copyOneClassFile(p, dest.resolve(rel));
+                }
+            }
+            return;
+        }
+        // Collect (version, path) pairs first, so they can be replayed in ascending numeric order —
+        // Files.walk's own order is a filesystem detail, not a version ordering.
+        java.util.TreeMap<Integer, List<Path>> byVersion = new java.util.TreeMap<>();
+        try (Stream<Path> s = Files.walk(root)) {
+            for (Path p : (Iterable<Path>) s::iterator) {
+                if (!Files.isRegularFile(p)) continue;
+                String rel = root.relativize(p).toString().replace('\\', '/');
+                if (!rel.toLowerCase(Locale.ROOT).endsWith(".class")) continue;
+                int idx = rel.indexOf(versionedPrefix);
+                if (idx < 0) continue;
+                String tail = rel.substring(idx + versionedPrefix.length());
+                int slash = tail.indexOf('/');
+                if (slash <= 0) continue;
+                int version;
+                try { version = Integer.parseInt(tail.substring(0, slash)); }
+                catch (NumberFormatException e) { continue; }
+                byVersion.computeIfAbsent(version, k -> new ArrayList<>()).add(p);
+            }
+        }
+        for (var e : byVersion.entrySet()) {
+            for (Path p : e.getValue()) {
+                String rel = root.relativize(p).toString().replace('\\', '/');
+                int idx = rel.indexOf(versionedPrefix);
+                String tail = rel.substring(idx + versionedPrefix.length());
+                int slash = tail.indexOf('/');
+                String outRel = tail.substring(slash + 1);
+                if (outRel.isEmpty()) continue;
+                copyOneClassFile(p, dest.resolve(outRel));
+            }
+        }
+    }
+
+    /** ⟨CHA-widening⟩ Resolve a JUDGED (in-scope) qualified name's own SOURCE FILE for a
+     *  {@code dispatch-widened} disclosure's {@code path} field. {@code ctx().loc}'s bytecode
+     *  {@code SourceFile} attribute is a bare filename ("RunnerCaller.java"), not a scan-root-relative
+     *  path, and PART 55's attribution cell asserts every {@code outOfScope} entry names an openable file
+     *  in the scanned tree. Reuses ⟨0.29⟩'s own source-file inventory ({@code ctx().sourceFiles}, here
+     *  passed in captured from the CALLING thread before the peek thread's {@code resetState} wipes it),
+     *  matched by package + simple name exactly as {@link #classifySourceScope} already matches a source
+     *  to its compiled class, including an inner class's OUTER file. Null when nothing matches — a jar
+     *  scanned directly with no source tree at all — and the caller falls back rather than inventing one. */
+    private static String sourcePathFor(String qual, List<String> sourceFileRecords) {
+        int lastDot = qual.lastIndexOf('.');
+        String owner = lastDot > 0 ? qual.substring(0, lastDot) : qual;   // drop the member name
+        int dollar = owner.indexOf('$');
+        if (dollar > 0) owner = owner.substring(0, dollar);               // outer class of a nested type
+        int pkgDot = owner.lastIndexOf('.');
+        String pkg = pkgDot > 0 ? owner.substring(0, pkgDot) : "";
+        String stem = pkgDot > 0 ? owner.substring(pkgDot + 1) : owner;
+        for (String rec : sourceFileRecords) {
+            int nul = rec.indexOf('\0');
+            String path = rec.substring(0, nul);
+            String recPkg = rec.substring(nul + 1);
+            String file = path.substring(path.lastIndexOf('/') + 1);
+            int dot = file.lastIndexOf('.');
+            String fileStem = dot < 0 ? file : file.substring(0, dot);
+            if (recPkg.equals(pkg) && (fileStem.equals(stem) || fileStem.equals(stem + "Kt"))) return path;
+        }
+        return null;
+    }
+
+    /** ⟨CHA-widening⟩ Merge a new attribution into {@code found} by (fn, path) rather than appending a
+     *  duplicate — matching candor-swift's {@code mergeOrAppend} (7378f4f): a single declaration can be
+     *  reached BOTH directly (its own qual matches a rule, the arms above) and via
+     *  {@link #applyDispatchWidening} (an in-scope caller's dispatch resolves into it), so closing the
+     *  drop must not open a duplicate over-charge in its place. Effects union; the FIRST reason string
+     *  wins — it documents a SITE, not a mechanism, and either route is a legitimate account of the same
+     *  fact. */
+    private static void mergeOrAppendOOS(List<Report.OutOfScope> found, String fn, String path, String cls,
+            List<String> effects, String reason) {
+        for (int i = 0; i < found.size(); i++) {
+            Report.OutOfScope f = found.get(i);
+            if (f.fn().equals(fn) && f.path().equals(path)) {
+                java.util.TreeSet<String> merged = new java.util.TreeSet<>(f.effects());
+                merged.addAll(effects);
+                found.set(i, new Report.OutOfScope(f.fn(), f.path(), List.copyOf(merged), f.cls(), f.reason()));
+                return;
+            }
+        }
+        found.add(new Report.OutOfScope(fn, path, List.copyOf(new java.util.TreeSet<>(effects)), cls, reason));
+    }
+
+    /** ⟨CHA-widening⟩ THE FIX FOR BACKLOG.md's "FOUR-WAY CARDINAL SIN": a peek finding used to be
+     *  scope-matched ONLY against the excluded declaration's own qualified name ({@link #peekHits}'s
+     *  {@code fn}), so a policy rule scoped to the IN-SCOPE CALLER that reaches it — through CHA/dynamic
+     *  dispatch (a protocol/interface conformer declared in an excluded file, reached only through an
+     *  in-scope reference to the interface) or through an ordinary direct call whose TARGET's bytecode a
+     *  multi-release override replaces — could never match, and the effect was never disclosed. Two
+     *  reproductions, both `exit 0`/"no violations" on the pre-fix binary under a CALLER-scoped rule where
+     *  the identical code under an UNSCOPED rule already named the excluded declaration directly.
+     *
+     *  <p>candor-java's OWN callgraph ({@code ctx().edges}, captured as {@code judged} before this thread
+     *  starts) cannot answer this alone: it was built by the PRIMARY scan, before the excluded declaration
+     *  was visible, so for the dispatch case it holds no edge INTO it at all — that absence is the whole
+     *  content of the exclusion. Only a fresh CHA resolution that can SEE both sides at once (a UNION of
+     *  the primary's own context plus the excluded material) can discover the new edge, so this method
+     *  builds one and re-runs THE SAME {@link #runScan} entry point over it — one semantics, one
+     *  classifier, never a hand-rolled second dispatch resolver that would have to reimplement bounded-CHA
+     *  and sealed/monomorphic narrowing to avoid drifting from the real one. A multi-release override needs
+     *  no separate mechanism: copying it over the context's own copy of the same qualified name (see
+     *  {@link #copyClassesForUnion}) makes the SAME fixpoint propagate its effect to any in-scope caller,
+     *  so one construction serves both fixtures — "the same question wearing different clothes" (the brief).
+     *
+     *  <p>The rule now FIRES against either name (the excluded declaration's own, unchanged in the arms
+     *  above, OR a reaching in-scope caller's, here) but ATTRIBUTION is decided separately: where the
+     *  responsible excluded declaration can be named with confidence — a call edge the caller's OWN
+     *  (union-resolved) edges reach, landing in a peeked declaration whose own widened effects explain the
+     *  new hit, and exactly ONE such candidate — the finding is attributed THERE, matching how a direct
+     *  scope hit is already attributed. Where it cannot be (no such edge, or more than one candidate), the
+     *  finding is disclosed against the in-scope caller under {@code dispatch-widened} — candor-swift's
+     *  name for the same concept (7378f4f), reused deliberately rather than inventing a second one; neither
+     *  has a SPEC clause yet. A wrong-but-visible attribution is recoverable; a silent drop is not.
+     *
+     *  <p>Advisory throughout, matching every other peek arm: any failure here (the union will not
+     *  compile/scan, a timeout) is swallowed and the direct findings the caller already produced stand
+     *  unaffected — this method only ever ADDS a finding, never removes or changes one. */
+    private static void applyDispatchWidening(Path contextRoot, List<Path> excludedRoots, String versionedPrefix,
+            Config peekConfig, List<PolicyRule.Deny> peekRules, Map<String, EffectSet> primaryInferred,
+            Set<String> judged, Map<String, EffectSet> peekedAll, Map<String, String> whereOf,
+            String defaultCls, List<String> primarySourceFiles, List<Report.OutOfScope> found) {
+        if (peekedAll.isEmpty()) return;   // nothing was read for this arm — nothing whose dispatch could widen
+        Path union = null;
+        try {
+            union = Files.createTempDirectory("candor-peek-union");
+            if (contextRoot != null) copyClassesForUnion(contextRoot, union, null);
+            for (Path r : excludedRoots) copyClassesForUnion(r, union, versionedPrefix);
+            Map<String, EffectSet> widened;
+            try {
+                widened = runScan(union, peekConfig);
+            } catch (Throwable e) {
+                return;
+            }
+            Map<String, Set<String>> widenedEdges = new HashMap<>(ctx().edges);
+            Policy.GateInput widenedGi = Policy.gateInputFromScan(widened);
+            // FIRST PASS: which judged (in-scope) quals gained an effect at all, purely from the diff —
+            // computed for ALL of them before any attribution decision, so the SECOND pass can tell a
+            // caller several hops up the chain (main -> invoke -> the peeked declaration) that a MORE
+            // PRECISE site further down already accounts for its own gain, regardless of `judged`'s
+            // (arbitrary Set) iteration order.
+            Map<String, EffectSet> addedByQual = new HashMap<>();
+            for (String qual : judged) {
+                // A judged qual that IS ITSELF one of the peeked/excluded declarations — the multi-release
+                // case, where the override shares the BASE's own qualified name — is not a CALLER reaching
+                // an exclusion; it IS the exclusion, and the direct arm above already reports it under its
+                // own name. Treating it as a widening candidate here would self-attribute a `dispatch-
+                // widened` duplicate of the SAME finding the direct arm just made.
+                if (peekedAll.containsKey(qual)) continue;
+                EffectSet now = widened.get(qual);
+                if (now == null) continue;   // not part of the union's own project — nothing to compare
+                EffectSet added = now.minus(primaryInferred.getOrDefault(qual, EffectSet.empty()));
+                if (!added.isEmpty()) addedByQual.put(qual, added);
+            }
+            for (var entry : addedByQual.entrySet()) {
+                String qual = entry.getKey();
+                List<String> hits = peekHits(peekRules, qual, entry.getValue(), widenedGi);
+                if (hits.isEmpty()) continue;   // no DENY rule reaches it via the CALLER's name either
+                Set<String> hitSet = new HashSet<>(hits);
+                List<String> candidates = new ArrayList<>();
+                boolean explainedDownstream = false;
+                for (String callee : widenedEdges.getOrDefault(qual, Set.of())) {
+                    if (peekedAll.containsKey(callee)) {
+                        EffectSet calleeEff = widened.getOrDefault(callee, EffectSet.empty());
+                        if (calleeEff.toNames().stream().anyMatch(hitSet::contains)) candidates.add(callee);
+                    } else {
+                        // A callee that is ITSELF a judged function with its own new effect(s) is a MORE
+                        // PRECISE site for the same fact — main() calling invoke() calling the peeked
+                        // declaration should surface ONE finding (at invoke, or deeper), not one per hop of
+                        // the chain. Only suppresses THIS qual, never the callee's own entry below.
+                        EffectSet calleeAdded = addedByQual.get(callee);
+                        if (calleeAdded != null && calleeAdded.toNames().stream().anyMatch(hitSet::contains))
+                            explainedDownstream = true;
+                    }
+                }
+                if (candidates.size() == 1) {
+                    String cand = candidates.get(0);
+                    mergeOrAppendOOS(found, cand, whereOf.getOrDefault(cand, "?"), defaultCls, hits,
+                            "OUTSIDE this scan's scope (" + defaultCls + ") — the gate did NOT judge it. An "
+                            + "in-scope call this scan analyzed dispatches to this declaration, and candor's "
+                            + "ANALYSIS reaches this effect through it; the gate did not judge it, so the "
+                            + "verdict is INCOMPLETE rather than a pass. (An analysis result, not a claim "
+                            + "about what the code does at runtime.)");
+                } else if (candidates.isEmpty() && explainedDownstream) {
+                    // A deeper call in THIS SAME chain already carries the disclosure (directly, or under
+                    // its own dispatch-widened) — skip, rather than repeat the same fact at every hop.
+                    continue;
+                } else {
+                    String callerPath = sourcePathFor(qual, primarySourceFiles);
+                    mergeOrAppendOOS(found, qual, callerPath != null ? callerPath : "?", "dispatch-widened", hits,
+                            "OUTSIDE this scan's scope (dispatch-widened) — a file this scan excluded ("
+                            + defaultCls + ") adds a dispatch target this in-scope call can reach, and this "
+                            + "scan cannot name that declaration precisely, so the effect is disclosed "
+                            + "against this in-scope call site instead. The gate did not judge the excluded "
+                            + "declaration, so the verdict is INCOMPLETE rather than a pass. (An analysis "
+                            + "result, not a claim about what the code does at runtime.)");
+                }
+            }
+        } catch (Throwable e) {
+            // A widening pass that cannot run must not fail the gate, and must not withdraw the direct
+            // findings the caller already produced — this method never removes an entry, only adds one.
+        } finally {
+            deleteTree(union);
+        }
+    }
+
+    static void peekExcluded(String policyPath, Map<String, EffectSet> primaryInferred) {
         if (policyPath == null || policyPath.isEmpty()) return;   // nothing asked, so nothing claimed
         List<Report.OutOfScope> found = new ArrayList<>();
         // ANSWERED, not "a policy was configured". A policy this engine REFUSES — unreadable, or naming a
@@ -749,6 +999,16 @@ public class Candor {
         Path scanRootForPeek = ctx().scanRoot;
         List<Path> peekClasspath = new ArrayList<>(archives);
         if (scanRootForPeek != null) peekClasspath.add(scanRootForPeek);
+        // ⟨CHA-widening⟩ THE PER-PACKAGE ROOTS this run actually found `.class` files under (see
+        // Loader#collectClasses), ADDED rather than substituted for the literal scan-root path above. A
+        // repo-root scan almost always has its compiled output nested (`build/classes/java/main`,
+        // `target/classes`) rather than sitting directly at the root, so `-cp <scan-root>` alone could
+        // not resolve a project symbol (`app.Doer`) at all: MEASURED, an excluded `EvilDoer implements
+        // Doer` failed to compile with "cannot find symbol" on exactly that ordinary Gradle shape, and the
+        // class stayed `peeked: false` — INCOMPLETE, not silent, but rendering this arm inert on the tree
+        // shape a repo-root scan usually has. `scanRootForPeek` stays in the list too: a flat layout (no
+        // nested build dir) still needs it, and appending never narrows what already worked.
+        peekClasspath.addAll(ctx().classpathRoots);
         // ⟨0.32⟩ …plus whatever the operator declared. Appended, never substituted: what is under the
         // root is still theirs, and dropping it would silently narrow a derivation that already worked.
         List<Path> declaredPeekEntries = new ArrayList<>();
@@ -799,6 +1059,10 @@ public class Candor {
             }
         }
         Set<String> judged = Set.copyOf(ctx().edges.keySet());
+        // ⟨CHA-widening⟩ THIS RUN'S OWN source-file inventory, captured on the CALLING thread before the
+        // peek thread's resetState wipes it — {@link #sourcePathFor}'s only way to resolve a `judged`
+        // caller's real path for a `dispatch-widened` disclosure.
+        List<String> primarySourceFileRecords = List.copyOf(ctx().sourceFiles);
         Path root = ctx().scanRoot;
         // The peek's own stderr is DISCARDED for its duration. It parses the policy (to learn what is
         // denied) and scans jars, and both are chatty — an ignored-policy-line warning printed once by the
@@ -840,6 +1104,12 @@ public class Candor {
                 scannedUnder.set(Policy.canonicalDenySet(peekRules));
                 if (peekRules.isEmpty()) return;   // allow-only: nothing denied, so nothing to look for
                 int[] readOk = {0}, readFail = {0}, readPartial = {0};
+                // ⟨CHA-widening⟩ every qual this arm actually read, and where — ACCUMULATED across jars,
+                // independent of whether it already matches this arm's direct (excluded-name-scoped) test
+                // below, because {@link #applyDispatchWidening}'s candidate check needs a peeked
+                // declaration's effects even when the excluded name itself never appears in a rule's scope.
+                Map<String, EffectSet> archAllPeeked = new HashMap<>();
+                Map<String, String> archWhereOf = new HashMap<>();
                 for (Path jar : archives) {
                     Map<String, EffectSet> peeked;
                     try {
@@ -879,6 +1149,10 @@ public class Candor {
                     // a clean slate, so this is THIS jar's count and no other's.
                     if (!ctx().unanalyzed.isEmpty()) readPartial[0]++;
                     String where = root == null ? jar.toString() : relativeTo(root, jar);
+                    for (var e : peeked.entrySet()) {
+                        archAllPeeked.putIfAbsent(e.getKey(), e.getValue());
+                        archWhereOf.putIfAbsent(e.getKey(), where);
+                    }
                     for (var e : new java.util.TreeMap<>(peeked).entrySet()) {
                         if (judged.contains(e.getKey())) continue;   // the gate DID judge this one
                         List<String> hits = peekHits(peekRules, e.getKey(), e.getValue(), peekGi);
@@ -891,6 +1165,11 @@ public class Candor {
                                 + "not a claim about what the code does at runtime)."));
                     }
                 }
+                // ⟨CHA-widening⟩ the archive arm's own widening pass — see applyDispatchWidening. Context is
+                // the primary's compiled output; the excluded material is every archive this arm just read.
+                applyDispatchWidening(scanRootForPeek, archives, null, peekConfig, peekRules, primaryInferred,
+                        judged, archAllPeeked, archWhereOf, "archive-under-the-scan-root",
+                        primarySourceFileRecords, found);
                 // ⟨0.30⟩ THE MULTI-RELEASE PASS. A multi-release jar ships version-specific overrides under
                 // META-INF/versions/<N>/; the ordinary scan analyses the BASE class and skips the override,
                 // so an effect present ONLY in a versioned copy sat outside every verdict. That exclusion
@@ -935,71 +1214,97 @@ public class Candor {
                             srcFail[0]++; srcFailed.add(cls);
                             continue;
                         }
-                        Map<String, EffectSet> peeked;
+                        // ⟨CHA-widening⟩ `out` now wraps the WHOLE per-class body (previously only the
+                        // `runScan` call), so its scratch `.class` files are still on disk when
+                        // applyDispatchWidening needs to copy them — `deleteTree` moved to a `finally`
+                        // around all of it rather than running immediately after `runScan` returns.
                         try {
-                            peeked = runScan(out, peekConfig);
-                        } catch (Throwable e) {
-                            srcFail[0]++; srcFailed.add(cls); deleteTree(out); continue;
+                            Map<String, EffectSet> peeked;
+                            try {
+                                peeked = runScan(out, peekConfig);
+                            } catch (Throwable e) {
+                                srcFail[0]++; srcFailed.add(cls);
+                                continue;
+                            }
+                            if (!ctx().unanalyzed.isEmpty()) { srcFail[0]++; srcFailed.add(cls); continue; }
+                            srcOk[0]++;
+                            Policy.GateInput peekGi = Policy.gateInputFromScan(peeked);
+                            // THE `judged` SKIP DOES NOT APPLY TO A STALE CLASS, and getting this wrong
+                            // reintroduced the exact false all-clear the staleness disclosure exists to stop —
+                            // MEASURED on the first end-to-end run: an edit added `Runtime.exec`, the stale
+                            // `.class` still carried the old pure body, the gate "judged" com.x.App.go from
+                            // those old bytes, and this skip therefore dropped the finding the freshly
+                            // compiled source had just produced. Exit 0.
+                            //
+                            // The skip is right for an ARCHIVE — there, judged means the gate judged THIS
+                            // code, and re-charging it would double-count. For `source-newer-than-class`,
+                            // judged means the gate judged a DIFFERENT PROGRAM: the one that existed before
+                            // the edit. Same word, different fact.
+                            boolean stale = cls.equals("source-newer-than-class");
+                            // ⟨CHA-widening⟩ every qual THIS CLASS produced, and where — accumulated for
+                            // applyDispatchWidening below regardless of whether it already matches the
+                            // direct (excluded-name-scoped) test two lines down, for the same reason the
+                            // archive arm's accumulator does.
+                            Map<String, EffectSet> srcAllPeekedThisClass = new HashMap<>();
+                            Map<String, String> srcWhereOfThisClass = new HashMap<>();
+                            for (var e : new java.util.TreeMap<>(peeked).entrySet()) {
+                                // THE PATH IS THE SOURCE FILE, NOT THE CLASS NAME. A finding filed under
+                                // `source-without-class` names something the operator cannot open — caught by
+                                // PART 55's attribution cell, which asserts every finding names a file in the
+                                // scanned tree. `.java` guarantees filename == public class name, so the
+                                // qual's owner resolves the file without threading provenance through the
+                                // compile; a qual that does not resolve keeps the file set's first entry
+                                // rather than inventing a path. Computed BEFORE the `judged`/hits tests below
+                                // (moved up from the direct-scope-only version of this loop) so the widening
+                                // accumulator gets a `where` for every compiled qual, not only the ones that
+                                // already match this arm's own excluded-name-scoped test.
+                                String owner = e.getKey();
+                                int lastDot = owner.lastIndexOf('.');
+                                if (lastDot > 0) owner = owner.substring(0, lastDot);
+                                String want = "/" + owner.replace('.', '/') + ".java";
+                                String where = null;
+                                for (Path f : files) {
+                                    String fp = f.toString().replace('\\', '/');
+                                    if (fp.endsWith(want)) {
+                                        where = scanRootForPeek == null ? fp : relativeTo(scanRootForPeek, f);
+                                        break;
+                                    }
+                                }
+                                if (where == null && !files.isEmpty())
+                                    where = scanRootForPeek == null ? files.get(0).toString()
+                                                                    : relativeTo(scanRootForPeek, files.get(0));
+                                srcAllPeekedThisClass.putIfAbsent(e.getKey(), e.getValue());
+                                srcWhereOfThisClass.putIfAbsent(e.getKey(), where);
+                                if (!stale && judged.contains(e.getKey())) continue;   // the gate DID judge this one
+                                List<String> hits = peekHits(peekRules, e.getKey(), e.getValue(), peekGi);
+                                if (hits.isEmpty()) continue;
+                                found.add(new Report.OutOfScope(e.getKey(), where, hits, cls,
+                                        "OUTSIDE this scan's scope (" + cls + ") — the gate did NOT judge it. "
+                                        + "candor COMPILED the source and ran its ordinary analysis over the "
+                                        + "result, and that analysis reaches this effect, so the verdict is "
+                                        + "INCOMPLETE rather than a pass (an analysis result, not a claim "
+                                        + "about what the code does at runtime)."));
+                            }
+                            // ⟨CHA-widening⟩ still inside `out`'s lifetime — the union copy needs its files.
+                            applyDispatchWidening(scanRootForPeek, List.of(out), null, peekConfig, peekRules,
+                                    primaryInferred, judged, srcAllPeekedThisClass, srcWhereOfThisClass, cls,
+                                    primarySourceFileRecords, found);
+                            srcPeeked.add(cls);
                         } finally {
                             // The scratch tree is this run's, and every scan of a tree with an uncompiled
                             // source would otherwise leave one behind in the temp dir — unbounded, and
                             // full of the operator's compiled code.
                             deleteTree(out);
                         }
-                        if (!ctx().unanalyzed.isEmpty()) { srcFail[0]++; srcFailed.add(cls); continue; }
-                        srcOk[0]++;
-                        Policy.GateInput peekGi = Policy.gateInputFromScan(peeked);
-                        // THE `judged` SKIP DOES NOT APPLY TO A STALE CLASS, and getting this wrong
-                        // reintroduced the exact false all-clear the staleness disclosure exists to stop —
-                        // MEASURED on the first end-to-end run: an edit added `Runtime.exec`, the stale
-                        // `.class` still carried the old pure body, the gate "judged" com.x.App.go from
-                        // those old bytes, and this skip therefore dropped the finding the freshly
-                        // compiled source had just produced. Exit 0.
-                        //
-                        // The skip is right for an ARCHIVE — there, judged means the gate judged THIS
-                        // code, and re-charging it would double-count. For `source-newer-than-class`,
-                        // judged means the gate judged a DIFFERENT PROGRAM: the one that existed before
-                        // the edit. Same word, different fact.
-                        boolean stale = cls.equals("source-newer-than-class");
-                        for (var e : new java.util.TreeMap<>(peeked).entrySet()) {
-                            if (!stale && judged.contains(e.getKey())) continue;   // the gate DID judge this one
-                            List<String> hits = peekHits(peekRules, e.getKey(), e.getValue(), peekGi);
-                            if (hits.isEmpty()) continue;
-                            // THE PATH IS THE SOURCE FILE, NOT THE CLASS NAME. A finding filed under
-                            // `source-without-class` names something the operator cannot open — caught by
-                            // PART 55's attribution cell, which asserts every finding names a file in the
-                            // scanned tree. `.java` guarantees filename == public class name, so the
-                            // qual's owner resolves the file without threading provenance through the
-                            // compile; a qual that does not resolve keeps the file set's first entry
-                            // rather than inventing a path.
-                            String owner = e.getKey();
-                            int lastDot = owner.lastIndexOf('.');
-                            if (lastDot > 0) owner = owner.substring(0, lastDot);
-                            String want = "/" + owner.replace('.', '/') + ".java";
-                            String where = null;
-                            for (Path f : files) {
-                                String fp = f.toString().replace('\\', '/');
-                                if (fp.endsWith(want)) {
-                                    where = scanRootForPeek == null ? fp : relativeTo(scanRootForPeek, f);
-                                    break;
-                                }
-                            }
-                            if (where == null && !files.isEmpty())
-                                where = scanRootForPeek == null ? files.get(0).toString()
-                                                                : relativeTo(scanRootForPeek, files.get(0));
-                            found.add(new Report.OutOfScope(e.getKey(), where, hits, cls,
-                                    "OUTSIDE this scan's scope (" + cls + ") — the gate did NOT judge it. "
-                                    + "candor COMPILED the source and ran its ordinary analysis over the "
-                                    + "result, and that analysis reaches this effect, so the verdict is "
-                                    + "INCOMPLETE rather than a pass (an analysis result, not a claim "
-                                    + "about what the code does at runtime)."));
-                        }
-                        srcPeeked.add(cls);
                     }
                 }
                 int[] vOk = {0}, vFail = {0}, vPartial = {0};
                 List<Path> versionedTargets = new ArrayList<>(archives);
                 if (root != null && !versionedTargets.contains(root)) versionedTargets.add(root);
+                // ⟨CHA-widening⟩ every override qual this pass actually read, and where — same purpose as
+                // the other two arms' accumulators.
+                Map<String, EffectSet> overAllPeeked = new HashMap<>();
+                Map<String, String> overWhereOf = new HashMap<>();
                 for (Path jar : versionedTargets) {
                     Map<String, EffectSet> over;
                     try {
@@ -1033,6 +1338,10 @@ public class Candor {
                     vOk[0]++;
                     Policy.GateInput peekGi = Policy.gateInputFromScan(over);
                     String where = root == null ? jar.toString() : relativeTo(root, jar);
+                    for (var e : over.entrySet()) {
+                        overAllPeeked.putIfAbsent(e.getKey(), e.getValue());
+                        overWhereOf.putIfAbsent(e.getKey(), where);
+                    }
                     for (var e : new java.util.TreeMap<>(over).entrySet()) {
                         // NOT filtered by `judged`: the base copy of the SAME qualified name is judged, and
                         // that is exactly the case this pass exists for — the override is different code
@@ -1048,6 +1357,15 @@ public class Candor {
                     }
                 }
                 peekVersionedAll[0] = vFail[0] == 0 && vPartial[0] == 0;
+                // ⟨CHA-widening⟩ the multi-release arm's own widening pass: context is the primary's
+                // compiled output, the "excluded" material is the SAME jars this pass just read, copied a
+                // second time with `versionedPrefix` set so only their OVERRIDE entries are extracted,
+                // landing at the base package path — the copy this arm's own reproduction (BACKLOG.md
+                // fixture B) needs to see `Caller.invoke()`'s effect change once the override REPLACES the
+                // base in the union.
+                applyDispatchWidening(scanRootForPeek, versionedTargets, "META-INF/versions/", peekConfig,
+                        peekRules, primaryInferred, judged, overAllPeeked, overWhereOf, "multi-release-override",
+                        primarySourceFileRecords, found);
 
                 // ⟨0.29⟩ THE CLASS IS `peeked` ONLY IF EVERY FILE OF IT WAS READ. One unreadable jar means
                 // the class was not fully examined, and a partial read publishing `peeked:true` is the
@@ -1941,7 +2259,7 @@ public class Candor {
         // gate block below because the gate runs AFTER the report is written: computing it there would put
         // the finding on stderr and leave it out of the artifact, which is the split ⟨0.26⟩ calls worse
         // than saying nothing.
-        peekExcluded(policyPath);
+        peekExcluded(policyPath, inferred);
         phase("peek");
 
         // JSON output is orthogonal — write first so `--json` can snapshot a baseline. The report needs

@@ -8,6 +8,30 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **Regression coverage for two undated fixes that shipped with no test that would notice their own
+  deletion** (found by review): `a034371`'s peek scope-match cardinal-sin fix touched only
+  `AnalysisContext.java`/`Candor.java`/`Loader.java` with no test file — a full revert of that ~470-line
+  diff left the suite 855/855 green; `37c9b10`'s `DESCRIPTIVE_NO_POLICY` exit-2 guard was likewise
+  invisible to the suite (deleting the check also leaves 855/855 green). Both closed with tests PROVEN to
+  fail on the reverted production code (confirmed in a throwaway worktree, not theorised):
+  `FileSetScopeTest#aCallerScopedRuleCatchesAnExcludedDeclarationReachedOnlyThroughDispatch` and
+  `#aCallerScopedRuleCatchesAMultiReleaseOverrideReachedOnlyThroughAnInScopeCall` reproduce a034371's own
+  two named fixtures (source-peek/CHA dispatch onto an uncompiled `EvilDoer implements Doer`, and a
+  multi-release override `Caller.invoke()` reaches only through `Widget.work`'s versioned copy), each
+  under a CALLER-scoped `deny` rule the pre-fix binary could never match, with an unscoped control proving
+  the fixture is genuine and that the widening pass does not double-report once it also reaches the same
+  fact. `DescriptiveNoPolicyGuardTest` drives `Query.run` directly against `show`/`map` with `--policy`
+  pointed at a nonexistent report — proving the guard fires BEFORE report resolution, not coincidentally
+  alongside a file-not-found error — plus a positive control (`whatif`, a real `POLICY_VERB`, must never
+  be told `--policy` is unknown) and a membership pin over the full twelve-verb `DESCRIPTIVE_NO_POLICY`
+  set. Swept the day's other two commits (`3a84522`, `fee92bd`) the same way — revert the production
+  diff only, keep the commit's own tests, run them: both go red (`3a84522`'s
+  `recordContractsReenterEffectfulComponentOverride` on a runtime assertion; `fee92bd`'s `HelpersTest`/
+  `UnreadCodeRouteTest` at COMPILE TIME, since the fix changed `Query.specPredates`'s signature and the
+  `ReportCompleteness` record shape) — clean, no gap found in either. `./gradlew test --rerun-tasks` (861
+  tests, 0 failures — 6 new), `test/smoke.sh` (547 passed), `ci/self-gate.sh` and `soundness/reentrancy.sh`
+  both OK.
+
 - ⚠ **CARDINAL SIN, closed: a record's compiler-generated `equals`/`hashCode`/`toString` silently
   dropped an effectful component override, all the way up to `main`.** A record's own `equals`/
   `hashCode`/`toString` body is a single `invokedynamic` into `java.lang.runtime.ObjectMethods`

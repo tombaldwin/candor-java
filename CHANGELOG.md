@@ -8,6 +8,53 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- ⚠ **CARDINAL SIN, closed: a `CONSTANT_Dynamic` (condy) constant made the calling method vanish from
+  the report entirely — not `Unknown`, not `unresolved`, absent.** ASM surfaces a condy `ldc` as an
+  `LdcInsnNode` whose `cst` is a `ConstantDynamic` — a DIFFERENT bytecode form from `invokedynamic`
+  (`InvokeDynamicInsnNode`) — and the per-instruction dispatch in `Candor#analyze` only ever reached
+  `handleInvokeDynamic`. A condy `ldc` fell through every branch with no edge and no effect recorded;
+  since absence from `functions[]` means pure (spec §2 rule 3), a method whose only body was a condy
+  `ldc` disappeared from the report rather than reading `Unknown`. Reproduced with a hand-built
+  bootstrap that genuinely execs a subprocess at resolution time (confirmed with a real
+  `defineHiddenClass` + invoke runtime probe): `deny Exec` passed it with "no violations", exit 0,
+  `functions: []`, over a class where the exec provably fired.
+  The first hypothesis was an over-broad `STRUCTURAL_INDY_BSM` allowlist; a calibration fixture whose
+  bootstrap owner is emphatically OUTSIDE that allowlist reproduced the identical silence, disproving
+  it — the allowlist check never ran at all, because `handleInvokeDynamic` never fires on a
+  `LdcInsnNode`. The real cause is structural, not a classification error.
+  Fixed with a new `handleConstantDynamic`, wired into the per-instruction dispatch alongside
+  `handleInvokeDynamic`, that reuses the EXACT SAME `STRUCTURAL_INDY_BSM` decision the indy path
+  already encodes rather than a second hand-rolled one: a condy whose bootstrap owner is one of the
+  JVM's own factories (`java.lang.invoke.ConstantBootstraps` — `nullConstant`, `primitiveClass`,
+  `enumConstant`, `getStaticFinal`, `invoke`, `explicitCast`) stays quiet, exactly as already true for
+  an equivalent indy; any other bootstrap is opaque and now reads honest `Unknown` (`unknownWhy:
+  indy:<owner>`), never silent-pure.
+  `javac`/`kotlinc`/`scalac` do not currently emit condy for ordinary source, so this is lower-frequency
+  than most findings — but the realistic vector is ASM-based codegen and bytecode obfuscators, some of
+  which reach for condy specifically because it hides payloads from analyzers, which is exactly the
+  wrong blind spot for candor to have.
+  New `ConstantDynamicTest`: the calibration fixture (non-allowlisted bootstrap owner) discloses
+  `Unknown` — proven RED against the pre-fix engine by reverting the fix and re-running (1 of 3 tests
+  fails, as expected: the other two assert absence of fabrication, which trivially holds when the whole
+  path is dead); a genuine structural condy (`ConstantBootstraps.nullConstant`) stays quiet, no
+  fabricated `Unknown`; a plain non-condy `ldc` (a String constant) is unaffected. Over-charge control:
+  394 real third-party jars from the local Gradle cache (984,953 analyzed units, 482,617 effectful
+  functions across 386 non-empty jars) are byte-identical pre/post-fix — condy is genuinely unused by
+  mainstream compiled libraries today, so the fix costs nothing on real code.
+  Swept for the same class of bug elsewhere: no other ASM node-type pair (raw `ldc`-loaded
+  `MethodHandle`/`MethodType` constants, `TABLESWITCH`/`LOOKUPSWITCH`, `TypeInsnNode` opcodes) carries an
+  effect-relevant construct that is wired on only one of two representations. One stated residual: a
+  `ConstantDynamic` NESTED inside another bootstrap's own `bsmArgs` (an indy's, or now a condy's) is not
+  independently visited — only the enclosing call site's bootstrap owner is checked. Sound in the
+  common case (a non-structural enclosing bootstrap already fails closed to `Unknown`, which
+  over-approximates whatever it nested), but a structural enclosing bootstrap — chiefly
+  `ConstantBootstraps.invoke` itself — could in principle carry a nested effectful condy invisibly. Not
+  observed in any of the 394 real jars; flagged rather than fixed, to avoid a second hand-rolled
+  decision the task this closed was explicitly written to avoid.
+  Verified: `./gradlew test --rerun-tasks` (864 tests, 0 failures — 3 new), `test/smoke.sh` (547
+  passed), `ci/self-gate.sh`, `soundness/reentrancy.sh`, and `soundness/mutation_probe.sh` (14/14
+  caught) all OK.
+
 - **Regression coverage for two undated fixes that shipped with no test that would notice their own
   deletion** (found by review): `a034371`'s peek scope-match cardinal-sin fix touched only
   `AnalysisContext.java`/`Candor.java`/`Loader.java` with no test file — a full revert of that ~470-line

@@ -431,4 +431,47 @@ class SoundnessSweepTest {
         var r = scan("public class A { public void use(System.Logger l){ l.log(System.Logger.Level.INFO, \"x\"); } }");
         mustHave(r, "A.use", "Log");
     }
+
+    /** A record's compiler-generated equals/hashCode/toString is a near-empty body whose one instruction
+     *  is an invokedynamic into java.lang.runtime.ObjectMethods — the per-component comparison/combine/
+     *  format runs INSIDE that bootstrap's machinery, never in bytecode this method owns. When a
+     *  component's declared type is a project class with an EFFECTFUL equals/hashCode/toString override,
+     *  calling the record's own equals/hashCode/toString silently ran that override with no edge at all:
+     *  the exact shape already fixed for string-concat's implicit toString() (`"x" + obj`), left open for
+     *  records because the bootstrap's field-getter Handles were (correctly) skipped as non-effectful in
+     *  their own right — but skipped WITHOUT reentering the component's contract method either. */
+    @Test
+    void recordContractsReenterEffectfulComponentOverride() throws Exception {
+        var r = scan("public class A {\n"
+                + "  static class Sneaky {\n"
+                + "    public boolean equals(Object o){ " + FS + " return true; }\n"
+                + "    public int hashCode(){ " + FS + " return 0; }\n"
+                + "    public String toString(){ " + FS + " return \"x\"; }\n"
+                + "  }\n"
+                + "  record Rec(Sneaky s) {}\n"
+                + "  public boolean useEquals(Rec a, Rec b){ return a.equals(b); }\n"
+                + "  public int useHash(Rec a){ return a.hashCode(); }\n"
+                + "  public String useToString(Rec a){ return a.toString(); }\n"
+                + "}");
+        mustHave(r, "A.useEquals", "Fs");
+        mustHave(r, "A.useHash", "Fs");
+        mustHave(r, "A.useToString", "Fs");
+    }
+
+    /** The anti-fabrication twin: a record whose components are a String, a primitive, and a project class
+     *  with NO overrides (Object's identity-based defaults) must stay entirely pure — the reentry must not
+     *  invent an effect over a component with nothing to reenter. */
+    @Test
+    void recordWithPureComponentsStaysPure() throws Exception {
+        var r = scan("public class A {\n"
+                + "  static class Plain {}\n"
+                + "  record Rec(String name, int x, Plain p) {}\n"
+                + "  public boolean useEquals(Rec a, Rec b){ return a.equals(b); }\n"
+                + "  public int useHash(Rec a){ return a.hashCode(); }\n"
+                + "  public String useToString(Rec a){ return a.toString(); }\n"
+                + "}");
+        assertFalse(eff(r, "A.useEquals").toNames().contains("Fs"), "pure record must not fabricate, got " + eff(r, "A.useEquals"));
+        assertFalse(eff(r, "A.useHash").toNames().contains("Fs"), "pure record must not fabricate, got " + eff(r, "A.useHash"));
+        assertFalse(eff(r, "A.useToString").toNames().contains("Fs"), "pure record must not fabricate, got " + eff(r, "A.useToString"));
+    }
 }

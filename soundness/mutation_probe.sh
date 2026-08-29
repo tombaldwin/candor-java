@@ -107,12 +107,18 @@ patch_for() {
 '                || owner.equals("java.util.zip.ZipFile") || owner.equals("java.util.jar.JarFile"))
             return null; // MUTANT (was Effect.FS)' ;;
   exec_pb)
+    # ⟨2026-08-29⟩ The rule this targeted was itself upgraded from an ALLOWLIST of launch verbs
+    # (start/startPipeline) to a whole-owner-with-denylist stance (Classifier.java, "the WHOLE TYPE is
+    # Exec, with the proven-pure surface carved out as a named DENYLIST") — the old anchor text no
+    # longer exists at all, so this mutation silently stopped applying. Retarget the SAME question
+    # (does a bare, unconfigured `pb.start()` still classify Exec?) at the current mechanism: flip its
+    # terminal `return Effect.EXEC` to `return null`.
     TGT="$CLS"
     apply_patch \
-'if (owner.equals("java.lang.ProcessBuilder")
-                && (method.equals("start") || method.equals("startPipeline"))) return Effect.EXEC;' \
-'if (owner.equals("java.lang.ProcessBuilder")
-                && (method.equals("start") || method.equals("startPipeline"))) return null; // MUTANT' ;;
+'            boolean objectProto = isObjectProtocolExempt(method, desc);
+            if (!env && !readBack && !objectProto) return Effect.EXEC;' \
+'            boolean objectProto = isObjectProtocolExempt(method, desc);
+            if (!env && !readBack && !objectProto) return null; // MUTANT (was Effect.EXEC)' ;;
   log_syslogger)
     TGT="$CLS"
     apply_patch \
@@ -156,23 +162,30 @@ patch_for() {
 'static Set<String> functionalSamSurface(String classInternal) {
         if (true) return new java.util.HashSet<>(); // MUTANT' ;;
   cha_edges)
+    # ⟨2026-08-29⟩ re-anchored: the P7 decomposition moved this out of the old monolithic method,
+    # de-indenting it one level, and `ctx()` (the ThreadLocal singleton call) became the plain `ctx`
+    # parameter handleMethodInsn now threads through — both textual, not behavioural, changes, but
+    # they moved the anchor off the source, so this mutation silently stopped applying.
     apply_patch \
-'                        List<String> targets = broad ? List.of() : cha;
-                        ctx().edges.get(id).addAll(targets);' \
-'                        List<String> targets = broad ? List.of() : cha;
-                        // MUTANT: ctx().edges.get(id).addAll(targets);' ;;
+'            List<String> targets = broad ? List.of() : cha;
+            ctx.edges.get(id).addAll(targets);' \
+'            List<String> targets = broad ? List.of() : cha;
+            // MUTANT: ctx.edges.get(id).addAll(targets);' ;;
   cb_unknown)
+    # ⟨2026-08-29⟩ re-anchored: same P7 de-indentation (16/32-space continuation → 12/20).
     apply_patch \
-'if (!broad && targets.isEmpty() && !dispatchExempt && effect == null && !springTyped
-                                && isJdkFunctionalSam(min.owner, min.name)) {' \
-'if (false && !broad && targets.isEmpty() && !dispatchExempt && effect == null && !springTyped
-                                && isJdkFunctionalSam(min.owner, min.name)) {' ;;
+'            if (!broad && targets.isEmpty() && !dispatchExempt && effect == null && !springTyped
+                    && isJdkFunctionalSam(min.owner, min.name)) {' \
+'            if (false && !broad && targets.isEmpty() && !dispatchExempt && effect == null && !springTyped
+                    && isJdkFunctionalSam(min.owner, min.name)) {' ;;
   deferred)
+    # ⟨2026-08-29⟩ re-anchored: same P7 de-indentation (12/16-space → 8/12) from registerMethod's
+    # extraction out of the old inline per-method loop.
     apply_patch \
-'            if (mn.name.equals("<init>") || mn.name.equals("<clinit>"))
-                bindDeferredFields(cn, mn);' \
-'            if (false && (mn.name.equals("<init>") || mn.name.equals("<clinit>")))
-                bindDeferredFields(cn, mn); // MUTANT' ;;
+'        if (mn.name.equals("<init>") || mn.name.equals("<clinit>"))
+            bindDeferredFields(cn, mn);' \
+'        if (false && (mn.name.equals("<init>") || mn.name.equals("<clinit>")))
+            bindDeferredFields(cn, mn); // MUTANT' ;;
   clock_now)
     TGT="$CLS"
     apply_patch \
@@ -205,10 +218,20 @@ for i in "${!NAMES[@]}"; do
   TGT="$SRC"   # default target; a classify-rule mutation resets it to $CLS in its case arm
   if ! patch_for "$name"; then
     echo "PATCH-ERROR (anchor moved?) — investigate"
+    # A moved anchor means this mutation could not be APPLIED, so the probe it names was never actually
+    # exercised this run — indistinguishable, for verification purposes, from a MISSED mutation (the
+    # thing this whole harness exists to catch). Previously this fell through to `continue` without
+    # touching `blindspots`, so the harness's own final `[ "${#blindspots[@]}" -eq 0 ]` exit code stayed
+    # 0 — a refactor that silently detached 4 of 14 mutations from their anchors still reported the
+    # weekly soundness-gate GREEN. MEASURED 2026-08-29: after the P7 Candor.java decomposition
+    # re-indented (and in one case renamed `ctx()`→`ctx`) the guards these anchors target, exec_pb/
+    # cha_edges/cb_unknown/deferred all went PATCH-ERROR while `mutation_probe.sh` still exited 0.
+    blindspots+=("$name : anchor no longer matches source — mutation NOT applied, probe NOT verified")
     RESULTS+=("$name|${probe#run_}|$expect|PATCH-ERROR|$desc"); restore; continue
   fi
   if ! rebuild; then
     echo "BUILD-FAIL (mutation didn't compile) — see /tmp/mut_build.log"
+    blindspots+=("$name : mutation did not compile — probe NOT verified")
     RESULTS+=("$name|${probe#run_}|$expect|BUILD-FAIL|$desc"); restore; continue
   fi
 

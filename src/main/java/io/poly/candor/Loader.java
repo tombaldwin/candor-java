@@ -97,6 +97,29 @@ final class Loader {
                     // re-reading the file, and a hash taken from a second read is a hash of a different
                     // moment than the one that was analysed.
                     ctx().classHash.put(cn.name, Refresh.sha256(raw));
+                    // ⟨CHA-widening⟩ THE PER-PACKAGE CLASSPATH ROOT this class actually lives under, derived
+                    // from where its bytes were FOUND rather than assumed from the scan root. The peek's
+                    // source-compile arm used to hand `javac` the literal scan-root path as `-cp`, which only
+                    // resolves a project symbol when compiled classes sit directly at that root — false for
+                    // the ordinary Gradle/Maven shape this exclusion exists for (`build/classes/java/main`
+                    // nested under a repo-root scan), so `EvilDoer implements Doer` failed to compile with
+                    // "cannot find symbol" and the class stayed `peeked: false` (INCOMPLETE, not silent — but
+                    // INERT on the exact tree shape a repo-root scan usually has). Stripping this class's own
+                    // internal-name suffix off its file path gives the directory `-cp` actually needs, e.g.
+                    // `.../build/classes/java/main` for `app/Doer.class` at
+                    // `.../build/classes/java/main/app/Doer.class` — computed per class because a multi-module
+                    // build can have several such roots (main, test, another module) that no single guess
+                    // covers. Skipped for anything read out of a mounted jar/zip FILESYSTEM: that entry's
+                    // "directory" is not a real filesystem path `-cp` could use, and a jar target is already
+                    // added to the peek's classpath by name elsewhere.
+                    if (p.getFileSystem() == FileSystems.getDefault()) {
+                        String pStr = p.toAbsolutePath().normalize().toString().replace('\\', '/');
+                        String suffix = "/" + cn.name + ".class";
+                        if (pStr.endsWith(suffix)) {
+                            String baseStr = pStr.substring(0, pStr.length() - suffix.length());
+                            if (!baseStr.isEmpty()) ctx().classpathRoots.add(Path.of(baseStr));
+                        }
+                    }
                     // ⟨0.32⟩ …and the file's timestamp, for the same reason and at the same moment: the
                     // staleness question is about THIS file as it was when its bytes were read.
                     try {

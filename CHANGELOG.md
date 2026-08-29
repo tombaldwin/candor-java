@@ -8,6 +8,70 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- ⚠ **CARDINAL SIN, closed, reproduced TWICE with distinct artifact types: a peek finding was
+  scope-matched ONLY against the excluded declaration's own qualified name, so a policy rule scoped to
+  the IN-SCOPE CALLER that reaches it could never match, and the effect was never disclosed.**
+  BACKLOG.md "FOUR-WAY CARDINAL SIN — a peek finding is scope-matched against the WRONG ENTITY":
+  `peekHits` tested `Policy.scopeMatches(fn, r.scope())` where `fn` was always the peeked declaration's
+  own name; the caller's own effect set was never re-unioned and java's real CHA was never wired to the
+  peek, so `deny Net RunnerCaller` could never fire on an effect the excluded declaration alone carries.
+  Two reproductions, both `exit 0`/`"no violations"` on the pre-fix binary under a caller-scoped rule
+  where the identical tree under an UNSCOPED rule already named the excluded declaration directly:
+  (1) source-peek — an in-scope `Doer` interface, an in-scope `RunnerCaller.invoke(Doer d)` dispatching
+  through it, an uncompiled `EvilDoer implements Doer` performing `Net` (genuine `source-without-class`)
+  — `deny Net RunnerCaller` passed clean, `deny Net` named `EvilDoer.work` directly; (2) a multi-release
+  jar — base `Widget.work` pure, `META-INF/versions/17/Widget.class` performs `Net`, `Caller.invoke()`
+  calls it — `deny Net Caller` passed clean, `deny Net` named `Widget.work` directly.
+  Fixed by adding a UNION re-scan (`applyDispatchWidening`, called once per peek arm): a scratch tree
+  copies the primary's own compiled output (the CONTEXT) plus the excluded material — for the
+  multi-release arm, the OVERRIDE'S classes land at their BASE package path and REPLACE the context's
+  own copy there, exactly the class a JVM of that version actually runs — and THE SAME `runScan` entry
+  point every other peek arm already uses resolves CHA over the union. The primary's own callgraph
+  cannot answer this alone: it was built before the excluded declaration was visible, so for the
+  dispatch case it holds no edge into it at all (that absence is the whole content of the exclusion);
+  only a fresh CHA resolution that can see both sides at once discovers the new edge. Every in-scope
+  (`judged`) function's union effect set is diffed against this run's own finalized primary result;
+  effects present only in the union are new BECAUSE OF the exclusion and must surface. Where the
+  responsible excluded declaration can be named with confidence — a call edge the caller's own
+  (union-resolved) edges reach, landing in a peeked declaration whose own widened effects explain the
+  new hit, and exactly one such candidate — the finding is attributed THERE, matching how a direct scope
+  hit is already attributed. Where it cannot be (no such edge, or more than one candidate), the finding
+  is disclosed against the in-scope caller under `dispatch-widened` — candor-swift's name for the same
+  concept (`7378f4f`), reused deliberately rather than inventing a second one; neither has a SPEC clause
+  yet. A judged qual that IS ITSELF one of the peeked/excluded declarations (the multi-release case,
+  where the override shares the base's own qualified name) is never treated as a widening candidate —
+  it IS the exclusion, not a caller reaching one, and the direct arm above already reports it; getting
+  this wrong self-attributed a spurious duplicate `dispatch-widened` copy of the SAME finding. A caller
+  several hops up a call chain (`main` → `invoke` → the peeked declaration) is suppressed once a more
+  precise site further down the SAME chain already accounts for the same new effect, so a long chain
+  produces ONE finding rather than one per hop.
+  Five controls, falsified against the pre-fix binary: both fixtures now `exit 2` naming the excluded
+  declaration directly (`EvilDoer.work`, `Widget.work`); the UNSCOPED control for each still names the
+  same declaration, merged into ONE entry rather than two (`mergeOrAppendOOS`, by (fn, path), keeping
+  the first reason string — matching candor-swift's own dedup control); the finding names the excluded
+  declaration, not the in-scope caller, in every attributable case; an ordinary scan with no exclusions
+  and a separate excluded-file-nothing-calls fixture are BYTE-IDENTICAL, report and stderr modulo the
+  output filename, to the pre-fix binary (git-stashed and rebuilt for the comparison). `./gradlew test
+  --rerun-tasks` (853 tests, 0 failures), `test/smoke.sh` (547 passed), `ci/self-gate.sh` and
+  `soundness/reentrancy.sh` all pass; candor-java's own repo root under `deny Net`/`deny Exec` completes
+  in ~2s with the widening pass live (5 archives peeked), no observable regression against the peek's
+  existing 120s deadline.
+
+- **Lower severity, reported and fixed alongside the cardinal sin above: the source-peek's compile
+  classpath was the literal scan-root path rather than resolved per-package, so a repo-root scan with a
+  nested `build/classes` made the peek's own `javac` fail to resolve symbols** — MEASURED: an excluded
+  `EvilDoer implements Doer` failed with "cannot find symbol: variable Doer" on exactly the ordinary
+  Gradle/Maven shape (`build/classes/java/main` nested under the scanned root) this exclusion class
+  exists for, and the class stayed `peeked: false` (INCOMPLETE, not silent — but that failure mode
+  RENDERS THE SOURCE-PEEK ARM INERT on the tree shape a repo-root scan usually has, meaning fixture (1)
+  above was rarely exercised in practice before this fix). Fixed by recording, per compiled class, the
+  DIRECTORY it was actually found under (`Loader#collectClasses`, stripping the class's own
+  internal-name suffix off its file path — `AnalysisContext#classpathRoots`) and adding every such root
+  to the peek's compile classpath, alongside the literal scan-root path rather than instead of it (a
+  flat layout with no nested build directory still needs the latter). Confirmed on a fixture with
+  `<root>/src/main/java` + `<root>/build/classes` + an excluded source under `<root>/src/test/java`: the
+  class went from `peeked: false` (compile failure) to `peeked: true` with no other change to the tree.
+
 - **⚠ `--policy` is now a usage error (exit 2) on twelve descriptive/comparative verbs that never
   honoured it: `show`/`where`/`callers`/`map`/`diff`/`containment`/`reachable`/`path`/`impact`/
   `blindspots`/`tour`/`rewire`.** BACKLOG "candor-java: `--policy` is ACCEPTED and silently ignored on

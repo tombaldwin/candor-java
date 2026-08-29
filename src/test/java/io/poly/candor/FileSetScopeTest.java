@@ -573,4 +573,165 @@ class FileSetScopeTest {
         assertTrue(excludedClass(rpt2, "multi-release-override").get("peeked").getAsBoolean(),
             "present-and-empty is asked-and-clear, and it is a claim only if the class was READ");
     }
+
+    /**
+     * ⟨CHA-widening, a034371⟩ THE FOUR-WAY CARDINAL SIN: a peek finding used to be scope-matched ONLY
+     * against the EXCLUDED declaration's own qualified name, so a rule scoped to the IN-SCOPE CALLER that
+     * reaches it only through dynamic dispatch could never match — {@code peekHits} tested
+     * {@code Policy.scopeMatches(fn, r.scope())} with {@code fn} always the peeked declaration's own name,
+     * and the caller's effect set was never re-unioned against a fresh CHA that could see both sides.
+     *
+     * <p>Fixture (A) from the fix's own commit message: an in-scope {@code Doer} interface, an in-scope
+     * {@code RunnerCaller.invoke(Doer)} dispatching through it, and an UNCOMPILED {@code EvilDoer implements
+     * Doer} performing {@code Net} — genuine {@code source-without-class}, the java-specific exclusion kind
+     * (this engine reads bytecode; a `.java` with no compiled class cannot be judged at all). Both classes
+     * compile straight onto the scan root (package {@code app} lands at {@code root/app/*.class}) so this
+     * fixture needs nothing from the LOWER-SEVERITY classpath-roots fix landed in the same commit — only the
+     * CHA-widening mechanism is under test here.
+     *
+     * <p>{@code deny Net RunnerCaller} is a rule that can ONLY ever fire through the widening: on the
+     * pre-fix binary this reproduces the sin verbatim — exit 0, "no violations" — over a tree whose identical
+     * shape under an UNSCOPED {@code deny Net} already named {@code EvilDoer.work} directly. THE UNSCOPED
+     * ARM IS THE CONTROL, asserted in the same test: it must still be caught (proving the fixture really
+     * does contain a genuine finding) and must not be reported TWICE once the widening pass also reaches it
+     * (proving the fix's own (fn, path) dedup, not just its positive case).
+     */
+    @Test void aCallerScopedRuleCatchesAnExcludedDeclarationReachedOnlyThroughDispatch() throws Exception {
+        Path classes = compile(Map.of(
+            "Doer.java", String.join("\n",
+                "package app;",
+                "public interface Doer { void work() throws Exception; }"),
+            "RunnerCaller.java", String.join("\n",
+                "package app;",
+                "public class RunnerCaller {",
+                "  public static void invoke(Doer d) throws Exception { d.work(); }",
+                "}")));
+        Path root = tmp.resolve("cha-src");
+        Files.createDirectories(root);
+        copyTree(classes, root);   // app/Doer.class, app/RunnerCaller.class land directly at the scan root
+        Files.createDirectories(root.resolve("src/app"));
+        Files.writeString(root.resolve("src/app/EvilDoer.java"), String.join("\n",
+            "package app;",
+            "import java.net.URI;",
+            "import java.net.http.HttpClient;",
+            "import java.net.http.HttpRequest;",
+            "import java.net.http.HttpResponse;",
+            "public class EvilDoer implements Doer {",
+            "  public void work() throws Exception {",
+            "    HttpClient.newHttpClient().send(HttpRequest.newBuilder("
+                + "URI.create(\"https://evil.example/\")).build(), HttpResponse.BodyHandlers.ofString());",
+            "  }",
+            "}"));
+        rm(classes.getParent());
+
+        // THE SCOPED RULE — the one the pre-fix binary could never match.
+        Path scopedOut = tmp.resolve("cha-scoped.json");
+        Run scoped = runCli(root.toString(), "--json", scopedOut.toString(),
+                       "--policy", policy("cha-scoped.policy", "deny Net RunnerCaller\n").toString());
+        JsonObject scopedRpt = report(scopedOut);
+        JsonArray scopedOos = scopedRpt.getAsJsonArray("outOfScope");
+        assertNotNull(scopedOos, "a configured policy must answer, even with []: " + scopedRpt);
+        assertEquals(1, scopedOos.size(),
+            "the in-scope RunnerCaller dispatches to EvilDoer.work, which performs the denied Net — the "
+            + "pre-fix binary reported NOTHING here because the scope match ran against EvilDoer's own "
+            + "name, which `RunnerCaller` never matches: " + scopedOos);
+        JsonObject scopedHit = scopedOos.get(0).getAsJsonObject();
+        assertEquals("app.EvilDoer.work", scopedHit.get("fn").getAsString(),
+            "the finding must attribute to the excluded declaration ITSELF, not the in-scope caller — "
+            + "there is exactly one candidate the caller's own dispatch reaches: " + scopedOos);
+        assertEquals("source-without-class", scopedHit.get("class").getAsString(), scopedOos.toString());
+        assertTrue(scopedHit.get("effects").toString().contains("Net"), scopedOos.toString());
+        assertEquals(2, scoped.exit(),
+            "a peeked fn reached only through an in-scope caller's dispatch still makes the verdict "
+            + "INCOMPLETE — exit 0 here is the exact cardinal sin a034371 closed: " + scoped.stderr());
+
+        // THE CONTROL — an UNSCOPED rule over the identical tree already named the excluded declaration
+        // directly, even on the pre-fix binary. Proves the fixture is genuine, AND that the widening pass
+        // does not double-report the same fact through a second route.
+        Path unscopedOut = tmp.resolve("cha-unscoped.json");
+        Run unscoped = runCli(root.toString(), "--json", unscopedOut.toString(),
+                       "--policy", policy("cha-unscoped.policy", "deny Net\n").toString());
+        JsonObject unscopedRpt = report(unscopedOut);
+        JsonArray unscopedOos = unscopedRpt.getAsJsonArray("outOfScope");
+        assertEquals(1, unscopedOos.size(),
+            "an unscoped rule must catch the SAME single fact, not a second one added by the widening "
+            + "pass reaching it independently through RunnerCaller: " + unscopedOos);
+        assertEquals("app.EvilDoer.work", unscopedOos.get(0).getAsJsonObject().get("fn").getAsString());
+        assertEquals(2, unscoped.exit());
+    }
+
+    /**
+     * ⟨CHA-widening, a034371⟩ Fixture (B) from the same fix, THE MULTI-RELEASE-JAR SHAPE: a base
+     * {@code Widget.work} that is pure, a {@code META-INF/versions/17/Widget.class} override that performs
+     * {@code Net}, and an in-scope {@code Caller.invoke()} that calls {@code Widget.work()} — the same
+     * "caller reaches an excluded declaration" sin as fixture (A), but through a multi-release override
+     * REPLACING a base class's bytecode rather than through interface dispatch onto an uncompiled source.
+     * The fix closes both with the SAME mechanism ({@code applyDispatchWidening}, one scratch union tree
+     * per peek arm), so this fixture is "the same question wearing different clothes" (the commit's own
+     * words) and belongs beside fixture (A) rather than substituting for it.
+     */
+    @Test void aCallerScopedRuleCatchesAMultiReleaseOverrideReachedOnlyThroughAnInScopeCall() throws Exception {
+        Path base = compile(Map.of(
+            "Widget.java", String.join("\n",
+                "package com.x;",
+                "public class Widget { public static int work(int i) { return i + 1; } }"),
+            "Caller.java", String.join("\n",
+                "package com.x;",
+                "public class Caller { public static int invoke() { return Widget.work(5); } }")));
+        Path over = compile(Map.of("Widget.java", String.join("\n",
+            "package com.x;",
+            "import java.net.URI;",
+            "import java.net.http.HttpClient;",
+            "import java.net.http.HttpRequest;",
+            "import java.net.http.HttpResponse;",
+            "public class Widget {",
+            "  public static int work(int i) throws Exception {",
+            "    HttpClient.newHttpClient().send(HttpRequest.newBuilder("
+                + "URI.create(\"https://evil.example/\")).build(), HttpResponse.BodyHandlers.ofString());",
+            "    return i + 1;",
+            "  }",
+            "}")));
+        Path tree = tmp.resolve("cha-mr");
+        Files.createDirectories(tree.resolve("META-INF/versions/17"));
+        copyTree(base, tree);
+        // Only Widget's override is copied — the override module never had a Caller of its own, matching
+        // a real multi-release jar where the versioned directory holds only the classes it needs to replace.
+        copyTree(over.resolve("com"), tree.resolve("META-INF/versions/17/com"));
+        Path jar = tmp.resolve("cha-mr.jar");
+        jarUp(tree, jar);
+
+        // THE SCOPED RULE — pre-fix, exit 0/clean: the direct arm tests `com.x.Widget.work` against scope
+        // `Caller`, which never matches a fn that names Widget at all.
+        Path scopedOut = tmp.resolve("cha-mr-scoped.json");
+        Run scoped = runCli(jar.toString(), "--json", scopedOut.toString(),
+                       "--policy", policy("cha-mr-scoped.policy", "deny Net Caller\n").toString());
+        JsonObject scopedRpt = report(scopedOut);
+        JsonArray scopedOos = scopedRpt.getAsJsonArray("outOfScope");
+        assertNotNull(scopedOos, "a configured policy must answer, even with []: " + scopedRpt);
+        assertEquals(1, scopedOos.size(),
+            "in-scope Caller.invoke() calls Widget.work(), whose OVERRIDE performs the denied Net — the "
+            + "pre-fix binary reported nothing because the override's own qualified name never mentions "
+            + "`Caller`: " + scopedOos);
+        JsonObject scopedHit = scopedOos.get(0).getAsJsonObject();
+        assertEquals("com.x.Widget.work", scopedHit.get("fn").getAsString(),
+            "attributed to the override itself — the caller's dispatch reaches exactly one candidate: "
+            + scopedOos);
+        assertEquals("multi-release-override", scopedHit.get("class").getAsString(), scopedOos.toString());
+        assertTrue(scopedHit.get("effects").toString().contains("Net"), scopedOos.toString());
+        assertEquals(2, scoped.exit(),
+            "a peeked override reached only through an in-scope caller still makes the verdict "
+            + "INCOMPLETE — exit 0 here is fixture (B) of a034371's cardinal sin: " + scoped.stderr());
+
+        // THE CONTROL — an unscoped rule over the identical jar already named the override directly, even
+        // pre-fix, and must not be reported twice now that the widening pass also reaches it via Caller.
+        Path unscopedOut = tmp.resolve("cha-mr-unscoped.json");
+        Run unscoped = runCli(jar.toString(), "--json", unscopedOut.toString(),
+                       "--policy", policy("cha-mr-unscoped.policy", "deny Net\n").toString());
+        JsonArray unscopedOos = report(unscopedOut).getAsJsonArray("outOfScope");
+        assertEquals(1, unscopedOos.size(),
+            "an unscoped rule must catch the SAME single fact, not a second one added by the widening "
+            + "pass reaching it independently through Caller: " + unscopedOos);
+        assertEquals("com.x.Widget.work", unscopedOos.get(0).getAsJsonObject().get("fn").getAsString());
+        assertEquals(2, unscoped.exit());
+    }
 }

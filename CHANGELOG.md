@@ -8,6 +8,64 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **Guard-deletion sweep, round 2 — the ~90-candidate inventory the first pass left ANALYSIS-ONLY,
+  scoped to `Candor.java`'s dispatch/CHA-fanout machinery and the verdict/completeness chain
+  (`Query.java`).** Each candidate was mutated for real in a throwaway worktree — the guard's condition
+  forced to its no-op value, never reasoned about from the comment beside it — and run against the full
+  local suite (`./gradlew test --rerun-tasks`, `test/smoke.sh`, `ci/self-gate.sh`,
+  `soundness/reentrancy.sh`). ~20 guards were tested this way across `virtualDispatch`,
+  `untypedDepReceiver`, the `--gate-json` verdict-sink family, and `ReportCompleteness`'s hedge
+  predicates; the large majority were already well covered (proven RED on deletion by an existing test,
+  several by name in the code's own comments — `CrossScanBoundaryTest`, `ClosedEnumDispatchTest`,
+  `ClosedWorldTest`, `PrivateFunctionalParamForwardingTest`, `SoundnessSweepTest`). Four were not, and are
+  closed here, each with a regression proven RED on deletion and GREEN on restoration:
+  1. **`virtualDispatch`'s `dispatchExempt` (SPEC §4's Object-protocol exemption) had zero coverage of
+     its own contribution to the "genuine unresolved dispatch" branch.** A project abstract type that
+     redeclares `toString`/`equals`/`hashCode`/`compareTo` abstractly with no visible concrete
+     implementor (a value-object base class, or a documentation-only redeclare) fabricated an Unknown the
+     spec says must not exist — an over-charge, not a fabrication, which is exactly why it read as safe
+     and went unmeasured. New `projectAbstractRedeclareOfObjectProtocolStaysPureWithNoVisibleImpl`
+     (`StructuralDispatchTest`).
+  2. **The identical exemption's SECOND, independent call site — `untypedDepReceiver`'s own
+     `isChaExemptMethod` conjunct, sitting ahead of its documented 5-conjunct list without being one of
+     them — had the same zero coverage**, for the one shape that reaches it: a generic `Comparable<T>`
+     bridge through a chained-dependency interface (`a.compareTo(b)` erases to INVOKEINTERFACE
+     `lib.Store.compareTo(Ljava/lang/Object;)I`). Ordinary `toString`/`equals`/`hashCode` calls never
+     reach this code at all — confirmed via `javap` that javac resolves those to
+     `invokevirtual java/lang/Object.*` regardless of the receiver's static interface type, so `compareTo`
+     is the only member of the set this conjunct-chain can ever see. New
+     `comparableBridgeThroughChainedInterfaceStaysPureWithNoVisibleImpl` (`CrossScanBoundaryTest`).
+  3. **`refuseGateJsonAtConfig`/`gateJsonIsAtConfig` (SPEC §3.3.1 ⟨0.27⟩, "`.candor/config` is never a
+     verdict sink, wherever it is") had zero coverage of its own contribution.** Every existing test
+     poses a `.candor/config` this run itself DISCOVERS as an input, which the ordinary input-collision
+     guard already catches first — measured by running the real binary both ways before writing the
+     fixture. This guard's actual, distinctive job is a `.candor/config` belonging to some OTHER,
+     non-discovered directory, named directly: `--gate-json` arms (overwrites) its target unconditionally
+     and before any policy is read, so without this guard an unrelated project's config was destroyed on
+     the first byte of the run — the exact shape measured live on candor-swift, cited in the method's own
+     (previously unverified) javadoc. New `gateJsonSinkNamingAnUnrelatedConfigIsRefusedBytesUnchanged`
+     (`SinkArmingIntegrityTest`).
+  4. **`ReportCompleteness#absorb`'s ⟨0.34⟩ `unaskedRulesPredates033` merge — used by `containment
+     <baseline>`, which reads two report sets — had zero coverage.** Its own javadoc names the exact bug
+     a naive `&&` introduces ("a side that contributed NOTHING must not move the merged answer either"),
+     and a naive `&&` restored that exact bug: when only ONE side had `unaskedRules` entries, the other
+     side's default-`false` flag vetoed a genuinely-explained ("fully pre-⟨0.33⟩") answer into a false
+     "not explained" — mislabelling the disclosed CAUSE (this flag by design never moves an exit code).
+     New `ReportCompletenessAbsorbTest` (four cases: one side contributing, the other; neither; both).
+
+  `./gradlew test --rerun-tasks`: full suite green, 877 tests (7 new, all independently proven RED on
+  their guard's deletion and GREEN on restoration in a throwaway worktree). `test/smoke.sh`: 547 passed.
+  `ci/self-gate.sh` and `soundness/reentrancy.sh`: both OK. Runtime unchanged (~1m for `./gradlew test`,
+  same as before this sweep) — every fix here restores a guard that was already correct, closing a
+  coverage gap on it, not a live defect in the shipped verdict.
+
+  **Left unreached, named rather than silently dropped:** `Candor.java`'s file-set staleness/peek trio
+  (`peekExcluded`'s per-class accounting, `undrivableClasses`, the multi-language-sibling withdrawal
+  rule) beyond the coverage `FileSetScopeTest`/`UnreadCodeRouteTest` already exercise; `Query.java`'s
+  envelope shape-coercion guards; and `Policy.java`'s parser internals entirely (25 candidates the first
+  pass named, plus whatever else lives beyond them) — none of these were re-verified by deletion in this
+  round.
+
 - **Guard-deletion sweep (systematic, not the usual single-fix follow-up): every early-return,
   `instanceof` gate, and allowlist/denylist membership test on the silent-vs-disclosed boundary in
   `Loader.java`/`AnalysisContext.java`/`Rules.java` was deleted in turn, in a throwaway worktree, to see

@@ -571,6 +571,42 @@ class CrossScanBoundaryTest {
                         + r.get("app.S.run"));
     }
 
+    /** GUARD-DELETION SWEEP: {@code untypedDepReceiver} has an unnumbered guard ahead of the documented
+     *  5 conjuncts — {@code isChaExemptMethod}, "the conventionally-pure surface" — that had zero coverage
+     *  of its own contribution: deleting it left the full unit suite AND {@code smoke.sh} green. It matters
+     *  for exactly one shape: a generic {@code Comparable<T>} bridge. {@code a.compareTo(b)} through a
+     *  chained-dep interface erases to INVOKEINTERFACE {@code lib.Store.compareTo(Ljava/lang/Object;)I} —
+     *  every other conjunct (interface dispatch, non-mono receiver, chained pkg, empty project CHA, AND a
+     *  same-signature effectful body elsewhere in the dep — {@code LoudKey}'s bridge) is satisfied, so
+     *  without this guard the SPEC §4 conventionally-pure {@code compareTo} bridge fabricates an Unknown.
+     *  (Ordinary {@code toString}/{@code equals}/{@code hashCode} calls through an interface-typed receiver
+     *  do NOT reach this code at all — javac resolves them to {@code invokevirtual java/lang/Object.*}
+     *  regardless of the receiver's static interface type, confirmed via javap — so {@code compareTo} is
+     *  the only member of the Object-protocol set this conjunct-chain can ever see.) */
+    @Test
+    void comparableBridgeThroughChainedInterfaceStaysPureWithNoVisibleImpl() throws Exception {
+        Map<String, String> lib5WithComparable = new java.util.HashMap<>(LIB5);
+        lib5WithComparable.put("lib/Ordered.java",
+            "package lib;\npublic interface Ordered extends Comparable<Ordered> {}\n");
+        // A RAW Comparable (no generic argument) declares compareTo(Object) directly — not a synthetic
+        // bridge (candor's scanner does not analyse bridge/synthetic methods, so a generic
+        // Comparable<LoudKey>'s auto-generated bridge never appears in the dep report at all; this is the
+        // one shape that puts a REAL, analysed method under the erased `(Ljava/lang/Object;)I` descriptor).
+        lib5WithComparable.put("lib/LoudKey.java", String.join("\n",
+            "package lib;",
+            "@SuppressWarnings({\"unchecked\", \"rawtypes\"})",
+            "public class LoudKey implements Comparable {",
+            "  public int compareTo(Object o){ System.getenv(\"HOME\"); return 0; }",
+            "}"));
+        Map<String, EffectSet> r = scanChained(lib5WithComparable, Map.of("app/S.java", String.join("\n",
+            "package app; import lib.Ordered;",
+            "public class S { public int run(Ordered a, Ordered b){ return a.compareTo(b); } }")));
+        assertFalse(r.getOrDefault("app.S.run", EffectSet.empty()).toNames().contains("Unknown"),
+                "a Comparable bridge (Object-protocol, SPEC §4 conventionally pure) through a chained "
+                        + "interface with no visible impl must stay pure, not fabricate Unknown, got "
+                        + r.get("app.S.run"));
+    }
+
     /** A hand-off invokes ONE member of the constructed type — the interface's SAM — plus the constructor.
      *  The rest of the type's reported surface is unreachable through it, and inheriting all of it charged
      *  a scheduling method with effects no call path reaches. */

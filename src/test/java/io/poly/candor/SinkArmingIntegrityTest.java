@@ -474,6 +474,39 @@ class SinkArmingIntegrityTest {
         assertEquals(2, r.exit(), "refused, exit 2\nSTDERR:\n" + r.stderr());
     }
 
+    /** GUARD-DELETION SWEEP: {@code refuseGateJsonAtConfig}/{@code gateJsonIsAtConfig} — SPEC §3.3.1
+     *  ⟨0.27⟩, "`.candor/config` is never a verdict sink, wherever it is" — had ZERO test coverage of its
+     *  own contribution. Pointing {@code --gate-json} at the config THIS run actually discovers is
+     *  already caught by the ordinary input-collision guard ({@code refuseGateJsonOverInput} — the
+     *  discovered config is registered as a run input), so that shape does not exercise this method at
+     *  all; MEASURED by running the real binary both ways before writing this test. This guard's actual
+     *  distinctive job is a {@code .candor/config} the run does NOT discover — some OTHER directory's
+     *  config, named directly and not on the target's upward walk — which the input-collision guard has
+     *  no way to know about, because it was never told about it. Deleting this guard left that path
+     *  unprotected: MEASURED live, `--gate-json <unrelated>/.candor/config` exited 0 and overwrote the
+     *  unrelated config with the verdict placeholder; restoring the guard refused it, exit 2, bytes
+     *  unchanged. The full unit suite AND `smoke.sh` stayed green with the guard deleted — this exact
+     *  shape (an unrelated, non-discovered `.candor/config`) had never been posed. */
+    @Test
+    void gateJsonSinkNamingAnUnrelatedConfigIsRefusedBytesUnchanged() throws Exception {
+        Path cls = compileNetFixture();
+        // A SEPARATE .candor/config, in a directory that is not on cls's upward walk — this run never
+        // discovers it as an input, so only the SHAPE-based guard can protect it.
+        Path elsewhere = scratch.resolve("elsewhere");
+        Path dotCandor = elsewhere.resolve(".candor");
+        Files.createDirectories(dotCandor);
+        Path config = dotCandor.resolve("config");
+        Files.writeString(config, "unrelated-marker\n");
+        byte[] before = Files.readAllBytes(config);
+        Run r = runCli(cls.toString(), "--gate-json", config.toString());
+        assertArrayEquals(before, Files.readAllBytes(config),
+                "--gate-json <an UNRELATED .candor/config> DESTROYED it (measured live on candor-swift's "
+                + "shape — the run then exited 0 with no gate at all)\nSTDERR:\n" + r.stderr());
+        assertEquals(2, r.exit(), "a gate-json sink naming any .candor/config is refused, exit 2\nSTDERR:\n" + r.stderr());
+        assertTrue(r.stderr().contains(".candor/config"),
+                "the refusal names the .candor/config shape it matched\nSTDERR:\n" + r.stderr());
+    }
+
     @Test
     void jsonSinkStemWhoseSidecarIsTheBaselinesSidecarIsRefusedBytesUnchanged() throws Exception {
         // THE SINK EXPANDS TOO: `--json base` (no .json) writes `base` AND `base.callgraph.json` — with

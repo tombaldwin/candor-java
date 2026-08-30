@@ -470,4 +470,33 @@ class StructuralDispatchTest {
         assertTrue(r.getOrDefault("app.N.viaHalf", EffectSet.empty()).toNames().contains("Fs"),
                 "Half2 inherits Root2.go — a CLASS body beats Trace3's default: " + r.get("app.N.viaHalf"));
     }
+
+    /** GUARD-DELETION SWEEP: {@code virtualDispatch}'s {@code dispatchExempt} (line ~5155, {@code
+     *  isChaExemptMethod}) had zero coverage of its own unique contribution — deleting it (forcing
+     *  {@code dispatchExempt = false}) left the FULL unit suite, {@code smoke.sh}, and {@code
+     *  self-gate.sh} entirely green. The "genuine unresolved dispatch" branch just below it (line
+     *  ~5296: a project interface/abstract type DECLARES a method with no visible concrete impl → honest
+     *  Unknown) is correct and well tested (see {@code aSuperclassBodyBeatsAnInterfaceDefaultOnAnOrdinaryDispatch}
+     *  and friends) for ordinary members, but SPEC §4 carves the Object-protocol surface
+     *  (toString/hashCode/equals/compareTo) out as conventionally pure EVEN WHEN a project abstraction
+     *  redeclares one of them abstractly with no visible override — exactly the shape a value-object base
+     *  class or a documentation-only redeclare produces. Without {@code dispatchExempt}, that redeclare
+     *  fabricates an Unknown the SPEC says must not exist, silently: no test held the receiver a project
+     *  abstract type WHOSE unimplemented method is also Object-protocol-shaped. */
+    @Test
+    void projectAbstractRedeclareOfObjectProtocolStaysPureWithNoVisibleImpl() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of("app/O.java", String.join("\n",
+            "package app;",
+            "abstract class Base { public abstract String toString(); public abstract boolean equals(Object o); }",
+            "public class O {",
+            "  void run(Base b){ b.toString(); }",
+            "  void runEquals(Base b, Object o){ b.equals(o); }",
+            "}")));
+        assertTrue(r.getOrDefault("app.O.run", EffectSet.empty()).isEmpty(),
+                "toString() on a project abstract type with NO visible impl must stay pure (Object-protocol "
+                        + "exemption), not fabricate Unknown, got " + r.get("app.O.run"));
+        assertTrue(r.getOrDefault("app.O.runEquals", EffectSet.empty()).isEmpty(),
+                "equals(Object) on a project abstract type with NO visible impl must stay pure, got "
+                        + r.get("app.O.runEquals"));
+    }
 }

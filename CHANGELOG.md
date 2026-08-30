@@ -8,6 +8,66 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **Guard-deletion sweep (systematic, not the usual single-fix follow-up): every early-return,
+  `instanceof` gate, and allowlist/denylist membership test on the silent-vs-disclosed boundary in
+  `Loader.java`/`AnalysisContext.java`/`Rules.java` was deleted in turn, in a throwaway worktree, to see
+  whether anything noticed.** Most did (`declaresItselfIncomplete`/`claimsToHaveJudgedNothing`/
+  `hasNoManifest`/`isSidecarName` all go red on deletion — genuinely covered, not just named-alike). Two
+  did not, and are closed here; a third confirmed-untested guard (the refresh-split growth detector) also
+  gained coverage even though nothing was wrong with it.
+  1. **`Rules#isPanacheRepoBase`/`isPanacheEntityBase`'s `!byName.containsKey` fabrication guard had ZERO
+     test coverage of its own unique contribution.** The existing lookalike test
+     (`PanachePersistenceTest#panacheActiveRecordAndRepositoryInferDb_lookalikeStaysPure`) stayed fully
+     green with the guard deleted, because its lookalike class declares CONCRETE bodies for `persist()`/
+     `listAll()`, and a completely separate check at the `Candor.java` call site (`ownBody`/
+     `!visibleBody`) already saves any project method that has its own body, regardless of whether the
+     self-match fired. New `panacheLookalikeAbstractMembersStayPure_noOwnBodyFallbackToRescue` uses
+     ABSTRACT members (an interface method with no body anywhere) specifically to remove that fallback
+     from the picture: with the guard deleted, a project's own `app.panache.LookalikeEntityBase` and an
+     interface extending a project `app.panache.FooRepository` both fabricated `Db` on a call with no
+     visible implementor (`[Db, Unknown]` and `[Db]`); with the guard restored, both correctly read the
+     honest `Unknown` a CHA-miss deserves, never `Db` and never silently pure. Proven RED on deletion and
+     GREEN on restoration in a throwaway worktree before being trusted.
+  2. **`Policy#scopeIsExact` (the trailing `::`/`.` exact-segment marker, fixed for a reported field bug
+     where `forbid aws -> app` fired 14 times on honest AWS SDK calls because bare `app` prefix-matches
+     `application`) had never been exercised by a single test.** A grep of every test file for a scope
+     literal ending in `::` or `.` — as opposed to `::` used mid-string as an ordinary segment separator,
+     which several tests do use — found zero hits, and replacing the method body with `return false`
+     left the entire unit suite, the smoke suite, and `ci/self-gate.sh` fully green: the exact fabrication
+     the original fix closed was one silent regression away from reopening with nobody noticing. New
+     `ScopeExactSuffixTest` pins both the `::` and `.` forms, the additive control that bare `app` keeps
+     its documented prefix behaviour, and that the exact marker binds the scope's LAST segment wherever
+     it matches inside a longer name, not only at the tail.
+  3. **`AnalysisContext#assertNoInputGrowth` — the refresh-cache split's own correctness detector
+     (CANDOR_REFRESH_VERIFY) — had no test calling it directly**, and it only ever runs inside a real scan
+     under that env var, over input sizes that never happen to grow under the current field set; the
+     detector had never actually been proven to fire. New `AnalysisContextInputGrowthTest` calls it
+     directly with a manufactured growth and confirms both that it throws `UnmergeableDelta` and that the
+     thrown message NAMES the misclassified field (so a future fix lands on the right accumulator, not a
+     slot number), plus the unchanged-sizes control proving the RED comes from the growth, not from
+     merely invoking the method.
+
+  Also swept and confirmed genuinely dead (not deleted, reported): `AnalysisContext#outputFields`'s
+  empty-reflection-result throw (a real, previously-shipped GraalVM native-image incident — see
+  `docs/native-image.md` — but its recovery path can only be exercised under GraalVM native-image, which
+  this JVM-only unit suite cannot drive; `native.yml`'s release-time parity check is the gate that
+  actually watches it) and the `mergeInto`/`foldValue` unrecognised-accumulator-type throws (every
+  current `final` field's value type is one `foldValue` already handles — `EffectSet`, a `Collection`,
+  `Integer`, or `String` — so the throw is unreachable under the present field set by construction; its
+  entire job is to fire the day a future field breaks that invariant, which cannot be tested without
+  first breaking it). A wider single-session sweep of `Candor.java`/`Query.java`/`Policy.java` inventoried
+  ~90 further guard candidates on the same boundary (dispatch/CHA-fanout resolution, the file-set
+  staleness/peek trio, the `gate --report` verdict-precedence chain, `ReportCompleteness`'s hedge
+  predicates, the policy scope/narrowing chain) with a test-coverage proxy per candidate, but did not
+  re-verify each by actual deletion — an inventory, not a second closed sweep; see the session notes for
+  the full list and which items carry the weakest test evidence.
+
+  `./gradlew test --rerun-tasks`: full suite green (6 new test methods, all independently proven RED on
+  their guard's deletion and GREEN on its restoration in a throwaway worktree). `test/smoke.sh`: 547
+  passed. `ci/self-gate.sh` and `soundness/reentrancy.sh`: both OK. Runtime unchanged (no production
+  behaviour moved — every fix here restores a guard that was already correct, closing a coverage gap on
+  it, not a live defect in the shipped verdict).
+
 - ⚠ **CARDINAL SIN, closed: a `CONSTANT_Dynamic` (condy) constant made the calling method vanish from
   the report entirely — not `Unknown`, not `unresolved`, absent.** ASM surfaces a condy `ldc` as an
   `LdcInsnNode` whose `cst` is a `ConstantDynamic` — a DIFFERENT bytecode form from `invokedynamic`

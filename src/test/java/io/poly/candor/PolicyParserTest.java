@@ -123,6 +123,38 @@ class PolicyParserTest {
         assertTrue(ctx().forbidRules.isEmpty(), "an unspaced arrow is malformed and must be dropped");
     }
 
+    /**
+     * ⟨0.29⟩ `only <A> -> <B> [<C> …]`'s OWN malformed-form drop — the sibling of {@link
+     * #forbidRequiresSpacedArrow} for a rule kind `forbid`'s test does not exercise. {@code only} reuses
+     * the identical {@code t.length >= 4 && t[2].equals("->")} shape and the identical {@link
+     * Policy#warnPolicy} call, but is a SEPARATE {@code case} in the parser's switch (added a whole rung
+     * later, ⟨0.29⟩) — a distinct call site nothing before this test drove. Before this test, deleting the
+     * {@code warnPolicy} call from the {@code only} arm entirely (turning the drop silent — no stderr
+     * warning, no {@link Policy#policyErrors} entry, no {@code ignored} row in the verdict document) left
+     * the FULL suite green: {@code onlyRules} was already empty either way, because the {@code if} that
+     * adds the rule never fired — only the DISCLOSURE was unprotected, and nothing exercised it. This is
+     * the A.2 shape named in the corpus brief: one grammar rule's malformed-form drop tested, its sibling
+     * rule kind's identical-shaped drop not. */
+    @Test
+    void onlyRequiresSpacedArrowAndDropsWithDisclosure() throws Exception {
+        parse("only app.M -> app.util app.infra");
+        assertEquals(1, ctx().onlyRules.size());
+        assertEquals("app.M", ctx().onlyRules.get(0).from());
+        assertEquals(List.of("app.util", "app.infra"), ctx().onlyRules.get(0).to());
+        fresh();
+        parse("only app.M->app.util");
+        assertTrue(ctx().onlyRules.isEmpty(), "an unspaced arrow is malformed and must be dropped, exactly "
+                + "as `forbid`'s");
+        assertEquals(1, Policy.policyErrors.size(),
+                "the drop must be RECORDED — a silent drop here is indistinguishable from the operator's "
+                + "permission list actually having no rule at all, which is fail-OPEN for a form whose "
+                + "entire point is to fail safe");
+        assertEquals("rule-form", Policy.policyErrors.get(0).kind());
+        assertTrue(Policy.policyErrors.get(0).message().contains("DROPPED"),
+                "…and the message says DROPPED, not merely that a token failed: "
+                + Policy.policyErrors.get(0).message());
+    }
+
     /** `allow <Effect> in <scope> <values…>` parses the scope + values; a value-less allow is dropped (not
      *  left with "in" kept as a value), and only Net/Exec/Fs/Db carry an allow surface. */
     @Test

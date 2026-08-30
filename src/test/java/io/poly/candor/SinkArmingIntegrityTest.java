@@ -507,6 +507,48 @@ class SinkArmingIntegrityTest {
                 "the refusal names the .candor/config shape it matched\nSTDERR:\n" + r.stderr());
     }
 
+    /** GUARD-DELETION SWEEP, ROUND 3: {@code gateJsonIsAtConfig}'s <b>OTHER</b> call site — inside
+     *  {@code gateJsonIsInput} (Candor.java ~3126), reached only from the DUPLICATE {@code --gate-json}
+     *  branch (~line 2038), never from {@link #gateJsonSinkNamingAnUnrelatedConfigIsRefusedBytesUnchanged}
+     *  above, which drives the SINGLE-sink path ({@code refuseGateJsonOverAnyInput} ->
+     *  {@code refuseGateJsonAtConfig}, a sibling call one hop away). Same guard, same shape check, a
+     *  second independent call site that nothing before this test drove — the exact A.2 shape (a test
+     *  inherits the blind spot of the bug report that prompted it): the config spelling that defeated the
+     *  first version of this guard was fixed and fixture'd on ONE of its two call sites and not the other.
+     *
+     *  <p>MEASURED: with {@code gateJsonIsAtConfig(gateJson)} deleted from {@code gateJsonIsInput}'s OR
+     *  chain, the config sink here is no longer found in {@code offending} (it is not under the target,
+     *  not a discovered run input, and not at a config the run walked to — nothing else in the duplicate
+     *  branch asks the SHAPE question), so {@code offending.size() != namedSinks.size()} takes the
+     *  "write the refusal to every non-offending path" branch and writes the fail-closed placeholder text
+     *  straight over the unrelated {@code .candor/config} — the same destruction the single-sink guard
+     *  exists to prevent, through the sink-count-two spelling instead of the sink-count-one one. */
+    @Test
+    void duplicateGateJsonSinksStillRefuseAnUnrelatedConfigOneOfTwo() throws Exception {
+        Path cls = compileNetFixture();
+        // A SEPARATE .candor/config this run never discovers (not on cls's upward walk) — only the
+        // SHAPE-based check can protect it, exactly as in the single-sink sibling above.
+        Path elsewhere = scratch.resolve("elsewhere");
+        Path dotCandor = elsewhere.resolve(".candor");
+        Files.createDirectories(dotCandor);
+        Path config = dotCandor.resolve("config");
+        Files.writeString(config, "unrelated-marker\n");
+        byte[] before = Files.readAllBytes(config);
+        Path other = scratch.resolve("verdict.json");
+        // TWO --gate-json sinks: the duplicate-sinks branch, whose OWN gateJsonIsInput call is the one
+        // under test — never reached by a single `--gate-json <config>` invocation.
+        Run r = runCli(cls.toString(), "--gate-json", other.toString(), "--gate-json", config.toString());
+        assertArrayEquals(before, Files.readAllBytes(config),
+                "--gate-json <verdict.json> --gate-json <an UNRELATED .candor/config> DESTROYED the config "
+                + "— the DUPLICATE-sinks branch's own is-input check let it through even though the "
+                + "single-sink path already refuses this exact shape\nSTDERR:\n" + r.stderr());
+        assertEquals(2, r.exit(), "a gate-json sink naming any .candor/config is refused, even beside "
+                + "another named sink\nSTDERR:\n" + r.stderr());
+        assertTrue(r.stderr().contains(config.toString()) && r.stderr().contains("INPUT"),
+                "the offending sink is named as an input in the duplicate-sinks message\nSTDERR:\n"
+                + r.stderr());
+    }
+
     @Test
     void jsonSinkStemWhoseSidecarIsTheBaselinesSidecarIsRefusedBytesUnchanged() throws Exception {
         // THE SINK EXPANDS TOO: `--json base` (no .json) writes `base` AND `base.callgraph.json` — with

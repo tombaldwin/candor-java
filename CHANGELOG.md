@@ -66,6 +66,50 @@ after upgrading; review policies and regenerate baselines with the new build.
   pass named, plus whatever else lives beyond them) — none of these were re-verified by deletion in this
   round.
 
+- **Guard-deletion sweep, round 3 — the two items round 2 named and left unreached first: `Policy.java`'s
+  parser, and `gateJsonIsAtConfig`'s OTHER call site.** Same method (mutate the guard for real in a
+  throwaway worktree, run `./gradlew test --rerun-tasks` + `test/smoke.sh` + `ci/self-gate.sh` +
+  `soundness/reentrancy.sh`, require every non-target test to stay green before trusting the new one).
+  1. **`gateJsonIsAtConfig` (SPEC §3.3.1 ⟨0.27⟩) has TWO independent call sites, and round 2 fixed only
+     one.** `refuseGateJsonAtConfig` (the single-`--gate-json` path) got
+     `gateJsonSinkNamingAnUnrelatedConfigIsRefusedBytesUnchanged` last round; `gateJsonIsInput`'s own `||`
+     branch — reached only from the DUPLICATE-`--gate-json` path (`--gate-json a --gate-json b`), which
+     asks "is this sink an input" without exiting so the other named sink still gets its answer — had
+     never been driven by any fixture. MEASURED: deleting `gateJsonIsAtConfig(gateJson)` from
+     `gateJsonIsInput`'s OR chain left the full 878-test suite (and `smoke.sh`) green, and
+     `--gate-json verdict.json --gate-json <unrelated>/.candor/config` then wrote the two-sinks refusal
+     document straight over the unrelated config — the identical destruction the single-sink guard exists
+     to prevent, through the sink-count-two spelling. This is the A.2 shape the corpus brief names
+     verbatim: one call site of a guard tested, its sibling not. New
+     `duplicateGateJsonSinksStillRefuseAnUnrelatedConfigOneOfTwo` (`SinkArmingIntegrityTest`).
+  2. **`Policy.java`'s parser: the `only <A> -> <B> […]` rule kind's OWN malformed-form drop had zero
+     coverage**, even though `forbid`'s identically-shaped malformed-arrow drop
+     (`forbidRequiresSpacedArrow`) has been pinned for a while. `only` reuses the same
+     `t.length >= 4 && t[2].equals("->")` test and the same `warnPolicy` call, but is a separate `case`
+     added a whole rung later (⟨0.29⟩) — a distinct call site nothing before this test drove. MEASURED:
+     deleting the `warnPolicy` call from the `only` arm (the drop stays silent — no stderr warning, no
+     `policyErrors` entry, no `ignored` row in the verdict document; `onlyRules` was already empty either
+     way, since the `if` that adds the rule never fired) left the full 879-test suite and `smoke.sh`
+     green. A silent drop here is fail-open in the sharpest way this rule kind has: `only`'s entire point
+     is to fail SAFE by enumerating what IS permitted, so an operator whose malformed line vanished with
+     no trace reads a permission list that is actually no rule at all. New
+     `onlyRequiresSpacedArrowAndDropsWithDisclosure` (`PolicyParserTest`).
+
+  `./gradlew test --rerun-tasks`: full suite green, 879 tests (2 new, both independently proven RED on
+  their guard's deletion and GREEN on restoration in a throwaway worktree). `test/smoke.sh`: 547 passed.
+  `ci/self-gate.sh` and `soundness/reentrancy.sh`: both OK. Runtime unchanged.
+
+  **Left unreached, bounded deliberately (the brief's own scope order put these two first, then said stop
+  and report):** `Query.java`'s envelope shape-coercion guards (a consumer that COERCES a
+  malformed/unexpected report field rather than refusing it), and `peekExcluded`'s per-class accounting
+  internals (`undrivableClasses`, the multi-language-sibling withdrawal rule) beyond
+  `FileSetScopeTest`/`UnreadCodeRouteTest`'s existing coverage. Both are named, not silently dropped;
+  neither was attempted this round. The rest of `Policy.java`'s parser (the `deny`/`allow` vocabulary
+  paths, `checkAllowlist`, `scopeMatches`/`reachesScope`) was read in full and is already covered by
+  `PolicyParserTest`/`PolicyVocabularyAnchorTest`/`ScopeExactSuffixTest`/`HelpersTest`/
+  `LayerWitnessOrderTest`; the `only` gap above was the one branch of the parser's actual `switch` with no
+  fixture reaching it at all.
+
 - **Guard-deletion sweep (systematic, not the usual single-fix follow-up): every early-return,
   `instanceof` gate, and allowlist/denylist membership test on the silent-vs-disclosed boundary in
   `Loader.java`/`AnalysisContext.java`/`Rules.java` was deleted in turn, in a throwaway worktree, to see

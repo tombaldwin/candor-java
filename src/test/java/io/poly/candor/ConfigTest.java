@@ -127,6 +127,45 @@ class ConfigTest {
                 c.value("deps", UNSET));
     }
 
+    /**
+     * ⟨0.34⟩ THE SIBLING OF {@link #depsBecomeAPathList}, which is the fixture this key never got.
+     *
+     * <p>{@code peek-classpath} is a path LIST — {@code Candor}'s peek setup splits its value on the OS
+     * path separator — but it was added to {@code PATH_KEYS} beside {@code policy}/{@code baseline},
+     * whose values are ONE path, so the generic arm anchor-resolved the whole joined string as a single
+     * filename. MEASURED before the fix, both keys in the SAME config, same anchor, same run, only the
+     * key differing:
+     * <pre>
+     *   deps           => &lt;root&gt;/libs/x.json:&lt;root&gt;/libs/y.json   (both anchored)
+     *   peek-classpath => &lt;root&gt;/libs/a.jar:libs/b.jar              (only the FIRST anchored)
+     * </pre>
+     * Every entry after the first then arrived CWD-relative, failed {@code Files.exists} in the peek
+     * setup and was dropped with a warning — a checked-in config whose meaning depends on the launch
+     * directory, which is precisely what anchoring exists to remove.
+     *
+     * <p>The assertion names EVERY element's resolved form rather than just the tail, so a future
+     * "fix" that anchors the last one instead of the first cannot pass it either.
+     */
+    @Test
+    void peekClasspathBecomesAnAnchoredPathList_everyEntry_notJustTheFirst() throws Exception {
+        // The separator is the PATH separator here (not whitespace as for `deps`): this key's grammar is
+        // the `--peek-classpath` flag's, and the consumer splits it exactly this way.
+        Config c = write("peek-classpath ../libs/a.jar" + File.pathSeparator + "../libs/b.jar"
+                + File.pathSeparator + "../libs/c.jar\n");
+        assertEquals(anchored("../libs/a.jar") + File.pathSeparator + anchored("../libs/b.jar")
+                        + File.pathSeparator + anchored("../libs/c.jar"),
+                c.value("peek-classpath", UNSET),
+                "every entry of the peek classpath anchors at the config, not just the first");
+    }
+
+    /** The single-entry form is unchanged by the list treatment — the control for the direction the fix
+     *  did NOT intend (a value with no separator must still resolve exactly as `policy`/`baseline` do). */
+    @Test
+    void aSingleEntryPeekClasspathStillResolvesLikeAnyOtherPathKey() throws Exception {
+        Config c = write("peek-classpath libs/only.jar\n");
+        assertEquals(anchored("libs/only.jar"), c.value("peek-classpath", UNSET));
+    }
+
     @Test
     void envOverridesTheConfigFile() throws Exception {
         // The precedence contract, tested at the seam we CAN control: an env var that IS set (PATH exists on

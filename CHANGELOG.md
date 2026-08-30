@@ -8,6 +8,71 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ `peek-classpath` was the one path-bearing input SPEC §3.3.1 (3) never learned about — three
+  defects, all found by asking the A.2 question (what ELSE has this shape?) of the ⟨0.32⟩ key, and all
+  previously carrying ZERO tests of any kind** (`grep -r peek-classpath src/test/ test/` returned
+  nothing). Every one is the same story: the flag/key was added beside siblings that each already had the
+  treatment, and got none of them.
+  1. **A declared peek-classpath entry named as a sink was DESTROYED, at exit 0.** `javac` READS those
+     jars during the compile-peek, so they are inputs in exactly the sense §3.3.1 (3) means — but
+     `runInputs` registered the target, `--policy`, `CANDOR_POLICY`/`BASELINE`/`CONFIG`/`DEPS` and the
+     config's `policy`/`baseline`/`deps`, and not this one. MEASURED, target `cls`, `libs/dep.jar` at
+     716 bytes, everything else held constant, with the siblings as the control:
+     ```
+     --policy libs/gate.pol         --json <same path>       → exit 2, intact
+     config `deps libs/dep.jar`     --json <same path>       → exit 2, intact
+     --peek-classpath libs/dep.jar  --json <same path>       → EXIT 0, jar → a 279-byte report
+     --peek-classpath libs/dep.jar  --gate-json <same path>  → EXIT 0, jar → a  91-byte verdict
+     config `peek-classpath …`      --json <same path>       → EXIT 0, destroyed
+     CANDOR_PEEK_CLASSPATH=…        --json <same path>       → EXIT 0, destroyed
+     ```
+     Worse than the scan-target case that prompted the guard in the first place: that one exited 2 and
+     diagnosed what it had broken. This printed a report summary and returned SUCCESS over the operator's
+     destroyed dependency — and the `--gate-json` spelling said "no violations" while doing it. All three
+     spellings now register through one helper (`addPeekClasspathInputs`), split on the path separator the
+     peek's own consumer splits on, because a guard that enumerates differently from the consumer guards a
+     different set of files.
+  2. **The arming pre-pass did not know `--peek-classpath` takes a value, so the flag's VALUE became the
+     scan TARGET whenever the flag preceded the real one** — and every §3.3.1 guard, including the walk
+     that discovers `.candor/config`, was then computed against the wrong tree. MEASURED with identical
+     argv tokens and ONLY the flag's position differing, `<root>/.candor/config` declaring a `policy`:
+     ```
+     candor proj/cls --peek-classpath other/dep.jar --json <that policy>  → exit 2, policy intact
+     candor --peek-classpath other/dep.jar proj/cls --json <that policy>  → EXIT 0, policy DESTROYED
+     ```
+     The pre-pass had walked up from `other/dep.jar`, found no config there, and so never registered the
+     policy the run went on to read. This is the "the pre-pass must agree with the parse loop" defect this
+     rung already paid for once on `--policy`; the pre-pass now consumes the value token-for-token with
+     the parse loop (which refuses a flag-shaped value, so `-` is deliberately NOT value-shaped here).
+  3. **A multi-entry `peek-classpath` in `.candor/config` anchored only its FIRST entry.** The key was
+     added to `PATH_KEYS` beside `policy`/`baseline`, whose values are ONE path, while the consumer splits
+     it on the path separator — so the generic arm resolved the whole joined string as a single filename.
+     MEASURED, both keys in the same config, same anchor, same run, only the key differing:
+     ```
+     deps           => <root>/libs/x.json:<root>/libs/y.json   (both anchored)
+     peek-classpath => <root>/libs/a.jar:libs/b.jar            (only the FIRST anchored)
+     ```
+     Every entry after the first arrived CWD-relative, failed `Files.exists` in the peek setup and was
+     dropped with a warning — a checked-in config whose meaning depends on the launch directory, which is
+     the one thing anchoring exists to remove. `deps`, the twin, has had the list treatment since it was
+     added.
+
+  Nine regressions added (`SinkArmingIntegrityTest` ×7, `ConfigTest` ×2), each proven RED by deleting its
+  guard in a throwaway worktree and GREEN on restoration, with the mutations chosen to DISCRIMINATE: the
+  argv-agreement row was isolated by a mutation that still registers the value but leaves the token live,
+  and it alone goes red there. That mutation run also caught a defect in the FIRST draft of that test —
+  its declared jar sat inside the config's own tree, so discovery from the mis-taken target still reached
+  the same config and the test stayed green while the others went red. The fixture now puts the jar in a
+  sibling tree. Two over-charge controls guard the direction the fix did not intend: a peek classpath
+  beside an UNRELATED sink still runs to completion and publishes (a "refuse every run that declares one"
+  fix passes every other assertion), and a single-entry config value still resolves exactly as
+  `policy`/`baseline` do. Report-level control: candor-java scanned with the pre-fix and post-fix builds
+  produces byte-identical reports (296,607 bytes, structurally equal with the build id stripped) — this
+  touches sink guarding and config resolution only, no classification.
+
+  `./gradlew test --rerun-tasks`: 888 tests, all green (879 before). `test/smoke.sh`: 547 passed.
+  `ci/self-gate.sh` and `soundness/reentrancy.sh`: both OK.
+
 - **Guard-deletion sweep, round 2 — the ~90-candidate inventory the first pass left ANALYSIS-ONLY,
   scoped to `Candor.java`'s dispatch/CHA-fanout machinery and the verdict/completeness chain
   (`Query.java`).** Each candidate was mutated for real in a throwaway worktree — the guard's condition

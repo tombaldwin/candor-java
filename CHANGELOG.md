@@ -8,6 +8,63 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **The config-shape sink guard is CORRECT, and four of its six ROUTES had no test that could say so.**
+  Tests only — no production source changed and no behaviour changed. Round 4 of the guard-deletion
+  sweep, and the third consecutive round to find something at `gateJsonIsAtConfig`, so this one
+  enumerated SINKS rather than call sites: every argv spelling that writes a document to an
+  operator-named path, driven at an unrelated (non-discovered) `.candor/config`, with each guard on each
+  path disarmed in turn to see which route it actually protects.
+
+  MEASURED against the suite as it stood (888 tests) — each mutation applied, recompiled, the full suite
+  run, and the real binary driven at the config:
+
+  ```
+  route                                       disarm                       binary            888-suite
+  R1  --json <cfg>                            refuseJsonAtConfig           EXIT 0, 17→698 B  GREEN  ✗
+  R2  --json a --json <cfg>                   dup branch's is-input ask    exit 2, 17→500 B  GREEN  ✗
+  R3  --gate-json <cfg>                       refuseGateJsonAtConfig       EXIT 0, 17→ 91 B  1 RED  ✓
+  R4  --gate-json a --gate-json <cfg>         gateJsonIsInput's shape arm  exit 2, 17→386 B  1 RED  ✓
+  R5  gate --report R --gate-json <cfg>       Query pre-pass, both calls   exit 2, 17→228 B  GREEN  ✗
+  R6  gate … --gate-json v --gate-json <cfg>  Query pre-pass, both calls   exit 2, 17→386 B  GREEN  ✗
+  ```
+
+  **`--json` is the quieter destroyer than `--gate-json`, and it was the one with no test.** R1 truncates
+  the config and exits **0** printing `candor: nothing hidden — every effect sits where its name says it
+  should`. R2/R5/R6 destroy at exit 2, which reads as a clean refusal to any caller checking only the
+  status — so the assertions are on BYTES, never exit codes.
+
+  Two structural notes worth keeping. The `gate` verb asks the guard TWICE (once for `preGate`, once per
+  named sink), so neither call alone is observable — deleting either leaves the other covering it, and
+  only a test driving the VERB notices the route losing its guard entirely; the redundancy is fine, its
+  invisibility was not. And R2 reaches the shape question through `gateJsonIsInput` rather than
+  `refuseJsonAtConfig`, so it is `--json`'s own copy of the arrangement round 3 pinned on `--gate-json`
+  — the sibling-route habit, one flag over, for the third time on this key.
+
+  Four route tests added, plus three OVER-CHARGE controls for the shape rule (`config` AND a `.candor`
+  parent, never either alone): an ordinary `--json out.json` still exits 0 with a real report; a file
+  NAMED `config` outside a `.candor` directory stays permitted; and `.candor/report.json` +
+  `.candor/gate.json` — the layout the docs recommend — stays permitted. Each test was watched go red
+  with its guard disarmed and green with it restored.
+
+- **`AnalysisContextInputGrowthTest` asserted a property of the list it was handed instead of pinning
+  it.** The refresh-split growth check guards a silent under-report on every refresh after the first; the
+  test asked `names.size() > 5` and then iterated whatever `inputNames()` returned. MEASURED by
+  truncating that method: **46 → 45 fields GREEN, 46 → 10 GREEN**, and 46 → 3 red only because the size
+  floor finally tripped — so the check could go 78% blind unnoticed. The set is now spelled out (46
+  names, declaration order — load-bearing, because `inputNames()` and `inputSizes()` are index-aligned)
+  and asserted by list equality, and the growth probe walks EVERY slot rather than `size() / 2`. Red on
+  shrink, on growth, and on reorder.
+
+- **⟨0.34⟩ `ReportCompleteness#absorb` — TWO of the four arms could not be seen, not one.** The arm the
+  review named (branch 3, other-side-only) was blind; mutating every arm rather than the one in hand
+  found branch 1 (both-sides-empty) blind by the same mechanism. **Every case the class posed set
+  `other.predates033 = false`, and the correct answer and a naive AND agree on every input where that
+  flag is false** — so both arms were reached only by inputs on which no implementation could disagree.
+  The general form: a control must differ from the wrong implementation in the VALUE of the field under
+  test, not merely exercise the code path. The class comment claiming its control was "not merely happen
+  to agree with a naive AND" asserted the opposite of what it measured, and is corrected. Teeth added for
+  both arms, each watched go red with its arm deleted.
+
 - **⚠ `peek-classpath` was the one path-bearing input SPEC §3.3.1 (3) never learned about — three
   defects, all found by asking the A.2 question (what ELSE has this shape?) of the ⟨0.32⟩ key, and all
   previously carrying ZERO tests of any kind** (`grep -r peek-classpath src/test/ test/` returned

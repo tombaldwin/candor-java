@@ -549,6 +549,199 @@ class SinkArmingIntegrityTest {
                 + r.stderr());
     }
 
+    // ── ROUND 4: the config-shape guard, pinned per ROUTE rather than per call site ───────────────────
+    //
+    // WHY A FOURTH ROUND ON ONE GUARD. Rounds 1–3 above each closed the call site in hand and left the
+    // next one, so this round enumerated SINKS instead of call sites: every argv spelling that can write
+    // a document to an operator-named path was driven at an unrelated `.candor/config`, and every guard
+    // on each of those paths was mutated to see which route it actually protects. Six routes exist:
+    //
+    //   R1  scan `--json <cfg>`                                   Candor#refuseJsonAtConfig
+    //   R2  scan `--json a --json <cfg>`   (duplicate report)     Candor#gateJsonIsInput's shape arm
+    //   R3  scan `--gate-json <cfg>`                              Candor#refuseGateJsonAtConfig
+    //   R4  scan `--gate-json a --gate-json <cfg>`                Candor#gateJsonIsInput's shape arm
+    //   R5  `gate --report R --gate-json <cfg>`                   Query pre-pass → refuseGateJsonAtConfig
+    //   R6  `gate --report R --gate-json v --gate-json <cfg>`     Query pre-pass, per-sink
+    //
+    // MEASURED before these tests were written, by disarming each guard, recompiling and driving the real
+    // binary — only R3 and R4 had a test that could tell armed from disarmed:
+    //
+    //   disarm refuseJsonAtConfig       → R1 EXIT 0, config 17 → 698 bytes, "nothing hidden"   888/888 GREEN
+    //   disarm the duplicate-`--json`   → R2 exit 2, config 17 → 500 bytes                     888/888 GREEN
+    //     branch's is-input question
+    //   disarm BOTH Query pre-pass      → R5 exit 2, config 17 → 228 bytes                     888/888 GREEN
+    //     refuseGateJsonOverAnyInput      R6 exit 2, config 17 → 386 bytes
+    //     calls
+    //   disarm refuseGateJsonAtConfig   → R3 EXIT 0, config → 91 bytes  (and R5, R6 too)       1 RED (R3's test)
+    //   disarm the is-input shape arm   → R4 exit 2, config → 386 bytes (and R2 too)           1 RED (R4's test)
+    //
+    // Note what the exit codes say: R1 is the QUIETEST route — exit 0 and a success banner over a
+    // destroyed config — and it was the one with no test. R2/R5/R6 destroy at exit 2, which reads as a
+    // clean refusal to anyone checking only the status. Bytes, not exit codes, are the assertion.
+    //
+    // The Query pair (R5/R6) is pinned by ROUTE deliberately: `Query` asks the guard twice, once for
+    // `preGate` and once per named sink, so either call alone can be deleted with no observable effect —
+    // the redundancy is fine, but it means no single-call mutation is measurable and only a test that
+    // drives the VERB can notice the route losing its guard entirely.
+
+    /** R1 — the single `--json` sink at an unrelated `.candor/config`. The quietest destroyer in the
+     *  family: {@code refuseJsonAtConfig} is CORRECT, and until this test nothing could tell it from
+     *  {@code if (true) return;} — measured, 888/888 green with the body disarmed while the binary exited
+     *  0, truncated a 17-byte config to a 698-byte report and printed "nothing hidden". The `--gate-json`
+     *  sibling three tests up has had this coverage since round 1; the report sink one hop upstream never
+     *  did, because each round scoped itself to the flag its own bug report named. */
+    @Test
+    void jsonSinkNamingAnUnrelatedConfigIsRefusedBytesUnchanged() throws Exception {
+        Path cls = compileNetFixture();
+        Path config = unrelatedConfig();
+        byte[] before = Files.readAllBytes(config);
+        Run r = runCli(cls.toString(), "--json", config.toString());
+        assertArrayEquals(before, Files.readAllBytes(config),
+                "--json <an UNRELATED .candor/config> DESTROYED it — and at EXIT 0 with the ordinary "
+                + "success banner, so nothing in the output says a config was lost\nSTDERR:\n" + r.stderr());
+        assertEquals(2, r.exit(), "a report sink naming any .candor/config is refused, exit 2\nSTDERR:\n"
+                + r.stderr());
+        assertTrue(r.stderr().contains(".candor/config") && r.stderr().contains("--json"),
+                "the refusal names the shape it matched AND the flag that named it\nSTDERR:\n" + r.stderr());
+    }
+
+    /** R2 — the DUPLICATE `--json` branch. A second, independent route to the shape question: the
+     *  repeated-sink branch asks {@code gateJsonIsInput} rather than calling {@code refuseJsonAtConfig},
+     *  and skips arming only the sinks that came back offending. MEASURED with that question disarmed in
+     *  this branch alone: exit 2 (the duplicate refusal), config 17 → 500 bytes — the fail-closed report
+     *  written straight over it — and 888/888 green, because round 3's duplicate test drives
+     *  `--gate-json` and this branch is `--json`'s own copy of the same shape. */
+    @Test
+    void duplicateJsonSinksStillRefuseAnUnrelatedConfigOneOfTwo() throws Exception {
+        Path cls = compileNetFixture();
+        Path config = unrelatedConfig();
+        byte[] before = Files.readAllBytes(config);
+        Path other = scratch.resolve("report.json");
+        Run r = runCli(cls.toString(), "--json", other.toString(), "--json", config.toString());
+        assertArrayEquals(before, Files.readAllBytes(config),
+                "--json <report.json> --json <an UNRELATED .candor/config> DESTROYED the config — the "
+                + "duplicate branch arms every non-offending sink, and the config was not recognised as "
+                + "offending\nSTDERR:\n" + r.stderr());
+        assertEquals(2, r.exit(), "a repeated report sink is refused, exit 2\nSTDERR:\n" + r.stderr());
+        assertTrue(r.stderr().contains(config.toString()) && r.stderr().contains("INPUT"),
+                "the config sink is named as an INPUT, which is what kept it out of the arming loop"
+                + "\nSTDERR:\n" + r.stderr());
+    }
+
+    /** R5 — the `gate` VERB's route into the same guard. `Query`'s pre-pass reaches
+     *  {@code refuseGateJsonAtConfig} through {@code refuseGateJsonOverAnyInput}, and it makes that call
+     *  TWICE (once for {@code preGate}, once per named sink), so neither call alone is observable —
+     *  deleting either leaves the other covering it. MEASURED with BOTH deleted: exit 2 and the config
+     *  17 → 228 bytes (armGateJson's fail-closed placeholder), 888/888 green. The scan verb's identical
+     *  shape has been pinned since round 1; this verb — the one §3.3.1's own worked example is written
+     *  about (`gate --report R --policy P --gate-json P`) — had no route-level test at all. */
+    @Test
+    void gateVerbGateJsonSinkNamingAnUnrelatedConfigIsRefusedBytesUnchanged() throws Exception {
+        Path report = scanReport();
+        Path config = unrelatedConfig();
+        byte[] before = Files.readAllBytes(config);
+        Run r = runCli("gate", "--report", report.toString(), "--gate-json", config.toString());
+        assertArrayEquals(before, Files.readAllBytes(config),
+                "gate --gate-json <an UNRELATED .candor/config> DESTROYED it. Note the exit code is 2 "
+                + "either way — a caller checking only the status cannot tell this from a clean refusal, "
+                + "which is why the assertion is on BYTES\nSTDERR:\n" + r.stderr());
+        assertEquals(2, r.exit(), "refused, exit 2\nSTDERR:\n" + r.stderr());
+        assertTrue(r.stderr().contains(".candor/config"),
+                "the refusal names the .candor/config shape it matched\nSTDERR:\n" + r.stderr());
+    }
+
+    /** R6 — the `gate` verb's DUPLICATE-sink route. Same verb, the other branch: the per-sink loop asks
+     *  the input question for every named sink and then WRITES the duplicate-refusal document to each one
+     *  ({@code Query} ~line 485) — so a config that slipped past the loop is overwritten by the refusal
+     *  itself. MEASURED with the loop's guard call deleted alongside the single-sink one: exit 2, config
+     *  17 → 386 bytes, 888/888 green. */
+    @Test
+    void gateVerbDuplicateGateJsonSinksStillRefuseAnUnrelatedConfig() throws Exception {
+        Path report = scanReport();
+        Path config = unrelatedConfig();
+        byte[] before = Files.readAllBytes(config);
+        Path other = scratch.resolve("verdict.json");
+        Run r = runCli("gate", "--report", report.toString(),
+                "--gate-json", other.toString(), "--gate-json", config.toString());
+        assertArrayEquals(before, Files.readAllBytes(config),
+                "gate --gate-json <verdict.json> --gate-json <an UNRELATED .candor/config> DESTROYED the "
+                + "config — with the DUPLICATE-REFUSAL document, the very write that announces the "
+                + "refusal\nSTDERR:\n" + r.stderr());
+        assertEquals(2, r.exit(), "refused, exit 2\nSTDERR:\n" + r.stderr());
+    }
+
+    // ── THE OVER-CHARGE CONTROLS for the shape rule ──────────────────────────────────────────────────
+    //
+    // The rule is `config` AND a `.candor` parent, and a guard that refuses everything has deleted the
+    // feature rather than fixed the sin. Both near misses are asserted, plus the ordinary sink: each
+    // differs from a refused run in exactly ONE thing (the filename, the parent directory, or neither).
+
+    /** CONTROL — an ORDINARY `--json <path>.json` still runs and still exits 0, writing its report. If
+     *  this goes red the guard has stopped being a shape test and started refusing report sinks. */
+    @Test
+    void anOrdinaryJsonSinkStillWorksAndExitsZero() throws Exception {
+        Path cls = compileNetFixture();
+        Path out = scratch.resolve("ordinary.json");
+        Run r = runCli(cls.toString(), "--json", out.toString());
+        assertEquals(0, r.exit(), "an ordinary report sink is ordinary usage\nSTDERR:\n" + r.stderr());
+        assertTrue(Files.isRegularFile(out), "the report was written where asked");
+        assertTrue(Files.readString(out).contains("\"functions\""), "and it is a real report, not a stub");
+    }
+
+    /** CONTROL, NEAR MISS 1 — a file NAMED `config` whose parent is NOT `.candor`. One field's value
+     *  different from the refused shape (the parent), and it must still be a permitted sink: `config` is
+     *  an ordinary filename and the rule is about candor's own directory, not about the word. */
+    @Test
+    void aFileNamedConfigOutsideADotCandorDirectoryStaysPermitted() throws Exception {
+        Path cls = compileNetFixture();
+        Path dir = scratch.resolve("conf");
+        Files.createDirectories(dir);
+        Path sink = dir.resolve("config");
+        Run r = runCli(cls.toString(), "--json", sink.toString());
+        assertEquals(0, r.exit(), "`config` is only protected INSIDE a `.candor` directory — a file of "
+                + "that name anywhere else is the operator's business\nSTDERR:\n" + r.stderr());
+        assertTrue(Files.isRegularFile(sink), "the report was written where asked");
+    }
+
+    /** CONTROL, NEAR MISS 2 — a file INSIDE a `.candor` directory that is not named `config`. The other
+     *  half of the conjunction, and the recommended layout: `.candor/report.json` and `.candor/gate.json`
+     *  are where the docs tell operators to put these. A guard that refused the whole directory would
+     *  break the shipped convention. */
+    @Test
+    void anOtherFileInsideADotCandorDirectoryStaysPermitted() throws Exception {
+        Path cls = compileNetFixture();
+        Path dot = scratch.resolve("out").resolve(".candor");
+        Files.createDirectories(dot);
+        Run r = runCli(cls.toString(), "--json", dot.resolve("report.json").toString(),
+                "--gate-json", dot.resolve("gate.json").toString());
+        assertEquals(0, r.exit(), "the recommended `.candor/report.json` + `.candor/gate.json` layout is "
+                + "ordinary usage\nSTDERR:\n" + r.stderr());
+        assertTrue(Files.isRegularFile(dot.resolve("report.json")), "the report landed");
+        assertTrue(Files.isRegularFile(dot.resolve("gate.json")), "and the verdict landed");
+    }
+
+    /** A `.candor/config` in a directory that is NOT on the fixture's upward walk, so this run never
+     *  discovers it as an input — the shape guard is then the only thing that can protect it. (Pointing a
+     *  sink at the config the run DOES discover is caught by the ordinary input-collision guard and does
+     *  not exercise the shape test at all; measured in round 1.) */
+    private Path unrelatedConfig() throws Exception {
+        Path dotCandor = scratch.resolve("elsewhere").resolve(".candor");
+        Files.createDirectories(dotCandor);
+        Path config = dotCandor.resolve("config");
+        Files.writeString(config, "unrelated-marker\n");
+        return config;
+    }
+
+    /** A real report for the `gate` verb to read, produced by the engine's own scan of the fixture —
+     *  `gate` needs an input before its sink handling is worth anything. */
+    private Path scanReport() throws Exception {
+        Path cls = compileNetFixture();
+        Path rep = scratch.resolve("gate-input.json");
+        Run r = runCli(cls.toString(), "--json", rep.toString());
+        assertEquals(0, r.exit(), "the gate-verb fixture's own scan must succeed\nSTDERR:\n" + r.stderr());
+        return rep;
+    }
+
     @Test
     void jsonSinkStemWhoseSidecarIsTheBaselinesSidecarIsRefusedBytesUnchanged() throws Exception {
         // THE SINK EXPANDS TOO: `--json base` (no .json) writes `base` AND `base.callgraph.json` — with

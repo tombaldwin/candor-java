@@ -464,6 +464,26 @@ public final class Config {
                     val = java.util.Arrays.stream(val.split("[ \\t]+"))
                             .map(v -> resolveAgainst(anchor, v))
                             .collect(java.util.stream.Collectors.joining(File.pathSeparator));
+                } else if ("peek-classpath".equals(key) && !val.isEmpty()) {
+                    // ⟨0.34⟩ A PATH LIST TOO — and it was in {@link #PATH_KEYS} beside `policy`/`baseline`,
+                    // whose values are ONE path, so the generic arm below anchor-resolved the whole
+                    // pathSeparator-joined string as a single filename. MEASURED here before this fix, with
+                    // `peek-classpath libs/a.jar:libs/b.jar` in `<root>/.candor/config` and the process
+                    // launched OUTSIDE `<root>`:
+                    //   deps           => /root/libs/x.json:/root/libs/y.json     (both anchored)
+                    //   peek-classpath => /root/libs/a.jar:libs/b.jar             (only the FIRST anchored)
+                    // The consumer (Candor's peek setup) splits this value on the path separator, so every
+                    // entry after the first arrived CWD-relative: it fails `Files.exists` and is dropped
+                    // with a warning, leaving a checked-in config whose meaning depends on the launch
+                    // directory — the one thing anchoring exists to remove. `deps`, the twin, has had the
+                    // list treatment since it was added; this key was given the single-path arm and nobody
+                    // wrote the sibling's fixture. (The separator differs from `deps`'s on purpose: this
+                    // key's grammar is the `--peek-classpath` flag's, which is path-separator joined, and
+                    // splitting it on whitespace would break a path that legitimately contains a space.)
+                    val = java.util.Arrays.stream(val.split(java.util.regex.Pattern.quote(File.pathSeparator)))
+                            .filter(v -> !v.isEmpty())
+                            .map(v -> resolveAgainst(anchor, v))
+                            .collect(java.util.stream.Collectors.joining(File.pathSeparator));
                 } else if (PATH_KEYS.contains(key)) {
                     val = resolveAgainst(anchor, val);
                 }

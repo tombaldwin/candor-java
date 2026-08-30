@@ -631,6 +631,17 @@ public class Candor {
      *  inputs on the context, and this is an INPUT to it in the same sense the policy path is. */
     static String peekClasspathArg;
 
+    /**
+     * ⟨0.34⟩ The {@code --peek-classpath} value AS THE ARMING PRE-PASS SAW IT — the flag analog of the
+     * {@code policyFlag} that travels into {@link #runInputs} as a parameter.
+     *
+     * <p>A field rather than a fifth parameter threaded through the six sink-guard signatures, and set in
+     * the pre-pass BEFORE the first sink is armed, so {@link #runInputs} can register the declared jars
+     * among the paths §3.3.1 (3) forbids arming to touch. {@link #peekClasspathArg} above cannot serve:
+     * it is assigned from the config only AFTER the config load, which is long after arming has written.
+     */
+    static String prePeekClasspath;
+
     static boolean declaresAnnotationProcessor(Path jar) {
         try (java.util.zip.ZipFile z = new java.util.zip.ZipFile(jar.toFile())) {
             return z.getEntry("META-INF/services/javax.annotation.processing.Processor") != null;
@@ -1885,6 +1896,7 @@ public class Candor {
         // while rust/ts/swift wrote a refusal. Flags-before-positional is not an exotic spelling, and
         // §3.3 names an unknown flag as an exit-2 cause that must leave a refusal.
         String preGate = null, prePolicy = null, preTarget = null;
+        prePeekClasspath = null;   // this pre-pass owns the field; never inherit a previous main()'s value
         // ⟨0.28⟩ Was `--json` requested in STDOUT form (bare, or followed by a flag)? And was any
         // `--gate-json -` in the argv (which would also claim stdout)? Learned in this same pre-pass so
         // `armReportStream` can fire below, BEFORE every downstream exit-2 — including an unknown flag.
@@ -1917,6 +1929,20 @@ public class Candor {
             else if (args[i].equals("--policy") && hasVal
                     && (args[i + 1].equals("-") || !args[i + 1].startsWith("-")))
                 prePolicy = args[++i];
+            // ⟨0.34⟩ `--peek-classpath` CONSUMES ITS VALUE HERE TOO, token-for-token with the parse loop
+            // below (which requires a value and refuses a flag-shaped one — so `-` is NOT value-shaped for
+            // this flag, unlike `--policy`/`--gate-json`, and is deliberately left live). The pre-pass did
+            // not know this flag at all, and the branch after this chain takes the first non-flag token as
+            // the scan TARGET — so the flag's VALUE became the target whenever the flag preceded the real
+            // one, and every §3.3.1 guard was then computed against the wrong tree. MEASURED, identical
+            // argv, only the flag's POSITION differing, with `<root>/.candor/config` declaring a `policy`:
+            //   candor proj/cls --peek-classpath other/dep.jar --json <that policy>  → exit 2, intact
+            //   candor --peek-classpath other/dep.jar proj/cls --json <that policy>  → exit 0, DESTROYED
+            // The pre-pass had walked up from `other/dep.jar`, found no config there, and so never
+            // registered the policy the run went on to read. This is the "the pre-pass must agree with the
+            // parse loop" defect this rung already paid for once on `--policy`.
+            else if (args[i].equals("--peek-classpath") && hasVal && !args[i + 1].startsWith("-"))
+                prePeekClasspath = args[++i];
             else if (args[i].equals("--json") && hasVal && !args[i + 1].startsWith("-")) {
                 preJsonFile = args[++i];                                                        // --json <file>
                 preJsonSinks.add(preJsonFile);
@@ -2995,6 +3021,21 @@ public class Candor {
         // refused. Registered HERE so both sinks — and the sidecar remover — inherit it from the one list.
         if (target != null) out.add(new String[]{target, "the scan target"});
         if (policyFlag != null) out.add(new String[]{policyFlag, "--policy"});
+        // ⟨0.34⟩ THE DECLARED PEEK CLASSPATH IS AN INPUT — in all three of its spellings. `javac` READS
+        // those jars/dirs during the ⟨0.32⟩ compile-peek, which is exactly what §3.3.1 (3) means by an
+        // input, and this key was the one path-bearing input the list never learned. MEASURED before this
+        // fix, target `cls`, jar `libs/dep.jar` (716 bytes), everything else held constant:
+        //   --policy libs/gate.pol      --json <same>  → exit 2, file intact   (the sibling guard works)
+        //   config `deps libs/dep.jar`  --json <same>  → exit 2, file intact   (ditto)
+        //   --peek-classpath libs/dep.jar --json <same>    → EXIT 0, jar → 279-byte report
+        //   --peek-classpath libs/dep.jar --gate-json <same> → EXIT 0, jar → 91-byte verdict
+        //   config `peek-classpath …`   --json <same>  → EXIT 0, destroyed
+        //   CANDOR_PEEK_CLASSPATH=…     --json <same>  → EXIT 0, destroyed
+        // Worse than the target case that prompted this whole guard: that one at least exited 2 and said
+        // what it had broken. This ran to completion, printed a report summary, and returned success over
+        // the operator's destroyed dependency.
+        addPeekClasspathInputs(out, prePeekClasspath, "--peek-classpath");
+        addPeekClasspathInputs(out, System.getenv("CANDOR_PEEK_CLASSPATH"), "CANDOR_PEEK_CLASSPATH");
         for (var e : new String[][]{{"CANDOR_POLICY", "CANDOR_POLICY"}, {"CANDOR_BASELINE", "CANDOR_BASELINE"},
                                     {"CANDOR_CONFIG", "CANDOR_CONFIG"}}) {
             String v = System.getenv(e[0]);
@@ -3079,6 +3120,13 @@ public class Candor {
                         // already anchor-resolved and joined on the path separator by the loader
                         for (String one : val.split(java.util.regex.Pattern.quote(java.io.File.pathSeparator)))
                             if (!one.isEmpty()) addReportInput(out, one, "the config's `deps`");
+                    } else if (key.equals("peek-classpath")) {
+                        // ⟨0.34⟩ the config spelling of the declared peek classpath — the same key `deps`
+                        // is handled two lines up, and for the same reason. Anchor-resolved and
+                        // path-separator joined by the loader (see Config#load), so it splits identically.
+                        // NOT addReportInput: these are jars/class dirs on a compile classpath, not report
+                        // locators, so they have no §2.2 sidecar family to expand.
+                        addPeekClasspathInputs(out, val, "the config's `peek-classpath`");
                     }
                 }
             }
@@ -3112,6 +3160,25 @@ public class Candor {
                     out.add(new String[]{side, "the §2.2 `" + seg + "` sidecar of " + label + " " + path});
             } catch (RuntimeException ignored) { /* not a path on this filesystem — nothing to protect */ }
         }
+    }
+
+    /**
+     * ⟨0.34⟩ Register every entry of a declared peek classpath as an input of this run.
+     *
+     * <p>One helper for all three spellings — the {@code --peek-classpath} flag, {@code
+     * CANDOR_PEEK_CLASSPATH}, and the {@code .candor/config} {@code peek-classpath} key — because the
+     * recurring defect in this file is a rule bound to the ONE spelling in front of its author. The split
+     * is the path separator, which is what {@code Candor}'s own peek setup splits this value on: a guard
+     * that enumerates differently from the consumer guards a different set of files.
+     *
+     * <p>An entry is registered as the EXACT artifact the operator named, like {@code CANDOR_POLICY} and
+     * unlike {@code CANDOR_DEPS}: a classpath entry is read by {@code javac} as itself, and a directory on
+     * it has no enumerable report family the way a deps directory does.
+     */
+    static void addPeekClasspathInputs(java.util.List<String[]> out, String value, String label) {
+        if (value == null || value.isBlank()) return;
+        for (String one : value.split(java.util.regex.Pattern.quote(java.io.File.pathSeparator)))
+            if (!one.isBlank()) out.add(new String[]{one, label});
     }
 
     /** Refuse the sink if it names ANY input of this run, whatever channel that input arrived through. */

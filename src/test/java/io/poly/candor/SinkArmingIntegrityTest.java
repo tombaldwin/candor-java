@@ -695,4 +695,169 @@ class SinkArmingIntegrityTest {
         assertTrue(Files.isRegularFile(out) && Files.isRegularFile(scratch.resolve("report.callgraph.json")),
                 "the report pair was written where asked");
     }
+
+    // ── ⟨0.34⟩ defect 4: the DECLARED PEEK CLASSPATH was not an input ────────────────────────────────
+    //
+    // `runInputs` registered the target, `--policy`, CANDOR_POLICY/BASELINE/CONFIG/DEPS and the config's
+    // `policy`/`baseline`/`deps` — every path-bearing input except the ⟨0.32⟩ `peek-classpath`, whose
+    // jars `javac` READS during the compile-peek. All three spellings destroyed the declared artifact,
+    // and unlike the target case that prompted this whole guard they did it AT EXIT 0, after printing a
+    // report summary. MEASURED before the fix, target `cls`, `libs/dep.jar` 716 bytes, everything else
+    // held constant — the siblings are the control:
+    //
+    //   --policy libs/gate.pol         --json <same path>       → exit 2, intact
+    //   config `deps libs/dep.jar`     --json <same path>       → exit 2, intact
+    //   --peek-classpath libs/dep.jar  --json <same path>       → EXIT 0, jar → a 279-byte report
+    //   --peek-classpath libs/dep.jar  --gate-json <same path>  → EXIT 0, jar → a 91-byte verdict
+    //   config `peek-classpath …`      --json <same path>       → EXIT 0, destroyed
+    //   CANDOR_PEEK_CLASSPATH=…        --json <same path>       → EXIT 0, destroyed
+
+    /** A jar under {@code <scratch>/libs} that stands in for an operator-declared dependency. */
+    private Path declaredJar(Path classesDir) throws Exception {
+        Path libs = scratch.resolve("libs");
+        Files.createDirectories(libs);
+        Path jar = libs.resolve("dep.jar");
+        try (ZipOutputStream z = new ZipOutputStream(Files.newOutputStream(jar));
+             Stream<Path> files = Files.walk(classesDir)) {
+            for (Path f : files.filter(Files::isRegularFile).sorted().toList()) {
+                z.putNextEntry(new ZipEntry(classesDir.relativize(f).toString().replace('\\', '/')));
+                z.write(Files.readAllBytes(f));
+                z.closeEntry();
+            }
+        }
+        return jar;
+    }
+
+    @Test
+    void aPeekClasspathJarNamedAsTheReportSinkIsRefusedWithTheJarIntact() throws Exception {
+        Path cls = compileNetFixture();
+        Path jar = declaredJar(cls);
+        byte[] before = Files.readAllBytes(jar);
+        Run r = runCli(cls.toString(), "--peek-classpath", jar.toString(), "--json", jar.toString());
+        assertEquals(2, r.exit(), "a sink naming a declared peek-classpath entry must be refused"
+                + "\nSTDERR:\n" + r.stderr());
+        assertArrayEquals(before, Files.readAllBytes(jar),
+                "the declared dependency must be BYTE-identical — nothing was written");
+        assertTrue(r.stderr().contains("--peek-classpath"),
+                "the refusal must name the channel the input arrived through: " + r.stderr());
+    }
+
+    @Test
+    void aPeekClasspathJarNamedAsTheVerdictSinkIsRefusedWithTheJarIntact() throws Exception {
+        // THE SIBLING SINK, tested separately: `--gate-json` was the QUIETER of the two — it printed
+        // "no violations" and exited 0 over the jar it had just overwritten with a 91-byte verdict.
+        Path cls = compileNetFixture();
+        Path jar = declaredJar(cls);
+        byte[] before = Files.readAllBytes(jar);
+        Run r = runCli(cls.toString(), "--peek-classpath", jar.toString(), "--gate-json", jar.toString());
+        assertEquals(2, r.exit(), r.stderr());
+        assertArrayEquals(before, Files.readAllBytes(jar), "the declared dependency must be BYTE-identical");
+    }
+
+    @Test
+    void aConfigDeclaredPeekClasspathEntryNamedAsASinkIsRefused() throws Exception {
+        // The `.candor/config` spelling — SPEC records that the CONFIG spelling is the one that defeated
+        // the FIRST version of this guard in all four engines, so it gets its own row rather than being
+        // assumed to ride the flag's.
+        Path cls = compileNetFixture();
+        Path jar = declaredJar(cls);
+        Files.createDirectories(scratch.resolve(".candor"));
+        Files.writeString(scratch.resolve(".candor/config"), "peek-classpath libs/dep.jar\n");
+        byte[] before = Files.readAllBytes(jar);
+        Run r = runCli(cls.toString(), "--json", jar.toString());
+        assertEquals(2, r.exit(), r.stderr());
+        assertArrayEquals(before, Files.readAllBytes(jar), "the declared dependency must be BYTE-identical");
+        assertTrue(r.stderr().contains("peek-classpath"), r.stderr());
+    }
+
+    @Test
+    void anEnvDeclaredPeekClasspathEntryNamedAsASinkIsRefused() throws Exception {
+        Path cls = compileNetFixture();
+        Path jar = declaredJar(cls);
+        byte[] before = Files.readAllBytes(jar);
+        Run r = runCliEnv(java.util.Map.of("CANDOR_PEEK_CLASSPATH", jar.toString()),
+                cls.toString(), "--json", jar.toString());
+        assertEquals(2, r.exit(), r.stderr());
+        assertArrayEquals(before, Files.readAllBytes(jar), "the declared dependency must be BYTE-identical");
+        assertTrue(r.stderr().contains("CANDOR_PEEK_CLASSPATH"), r.stderr());
+    }
+
+    /**
+     * ⟨0.34⟩ defect 5 — THE PRE-PASS MUST AGREE WITH THE PARSE LOOP, on this flag too.
+     *
+     * <p>The arming pre-pass did not know {@code --peek-classpath} takes a value, and the branch that
+     * ends its chain takes the first non-flag token as the scan TARGET. So whenever the flag PRECEDED
+     * the real target, the flag's VALUE became the target and every §3.3.1 guard was computed against
+     * the wrong tree — including the walk that discovers {@code .candor/config}, so a config-declared
+     * {@code policy} was never registered and the sink destroyed it at exit 0.
+     *
+     * <p>The two arms are the SAME argv tokens in a different order; that is the only thing that differs.
+     * Asserting them TOGETHER rather than only on the broken order is the point: the property is that
+     * argv order does not change what arming protects.
+     *
+     * <p><b>THE DECLARED JAR MUST LIVE OUTSIDE THE CONFIG'S TREE, and the first draft of this test did
+     * not.</b> With the jar under {@code <scratch>/libs} and the config at {@code <scratch>/.candor},
+     * discovery walking up from the WRONG target still reached the SAME config — so deleting the pre-pass
+     * fix left this test green while the other rows went red. Measured, not reasoned: the mutation run is
+     * what exposed it. The jar now sits in a sibling tree the mis-taken target's walk cannot reach.
+     */
+    @Test
+    void peekClasspathBeforeTheTargetIsNotMistakenForTheScanTarget() throws Exception {
+        Path proj = scratch.resolve("proj");
+        Path cls = proj.resolve("cls");
+        Files.createDirectories(cls);
+        try (Stream<Path> s = Files.walk(compileNetFixture())) {
+            for (Path f : s.filter(Files::isRegularFile).toList()) {
+                Path rel = scratch.resolve("cls").relativize(f);
+                Files.createDirectories(cls.resolve(rel).getParent());
+                Files.copy(f, cls.resolve(rel));
+            }
+        }
+        // OUTSIDE `proj`: walking up from here can never reach proj/.candor/config.
+        Path jar = declaredJar(scratch.resolve("cls"));
+        Files.createDirectories(proj.resolve(".candor"));
+        Files.writeString(proj.resolve(".candor/config"), "policy .candor/gate.pol\n");
+        Path pol = proj.resolve(".candor/gate.pol");
+
+        for (boolean flagFirst : new boolean[] {false, true}) {
+            Files.writeString(pol, "deny Net app\n");
+            byte[] before = Files.readAllBytes(pol);
+            Run r = flagFirst
+                    ? runCli("--peek-classpath", jar.toString(), cls.toString(), "--json", pol.toString())
+                    : runCli(cls.toString(), "--peek-classpath", jar.toString(), "--json", pol.toString());
+            String where = flagFirst ? "flag BEFORE the target" : "flag AFTER the target";
+            assertEquals(2, r.exit(), where + ": the config-declared policy is an input\nSTDERR:\n" + r.stderr());
+            assertArrayEquals(before, Files.readAllBytes(pol),
+                    where + ": the operator's gate policy must be BYTE-identical");
+        }
+    }
+
+    /**
+     * THE OVER-CHARGE CONTROL for all of the above — the direction the fix did NOT intend. A declared
+     * peek classpath beside a sink that names something ELSE is ordinary usage and must still run to
+     * completion and publish. Without this, registering the classpath as an input could have been
+     * "fixed" by refusing every run that declares one, which passes every assertion above.
+     */
+    @Test
+    void aPeekClasspathBesideAnUnrelatedSinkStaysPermitted() throws Exception {
+        Path cls = compileNetFixture();
+        Path jar = declaredJar(cls);
+        byte[] before = Files.readAllBytes(jar);
+        Path out = scratch.resolve("report.json");
+        Run r = runCli(cls.toString(), "--peek-classpath", jar.toString(), "--json", out.toString());
+        assertEquals(0, r.exit(), "a declared peek classpath is not itself a reason to refuse"
+                + "\nSTDERR:\n" + r.stderr());
+        assertTrue(Files.readString(out).contains("app.Svc.fetch"), "the real report landed");
+        assertArrayEquals(before, Files.readAllBytes(jar), "…and the declared jar was not touched");
+    }
+
+    /** …and the pre-pass's new consumption must not swallow a flag-shaped token: `--peek-classpath` with
+     *  no value is still the parse loop's usage error, which is the agreement half of the ruling. */
+    @Test
+    void peekClasspathWithNoValueIsStillAUsageError() throws Exception {
+        Path cls = compileNetFixture();
+        Run r = runCli(cls.toString(), "--peek-classpath", "--json", scratch.resolve("r.json").toString());
+        assertEquals(2, r.exit(), r.stderr());
+        assertTrue(r.stderr().contains("--peek-classpath requires a value"), r.stderr());
+    }
 }

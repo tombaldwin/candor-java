@@ -10,6 +10,10 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.34.0] — 2026-08-31
 
+- **`jbang-catalog.json` → v0.34.0.** jbang pulls the shadow jar from the release download
+  URL, so this pin names an artifact that must already exist; 0.24 shipped a jbang pin to a
+  release that did not, and it 404'd for every jbang user.
+
 - **UPGRADING FROM 0.33.1 — re-baselining is not review.** ⟨0.34⟩ is NON-ADDITIVE and this wave
   corrects the classifier in BOTH directions. After regenerating a baseline, **diff it against the
   old one**: effects this release REMOVES will never trip any gate, because `gains` and the baseline

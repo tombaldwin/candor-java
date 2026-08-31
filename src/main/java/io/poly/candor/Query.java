@@ -2161,7 +2161,7 @@ public final class Query {
             // ⟨0.34⟩ …and this report's own declared spec, read from the SAME `env` rather than a second
             // parse of the file — see `Envelope.spec`'s doc for why.
             List<String> missingHere = unaskedRules(env);
-            if (!missingHere.isEmpty() && !specPredates(env.spec(), "0.33")) unaskFromCurrentSpec = true;
+            if (!missingHere.isEmpty() && !specPredates(env.spec(), "0.33")) unaskFromCurrentSpec = true;  // ⟨0.33⟩ — the rung this predicate names
             for (String u : missingHere) if (!unask.contains(u)) unask.add(u);
             // ⟨0.31⟩ adopt the PRODUCER's partner provenance so the shared verdict writer emits the same
             // bytes on this route as the scan route did. Copied, never recomputed — §3.1's byte-equality
@@ -4466,7 +4466,7 @@ public final class Query {
             // ⟨0.34⟩ …and this report's own declared spec, read from the SAME `env` rather than a second
             // parse — see `Envelope.spec`'s doc.
             List<String> missingHere = unaskedRules(env);
-            if (!missingHere.isEmpty() && !specPredates(env.spec(), "0.33")) unaskedFromCurrentSpec = true;
+            if (!missingHere.isEmpty() && !specPredates(env.spec(), "0.33")) unaskedFromCurrentSpec = true;  // ⟨0.33⟩ — the rung this predicate names
             unasked.addAll(missingHere);
             // ⟨0.31⟩ adopt the PRODUCER's partner provenance here too. TWO envelope consumers exist on
             // this verb's paths and the disclosure has to be adopted at BOTH, or the route that skipped it

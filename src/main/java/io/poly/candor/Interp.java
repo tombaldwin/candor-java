@@ -217,8 +217,16 @@ final class Interp {
                 String t = ((TypeInsnNode) insn).desc;
                 return wrap(bi.newOperation(insn), t, t);
             }
-            String dt = (insn.getOpcode() == Opcodes.GETSTATIC) ? declFromDesc(((FieldInsnNode) insn).desc) : null;
-            return wrap(bi.newOperation(insn), null, dt);
+            if (insn.getOpcode() == Opcodes.GETSTATIC) {
+                // ⟨0.35⟩ A static field's read is a field-origin carrier too, exactly like GETFIELD below —
+                // see collectFieldLambdaBindings's doc for why treating this as merely "inert" was wrong:
+                // a static field re-read in its OWN declaring class (the ordinary case) was silently
+                // dropping the stored lambda's effect. fieldKey normalizes owner+name to the declaring
+                // class, the same normalization the write side now applies.
+                FieldInsnNode fi = (FieldInsnNode) insn;
+                return wrapField(bi.newOperation(insn), declFromDesc(fi.desc), fieldKey(fi.owner, fi.name));
+            }
+            return wrap(bi.newOperation(insn), null, null);
         }
         public ProvValue copyOperation(AbstractInsnNode insn, ProvValue value) { return value; }
         public ProvValue unaryOperation(AbstractInsnNode insn, ProvValue value)
@@ -236,7 +244,9 @@ final class Interp {
                 FieldInsnNode fi = (FieldInsnNode) insn;
                 // Carry the field identity so the value-provenance summary can decide, at a stream read, whether
                 // this field is bound only to in-scope concrete opens (Phase 2). newType stays null (no alloc).
-                return wrapField(b, declFromDesc(fi.desc), fi.owner + "#" + fi.name);
+                // fieldKey normalizes to the DECLARING class — see Cha.fieldKey's doc: the class an inherited
+                // field's GETFIELD names as `owner` need not be the class its PUTFIELD names.
+                return wrapField(b, declFromDesc(fi.desc), fieldKey(fi.owner, fi.name));
             }
             if (insn.getOpcode() == Opcodes.CHECKCAST) {
                 String d = ((TypeInsnNode) insn).desc; // CHECKCAST desc is an internal name (or [..] array)

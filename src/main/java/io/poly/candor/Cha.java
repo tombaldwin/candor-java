@@ -406,6 +406,42 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         }
     }
 
+    /** The (owner,name) key a field access should be recorded/looked-up under for
+     *  {@link #collectFieldLambdaBindings}/{@link #fieldBoundImplementors}, NORMALIZED to the class that
+     *  actually DECLARES the field — never the literal `owner` a PUTFIELD/GETFIELD/PUTSTATIC/GETSTATIC
+     *  instruction names in its constant-pool entry, which javac frequently spells as the ACCESSING site's
+     *  class instead: a `this.task` read inside a subclass whose field is inherited from a base names the
+     *  SUBCLASS as owner even though the base's own write to the identical storage names the BASE; a static
+     *  field read through a subtype reference (`Impl.CONST` where `CONST` is declared on an interface
+     *  `Impl` implements) names the SUBTYPE; `super.field` names the syntactic superclass, which already
+     *  happens to agree with the declaring class today but is not guaranteed to for a deeper chain. All of
+     *  these are the SAME runtime storage location and MUST collapse to the same key on both the write side
+     *  and the read side, or a binding proven clean at the write's key silently never matches the read's.
+     *
+     *  <p>Reuses {@link #resolutionOrder} — project method-resolution order, `owner` first, already
+     *  handling the dep-hierarchy fallback for a field inherited across a chained dependency — rather than
+     *  a second hand-rolled walk (the family's "ask the authority" rule: {@link #buildSubtypeIndex}/
+     *  {@link #chaTargets} already trust it for methods, and field-vs-method resolution order agrees for
+     *  the single-field-name case javac accepts — an ambiguous inherited field name is a compile error, so
+     *  there is never a second candidate to choose between). The first type in that order whose own
+     *  `ClassNode.fields` declares `name` IS the field's home; `owner` itself is visited first, so a
+     *  same-class field (the common case) still resolves to itself with zero extra work.
+     *
+     *  <p><b>Falls back to the literal `owner` unchanged</b> when no class in the visible chain declares the
+     *  field — the declaring class is off-classpath (a JDK/third-party field), or this walk simply cannot
+     *  place it. That is the CONSERVATIVE direction: the two sides then key exactly as they did before this
+     *  normalization existed, so the binding can still miss (falls through to the pre-existing CHA/Unknown
+     *  behaviour) but never MERGES two accesses that do not, in fact, share storage. */
+    static String fieldKey(String owner, String name) {
+        for (String t : resolutionOrder(owner, false)) {
+            ClassNode cn = ctx().byName.get(t);
+            if (cn == null || cn.fields == null) continue;
+            for (FieldNode fn : cn.fields)
+                if (fn.name.equals(name)) return t + "#" + name;
+        }
+        return owner + "#" + name;
+    }
+
     /** ⟨0.35⟩ SPEC §4 "A NON-EMPTY CANDIDATE SET IS NOT A COMPLETE ONE" — binds a functional-interface-
      *  typed FIELD to the LambdaMetafactory implementor(s) stored into it, so a dispatch through that
      *  field (`this.task = () -> s.write(); … task.run();`) resolves to the real body instead of falling
@@ -431,9 +467,11 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
      *  resolving to a PROJECT method ({@link Candor#indyLambdaTarget}, reused verbatim — covers an inline
      *  lambda's synthetic body, an unbound/bound method reference's real target, and a constructor
      *  reference's {@code <init>} identically, so a fix shaped for lambdas alone does not close only one
-     *  of three spellings), record it under {@code owner#name} — the SAME key
-     *  {@link Interp.ProvValue#fieldOrigin} already carries for a GETFIELD read (see
-     *  {@code Interp.ProvInterpreter#unaryOperation}), so the dispatch-site lookup is a direct map hit.
+     *  of three spellings), record it under {@link #fieldKey} — the SAME normalized key
+     *  {@link Interp.ProvValue#fieldOrigin} now carries for BOTH a GETFIELD and a GETSTATIC read (see
+     *  {@code Interp.ProvInterpreter#unaryOperation}/{@code newOperation}), so the dispatch-site lookup is a
+     *  direct map hit regardless of which class's bytecode the write and the read instructions each name as
+     *  `owner` — see {@link #fieldKey}'s doc for why those two can legitimately disagree.
      *
      *  <p><b>TAINT, not silence, on an opaque write.</b> If ANY assignment to a field — anywhere in the
      *  project — is NOT a recognisable project lambda/method-ref (a parameter, a null, an external
@@ -447,12 +485,19 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
      *  <p><b>Not registered, by construction (sound under-approximation):</b> a method reference to a
      *  method OUTSIDE the project (indyLambdaTarget's existing project-only filter) taints nothing by
      *  itself here — a field written ONLY via such calls degrades to "not recognised as a lambda", so it
-     *  is simply never bound (falls through), same as any other opaque write. STATIC fields ARE scanned
-     *  as write sites (so a static-only write does not silently taint an unrelated instance field sharing
-     *  a name in a different class — the key is fully qualified), but a static field's OWN reads are not
-     *  currently tagged with `fieldOrigin` by the interpreter (GETSTATIC only captures `declType`, see
-     *  {@code Interp.ProvInterpreter#newOperation}), so a binding for a static-only field is inert until that is
-     *  extended — a scope decision, not a soundness gap (inert, not wrong). */
+     *  is simply never bound (falls through), same as any other opaque write.
+     *
+     *  <p><b>STATIC fields and INHERITED fields are now first-class, not a scope decision.</b> An earlier
+     *  version of this doc called a static-only field binding "inert" because GETSTATIC only captured
+     *  `declType`, never `fieldOrigin` — that was measured wrong: a static field's OWN class re-reading its
+     *  own write is the ORDINARY case (`private static Runnable task; … task = () -> s.write(); … task.run();`
+     *  in one class), and it silently dropped the effect just as completely as the instance-field shape this
+     *  method was written to fix. {@code Interp.ProvInterpreter#newOperation} now tags a GETSTATIC's result
+     *  with `fieldOrigin` the same way `unaryOperation` already tagged GETFIELD. Separately, {@link #fieldKey}
+     *  normalizes both this write-side key and the read-side key to the DECLARING class, closing the
+     *  inherited-field mismatch (a base class's write and a subclass's inherited read/write name DIFFERENT
+     *  classes as `owner` in their own bytecode — see that method's doc for the full enumeration, including
+     *  the reverse direction and interface constants read through an implementing subtype). */
     static void collectFieldLambdaBindings(List<ClassNode> classes) {
         Set<String> tainted = new HashSet<>();
         Map<String, List<String>> bindings = new HashMap<>();
@@ -461,7 +506,7 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
                 for (AbstractInsnNode insn : mn.instructions) {
                     if (!(insn instanceof FieldInsnNode fi)) continue;
                     if (fi.getOpcode() != Opcodes.PUTFIELD && fi.getOpcode() != Opcodes.PUTSTATIC) continue;
-                    String key = fi.owner + "#" + fi.name;
+                    String key = fieldKey(fi.owner, fi.name);
                     AbstractInsnNode v = fi.getPrevious();
                     while (v instanceof LabelNode || v instanceof LineNumberNode || v instanceof FrameNode)
                         v = v.getPrevious();

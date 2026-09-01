@@ -199,4 +199,248 @@ class FieldLambdaCompletionTest {
                 "a field with an opaque assignment anywhere must keep Unknown — the lambda assignment "
                 + "elsewhere must not silently vouch for the whole field, got " + r.get("Widget.fire"));
     }
+
+    // ------------------------------------------------------------------------------------------------
+    // ⟨0.35⟩ FOLLOW-UP — two ordinary Java shapes an adversarial review found the fixture above never
+    // exercised: a STATIC field (GETSTATIC was never tagged with fieldOrigin at all — a totally separate
+    // omission from the GETFIELD-owner-mismatch bug below, but the SAME visible symptom) and an
+    // INHERITED field (a base class's PUTFIELD and a subclass's GETFIELD of the identical storage name
+    // DIFFERENT owners in their own constant pools, so the write-side key and the read-side key never
+    // matched). Both reproduced on the PUBLISHED 0.34.0 jar AND at this fix's own pre-image HEAD.
+    //
+    // THE ENUMERATION RUN before writing the fix (candor-java owns this vein; do not re-derive it — see
+    // Cha.fieldKey's doc for the mechanism, and BACKLOG.md for the one shape found NOT to close): instance
+    // same-class (already covered above); STATIC same-class; INSTANCE inherited, base writes / subclass
+    // reads; the REVERSE direction (subclass writes / base reads via an inherited method); a field written
+    // through a SETTER; a field accessed via a WIDER STATIC TYPE than its declaring class (`s.task = …`
+    // where `s` is declared `Sub` but `task` lives on `Base`); a field on an INTERFACE (implicitly static
+    // final) read through an IMPLEMENTING class; a field written in a CONSTRUCTOR/static initializer; a
+    // field accessed via `super.`. `javap -v` on each shape (recorded in the session, not reproduced here)
+    // confirmed the owner javac emits is the ACCESS SITE's class, not necessarily the DECLARING class —
+    // Cha.fieldKey normalizes both sides to the declaring class via the same resolutionOrder walk CHA
+    // already trusts for methods, which is why one fix (plus tagging GETSTATIC) closes every shape below.
+    // ------------------------------------------------------------------------------------------------
+
+    /** STATIC field, same class — the simplest possible case, and it still vanished pre-fix because
+     *  GETSTATIC never carried fieldOrigin at all (the doc used to call this "inert, not wrong"; it was
+     *  wrong). No inheritance, no cross-class owner mismatch — isolates the GETSTATIC-tagging half of the
+     *  fix from the fieldKey-normalization half exercised by the tests below. */
+    @Test
+    void staticFieldCompletesEvenWithUnrelatedImplementor() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of(
+            "Store.java", String.join("\n",
+                "import java.io.*; import java.nio.file.*;",
+                "public class Store { public void write() { try { Files.write(Paths.get(\"/tmp/fl6.txt\"), \"x\".getBytes()); } catch (IOException e) {} } }"),
+            "Widget.java", String.join("\n",
+                "public class Widget {",
+                "  private static Runnable task;",
+                "  public static void install(Store s) { task = () -> s.write(); }",
+                "  public static void fire() { if (task != null) task.run(); }",
+                "}"),
+            "Repaint.java", String.join("\n",
+                "public class Repaint implements Runnable { public static int n; @Override public void run() { n++; } }")));
+        assertTrue(eff(r, "Widget.fire").contains(Effect.FS),
+                "a static field's stored lambda must reach its caller, got " + r.get("Widget.fire"));
+    }
+
+    /** INHERITED field — BASE writes (in an instance method), SUBCLASS reads (inherited, unqualified).
+     *  `javap -v` confirms `Base.install`'s PUTFIELD names owner=Base while `Sub.fire`'s GETFIELD of the
+     *  identical `task` names owner=Sub — the exact mismatch {@link Cha#fieldKey} exists to normalize. */
+    @Test
+    void baseWritesSubclassReadsCompletesEvenWithUnrelatedImplementor() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of(
+            "Store.java", String.join("\n",
+                "import java.io.*; import java.nio.file.*;",
+                "public class Store { public void write() { try { Files.write(Paths.get(\"/tmp/fl7.txt\"), \"x\".getBytes()); } catch (IOException e) {} } }"),
+            "Base.java", String.join("\n",
+                "public class Base {",
+                "  protected Runnable task;",
+                "  public void install(Store s) { this.task = () -> s.write(); }",
+                "}"),
+            "Sub.java", String.join("\n",
+                "public class Sub extends Base {",
+                "  public void fire() { if (task != null) task.run(); }",
+                "}"),
+            "Repaint.java", String.join("\n",
+                "public class Repaint implements Runnable { public static int n; @Override public void run() { n++; } }")));
+        assertTrue(eff(r, "Sub.fire").contains(Effect.FS),
+                "an inherited field's stored lambda must reach a subclass caller, got " + r.get("Sub.fire"));
+    }
+
+    /** INHERITED field, the REVERSE direction — SUBCLASS writes `this.task` (inherited, unqualified;
+     *  `javap -v` shows owner=Sub there), BASE reads AND DISPATCHES it directly in its own inherited
+     *  method (`task.run()`, owner=Base on the GETFIELD) — deliberately NOT through a getter that returns
+     *  it, which is a separate, much larger, already-tracked gap (field provenance does not currently
+     *  survive a method-call return boundary at all — see BACKLOG.md; it reproduces even same-class, on
+     *  the published 0.34.0 jar, with no inheritance involved, and is out of scope for this fix). Here the
+     *  dispatch site itself is the GETFIELD, so this isolates the reverse-direction owner-mismatch this
+     *  fix targets from that unrelated interprocedural-provenance gap. Not the direction the review named,
+     *  but the audit-boundary rule says to check the sibling: a fix that patched only "subclass reads a
+     *  base-written field" could still miss this direction if it normalized one side and not the other. */
+    @Test
+    void subclassWritesBaseReadsCompletesEvenWithUnrelatedImplementor() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of(
+            "Store.java", String.join("\n",
+                "import java.io.*; import java.nio.file.*;",
+                "public class Store { public void write() { try { Files.write(Paths.get(\"/tmp/fl8.txt\"), \"x\".getBytes()); } catch (IOException e) {} } }"),
+            "Base.java", String.join("\n",
+                "public class Base {",
+                "  protected Runnable task;",
+                "  public void fire() { if (task != null) task.run(); }",
+                "}"),
+            "Sub.java", String.join("\n",
+                "public class Sub extends Base {",
+                "  public void install(Store s) { this.task = () -> s.write(); }",
+                "}"),
+            "Repaint.java", String.join("\n",
+                "public class Repaint implements Runnable { public static int n; @Override public void run() { n++; } }")));
+        assertTrue(eff(r, "Base.fire").contains(Effect.FS),
+                "a subclass-written inherited field, dispatched directly in an inherited base method, must "
+                + "still resolve, got " + r.get("Base.fire"));
+    }
+
+    /** A field written through a `super.field` reference. `javap -v` shows this already names the
+     *  syntactic superclass as owner (agreeing with the declaring class here), but the fix must not rely
+     *  on that agreement holding for every JVM/javac — {@link Cha#fieldKey} resolves it structurally
+     *  either way. */
+    @Test
+    void superFieldWriteCompletesEvenWithUnrelatedImplementor() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of(
+            "Store.java", String.join("\n",
+                "import java.io.*; import java.nio.file.*;",
+                "public class Store { public void write() { try { Files.write(Paths.get(\"/tmp/fl9.txt\"), \"x\".getBytes()); } catch (IOException e) {} } }"),
+            "Base.java", "public class Base { protected Runnable task; }",
+            "Sub.java", String.join("\n",
+                "public class Sub extends Base {",
+                "  public void install(Store s) { super.task = () -> s.write(); }",
+                "  public void fire() { if (task != null) task.run(); }",
+                "}"),
+            "Repaint.java", String.join("\n",
+                "public class Repaint implements Runnable { public static int n; @Override public void run() { n++; } }")));
+        assertTrue(eff(r, "Sub.fire").contains(Effect.FS),
+                "a lambda written via super.field must still reach the reading caller, got " + r.get("Sub.fire"));
+    }
+
+    /** A field accessed through a WIDER static type than its declaring class — `s.task = …` where `s` is
+     *  declared `Sub` but `task` is declared on `Base`. javac's PUTFIELD names owner=Sub here (the
+     *  syntactic reference type), not Base, a THIRD spelling of the owner-mismatch class distinct from
+     *  plain inheritance. */
+    @Test
+    void fieldWriteThroughSubtypeReferenceCompletesEvenWithUnrelatedImplementor() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of(
+            "Store.java", String.join("\n",
+                "import java.io.*; import java.nio.file.*;",
+                "public class Store { public void write() { try { Files.write(Paths.get(\"/tmp/fl10.txt\"), \"x\".getBytes()); } catch (IOException e) {} } }"),
+            "Base.java", "public class Base { protected Runnable task; }",
+            "Sub.java", String.join("\n",
+                "public class Sub extends Base {",
+                "  public void install(Sub s, Store store) { s.task = () -> store.write(); }",
+                "  public void fire() { if (task != null) task.run(); }",
+                "}"),
+            "Repaint.java", String.join("\n",
+                "public class Repaint implements Runnable { public static int n; @Override public void run() { n++; } }")));
+        assertTrue(eff(r, "Sub.fire").contains(Effect.FS),
+                "a lambda written through a subtype-typed reference must still reach the reading caller, got "
+                + r.get("Sub.fire"));
+    }
+
+    /** A functional-interface field DECLARED ON AN INTERFACE (implicitly `public static final`), assigned
+     *  in the interface's own implicit static initializer, and READ through an IMPLEMENTING CLASS
+     *  (`Impl.K`) rather than the interface itself (`Iface.K`) — javac's GETSTATIC there names owner=Impl,
+     *  not the declaring interface, the same class of mismatch as inheritance but for statics. */
+    @Test
+    void interfaceStaticFieldReadThroughImplementorCompletesEvenWithUnrelatedImplementor() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of(
+            "Store.java", String.join("\n",
+                "import java.io.*; import java.nio.file.*;",
+                "public class Store { public void write() { try { Files.write(Paths.get(\"/tmp/fl11.txt\"), \"x\".getBytes()); } catch (IOException e) {} } }"),
+            "Iface.java", String.join("\n",
+                "public interface Iface {",
+                "  Runnable K = () -> { try { new Store().write(); } catch (Throwable t) {} };",
+                "}"),
+            "ImplOfIface.java", "public class ImplOfIface implements Iface {}",
+            "Widget.java", String.join("\n",
+                "public class Widget {",
+                "  public void fire() { ImplOfIface.K.run(); }",  // reads K through the IMPLEMENTING class
+                "}"),
+            "Repaint.java", String.join("\n",
+                "public class Repaint implements Runnable { public static int n; @Override public void run() { n++; } }")));
+        assertTrue(eff(r, "Widget.fire").contains(Effect.FS),
+                "an interface static field's lambda read through an implementing class must still reach the "
+                + "caller, got " + r.get("Widget.fire"));
+    }
+
+    /** A field written through a SETTER method (not `this.field = …` inline at the call site) and written
+     *  in a CONSTRUCTOR on a different clean path — confirms the write-side scan (which walks every
+     *  method, `<init>` included) sees a PUTFIELD wherever it textually lives, not just at an inline
+     *  assignment shape. */
+    @Test
+    void fieldWrittenThroughSetterAndConstructorCompletesEvenWithUnrelatedImplementor() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of(
+            "Store.java", String.join("\n",
+                "import java.io.*; import java.nio.file.*;",
+                "public class Store { public void write() { try { Files.write(Paths.get(\"/tmp/fl12.txt\"), \"x\".getBytes()); } catch (IOException e) {} } }"),
+            "Widget.java", String.join("\n",
+                "public class Widget {",
+                "  private Runnable task;",
+                "  public Widget() { this.task = () -> { int z = 1 + 1; }; }",   // clean write #1: <init>
+                "  public void setTask(Store s) { this.task = () -> s.write(); }", // clean write #2: setter
+                "  public void fire() { if (task != null) task.run(); }",
+                "}"),
+            "Repaint.java", String.join("\n",
+                "public class Repaint implements Runnable { public static int n; @Override public void run() { n++; } }")));
+        assertTrue(eff(r, "Widget.fire").contains(Effect.FS),
+                "a lambda installed via a setter (unioned with a constructor's own clean write) must reach "
+                + "the caller, got " + r.get("Widget.fire"));
+    }
+
+    /** OVER-CHARGE CONTROL 3 — the STATIC-field analogue of {@code pureLambdaGainsNothing…}: now that
+     *  static fields are bound, a PURE static-field lambda must not gain Fs merely because an unrelated
+     *  EFFECTFUL Runnable also exists in the project. This is the exact shape the review's over-charge
+     *  report used (Widget.task always a pure lambda; Repaint effectful) — it flipped `deny Fs
+     *  Widget.fire` 1 -> 0 once the static-field write became bound, since the field is no longer tainted
+     *  through to the unrelated-implementor CHA fallback. */
+    @Test
+    void pureStaticLambdaGainsNothingEvenWithUnrelatedEffectfulImplementor() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of(
+            "Widget.java", String.join("\n",
+                "public class Widget {",
+                "  private static Runnable task;",
+                "  public static void install() { task = () -> { int z = 1 + 1; }; }",
+                "  public static void fire() { if (task != null) task.run(); }",
+                "}"),
+            "Repaint.java", String.join("\n",
+                "import java.io.*; import java.nio.file.*;",
+                "public class Repaint implements Runnable {",
+                "  @Override public void run() { try { Files.write(Paths.get(\"/tmp/fl13.txt\"), \"x\".getBytes()); } catch (IOException e) {} }",
+                "}")));
+        assertFalse(eff(r, "Widget.fire").contains(Effect.FS),
+                "a pure lambda in a STATIC field must not gain Fs from an unrelated EFFECTFUL implementor, got "
+                + r.get("Widget.fire"));
+    }
+
+    /** OVER-CHARGE CONTROL 4 — the INHERITED-field analogue: a pure lambda stored in a base-declared field
+     *  and read through a subclass must not gain Fs from an unrelated effectful implementor either, now
+     *  that inherited-field binding closes the owner-mismatch that used to leave it tainted-through-to-CHA. */
+    @Test
+    void pureInheritedLambdaGainsNothingEvenWithUnrelatedEffectfulImplementor() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of(
+            "Base.java", String.join("\n",
+                "public class Base {",
+                "  protected Runnable task;",
+                "  public void install() { this.task = () -> { int z = 1 + 1; }; }",
+                "}"),
+            "Sub.java", String.join("\n",
+                "public class Sub extends Base {",
+                "  public void fire() { if (task != null) task.run(); }",
+                "}"),
+            "Repaint.java", String.join("\n",
+                "import java.io.*; import java.nio.file.*;",
+                "public class Repaint implements Runnable {",
+                "  @Override public void run() { try { Files.write(Paths.get(\"/tmp/fl14.txt\"), \"x\".getBytes()); } catch (IOException e) {} }",
+                "}")));
+        assertFalse(eff(r, "Sub.fire").contains(Effect.FS),
+                "a pure lambda in an INHERITED field must not gain Fs from an unrelated EFFECTFUL implementor, "
+                + "got " + r.get("Sub.fire"));
+    }
 }

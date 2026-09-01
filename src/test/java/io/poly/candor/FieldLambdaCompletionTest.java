@@ -443,4 +443,126 @@ class FieldLambdaCompletionTest {
                 "a pure lambda in an INHERITED field must not gain Fs from an unrelated EFFECTFUL implementor, "
                 + "got " + r.get("Sub.fire"));
     }
+
+    // ------------------------------------------------------------------------------------------------
+    // ⟨0.35⟩ HARDENING — the LINEAR-LOOKBACK cardinal sin (candor-java, measured on real jars: AWS S3
+    // SDK's DefaultSelectObjectContentVisitorBuilder$VisitorFromBuilder, HttpCore5's
+    // RequestHandlerRegistry ctor, Spring Data Redis's FutureResult ctor, Netflix Eureka's
+    // InstanceInfo$Builder). Every test above writes a field from exactly ONE producer per site (a lambda,
+    // or a single opaque source) — none of them exercise a putfield fed by a CONTROL-FLOW MERGE, which is
+    // the shape that broke: `this.x = supplied != null ? supplied : defaultLambda;` compiles to ONE
+    // putfield with TWO predecessors. The pre-fix scan looked only at the single instruction physically
+    // adjacent to the putfield (javac places the default arm there), read a clean lambda, and bound the
+    // field — so an arbitrary CALLER-SUPPLIED callback was treated as if it could only ever be the safe
+    // default. The exact inverse of this class's own TAINT contract.
+    // ------------------------------------------------------------------------------------------------
+
+    /** THE SIN ITSELF — the default-or-caller-supplied idiom. `supplied` is an opaque ctor parameter (could
+     *  be anything, including an effectful caller lambda); the field must stay tainted and `fire` must
+     *  disclose honest Unknown, not silently resolve to the default no-op. This is the revert-provable
+     *  fixture: reverting the control-flow-aware fix (restoring the linear `fi.getPrevious()` lookback)
+     *  makes {@code Widget.fire} vanish from the report entirely (an absent key, not a wrong one). */
+    @Test
+    void ternaryDefaultOrSuppliedCallbackKeepsUnknown() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of(
+            "Widget.java", String.join("\n",
+                "import java.util.function.Consumer;",
+                "public class Widget {",
+                "  private final Consumer<String> onEnd;",
+                "  public Widget(Consumer<String> supplied) {",
+                "    this.onEnd = supplied != null ? supplied : (s) -> { };",
+                "  }",
+                "  public void fire(String s) { onEnd.accept(s); }",
+                "}")));
+        assertTrue(eff(r, "Widget.fire").contains(Effect.UNKNOWN),
+                "a putfield fed by a ternary merge of a caller-supplied param and a default lambda must "
+                + "stay Unknown — resolving to the default alone treats an arbitrary supplied callback as "
+                + "the safe default, got " + r.get("Widget.fire"));
+    }
+
+    /** Same shape, but the "default" arm is an EFFECTFUL lambda and the constructor is always invoked with
+     *  an explicit (opaque) supplied callback in the fixture's own call graph — makes explicit that the
+     *  disclosure is Unknown, not a silent resolution to the default's own (here, effectful) body either.
+     *  Guards against a fix that taints correctly in one direction (drops the default's Fs) but leaks it
+     *  the other way (attributes Fs to a caller that in fact passed something else entirely). */
+    @Test
+    void ternaryWithEffectfulDefaultDoesNotLeakThatEffectAsTheOnlyAnswer() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of(
+            "Store.java", String.join("\n",
+                "import java.io.*; import java.nio.file.*;",
+                "public class Store { public void write() { try { Files.write(Paths.get(\"/tmp/fl15.txt\"), \"x\".getBytes()); } catch (IOException e) {} } }"),
+            "Widget.java", String.join("\n",
+                "import java.util.function.Consumer;",
+                "public class Widget {",
+                "  private final Consumer<String> onEnd;",
+                "  public Widget(Consumer<String> supplied, Store s) {",
+                "    this.onEnd = supplied != null ? supplied : (x) -> s.write();",
+                "  }",
+                "  public void fire(String x) { onEnd.accept(x); }",
+                "}")));
+        assertTrue(eff(r, "Widget.fire").contains(Effect.UNKNOWN),
+                "the merged putfield must taint to Unknown regardless of which arm happens to be "
+                + "effectful — a caller-supplied value could still reach here, got " + r.get("Widget.fire"));
+    }
+
+    /** RESIDUAL-RISK PROBE, not a clean pass/fail on this fix's own guarantee — a PURE lambda in a ternary,
+     *  with exactly ONE named project implementor of the same interface (`Repaint`, effectful) also in
+     *  scope. MEASURED: the field correctly taints (this fix's job), but the taint fallthrough lands on
+     *  the PRE-EXISTING, BACKLOG-documented gap ("the static/inherited-field over-charge is closed for a
+     *  CLEAN write-set; a TAINTED write-set … still falls through to CHA and can still fabricate") — CHA's
+     *  own fan-out for `Runnable` here is exactly 1 (the anonymous default arm has no CHA-visible class;
+     *  only `Repaint` is a named implementor), so the narrow-CHA path attributes Repaint's Fs to
+     *  {@code Widget.fire} even though the true receiver might be the pure default or an opaque `supplied`
+     *  — an over-charge, not the silent-pure this class otherwise guards against. NOT this fix's mechanism
+     *  to close (a third taint state, per BACKLOG.md); this test's job is only to confirm the fix does not
+     *  make it WORSE than the status quo — i.e. does not regress to silent absence, which the REVERT of
+     *  this fix on this exact fixture does (see the class doc's link to the BACKLOG entry). */
+    @Test
+    void pureLambdaInTernaryBesideUnrelatedEffectfulImplementorIsNotSilentlyPure() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of(
+            "Widget.java", String.join("\n",
+                "public class Widget {",
+                "  private final Runnable onEnd;",
+                "  public Widget(Runnable supplied) {",
+                "    this.onEnd = supplied != null ? supplied : () -> { int z = 1 + 1; };",
+                "  }",
+                "  public void fire() { onEnd.run(); }",
+                "}"),
+            "Repaint.java", String.join("\n",
+                "import java.io.*; import java.nio.file.*;",
+                "public class Repaint implements Runnable {",
+                "  @Override public void run() { try { Files.write(Paths.get(\"/tmp/fl16.txt\"), \"x\".getBytes()); } catch (IOException e) {} }",
+                "}")));
+        assertTrue(r.containsKey("Widget.fire"),
+                "the field-write taint must not silently disappear the caller from the report — whatever "
+                + "it discloses (even an imprecise Fs via the pre-existing CHA-narrow-fallthrough gap this "
+                + "fix does not close), it must not read as certified-pure, got absent-key");
+    }
+
+    /** REGRESSION GUARD for the fix's OWN mechanism: two clean project lambdas written at TWO DIFFERENT
+     *  PUTFIELD SITES (not merged by control flow — each site has exactly one producer) must still UNION,
+     *  exactly as {@code fieldWrittenThroughSetterAndConstructorCompletesEvenWithUnrelatedImplementor}
+     *  established. This is the amqp-client {@code WorkPool}-shaped case the audit flagged as the one this
+     *  fix is most likely to break: confirms the control-flow-merge taint (new) is not over-applied to a
+     *  field that merely has multiple independent write SITES (unaffected, pre-existing behaviour). */
+    @Test
+    void twoCleanLambdasAtTwoDifferentSitesStillUnionNotTaint() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of(
+            "Store.java", String.join("\n",
+                "import java.io.*; import java.nio.file.*;",
+                "public class Store { public void write() { try { Files.write(Paths.get(\"/tmp/fl17.txt\"), \"x\".getBytes()); } catch (IOException e) {} } }"),
+            "Widget.java", String.join("\n",
+                "public class Widget {",
+                "  private Runnable task;",
+                "  public void installQuiet() { this.task = () -> { int z = 1 + 1; }; }",
+                "  public void installLoud(Store s) { this.task = () -> s.write(); }",
+                "  public void fireAfterLoud() { installLoud(new Store()); if (task != null) task.run(); }",
+                "}"),
+            "Repaint.java", String.join("\n",
+                "public class Repaint implements Runnable { public static int n; @Override public void run() { n++; } }")));
+        assertTrue(eff(r, "Widget.fireAfterLoud").contains(Effect.FS),
+                "two clean lambdas at two DIFFERENT write sites must still union (unaffected by the "
+                + "control-flow-merge taint, which only applies WITHIN one site) — the loud site's Fs must "
+                + "reach the caller, got " + r.get("Widget.fireAfterLoud"));
+    }
 }

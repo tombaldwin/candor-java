@@ -461,17 +461,52 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
      *  was ever written to it, so completing THAT receiver from THAT field's own write-set cannot leak an
      *  unrelated field's or an unrelated call site's value the way a project-wide interface union can.
      *
-     *  <p><b>How.</b> One pass over every PUTFIELD/PUTSTATIC in the scan: if the value immediately behind
-     *  it (skipping only labels/line-numbers/frames — no dataflow needed, since a metafactory site pushes
-     *  its result straight onto the stack for the following store) is an INVOKEDYNAMIC(LambdaMetafactory)
-     *  resolving to a PROJECT method ({@link Candor#indyLambdaTarget}, reused verbatim — covers an inline
+     *  <p><b>How — CONTROL-FLOW-AWARE, not linear-adjacency (⟨0.35⟩ hardening, PART 87 vein).</b> An
+     *  earlier version of this pass looked only at the single bytecode instruction immediately preceding
+     *  the PUTFIELD/PUTSTATIC (skipping labels/line-numbers/frames) — a LINEAR lookback answering a
+     *  CONTROL-FLOW question, and wrong whenever the stored value has more than one producer. The
+     *  idiom {@code this.x = supplied != null ? supplied : defaultLambda;} (the default-or-caller-
+     *  supplied-callback pattern — AWS SDK, HttpCore5, Spring Data Redis, Netflix Eureka all ship it)
+     *  compiles to ONE putfield fed by TWO control-flow predecessors merging: javac places the default
+     *  branch's lambda immediately before the putfield, so the linear check saw only the default and
+     *  called the field cleanly bound — treating an arbitrary externally-supplied callback as if it could
+     *  only ever be the safe default. That is the exact inverse of this method's own TAINT contract below.
+     *
+     *  <p>The fix reuses the engine's existing whole-method dataflow ({@link Interp.ProvInterpreter} via
+     *  {@link Candor#cachedProvFrames}) rather than hand-rolling a second, weaker analysis over the same
+     *  question ASM's frame MERGE already answers soundly elsewhere ({@link Interp#monomorphicReceiver}) —
+     *  the family's "ask the authority, don't reimplement it" rule. One pass over every PUTFIELD/PUTSTATIC:
+     *  the value about to be stored is the top of the {@code Frame<ProvValue>} recorded for that
+     *  instruction — the frame ASM's {@code Analyzer} computes as the MERGE, over EVERY incoming
+     *  control-flow edge, of whatever value reaches this program point, not merely whatever instruction is
+     *  physically adjacent to it. {@code ProvInterpreter#merge} already collapses {@code lambdaTarget} to
+     *  null the instant two incoming paths disagree (a lambda vs. a param, or two different lambdas), so a
+     *  ternary/if-else whose arms push different producers is seen as what it is — taint, not a clean bind
+     *  — while a single-producer write (the overwhelming common case) reads identically to the old check.
+     *  {@code lambdaTarget} is set only when the producer is an INVOKEDYNAMIC(LambdaMetafactory) resolving
+     *  to a PROJECT method ({@link Candor#indyLambdaTarget}, reused verbatim there too — covers an inline
      *  lambda's synthetic body, an unbound/bound method reference's real target, and a constructor
-     *  reference's {@code <init>} identically, so a fix shaped for lambdas alone does not close only one
-     *  of three spellings), record it under {@link #fieldKey} — the SAME normalized key
-     *  {@link Interp.ProvValue#fieldOrigin} now carries for BOTH a GETFIELD and a GETSTATIC read (see
-     *  {@code Interp.ProvInterpreter#unaryOperation}/{@code newOperation}), so the dispatch-site lookup is a
-     *  direct map hit regardless of which class's bytecode the write and the read instructions each name as
-     *  `owner` — see {@link #fieldKey}'s doc for why those two can legitimately disagree.
+     *  reference's {@code <init>} identically). A method with no field writes never pays for the analyzer
+     *  (computed lazily, first PUTFIELD/PUTSTATIC only); an unanalyzable method (native/abstract/bodiless,
+     *  or a genuine {@code AnalyzerException} on malformed bytecode) taints every field it writes — sound:
+     *  no binding is ever claimed without the dataflow proving it. {@link Candor#cachedProvFrames} shares
+     *  its memo with the Phase-2 stream-origin pre-pass that runs right after this one, so a method touched
+     *  by both pays for the analyzer once, not twice. Record each producer's key under {@link #fieldKey} —
+     *  the SAME normalized key {@link Interp.ProvValue#fieldOrigin} carries for BOTH a GETFIELD and a
+     *  GETSTATIC read (see {@code Interp.ProvInterpreter#unaryOperation}/{@code newOperation}), so the
+     *  dispatch-site lookup is a direct map hit regardless of which class's bytecode the write and the read
+     *  instructions each name as `owner` — see {@link #fieldKey}'s doc for why those two can legitimately
+     *  disagree.
+     *
+     *  <p><b>Known, accepted precision loss (sound direction only).</b> A single putfield fed by a merge of
+     *  TWO DIFFERENT clean project lambdas (`this.x = cond ? lambdaA : lambdaB;`, both recognisable) now
+     *  taints rather than unions — {@code merge} cannot tell "two disagreeing clean lambdas" apart from
+     *  "a clean lambda vs. an opaque value" from the merged value alone, and guessing wrong in the union
+     *  direction risks exactly the fabrication this pass exists to prevent. This falls through to the
+     *  pre-existing CHA/Unknown path, same as any other tainted field — under-precision, never fabrication.
+     *  A field written from TWO DIFFERENT SITES (two constructors, or a constructor and a setter, each its
+     *  own single-producer putfield) is unaffected and still unions both — see
+     *  {@code fieldWrittenThroughSetterAndConstructorCompletesEvenWithUnrelatedImplementor}.
      *
      *  <p><b>TAINT, not silence, on an opaque write.</b> If ANY assignment to a field — anywhere in the
      *  project — is NOT a recognisable project lambda/method-ref (a parameter, a null, an external
@@ -503,20 +538,25 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         Map<String, List<String>> bindings = new HashMap<>();
         for (ClassNode cn : classes) {
             for (MethodNode mn : cn.methods) {
-                for (AbstractInsnNode insn : mn.instructions) {
-                    if (!(insn instanceof FieldInsnNode fi)) continue;
+                AbstractInsnNode[] insns = mn.instructions.toArray();
+                Frame<ProvValue>[] pf = null;      // computed lazily — only methods that write a field pay
+                boolean pfAttempted = false;        // for the analyzer; null pf after an attempt means
+                for (int i = 0; i < insns.length; i++) {   // unanalyzable, not "not yet computed"
+                    if (!(insns[i] instanceof FieldInsnNode fi)) continue;
                     if (fi.getOpcode() != Opcodes.PUTFIELD && fi.getOpcode() != Opcodes.PUTSTATIC) continue;
                     String key = fieldKey(fi.owner, fi.name);
-                    AbstractInsnNode v = fi.getPrevious();
-                    while (v instanceof LabelNode || v instanceof LineNumberNode || v instanceof FrameNode)
-                        v = v.getPrevious();
+                    if (!pfAttempted) { pf = cachedProvFrames(cn, mn); pfAttempted = true; }
                     String impl = null;
-                    if (v instanceof InvokeDynamicInsnNode idin && idin.bsm != null
-                            && idin.bsm.getOwner().equals("java/lang/invoke/LambdaMetafactory"))
-                        impl = indyLambdaTarget(idin);   // null: external target or not a lambda bootstrap
+                    if (pf != null) {
+                        Frame<ProvValue> f = pf[i];   // the merged frame reaching THIS putfield, over every
+                        if (f != null && f.getStackSize() > 0) {   // incoming control-flow edge — not just
+                            ProvValue v = f.getStack(f.getStackSize() - 1);   // the physically preceding insn
+                            if (v != null) impl = v.lambdaTarget;   // null unless EVERY reaching path agrees
+                        }                                           // on the identical project lambda/ctor-ref
+                    }
                     if (impl != null) bindings.computeIfAbsent(key, k -> new ArrayList<>()).add(impl);
-                    else tainted.add(key);   // conservative: an unrecognised write voids the WHOLE field
-                }
+                    else tainted.add(key);   // conservative: an unrecognised OR merge-disagreeing write
+                }                             // voids the WHOLE field
             }
         }
         for (String t : tainted) bindings.remove(t);

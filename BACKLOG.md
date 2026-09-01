@@ -94,6 +94,98 @@ this is a cross-engine spec item, not a local patch. Repro: the `viaParam` fixtu
 further instances of the same property were found and VERIFIED but NOT fixed in that pass — logged here
 so the next session starts ahead rather than re-discovering them.
 
+**A THIRD session (2026-09-01, same day) closed the LINEAR-LOOKBACK cardinal sin**:
+`collectFieldLambdaBindings` decided a field's write-set by inspecting only the single bytecode
+instruction immediately preceding the PUTFIELD/PUTSTATIC — a linear-adjacency check answering a
+CONTROL-FLOW question. `this.x = supplied != null ? supplied : defaultLambda;` (the default-or-
+caller-supplied-callback idiom — AWS SDK `DefaultSelectObjectContentVisitorBuilder`, HttpCore5
+`RequestHandlerRegistry`, Spring Data Redis `FutureResult`, Netflix Eureka `InstanceInfo$Builder`, and
+2 further genuinely-new instances the fix's own generality caught beyond those 4 named clusters —
+`AMQConnection.flush` in amqp-client, `ClientJCacheEntryListenerAdapter.onUpdated` in ignite-core, plus
+4 rows in spring-data-commons's `*.isNew`) compiles to ONE putfield fed by TWO control-flow
+predecessors; javac places the default arm immediately before the putfield, so the linear check saw
+only the default and called the field cleanly bound. Fixed by reusing the engine's existing whole-
+method dataflow (`Interp.ProvInterpreter` via `Candor.cachedProvFrames`) instead of a second hand-
+rolled linear scan — `ProvInterpreter#merge` already collapses `lambdaTarget` to null the moment two
+incoming control-flow paths disagree, so the fix is "read the merged frame at the putfield" rather than
+a new mechanism. See `Cha.collectFieldLambdaBindings`'s doc and `FieldLambdaCompletionTest`'s
+`ternaryDefaultOrSuppliedCallbackKeepsUnknown` + siblings for the fixture, revert test, and over-charge
+controls. Full 325-jar A/B (pre = published 0.34.0, post = this fix): of the 386 rows the PRIOR fix
+(`a294b86`+`5fa3417`) had diverged from 0.34.0, **42 revert exactly to the 0.34.0 value** (this
+session's fix — a superset of the 4 named real-world clusters, since the fix is general to ANY
+control-flow merge, not just the exact ternary shape) and **344 stay exactly as `a294b86`/`5fa3417`
+left them** (every named Mechanism-A cluster spot-checked individually: chronicle-wire
+`EnumSetFieldAccess.copy`, spring-integration-core `MethodHandleLookup$2.lookup`, h2
+`CharsetCollator.compare`/`CharsetCollationKey.compareTo`, jedis `ScanIteration.*CommandArguments`,
+amqp-client `WorkPool.addWorkItem` — the two-clean-PUTFIELDs case flagged as highest regression risk —
+all unchanged). Zero rows landed on a third, unexpected value — every one of the 344 that still differs
+from pre is byte-identical to the pre-this-fix value, confirmed against `cat_reverted.tsv` /
+`cat_still_same.tsv` in the session's scratch dir.
+
+### An ABSTRACT-INTERFACE method-reference identity CARDINAL SIN — CONFIRMED, live on `origin/main`
+### since `a294b86`, NOT fixed by the STATIC/INHERITED session, NOT fixed by the linear-lookback fix
+
+**MEASURED 2026-09-01, ground-truthed with a minimal fixture, NOT merely inferred.** `indyLambdaTarget`
+(the helper `collectFieldLambdaBindings` reuses to decide what a lambda/method-ref's "body" is) accepts
+any handle whose owner is a project class and whose tag is `>= H_INVOKEVIRTUAL` — which includes
+`H_INVOKEINTERFACE`, i.e. an UNBOUND instance method reference to an INTERFACE's method
+(`someInterfaceTyped::method`, the common `stream.map(Shape::area)` idiom where `area` is abstract).
+It does **not** check whether the resolved method is CONCRETE. When it is abstract, the returned "impl"
+id names a method with no bytecode body of its own — the TRUE dispatch is polymorphic over whichever
+concrete type is passed as the first argument at each call site, exactly the question CHA exists to
+answer — but `collectFieldLambdaBindings` binds the field to that phantom id anyway, and the id resolves
+to nothing in the effects graph, so the edge silently contributes ZERO effects instead of falling
+through to CHA (which would find the concrete implementor and either resolve it or, on a genuinely
+ambiguous fan-out, disclose Unknown).
+
+Repro (`.../scratchpad/absint` in the session that found this):
+
+    public interface Shape { void render(); }
+    public class LoudShape implements Shape {
+        public void render() { Files.write(Paths.get("/tmp/x"), "x".getBytes()); }  // Fs
+    }
+    public class Widget {
+        private final Consumer<Shape> renderer;
+        public Widget() { this.renderer = Shape::render; }   // unbound ref to an ABSTRACT interface method
+        public void fire(Shape s) { renderer.accept(s); }
+    }
+    public class Main { public static void main(String[] a) { new Widget().fire(new LoudShape()); } }
+
+    published 0.34.0 (no field-lambda binding at all):  Widget.fire -> Unknown, Main.main -> Unknown
+    HEAD (a294b86 onward, incl. this session's two fixes): Widget.fire ABSENT, Main.main inferred=[]
+      — CERTIFIED PURE, though `Main.main` transitively performs Fs via `LoudShape.render`.
+
+**`a294b86` is already on `origin/main`** (confirmed via `git log origin/main`) — this is not a local-
+only risk. The auditor who found this session's linear-lookback sin separately flagged "hazelcast,
+micrometer ×2 bind a field to an abstract-interface method-reference identity" as a latent risk "not
+validated as sound in general"; this session's fixture CONFIRMS it is not sound, independent of whether
+any specific corpus row happens to land on the right answer by luck (both hazelcast's and micrometer's
+cited rows did, coincidentally, since their real implementors were pure).
+
+**Not fixed in this pass** (explicitly out of scope for the linear-lookback fix, and risky to rush): the
+shape of the fix is to check `ACC_ABSTRACT` on the resolved handle's target method in
+`indyLambdaTarget` (or at its `collectFieldLambdaBindings`/wherever-else-it-is-reused call sites) and
+treat an abstract-interface-method handle as NOT a recognisable "clean project lambda" — taint the field
+(or decline the creation-site edge, for `indyLambdaTarget`'s other callers), falling through to CHA. Two
+things to check before shipping that: (1) whether `indyLambdaTarget` is reused anywhere a CONCRETE
+non-final class's method is *also* effectively receiver-polymorphic (an unbound instance reference to an
+overridable method on a non-final class has the same shape, one level less obviously) — the fix above
+narrows only the interface/abstract case; (2) an over-charge control on real code before shipping, per
+this project's own "4 defects in 5 fabrication-shaped fixes" history.
+
+### A candidate SIBLING (found by reading, NOT fixture-verified — time-boxed, flagged rather than
+### chased): `Candor.bindDeferredFields`'s backward scan may have the SAME linear-vs-control-flow shape
+
+`bindDeferredFields` (Kotlin `by lazy` / `ThreadLocal.withInitial`) scans backward from a PUTFIELD
+looking for a deferred-factory call and its feeding INVOKEDYNAMIC, bounded by depth and by a prior
+PUTFIELD/PUTSTATIC — but NOT by a branch (`JumpInsnNode`), unlike its sibling `forcedFieldKey` in the
+same file, which explicitly stops at one. A ternary/if-else feeding a deferred field
+(`this.x$delegate = supplied != null ? supplied : LazyKt.lazy(() -> default());`) would let the
+backward scan walk past the branch-merge label into whichever arm is physically adjacent and attribute
+that arm's factory+lambda to the OTHER arm's possible values too — plausible fabrication/under-report
+by the same mechanism as the fixed sin, unconfirmed with a fixture. Worth a session of its own before
+being fixed (needs its own repro + revert test + over-charge controls, not a squeeze-in).
+
 ### Field provenance does not survive a call through a GETTER — a broader, pre-existing gap than
 ### PART 87's own two fixed shapes, and out of scope for that fix
 

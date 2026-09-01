@@ -565,4 +565,91 @@ class FieldLambdaCompletionTest {
                 + "control-flow-merge taint, which only applies WITHIN one site) — the loud site's Fs must "
                 + "reach the caller, got " + r.get("Widget.fireAfterLoud"));
     }
+
+    /** R84 — THE SIN. An UNBOUND instance-method reference to an ABSTRACT interface method
+     *  ({@code this.op = Shape::render;}) must NOT be accepted as a "clean project lambda body": `render`
+     *  has no bytecode of its own, so binding the field to it degrades the real implementor's Fs to
+     *  silent purity — {@code Widget.fire} would vanish from the scan result (an absent key, not merely
+     *  "not FS") exactly like {@code storedLambdaCompletesEvenWithUnrelatedImplementor}'s defect shape,
+     *  except the field must now be EXCLUDED (taint), not completed, because there is no visible bytecode
+     *  call site for CHA to complete it FROM (see {@link Candor#indyLambdaTarget}'s doc). The revert test:
+     *  reverting {@link Candor#handleTargetConcrete} makes {@code Widget.fire} disappear from the result
+     *  entirely — this assertion (effect PRESENT, i.e. non-empty) catches that the same way the sibling
+     *  tests above catch the field-binding regression. */
+    @Test
+    void abstractInterfaceMethodReferenceIsExcludedNotSilentlyPure() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of(
+            "Shape.java", "public interface Shape { void render(); }",
+            "LoudShape.java", String.join("\n",
+                "import java.io.*; import java.nio.file.*;",
+                "public class LoudShape implements Shape {",
+                "  public void render() { try { Files.write(Paths.get(\"/tmp/fl18.txt\"), \"x\".getBytes()); } catch (IOException e) {} }",
+                "}"),
+            "Widget.java", String.join("\n",
+                "import java.util.function.Consumer;",
+                "public class Widget {",
+                "  private final Consumer<Shape> op;",
+                "  public Widget() { this.op = Shape::render; }",   // unbound ref to an ABSTRACT method
+                "  public void fire(Shape s) { op.accept(s); }",
+                "}")));
+        assertFalse(eff(r, "Widget.fire").isEmpty(),
+                "an abstract-interface-method reference must NOT bind: Widget.fire must not go silently "
+                + "pure/absent — the field must stay excluded (taint), not completed to a bodiless stub, got "
+                + r.get("Widget.fire"));
+    }
+
+    /** R84 — THE OVER-CHARGE CONTROL, direction 1: an UNBOUND instance-method reference to a CONCRETE
+     *  class method (not abstract, not an interface) is the shape {@link
+     *  #methodReferenceCompletesEvenWithUnrelatedImplementor} exercises for a BOUND reference — this
+     *  covers the UNBOUND form, which the R84 fix's abstractness check must not over-apply to. */
+    @Test
+    void unboundConcreteMethodReferenceStillBinds() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of(
+            "LoudShape.java", String.join("\n",
+                "import java.io.*; import java.nio.file.*;",
+                "public class LoudShape {",
+                "  public void render() { try { Files.write(Paths.get(\"/tmp/fl19.txt\"), \"x\".getBytes()); } catch (IOException e) {} }",
+                "}"),
+            "Widget.java", String.join("\n",
+                "import java.util.function.Consumer;",
+                "public class Widget {",
+                "  private final Consumer<LoudShape> op;",
+                "  public Widget() { this.op = LoudShape::render; }",   // unbound ref, CONCRETE class method
+                "  public void fire(LoudShape s) { op.accept(s); }",
+                "}")));
+        assertTrue(eff(r, "Widget.fire").contains(Effect.FS),
+                "an unbound reference to a CONCRETE class method must still bind and complete to Fs, got "
+                + r.get("Widget.fire"));
+    }
+
+    /** R84 — THE OVER-CHARGE CONTROL, direction 2: an unbound instance-method reference to a DEFAULT
+     *  (concrete) interface method must still bind — "interface" is not a proxy for "abstract". Uses the
+     *  SAME {@code Shape} interface as the sin fixture, with a second, default method on it, to prove the
+     *  fix discriminates by the REFERENCED method's own abstractness, not by its owner's kind. */
+    @Test
+    void unboundDefaultInterfaceMethodReferenceStillBinds() throws Exception {
+        Map<String, EffectSet> r = compileAndScan(Map.of(
+            "Shape.java", String.join("\n",
+                "public interface Shape {",
+                "  void render();",
+                "  default void log() { io.Loud.touch(); }",   // concrete default method
+                "}"),
+            "io/Loud.java", String.join("\n",
+                "package io;",
+                "import java.io.*; import java.nio.file.*;",
+                "public class Loud {",
+                "  public static void touch() { try { Files.write(Paths.get(\"/tmp/fl20.txt\"), \"x\".getBytes()); } catch (IOException e) {} }",
+                "}"),
+            "LoudShape.java", "public class LoudShape implements Shape { public void render() {} }",
+            "Widget.java", String.join("\n",
+                "import java.util.function.Consumer;",
+                "public class Widget {",
+                "  private final Consumer<Shape> op;",
+                "  public Widget() { this.op = Shape::log; }",   // unbound ref to a DEFAULT (concrete) method
+                "  public void fire(Shape s) { op.accept(s); }",
+                "}")));
+        assertTrue(eff(r, "Widget.fire").contains(Effect.FS),
+                "an unbound reference to a DEFAULT interface method must still bind and complete to Fs — "
+                + "'interface' is not a proxy for 'abstract', got " + r.get("Widget.fire"));
+    }
 }

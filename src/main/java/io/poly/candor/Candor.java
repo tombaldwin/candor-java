@@ -6464,14 +6464,70 @@ public class Candor {
     }
 
     /** The PROJECT method body a lambda/method-ref invokedynamic creates (its `lambda$…` synthetic or the
-     *  referenced project method), or null — a non-lambda bootstrap, or a ref to an EXTERNAL method (no
-     *  project node to resolve to → treated as opaque by the caller, keeping the sink's honest Unknown). */
+     *  referenced project method), or null — a non-lambda bootstrap, a ref to an EXTERNAL method (no
+     *  project node to resolve to → treated as opaque by the caller, keeping the sink's honest Unknown),
+     *  or — R84 — a ref whose target is ABSTRACT (no project node to resolve to EITHER: an unbound or
+     *  bound instance-method reference to an interface/abstract-class method with no body is not a
+     *  callable implementation — whichever concrete type ends up supplying the receiver at call time is
+     *  where the real effect lives, and there is no visible bytecode call site naming it at all: the
+     *  metafactory invokes the target directly from the captured MethodHandle, so there is nothing here
+     *  for CHA to fan out over either). Binding the field/sink to the abstract stub instead degrades a
+     *  real effect to silent purity ({@code this.op = Shape::render;} analyzed `Shape.render` — zero
+     *  instructions, zero effects — instead of falling through to the caller's OWN pre-existing
+     *  unresolvable-dispatch path, e.g. the honest {@code callback:} Unknown a field-bound value already
+     *  gets when {@link Cha#fieldBoundImplementors} has nothing to return). See {@link
+     *  #handleTargetConcrete} for which handle kinds can even name an abstract method. */
     static String indyLambdaTarget(InvokeDynamicInsnNode idin) {
         if (idin.bsm == null || !idin.bsm.getOwner().equals("java/lang/invoke/LambdaMetafactory")) return null;
         for (Object a : idin.bsmArgs)
-            if (a instanceof Handle h && h.getTag() >= Opcodes.H_INVOKEVIRTUAL && ctx().projectClasses.contains(h.getOwner()))
+            if (a instanceof Handle h && h.getTag() >= Opcodes.H_INVOKEVIRTUAL && ctx().projectClasses.contains(h.getOwner())
+                    && handleTargetConcrete(h))
                 return methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc());
         return null;
+    }
+
+    /** Whether method-handle {@code h} — a `LambdaMetafactory` bootstrap arg already known to be a
+     *  METHOD-kind handle ({@code tag >= H_INVOKEVIRTUAL}, i.e. not a field getter/setter) — names a
+     *  method that HAS A BODY. Enumerated over every kind {@link #indyLambdaTarget} can see:
+     *
+     *  <pre>
+     *  H_INVOKEVIRTUAL   (5)  CAN be abstract  — an instance method looked up on a class/abstract-class
+     *                                            type (`AbstractShape::render`); CHECK.
+     *  H_INVOKESTATIC    (6)  never abstract   — the JLS forbids an abstract static method; accept as-is.
+     *  H_INVOKESPECIAL   (7)  never abstract   — a private instance method or a `Type.super::method`
+     *                                            bound reference; both require a body; accept as-is.
+     *  H_NEWINVOKESPECIAL(8)  never abstract   — a constructor reference (`Foo::new`); constructors are
+     *                                            never abstract; accept as-is.
+     *  H_INVOKEINTERFACE (9)  CAN be abstract  — an interface method, either a bodiless abstract member
+     *                                            (`Shape::render`) or a DEFAULT method with a real body
+     *                                            (`Shape::log`, still concrete — "interface" is not a
+     *                                            proxy for "abstract"); CHECK.
+     *  </pre>
+     *
+     *  The two CHECK rows walk {@link Cha#resolutionOrder} from {@code h.getOwner()} — the SAME
+     *  class-phase-then-interface-phase JLS walk CHA already uses to resolve an ordinary virtual/interface
+     *  dispatch, reused rather than hand-rolled — to the first project declaration of {@code (name, desc)}
+     *  and reads its {@code ACC_ABSTRACT} bit. Whether the reference is BOUND (`s::render`, receiver
+     *  captured now) or UNBOUND (`Shape::render`, receiver supplied at call time) does not change this:
+     *  either way the constant-pool target is the syntactic type used in the reference expression, and if
+     *  THAT declaration is abstract the real implementor is only known at the dispatch site, never at this
+     *  decode site. Fails CLOSED: a target whose declaration is not found among the LOADED project classes
+     *  (e.g. inherited solely from an unmarked/unloaded supertype) is treated as NOT concrete, so an
+     *  unresolvable target degrades to the engine's existing conservative fall-through rather than ever
+     *  being assumed callable — the same "exclude, don't guess" direction {@code
+     *  collectFieldLambdaBindings}'s own taint contract already requires. */
+    static boolean handleTargetConcrete(Handle h) {
+        int tag = h.getTag();
+        if (tag == Opcodes.H_INVOKESTATIC || tag == Opcodes.H_INVOKESPECIAL || tag == Opcodes.H_NEWINVOKESPECIAL)
+            return true;
+        for (String t : resolutionOrder(h.getOwner(), false)) {
+            ClassNode cn = ctx().byName.get(t);
+            if (cn == null) continue; // not a loaded project type — keep walking, don't guess from it
+            for (MethodNode mn : cn.methods)
+                if (mn.name.equals(h.getName()) && mn.desc.equals(h.getDesc()))
+                    return (mn.access & Opcodes.ACC_ABSTRACT) == 0;
+        }
+        return false; // declaration not found among loaded project types — fail closed, not concrete
     }
 
     /** The descriptor-arg index (excluding `this`) of the SOLE functional-interface parameter of `mn`, or

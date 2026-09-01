@@ -4114,16 +4114,21 @@ public class Candor {
             // The per-call attribution mirrors candor-rust's `str_arg` and kills the AS-EFF-008 evasion
             // where a benign URL literal in a host-bearing method certified a runtime-computed host. The
             // const-local map lets the window resolve a literal that reaches the sink through a local.
-            Map<Integer, String> constLocals = constStringLocals(mn);
+            // (R86) Control-flow JOIN labels — a GOTO/switch-case target or exception handler start —
+            // computed ONCE per method and threaded through every literal-window walker below, so a
+            // ternary/switch-expression/try-catch merge bounds the walk instead of letting it silently
+            // prefer whichever branch's literal sits physically adjacent to the consuming call.
+            Set<LabelNode> joins = Literals.joinLabels(mn);
+            Map<Integer, String> constLocals = constStringLocals(mn, joins);
             // URL/URI values provably built from a literal host — lets a split `URL u = new URL("h"); u.open
             // Stream()` still attribute its host (so the common literal case is not over-flagged), while a
             // runtime-built URL stays unattributable → the terminal reads incomplete (the URL split-construct
             // /use AS-EFF-008 fail-closed, replacing the old value-flow backlog at the Net surface below).
-            Map<Integer, String> urlLocals = constUrlLocals(mn, constLocals);
+            Map<Integer, String> urlLocals = constUrlLocals(mn, constLocals, joins);
             // This method's entry-point status is settled before the loop (entry detection above) and `id`
             // is fixed, so hoist it out of the per-instruction loop (used by the R17 gate below).
             MethodScan s = new MethodScan(mn, id, dir, taintFrames(ctx, cn, mn), provFrames(cn, mn),
-                    constLocals, urlLocals, ctx.entryPoints.contains(id));
+                    constLocals, urlLocals, ctx.entryPoints.contains(id), joins);
             for (AbstractInsnNode insn : mn.instructions) {
                 if (insn instanceof MethodInsnNode min) {
                     handleMethodInsn(ctx, s, min);
@@ -4155,9 +4160,10 @@ public class Candor {
         final Map<Integer, String> constLocals;  // local slot -> const String (the literal-window resolver)
         final Map<Integer, String> urlLocals;    // local slot -> URL/URI value with a literal host
         final boolean isEntry;                   // entry-point status, settled before the loop (R17 gate)
+        final Set<LabelNode> joinLabels;         // (R86) control-flow join labels — bounds literal walks
         MethodScan(MethodNode mn, String id, EffectSet dir, Frame<TaintValue>[] taintFrames,
                 Frame<ProvValue>[] provFrames, Map<Integer, String> constLocals,
-                Map<Integer, String> urlLocals, boolean isEntry) {
+                Map<Integer, String> urlLocals, boolean isEntry, Set<LabelNode> joinLabels) {
             this.mn = mn;
             this.id = id;
             this.dir = dir;
@@ -4166,6 +4172,7 @@ public class Candor {
             this.constLocals = constLocals;
             this.urlLocals = urlLocals;
             this.isEntry = isEntry;
+            this.joinLabels = joinLabels;
         }
     }
 
@@ -4217,7 +4224,12 @@ public class Candor {
         // marker) was NOT rooted by a direct-annotation-only check, orphaning a framework-invoked method
         // from every reachability root (silent-pure for a blast-radius / --agents walk). Resolve the
         // annotation type's own meta-annotations recursively.
-        if (annoOrMetaMatches(mn.visibleAnnotations, ROOT_ANNOTATIONS))
+        // (R87) Both retention lists: a marker declared without an explicit @Retention(RUNTIME) gets
+        // Java's DEFAULT CLASS retention and lands in invisibleAnnotations only — the single most common
+        // mistake in writing such a marker, so checking visibleAnnotations alone missed exactly the
+        // real-world case. Shares one authority with anyParamAnnoMatches (the CDI @Observes path, which
+        // already checked both parameter-annotation lists) via anyDeclAnnoMatches.
+        if (anyDeclAnnoMatches(mn.visibleAnnotations, mn.invisibleAnnotations, ROOT_ANNOTATIONS))
             ctx.entryPoints.add(id);
         // CDI observer method: `void onX(@Observes Event e)` is invoked by the CDI container when the
         // event fires, with NO project call site (the @EventListener shape). Unlike the mappings the
@@ -4831,8 +4843,8 @@ public class Candor {
             // constant) AND the RECEIVER class (the `X.class` literal). The edge is only
             // formed in resolution when the receiver is a project class — never a global
             // leaf-name match that fabricates an edge to an unrelated same-named method.
-            String lit = nearestLiteralArg(mn, min);
-            String recv = reflectReceiver(mn, min);
+            String lit = nearestLiteralArg(mn, min, s.joinLabels);
+            String recv = reflectReceiver(mn, min, s.joinLabels);
             if (lit != null) ctx.reflectPairs.add(new String[] { id, lit, recv == null ? "" : recv });
         }
     }
@@ -4944,7 +4956,7 @@ public class Candor {
             // capture AND the cliff refinement (spec §4 ⟨0.5⟩: `curl`→Net, `candor`→Fs/Env)
             // therefore key off argv[0]; a dynamic head keeps the bare Exec cliff with no
             // `cmds`. Exec itself is emitted unconditionally below — only the literal tightens.
-            String head = programHeadLiteral(min);
+            String head = programHeadLiteral(min, s.joinLabels);
             if (head != null) {
                 ctx.cmdsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(head);
                 dir.addAll(EffectSet.ofNames(commandHeadEffects(head)));
@@ -4964,7 +4976,7 @@ public class Candor {
                 || (owner.equals("java.nio.file.Paths") && min.name.equals("get"))
                 || (PATH_CTOR_OWNERS.contains(owner) && min.name.equals("<init>")))
                 && pathArgIsSingleString(min.desc)) {
-            String p = firstLiteralArg(mn, min);
+            String p = firstLiteralArg(mn, min, s.joinLabels);
             if (p != null) ctx.pathsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(p);
             // a path-establishing call with a RUNTIME path (single-String arg, no literal) — the
             // path is invisible to the gate (masking guard generalized to Fs, sweep [0]).
@@ -4987,7 +4999,7 @@ public class Candor {
                 // EVASION found by a security sweep).
                 || owner.equals("java.util.logging.SocketHandler"))
                 && min.name.equals("<init>") && min.desc.startsWith("(Ljava/lang/String;I")) {
-            String h = firstLiteralArg(mn, min);
+            String h = firstLiteralArg(mn, min, s.joinLabels);
             // The host must look like a host (a dotted name / IPv4), not e.g. a "localhost"
             // bareword that could equally be anything — reuse hostPart's shape via a dot test,
             // matching netHostLiteral's "contains a dot" gate for bare host:port.
@@ -4995,7 +5007,7 @@ public class Candor {
                 // Append the literal int port for `host:port` (SPEC §2) — so a two-arg
                 // Socket("h", 443) matches the URL form's `h:port` and candor-scan, instead of
                 // dropping the statically-known port (adversarial coverage-gap review, GAP2).
-                String port = intLiteralBefore(min);
+                String port = intLiteralBefore(min, s.joinLabels);
                 String hostLit = port != null ? h + ":" + port : h;
                 ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(hostLit);
                 dir.addAll(EffectSet.ofNames(modelHostEffects(hostLit))); // §1 ⟨0.13⟩ Llm host-literal refinement
@@ -5005,7 +5017,7 @@ public class Candor {
                 // that the dotted-host gate above rejects — the model signal is the `:11434` PORT. Refine
                 // to Llm on that port WITHOUT capturing the host as a Net literal (the dotless-host gate
                 // stays intact; this only adds the effect).
-                String port = intLiteralBefore(min);
+                String port = intLiteralBefore(min, s.joinLabels);
                 if ("11434".equals(port)) dir.add(Effect.LLM);
             }
         }
@@ -5018,7 +5030,7 @@ public class Candor {
         // handled above (netHostLiteral rejects a scheme-less bare host by design).
         if (isHostBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;")) {
             boolean hostCaptured = false;
-            for (String lit : literalArgsInWindow(min, constLocals)) {
+            for (String lit : literalArgsInWindow(min, constLocals, s.joinLabels)) {
                 String hl = netHostLiteral(lit);
                 if (hl != null) {
                     ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(hl);
@@ -5032,7 +5044,7 @@ public class Candor {
             // no plain literal host was already captured, and only when the receiver-producing insn just
             // before this call is the concat (concatArgHost returns null otherwise — safe under-report).
             if (!hostCaptured) {
-                String h = Literals.concatArgHost(min);
+                String h = Literals.concatArgHost(min, s.joinLabels);
                 if (h != null) {
                     ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(h);
                     dir.addAll(EffectSet.ofNames(modelHostEffects(h))); // §1 ⟨0.13⟩ Llm host-literal refinement
@@ -5066,7 +5078,7 @@ public class Candor {
                             || min.name.equals("getContent"));
             boolean urlTerminalCapturedHost = false;
             if (urlTerminal) {
-                String h = urlTerminalHost(min, urlLocals, constLocals);
+                String h = urlTerminalHost(min, urlLocals, constLocals, s.joinLabels);
                 if (h != null) {
                     urlTerminalCapturedHost = true;
                     ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(h);
@@ -5118,7 +5130,7 @@ public class Candor {
         if (isSqlBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;")
                 && !isSqlParameterBinder(min.name)) {
             boolean anySqlLiteral = false;
-            for (String lit : literalArgsInWindow(min, constLocals)) {
+            for (String lit : literalArgsInWindow(min, constLocals, s.joinLabels)) {
                 anySqlLiteral = true;
                 List<String> tl = tablesInSql(lit);
                 if (!tl.isEmpty()) ctx.tablesDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(tl);
@@ -6762,6 +6774,19 @@ public class Candor {
         for (List<AnnotationNode> p : params)
             if (annoOrMetaMatches(p, markers)) return true;
         return false;
+    }
+
+    /** Whether a DECLARATION-level marker (method or class, as opposed to a parameter) matches one of
+     *  `markers` — checking BOTH the RUNTIME-retention list (`visible`) and the CLASS-retention list
+     *  (`invisible`), meta-annotation aware in each. R87: a custom lifecycle/scheduler/container marker
+     *  declared WITHOUT an explicit `@Retention(RUNTIME)` gets Java's default CLASS retention and lands
+     *  in the invisible list only — `annoOrMetaMatches(visibleAnnotations, …)` alone silently missed it,
+     *  reporting `entryPoint:false` over a method that genuinely performs effects at runtime. This is the
+     *  method/class-level analog of {@link #anyParamAnnoMatches}, which already checked both lists at the
+     *  parameter level (the CDI `@Observes` path); the two are now ONE authority so they cannot drift. */
+    static boolean anyDeclAnnoMatches(List<AnnotationNode> visible, List<AnnotationNode> invisible,
+            List<String> markers) {
+        return annoOrMetaMatches(visible, markers) || annoOrMetaMatches(invisible, markers);
     }
 
     /** Whether any annotation in `anns` — DIRECTLY or via its META-annotation chain — matches a marker.

@@ -85,6 +85,88 @@ actually covers — again needing the report to name its interfaces). Both touch
 this is a cross-engine spec item, not a local patch. Repro: the `viaParam` fixture in the audit
 (interface param, no visible `new`) — absent from the report under `--deps`.
 
+## Soundness (field-lambda dispatch, ⟨0.35⟩ PART 87 vein)
+
+**Context:** `a294b86` closed PART 87 for the same-class INSTANCE FIELD shape only. A follow-up session
+(2026-09-01) closed STATIC fields and INHERITED fields (`Cha.fieldKey`, tagging GETSTATIC with
+`fieldOrigin`) — both verified cardinal sins, four-way-checked against `candor-spec`'s
+`cha_completeness_check.py`, revert-tested, and A/B'd against 325 real jars (`soundness/lib`). Two
+further instances of the same property were found and VERIFIED but NOT fixed in that pass — logged here
+so the next session starts ahead rather than re-discovering them.
+
+### Field provenance does not survive a call through a GETTER — a broader, pre-existing gap than
+### PART 87's own two fixed shapes, and out of scope for that fix
+
+**MEASURED at HEAD (⟨0.35⟩ + the static/inherited field-lambda-binding fix), and reproduces on the
+PUBLISHED 0.34.0 jar too — i.e. this predates BOTH fixes and is unrelated to either.** `ProvValue
+.fieldOrigin` (the tag `Cha.fieldBoundImplementors` reads to complete a field-held-lambda dispatch) is
+set only when the call's RECEIVER is itself a GETFIELD/GETSTATIC result — see `Interp.ProvInterpreter
+.unaryOperation`/`newOperation`. It does not propagate through a method call: a value returned from a
+getter carries no `fieldOrigin`, `newType`, or any other provenance tag (a bare `ProvValue` from
+`naryOperation`). So the ordinary Java idiom of a private field plus a public getter defeats field-lambda
+completion entirely, with NO inheritance needed:
+
+    private Runnable task;
+    public void install(Store s) { this.task = () -> s.write(); }
+    public Runnable getTask() { return task; }
+    public void fire() { Runnable t = getTask(); if (t != null) t.run(); }
+
+`Widget.fire` is ABSENT from `functions[]` — same-class, same published-0.34.0 jar, zero inheritance.
+The dispatch falls straight to the pre-existing CHA path (fieldBoundImplementors returns null since the
+receiver's `fieldOrigin` is null), and if the project happens to have exactly one PURE implementor of
+`Runnable` in scope, CHA silently resolves to it — PART 87's own signature, through a THIRD chokepoint
+neither the review nor this session's fix touched.
+
+**Why this is out of scope for the static/inherited-field fix in this pass.** That fix normalizes the
+KEY two field accesses are recorded/looked-up under (`Cha.fieldKey`); this gap is about provenance not
+surviving AT ALL past a call boundary — a different, much larger mechanism (interprocedural value
+provenance: does a function's RETURN value carry the provenance of what it returns). This is the same
+class of problem the standing `[[candor-value-provenance]]` design item names ("recover a value's
+concrete origin across construction/fields" — design doc written, impl pending); a real fix here needs
+that groundwork (summarizing a method's return provenance and propagating it to each call site), not a
+local patch to `Interp`/`Cha`.
+
+**Repro:** `.../scratchpad/repro35/getter2` in the review session (compile `Store.java`/`Widget.java`
+above + `Repaint implements Runnable { public void run(){ n++; } }`, scan, `deny Fs Widget.fire` → exit
+0 on both the published 0.34.0 jar and HEAD).
+
+### The static/inherited-field over-charge is closed for a CLEAN write-set; a TAINTED write-set
+### (an unresolvable, off-project method reference) still falls through to CHA and can still
+### fabricate
+
+**MEASURED at HEAD, post-fix.** `collectFieldLambdaBindings` taints (excludes from binding) a field the
+moment ANY write to it is not a recognisable project lambda/method-ref — by design, since the write
+could be anything (see that method's own TAINT doc). A field written ONLY via an off-project method
+reference (`this.fn = String::length;` — `indyLambdaTarget`'s project-only filter returns null for it)
+degrades to "tainted", falls through to the OLD CHA path exactly like a genuinely opaque
+(parameter-sourced) write, and if the interface has exactly one EFFECTFUL unrelated implementor in
+scope, that implementor's effect is attributed to the caller — even though the field's true runtime
+value (the JDK method reference) can never reach it. This is the SAME over-charge shape reported for
+static fields in this session (now closed for a clean write-set), surviving through a THIRD trigger:
+
+    private ToIntFunction<String> fn;
+    public void install() { this.fn = String::length; }   // clean spelling, but the target is off-project
+    public int fire() { return fn != null ? fn.applyAsInt("hi") : -1; }
+    // + `class Other implements ToIntFunction<String> { ... writes a file ... }` elsewhere in the project
+
+`Widget.fire` gains `Fs` from `Other` — a fabrication — on both the published 0.34.0 jar and HEAD
+(unaffected by this session's static/inherited fix, since `fn`'s write was never tainted BY the
+static/inherited bug; it is tainted by construction, deliberately, because the target is unresolvable).
+
+**Why not fixed in this pass.** Closing it needs a THIRD field state beyond "bound" (clean project
+write-set) and "tainted" (fall through to CHA, unconstrained): a field whose every write is a
+RECOGNISABLE lambda/method-ref bootstrap but at least one target is off-project. Such a field's true
+runtime value set is PROVABLY `{known project bodies} ∪ {specific external targets}` — never an
+unrelated project implementor — so the sound completion is the project bodies' effects unioned with
+`Unknown` (disclosed), not a fall-through to unconstrained CHA. That is a new mechanism (a third taint
+state plus a dispatch-site consumer for it), not a one-line change, and it needs its own over-charge
+controls before shipping — flagging it here rather than rushing it into this pass.
+
+**Repro:** `soundness/lib` corpus round via `soundness/dynamic/agent` is not needed — a two-class fixture
+reproduces it directly (see `.../scratchpad/AttackFieldLambda2Test.java`'s
+`taintedFieldFallsThroughToNarrowCHAAndMayOvercharge`, written during the review that found this vein;
+promote it to `FieldLambdaCompletionTest` alongside a fix when this is picked up).
+
 ## Equivalence (scan --policy ≡ gate --report)
 
 ### A MERGED `interfaceUnion` entry still breaks §3.1 byte-equality — needs a format rung

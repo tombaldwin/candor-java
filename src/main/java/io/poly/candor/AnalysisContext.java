@@ -138,6 +138,24 @@ final class AnalysisContext {
     /** Reverse-subtype index for CHA: owner -> loaded classes that are owner-or-a-subtype. Built once
      *  after load so chaTargets() consults O(subtypes-of-owner) candidates, not ALL classes per call. */
     Map<String, List<String>> subtypeIndex = new HashMap<>();
+    /** ⟨0.35⟩ SPEC §4 "A NON-EMPTY CANDIDATE SET IS NOT A COMPLETE ONE": {@code owner#name} (the same key
+     *  {@link Interp.ProvValue#fieldOrigin} carries for a GETFIELD read) -> the project method ids of every
+     *  LambdaMetafactory-produced implementor (an inline lambda's synthetic body, a method reference's real
+     *  target, a constructor reference's {@code <init>}) EVER written into that field — present ONLY when
+     *  every write this scan saw to that field was one of those, never an opaque value (see
+     *  {@link Cha#collectFieldLambdaBindings}'s doc for why a per-FIELD binding, not a project-wide
+     *  per-interface union, is the sound scope: the wider version broke the private functional-param
+     *  forwarding tests by making an unrelated lambda anywhere in the project silently complete a call
+     *  whose real receiver could have been an opaque value). Lets {@link Cha#fieldBoundImplementors}
+     *  resolve `this.task = () -> …; … task.run();` to the real body instead of the dispatch falling
+     *  silently pure the moment some UNRELATED class also implements the interface — without touching
+     *  {@link Cha#chaTargets} or any general CHA/Unknown branch at all. Built ONCE by
+     *  {@code collectFieldLambdaBindings} right after {@code subtypeIndex}, before any per-class analyze
+     *  overlay starts — a shared INPUT, not an accumulator, exactly like {@code subtypeIndex} beside it
+     *  (see the overlay constructor + MEMOS below: this is deliberately NOT a memo, because it is not a
+     *  cache of a pure function recomputed on demand — it is enumerated once, up front, over the whole
+     *  program). */
+    Map<String, List<String>> fieldLambdaBindings = new HashMap<>();
     /** Memoized chaTargets(owner,name,desc) results. chaTargets is a PURE function of the (post-load,
      *  fixed) class hierarchy — the same call-key recurs across the many call sites that invoke a method
      *  on a given declared type — so caching collapses the analyze pass's dominant super-linear cost
@@ -321,6 +339,7 @@ final class AnalysisContext {
         repoTypes = master.repoTypes;                       entityTables = master.entityTables;
         repoTables = master.repoTables;                     feignTypes = master.feignTypes;
         httpClientTypes = master.httpClientTypes;           subtypeIndex = master.subtypeIndex;
+        fieldLambdaBindings = master.fieldLambdaBindings;
         overloadDescs = master.overloadDescs;               classesWithClinit = master.classesWithClinit;
         depCoveredPkgs = master.depCoveredPkgs;             depChainedPkgs = master.depChainedPkgs;
         depCallsByFn = master.depCallsByFn;                 depWhyByFn = master.depWhyByFn;

@@ -54,7 +54,7 @@ class AnalysisContextInputGrowthTest {
             "netPartnersSource", "unanalyzed", "excluded", "archives", "sourceFiles", "classpathRoots",
             "scanRoot", "outOfScope", "scannedUnder", "peekedClasses", "projectClasses", "repoTypes",
             "entityTables", "repoTables", "feignTypes", "httpClientTypes", "ALL", "byName",
-            "subtypeIndex", "overloadDescs", "classesWithClinit", "taintEnabled", "unknownRatchet",
+            "subtypeIndex", "fieldLambdaBindings", "overloadDescs", "classesWithClinit", "taintEnabled", "unknownRatchet",
             "closedWorld", "peekVersioned", "depCoveredPkgs", "depChainedPkgs", "depReportsRead",
             "depCallsByFn", "depWhyByFn", "depSupers", "depSplitKnown", "depSuperclass", "classHash",
             "denyRules", "allowRules", "forbidRules", "onlyRules");

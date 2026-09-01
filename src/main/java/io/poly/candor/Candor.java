@@ -279,6 +279,10 @@ public class Candor {
         }
         phase("index-methods");
         buildSubtypeIndex(classes);
+        collectFieldLambdaBindings(classes);   // ⟨0.35⟩ SPEC §4 — bind each functional-interface field to
+                                                // the lambda/method-ref(s) written into it; MUST run before
+                                                // any per-class analyze overlay (see AnalysisContext's
+                                                // fieldLambdaBindings doc — it is a shared INPUT).
         computeSpringTypes(classes);
         computeStreamFieldOrigins(classes); // VALUE-PROVENANCE Phase 2: which stream fields are provably all-concrete
         // Cross-jar inheritance (candor-spec §2): load dependency reports named by CANDOR_DEPS BEFORE
@@ -5266,6 +5270,22 @@ public class Candor {
             // — but DON'T `continue`: fall through to the cross-jar inheritance block below, since
             // the call is into an external/dependency method that may carry recorded effects.
             if (monoRecv == null) {
+            // ⟨0.35⟩ SPEC §4 "A NON-EMPTY CANDIDATE SET IS NOT A COMPLETE ONE": a receiver read straight
+            // off a field this scan proved is written ONLY by project lambdas/method-refs (never an
+            // opaque value) resolves to those bodies directly — `this.task = () -> s.write(); …
+            // task.run();` no longer reads silent-pure the moment some UNRELATED class also implements
+            // the interface. Checked BEFORE chaTargets, and returns true (resolved locally, like the
+            // monoTarget case above) so an unrelated named/synthetic implementor elsewhere in the
+            // project is never unioned with — or substituted for — THIS field's own narrower write-set.
+            // See Cha.collectFieldLambdaBindings for why this is scoped to FIELDS rather than a
+            // project-wide per-interface union (the wider version fabricated across the private
+            // functional-param forwarding tests).
+            List<String> fieldImpls = fieldBoundImplementors(
+                    provFrames == null ? null : provFrames[mn.instructions.indexOf(min)], min);
+            if (fieldImpls != null) {
+                ctx.edges.get(id).addAll(fieldImpls);
+                return true;
+            }
             List<String> cha = chaTargets(min.owner, min.name, min.desc);
             // BOUNDED CHA (SPEC §4): a dispatch over a local abstraction resolves to its
             // implementors only when the fan-out is NARROW (≤ CHA_FANOUT_LIMIT); a broad

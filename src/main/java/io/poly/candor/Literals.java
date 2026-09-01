@@ -11,6 +11,37 @@ import static io.poly.candor.AnalysisState.*;
  *  from Candor.java (refactor P3); reaches Candor state (hostsDirect etc.) + helpers via the static
  *  import. See REFACTOR_PLAN.md. */
 final class Literals {
+    /** Labels reachable as a control-flow JOIN in {@code mn} — the target of any GOTO/conditional
+     *  jump/table- or lookup-switch case, or the START of an exception handler (reachable from every
+     *  throwing instruction in its protected range, not just the one physically before it). Computed
+     *  ONCE per method and reused by every window-bounding walker below (R86): a backward
+     *  literal-argument walk MUST NOT cross one, because the instructions before it and after it can
+     *  belong to DIFFERENT branches — a ternary/switch-expression/try-catch merges two branches
+     *  immediately before the consuming call, and without this bound the walker sees only whichever
+     *  branch sits physically adjacent, not the one actually taken. Deliberately NOT a wider window:
+     *  that would capture both literals here but could as easily attribute a literal from an unrelated
+     *  statement (the over-charge this bound must not introduce). Bounding at the join keeps a genuine
+     *  single-branch literal captured exactly as before and turns a merged one into "no literal found"
+     *  (the caller's existing fail-closed/incomplete path), never a literal chosen by bytecode order. */
+    static Set<LabelNode> joinLabels(MethodNode mn) {
+        Set<LabelNode> joins = new HashSet<>();
+        for (AbstractInsnNode n = mn.instructions.getFirst(); n != null; n = n.getNext()) {
+            if (n instanceof JumpInsnNode j) joins.add(j.label);
+            else if (n instanceof TableSwitchInsnNode t) {
+                if (t.dflt != null) joins.add(t.dflt);
+                joins.addAll(t.labels);
+            } else if (n instanceof LookupSwitchInsnNode l) {
+                if (l.dflt != null) joins.add(l.dflt);
+                joins.addAll(l.labels);
+            }
+        }
+        // A catch/finally handler is reachable from every throwing instruction in its protected
+        // range — a merge of arbitrarily many predecessors, the same hazard as a GOTO join.
+        if (mn.tryCatchBlocks != null)
+            for (TryCatchBlockNode tcb : mn.tryCatchBlocks) if (tcb.handler != null) joins.add(tcb.handler);
+        return joins;
+    }
+
     static String netHostLiteral(String s) {
         if (s == null || s.isBlank()) return null;
         String h = s.trim();
@@ -87,9 +118,16 @@ final class Literals {
      *   (B) `StringBuilder().append("lit").append(var)…toString()` (javac `-XDstringConcat=inline`, older
      *       compilers) — the receiver is the `StringBuilder.toString()`; the literal head is the constant
      *       of the FIRST `append(String)` in that builder chain. */
-    static String concatArgHost(AbstractInsnNode ctorCall) {
+    static String concatArgHost(AbstractInsnNode ctorCall, Set<LabelNode> joins) {
         AbstractInsnNode r = ctorCall.getPrevious();
-        while (r != null && r.getOpcode() < 0) r = r.getPrevious();       // skip labels/line-nos/frames
+        // Skip labels/line-nos/frames, BUT a join label bounds the search exactly like a real
+        // instruction would — the receiver-producing insn is not reliably the one physically before
+        // a merge point (R86: `new URL(cond ? "http://evil/" : "http://good/x") .openStream()` must
+        // not silently resolve to whichever branch's indy/toString sits adjacent to the ctor call).
+        while (r != null && r.getOpcode() < 0) {
+            if (r instanceof LabelNode lbl && joins.contains(lbl)) return null;
+            r = r.getPrevious();
+        }
         if (r == null) return null;
         // (A) makeConcatWithConstants: the recipe is bsmArgs[0].
         if (r instanceof InvokeDynamicInsnNode indy && indy.bsm != null
@@ -101,7 +139,7 @@ final class Literals {
         // (B) StringBuilder chain: receiver is `StringBuilder.toString()`; find the FIRST append's constant.
         if (r instanceof MethodInsnNode ts && ts.owner.equals("java/lang/StringBuilder")
                 && ts.name.equals("toString")) {
-            String head = firstBuilderAppendLiteral(r);
+            String head = firstBuilderAppendLiteral(r, joins);
             return head == null ? null : concatPrefixHost(head);
         }
         return null;
@@ -113,9 +151,13 @@ final class Literals {
      *  chain (its start); the last (earliest) `append` whose argument is an LDC String constant is the
      *  head. Returns null if the first append's argument is a runtime value (the head is dynamic → no
      *  static prefix). A non-append/non-toString method call bounds the scan (a different expression). */
-    static String firstBuilderAppendLiteral(AbstractInsnNode toStringCall) {
+    static String firstBuilderAppendLiteral(AbstractInsnNode toStringCall, Set<LabelNode> joins) {
         String head = null;
         for (AbstractInsnNode n = toStringCall.getPrevious(); n != null; n = n.getPrevious()) {
+            // A join label (R86) bounds the chain exactly like a foreign call/branch: the append whose
+            // constant sits adjacent to the join belongs to only ONE branch of a ternary/switch feeding
+            // this StringBuilder, and the walker must not silently prefer it over the other.
+            if (n instanceof LabelNode lbl && joins.contains(lbl)) break;
             if (n.getOpcode() < 0) continue;
             if (n instanceof TypeInsnNode t && t.getOpcode() == Opcodes.NEW
                     && t.desc.equals("java/lang/StringBuilder")) break;   // chain start
@@ -234,7 +276,7 @@ final class Literals {
      *  a prior method call / jump bounds the argument block, then returns the EARLIEST — the first arg, not
      *  a trailing flag / the data of `Files.write(path, "content")`. Null if no literal. Never over-claims
      *  (SPEC §2): under-extracts a runtime-computed value rather than guessing. */
-    static String firstLiteralArg(MethodNode mn, AbstractInsnNode call) {
+    static String firstLiteralArg(MethodNode mn, AbstractInsnNode call, Set<LabelNode> joins) {
         String found = null;
         for (AbstractInsnNode n = call.getPrevious(); n != null; n = n.getPrevious()) {
             // Bound the back-scan at the START of THIS call's statement, so a literal from a PRIOR
@@ -243,14 +285,19 @@ final class Literals {
             // host on a runtime-computed destination and DEFEATING the AS-EFF-008 allowlist (an attacker
             // host certified under the wrong literal). Boundaries: a prior call/branch (already), the
             // receiver's `new` (a constructor's allocation begins this statement; a real literal ARG sits
-            // after the NEW/DUP so it's still captured), and a `*STORE`/PUTFIELD/PUTSTATIC ending the prior
-            // statement.
+            // after the NEW/DUP so it's still captured), a `*STORE`/PUTFIELD/PUTSTATIC ending the prior
+            // statement, and (R86) a control-flow JOIN label — a ternary/switch-expression feeding this
+            // call's argument merges two branches immediately before it, and the physically-adjacent
+            // branch is not necessarily the one taken. Bounding here (rather than widening the window)
+            // makes the merged case "no literal found" (this call's existing fail-closed path), never a
+            // literal chosen by which branch the compiler happened to place last.
             if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode
                     || (n instanceof TypeInsnNode && n.getOpcode() == Opcodes.NEW)
                     || (n instanceof VarInsnNode v && v.getOpcode() >= Opcodes.ISTORE
                             && v.getOpcode() <= Opcodes.ASTORE)
                     || (n instanceof FieldInsnNode fi
-                            && (fi.getOpcode() == Opcodes.PUTFIELD || fi.getOpcode() == Opcodes.PUTSTATIC)))
+                            && (fi.getOpcode() == Opcodes.PUTFIELD || fi.getOpcode() == Opcodes.PUTSTATIC))
+                    || (n instanceof LabelNode lbl && joins.contains(lbl)))
                 break;
             if (n instanceof LdcInsnNode ldc && ldc.cst instanceof String s) found = s; // keep the earliest
         }
@@ -278,23 +325,28 @@ final class Literals {
      *       local whose EVERY definition is a `new URL(lit)`/`URI.create(lit)` (urlLocals, built like
      *       constStringLocals) — so resolving its host is sound. */
     static String urlTerminalHost(AbstractInsnNode terminal, Map<Integer, String> urlLocals,
-            Map<Integer, String> constLocals) {
+            Map<Integer, String> constLocals, Set<LabelNode> joins) {
         // The instruction producing the receiver sits immediately before the terminal (the terminal takes
-        // no args). Skip pseudo-insns (labels/line-numbers/frames, opcode < 0).
+        // no args). Skip pseudo-insns (labels/line-numbers/frames, opcode < 0) — EXCEPT a join label
+        // (R86), which bounds the search: `(cond ? new URL("evil") : new URL("safe")).openStream()`
+        // must not silently resolve the receiver to whichever branch's ctor sits adjacent to the join.
         AbstractInsnNode r = terminal.getPrevious();
-        while (r != null && r.getOpcode() < 0) r = r.getPrevious();
+        while (r != null && r.getOpcode() < 0) {
+            if (r instanceof LabelNode lbl && joins.contains(lbl)) return null;
+            r = r.getPrevious();
+        }
         if (r == null) return null;
         // (1) INLINE: receiver is the URL/URI value-building call (`new URL("lit")` → INVOKESPECIAL <init>;
         //     `URI.create("lit")` → INVOKESTATIC). Extract the host from ITS own argument window.
         if (r instanceof MethodInsnNode ctor && isUrlValueOwner(ctor.owner)
                 && (ctor.name.equals("<init>") || ctor.name.equals("create"))) {
-            for (String lit : literalArgsInWindow(ctor, constLocals)) {
+            for (String lit : literalArgsInWindow(ctor, constLocals, joins)) {
                 String hl = netHostLiteral(lit);
                 if (hl != null) return hl;
             }
             // LITERAL-HEAD of a runtime CONCAT arg (`new URL("https://api.openai.com/v1/" + p)`): the
             // authority is fully present in the literal prefix, so it is statically known (SPEC §1).
-            return concatArgHost(ctor); // null unless the prefix carries a complete authority → under-report
+            return concatArgHost(ctor, joins); // null unless the prefix carries a complete authority
         }
         // (2) THROUGH A LOCAL: `u.openStream()` where the receiver is an ALOAD of a const-URL local.
         if (r instanceof VarInsnNode v && v.getOpcode() == Opcodes.ALOAD && urlLocals.containsKey(v.var))
@@ -307,22 +359,30 @@ final class Literals {
      *  stored a runtime URL, two different literal hosts, or a non-URL value is ambiguous and EXCLUDED, so a
      *  later `u.openStream()` reads incomplete (fail-closed) rather than inheriting a benign host. Mirrors
      *  {@link #constStringLocals} but keys on the URL-value ctor and stores the EXTRACTED host. */
-    static Map<Integer, String> constUrlLocals(MethodNode mn, Map<Integer, String> constLocals) {
+    static Map<Integer, String> constUrlLocals(MethodNode mn, Map<Integer, String> constLocals,
+            Set<LabelNode> joins) {
         Map<Integer, String> m = new HashMap<>();
         Set<Integer> ambiguous = new HashSet<>();
         for (AbstractInsnNode n = mn.instructions.getFirst(); n != null; n = n.getNext()) {
             if (n instanceof VarInsnNode v && v.getOpcode() == Opcodes.ASTORE) {
                 AbstractInsnNode p = v.getPrevious();
-                while (p != null && p.getOpcode() < 0) p = p.getPrevious();
+                boolean crossedJoin = false;
+                while (p != null && p.getOpcode() < 0) {
+                    // (R86) `URL u = cond ? new URL("evil") : new URL("safe");` merges two branches
+                    // immediately before the ASTORE — the ctor physically adjacent to the join is not
+                    // necessarily the one that ran, so treat this store like a runtime value.
+                    if (p instanceof LabelNode lbl && joins.contains(lbl)) { crossedJoin = true; break; }
+                    p = p.getPrevious();
+                }
                 String host = null;
-                if (p instanceof MethodInsnNode ctor && isUrlValueOwner(ctor.owner)
+                if (!crossedJoin && p instanceof MethodInsnNode ctor && isUrlValueOwner(ctor.owner)
                         && (ctor.name.equals("<init>") || ctor.name.equals("create"))) {
-                    for (String lit : literalArgsInWindow(ctor, constLocals)) {
+                    for (String lit : literalArgsInWindow(ctor, constLocals, joins)) {
                         String hl = netHostLiteral(lit);
                         if (hl != null) { host = hl; break; }
                     }
                     // Literal-head of a concat arg — the split `URL u = new URL("https://h/"+p); u.open…()`.
-                    if (host == null) host = concatArgHost(ctor);
+                    if (host == null) host = concatArgHost(ctor, joins);
                 }
                 // A non-URL store, a runtime-URL store (host==null), or a disagreeing host → ambiguous.
                 if (host == null || (m.containsKey(v.var) && !m.get(v.var).equals(host))) {
@@ -343,15 +403,23 @@ final class Literals {
      *  URL literal certified a runtime-computed host (an AS-EFF-008 gate EVASION) and a SQL-shaped log line
      *  poisoned the table allowlist. Keyed to the call's own window, a literal in another statement is
      *  never captured — mirroring candor-rust's per-classified-call `str_arg` attribution. */
-    static List<String> literalArgsInWindow(AbstractInsnNode call, Map<Integer, String> constLocals) {
+    static List<String> literalArgsInWindow(AbstractInsnNode call, Map<Integer, String> constLocals,
+            Set<LabelNode> joins) {
         List<String> out = new ArrayList<>();
         for (AbstractInsnNode n = call.getPrevious(); n != null; n = n.getPrevious()) {
+            // (R86) A join label bounds the window exactly like a prior call/branch/NEW/store: a
+            // ternary/switch feeding this call's argument merges branches immediately before it, and
+            // the literal physically adjacent to the join is not necessarily the one taken. Widening
+            // past the join would let the window absorb a DIFFERENT branch's or an unrelated prior
+            // statement's literal (the over-charge this bound must not introduce) — bounding at the
+            // join instead yields "no literal in this window", the caller's existing incomplete path.
             if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode
                     || (n instanceof TypeInsnNode && n.getOpcode() == Opcodes.NEW)
                     || (n instanceof VarInsnNode v && v.getOpcode() >= Opcodes.ISTORE
                             && v.getOpcode() <= Opcodes.ASTORE)
                     || (n instanceof FieldInsnNode fi
-                            && (fi.getOpcode() == Opcodes.PUTFIELD || fi.getOpcode() == Opcodes.PUTSTATIC)))
+                            && (fi.getOpcode() == Opcodes.PUTFIELD || fi.getOpcode() == Opcodes.PUTSTATIC))
+                    || (n instanceof LabelNode lbl && joins.contains(lbl)))
                 break;
             if (n instanceof LdcInsnNode ldc && ldc.cst instanceof String s) out.add(s);
             // Dataflow-lite: an arg that is a load of a PROVABLY-CONSTANT local (`String sql = "…"; q(sql)`)
@@ -369,14 +437,22 @@ final class Literals {
      *  different literals is ambiguous and excluded — so resolving a load of one is sound (it is exactly that
      *  constant at every use). Used by {@link #literalArgsInWindow} to attribute a host/SQL literal that
      *  reaches the sink THROUGH a local, without re-introducing the method-wide over-capture. */
-    static Map<Integer, String> constStringLocals(MethodNode mn) {
+    static Map<Integer, String> constStringLocals(MethodNode mn, Set<LabelNode> joins) {
         Map<Integer, String> m = new HashMap<>();
         Set<Integer> ambiguous = new HashSet<>();
         for (AbstractInsnNode n = mn.instructions.getFirst(); n != null; n = n.getNext()) {
             if (n instanceof VarInsnNode v && v.getOpcode() == Opcodes.ASTORE) {
                 AbstractInsnNode p = v.getPrevious();
-                while (p != null && p.getOpcode() < 0) p = p.getPrevious(); // skip labels/frames/line-nos
-                String s = (p instanceof LdcInsnNode ldc && ldc.cst instanceof String str) ? str : null;
+                boolean crossedJoin = false;
+                while (p != null && p.getOpcode() < 0) { // skip labels/frames/line-nos
+                    // (R86) `String s = cond ? "a" : "b";` merges two branches immediately before the
+                    // ASTORE — the LDC physically adjacent to the join is not necessarily the value that
+                    // ran, so treat this store like a non-literal (ambiguous) rather than pick one side.
+                    if (p instanceof LabelNode lbl && joins.contains(lbl)) { crossedJoin = true; break; }
+                    p = p.getPrevious();
+                }
+                String s = (!crossedJoin && p instanceof LdcInsnNode ldc && ldc.cst instanceof String str)
+                        ? str : null;
                 if (s == null || (m.containsKey(v.var) && !m.get(v.var).equals(s))) {
                     ambiguous.add(v.var);
                     m.remove(v.var);
@@ -391,13 +467,16 @@ final class Literals {
     /** The literal int constant pushed closest before `call` — the port of a `(String host, int port)`
      *  Socket/InetSocketAddress ctor, for the SPEC §2 `host[:port]` surface. Null if the port is a runtime
      *  value (then no port is appended — the safe direction). Bounded to this call's arg window. */
-    static String intLiteralBefore(AbstractInsnNode call) {
+    static String intLiteralBefore(AbstractInsnNode call, Set<LabelNode> joins) {
         for (AbstractInsnNode n = call.getPrevious(); n != null; n = n.getPrevious()) {
             int op = n.getOpcode();
             if (op >= Opcodes.ICONST_0 && op <= Opcodes.ICONST_5) return String.valueOf(op - Opcodes.ICONST_0);
             if (n instanceof IntInsnNode iin && (op == Opcodes.BIPUSH || op == Opcodes.SIPUSH)) return String.valueOf(iin.operand);
             if (n instanceof LdcInsnNode ldc && ldc.cst instanceof Integer i) return String.valueOf(i);
-            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode) break;
+            // (R86) A join bounds this exactly like a call/branch: `new Socket(h, cond ? 443 : 8080)`
+            // must not silently report whichever port sits adjacent to the merge.
+            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode
+                    || (n instanceof LabelNode lbl && joins.contains(lbl))) break;
         }
         return null;
     }
@@ -412,15 +491,18 @@ final class Literals {
      *  a leading `String[]` is a varargs/array whose ELEMENT 0 is the program (`ProcessBuilder("curl",
      *  …)`, `exec(new String[]{"curl", …})`). Returns null whenever argv[0] is not a static literal —
      *  the safe direction. Used ONLY for the effect refinement, never to widen it. */
-    static String programHeadLiteral(MethodInsnNode call) {
+    static String programHeadLiteral(MethodInsnNode call, Set<LabelNode> joins) {
         boolean arrayHead = call.desc.startsWith("([Ljava/lang/String;");
         boolean scalarHead = call.desc.startsWith("(Ljava/lang/String;");
         if (!arrayHead && !scalarHead) return null; // a List<String> ctor etc. names no static head
         // The call's argument-evaluation window, bounded by a prior call/branch, real insns only
-        // (drop labels/line-numbers/frames so the array-store pattern below is contiguous).
+        // (drop labels/line-numbers/frames so the array-store pattern below is contiguous). (R86) A
+        // join label bounds it too: `new ProcessBuilder(cond ? "curl" : "rm")` must not silently name
+        // whichever program sits adjacent to the merge as argv[0].
         List<AbstractInsnNode> win = new ArrayList<>();
         for (AbstractInsnNode n = call.getPrevious(); n != null; n = n.getPrevious()) {
-            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode)
+            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode
+                    || (n instanceof LabelNode lbl && joins.contains(lbl)))
                 break;
             if (n.getOpcode() >= 0) win.add(n); // skip pseudo-insns (opcode -1)
         }
@@ -450,9 +532,12 @@ final class Literals {
      *  name is pushed immediately before the call, so the nearest String is unambiguously it; the
      *  loose firstLiteralArg (keep-earliest) would grab an unrelated prior constant (`String tag =
      *  "runIt"; … c.getMethod("strip")` returned "runIt" — a fabricated target). */
-    static String nearestLiteralArg(MethodNode mn, AbstractInsnNode call) {
+    static String nearestLiteralArg(MethodNode mn, AbstractInsnNode call, Set<LabelNode> joins) {
         for (AbstractInsnNode n = call.getPrevious(); n != null; n = n.getPrevious()) {
-            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode)
+            // (R86) A join bounds this like a call/branch: `c.getMethod(cond ? "a" : "b")` must not
+            // silently name whichever method name sits adjacent to the merge.
+            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode
+                    || (n instanceof LabelNode lbl && joins.contains(lbl)))
                 return null;
             if (n instanceof LdcInsnNode ldc && ldc.cst instanceof String s) return s; // NEAREST
         }
@@ -463,9 +548,12 @@ final class Literals {
      *  Type constant before the call (internal slash-form), bounded by a prior call/branch. Null when
      *  the receiver is a RUNTIME Class value (`obj.getClass()`, a field): then the reflection target
      *  is genuinely indeterminate and an edge MUST NOT be fabricated (the §4 Unknown stands). */
-    static String reflectReceiver(MethodNode mn, AbstractInsnNode call) {
+    static String reflectReceiver(MethodNode mn, AbstractInsnNode call, Set<LabelNode> joins) {
         for (AbstractInsnNode n = call.getPrevious(); n != null; n = n.getPrevious()) {
-            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode)
+            // (R86) A join bounds the receiver evaluation too: `(cond ? A.class : B.class).getMethod(…)`
+            // must not silently name whichever class sits adjacent to the merge as the receiver.
+            if (n instanceof MethodInsnNode || n instanceof InvokeDynamicInsnNode || n instanceof JumpInsnNode
+                    || (n instanceof LabelNode lbl && joins.contains(lbl)))
                 return null; // a prior call (e.g. getClass()) or branch bounds the receiver evaluation
             if (n instanceof LdcInsnNode ldc && ldc.cst instanceof org.objectweb.asm.Type t
                     && t.getSort() == org.objectweb.asm.Type.OBJECT)

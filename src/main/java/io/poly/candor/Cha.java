@@ -4,8 +4,10 @@ import java.util.*;
 import java.util.stream.*;
 import org.objectweb.asm.*;
 import org.objectweb.asm.tree.*;
+import org.objectweb.asm.tree.analysis.Frame;
 import static io.poly.candor.Candor.*;
 import static io.poly.candor.AnalysisState.*;
+import static io.poly.candor.Interp.*;
 
 /** CHA / dispatch resolution. The bounded-CHA closed-hierarchy carve-out (enum + fully-closed-visible
  *  sealed families: isClosedHierarchy/isFullyClosedSealed/sealedHasUnseenPermit + the two private
@@ -404,6 +406,95 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         }
     }
 
+    /** ⟨0.35⟩ SPEC §4 "A NON-EMPTY CANDIDATE SET IS NOT A COMPLETE ONE" — binds a functional-interface-
+     *  typed FIELD to the LambdaMetafactory implementor(s) stored into it, so a dispatch through that
+     *  field (`this.task = () -> s.write(); … task.run();`) resolves to the real body instead of falling
+     *  silently pure the moment some UNRELATED class also implements the interface.
+     *
+     *  <p><b>Why this is keyed by FIELD, not by (interface, SAM) globally.</b> A first version of this fix
+     *  registered every lambda/method-ref project-wide under (owner,name,desc) and unioned it straight
+     *  into {@link #chaTargets}. It closed PART 87 but broke FOUR existing
+     *  {@code PrivateFunctionalParamForwardingTest} cases: a private sink's sole functional PARAM is
+     *  already resolved precisely by enumerating that (closed, nestmate-only) method's own call sites —
+     *  {@code Candor.forwardable}/{@code fwdSinkPending} — and bails to honest Unknown the moment ANY call
+     *  site passes an opaque value. A global per-interface union made {@code chaTargets} non-empty the
+     *  instant ANY lambda anywhere in the project targeted that interface, which skipped the forwarding
+     *  gate entirely (it only runs on an EMPTY candidate set) and silently dropped the opaque call site's
+     *  Unknown — the exact cardinal-sin direction this project measures for fabrication-shaped fixes. A
+     *  FIELD is a narrower, provable unit: {@code this.task}'s only possible runtime values are whatever
+     *  was ever written to it, so completing THAT receiver from THAT field's own write-set cannot leak an
+     *  unrelated field's or an unrelated call site's value the way a project-wide interface union can.
+     *
+     *  <p><b>How.</b> One pass over every PUTFIELD/PUTSTATIC in the scan: if the value immediately behind
+     *  it (skipping only labels/line-numbers/frames — no dataflow needed, since a metafactory site pushes
+     *  its result straight onto the stack for the following store) is an INVOKEDYNAMIC(LambdaMetafactory)
+     *  resolving to a PROJECT method ({@link Candor#indyLambdaTarget}, reused verbatim — covers an inline
+     *  lambda's synthetic body, an unbound/bound method reference's real target, and a constructor
+     *  reference's {@code <init>} identically, so a fix shaped for lambdas alone does not close only one
+     *  of three spellings), record it under {@code owner#name} — the SAME key
+     *  {@link Interp.ProvValue#fieldOrigin} already carries for a GETFIELD read (see
+     *  {@code Interp.ProvInterpreter#unaryOperation}), so the dispatch-site lookup is a direct map hit.
+     *
+     *  <p><b>TAINT, not silence, on an opaque write.</b> If ANY assignment to a field — anywhere in the
+     *  project — is NOT a recognisable project lambda/method-ref (a parameter, a null, an external
+     *  factory's return value, a second field's value…), the field is EXCLUDED from binding entirely,
+     *  even if every OTHER assignment to it was clean: `this.task = external(); … this.task = () -> ...;`
+     *  must not complete as if only the lambda could ever be there. An unbound field simply falls through
+     *  to the engine's pre-existing behaviour (CHA/Unknown), unaffected by this pass — under-precision,
+     *  never fabrication. A field assigned the SAME interface from TWO clean sites (two constructors, or
+     *  two lambdas in one) unions both — correct: either could be the runtime value.
+     *
+     *  <p><b>Not registered, by construction (sound under-approximation):</b> a method reference to a
+     *  method OUTSIDE the project (indyLambdaTarget's existing project-only filter) taints nothing by
+     *  itself here — a field written ONLY via such calls degrades to "not recognised as a lambda", so it
+     *  is simply never bound (falls through), same as any other opaque write. STATIC fields ARE scanned
+     *  as write sites (so a static-only write does not silently taint an unrelated instance field sharing
+     *  a name in a different class — the key is fully qualified), but a static field's OWN reads are not
+     *  currently tagged with `fieldOrigin` by the interpreter (GETSTATIC only captures `declType`, see
+     *  {@code Interp.ProvInterpreter#newOperation}), so a binding for a static-only field is inert until that is
+     *  extended — a scope decision, not a soundness gap (inert, not wrong). */
+    static void collectFieldLambdaBindings(List<ClassNode> classes) {
+        Set<String> tainted = new HashSet<>();
+        Map<String, List<String>> bindings = new HashMap<>();
+        for (ClassNode cn : classes) {
+            for (MethodNode mn : cn.methods) {
+                for (AbstractInsnNode insn : mn.instructions) {
+                    if (!(insn instanceof FieldInsnNode fi)) continue;
+                    if (fi.getOpcode() != Opcodes.PUTFIELD && fi.getOpcode() != Opcodes.PUTSTATIC) continue;
+                    String key = fi.owner + "#" + fi.name;
+                    AbstractInsnNode v = fi.getPrevious();
+                    while (v instanceof LabelNode || v instanceof LineNumberNode || v instanceof FrameNode)
+                        v = v.getPrevious();
+                    String impl = null;
+                    if (v instanceof InvokeDynamicInsnNode idin && idin.bsm != null
+                            && idin.bsm.getOwner().equals("java/lang/invoke/LambdaMetafactory"))
+                        impl = indyLambdaTarget(idin);   // null: external target or not a lambda bootstrap
+                    if (impl != null) bindings.computeIfAbsent(key, k -> new ArrayList<>()).add(impl);
+                    else tainted.add(key);   // conservative: an unrecognised write voids the WHOLE field
+                }
+            }
+        }
+        for (String t : tainted) bindings.remove(t);
+        ctx().fieldLambdaBindings.putAll(bindings);
+    }
+
+    /** The bound implementor(s) of the receiver `min` dispatches on, if it is a GETFIELD read of a field
+     *  {@link #collectFieldLambdaBindings} proved is written ONLY by project lambdas/method-refs — or null
+     *  (not a field receiver, or that field carries at least one unrecognised write and was never bound).
+     *  Mirrors {@link Interp#monomorphicReceiver}'s stack-slot arithmetic exactly (the receiver sits below
+     *  the call's argument slots), reading {@code fieldOrigin} instead of {@code newType}. */
+    static List<String> fieldBoundImplementors(Frame<ProvValue> f, MethodInsnNode min) {
+        if (f == null) return null;
+        int argSlots = 0;
+        for (Type a : Type.getArgumentTypes(min.desc)) argSlots += a.getSize();
+        int top = f.getStackSize();
+        int recvIdx = top - 1 - argSlots;
+        if (recvIdx < 0) return null;
+        ProvValue rv = f.getStack(recvIdx);
+        if (rv == null || rv.fieldOrigin == null) return null;
+        return ctx().fieldLambdaBindings.get(rv.fieldOrigin);
+    }
+
     /** CHA: project subtypes-or-self of `owner` that provide a concrete (name,desc) impl. */
     static List<String> chaTargets(String owner, String name, String desc) {
         AnalysisContext c = ctx();   // hoist the ThreadLocal lookup out of the per-subtype loop below
@@ -442,6 +533,10 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
             String impl = nearestConcreteSuper(owner, name, desc);
             if (impl != null) out.add(impl);
         }
+        // ⟨0.35⟩ SPEC §4's lambda/method-ref completion does NOT live here — see
+        // collectFieldLambdaBindings's doc for why a project-wide union at this chokepoint is unsound
+        // (it broke the private functional-param forwarding tests) and fieldBoundImplementors for the
+        // narrower, field-scoped mechanism virtualDispatch consults instead, before it ever reaches CHA.
         List<String> result = List.copyOf(out);   // immutable → safe to share across call sites
         c.chaTargetsCache.put(key, result);
         return result;

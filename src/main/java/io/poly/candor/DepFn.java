@@ -94,4 +94,74 @@ final class DepFn {
     private static void addAllMissing(List<String> into, List<String> from) {
         for (String s : from) if (!into.contains(s)) into.add(s);
     }
+
+    /** THE VALUE THE REFRESH DIGEST FOLDS IN (SOUNDNESS R151) — see {@link Refresh#wholeProgramDigest}.
+     *
+     *  <p><b>Why it exists.</b> The digest folded in {@code crossDeps.keySet()} and none of the VALUES,
+     *  while {@link Candor#inheritDepFn} writes those values into per-class accumulators the cache
+     *  stores. So a dependency function that kept its key and gained an effect was replayed from cache
+     *  WITHOUT it. Measured on the published 0.34.0 jar: warm cache under a dep reporting {@code ['Db']},
+     *  rerun under the same dep reporting {@code ['Db','Net']} with the same app bytecode and the same
+     *  {@code deny Net} policy — exit 0, "no violations", "reused 1 of 1". Cold and fresh-cache controls
+     *  both exit 1. Every field below reproduced the same way on its own axis ({@code allow Fs} certifying
+     *  a different path, {@code allow Exec} a different command, {@code allow Db} a different table,
+     *  {@code allow Net} a different host, and a reason-scoped {@code deny Net Unknown[reflect]} reading
+     *  the previous run's reason class).
+     *
+     *  <p><b>REFLECTIVE, and it RAISES on a type it does not recognise</b>, for the reason the defect
+     *  had: this record grew four fields after the digest was written ({@code netClass} ⟨0.20⟩,
+     *  {@code unknownWhy} ⟨0.19⟩, {@code incomplete} ⟨0.29⟩, {@code fn} ⟨0.24⟩) and every one of them
+     *  escaped it silently, because a hand-written rendering only covers the fields someone remembered.
+     *  A field added after this comment is folded in automatically; one whose type is new fails the scan
+     *  loudly rather than dropping out of the key. Same fact and same reason as
+     *  {@link AnalysisContext#inputSizes} and {@link Refresh.Delta}.
+     *
+     *  <p>Collections are rendered SORTED. They are "Lists on the wire but sets in meaning" (see
+     *  {@link #addAllMissing}) and their order follows the order {@code CANDOR_DEPS} reports happened to
+     *  be walked in, which {@code Files.walk} does not fix — so rendering them in list order would make
+     *  the digest flap between runs with identical inputs. That direction is safe (a miss is a full scan)
+     *  but it would silently delete the feature, which is exactly how the ASM enum-encoding defect
+     *  presented. */
+    @SuppressWarnings("unchecked")
+    void renderTo(StringBuilder sb) {
+        for (java.lang.reflect.Field f : DIGEST_FIELDS) {
+            Object v;
+            try { v = f.get(this); }
+            catch (IllegalAccessException e) { throw new IllegalStateException("DepFn." + f.getName() + ": " + e); }
+            sb.append(f.getName()).append('=');
+            if (v == null) sb.append("null");
+            else if (v instanceof EffectSet es) sb.append(es.toNames());          // toNames() sorts, by contract
+            else if (v instanceof java.util.Collection<?> c) {
+                for (Object o : c)
+                    if (!(o instanceof String)) throw new IllegalStateException("DepFn." + f.getName()
+                            + " holds a " + (o == null ? "null" : o.getClass().getName()) + ", which the refresh"
+                            + " digest cannot render value-based — render it structurally or the cache goes stale"
+                            + " on it silently (SOUNDNESS R151)");
+                // Sorted only when there is an order to disagree about. Nearly every one of these surfaces
+                // is empty or a singleton on real reports, and a TreeSet per field per entry was the second
+                // half of the digest's cost across 23,624 joined entries.
+                sb.append(c.size() < 2 ? c : new java.util.TreeSet<>((java.util.Collection<String>) c));
+            }
+            else if (v instanceof String || v instanceof Boolean || v instanceof Number) sb.append(v);
+            else throw new IllegalStateException("DepFn." + f.getName() + " is a " + v.getClass().getName()
+                    + ", which the refresh digest cannot render value-based — a dependency value outside the"
+                    + " digest is replayed from cache after it changes (SOUNDNESS R151)");
+            sb.append('\u0002');
+        }
+    }
+
+    /** This record's own fields, in name order so the rendering does not depend on the order the JVM
+     *  hands them back. Computed once; {@code setAccessible} is a no-op for same-package access but
+     *  keeps the loop honest if this class ever moves. */
+    private static final java.lang.reflect.Field[] DIGEST_FIELDS;
+    static {
+        List<java.lang.reflect.Field> fs = new ArrayList<>();
+        for (java.lang.reflect.Field f : DepFn.class.getDeclaredFields()) {
+            if (java.lang.reflect.Modifier.isStatic(f.getModifiers()) || f.isSynthetic()) continue;
+            f.setAccessible(true);
+            fs.add(f);
+        }
+        fs.sort(java.util.Comparator.comparing(java.lang.reflect.Field::getName));
+        DIGEST_FIELDS = fs.toArray(new java.lang.reflect.Field[0]);
+    }
 }

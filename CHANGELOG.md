@@ -8,6 +8,79 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ SOUNDNESS R151 — a CHAINED DEPENDENCY that kept its key and changed its VALUE was replayed from
+  the refresh cache.** `Refresh.wholeProgramDigest` folded in `crossDeps.keySet()` and none of the
+  `DepFn` VALUES, while `Candor.inheritDepFn` writes those values — effects, `hosts`/`cmds`/`paths`/
+  `tables`, `netClass`, `incomplete`, `unknownWhy` — straight into the per-class accumulators the cache
+  stores. The class comment claiming that "a change to … chained dependencies discards the whole cache"
+  was false, and `bin/refresh-equiv.sh`, which calls itself "the refresh's entire safety case", never
+  perturbed `CANDOR_DEPS` at all. It needs only a warm cache, which is the normal CI configuration.
+
+  **Reproduced on the published 0.34.0 jar**, one variable, app bytecode byte-identical across the two
+  arms (`shasum` equal), dep v1 and v2 both compiled and EXECUTED first so the effect was observed
+  present and absent (a listener on 127.0.0.1:19151 saw `NO CONNECTION` under v1 and
+  `CONNECTION RECEIVED` under v2). Warm cache primed under a dep reporting `['Db']`, rerun under the
+  same dep reporting `['Db','Net']`: **exit 0, `no violations`, "reused 1 of 1"**, where the fresh-cache
+  and no-cache controls both exit 1 with `['Db','Net']`.
+
+  **Ten axes measured, each on its own fixture, each with its cold and fresh-cache controls**; the six
+  marked ⚑ flip a configured gate from exit 1 to exit 0:
+
+  | axis | policy | stale | cold |
+  |---|---|---|---|
+  | ⚑ `effects` | `deny Net` | 0 | 1 |
+  | ⚑ `hosts` | `allow Net a.example.com` | 0 | 1 |
+  | ⚑ `paths` | `allow Fs /tmp/alpha` | 0 | 1 |
+  | ⚑ `cmds` | `allow Exec ls` | 0 | 1 |
+  | ⚑ `tables` | `allow Db users` | 0 | 1 |
+  | ⚑ `netClass` / `incomplete` | `allow Net a.example.com` | 0 | 1 |
+  | `unknownWhy` | `deny Net Unknown[reflect]` | stale reason class, both directions | |
+  | `fn` + `calls` (`depCallsByFn`/`depWhyByFn`) | `deny Net Unknown[reflect]` | same, one hop further | |
+  | `stale` (§2.1 distrust) | — | **already caught**, via `depCoveredPkgs` | |
+
+  The boundary: the pre-fix digest DID cover a dep entry appearing or disappearing (the key set); what
+  it missed was a value change on an existing key. Every non-final, non-memo `AnalysisContext` field was
+  audited against the digest — the remaining uncovered ones are all derived from the scanned class bytes
+  (`projectClasses`, `subtypeIndex`, `overloadDescs`, `byName`, `classHash`, `classpathRoots`) or are
+  recomputed per run at report-write time (`vocabularySource`, `netPartnersSource`, `outOfScope`), and
+  only a shared input read during per-class analyze can go stale in a per-class cache.
+
+  **Fixed** by folding every `DepFn` field, plus the dep call graph, into the digest. The `DepFn`
+  rendering is REFLECTIVE over that record's own fields and raises on a type it does not recognise,
+  because the hole opened by hand-written omission: four fields were added after the digest was written
+  (`unknownWhy` ⟨0.19⟩, `netClass` ⟨0.20⟩, `fn` ⟨0.24⟩, `incomplete` ⟨0.29⟩) and every one escaped it.
+
+  **Corpus A/B**, guava-33.5.0-jre chained into six real third-party jars, refresh on, keyed on fifteen
+  fields (not just `inferred`), with hit counters: **45,150 executions of the changed branch** (7,525 per
+  consumer, counted from the digest's own `CANDOR_REFRESH_DEBUG` dump). Under an UNCHANGED dep report
+  pre-fix and post-fix agree `+0/-0/~0` on all six with identical reuse counts (1666/878/1912/131/704/413)
+  — no over-invalidation. Under a dep report perturbed in one field, the post-fix warm scan equals the
+  cold scan on all six, while the PRE-FIX warm scan diverges on **3,809 / 2,799 / 1,379 / 523 rows** in
+  error_prone_core, dagger-compiler, dagger-spi and google-java-format — **5,825 rows LOST an effect and
+  0 gained one**, which is the cardinal sin at corpus scale. caffeine and commons-lang3 join nothing from
+  guava, so their rows are a SAFETY measurement only, and are recorded as such.
+
+  **Cost, measured rather than assumed** (guava + hibernate-core chained, 23,624 joined entries, candor's
+  own classes as the consumer, three warm runs each): `cache-digest` 218 ms → 269 ms, whole warm scan
+  6.79s → 6.88s — against 6.7s that both arms spend just PARSING those dep reports. Reuse stays 87 of 87
+  and the reports are byte-identical. With no deps chained, the ordinary agent-loop case, the digest goes
+  4.8 ms → 2.5 ms. The refresh is not made worthless; it is not measurably slower.
+
+- **The refresh digest's identity-hash guard was quadratic, and had no test at all.** Sizing R151 showed
+  the guard, not the rendering, was the cost: `[\w.$\[;]+@[0-9a-f]{6,8}\b` retries the run from every
+  position inside it, so the 15.4 MB the chained entries render to cost **1.19s of a 1.46s digest**.
+  Anchored to the start of a run and made possessive it is 0.05s and finds exactly the same thing (a
+  leftmost match always began at a run start). `RefreshIdentityHashGuardTest` pins the equivalence on
+  seven positives and seven near-misses, and pins the linearity — that last one fails at 1,262 ms against
+  the old pattern.
+
+- **`bin/refresh-equiv.sh` gained a `CANDOR_DEPS` axis, and CI gained `bin/refresh-equiv.sh`.** The
+  script had no caller anywhere: not `ci.yml`, not `test/smoke.sh`, not any gate. The new arm compiles
+  its own two-package fixture and generates both dep reports with the jar under test, then requires the
+  perturbation to move a cold report and the cache to have engaged before it will call anything a pass.
+  It FAILS against the pre-fix jar (`a CHANGED dependency report was replayed from cache`) and passes
+  against this one; the whole script is 4s on this repo's own classes.
+
 - **⚠ SOUNDNESS R130 — one rule, one spelling: THIRTEEN JDK routes to an already-modelled effect were
   silent.** The question came from candor-rust, where `std::fs::` turned out to be the entire filesystem
   rule and every platform module under it read PURE. Re-asked of this engine and answered by

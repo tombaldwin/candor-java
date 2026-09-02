@@ -80,6 +80,24 @@ jobs:
           ./gradlew --no-daemon -q shadowJar
           bash ci/self-gate.sh
 
+      # THE REFRESH CACHE'S ACCEPTANCE ORACLE, WHICH NOTHING RAN. bin/refresh-equiv.sh calls itself "the
+      # refresh's entire safety case" and had no caller anywhere: not CI, not smoke.sh, not a gate. Found
+      # while fixing SOUNDNESS R151, a silent under-report that lived in the digest that script exists to
+      # defend. A safety case nobody runs is a document. Four seconds on this repo's own classes; it
+      # needs the jar the step above builds.
+      - name: Refresh-cache equivalence (report bytes, control, CANDOR_DEPS axis)
+        run: |
+          set -euo pipefail
+          # Name the jar rather than trust a glob to hold exactly one entry: two *-all.jars would make
+          # the second one a scan TARGET here, not an error. Same trap as the native parity step below.
+          shopt -s nullglob
+          JARS=(build/libs/*-all.jar)
+          if [ "${#JARS[@]}" -ne 1 ]; then
+            echo "expected exactly one build/libs/*-all.jar, found ${#JARS[@]}: ${JARS[*]:-<none>}" >&2
+            exit 1
+          fi
+          bash bin/refresh-equiv.sh "${JARS[0]}" build/classes/java/main
+
       # Kotlin-bytecode lane: Kotlin compiles the same semantics through different shapes (suspend/CPS,
       # indy lambdas, object/companion <clinit>, $default wrappers, callable refs, property getters,
       # extension + inline fns). KotlinProbe.kt threads a known effect through each; all 12 chains must

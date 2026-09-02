@@ -7530,6 +7530,101 @@ public class Candor {
      *  CRITICAL: this may only ever REMOVE a fabrication, never introduce an under-report, so the
      *  effectful members of each type (delete/exists/getCanonicalPath; getInput/OutputStream; instant;
      *  nextInt/getSeed; entries; getContents) are deliberately ABSENT here and keep firing. */
+    /** Socket HANDLE STATE — the port/address bound at construct/connect time and the
+     *  closed/bound/connected/shutdown flags. Each reads a field the handle already holds; none touches the
+     *  wire. Shared by all six socket owners in {@link #isPureHandleAccessor}, which is the point: a name
+     *  the owner does not declare (`getBroadcast` on a ServerSocket) is simply never emitted by javac, so
+     *  one list over six types costs nothing and removes the drift that five copies produced.
+     *  DELIBERATELY ABSENT and therefore still Net: connect / bind / accept / implAccept / close /
+     *  disconnect / send / receive / sendUrgentData / shutdownInput / shutdownOutput / joinGroup /
+     *  leaveGroup / getInputStream / getOutputStream / getChannel / `<init>` / the static *Factory
+     *  installers — the wire, and the acquisition of the handle itself. */
+    static boolean isPureSocketHandleState(String method) {
+        switch (method) {
+            case "getPort": case "getLocalPort":
+            case "getInetAddress": case "getLocalAddress":
+            case "getLocalSocketAddress": case "getRemoteSocketAddress":
+            case "isClosed": case "isBound": case "isConnected":
+            case "isInputShutdown": case "isOutputShutdown":
+            case "toString": case "hashCode": case "equals":
+                return true;
+            default: return false;
+        }
+    }
+
+    /** The SOCKET-OPTION PROTOCOL — `getsockopt`/`setsockopt` and the JDK's named wrappers for it. NONE of
+     *  these can move a byte: they configure a descriptor. EXECUTED (2026-09-02) on an UNBOUND
+     *  `SSLServerSocketFactory.getDefault().createServerSocket()`: `setSoTimeout` / `setReuseAddress` /
+     *  `setReceiveBufferSize` / `setPerformancePreferences` / `setOption(SO_REUSEADDR)` all succeeded and
+     *  the socket was still `isBound()==false, getLocalPort()==-1` afterwards — a socket with no local
+     *  address cannot have touched the wire — while the getters round-tripped exactly what was set.
+     *
+     *  WHY THE SETTERS ARE HERE NOW. The GETTERS (`getSoTimeout`, `getReuseAddress`) have been carved out
+     *  of this family for many rounds, and `getReuseAddress()` is a real `getsockopt` syscall, so the
+     *  engine had already ruled that option ACCESS is not network I/O. Charging `setSoTimeout` while
+     *  exempting `getSoTimeout` is the same syscall class answered two ways; R130 made that visible by
+     *  giving javax.net.ssl.SSLServerSocket a whole-owner Net rule, under which `Opts.soTimeout` went
+     *  absent -> ['Net'] and `deny Net` 0 -> 1 on a method that only sets a timeout. The asymmetry was
+     *  PRE-EXISTING on the other five owners (`Socket.setSoTimeout` -> Net at 2dd1600 too); fixing it on
+     *  the TLS acceptor alone would have converged one pair of arms by splitting another, so it is fixed
+     *  for the family at once.
+     *
+     *  THE DIRECTION THIS FAILS IN. It is a narrowing, so the risk is a silent under-report: a method whose
+     *  ONLY charged call was an option accessor now reports pure. That is correct — such a method performs
+     *  no I/O, and the socket it configures was acquired by some other method, which is still charged for
+     *  the acquisition. `disconnect()` is deliberately NOT here even though it sends no packet: it is a
+     *  connection-state change and the twin of `connect`, so it keeps firing (when in doubt, KEEP it).
+     *  `setPerformancePreferences` IS here: the JDK specifies it as a hint and the default impl ignores it. */
+    static boolean isPureSocketOptionAccessor(String method) {
+        switch (method) {
+            // SO_TIMEOUT / SO_REUSEADDR / SO_RCVBUF / SO_SNDBUF / TCP_NODELAY / SO_KEEPALIVE /
+            // SO_OOBINLINE / SO_LINGER / IP_TOS / SO_BROADCAST
+            case "getSoTimeout": case "setSoTimeout":
+            case "getReuseAddress": case "setReuseAddress":
+            case "getReceiveBufferSize": case "setReceiveBufferSize":
+            case "getSendBufferSize": case "setSendBufferSize":
+            case "getTcpNoDelay": case "setTcpNoDelay":
+            case "getKeepAlive": case "setKeepAlive":
+            case "getOOBInline": case "setOOBInline":
+            case "getSoLinger": case "setSoLinger":
+            case "getTrafficClass": case "setTrafficClass":
+            case "getBroadcast": case "setBroadcast":
+            // the multicast options — IP_MULTICAST_TTL / IP_MULTICAST_IF / IP_MULTICAST_LOOP. The GROUP
+            // verbs joinGroup/leaveGroup are NOT options: they emit IGMP on the wire and stay Net.
+            case "getTTL": case "setTTL":
+            case "getTimeToLive": case "setTimeToLive":
+            case "getInterface": case "setInterface":
+            case "getNetworkInterface": case "setNetworkInterface":
+            case "getLoopbackMode": case "setLoopbackMode":
+            // the generic java.net.SocketOption protocol (JDK 9+), the same options by another spelling
+            case "getOption": case "setOption": case "supportedOptions":
+            // a documented HINT with no OS call at all in the default implementation
+            case "setPerformancePreferences":
+                return true;
+            default: return false;
+        }
+    }
+
+    /** TLS HANDSHAKE CONFIGURATION on javax.net.ssl.SSLSocket / SSLServerSocket — cipher-suite, protocol,
+     *  client-auth and SSLParameters get+set, plus the handshake-listener registry. All of it stages what a
+     *  LATER handshake will negotiate; none of it touches the wire. DELIBERATELY ABSENT → still Net:
+     *  `startHandshake()`, `getSession()` (forces a handshake if none has run), `getHandshakeSession`,
+     *  and the accept/bind/close/stream surface handled by the two predicates above. */
+    static boolean isPureTlsHandshakeConfig(String method) {
+        switch (method) {
+            case "getEnabledCipherSuites": case "setEnabledCipherSuites": case "getSupportedCipherSuites":
+            case "getEnabledProtocols": case "setEnabledProtocols": case "getSupportedProtocols":
+            case "getSSLParameters": case "setSSLParameters":
+            case "getUseClientMode": case "setUseClientMode":
+            case "getNeedClientAuth": case "setNeedClientAuth":
+            case "getWantClientAuth": case "setWantClientAuth":
+            case "getEnableSessionCreation": case "setEnableSessionCreation":
+            case "addHandshakeCompletedListener": case "removeHandshakeCompletedListener":
+                return true;
+            default: return false;
+        }
+    }
+
     static boolean isPureHandleAccessor(String owner, String method) {
         switch (owner) {
             // java.io.File — a File is just an immutable PATHNAME object; these touch NO filesystem.
@@ -7543,48 +7638,29 @@ public class Candor {
                         || method.equals("isAbsolute") || method.equals("toURI") || method.equals("toPath")
                         || method.equals("toString") || method.equals("hashCode") || method.equals("equals")
                         || method.equals("compareTo");
-            // java.net.Socket family — these read fields cached on the handle (the port/address bound at
-            // construct/connect time, the closed/bound/connected flags); they do NO wire I/O. The I/O
-            // boundary (getInputStream/getOutputStream/connect/bind/send/receive/close) is NOT listed.
+            // THE SOCKET FAMILY — SIX OWNERS, ONE DEFINITION EACH OF THREE PURE GROUPS. These used to be
+            // five hand-copied `method.equals(...)` chains and they had DRIFTED (§F1 q3, §G): the
+            // javax.net.ssl.SSLServerSocket chain R130 added carved out `getReceiveBufferSize` where the
+            // java.net.ServerSocket chain it was copied from does not, so ONE PROGRAM got two answers for
+            // the same operation depending only on the DECLARED TYPE of the receiver — measured on one
+            // fixture, 2026-09-02: `SSLServerSocket.getReceiveBufferSize` pure,
+            // `ServerSocket.getReceiveBufferSize` -> Net. Where two paths compute one fact, make it one path.
             case "java.net.Socket":
             case "java.net.ServerSocket":
             case "java.net.DatagramSocket":
-            // MulticastSocket extends DatagramSocket and javax.net.ssl.SSLSocket extends Socket — a receiver
-            // TYPED as the subclass emits owner=subclass for the INHERITED pure accessors, which sailed past
-            // the Socket carve-out and got fabricated Net by the subclass's whole-owner Net rule (the cardinal
-            // sin; found by a fabrication sweep — these survived 14 rounds). They inherit exactly this
-            // accessor set. (SSLSocket's OWN pure config surface is handled in its case below.)
+            // MulticastSocket extends DatagramSocket, javax.net.ssl.SSLSocket extends Socket and
+            // javax.net.ssl.SSLServerSocket extends ServerSocket — a receiver TYPED as the subclass emits
+            // owner=subclass for the INHERITED pure accessors, which sailed past the Socket carve-out and
+            // got fabricated Net by the subclass's whole-owner Net rule (found by a fabrication sweep —
+            // these survived 14 rounds). They inherit exactly this accessor set, so they now SHARE the
+            // predicate rather than a copy of it.
             case "java.net.MulticastSocket":
-                return method.equals("getPort") || method.equals("getLocalPort")
-                        || method.equals("getInetAddress") || method.equals("getLocalAddress")
-                        || method.equals("getLocalSocketAddress") || method.equals("getRemoteSocketAddress")
-                        || method.equals("isClosed") || method.equals("isBound") || method.equals("isConnected")
-                        || method.equals("isInputShutdown") || method.equals("isOutputShutdown")
-                        || method.equals("getReuseAddress") || method.equals("getSoTimeout")
-                        || method.equals("getTimeToLive") || method.equals("getInterface")
-                        || method.equals("getNetworkInterface") || method.equals("getLoopbackMode")
-                        || method.equals("toString") || method.equals("hashCode") || method.equals("equals");
-            // javax.net.ssl.SSLSocket — the inherited Socket accessors PLUS its own pure HANDSHAKE-CONFIG
-            // surface (cipher-suite/protocol/parameter get+set touch NO wire). Only startHandshake /
-            // getInputStream / getOutputStream / getSession (forces a handshake) do I/O — NOT listed → Net.
+                return isPureSocketHandleState(method) || isPureSocketOptionAccessor(method);
+            // The two TLS sockets add their own pure HANDSHAKE-CONFIG surface on top of the same two groups.
             case "javax.net.ssl.SSLSocket":
-                return method.equals("getPort") || method.equals("getLocalPort")
-                        || method.equals("getInetAddress") || method.equals("getLocalAddress")
-                        || method.equals("getLocalSocketAddress") || method.equals("getRemoteSocketAddress")
-                        || method.equals("isClosed") || method.equals("isBound") || method.equals("isConnected")
-                        || method.equals("isInputShutdown") || method.equals("isOutputShutdown")
-                        || method.equals("getReuseAddress") || method.equals("getSoTimeout")
-                        || method.equals("getEnabledCipherSuites") || method.equals("getSupportedCipherSuites")
-                        || method.equals("setEnabledCipherSuites") || method.equals("getEnabledProtocols")
-                        || method.equals("getSupportedProtocols") || method.equals("setEnabledProtocols")
-                        || method.equals("getSSLParameters") || method.equals("setSSLParameters")
-                        || method.equals("getUseClientMode") || method.equals("setUseClientMode")
-                        || method.equals("getNeedClientAuth") || method.equals("setNeedClientAuth")
-                        || method.equals("getWantClientAuth") || method.equals("setWantClientAuth")
-                        || method.equals("getEnableSessionCreation") || method.equals("setEnableSessionCreation")
-                        || method.equals("addHandshakeCompletedListener")
-                        || method.equals("removeHandshakeCompletedListener")
-                        || method.equals("toString") || method.equals("hashCode") || method.equals("equals");
+            case "javax.net.ssl.SSLServerSocket":
+                return isPureSocketHandleState(method) || isPureSocketOptionAccessor(method)
+                        || isPureTlsHandshakeConfig(method);
             // java.time.Clock — the factories (systemUTC/system/fixed/offset/tick*) build a Clock object
             // and the accessors (getZone/withZone) read its zone; NONE read the wall clock. The actual
             // clock reads — instant()/millis() — are NOT listed, so they keep returning Clock.
@@ -7593,29 +7669,6 @@ public class Candor {
                         || method.equals("system") || method.equals("fixed") || method.equals("offset")
                         || method.equals("tick") || method.equals("tickMillis") || method.equals("tickSeconds")
                         || method.equals("tickMinutes") || method.equals("getZone") || method.equals("withZone")
-                        || method.equals("toString") || method.equals("hashCode") || method.equals("equals");
-            // javax.net.ssl.SSLServerSocket — the ACCEPTOR twin of the SSLSocket case above, added with
-            // the whole-owner Net rule for it (R130). Same reasoning, same two groups: the inherited
-            // ServerSocket accessors read fields cached on the handle, and SSLServerSocket's OWN surface
-            // is handshake CONFIGURATION (cipher-suite / protocol / client-auth / SSLParameters get+set)
-            // which touches no wire. The wire boundary — accept(), bind(), close(), getChannel() — is NOT
-            // listed and keeps returning Net. Without this case the new whole-owner rule would fabricate
-            // Net on every TLS server's configuration code, which is the cardinal sin in the other
-            // direction; each carve-out here is pinned by a test.
-            case "javax.net.ssl.SSLServerSocket":
-                return method.equals("getLocalPort") || method.equals("getInetAddress")
-                        || method.equals("getLocalSocketAddress")
-                        || method.equals("isClosed") || method.equals("isBound")
-                        || method.equals("getReuseAddress") || method.equals("getSoTimeout")
-                        || method.equals("getReceiveBufferSize")
-                        || method.equals("getEnabledCipherSuites") || method.equals("getSupportedCipherSuites")
-                        || method.equals("setEnabledCipherSuites") || method.equals("getEnabledProtocols")
-                        || method.equals("getSupportedProtocols") || method.equals("setEnabledProtocols")
-                        || method.equals("getSSLParameters") || method.equals("setSSLParameters")
-                        || method.equals("getUseClientMode") || method.equals("setUseClientMode")
-                        || method.equals("getNeedClientAuth") || method.equals("setNeedClientAuth")
-                        || method.equals("getWantClientAuth") || method.equals("setWantClientAuth")
-                        || method.equals("getEnableSessionCreation") || method.equals("setEnableSessionCreation")
                         || method.equals("toString") || method.equals("hashCode") || method.equals("equals");
             // java.util.Random / SecureRandom / ThreadLocalRandom / SplittableRandom — these read NO
             // entropy: getInstance/getInstanceStrong build a generator, getAlgorithm/getProvider read

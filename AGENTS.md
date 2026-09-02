@@ -6,6 +6,9 @@ candor-java — the family's reference engine (spec 0.35) — reports, for every
 [candor-spec/AGENTS.md](https://github.com/tombaldwin/candor-spec/blob/main/AGENTS.md); this file is
 the JVM-specific production + query surface.
 
+Effects: `Net`, `Llm` (a call to a model provider — refines `Net`), `Fs`, `Db`, `Exec`, `Env`,
+`Clock`, `Ipc`, `Log`, `Rand`, `Clipboard`.
+
 > **If the repository is not JVM-only, start at the umbrella:**
 > [candor/AGENTS.md](https://github.com/tombaldwin/candor/blob/main/AGENTS.md). `candor` is one
 > command in front of every engine (JVM, Rust, TypeScript, Swift, agent fleets) — it picks the right

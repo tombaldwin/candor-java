@@ -8,6 +8,14 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **SOUNDNESS R155 — `AGENTS.md` never named the effect VOCABULARY.** Nine of the eleven SPEC §1
+  effects had zero mentions in candor-java's agent contract, and the embedded `--agents` copy an agent
+  actually reads had none either — including `Llm`, which the classifier has policed since ⟨0.13⟩. The
+  drift gate could not see it: `test/smoke.sh` pins the repo doc to the embedded copy, so the two drift
+  TOGETHER and stay green; nothing pinned either to SPEC §1. candor-spec's new
+  `scripts/check_agents_vocabulary.py` derives the vocabulary from SPEC.md's own table and now passes
+  for candor-java in both copies (it named candor-java as the only failing engine before this change).
+
 - **⚠ SOUNDNESS R163 — a whole-program pre-pass index built from other classes' BODIES was not in the
   refresh digest.** R151's class, one field over. ⟨0.35⟩ added `fieldLambdaBindings` to
   `AnalysisContext`: `Cha.collectFieldLambdaBindings` walks every method's INSTRUCTIONS to bind each

@@ -42,7 +42,14 @@ import io.poly.candor.model.UnknownReason;
  *    <li>a different ENGINE BUILD discards the whole cache, because a classifier fix must not be
  *        silently skipped — the same rule §2.1 already applies to dependency reports and baselines.</li>
  *    <li>a change to any class's STRUCTURE, or to any whole-program pre-pass output, or to the policy,
- *        flags or chained dependencies, discards the whole cache. See {@link #wholeProgramDigest}.</li>
+ *        flags or chained dependencies, discards the whole cache. See {@link #wholeProgramDigest}.
+ *        <b>THIS CLAUSE WAS FALSE FOR "chained dependencies" UNTIL SOUNDNESS R151.</b> The digest
+ *        folded in the chained-dep KEY SET and none of the VALUES, so a dependency function that kept
+ *        its key and GAINED an effect was replayed from cache without it: measured on 0.34.0,
+ *        {@code deny Net} exit 1 to exit 0 on a warm cache, which is the normal CI configuration. It is
+ *        true now because {@link DepFn#renderTo} folds in every field of every entry, and
+ *        {@link #wholeProgramDigest} folds in the dep call graph beside it. Do not narrow either back to
+ *        a hand-written field list; that is precisely what let four later-added fields escape.</li>
  *    <li>anything unreadable, unrecognised or unparseable abandons the cache and takes the full scan.
  *        There is no path on which the refresh guesses.</li>
  *  </ul>
@@ -283,7 +290,10 @@ final class Refresh {
         return scratch.hex();
     }
 
-    private String wholeProgramDigest(List<ClassNode> classes) {
+    /** Package-private, not private, so RefreshDepDigestTest can recompute it after mutating one
+     *  shared input and require the key to MOVE. That test is the reason SOUNDNESS R151 cannot come
+     *  back one field at a time; it cannot be written against a private method. */
+    String wholeProgramDigest(List<ClassNode> classes) {
         // STREAMED, one class at a time. The first version built the whole ~15 MB rendering in a
         // StringBuilder and then ran the identity-hash regex across all of it: 127 ms, most of it the
         // allocation and the single huge scan. Feeding the digest per class costs the same rendering
@@ -317,8 +327,51 @@ final class Refresh {
           .append(new TreeSet<>(c.httpClientTypes)).append('\u0001')
           .append(new TreeSet<>(c.classesWithClinit)).append('\u0001');
         sb.append("deps");
-        sb.append(new TreeSet<>(c.crossDeps.keySet())).append('\u0001')
-          .append(new TreeSet<>(c.depCoveredPkgs)).append('\u0001')
+        // EVERY DEP VALUE, NOT THE KEY SET (SOUNDNESS R151). This fed `crossDeps.keySet()` and nothing
+        // else, while Candor#inheritDepFn writes the VALUES into the per-class accumulators this cache
+        // stores, so a dep function that kept its key and GAINED an effect was replayed without it.
+        // Measured on 0.34.0: `deny Net` over a warm cache primed under a dep reporting ['Db'], rerun
+        // under the same dep reporting ['Db','Net'] with the same app bytecode, exits 0 (no violations)
+        // and discloses "reused 1 of 1", while the fresh-cache and no-cache controls both exit 1. Seven
+        // further fields flip the same way on their own axes: `allow Fs` certifying a different path,
+        // `allow Exec` a different command, `allow Db` a different table, `allow Net` a different host,
+        // an `incomplete` / `netClass` marker dropped, a reason class read from the previous run. See
+        // DepFn#renderTo, which renders them REFLECTIVELY so that the next field added to that record
+        // cannot escape this digest the way four of them already had.
+        //
+        // Fed in 64 KB batches rather than accumulated whole. Two chained dep reports with 23,624
+        // joined entries take the digest input from 0.05 MB to 15.5 MB, so accumulating it all is the
+        // allocation this method was already streamed to avoid. Batching is the same hash and the same
+        // guard: a batch breaks at an entry boundary, and an identity hash is emitted inside one
+        // value, so the pattern still cannot span a break.
+        //
+        // MEASURED COST of folding the values in, guava + hibernate-core chained (23,624 entries),
+        // candor's own classes as the consumer, three warm runs each: cache-digest 218 ms -> 269 ms,
+        // whole warm scan 6.79s -> 6.88s (within run-to-run noise, and both spend 6.7s of it PARSING
+        // those dep reports). Reuse stays 87 of 87 and the reports are byte-identical. With no deps
+        // chained — the ordinary agent-loop case — the digest goes 4.8 ms -> 2.5 ms.
+        for (String k : new TreeSet<>(c.crossDeps.keySet())) {
+            sb.append(k).append('=');
+            c.crossDeps.get(k).renderTo(sb);
+            sb.append('\n');
+            if (sb.length() > 1 << 16) digest.feed(sb);   // batched: see the note above
+        }
+        // ...AND THE DEP'S OWN CALL GRAPH, read during per-class analyze for the same reason:
+        // inheritDepFn calls depTransitiveWhy, and an INHERITED Unknown's reason class lives one hop
+        // past the entry, in the `calls` array the dependency's own report published. Measured on the
+        // same harness with `crossDeps` byte-identical across both arms: `deny Net Unknown[reflect]`
+        // read the PREVIOUS run's reason class, exit 1 -> 0. Sorted for the reason DepFn#renderTo sorts.
+        sb.append("depcalls");
+        for (var e : new TreeMap<>(c.depCallsByFn).entrySet()) {
+            sb.append(e.getKey()).append('=').append(new TreeSet<>(e.getValue())).append('\u0001');
+            if (sb.length() > 1 << 16) digest.feed(sb);
+        }
+        sb.append("depwhy");
+        for (var e : new TreeMap<>(c.depWhyByFn).entrySet()) {
+            sb.append(e.getKey()).append('=').append(new TreeSet<>(e.getValue())).append('\u0001');
+            if (sb.length() > 1 << 16) digest.feed(sb);
+        }
+        sb.append(new TreeSet<>(c.depCoveredPkgs)).append('\u0001')
           .append(new TreeSet<>(c.depChainedPkgs)).append('\u0001')
           .append(new TreeMap<>(c.depSupers)).append('\u0001')
           .append(new TreeSet<>(c.depSplitKnown)).append('\u0001')
@@ -344,9 +397,20 @@ final class Refresh {
     private static final char SEP = '\u0001';
 
     /** {@code some.Class@1b6d3586} — what {@code Object.toString()} emits, and the tell that a
-     *  non-value-based rendering has reached the digest. See the check in {@link #wholeProgramDigest}. */
+     *  non-value-based rendering has reached the digest. See the check in {@link #wholeProgramDigest}.
+     *
+     *  <p>ANCHORED TO THE START OF THE RUN, AND POSSESSIVE, and both are about cost rather than meaning.
+     *  Written as a bare {@code [\w.$\[;]+@}, the engine retries the run from every position inside it
+     *  and backtracks within each try, which is quadratic in run length — measured while sizing SOUNDNESS
+     *  R151, the extra 15.4 MB that 23,624 chained dep entries render to cost 1.19s of a 1.46s digest
+     *  under the old pattern and 0.05s under this one — the guard, not the rendering. The lookbehind
+     *  means only a position that BEGINS a run is tried, and the possessive {@code ++} stops it
+     *  backtracking inside one, which is linear in the input. It finds
+     *  exactly what the old pattern found: a leftmost match always started at the beginning of its run,
+     *  because the run's first character is itself in the class. Pinned by
+     *  RefreshIdentityHashGuardTest, which had no coverage at all before that measurement. */
     private static final java.util.regex.Pattern IDENTITY_HASH =
-            java.util.regex.Pattern.compile("[\\w.$\\[;]+@[0-9a-f]{6,8}\\b");
+            java.util.regex.Pattern.compile("(?<![\\w.$\\[;])[\\w.$\\[;]++@[0-9a-f]{6,8}\\b");
 
     private static void annos(StringBuilder sb, List<AnnotationNode> as) {
         if (as == null) return;

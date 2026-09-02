@@ -8,6 +8,8 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+## [0.35.0] — 2026-09-03
+
 - **SOUNDNESS R155 — `AGENTS.md` never named the effect VOCABULARY.** Nine of the eleven SPEC §1
   effects had zero mentions in candor-java's agent contract, and the embedded `--agents` copy an agent
   actually reads had none either — including `Llm`, which the classifier has policed since ⟨0.13⟩. The

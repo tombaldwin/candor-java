@@ -7594,6 +7594,29 @@ public class Candor {
                         || method.equals("tick") || method.equals("tickMillis") || method.equals("tickSeconds")
                         || method.equals("tickMinutes") || method.equals("getZone") || method.equals("withZone")
                         || method.equals("toString") || method.equals("hashCode") || method.equals("equals");
+            // javax.net.ssl.SSLServerSocket — the ACCEPTOR twin of the SSLSocket case above, added with
+            // the whole-owner Net rule for it (R130). Same reasoning, same two groups: the inherited
+            // ServerSocket accessors read fields cached on the handle, and SSLServerSocket's OWN surface
+            // is handshake CONFIGURATION (cipher-suite / protocol / client-auth / SSLParameters get+set)
+            // which touches no wire. The wire boundary — accept(), bind(), close(), getChannel() — is NOT
+            // listed and keeps returning Net. Without this case the new whole-owner rule would fabricate
+            // Net on every TLS server's configuration code, which is the cardinal sin in the other
+            // direction; each carve-out here is pinned by a test.
+            case "javax.net.ssl.SSLServerSocket":
+                return method.equals("getLocalPort") || method.equals("getInetAddress")
+                        || method.equals("getLocalSocketAddress")
+                        || method.equals("isClosed") || method.equals("isBound")
+                        || method.equals("getReuseAddress") || method.equals("getSoTimeout")
+                        || method.equals("getReceiveBufferSize")
+                        || method.equals("getEnabledCipherSuites") || method.equals("getSupportedCipherSuites")
+                        || method.equals("setEnabledCipherSuites") || method.equals("getEnabledProtocols")
+                        || method.equals("getSupportedProtocols") || method.equals("setEnabledProtocols")
+                        || method.equals("getSSLParameters") || method.equals("setSSLParameters")
+                        || method.equals("getUseClientMode") || method.equals("setUseClientMode")
+                        || method.equals("getNeedClientAuth") || method.equals("setNeedClientAuth")
+                        || method.equals("getWantClientAuth") || method.equals("setWantClientAuth")
+                        || method.equals("getEnableSessionCreation") || method.equals("setEnableSessionCreation")
+                        || method.equals("toString") || method.equals("hashCode") || method.equals("equals");
             // java.util.Random / SecureRandom / ThreadLocalRandom / SplittableRandom — these read NO
             // entropy: getInstance/getInstanceStrong build a generator, getAlgorithm/getProvider read
             // its metadata. ThreadLocalRandom.current() is a pure thread-local FACTORY: it returns the

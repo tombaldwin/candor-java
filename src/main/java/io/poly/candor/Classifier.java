@@ -119,6 +119,71 @@ final class Classifier {
                     || method.equals("supportsFileAttributeView")))
             return Effect.FS;
         if (owner.equals("java.io.FileDescriptor") && method.equals("sync")) return Effect.FS;
+        // THE LAYER UNDERNEATH `java.nio.file.Files`. Every `Files.*` method is DEFINED in the JDK as a
+        // call to `provider(path).xxx(...)`, and `FileSystems.getDefault().provider()` hands that provider
+        // object straight to user code — so the whole filesystem API is reachable without ever naming
+        // `Files`. MEASURED silent (R130, 2026-09-02): a class doing nothing but
+        //     FileSystemProvider pv = FileSystems.getDefault().provider();
+        //     try (OutputStream os = pv.newOutputStream(f)) { os.write(66); }
+        //     pv.createDirectory(sub); pv.createSymbolicLink(lnk, f); pv.delete(lnk);
+        // scanned `functions: []`, `excluded: []` and passed ALL FIVE policy forms (deny Fs / deny Unknown /
+        // deny Fs Unknown / deny Fs <scope> / pure <scope>) at exit 0 — with the file, the directory and the
+        // symlink verified present on disk by an executed fixture. The CONTROL, `Files.write` on the same
+        // jar in the same compile, charged Fs and exited 1. The only variable was the route.
+        //
+        // WHOLE-OWNER with a proven-pure DENYLIST (never the reverse — this rule's whole reason to exist is
+        // that an enumerated verb list silently drops every verb it forgets, and this SPI has ~25 of them):
+        //  - `getScheme()` returns the constant "file"/"jar" — a String field, no syscall;
+        //  - `<init>` is the JDK's protected no-op ctor, reached only by `super()` from a user-written
+        //    provider subclass (whose own methods are analysed as project code) — charging it would
+        //    fabricate Fs on every custom provider's constructor;
+        //  - `getPath(URI)` and `getFileSystem(URI)`, each pure by the SPI's OWN CONTRACT: getPath is
+        //    specified as "return a Path object by converting the given URI" (string parsing), and
+        //    getFileSystem as returning an EXISTING FileSystem created by this provider, throwing
+        //    FileSystemNotFoundException rather than creating one. `newFileSystem` — the one that actually
+        //    MOUNTS — is deliberately NOT carved out. These two were found by auditing THIS FIX'S OWN
+        //    corpus diff, not reasoned out in advance: without them the rule fabricated Fs on four real
+        //    rows in jetbrains verifier-cli's FileSystemProvider wrapper (toPath/getPath/getFileSystem),
+        //    which is the cardinal sin in the over-charge direction;
+        //  - the §4 conventionally-pure Object protocol.
+        // `installedProviders()` is NOT carved out: it runs a ServiceLoader over META-INF/services, which
+        // is the same classpath-resource read already charged Fs for `ServiceLoader.load` below.
+        if (owner.equals("java.nio.file.spi.FileSystemProvider")
+                && !method.equals("getScheme") && !method.equals("<init>")
+                && !method.equals("getPath") && !method.equals("getFileSystem")
+                && !isConventionallyPure(method))
+            return Effect.FS;
+        // `java.nio.file.FileSystem` — the instance behind `FileSystems.getDefault()` / `newFileSystem()`.
+        // VERB-GATED, because most of this type is path ALGEBRA that touches nothing (getPath/getSeparator/
+        // getPathMatcher/isOpen/isReadOnly/supportedFileAttributeViews/provider), and a whole-owner rule
+        // would fabricate Fs on it. The four that do hit the OS: getFileStores() statfs's every mount,
+        // getRootDirectories() enumerates them (and, on a zip/jar FileSystem, reads the archive),
+        // newWatchService() opens a kqueue/inotify descriptor, and close() FLUSHES a zip FileSystem's
+        // pending writes to disk. MEASURED silent (R130) — 16 file stores really enumerated.
+        if (owner.equals("java.nio.file.FileSystem")
+                && (method.equals("getFileStores") || method.equals("getRootDirectories")
+                    || method.equals("newWatchService") || method.equals("close")))
+            return Effect.FS;
+        // File ATTRIBUTE VIEWS — chmod, chown, utimes, setxattr and the ACL/DOS equivalents. The view is
+        // ACQUIRED through `Files.getFileAttributeView(...)` (already Fs, whole-owner), but the acquisition
+        // and the mutation are routinely in different methods — pass the view across a boundary and the
+        // effect vanished. MEASURED silent (R130): a class whose only calls were
+        // `PosixFileAttributeView.setPermissions` / `FileOwnerAttributeView.setOwner` /
+        // `UserDefinedFileAttributeView.write` scanned `functions: []` and passed all five policy forms,
+        // with a 0400 chmod and an `user.candor` xattr both verified on disk afterwards.
+        //
+        // Keyed on the SUFFIX so the whole family is covered at once (Basic/Posix/Dos/FileOwner/Acl/
+        // UserDefined, and any view a future JDK adds) rather than an owner list that drifts. The
+        // ATTRIBUTES snapshot types (`PosixFileAttributes.permissions()`, `BasicFileAttributes.size()`)
+        // do NOT end in `AttributeView`, so they stay pure — the read already happened. DENYLIST carve-out:
+        // `name()` returns the view's constant identifier ("posix"/"basic"), and the Object protocol.
+        if (owner.startsWith("java.nio.file.attribute.") && owner.endsWith("AttributeView")
+                && !method.equals("name") && !isConventionallyPure(method))
+            return Effect.FS;
+        // UserPrincipalLookupService.lookupPrincipalByName/lookupPrincipalByGroupName resolves a user or
+        // group through the OS name service (/etc/passwd, NSS, LDAP) — the lookup a chown needs.
+        if (owner.equals("java.nio.file.attribute.UserPrincipalLookupService")
+                && method.startsWith("lookup")) return Effect.FS;
         // Classpath RESOURCE reads (a file/jar entry off disk) — the ubiquitous config/i18n-loading idioms:
         // Class/ClassLoader.getResource*, ResourceBundle.getBundle, ServiceLoader (reads META-INF/services),
         // FileSystems.newFileSystem (mounts a jar/zip), LogManager/Preferences (OS prefs store). All Fs.
@@ -283,18 +348,56 @@ final class Classifier {
                 && (method.equals("browse") || method.equals("open") || method.equals("edit")
                     || method.equals("print") || method.equals("mail")
                     || method.equals("browseFileDirectory") || method.equals("openHelpViewer"))) return Effect.EXEC;
+        // …and `Desktop.moveToTrash(File)` is the member of that same surface which is not a LAUNCH at all:
+        // it DELETES the named file from the filesystem (macOS `NSFileManager trashItemAtURL`, Windows
+        // `SHFileOperation`). The verb list above enumerated the launchers and stopped, so it read
+        // silent-pure — MEASURED (R130, 2026-09-02) with an executed fixture whose file really was removed
+        // from disk: `functions: []`, and `deny Fs`, `deny Unknown`, `deny Fs Unknown`, `deny Fs <scope>`
+        // and `pure <scope>` all exit 0. Fs, not Exec — no program is launched.
+        if (owner.equals("java.awt.Desktop") && method.equals("moveToTrash")) return Effect.FS;
         // Driving an already-spawned subprocess is Exec too — getInputStream/getErrorStream read its
         // output, getOutputStream feeds its stdin (an unmonitored data channel), waitFor blocks on it.
         // Splitting spawn (start(), in one method) from drive (these, in another) lost the effect on the
-        // driver. java.lang.Process getters typed as I/O verbs; toHandle/exitValue/isAlive stay pure.
-        if (owner.equals("java.lang.Process")
-                && (method.equals("getInputStream") || method.equals("getOutputStream")
-                    || method.equals("getErrorStream") || method.equals("waitFor")
-                    // destroy/destroyForcibly send SIGTERM/SIGKILL — subprocess CONTROL (spec §1 Exec =
-                    // "spawning / controlling a subprocess"); were silent-pure.
-                    || method.equals("destroy") || method.equals("destroyForcibly"))) return Effect.EXEC;
-        if (owner.equals("java.lang.ProcessHandle")
-                && (method.equals("destroy") || method.equals("destroyForcibly"))) return Effect.EXEC;
+        // driver.
+        //
+        // THESE TWO RULES USED TO ENUMERATE THE DRIVE VERBS, AND THAT IS AN ALLOWLIST — the same argument
+        // the ProcessBuilder rule above already makes about itself, applied to the two types the builder
+        // hands you. It under-reported every verb it omitted, and it omitted six, MEASURED silent on
+        // executed fixtures (R130, 2026-09-02):
+        //   - `Process.onExit()` and `ProcessHandle.onExit()` — the async twin of `waitFor`, which IS
+        //     charged. A fixture that waited for a real `/bin/sh -c 'sleep 0.2'` child through onExit()
+        //     scanned `functions: []` and passed all five policy forms at exit 0;
+        //   - `Process.inputReader()/outputWriter()/errorReader()` — added in Java 17, the CHARSET-decoding
+        //     twins of the three stream getters that are charged, i.e. the modern spelling of the exact
+        //     capability this rule exists for;
+        //   - `ProcessHandle.allProcesses()/children()/descendants()/parent()/of(pid)` — each hands back
+        //     DESTROY-CAPABLE handles. `allProcesses()` really enumerated 807 live OS processes in the
+        //     measured fixture, silently. SPEC §1 Exec is "spawning / CONTROLLING a subprocess", and
+        //     acquiring the control handle is the capability; charging `destroy()` but not the call that
+        //     obtains the thing to destroy is the same split (arm here, fire there) the ProcessBuilder rule
+        //     was rewritten to close.
+        //
+        // So: WHOLE TYPE, with the proven-pure surface as a named DENYLIST — a forgotten carve-out
+        // over-reports LOUDLY, a forgotten allowlist entry under-reports SILENTLY. Each carve-out is a
+        // value read of state the handle already holds, and each is pinned by a test:
+        //   exitValue/isAlive/pid/supportsNormalTermination — an int or a boolean about a process that has
+        //   already been spawned; toHandle()/info() convert between the two handle types and read the
+        //   startup state (info()'s arguments/command/commandLine are separately Env, ~40 lines below);
+        //   ProcessHandle.current() is the JVM's OWN handle, not a subprocess (`current().destroy()` still
+        //   charges, on destroy); compareTo/equals/hashCode/toString are the §4 Object protocol.
+        if (owner.equals("java.lang.Process") || owner.equals("java.lang.ProcessHandle")) {
+            boolean pure = method.equals("exitValue") || method.equals("isAlive") || method.equals("pid")
+                    || method.equals("toHandle") || method.equals("info")
+                    || method.equals("supportsNormalTermination") || method.equals("current")
+                    || method.equals("compareTo")
+                    //   `<init>` is java.lang.Process's protected no-op constructor, reached only by
+                    //   `super()` from a user-written Process subclass (a test double, a wrapper) — whose
+                    //   own methods are analysed as project code. Charging it would fabricate Exec on
+                    //   every such subclass's constructor.
+                    || method.equals("<init>")
+                    || isObjectProtocolExempt(method, desc);
+            if (!pure) return Effect.EXEC;
+        }
         // System.load/loadLibrary (and the Runtime twins) load a native image and RUN its JNI init
         // (JNI_OnLoad) — arbitrary native-code execution (candor already treats a `native` body as
         // Unknown; the call that loads+triggers it must not be invisible). The gateway to every native
@@ -342,7 +445,13 @@ final class Classifier {
         if (method.equals("<init>") && "()V".equals(desc)
                 && (owner.equals("java.util.Date") || owner.equals("java.util.GregorianCalendar")))
             return Effect.CLOCK;
-        if (owner.equals("java.util.Calendar") && method.equals("getInstance")) return Effect.CLOCK;
+        // `Calendar.getInstance()` initializes to "now". BOTH SPELLINGS: javac emits the QUALIFYING type
+        // for a static call, so `GregorianCalendar.getInstance()` — legal, inherited, and what a lot of
+        // calendar code actually writes — emits owner `java/util/GregorianCalendar` and missed the
+        // exact-owner match. MEASURED silent (R130, javap-confirmed:
+        // `Method java/util/GregorianCalendar.getInstance:()Ljava/util/Calendar;`).
+        if ((owner.equals("java.util.Calendar") || owner.equals("java.util.GregorianCalendar"))
+                && method.equals("getInstance")) return Effect.CLOCK;
         // Randomness — the concrete PRNG/CSPRNG classes (mirrors `new Random()` / `Math.random()`).
         // ThreadLocalRandom and SplittableRandom are the java.util(.concurrent) generators a probe found
         // unclassified despite Random being flagged — same effect category, added for consistency.
@@ -351,8 +460,29 @@ final class Classifier {
                 || owner.equals("java.util.SplittableRandom")
                 // java.util.random.RandomGenerator is the Java 17+ root interface for all PRNGs; code typed
                 // to it (or to RandomGeneratorFactory.create() results) bypasses the concrete-class matches
-                // above. The sub-interfaces (Jumpable/Splittable/StreamableGenerator) extend it.
+                // above.
+                //
+                // PREFIX, NOT EXACT. This line used to say `owner.equals("java.util.random.RandomGenerator")`
+                // with a comment reading "The sub-interfaces (Jumpable/Splittable/StreamableGenerator)
+                // extend it." That sentence is true about the Java type system and FALSE about bytecode:
+                // the classifier is keyed on the STATIC RECEIVER TYPE, and a receiver declared as a
+                // sub-interface emits owner `java/util/random/RandomGenerator$SplittableGenerator`, which
+                // the exact match never saw. MEASURED silent (R130, 2026-09-02) — a fixture that drew real
+                // entropy through `SplittableGenerator.of(...).nextLong()`, `JumpableGenerator.jump()` and
+                // `StreamableGenerator.nextLong()` scanned `functions: []`, `excluded: []` and passed all
+                // five policy forms at exit 0, while the control `new Random().nextInt()` charged Rand in
+                // the same jar. javap confirms the owners. This is the same shape as the MulticastSocket
+                // and SSLSocket carve-ins below, and this comment is why it was never looked for: it
+                // asserted the property the rule needed to be true.
+                //
+                // Written as exact-match PLUS a `$`-anchored prefix, so it covers `RandomGenerator` itself
+                // and all five nested sub-interfaces (Splittable/Jumpable/Leapable/ArbitrarilyJumpable/
+                // StreamableGenerator), including any a future JDK adds. The `$` matters: a bare
+                // `startsWith("java.util.random.RandomGenerator")` would also swallow the sibling
+                // TOP-LEVEL type `java.util.random.RandomGeneratorFactory`, whose all()/of()/getDefault()
+                // are pure metadata — that would be a fabrication, and it is pinned by a test.
                 || owner.equals("java.util.random.RandomGenerator")
+                || owner.startsWith("java.util.random.RandomGenerator$")
                 || (owner.equals("java.lang.Math") && method.equals("random")))
             // isDeprecated() is a pure metadata DEFAULT method on the RandomGenerator interface (no entropy
             // draw); the whole-owner rule fabricated Rand on it (sweep [22]). isConventionallyPure guards the
@@ -2038,6 +2168,13 @@ final class Classifier {
                 // exact-owner match above misses — a silent Net under-report (multicast send/receive IS
                 // network I/O). joinGroup/leaveGroup likewise.
                 || owner.equals("java.net.MulticastSocket")
+                // javax.net.ssl.SSLServerSocket extends java.net.ServerSocket — the ACCEPTOR twin of the
+                // SSLSocket carve-in further down, and the sibling that carve-in did not go and look for
+                // (§A.2). A receiver typed as SSLServerSocket emits owner `javax/net/ssl/SSLServerSocket`
+                // for the inherited accept()/bind()/close(), so every TLS server's accept loop was silent
+                // Net. Found by enumerating the JDK's public subtypes of every owner this file models,
+                // rather than by meeting another one by hand (R130, 2026-09-02).
+                || owner.equals("javax.net.ssl.SSLServerSocket")
                 || owner.equals("java.nio.channels.SocketChannel")
                 || owner.equals("java.nio.channels.ServerSocketChannel")
                 || owner.equals("java.nio.channels.DatagramChannel")
@@ -2067,6 +2204,17 @@ final class Classifier {
                 || owner.equals("javax.net.ssl.SSLSocket")
                 || (owner.equals("javax.net.ssl.SSLSocketFactory") && method.equals("createSocket"))
                 || (owner.equals("javax.net.SocketFactory") && method.equals("createSocket"))
+                // …and the ACCEPTOR factories, which were the missing half: createServerSocket BINDS and
+                // LISTENS on a port. Both owners, because SSLServerSocketFactory extends
+                // ServerSocketFactory and a receiver typed as the subclass emits the subclass owner.
+                // MEASURED silent in ISOLATION (R130, 2026-09-02) — and this one is a near-miss worth
+                // recording: the first fixture called `createServerSocket(0)` and then `close()`, so it
+                // charged Net and read as covered. The charge came entirely from `ServerSocket.close()`
+                // under the whole-owner rule. Re-run with the bind ALONE (returning the socket, closing it
+                // in the caller), both arms reported `functions: []`. A mixed fixture cannot answer this.
+                || ((owner.equals("javax.net.ServerSocketFactory")
+                        || owner.equals("javax.net.ssl.SSLServerSocketFactory"))
+                    && method.equals("createServerSocket"))
                 // Conscrypt TLS sockets (Google's BoringSSL-backed JSSE provider — the dominant alternative
                 // SSLSocket backend, ubiquitous on Android + gRPC). The concrete socket impls all extend
                 // javax.net.ssl.SSLSocket, so a receiver typed as the INTERFACE already hits the rule above;
@@ -2103,9 +2251,33 @@ final class Classifier {
                 // to the resolver (UDP/TCP) = network egress. getByAddress(byte[]) builds from bytes with
                 // NO lookup, so it's excluded. (Found by a controlled JDK-effect probe: all three lookup
                 // forms read Net 0 — a silent under-report on an extremely common API.)
-                || (owner.equals("java.net.InetAddress")
+                // …AND THE SUBCLASSES, AND `getHostName`. Two holes in that list, both MEASURED or
+                // javap-confirmed (R130, 2026-09-02):
+                //  - `Inet4Address`/`Inet6Address` extend InetAddress, so a receiver typed as one of them
+                //    (`Inet4Address a = (Inet4Address) sock.getInetAddress(); a.getCanonicalHostName();`)
+                //    emits owner `java/net/Inet4Address` and the exact match never fired. Same shape as
+                //    MulticastSocket/SSLSocket below, one type over — §A.2.
+                //  - `getHostName()` performs a REVERSE lookup when the address was built from a literal
+                //    IP (the JDK javadoc says so), which is the same resolver round trip as
+                //    getCanonicalHostName. It was omitted because it does not look like one.
+                || ((owner.equals("java.net.InetAddress") || owner.equals("java.net.Inet4Address")
+                        || owner.equals("java.net.Inet6Address"))
                     && (method.equals("getByName") || method.equals("getAllByName")
-                        || method.equals("getLocalHost") || method.equals("getCanonicalHostName")))
+                        || method.equals("getLocalHost") || method.equals("getCanonicalHostName")
+                        || method.equals("getHostName")))
+                // `new InetSocketAddress(String host, int port)` RESOLVES the hostname inside the
+                // constructor — the identical resolver call the getByName rule above exists for, in the
+                // spelling every socket/bind/connect site actually writes. MEASURED silent (R130):
+                // `functions: []` and all five policy forms exit 0, while the executed fixture proved the
+                // lookup really happened (localhost resolved to 127.0.0.1; a `.invalid` name came back
+                // `isUnresolved()` — a failure only a real lookup can produce).
+                // DESCRIPTOR-GATED to the String-first ctor: `(InetAddress,int)` takes an already-resolved
+                // address and `(int)` binds the wildcard, so neither resolves anything; the static
+                // `createUnresolved` is documented never to resolve and is excluded by the `<init>` match.
+                // `getHostName()` on the result reverse-resolves for the same reason as InetAddress's.
+                || (owner.equals("java.net.InetSocketAddress")
+                    && ((method.equals("<init>") && desc != null && desc.startsWith("(Ljava/lang/String;"))
+                        || method.equals("getHostName")))
                 || (owner.equals("java.net.URL")
                     && (method.equals("openStream") || method.equals("openConnection") || method.equals("getContent")))
                 // URLConnection / HttpURLConnection wire verbs: `URL.openConnection()` returns a LAZY
@@ -2140,7 +2312,15 @@ final class Classifier {
                 // builder-style HTTP wrapper in the corpus (pinned by urlConnectionRequestSideAccessorsStayPure
                 // + the Prepare fixture). Owners are matched FULLY QUALIFIED, so a project class that
                 // merely shares the simple name is untouched.
+                // `java.net.JarURLConnection` is the fourth public URLConnection subclass and was the one
+                // missing: a `jar:` URL's connection, i.e. the ordinary classpath-resource read, held in a
+                // variable of its own type. Same owner-is-the-static-type shape as the three above.
+                // (Effect LABEL caveat, stated rather than assumed: this rule charges Net for every
+                // URLConnection scheme, so a `jar:file:` read is charged Net where Fs would be nearer —
+                // pre-existing and shared with plain `file:` URLConnections, not introduced here. Silence
+                // is the cardinal sin; the imprecise label is loud.)
                 || ((owner.equals("java.net.URLConnection") || owner.equals("java.net.HttpURLConnection")
+                        || owner.equals("java.net.JarURLConnection")
                         || owner.equals("javax.net.ssl.HttpsURLConnection"))
                     && (method.equals("connect") || method.equals("getInputStream")
                         || method.equals("getOutputStream") || method.equals("getContent")

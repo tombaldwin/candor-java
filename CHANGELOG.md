@@ -8,6 +8,71 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ SOUNDNESS R130 — one rule, one spelling: THIRTEEN JDK routes to an already-modelled effect were
+  silent.** The question came from candor-rust, where `std::fs::` turned out to be the entire filesystem
+  rule and every platform module under it read PURE. Re-asked of this engine and answered by
+  measurement, not by reading the classifier. Each route below was put in a class of its own with no
+  ordinary-spelling call in it, COMPILED AND EXECUTED so the real-world effect was observed, and then
+  scanned: every one came back `functions: []`, `excluded: []`, and **exit 0 under all five policy
+  forms** — `deny <E>`, `deny Unknown`, `deny <E> Unknown`, scoped `deny <E> <pkg>`, and `pure <pkg>`.
+  In every case the control — the ordinary spelling of the same operation, same jar, same compile,
+  differing only in the route — charged the effect and exited 1.
+
+  - **`java.nio.file.spi.FileSystemProvider`** — the SPI every `Files.*` method is *defined* as a call
+    to, handed to user code by `FileSystems.getDefault().provider()`. A real file, a real directory and
+    a real **symlink** created on disk through it, silently. Now whole-owner `Fs` with a tested denylist
+    (`getScheme`, `<init>`, and — found by auditing this fix's own corpus diff — `getPath(URI)` and
+    `getFileSystem(URI)`, both specified by the SPI as non-I/O).
+  - **`java.nio.file.FileSystem`** `getFileStores`/`getRootDirectories`/`newWatchService`/`close` →
+    `Fs`. Verb-gated: the type is mostly path algebra.
+  - **`java.nio.file.attribute.*AttributeView`** → `Fs`. chmod, chown, utimes, setxattr and the ACL/DOS
+    equivalents, through a view received as a PARAMETER — the acquisition (`Files.getFileAttributeView`)
+    was charged, but acquisition and mutation routinely live in different methods. A 0400 chmod and a
+    `user.candor` xattr were both verified on disk while the scan said nothing.
+    Plus `UserPrincipalLookupService.lookupPrincipalByName`.
+  - **`java.awt.Desktop.moveToTrash`** → `Fs`. The Desktop rule enumerated the LAUNCH verbs; this is the
+    one member that is not a launch — it deletes the named file. The fixture's file really was removed.
+  - **`java.lang.Process` and `java.lang.ProcessHandle`** → whole-owner `Exec` with a tested denylist,
+    replacing two verb ALLOWLISTS that had each forgotten members: `onExit()` (the async twin of the
+    charged `waitFor`), the Java 17 `inputReader()`/`errorReader()`/`outputWriter()`, and
+    `allProcesses()`/`children()`/`descendants()`/`parent()`/`of(pid)`, every one of which hands back a
+    destroy-capable handle. The fixture really enumerated 807 live OS processes. `exitValue`/`isAlive`/
+    `pid`/`toHandle`/`info`/`supportsNormalTermination`/`current`/`<init>` stay pure, each pinned.
+  - **`java.util.random.RandomGenerator$*Generator`** → `Rand`. The rule matched the root interface
+    exactly, under a comment asserting that the sub-interfaces "extend it" — true of the type system and
+    false of bytecode, since the classifier is keyed on the STATIC RECEIVER TYPE. Real entropy drawn
+    through `SplittableGenerator`/`JumpableGenerator`/`StreamableGenerator`, silently. Now
+    `$`-anchored, so the sibling top-level `RandomGeneratorFactory` stays pure (pinned).
+  - **`new InetSocketAddress(String,int)`** → `Net` — it performs the identical resolver lookup the
+    already-charged `InetAddress.getByName` exists for. Proven by execution: `localhost` resolved,
+    a `.invalid` name came back `isUnresolved()`. Descriptor-gated, so `createUnresolved` and the
+    `(InetAddress,int)` / `(int)` forms stay pure. Plus `InetAddress.getHostName` (the REVERSE lookup,
+    omitted because it does not look like one), and `Inet4Address`/`Inet6Address`-typed receivers.
+  - **`javax.net.ssl.SSLServerSocket`** → `Net` (with a full pure-config carve-out), the acceptor twin of
+    the `SSLSocket` carve-in; **`ServerSocketFactory`/`SSLServerSocketFactory.createServerSocket`** →
+    `Net`; **`java.net.JarURLConnection`** → `Net`, the fourth URLConnection subclass.
+  - **`GregorianCalendar.getInstance()`** → `Clock`. javac emits the QUALIFYING type for a static call.
+
+  **A/B over 395 third-party jars** (gradle cache), PRE built from HEAD `2dd1600` in a clean worktree,
+  diffed on **every field** and not just `inferred`: 577,547 common rows, **ADDED 107, REMOVED 0**, and
+  **zero losses on any field** (`inferred`, `incomplete`, `declared`, `invisible`, `unknownWhy`,
+  `unresolved`, `netClass`) — the movement is entirely in the reporting direction. Gains: Net 180,
+  Fs 21, Exec 12, Clock 4, each bucketed by mechanism and ground-truthed from `javap`, never from
+  candor's own report. **Hit counters in every changed branch** (an instrumented twin of the shipped
+  jar) prove the corpus REACHED 11 of the 14 new branches — clock.calendar 279, exec.process 111,
+  net.sockaddr 90, fs.filesystem 61, fs.provider 57, net.gethostname 34, fs.attrview 33, net.jarurl 14,
+  net.ssfactory 11, fs.principal 7, net.inetsub 4 — so this is a RECALL measurement, not a safety-only
+  one. Three branches (`Desktop.moveToTrash`, the RandomGenerator sub-interfaces, `SSLServerSocket`) got
+  **zero corpus hits and are safety-only over this corpus**; each is backed by an executed fixture
+  instead. Real code newly reported includes httpcore5's `DefaultAddressResolver.resolve`, okhttp's
+  `Util.peerName`, jackson's `InetSocketAddressSerializer`, and IntelliJ's split-mode process tracker.
+
+  The audit **found two fabrications in its own first cut** (`FileSystemProvider.getPath`/
+  `getFileSystem`, over-charging four real rows in jetbrains verifier-cli) and one **near-miss**:
+  `ServerSocketFactory.createServerSocket` first read as already-covered because the fixture also called
+  `ServerSocket.close()`, which is charged — re-run with the bind ALONE, both arms reported
+  `functions: []`. A mixed fixture cannot answer this question.
+
 ## [0.34.0] — 2026-08-31
 
 - **`jbang-catalog.json` → v0.34.0.** jbang pulls the shadow jar from the release download

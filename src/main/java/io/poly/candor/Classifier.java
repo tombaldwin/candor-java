@@ -145,12 +145,38 @@ final class Classifier {
         //    corpus diff, not reasoned out in advance: without them the rule fabricated Fs on four real
         //    rows in jetbrains verifier-cli's FileSystemProvider wrapper (toPath/getPath/getFileSystem),
         //    which is the cardinal sin in the over-charge direction;
+        //  - `getFileAttributeView(Path,Class,LinkOption...)`, which HANDS BACK a view object and performs
+        //    no I/O at all. EXECUTED (R130 follow-up, 2026-09-02): called on a path that does not exist it
+        //    returns a live `BasicFileAttributeView` and throws nothing, while the very next call —
+        //    `view.readAttributes()` — throws NoSuchFileException. So the syscall is in the VIEW, and the
+        //    view's whole surface is already charged by the `*AttributeView` rule below; carving the
+        //    acquisition out loses no capability. Without it the rule fabricated Fs on a method that only
+        //    obtains a view (`NoIo.view -> ['Fs']` at d8e953c, absent at 2dd1600, `deny Fs` 0 -> 1);
         //  - the §4 conventionally-pure Object protocol.
-        // `installedProviders()` is NOT carved out: it runs a ServiceLoader over META-INF/services, which
-        // is the same classpath-resource read already charged Fs for `ServiceLoader.load` below.
+        //
+        // THE BOUNDARY OF THIS DENYLIST IS THE SPI, NOT THE CORPUS — and that is the correction R130's own
+        // fix needed. `getPath`/`getFileSystem` were derived from what the 395-jar corpus happened to
+        // contain, so `getFileAttributeView` (which it did not contain) was missed by exactly the reasoning
+        // that produced them (§9: an audit drawn around its own trigger). The sweep that replaces it is
+        // mechanical over `javap -protected java.nio.file.spi.FileSystemProvider`: **every I/O member of
+        // this SPI declares `throws IOException`, and exactly five public/protected members do not** —
+        // `<init>`, `getScheme()`, `getFileSystem(URI)`, `getPath(URI)`, `getFileAttributeView(...)` —
+        // plus the static `installedProviders()`. Those five are the carve-out, entire; there is no sixth
+        // to find at JDK 17.
+        // TWO THINGS THAT ARE ASSUMPTIONS RATHER THAN GUARANTEES, said as such:
+        //  - `installedProviders()` also declares no IOException and is deliberately NOT carved out — it
+        //    runs a ServiceLoader over META-INF/services, the same classpath-resource read already charged
+        //    Fs for `ServiceLoader.load` below. So "declares IOException" is the AUDIT's discriminator, not
+        //    this rule's; the rule stays a denylist precisely so a member the discriminator misjudges keeps
+        //    firing.
+        //  - JDK 20 adds `exists(Path,LinkOption...)` and `readAttributesIfExists(...)`; `exists` swallows
+        //    its own IOException and so declares none, while really calling `checkAccess`. It is NOT in the
+        //    carve-out and therefore charges Fs — which is the denylist design working, and is the reason
+        //    this stays a named list of five rather than a `throws`-derived predicate.
         if (owner.equals("java.nio.file.spi.FileSystemProvider")
                 && !method.equals("getScheme") && !method.equals("<init>")
                 && !method.equals("getPath") && !method.equals("getFileSystem")
+                && !method.equals("getFileAttributeView")
                 && !isConventionallyPure(method))
             return Effect.FS;
         // `java.nio.file.FileSystem` — the instance behind `FileSystems.getDefault()` / `newFileSystem()`.
@@ -391,9 +417,31 @@ final class Classifier {
                     || method.equals("supportsNormalTermination") || method.equals("current")
                     || method.equals("compareTo")
                     //   `<init>` is java.lang.Process's protected no-op constructor, reached only by
-                    //   `super()` from a user-written Process subclass (a test double, a wrapper) — whose
-                    //   own methods are analysed as project code. Charging it would fabricate Exec on
-                    //   every such subclass's constructor.
+                    //   `super()` from a user-written Process subclass (a test double, a wrapper).
+                    //   Charging it would fabricate Exec on every such subclass's constructor.
+                    //
+                    //   THIS CARVE-OUT USED TO ADD "— whose own methods are analysed as project code",
+                    //   AND THAT CLAUSE WAS FALSE, in the direction that made the diff look safe (§E2).
+                    //   It is true only of members the subclass OVERRIDES. For an INHERITED CONCRETE
+                    //   member it does not override, `Candor.handleMethodInsn`'s supertype walk fires —
+                    //   the project owner declares no body and no project super does either — and
+                    //   re-classifies the call against `java.lang.Process`, so this whole-owner rule
+                    //   charges it. MEASURED (2026-09-02) on `FakeProc extends Process` overriding all six
+                    //   abstract members with ByteArrayStreams and spawning nothing: `p.onExit()` and
+                    //   `p.inputReader()` go absent -> ['Exec'] across 2dd1600 -> d8e953c and flip
+                    //   `deny Exec` 0 -> 1, on a program whose own output shows zero child processes
+                    //   before and after. `p.destroyForcibly()` was already charged the same way at
+                    //   2dd1600, so the shape PRE-DATES the whole-owner rewrite; the rewrite widened it
+                    //   from one inherited member to eleven.
+                    //
+                    //   IT IS KEPT ANYWAY, AND THE TRADE IS MEASURED RATHER THAN ASSUMED. The counter-
+                    //   fixture is `Wrap extends Process` delegating every abstract member to a REAL
+                    //   child: a caller of the inherited `w.onExit()` is reported `['Exec']` with
+                    //   `calls: None` — i.e. the ONLY route to that capability is this walk, because the
+                    //   JDK body that would reach `Wrap.waitFor` is never scanned. Removing the walk for
+                    //   Process would therefore trade a loud over-charge on a test double for a SILENT
+                    //   under-report on a real subprocess wrapper, which is the cardinal sin. Both
+                    //   directions are pinned by tests; the general mechanism is SOUNDNESS R131.
                     || method.equals("<init>")
                     || isObjectProtocolExempt(method, desc);
             if (!pure) return Effect.EXEC;
@@ -444,6 +492,25 @@ final class Classifier {
         // gate the ctors to the no-arg descriptor to avoid fabricating Clock on the valued forms.
         if (method.equals("<init>") && "()V".equals(desc)
                 && (owner.equals("java.util.Date") || owner.equals("java.util.GregorianCalendar")))
+            return Effect.CLOCK;
+        // …AND THE SENTENCE ABOVE IS WHY THE NEXT THREE WERE MISSED. "takes a value ⇒ pure" is true of
+        // `new Date(long)` and of the `(y,m,d)` calendar ctors, and FALSE of the three GregorianCalendar
+        // ctors that take a TimeZone and/or a Locale: each delegates to `this(zone, locale, ...)` which
+        // calls `setTimeInMillis(System.currentTimeMillis())`. So arity was never the discriminator —
+        // the ARGUMENT KINDS are: every pure GregorianCalendar ctor takes only `int`s, every clock-reading
+        // one takes only TimeZone/Locale references. EXECUTED (2026-09-02): two calls 1.1s apart through
+        // each of the three forms returned millis differing by 1110-1111, while the control
+        // `new GregorianCalendar(2020,1,1)` returned an IDENTICAL value both times. Silent before this
+        // line: all three were absent from `functions[]` and all five policy forms exited 0, while the
+        // control `new GregorianCalendar()` charged Clock in the same jar. PRE-EXISTING (also silent at
+        // 2dd1600), found one line from the code R130 edited, by reading the comment above as a claim
+        // rather than as documentation (§K).
+        // The four public descriptors are ENUMERATED rather than derived from "contains no I", because an
+        // enumeration is what a test can pin and because the package-private `(TimeZone,Locale,boolean)`
+        // and `(int×7)` forms are unreachable from user code.
+        if (method.equals("<init>") && owner.equals("java.util.GregorianCalendar") && desc != null
+                && (desc.equals("(Ljava/util/TimeZone;)V") || desc.equals("(Ljava/util/Locale;)V")
+                    || desc.equals("(Ljava/util/TimeZone;Ljava/util/Locale;)V")))
             return Effect.CLOCK;
         // `Calendar.getInstance()` initializes to "now". BOTH SPELLINGS: javac emits the QUALIFYING type
         // for a static call, so `GregorianCalendar.getInstance()` — legal, inherited, and what a lot of

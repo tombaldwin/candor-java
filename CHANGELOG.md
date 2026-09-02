@@ -73,6 +73,102 @@ after upgrading; review policies and regenerate baselines with the new build.
   `ServerSocket.close()`, which is charged — re-run with the bind ALONE, both arms reported
   `functions: []`. A mixed fixture cannot answer this question.
 
+- **⚠ SOUNDNESS R130 follow-up — the over-charge column of that fix: three fabrications it introduced,
+  and one silent under-report it sat next to.** An adversarial review of the entry above found three
+  members newly charged for effects they do not perform, each absent at `2dd1600`, charged at
+  `d8e953c`, and each flipping a `deny <E>` gate from exit 0 to exit 1 on code that performs nothing.
+  All three were reproduced before being fixed, with the real-world behaviour EXECUTED.
+
+  - **`FileSystemProvider.getFileAttributeView` was charged `Fs` and performs no I/O.** Executed: on a
+    path that does not exist it returns a live `BasicFileAttributeView` and throws nothing, while
+    `view.readAttributes()` on that same view throws `NoSuchFileException`. The syscall is in the view,
+    and the view's whole surface is already charged by the `*AttributeView` rule, so carving the
+    acquisition out loses no capability. **The defect was the audit boundary, not the member:** the two
+    carve-outs `d8e953c` shipped (`getPath`, `getFileSystem`) were derived from what its 395-jar corpus
+    happened to contain, so the member the corpus lacked was missed by exactly the reasoning that
+    produced them. The replacement boundary is the SPI itself — every I/O member of
+    `java.nio.file.spi.FileSystemProvider` declares `throws IOException` and **exactly five do not**
+    (`<init>`, `getScheme`, `getFileSystem`, `getPath`, `getFileAttributeView`), plus the static
+    `installedProviders()`, which is deliberately still charged because it runs a `ServiceLoader` over
+    `META-INF/services`. That the discriminator has a counterexample is why the rule stays a denylist:
+    JDK 20's `exists(Path,…)` also declares no `IOException` and really does call `checkAccess`, and it
+    keeps firing.
+  - **The socket-option protocol was charged `Net` and moves no byte, on all six socket owners.**
+    Executed on an UNBOUND `SSLServerSocketFactory.getDefault().createServerSocket()`: `setSoTimeout`,
+    `setReuseAddress`, `setReceiveBufferSize`, `setPerformancePreferences` and
+    `setOption(SO_REUSEADDR)` all succeed and leave it `isBound()==false, getLocalPort()==-1` — a socket
+    with no local address cannot have touched the wire — while the getters round-trip what was set. The
+    engine had **already** ruled that option access is not network I/O by exempting `getSoTimeout`/
+    `getReuseAddress` for many rounds (`getReuseAddress()` is a real `getsockopt`), so charging the
+    matching setters answered one syscall class two ways. `d8e953c` made that visible by giving
+    `javax.net.ssl.SSLServerSocket` a whole-owner `Net` rule; the asymmetry itself was pre-existing on
+    the other five owners.
+  - **…and the two ACCEPTOR arms had drifted.** The `SSLServerSocket` list `d8e953c` added carved out
+    `getReceiveBufferSize` where the `java.net.ServerSocket` list it was copied from does not, so one
+    program got two answers for one operation depending only on the receiver's declared type. Fixed by
+    replacing five hand-copied `method.equals(...)` chains with **three predicates defined once** —
+    `isPureSocketHandleState`, `isPureSocketOptionAccessor`, `isPureTlsHandshakeConfig` — shared by
+    `Socket`, `ServerSocket`, `DatagramSocket`, `MulticastSocket`, `SSLSocket` and `SSLServerSocket`.
+    Fixing the TLS acceptor alone would have converged one pair of arms by splitting another. The wire
+    boundary (`connect`/`bind`/`accept`/`close`/`getInputStream`/`getOutputStream`/`sendUrgentData`/
+    `shutdown*`/`send`/`receive`/`joinGroup`/`leaveGroup`/`disconnect`/`startHandshake`/`getSession`)
+    is unchanged and pinned by a 17-member control.
+  - **`new GregorianCalendar(TimeZone)` / `(Locale)` / `(TimeZone,Locale)` read the wall clock and were
+    certified pure** — the opposite direction, PRE-EXISTING, and one line from the code `d8e953c`
+    edited. Missed because the adjacent comment asserts *"ARITY-PRECISE: `new Date(long)` /
+    `new GregorianCalendar(y,m,d)` take a value and are pure"*; three valued constructors take a value
+    **and** read the clock. Arity was never the discriminator — the argument KIND is: every pure
+    `GregorianCalendar` ctor takes only `int`s, every clock-reading one takes only `TimeZone`/`Locale`.
+    Executed: two calls 1.1s apart returned millis differing by 1110–1111 through each of the three,
+    and by 0 through the `(y,m,d)` control.
+
+  **NOT narrowed, and the measurement is why.** A project class extending `java.lang.Process` is charged
+  `Exec` on the INHERITED CONCRETE members it does not override, because the supertype walk in
+  `handleMethodInsn` re-classifies them against `java.lang.Process`. On a test double that spawns
+  nothing that is a fabrication (`onExit`/`inputReader` go absent → `['Exec']` across the two commits,
+  `deny Exec` 0 → 1, on a program whose own output shows zero child processes). Removing the walk would
+  be worse: a wrapper over a REAL child reaches its capability through that walk **and through nothing
+  else** (`calls: None`, because the JDK body that would call back into the subclass is never scanned),
+  so the narrowing would trade a loud over-charge for a silent under-report. Both directions are now
+  pinned by tests instead of argued in a comment, and the comment that claimed a user subclass's
+  *"own methods are analysed as project code"* — false for inherited concrete members — now says what
+  it assumes. The general mechanism is R131. The same shape reaches `FileSystemProvider` (ten concrete
+  inheritable members) and `RandomGenerator` (~30 defaults over one abstract `nextLong`);
+  `ProcessHandle` is unaffected — its only concrete inheritable member is `default compareTo(Object)`,
+  already exempt.
+
+  **A/B — the same 395 third-party jars, three arms in one run, keyed on EVERY field.** The
+  `2dd1600 → d8e953c` arm reproduces that fix's published numbers exactly (577,547 common rows, ADDED
+  107, REMOVED 0), which is what calibrates the instrument. `d8e953c → HEAD`: **577,536 common, ADDED
+  254, REMOVED 118, CHANGED(wide) 1,839** — declared 806, overdeclared 716, undeclared 506, inferred
+  382, calls 208, incomplete 82, direct 63, netClass 57. Two mechanisms, not one: **+117 rows gained
+  `Clock`** (37 of them with the constructor in their own bytecode, all 37 confirmed by `javap`, zero
+  unexplained, across gson, jackson, okhttp, postgresql, joda-time, poi, log4j and 12 more) and +137
+  appeared only because their class's field types now declare `Clock`; **−118 rows plus the field-level
+  losses** are the socket narrowing and the two `FileSystemProvider` rows.
+
+  **Every removal was audited in FULL from `javap`, never from candor's own report — 146 rows losing
+  `Net` or `Fs`: 102 direct with every changed-owner call in the exempt set, 44 explained transitively,
+  0 suspicious, 0 unexplained.** Hit counters in an instrumented twin (proven byte-identical to the
+  shipped jar over all 395 jars: ADDED 0 REMOVED 0 CHANGED 0) show the corpus reaches every changed
+  branch — 400 socket-option hits across 6 owners, 41 `GregorianCalendar` ctor hits, 2
+  `getFileAttributeView` hits — so this is a recall measurement. **`SSLServerSocket` itself still gets
+  zero corpus hits and remains safety-only, exactly as `d8e953c` recorded.**
+
+  **The near-miss, reported rather than buried.** Removing an over-charge un-masks whatever it was
+  accidentally covering. Screening all 146 lost rows for a co-located read/write found 8, and exactly
+  **one leaf loses its row with no disclosure at all**: httpcore 4.4.13's
+  `BHttpConnectionBase.fillInputBuffer`, which really does read the socket — through
+  `SessionInputBufferImpl.fillBuffer` on a plain `java.io.InputStream` stored at bind time. Its `Net`
+  came entirely from the `get/setSoTimeout` pair; `SessionInputBufferImpl.fillBuffer` is absent from the
+  report at `2dd1600`, at `d8e953c` **and** at HEAD, so the blind spot is socket-STREAM PROVENANCE and
+  is not introduced here — it was masked by the fabrication. ~13 rows in that one jar follow it
+  transitively (`awaitInput`, `isStale`, `isResponseAvailable`, `BasicConnPool.validate`, …). The other
+  seven keep a disclosure (`invisible: ['okio']` on okhttp's `Util.isHealthy`) or keep `Net` from
+  another route. The wire boundary in the same jar is untouched: `getSocketInputStream`,
+  `getSocketOutputStream`, `close`, `shutdown` and `ensureOpen` all still read `Net`. Filed as its own
+  question rather than answered by keeping a known fabrication as accidental coverage.
+
 ## [0.34.0] — 2026-08-31
 
 - **`jbang-catalog.json` → v0.34.0.** jbang pulls the shadow jar from the release download

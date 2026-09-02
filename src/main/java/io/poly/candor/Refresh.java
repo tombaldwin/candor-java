@@ -50,6 +50,13 @@ import io.poly.candor.model.UnknownReason;
  *        true now because {@link DepFn#renderTo} folds in every field of every entry, and
  *        {@link #wholeProgramDigest} folds in the dep call graph beside it. Do not narrow either back to
  *        a hand-written field list; that is precisely what let four later-added fields escape.</li>
+ *        <b>AND IT WAS FALSE FOR "any whole-program pre-pass output" UNTIL SOUNDNESS R163.</b> ⟨0.35⟩
+ *        added {@code fieldLambdaBindings} — a pre-pass index built from every method's INSTRUCTIONS and
+ *        read during per-class analyze — and it reached this digest by no route at all, so class A's
+ *        cached delta went stale when class B's BODY gained a lambda write while B's structure held
+ *        still. The same shape as R151, one field over, and it escaped R151's own audit because it was
+ *        added in the release that audit was run against. What stops the next one is not a wider list
+ *        but a test over {@link AnalysisContext#inputNames()} — see RefreshFieldLambdaDigestTest.</li>
  *    <li>anything unreadable, unrecognised or unparseable abandons the cache and takes the full scan.
  *        There is no path on which the refresh guesses.</li>
  *  </ul>
@@ -252,6 +259,15 @@ final class Refresh {
      *  still. That is not left as a comment: RefreshBodyIndependenceTest measures it directly, by
      *  analysing every class twice, once against the real program and once against a program whose
      *  other bodies have been stripped, and requiring the two deltas to be equal.
+     *
+     *  <p><b>THAT TEST MEASURES ONLY THE DIRECT HALF, AND SAYING SO IS THE POINT (SOUNDNESS R163).</b>
+     *  It runs {@code prepareScan} over the REAL bodies in BOTH arms, so every whole-program pre-pass
+     *  output is identical in the two arms by construction, and a body dependency routed THROUGH one of
+     *  them is invisible to it. Its own doc justified that with "those are already in the digest", which
+     *  was true when written and false the moment ⟨0.35⟩ added {@code fieldLambdaBindings}. The indirect
+     *  half — that every shared INPUT is folded in here — is measured by RefreshFieldLambdaDigestTest,
+     *  reflectively over {@link AnalysisContext#inputNames()}, so neither half rests on a reader
+     *  noticing.
      */
     /** The structural rendering of ONE class, hashed.
      *
@@ -326,6 +342,30 @@ final class Refresh {
           .append(new TreeSet<>(c.feignTypes)).append('\u0001')
           .append(new TreeSet<>(c.httpClientTypes)).append('\u0001')
           .append(new TreeSet<>(c.classesWithClinit)).append('\u0001');
+        // THE FIELD→LAMBDA BINDINGS, DERIVED FROM OTHER CLASSES' BODIES (SOUNDNESS R163).
+        // ⟨0.35⟩ added `fieldLambdaBindings` as a whole-program pre-pass INPUT — Cha#collectFieldLambdaBindings
+        // walks every method's INSTRUCTIONS to find the lambdas/method-refs written into each functional
+        // field — and Cha#fieldBoundImplementors reads it during per-class analyze to resolve a dispatch
+        // off that field. So class A's cached delta depends on class B's BODY, which is the one thing the
+        // structural digest deliberately does not cover, and the pre-pass output that covers the other
+        // body-derived index (`suppressibleStreamFields`, six lines up) never grew a sibling entry.
+        // Measured on the pre-fix HEAD, one variable, with `Widget`'s structure held byte-identical by
+        // `javap -p` and `Caller`/`Effector`/`Main` sha256-identical across both arms: a warm cache
+        // primed under a `Widget.bindSecondary()` that binds nothing, rerun after it gains
+        // `this.task = Effector::act`, replays `Caller.go` as PURE — the report comes back byte-identical
+        // to the cold v1 scan, "reused 3 of 4", and `pure Caller.go` goes exit 1 -> 0 while the program
+        // really does write the file at runtime.
+        //
+        // Rendered as a sorted map of sorted SETS rather than the raw lists: the binding lists are built
+        // in class/method/instruction walk order (which Files.walk does not fix) and are consumed into
+        // `ctx.edges`, a Set — so neither order nor duplication carries meaning there, and a digest that
+        // flapped with them would miss every run and delete the feature while passing every equivalence
+        // arm. Same reasoning, and the same over-invalidation control, as the dep surfaces below.
+        sb.append("fieldlambdas");
+        for (var e : new TreeMap<>(c.fieldLambdaBindings).entrySet()) {
+            sb.append(e.getKey()).append('=').append(new TreeSet<>(e.getValue())).append('\u0001');
+            if (sb.length() > 1 << 16) digest.feed(sb);
+        }
         sb.append("deps");
         // EVERY DEP VALUE, NOT THE KEY SET (SOUNDNESS R151). This fed `crossDeps.keySet()` and nothing
         // else, while Candor#inheritDepFn writes the VALUES into the per-class accumulators this cache

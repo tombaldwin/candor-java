@@ -8,6 +8,66 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ SOUNDNESS R163 — a whole-program pre-pass index built from other classes' BODIES was not in the
+  refresh digest.** R151's class, one field over. ⟨0.35⟩ added `fieldLambdaBindings` to
+  `AnalysisContext`: `Cha.collectFieldLambdaBindings` walks every method's INSTRUCTIONS to bind each
+  functional-interface field to the lambdas/method-refs written into it, and `Cha.fieldBoundImplementors`
+  reads it during per-class analyze. So class A's cached delta depends on class B's BODY — exactly what
+  `Refresh.wholeProgramDigest` deliberately does not cover structurally — and the field reached that
+  digest by no route at all. Unpublished: the defect is post-`v0.34.0`, so no released binary carries it.
+
+  **Reproduced first, executed, one variable.** `Widget.bindSecondary()` goes from a no-op to
+  `this.task = Effector::act` — a bound METHOD REFERENCE, chosen so javac emits no new synthetic member
+  and `javap -p Widget` is byte-identical either way; `Caller.class`, `Effector.class` and `Main.class`
+  are sha256-identical across the two arms, and the programs were RUN (v1 writes nothing, v2 writes the
+  witness file through `Caller.go`'s field dispatch). Matrix on the pre-fix HEAD, `pure Caller.go`:
+
+  | arm | exit | reuse | `Caller.go` |
+  |---|---|---|---|
+  | cold v1 | 0 | 0 of 4 | absent (pure — correct) |
+  | cold v2 | 1 | 0 of 4 | `Fs`, `calls:[Effector.act]` |
+  | **warm: primed v1, rerun v2** | **0** | **3 of 4** | **absent — report byte-identical to cold v1** |
+  | control: primed v2, rerun v2 | 1 | 4 of 4 | `Fs` (ordinary reuse intact) |
+
+  After the fix the warm arm is exit 1, `reused 0 of 4`, byte-identical to cold v2, and the control
+  still reuses 4 of 4. `analyzed.digest` is `d7608ec5a5adc4c4` in all four arms, and
+  `CANDOR_REFRESH_DEBUG`'s digest-input dump was byte-identical between v1 and v2 with no occurrence of
+  `task`, `Effector` or `lambda`.
+
+  **The sweep, not just the instance (§9).** `AnalysisContext.inputNames()` — the engine's own authority
+  for the shared-input set — lists 47 fields. Perturbed one at a time against `wholeProgramDigest` on the
+  pre-fix build, **exactly one failed to move it: `fieldLambdaBindings`.** The other 26 perturbable
+  inputs move the digest; the remaining 20 are excused in writing, in three categories: structure-derived
+  (`ALL`, `byName`, `projectClasses`, `subtypeIndex`, `overloadDescs`, `classHash` — the per-class loop
+  already hashes the bytes they are functions of), dep-derived memos (`depFnsByOwner`,
+  `depFnsByOwnerName`, `depOwnersBySigBuilt` — pure functions of `crossDeps`, folded value-by-value by
+  R151), and after-analyze-only (`vocabularySource`, `netPartnersSource`, `unanalyzed`, `excluded`,
+  `archives`, `sourceFiles`, `classpathRoots`, `scanRoot`, `outOfScope`, `scannedUnder`, `peekedClasses`
+  — written and read by the peek/scope/report-write phases, which run after the analyze loop). R151's
+  audit reached the same verdict on the remainder and still missed this one, because it was added in the
+  release that audit was run against; a prose audit cannot see a field that appears after it.
+
+  **Teeth, all revert-tested BY REVERTING.** `RefreshFieldLambdaDigestTest` — an end-to-end arm on the
+  fixture above (compiled AND executed, with the one-variable and cache-engaged controls), plus a
+  reflective arm requiring every name in `AnalysisContext.inputNames()` to be either perturbable-into-the
+  -digest or carry a written excuse, so a field added tomorrow is in neither list and fails BY NAME.
+  Reverting only the digest fold turns both red, naming `fieldLambdaBindings`.
+  **`bin/refresh-equiv.sh` gains a field-binding axis** in the style of R151's `CANDOR_DEPS` one: it
+  compiles its own fixture, refuses to pass unless the body change moved a COLD report, the two arms
+  differ in exactly one class, and the cache engaged — and it **FAILS against the pre-fix jar** and
+  passes against the fixed one. `RefreshBodyIndependenceTest` is structurally blind to this class (it
+  runs `prepareScan` over the real bodies in BOTH arms, so every pre-pass output is identical by
+  construction); its doc justified that with "those are already in the digest", which was true when
+  written and false the moment ⟨0.35⟩ landed. That sentence and `Refresh`'s matching class-doc clause are
+  now corrected rather than left standing.
+
+  **COST: none measurable.** guava-33.6.0-jre (1,969 classes), three warm runs each: cache-digest
+  14.8/16.8/15.4 ms before vs 12.1/14.4/15.3 ms after, whole warm scan ~1.0 s both, reuse 1,969 of 1,969
+  both, reports byte-identical. candor's own `build/classes/java/main` (87 classes): digest 2.3 ms both,
+  warm scan 0.26–0.28 s both, reuse 87 of 87 both. The fold is small because the index is: **3 bound
+  fields on guava, 1 on candor's own classes** — counted from the digest-input dump, so the cost figure
+  is not a zero over a branch that never ran.
+
 - **⚠ SOUNDNESS R151 — a CHAINED DEPENDENCY that kept its key and changed its VALUE was replayed from
   the refresh cache.** `Refresh.wholeProgramDigest` folded in `crossDeps.keySet()` and none of the
   `DepFn` VALUES, while `Candor.inheritDepFn` writes those values — effects, `hosts`/`cmds`/`paths`/

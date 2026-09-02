@@ -224,6 +224,112 @@ JAVA
   fi
 fi
 
+# ── THE FIELD-LAMBDA BINDING AXIS (SOUNDNESS R163) ───────────────────────────────────────────────
+#
+# WHY IT IS HERE, AND WHY THE ARMS ABOVE CANNOT SEE IT. Every arm above perturbs a class by DELETING
+# it — which moves that class's structural digest, and the whole-program digest with it. ⟨0.35⟩ added
+# a whole-program pre-pass index (`fieldLambdaBindings`) built from every method's INSTRUCTIONS and
+# read during another class's analyze, so a class's BODY can change what a DIFFERENT class analyses
+# to while its STRUCTURE — and therefore the digest — holds perfectly still. Measured on the pre-fix
+# HEAD: `Widget.bindSecondary()` goes from a no-op to `this.task = Effector::act` (a bound METHOD
+# REFERENCE, so javac emits no new synthetic member and `javap -p Widget` is identical either way),
+# and the warm rerun replays `Caller.go` as PURE — byte-identical to the cold v1 report, "reused 3 of
+# 4", `pure Caller.go` exit 1 -> 0, over a program that really does write the file.
+#
+# Same construction as the CANDOR_DEPS axis: its own compiled fixture, because the perturbation has to
+# travel through a real field dispatch and an arbitrary target does not contain one; and the same
+# refusal to report a pass it could not have failed — the perturbation must move a COLD report and the
+# cache must be shown to engage, or the axis reports CANNOT ARM and that reaches the exit code.
+if [ -z "$javac_bin" ]; then
+  echo "refresh-equiv: CANNOT ARM the field-binding axis — no javac on PATH (the fixture must compile)"
+  fail=1
+else
+  F="$WORK/fieldaxis"; mkdir -p "$F/src" "$F/v1" "$F/v2"
+  cat > "$F/src/Caller.java" <<'JAVA'
+public class Caller { public void go(Widget w) { if (w.task != null) w.task.run(); } }
+JAVA
+  cat > "$F/src/Effector.java" <<'JAVA'
+import java.nio.file.*;
+public class Effector {
+  public static void act() {
+    try { Files.write(Path.of("/tmp/candor-r163-witness"), "L2 ran\n".getBytes(),
+            StandardOpenOption.CREATE, StandardOpenOption.APPEND); }
+    catch (Exception e) { throw new RuntimeException(e); }
+  }
+}
+JAVA
+  cat > "$F/src/Main.java" <<'JAVA'
+public class Main {
+  public static void main(String[] a) {
+    Widget w = new Widget(); w.bindPrimary(); w.bindSecondary(); new Caller().go(w);
+  }
+}
+JAVA
+  # Same field, same two methods, same descriptors — only bindSecondary's BODY differs.
+  cat > "$F/v1/Widget.java" <<'JAVA'
+public class Widget {
+  public Runnable task;
+  public void bindPrimary() { this.task = () -> { int z = 1 + 1; }; }
+  public void bindSecondary() { int noop = 0; }
+}
+JAVA
+  cat > "$F/v2/Widget.java" <<'JAVA'
+public class Widget {
+  public Runnable task;
+  public void bindPrimary() { this.task = () -> { int z = 1 + 1; }; }
+  public void bindSecondary() { this.task = Effector::act; }
+}
+JAVA
+  ffail=0
+  javac -nowarn -d "$F/ca" "$F/src"/*.java "$F/v1/Widget.java" >"$F/javac.log" 2>&1 || ffail=1
+  javac -nowarn -d "$F/cb" "$F/src"/*.java "$F/v2/Widget.java" >>"$F/javac.log" 2>&1 || ffail=1
+  if [ "$ffail" != 0 ]; then
+    echo "refresh-equiv: CANNOT ARM the field-binding axis — the fixture did not compile:"
+    sed 's/^/     /' "$F/javac.log" | head -20
+    fail=1
+  else
+    # ONE VARIABLE. Only Widget may differ between the arms; if anything else moved, a difference in
+    # the reports below would not be attributable to the binding set at all.
+    onevar=1
+    for c in Caller.class Effector.class Main.class; do
+      cmp -s "$F/ca/$c" "$F/cb/$c" || onevar=0
+    done
+    cmp -s "$F/ca/Widget.class" "$F/cb/Widget.class" && onevar=0
+    wt="$F/tree"; mkdir -p "$wt"
+    cp "$F/ca"/*.class "$wt/"
+    scan 0       "$wt" "$F/coldA/report" "$F/coldA.log"
+    scan "$F/fc" "$wt" "$F/prime/report" "$F/prime.log"
+    scan "$F/fc" "$wt" "$F/sameA/report" "$F/sameA.log"
+    cp "$F/cb/Widget.class" "$wt/Widget.class"          # the BODY changes; the structure does not
+    scan 0       "$wt" "$F/coldB/report" "$F/coldB.log"
+    scan "$F/fc" "$wt" "$F/warmB/report" "$F/warmB.log"
+
+    snap "$F/coldA" >"$F/fa"; snap "$F/coldB" >"$F/fb"; snap "$F/warmB" >"$F/fw"
+    fn="$(reuse_of "$F/sameA.log")"
+    printf -- '── %-22s' "field-binding axis"
+    if [ "$onevar" != 1 ]; then
+      echo "CANNOT ARM — the two arms differ in more than Widget's body (or not at all)"
+      fail=1
+    elif diff -q "$F/fa" "$F/fb" >/dev/null 2>&1; then
+      echo "CANNOT ARM — the body change moved no cold report (the field binding never reached the dispatch)"
+      fail=1
+    elif [ -z "$fn" ] || [ "$fn" = 0 ]; then
+      echo "CANNOT ARM — the unchanged rerun reused ${fn:-no} class(es); the cache never engaged"
+      fail=1
+    elif diff -u "$F/fb" "$F/fw" >"$F/fdiff" 2>&1; then
+      controls=$((controls+1))
+      echo "field-binding axis OK (cache engaged: reused $fn on the unchanged rerun)"
+    else
+      echo "FAIL — a class whose BODY changed the field-lambda binding set was replayed from cache"
+      echo "     Widget's structure held still, so the whole-program digest did not move and Caller's"
+      echo "     delta was replayed under the old binding set. This is SOUNDNESS R163 and it is a"
+      echo "     silent under-report: Caller.go comes back PURE over a program that writes a file."
+      sed 's/^/     /' "$F/fdiff" | head -40
+      fail=1
+    fi
+  fi
+fi
+
 echo
 if [ "$fail" != 0 ]; then
   echo "refresh-equiv: FAILED — see the diffs above"

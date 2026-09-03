@@ -10,6 +10,78 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.35.0] — 2026-09-03
 
+- **⚠ SOUNDNESS R147 — a read through a stream handle STORED IN A FIELD was silent; `deny Net` over a
+  socket read went exit 1 → 0 on this upgrade until now.** `this.in = sock.getInputStream()` charges
+  `Net` in the constructor; `in.read()` in another method charged NOTHING, because the receiver's static
+  type is the abstract `java.io.InputStream` and the classifier has no rule for it — so the method that
+  actually moves the bytes was reported pure. **PRE-EXISTING AND PUBLISHED**: absent at `2dd1600`, at
+  `d8e953c` and at `81f4ceb`. Until `81f4ceb` the surrounding method kept a `Net` that came ENTIRELY from
+  the fabricated `get/setSoTimeout` pair — a correct verdict produced by an incorrect mechanism — so
+  removing that over-charge UNMASKED this, and the 0.35.0 release panel measured the consequence as a
+  **RED→GREEN FLIP on upgrade**. Three arms, one variable, published jar vs release candidate vs this fix,
+  on `s.setSoTimeout(100); return in.read();` over a stored socket stream:
+
+  | policy | published 0.34.0 | 0.35.0 candidate | this fix |
+  |---|---|---|---|
+  | `deny Net SockRead.poll` | 1 | **0** | **1** |
+  | `pure SockRead.poll` | 1 | **0** | **1** |
+  | `deny Net Unknown SockRead.poll` | 1 | **0** | **1** |
+  | `deny Net SockRead.tune` (options only — the correct removal) | 1 | 0 | 0 |
+  | `deny Net` (blanket) | 1 | 1 | 1 — passes INCIDENTALLY, via the acquisition in `<init>` |
+
+  Ground truth EXECUTED over real loopback TCP: `poll()` returns byte `65` written by the peer, `tune()`
+  moves none.
+
+  **The fix is keyed on the ACQUISITION, not on the socket (§G).** A whole-program pre-pass records, per
+  stream field, the effect of what was written into it — asking `Classifier.classify` what the producing
+  call *already* charges — so `Socket`/`SSLSocket`/`URLConnection` (Net), `Process` (Exec),
+  `Files.newOutputStream`/`new FileInputStream` (Fs) all fall out of ONE rule and none can drift from the
+  classifier's own answer at the acquisition site. A field declared with a CONCRETE stream type needed no
+  pass at all (`FileInputStream in; in.read()` already emits owner `java/io/FileInputStream`); the blind
+  spot was exactly the four abstract `java.io` bases. Static fields and cross-class writes are covered —
+  the real-world instance below binds the field from a SUBCLASS. The consuming verbs are
+  `Candor.isAbstractStreamIo`'s, reused rather than re-listed, so this and R17 cannot answer "is this a
+  stream read" two ways (§F1 q3).
+
+  **A/B over 395 gradle-cache jars, keyed on EVERY field (18 of them), 577,790 common rows:
+  ADDED 0, REMOVED 0, CHANGED(wide) 271, CHANGED(inferred) 255 — every one a GAIN (Fs 250, Net 5),
+  ZERO effects lost on any field.** The 25 rows that changed DIRECTLY were audited in FULL from `javap`,
+  never from candor's own report — four mechanisms, all confirmed real I/O:
+  commons-io `LockableFileWriter.write(×5, three jar versions)` (`out = initWriter(File,…)`, which really
+  returns an `OutputStreamWriter` over a `FileOutputStream` on that file); commons-compress
+  `FileBasedScatterGatherBackingStore.writeOut` (`Files.newOutputStream(target)`); guava and its
+  checkerframework shade, `FileBackedOutputStream.write(int)` / `write(byte[],int,int)`
+  (`out = new FileOutputStream(temp)` inside `update()`, i.e. a capability that only appears past the
+  threshold); and **bsf 2.3.0 `SocketConnection.listen` / `sendPacket`, which is the R147 shape verbatim
+  in real third-party code** — `fInputStream = fSocket.getInputStream()` written by the SUBCLASS
+  `ClientConnection`, read by the superclass, `deny Net` exit 0 before. The remaining 230 rows are the
+  engine's existing CHA propagation of those 25 (`direct` moved on 25, `inferred` on 255); two were
+  traced end-to-end and both land on `LockableFileWriter.write`. The corpus therefore REACHES both new
+  branches on real code, so this is a RECALL measurement, not a safety-only one.
+
+  **THE BOUNDARY, PINNED RATHER THAN ASSERTED.** Two shapes are deliberately NOT closed and are measured
+  as residuals in `StoredStreamProvenanceTest.theTwoResidualsThisRowDoesNotClose`, so closing either turns
+  that test red instead of quietly widening the claim: a field bound from a PARAM (the caller's concrete
+  stream — the pre-existing external-stream question, answered with `Unknown` today only where the stream
+  is an ARGUMENT to a stream-consuming utility, or is an entry point's own param), and a field holding a
+  FILTER constructed over an acquisition (`new InputStreamReader(sock.getInputStream())`). `close()` is
+  outside `isAbstractStreamIo` and so outside this fix.
+
+  **Teeth, revert-tested BY REVERTING** (`git stash` of `src/main`, suite re-run): 4 of the 7 rows in
+  `StoredStreamProvenanceTest` go RED — the socket read/write, the static field, the four-effect
+  acquisition sweep, and the branch-merged join. The other three pass in BOTH arms by construction and are
+  NOT claimed to discriminate the fix: the socket-option over-charge control, the two residuals, and the
+  §E2 row that MEASURES (rather than asserts) the one assumption in the new code — that every
+  `SELF_SOURCING_STREAMS` rule is whole-owner, so a synthetic `()V` probe can stand in for the real
+  constructor descriptor. The branch-merged row was RED against the first cut of this fix and is why the
+  origin rides on the VALUE at the `NEW` rather than being re-derived from `newType` at the store:
+  `newType` correctly collapses at a control-flow join, and a store-side re-derivation lost the `Fs` half
+  of `net ? sock.getInputStream() : new FileInputStream(f)` in silence.
+
+  The new index is a body-derived whole-program pre-pass output, so it is folded into
+  `Refresh.wholeProgramDigest` — R163's reflective guard over `AnalysisContext.inputNames()` requires
+  exactly that, and it is the reason this could not be forgotten.
+
 - **SOUNDNESS R155 — `AGENTS.md` never named the effect VOCABULARY.** Nine of the eleven SPEC §1
   effects had zero mentions in candor-java's agent contract, and the embedded `--agents` copy an agent
   actually reads had none either — including `Llm`, which the classifier has policed since ⟨0.13⟩. The

@@ -50,7 +50,7 @@ class AnalysisContextInputGrowthTest {
      */
     private static final List<String> EXPECTED_INPUTS = List.of(
             "crossDeps", "depFnsByOwner", "depFnsByOwnerName", "depOwnersBySigBuilt",
-            "suppressibleStreamFields", "unknownAliases", "vocabularySource", "netPartners",
+            "suppressibleStreamFields", "streamFieldSources", "unknownAliases", "vocabularySource", "netPartners",
             "netPartnersSource", "unanalyzed", "excluded", "archives", "sourceFiles", "classpathRoots",
             "scanRoot", "outOfScope", "scannedUnder", "peekedClasses", "projectClasses", "repoTypes",
             "entityTables", "repoTables", "feignTypes", "httpClientTypes", "ALL", "byName",

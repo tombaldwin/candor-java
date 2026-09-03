@@ -17,6 +17,7 @@ import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.MethodNode;
 
+import io.poly.candor.model.Effect;
 import io.poly.candor.model.EffectSet;
 import io.poly.candor.model.UnknownReason;
 
@@ -306,6 +307,17 @@ final class Refresh {
         return scratch.hex();
     }
 
+    /** SOUNDNESS R147's stream-field source index, rendered deterministically for the whole-program digest:
+     *  a sorted map of sorted effect sets, so the class/method/instruction walk order that BUILT it (which
+     *  {@code Files.walk} does not fix) cannot move the key and invalidate every cache. Same shape and same
+     *  reasoning as the {@code fieldlambdas} rendering below. */
+    private static String renderStreamFieldSources(Map<String, Set<Effect>> m) {
+        StringBuilder b = new StringBuilder();
+        for (var e : new TreeMap<>(m).entrySet())
+            b.append(e.getKey()).append('=').append(new TreeSet<>(e.getValue())).append(',');
+        return b.toString();
+    }
+
     /** Package-private, not private, so RefreshDepDigestTest can recompute it after mutating one
      *  shared input and require the key to MOVE. That test is the reason SOUNDNESS R151 cannot come
      *  back one field at a time; it cannot be written against a private method. */
@@ -336,6 +348,11 @@ final class Refresh {
         AnalysisContext c = AnalysisState.ctx();
         sb.append("prepass");
         sb.append(new TreeSet<>(c.suppressibleStreamFields)).append('\u0001')
+          // SOUNDNESS R147's `streamFieldSources` is the SECOND body-derived stream index (the first,
+          // `suppressibleStreamFields`, is the line above): it is computed by walking every method's PUTFIELD/
+          // PUTSTATIC instructions, so class A's cached delta depends on class B's BODY exactly as R163's
+          // `fieldLambdaBindings` does. Rendered as a sorted map of sorted sets so walk order cannot move it.
+          .append(renderStreamFieldSources(c.streamFieldSources)).append('\u0001')
           .append(new TreeSet<>(c.repoTypes)).append('\u0001')
           .append(new TreeMap<>(c.entityTables)).append('\u0001')
           .append(new TreeMap<>(c.repoTables)).append('\u0001')

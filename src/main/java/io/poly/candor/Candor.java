@@ -4727,8 +4727,10 @@ public class Candor {
     /** The effect a SELF-SOURCING concrete stream's construction is charged, or null. Restricted to
      *  {@link Rules#SELF_SOURCING_STREAMS} — ten enumerated types — precisely because the classification is
      *  asked with a synthetic `()V` descriptor: every rule that covers one of them is WHOLE-OWNER, so the
-     *  descriptor cannot change the answer, and {@code SecondSpellingFabricationTest} pins that rather than
-     *  asserting it in this sentence. */
+     *  descriptor cannot change the answer — and {@code
+     *  StoredStreamProvenanceTest#selfSourcingStreamRulesAreDescriptorIndependent} MEASURES that rather
+     *  than letting this sentence assert it: all ten types are asked with four constructor descriptors and
+     *  must give one answer, so a member whose rule ever becomes descriptor-gated fails there by name. */
     static Effect selfSourcingCtorEffect(String newTypeInternal) {
         if (newTypeInternal == null || !Rules.SELF_SOURCING_STREAMS.contains(newTypeInternal)) return null;
         return Classifier.classify(newTypeInternal.replace('/', '.'), "<init>", "()V");

@@ -1,6 +1,7 @@
 package io.poly.candor;
 
 import java.util.*;
+import io.poly.candor.model.Effect;
 import java.util.stream.*;
 import org.objectweb.asm.*;
 import org.objectweb.asm.tree.*;
@@ -133,25 +134,43 @@ final class Interp {
         // at a stream read, whether the field is bound only to in-scope concrete opens (VALUE-PROVENANCE-DESIGN.md
         // Phase 2). Only ever used to SUPPRESS a Phase-1 Unknown for a provably-concrete field — never to narrow.
         final String fieldOrigin;
+        // SOUNDNESS R147 — THE EFFECT OF THE ACQUISITION THAT PRODUCED THIS STREAM. Set only when this value
+        // is the RETURN of a call whose declared return type is one of the four abstract `java.io` stream
+        // bases AND which `Classifier.classify` already charges (`Socket.getInputStream` -> Net,
+        // `Process.getInputStream` -> Exec, `URLConnection.getInputStream` -> Net, …). It is the answer to
+        // "what does moving bytes through this handle actually touch", carried from the acquisition site to
+        // the PUTFIELD that stores it, so `Candor#computeStreamFieldSources` can key it by field and the
+        // later `in.read()` in another method charges the same effect instead of reading silent-pure.
+        // ALWAYS A UNION, never a single value: at a control-flow join the sound direction for a value used
+        // to CHARGE is to keep BOTH origins (unlike newType/declType/fieldOrigin above, which are used to
+        // NARROW and so collapse to null on disagreement). Empty set is normalised to null.
+        final Set<Effect> originEffects;
         ProvValue(BasicValue base, String newType) { this(base, newType, false, declTypeOf(base), null, null); }
         ProvValue(BasicValue base, String newType, boolean fromIndy) { this(base, newType, fromIndy, declTypeOf(base), null, null); }
         ProvValue(BasicValue base, String newType, boolean fromIndy, String declType) { this(base, newType, fromIndy, declType, null, null); }
         ProvValue(BasicValue base, String newType, boolean fromIndy, String declType, String lambdaTarget) { this(base, newType, fromIndy, declType, lambdaTarget, null); }
         ProvValue(BasicValue base, String newType, boolean fromIndy, String declType, String lambdaTarget, String fieldOrigin) {
+            this(base, newType, fromIndy, declType, lambdaTarget, fieldOrigin, null);
+        }
+        ProvValue(BasicValue base, String newType, boolean fromIndy, String declType, String lambdaTarget,
+                  String fieldOrigin, Set<Effect> originEffects) {
             this.base = base; this.newType = newType; this.fromIndy = fromIndy; this.declType = declType;
             this.lambdaTarget = lambdaTarget; this.fieldOrigin = fieldOrigin;
+            this.originEffects = (originEffects == null || originEffects.isEmpty()) ? null : originEffects;
         }
         public int getSize() { return base.getSize(); }
         public boolean equals(Object o) {
             return o instanceof ProvValue p && base.equals(p.base)
                     && Objects.equals(newType, p.newType) && fromIndy == p.fromIndy
                     && Objects.equals(declType, p.declType) && Objects.equals(lambdaTarget, p.lambdaTarget)
-                    && Objects.equals(fieldOrigin, p.fieldOrigin);
+                    && Objects.equals(fieldOrigin, p.fieldOrigin)
+                    && Objects.equals(originEffects, p.originEffects);
         }
         public int hashCode() {
-            return ((((base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode())) * 31 + (fromIndy ? 1 : 0))
+            return (((((base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode())) * 31 + (fromIndy ? 1 : 0))
                     * 31 + (declType == null ? 0 : declType.hashCode())) * 31 + (lambdaTarget == null ? 0 : lambdaTarget.hashCode()))
-                    * 31 + (fieldOrigin == null ? 0 : fieldOrigin.hashCode());
+                    * 31 + (fieldOrigin == null ? 0 : fieldOrigin.hashCode()))
+                    * 31 + (originEffects == null ? 0 : originEffects.hashCode());
         }
     }
 
@@ -215,7 +234,16 @@ final class Interp {
             // toString is effectful, fed to a sink). The NEW desc is both newType AND declType.
             if (insn.getOpcode() == Opcodes.NEW) {
                 String t = ((TypeInsnNode) insn).desc;
-                return wrap(bi.newOperation(insn), t, t);
+                // SOUNDNESS R147 — a SELF-SOURCING concrete stream (`new FileInputStream`) is an acquisition
+                // too, and its origin has to ride on the VALUE rather than be re-derived from `newType` at
+                // the store. Measured: `this.in = net ? sock.getInputStream() : new FileInputStream(f)`
+                // merges a newType-bearing value with a newType-less one, so `newType` COLLAPSES to null at
+                // the join (correct — it is a narrowing guarantee) and a store-side re-derivation loses the
+                // Fs half in silence. Carried here it unions with the socket's Net like any other origin.
+                Effect ce = selfSourcingCtorEffect(t);
+                BasicValue nb = bi.newOperation(insn);
+                return nb == null ? null
+                        : new ProvValue(nb, t, false, t, null, null, ce == null ? null : EnumSet.of(ce));
             }
             if (insn.getOpcode() == Opcodes.GETSTATIC) {
                 // ⟨0.35⟩ A static field's read is a field-origin carrier too, exactly like GETFIELD below —
@@ -251,6 +279,9 @@ final class Interp {
             if (insn.getOpcode() == Opcodes.CHECKCAST) {
                 String d = ((TypeInsnNode) insn).desc; // CHECKCAST desc is an internal name (or [..] array)
                 dt = (d != null && d.charAt(0) != '[' && !d.equals("java/lang/Object")) ? d : null;
+                // A CHECKCAST is the SAME value with a narrower static type — the acquisition it came from
+                // is unchanged, so R147's origin must survive it (`(InputStream) obj` after a socket get).
+                return b == null ? null : new ProvValue(b, null, false, dt, null, null, value.originEffects);
             }
             return wrap(b, null, dt);
         }
@@ -283,7 +314,8 @@ final class Interp {
             if (insn instanceof MethodInsnNode mi) dt = declFromDesc(Type.getReturnType(mi.desc).getDescriptor());
             // A lambda/method-ref creation: capture the PROJECT impl body so a closed sink can resolve it.
             String lt = indy && insn instanceof InvokeDynamicInsnNode idin ? indyLambdaTarget(idin) : null;
-            return new ProvValue(b, null, indy, dt, lt);
+            // SOUNDNESS R147 — carry the ACQUISITION's effect on a stream handed back by a classified call.
+            return new ProvValue(b, null, indy, dt, lt, null, acquisitionEffects(insn));
         }
         public void returnOperation(AbstractInsnNode insn, ProvValue value, ProvValue expected) {}
         public ProvValue merge(ProvValue a, ProvValue b) {
@@ -308,11 +340,64 @@ final class Interp {
             // (or field-vs-other-field) merge collapses to null, so the value-provenance suppression never
             // fires on a joined value that can be an external (non-field) operand (would be a silent under-report).
             String mfo = Objects.equals(a.fieldOrigin, b.fieldOrigin) ? a.fieldOrigin : null;
+            // SOUNDNESS R147 — originEffects UNIONS at a join, it does not collapse. It is used to CHARGE an
+            // effect on a later read of the stored handle, so dropping one arm's origin would silently lose
+            // the effect of the branch that acquired it (`in = c ? sock.getInputStream() : new
+            // FileInputStream(f)` must charge BOTH). Every other field here is used to NARROW, where the
+            // sound direction is the opposite one — collapse to null.
+            Set<Effect> moe = unionOrigins(a.originEffects, b.originEffects);
             if (mb.equals(a.base) && Objects.equals(mt, a.newType) && mi == a.fromIndy
                     && Objects.equals(mdt, a.declType) && Objects.equals(mlt, a.lambdaTarget)
-                    && Objects.equals(mfo, a.fieldOrigin)) return a;
-            return new ProvValue(mb, mt, mi, mdt, mlt, mfo);
+                    && Objects.equals(mfo, a.fieldOrigin) && Objects.equals(moe, a.originEffects)) return a;
+            return new ProvValue(mb, mt, mi, mdt, mlt, mfo, moe);
         }
+    }
+
+    /** SOUNDNESS R147 — the effect of a STREAM ACQUISITION, or null when this instruction is not one.
+     *
+     *  <p>An acquisition is a call whose DECLARED RETURN TYPE is one of the four abstract {@code java.io}
+     *  stream bases and which {@link Classifier#classify} already charges an effect for. That is the whole
+     *  test, and it is deliberately the classifier's own answer rather than a second table of socket
+     *  getters (§G — ask the authority, never reimplement it): whatever `Socket.getInputStream` /
+     *  `SSLSocket.getInputStream` / `URLConnection.getInputStream` / `Process.getInputStream` /
+     *  `ZipFile.getInputStream` are charged at their acquisition site is exactly what a later read through
+     *  the stored handle is charged, so the two answers cannot drift apart (§F1 q3).
+     *
+     *  <p>The RETURN-TYPE gate is what keeps this from firing on every classified call in the program: it
+     *  matches only the shape whose effect is otherwise lost — an effectful call that hands back an opaque
+     *  handle to be moved through later. A concrete return type (`FileInputStream`) needs nothing, because
+     *  the field then carries that type and the classifier fires on the read itself. */
+    static Set<Effect> acquisitionEffects(AbstractInsnNode insn) {
+        if (!(insn instanceof MethodInsnNode mi)) return null;
+        String ret;
+        try {
+            Type rt = Type.getReturnType(mi.desc);
+            if (rt.getSort() != Type.OBJECT) return null;   // void / primitive / array — never a stream handle
+            ret = rt.getInternalName();
+        } catch (Throwable t) { return null; }
+        if (ret == null || !isAbstractStreamType(ret)) return null;
+        Effect e = Classifier.classify(mi.owner.replace('/', '.'), mi.name, mi.desc);
+        return e == null ? null : EnumSet.of(e);
+    }
+
+    /** The four abstract {@code java.io} stream bases — the declared types a handle whose real source is
+     *  invisible to the classifier travels as. Kept beside {@link Candor#isStreamFieldDesc}, which names
+     *  the same four as FIELD descriptors. */
+    static boolean isAbstractStreamType(String internalName) {
+        return internalName.equals("java/io/InputStream") || internalName.equals("java/io/OutputStream")
+                || internalName.equals("java/io/Reader") || internalName.equals("java/io/Writer");
+    }
+
+    /** Union of two origin sets, normalising empty to null. Union — not intersection, not first-wins —
+     *  because this set CHARGES. */
+    static Set<Effect> unionOrigins(Set<Effect> a, Set<Effect> b) {
+        if (a == null) return b;
+        if (b == null) return a;
+        if (a.containsAll(b)) return a;
+        if (b.containsAll(a)) return b;
+        EnumSet<Effect> u = EnumSet.copyOf(a);
+        u.addAll(b);
+        return u;
     }
 
     /** The provable single `new T` receiver internal name of the call `min` in frame `f`, or null if the

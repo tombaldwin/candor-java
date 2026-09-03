@@ -42,6 +42,14 @@ final class AnalysisContext {
     // Unknown is suppressed. Computed once in a pre-pass; empty unless a field is provably all-concrete
     // (conservative: any doubt leaves it out, keeping the sound Phase-1 disclosure).
     Set<String> suppressibleStreamFields = new HashSet<>();
+    // SOUNDNESS R147 — VALUE-PROVENANCE, THE CHARGING DIRECTION. Stream fields (keyed by Cha#fieldKey, so
+    // `owner#name` names the DECLARING class) mapped to the effects of the acquisitions written into them:
+    // `this.in = sock.getInputStream()` puts `SockRead#in -> {Net}` here, and a later `in.read()` in ANY
+    // method of the program is charged Net instead of reading silent-pure. The mirror of
+    // `suppressibleStreamFields` above, which answers the same provenance question in the SUPPRESSING
+    // direction; this one over-approximates (a field with two acquisitions carries both effects) because a
+    // missing entry is a silent under-report and a spare one is a loud over-charge.
+    Map<String, Set<Effect>> streamFieldSources = new HashMap<>();
     // Provenance frames the Phase-2 pre-pass computed, handed to the main analyze pass so a stream-touching
     // method's ASM dataflow is not re-run (consume-once: provFrames removes on read). Bounded to the few
     // stream-relevant methods the pre-pass visits; freed as the main pass consumes each.
@@ -334,6 +342,7 @@ final class AnalysisContext {
         depFnsByOwnerName = master.depFnsByOwnerName;       depOwnersBySig = master.depOwnersBySig;
         depOwnersBySigBuilt = master.depOwnersBySigBuilt;   unknownAliases = master.unknownAliases;
         netPartners = master.netPartners;                   suppressibleStreamFields = master.suppressibleStreamFields;
+        streamFieldSources = master.streamFieldSources;
         provFramesCache = master.provFramesCache;           ALL = master.ALL;
         byName = master.byName;                             projectClasses = master.projectClasses;
         repoTypes = master.repoTypes;                       entityTables = master.entityTables;

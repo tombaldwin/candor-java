@@ -285,6 +285,7 @@ public class Candor {
                                                 // fieldLambdaBindings doc — it is a shared INPUT).
         computeSpringTypes(classes);
         computeStreamFieldOrigins(classes); // VALUE-PROVENANCE Phase 2: which stream fields are provably all-concrete
+        computeStreamFieldSources(classes); // SOUNDNESS R147: which stream fields hold an EFFECTFUL acquisition
         // Cross-jar inheritance (candor-spec §2): load dependency reports named by CANDOR_DEPS BEFORE
         // analyze, so a call into an already-analyzed dependency inherits its effects (vs assumed-pure).
         phase("subtype+spring+stream");
@@ -4410,6 +4411,7 @@ public class Candor {
         namedFunctionalToHof(ctx, s, min);
         xmlParseFilePrecision(ctx, s, min);
         entryAbstractStream(ctx, s, min, owner, effect);
+        storedStreamAcquisition(ctx, s, min);
         externalStreamUtility(ctx, s, min, owner, effect);
         contractReentry(s, min);
         deferredForce(ctx, s, min);
@@ -4623,6 +4625,111 @@ public class Candor {
                     .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
             return;
         }
+    }
+
+    /** SOUNDNESS R147 — SOCKET-STREAM (and every other stream's) PROVENANCE, THE CHARGING HALF.
+     *
+     *  <p>THE DEFECT. `this.in = sock.getInputStream()` charges Net where it is written; `in.read()` in
+     *  another method charges NOTHING, because the receiver's static type is the abstract `java.io.InputStream`
+     *  and the classifier has no rule for it. So the method that actually moves the bytes is reported pure.
+     *  MEASURED on httpcore 4.4.13 (R130's follow-up): `BHttpConnectionBase.fillInputBuffer` really reads the
+     *  socket through `SessionInputBufferImpl.fillBuffer` on a plain `java.io.InputStream` stored at bind time,
+     *  and `fillBuffer` is ABSENT from the report at `2dd1600`, at `d8e953c` and at `81f4ceb`. Until `81f4ceb`
+     *  the CALLER kept a Net that came ENTIRELY from the fabricated `get/setSoTimeout` pair — a correct verdict
+     *  produced by an incorrect mechanism — so removing that over-charge UNMASKED this, and `deny Net
+     *  SockRead.poll` went exit 1 -> 0 on an upgrade. Pre-existing, published, and not caused by the narrowing.
+     *
+     *  <p>THE FIX IS KEYED ON THE ACQUISITION, NOT ON THE SOCKET. The pass records, per stream FIELD, the
+     *  effects of what was written into it — {@link Interp#acquisitionEffects} asks {@code Classifier.classify}
+     *  what the producing call already charges — so `Socket`/`SSLSocket`/`URLConnection` (Net), `Process`
+     *  (Exec) and `ZipFile`/`FileSystemProvider` (Fs) all fall out of the one rule, and none of them can drift
+     *  from the classifier's own answer at the acquisition site. `new FileInputStream(f)` is covered by
+     *  {@link #selfSourcingCtorEffect}, attached to the value AT THE NEW rather than re-derived from
+     *  {@code newType} here — measured, not chosen: {@code newType} collapses to null at a control-flow
+     *  join (correctly, it is a narrowing guarantee), so a store-side re-derivation loses one branch's
+     *  origin in silence. {@code aBranchMergedAcquisitionChargesEveryOriginNotOne} is that measurement,
+     *  and it was RED against the first cut of this pass.
+     *
+     *  <p>WHY THE FOUR ABSTRACT BASES AND NOTHING ELSE. A field declared with a CONCRETE stream type needs no
+     *  pass at all — `FileInputStream in; in.read()` emits owner `java/io/FileInputStream` and the whole-owner
+     *  rule already fires (measured, both jars). The blind spot is exactly the abstract-typed handle, which is
+     *  the same four types {@link #isStreamFieldDesc} and {@link Interp#isAbstractStreamType} name.
+     *
+     *  <p><b>THE BOUNDARY, STATED RATHER THAN IMPLIED, AND WHAT IS LEFT OPEN.</b>
+     *  <ul>
+     *    <li>A field bound from a PARAM or any other value this pass cannot classify contributes NOTHING and
+     *        the read stays as it is today. That is the pre-existing external-stream question — Phase 1
+     *        ({@link #externalStreamUtility}) answers it with {@code Unknown} for the stream-consuming
+     *        UTILITIES only, and R17 ({@link #entryAbstractStream}) for an entry point's own param. Widening
+     *        it to every receiver read is a separate decision with its own flood risk; it is NOT closed here.
+     *    <li>A FILTER/WRAPPER construction (`this.r = new InputStreamReader(sock.getInputStream())`) is not
+     *        traced through the wrapper's constructor, so `r.read()` stays silent. Same residual as above and
+     *        deliberately not the same fix.
+     *    <li>The consuming verbs are exactly {@link #isAbstractStreamIo}'s — reused, not re-listed, so this
+     *        and R17 cannot answer "is this a stream read" two ways (§F1 q3). `close()` is outside that
+     *        predicate and so outside this fix.
+     *  </ul>
+     *
+     *  <p>KEY SPELLING. Both sides use {@link Cha#fieldKey}, which normalises to the DECLARING class — the
+     *  same normalisation {@code Interp.ProvInterpreter}'s GETFIELD/GETSTATIC read side already applies. The
+     *  neighbouring Phase-2 pass below keys on the RAW `fi.owner`, which for an inherited field can be the
+     *  subclass; that mismatch can only make it fail to SUPPRESS, which is its sound direction, so it is left
+     *  alone rather than changed under this row. Here a mismatch would fail to CHARGE, which is the sin. */
+    static void computeStreamFieldSources(List<ClassNode> classes) {
+        AnalysisContext ctx = ctx();
+        Set<String> streamFieldKeys = new HashSet<>();
+        for (ClassNode cn : classes) {
+            if (cn.fields == null) continue;
+            for (FieldNode fn : cn.fields)
+                if (isStreamFieldDesc(fn.desc)) streamFieldKeys.add(cn.name + "#" + fn.name);
+        }
+        if (streamFieldKeys.isEmpty()) return;
+        for (ClassNode cn : classes) {
+            for (MethodNode mn : cn.methods) {
+                Frame<ProvValue>[] pf = null;   // lazily, only for methods that store one of these fields
+                AbstractInsnNode[] insns = mn.instructions.toArray();
+                for (int i = 0; i < insns.length; i++) {
+                    if (!(insns[i] instanceof FieldInsnNode fi)) continue;
+                    int op = fi.getOpcode();
+                    if (op != Opcodes.PUTFIELD && op != Opcodes.PUTSTATIC) continue;
+                    String key = fieldKey(fi.owner, fi.name);
+                    if (!streamFieldKeys.contains(key)) continue;
+                    if (pf == null) pf = cachedProvFrames(cn, mn);
+                    ProvValue v = (pf != null && pf[i] != null && pf[i].getStackSize() > 0)
+                            ? pf[i].getStack(pf[i].getStackSize() - 1) : null;
+                    if (v == null) continue;
+                    if (v.originEffects == null) continue;
+                    ctx.streamFieldSources.computeIfAbsent(key, k -> EnumSet.noneOf(Effect.class))
+                            .addAll(v.originEffects);
+                }
+            }
+        }
+    }
+
+    /** The effect a SELF-SOURCING concrete stream's construction is charged, or null. Restricted to
+     *  {@link Rules#SELF_SOURCING_STREAMS} — ten enumerated types — precisely because the classification is
+     *  asked with a synthetic `()V` descriptor: every rule that covers one of them is WHOLE-OWNER, so the
+     *  descriptor cannot change the answer, and {@code SecondSpellingFabricationTest} pins that rather than
+     *  asserting it in this sentence. */
+    static Effect selfSourcingCtorEffect(String newTypeInternal) {
+        if (newTypeInternal == null || !Rules.SELF_SOURCING_STREAMS.contains(newTypeInternal)) return null;
+        return Classifier.classify(newTypeInternal.replace('/', '.'), "<init>", "()V");
+    }
+
+    /** SOUNDNESS R147 — charge the acquisition's effect on a read/write through a STORED stream handle.
+     *  Fires only where the classifier found nothing (an abstract `java.io` base has no rule), only on
+     *  {@link #isAbstractStreamIo}'s verbs, and only when the receiver is a GETFIELD/GETSTATIC of a field
+     *  {@link #computeStreamFieldSources} proved holds an effectful acquisition. */
+    static void storedStreamAcquisition(AnalysisContext ctx, MethodScan s, MethodInsnNode min) {
+        if (ctx.streamFieldSources.isEmpty()) return;
+        Frame<ProvValue>[] provFrames = s.provFrames;
+        if (provFrames == null) return;
+        if (!isAbstractStreamIo(min.owner, min.name)) return;
+        ProvValue recv = receiverProv(provFrames[s.mn.instructions.indexOf(min)], min);
+        if (recv == null || recv.fieldOrigin == null) return;
+        Set<Effect> src = ctx.streamFieldSources.get(recv.fieldOrigin);
+        if (src == null) return;
+        for (Effect e : src) s.dir.add(e);
     }
 
     /** VALUE-PROVENANCE Phase 2 pre-pass. Computes the set of instance stream fields ("owner#name") PROVEN

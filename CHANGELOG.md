@@ -72,6 +72,7 @@ after upgrading; review policies and regenerate baselines with the new build.
   that **no name is a prefix of another** — the 0.35.0 panel recorded a cell contaminated by scope
   prefix-matching, and a scoped policy here would inherit exactly that.
 
+  The in-code comment beside the fix names the test that proves it (`5dae0ca`, comment only).
 - **⚠ SOUNDNESS R147 — a read through a stream handle STORED IN A FIELD was silent; `deny Net` over a
   socket read went exit 1 → 0 on this upgrade until now.** `this.in = sock.getInputStream()` charges
   `Net` in the constructor; `in.read()` in another method charged NOTHING, because the receiver's static

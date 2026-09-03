@@ -8,6 +8,10 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **SOUNDNESS R148 — `soundness/dynamic/corpus.sh` now SELFSKIPs (exit 3) when a corpus entry cannot
+  be compiled (missing JDK feature, absent toolchain), instead of reaching `RESULT: CLEAN`, exit 0,
+  with that entry's oracle never having run. A genuine confirmed under-report still exits 1, unaffected.
+
 ## [0.35.0] — 2026-09-03
 
 - `jbang-catalog.json` points at the v0.35.0 shadow jar (moved after the release exists, so the

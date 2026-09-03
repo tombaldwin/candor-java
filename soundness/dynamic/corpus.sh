@@ -40,25 +40,54 @@ CANDOR_JAR="$(ls -1 "$HERE"/../../build/libs/candor-java-*-all.jar 2>/dev/null |
 
 # ---------------------------------------------------------------------------------------------
 # COMPILE STEP — build every source we need into per-program classes dirs under $WORK.
-# Editable: add a javac line for any new seed source. Self-tests are reused verbatim.
+# Editable: add a compile_one line for any new seed source. Self-tests are reused verbatim.
+#
+# R148: this used to be a bare sequence of `javac` calls whose exit codes were never read, so a
+# compile failure (e.g. AsyncNetFs.java's Thread.ofVirtual() needing Java 21+ on an older javac)
+# left its classes dir silently absent and `echo "== compiled =="` printed regardless. entry()'s
+# classpath-missing check then reported that program as "ERROR" but the run still finished
+# RESULT: CLEAN, exit 0 — a driver that never compiled read as a pass. compile_one() below reads
+# javac's own exit code and records WHY, so entry() can SELFSKIP loudly instead.
 # ---------------------------------------------------------------------------------------------
+PREREQ_MISSING_DIRS=()      # classes dirs whose compile_one call failed (R148)
+PREREQ_MISSING_REASONS=()   # parallel array: javac's own first error line for each
+
+# compile_one <target-dir> <source-file...> — javac one corpus program, recording a
+# PREREQ_MISSING_DIRS/PREREQ_MISSING_REASONS entry (keyed by target dir) on failure instead of
+# leaving the dir silently missing for entry()'s classpath check to discover unexplained.
+compile_one() {
+  local dir="$1"; shift
+  local out rc first_err
+  out="$(javac -d "$dir" "$@" 2>&1)"; rc=$?
+  [ -n "$out" ] && echo "$out" | sed 's/^/    /'
+  if [ "$rc" -ne 0 ]; then
+    first_err="$(printf '%s\n' "$out" | grep -m1 'error:')"
+    [ -z "$first_err" ] && first_err="$(printf '%s\n' "$out" | head -1)"
+    [ -z "$first_err" ] && first_err="(javac exited $rc with no output)"
+    PREREQ_MISSING_DIRS+=("$dir")
+    PREREQ_MISSING_REASONS+=("javac exit $rc: $first_err")
+  fi
+}
+
 compile_all() {
   rm -rf "$WORK"
   mkdir -p "$WORK"
+  PREREQ_MISSING_DIRS=()
+  PREREQ_MISSING_REASONS=()
 
   echo "== compiling corpus programs into $WORK =="
 
   # Existing self-tests (reused as corpus entries).
-  javac -d "$WORK/selftest"       "$SELFTEST_DIR/SelfTest.java"
-  javac -d "$WORK/agentselftest"  "$AGENT_SELFTEST_DIR/AgentSelfTest.java" "$AGENT_SELFTEST_DIR/StubDriver.java"
+  compile_one "$WORK/selftest"       "$SELFTEST_DIR/SelfTest.java"
+  compile_one "$WORK/agentselftest"  "$AGENT_SELFTEST_DIR/AgentSelfTest.java" "$AGENT_SELFTEST_DIR/StubDriver.java"
 
   # New seed programs (package corpus.*). Each compiled to its OWN classes dir so candor's static
   # report and the runtime cp are scoped to exactly that program.
-  javac -d "$WORK/hofio"          "$CORPUS_SRC/HofIo.java"
-  javac -d "$WORK/strategy"       "$CORPUS_SRC/Strategy.java"
-  javac -d "$WORK/absreader"      "$CORPUS_SRC/AbstractReaderParse.java"
-  javac -d "$WORK/asyncnetfs"     "$CORPUS_SRC/AsyncNetFs.java"
-  javac -d "$WORK/asyncexec"      "$CORPUS_SRC/AsyncExec.java"
+  compile_one "$WORK/hofio"          "$CORPUS_SRC/HofIo.java"
+  compile_one "$WORK/strategy"       "$CORPUS_SRC/Strategy.java"
+  compile_one "$WORK/absreader"      "$CORPUS_SRC/AbstractReaderParse.java"
+  compile_one "$WORK/asyncnetfs"     "$CORPUS_SRC/AsyncNetFs.java"
+  compile_one "$WORK/asyncexec"      "$CORPUS_SRC/AsyncExec.java"
 
   echo "== compiled =="
 }
@@ -100,6 +129,7 @@ TOTAL_ENTRIES=0
 TOTAL_UNDERREPORTS=0
 declare -a SUMMARY_LINES=()     # "label: STATUS detail"
 declare -a GAP_LINES=()         # confirmed under-report lines (program-attributed)
+declare -a SKIPPED_ENTRIES=()   # "label (reason)" — entries whose classpath never compiled (R148 SELFSKIP)
 
 # Run one oracle, capture output, count UNDER-REPORT lines, append them (prefixed by label) to GAP_LINES.
 # Echoes the oracle output live. Returns the number of under-reports it found via the global LAST_GAPS.
@@ -133,8 +163,19 @@ entry() {
   echo "============================================================"
 
   if [ ! -e "$cp" ]; then
-    SUMMARY_LINES+=("$label: ERROR (classpath missing: $cp)")
-    echo "  ERROR: classpath does not exist: $cp"
+    # R148: this used to be SUMMARY_LINES+=("$label: ERROR ...") and `return` — the entry never
+    # touched TOTAL_UNDERREPORTS, so a run where every OTHER entry compiled still reached
+    # `RESULT: CLEAN`, exit 0, with this driver never having run at all. A missing classpath here
+    # means compile_one() above could not build this program — a missing prerequisite, not a
+    # soundness finding — so it must SELFSKIP the whole run, loudly, never read as clean.
+    local reason="" i
+    for i in "${!PREREQ_MISSING_DIRS[@]}"; do
+      if [ "${PREREQ_MISSING_DIRS[$i]}" = "$cp" ]; then reason="${PREREQ_MISSING_REASONS[$i]}"; break; fi
+    done
+    [ -z "$reason" ] && reason="classpath missing: $cp (compile_one recorded no reason)"
+    SKIPPED_ENTRIES+=("$label ($reason)")
+    SUMMARY_LINES+=("$label: SELFSKIP ($reason)")
+    echo "  SELFSKIP: prerequisite missing — $reason"
     return
   fi
 
@@ -229,6 +270,8 @@ main() {
     echo "  expected/accepted (documented gaps, not regressions):"
     for g in "${expected[@]}"; do echo "    ~ $g"; done
   fi
+  # A genuine soundness finding always wins the verdict: it is the one thing this harness exists to
+  # surface, and it must FAIL (non-zero, and never 3) even if some other entry was also skipped below.
   if [ "${#new_gaps[@]}" -gt 0 ]; then
     echo "  NEW model-gap under-report(s):"
     for g in "${new_gaps[@]}"; do echo "    - $g"; done
@@ -236,6 +279,19 @@ main() {
     echo "RESULT: ${#new_gaps[@]} NEW under-report(s) — candor model-gap regression(s). Exit 1."
     exit 1
   fi
+
+  # R148: a corpus entry that never compiled (missing JDK feature, absent toolchain, ...) never ran,
+  # so it never had the chance to be clean either. SELFSKIP loudly — exit 3, the family convention
+  # (bin/gate-run.sh classifies rc==3 as SELFSKIP) — naming what was missing, rather than folding
+  # silently into RESULT: CLEAN.
+  if [ "${#SKIPPED_ENTRIES[@]}" -gt 0 ]; then
+    echo "  entries SKIPPED (prerequisite missing, never analysed) ... ${#SKIPPED_ENTRIES[@]}"
+    for s in "${SKIPPED_ENTRIES[@]}"; do echo "    ! $s"; done
+    echo
+    echo "RESULT: SELFSKIP — ${#SKIPPED_ENTRIES[@]} corpus entr$( [ "${#SKIPPED_ENTRIES[@]}" -eq 1 ] && echo y || echo ies) could not be analysed (prerequisite missing): ${SKIPPED_ENTRIES[*]} — skipping."
+    exit 3
+  fi
+
   echo
   echo "RESULT: CLEAN — no NEW model gaps (every observed effect statically predicted, or an accepted gap)."
   exit 0

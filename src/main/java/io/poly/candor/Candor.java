@@ -4464,10 +4464,28 @@ public class Candor {
         if ((isExecutorHandoff(min.owner, min.name, min.desc)
                 || isSyncCallbackInvoker(min.owner, min.name, min.desc)) && provFrames != null) {
             ProvValue task = handoffTaskArg(provFrames[mn.instructions.indexOf(min)], min);
-            if (task != null && !task.fromIndy && task.newType == null) {
+            // SOUNDNESS R179 — `fromIndy` SUPPRESSES THIS DISCLOSURE ON A PREMISE THAT IS NOT ALWAYS TRUE.
+            // The premise, stated in `fromIndy`'s own doc, is "its body is edged at creation". For a
+            // reference to a FUNCTIONAL INTERFACE'S OWN SAM — `ifPresent(Runnable::run)`,
+            // `forEach(Runnable::run)`, `submit(task::run)` — nothing is edged at creation: the handle names
+            // an ABSTRACT method, `handleInvokeDynamic`'s project branch never runs (the owner is
+            // `java/lang/Runnable`), and its external branch finds nothing to classify or inherit. The body
+            // that really runs belongs to whatever receiver the HOF supplies — here the opaque field the
+            // chain was built from. So the site got neither an edge nor an Unknown: SILENT, while the
+            // LAMBDA spelling of the same call (`ifPresent(r -> r.run())`) discloses
+            // `callback:java.lang.Runnable.run` through its synthetic body. PUBLISHED cardinal sin
+            // (0.34.0 and the 0.35.0 candidate both), ground truth executed — all four spellings really
+            // write the file. This restores PARITY between the two spellings; it does not widen the
+            // invoker tables, so a HOF neither table names (`Stream.map`) is unchanged in BOTH spellings.
+            boolean bodilessRef = task != null && task.samForwarder != null;
+            if (task != null && task.newType == null && (!task.fromIndy || bodilessRef)) {
                 dir.add(Effect.UNKNOWN);
                 ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
-                        .add(UnknownReason.of(UnknownReason.Kind.TASK_HANDOFF, owner + "." + min.name));
+                        .add(bodilessRef
+                                // The SAME reason the lambda spelling produces, so the two are not merely
+                                // both non-silent but byte-identical in the report's disclosure channel.
+                                ? UnknownReason.of(UnknownReason.Kind.CALLBACK, task.samForwarder)
+                                : UnknownReason.of(UnknownReason.Kind.TASK_HANDOFF, owner + "." + min.name));
             }
             // `es.submit(new lib.Task())` — the Unknown above is correctly suppressed for a `new T`, since
             // the NEW-site edge attributes T's run()/call(). But that edge is project-only: when T belongs
@@ -6602,6 +6620,43 @@ public class Candor {
             if (a instanceof Handle h && h.getTag() >= Opcodes.H_INVOKEVIRTUAL && ctx().projectClasses.contains(h.getOwner())
                     && handleTargetConcrete(h))
                 return methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc());
+        return null;
+    }
+
+    /** SOUNDNESS R179 — the {@code owner.name} of the SAM a method reference merely FORWARDS to, or null.
+     *
+     *  <p>A {@code LambdaMetafactory} indy whose implementation handle names <b>the single abstract method
+     *  of a functional interface</b> — {@code Runnable::run}, {@code task::run},
+     *  {@code Consumer::accept} — creates a function value that CONTAINS NO BODY. Bound or unbound makes no
+     *  difference: either way the constant-pool target is an abstract declaration, so the method actually
+     *  executed is decided by the receiver at call time, not at this creation site. That is precisely the
+     *  case {@code ProvValue#fromIndy} was suppressing the opaque-hand-off {@code Unknown} for.
+     *
+     *  <p><b>Why the SAM table and not "is the target abstract".</b> {@link #handleTargetConcrete} fails
+     *  CLOSED for every non-project owner — it can only read {@code ACC_ABSTRACT} off a LOADED project
+     *  class — so using it here would call {@code CharSequence::length} and {@code System.out::println}
+     *  bodiless too and disclose {@code Unknown} over provably pure code. {@link #SAM_OF} is the engine's
+     *  existing authority for "this interface method is the abstract SAM a hand-off invokes" (§G), and it
+     *  is exactly the set where the forwarding shape is expressible; a concrete JDK method reference is not
+     *  in it and is untouched.
+     *
+     *  <p>PROJECT owners are excluded because {@code handleInvokeDynamic}'s project branch already resolves
+     *  them — it CHA-fans an unbound abstract project method-ref over the loaded implementors, and
+     *  discloses {@code Unknown} itself when that fan-out is broad. Disclosing here as well would double-
+     *  count a question already answered, in the over-charging direction.
+     *
+     *  <p>An interface NOT in {@code SAM_OF} yields null and the pre-existing behaviour stands — a sound
+     *  under-report of the same shape, not a new one, and the reason this is a DENYLIST-shaped widening
+     *  rather than a claim of completeness. */
+    static String samForwarderTarget(InvokeDynamicInsnNode idin) {
+        if (idin.bsm == null || !idin.bsm.getOwner().equals("java/lang/invoke/LambdaMetafactory")) return null;
+        for (Object a : idin.bsmArgs) {
+            if (!(a instanceof Handle h) || h.getTag() < Opcodes.H_INVOKEVIRTUAL) continue;
+            if (ctx().projectClasses.contains(h.getOwner())) continue;
+            String sam = SAM_OF.get(h.getOwner());
+            if (sam != null && sam.equals(h.getName()))
+                return h.getOwner().replace('/', '.') + "." + h.getName();
+        }
         return null;
     }
 

@@ -145,6 +145,15 @@ final class Interp {
         // to CHARGE is to keep BOTH origins (unlike newType/declType/fieldOrigin above, which are used to
         // NARROW and so collapse to null on disagreement). Empty set is normalised to null.
         final Set<Effect> originEffects;
+        // SOUNDNESS R179 — WHEN `fromIndy` IS TRUE AND ITS PREMISE IS FALSE. `fromIndy`'s whole job is to
+        // suppress the opaque-hand-off `Unknown`, on the stated ground that "the body is edged at
+        // creation". For a method reference to a FUNCTIONAL INTERFACE'S OWN SAM — `Runnable::run`,
+        // `task::run` — that ground does not exist: the handle names an ABSTRACT method, so the creation
+        // site edges nothing, and the body actually invoked belongs to whatever receiver the higher-order
+        // function supplies at call time. This field holds `owner.name` of that SAM (else null), so the
+        // hand-off site can disclose exactly what the LAMBDA spelling of the same call already discloses —
+        // `callback:java.lang.Runnable.run` — instead of reading silent-pure.
+        final String samForwarder;
         ProvValue(BasicValue base, String newType) { this(base, newType, false, declTypeOf(base), null, null); }
         ProvValue(BasicValue base, String newType, boolean fromIndy) { this(base, newType, fromIndy, declTypeOf(base), null, null); }
         ProvValue(BasicValue base, String newType, boolean fromIndy, String declType) { this(base, newType, fromIndy, declType, null, null); }
@@ -154,9 +163,14 @@ final class Interp {
         }
         ProvValue(BasicValue base, String newType, boolean fromIndy, String declType, String lambdaTarget,
                   String fieldOrigin, Set<Effect> originEffects) {
+            this(base, newType, fromIndy, declType, lambdaTarget, fieldOrigin, originEffects, null);
+        }
+        ProvValue(BasicValue base, String newType, boolean fromIndy, String declType, String lambdaTarget,
+                  String fieldOrigin, Set<Effect> originEffects, String samForwarder) {
             this.base = base; this.newType = newType; this.fromIndy = fromIndy; this.declType = declType;
             this.lambdaTarget = lambdaTarget; this.fieldOrigin = fieldOrigin;
             this.originEffects = (originEffects == null || originEffects.isEmpty()) ? null : originEffects;
+            this.samForwarder = samForwarder;
         }
         public int getSize() { return base.getSize(); }
         public boolean equals(Object o) {
@@ -164,13 +178,15 @@ final class Interp {
                     && Objects.equals(newType, p.newType) && fromIndy == p.fromIndy
                     && Objects.equals(declType, p.declType) && Objects.equals(lambdaTarget, p.lambdaTarget)
                     && Objects.equals(fieldOrigin, p.fieldOrigin)
-                    && Objects.equals(originEffects, p.originEffects);
+                    && Objects.equals(originEffects, p.originEffects)
+                    && Objects.equals(samForwarder, p.samForwarder);
         }
         public int hashCode() {
-            return (((((base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode())) * 31 + (fromIndy ? 1 : 0))
+            return ((((((base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode())) * 31 + (fromIndy ? 1 : 0))
                     * 31 + (declType == null ? 0 : declType.hashCode())) * 31 + (lambdaTarget == null ? 0 : lambdaTarget.hashCode()))
                     * 31 + (fieldOrigin == null ? 0 : fieldOrigin.hashCode()))
-                    * 31 + (originEffects == null ? 0 : originEffects.hashCode());
+                    * 31 + (originEffects == null ? 0 : originEffects.hashCode()))
+                    * 31 + (samForwarder == null ? 0 : samForwarder.hashCode());
         }
     }
 
@@ -281,7 +297,8 @@ final class Interp {
                 dt = (d != null && d.charAt(0) != '[' && !d.equals("java/lang/Object")) ? d : null;
                 // A CHECKCAST is the SAME value with a narrower static type — the acquisition it came from
                 // is unchanged, so R147's origin must survive it (`(InputStream) obj` after a socket get).
-                return b == null ? null : new ProvValue(b, null, false, dt, null, null, value.originEffects);
+                return b == null ? null : new ProvValue(b, null, false, dt, null, null, value.originEffects,
+                        value.samForwarder);
             }
             return wrap(b, null, dt);
         }
@@ -315,7 +332,9 @@ final class Interp {
             // A lambda/method-ref creation: capture the PROJECT impl body so a closed sink can resolve it.
             String lt = indy && insn instanceof InvokeDynamicInsnNode idin ? indyLambdaTarget(idin) : null;
             // SOUNDNESS R147 — carry the ACQUISITION's effect on a stream handed back by a classified call.
-            return new ProvValue(b, null, indy, dt, lt, null, acquisitionEffects(insn));
+            // SOUNDNESS R179 — and, for an indy, whether it merely FORWARDS to a bodiless SAM.
+            String sf = indy && insn instanceof InvokeDynamicInsnNode idin2 ? samForwarderTarget(idin2) : null;
+            return new ProvValue(b, null, indy, dt, lt, null, acquisitionEffects(insn), sf);
         }
         public void returnOperation(AbstractInsnNode insn, ProvValue value, ProvValue expected) {}
         public ProvValue merge(ProvValue a, ProvValue b) {
@@ -346,10 +365,18 @@ final class Interp {
             // FileInputStream(f)` must charge BOTH). Every other field here is used to NARROW, where the
             // sound direction is the opposite one — collapse to null.
             Set<Effect> moe = unionOrigins(a.originEffects, b.originEffects);
+            // SOUNDNESS R179 — samForwarder SURVIVES a join whenever EITHER path carries one, for the same
+            // reason as originEffects: it is used to DISCLOSE, so losing it on one arm is the silent
+            // direction. Ties are broken lexicographically only so the choice of REASON STRING is
+            // deterministic across runs — whether the disclosure fires does not depend on which is picked.
+            String msf = a.samForwarder == null ? b.samForwarder
+                    : b.samForwarder == null ? a.samForwarder
+                    : (a.samForwarder.compareTo(b.samForwarder) <= 0 ? a.samForwarder : b.samForwarder);
             if (mb.equals(a.base) && Objects.equals(mt, a.newType) && mi == a.fromIndy
                     && Objects.equals(mdt, a.declType) && Objects.equals(mlt, a.lambdaTarget)
-                    && Objects.equals(mfo, a.fieldOrigin) && Objects.equals(moe, a.originEffects)) return a;
-            return new ProvValue(mb, mt, mi, mdt, mlt, mfo, moe);
+                    && Objects.equals(mfo, a.fieldOrigin) && Objects.equals(moe, a.originEffects)
+                    && Objects.equals(msf, a.samForwarder)) return a;
+            return new ProvValue(mb, mt, mi, mdt, mlt, mfo, moe, msf);
         }
     }
 

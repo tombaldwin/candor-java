@@ -446,6 +446,101 @@ after upgrading; review policies and regenerate baselines with the new build.
   `getSocketOutputStream`, `close`, `shutdown` and `ensureOpen` all still read `Net`. Filed as its own
   question rather than answered by keeping a known fabrication as accidental coverage.
 
+- **⚠ SPEC ⟨0.35⟩ §4 / conformance PART 87 — A NON-EMPTY CANDIDATE SET IS NOT A COMPLETE ONE, part 1
+  of 3 (`a294b86`).** A lambda stored in a field and invoked later was attributed to NOTHING the moment
+  the functional interface had any declared implementor. Measured on the PUBLISHED 0.34.0 jar, one
+  variable: with zero implementors `App.go` reads `Unknown, unresolved:true,
+  callback:java.lang.Runnable.run`; **add ONE pure unrelated `class Repaint implements Runnable` and
+  change nothing else, and `App.go` VANISHES from `functions[]` — `deny Unknown` exit 1 → 0.** The engine
+  parsed the metafactory (it named the target interface in its own `callback:` detail) and analysed the
+  lambda body as its own unit; it simply never registered that body as an implementor. Fixed by
+  COMPLETING the candidate set — SPEC ⟨0.35⟩ was written as a disjunction precisely so that the effects
+  may flow rather than be hedged, and binding it to `unresolved:true` alone would have outlawed this fix.
+  Published-jar A/B on the engine's own 1,636-function corpus: ADDED 0, REMOVED 0, CHANGED 0 — zero blast
+  radius, because this source does not contain the shape; the over-charge control (a PURE lambda through
+  the identical shape) gains no `Fs`.
+
+- **⚠ PART 87 was HALF-CLOSED: the STATIC and INHERITED field shapes (`5fa3417`).** Two ordinary Java
+  spellings of the identical property were still live, both reproducing on published 0.34.0 (they predate
+  `a294b86`, so this is not a regression). **Static fields**: `private static Runnable task` — `GETSTATIC`
+  was never tagged with `fieldOrigin`, only `GETFIELD` was, and the pass's own doc called that *"inert,
+  not wrong"*; measurement said otherwise (`Widget.fire` ABSENT, `deny Unknown` 1 → 0). **Inherited
+  fields**: `Base.install`'s `PUTFIELD` names `owner=Base` while `Sub.fire`'s `GETFIELD` of the same
+  storage names `owner=Sub` (confirmed with `javap -v`), so the write key and the read's `fieldOrigin`
+  never matched and the lookup fell through to the unfixed CHA path (`deny Fs Sub.fire` 1 → 0). Fixed
+  with `Cha.fieldKey`, which normalises a field access to its DECLARING class through the same
+  resolution-order walk CHA already trusts for methods — one mechanism, not a second hand-rolled walk —
+  after an enumeration of nine field-access spellings, each with its own revert-tested fixture. A/B over
+  325 real third-party jars vs the published jar: ADDED 2, REMOVED 66, CHANGED 318. **Also closed, and
+  also measured rather than assumed:** the pre-existing OVER-CHARGE this vein produces when a field falls
+  through to CHA beside exactly one unrelated effectful implementor (a false `deny Fs` on a provably-pure
+  lambda, on the published jar too) — closed for a CLEAN write-set, and explicitly **NOT** closed for a
+  tainted one, which is recorded in `BACKLOG.md` rather than left standing as a fixed claim. So is the
+  larger gap that field provenance does not survive a call through a GETTER at all.
+
+- **⚠ PART 87, part 3: the binding pass read CONTROL FLOW as LINEAR ADJACENCY (`8599ec0`).** The
+  field-lambda pass decided whether a `PUTFIELD`/`PUTSTATIC`'s write-set was a clean project lambda by
+  inspecting only the single bytecode instruction physically preceding the store. That is a linear check
+  answering a dataflow question. `this.x = supplied != null ? supplied : defaultLambda;` — the
+  default-or-caller-supplied-callback idiom, shipped by the AWS S3 SDK, HttpCore5, Spring Data Redis and
+  Netflix Eureka — compiles to ONE `putfield` fed by TWO merging predecessors, and javac places the
+  default arm adjacent, so **an arbitrary caller-supplied callback was recorded as if it could only ever
+  be the safe default**: the exact inverse of that method's own documented taint contract. Fixed by
+  reusing the engine's existing whole-method dataflow (`Interp.ProvInterpreter` via
+  `Candor.cachedProvFrames`), whose `merge` already collapses `lambdaTarget` to null the moment two
+  incoming paths disagree — correct and free, since the stream-origin pre-pass shares the same per-method
+  memo. 325-jar A/B: of the 386 rows `a294b86`+`5fa3417` had moved off the published value, **42 revert
+  exactly to it and 344 stay exactly where they were; zero landed on a third value.**
+
+- **⚠ SOUNDNESS R84 — an ABSTRACT method reference was accepted as a clean lambda body (`a1bbd92`).**
+  A CARDINAL SIN introduced by `a294b86` and untouched by both `5fa3417` and `8599ec0`, **caught and
+  fixed inside this release, so no published artifact carries it.** `indyLambdaTarget` called a
+  `LambdaMetafactory` handle a recognisable project lambda whenever its owner was a project class and its
+  tag was `>= H_INVOKEVIRTUAL`, without checking the target was CONCRETE — so `this.op = Shape::render`
+  where `Shape.render` has no body bound the field to a phantom method id with zero instructions, and the
+  real implementor's effect never reached the caller. Where published 0.34.0 disclosed `Unknown`, the
+  intermediate build read certified pure. Fixed by `handleTargetConcrete(Handle)`, which enumerates all
+  six MethodHandle kinds — the three that can never be abstract are accepted unconditionally, the two
+  that can are walked through `Cha.resolutionOrder` and their `ACC_ABSTRACT` bit read, and an
+  unresolvable declaration FAILS CLOSED. "interface" is deliberately not used as a proxy for "abstract":
+  a default method is concrete and must still bind, and it has its own control. `deny Unknown` and
+  `deny Fs Unknown Main.main` both restored 0 → 1; `deny Fs` 1 → 1 and the pre-existing scoped gap
+  `deny Fs Main.main` 0 → 0 untouched. 325-jar A/B isolated by rebuilding a pre-R84 jar: ADDED 3,
+  REMOVED 0, CHANGED 93, all in the disclosure direction; the two rows that lost a label were
+  ground-truthed from `javap`.
+
+- **⚠ SOUNDNESS R86 — every backward literal walker captured the WRONG ternary branch (`1abc71d`,
+  regression teeth in `2dd1600`).** Each instruction-window walker in `Literals.java` bounded its walk at
+  a call/jump/NEW/store but never at a control-flow JOIN, so a ternary or switch-expression feeding a
+  literal into a call argument had whichever branch sat physically adjacent captured. **That is a
+  POSITIVE claim about the wrong destination, not an omission**:
+  `new Socket(cond ? "danger.example.net" : "safe-partner.example.com", 443)` with
+  `net-partner safe-partner.example.com` configured reported ONLY the safe partner, and
+  `deny Net[unknown-host]` exited 0. Fixed with `Literals.joinLabels(mn)` — computed once per method —
+  so a merged literal becomes "no literal captured" and takes the existing fail-closed/`incomplete` path
+  rather than one chosen by bytecode order. Measured: the repro now reports no hosts and
+  `incomplete:["Net"]`, and both `deny Net[unknown-host]` and `deny Net` exit 1; switch-expression was
+  confirmed vulnerable pre-fix in BOTH branch orders and fixed in both. Try/catch-via-local and
+  loop-carried reassignment were BUILT and measured **already safe** through an unrelated pre-existing
+  ambiguity check — the brief's inference that they shared the vulnerable path was wrong, and saying so
+  is the point. Every consumer inherits the fix: `Net` host, `Fs` path, `Exec` program head, `Db` tables,
+  and the reflection method-name and receiver class.
+
+- **⚠ SOUNDNESS R87 — an entry-point marker without an explicit `@Retention(RUNTIME)` was never seen
+  (`1abc71d`).** `Candor.markEntryPoints` matched `Rules.ROOT_ANNOTATIONS` against
+  `mn.visibleAnnotations` ONLY. Java's DEFAULT retention is `CLASS`, so a custom lifecycle / scheduler /
+  container marker declared without an explicit `@Retention(RUNTIME)` lands in `invisibleAnnotations` and
+  was never read. Measured with retention as the only variable: `CLASS` → `entryPoint:false` and
+  `candor reachable` answers **0 entry points over a method that genuinely writes a file**; `RUNTIME` →
+  correct. `impact` shares the same filter and moved identically (0 downstream entry points pre-fix, 1
+  post-fix). **`--policy` scan gates were confirmed UNAFFECTED** — a direct-effect `deny` fires regardless
+  of entry-point status — so the ⚠ here is about the `entryPoint` REPORT field and the query verbs that
+  read it, not about a gate flip. Fixed with `anyDeclAnnoMatches(visible, invisible, markers)`, which is
+  the pattern `anyParamAnnoMatches` was already using one level down (the CDI `@Observes` path always
+  checked both lists): two independent implementations of one question that had already drifted, now one
+  authority (§F1 q3). Controls measured in all three directions: `CLASS` → now true; `RUNTIME` → still
+  true; no marker at all → still false, 0 entry points, no fabrication.
+
 ## [0.34.0] — 2026-08-31
 
 - **`jbang-catalog.json` → v0.34.0.** jbang pulls the shadow jar from the release download

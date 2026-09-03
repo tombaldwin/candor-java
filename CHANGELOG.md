@@ -10,6 +10,9 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.35.0] — 2026-09-03
 
+- `jbang-catalog.json` points at the v0.35.0 shadow jar (moved after the release exists, so the
+  URL it names resolves).
+
 - **⚠ SOUNDNESS R179 — a method reference to a functional interface's own SAM, handed to a higher-order
   function, read SILENT-PURE.** `Optional.ofNullable(task).ifPresent(Runnable::run)`,
   `Stream.of(task).forEach(Runnable::run)`, `queue.forEach(Runnable::run)`, `es.submit(task::run)` and

@@ -10,6 +10,68 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.35.0] — 2026-09-03
 
+- **⚠ SOUNDNESS R179 — a method reference to a functional interface's own SAM, handed to a higher-order
+  function, read SILENT-PURE.** `Optional.ofNullable(task).ifPresent(Runnable::run)`,
+  `Stream.of(task).forEach(Runnable::run)`, `queue.forEach(Runnable::run)`, `es.submit(task::run)` and
+  `new Thread(task::run)` were ABSENT from the report — while the LAMBDA spelling of the same call,
+  `ifPresent(r -> r.run())`, discloses `Unknown` with `callback:java.lang.Runnable.run`. One variable: the
+  spelling. **PUBLISHED** — identical on 0.34.0 and on the 0.35.0 candidate. Ground truth EXECUTED: every
+  spelling really writes the file. `deny Unknown app.Widget.viaOptional` / `viaStream` / `viaList` all go
+  **exit 0 → 1**; the lambda control was already 1 on all three arms, and blanket `deny Unknown` was 1 on
+  all three (it passes only INCIDENTALLY, via another method).
+
+  **The mechanism is a comment asserting its own correctness.** `ProvValue.fromIndy` suppresses
+  `Candor.opaqueTaskHandoff`'s `Unknown` on the stated ground that a lambda's *"body is edged at
+  creation"*. For a reference to a functional interface's own SAM that ground does not exist: the
+  `LambdaMetafactory` handle names an ABSTRACT method (`REF_invokeInterface java/lang/Runnable.run:()V`),
+  so `handleInvokeDynamic`'s project branch never runs — the owner is `java/lang/Runnable`, not a project
+  class — and its external branch finds nothing to classify or inherit. The body that really runs belongs
+  to whatever receiver the HOF supplies. The site got neither an edge nor an Unknown. **Not R84**: that is
+  the same false premise one site over (`indyLambdaTarget` accepting an abstract PROJECT method-ref for a
+  FIELD-BOUND dispatch); it fixed the project branch and left this suppression untouched — §F1 q3 crossed
+  with q2.
+
+  **Keyed on the SAM table, not on "is the target abstract", and that choice is a control rather than a
+  preference.** `handleTargetConcrete` fails CLOSED for every non-project owner (it can only read
+  `ACC_ABSTRACT` off a loaded project class), so reusing it here would call `System.out::println` bodiless
+  too and disclose `Unknown` over provably pure code. `Candor.SAM_OF` — the engine's existing authority for
+  "this interface method is the abstract SAM a hand-off invokes" — is asked instead, and
+  `aConcreteJdkMethodReferenceIsStillPure` is the row that would have caught the wrong fix.
+
+  **Found in real code by the corpus A/B, not by enumeration.** spring-web 5.3.39's
+  `StandardServletAsyncWebRequest.onTimeout` and `.onComplete` are literally
+  `this.timeoutHandlers.forEach(Runnable::run)` — confirmed from the class file's own `BootstrapMethods`
+  table, not from candor's report — and **both are ENTRY POINTS** (servlet `AsyncListener` callbacks), so
+  a user's registered timeout handler ran through a method certified pure.
+
+  **A/B over the same 395 gradle-cache jars, isolated from R147 by A/B-ing against a jar built with R147
+  and nothing else, 577,790 common rows: ADDED 46, REMOVED 0, CHANGED(wide) 9, CHANGED(inferred) 6 — all
+  six are `Unknown` GAINS, zero effects lost on any field.** Two rows changed DIRECTLY (the two spring
+  entry points above); four more inherit transitively through the `AsyncListener.onComplete`/`onTimeout`
+  CHA fan-out. The 46 ADDED rows are all in that one spring class's nested `LifecyclePrintWriter` /
+  `LifecycleHttpServletResponse`, all with `inferred: []` and `overdeclared: ['Unknown']` — the
+  pre-existing AS-EFF-002 report rule ("a class that declares a capability stays visible") admitting a
+  unit that now carries a class-level effect. They claim nothing new about any method and no `deny` reads
+  them.
+
+  **THE BOUNDARY, MEASURED — AND IT LEAVES A DIFFERENT SILENT UNDER-REPORT OPEN, WHICH IS SAID HERE
+  RATHER THAN IMPLIED.** This fix corrects `fromIndy`'s false premise. It does NOT widen
+  `Rules.SYNC_CALLBACK_INVOKERS` / `FOR_EACH_FAMILY`, the allowlist of higher-order functions known to
+  INVOKE their callback. So a HOF outside those tables is still silent in the method-reference spelling:
+  `Optional.ofNullable(sup).map(Supplier::get)` reports nothing, while `map(s -> s.get())` discloses.
+  **Both arms measured; the asymmetry is real, published, and one HOF over from the trigger.** It belongs
+  to a different question — which HOFs invoke, where the allowlist deliberately excludes STORE and LAZY
+  sinks — and widening it has its own fabrication risk, so it is filed rather than folded in here.
+  `theHofTableBoundaryThisRowDoesNotWiden` pins it, so closing it turns that test red.
+
+  **Teeth, revert-tested BY REVERTING**: 2 of the 6 rows in `SamForwarderHandoffTest` go RED — the
+  sync-callback arm and the executor/`Thread` arm. The other four pass in BOTH arms by construction and
+  are NOT claimed to discriminate the fix: the lambda-spelling and plain-loop control, the concrete-JDK
+  method-ref over-charge control, the bound-project-method-ref resolution control (PART 87's field-stored
+  toggle must stay `Fs`, not regress to a disclosure), and the residual above. Fixture names are chosen so
+  that **no name is a prefix of another** — the 0.35.0 panel recorded a cell contaminated by scope
+  prefix-matching, and a scoped policy here would inherit exactly that.
+
 - **⚠ SOUNDNESS R147 — a read through a stream handle STORED IN A FIELD was silent; `deny Net` over a
   socket read went exit 1 → 0 on this upgrade until now.** `this.in = sock.getInputStream()` charges
   `Net` in the constructor; `in.read()` in another method charged NOTHING, because the receiver's static

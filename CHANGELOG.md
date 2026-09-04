@@ -8,6 +8,78 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ SOUNDNESS R191 — a method reference to the SAM of a functional interface the hand-written
+  `SAM_OF` table did not list — which is EVERY primitive-specialised `java.util.function` interface —
+  read SILENT-PURE.** `isups.forEach(IntSupplier::getAsInt)` and
+  `bsups.forEach(BooleanSupplier::getAsBoolean)` were ABSENT from `functions[]` entirely, while the
+  lambda twin `isups.forEach(s -> s.getAsInt())` discloses `Unknown` with
+  `callback:java.util.function.IntSupplier.getAsInt`. One variable: the spelling. **PUBLISHED, and
+  measured on TWO published 0.35.0 artifacts with identical cells — the fat jar AND the native binary
+  (`~/.candor/bin/candor-java`, installed from the release).** Ground truth EXECUTED: both spellings
+  really write the probe file (three writes, one per arm). `deny Unknown app.Widget.viaIntSupplier`,
+  `…viaBoolSupplier` and `…viaIterable` go **exit 0 → 1**; the lambda twin and the already-listed `Supplier::get` sibling
+  were 1 on every arm, and blanket `deny Unknown` was 1 on every arm — it passes only INCIDENTALLY, via
+  the twin. Scoped `deny Fs` is 0 on every arm including the twin (the effect these carry is `Unknown`,
+  not `Fs`), so that cell discriminates nothing here; scoped `deny Unknown` is the one that does.
+
+  **The mechanism is a safety sentence that was true of one consumer and false of the other.**
+  `Candor.SAM_OF`'s doc claimed an interface it does not list *"falls through to the CONSERVATIVE branch
+  below (charge the whole surface) rather than to silence"*. True of `handoffInvoked`, whose null makes
+  `depFnsInvokedByHandoff` charge a handed-off dependency type's whole reported surface. **False of
+  `samForwarderTarget`**, added later by R179, where the null leaves `opaqueTaskHandoff`'s `Unknown`
+  suppressed — the caller's only other route to a disclosure is `!task.fromIndy`, and an indy always
+  sets that. Two consumers, one table, opposite fail directions; the comment was written by the change
+  that needed it to be true.
+
+  **The fix is a DENYLIST, not more table entries.** Listing `IntSupplier` and its siblings is the same
+  allowlist one row along, silent for the next interface nobody thought of. `Candor.samNameOf` now asks
+  an index **derived from the build JDK itself** (`generateJdkSams` in `build.gradle.kts`): every JDK
+  interface with exactly one abstract method, computed over the interface *and its super-interfaces*,
+  ignoring statics, ignoring the `Object` methods JLS 9.8 lets a functional interface redeclare
+  (`Comparator` declares `equals` abstract beside `compare`), and subtracting every signature a
+  `default` gives a body to. 732 interfaces, ~10KB gzipped. `SAM_OF` stays for the entries an interface
+  index cannot hold (`TimerTask`, commons-io `IOConsumer`) and is unioned, not replaced.
+
+  **A resource rather than a runtime class-file read, for two measured reasons.** A GraalVM native image
+  has no `.class` files — the reason `jdk-supertypes.idx.gz` exists — so a runtime `ClassReader` read
+  would leave the native binary silent on exactly the references the jar discloses; and one derivation
+  executed at build time cannot DRIFT from a second one executed at runtime. One code path, both
+  artifacts. `PrimitiveSamForwarderTest` fails if the index is missing or degraded, so a build that
+  forgot it cannot pass as fixed.
+
+  **The over-charge controls, and the wider rule this stops short of.** `System.out::println` and
+  `String::trim` name CONCRETE bodies and stay pure. `CharSequence::length` names an ABSTRACT one and
+  ALSO stays pure — `CharSequence` has three abstract methods, so it is not a functional interface and
+  has no SAM. A fix keyed on "the target is `ACC_ABSTRACT`" would charge it over a receiver that is a
+  `String` in essentially all real code; fabrication is the direction with no gate behind it.
+
+  **A/B over 395 gradle-cache jars, keyed on EVERY field, 577,836 common rows: ADDED 0, REMOVED 0,
+  CHANGED 0 — byte-identical.** That is an OVER-CHARGE control and **it is not evidence of recall**,
+  which is said here rather than implied. Instrumented (a counter in the changed branch, because an
+  unchanged row is not evidence the new code ran): the corpus contains **24 method references whose SAM
+  only the new index answers**, in 14 libraries — `Iterable::iterator` (guava, ant, spring-data),
+  `Comparable::compareTo` (commons-lang3), `IntPredicate::test` (assertj, spring-core),
+  `Closeable::close`, `PathMatcher::matches`, `Principal::getName` — and **0 of them reach the
+  disclosure site**, because none is then handed to a HOF the invoker tables name. So the corpus reaches
+  the new lookup and cannot reach the new disclosure; the executed fixtures carry that half.
+
+  **The rule is not scoped to `java.util.function`, and the fixture says so (§A.2 — write the fixture for
+  the sibling you were NOT handed).** The row is written about the primitive suppliers; a fix scoped to
+  that package would pass every assertion about them and stay silent one package over.
+  `iters.forEach(Iterable::iterator)` — the shape the corpus actually contains, in guava, ant and
+  spring-data-commons — is silent on the published 0.35.0 by the same mechanism and discloses here,
+  measured on both arms and executed.
+
+  **Teeth, revert-tested BY REVERTING.** Restoring the one-line `SAM_OF.get` lookup turns exactly
+  `aPrimitiveSpecialisedSamReferenceIsDisclosedNotSilent` red; pointing the loader at an absent resource
+  turns that row AND `theJdkSamIndexIsBundledAndAnswersTheInterfacesThisRowIsAbout` red. The other three
+  rows pass in BOTH arms by construction and are NOT claimed to discriminate the fix: the lambda-twin
+  and already-listed-sibling control, the concrete/multi-abstract over-charge control, and
+  `theWholeSurfaceHandoffConsumerIsNotWidenedByThisRow` — which pins that `handoffInvoked` still returns
+  null for an unlisted interface, so its whole-surface fallback is untouched. **R183 is a different
+  mechanism with the opposite fail direction (widening the invoker tables FABRICATES) and is not touched
+  here; `theHofTableBoundaryThisRowDoesNotWiden` still passes.**
+
 - **SOUNDNESS R148 — `soundness/dynamic/corpus.sh` now SELFSKIPs (exit 3) when a corpus entry cannot
   be compiled (missing JDK feature, absent toolchain), instead of reaching `RESULT: CLEAN`, exit 0,
   with that entry's oracle never having run. A genuine confirmed under-report still exits 1, unaffected.

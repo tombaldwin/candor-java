@@ -4,6 +4,9 @@ import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.util.zip.GZIPOutputStream
 import org.objectweb.asm.ClassReader
+import org.objectweb.asm.ClassVisitor
+import org.objectweb.asm.MethodVisitor
+import org.objectweb.asm.Opcodes
 
 // ASM on the build-script classpath so the JDK-supertype-index generator (generateJdkSupertypes) reads
 // supers with the SAME library the runtime consumer (Cha.externalSupers) uses — no hand-rolled class-file
@@ -103,6 +106,11 @@ graalvmNative {
             // classpath via ASM on the JVM, but a native image has no .class files; this index lets
             // Cha.externalSupers resolve JDK hierarchies in native, keeping native == jar (see Cha).
             buildArgs.add("-H:IncludeResources=candor/jdk-supertypes\\.idx\\.gz")
+            // SOUNDNESS R191 — the build-time JDK functional-interface SAM index, read by
+            // Candor.samNameOf on BOTH artifacts (there is no runtime ClassReader path to fall back
+            // to, by design), so leaving it out of the image would make the native binary silent on
+            // exactly the method references the jar discloses.
+            buildArgs.add("-H:IncludeResources=candor/jdk-sams\\.idx\\.gz")
         }
     }
 }
@@ -224,6 +232,84 @@ val generateJdkSupertypes by tasks.registering {
 }
 sourceSets["main"].resources.srcDir(jdkSupersDir)
 tasks.named("processResources") { dependsOn(generateJdkSupertypes) }
+
+// SOUNDNESS R191 — JDK FUNCTIONAL-INTERFACE SAM INDEX. `Candor.samForwarderTarget` has to answer "is
+// this method reference merely FORWARDING to a bodiless SAM?", and it answered it from a HAND-WRITTEN
+// list (`Candor.SAM_OF`), which omitted every primitive-specialised `java.util.function` interface
+// (`IntSupplier::getAsInt`, `BooleanSupplier::getAsBoolean`, …) and therefore read them SILENT-PURE.
+// The list is replaced as the authority by this index, DERIVED from the build JDK itself (§G — ask the
+// authority, never reimplement it): for every JDK interface, its single abstract method, computed over
+// the interface AND its super-interfaces, ignoring `static`s, ignoring the `Object` public methods a
+// functional interface is allowed to redeclare (`Comparator` declares `equals`), and subtracting any
+// signature a `default` supplies a body for. An interface with two or more abstract methods
+// (`CharSequence`) has no SAM and is deliberately absent.
+//
+// It is a RESOURCE rather than a runtime `ClassReader` read for two reasons, both measured elsewhere in
+// this repo: a GraalVM native image has no .class files to read (the reason `jdk-supertypes.idx.gz`
+// exists at all), and ONE derivation executed at build time cannot DRIFT from a second one executed at
+// runtime — the §F1-q3 failure this project keeps finding. Same code path on both artifacts, so the
+// answer cannot depend on the host or on the JDK the scanned project happens to run under.
+val jdkSamsDir = layout.buildDirectory.dir("generated/candor-jdksams")
+val generateJdkSams by tasks.registering {
+    val out = jdkSamsDir.map { it.file("candor/jdk-sams.idx.gz") }
+    outputs.file(out)
+    inputs.property("jdk", System.getProperty("java.version"))   // regenerate on a JDK change
+    doLast {
+        // name -> (its super-interfaces, its declared methods as name/desc/access)
+        val ifaces = HashMap<String, Pair<List<String>, List<Triple<String, String, Int>>>>()
+        val fs = FileSystems.newFileSystem(URI.create("jrt:/"), emptyMap<String, Any>())
+        Files.walk(fs.getPath("/modules")).use { stream ->
+            stream.filter {
+                val s = it.toString(); s.endsWith(".class") && !s.endsWith("module-info.class")
+            }.forEach { p ->
+                val cr = try { ClassReader(Files.readAllBytes(p)) } catch (e: Exception) { return@forEach }
+                if (cr.access and Opcodes.ACC_INTERFACE == 0) return@forEach
+                val ms = ArrayList<Triple<String, String, Int>>()
+                cr.accept(object : ClassVisitor(Opcodes.ASM9) {
+                    override fun visitMethod(a: Int, n: String, d: String, sig: String?, ex: Array<String>?):
+                            MethodVisitor? { ms.add(Triple(n, d, a)); return null }
+                }, ClassReader.SKIP_CODE or ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES)
+                ifaces[cr.className] = Pair(cr.interfaces.toList(), ms)
+            }
+        }
+        // The three `Object` public methods an interface may redeclare abstract without becoming
+        // non-functional (JLS 9.8). `Comparator` is the live case: it declares BOTH `compare` and
+        // `equals(Object)` abstract, so without this it would have no SAM and `Comparator::compare`
+        // would go back to being silent.
+        val objectMethods = setOf("equals(Ljava/lang/Object;)Z", "hashCode()I", "toString()Ljava/lang/String;")
+        fun samOf(name: String): String? {
+            val abstracts = LinkedHashMap<String, String>()   // name+desc -> name
+            val concrete = HashSet<String>()                  // name+desc with a body (default methods)
+            val seen = HashSet<String>()
+            fun walk(n: String) {
+                if (!seen.add(n)) return
+                val e = ifaces[n] ?: return
+                for ((mn, md, acc) in e.second) {
+                    if (acc and Opcodes.ACC_STATIC != 0) continue
+                    val key = mn + md
+                    if (acc and Opcodes.ACC_ABSTRACT != 0) {
+                        if (key !in objectMethods) abstracts.putIfAbsent(key, mn)
+                    } else concrete.add(key)
+                }
+                for (s in e.first) walk(s)
+            }
+            walk(name)
+            abstracts.keys.removeAll(concrete)
+            return if (abstracts.size == 1) abstracts.values.first() else null
+        }
+        val sb = StringBuilder()
+        var n = 0
+        for (name in ifaces.keys.sorted()) {                  // sorted: a byte-reproducible resource
+            val sam = samOf(name) ?: continue
+            sb.append(name).append(' ').append(sam).append('\n'); n++
+        }
+        val f = out.get().asFile.apply { parentFile.mkdirs() }
+        GZIPOutputStream(f.outputStream()).use { it.write(sb.toString().toByteArray(Charsets.UTF_8)) }
+        logger.lifecycle("candor: wrote JDK SAM index ($n functional interfaces, ${f.length() / 1024}KB gz)")
+    }
+}
+sourceSets["main"].resources.srcDir(jdkSamsDir)
+tasks.named("processResources") { dependsOn(generateJdkSams) }
 
 // ---- Publishing (Maven Central via the Central Portal; see PUBLISHING.md for the one-time setup) ----
 // Central REQUIRES sources + javadoc jars, a full POM (name/description/url/licenses/scm/developers),

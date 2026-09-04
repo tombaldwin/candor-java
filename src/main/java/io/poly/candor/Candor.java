@@ -6106,15 +6106,34 @@ public class Candor {
      *  service that only enqueues work. The comment at the call site argued the parameter gate made the
      *  surface safe; the gate constrains which TYPE is handed off, never which MEMBER runs. */
     /** Functional interface -> its single abstract method. Keyed by INTERFACE, not by method name, because
-     *  the interface set is CLOSED (isFunctionalIface / isHofFunctionalIface / TASK_ARG_PREFIXES all gate on
-     *  an explicit list) while the set of SAM names is not. An earlier version allowlisted the NAMES and
+     *  the interface set was believed CLOSED (isFunctionalIface / isHofFunctionalIface / TASK_ARG_PREFIXES
+     *  all gate on an explicit list) while the set of SAM names is not. <b>That premise is where R191
+     *  came in: {@code isFunctionalIface} does NOT gate on a list — it admits the whole
+     *  {@code java/util/function/} PACKAGE by prefix — so the set of interfaces that can reach a consumer
+     *  of this table was never closed, and keying by interface simply moved the omission from the SAM
+     *  names to the interfaces.</b> An earlier version allowlisted the NAMES and
      *  promptly omitted `getAsInt`/`getAsLong`/`getAsDouble`/`getAsBoolean`, which would have silently
      *  dropped an `IntSupplier` implementation's effects — an allowlist under-reports exactly what you
      *  forgot, which is why this project prefers a denylist over a sound over-approximation.
      *
-     *  A `java/util/function/` interface not listed here falls through to the CONSERVATIVE branch below
-     *  (charge the whole surface) rather than to silence: over-charging is loud in an A/B and is the
-     *  fabrication side, whereas a missed SAM is the cardinal sin and is invisible. */
+     *  <b>SOUNDNESS R191 — THIS COMMENT USED TO CLAIM AN UNLISTED INTERFACE COULD NOT FALL TO SILENCE, AND
+     *  THAT WAS TRUE OF ONE CONSUMER AND FALSE OF THE OTHER.</b> It said: "a `java/util/function/`
+     *  interface not listed here falls through to the CONSERVATIVE branch below (charge the whole surface)
+     *  rather than to silence". True for {@link #handoffInvoked}, whose null makes
+     *  {@link #depFnsInvokedByHandoff} charge the type's whole reported surface. FALSE for
+     *  {@link #samForwarderTarget}, added later by R179, where a null is the ONLY thing that keeps
+     *  `opaqueTaskHandoff`'s Unknown suppressed — so every interface missing from this table, which is
+     *  every primitive-specialised one, read SILENT-PURE. Measured on the shipped 0.35.0 jar:
+     *  `isups.forEach(IntSupplier::getAsInt)` absent from `functions[]` while the lambda twin
+     *  `isups.forEach(s -> s.getAsInt())` disclosed `Unknown`, ground truth executed (both really write the
+     *  file), `deny Unknown` on the silent method exit 0 against exit 1 on the twin.
+     *
+     *  <p>So this table is NO LONGER the authority {@link #samForwarderTarget} asks — {@link #samNameOf}
+     *  is, and it is derived from the JDK itself. The entries here remain the authority for
+     *  {@link #handoffInvoked}, unchanged and deliberately NOT widened: narrowing that consumer's
+     *  whole-surface fallback to a single SAM would be a precision gain in the UNDER-report direction, a
+     *  separate question from this one. Nothing outside the JDK is in the index (`IOConsumer` is the live
+     *  case), so the two are unioned rather than swapped. */
     static final Map<String, String> SAM_OF = Map.ofEntries(
             Map.entry("java/lang/Runnable", "run"),
             Map.entry("java/util/TimerTask", "run"),
@@ -6134,6 +6153,64 @@ public class Candor {
             Map.entry("java/util/function/Supplier", "get"),
             Map.entry("java/util/function/Predicate", "test"),
             Map.entry("java/util/function/BiPredicate", "test"));
+
+    /** SOUNDNESS R191 — the single abstract method of {@code internal}, or null if it has none.
+     *
+     *  <p>{@link #SAM_OF} first (it carries the non-JDK entries and the two abstract CLASSES, which an
+     *  interface index cannot), then the build-time JDK functional-interface index. The index is DERIVED
+     *  from the build JDK by {@code generateJdkSams} in build.gradle.kts (§G — ask the authority): for
+     *  every JDK interface, the one abstract method left after ignoring statics, ignoring the `Object`
+     *  public methods JLS 9.8 lets a functional interface redeclare (`Comparator` declares `equals`
+     *  abstract), and subtracting every signature a `default` gives a body to. Two or more abstract
+     *  methods and the interface has no SAM and is absent — `CharSequence` is the control, and
+     *  `CharSequence::length` therefore stays pure.
+     *
+     *  <p><b>Why an index and not a runtime {@code ClassReader} read of the class file.</b> A GraalVM
+     *  native image has no .class files (the reason `jdk-supertypes.idx.gz` exists), so a runtime read
+     *  would make the native binary silent on exactly the references the jar discloses — an §L guard that
+     *  only ever runs on one artifact. And one derivation at build time cannot DRIFT from a second one at
+     *  runtime, which is §F1-q3, the failure this project keeps finding. One path, both artifacts.
+     *
+     *  <p>An interface outside the JDK and outside {@code SAM_OF} — a scanned project's own third-party
+     *  callback type — yields null and the pre-existing silence stands. That is the residual, and it is
+     *  bounded by what candor can see: those class files are not on candor's classpath either, so no
+     *  runtime read would have answered them. */
+    static String samNameOf(String internal) {
+        if (internal == null) return null;
+        String listed = SAM_OF.get(internal);
+        return listed != null ? listed : JdkSams.MAP.get(internal);
+    }
+
+    /** The build-time JDK interface -> SAM index (gzipped resource), loaded once on first use. Process-
+     *  global and immutable: it is the constant JDK, not per-scan state. Mirrors {@code Cha.JdkSupers},
+     *  except that this one is consulted on the JVM as well as in a native image — see {@link #samNameOf}
+     *  for why there is deliberately no second, runtime derivation to diverge from it. */
+    private static final class JdkSams {
+        static final Map<String, String> MAP = load();
+
+        private static Map<String, String> load() {
+            Map<String, String> m = new HashMap<>();
+            try (var in = Candor.class.getResourceAsStream("/candor/jdk-sams.idx.gz")) {
+                if (in == null) return m;   // index not bundled — SAM_OF still answers, see samNameOf
+                try (var br = new java.io.BufferedReader(new java.io.InputStreamReader(
+                        new java.util.zip.GZIPInputStream(in), java.nio.charset.StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        int sp = line.indexOf(' ');
+                        if (sp > 0) m.put(line.substring(0, sp), line.substring(sp + 1));
+                    }
+                }
+            } catch (java.io.IOException e) {
+                // A truncated index must not crash a scan. It degrades to SAM_OF — the pre-R191 answer,
+                // i.e. silence on the very references this row is about — and
+                // PrimitiveSamForwarderTest.theJdkSamIndexIsBundledAndAnswersTheInterfacesThisRowIsAbout
+                // is what stops that degradation passing unnoticed: it asserts the resource is present
+                // AND that samNameOf answers the primitive suppliers, so a loader reading the wrong name
+                // fails too, not just a missing file.
+            }
+            return Map.copyOf(m);
+        }
+    }
 
     /** The members a hand-off through {@code iface} can actually invoke: that interface's SAM, plus
      *  {@code <init>} — the constructor runs at the {@code new} site itself, so its effects ARE reached.
@@ -6647,15 +6724,33 @@ public class Candor {
      *  discloses {@code Unknown} itself when that fan-out is broad. Disclosing here as well would double-
      *  count a question already answered, in the over-charging direction.
      *
-     *  <p>An interface NOT in {@code SAM_OF} yields null and the pre-existing behaviour stands — a sound
-     *  under-report of the same shape, not a new one, and the reason this is a DENYLIST-shaped widening
-     *  rather than a claim of completeness. */
+     *  <p><b>SOUNDNESS R191 — THE PARAGRAPH THAT USED TO STAND HERE WAS WRONG, AND IT WAS WRONG IN THE
+     *  DIRECTION THAT HIDES.</b> It said an interface not in {@code SAM_OF} "yields null and the
+     *  pre-existing behaviour stands — a sound under-report of the same shape, not a new one". The
+     *  pre-existing behaviour it appealed to is SILENCE: the caller's only other route to a disclosure is
+     *  {@code !task.fromIndy}, and an indy always sets that. So every functional interface the hand-written
+     *  table omitted — every primitive-specialised one, {@code IntSupplier}, {@code BooleanSupplier},
+     *  {@code LongSupplier}, {@code DoubleSupplier}, {@code IntPredicate}, … — was a live cardinal sin,
+     *  measured on the shipped 0.35.0 jar with the effect executed.
+     *
+     *  <p>The table is therefore no longer consulted directly: {@link #samNameOf} answers, from an index
+     *  DERIVED from the JDK at build time, so the question is "is this the single abstract method of a
+     *  functional interface" rather than "did someone remember to list it". A concrete method reference
+     *  ({@code System.out::println}, {@code String::trim}) is still not a SAM and is still untouched; an
+     *  interface with more than one abstract method ({@code CharSequence}) has no SAM and is untouched
+     *  too, which is where this stops short of the wider rule "the target is ACC_ABSTRACT" — that one
+     *  would charge {@code CharSequence::length} over a receiver that is a {@code String} in essentially
+     *  all real code, and fabrication is the direction with no gate behind it.
+     *
+     *  <p>The remaining null case is an interface outside the JDK and outside {@code SAM_OF} — a scanned
+     *  project's own third-party callback type, whose class files candor cannot read here either. That
+     *  residual is silence, it is stated rather than implied, and it is not claimed to be sound. */
     static String samForwarderTarget(InvokeDynamicInsnNode idin) {
         if (idin.bsm == null || !idin.bsm.getOwner().equals("java/lang/invoke/LambdaMetafactory")) return null;
         for (Object a : idin.bsmArgs) {
             if (!(a instanceof Handle h) || h.getTag() < Opcodes.H_INVOKEVIRTUAL) continue;
             if (ctx().projectClasses.contains(h.getOwner())) continue;
-            String sam = SAM_OF.get(h.getOwner());
+            String sam = samNameOf(h.getOwner());   // SOUNDNESS R191 — was SAM_OF.get, an allowlist
             if (sam != null && sam.equals(h.getName()))
                 return h.getOwner().replace('/', '.') + "." + h.getName();
         }

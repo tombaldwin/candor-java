@@ -8,6 +8,104 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ SOUNDNESS R183 — a method reference handed to a higher-order function the invoker allowlist does
+  not name read SILENT-PURE, while the lambda spelling of the same expression disclosed.**
+  `Optional.ofNullable(sup).map(Supplier::get)` was ABSENT from `functions[]`; `map(s -> s.get())` is
+  `['Unknown']`. One variable: the spelling. `deny Unknown app.R183.viaMethodRef` goes **exit 0 → 1**
+  (the lambda twin was 1 on both arms), ground truth EXECUTED — both spellings really write the probe
+  file. Scoped `deny Fs` and `pure` are 0 on every arm including the twin, so neither discriminates
+  anything here; scoped `deny Unknown` is the one that does. R179 closed the same false premise at the
+  HAND-OFF site, so it reached only the higher-order functions `Rules.SYNC_CALLBACK_INVOKERS` /
+  `FOR_EACH_FAMILY` name — which is almost none of them.
+
+  **No table is widened, and the question the row was filed as does not have to be answered.** R183
+  was filed as "now widen the invoker allowlist", the FABRICATION direction, resting on a distinction —
+  does this HOF invoke its callback synchronously, in the caller's frame — that no JDK signature,
+  `@FunctionalInterface` marker or `default`-with-a-body carries. Nothing at a CREATION site needs it,
+  because **the lambda arm has never known what the sink does either**: `handleInvokeDynamic` edges a
+  lambda at its creation site unless it ESCAPES UNINVOKED (`lambdaEscapesUninvoked`) or feeds a curated
+  deferred container (`feedsDeferredFactory`), and that one flag is the engine's settled stance on lazy
+  and stored sinks. Measured on the pre-fix jar, which is why `Stream.map` is not the hazard it looks
+  like: `list.stream().map(s -> s.get())` with NO terminal operation is ALREADY `Unknown` there, and so
+  are `Optional.map`, `collect` and `submit`, while `this.f = () -> …`, `return () -> …` and
+  `queue.add(() -> …)` are ALREADY silent. The method-reference spelling was simply never asking.
+  `SYNC_CALLBACK_INVOKERS` and `FOR_EACH_FAMILY` are untouched and stay the authority for the different
+  question they answer — an OPAQUE callback (a field, a param) at a site with no indy to attribute to.
+  That silence is still OPEN and is now pinned by
+  `theRemainingBoundaryIsTheOPAQUECallbackNotTheSpelling`, which replaces the boundary row this fix
+  made obsolete.
+
+  **The predicate is borrowed, not invented (§G).** The gate is `isJdkFunctionalSam` — the predicate
+  that already decides the lambda arm at `handleMethodInsn`'s unpinned-SAM branch — and the CHA fan-out
+  is consulted FIRST, exactly as it is there and in the project-owner branch of `handleInvokeDynamic`,
+  so a scanned project that implements `Function` resolves to the real body instead of degrading to a
+  disclosure. Keying on `samNameOf` (R191's 732-interface JDK index) was tried and MEASURED first, and
+  REJECTED: it charges `Unknown` over `stream().map(Iterable::iterator)`, `map(Principal::getName)`,
+  `sorted(c::compare)` and `map(m::matches)` where `x -> x.iterator()` and `p -> p.getName()` stay
+  pure, because those SAMs are ordinary κ-covered JDK calls — a NEW fabrication on the front door of
+  `Stream`, which is the outcome this row must not have. (It follows that R179/R191's "the lambda twin
+  discloses" holds only inside `java/util/function/` + `Runnable` + `Callable`; for `Iterable::iterator`
+  at an ALLOWLISTED invoker they already charge where the lambda does not. Left alone — narrowing that
+  is the under-report direction and a separate row.)
+
+  **A/B OVER 395 GRADLE-CACHE JARS, KEYED ON EVERY FIELD, 577,836 common rows:**
+
+      ADDED 167   REMOVED 0   CHANGED(every field) 415   CHANGED(inferred only) 73
+
+  **And it is RECALL evidence, not only an over-charge control** — said here rather than implied.
+  Instrumented, because an unchanged row is not evidence the new code ran: a counter in the changed
+  branch records **72 events at 70 distinct call sites in 30 jars** — 36 disclosures and 36 CHA
+  resolutions. 21 of those 70 sites were read from the BYTECODE (`javap -v`, never from candor's own
+  report), covering every distinct mechanism, and every one is a caller-supplied callback that really
+  runs: `sdk-core` `ClientOverrideConfiguration.defaultProfileFile` is literally
+  `Optional.map(Supplier::get)` over a user-settable `Supplier<ProfileFile>`; `spring-web`
+  `AbstractClientHttpRequest.doCommit` / `AbstractServerHttpResponse.doCommit` are
+  `commitActions.stream().map(Supplier::get).collect(…)` over callbacks registered by
+  `beforeCommit(…)`; `commons-lang3` `ObjectUtils.getFirstNonNull` and `EnumUtils.getEnumMap`;
+  `spring-hateoas` `Links.andIf(boolean, Supplier<Link>…)`; `assertj` `NioFilesWrapper.newDirectoryStream`
+  (a caller `Predicate` invoked per directory entry); `javac`'s own `Operators.initOperators`. Zero
+  fabrications found.
+
+  **The 167 ADDED rows audited in FULL, not sampled (§E1).** 129 claim NO effect at all
+  (`inferred: []`): they become visible only through `ReportWriter`'s existing "the class declares a
+  capability" rule once a sibling method discloses, and every one was checked to assert nothing in any
+  channel. The other 38, and all 73 `inferred` changes, were traced by call path to one of the
+  instrumented origins — 110 of 111 automatically, and the one exception (`xnio-api`
+  `ByteBufferPool.runWithCache`, `dispatch:` from a `Runnable::run` fan-out of 17) read from bytecode
+  by hand. REMOVED is 0, so no row moved toward silence.
+
+  **A key two paths spell differently, caught in the same file (§F1 q7).** Eight of the nine `DISPATCH`
+  reason producers render the owner DOTTED (`min.owner.replace('/', '.')`); the project-owner branch of
+  `handleInvokeDynamic` renders it with SLASHES, and `xnio-api` 3.8.16 carries both `dispatch:java.lang.Runnable.run` and
+  `dispatch:java/lang/Runnable.run` in ONE report. This line emits the dotted form. The neighbour's
+  slash spelling is pre-existing, is NOT fixed here, and is reported as its own finding.
+
+  **TEETH, revert-tested by reverting.** Removing the block turns FOUR rows red
+  (`aMethodReferenceOutsideTheInvokerAllowlistIsDisclosedNotSilent`,
+  `theTwoSpellingsAgreeOnEveryShape`, `aProjectImplementorResolvesRatherThanDiscloses`,
+  `theRemainingBoundaryIsTheOPAQUECallbackNotTheSpelling`). Each design choice has its OWN
+  discriminating row, verified by degrading it: dropping the CHA lookup reddens
+  `aProjectImplementorResolvesRatherThanDiscloses`; keying on `samNameOf` reddens
+  `referencesThatNameNoUnpinnedJdkSamStayPure`; dropping the `!deferred` gate reddens
+  `aReferenceThatEscapesUninvokedIsNotChargedAtItsCreationSite`. That last row and the concrete-and-
+  non-functional controls pass in BOTH arms by construction and are NOT claimed to discriminate.
+
+  **Gates, each in a clean shell, from `bin/gates.sh candor-java` rather than from memory:**
+  `compileJava`, `test` (984 tests, 0 failures), `test/smoke.sh` (547 passed), `soundness/run.sh 40`
+  (40 passed, exit 0), `soundness/reentrancy.sh`, `shadowJar`, `ci/self-gate.sh`,
+  `bin/refresh-equiv.sh`, `soundness/run_kotlin.sh` (kotlinc absent — SKIPPED),
+  `soundness/dynamic/agent/build.sh` — all OK. `soundness/dynamic/corpus.sh` exits 3 SELFSKIP, and it
+  cannot depend on this diff: the failure is `javac` refusing `AsyncNetFs.java:29` (`Thread.ofVirtual`
+  on this box's default JDK 17), upstream of any engine invocation. `nativeCompile` fails with
+  "native-image wasn't found … isn't a GraalVM distribution" — a GraalVM-absent box, not a finding — so
+  the native/jar parity step did not run here.
+
+  **RESIDUALS, stated.** (1) The OPAQUE-callback silence above, still open. (2) A method reference to a
+  functional interface OUTSIDE `java/util/function/` + `Runnable` + `Callable` is charged only at an
+  ALLOWLISTED invoker (R179/R191's path), not at an arbitrary HOF — matching the lambda arm, which is
+  silent there too; closing that means widening `isJdkFunctionalSam` for BOTH arms together. (3) Jar/
+  native parity unverified on this box.
+
 - **⚠ SOUNDNESS R191 — a method reference to the SAM of a functional interface the hand-written
   `SAM_OF` table did not list — which is EVERY primitive-specialised `java.util.function` interface —
   read SILENT-PURE.** `isups.forEach(IntSupplier::getAsInt)` and

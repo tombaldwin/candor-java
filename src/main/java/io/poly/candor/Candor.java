@@ -5910,6 +5910,86 @@ public class Candor {
                     // attributed here. Also the class-load trigger, as for a project static/ctor ref.
                     if (!deferred) inheritDepFn(id, ctx.crossDeps.get(h.getOwner() + "." + h.getName() + h.getDesc()));
                     inheritDepClinit(id, h.getOwner());
+                    // SOUNDNESS R183 — AND WHEN THE HANDLE NAMES NO BODY AT ALL, THE TWO LINES ABOVE BOTH
+                    // FIND NOTHING AND THE SITE IS SILENT. `Optional.ofNullable(sup).map(Supplier::get)`:
+                    // the handle is `REF_invokeInterface java/util/function/Supplier.get` — an ABSTRACT
+                    // declaration, so `classify` has nothing to classify and `crossDeps` has no entry (the
+                    // body that really runs belongs to whatever receiver the higher-order function supplies,
+                    // which is the opaque field this chain was built from). Neither an edge nor a
+                    // disclosure: PUBLISHED cardinal sin, ground truth executed, `deny Unknown` exit 0 over
+                    // a method that really performs the effect, against exit 1 on the lambda twin.
+                    //
+                    // THE ROW ASKED THE WRONG QUESTION, AND THE RIGHT ONE IS ALREADY ANSWERED TWICE IN THIS
+                    // FILE. R179 closed the same false premise at the HAND-OFF site, so it reached only the
+                    // higher-order functions `Rules#SYNC_CALLBACK_INVOKERS` / {@link #FOR_EACH_FAMILY} name,
+                    // and R183 was filed as "widen the invoker allowlist" — the FABRICATION direction, on a
+                    // distinction ("does this HOF invoke its callback synchronously, here, in my frame")
+                    // that is not derivable from a JDK signature. IT DOES NOT HAVE TO BE DERIVED. Nothing
+                    // at a CREATION site needs to know what the sink does with the value, because the
+                    // LAMBDA spelling has never known either: a lambda is edged at its creation site unless
+                    // it ESCAPES UNINVOKED ({@link #lambdaEscapesUninvoked}) or feeds a curated deferred
+                    // container ({@link #feedsDeferredFactory}), and `deferred`, twenty lines up, is that
+                    // whole answer. Measured on the pre-fix jar: `list.stream().map(s -> s.get())` with NO
+                    // terminal operation is ALREADY `Unknown`, and so are `Optional.map`, `collect` and
+                    // `submit`, while `this.f = () -> …`, `return () -> …` and `queue.add(() -> …)` are
+                    // ALREADY silent here (they disclose later, at the unpinned SAM read). The engine's
+                    // stance on lazy and stored sinks is settled and settled in one place; the
+                    // method-reference spelling was simply never asking it. So this widens NO table:
+                    // `SYNC_CALLBACK_INVOKERS` and `FOR_EACH_FAMILY` are untouched, and they stay the
+                    // authority for the DIFFERENT question they answer — an OPAQUE callback (a field, a
+                    // param) at a site with no indy to attribute to. That silence is still open; see
+                    // `theRemainingBoundaryIsTheOPAQUECallbackNotTheSpelling`.
+                    //
+                    // WHICH PREDICATE — AND THE ANSWER IS NOT {@link #samForwarderTarget}'s, WHICH WOULD
+                    // OVER-CHARGE. The claim being made here is PARITY WITH THE LAMBDA ARM, so the gate has
+                    // to be the predicate that decides the lambda arm, which is
+                    // {@link #isJdkFunctionalSam} at the unpinned-SAM branch of {@link #handleMethodInsn}
+                    // (§G — ask the authority, do not write a second one). Keying on `samNameOf` instead —
+                    // the R191 index, 732 JDK interfaces — was tried and MEASURED, and it charges where the
+                    // lambda arm is silent: `xs.stream().map(Iterable::iterator)`, `map(Principal::getName)`,
+                    // `sorted(c::compare)`, `map(m::matches)` all become `Unknown` while
+                    // `x -> x.iterator()`, `p -> p.getName()`, `(a,b) -> c.compare(a,b)` stay pure, because
+                    // those SAMs are ordinary κ-covered JDK calls. That is a NEW fabrication, on exactly
+                    // the front door of `Stream` the row warns about, so it is not taken. (It also means
+                    // R179/R191's own "the lambda twin discloses" reads true only inside
+                    // `java/util/function/` + Runnable + Callable; for `Iterable::iterator` at an
+                    // ALLOWLISTED invoker they already charge where the lambda does not. Left as it is:
+                    // narrowing THAT is the under-report direction and a different row.)
+                    //
+                    // …AND CHA FIRST, FOR THE SAME REASON. `handleMethodInsn` discloses `callback:` only
+                    // when the CHA fan-out is EMPTY — when the only implementors are lambdas, so no body is
+                    // reachable from here. A scanned project that DOES implement `Function` resolves there
+                    // and must resolve here: `chaTargets` is the same authority the project-owner branch
+                    // above already CHAs an unbound abstract method-ref with, reused rather than re-derived,
+                    // and a fan-out too broad to enumerate degrades to `dispatch:` exactly as it does there.
+                    // `theTwoSpellingsAgreeOnEveryShape` is the fixture that PINS this parity instead of
+                    // asserting it (§E2): every row runs both spellings of one expression and requires the
+                    // same effect set, so if this claim were false the fixture fails rather than the comment
+                    // lying. `System.out::println`, `String::trim`, `Objects::nonNull` (concrete bodies) and
+                    // `CharSequence::length` (three abstract methods, no SAM) are the over-charge controls
+                    // and `isJdkFunctionalSam` is false for all four.
+                    if (!deferred && idin.bsm != null
+                            && idin.bsm.getOwner().equals("java/lang/invoke/LambdaMetafactory")
+                            && isJdkFunctionalSam(h.getOwner(), h.getName())) {
+                        List<String> samCha = chaTargets(h.getOwner(), h.getName(), h.getDesc());
+                        if (samCha.isEmpty()) {
+                            dir.add(Effect.UNKNOWN);
+                            ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(
+                                    UnknownReason.Kind.CALLBACK, h.getOwner().replace('/', '.') + "." + h.getName()));
+                        } else if (samCha.size() > CHA_FANOUT_LIMIT && !isClosedHierarchy(h.getOwner())) {
+                            dir.add(Effect.UNKNOWN);
+                            // DOTTED, like the seven other DISPATCH producers and unlike the project-owner
+                            // branch above (which spells the same fact `java/lang/Runnable.run`). Measured
+                            // on xnio-api 3.8.16, where both spellings land in ONE report: that is §F1 q7,
+                            // a key two paths spell differently, and this line is not going to add a third
+                            // instance of it. The neighbour's slash form is a separate, pre-existing defect.
+                            ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(
+                                    UnknownReason.Kind.DISPATCH,
+                                    h.getOwner().replace('/', '.') + "." + h.getName()));
+                        } else {
+                            ctx.edges.get(id).addAll(samCha);
+                        }
+                    }
                 }
             }
         }

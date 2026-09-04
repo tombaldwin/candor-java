@@ -223,39 +223,56 @@ class SamForwarderHandoffTest {
         } finally { rm(cls.getParent()); }
     }
 
-    /** THE RESIDUAL, MEASURED — AND IT IS A SEPARATE, STILL-OPEN SILENT UNDER-REPORT, NOT A CLOSED ONE.
+    /** THE BOUNDARY, MOVED — this row USED TO BE {@code theHofTableBoundaryThisRowDoesNotWiden}, and
+     *  SOUNDNESS R183 made that boundary obsolete rather than merely crossing it.
      *
-     *  <p>This fix corrects {@code fromIndy}'s false premise. It does NOT widen
-     *  {@code Rules#SYNC_CALLBACK_INVOKERS} / {@code FOR_EACH_FAMILY}, the allowlist of higher-order
-     *  functions known to INVOKE their callback. So a HOF outside those tables is still silent in the
-     *  method-reference spelling — {@code Optional.map} is one: {@code ofNullable(sup).map(Supplier::get)}
-     *  reports nothing, while {@code map(s -> s.get())} discloses {@code Unknown} through its synthetic
-     *  body. Both arms measured; the asymmetry is REAL and PUBLISHED, it is one HOF over from the trigger,
-     *  and it belongs to a different question (which HOFs invoke) with its own flood risk — widening an
-     *  allowlist that deliberately excludes STORE/lazy sinks is not a change to make inside this row.
+     *  <p><b>What it used to pin.</b> R179 corrects {@code fromIndy}'s false premise at the HAND-OFF site,
+     *  so it reached only the higher-order functions {@code Rules#SYNC_CALLBACK_INVOKERS} /
+     *  {@code FOR_EACH_FAMILY} name. {@code Optional.ofNullable(sup).map(Supplier::get)} therefore stayed
+     *  SILENT while {@code map(s -> s.get())} disclosed, and this row asserted that silence so it could not
+     *  be mistaken for coverage. It is now closed — by {@link HofSpellingParityTest}, at the CREATION site,
+     *  and <b>without widening either table</b>: the SPELLING was never the invoker tables' question.
      *
-     *  <p>Pinned so it cannot be mistaken for coverage: when it is closed, this test goes RED and the row
-     *  moves with it. */
+     *  <p><b>What the boundary actually is, now that the spelling no longer decides.</b> OPAQUENESS, not
+     *  syntax. A callback arriving as a FIELD or a PARAMETER has no creation site in this method to
+     *  attribute anything to, so the only thing that can speak for it is the invoker allowlist — and
+     *  outside that allowlist it is silent in EVERY spelling, because there is no spelling. {@code sort},
+     *  {@code computeIfAbsent} and {@code removeIf} really do invoke the callback they are handed, and
+     *  candor does not disclose it. That is a live silent under-report, and it IS the question R183 was
+     *  filed as ("which HOFs invoke"), with its fabrication risk intact — widening an allowlist that
+     *  deliberately excludes store/lazy sinks is still not a change to make from a table.
+     *
+     *  <p>Pinned exactly as before: when it is closed, this row goes RED and the register moves with it.
+     *  {@code refArm} is the control that keeps the two questions apart — same HOF, same interface, the
+     *  callback arriving as an indy instead of a param, disclosed since R183. */
     @Test
-    void theHofTableBoundaryThisRowDoesNotWiden() throws Exception {
-        Path cls = compile(Map.of("app/Lazy.java", String.join("\n",
+    void theRemainingBoundaryIsTheOPAQUECallbackNotTheSpelling() throws Exception {
+        Path cls = compile(Map.of("app/Opaque.java", String.join("\n",
             "package app;",
-            "import java.util.Optional;",
-            "import java.util.function.Supplier;",
-            "public class Lazy {",
-            "  private Supplier<String> sup;",
-            "  public String mapRef()    { return Optional.ofNullable(sup).map(Supplier::get).orElse(null); }",
-            "  public String mapLambda() { return Optional.ofNullable(sup).map(s -> s.get()).orElse(null); }",
+            "import java.util.*;",
+            "import java.util.function.*;",
+            "public class Opaque {",
+            "  private Comparator<String> cmp;",
+            "  public void sortField(List<String> xs) { xs.sort(cmp); }",
+            "  public void sortParam(List<String> xs, Comparator<String> c) { xs.sort(c); }",
+            "  public String computeParam(Map<String,String> m, Function<String,String> f) { return m.computeIfAbsent(\"k\", f); }",
+            "  public boolean removeParam(List<String> xs, Predicate<String> p) { return xs.removeIf(p); }",
+            "  public String refArm(Supplier<String> s) { return Optional.of(s).map(Supplier::get).orElse(null); }",
             "}")));
         try {
             Map<String, EffectSet> r = Candor.runScan(cls);
-            assertTrue(eff(r, "app.Lazy.mapLambda").contains(Effect.UNKNOWN),
-                "the lambda spelling discloses through its synthetic body: " + r.get("app.Lazy.mapLambda"));
-            assertFalse(eff(r, "app.Lazy.mapRef").contains(Effect.UNKNOWN),
-                "RESIDUAL, NOT A CLAIM OF CORRECTNESS: Optional.map is not in the invoking-HOF allowlist, "
-                + "so the method-reference spelling is still silent there. This is an OPEN silent "
-                + "under-report of the same class, one HOF over, filed rather than fixed inside this row. "
-                + "Got " + r.get("app.Lazy.mapRef"));
+            for (String m : new String[] {"sortField", "sortParam", "computeParam", "removeParam"})
+                assertFalse(eff(r, "app.Opaque." + m).contains(Effect.UNKNOWN),
+                    "RESIDUAL, NOT A CLAIM OF CORRECTNESS: " + m + " hands an OPAQUE callback to a "
+                    + "higher-order function the invoker allowlist does not name, and there is no creation "
+                    + "site here to attribute it to, so it is silent — an OPEN silent under-report of the "
+                    + "same family, and the one that really does need the 'which HOFs invoke' question "
+                    + "answered. Got " + r.get("app.Opaque." + m));
+            assertTrue(eff(r, "app.Opaque.refArm").contains(Effect.UNKNOWN),
+                "…and the CONTROL that separates the two: the same shape with the callback arriving as a "
+                + "method reference HAS a creation site, and R183 discloses there. If this went silent the "
+                + "four rows above would read as a boundary when they were really a regression. Got "
+                + r.get("app.Opaque.refArm"));
         } finally { rm(cls.getParent()); }
     }
 

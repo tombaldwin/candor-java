@@ -7,13 +7,31 @@ import org.objectweb.asm.ClassReader
 import org.objectweb.asm.ClassVisitor
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes
+import org.objectweb.asm.Type
+import org.objectweb.asm.tree.AbstractInsnNode
+import org.objectweb.asm.tree.ClassNode
+import org.objectweb.asm.tree.MethodInsnNode
+import org.objectweb.asm.tree.MethodNode
+import org.objectweb.asm.tree.VarInsnNode
+import org.objectweb.asm.tree.analysis.Analyzer
+import org.objectweb.asm.tree.analysis.Frame
+import org.objectweb.asm.tree.analysis.SourceInterpreter
+import org.objectweb.asm.tree.analysis.SourceValue
 
 // ASM on the build-script classpath so the JDK-supertype-index generator (generateJdkSupertypes) reads
 // supers with the SAME library the runtime consumer (Cha.externalSupers) uses — no hand-rolled class-file
 // parsing to drift on a future class-file format.
 buildscript {
     repositories { mavenCentral() }
-    dependencies { classpath("org.ow2.asm:asm:9.8") }
+    dependencies {
+        classpath("org.ow2.asm:asm:9.8")
+        // SOUNDNESS R237 — `generateJdkHofInvokes` needs the TREE and ANALYSIS modules: it runs ASM's
+        // own SourceInterpreter over JDK method bodies to answer "does this method invoke the functional
+        // argument it is handed", which is the question `Candor.isInvokingHof` had been answering from a
+        // hand-written list of 27 names.
+        classpath("org.ow2.asm:asm-tree:9.8")
+        classpath("org.ow2.asm:asm-analysis:9.8")
+    }
 }
 
 plugins {
@@ -111,6 +129,11 @@ graalvmNative {
             // to, by design), so leaving it out of the image would make the native binary silent on
             // exactly the method references the jar discloses.
             buildArgs.add("-H:IncludeResources=candor/jdk-sams\\.idx\\.gz")
+            // SOUNDNESS R237 — the build-time JDK invoking-higher-order-function index, read by
+            // Candor.jdkInvokesFunctionalArg on BOTH artifacts for the same reason as the SAM index:
+            // leaving it out would make the native binary SILENT on exactly the callbacks the jar
+            // discloses, which is the one-artifact guard §L is about.
+            buildArgs.add("-H:IncludeResources=candor/jdk-hof-invokes\\.idx\\.gz")
         }
     }
 }
@@ -310,6 +333,239 @@ val generateJdkSams by tasks.registering {
 }
 sourceSets["main"].resources.srcDir(jdkSamsDir)
 tasks.named("processResources") { dependsOn(generateJdkSams) }
+
+// SOUNDNESS R237 — JDK INVOKING-HIGHER-ORDER-FUNCTION INDEX. `Candor.isInvokingHof` answers "does this
+// library method INVOKE the functional argument it is handed", and it answered it from a HAND-WRITTEN
+// list of 27 simple names. An allowlist fails toward SILENCE, so every invoking HOF missing from it was
+// a live under-report: `Optional.orElseGet(supParam)` and `Objects.requireNonNullElseGet(x, supParam)`
+// were both measured ABSENT while `List.removeIf(pParam)` in the same class disclosed — the interface
+// was covered, the HOF was not. What was owed is a SWEEP, not another name.
+//
+// So this asks the JDK (§G — ask the authority, never reimplement it). For every JDK method that takes
+// a functional-interface parameter, ASM's own `SourceInterpreter` decides whether the body invokes that
+// parameter's SAM ON that parameter, and a fixpoint propagates the answer backwards through methods
+// that FORWARD the parameter to another one (`List.sort` -> `Arrays.sort` -> `TimSort.sort` ->
+// `binarySort`, four hops, none of them derivable from a signature). Two shapes the sweep must see
+// through, both derived rather than listed: a CHECKCAST between the wrapper and the call (erasure), and
+// an IDENTITY WRAPPER — a small method whose every ARETURN returns one of its own arguments, which is
+// what `Objects.requireNonNullElseGet` puts between `supplier` and `supplier.get()`.
+//
+// KEYED BY (name, desc), NOT by owner. The consumer sees the bytecode owner, which may be an
+// implementation class that inherits the method without declaring it (`ArrayList.removeIf`), so an
+// owner-keyed index would need a runtime resolution walk and would go silent whenever that walk missed.
+// Name+descriptor is owner-agnostic exactly as `isInvokingHof`'s name list already was, and strictly
+// more precise than it. The consumer UNIONS this with that list rather than replacing it: an abstract
+// interface method whose implementation wraps the callback in a lazy pipeline (`Stream.map`) has no
+// body to read here, so removing the hand list would be the silent direction.
+//
+// FAILS TOWARD SILENCE, like everything else at this site. A method the sweep cannot prove invoking is
+// absent, and absent means the pre-R237 answer. What it can get WRONG is a (name, desc) collision with
+// a non-JDK method that merely stores its callback — an over-report, and bounded by the consumer's
+// other gate, which still requires the argument's declared type to be one candor recognises.
+val jdkHofDir = layout.buildDirectory.dir("generated/candor-jdkhof")
+val generateJdkHofInvokes by tasks.registering {
+    val out = jdkHofDir.map { it.file("candor/jdk-hof-invokes.idx.gz") }
+    outputs.file(out)
+    inputs.property("jdk", System.getProperty("java.version"))   // regenerate on a JDK change
+    doLast {
+        val IDENTITY_BODY_LIMIT = 24
+        val fs = FileSystems.newFileSystem(URI.create("jrt:/"), emptyMap<String, Any>())
+        val paths = ArrayList<java.nio.file.Path>()
+        Files.walk(fs.getPath("/modules")).use { st ->
+            st.filter {
+                val s = it.toString(); s.endsWith(".class") && !s.endsWith("module-info.class")
+            }.forEach { paths.add(it) }
+        }
+
+        // ---- pass 1: every JDK interface's single abstract method (the same derivation generateJdkSams
+        // makes; kept local so this task has no ordering dependency on that one's resource) ----
+        val ifaceSupers = HashMap<String, List<String>>()
+        val ifaceMethods = HashMap<String, List<Triple<String, String, Int>>>()
+        for (p in paths) {
+            val cr = try { ClassReader(Files.readAllBytes(p)) } catch (e: Exception) { continue }
+            if (cr.access and Opcodes.ACC_INTERFACE == 0) continue
+            val ms = ArrayList<Triple<String, String, Int>>()
+            cr.accept(object : ClassVisitor(Opcodes.ASM9) {
+                override fun visitMethod(a: Int, n: String, d: String, sig: String?, ex: Array<String>?):
+                        MethodVisitor? { ms.add(Triple(n, d, a)); return null }
+            }, ClassReader.SKIP_CODE or ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES)
+            ifaceSupers[cr.className] = cr.interfaces.toList()
+            ifaceMethods[cr.className] = ms
+        }
+        val objectMethods = setOf("equals(Ljava/lang/Object;)Z", "hashCode()I", "toString()Ljava/lang/String;")
+        val sam = HashMap<String, String>()
+        for (name in ifaceMethods.keys) {
+            val abstracts = LinkedHashMap<String, String>()
+            val concrete = HashSet<String>()
+            val seen = HashSet<String>()
+            val queue = ArrayDeque<String>(); queue.add(name)
+            while (queue.isNotEmpty()) {
+                val n = queue.removeFirst()
+                if (!seen.add(n)) continue
+                for ((mn, md, acc) in ifaceMethods[n] ?: emptyList()) {
+                    if (acc and Opcodes.ACC_STATIC != 0) continue
+                    val key = mn + md
+                    if (acc and Opcodes.ACC_ABSTRACT != 0) {
+                        if (key !in objectMethods) abstracts.putIfAbsent(key, mn)
+                    } else concrete.add(key)
+                }
+                queue.addAll(ifaceSupers[n] ?: emptyList())
+            }
+            abstracts.keys.removeAll(concrete)
+            if (abstracts.size == 1) sam[name] = abstracts.values.first()
+        }
+
+        // ---- pass 2: identity wrappers ----
+        val returnsArg = HashMap<Pair<String, String>, Int>()
+        fun argSlots(mn: MethodNode): Map<Int, Int> {   // local slot -> descriptor arg index
+            val args = Type.getArgumentTypes(mn.desc)
+            val m = HashMap<Int, Int>()
+            var slot = if (mn.access and Opcodes.ACC_STATIC != 0) 0 else 1
+            for (i in args.indices) { m[slot] = i; slot += args[i].size }
+            return m
+        }
+        fun readClass(p: java.nio.file.Path): ClassNode? {
+            val b = try { Files.readAllBytes(p) } catch (e: Exception) { return null }
+            val cn = ClassNode()
+            return try { ClassReader(b).accept(cn, ClassReader.SKIP_FRAMES or ClassReader.SKIP_DEBUG); cn }
+                   catch (e: Exception) { null }
+        }
+        // Re-read per pass rather than holding every ClassNode: the whole JDK as a tree is gigabytes and
+        // OOMs the Gradle daemon.
+        for (p in paths) { val cn = readClass(p) ?: continue; for (mn in cn.methods) {
+            if (Type.getReturnType(mn.desc).sort != Type.OBJECT) continue
+            val insns = mn.instructions ?: continue
+            if (insns.size() == 0 || insns.size() > IDENTITY_BODY_LIMIT) continue
+            val argOf = argSlots(mn)
+            if (argOf.isEmpty()) continue
+            var reassigned = false
+            for (i in insns) if (i.opcode == Opcodes.ASTORE && argOf.containsKey((i as VarInsnNode).`var`)) reassigned = true
+            if (reassigned) continue
+            val frames = try { Analyzer(SourceInterpreter()).analyze(cn.name, mn) } catch (e: Exception) { continue }
+            var answer: Int? = null
+            var ok = true
+            for (i in insns) {
+                if (i.opcode != Opcodes.ARETURN) continue
+                val f = frames[insns.indexOf(i)]
+                if (f == null || f.stackSize == 0) { ok = false; break }
+                val v = f.getStack(f.stackSize - 1)
+                if (v.insns.isEmpty()) { ok = false; break }
+                var arg: Int? = null
+                for (src in v.insns) {
+                    if (src.opcode != Opcodes.ALOAD) { ok = false; break }
+                    val ai = argOf[(src as VarInsnNode).`var`]
+                    if (ai == null || (arg != null && arg != ai)) { ok = false; break }
+                    arg = ai
+                }
+                if (!ok) break
+                if (answer != null && answer != arg) { ok = false; break }
+                answer = arg
+            }
+            if (ok && answer != null) returnsArg[Pair(mn.name, mn.desc)] = answer!!
+        } }
+
+        // ---- pass 3: which functional parameter does each method INVOKE, or FORWARD ----
+        val invokes = HashMap<Pair<String, String>, MutableSet<Int>>()
+        val forwards = HashMap<Pair<String, String>, MutableMap<Int, MutableSet<Triple<String, String, Int>>>>()
+        var curFrames: Array<Frame<SourceValue>?>? = null
+        var curMethod: MethodNode? = null
+
+        fun frameAt(i: AbstractInsnNode): Frame<SourceValue>? {
+            val idx = curMethod!!.instructions.indexOf(i)
+            val fr = curFrames ?: return null
+            return if (idx < 0 || idx >= fr.size) null else fr[idx]
+        }
+        fun fromParam(v: SourceValue?, slot: Int, depth: Int): Boolean {
+            if (v == null || v.insns.isEmpty() || depth > 3) return false
+            for (i in v.insns) {
+                if (i.opcode == Opcodes.ALOAD && (i as VarInsnNode).`var` == slot) continue
+                if (i.opcode == Opcodes.CHECKCAST) {
+                    val cf = frameAt(i) ?: return false
+                    if (cf.stackSize == 0 || !fromParam(cf.getStack(cf.stackSize - 1), slot, depth + 1)) return false
+                    continue
+                }
+                if (i is MethodInsnNode) {
+                    val j = returnsArg[Pair(i.name, i.desc)] ?: return false
+                    val cf = frameAt(i) ?: return false
+                    val cargs = Type.getArgumentTypes(i.desc)
+                    if (j >= cargs.size) return false
+                    var cur = cf.stackSize - cargs.size + j   // value-indexed, see above
+                    if (cur < 0 || cur >= cf.stackSize) return false
+                    if (!fromParam(cf.getStack(cur), slot, depth + 1)) return false
+                    continue
+                }
+                return false
+            }
+            return true
+        }
+
+        for (p in paths) { val cn = readClass(p) ?: continue; for (mn in cn.methods) {
+            val args = Type.getArgumentTypes(mn.desc)
+            val fparams = args.indices.filter { args[it].sort == Type.OBJECT && sam.containsKey(args[it].internalName) }
+            if (fparams.isEmpty()) continue
+            val insns = mn.instructions ?: continue
+            if (insns.size() == 0) continue
+            val slotOf = HashMap<Int, Int>()
+            var slot = if (mn.access and Opcodes.ACC_STATIC != 0) 0 else 1
+            for (i in args.indices) { slotOf[i] = slot; slot += args[i].size }
+            val reassigned = HashSet<Int>()
+            for (i in insns) if (i.opcode == Opcodes.ASTORE) reassigned.add((i as VarInsnNode).`var`)
+            val frames = try { Analyzer(SourceInterpreter()).analyze(cn.name, mn) } catch (e: Exception) { continue }
+            curFrames = frames; curMethod = mn
+            val key = Pair(mn.name, mn.desc)
+            for (i in fparams) {
+                val s = slotOf[i]!!
+                if (s in reassigned) continue
+                val samName = sam[args[i].internalName]
+                var charged = false
+                for (ins in insns) {
+                    if (ins !is MethodInsnNode) continue
+                    val f = frames[insns.indexOf(ins)] ?: continue
+                    // ASM's operand stack is VALUE-indexed, NOT slot-indexed: a long/double is ONE
+                    // entry. Summing `Type.size` here (the natural mistake) puts the receiver an entry
+                    // too low for every call with a long or double argument — measured on
+                    // `OptionalDouble.ifPresentOrElse(DoubleConsumer, Runnable)`, whose `accept(D)`
+                    // receiver was missed entirely until this was counted rather than sized.
+                    val cargs = Type.getArgumentTypes(ins.desc)
+                    if (ins.opcode != Opcodes.INVOKESTATIC && ins.name == samName) {
+                        val ri = f.stackSize - cargs.size - 1
+                        if (ri in 0 until f.stackSize && fromParam(f.getStack(ri), s, 0)) {
+                            invokes.getOrPut(key) { mutableSetOf<Int>() }.add(i); charged = true; break
+                        }
+                    }
+                    var cur = f.stackSize - cargs.size
+                    for (j in cargs.indices) {
+                        if (cur in 0 until f.stackSize && fromParam(f.getStack(cur), s, 0))
+                            forwards.getOrPut(key) { HashMap() }.getOrPut(i) { HashSet() }
+                                    .add(Triple(ins.name, ins.desc, j))
+                        cur += 1
+                    }
+                }
+                if (charged) continue
+            }
+        } }
+
+        // ---- fixpoint: INVOKES propagates backwards through FORWARDS ----
+        var moved = true; var rounds = 0
+        while (moved && rounds++ < 20) {
+            moved = false
+            for ((key, perArg) in forwards) for ((i, targets) in perArg) for ((tn, td, j) in targets) {
+                if (invokes[Pair(tn, td)]?.contains(j) == true)
+                    if (invokes.getOrPut(key) { mutableSetOf<Int>() }.add(i)) moved = true
+            }
+        }
+
+        val lines = invokes.entries
+            .map { (k, v) -> "${k.first} ${k.second} " + v.sorted().joinToString(",") }
+            .sorted()                                        // sorted: a byte-reproducible resource
+        val f = out.get().asFile.apply { parentFile.mkdirs() }
+        GZIPOutputStream(f.outputStream()).use { it.write(lines.joinToString("\n").toByteArray(Charsets.UTF_8)) }
+        logger.lifecycle("candor: wrote JDK invoking-HOF index (${lines.size} name+descriptor entries, " +
+                "${returnsArg.size} identity wrappers, ${f.length() / 1024}KB gz)")
+    }
+}
+sourceSets["main"].resources.srcDir(jdkHofDir)
+tasks.named("processResources") { dependsOn(generateJdkHofInvokes) }
 
 // ---- Publishing (Maven Central via the Central Portal; see PUBLISHING.md for the one-time setup) ----
 // Central REQUIRES sources + javadoc jars, a full POM (name/description/url/licenses/scm/developers),

@@ -4521,13 +4521,26 @@ public class Candor {
         // sound UNDER-report (no edge), never a fabrication. Restricted to a freshly-constructed
         // (`newType`) project functional impl and EXTERNAL callees (a project callee's body is
         // analysed directly).
+        // SOUNDNESS R237 — THE SECOND AUTHORITY IS THE JDK, NOT A LONGER LIST. `isInvokingHof` is an
+        // ALLOWLIST of 27 simple names, so every invoking higher-order function it does not name leaves
+        // this site SILENT: `Optional.orElseGet(supParam)` and `Objects.requireNonNullElseGet(x, sup)`
+        // were both measured ABSENT while `List.removeIf(pParam)` in the same class disclosed — the
+        // INTERFACE was covered and the HOF was not. `jdkInvokesFunctionalArg` is the swept answer,
+        // derived from JDK bytecode at build time (see its javadoc and `generateJdkHofInvokes`), and it
+        // is UNIONED with the name list rather than replacing it: an abstract interface method whose
+        // implementation defers the callback into a lazy pipeline (`Stream.map`) has no body to read, so
+        // dropping the list would be the silent direction. Per-ARGUMENT where the list is per-CALL, which
+        // is strictly more precise — but only for the arguments the list did not already admit, so this
+        // can never narrow what HEAD already charged.
+        boolean nameHof = isInvokingHof(min.name);
         if (provFrames != null && !ctx.projectClasses.contains(min.owner)
-                && isInvokingHof(min.name)) {
+                && (nameHof || jdkInvokesAnyFunctionalArg(min.name, min.desc))) {
             Type[] pt = Type.getArgumentTypes(min.desc);
             List<ProvValue> args = callArgs(provFrames[mn.instructions.indexOf(min)], min);
             for (int i = 0; i < args.size(); i++) {
                 ProvValue a = args.get(i);
                 if (a == null) continue;
+                if (!nameHof && !jdkInvokesFunctionalArg(min.name, min.desc, i)) continue;
                 if (a.newType == null) { opaqueFunctionalToHof(ctx, s, min, pt, i, a); continue; }
                 ctx.edges.get(id).addAll(functionalSamSurface(a.newType));
                 // ACROSS THE SCAN BOUNDARY: the same hand-off, but the functional impl belongs to a chained
@@ -6387,6 +6400,87 @@ public class Candor {
                 // is what stops that degradation passing unnoticed: it asserts the resource is present
                 // AND that samNameOf answers the primitive suppliers, so a loader reading the wrong name
                 // fails too, not just a missing file.
+            }
+            return Map.copyOf(m);
+        }
+    }
+
+    /** SOUNDNESS R237 — DOES THIS LIBRARY METHOD INVOKE THE FUNCTIONAL ARGUMENT AT {@code argIndex},
+     *  ANSWERED BY THE JDK ITSELF.
+     *
+     *  <p>{@link #isInvokingHof} answers the same question from a hand-written list of 27 simple names,
+     *  and an allowlist fails toward SILENCE — so every invoking higher-order function missing from it
+     *  was a live under-report. Measured on the engine at {@code 9dfd5d2}, with a control in the same
+     *  class: {@code Optional.orElseGet(supParam)} and {@code Objects.requireNonNullElseGet(x, supParam)}
+     *  both ABSENT from {@code functions[]} while {@code List.removeIf(pParam)} disclosed
+     *  {@code callback:java.util.function.Predicate.test}. {@code Supplier} is inside the interface set,
+     *  so the gate was not the problem; the HOF was. What R237 asks for is the SWEEP, not another name,
+     *  and {@code generateJdkHofInvokes} in build.gradle.kts is it (§G — ask the authority): ASM's own
+     *  {@code SourceInterpreter} over every JDK method that takes a functional-interface parameter, plus
+     *  a fixpoint through methods that FORWARD it ({@code List.sort} → {@code Arrays.sort} →
+     *  {@code TimSort.sort} → {@code binarySort}, four hops).
+     *
+     *  <p><b>UNIONED WITH {@link #isInvokingHof}, NEVER REPLACING IT.</b> An abstract interface method
+     *  whose implementation wraps the callback in a lazy pipeline has no body for the sweep to read —
+     *  {@code Stream.map} is the case — so dropping the hand list would be the silent direction. The two
+     *  together can only DISCLOSE more than either alone.
+     *
+     *  <p><b>KEYED BY (name, descriptor), NOT BY OWNER — and that is a deliberate over-approximation.</b>
+     *  The bytecode owner is often an implementation class that inherits the method without declaring it
+     *  ({@code ArrayList.removeIf}), so an owner-keyed index would need a runtime resolution walk and
+     *  would go SILENT wherever that walk missed. Name+descriptor is owner-agnostic exactly as
+     *  {@code isInvokingHof}'s name list already is, and strictly more precise than it. What it can get
+     *  wrong is a collision with a non-JDK method of the same name and descriptor that merely STORES its
+     *  callback — an OVER-report, and bounded by the caller's other gate, which still requires the
+     *  argument's declared type to be an interface {@link #isFunctionalIface} recognises.
+     *
+     *  <p>An absent or truncated index degrades to {@code isInvokingHof} alone — the pre-R237 answer, i.e.
+     *  silence on exactly the callbacks this row is about — and
+     *  {@code JdkHofIndexTest#theIndexIsBundledAndAnswersTheHofsThisRowIsAbout} is what stops that
+     *  degradation passing unnoticed: it asserts the resource is present AND that the two measured cells
+     *  come back true, so a loader reading the wrong key fails too, not just a missing file. */
+    static boolean jdkInvokesFunctionalArg(String name, String desc, int argIndex) {
+        int[] idx = JdkHofInvokes.MAP.get(name + " " + desc);
+        if (idx == null) return false;
+        for (int i : idx) if (i == argIndex) return true;
+        return false;
+    }
+
+    /** Whether the index names ANY invoked functional argument for this (name, descriptor) — the cheap
+     *  outer gate, so the per-argument loop is entered at all. */
+    static boolean jdkInvokesAnyFunctionalArg(String name, String desc) {
+        return JdkHofInvokes.MAP.containsKey(name + " " + desc);
+    }
+
+    /** The build-time JDK invoking-higher-order-function index (gzipped resource), loaded once on first
+     *  use. Process-global and immutable: it is the constant JDK, not per-scan state. Mirrors
+     *  {@link JdkSams}, including the reason there is deliberately no second runtime derivation to
+     *  diverge from it — a native image has no .class files to read, and one derivation cannot drift
+     *  from a second one (§F1-q3). */
+    private static final class JdkHofInvokes {
+        static final Map<String, int[]> MAP = load();
+
+        private static Map<String, int[]> load() {
+            Map<String, int[]> m = new HashMap<>();
+            try (var in = Candor.class.getResourceAsStream("/candor/jdk-hof-invokes.idx.gz")) {
+                if (in == null) return m;   // index not bundled — isInvokingHof still answers
+                try (var br = new java.io.BufferedReader(new java.io.InputStreamReader(
+                        new java.util.zip.GZIPInputStream(in), java.nio.charset.StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        int sp = line.lastIndexOf(' ');
+                        if (sp <= 0) continue;
+                        String[] parts = line.substring(sp + 1).split(",");
+                        int[] idx = new int[parts.length];
+                        boolean ok = true;
+                        for (int i = 0; i < parts.length; i++) {
+                            try { idx[i] = Integer.parseInt(parts[i]); } catch (NumberFormatException e) { ok = false; }
+                        }
+                        if (ok) m.put(line.substring(0, sp), idx);
+                    }
+                }
+            } catch (java.io.IOException e) {
+                // A truncated index must not crash a scan. It degrades to isInvokingHof — see above.
             }
             return Map.copyOf(m);
         }

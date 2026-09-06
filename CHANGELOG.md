@@ -8,6 +8,58 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ SOUNDNESS R237 — an invoking higher-order function `isInvokingHof` did not name was SILENT, even
+  for an interface the set DOES cover.** Ground truth EXECUTED against a jar built at `61fb0b4` (R236's
+  commit, so the interface set is already the wide one and cannot be the cause):
+  `Optional.orElseGet(supParam)` and `Objects.requireNonNullElseGet(x, supParam)` ABSENT from
+  `functions[]` while `List.removeIf(pParam)` in the same class discloses
+  `callback:java.util.function.Predicate.test`. `Supplier` is inside the interface set; the HOF was the
+  problem. `isInvokingHof` is a hand-written allowlist of 27 simple names and an allowlist fails toward
+  SILENCE.
+
+  **The enumeration is the work, and it is not a list a person can write.** `List.sort` does not invoke
+  the comparator — it forwards it to `Arrays.sort`, which forwards to `TimSort.sort`, which forwards to
+  `binarySort`, which invokes it. So `generateJdkHofInvokes` asks the JDK (§G): ASM's own
+  `SourceInterpreter` over every JDK method taking a functional-interface parameter, plus a fixpoint
+  through the forwarding edges, plus two shapes it must see through — a CHECKCAST (erasure) and an
+  IDENTITY WRAPPER, both DERIVED rather than listed, because `Objects.requireNonNullElseGet`'s
+  `supplier.get()` receiver is `(Supplier) requireNonNull(supplier, "supplier")`. **1,623 (name,
+  descriptor) entries, 412 simple names the hand list never had** — `orElseGet`, `orElseThrow`,
+  `thenApply*`/`whenComplete*`/`handle*`/`exceptionally*`, `setAll`, `getAndUpdate`/`updateAndGet`,
+  `forEachRemaining`, `binarySearch`, `Subject.doAs`, `System.Logger.log`, …
+
+  **Unioned with the name list, never substituted for it** — an abstract interface method whose
+  implementation wraps the callback in a lazy pipeline (`Stream.map`) has no body to read, so dropping
+  the hand list would be the silent direction. **Keyed by (name, descriptor), not by owner**, because the
+  bytecode owner is often an implementation class that inherits the method (`ArrayList.removeIf`) and an
+  owner-keyed index would need a resolution walk that fails silent. The collision that key allows is an
+  OVER-report, bounded by the interface gate — measured, not asserted: over 395 jars the index admitted
+  `String.join(CharSequence, Iterable)` 65 times, `CollectionsKt.toSet(Iterable)` 39 and
+  `IOUtils.close(Closeable)` 7, and every one charged NOTHING.
+
+  **A/B over 395 gradle-cache jars, keyed on EVERY field, 580,538 common rows: ADDED 290 · REMOVED 0 ·
+  CHANGED(every field) 481 · CHANGED(inferred) 195.** Instrumented at 1,669 events over 1,361 distinct
+  sites. No channel lost an entry except `overdeclared` (96 rows, every lost entry `Unknown` on a method
+  that now really performs it). The largest cluster is commons-lang3 (122 + 99 rows across two versions)
+  and it is ONE shape: `Validate.notNull(obj, msg, values)` compiles to
+  `Objects.requireNonNull(obj, toSupplier(msg, values))`, so the supplier is a CALL RETURN — R217's
+  residual (3), disclosed rather than resolved, propagating through a library everything uses. **The
+  recall, ground-truthed from `javap`:** undertow's `GSSAPIAuthenticationMechanism.runGSSAPI` does
+  `new AcceptSecurityContext(...)` then `Subject.doAs(subject, action)` and gained **Clock and Rand**
+  from the action's own body — a concrete effect the engine had been dropping entirely, and the only row
+  in the whole A/B that gained one.
+
+  **A bug the sweep really had, kept as a regression guard.** ASM's operand stack is VALUE-indexed, not
+  slot-indexed: summing `Type.getSize()` to locate the receiver puts it one entry too low for every call
+  with a `long` or `double` argument. `OptionalDouble.ifPresentOrElse(DoubleConsumer, Runnable)` came
+  back naming only the `Runnable`; counted rather than sized it names both, and **155 further entries
+  appeared**. `theIndexIsBundledAndAnswersTheHofsThisRowIsAbout` asserts all four primitive overloads.
+
+  **Residual:** an invoking HOF whose implementation defers the callback into another object still needs
+  the hand list (`Stream.collect(Supplier, BiConsumer, BiConsumer)` is silent), and `ThreadLocal.withInitial`
+  is correctly NOT charged — it stores the supplier, which is the engine's settled stance on deferred
+  containers.
+
 - **⚠ SOUNDNESS R236 — `Comparator` and its family were outside EVERY arm that charges a callback, so
   `xs.sort(cmpField)` AND a direct `cmp.compare(a, b)` were both silent.** Ground truth EXECUTED
   against a jar built at `9dfd5d2`: eighteen probe methods whose callback really writes a file are

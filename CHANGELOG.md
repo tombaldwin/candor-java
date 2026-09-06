@@ -8,6 +8,66 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- ⚠ **SOUNDNESS R274 / R248 / R258 — the SLOT-vs-VALUE operand-stack index. Three cardinal sins from one
+  arithmetic error, all three PUBLISHED in 0.34.0 and 0.35.0, plus a fabrication in the other direction.**
+
+  ASM's `Frame` stack holds **one entry per VALUE**; `Type.getSize()` counts a `long`/`double` as two.
+  Nine helpers across `Candor.java`, `Interp.java` and `Cha.java` summed sizes to index the stack, so any
+  category-2 operand made each of them read *below* the value it wanted. The predictive rule: **argument
+  *k* is misread iff a `long`/`double` sits at descriptor position ≥ *k*, and the RECEIVER is misread iff
+  the descriptor holds one anywhere.** All nine now share one authority — `Candor.argValueIndex` /
+  `Candor.receiverValueIndex` — and the size-summing copies are deleted.
+
+  **What was silent, measured on a jar built from the `v0.35.0` tag and executed (70 generated cells, every
+  one compiled, run, and its effect observed):**
+
+  - `Interp.monomorphicReceiver` — **the widest, and on an UNBOUNDED surface.** A non-null result switches
+    OFF the CHA over-approximation. `new StringBuilder().append(h.work(1L))` read the StringBuilder as
+    `h`'s receiver: the interface call resolved to nothing, edged to nothing, disclosed nothing —
+    `inferred: []`, `calls: []`, over a callback that really wrote a file. Drop the `long`, or drop the
+    `new`, and the same call is `['Fs']` with its edge. Any virtual/interface call whose descriptor
+    carries a `long`/`double` was a candidate; no table bounded it.
+  - `Candor.handoffTaskArg` (R248) — **every periodic scheduling hand-off in the JVM.** One category-2
+    argument after the task returned the RECEIVER; two drove the index negative and returned `null`.
+    12 of 22 measured hand-off cells were silent, and over a tree holding only the silent method all
+    policy forms — `pure`, `deny Fs`, `deny Unknown`, `deny Fs`+`deny Unknown`, and both caller-scoped
+    forms — exited 0.
+  - `Candor.receiverProv` (R258 + R17) — `InputStream.skip(long)`, `InputStream.skipNBytes(long)` and
+    `Reader.skip(long)` are the only three verbs of `isAbstractStreamIo`'s own list the JDK spells with a
+    `long`, and they were exactly the three the stored-stream charge and the entry-point stream
+    disclosure could not locate.
+
+  **The same arithmetic FABRICATED.** Four measured cells charged a `task-handoff` Unknown against a
+  provably-pure program — `timerField.schedule(new EmptyTask(), 1L)` read the opaque *receiver* as the
+  task. `Interp.argsTainted` likewise walked past the argument block into the receiver and raised an
+  AS-EFF-007 injection-surface advisory for `in.skip(2L)`, whose only argument is a constant.
+
+  **AFFECTED SURFACE** (the rule applied by descriptor to every method in the affected tables — 16 of 199):
+  `Timer.schedule(TimerTask,long)`, `(TimerTask,Date,long)`, `(TimerTask,long,long)`,
+  `Timer.scheduleAtFixedRate(TimerTask,Date,long)`, `(TimerTask,long,long)`; `schedule(Runnable,long,
+  TimeUnit)`, `schedule(Callable,long,TimeUnit)`, `scheduleAtFixedRate(Runnable,long,long,TimeUnit)` and
+  `scheduleWithFixedDelay(Runnable,long,long,TimeUnit)` on both `ScheduledExecutorService` and
+  `ScheduledThreadPoolExecutor`; `InputStream.skip(long)`, `InputStream.skipNBytes(long)`,
+  `Reader.skip(long)`. **Unaffected and verified so:** `submit`/`execute`, every `CompletableFuture`
+  verb, `new Thread(r)`, all eight sync-callback-invoker owners, `Timer.schedule(TimerTask,Date)` and
+  every `isEqualsHashSink` overload — their descriptors carry no category-2 argument.
+
+  **Two sites keep `Type.getSize()` and must not be "fixed":** `Candor.paramLocalSlot` and
+  `Interp.paramSlots` address LOCAL-VARIABLE slots, where a `long` genuinely does occupy two. The
+  discriminator — frame-STACK index (values) vs frame-LOCAL index (slots) — is now written at
+  `argValueIndex`, because a text grep for `getSize()` cannot tell them apart and that is how the
+  boundary was first drawn wrong.
+
+  **`Cha.fieldBoundImplementors` was MEASURED NON-SILENT** before the fix: a SAM carrying a `long` lost
+  the field's lambda binding and fell back to the pre-existing CHA/Unknown path, disclosing
+  `['Unknown'] dispatch:…`. It is folded into the one authority as a precision win, not as a sin fix.
+
+- **R275 — `StructuralDispatchTest`'s one long-bearing hand-off assertion was green on a fabricated
+  reason.** `timer.schedule(tt, 0L)` passed on the broken engine because the misread returned the opaque
+  PARAM receiver, which is itself Unknown-worthy. Two spellings that cannot go green that way — a
+  provable `new` receiver, and two category-2 arguments — are added beside it; both were absent from
+  `functions[]` on the published 0.35.0 jar.
+
 - **SOUNDNESS R249 (gate half) — the native/jar parity gate could not see any of the three bundled
   classifier indexes go missing.** No engine behaviour changes; this is entirely about the instrument.
 

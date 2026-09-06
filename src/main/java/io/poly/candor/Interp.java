@@ -17,8 +17,10 @@ import static io.poly.candor.Literals.*;
  *  are re-exposed to Candor as bare names via `import static io.poly.candor.Interp.*`, and read Candor
  *  state/methods via `import static io.poly.candor.Candor.*`. See REFACTOR_PLAN.md. */
 final class Interp {
-    /** The local-variable slots holding this method's declared parameters (excluding `this`); a load from
-     *  one of these is the untrusted-input source for the taint pass. Long/double params occupy 2 slots. */
+    /** The LOCAL-VARIABLE slots holding this method's declared parameters (excluding `this`); a load from
+     *  one of these is the untrusted-input source for the taint pass. Long/double params occupy 2 slots.
+     *  <p>Summing {@code Type.getSize()} is CORRECT here and must stay: locals are addressed in SLOTS, not
+     *  in the VALUES that index a frame's stack. See {@link Candor#argValueIndex}. */
     static Set<Integer> paramSlots(MethodNode mn) {
         Set<Integer> s = new HashSet<>();
         int slot = (mn.access & Opcodes.ACC_STATIC) != 0 ? 0 : 1; // instance methods carry `this` at slot 0
@@ -29,14 +31,19 @@ final class Interp {
         return s;
     }
 
-    /** Is any ARGUMENT (not the receiver) of the call `min` tainted in the frame `f` before it executes? */
+    /** Is any ARGUMENT (not the receiver) of the call `min` tainted in the frame `f` before it executes?
+     *  <p>R274: this walked the top `Sum(Type.getSize())` stack entries, so a category-2 argument made it
+     *  read PAST the argument block into the receiver and below — measured FABRICATING an AS-EFF-007
+     *  injection-surface advisory for `in.skip(2L)`, whose only argument is a constant, off the tainted
+     *  RECEIVER the javadoc says it must not read. The arguments are exactly the top
+     *  `getArgumentTypes(desc).length` ENTRIES; see {@link Candor#argValueIndex}. */
     static boolean argsTainted(Frame<TaintValue> f, MethodInsnNode min) {
         if (f == null) return false;
-        int slots = 0;
-        for (Type a : Type.getArgumentTypes(min.desc)) slots += a.getSize();
-        int top = f.getStackSize();
-        for (int i = 0; i < slots && i < top; i++) { // the args occupy the top `slots` stack entries
-            TaintValue v = f.getStack(top - 1 - i);
+        Type[] at = Type.getArgumentTypes(min.desc);
+        for (int i = 0; i < at.length; i++) {
+            int idx = argValueIndex(f.getStackSize(), at, i);
+            if (idx < 0) continue;
+            TaintValue v = f.getStack(idx);
             if (v != null && v.tainted) return true;
         }
         return false;
@@ -456,10 +463,13 @@ final class Interp {
      *  call's arguments. */
     static String monomorphicReceiver(Frame<ProvValue> f, MethodInsnNode min) {
         if (f == null) return null;
-        int argSlots = 0;
-        for (Type a : Type.getArgumentTypes(min.desc)) argSlots += a.getSize();
-        int top = f.getStackSize();
-        int recvIdx = top - 1 - argSlots; // below the args sits the receiver
+        // R274 — THE WORST OF THE SLOT-vs-VALUE SITES, because a wrong answer here does not merely miss a
+        // table entry: a non-null `monoRecv` switches OFF the CHA over-approximation at the call site.
+        // Summing `Type.getSize()` made `new StringBuilder().append(h.work(1L))` read the StringBuilder as
+        // `h`'s receiver, so the call resolved to nothing, edged to nothing, disclosed nothing — executed
+        // silent-pure over a real file write, on an UNBOUNDED surface (every virtual/interface call whose
+        // descriptor carries a long/double), and SHIPPED in 0.34.0 and 0.35.0.
+        int recvIdx = receiverValueIndex(f.getStackSize(), Type.getArgumentTypes(min.desc));
         if (recvIdx < 0) return null;
         ProvValue rv = f.getStack(recvIdx);
         return rv == null ? null : rv.newType;

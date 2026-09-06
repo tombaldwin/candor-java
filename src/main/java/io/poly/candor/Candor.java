@@ -4538,7 +4538,7 @@ public class Candor {
                 // Gated on the PARAMETER's declared type being a functional interface, so an ordinary object
                 // that merely happens to be constructed at a HOF call site (`map.merge(k, new Val(), fn)`)
                 // is never charged its whole surface.
-                if (i < pt.length && isHofFunctionalIface(pt[i].getInternalName())
+                if (i < pt.length && isFunctionalIface(pt[i].getInternalName())
                         && !ctx.projectClasses.contains(a.newType))
                     for (DepFn d : depFnsInvokedByHandoff(a.newType, handoffInvoked(pt[i].getInternalName())))
                         inheritDepFn(id, d);
@@ -4553,7 +4553,7 @@ public class Candor {
      *
      *  <ul>
      *    <li>a {@code new EffImpl()} — resolved to its SAM surface by {@link #namedFunctionalToHof},
-     *        the caller of this method, gated on {@link #isInvokingHof} + {@link #isHofFunctionalIface};
+     *        the caller of this method, gated on {@link #isInvokingHof} + {@link #isFunctionalIface};
      *    <li>a lambda or a method reference — edged at its creation site by
      *        {@link #handleInvokeDynamic} (and, since R183, disclosed there when the handle names no
      *        body). That is what {@code fromIndy} records;
@@ -4572,23 +4572,21 @@ public class Candor {
      *  invoker table; those two keep answering the arg0 hand-off question they were built for, and this
      *  returns early where they have already spoken.
      *
-     *  <p><b>WHICH INTERFACES — {@link #isFunctionalIface}, NOT {@link #isHofFunctionalIface}, AND THAT
-     *  WAS MEASURED, NOT REASONED.</b> The claim here is parity with the arms that already charge, and
-     *  those are gated on {@link #isJdkFunctionalSam} — {@code java/util/function/} + {@code Runnable} +
-     *  {@code Callable}. {@code isJdkFunctionalSam} itself cannot be called here, because it takes the
-     *  invoked (owner, NAME) pair and this site has only the declared parameter TYPE; its own
-     *  same-membership sibling {@link #isFunctionalIface} — "a recognised JDK functional interface, the
-     *  owners whose SAM raises a {@code callback:} Unknown" — is the type-only spelling of exactly that
-     *  set, which is why it is the one asked. Taking the wider set instead (adding {@code Comparator}, {@code FileFilter},
-     *  {@code FilenameFilter}, {@code PrivilegedAction}) was built and run over the same 395-jar corpus:
-     *  ADDED 2,155 rather than 458 and CHANGED(inferred) 865 rather than 338 — +1,697 rows, 596 of them
-     *  in assertj-core and 560 in jandex alone, over {@code Comparator.comparing(…)}-shaped plumbing.
-     *  It is also INTERNALLY INCONSISTENT: {@code cmpParam.compare(a, b)} — the same callback, invoked
-     *  DIRECTLY one frame shallower — is silent at HEAD, because {@code handleMethodInsn}'s unpinned-SAM
-     *  branch is keyed on {@code isJdkFunctionalSam} too. Charging the HOF-mediated spelling while the
-     *  direct one stays silent would put the boundary in a place no arm agrees on. So {@code Comparator}
-     *  stays OPEN here, it is R183's stated residual (2), and closing it means widening
-     *  {@code isJdkFunctionalSam} for EVERY arm together — a different row.
+     *  <p><b>WHICH INTERFACES — {@link #isFunctionalIface}, WHICH SINCE SOUNDNESS R236 IS THE ONLY SET.</b>
+     *  The claim here is parity with the arms that already charge, and those are gated on
+     *  {@link #isJdkFunctionalSam}. {@code isJdkFunctionalSam} itself cannot be called here, because it
+     *  takes the invoked (owner, NAME) pair and this site has only the declared parameter TYPE;
+     *  {@link #isFunctionalIface} is its type-only spelling and its membership authority, which is why it
+     *  is the one asked. <b>The parity that sentence claims was FALSE when it was written, and R236 is
+     *  what it cost.</b> R217 measured the wider set HERE, in this arm alone: +1,697 rows over the same
+     *  395-jar corpus, 596 in assertj-core and 560 in jandex, over comparator plumbing — while
+     *  {@code cmpParam.compare(a, b)}, the same callback invoked DIRECTLY one frame shallower, stayed
+     *  silent because {@code handleMethodInsn}'s unpinned-SAM branch is keyed on {@code isJdkFunctionalSam}
+     *  too. Charging the HOF-mediated spelling while the direct one stays silent puts the boundary where no
+     *  arm agrees, so it was rejected — correctly, and it left a live cardinal sin, because the alternative
+     *  taken was to charge NEITHER. R236 widened the set for every arm at once instead. There is now one
+     *  set, this method asks it, and the direct-invoke branch asks it through
+     *  {@code isJdkFunctionalSam}.
      *
      *  <p><b>WHICH DIRECTION THIS FAILS IN.</b> {@code isInvokingHof} is an ALLOWLIST, so an invoking HOF
      *  it does not name leaves this site SILENT — an under-report, never a fabrication on a sink that
@@ -4611,6 +4609,16 @@ public class Candor {
         if (i >= pt.length || pt[i].getSort() != Type.OBJECT) return;
         String iface = pt[i].getInternalName();
         if (!isFunctionalIface(iface)) return;
+        // SOUNDNESS R236 — A PROVABLE `null` HANDS OVER NO CALLBACK. `xs.sort(null)` is the documented
+        // natural-ordering spelling, `Collections.sort(xs, null)` and `Arrays.sort(a, null)` likewise, and
+        // `AccessController.doPrivileged(null)` throws. Charging `Unknown` there claims candor cannot rule
+        // out an effect that provably cannot occur. R217 wrote this guard as `declType == null`, measured
+        // it at 0 rows over 395 jars and DELETED it rather than ship an untestable narrowing — correctly,
+        // because inside `java/util/function/` every invoking HOF NPEs on null so no fixture could
+        // discriminate it. Widening the set to `Comparator` is what gives it a runnable fixture
+        // (`aProvableNullComparatorIsNotACallback`), and `ProvValue.nullConst` is a dataflow fact that
+        // collapses at a join — not `declType`, which is also null for a merge and for an array read.
+        if (a.nullConst) return;
         // A LAMBDA OR A METHOD REFERENCE IS ALREADY ANSWERED AT ITS CREATION SITE — by
         // `handleInvokeDynamic`'s project and external arms, and since R183 by its `isJdkFunctionalSam`
         // arm for a reference that names no body. `fromIndy` is that whole answer, and it is the same
@@ -5628,7 +5636,7 @@ public class Candor {
             // (`list.size()`, `map.get()`) is unaffected — those owners aren't functional SAMs.
             if (!broad && targets.isEmpty() && !dispatchExempt && effect == null && !springTyped
                     && isJdkFunctionalSam(min.owner, min.name)) {
-                // Canonical vocabulary (SPEC §4, ⟨0.7⟩): a JDK functional-SAM invoked on an
+                        // Canonical vocabulary (SPEC §4, ⟨0.7⟩): a JDK functional-SAM invoked on an
                 // unpinned receiver (a field/param-stored handler `this.cb.run()`) is a
                 // higher-order call on a function VALUE → `callback:`, not `dispatch:` (it does
                 // not resolve to a class-hierarchy override, so it is correctly NOT a frontier source).
@@ -6267,7 +6275,7 @@ public class Candor {
      *  (`accept(String)`), so there is no single hash to join on. Taking the type's whole reported surface
      *  mirrors {@link #functionalSamSurface}, which edges every method of a project functional impl for the
      *  same reason — such a type exists to be invoked, and its surface is one or two methods. */
-    /** The SAM method names of every functional interface `TASK_ARG_PREFIXES` / `isHofFunctionalIface`
+    /** The SAM method names of every functional interface `TASK_ARG_PREFIXES` / `isFunctionalIface`
      *  admit, plus `<init>`. A hand-off invokes exactly ONE member of the constructed type — the
      *  interface's single abstract method — and the constructor, which runs at the `new` site itself.
      *  Every other member of that type is unreachable through the hand-off.
@@ -6278,7 +6286,7 @@ public class Candor {
      *  service that only enqueues work. The comment at the call site argued the parameter gate made the
      *  surface safe; the gate constrains which TYPE is handed off, never which MEMBER runs. */
     /** Functional interface -> its single abstract method. Keyed by INTERFACE, not by method name, because
-     *  the interface set was believed CLOSED (isFunctionalIface / isHofFunctionalIface / TASK_ARG_PREFIXES
+     *  the interface set was believed CLOSED (isFunctionalIface / TASK_ARG_PREFIXES
      *  all gate on an explicit list) while the set of SAM names is not. <b>That premise is where R191
      *  came in: {@code isFunctionalIface} does NOT gate on a list — it admits the whole
      *  {@code java/util/function/} PACKAGE by prefix — so the set of interfaces that can reach a consumer
@@ -6769,38 +6777,73 @@ public class Candor {
     /** A JDK FUNCTIONAL-INTERFACE single-abstract-method invocation — its only implementors are lambdas/
      *  method-refs whose bodies don't resolve from the call site, so an unpinned dispatch with no project
      *  impl is honest Unknown (never silent-pure). Restricted to the actual SAM names (not the package's
-     *  concrete default methods); Runnable.run and Callable.call are the two outside the package. NOT the
-     *  Kotlin/Scala/Groovy FunctionN (those stay isChaExemptMethod — their lambda effect is captured). */
+     *  concrete default methods); NOT the Kotlin/Scala/Groovy FunctionN (those stay isChaExemptMethod —
+     *  their lambda effect is captured).
+     *
+     *  <p><b>SOUNDNESS R236 — THE SET IS {@link #isFunctionalIface}'s, AND IT IS NOW THE SAME SET EVERY
+     *  ARM ASKS.</b> Until this row there were TWO sets: this one ({@code java/util/function/} +
+     *  {@code Runnable} + {@code Callable}) gating the three arms that CHARGE a callback, and a wider one
+     *  gating the two that resolve a NAMED impl. {@code Comparator}, {@code FileFilter},
+     *  {@code FilenameFilter} and {@code PrivilegedAction} sat in the wide set only, so no charging arm
+     *  reached them: {@code xs.sort(cmpParam)} was silent (R217's opaque arm), {@code xs.sort(c::compare)}
+     *  was silent (R183's creation-site arm), {@code xs.sort((a,b) -> c.compare(a,b))} was silent (the
+     *  lambda's body is this branch, one frame in), and so was {@code cmpParam.compare(a, b)} — a DIRECT
+     *  invoke with no higher-order function anywhere. Ground truth executed: eighteen probe methods whose
+     *  callback really writes a file, {@code deny Unknown} exit 0 on every one.
+     *
+     *  <p>The name is asked of {@link #samNameOf} — R191's JDK-derived index — rather than written down a
+     *  second time (§G). That matters here: {@code Comparator} carries eleven {@code default} and
+     *  {@code static} members ({@code reversed}, {@code thenComparing}, {@code comparing}, …) and only
+     *  {@code compare} is the SAM, exactly the distinction {@code FUNCTION_PKG_SAM} exists to make for
+     *  {@code andThen}/{@code compose}/{@code negate}. Composition and factory calls therefore stay pure,
+     *  and {@code CmpCombinatorsAndFactoriesGainNothing} is the row that fails if that stops being true. */
+
     static boolean isJdkFunctionalSam(String owner, String name) {
         if (owner.startsWith("java/util/function/")) return FUNCTION_PKG_SAM.contains(name);
-        if (owner.equals("java/lang/Runnable") && name.equals("run")) return true;
-        if (owner.equals("java/util/concurrent/Callable") && name.equals("call")) return true;
-        return false;
+        if (!isFunctionalIface(owner)) return false;
+        return name.equals(samNameOf(owner));
     }
 
     // ── Private functional-param forwarding (see fwdSink* fields) ──────────────────────────────────────
 
-    /** A recognised JDK functional interface (the owners whose SAM raises a callback: Unknown). */
+    /** A recognised JDK functional interface — the owners whose SAM raises a {@code callback:} Unknown, the
+     *  owners a library HOF invokes on a passed instance, and the owners whose sole occurrence in a private
+     *  method's descriptor makes it a forwarding sink. <b>ONE set, asked by every arm (SOUNDNESS R236).</b>
+     *
+     *  <p>The {@code java.util.function} package plus the library SAMs outside it: {@code Comparator}
+     *  ({@code sort}/{@code sorted}/{@code min}/{@code max}), {@code FileFilter}/{@code FilenameFilter}
+     *  ({@code File.listFiles}), {@code Runnable}/{@code Callable}, and the two
+     *  {@code AccessController.doPrivileged} actions — {@code doPrivileged} SYNCHRONOUSLY runs
+     *  {@code action.run()} (see {@link #isInvokingHof}), and a project class implementing one of these
+     *  performs the real effect in that body (found silent-pure on commons-vfs2's
+     *  {@code PrivilegedFileReplicator.init}/{@code replicateFile} → Net/Fs).
+     *
+     *  <p><b>WHY THE TWO SETS ARE MERGED RATHER THAN THE NARROW ONE WIDENED IN PLACE.</b> R217 built the
+     *  wider set into its opaque arm ALONE and measured it: +1,697 rows over 395 jars, 596 in assertj-core
+     *  and 560 in jandex, over comparator plumbing — <i>and it still charged nothing at the direct
+     *  {@code cmp.compare(a, b)} invoke</i>, because that branch is keyed on {@link #isJdkFunctionalSam}.
+     *  It bought fabrication and not the decisive cell, so it was rejected, correctly. The set is not the
+     *  problem; asking it in one arm out of four is. Widened everywhere at once the three charging arms
+     *  agree with each other and with the two resolving arms, which is the property R217's rejection was
+     *  actually defending.
+     *
+     *  <p><b>WHICH DIRECTION THIS FAILS IN, SAID BEFORE THE CHANGE.</b> Widening an interface set can only
+     *  ADD {@code Unknown}: every arm it feeds is an over-approximation that emits a disclosure, none
+     *  suppresses one. The single arm where a wider set can change an answer in the other direction is
+     *  {@link #singleFunctionalParamIndex}, which returns -1 when a method has MORE than one functional
+     *  parameter — a wider set can only turn an index into -1, never -1 into an index, and -1 means the
+     *  callback Unknown is emitted NOW instead of being deferred and resolved from call sites. Also the
+     *  over-report direction. So {@code REMOVED} over the corpus must be 0, and it is; a removal here would
+     *  be a defect, not a precision gain. */
     static boolean isFunctionalIface(String internal) {
         return internal != null && (internal.startsWith("java/util/function/")
-                || internal.equals("java/lang/Runnable") || internal.equals("java/util/concurrent/Callable"));
-    }
-
-    /** A JDK functional interface a LIBRARY HOF invokes on a passed instance — the java.util.function set
-     *  plus the common library SAMs NOT in that package: `Comparator` (sort/sorted), `FileFilter`/
-     *  `FilenameFilter` (File.listFiles). Broader than {@link #isFunctionalIface} on PURPOSE: kept separate
-     *  so the private-forwarding param-count (which uses isFunctionalIface) is unaffected by this widening. */
-    static boolean isHofFunctionalIface(String internal) {
-        return isFunctionalIface(internal)
+                || "java/lang/Runnable".equals(internal)
+                || "java/util/concurrent/Callable".equals(internal)
                 || "java/util/Comparator".equals(internal)
                 || "java/io/FileFilter".equals(internal)
                 || "java/io/FilenameFilter".equals(internal)
-                // AccessController.doPrivileged(action) SYNCHRONOUSLY runs action.run() (see isInvokingHof).
-                // The action is a project class implementing one of these — its run() body performs the
-                // real effect, so its SAM surface must propagate (found silent-pure on commons-vfs2's
-                // PrivilegedFileReplicator.init/replicateFile → Net/Fs via a doPrivileged'd wrapped call).
                 || "java/security/PrivilegedAction".equals(internal)
-                || "java/security/PrivilegedExceptionAction".equals(internal);
+                || "java/security/PrivilegedExceptionAction".equals(internal));
     }
 
     /** Library method SIMPLE-NAMES that INVOKE a functional/Comparator/FileFilter argument's SAM (so a
@@ -6826,7 +6869,7 @@ public class Candor {
             // FileFilter / FilenameFilter
             case "listFiles": case "list":
             // AccessController.doPrivileged(PrivilegedAction|PrivilegedExceptionAction) runs action.run()
-            // synchronously — a genuine invoking HOF (see isHofFunctionalIface).
+            // synchronously — a genuine invoking HOF (see isFunctionalIface).
             case "doPrivileged":
                 return true;
             default:
@@ -6840,7 +6883,7 @@ public class Candor {
      *  implements no such interface (a non-functional `new Foo()` edges nothing). */
     static Set<String> functionalSamSurface(String classInternal) {
         ClassNode cn = ctx().byName.get(classInternal);
-        if (cn == null || cn.interfaces == null || cn.interfaces.stream().noneMatch(Candor::isHofFunctionalIface))
+        if (cn == null || cn.interfaces == null || cn.interfaces.stream().noneMatch(Candor::isFunctionalIface))
             return Set.of();
         Set<String> out = new HashSet<>();
         String dotted = classInternal.replace('/', '.');

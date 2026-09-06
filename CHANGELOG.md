@@ -8,6 +8,62 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ SOUNDNESS R236 — `Comparator` and its family were outside EVERY arm that charges a callback, so
+  `xs.sort(cmpField)` AND a direct `cmp.compare(a, b)` were both silent.** Ground truth EXECUTED
+  against a jar built at `9dfd5d2`: eighteen probe methods whose callback really writes a file are
+  ABSENT from `functions[]`, and `deny Unknown <method>` exits **0** on every one of them against exit
+  1 on `removeIf(pParam)` in the same class. `Comparator`, `FileFilter`, `FilenameFilter` and the two
+  `PrivilegedAction`s lived only in the WIDER interface set, which gates the two arms that resolve a
+  NAMED impl — so a comparator got an edge when it arrived as `new MyCmp()` and nothing at all in every
+  other spelling, including the LAMBDA one (`xs.sort((a,b) -> c.compare(a,b))`, whose body is judged by
+  the same branch one frame in).
+
+  **The direct-invoke cell is why this was its own row.** R217's mechanism is "an argument handed to an
+  invoking higher-order function"; `cmpParam.compare("a","b")` fires with no higher-order function
+  anywhere. R217 BUILT and MEASURED the wider set in its opaque arm alone — +1,697 rows over 395 jars,
+  596 in assertj-core and 560 in jandex — and it still left the direct invoke silent, so it was
+  rejected. The set was never the problem; asking it in one arm out of four was.
+
+  **What changed: one set, asked by every arm.** `isHofFunctionalIface` is gone; `isFunctionalIface` is
+  the single membership authority, consulted by the direct-invoke branch (through `isJdkFunctionalSam`),
+  by R183's creation-site arm, by R217's opaque arm, by `namedFunctionalToHof` and by
+  `functionalSamSurface`. The SAM NAME comes from `samNameOf` — R191's JDK-derived index — rather than
+  a second hand-written list (§G), which is what keeps `Comparator`'s eleven `default`/`static` members
+  (`reversed`, `thenComparing`, `comparing`, …) out of it.
+
+  **A provable `null` is not a callback, and this is where that guard became testable.** `xs.sort(null)`
+  is natural ordering; charging `Unknown` there claims candor cannot rule out an effect that provably
+  cannot occur. R217 wrote the guard as `declType == null`, measured 0 rows, found no runnable fixture
+  could discriminate it inside `java/util/function/` (every invoking HOF there throws on null) and
+  DELETED it rather than ship an untestable narrowing. Widening to `Comparator` gives it a fixture. It
+  is `ProvValue.nullConst` — a dataflow fact that collapses at a join — and NOT `declType == null`,
+  which is also null for a merge and for an array read. Still 0 rows over the same 395 jars; kept
+  because it can now be made to fail.
+
+  **A/B over 395 gradle-cache jars, keyed on EVERY field, 578,461 common rows** (347 jars have rows; 48
+  are annotation-only and scan to zero rows in BOTH engines): **ADDED 2,077 · REMOVED 0 ·
+  CHANGED(every field) 2,814 · CHANGED(inferred) 534.** Pre-image built from a jar at `9dfd5d2`.
+  INSTRUMENTED, because an unchanged row is not evidence the new code ran: 1,368 events at 734 distinct
+  sites — opaque arm 628 sites, private-forwarding param count 83, direct invoke 23, **method-reference
+  creation site 0**. That last zero is stated rather than buried: the reference arm's evidence is the
+  executed probe and `theFourSpellingsAgreeOnTheComparator`, not the corpus. No channel lost an entry
+  anywhere except `overdeclared` (130 rows), which is `declared - performed` shrinking because
+  `performed` grew. All 534 `inferred` moves are a strict addition of exactly `Unknown`; no added row
+  claims a concrete effect, and 908 of the added rows claim no effect at all (they surface only through
+  `ReportWriter`'s existing "the class declares a capability" rule). Bucketed from `javap`, never from
+  candor's own report: pcollections' `KVTree` really does `invokeinterface Comparator.compare` on a
+  caller-supplied comparator at seven sites (its 358 rows are that closure); commons-io's
+  `FileUtils.listFiles(File, FileFilter)` really hands the caller's filter to `File.listFiles`; jandex's
+  `Type.<init>` really sorts with one.
+
+  **Residual, stated not implied.** An opaque callback whose `declType` names a class that is IN THE
+  SCAN is hedged rather than resolved — junit's `Sorter.orderItems` passes `this` to `Collections.sort`
+  and gets `Unknown` although `Sorter.compare` is right there. That is R217's residual (3) one interface
+  over, and it stays: `declType`'s own contract forbids using it to NARROW. The other residual is the
+  OWNER LIST itself — `ThreadFactory.newThread` is still silent — pinned by
+  `theRemainingBoundaryIsTheOwnerListNotTheInterfaceKind`, which REPLACES
+  `theRemainingBoundaryIsTheInterfaceSetNotTheOpaqueness`.
+
 - **⚠ SOUNDNESS R217 — an OPAQUE callback (one arriving as a field or a parameter) handed to a
   higher-order function read SILENT-PURE, while its lambda and method-reference twins disclosed.**
   `xs.removeIf(pParam)` and `m.computeIfAbsent(k, fnField)` were ABSENT from `functions[]`, ground

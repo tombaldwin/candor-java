@@ -223,60 +223,43 @@ class SamForwarderHandoffTest {
         } finally { rm(cls.getParent()); }
     }
 
-    /** THE BOUNDARY, MOVED AGAIN — this row was {@code theHofTableBoundaryThisRowDoesNotWiden}, then
-     *  {@code theRemainingBoundaryIsTheOPAQUECallbackNotTheSpelling}, and SOUNDNESS R217 made THAT
-     *  boundary obsolete rather than merely crossing it.
+    /** THE BOUNDARY REGISTER LIVES ELSEWHERE NOW. This row was
+     *  {@code theHofTableBoundaryThisRowDoesNotWiden}, then
+     *  {@code theRemainingBoundaryIsTheOPAQUECallbackNotTheSpelling} (R183), then
+     *  {@code theRemainingBoundaryIsTheInterfaceSetNotTheOpaqueness} (R217) — and SOUNDNESS R236 closed
+     *  THAT one: {@code Comparator}, {@code FileFilter}, {@code FilenameFilter} and
+     *  {@code PrivilegedAction} are inside {@code Candor#isFunctionalIface} now, and every arm that
+     *  charges a callback asks that one set. The register MOVED rather than being deleted, and it moved
+     *  to a different file because the subject changed with it:
+     *  {@code ComparatorFamilyEveryArmTest#theRemainingBoundaryIsTheOwnerListNotTheInterfaceKind}, which
+     *  pins {@code ThreadFactory.newThread} — a JDK functional interface outside the owner list.
      *
-     *  <p><b>What it used to pin.</b> After R183 closed the SPELLING gap at the creation site, a callback
-     *  arriving as a FIELD or a PARAMETER still had no creation site to attribute anything to, so
-     *  {@code xs.removeIf(pParam)} and {@code m.computeIfAbsent(k, fnParam)} stayed silent. R217 closed
-     *  that, in {@link OpaqueCallbackToHofTest}, and <b>without widening either invoker table</b>:
-     *  {@code Candor#isInvokingHof} was already the authority for "does this library higher-order
-     *  function invoke the functional argument it is handed", answering exactly that question at exactly
-     *  this call site for the {@code new EffImpl()} arm.
-     *
-     *  <p><b>What the boundary actually is, now that opaqueness no longer decides.</b> THE INTERFACE SET.
-     *  Every arm that charges a callback — the lambda body's unpinned-SAM read, R183's creation-site arm,
-     *  and now the opaque arm — is keyed on {@code java/util/function/} + {@code Runnable} +
-     *  {@code Callable}. A {@code Comparator} is outside all three, so {@code xs.sort(cmpField)} is
-     *  silent, and so is {@code cmpParam.compare(a, b)} — the SAME callback invoked directly, one frame
-     *  shallower, with no higher-order function involved at all. That is a live silent under-report and
-     *  it is R183's stated residual (2): closing it means widening {@code Candor#isJdkFunctionalSam} for
-     *  EVERY arm together, which is a separate row with its own fabrication risk — the wider set was
-     *  built and measured for R217 and cost +1,697 rows over 395 jars, 596 in assertj-core alone.
-     *
-     *  <p>Pinned exactly as before: when it is closed, this row goes RED and the register moves with it.
-     *  {@code removeArm} is the control that keeps the two questions apart — the same OPAQUE parameter at
-     *  the same kind of higher-order function, differing only in the interface, disclosed since R217. */
+     *  <p>What stays HERE is the half of the old row that is still about THIS file's subject: the
+     *  interface-set widening must not have cost the {@code removeIf} arm R217 closed, and the two
+     *  spellings that reach it must still agree. If this goes silent, the boundary row one file over
+     *  reads as a boundary when it is really a regression. */
     @Test
-    void theRemainingBoundaryIsTheInterfaceSetNotTheOpaqueness() throws Exception {
+    void theInterfaceSetWideningKeptTheArmsItAlreadyHad() throws Exception {
         Path cls = compile(Map.of("app/Opaque.java", String.join("\n",
             "package app;",
             "import java.util.*;",
             "import java.util.function.*;",
             "public class Opaque {",
-            "  private Comparator<String> cmp;",
-            "  public void sortField(List<String> xs) { xs.sort(cmp); }",
-            "  public void sortParam(List<String> xs, Comparator<String> c) { xs.sort(c); }",
-            "  public Optional<String> minParam(List<String> xs, Comparator<String> c) { return xs.stream().min(c); }",
-            "  public int compareParam(Comparator<String> c) { return c.compare(\"a\", \"b\"); }",
             "  public boolean removeArm(List<String> xs, Predicate<String> p) { return xs.removeIf(p); }",
+            "  public boolean lambdaArm(List<String> xs, Predicate<String> p) { return xs.removeIf(x -> p.test(x)); }",
+            "  public void sortField(List<String> xs, Comparator<String> c) { xs.sort(c); }",
             "}")));
         try {
             Map<String, EffectSet> r = Candor.runScan(cls);
-            for (String m : new String[] {"sortField", "sortParam", "minParam", "compareParam"})
-                assertFalse(eff(r, "app.Opaque." + m).contains(Effect.UNKNOWN),
-                    "RESIDUAL, NOT A CLAIM OF CORRECTNESS: " + m + " reaches a Comparator that really "
-                    + "runs, and Comparator is outside `isJdkFunctionalSam` — the set EVERY arm that "
-                    + "charges a callback is keyed on — so it is silent whether it is handed to a "
-                    + "higher-order function or invoked directly. An OPEN silent under-report, and the "
-                    + "one that really does need the interface set widened for all arms at once. Got "
-                    + r.get("app.Opaque." + m));
             assertTrue(eff(r, "app.Opaque.removeArm").contains(Effect.UNKNOWN),
-                "…and the CONTROL that separates the two: the same OPAQUE parameter at the same kind of "
-                + "higher-order function, differing only in the interface, which R217 discloses. If this "
-                + "went silent the four rows above would read as a boundary when they were really a "
-                + "regression. Got " + r.get("app.Opaque.removeArm"));
+                "R217's arm: an OPAQUE parameter at an invoking higher-order function. Got "
+                + r.get("app.Opaque.removeArm"));
+            assertTrue(eff(r, "app.Opaque.lambdaArm").contains(Effect.UNKNOWN),
+                "and its one-variable lambda twin, which has disclosed since before R217. Got "
+                + r.get("app.Opaque.lambdaArm"));
+            assertTrue(eff(r, "app.Opaque.sortField").contains(Effect.UNKNOWN),
+                "and the Comparator cell R236 closed, kept here so this file records that the set it "
+                + "used to call a boundary is no longer one. Got " + r.get("app.Opaque.sortField"));
         } finally { rm(cls.getParent()); }
     }
 

@@ -4527,7 +4527,8 @@ public class Candor {
             List<ProvValue> args = callArgs(provFrames[mn.instructions.indexOf(min)], min);
             for (int i = 0; i < args.size(); i++) {
                 ProvValue a = args.get(i);
-                if (a == null || a.newType == null) continue;
+                if (a == null) continue;
+                if (a.newType == null) { opaqueFunctionalToHof(ctx, s, min, pt, i, a); continue; }
                 ctx.edges.get(id).addAll(functionalSamSurface(a.newType));
                 // ACROSS THE SCAN BOUNDARY: the same hand-off, but the functional impl belongs to a chained
                 // DEPENDENCY. `functionalSamSurface` reads the project ClassNode, so a dep type yields an
@@ -4543,6 +4544,95 @@ public class Candor {
                         inheritDepFn(id, d);
             }
         }
+    }
+
+    /** SOUNDNESS R217 — THE SAME CALL SITE, THE SAME TWO PREDICATES, AND THE OPAQUE ARGUMENT GOT
+     *  NOTHING. {@code xs.removeIf(pParam)} / {@code m.computeIfAbsent(k, fnField)} was ABSENT from
+     *  {@code functions[]} while the callback really ran — ground truth EXECUTED, five driven arms and
+     *  five writes. Three arms reach one HOF argument and only two were answered:
+     *
+     *  <ul>
+     *    <li>a {@code new EffImpl()} — resolved to its SAM surface by {@link #namedFunctionalToHof},
+     *        the caller of this method, gated on {@link #isInvokingHof} + {@link #isHofFunctionalIface};
+     *    <li>a lambda or a method reference — edged at its creation site by
+     *        {@link #handleInvokeDynamic} (and, since R183, disclosed there when the handle names no
+     *        body). That is what {@code fromIndy} records;
+     *    <li>an OPAQUE value — a parameter, a field, another call's return — which has no creation site
+     *        in this method at all, so neither arm fires. Silent, in the one spelling that carries no
+     *        syntax to attribute. This is the boundary R183's fix moved TO.
+     *  </ul>
+     *
+     *  <p><b>NO TABLE IS WIDENED, AND THE ROW'S "WHICH HOFs INVOKE" QUESTION IS ALREADY ANSWERED IN THIS
+     *  FILE.</b> R217 was filed as needing {@code Rules#SYNC_CALLBACK_INVOKERS} / {@link #FOR_EACH_FAMILY}
+     *  widened by hand — the fabrication direction. It does not: {@link #isInvokingHof} is the engine's
+     *  own authority for "does this library HOF invoke the functional argument it is handed", and it
+     *  already decides EXACTLY this question, at EXACTLY this call site, for the {@code new EffImpl()}
+     *  arm one branch up (§G — ask the authority, do not write a second one). It names {@code sort},
+     *  {@code computeIfAbsent} and {@code removeIf}. This method adds no name to it and no name to either
+     *  invoker table; those two keep answering the arg0 hand-off question they were built for, and this
+     *  returns early where they have already spoken.
+     *
+     *  <p><b>WHICH INTERFACES — {@link #isFunctionalIface}, NOT {@link #isHofFunctionalIface}, AND THAT
+     *  WAS MEASURED, NOT REASONED.</b> The claim here is parity with the arms that already charge, and
+     *  those are gated on {@link #isJdkFunctionalSam} — {@code java/util/function/} + {@code Runnable} +
+     *  {@code Callable}. {@code isJdkFunctionalSam} itself cannot be called here, because it takes the
+     *  invoked (owner, NAME) pair and this site has only the declared parameter TYPE; its own
+     *  same-membership sibling {@link #isFunctionalIface} — "a recognised JDK functional interface, the
+     *  owners whose SAM raises a {@code callback:} Unknown" — is the type-only spelling of exactly that
+     *  set, which is why it is the one asked. Taking the wider set instead (adding {@code Comparator}, {@code FileFilter},
+     *  {@code FilenameFilter}, {@code PrivilegedAction}) was built and run over the same 395-jar corpus:
+     *  ADDED 2,155 rather than 458 and CHANGED(inferred) 865 rather than 338 — +1,697 rows, 596 of them
+     *  in assertj-core and 560 in jandex alone, over {@code Comparator.comparing(…)}-shaped plumbing.
+     *  It is also INTERNALLY INCONSISTENT: {@code cmpParam.compare(a, b)} — the same callback, invoked
+     *  DIRECTLY one frame shallower — is silent at HEAD, because {@code handleMethodInsn}'s unpinned-SAM
+     *  branch is keyed on {@code isJdkFunctionalSam} too. Charging the HOF-mediated spelling while the
+     *  direct one stays silent would put the boundary in a place no arm agrees on. So {@code Comparator}
+     *  stays OPEN here, it is R183's stated residual (2), and closing it means widening
+     *  {@code isJdkFunctionalSam} for EVERY arm together — a different row.
+     *
+     *  <p><b>WHICH DIRECTION THIS FAILS IN.</b> {@code isInvokingHof} is an ALLOWLIST, so an invoking HOF
+     *  it does not name leaves this site SILENT — an under-report, never a fabrication on a sink that
+     *  merely stores the callback. The denylist form was already tried at this exact site and MEASURED
+     *  wrong: {@code namedFunctionalToHof}'s own history records that {@code !isStoringContainerCall}
+     *  fired for ANY external non-store and charged {@code Objects.requireNonNull(c)},
+     *  {@code Optional.ofNullable(c)}, {@code map.getOrDefault(k, c)} and {@code new TreeMap<>(cmp)}.
+     *
+     *  <p><b>A NULL-CONSTANT GUARD WAS WRITTEN, MEASURED AND DELETED.</b> {@code ACONST_NULL} reaches
+     *  here with a null {@code declType} (the bare-{@code Object} REFERENCE_VALUE), and skipping on that
+     *  looked obviously right — {@code xs.sort(null)} is the documented natural-ordering spelling. It is
+     *  a {@code Comparator} spelling, which this method does not cover; inside
+     *  {@code java/util/function/} + {@code Runnable} + {@code Callable} every invoking HOF NPEs on a
+     *  null argument, so there is no runnable fixture that could discriminate the guard, and over the
+     *  395-jar corpus it changed ADDED/REMOVED/CHANGED by 0 on every field. An untestable narrowing of a
+     *  sound over-approximation is the shape that becomes a silent under-report later, so it is gone
+     *  rather than kept behind a comment asserting it is safe. */
+    static void opaqueFunctionalToHof(AnalysisContext ctx, MethodScan s, MethodInsnNode min,
+                                      Type[] pt, int i, ProvValue a) {
+        if (i >= pt.length || pt[i].getSort() != Type.OBJECT) return;
+        String iface = pt[i].getInternalName();
+        if (!isFunctionalIface(iface)) return;
+        // A LAMBDA OR A METHOD REFERENCE IS ALREADY ANSWERED AT ITS CREATION SITE — by
+        // `handleInvokeDynamic`'s project and external arms, and since R183 by its `isJdkFunctionalSam`
+        // arm for a reference that names no body. `fromIndy` is that whole answer, and it is the same
+        // flag `opaqueTaskHandoff` reads one handler up for the same purpose.
+        if (a.fromIndy) return;
+        // ARG0 OF A HAND-OFF VERB IS ALREADY OWNED BY `opaqueTaskHandoff`, WHICH RAN FIRST (both are
+        // called from the same per-instruction block, that one first). Its gate is `TASK_ARG_PREFIXES` —
+        // the FIRST parameter only — and its opacity test (`newType == null && !fromIndy`) is IMPLIED by
+        // the two conditions above, so for this exact value it has already disclosed. Returning keeps
+        // `unknownWhy` at one reason per site instead of adding a second spelling of one fact to every
+        // `list.forEach(opaqueConsumer)` in the corpus. Note this does NOT cover `LongStream.forEach`:
+        // `LongConsumer` is not in `TASK_ARG_PREFIXES`, that path never fired, and it is charged below.
+        if (i == 0 && (isExecutorHandoff(min.owner, min.name, min.desc)
+                || isSyncCallbackInvoker(min.owner, min.name, min.desc))) return;
+        // The SAM name comes from `samNameOf` — R191's JDK index — so the rendered reason is
+        // byte-identical to what the LAMBDA and METHOD-REFERENCE spellings of the same call already
+        // produce (`callback:java.util.function.Predicate.test`), not merely also-non-silent.
+        String sam = samNameOf(iface);
+        if (sam == null) return;
+        s.dir.add(Effect.UNKNOWN);
+        ctx.unknownWhy.computeIfAbsent(s.id, k -> new TreeSet<>())
+                .add(UnknownReason.of(UnknownReason.Kind.CALLBACK, iface.replace('/', '.') + "." + sam));
     }
 
     /** XML parse(File) precision: the File overload definitely reads the file — add Fs beside the
@@ -5937,8 +6027,10 @@ public class Candor {
                     // method-reference spelling was simply never asking it. So this widens NO table:
                     // `SYNC_CALLBACK_INVOKERS` and `FOR_EACH_FAMILY` are untouched, and they stay the
                     // authority for the DIFFERENT question they answer — an OPAQUE callback (a field, a
-                    // param) at a site with no indy to attribute to. That silence is still open; see
-                    // `theRemainingBoundaryIsTheOPAQUECallbackNotTheSpelling`.
+                    // param) at a site with no indy to attribute to. SOUNDNESS R217 closed that one too,
+                    // in `opaqueFunctionalToHof`, and again without widening either table — see
+                    // `theRemainingBoundaryIsTheInterfaceSetNotTheOpaqueness` for where the boundary
+                    // sits now (the INTERFACE SET, not opaqueness and not the spelling).
                     //
                     // WHICH PREDICATE — AND THE ANSWER IS NOT {@link #samForwarderTarget}'s, WHICH WOULD
                     // OVER-CHARGE. The claim being made here is PARITY WITH THE LAMBDA ARM, so the gate has

@@ -43,9 +43,10 @@ import org.junit.jupiter.api.Test;
  *
  * <p><b>SO NO TABLE IS WIDENED.</b> {@code SYNC_CALLBACK_INVOKERS} and {@code FOR_EACH_FAMILY} are
  * untouched and remain the authority for the different question they answer — an OPAQUE callback (a
- * field, a param) at a site with no indy to attribute to. That silence is still open; it is pinned by
- * {@code SamForwarderHandoffTest#theRemainingBoundaryIsTheOPAQUECallbackNotTheSpelling}, which replaced
- * the boundary row this fix made obsolete.
+ * field, a param) at a site with no indy to attribute to. SOUNDNESS R217 closed that silence too, in
+ * {@link OpaqueCallbackToHofTest}, and again without widening either table; the boundary is now the
+ * INTERFACE SET, pinned by
+ * {@code SamForwarderHandoffTest#theRemainingBoundaryIsTheInterfaceSetNotTheOpaqueness}.
  *
  * <p><b>THE PREDICATE IS BORROWED, NOT INVENTED (§G).</b> The gate is {@code isJdkFunctionalSam} — the
  * predicate that already decides the lambda arm at {@code handleMethodInsn}'s unpinned-SAM branch — and

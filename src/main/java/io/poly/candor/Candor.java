@@ -7123,8 +7123,11 @@ public class Candor {
         return found;
     }
 
-    /** The local-variable slot of declared argument {@code argIndex} (long/double occupy 2 slots; +1 for
-     *  the {@code this} slot of an instance method). */
+    /** The LOCAL-VARIABLE slot of declared argument {@code argIndex} (long/double occupy 2 slots; +1 for
+     *  the {@code this} slot of an instance method).
+     *  <p>Summing {@code Type.getSize()} is CORRECT here and must stay: locals are addressed in SLOTS. Do
+     *  not "fix" this to match {@link #argValueIndex}, which addresses the frame STACK, in VALUES. The two
+     *  coordinate systems and why a grep cannot tell them apart are documented at {@link #argValueIndex}. */
     static int paramLocalSlot(MethodNode mn, int argIndex) {
         int slot = (mn.access & Opcodes.ACC_STATIC) != 0 ? 0 : 1;
         Type[] args = Type.getArgumentTypes(mn.desc);
@@ -7132,14 +7135,56 @@ public class Candor {
         return slot;
     }
 
-    /** The receiver ProvValue of instance call {@code min} in frame {@code f} — the stack slot just below
-     *  the call's argument block; null if no frame or out of range. */
+    // ========================================================================================
+    // THE ONE AUTHORITY for locating a call's operands in an ASM dataflow Frame.
+    //
+    // FRAME-STACK INDEX (a count of VALUES) vs FRAME-LOCAL INDEX (a count of SLOTS). These are two
+    // different coordinate systems and `Type.getSize()` belongs to exactly ONE of them:
+    //
+    //   * LOCALS are addressed in SLOTS. A `long`/`double` genuinely occupies TWO local slots, so
+    //     `paramLocalSlot` / `Interp#paramSlots` sum `Type.getSize()` and are CORRECT. Do not
+    //     "fix" them.
+    //   * The frame STACK is addressed in VALUES. `Frame.getStackSize()` counts ENTRIES and ASM
+    //     pushes a `long`/`double` as ONE entry. Summing `getSize()` to index the stack therefore
+    //     over-counts by the number of category-2 operands, and reads BELOW the intended value.
+    //
+    // A text grep for `getSize()` cannot tell the two apart; the question — "am I addressing a
+    // local or a stack entry?" — is what discriminates them. R248/R258/R274: nine helpers across
+    // three files summed sizes to index the STACK. `handoffTaskArg` read the receiver instead of
+    // the task (silent-pure scheduling, PUBLISHED in 0.34.0 and 0.35.0), `receiverProv` returned
+    // null for `InputStream.skip(long)`, and `monomorphicReceiver` returned an unrelated `new T`
+    // that switched OFF the CHA over-approximation entirely. The same arithmetic also FABRICATED:
+    // four measured cells charged a `task-handoff` Unknown against a provably-pure program.
+    //
+    // Both helpers take the stack DEPTH and the call's argument types and return a stack index, or
+    // -1 when the frame is too shallow (a merge point ASM could not type) or the index is out of
+    // range. Callers must check for -1 rather than indexing blind.
+    // ========================================================================================
+
+    /** The frame-stack index of declared argument {@code argIndex} (0-based, receiver excluded) of a call
+     *  whose parameter types are {@code args}, given a stack of {@code stackSize} VALUES; -1 if out of
+     *  range. The arguments occupy the top {@code args.length} entries — ONE per argument, a category-2
+     *  argument included. */
+    static int argValueIndex(int stackSize, Type[] args, int argIndex) {
+        if (argIndex < 0 || argIndex >= args.length) return -1;
+        int idx = stackSize - args.length + argIndex;
+        return idx >= 0 && idx < stackSize ? idx : -1;
+    }
+
+    /** The frame-stack index of the RECEIVER of an instance call whose parameter types are {@code args},
+     *  given a stack of {@code stackSize} VALUES — the entry just below the argument block; -1 if out of
+     *  range. */
+    static int receiverValueIndex(int stackSize, Type[] args) {
+        int idx = stackSize - args.length - 1;
+        return idx >= 0 && idx < stackSize ? idx : -1;
+    }
+
+    /** The receiver ProvValue of instance call {@code min} in frame {@code f} — the stack ENTRY just below
+     *  the call's argument block; null if no frame or out of range. See {@link #receiverValueIndex}. */
     static ProvValue receiverProv(Frame<ProvValue> f, MethodInsnNode min) {
         if (f == null) return null;
-        int argSlots = 0;
-        for (Type a : Type.getArgumentTypes(min.desc)) argSlots += a.getSize();
-        int idx = f.getStackSize() - argSlots - 1;
-        return idx >= 0 && idx < f.getStackSize() ? f.getStack(idx) : null;
+        int idx = receiverValueIndex(f.getStackSize(), Type.getArgumentTypes(min.desc));
+        return idx < 0 ? null : f.getStack(idx);
     }
 
     /** Whether the SAM call {@code min} in {@code mn} is invoked on the UNMODIFIED parameter at descriptor
@@ -7192,15 +7237,14 @@ public class Candor {
     }
 
     /** The ProvValue of the {@code argIndex}-th declared argument (excluding the receiver) of call {@code min}
-     *  in frame {@code f}, accounting for long/double double-slots; null if out of range or no frame. */
+     *  in frame {@code f}; null if out of range or no frame. The stack holds ONE entry per argument — a
+     *  category-2 argument included — so this is a VALUE index, not a slot sum. See {@link #argValueIndex}.
+     *  <p>The sentence this javadoc used to carry, "accounting for long/double double-slots", was written
+     *  beside code that summed {@code Type.getSize()} and so did the OPPOSITE (R248/R274). */
     static ProvValue argAt(Frame<ProvValue> f, MethodInsnNode min, int argIndex) {
         if (f == null) return null;
-        Type[] args = Type.getArgumentTypes(min.desc);
-        if (argIndex < 0 || argIndex >= args.length) return null;
-        int total = 0, before = 0;
-        for (int i = 0; i < args.length; i++) { if (i < argIndex) before += args[i].getSize(); total += args[i].getSize(); }
-        int idx = f.getStackSize() - total + before;
-        return idx >= 0 && idx < f.getStackSize() ? f.getStack(idx) : null;
+        int idx = argValueIndex(f.getStackSize(), Type.getArgumentTypes(min.desc), argIndex);
+        return idx < 0 ? null : f.getStack(idx);
     }
 
     /** The declared {@code (name,desc)} method of {@code cn}, or null. */
@@ -7740,32 +7784,25 @@ public class Candor {
     }
 
     /** The ProvValue of argument `argPos` (0-based, in source order) of the call `min` in frame `f`, or null.
-     *  Accounts for the receiver (present for non-static) and category-2 (long/double) arg slots. */
+     *  A VALUE index over the frame stack — see {@link #argValueIndex}. (This helper was absent from R248's
+     *  own list of affected helpers; it has the identical defect and the identical fix.) */
     static ProvValue callArg(Frame<ProvValue> f, MethodInsnNode min, int argPos) {
         if (f == null) return null;
-        Type[] at = Type.getArgumentTypes(min.desc);
-        if (argPos < 0 || argPos >= at.length) return null;
-        int argSlots = 0;
-        for (Type a : at) argSlots += a.getSize();
-        int base = f.getStackSize() - argSlots; // first arg sits at the bottom of the call's arg block
-        int idx = base;
-        for (int i = 0; i < argPos; i++) idx += at[i].getSize();
-        return idx >= 0 && idx < f.getStackSize() ? f.getStack(idx) : null;
+        int idx = argValueIndex(f.getStackSize(), Type.getArgumentTypes(min.desc), argPos);
+        return idx < 0 ? null : f.getStack(idx);
     }
 
-    /** ALL argument ProvValues of `min` in source order (skipping the category-2 second slots). Used by
-     *  sinks whose Object operand could be any positional arg (e.g. a String.format-style varargs we resolve
-     *  via the array-store scan instead — see reentryToStringForArrayStores). */
+    /** ALL argument ProvValues of `min` in source order — one entry per DECLARED argument, so the returned
+     *  list is positionally aligned with `Type.getArgumentTypes(min.desc)` even when a category-2 argument is
+     *  present. Used by sinks whose Object operand could be any positional arg (e.g. a String.format-style
+     *  varargs we resolve via the array-store scan instead — see reentryToStringForArrayStores). */
     static List<ProvValue> callArgs(Frame<ProvValue> f, MethodInsnNode min) {
         List<ProvValue> out = new ArrayList<>();
         if (f == null) return out;
         Type[] at = Type.getArgumentTypes(min.desc);
-        int argSlots = 0;
-        for (Type a : at) argSlots += a.getSize();
-        int idx = f.getStackSize() - argSlots;
-        for (Type a : at) {
-            if (idx >= 0 && idx < f.getStackSize()) out.add(f.getStack(idx));
-            idx += a.getSize();
+        for (int i = 0; i < at.length; i++) {
+            int idx = argValueIndex(f.getStackSize(), at, i);
+            if (idx >= 0) out.add(f.getStack(idx));
         }
         return out;
     }
@@ -7776,12 +7813,9 @@ public class Candor {
         List<ProvValue> out = new ArrayList<>();
         if (f == null) return out;
         Type[] at = Type.getArgumentTypes(idin.desc);
-        int argSlots = 0;
-        for (Type a : at) argSlots += a.getSize();
-        int idx = f.getStackSize() - argSlots;
-        for (Type a : at) {
-            if (idx >= 0 && idx < f.getStackSize()) out.add(f.getStack(idx));
-            idx += a.getSize();
+        for (int i = 0; i < at.length; i++) {
+            int idx = argValueIndex(f.getStackSize(), at, i);
+            if (idx >= 0) out.add(f.getStack(idx));
         }
         return out;
     }
@@ -7856,13 +7890,15 @@ public class Candor {
     /** The synchronous for-each idiom, matched owner-agnostically (see {@link #isSyncCallbackInvoker}). */
     static final Set<String> FOR_EACH_FAMILY = Set.of("forEach", "forEachOrdered", "forEachRemaining");
 
-    /** The TASK argument (arg0 — the deepest) of an executor hand-off call, from the provenance frame. */
+    /** The TASK argument (arg0 — the deepest) of an executor hand-off call, from the provenance frame.
+     *  <p>R248: this read `getStackSize() - Sum(Type.getSize())`, so ONE category-2 argument after the task
+     *  (`Timer.schedule(TimerTask,long)`, `ScheduledExecutorService.schedule(Runnable,long,TimeUnit)`)
+     *  returned the RECEIVER and TWO (`scheduleAtFixedRate`, `scheduleWithFixedDelay`) drove the index
+     *  negative and returned null — every periodic scheduling hand-off in the JVM read silent-pure. */
     static ProvValue handoffTaskArg(Frame<ProvValue> f, MethodInsnNode min) {
         if (f == null) return null;
-        int argSlots = 0;
-        for (Type a : Type.getArgumentTypes(min.desc)) argSlots += a.getSize();
-        int idx = f.getStackSize() - argSlots; // arg0 sits at the bottom of the call's argument block
-        return idx >= 0 && idx < f.getStackSize() ? f.getStack(idx) : null;
+        int idx = argValueIndex(f.getStackSize(), Type.getArgumentTypes(min.desc), 0);
+        return idx < 0 ? null : f.getStack(idx);
     }
 
 

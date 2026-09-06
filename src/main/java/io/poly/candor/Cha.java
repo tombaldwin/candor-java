@@ -570,10 +570,13 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
      *  the call's argument slots), reading {@code fieldOrigin} instead of {@code newType}. */
     static List<String> fieldBoundImplementors(Frame<ProvValue> f, MethodInsnNode min) {
         if (f == null) return null;
-        int argSlots = 0;
-        for (Type a : Type.getArgumentTypes(min.desc)) argSlots += a.getSize();
-        int top = f.getStackSize();
-        int recvIdx = top - 1 - argSlots;
+        // R274 — shared with {@link Interp#monomorphicReceiver} via ONE authority rather than mirrored by
+        // hand, which is how the two drifted into the same slot-vs-value defect twice. MEASURED fail
+        // direction here, before the fix: NOT silent. A SAM carrying a long (`void w(long)`) lost the
+        // field's lambda binding and fell back to the pre-existing CHA/Unknown path — `['Unknown']`,
+        // `dispatch:app.W.w`, with `deny Unknown` firing. So this half is a PRECISION win, not a
+        // cardinal-sin fix; it is folded in because two spellings of one question is the defect.
+        int recvIdx = receiverValueIndex(f.getStackSize(), Type.getArgumentTypes(min.desc));
         if (recvIdx < 0) return null;
         ProvValue rv = f.getStack(recvIdx);
         if (rv == null || rv.fieldOrigin == null) return null;

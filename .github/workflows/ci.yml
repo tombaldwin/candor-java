@@ -98,6 +98,35 @@ jobs:
           fi
           bash bin/refresh-equiv.sh "${JARS[0]}" build/classes/java/main
 
+      # SOUNDNESS R249 — THE HALF OF THE NATIVE PARITY GATE THAT NEEDS NO GRAALVM, RUN HERE SO IT RUNS ON
+      # EVERY PUSH RATHER THAN ONLY IN `native`.
+      #
+      # candor bundles three gzipped classifier indexes as jar resources, each reaching the native image
+      # through one `-H:IncludeResources` line in build.gradle.kts. A missing index does not fail, warn or
+      # disclose — every loader degrades to an empty map, so the binary answers what it answered before
+      # that index existed. `native.yml`'s parity check is the only thing that compares the two artifacts,
+      # and it was measured BLIND to all three: stripping any of them left its target at 610 functions /
+      # 1,397 analyzed with a byte-identical envelope, while its non-vacuousness control (>=100 functions,
+      # >=500 analyzed) passed throughout — that control proves the SCAN found something, not that a
+      # RESOURCE was consulted.
+      #
+      # `verifyNativeImageResources` compares the resources `processResources` really produced against the
+      # `-H:IncludeResources` patterns the build really declares, in both directions, so a dropped or
+      # mistyped line fails in seconds with no native-image toolchain. It also runs as a `processResources`
+      # finalizer — it is named here as well because `candor/bin/gates.sh` prints `run:` steps, and a gate
+      # reachable only as another task's side effect is invisible to the per-repo gate list.
+      #
+      # `native-parity-selftest.sh` is the other half: it hands the parity VERDICT a whole jar's report
+      # against a stripped jar's report — the same asymmetry a native image built without an
+      # `-H:IncludeResources` line produces — and requires it to go RED and to NAME the resource. A gate
+      # nobody has watched fail is not a gate, and this is what watches it. It needs the shadow jar the
+      # self-gate step above built.
+      - name: Native-image resource declaration + parity-checker selftest (R249)
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon verifyNativeImageResources nativeParityClasses
+          bash ci/native-parity-selftest.sh
+
       # Kotlin-bytecode lane: Kotlin compiles the same semantics through different shapes (suspend/CPS,
       # indy lambdas, object/companion <clinit>, $default wrappers, callable refs, property getters,
       # extension + inline fns). KotlinProbe.kt threads a known effect through each; all 12 chains must

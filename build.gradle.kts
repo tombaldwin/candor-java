@@ -137,6 +137,99 @@ graalvmNative {
         }
     }
 }
+
+// SOUNDNESS R249 — THE LINES ABOVE WERE UNGATED, AND DROPPING ONE IS A SILENT UNDER-REPORT.
+//
+// Each `-H:IncludeResources` line bundles a classifier index into the native image. A missing index
+// does not fail, does not warn and does not disclose: every loader degrades to an empty map, so the
+// binary answers exactly what it answered before that index existed — measured, stripping each resource
+// from the shipped fat jar: exit 0, ZERO stderr lines, and `Optional.orElseGet(supParam)` /
+// `Objects.requireNonNullElseGet` fall from `['Unknown']` back to ABSENT.
+//
+// `native.yml`'s parity gate is supposed to be what catches that, and it could not: measured over its
+// target (`build/classes/java/main`), stripping ANY of the three left 610 functions / 1,397 analyzed and
+// a byte-identical envelope. Its non-vacuousness control passed throughout, because that control proves
+// the SCAN found something, not that a RESOURCE was consulted. `src/nativeParity` + `ci/native-parity.py`
+// are the behavioural half of the answer, and their NATIVE leg needs GraalVM (the verdict itself does not —
+// `ci/native-parity-selftest.sh` attacks it here).
+//
+// THIS TASK IS THE HALF THAT DOES NOT. It compares two lists that both already exist — the resources
+// `processResources` really produced, and the `IncludeResources` patterns this file really declares — so
+// a deleted or mistyped line fails on any machine, in seconds, with no native-image toolchain. It reads
+// the patterns off the extension rather than repeating them, because a second hand-written copy of a
+// list is the drift this repo keeps finding (corpus brief §F1-q3).
+//
+// BOTH DIRECTIONS, and the second is the one that catches a stripped resource rather than a dropped
+// line: every runtime resource must be matched by some pattern, AND every pattern must match some
+// resource. `META-INF/native-image/**` is excluded because native-image reads that directory as
+// CONFIGURATION on its own — it is not an `IncludeResources` bundle and never was.
+val nativeImageIncludeResourcePatterns: Provider<List<String>> = provider {
+    graalvmNative.binaries.getByName("main").buildArgs.get()
+        .filter { it.startsWith("-H:IncludeResources=") }
+        .map { it.removePrefix("-H:IncludeResources=") }
+}
+val verifyNativeImageResources by tasks.registering {
+    group = "verification"
+    description = "SOUNDNESS R249 — every bundled resource is named by an -H:IncludeResources line, and back."
+    dependsOn(tasks.named("processResources"))
+    val resDir = layout.buildDirectory.dir("resources/main")
+    val patterns = nativeImageIncludeResourcePatterns
+    inputs.dir(resDir)
+    inputs.property("includeResourcePatterns", patterns)
+    outputs.upToDateWhen { false }   // a two-list comparison over a handful of files; never worth skipping
+    doLast {
+        val root = resDir.get().asFile
+        val files = root.walkTopDown().filter { it.isFile }
+            .map { it.relativeTo(root).invariantSeparatorsPath }
+            .filterNot { it.startsWith("META-INF/native-image/") }
+            .toList().sorted()
+        val pats = patterns.get()
+        check(files.isNotEmpty()) {
+            "R249: no runtime resources found under $root — this gate would then be comparing two empty " +
+                "lists and passing. Zero resources is not zero findings."
+        }
+        val compiled = pats.map { it to Regex(it) }
+        val unbundled = files.filter { f -> compiled.none { (_, re) -> re.matches(f) } }
+        val dead = compiled.filter { (_, re) -> files.none { re.matches(it) } }.map { it.first }
+        val problems = buildList {
+            if (unbundled.isNotEmpty()) add(
+                "these runtime resources are NOT named by any -H:IncludeResources line, so a native image\n" +
+                    "  will not carry them and every loader that reads one degrades SILENTLY to an empty map:\n" +
+                    unbundled.joinToString("\n") { "    $it" } +
+                    "\n  Fix: add `buildArgs.add(\"-H:IncludeResources=<regex>\")` in the graalvmNative block above.",
+            )
+            if (dead.isNotEmpty()) add(
+                "these -H:IncludeResources patterns match NO resource, so they bundle nothing — either the\n" +
+                    "  resource stopped being generated or the pattern is mistyped:\n" +
+                    dead.joinToString("\n") { "    $it" },
+            )
+        }
+        check(problems.isEmpty()) {
+            "SOUNDNESS R249 — native-image resource declaration is out of step with the resources built.\n" +
+                problems.joinToString("\n") { "  $it" } +
+                "\n  Declared patterns: $pats\n  Built resources:   $files"
+        }
+        logger.lifecycle(
+            "R249: ${files.size} runtime resource(s), each named by one of ${pats.size} " +
+                "-H:IncludeResources pattern(s)",
+        )
+    }
+}
+// Runs on every build path that produces resources — `test`, `shadowJar` and `nativeCompile` all pull
+// `classes`, which pulls `processResources`. It is also an explicit `ci.yml` step so that
+// `candor/bin/gates.sh candor-java` PRINTS it: a gate reachable only as a side effect of another task
+// is invisible to the per-repo gate list, and a gate nobody knows to run is the shape R249 is about.
+tasks.named("processResources") { finalizedBy(verifyNativeImageResources) }
+
+// SOUNDNESS R249 — THE NATIVE-PARITY FIXTURE. A separate source set, deliberately outside `main` (it must
+// never reach the shadow jar) and outside `test` (the parity gate scans a CLASSES DIRECTORY, and mixing
+// it into the test tree would put JUnit on the scanned target). `build/classes/java/nativeParity` is what
+// `native.yml` hands to both legs. Compiled with the same toolchain, the same `--release 17` and the same
+// `-Xlint:all -Werror` as everything else here, so it cannot drift into being unbuildable unnoticed.
+sourceSets {
+    create("nativeParity") { java.srcDir("src/nativeParity/java") }
+}
+
 java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
 // Build WITH the JDK 21 toolchain but emit Java 17 bytecode so the tool RUNS on any Java 17+ runtime —
 // candor is a bytecode analyzer, not an app; requiring Java 21 to run it needlessly excludes 17-LTS CI

@@ -8,6 +8,63 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **SOUNDNESS R249 (gate half) — the native/jar parity gate could not see any of the three bundled
+  classifier indexes go missing.** No engine behaviour changes; this is entirely about the instrument.
+
+  **What was measured.** candor ships `candor/jdk-supertypes.idx.gz`, `candor/jdk-sams.idx.gz` and
+  `candor/jdk-hof-invokes.idx.gz` as jar resources, each reaching the native image through one
+  `-H:IncludeResources` line in `build.gradle.kts`. Strip any one from the shipped fat jar and rescan:
+  exit **0**, **zero stderr lines**, and rows simply leave `functions[]` — the cardinal-sin shape.
+  `native.yml`'s parity check is the only thing in the project that compares the native binary against
+  the jar, and over its target (`build/classes/java/main`) stripping any of the three left **610
+  functions / 1,397 analyzed and a byte-identical envelope**. Its non-vacuousness control (jar leg must
+  find ≥100 functions / ≥500 analyzed) passed throughout, because that control proves the SCAN found
+  something, not that a RESOURCE was consulted.
+
+  **The supertype index's blindness needed a different experiment, and that is a correction to how this
+  was first measured.** `Cha.JdkSupers` is read ONLY when `ClassReader` throws, which on the JVM never
+  happens — the class is gated behind `IN_NATIVE_IMAGE` and is not even loaded from the jar. So
+  stripping it from a jar is a *guaranteed* no-op and says nothing about the native leg. Re-measured
+  properly, in a throwaway worktree whose `Cha.externalSupersSplit` was patched to force the
+  `ClassReader` read to fail for every external name (the native image's real condition): the existing
+  parity target is byte-identical **with and without** the index, so the gate was blind to it too — the
+  same conclusion, on evidence that can actually support it.
+
+  **Two halves, and the local one is deliberately the load-bearing one.**
+  `./gradlew verifyNativeImageResources` compares the resources `processResources` really produced
+  against the `-H:IncludeResources` patterns the build really declares, **in both directions** (an
+  unbundled resource AND a pattern that matches nothing), reading the patterns off the `graalvmNative`
+  extension rather than repeating them. It needs no GraalVM, runs as a `processResources` finalizer and
+  as an explicit step in `ci.yml` and `native.yml`. Falsified: deleting each of the four
+  `-H:IncludeResources` lines in turn fails the build naming that resource, and adding a pattern that
+  matches nothing fails it the other way; restored, green.
+
+  The behavioural half is `src/nativeParity` — a fixture built so each index changes a NAMED ROW —
+  scanned as a second parity target, with the verdict moved out of the workflow heredoc into
+  `ci/native-parity.py` so it can be attacked without a native-image toolchain (corpus brief §M: the
+  ~4-minute build is upstream of the comparison, so its cost is not the comparison's cost). The marker
+  rows are checked on BOTH legs, so a failure names the missing resource instead of leaving a reader to
+  infer it from a diff of absent rows. `ci/native-parity-selftest.sh` runs the fixture first (five arms,
+  five witness appends — §E3, because every marker is an absence claim in disguise), then hands the
+  checker a whole jar's report against a stripped jar's report and requires RED **naming the resource**,
+  for each index a jar-side experiment can move.
+
+  **Which interface the SAM arm had to use is a measurement, not a preference.** The obvious R191
+  spelling, `IntSupplier::getAsInt`, is NOT sensitive to `jdk-sams.idx.gz` — `isJdkFunctionalSam`
+  short-circuits every `java/util/function/` owner through the hand-written `FUNCTION_PKG_SAM` set — and
+  `Comparator` is one of the eighteen entries in `SAM_OF`, which `samNameOf` consults first.
+  `java.lang.Iterable` is in neither, so the index is its only answer.
+
+  **What only CI can verify, stated rather than implied.** The supertype arm's teeth exist only on the
+  native leg, for the reason above; the selftest asserts that jar-side no-op explicitly so a future
+  reader cannot mistake its silence for coverage, and fails loudly if the native-only invariant ever
+  stops holding. A dropped `-H:IncludeResources=candor/jdk-supertypes\.idx\.gz` line is caught locally
+  by `verifyNativeImageResources`.
+
+  Still open (queued separately, deliberately not done here): **a missing index is silent.** Loading one
+  must fail loud or hedge the envelope — the report currently makes a full-confidence purity claim over
+  a classifier that was never loaded.
+
 - **⚠ SOUNDNESS R237 — an invoking higher-order function `isInvokingHof` did not name was SILENT, even
   for an interface the set DOES cover.** Ground truth EXECUTED against a jar built at `61fb0b4` (R236's
   commit, so the interface set is already the wide one and cannot be the cause):

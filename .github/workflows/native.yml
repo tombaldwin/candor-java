@@ -126,17 +126,55 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           native-image-job-reports: 'true'
 
+      # SOUNDNESS R249 — FAIL BEFORE THE ~4-MINUTE BUILD, NOT AFTER IT. `verifyNativeImageResources`
+      # compares the resources `processResources` really produced against the `-H:IncludeResources`
+      # patterns this build really declares, in both directions. It also runs as a `processResources`
+      # finalizer (so `nativeCompile` below cannot skip it), and it runs in `ci.yml` on every push where
+      # there is no GraalVM at all — it is named here because a dropped line makes the expensive build
+      # produce a binary that is wrong in the one way this workflow exists to catch.
+      - name: Verify the native-image resource declaration (R249)
+        run: ./gradlew --no-daemon verifyNativeImageResources
+
       - name: Build native image
         run: ./gradlew --no-daemon nativeCompile
 
       # SOUNDNESS GATE: the native binary resolves JDK supertypes from a bundled index, the jar from
-      # ClassReader off the classpath — verify they produce IDENTICAL reports (functions[]) on a real
-      # target (candor's own compiled classes, always present in CI). A divergence = the native binary
-      # under/over-reports vs the jar; fail the build rather than ship it.
-      - name: Build jar (for parity check)
-        run: ./gradlew --no-daemon shadowJar
+      # ClassReader off the classpath — verify they produce IDENTICAL reports (whole envelope) on real
+      # targets. A divergence = the native binary under/over-reports vs the jar; fail the build rather
+      # than ship it.
+      #
+      # `nativeParityClasses` builds `src/nativeParity`, the R249 fixture: the second target below, whose
+      # rows each index demonstrably changes.
+      - name: Build jar + parity fixture (for parity check)
+        run: ./gradlew --no-daemon shadowJar nativeParityClasses
 
-      - name: Parity — native report == jar report
+      # SOUNDNESS R249 — TWO TARGETS, AND THE VERDICT NOW LIVES IN A FILE.
+      #
+      # WHAT WAS WRONG. This step used to be one target (`build/classes/java/main`) and an inline python
+      # heredoc. The comparison was right — the whole envelope — and so was its non-vacuousness control
+      # (the jar leg must find >=100 functions / >=500 analyzed). But that control proves the SCAN found
+      # something, not that any bundled RESOURCE was consulted, and measured over that target, stripping
+      # `candor/jdk-hof-invokes.idx.gz`, `candor/jdk-sams.idx.gz` or `candor/jdk-supertypes.idx.gz` left
+      # 610 functions / 1,397 analyzed and a byte-identical envelope EVERY TIME. Three
+      # `-H:IncludeResources` lines, and deleting any one of them was invisible to the only gate that
+      # compares the two artifacts. A missing index is silent — no exit code, no stderr, no disclosure —
+      # so nothing else would have caught it either.
+      #
+      # WHAT CHANGED. `main` is kept exactly as it was: it is the broad target, and it is what caught
+      # ⟨0.32⟩'s empty-report native binary. `fixture` is the new one — `src/nativeParity`, built so each
+      # index changes a NAMED ROW — and `ci/native-parity.py` checks those marker rows on BOTH LEGS
+      # before comparing envelopes, so a missing resource is reported as "this row is absent, that
+      # resource is why" rather than as an unexplained diff.
+      #
+      # AND THE VERDICT IS A FILE BECAUSE A HEREDOC CANNOT BE ATTACKED. `ci/native-parity-selftest.sh`
+      # (run in `ci.yml`, no GraalVM needed) feeds the same checker a whole jar's report against a
+      # stripped jar's report and requires RED — the asymmetry a native image built without an
+      # `-H:IncludeResources` line produces. The engine run is upstream of the comparison, so its cost is
+      # not the comparison's cost (corpus brief §M).
+      #
+      # DELIBERATELY NOT A LOOP over the two targets: an aggregator's worst failure is running zero
+      # times and reporting zero failures. Two explicit blocks under `set -e` cannot do that.
+      - name: Parity — native report == jar report (candor's classes, and the R249 index fixture)
         run: |
           set -euo pipefail
           # Name the jar rather than trust a glob to hold exactly one entry: a build dir carrying two
@@ -149,53 +187,17 @@ jobs:
             exit 1
           fi
           JAR="${JARS[0]}"
-          TARGET=build/classes/java/main
-          ./build/native/nativeCompile/candor "$TARGET" --json /tmp/native.json
-          java -jar "$JAR" "$TARGET" --json /tmp/jar.json
-          python3 - <<'PY'
-          import json, sys
-          jar = json.load(open('/tmp/jar.json'))
-          nat = json.load(open('/tmp/native.json'))
+          NATIVE=./build/native/nativeCompile/candor
 
-          # THE CONTROL, AND IT IS NOT OPTIONAL. This gate is an EQUALITY, and two empty documents are
-          # equal — so a defect that zeroes BOTH legs passes it while measuring nothing. The jar leg has
-          # to be shown to have found something before its agreement with native means anything.
-          # candor's own classes reach Fs/Exec/Env/Clock in the hundreds.
-          n = len(jar.get('functions', []))
-          count = jar.get('analyzed', {}).get('count', 0)
-          if n < 100 or count < 500:
-              print(f'PARITY VACUOUS: the jar leg found {n} function(s) / {count} analyzed — this gate '
-                    f'would be comparing two empty reports. Fix the scan, not the gate.', file=sys.stderr)
-              sys.exit(1)
+          # [1] candor's own compiled classes — the broad envelope check, unchanged.
+          "$NATIVE" build/classes/java/main --json /tmp/native-main.json
+          java -jar "$JAR" build/classes/java/main --json /tmp/jar-main.json
+          python3 ci/native-parity.py --jar /tmp/jar-main.json --native /tmp/native-main.json --profile main
 
-          # THE WHOLE ENVELOPE, not just `functions`. ⟨0.32⟩ shipped a native image whose per-class delta
-          # merge folded nothing: `functions` went to 0, AND `analyzed.count` 1329 -> 0, AND `coverage`
-          # vanished. `functions` caught that one — but a divergence confined to `analyzed`, `excluded`,
-          # `outOfScope` or `netPartners` would have passed a functions-only gate, and a consumer's
-          # verdict reads every one of those keys.
-          bad = [k for k in sorted(set(jar) | set(nat))
-                 if jar.get(k, '<ABSENT>') != nat.get(k, '<ABSENT>')]
-          if bad:
-              print(f'PARITY FAILED: native report differs from jar on {bad}', file=sys.stderr)
-              for k in bad:
-                  a, b = jar.get(k, '<ABSENT>'), nat.get(k, '<ABSENT>')
-                  if k == 'functions' and isinstance(a, list) and isinstance(b, list):
-                      an = {f['fn']: f for f in a}
-                      bn = {f['fn']: f for f in b}
-                      print(f'  functions: jar {len(an)} vs native {len(bn)}', file=sys.stderr)
-                      for fn in sorted(set(an) ^ set(bn))[:10]:
-                          print(f'    only in {"jar" if fn in an else "native"}: {fn}', file=sys.stderr)
-                      for fn in sorted(set(an) & set(bn)):
-                          if an[fn] != bn[fn]:
-                              print(f'    differs: {fn}\n      jar   : {an[fn]}\n      native: {bn[fn]}',
-                                    file=sys.stderr)
-                              break
-                  else:
-                      print(f'  {k}:\n    jar   : {json.dumps(a)[:300]}\n    native: {json.dumps(b)[:300]}',
-                            file=sys.stderr)
-              sys.exit(1)
-          print(f'parity OK: native report == jar, whole envelope ({n} functions, {count} analyzed)')
-          PY
+          # [2] the R249 fixture — the target that can actually move when an index goes missing.
+          "$NATIVE" build/classes/java/nativeParity --json /tmp/native-fixture.json
+          java -jar "$JAR" build/classes/java/nativeParity --json /tmp/jar-fixture.json
+          python3 ci/native-parity.py --jar /tmp/jar-fixture.json --native /tmp/native-fixture.json --profile fixture
 
       - name: Stage binary
         run: |

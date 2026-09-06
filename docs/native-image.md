@@ -66,11 +66,29 @@ Otherwise candor needs almost no native-image config:
 - **Serialization is manual** — `ReportJson` builds `LinkedHashMap`s / parses `JsonObject`s by hand; Gson
   is used only for generic Map/List formatting and ships its **own** native-image metadata in its jar.
 - **Bundled resources** read via `getResourceAsStream`, included via `-H:IncludeResources`: `AGENTS.md`,
-  `candor/build-info.properties`, and the JDK index `candor/jdk-supertypes.idx.gz`.
+  `candor/build-info.properties`, and THREE build-time JDK indexes — `candor/jdk-supertypes.idx.gz`
+  (§ above), `candor/jdk-sams.idx.gz` (SOUNDNESS R191) and `candor/jdk-hof-invokes.idx.gz` (R237).
+  **This list was stale for two of the three until 2026-09-06**, which is the whole shape of R249: the
+  list of what must be bundled lived in three places (this doc, the build file, nobody's gate) and only
+  the build file was ever right.
 
-`--no-fallback` makes any missing config a hard build error rather than a silent JVM-fallback image. If a
-future change adds reflection, regenerate metadata with the GraalVM tracing agent
+`--no-fallback` makes any missing REFLECTION config a hard build error rather than a silent JVM-fallback
+image. If a future change adds reflection, regenerate metadata with the GraalVM tracing agent
 (`-agentlib:native-image-agent=config-output-dir=...`) over the test suite and commit the `*-config.json`.
+
+**It says nothing about a missing RESOURCE, and reading it as though it did is how R249 happened.** Drop
+an `-H:IncludeResources` line and the build succeeds; the binary then answers exactly what it answered
+before that index existed — exit 0, nothing on stderr, rows simply gone from `functions[]`. Two gates now
+cover that, and both are described in `ci/native-parity.py`:
+
+- `./gradlew verifyNativeImageResources` (no GraalVM needed, runs in `ci.yml` and as a `processResources`
+  finalizer) — every built resource must be named by an `-H:IncludeResources` pattern, and every pattern
+  must match a resource. A dropped line, a mistyped one, a resource that stopped being generated, or a
+  NEW resource added with no line: all four fail here.
+- `native.yml`'s parity check now scans a second target, `src/nativeParity` — a fixture built so each
+  index changes a named row — and asserts those rows on BOTH legs before comparing envelopes. Before
+  this, the parity gate's only target was `build/classes/java/main`, where stripping any of the three
+  indexes left 610 functions / 1,397 analyzed and a byte-identical envelope.
 
 ## Distribution
 

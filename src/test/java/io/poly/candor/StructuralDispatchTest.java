@@ -386,7 +386,16 @@ class StructuralDispatchTest {
             // the bug: opaque task → CF.runAsync / supplyAsync, and opaque TimerTask → timer.schedule
             "  void viaCF(){ CompletableFuture.runAsync(task); }",
             "  void viaSupply(){ CompletableFuture.supplyAsync(sup); }",
+            // R274 — THIS LINE PASSED ON THE BROKEN ENGINE, FOR A REASON ITS AUTHOR DID NOT INTEND.
+            // `handoffTaskArg` summed `Type.getSize()` to index a frame stack that holds one entry per
+            // VALUE, so the trailing `0L` made it return the RECEIVER rather than `tt`. `timer` is an
+            // opaque PARAM, which is itself Unknown-worthy, so the assertion below went green off the
+            // wrong value. The two spellings that CANNOT be green that way — a receiver the engine can
+            // prove is a `new`, and two category-2 args (which drive the index negative) — are added
+            // beside it; both were ABSENT from functions[] on the published 0.35.0 jar.
             "  void viaTimer(Timer timer){ timer.schedule(tt, 0L); }",
+            "  void viaTimerNewRecv(){ new Timer(true).schedule(tt, 0L); }",
+            "  void viaTimerTwoLongs(Timer timer){ timer.schedule(tt, 0L, 100000L); }",
             // no-regression: inline lambda / new R() with a real Fs effect keep Fs (not Unknown)
             "  void inlineLambda(){ CompletableFuture.runAsync(() -> { try { new java.io.FileInputStream(\"x\"); } catch(Exception e){} }); }",
             "  void newRunnable(){ CompletableFuture.runAsync(new MyR()); }",
@@ -397,6 +406,12 @@ class StructuralDispatchTest {
         assertTrue(eff(r, "CFT.viaCF").toNames().contains("Unknown"), "CompletableFuture.runAsync(opaque) must read Unknown");
         assertTrue(eff(r, "CFT.viaSupply").toNames().contains("Unknown"), "CompletableFuture.supplyAsync(opaque) must read Unknown");
         assertTrue(eff(r, "CFT.viaTimer").toNames().contains("Unknown"), "Timer.schedule(opaque TimerTask) must read Unknown");
+        assertTrue(eff(r, "CFT.viaTimerNewRecv").toNames().contains("Unknown"),
+                "Timer.schedule(opaque TimerTask, long) on a PROVABLE `new` receiver must read Unknown — the "
+                        + "cell the param-receiver line above cannot distinguish, got " + r.get("CFT.viaTimerNewRecv"));
+        assertTrue(eff(r, "CFT.viaTimerTwoLongs").toNames().contains("Unknown"),
+                "Timer.schedule(opaque TimerTask, long, long) must read Unknown — two category-2 args drove the "
+                        + "old index negative, got " + r.get("CFT.viaTimerTwoLongs"));
         // no-regression: the inline-lambda / new-task body's REAL effect is preserved, NOT downgraded.
         assertTrue(eff(r, "CFT.inlineLambda").toNames().contains("Fs"), "runAsync(inline effect lambda) must keep Fs, got " + r.get("CFT.inlineLambda"));
         assertTrue(!eff(r, "CFT.inlineLambda").toNames().contains("Unknown"), "runAsync(inline lambda) must NOT be downgraded to Unknown, got " + r.get("CFT.inlineLambda"));

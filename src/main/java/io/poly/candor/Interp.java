@@ -154,6 +154,16 @@ final class Interp {
         // hand-off site can disclose exactly what the LAMBDA spelling of the same call already discloses —
         // `callback:java.lang.Runnable.run` — instead of reading silent-pure.
         final String samForwarder;
+        // SOUNDNESS R236 — PROVABLY THE `null` CONSTANT ON EVERY PATH. `xs.sort(null)` is the documented
+        // natural-ordering spelling and `AccessController.doPrivileged(null)` NPEs: neither hands over a
+        // callback, so charging `Unknown` there is a fabrication and nothing else — the only reason it was
+        // not one before R236 is that `Comparator` sat outside the interface set, so the branch was never
+        // reached. It is a FLAG rather than `declType == null` (the shape R217 wrote, measured at 0 rows
+        // inside the narrow set, and deleted): `declType` is also null for a merge of two different
+        // declared types and for an array-element read, so suppressing on it would go SILENT on a genuine
+        // opaque callback. Used only to SUPPRESS, so it collapses to false at a join like every other
+        // narrowing field here — a `c != null ? c : null` merge charges.
+        final boolean nullConst;
         ProvValue(BasicValue base, String newType) { this(base, newType, false, declTypeOf(base), null, null); }
         ProvValue(BasicValue base, String newType, boolean fromIndy) { this(base, newType, fromIndy, declTypeOf(base), null, null); }
         ProvValue(BasicValue base, String newType, boolean fromIndy, String declType) { this(base, newType, fromIndy, declType, null, null); }
@@ -167,10 +177,14 @@ final class Interp {
         }
         ProvValue(BasicValue base, String newType, boolean fromIndy, String declType, String lambdaTarget,
                   String fieldOrigin, Set<Effect> originEffects, String samForwarder) {
+            this(base, newType, fromIndy, declType, lambdaTarget, fieldOrigin, originEffects, samForwarder, false);
+        }
+        ProvValue(BasicValue base, String newType, boolean fromIndy, String declType, String lambdaTarget,
+                  String fieldOrigin, Set<Effect> originEffects, String samForwarder, boolean nullConst) {
             this.base = base; this.newType = newType; this.fromIndy = fromIndy; this.declType = declType;
             this.lambdaTarget = lambdaTarget; this.fieldOrigin = fieldOrigin;
             this.originEffects = (originEffects == null || originEffects.isEmpty()) ? null : originEffects;
-            this.samForwarder = samForwarder;
+            this.samForwarder = samForwarder; this.nullConst = nullConst;
         }
         public int getSize() { return base.getSize(); }
         public boolean equals(Object o) {
@@ -179,14 +193,14 @@ final class Interp {
                     && Objects.equals(declType, p.declType) && Objects.equals(lambdaTarget, p.lambdaTarget)
                     && Objects.equals(fieldOrigin, p.fieldOrigin)
                     && Objects.equals(originEffects, p.originEffects)
-                    && Objects.equals(samForwarder, p.samForwarder);
+                    && Objects.equals(samForwarder, p.samForwarder) && nullConst == p.nullConst;
         }
         public int hashCode() {
-            return ((((((base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode())) * 31 + (fromIndy ? 1 : 0))
+            return (((((((base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode())) * 31 + (fromIndy ? 1 : 0))
                     * 31 + (declType == null ? 0 : declType.hashCode())) * 31 + (lambdaTarget == null ? 0 : lambdaTarget.hashCode()))
                     * 31 + (fieldOrigin == null ? 0 : fieldOrigin.hashCode()))
                     * 31 + (originEffects == null ? 0 : originEffects.hashCode()))
-                    * 31 + (samForwarder == null ? 0 : samForwarder.hashCode());
+                    * 31 + (samForwarder == null ? 0 : samForwarder.hashCode())) * 31 + (nullConst ? 1 : 0);
         }
     }
 
@@ -260,6 +274,12 @@ final class Interp {
                 BasicValue nb = bi.newOperation(insn);
                 return nb == null ? null
                         : new ProvValue(nb, t, false, t, null, null, ce == null ? null : EnumSet.of(ce));
+            }
+            // SOUNDNESS R236 — the ONE production of a provable null. Every other production leaves the
+            // flag false, so it can only ever be set here and can only ever be cleared at a merge.
+            if (insn.getOpcode() == Opcodes.ACONST_NULL) {
+                BasicValue nb = bi.newOperation(insn);
+                return nb == null ? null : new ProvValue(nb, null, false, null, null, null, null, null, true);
             }
             if (insn.getOpcode() == Opcodes.GETSTATIC) {
                 // ⟨0.35⟩ A static field's read is a field-origin carrier too, exactly like GETFIELD below —
@@ -372,11 +392,14 @@ final class Interp {
             String msf = a.samForwarder == null ? b.samForwarder
                     : b.samForwarder == null ? a.samForwarder
                     : (a.samForwarder.compareTo(b.samForwarder) <= 0 ? a.samForwarder : b.samForwarder);
+            // SOUNDNESS R236 — a join is provably null only when BOTH arms are, the same collapse every
+            // other NARROWING field above makes. `c != null ? c : null` therefore charges.
+            boolean mnc = a.nullConst && b.nullConst;
             if (mb.equals(a.base) && Objects.equals(mt, a.newType) && mi == a.fromIndy
                     && Objects.equals(mdt, a.declType) && Objects.equals(mlt, a.lambdaTarget)
                     && Objects.equals(mfo, a.fieldOrigin) && Objects.equals(moe, a.originEffects)
-                    && Objects.equals(msf, a.samForwarder)) return a;
-            return new ProvValue(mb, mt, mi, mdt, mlt, mfo, moe, msf);
+                    && Objects.equals(msf, a.samForwarder) && mnc == a.nullConst) return a;
+            return new ProvValue(mb, mt, mi, mdt, mlt, mfo, moe, msf, mnc);
         }
     }
 

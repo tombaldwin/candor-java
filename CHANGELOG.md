@@ -8,6 +8,98 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ SOUNDNESS R217 — an OPAQUE callback (one arriving as a field or a parameter) handed to a
+  higher-order function read SILENT-PURE, while its lambda and method-reference twins disclosed.**
+  `xs.removeIf(pParam)` and `m.computeIfAbsent(k, fnField)` were ABSENT from `functions[]`, ground
+  truth EXECUTED — the run really performs the effect, five writes, one per driven arm. `deny Unknown`
+  over those methods goes **exit 0 → 1**. The one-variable twins `xs.removeIf(x -> p.test(x))` and
+  `xs.removeIf(p::test)` were already `['Unknown']` on the same engine.
+
+  **The row's premise was half wrong, and that decided what gets fixed.** R217 says the site is "silent
+  in EVERY spelling". Measured on the shipped engine that is TRUE for `xs.sort(cmpField)` and FALSE for
+  `removeIf`/`computeIfAbsent`: the discriminator is not the higher-order function, it is the
+  INTERFACE. `Predicate` and `Function` are in `java/util/function/`, which `isJdkFunctionalSam`
+  covers, so the lambda body's own `p.test(x)` read and R183's creation-site arm both fire;
+  `Comparator` is outside it, so nothing charges it anywhere — `cmpParam.compare(a, b)`, invoked
+  DIRECTLY one frame shallower with no higher-order function involved at all, is silent too. Two
+  mechanisms in one row. This closes the first. The second is R183's stated residual (2), still OPEN,
+  and now pinned by `theRemainingBoundaryIsTheInterfaceSetNotTheOpaqueness`, which REPLACES
+  `theRemainingBoundaryIsTheOPAQUECallbackNotTheSpelling`: the boundary moved from OPAQUENESS to the
+  INTERFACE SET.
+
+  **No table is widened (§G).** R217 was filed as needing `Rules.SYNC_CALLBACK_INVOKERS` /
+  `FOR_EACH_FAMILY` widened by hand — the fabrication direction. It does not: `isInvokingHof` is
+  already the engine's authority for "does this library higher-order function invoke the functional
+  argument it is handed", answering exactly that question at exactly this call site for the
+  `new EffImpl()` arm one branch up, and it names `sort`, `computeIfAbsent` and `removeIf`. Three arms
+  reach one HOF argument and only two were answered: a `new EffImpl()` resolves to its SAM surface, a
+  lambda or method reference is edged at its creation site (`fromIndy`), and an OPAQUE value — which
+  has no creation site in this method at all — got nothing. Both invoker tables are untouched and keep
+  answering the arg0 hand-off question they were built for.
+
+  **Which interfaces, measured rather than reasoned.** The claim is parity with the arms that already
+  charge, so the gate is `isFunctionalIface` — `java/util/function/` + `Runnable` + `Callable`, the set
+  `isJdkFunctionalSam` uses. The wider `isHofFunctionalIface` (adding `Comparator`, `FileFilter`,
+  `FilenameFilter`, `PrivilegedAction`) was BUILT and RUN over the same corpus: ADDED 2,155 rather than
+  458 and CHANGED(inferred) 865 rather than 338, 596 of the extra rows in assertj-core and 560 in
+  jandex, over `Comparator.comparing(…)`-shaped plumbing — and it charges where the direct
+  `cmp.compare(a, b)` invoke stays silent. Not taken.
+
+  **Which direction this fails in.** `isInvokingHof` is an ALLOWLIST: an invoking HOF it does not name
+  leaves the site SILENT (an under-report), and a sink that merely stores the callback is never
+  charged. The denylist form was tried at this exact site before and MEASURED wrong —
+  `!isStoringContainerCall` fired for ANY external non-store and fabricated on
+  `Objects.requireNonNull(c)` / `Optional.ofNullable(c)` / `map.getOrDefault(k, c)` /
+  `new TreeMap<>(cmp)`.
+
+  **A/B over 395 gradle-cache jars, keyed on EVERY field, 578,003 common rows: ADDED 458, REMOVED 0,
+  CHANGED(every field) 963, CHANGED(inferred) 338.** Pre-image built from a stashed tree, not from a
+  flag. Instrumented, because an unchanged row is not evidence the new code ran: 351 events at 298
+  distinct sites in 60 jars. Bucketed by MECHANISM from `javap`, never from candor's own report — 187
+  `aload` of a parameter or local, 25 field reads, 128 the return of another call, 11 mixed. The first
+  two are RECALL: commons-lang3 `Memoizer.compute` reads its user-supplied `mappingFunction` field
+  straight into `ConcurrentMap.computeIfAbsent`; guava `Synchronized$SynchronizedMap.computeIfAbsent`
+  and hibernate `LongStreamDecorator.filter` forward a caller-supplied `Function`/`LongPredicate`;
+  jackson `ObjectNode.removeIf` forwards its `Predicate` into `Collection.removeIf`. The third is an
+  honest disclosure that is also an IMPRECISION where the returned lambda was itself in scope
+  (`DaggerStreams.instancesOf(Class)` feeding `Stream.flatMap` is the largest cluster) — stated here
+  rather than implied.
+
+  **All 796 touched rows accounted for, not sampled (§E1).** REMOVED is 0, no row lost an effect in
+  `inferred`, and no row lost an entry in `declared`, `unresolved`, `direct`, `calls` or `unknownWhy`;
+  the only shrinking channel is `overdeclared` (72 rows), which is `declared − performed` with
+  `performed` growing. 213 rows are themselves instrumented sites, 396 reach one along the report's own
+  call edges, and the remaining 187 claim NO effect at all (`inferred: []`, nothing in any channel):
+  every one has a non-empty class-declared set, so they surface only through `ReportWriter`'s existing
+  "the class declares a capability" rule once a sibling discloses. No added row claims a concrete
+  effect; every gain is exactly `Unknown`.
+
+  **Teeth, revert-tested by reverting.** Stashing only the source change turns FOUR rows red. Each
+  design choice has its OWN discriminating row, verified by degrading it: forcing `isInvokingHof` true
+  reddens `aNonInvokingSinkGainsNothing`; dropping the `fromIndy` gate reddens
+  `aLambdaOrMethodReferenceAtTheSameHofIsUnchanged`; widening the interface set reddens
+  `theRemainingBoundaryIsTheInterfaceSetNotTheOpaqueness`; dropping the arg0 hand-off guard, or
+  widening it from `i == 0` to any argument, reddens
+  `theForEachHandoffKeepsItsSingleReasonAndThePrimitiveOneIsNotLost`; forcing the project-owner gate
+  true reddens `aProjectOwnedHofIsAnalysedNotDisclosed`. A first draft of the over-charge control used
+  `Objects.requireNonNull(f)` / `Optional.ofNullable(f)` / `Stream.of(f)` and SURVIVED its own
+  degradation — every one of those parameters erases to `Object`, so the interface gate excluded them
+  and the allowlist was never consulted. It read as coverage of the allowlist and was coverage of
+  erasure; it is replaced by sinks with genuinely `java.util.function`-typed parameters
+  (`Comparator.comparing`, `Collectors.groupingBy`/`toMap`, `Function.andThen`, `Predicate.and`).
+
+  **A null-constant guard was written, measured and deleted.** Skipping on a null `declType` looked
+  obviously right, but inside this interface set every invoking HOF NPEs on a null argument, so no
+  runnable fixture could discriminate it, and over the 395 jars it moved ADDED/REMOVED/CHANGED by 0 on
+  every field. An untestable narrowing of a sound over-approximation is the shape that becomes a silent
+  under-report later.
+
+  **Residuals, stated.** (1) `Comparator`/`FileFilter`/`FilenameFilter`/`PrivilegedAction` are outside
+  every arm that charges a callback, so `xs.sort(cmpField)` AND `cmpParam.compare(a, b)` are both still
+  silent; closing that means widening `isJdkFunctionalSam` for every arm together. (2) An invoking
+  higher-order function `isInvokingHof` does not name is still silent — `Optional.orElseGet(supParam)`
+  is one. (3) Jar/native parity unverified on this box (GraalVM absent).
+
 - **⚠ SOUNDNESS R183 — a method reference handed to a higher-order function the invoker allowlist does
   not name read SILENT-PURE, while the lambda spelling of the same expression disclosed.**
   `Optional.ofNullable(sup).map(Supplier::get)` was ABSENT from `functions[]`; `map(s -> s.get())` is

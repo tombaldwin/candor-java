@@ -223,30 +223,33 @@ class SamForwarderHandoffTest {
         } finally { rm(cls.getParent()); }
     }
 
-    /** THE BOUNDARY, MOVED — this row USED TO BE {@code theHofTableBoundaryThisRowDoesNotWiden}, and
-     *  SOUNDNESS R183 made that boundary obsolete rather than merely crossing it.
+    /** THE BOUNDARY, MOVED AGAIN — this row was {@code theHofTableBoundaryThisRowDoesNotWiden}, then
+     *  {@code theRemainingBoundaryIsTheOPAQUECallbackNotTheSpelling}, and SOUNDNESS R217 made THAT
+     *  boundary obsolete rather than merely crossing it.
      *
-     *  <p><b>What it used to pin.</b> R179 corrects {@code fromIndy}'s false premise at the HAND-OFF site,
-     *  so it reached only the higher-order functions {@code Rules#SYNC_CALLBACK_INVOKERS} /
-     *  {@code FOR_EACH_FAMILY} name. {@code Optional.ofNullable(sup).map(Supplier::get)} therefore stayed
-     *  SILENT while {@code map(s -> s.get())} disclosed, and this row asserted that silence so it could not
-     *  be mistaken for coverage. It is now closed — by {@link HofSpellingParityTest}, at the CREATION site,
-     *  and <b>without widening either table</b>: the SPELLING was never the invoker tables' question.
+     *  <p><b>What it used to pin.</b> After R183 closed the SPELLING gap at the creation site, a callback
+     *  arriving as a FIELD or a PARAMETER still had no creation site to attribute anything to, so
+     *  {@code xs.removeIf(pParam)} and {@code m.computeIfAbsent(k, fnParam)} stayed silent. R217 closed
+     *  that, in {@link OpaqueCallbackToHofTest}, and <b>without widening either invoker table</b>:
+     *  {@code Candor#isInvokingHof} was already the authority for "does this library higher-order
+     *  function invoke the functional argument it is handed", answering exactly that question at exactly
+     *  this call site for the {@code new EffImpl()} arm.
      *
-     *  <p><b>What the boundary actually is, now that the spelling no longer decides.</b> OPAQUENESS, not
-     *  syntax. A callback arriving as a FIELD or a PARAMETER has no creation site in this method to
-     *  attribute anything to, so the only thing that can speak for it is the invoker allowlist — and
-     *  outside that allowlist it is silent in EVERY spelling, because there is no spelling. {@code sort},
-     *  {@code computeIfAbsent} and {@code removeIf} really do invoke the callback they are handed, and
-     *  candor does not disclose it. That is a live silent under-report, and it IS the question R183 was
-     *  filed as ("which HOFs invoke"), with its fabrication risk intact — widening an allowlist that
-     *  deliberately excludes store/lazy sinks is still not a change to make from a table.
+     *  <p><b>What the boundary actually is, now that opaqueness no longer decides.</b> THE INTERFACE SET.
+     *  Every arm that charges a callback — the lambda body's unpinned-SAM read, R183's creation-site arm,
+     *  and now the opaque arm — is keyed on {@code java/util/function/} + {@code Runnable} +
+     *  {@code Callable}. A {@code Comparator} is outside all three, so {@code xs.sort(cmpField)} is
+     *  silent, and so is {@code cmpParam.compare(a, b)} — the SAME callback invoked directly, one frame
+     *  shallower, with no higher-order function involved at all. That is a live silent under-report and
+     *  it is R183's stated residual (2): closing it means widening {@code Candor#isJdkFunctionalSam} for
+     *  EVERY arm together, which is a separate row with its own fabrication risk — the wider set was
+     *  built and measured for R217 and cost +1,697 rows over 395 jars, 596 in assertj-core alone.
      *
      *  <p>Pinned exactly as before: when it is closed, this row goes RED and the register moves with it.
-     *  {@code refArm} is the control that keeps the two questions apart — same HOF, same interface, the
-     *  callback arriving as an indy instead of a param, disclosed since R183. */
+     *  {@code removeArm} is the control that keeps the two questions apart — the same OPAQUE parameter at
+     *  the same kind of higher-order function, differing only in the interface, disclosed since R217. */
     @Test
-    void theRemainingBoundaryIsTheOPAQUECallbackNotTheSpelling() throws Exception {
+    void theRemainingBoundaryIsTheInterfaceSetNotTheOpaqueness() throws Exception {
         Path cls = compile(Map.of("app/Opaque.java", String.join("\n",
             "package app;",
             "import java.util.*;",
@@ -255,24 +258,25 @@ class SamForwarderHandoffTest {
             "  private Comparator<String> cmp;",
             "  public void sortField(List<String> xs) { xs.sort(cmp); }",
             "  public void sortParam(List<String> xs, Comparator<String> c) { xs.sort(c); }",
-            "  public String computeParam(Map<String,String> m, Function<String,String> f) { return m.computeIfAbsent(\"k\", f); }",
-            "  public boolean removeParam(List<String> xs, Predicate<String> p) { return xs.removeIf(p); }",
-            "  public String refArm(Supplier<String> s) { return Optional.of(s).map(Supplier::get).orElse(null); }",
+            "  public Optional<String> minParam(List<String> xs, Comparator<String> c) { return xs.stream().min(c); }",
+            "  public int compareParam(Comparator<String> c) { return c.compare(\"a\", \"b\"); }",
+            "  public boolean removeArm(List<String> xs, Predicate<String> p) { return xs.removeIf(p); }",
             "}")));
         try {
             Map<String, EffectSet> r = Candor.runScan(cls);
-            for (String m : new String[] {"sortField", "sortParam", "computeParam", "removeParam"})
+            for (String m : new String[] {"sortField", "sortParam", "minParam", "compareParam"})
                 assertFalse(eff(r, "app.Opaque." + m).contains(Effect.UNKNOWN),
-                    "RESIDUAL, NOT A CLAIM OF CORRECTNESS: " + m + " hands an OPAQUE callback to a "
-                    + "higher-order function the invoker allowlist does not name, and there is no creation "
-                    + "site here to attribute it to, so it is silent — an OPEN silent under-report of the "
-                    + "same family, and the one that really does need the 'which HOFs invoke' question "
-                    + "answered. Got " + r.get("app.Opaque." + m));
-            assertTrue(eff(r, "app.Opaque.refArm").contains(Effect.UNKNOWN),
-                "…and the CONTROL that separates the two: the same shape with the callback arriving as a "
-                + "method reference HAS a creation site, and R183 discloses there. If this went silent the "
-                + "four rows above would read as a boundary when they were really a regression. Got "
-                + r.get("app.Opaque.refArm"));
+                    "RESIDUAL, NOT A CLAIM OF CORRECTNESS: " + m + " reaches a Comparator that really "
+                    + "runs, and Comparator is outside `isJdkFunctionalSam` — the set EVERY arm that "
+                    + "charges a callback is keyed on — so it is silent whether it is handed to a "
+                    + "higher-order function or invoked directly. An OPEN silent under-report, and the "
+                    + "one that really does need the interface set widened for all arms at once. Got "
+                    + r.get("app.Opaque." + m));
+            assertTrue(eff(r, "app.Opaque.removeArm").contains(Effect.UNKNOWN),
+                "…and the CONTROL that separates the two: the same OPAQUE parameter at the same kind of "
+                + "higher-order function, differing only in the interface, which R217 discloses. If this "
+                + "went silent the four rows above would read as a boundary when they were really a "
+                + "regression. Got " + r.get("app.Opaque.removeArm"));
         } finally { rm(cls.getParent()); }
     }
 

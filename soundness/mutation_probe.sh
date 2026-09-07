@@ -82,13 +82,16 @@ add sanity_noop  run_kappa       silent "no-op comment insertion (control: probe
 
 patch_for() {
   case "$1" in
-  net_dns)
-    TGT="$CLS"
-    apply_patch \
-'|| (owner.equals("java.net.InetAddress")
+    net_dns)
+      TGT="$CLS"
+      apply_patch \
+  '                || ((owner.equals("java.net.InetAddress") || owner.equals("java.net.Inet4Address")
+                        || owner.equals("java.net.Inet6Address"))
                     && (method.equals("getByName") || method.equals("getAllByName")
-                        || method.equals("getLocalHost") || method.equals("getCanonicalHostName")))' \
-'|| (owner.equals("java.net.InetAddress")
+                        || method.equals("getLocalHost") || method.equals("getCanonicalHostName")
+                        || method.equals("getHostName")))' \
+  '                || ((owner.equals("java.net.InetAddress") || owner.equals("java.net.Inet4Address")
+                        || owner.equals("java.net.Inet6Address"))
                     && (method.equals("__MUTANT_never__")))' ;;
   net_socket)
     TGT="$CLS"

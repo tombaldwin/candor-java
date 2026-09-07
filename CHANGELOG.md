@@ -8,6 +8,9 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **jbang catalog points at the 0.35.1 jar.** The pin moves only after the release exists, because it
+  names a release-download URL — resolved, not assumed: the script-ref returns 200.
+
 ## [0.35.1] — 2026-09-07
 
 - ⚠ **SOUNDNESS R274 / R248 / R258 — the SLOT-vs-VALUE operand-stack index. Three cardinal sins from one

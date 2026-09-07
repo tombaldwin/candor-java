@@ -23,7 +23,11 @@ VER=$(java -jar "$JAR" --version 2>/dev/null | head -1)
 echo "engine (frozen): $VER"
 case "$VER" in *0.23.*) : ;; *) echo "WARNING: PREREG pins v0.23.1; got '$VER' — record the deviation.";; esac
 
-WORK="${CORPUS_WORK:-${TMPDIR:-/tmp}/candor-corpus}"; mkdir -p "$WORK" "$HERE/results"
+# SOUNDNESS R242/R306 — evidence does not live under $TMPDIR, and this script's output is the
+# PAPER'S fresh-draw evidence. macOS sweeps /var/folders and /tmp alike, and a hollowed corpus
+# (directories intact, files gone) makes a differential print ADDED 0 / REMOVED 0 / CHANGED 0 —
+# indistinguishable from a correct, safely-inert result, which is why nobody looks twice.
+WORK="${CORPUS_WORK:-$HOME/.candor/corpus-freshdraw}"; mkdir -p "$WORK" "$HERE/results"
 SHALOCK="$HERE/results/SHALOCK.tsv"; SUM="$HERE/results/SUMMARY.tsv"
 : > "$SHALOCK"; printf 'repo\tsha\tanalyzed\tchecked\tsound\tdisclosed\tviolations\tHholds\tcomplete\tverdict\n' > "$SUM"
 

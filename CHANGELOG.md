@@ -8,6 +8,8 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+## [0.35.1] — 2026-09-07
+
 - ⚠ **SOUNDNESS R274 / R248 / R258 — the SLOT-vs-VALUE operand-stack index. Three cardinal sins from one
   arithmetic error, all three PUBLISHED in 0.34.0 and 0.35.0, plus a fabrication in the other direction.**
 

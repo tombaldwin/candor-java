@@ -23,7 +23,11 @@ VER=$(java -jar "$JAR" --version 2>/dev/null | head -1)
 echo "engine (frozen): $VER"
 case "$VER" in *0.23.*) : ;; *) echo "WARNING: PREREG pins v0.23.1; got '$VER' — record the deviation.";; esac
 
-WORK="${CORPUS_WORK:-${TMPDIR:-/tmp}/candor-corpus}"; mkdir -p "$WORK" "$HERE/results"
+# SOUNDNESS R242/R306 — evidence does not live under $TMPDIR. macOS sweeps the per-user
+# /var/folders tree and /tmp alike, and a HOLLOWED corpus (directories intact, files gone) makes
+# a differential print ADDED 0 / REMOVED 0 / CHANGED 0 — which is exactly what a correct,
+# safely-inert change prints. That is the result you were hoping for, so nobody looks twice.
+WORK="${CORPUS_WORK:-$HOME/.candor/corpus-confirmatory}"; mkdir -p "$WORK" "$HERE/results"
 SHALOCK="$HERE/results/SHALOCK.tsv"; SUM="$HERE/results/SUMMARY.tsv"
 : > "$SHALOCK"; printf 'repo\tsha\tanalyzed\tchecked\tsound\tdisclosed\tviolations\tHholds\tcomplete\tverdict\n' > "$SUM"
 
@@ -37,7 +41,10 @@ grep -vE '^\s*#|^\s*$' "$HERE/manifest.tsv" | while IFS=$'\t' read -r name url r
   wanted "$name" || continue
   echo; echo "################## $name ($ref) ##################"
   d="$WORK/$name"
-  if [ ! -d "$d/.git" ]; then
+# …and ACQUISITION IS TESTED BY CONTENT, not by the presence of `.git`. A gutted checkout keeps
+# `.git/hooks` and `.git/info`, so a `-d "$d/.git"` test answers "already got it" forever about a
+# tree with no source in it. Count real files instead.
+  if [ "$(find "$d" -type f -name "*.java" 2>/dev/null | head -1 | wc -l | tr -d " ")" = "0" ]; then
     rm -rf "$d"
     git clone --quiet --branch "$ref" --depth 1 "$url" "$d" 2>/dev/null \
       || { echo "  clone failed — disposition: clone-failed"; printf '%s\t%s\tCLONE-FAILED\n' "$name" "$ref" >>"$SHALOCK"; continue; }

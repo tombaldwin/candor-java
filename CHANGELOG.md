@@ -10,6 +10,9 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.36.0] — 2026-09-09
 
+- **jbang catalog points at the 0.36.0 jar.** The pin moves only after the release exists — verified
+  resolvable rather than assumed: the `script-ref` URL returns HTTP 200.
+
 - **⟨0.36⟩ floor declared.** No engine change in this release — the `SPEC_VERSION` constant is the
   change. A release review established that leaving this repo out of the cut would fail
   `release-preflight` check [1] (which reads all seven declarations unconditionally), `spec-bump.sh

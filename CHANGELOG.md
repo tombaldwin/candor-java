@@ -8,6 +8,8 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+## [0.36.0] — 2026-09-09
+
 - **⟨0.36⟩ floor declared.** No engine change in this release — the `SPEC_VERSION` constant is the
   change. A release review established that leaving this repo out of the cut would fail
   `release-preflight` check [1] (which reads all seven declarations unconditionally), `spec-bump.sh

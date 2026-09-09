@@ -8,6 +8,12 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⟨0.36⟩ floor declared.** No engine change in this release — the `SPEC_VERSION` constant is the
+  change. A release review established that leaving this repo out of the cut would fail
+  `release-preflight` check [1] (which reads all seven declarations unconditionally), `spec-bump.sh
+  --check`, and `candor doctor` for every user running this engine alongside another; SPEC §1 also
+  requires the reference engine to declare a new rung first.
+
 - **jbang catalog points at the 0.35.1 jar.** The pin moves only after the release exists, because it
   names a release-download URL — resolved, not assumed: the script-ref returns 200.
 

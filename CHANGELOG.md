@@ -12,6 +12,10 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 - **No engine change in this cut.** This release is a family build bump: the analysis changes are in candor-rust and candor-swift (see their changelogs), and the spec did not move. This engine's classifier, gate and report behaviour are unchanged from 0.36.0.
 
+- **jbang catalog points at the 0.36.1 jar.** Moved after the release existed, not before: 0.24 shipped a
+  jbang pin to a tag that was never cut, so the `script-ref` URL is resolved by `release-verify.sh` rather
+  than string-matched.
+
 ## [0.36.0] — 2026-09-09
 
 - **jbang catalog points at the 0.36.0 jar.** The pin moves only after the release exists — verified

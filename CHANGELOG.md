@@ -10,6 +10,10 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.36.2] — 2026-09-12
 
+- **jbang catalog points at the 0.36.2 jar.** Moved after the release existed, not before: 0.24 shipped a
+  jbang pin to a tag that was never cut, so `release-verify.sh` RESOLVES the `script-ref` URL rather than
+  string-matching it.
+
 - **`ci/self-gate.sh` is now its own one-line CI step — SOUNDNESS R406.** As part of a `run: |` block it
   was invisible to `bin/gates.sh`, which builds the per-repo gate list from `run:` steps: the block was
   named as an un-run `~` line and `bash ci/self-gate.sh` appeared **zero** times among the runnable

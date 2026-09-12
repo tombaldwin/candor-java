@@ -8,6 +8,26 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ `File.toURI()` STATS, and it was carved out as PURE — a silent under-report over a real syscall.**
+  `isPureHandleAccessor`'s `java.io.File` case listed `toURI` among the pathname accessors that "touch NO
+  filesystem". It appends a trailing slash when the pathname is a directory, so it calls `isDirectory()`.
+  MEASURED on JDK 21, not read off the name: `new File("/tmp/d").toURI()` is `file:/tmp/d/` when the
+  directory exists and `file:/tmp/d` when it does not. A verb whose OUTPUT depends on the filesystem has
+  read the filesystem.
+
+  The tell had been in the same list all along: `toURL` is ABSENT from it (so it correctly returned Fs
+  whole-owner) and `toURL` is implemented as `toURI().toURL()`. One list gave two answers for one syscall,
+  decided by which spelling the caller used. A smoke assertion — `absent "File.toURI is pure"` — was
+  standing guard over the wrong answer, which is why it survived; it is now a `want … 'Fs'`.
+
+  MEASURED, `bin/corpus-ab.py` over the same 122 jars, PRE = the R409 commit: **ADDED 14, REMOVED 0,
+  CHANGED 110** (`inferred` +14 / ~45). The 14 ADDED are the sin's signature — functions candor OMITTED
+  entirely, which under ⟨0.21⟩ is a positive purity claim: `org.apache.commons.io.FileUtils.toURLs`
+  (`files[i].toURI().toURL()` in a loop, ground-truthed in `javap`), ant's `Locator.fileToURL` and
+  `Launcher.getJarArray`, woodstox's `URLUtil.toURL`, jdom's `SAXBuilderEngine.fileToURL`, junit's
+  `FileSource.getUri`/`DirectorySource.getUri`, logback's `FileUtil.fileToURL`, plexus's `FileUtils.toURLs`.
+  Every `calls` movement in the 110 is an ADDED edge to one of those newly-reported nodes; none was removed.
+
 - **⚠ An Fs call NAMES ITS OWN FILE, and a file nobody captured leaves the `paths` surface incomplete —
   SOUNDNESS R409 (and the java half of R414).** The only Fs masking guard fired at the path-ESTABLISHING
   call (`Path.of`/`Paths.get`/a path ctor with a single String literal), so a locator that arrived ALREADY

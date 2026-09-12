@@ -8,6 +8,15 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **`ci/self-gate.sh` is now its own one-line CI step — SOUNDNESS R406.** As part of a `run: |` block it
+  was invisible to `bin/gates.sh`, which builds the per-repo gate list from `run:` steps: the block was
+  named as an un-run `~` line and `bash ci/self-gate.sh` appeared **zero** times among the runnable
+  gates, so the local gate list could not run it and the 0.36.1 cut did not. That is the exact gate the
+  family's own cautionary tale is about — candor-swift's `main` sat red for four commits because
+  `self-gate` was the one gate never run locally. CI executes the same two commands in the same order;
+  only the step boundary moved. Run for the first time from the gate list on 2026-09-12: **OK.**
+
+
 ## [0.36.1] — 2026-09-11
 
 - **No engine change in this cut.** This release is a family build bump: the analysis changes are in candor-rust and candor-swift (see their changelogs), and the spec did not move. This engine's classifier, gate and report behaviour are unchanged from 0.36.0.

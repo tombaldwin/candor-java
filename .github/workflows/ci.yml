@@ -76,9 +76,17 @@ jobs:
         # that the Exec-performing methods are EXACTLY the two declared ones. This step used to make the
         # strict policy pass by copying build/classes and DELETING io/poly/candor/verify, which left that
         # whole package outside the Exec gate entirely. See ci/self-gate.sh.
-        run: |
-          ./gradlew --no-daemon -q shadowJar
-          bash ci/self-gate.sh
+        # ONE COMMAND PER STEP, deliberately — SOUNDNESS R406. As a `run: |` block these two lines were
+        # invisible to `bin/gates.sh`, which extracts `run:` steps into the per-repo gate list: the block
+        # was named as an un-run `~` line and `bash ci/self-gate.sh` appeared ZERO times among the
+        # runnable gates. That is the exact gate CLAUDE.md's cautionary tale is about (candor-swift's
+        # `main` sat red for four commits because self-gate was the one gate never run locally), and the
+        # 0.36.1 cut did not run it either. Splitting changes nothing about what CI executes — same job,
+        # same order, same shell — and makes both lines runnable by `bash bin/gate-run.sh candor-java`.
+        run: ./gradlew --no-daemon -q shadowJar
+
+      - name: Self-gate (candor-java on candor-java) — the gate itself
+        run: bash ci/self-gate.sh
 
       # THE REFRESH CACHE'S ACCEPTANCE ORACLE, WHICH NOTHING RAN. bin/refresh-equiv.sh calls itself "the
       # refresh's entire safety case" and had no caller anywhere: not CI, not smoke.sh, not a gate. Found

@@ -63,6 +63,13 @@ class ClassifierTableTest {
             fx("java.nio.file.Path", "normalize", null),                 // pure path algebra twin
             fx("java.io.File", "delete", Effect.FS),
             fx("java.io.File", "getName", null),                         // pure pathname accessor twin
+            // `toURI` STATS — it appends a trailing slash for a directory, so it calls isDirectory().
+            // Measured on JDK 21: `new File("/tmp/d").toURI()` is `file:/tmp/d/` when the directory
+            // exists and `file:/tmp/d` when it does not. It sat in isPureHandleAccessor's File list
+            // beside `toURL`, which is ABSENT from it and is implemented as `toURI().toURL()` — one
+            // list, two answers for one syscall, decided by the caller's spelling.
+            fx("java.io.File", "toURI", Effect.FS),
+            fx("java.io.File", "toURL", Effect.FS),                       // the spelling that was right
             // network
             fx("java.net.Socket", "connect", Effect.NET),
             fx("java.net.Socket", "getPort", null),                      // cached-handle accessor twin

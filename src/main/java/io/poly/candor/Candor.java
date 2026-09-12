@@ -8336,11 +8336,22 @@ public class Candor {
             // The inert ctor (`new File(...)`) does ZERO I/O (it stores the path string). The effectful
             // members — delete/exists/isDirectory/mkdir/listFiles/getCanonicalPath/getCanonicalFile
             // (resolve symlinks → touch the FS) — are NOT listed, so they keep returning Fs.
+            //
+            // `toURI` WAS LISTED HERE AND IS NOT PURE. It is the most algebra-looking method on the type
+            // and it STATS: `File.toURI()` appends a trailing slash when the pathname is a directory, so
+            // it calls `isDirectory()` to find out. MEASURED on JDK 21, not read off the name —
+            // `new File("/tmp/d").toURI()` is `file:/tmp/d/` when the directory exists and `file:/tmp/d`
+            // when it does not. A verb whose OUTPUT depends on the filesystem has read the filesystem, so
+            // a method doing nothing but `f.toURI()` was reported silent-PURE over a real stat.
+            //
+            // The tell was sitting in this list the whole time: `toURL` is absent (so it correctly returns
+            // Fs whole-owner) and `toURL` is implemented as `toURI().toURL()`. One list gave two answers
+            // for one syscall depending only on which spelling the caller used.
             case "java.io.File":
                 return method.equals("<init>") || method.equals("getName") || method.equals("getParent")
                         || method.equals("getParentFile") || method.equals("getPath")
                         || method.equals("getAbsolutePath") || method.equals("getAbsoluteFile")
-                        || method.equals("isAbsolute") || method.equals("toURI") || method.equals("toPath")
+                        || method.equals("isAbsolute") || method.equals("toPath")
                         || method.equals("toString") || method.equals("hashCode") || method.equals("equals")
                         || method.equals("compareTo");
             // THE SOCKET FAMILY — SIX OWNERS, ONE DEFINITION EACH OF THREE PURE GROUPS. These used to be

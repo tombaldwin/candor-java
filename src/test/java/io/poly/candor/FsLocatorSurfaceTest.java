@@ -114,10 +114,14 @@ class FsLocatorSurfaceTest {
             "  void varargs(String child) throws Exception { Files.readAllBytes(Path.of(\"/tmp\", child)); }",
             // a locator derived by path ALGEBRA this pass does not model
             "  void resolved(Path base) throws Exception { Files.readAllBytes(base.resolve(\"x\")); }",
+            // `File.toURI`/`toURL` STAT (they call isDirectory() to decide the trailing slash), so a
+            // field- or parameter-held File reaching one of them names a file the gate cannot see. The
+            // sibling this rule was NOT handed: `toURI` had been carved out as pure until this change.
+            "  java.net.URI uri(File f) { return f.toURI(); }",
             "}")));
         try {
             Candor.runScan(cls);
-            for (String fn : new String[]{"fromField", "merged", "streamCtor", "varargs", "resolved"})
+            for (String fn : new String[]{"fromField", "merged", "streamCtor", "varargs", "resolved", "uri"})
                 assertTrue(inc("app.U." + fn), "`" + fn + "` names a file the gate cannot see — "
                         + "a benign sibling literal must not be able to certify it");
         } finally { rm(cls.getParent()); }

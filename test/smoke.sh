@@ -1329,7 +1329,7 @@ public class Fab {
   static String  fName()   { return new File("/tmp/x").getName(); }          // PURE (inert ctor + accessor)
   static String  fParent() { return new File("/tmp/x").getParent(); }        // PURE
   static boolean fAbs()    { return new File("/tmp/x").isAbsolute(); }       // PURE
-  static java.net.URI fUri(){ return new File("/tmp/x").toURI(); }           // PURE
+  static java.net.URI fUri(){ return new File("/tmp/x").toURI(); }           // Fs — toURI() STATS
   static boolean fDelete() { return new File("/tmp/x").delete(); }           // Fs (real I/O)
   static boolean fExists() { return new File("/tmp/x").exists(); }           // Fs (stat)
   static String  fCanon()  { try { return new File("/tmp/x").getCanonicalPath(); } catch (Exception e) { return null; } } // Fs (resolves symlinks)
@@ -1388,7 +1388,6 @@ fab="$(cat "$W/fab.json")"
 absent "File.getName + inert new File() is pure (no Fs)"   "$fab" '"Fab.fName"'
 absent "File.getParent is pure"                            "$fab" '"Fab.fParent"'
 absent "File.isAbsolute is pure"                           "$fab" '"Fab.fAbs"'
-absent "File.toURI is pure"                                "$fab" '"Fab.fUri"'
 absent "Socket.getPort is pure (cached field)"             "$fab" '"Fab.sPort"'
 absent "Socket.isClosed is pure"                           "$fab" '"Fab.sClosed"'
 absent "Socket.getRemoteSocketAddress is pure"             "$fab" '"Fab.sRemote"'
@@ -1412,6 +1411,13 @@ absent "Logger.getName is pure (cached field, not a Log emit)" "$fab" '"Fab.lgNa
 want   "File.delete still Fs"                "$("$CJ" show "$W/fab.json" 'Fab.fDelete')"   'Fs'
 want   "File.exists still Fs"                "$("$CJ" show "$W/fab.json" 'Fab.fExists')"   'Fs'
 want   "File.getCanonicalPath still Fs"      "$("$CJ" show "$W/fab.json" 'Fab.fCanon')"    'Fs'
+# `File.toURI` SAT IN THE (a) LIST ABOVE AS A PURITY CONTROL, AND THE CONTROL WAS WRONG. toURI appends a
+# trailing slash when the pathname is a directory, so it calls isDirectory() — a stat. MEASURED on JDK 21:
+# `new File("/tmp/d").toURI()` is `file:/tmp/d/` when the directory exists and `file:/tmp/d` when it does
+# not. A verb whose OUTPUT depends on the filesystem has read it. 14 real functions across the corpus
+# (commons-io `FileUtils.toURLs`, ant's `Locator.fileToURL`, woodstox's `URLUtil.toURL`, junit's
+# `FileSource.getUri`) were reported ABSENT — a positive purity claim over a real syscall.
+want   "File.toURI is Fs (it stats to decide the trailing slash)" "$("$CJ" show "$W/fab.json" 'Fab.fUri')" 'Fs'
 want   "Socket.getOutputStream still Net"    "$("$CJ" show "$W/fab.json" 'Fab.sOut')"      'Net'
 want   "Clock.instant still Clock"           "$("$CJ" show "$W/fab.json" 'Fab.cInstant')"  'Clock'
 want   "Clock.millis still Clock"            "$("$CJ" show "$W/fab.json" 'Fab.cMillis')"   'Clock'

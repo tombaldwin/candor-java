@@ -8,6 +8,41 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **⚠ An Fs call NAMES ITS OWN FILE, and a file nobody captured leaves the `paths` surface incomplete —
+  SOUNDNESS R409 (and the java half of R414).** The only Fs masking guard fired at the path-ESTABLISHING
+  call (`Path.of`/`Paths.get`/a path ctor with a single String literal), so a locator that arrived ALREADY
+  BUILT was never examined. Both spellings certified under `allow Fs /tmp/benign` beside one benign sibling
+  literal, exit 0, nothing disclosed:
+
+      void f(java.nio.file.Path p) { Files.write(Paths.get("/tmp/benign"), b); Files.exists(p); }
+      void f(java.io.File h)       { Files.write(Paths.get("/tmp/benign"), b); h.exists(); }
+
+  This is the AS-EFF-008 gate evasion `Literals#literalArgsInWindow` was written to kill for Net and Db and
+  was never migrated to Fs — the Net GENERAL RULE ("a Net call that contributes no visible host leaves the
+  surface incomplete") now stated for Fs. The locator is read from the DESCRIPTOR: a `Ljava/nio/file/Path;`
+  or `Ljava/io/File;` operand, at the receiver or at any argument, IS the file; a handle receiver
+  (`FileOutputStream`, `FileChannel`, `InputStream`) is not, so `out.write(b)` names nothing and makes no
+  claim in either direction.
+
+  **A DETERMINED path is still credited, and that control is half the change.** `Path p = Paths.get("/lit");
+  Files.write(p, b)` has no literal in `Files.write`'s own argument window, so a naive port of the per-call
+  window would have marked a fully visible path incomplete (the live behaviour of two other engines, R416).
+  Determination is answered by the value's own provenance — a new `pathLit` on the analyzer's `ProvValue`,
+  carried through locals, inline construction, `new File("…")` and `toPath()`/`toFile()`, and collapsing to
+  indeterminate at a disagreeing join.
+
+  MEASURED, `bin/corpus-ab.py`, PRE = a worktree at 67fd1b1: **122 third-party jars, 221,864 rows —
+  ADDED 0, REMOVED 0, CHANGED 8,174, every one of them `incomplete` GAINING `Fs` and none losing it;
+  `inferred` unchanged (0).** Of those 8,174, only **36** were certifiable before (a visible `paths`
+  surface and no incompleteness) and are not now — all 36 audited, all genuine masking: `kotlin.io.path
+  .copyToRecursively(source, target, …)` was certified by the `""`/`".."` literals beside it while
+  stat-ing and `toRealPath()`-ing both caller-supplied trees; `org.xnio.Xnio.openFile(File, FileAccess)` by
+  `/dev/null` and `NUL` while opening the caller's file; 21 rows of junit-platform-launcher by `"."`. A
+  second corpus (candor-java's own classes + the 5 standard jars, 6,956 rows) moved 44 rows the same way,
+  including `org.sqlite.util.OSInfo.isMusl`, whose `/proc/self/map_files` and `/etc/os-release` literals
+  were certifying a `Path.toRealPath()` on every symlink under them. Reach on the changed branch: 174
+  marked call sites, 2 credited-determined, 32 no-locator.
+
 ## [0.36.2] — 2026-09-12
 
 - **jbang catalog points at the 0.36.2 jar.** Moved after the release existed, not before: 0.24 shipped a

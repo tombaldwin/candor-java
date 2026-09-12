@@ -171,6 +171,17 @@ final class Interp {
         // opaque callback. Used only to SUPPRESS, so it collapses to false at a join like every other
         // narrowing field here — a `c != null ? c : null` merge charges.
         final boolean nullConst;
+        // SOUNDNESS R409 — THE LOCATOR THIS VALUE PROVABLY NAMES. The statically-determined path a
+        // `Path`/`File` value holds (or, for a `String` value, the constant itself): set at an `LDC "…"`, at
+        // `Path.of`/`Paths.get` over a determined String, at a `new File("…")`-family allocation, and carried
+        // through `toPath()`/`toFile()`. It answers the one question the Fs AS-EFF-008 surface asks of a
+        // stat/read/write call — "is the file this call names visible to the gate, wherever the locator
+        // arrived from" — for a locator reaching the call through a LOCAL or an inline construction, which no
+        // per-call literal WINDOW can see: `Path p = Paths.get("/lit"); Files.write(p, b)` has NO literal in
+        // `Files.write`'s own window, and marking that incomplete is the over-mask this field exists to avoid.
+        // A NARROWING field like newType/declType — it collapses to null at a disagreeing join, so a
+        // branch-merged locator is never claimed determined (the fail-closed direction).
+        final String pathLit;
         ProvValue(BasicValue base, String newType) { this(base, newType, false, declTypeOf(base), null, null); }
         ProvValue(BasicValue base, String newType, boolean fromIndy) { this(base, newType, fromIndy, declTypeOf(base), null, null); }
         ProvValue(BasicValue base, String newType, boolean fromIndy, String declType) { this(base, newType, fromIndy, declType, null, null); }
@@ -188,10 +199,21 @@ final class Interp {
         }
         ProvValue(BasicValue base, String newType, boolean fromIndy, String declType, String lambdaTarget,
                   String fieldOrigin, Set<Effect> originEffects, String samForwarder, boolean nullConst) {
+            this(base, newType, fromIndy, declType, lambdaTarget, fieldOrigin, originEffects, samForwarder,
+                    nullConst, null);
+        }
+        ProvValue(BasicValue base, String newType, boolean fromIndy, String declType, String lambdaTarget,
+                  String fieldOrigin, Set<Effect> originEffects, String samForwarder, boolean nullConst,
+                  String pathLit) {
             this.base = base; this.newType = newType; this.fromIndy = fromIndy; this.declType = declType;
             this.lambdaTarget = lambdaTarget; this.fieldOrigin = fieldOrigin;
             this.originEffects = (originEffects == null || originEffects.isEmpty()) ? null : originEffects;
-            this.samForwarder = samForwarder; this.nullConst = nullConst;
+            this.samForwarder = samForwarder; this.nullConst = nullConst; this.pathLit = pathLit;
+        }
+        /** This value with a determined locator attached — used where the producing insn names one. */
+        ProvValue withPathLit(String lit) {
+            return lit == null ? this : new ProvValue(base, newType, fromIndy, declType, lambdaTarget,
+                    fieldOrigin, originEffects, samForwarder, nullConst, lit);
         }
         public int getSize() { return base.getSize(); }
         public boolean equals(Object o) {
@@ -200,14 +222,16 @@ final class Interp {
                     && Objects.equals(declType, p.declType) && Objects.equals(lambdaTarget, p.lambdaTarget)
                     && Objects.equals(fieldOrigin, p.fieldOrigin)
                     && Objects.equals(originEffects, p.originEffects)
-                    && Objects.equals(samForwarder, p.samForwarder) && nullConst == p.nullConst;
+                    && Objects.equals(samForwarder, p.samForwarder) && nullConst == p.nullConst
+                    && Objects.equals(pathLit, p.pathLit);
         }
         public int hashCode() {
-            return (((((((base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode())) * 31 + (fromIndy ? 1 : 0))
+            return ((((((((base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode())) * 31 + (fromIndy ? 1 : 0))
                     * 31 + (declType == null ? 0 : declType.hashCode())) * 31 + (lambdaTarget == null ? 0 : lambdaTarget.hashCode()))
                     * 31 + (fieldOrigin == null ? 0 : fieldOrigin.hashCode()))
                     * 31 + (originEffects == null ? 0 : originEffects.hashCode()))
-                    * 31 + (samForwarder == null ? 0 : samForwarder.hashCode())) * 31 + (nullConst ? 1 : 0);
+                    * 31 + (samForwarder == null ? 0 : samForwarder.hashCode())) * 31 + (nullConst ? 1 : 0))
+                    * 31 + (pathLit == null ? 0 : pathLit.hashCode());
         }
     }
 
@@ -231,7 +255,18 @@ final class Interp {
      *  genuinely polymorphic receiver (param/field/branch-merged) NEVER narrows, keeping the CHA. */
     static final class ProvInterpreter extends Interpreter<ProvValue> {
         private final BasicInterpreter bi = new BasicInterpreter();
-        ProvInterpreter() { super(Opcodes.ASM9); }
+        /** SOUNDNESS R409 — per-method `NEW <path-ctor-owner>` insn -> the literal path its `<init>` names.
+         *  A constructor's result is the value the NEW pushed, NOT a return value, so `naryOperation` on the
+         *  INVOKESPECIAL has no way to attach anything to it (the receiver is already on the stack, twice,
+         *  and ProvValue is immutable). Pre-pairing NEW with its `<init>` is the only place the literal of
+         *  `new File("/lit")` can reach the value — and without it the extremely common determined shape
+         *  `File f = new File("/etc/hosts"); f.exists();` would read INCOMPLETE, which is the over-mask. */
+        private final Map<AbstractInsnNode, String> newPathLits;
+        ProvInterpreter() { this(Map.of()); }
+        ProvInterpreter(Map<AbstractInsnNode, String> newPathLits) {
+            super(Opcodes.ASM9);
+            this.newPathLits = newPathLits == null ? Map.of() : newPathLits;
+        }
         private static ProvValue wrap(BasicValue b, String t) { return b == null ? null : new ProvValue(b, t); }
         // Build with an EXPLICIT declared type — used where the insn carries a precise reference type the
         // BasicInterpreter would have collapsed to bare Object (field reads, call returns, casts, NEW).
@@ -280,7 +315,21 @@ final class Interp {
                 Effect ce = selfSourcingCtorEffect(t);
                 BasicValue nb = bi.newOperation(insn);
                 return nb == null ? null
-                        : new ProvValue(nb, t, false, t, null, null, ce == null ? null : EnumSet.of(ce));
+                        : new ProvValue(nb, t, false, t, null, null, ce == null ? null : EnumSet.of(ce),
+                                null, false, newPathLits.get(insn)); // R409 — `new File("/lit")`'s locator
+            }
+            // SOUNDNESS R409 — a String CONSTANT is a determined locator the moment it is pushed, and it stays
+            // one through an ASTORE/ALOAD round trip (copyOperation preserves the instance). That is what lets
+            // `String p = "/etc/hosts"; Files.readAllBytes(Path.of(p));` certify, where the per-call literal
+            // WINDOW sees only an ALOAD. Nothing but Path.of/Paths.get/a path ctor ever READS this on a String,
+            // so it cannot leak into the host/table surfaces.
+            if (insn instanceof LdcInsnNode ldc && ldc.cst instanceof String lit) {
+                BasicValue lb = bi.newOperation(insn);
+                // declType stays null exactly as the pre-R409 `wrap(…, null, null)` left it: declType seeds
+                // the implicit-contract-reentry CHA, and naming java/lang/String here would change which
+                // edges this pass emits. This branch adds the locator and NOTHING else.
+                return lb == null ? null : new ProvValue(lb, null, false, null,
+                        null, null, null, null, false, lit);
             }
             // SOUNDNESS R236 — the ONE production of a provable null. Every other production leaves the
             // flag false, so it can only ever be set here and can only ever be cleared at a merge.
@@ -361,7 +410,52 @@ final class Interp {
             // SOUNDNESS R147 — carry the ACQUISITION's effect on a stream handed back by a classified call.
             // SOUNDNESS R179 — and, for an indy, whether it merely FORWARDS to a bodiless SAM.
             String sf = indy && insn instanceof InvokeDynamicInsnNode idin2 ? samForwarderTarget(idin2) : null;
-            return new ProvValue(b, null, indy, dt, lt, null, acquisitionEffects(insn), sf);
+            // SOUNDNESS R409 — a path FACTORY hands the locator on to its result.
+            return new ProvValue(b, null, indy, dt, lt, null, acquisitionEffects(insn), sf, false,
+                    callPathLit(insn, values));
+        }
+
+        /** SOUNDNESS R409 — the determined locator a call's RESULT carries, or null (indeterminate).
+         *
+         *  <p>Deliberately a SHORT, closed list of pure path ALGEBRA, not a general string-constant
+         *  propagation: every entry here is a value the consumer will read as "the gate can see this file",
+         *  so a wrong entry is a silent under-report. `Path.resolve`, `File(File,String)`, `getParent` and
+         *  friends are ABSENT — each composes two locators, and an absent entry costs only an
+         *  incompleteness marker on a determined path (loud), where a wrong one costs a certification. */
+        private static String callPathLit(AbstractInsnNode insn, List<? extends ProvValue> values) {
+            if (!(insn instanceof MethodInsnNode mi) || values.isEmpty()) return null;
+            if ((mi.owner.equals("java/nio/file/Path") && mi.name.equals("of"))
+                    || (mi.owner.equals("java/nio/file/Paths") && mi.name.equals("get"))) {
+                // The SAME descriptor gate the pathsDirect capture uses — a `(String,String)` overload can
+                // have a non-path literal as its only constant. `Paths.get(URI)` is excluded by it too.
+                if (!pathArgIsSingleString(mi.desc)) return null;
+                // javac compiles even `Paths.get("/a")` to the VARARGS overload, so the single-arg form is
+                // reached as `(String, String[])` with an EMPTY array. A NON-empty array carries further
+                // path elements this pass does not model — `Path.of(base, userSuppliedChild)` is exactly the
+                // traversal the gate must not certify — so anything but a provably-empty varargs is
+                // indeterminate.
+                if (mi.desc.charAt("(Ljava/lang/String;".length()) == '[' && !emptyStringVarargs(mi)) return null;
+                return values.get(0).pathLit;
+            }
+            // A TYPE change over the SAME locator — no composition, nothing new to be wrong about.
+            if ((mi.owner.equals("java/io/File") && mi.name.equals("toPath") && mi.desc.equals("()Ljava/nio/file/Path;"))
+                    || (mi.owner.equals("java/nio/file/Path") && mi.name.equals("toFile") && mi.desc.equals("()Ljava/io/File;")))
+                return values.get(0).pathLit;
+            return null;
+        }
+
+        /** Whether the varargs array pushed immediately before {@code call} is the empty `new String[0]`
+         *  javac emits for a no-extra-element varargs call — `ICONST_0; ANEWARRAY java/lang/String`. Read
+         *  SYNTACTICALLY (not from the array ProvValue) because BasicValue models no array length. Anything
+         *  else — a populated array, a spread of an existing array — returns false, the fail-closed answer. */
+        private static boolean emptyStringVarargs(MethodInsnNode call) {
+            AbstractInsnNode a = call.getPrevious();
+            while (a != null && a.getOpcode() < 0) a = a.getPrevious(); // labels / line numbers / frames
+            if (!(a instanceof TypeInsnNode t) || t.getOpcode() != Opcodes.ANEWARRAY
+                    || !"java/lang/String".equals(t.desc)) return false;
+            AbstractInsnNode n = a.getPrevious();
+            while (n != null && n.getOpcode() < 0) n = n.getPrevious();
+            return n != null && n.getOpcode() == Opcodes.ICONST_0;
         }
         public void returnOperation(AbstractInsnNode insn, ProvValue value, ProvValue expected) {}
         public ProvValue merge(ProvValue a, ProvValue b) {
@@ -402,11 +496,18 @@ final class Interp {
             // SOUNDNESS R236 — a join is provably null only when BOTH arms are, the same collapse every
             // other NARROWING field above makes. `c != null ? c : null` therefore charges.
             boolean mnc = a.nullConst && b.nullConst;
+            // SOUNDNESS R409 — a locator is determined at a join only when BOTH arms name the SAME path.
+            // `Files.delete(cond ? Path.of("/tmp/a") : userPath)` must read INCOMPLETE, and so must
+            // `cond ? Path.of("/tmp/a") : Path.of("/etc/b")` — the second is fully visible but this field's
+            // consumer would otherwise certify it against whichever arm won the merge. Collapsing to null is
+            // the direction that can only ADD an incompleteness marker, never remove one.
+            String mpl = Objects.equals(a.pathLit, b.pathLit) ? a.pathLit : null;
             if (mb.equals(a.base) && Objects.equals(mt, a.newType) && mi == a.fromIndy
                     && Objects.equals(mdt, a.declType) && Objects.equals(mlt, a.lambdaTarget)
                     && Objects.equals(mfo, a.fieldOrigin) && Objects.equals(moe, a.originEffects)
-                    && Objects.equals(msf, a.samForwarder) && mnc == a.nullConst) return a;
-            return new ProvValue(mb, mt, mi, mdt, mlt, mfo, moe, msf, mnc);
+                    && Objects.equals(msf, a.samForwarder) && mnc == a.nullConst
+                    && Objects.equals(mpl, a.pathLit)) return a;
+            return new ProvValue(mb, mt, mi, mdt, mlt, mfo, moe, msf, mnc, mpl);
         }
     }
 

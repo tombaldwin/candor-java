@@ -562,6 +562,41 @@ final class Literals {
         return null;
     }
 
+    /** SOUNDNESS R409 — each {@code NEW <path-ctor-owner>} instruction in {@code mn} paired with the
+     *  literal path its {@code <init>} names, for the provenance pass to hang on the allocated value.
+     *
+     *  <p>WHY IT CANNOT LIVE IN THE INTERPRETER. A constructor returns {@code void}: the object that ends up
+     *  on the stack is the one {@code NEW} pushed (and {@code DUP}ed), so by the time {@code <init>} is
+     *  interpreted there is nothing left to attach a locator to and {@code ProvValue} is immutable. Pairing
+     *  the two instructions up front is what lets {@code File f = new File("/etc/hosts"); f.exists();} stay
+     *  CERTIFIED — the determined shape whose over-masking would be worse than the bug being fixed.
+     *
+     *  <p>The pairing is the LIFO javac emits ({@code NEW A; DUP; NEW B; DUP; … B.<init>; … A.<init>}), matched
+     *  by owner. A {@code super(…)}/{@code this(…)} call matches no pending NEW and contributes nothing; an
+     *  unmatched or literal-less ctor is simply absent from the map, which reads as "indeterminate" —
+     *  the fail-closed direction. The literal itself comes from {@link #firstLiteralArg} under the SAME
+     *  descriptor gate the {@code pathsDirect} capture uses, so the two never disagree about what the path is. */
+    static Map<AbstractInsnNode, String> newPathLiterals(MethodNode mn) {
+        Map<AbstractInsnNode, String> out = new HashMap<>();
+        if (mn.instructions == null || mn.instructions.size() == 0) return out;
+        Set<LabelNode> joins = joinLabels(mn);
+        Deque<TypeInsnNode> pending = new ArrayDeque<>();
+        for (AbstractInsnNode n = mn.instructions.getFirst(); n != null; n = n.getNext()) {
+            if (n instanceof TypeInsnNode t && t.getOpcode() == Opcodes.NEW) { pending.push(t); continue; }
+            if (!(n instanceof MethodInsnNode mi) || !mi.name.equals("<init>")) continue;
+            TypeInsnNode site = null;
+            for (Iterator<TypeInsnNode> it = pending.iterator(); it.hasNext(); ) {
+                TypeInsnNode c = it.next();
+                if (c.desc.equals(mi.owner)) { site = c; it.remove(); break; }
+            }
+            if (site == null || !Rules.PATH_CTOR_OWNERS.contains(mi.owner.replace('/', '.'))
+                    || !pathArgIsSingleString(mi.desc)) continue;
+            String lit = firstLiteralArg(mn, mi, joins);
+            if (lit != null) out.put(site, lit);
+        }
+        return out;
+    }
+
     /** Whether a path-constructor descriptor takes the path as a SINGLE leading String — `(String)` or
      *  `(String, String...)` (Path.of's varargs) — so the FIRST string literal is unambiguously the
      *  path. Excludes two-String overloads (`File(String,String)`, `RandomAccessFile(String,String)`)

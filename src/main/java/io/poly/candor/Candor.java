@@ -4328,7 +4328,8 @@ public class Candor {
         if (mn.instructions.size() > 0
                 && (mn.access & (Opcodes.ACC_NATIVE | Opcodes.ACC_ABSTRACT)) == 0) {
             try {
-                provFrames = new Analyzer<>(new ProvInterpreter()).analyze(cn.name, mn);
+                provFrames = new Analyzer<>(new ProvInterpreter(Literals.newPathLiterals(mn)))
+                        .analyze(cn.name, mn);
             } catch (Throwable t) { provFrames = null; }
         }
         return provFrames;
@@ -5219,6 +5220,41 @@ public class Candor {
             // a path-establishing call with a RUNTIME path (single-String arg, no literal) — the
             // path is invisible to the gate (masking guard generalized to Fs, sweep [0]).
             else ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Fs");
+        }
+        // ⟨0.37⟩ SOUNDNESS R409 — AN Fs CALL NAMES ITS OWN FILE, AND A FILE NOBODY CAPTURED LEAVES THE
+        // `paths` SURFACE INCOMPLETE.
+        //
+        // The branch above was the ONLY Fs masking guard, and it fires at the path-ESTABLISHING call
+        // (`Path.of`/`Paths.get`/a path ctor with a single String). A locator that arrives ALREADY BUILT
+        // therefore never entered it, and both spellings of that certified under `allow Fs /tmp/benign`
+        // beside one benign sibling literal:
+        //
+        //     void f(java.nio.file.Path p) { Files.write(Paths.get("/tmp/benign"), b); Files.exists(p); }
+        //     void f(java.io.File h)       { Files.write(Paths.get("/tmp/benign"), b); h.exists(); }
+        //
+        // Exit 0, `paths: ["/tmp/benign"]`, nothing disclosed — the AS-EFF-008 gate EVASION that
+        // {@link Literals#literalArgsInWindow} was written to kill for Net and Db and was never migrated to
+        // Fs. This is the Net GENERAL RULE ("a Net call that contributes NO VISIBLE HOST leaves the surface
+        // incomplete") stated for Fs.
+        //
+        // THE LOCATOR IS READ FROM THE DESCRIPTOR, which is the thing this engine has and the syntactic
+        // engines do not. A `Ljava/nio/file/Path;` or `Ljava/io/File;` operand — at the receiver or at ANY
+        // argument — IS the file; a HANDLE receiver (`FileOutputStream`, `FileChannel`, `RandomAccessFile`,
+        // `InputStream`) is not, so `out.write(b)` names nothing and makes no claim in either direction.
+        // That carve-out is a consequence of the types, not a list of use-verbs to keep in sync.
+        //
+        // AND IT MUST NOT OVER-MASK A DETERMINED PATH. `Path p = Paths.get("/lit"); Files.write(p, b)` has
+        // NO literal in `Files.write`'s own argument window, so a naive port of the per-call window would
+        // mark a fully-visible path incomplete (measured as the live behaviour of two other engines,
+        // R416). Determination is answered by the value's own provenance instead — {@link
+        // Interp.ProvValue#pathLit}, carried by the analyzer that already runs on every method — so a
+        // locator is determined however it reaches the call: inline, through a local, or through a
+        // `toPath()`. A branch-merged or field-read locator collapses to indeterminate, which is the
+        // fail-closed direction.
+        if (effect == Effect.FS) {
+            Boolean det = fsLocatorDetermined(min, owner, provFrameAt(s, min));
+            if (Boolean.FALSE.equals(det))
+                ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Fs");
         }
         // A bare-hostname Net endpoint: `new Socket("api.stripe.com", 443)` /
         // `new InetSocketAddress("api.stripe.com", 443)` names the host as a STRING argv[0]
@@ -8007,6 +8043,71 @@ public class Candor {
             }
         }
         return eff;
+    }
+
+    /** The descriptors of a value that IS a file — the two path-VALUE types (SOUNDNESS R409).
+     *
+     *  <p>{@code Ljava/lang/String;} is deliberately ABSENT. A String argument to an Fs call is as often
+     *  DATA as a path (`RandomAccessFile(path, "rw")`, `FileUtils.readFileToString(f, "UTF-8")`,
+     *  `writeString(p, text)`), and the engine already has a separate, descriptor-gated guard for the one
+     *  String position it can name safely — the path-establishing ctor/factory branch in
+     *  {@link #extractLiteralSurfaces}. Including String here would mark those calls off a charset or a
+     *  mode literal, which is the over-mask; excluding it leaves the String-only tail
+     *  (`new RandomAccessFile(runtimePath, "rw")`, `getResourceAsStream(runtimeName)`) exactly where it was
+     *  before this rule — no worse, and named here so the boundary is stated rather than implied. */
+    static final Set<String> FS_LOCATOR_TYPES = Set.of("Ljava/io/File;", "Ljava/nio/file/Path;");
+
+
+    /** The provenance frame in effect just before {@code min} executes, or null when this method has none
+     *  (bodiless / the analyzer failed). Fail-soft like every other provFrames reader. */
+    static Frame<ProvValue> provFrameAt(MethodScan s, MethodInsnNode min) {
+        if (s.provFrames == null) return null;
+        int i = s.mn.instructions.indexOf(min);
+        return (i >= 0 && i < s.provFrames.length) ? s.provFrames[i] : null;
+    }
+
+    /** SOUNDNESS R409 — is the file this Fs call names VISIBLE to the AS-EFF-008 gate?
+     *
+     *  <p>{@code null} = the call names no file of its own (a handle use-verb, or File path algebra) and is
+     *  evidence in NEITHER direction — the same "declining to read a non-signal" the Net rule makes for a
+     *  zero-argument call. {@code TRUE} = every locator it names is statically determined. {@code FALSE} =
+     *  at least one is not, so a benign sibling literal must not certify this function.
+     *
+     *  <p>EVERY path-typed operand is checked, not just the first: {@code Files.copy(Path.of("/lit"), dst)}
+     *  names two files and is only as visible as its worst one. A missing frame reads as indeterminate. */
+    static Boolean fsLocatorDetermined(MethodInsnNode min, String owner, Frame<ProvValue> f) {
+        // NO PURE-ALGEBRA CARVE-OUT HERE, AND THAT IS DELIBERATE. `java.io.File` is classified Fs
+        // WHOLE-OWNER and is the one path-VALUE type that appears as a RECEIVER, so this rule looked like
+        // it needed its own denylist of the algebra verbs (`getName`, `getPath`, `toPath`, …) to avoid
+        // marking every method that takes a File. It does not: {@link Candor#isPureHandleAccessor} already
+        // owns that question and `Classifier.classify` consults it FIRST, so those verbs arrive here with
+        // `effect == null` and never reach this method. A second list would be two paths computing one
+        // fact — and the first draft of it proved the point by disagreeing with the authority about
+        // `toURI`. Ask the authority; do not restate it.
+        Type[] args = Type.getArgumentTypes(min.desc);
+        boolean names = false, determined = true;
+        // The RECEIVER, when the type it is invoked on is itself a file (`file.exists()`). Never for
+        // `<init>`, whose "receiver" is the uninitialised object the NEW pushed, not a locator.
+        if (min.getOpcode() != Opcodes.INVOKESTATIC && !min.name.equals("<init>")
+                && FS_LOCATOR_TYPES.contains("L" + min.owner + ";")) {
+            names = true;
+            determined &= provPathVisible(f, receiverValueIndex(f == null ? 0 : f.getStackSize(), args));
+        }
+        for (int i = 0; i < args.length; i++) {
+            if (!FS_LOCATOR_TYPES.contains(args[i].getDescriptor())) continue;
+            names = true;
+            determined &= provPathVisible(f, argValueIndex(f == null ? 0 : f.getStackSize(), args, i));
+        }
+        return names ? determined : null;
+    }
+
+    /** Whether the stack entry at {@code idx} carries a statically-determined path. A null frame, an
+     *  out-of-range index or a value with no {@code pathLit} all read as NOT determined — the fail-closed
+     *  answer, since each of them means "this pass cannot see which file that is". */
+    static boolean provPathVisible(Frame<ProvValue> f, int idx) {
+        if (f == null || idx < 0 || idx >= f.getStackSize()) return false;
+        ProvValue v = f.getStack(idx);
+        return v != null && v.pathLit != null;
     }
 
     /** For a call ALREADY classified `Fs`, the read/write direction its verb implies: ["read"],

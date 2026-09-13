@@ -10,6 +10,8 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.37.0] — 2026-09-13
 
+- **jbang catalog pinned to v0.37.0** — the `script-ref` now names the release this cut publishes.
+
 - **R423 — `java.nio.file.Path.toUri()` is a filesystem STAT that was classified PURE.** Measured on
   JDK 21: `Path.of("/tmp/x").toUri()` is `file:///tmp/x/` when x is an existing DIRECTORY and
   `file:///tmp/x` when it is not, so the value is a filesystem observation. A probe function reading that

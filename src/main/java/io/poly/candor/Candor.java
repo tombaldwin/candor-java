@@ -5221,6 +5221,63 @@ public class Candor {
             // path is invisible to the gate (masking guard generalized to Fs, sweep [0]).
             else ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Fs");
         }
+        // SOUNDNESS R421 — THE STRING-LOCATOR TAIL, WHICH REACHED NEITHER GUARD.
+        //
+        // The branch above requires `pathArgIsSingleString`, and `FS_LOCATOR_TYPES` deliberately excludes
+        // `Ljava/lang/String;`. Between them sits every path ctor that takes the path as a leading String
+        // and something ELSE after it — and those entered NO masking guard at all:
+        //
+        //     new FileOutputStream(userPath, true)      new RandomAccessFile(userPath, "rw")
+        //     new FileReader(userPath, UTF_8)           new FileWriter(userPath, true)
+        //
+        // Measured: a method doing `Files.write(Paths.get("/tmp/benign"), …)` and then
+        // `new FileOutputStream(argv[0], true).write(42)` reported `paths: ["/tmp/benign"]` with NO
+        // incompleteness, and `allow Fs /tmp/benign` EXITED 0 over an append to a caller-chosen file.
+        // Identical on the 0.36.1 jar, so pre-existing. The boundary WAS stated, in `FS_LOCATOR_TYPES`'s
+        // javadoc, as "no worse" — and a limitation written as a comment reads as CONSIDERED, which is
+        // what stopped it being measured.
+        //
+        // **THIS ADDS NO CAPTURE, ONLY DISCLOSURE, and that asymmetry is the whole design.** Which literal
+        // IS the path here is genuinely ambiguous — `RandomAccessFile(String,String)`'s second String is a
+        // MODE, `File(String,String)`'s is a CHILD — and guessing would fabricate a destination, so
+        // `pathArgIsSingleString` remains the sole authority over what enters `paths`. Determinedness does
+        // not need that guess: if EVERY String operand is a compile-time constant the destination is
+        // visible in the source whatever it is, and if any is not, some part of it is runtime-chosen and a
+        // sibling literal must not certify it.
+        //
+        // THE SPLIT IS ON HOW MANY STRINGS THE CTOR TAKES, and the first draft of this rule got it wrong
+        // in a way worth recording. That draft said "if every String operand is a compile-time constant,
+        // stay silent" — reasoning that a destination visible in the source is not a masked one. It is,
+        // when nobody RECORDS it: `new RandomAccessFile("/etc/passwd", "rw")` beside a benign literal
+        // measured EXIT 0 under `allow Fs /tmp/benign`, a determined destination certified by a sibling
+        // because it never reached `paths`. Visible-to-a-reader is not visible-to-the-gate.
+        //
+        //   ONE String operand  — it is arg 0 and there is nothing else it could be, so the ambiguity
+        //                         that keeps `pathArgIsSingleString` narrow does not exist here. CAPTURE
+        //                         it when determined (which also fixes the over-mask on
+        //                         `new FileOutputStream("/tmp/log", true)`, previously uncertifiable),
+        //                         and disclose when not.
+        //   TWO OR MORE         — `RandomAccessFile(path, mode)`, `File(parent, child)`: we cannot say
+        //                         WHICH is the locator, and guessing fabricates a destination. Disclose,
+        //                         always. That is the same answer {@link Interp.ProvValue} already gives
+        //                         these — `callPathLit` refuses `File(File,String)` and friends because
+        //                         "each composes two locators" — so this is the existing position stated
+        //                         at the construction site, not a new one.
+        else if (PATH_CTOR_OWNERS.contains(owner) && min.name.equals("<init>")
+                && min.desc.startsWith("(Ljava/lang/String;")) {
+            Type[] ctorArgs = Type.getArgumentTypes(min.desc);
+            int strings = 0;
+            for (Type t : ctorArgs) if (t.getDescriptor().equals("Ljava/lang/String;")) strings++;
+            String lit = null;
+            if (strings == 1) {
+                Frame<ProvValue> pf = provFrameAt(s, min);
+                int idx = argValueIndex(pf == null ? 0 : pf.getStackSize(), ctorArgs, 0);
+                ProvValue v = (pf != null && idx >= 0 && idx < pf.getStackSize()) ? pf.getStack(idx) : null;
+                lit = v == null ? null : v.pathLit;
+            }
+            if (lit != null) ctx.pathsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(lit);
+            else ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Fs");
+        }
         // ⟨0.37⟩ SOUNDNESS R409 — AN Fs CALL NAMES ITS OWN FILE, AND A FILE NOBODY CAPTURED LEAVES THE
         // `paths` SURFACE INCOMPLETE.
         //

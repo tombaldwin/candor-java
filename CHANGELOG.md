@@ -8,6 +8,29 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### ⚠ Fixed
+
+- **R421 — the String-locator tail reached no masking guard at all.** Two guards stood either side of it
+  and neither covered it: `pathArgIsSingleString` requires the path to be the ONLY String (so a
+  two-String ctor's mode or child name is never mistaken for a destination), and `FS_LOCATOR_TYPES`
+  excludes `String` (because a String argument to an Fs call is as often DATA as a path). Between them
+  sat every path ctor taking the path as a LEADING String with something after it —
+  `new FileOutputStream(userPath, true)`, `new RandomAccessFile(userPath, "rw")`,
+  `new FileReader(userPath, UTF_8)`. Measured: beside `Files.write(Paths.get("/tmp/benign"), …)`, an
+  append to a caller-chosen file reported no incompleteness and `allow Fs /tmp/benign` **exited 0**.
+  Identical on the 0.36.1 jar, so pre-existing. The boundary *was* written down — in `FS_LOCATOR_TYPES`'s
+  javadoc, as "no worse" — and it was still live; a limitation written as a comment reads as considered,
+  which is what stops it being measured.
+  The rule splits on how many Strings the ctor takes. **One** is unambiguously arg 0, so it is now
+  CAPTURED when determined — which also fixes an over-mask: `new FileOutputStream("/tmp/log", true)` was
+  previously uncertifiable, a determined path nobody recorded. **Two or more** cannot be told apart, so
+  the surface is disclosed; staying silent because both happen to be literals was the first draft of this
+  fix and it left `new RandomAccessFile("/etc/passwd", "rw")` certified by a benign sibling. Visible to a
+  reader is not visible to the gate.
+  Priced against 119 real jars (515,029 rows): **71 changed, 3 added, 0 removed**, every change in the
+  disclosure direction and only ELEVEN a direct call site — each read by name, each a genuine
+  runtime-path open (a log file, a metrics writer, `RandomAccessFile(path, mode)`).
+
 ## [0.37.0] — 2026-09-13
 
 - **jbang catalog pinned to v0.37.0** — the `script-ref` now names the release this cut publishes.

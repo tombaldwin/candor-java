@@ -8,6 +8,8 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+## [0.37.0] — 2026-09-13
+
 - **R423 — `java.nio.file.Path.toUri()` is a filesystem STAT that was classified PURE.** Measured on
   JDK 21: `Path.of("/tmp/x").toUri()` is `file:///tmp/x/` when x is an existing DIRECTORY and
   `file:///tmp/x` when it is not, so the value is a filesystem observation. A probe function reading that

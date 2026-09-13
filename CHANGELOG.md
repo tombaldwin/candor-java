@@ -8,6 +8,16 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- **R423 — `java.nio.file.Path.toUri()` is a filesystem STAT that was classified PURE.** Measured on
+  JDK 21: `Path.of("/tmp/x").toUri()` is `file:///tmp/x/` when x is an existing DIRECTORY and
+  `file:///tmp/x` when it is not, so the value is a filesystem observation. A probe function reading that
+  trailing slash was ABSENT from `functions` entirely — a ⟨0.21⟩ purity claim — with `deny Fs` at exit 0.
+  **The cause is structural and outlives the verb:** `java.io.File` is a DENYLIST, so auditing it re-reads
+  every exemption (which is how `File.toURI` was found); `java.nio.file.Path` is an ALLOWLIST, and nothing
+  re-reads what an allowlist omits. Priced at ADDED 11 / REMOVED 0 over 325 jars, ground-truthed in
+  `javap`. Fixed with its over-charge control: pure `Path` algebra still certifies.
+- **Spec floor 0.36 → 0.37** (the STAT-LOCATOR rung), and `assert-audit` + `workflow-check` now run in CI.
+
 - **⚠ `File.toURI()` STATS, and it was carved out as PURE — a silent under-report over a real syscall.**
   `isPureHandleAccessor`'s `java.io.File` case listed `toURI` among the pathname accessors that "touch NO
   filesystem". It appends a trailing slash when the pathname is a directory, so it calls `isDirectory()`.

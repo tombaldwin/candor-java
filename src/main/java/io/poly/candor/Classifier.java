@@ -273,7 +273,24 @@ final class Classifier {
         // symlinks against the live FS and register walks/stats the watched dir. (JDK Fs-deep probe.)
         if (owner.equals("java.nio.file.WatchService") && (method.equals("take") || method.equals("poll")))
             return Effect.FS;
-        if (owner.equals("java.nio.file.Path") && (method.equals("toRealPath") || method.equals("register")))
+        // …AND `toUri()`, WHICH IS THE SAME DEFECT AS `File.toURI()` ONE TYPE OVER. Measured on JDK 21:
+        // `Path.of("/tmp/x").toUri()` is `file:///tmp/x/` when x is an existing DIRECTORY and
+        // `file:///tmp/x` when it is not, so the returned value is a filesystem observation. A function
+        // reading that trailing slash is a `File.exists` written sideways, and this engine reported it
+        // ABSENT from `functions` — a ⟨0.21⟩ purity claim over a real stat — with `deny Fs` at exit 0.
+        //
+        // WHY THIS SURVIVED THE SWEEP THAT FOUND `File.toURI`, which is the part worth keeping:
+        // `java.io.File` is a DENYLIST (whole-owner Fs minus `isPureHandleAccessor`'s exemptions), so
+        // auditing it means re-reading every exemption and `toURI` was among them. `java.nio.file.Path`
+        // is an ALLOWLIST, and nothing makes anyone re-read what an allowlist OMITS. The audit was drawn
+        // around the owner it was handed — CLAUDE.md's standing rule that an audit's boundary must not be
+        // drawn around its own trigger, failing on the very sweep that proved the class existed.
+        //
+        // Priced by review over 325 jars: ADDED 11, REMOVED 0 — spring-core `PathResource.getURI`/
+        // `getURL`, liquibase-core ×5, jetty-util ×2, testcontainers, hazelcast. Ground-truthed in
+        // `javap`, not from candor's own report.
+        if (owner.equals("java.nio.file.Path")
+                && (method.equals("toRealPath") || method.equals("register") || method.equals("toUri")))
             return Effect.FS;
         // Crypto KEY GENERATION draws entropy (from a SecureRandom) → Rand, like SecureRandom.nextBytes/
         // UUID.randomUUID. (JDK leaf, found by a crypto probe.) KeyFactory/SecretKeyFactory are deterministic

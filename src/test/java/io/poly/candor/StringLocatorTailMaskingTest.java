@@ -78,6 +78,45 @@ class StringLocatorTailMaskingTest {
             "}")));
     }
 
+    /** SOUNDNESS R433/R434 — the tail was closed for `PATH_CTOR_OWNERS` and OPEN for every other Fs
+     *  owner whose locator is a leading String. `new PrintWriter(argv[0])` was charged `Fs` with
+     *  `incomplete` ABSENT, so `allow Fs <benign>` printed "no violations" over a caller-chosen file —
+     *  and R421's own new capture made that newly exploitable (PRE exit 1, POST exit 0).
+     *
+     *  <p>The boundary is now DERIVED from the classification (`effect == Effect.FS` plus a leading
+     *  String) rather than from a second owner list, and from the CALL SHAPE rather than a list of
+     *  handle types: a ctor or a static call has no pre-existing receiver, so its leading String is its
+     *  own; an instance call may be a use-verb whose locator was fixed earlier.
+     *
+     *  <p><b>CAPTURE AND DISCLOSURE ARE SPLIT, and the corpus decided it.</b> Capturing across the
+     *  widened set published 2,910 new "paths" over 119 real jars whose distinct values were `top`,
+     *  `messages`, `com.sun.faces.resources.Messages`, `jakarta.faces.Messages`, `Operation Cancelled`
+     *  and `warmup` — seven values, not one a filesystem path. So the widened set discloses and does not
+     *  capture; only an owner that NAMES a path contributes one. Re-measured: 0 paths moved. */
+    @Test
+    void anFsCallWithAnUndeterminedLeadingStringDisclosesWhoeverTheOwnerIs() throws Exception {
+        Path cls = compile(Map.of("app/Wide.java", String.join("\n",
+            "package app;",
+            "import java.io.*;",
+            "public class Wide {",
+            "  void pw(String p) throws Exception { new PrintWriter(p).close(); }",
+            "  void zf(String p) throws Exception { new java.util.zip.ZipFile(p).close(); }",
+            // CONTROL: a use-verb on an OPEN handle. Its leading String is DATA and the locator was
+            // fixed at the ctor — marking it would be R393's content-vs-path confusion from the other
+            // side, and the first cut of this fix did exactly that.
+            "  void handle(String data) throws Exception {",
+            "    FileWriter w = new FileWriter(\"/tmp/benign/out.txt\"); w.write(data); w.close(); }",
+            "}")));
+        Candor.runScan(cls);
+        Map<String, TreeSet<String>> inc = Literals.literalFixpoint(AnalysisState.ctx().surfaceIncomplete);
+        for (String m : new String[] {"pw", "zf"}) {
+            assertTrue(inc.getOrDefault("app.Wide." + m, new TreeSet<>()).contains("Fs"),
+                    m + ": an Fs call with a caller-chosen leading String must disclose, whoever owns it");
+        }
+        assertFalse(inc.getOrDefault("app.Wide.handle", new TreeSet<>()).contains("Fs"),
+                "a use-verb on an open handle takes DATA, not a locator — marking it is an over-mask");
+    }
+
     @Test
     void theStringLocatorTailFailsClosedInEverySpelling() throws Exception {
         Candor.runScan(fixture());

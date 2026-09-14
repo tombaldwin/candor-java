@@ -10,6 +10,21 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ### ⚠ Fixed
 
+- **R433/R434 — the String-locator tail was closed for `PATH_CTOR_OWNERS` and open for every other `Fs`
+  owner.** `new PrintWriter(argv[0])` was charged `Fs` with `incomplete` absent, so `allow Fs <benign>`
+  printed *no violations* over a caller-chosen file; `new Formatter(new File(argv[0]))` exited 1 and
+  `new Formatter(argv[0])` exited 0 for the same destination. R421's new capture made it newly
+  exploitable — a composition that failed closed before now exited 0. The boundary is now DERIVED from
+  the classification (`effect == Effect.FS` plus a leading `String`) instead of a second owner list, and
+  from the CALL SHAPE instead of a list of handle types: a ctor or static call has no pre-existing
+  receiver, so its leading String is its own. **Capture and disclosure are split, and the corpus decided
+  that:** capturing across the widened set published 2,910 new "paths" over 119 jars whose seven distinct
+  values were `top`, `messages`, two `ResourceBundle` base names, `Operation Cancelled` and `warmup` —
+  not one a filesystem path. So the widened set discloses and does not capture; only an owner that names
+  a path contributes one. Re-measured: **3,341 rows changed, 0 added, 0 removed, and no path moved at
+  all.** Residual: `Class.getResourceAsStream(String)` is an instance call that establishes, so it stays
+  uncovered and R433 stays open for it.
+
 - **R421 — the String-locator tail reached no masking guard at all.** Two guards stood either side of it
   and neither covered it: `pathArgIsSingleString` requires the path to be the ONLY String (so a
   two-String ctor's mode or child name is never mistaken for a destination), and `FS_LOCATOR_TYPES`

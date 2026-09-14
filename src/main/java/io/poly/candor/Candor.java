@@ -5263,8 +5263,44 @@ public class Candor {
         //                         these — `callPathLit` refuses `File(File,String)` and friends because
         //                         "each composes two locators" — so this is the existing position stated
         //                         at the construction site, not a new one.
-        else if (PATH_CTOR_OWNERS.contains(owner) && min.name.equals("<init>")
-                && min.desc.startsWith("(Ljava/lang/String;")) {
+        // SOUNDNESS R433 — DERIVED FROM THE CLASSIFICATION, NOT FROM `PATH_CTOR_OWNERS`.
+        //
+        // This branch was gated on that owner list, and the list is not the set of calls that take a
+        // String locator — it is the set someone enumerated. The classifier charges `Fs` on others whose
+        // locator is also a leading String and none of them reached a masking guard:
+        // `PrintWriter`/`PrintStream`/`Formatter` (`Classifier.java:244`, itself descriptor-gated to the
+        // file-opening forms), `ZipFile`/`JarFile` (`:103`), `getResourceAsStream`/`getResource`
+        // (`:218`). MEASURED: `new PrintWriter(argv[0])` reported `Fs` with `incomplete` ABSENT, and
+        // beside a benign literal `allow Fs /tmp/benign` printed *no violations* over a caller-chosen
+        // file. The asymmetry said it in one line — `new Formatter(new File(argv[0]))` exited 1 and
+        // `new Formatter(argv[0])` exited 0, same destination, because `FS_LOCATOR_TYPES` excludes
+        // `String`.
+        //
+        // ASK THE AUTHORITY: if `Classifier.classify` called this an `Fs` and its descriptor opens with
+        // a `String`, that String is this call's locator — whoever the owner is, and whatever is added
+        // to the classifier tomorrow. A second hand-list beside the first is the R347 shape, and a list
+        // that must stay complete to be sound is the vein this register keeps paying for.
+        //
+        // BUT NOT EVERY Fs CALL WITH A LEADING STRING TAKES A LOCATOR THERE, and the first cut of this
+        // widening over-masked on exactly that. `FileWriter.write(String)` is classified `Fs` and its
+        // descriptor opens with a String — and that String is the DATA; the locator was fixed at the
+        // ctor. MEASURED: `new FileWriter("/tmp/benign/out.txt"); w.write(data);` published the literal
+        // AND marked the surface incomplete, which is R393's content-vs-path confusion arriving from the
+        // other side.
+        //
+        // The discriminator is the CALL SHAPE, not a list of handle owners: a constructor
+        // (INVOKESPECIAL `<init>`) and a STATIC call have no pre-existing receiver, so nothing could
+        // have fixed a locator earlier and the leading String is this call's own. An INSTANCE call may
+        // be a use-verb on an already-open handle, which is the legitimate split-construct/use shape
+        // `isEstablishingMember` protects everywhere else in this engine.
+        //
+        // RESIDUAL, stated rather than left to be found: `Class.getResourceAsStream(String)` is an
+        // INSTANCE call that DOES establish, so it stays uncovered — `ClassLoader.getSystemResourceAsStream`
+        // is static and is covered. Closing the instance spelling needs a receiver-kind test this engine
+        // does not yet have, and R433 stays open for it rather than being marked closed.
+        else if (effect == Effect.FS && min.desc.startsWith("(Ljava/lang/String;")
+                && (min.getOpcode() == Opcodes.INVOKESTATIC
+                    || (min.getOpcode() == Opcodes.INVOKESPECIAL && "<init>".equals(min.name)))) {
             Type[] ctorArgs = Type.getArgumentTypes(min.desc);
             int strings = 0;
             for (Type t : ctorArgs) if (t.getDescriptor().equals("Ljava/lang/String;")) strings++;
@@ -5275,7 +5311,25 @@ public class Candor {
                 ProvValue v = (pf != null && idx >= 0 && idx < pf.getStackSize()) ? pf.getStack(idx) : null;
                 lit = v == null ? null : v.pathLit;
             }
-            if (lit != null) ctx.pathsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(lit);
+            // CAPTURE ONLY WHERE THE STRING IS KNOWN TO BE A PATH — i.e. only for the owners
+            // `PATH_CTOR_OWNERS` enumerates. DISCLOSURE applies to the whole widened set.
+            //
+            // THE ASYMMETRY IS MEASURED, NOT ARGUED. Capturing across the widened set published
+            // 2,910 new "paths" over 119 real jars, and the distinct values were: `top` (2,187×),
+            // `messages`, `com.sun.faces.resources.Messages`, `jakarta.faces.Messages` (ResourceBundle
+            // BASE NAMES), `Operation Cancelled` (a message string) and `warmup`. Seven values, not one
+            // of them a filesystem path — R425's defect exactly, one owner family over: a string in a
+            // leading position is not a locator just because the call touches the filesystem.
+            //
+            // So the widened set gets the half that cannot fabricate. An undetermined leading String on
+            // an Fs-establishing call means the destination is invisible, whatever that string would
+            // have been; a determined one is only a PATH where the owner says so.
+            boolean ownerNamesAPath = PATH_CTOR_OWNERS.contains(owner);
+            if (lit != null && ownerNamesAPath) ctx.pathsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(lit);
+            // DISCLOSE WHENEVER WE DID NOT CAPTURE, not only when the string was undetermined. A
+            // determined literal on an owner whose leading String is not known to be a path is still a
+            // destination this report does not name — and an unnamed destination beside a benign
+            // sibling is the masking shape, whether the string was readable or not.
             else ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Fs");
         }
         // ⟨0.37⟩ SOUNDNESS R409 — AN Fs CALL NAMES ITS OWN FILE, AND A FILE NOBODY CAPTURED LEAVES THE

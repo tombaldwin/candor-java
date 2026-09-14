@@ -8,6 +8,8 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+## [0.38.0] — 2026-09-14
+
 ### ⚠ Fixed
 
 - **R433/R434 — the String-locator tail was closed for `PATH_CTOR_OWNERS` and open for every other `Fs`

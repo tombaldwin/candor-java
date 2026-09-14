@@ -10,6 +10,12 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.38.0] — 2026-09-14
 
+- **jbang pin → v0.38.0.** `jbang-catalog.json`'s `script-ref` now names
+  `releases/download/v0.38.0/candor-java-0.38.0-all.jar`, moved AFTER the release existed and verified
+  by resolving it (HTTP 200, 1,243,992 bytes — byte-identical to the locally built jar) rather than by
+  matching the string. At 0.24 this pin named a release that did not exist and `release-preflight [3]`
+  passed it green while the URL 404'd for every jbang user.
+
 ### ⚠ Fixed
 
 - **R433/R434 — the String-locator tail was closed for `PATH_CTOR_OWNERS` and open for every other `Fs`

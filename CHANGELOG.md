@@ -8,6 +8,9 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+- No engine change. `jbang-catalog.json` pins `v0.38.0`, verified by resolving it rather than by
+  reading the string. Released to keep the family line aligned at 0.38.2.
+
 ## [0.38.0] — 2026-09-14
 
 - **jbang pin → v0.38.0.** `jbang-catalog.json`'s `script-ref` now names

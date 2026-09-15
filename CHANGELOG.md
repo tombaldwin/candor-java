@@ -10,8 +10,9 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.38.2] — 2026-09-15
 
-- No engine change. `jbang-catalog.json` pins `v0.38.0`, verified by resolving it rather than by
-  reading the string. Released to keep the family line aligned at 0.38.2.
+- No engine change. `jbang-catalog.json` pins `v0.38.2`, verified by RESOLVING it (HTTP 200) rather
+  than by reading the string — the 0.24 failure was a pin naming a URL that 404'd. Released to keep the
+  family line aligned at 0.38.2.
 
 ## [0.38.0] — 2026-09-14
 

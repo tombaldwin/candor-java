@@ -8,6 +8,8 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+## [0.38.2] — 2026-09-15
+
 - No engine change. `jbang-catalog.json` pins `v0.38.0`, verified by resolving it rather than by
   reading the string. Released to keep the family line aligned at 0.38.2.
 

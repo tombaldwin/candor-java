@@ -11,7 +11,7 @@ import org.junit.jupiter.api.Test;
 /**
  * The legacy-enterprise frontier (commons-logging / Joda-Time / commons-lang3 / hibernate.criterion /
  * Struts 1.x), inventory-driven from a real 2,257-class Struts app's complete 169-member call surface
- * (the the field case dogfood: 81 ledgered packages, struts alone 5,502 calls). Every classification is
+ * (the field-case dogfood: 81 ledgered packages, struts alone 5,502 calls). Every classification is
  * verb-precise; the anti-fabrication twins pin the pure siblings.
  *
  * <p>Provenance: κ batch 28, 2026-07-06.

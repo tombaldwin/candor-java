@@ -1462,7 +1462,7 @@ public final class Query {
             }
             // The `packages` PLURAL envelope — the JVM shape (SPEC §2), which THIS engine's own scan
             // emits: one entry names it verbatim; several name their longest common dotted prefix
-            // (`com.acme` + `com.acme` → `com.acme`); none shared → null (basename).
+            // (`com.acme.actions` + `com.acme.dao` → `com.acme`); none shared → null (basename).
             if (obj.has("packages") && obj.get("packages").isJsonArray()) {
                 List<String> pkgs = new ArrayList<>();
                 for (JsonElement e : obj.getAsJsonArray("packages"))
@@ -5191,7 +5191,7 @@ public final class Query {
     }
 
     /** The longest dotted-segment prefix shared by EVERY function name — the codebase root, so the next
-     *  segment is the architectural "layer" (`<redacted client symbol>` → `model`/`dao`/`actions`). Adapts to any
+     *  segment is the architectural "layer" (`com.acme.app` → `model`/`dao`/`actions`). Adapts to any
      *  package root without configuration. */
     static String[] commonPrefix(List<Effector> fns) {
         String[] best = null;

@@ -1257,7 +1257,7 @@ final class Classifier {
         if (owner.equals("org.apache.commons.lang3.SystemUtils") && method.equals("getEnvironmentVariable"))
             return Effect.ENV;
         // ── κ batch 28 — the LEGACY-ENTERPRISE frontier (inventory-driven: a real 2,257-class Struts
-        //    app's complete 169-member call surface into these packages; see the the field case dogfood). Each
+        //    app's complete 169-member call surface into these packages; see the field-case dogfood). Each
         //    package's effectful members are classified verb-precisely HERE, and the namespaces join
         //    KAPPA_COVERED_PREFIXES so the (verified-pure) remainder floors silently instead of
         //    flooding the ledger. ──
@@ -2859,7 +2859,7 @@ final class Classifier {
         // The v1 SDK's request-making types are the *Client classes AND the service INTERFACES
         // (AmazonS3/AmazonSQS/AWSLambda — the recommended way to type a client variable; a call through
         // the interface emits the interface owner, which the Client-suffix gate MISSED: a real
-        // `AmazonS3.copyObject` read silent-invisible — found live, the field case dogfood). Interfaces are the
+        // `AmazonS3.copyObject` read silent-invisible — found live, field-case dogfood). Interfaces are the
         // Amazon*/AWS* simple names OUTSIDE .model./.builder types; TransferManager is the S3 high-level
         // I/O front (upload/download/copy do the transfers).
         // OWNER GATE: the *Client classes only. Batch 30b widened this to the Amazon*/AWS*-named service
@@ -2880,7 +2880,7 @@ final class Classifier {
                     || method.startsWith("encrypt") || method.startsWith("decrypt") || method.startsWith("sign")
                     || method.startsWith("verify") || method.startsWith("reEncrypt")
                     // copy* — S3 copyObject/copyPart make server-side-copy requests; missed by the
-                    // original verb list (found live: the the field case dogfood's S3 archival path).
+                    // original verb list (found live: the field-case dogfood's S3 archival path).
                     || method.startsWith("copy")
                     || method.startsWith("generate"))
                 && !isConventionallyPure(method)

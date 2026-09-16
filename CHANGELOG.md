@@ -2159,7 +2159,7 @@ nothing in the jar's analysis moved.
   - **0 over-charges and 0 misses across all 2 799 pairs**: exit 2 holds *iff* the report names a
     non-peeked, non-`judgedElsewhere` class. The 967 pairs with a real violation still exit 1 — a
     violation dominates INCOMPLETE.
-  - Hand-checked (jackson-core 2.18.3, jackson-databind 2.18.3, ehcache 3.8.1, the the field case repo root):
+  - Hand-checked (jackson-core 2.18.3, jackson-databind 2.18.3, ehcache 3.8.1, the field-case repo root):
     every newly-refusing class is real unread code — `META-INF/versions/*.class` overrides the base-class
     walk skips, a nested `sizeof-agent.jar`, 9 stale sources and 3 uncompiled ones — and re-scanning WITH
     the policy flips `peeked` to `true` and yields a definite answer.

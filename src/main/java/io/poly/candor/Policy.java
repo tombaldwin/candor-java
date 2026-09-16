@@ -2064,7 +2064,7 @@ final class Policy {
     /** Split a qualified name into its segments on {@code . : $}, dropping empties.
      *
      *  <p>MEASURED: this was the single largest cost of a gate-only run — `Policy.checkPolicyOutcome`
-     *  was 207 ms of a ~900 ms warm scan on the field case (the field case, 21k units). The cause was not the
+     *  was 207 ms of a ~900 ms warm scan on the field case (21k units). The cause was not the
      *  splitting but the REGEX: {@code String.split} has a fast path only for a single literal
      *  character, and {@code "[.:$]"} is a character class, so every call compiled a fresh
      *  {@link java.util.regex.Pattern}. It is called once per function per rule.

@@ -24,7 +24,7 @@ import io.poly.candor.model.UnknownReason;
 /** THE REPORT REFRESH — re-analyse only the classes whose bytecode changed.
  *
  *  <p>Why it exists: the agent edit-time loop pays a full re-analysis every time one class changes. On
- *  the field case (the field case, 2,259 classes) that is 3.30s of a 3.51s Stop-hook, and it is the turn the
+ *  the field case (~2,300 classes) that is 3.30s of a 3.51s Stop-hook, and it is the turn the
  *  agent is waiting on. The frequency half is already handled — the hook skips turns where nothing the
  *  verdict depends on moved — so what remains is the first turn after any edit.
  *

@@ -206,7 +206,7 @@ def edge_forms(callee, i):
         # FIELD descriptor ("I"), not a method descriptor. The component `v{i}` also has an OVERLOADED
         # method name here (accessor `v{i}()` + `v{i}(int)`), so the handle routes into methodId →
         # paramTypeList → Type.getArgumentTypes on a parenthesis-less descriptor, which overran and CRASHED
-        # the whole scan (found on a real app: the field case). The fix skips non-method-kind handles. The effect is
+        # the whole scan (found on a real in-production app). The fix skips non-method-kind handles. The effect is
         # threaded through `rtouch{i}` so the chain stays sound; the teeth are that the scan must COMPLETE.
         # DO NOT remove `int v{i}(int n)`: that decoy OVERLOADS the component accessor so overloadDescs has
         # >1 desc, which is what routes the H_GETFIELD handle into methodId→paramTypeList (the crash path).

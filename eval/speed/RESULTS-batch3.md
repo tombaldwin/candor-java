@@ -1,9 +1,14 @@
-# Results — token/speed batch 3 (the field case, a real in-production app)
+# Results — token/speed batch 3 (a real in-production app)
 
-Run per [PREREG-the field case.md](PREREG-the field case.md). N=6/arm = 12 trials, Opus-class both arms, on the field case
-(2272 production classes / 9559 functions). Target: `<the question function>` (a
-single-signature `public static` util — concrete dispatch). Pre-registration + ground-truth committed
-before any trial (`76adf7d`). Per-trial numbers in `runs/metrics-the field case.tsv`.
+> **Subject identifiers redacted 2026-09-16.** This batch's subject is a private, in-production client
+> codebase. The measurements, the trial design and the divergence analysis are unchanged; the project
+> name, package root, class and method names have been replaced with described placeholders, because
+> naming them discloses a client's system state and that is theirs to disclose, not ours.
+
+Run per [PREREG-batch3.md](PREREG-batch3.md). N=6/arm = 12 trials, Opus-class both arms, on an
+in-production app of **over 2,000 classes / ~9,500 functions**. Target: **a single-signature `public
+static` utility method** — concrete dispatch, one definition, no overrides. Pre-registration + ground-truth committed
+before any trial (`76adf7d`). Per-trial numbers in `runs/metrics-batch3.tsv`.
 
 ## Headline — cost
 
@@ -14,8 +19,8 @@ before any trial (`76adf7d`). Per-trial numbers in `runs/metrics-the field case.
 | tokens | **80,258** | 23,757 | **3.4×** |
 
 This is the project's own production codebase — the most realistic test available — and the gap is the
-largest of the three batches (synthetic floor 1.16×; jsoup 14×; the field case 27× wall-clock). On a 2272-class
-app, a control agent spends **5.6–11 minutes** and **32–55 tool calls** searching 1888 source files to
+largest of the three batches (synthetic floor 1.16×; jsoup 14×; batch 3 at 27× wall-clock). On an app of this size,
+app, a control agent spends **5.6–11 minutes** and **32–55 tool calls** searching ~1,900 source files to
 trace the call graph by hand; the treatment runs **one** `candor callers` query and answers in ~19 s.
 The cost claim's falsification bar was not hit on any axis.
 
@@ -29,12 +34,12 @@ human derives in 8 minutes.
 The other five control agents landed within ±1–2 of the set — and the divergences are themselves the
 finding:
 
-- **`<a model class with no path to the target>`** — two control agents included it; it has no path
-  to `<the question function>`. A **hand-tracing over-report**; candor (and the exact-match control) correctly
+- **A model class with no path to the target** — two control agents included it; it has no call path
+  to the target method. A **hand-tracing over-report**; candor (and the exact-match control) correctly
   excluded it.
-- **`<the abstract scheduled-task base's execute>`** — one control agent included it, and at runtime it does reach a
-  Net path: the abstract `execute` calls the abstract `performTask()` (<the abstract base's source>),
-  which dispatches to the Net-performing subclass overrides (`<a Net-performing subclass>`/`<a Net-performing subclass>...`). But
+- **An abstract scheduled-task base's `execute`** — one control agent included it, and at runtime it does
+  reach a Net path: the abstract `execute` calls an abstract `performTask()`, which dispatches to
+  Net-performing subclass overrides. But
   candor did **not** silently drop it: it reports `execute` as `{ Clock, Db, Unknown }` with
   `unknownWhy = dispatch-broad:…performTask` — `performTask` has **15 implementors**, over the bounded-CHA
   limit, so candor **discloses** it cannot resolve the dispatch rather than fabricate the edge or
@@ -61,7 +66,7 @@ codebase is slow and noisy even for a frontier model.
   and the cleanest statistic.
 - One target, one app, N=6/arm. The target is a concrete static method (chosen precisely so candor's set
   is clean ground truth); a dispatch-heavy target would reintroduce the jsoup-style divergence.
-- The one human/candor difference (`<the abstract scheduled-task base's execute>`) is candor disclosing `Unknown` at a
+- The one human/candor difference (the abstract scheduled-task base) is candor disclosing `Unknown` at a
   15-way `dispatch-broad`, not a silent miss — sound and disclosed by design, not a bug. The `callers`
   query returning confirmed-reachers-only (excluding functions that reach the target solely via an
   unresolved dispatch) is a deliberate soundness choice; surfacing those "possible via Unknown dispatch"

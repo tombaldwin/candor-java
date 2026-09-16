@@ -1,41 +1,47 @@
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>$EmailMessageAraReEntryOffer.<init>
-<redacted client symbol>$EmailMessageAraReEntryOffer.getResponseLink
-<redacted client symbol>$EmailMessageAraReEntryOffer.setText
-<redacted client symbol>$EmailMessageOffer.<init>
-<redacted client symbol>$EmailMessageOffer.getResponseLinks
-<redacted client symbol>$EmailMessageOffer.setText
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
-<redacted client symbol>
+# REDACTED 2026-09-16 — the subject is a private in-production client codebase.
+# Each entry is a stable opaque pseudonym for one real `Class.method`. The COUNTS and the
+# overload structure are preserved exactly, because they are what this ground truth asserts:
+# 42 transitive callers, 41 distinct Class.method, the difference being one method with two
+# signatures. The real names were committed at `76adf7d` before any trial and are verifiable
+# only by someone with access to the codebase, who does not need this file to read them.
+app.pkg.Class03.method03
+app.pkg.Class04.method04
+app.pkg.Class05.method05
+app.pkg.Class06.method06
+app.pkg.Class01.method01
+app.pkg.Class02.method02
+app.pkg.Class07.method07
+app.pkg.Class08.method08
+app.pkg.Class09.method09
+app.pkg.Class10.method10
+app.pkg.Class11.method11
+app.pkg.Class12.method12
+app.pkg.Class16.method16
+app.pkg.Class13.method13
+app.pkg.Class14.method14
+app.pkg.Class15.method15
+app.pkg.Class17.method17
+app.pkg.Class18.method18
+app.pkg.Class19.method19
+app.pkg.Class20.method20
+app.pkg.Class21.method21
+app.pkg.Class22.method22
+app.pkg.Class23.method23
+app.pkg.Class24.method24
+app.pkg.Class25.method25
+app.pkg.Class26.method26
+app.pkg.Class27.method27
+app.pkg.Class28.method28
+app.pkg.Class29.method29
+app.pkg.Class36.method36
+app.pkg.Class37.method37
+app.pkg.Class30.method30
+app.pkg.Class31.method31
+app.pkg.Class32.method32
+app.pkg.Class33.method33
+app.pkg.Class34.method34
+app.pkg.Class35.method35
+app.pkg.Class38.method38
+app.pkg.Class39.method39
+app.pkg.Class40.method40
+app.pkg.Class41.method41

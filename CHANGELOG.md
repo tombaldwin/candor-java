@@ -10,6 +10,8 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.38.3] — 2026-09-16
 
+- The `jbang-catalog.json` pin moved to `v0.38.3`, verified by RESOLVING it (HTTP 200).
+
 - No engine change. The `jbang-catalog.json` pin moved to `v0.38.2`, verified by RESOLVING it (HTTP 200)
   rather than by reading the string. Released to keep the family line aligned at 0.38.3.
 

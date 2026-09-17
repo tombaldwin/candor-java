@@ -89,3 +89,24 @@ consumer has confirmed** — the bar R493 exists to enforce:
 and `org.joda.time.format.PeriodFormat.buildWordBased` read a `ResourceBundle` off the CLASSPATH. Measured
 absent, and left that way: a classpath bundle lookup is not a filesystem disclosure in candor's model, and
 charging it would put `Fs` on every localized format call in every library.
+
+## The inverse: `weaker_claim_census.py` (SOUNDNESS R494, R496)
+
+This census asks *"κ says NULL — is the grant certifying an unmodelled member?"*. Its sibling asks the
+opposite: **"κ gave a CONCRETE answer — is that answer WRONG in the dangerous direction?"**
+
+That direction had **no instrument at all** until R494, and the reason it hid is structural: an ABSENT
+member floors to `invisible` and discloses itself; an OVER-charge is loud and the A/B's ADDED column
+catches it. But a member classified to a weaker-but-plausible effect emits a positive, confident answer
+that satisfies **every** disclosure channel the engine has.
+
+It reads `inferred`, not `direct` — the opposite choice from this file, deliberately: the whole class is
+about REACH, where the classified method performs the effect through a callee. Reading `direct` would
+miss every instance.
+
+**Its first real run found four candidates that R494's fix did not reach** (R496), including
+`DefaultCredentialsProvider.resolveCredentials` — κ `Env`, body reaching `Exec`. Worth recording how that
+looked: run against the pre-fix and post-fix classifiers it printed IDENTICAL output, which reads like a
+calibration failure and was not. **The identity WAS the finding** — those rows are unfixed in both. The
+lesson generalises: when a before/after run fails to discriminate, establish whether the rows are
+insensitive to the change before concluding the instrument is.

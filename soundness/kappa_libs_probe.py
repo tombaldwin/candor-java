@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """kappa_libs_probe.py — the DIRECT effect-leaf κ-coverage gate for THIRD-PARTY LIBRARIES.
 
-Sibling of kappa_probe.py, which pins the JDK effect leaves. The JVM dogfood showed candor handles
+Sibling of kappa_probe.py, which pins the JDK effect leaves. **And a DELIBERATE COUNTERPART of
+soundness/kappa_census/ — do NOT unify them (SOUNDNESS R492).** This probe drives a CURATED list of known
+effect leaves and fails when a modelled leaf REGRESSES. The census is EXHAUSTIVE over a jar's members and
+fails when a covered-prefix grant covers a member NOBODY SURVEYED. A hand list cannot find what nobody
+thought to list: R492 was five silent losses under prefixes this probe passes, including a `commons.csv`
+grant whose package holds zero rules and a `com.sun` grant that silently extends to JNA. Keeping both is
+the cost of the two error directions being different. The JVM dogfood showed candor handles
 APPLICATION code well (effects land in the right layer, low Unknown) but LIBRARIES are the risk surface:
 candor's κ table is NAME-BASED (it matches the call-site owner type, e.g. `okhttp3.Call` or
 `org.slf4j.Logger`), so a library leaf whose owner/verb candor doesn't enumerate makes EVERY caller of

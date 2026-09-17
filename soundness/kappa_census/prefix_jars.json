@@ -1,0 +1,154 @@
+{
+"java": {},
+"javax": {
+"cache-api-1.1.1.jar": 9,
+"javax.servlet-api-4.0.1.jar": 4,
+"javax.transaction-api-1.3.jar": 1
+},
+"jakarta": {
+"jakarta.activation-api-2.1.3.jar": 2,
+"jakarta.batch-api-2.1.1.jar": 8,
+"jakarta.faces-api-4.0.1.jar": 22,
+"jakarta.jms-api-3.1.0.jar": 1,
+"jakarta.json-api-2.1.3.jar": 3,
+"jakarta.json.bind-api-3.0.0.jar": 6,
+"jakarta.mail-api-2.1.3.jar": 5,
+"jakarta.persistence-api-3.1.0.jar": 4,
+"jakarta.servlet-api-6.0.0.jar": 4,
+"jakarta.transaction-api-2.0.1.jar": 1,
+"jakarta.websocket-api-2.1.0.jar": 1,
+"jakarta.websocket-client-api-2.1.0.jar": 1,
+"jakarta.ws.rs-api-3.1.0.jar": 6,
+"jakarta.xml.bind-api-4.0.2.jar": 6,
+"jakarta.xml.soap-api-3.0.1.jar": 1,
+"jakarta.xml.ws-api-4.0.1.jar": 10
+},
+"jdk": {},
+"sun": {},
+"com.sun": {
+"jna-5.13.0.jar": 4
+},
+"kotlin": {
+"kotlin-stdlib-1.9.24.jar": 43
+},
+"kotlinx": {
+"kotlinx-io-core-jvm-0.4.0.jar": 3
+},
+"scala": {
+"scala-library-2.13.14.jar": 31
+},
+"groovy": {
+"groovy-4.0.22.jar": 18,
+"groovy-json-4.0.22.jar": 1,
+"groovy-sql-4.0.22.jar": 1,
+"groovy-xml-4.0.22.jar": 5
+},
+"org.codehaus.groovy": {
+"groovy-4.0.22.jar": 53
+},
+"org.jetbrains": {},
+"org.springframework": {
+"spring-ai-client-chat-1.0.0.jar": 7,
+"spring-ai-commons-1.0.0.jar": 14,
+"spring-ai-model-1.0.0.jar": 31,
+"spring-ai-openai-1.0.0.jar": 8,
+"spring-amqp-3.1.6.jar": 8,
+"spring-batch-core-5.1.2.jar": 34,
+"spring-batch-infrastructure-5.1.2.jar": 51,
+"spring-beans-6.1.10.jar": 13,
+"spring-cloud-openfeign-core-4.1.3.jar": 10,
+"spring-context-6.1.10.jar": 58,
+"spring-context-support-6.1.10.jar": 9,
+"spring-core-6.1.10.jar": 59,
+"spring-data-cassandra-4.3.1.jar": 26,
+"spring-data-commons-3.3.1.jar": 47,
+"spring-data-couchbase-5.3.1.jar": 23,
+"spring-data-elasticsearch-5.3.1.jar": 37,
+"spring-data-mongodb-4.3.1.jar": 35,
+"spring-data-neo4j-7.3.1.jar": 15,
+"spring-data-redis-3.3.1.jar": 34,
+"spring-integration-core-6.3.1.jar": 60,
+"spring-jdbc-6.1.10.jar": 17,
+"spring-kafka-3.1.5.jar": 21,
+"spring-ldap-core-3.2.4.jar": 28,
+"spring-messaging-6.1.10.jar": 23,
+"spring-rabbit-3.1.6.jar": 18,
+"spring-session-core-3.3.1.jar": 17,
+"spring-tx-6.1.10.jar": 13,
+"spring-vault-core-3.1.1.jar": 21,
+"spring-web-6.1.10.jar": 58,
+"spring-webflux-6.1.10.jar": 24
+},
+"io.ktor": {},
+"org.slf4j": {
+"slf4j-api-2.0.13.jar": 4
+},
+"org.apache.logging": {
+"log4j-api-2.23.1.jar": 8
+},
+"ch.qos.logback": {},
+"org.apache.commons.logging": {},
+"org.apache.commons.lang3": {
+"commons-lang3-3.14.0.jar": 18
+},
+"org.joda.time": {},
+"org.hibernate.criterion": {},
+"org.apache.struts": {},
+"org.apache.commons.validator": {},
+"org.apache.commons.beanutils": {},
+"org.threeten.extra": {},
+"io.jsonwebtoken": {},
+"org.jdom2": {},
+"org.displaytag": {},
+"org.ehcache": {
+"ehcache-3.10.8.jar": 129
+},
+"org.w3c.dom": {},
+"com.fasterxml.jackson": {
+"jackson-annotations-2.17.1.jar": 1,
+"jackson-core-2.17.1.jar": 14,
+"jackson-databind-2.17.1.jar": 23,
+"jackson-dataformat-csv-2.17.1.jar": 2,
+"jackson-dataformat-xml-2.17.1.jar": 6,
+"jackson-dataformat-yaml-2.17.1.jar": 3
+},
+"com.csvreader": {},
+"org.supercsv": {},
+"org.apache.commons.codec": {},
+"org.apache.commons.lang": {},
+"org.apache.commons.csv": {
+"commons-csv-1.11.0.jar": 1
+},
+"com.opensymphony.oscache": {},
+"com.google.common.base": {
+"guava-33.2.1-jre.jar": 2
+},
+"com.google.common.math": {
+"guava-33.2.1-jre.jar": 1
+},
+"com.google.maps.model": {
+"google-maps-services-2.2.0.jar": 1
+},
+"org.apache.xml.serialize": {},
+"org.xml.sax": {},
+"org.aopalliance": {},
+"com.twilio": {
+"twilio-10.1.5.jar": 185
+},
+"org.redisson": {
+"redisson-3.31.0.jar": 64
+},
+"org.dbunit": {},
+"org.hibernate.engine.jdbc.internal": {
+"hibernate-core-6.5.2.Final.jar": 1
+},
+"org.hibernate.boot.model.naming": {
+"hibernate-core-6.5.2.Final.jar": 1
+},
+"org.hibernate.jpa": {
+"hibernate-core-6.5.2.Final.jar": 9
+},
+"io.awspring.cloud.ses": {},
+"software.amazon.awssdk.auth.credentials": {},
+"org.postgresql.util": {}
+}

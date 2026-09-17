@@ -56,6 +56,36 @@ Deliberately **not** examined: `java`/`jdk`/`sun` (κ's designed builtin frontie
 standing instrument there) and `javax`/`jakarta` (only API jars here: interfaces with no bodies, so a
 body-based census **cannot fail** and would be a vacuous gate).
 
-**Unmeasured and highest-risk: the 25 covered prefixes with no jar in `soundness/lib`.** `org.jetbrains`
-(zero owner literals in the classifier, and the prefix covers `org.jetbrains.exposed`, a SQL framework) and
-`io.ktor` (3 owners, all client-side) are R493. Fetch the jars and run this rather than reasoning about it.
+## The sweep is COMPLETE (SOUNDNESS R493, 2026-09-18)
+
+R493's two headline prefixes were **INFERRED**; they are now **MEASURED**, and worse than the row said —
+on a consumer compiled against the real jars, `org.jetbrains`/Exposed and `io.ktor`/server were absent
+from `functions` ENTIRELY with `coverage: null`, which under ⟨0.21⟩ is a certified purity claim, and
+`deny Db` / `deny Net` both exited 0. Every covered prefix that has a fetchable jar has now been
+censused; the jars are in `soundness/lib` (untracked).
+
+**Do not re-derive the boundary.** Of 52 prefixes: 46 measured, and the SIX that are not, each for a
+stated reason —
+
+| not measured | why |
+|---|---|
+| `java`, `jdk`, `sun` | κ's designed builtin frontier; `kappa_probe.py` is the standing instrument |
+| `javax`, `jakarta` | API jars only: interfaces with no bodies, so a body-based census **cannot fail** |
+| `org.xml.sax` | ships in the JDK's `java.xml` module and is interfaces — the `javax` case exactly |
+
+`org.hibernate.criterion` was measured against hibernate-core **5.6.15** (the package was removed in 6.x,
+which is why `soundness/lib`'s 6.5.2 jar showed no classes for it) and is **clean: 0 concrete-effect
+members**.
+
+**Two residuals left OPEN rather than closed, both CANDIDATES that this census found and no compiled
+consumer has confirmed** — the bar R493 exists to enforce:
+
+- `org.apache.struts` — `RequestProcessor.doForward`/`doInclude` (63 census NULLs, mostly `Net`). An app
+  SUBCLASSES RequestProcessor, so these are consumer-reachable, but confirming one needs a servlet
+  container on the compile path.
+- `org.displaytag` — `ExportDelegate.writeExport` / `TableTag.doEndTag` → `Net`, same obstacle.
+
+**One deliberate NON-finding, recorded so it is not re-opened:** `org.threeten.extra.AmountFormats.wordBased`
+and `org.joda.time.format.PeriodFormat.buildWordBased` read a `ResourceBundle` off the CLASSPATH. Measured
+absent, and left that way: a classpath bundle lookup is not a filesystem disclosure in candor's model, and
+charging it would put `Fs` on every localized format call in every library.

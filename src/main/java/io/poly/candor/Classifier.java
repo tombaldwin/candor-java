@@ -1605,22 +1605,16 @@ final class Classifier {
         // Redisson — a Redis client: the R* handles (RMap/RLock/RBucket/…) are REMOTE data structures by
         // design — their operations are wire round-trips (→ Db, the family's Redis stance); creating a
         // client connects. Config/serialization is pure.
-        if (owner.startsWith("org.redisson")) {
-            // Redisson.create connects → Db. The R* data verbs are classified PRECISELY by the exact-verb
-            // rule earlier in classify() (get/put/set/remove/…); a broad "any R* method → Db" here
-            // FABRICATED Db on pure members (getCodec, RemoteInvocationOptions builders, RFuture plumbing),
-            // so everything else falls through to pure. (review 0.8.3 regression.)
-            if (owner.equals("org.redisson.Redisson") && method.startsWith("create")) return Effect.DB;
-            return null;
-        }
-        // DbUnit — DatabaseOperation.execute runs the setup/teardown SQL → Db; datasets built FROM a
-        // File read it → Fs; wrapping an existing java.sql.Connection is pure-relative (the open carried
-        // Db); in-memory dataset manipulation is pure.
-        if (owner.startsWith("org.dbunit")) {
-            if (owner.contains("Operation") && method.equals("execute")) return Effect.DB;
-            if (paramsOf(desc).contains("Ljava/io/File;")) return Effect.FS;
-            return null;
-        }
+        // Redisson.create connects → Db. The R* data verbs are classified PRECISELY by the exact-verb
+        // rule earlier in classify() (get/put/set/remove/…); a broad "any R* method → Db" here
+        // FABRICATED Db on pure members (getCodec, RemoteInvocationOptions builders, RFuture plumbing),
+        // so everything else falls through to pure. (review 0.8.3 regression.)
+        // ⚠ The `return null` that used to close this block was REMOVED in κ batch 32: it made every
+        // later org.redisson rule unreachable, which is how the Config/adapter members below stayed
+        // silent. Do not restore it — add rules, not a catch-all.
+        if (owner.equals("org.redisson.Redisson") && method.startsWith("create")) return Effect.DB;
+        // DbUnit — see the WIDENED rule in κ batch 32 below (this block held only
+        // `*Operation.execute` + a File param, the [[R480]] allowlist shape).
         // Hibernate's internal JDBC package — apps reach it for ONE pure member (BasicFormatterImpl, the
         // SQL pretty-printer, reachable from toString/log helpers everywhere — 685 fns of invisible noise
         // on the dogfood app). Covering the package obliges classifying its GENUINELY effectful internals:
@@ -1638,6 +1632,192 @@ final class Classifier {
         if (owner.equals("org.hibernate.jpa.HibernatePersistenceProvider")
                 && (method.startsWith("createEntityManagerFactory") || method.startsWith("createContainerEntityManagerFactory")
                     || method.startsWith("generateSchema"))) return Effect.DB;
+
+        // ── κ batch 32 — SOUNDNESS R493, the COVERED-PREFIX CENSUS (soundness/kappa_census/). ──
+        //    Every rule below closes a member that was SILENT, not merely unknown: its package is in
+        //    `Rules.KAPPA_COVERED_PREFIXES`, so a floored call carried no `invisible` and no coverage
+        //    advisory — an unqualified purity claim (R492). Each was MEASURED absent from `functions`
+        //    on a consumer compiled against the real jar, with a JDK control firing on the same tree,
+        //    and each carve-out below is `javap`-derived, not guessed.
+
+        // Exposed (org.jetbrains.exposed) — Kotlin's SQL framework, reached by the `org.jetbrains` grant
+        // which held ZERO owner rules. MEASURED: a 10-method data layer (connect / transaction / insert /
+        // selectAll / update / deleteAll / SchemaUtils.create+drop / Transaction.exec) reported
+        // `0 functions reach effects`, coverage null, and `deny Db` exited 0.
+        //  - QueriesKt is WHOLE-TYPE: every member is a DML/DQL verb (select/selectAll/*Batched/insert*/
+        //    batchInsert/replace/update/upsert/delete*/exists) — `javap` shows no pure helper, so there is
+        //    no denylist to write. Charged at the DSL call, the point that names the table, on the same
+        //    stance as CacheManagerBuilder.persistence(dir) below: the later iteration is then vouched.
+        //  - SchemaUtils is MIXED, so it is whole-type plus a NAMED PURE DENYLIST — the five members that
+        //    build DDL strings without a round trip. Verified by disassembly: each has zero
+        //    TransactionManager/exec references, against listDatabases (the control) which has three.
+        if (owner.startsWith("org.jetbrains.exposed.")) {
+            // A Kotlin `object`/multifile facade's <clinit>+<init> allocate the singleton and nothing
+            // else — javap: SchemaUtils.<clinit> is `new SchemaUtils; invokespecial <init>()V`, three
+            // instructions. The whole-type rules below must not charge them, or every class that merely
+            // TOUCHES SchemaUtils reads Db. (Caught by the corpus A/B's ADDED column, not by a fixture.)
+            if (method.equals("<init>") || method.equals("<clinit>")) return null;
+            if (owner.equals("org.jetbrains.exposed.sql.QueriesKt")) return Effect.DB;
+            if (owner.equals("org.jetbrains.exposed.sql.SchemaUtils")) {
+                if (method.equals("sortTablesByReferences") || method.equals("checkCycle")
+                        || method.equals("createStatements") || method.equals("createFKey")
+                        || method.equals("createIndex")) return null;
+                return Effect.DB;
+            }
+            // Database.connect opens the pool; Transaction.exec runs raw SQL; the transaction{} builders
+            // and the Statement.execute family drive the connection.
+            if (owner.equals("org.jetbrains.exposed.sql.Database$Companion") && method.startsWith("connect"))
+                return Effect.DB;
+            if (owner.equals("org.jetbrains.exposed.sql.Transaction") && method.startsWith("exec")) return Effect.DB;
+            // EXACT verbs, not a `transaction*` prefix: `javap` on the two facades in that package shows
+            // TransactionScopeKt.transactionScope / nullableTransactionScope are DELEGATE FACTORIES that
+            // open nothing, and a prefix match charged them — measured as four fabricated `<clinit>` rows
+            // in the corpus A/B (EntityHookKt, EntityCacheKt, EntityLifecycleInterceptorKt), each of which
+            // would have made every class merely TOUCHING the DAO read Db. The `$default` suffix is
+            // kotlinc's bridge for default arguments and is the spelling a call site actually emits.
+            String exposedVerb = method.endsWith("$default")
+                    ? method.substring(0, method.length() - "$default".length()) : method;
+            if (owner.startsWith("org.jetbrains.exposed.sql.transactions.")
+                    && (exposedVerb.equals("transaction") || exposedVerb.equals("inTopLevelTransaction")
+                        || exposedVerb.equals("newSuspendedTransaction")
+                        || exposedVerb.equals("withSuspendTransaction")
+                        || exposedVerb.equals("suspendedTransactionAsync"))) return Effect.DB;
+            if (owner.startsWith("org.jetbrains.exposed.sql.statements.") && method.startsWith("execute"))
+                return Effect.DB;
+            // The DAO layer: EntityClass find/new/all/count/reload are queries; the Entity property
+            // delegates and the id/table accessors are pure.
+            if (owner.startsWith("org.jetbrains.exposed.dao.")
+                    && (method.startsWith("find") || method.startsWith("all") || method.equals("new")
+                        || method.equals("count") || method.startsWith("reload") || method.equals("forIds")
+                        || method.startsWith("delete") || method.equals("flush"))) return Effect.DB;
+            return null;
+        }
+
+        // DbUnit — the batch-31 rule was the [[R480]] ALLOWLIST SHAPE: only `*Operation.execute` was
+        // charged, so the whole IDatabaseConnection surface a test actually calls was silent. MEASURED
+        // absent on a compiled consumer: createDataSet, DatabaseDataSourceConnection.getConnection,
+        // SQLHelper.tableExists/schemaExists/getPrimaryKeyColumn — `deny Db` exited 0.
+        // The rule is now HANDLE-DRIVEN (a member handed a live java.sql.Connection / DatabaseMetaData /
+        // javax.sql.DataSource does a round trip) plus the four IDatabaseConnection verbs, which take no
+        // handle. Two carve-outs, both read off `javap` over all 428 classes rather than guessed:
+        //   - `<init>(java.sql.Connection…)` WRAPS a connection the caller already opened — pure-relative,
+        //     the batch-31 stance, and it is why the DataSource ctors are matched separately (those OPEN).
+        //   - AbstractDataType.loadClass(String, Connection) is a Class.forName; the handle is unused.
+        if (owner.startsWith("org.dbunit")) {
+            if (owner.contains("Operation") && method.equals("execute")) return Effect.DB;
+            if (method.equals("createDataSet") || method.equals("createQueryTable")
+                    || method.equals("createTable")) return Effect.DB;
+            // `getRowCount` is TWO METHODS WITH ONE NAME and only one of them queries:
+            // IDatabaseConnection.getRowCount(table) issues a `select count(*)`, while
+            // ITable.getRowCount() returns a list size. `javap` over all 428 classes in the jar: FOUR
+            // declarers are connection- or cursor-backed and FOURTEEN are in-memory ITable
+            // implementations. An unscoped verb charged all eighteen — measured as three fabricated
+            // rows in the corpus A/B (DefaultTable.setValue/getValue, XlsTable.getValue), which is why
+            // this is scoped by owner rather than by verb.
+            if (method.equals("getRowCount")
+                    && (owner.endsWith("Connection") || owner.endsWith("ResultSetTable"))) return Effect.DB;
+            String dbuParams = paramsOf(desc);
+            if (dbuParams.contains("Ljavax/sql/DataSource;")) return Effect.DB;
+            if (dbuParams.contains("Ljava/sql/DatabaseMetaData;") || dbuParams.contains("Ljava/sql/Connection;")) {
+                if (method.equals("<init>")) return null;
+                if (method.equals("loadClass")) return null;
+                return Effect.DB;
+            }
+            // A tester/connection that OPENS rather than wraps: DatabaseDataSourceConnection and the
+            // IDatabaseTester family build the connection themselves. DatabaseConnection (and its ext
+            // subclasses) hand back the wrapped one, so they stay pure-relative.
+            if (method.equals("getConnection")
+                    && (owner.equals("org.dbunit.database.DatabaseDataSourceConnection")
+                        || owner.endsWith("DatabaseTester"))) return Effect.DB;
+            if (dbuParams.contains("Ljava/io/File;")) return Effect.FS;
+            return null;
+        }
+
+        // commons-codec — the grant reads "codecs (pure CPU)" and the package held ZERO rules: the same
+        // contradiction R492 found in the `org.apache.commons.csv` grant, one package over. True for
+        // Base64/Hex/digest-over-bytes; FALSE for the twelve overloads that OPEN THE FILE THEMSELVES.
+        // Descriptor-driven, and `javap` over every class in the jar says those twelve are the ONLY
+        // members taking File/Path/RandomAccessFile — so there is no pure member to carve out. The
+        // InputStream overloads are deliberately NOT charged: a caller-opened stream is pure-relative
+        // (STREAM_CONSUMING_UTILITIES, the same stance as commons-io/IOUtils above).
+        if (owner.startsWith("org.apache.commons.codec")) {
+            String codecParams = paramsOf(desc);
+            if (codecParams.contains("Ljava/io/File;") || codecParams.contains("Ljava/nio/file/Path;")
+                    || codecParams.contains("Ljava/io/RandomAccessFile;")) return Effect.FS;
+            // Resources.getInputStream(name) opens a CLASSPATH resource itself — it is the open, not a
+            // consumer of someone else's stream.
+            if (owner.equals("org.apache.commons.codec.Resources") && method.equals("getInputStream"))
+                return Effect.FS;
+            return null;
+        }
+
+        // commons-validator — batch 29 granted it with beanutils/displaytag/w3c.dom on the finding that
+        // they "carry NO effectful members (pure predicates)". True of the Validator/Field/FormSet
+        // predicate surface, and FALSE of the one ACQUISITION point: ValidatorResources reads the
+        // validation ruleset from wherever it is handed. MEASURED absent from `functions` on a consumer
+        // compiled against commons-validator 1.9.0, `coverage: null`, with a Files.readAllBytes control
+        // firing on the same tree. `javap`: seven ctors — the no-arg one builds an empty resource set,
+        // the URL forms fetch, the String forms are file PATHS, and the InputStream forms consume a
+        // caller-opened source (pure-relative, the commons-io stance). Descriptor-driven, ctor-only.
+        if (owner.equals("org.apache.commons.validator.ValidatorResources") && method.equals("<init>")) {
+            String vParams = paramsOf(desc);
+            if (vParams.contains("Ljava/net/URL;")) return Effect.NET;
+            if (vParams.contains("Ljava/lang/String;")) return Effect.FS;
+            return null;
+        }
+
+        // commons-beanutils — batch 29 granted it on the finding that it "carries NO effectful members
+        // (bean plumbing)". MEASURED false: the two ResultSet-backed DynaClasses WALK A LIVE CURSOR.
+        // `RowSetDynaClass.<init>(ResultSet)` copies every row eagerly and `ResultSetDynaClass.iterator()`
+        // hands out a cursor-advancing iterator — both absent from `functions` on a compiled consumer.
+        // Owner-scoped to the three ResultSet types; the rest of beanutils stays pure, as surveyed.
+        if (owner.equals("org.apache.commons.beanutils.RowSetDynaClass")
+                || owner.equals("org.apache.commons.beanutils.ResultSetDynaClass")
+                || owner.equals("org.apache.commons.beanutils.ResultSetIterator")) {
+            if (isConventionallyPure(method)) return null;
+            if (method.startsWith("getDynaPropert") || method.equals("getName")) return null;
+            return Effect.DB;
+        }
+
+        // SuperCSV — granted with the CSV stacks as "pure-relative over caller sources", which holds for
+        // the Reader/Writer overloads. It does not hold for CsvResultSetWriter: its argument is a live
+        // java.sql.ResultSet and `write` drains it. MEASURED absent on a compiled consumer.
+        if (owner.equals("org.supercsv.io.CsvResultSetWriter")
+                && (method.equals("write") || method.equals("writeHeader"))) return Effect.DB;
+
+        // Ehcache — batch 29 charged persistence(dir) and clustered cluster(URI) and nothing else.
+        // XmlConfiguration(URL) FETCHES the config document (MEASURED absent on a compiled consumer),
+        // and the File/Path overloads read it from disk. Descriptor-driven on the xml package only.
+        if (owner.startsWith("org.ehcache.xml")) {
+            String ehParams = paramsOf(desc);
+            if (ehParams.contains("Ljava/net/URL;") || ehParams.contains("Ljava/net/URI;")) return Effect.NET;
+            if (ehParams.contains("Ljava/io/File;") || ehParams.contains("Ljava/nio/file/Path;")) return Effect.FS;
+            return null;
+        }
+
+        // Redisson — batch 31 charged Redisson.create plus the exact data verbs on `org.redisson.api.R*`.
+        // Config.fromJSON/fromYAML(File|URL|InputStream) READ THE SOURCE (MEASURED absent), and the two
+        // ADAPTER façades are outside the api.R* family a consumer normally names: the Spring
+        // `RedissonCache` and the JCache `JCache`/`JCacheManager` both round-trip to Redis.
+        if (owner.startsWith("org.redisson.config.Config")
+                || owner.equals("org.redisson.spring.cache.CacheConfigSupport")
+                || owner.equals("org.redisson.config.ConfigSupport")) {
+            String rParams = paramsOf(desc);
+            if (rParams.contains("Ljava/net/URL;")) return Effect.NET;
+            if (rParams.contains("Ljava/io/File;")) return Effect.FS;
+            return null;
+        }
+        if (owner.equals("org.redisson.spring.cache.RedissonCache")
+                || owner.equals("org.redisson.jcache.JCache")
+                || owner.equals("org.redisson.jcache.JCacheManager")) {
+            if (isConventionallyPure(method)) return null;
+            // javap: RedissonCache.<init>(RMapCache,…) chains to a sibling ctor and stores the handle —
+            // no wire traffic. (Caught by the corpus A/B's ADDED column.)
+            if (method.equals("<init>")) return null;
+            if (method.equals("getName") || method.equals("getNativeCache") || method.equals("getConfiguration")
+                    || method.equals("isClosed") || method.equals("unwrap")) return null;
+            return Effect.DB;
+        }
         // ['java', 'misc', 'org'] shared rule — see sharedLoggingFacades below
         if (isLoggingFacadesOwner(owner)) return sharedLoggingFacades(owner, method, desc);
         return null;
@@ -2156,6 +2336,40 @@ final class Classifier {
             if (method.startsWith("parse") && !paramsOf(desc).isEmpty()) return Effect.CLOCK;
             return null;
         }
+        // ── κ batch 32 — SOUNDNESS R493. ktor's grant covered THREE owners, all CLIENT-side, while
+        //    `io.ktor` is in KAPPA_COVERED_PREFIXES — so the whole SERVER was an unqualified purity
+        //    claim. MEASURED on a Kotlin consumer compiled against ktor 2.3.12: an HTTP server binding
+        //    :8080 with two routes, a respondFile, a raw TCP connect to example.com:80 and a bind on
+        //    0.0.0.0:9000 reported `0 functions reach effects`, coverage null, invisible null, and
+        //    `deny Net` exited 0. Calibrated on the same tree — adding one java.net.Socket reddens it. ──
+        // The server engine: embeddedServer names the PORT (the ⟨0.37⟩ locator position) and start/stop
+        // binds it. The routing BUILDERS (RoutingBuilderKt.get/post/route) only register handlers and
+        // stay pure — charging them would fabricate Net on every route table.
+        if (owner.equals("io.ktor.server.engine.EmbeddedServerKt") && method.startsWith("embeddedServer"))
+            return Effect.NET;
+        if (owner.startsWith("io.ktor.server.engine.") || owner.startsWith("io.ktor.server.netty.")
+                || owner.startsWith("io.ktor.server.cio.") || owner.startsWith("io.ktor.server.jetty.")
+                || owner.startsWith("io.ktor.server.tomcat.")) {
+            if (method.equals("start") || method.equals("stop")) return Effect.NET;
+        }
+        // The request/response boundary: respond*/receive* move bytes over the client socket. Whole
+        // FACADE-type (kotlinc emits the *Kt / *JvmKt multifile facades, which is why these are named as
+        // owners rather than as interfaces), verb-gated. NB a MEASURED residual, stated rather than left
+        // to be discovered: `respondFile(File)` ALSO reads the file, and classify returns one Effect, so
+        // the Fs half is not carried here — Net is the boundary this package exists to cross.
+        if (owner.startsWith("io.ktor.server.response.")
+                && (method.startsWith("respond") || method.equals("header") || method.startsWith("redirect")))
+            return Effect.NET;
+        if (owner.startsWith("io.ktor.server.request.") && method.startsWith("receive")) return Effect.NET;
+        // Raw sockets: aSocket(selector) and .tcp()/.udp() are pure BUILDERS (no fd yet); connect/bind
+        // are the syscall, and accept takes one off the listen queue. Derived from `javap` on the
+        // consumer's own bytecode — TcpSocketBuilder.connect$default/bind$default are what kotlinc emits.
+        if (owner.startsWith("io.ktor.network.sockets.")
+                && (method.startsWith("connect") || method.startsWith("bind") || method.startsWith("accept")))
+            return Effect.NET;
+        // DELIBERATELY NOT CHARGED: io.ktor.utils.io channel reads/writes. The ByteReadChannel was
+        // created by a connect/bind/receive that now carries the effect, so charging each read would
+        // double-count — the same source/sink stance as commons-io's caller-opened stream overloads.
         // Spring Cloud AWS SES — the mail sender's send is the SES call.
         if (owner.startsWith("io.awspring.cloud.ses") && method.startsWith("send")) return Effect.NET;
         return null;
@@ -2573,6 +2787,23 @@ final class Classifier {
         Effect s68 = sharedPanacheQueryTerminals(owner, method, desc);
         if (s68 != null) return s68;
         // AWS v2 credentials — RESOLUTION reads the environment/profile chain; factories are pure.
+        // ── κ batch 32 — SOUNDNESS R493. `software.amazon.awssdk.auth.credentials` is κ-covered, and the
+        //    blanket Env below was an UNDER-REPORT BY EFFECT CLASS rather than by absence: two of the
+        //    chain's providers do not read the environment at all.
+        //    MEASURED on a compiled consumer: all four providers read `Env` and `deny Exec` exited 0,
+        //    with a java.net.Socket control firing Net on the same tree.
+        //    `javap -c` confirms ProcessCredentialsProvider.executeCommand() constructs a
+        //    java/lang/ProcessBuilder and that resolveCredentials() is its only caller — so the provider
+        //    whose entire purpose is running `aws-vault`/`aws sso` forked a process under a passing
+        //    `deny Exec`. The IMDS/container providers issue an HTTP GET to the metadata endpoint.
+        //    Ordered BEFORE the Env rule; the remaining providers (profile/environment/static/default)
+        //    keep Env, which is what they do.
+        if (owner.equals("software.amazon.awssdk.auth.credentials.ProcessCredentialsProvider")
+                && method.startsWith("resolveCredentials")) return Effect.EXEC;
+        if ((owner.equals("software.amazon.awssdk.auth.credentials.InstanceProfileCredentialsProvider")
+                || owner.equals("software.amazon.awssdk.auth.credentials.ContainerCredentialsProvider")
+                || owner.equals("software.amazon.awssdk.auth.credentials.HttpCredentialsProvider"))
+                && method.startsWith("resolveCredentials")) return Effect.NET;
         if (owner.startsWith("software.amazon.awssdk.auth.credentials")
                 && method.startsWith("resolveCredentials")) return Effect.ENV;
         // ['java', 'misc', 'org'] shared rule — see sharedLoggingFacades below

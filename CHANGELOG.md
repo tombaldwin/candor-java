@@ -10,6 +10,69 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ### ⚠ Fixed
 
+- **R486 / R487 — the same class one owner over, and under a κ-COVERED prefix, where the under-report is
+  SILENT rather than disclosed.** [R480] below fixed the third-party subprocess builders; a sweep of the
+  rest of the classifier's `Exec` surface found three more verb-allowlists on payload-carrying owners, two
+  of them in packages that `Rules.KAPPA_COVERED_PREFIXES` declares covered.
+  **That list is a second, independent way to lose a call, and it converts a disclosed under-report into a
+  silent one:** R480's four packages floored to `invisible: [<package>]` plus the coverage advisory — the
+  honest floor — while a floored call into `scala.*` or `org.codehaus.groovy.*` is not ledgered at all.
+  No `invisible`, no advisory, `coverage: null`, and under ⟨0.21⟩ the arm-only method is **absent from
+  `functions` entirely**, which is a certified purity claim.
+  - **R486 `scala.sys.process` — CARDINAL SIN.** The rule was prefix-scoped but VERB-GATED (`run` /
+    `$bang*` / `lazyLines*` / `lineStream*`), so the launch verbs were charged and
+    `scala.sys.process.Process$.apply(String)` — the constructor that carries the program — was not, along
+    with the implicit conversions `stringToProcess`/`stringSeqToProcess` (what `"ls".!` compiles through)
+    and every composer (`#|`, `#&&`, `#||`, `###`, `#>`, `#<`). MEASURED END-TO-END AGAINST REAL SCALAC
+    3.8.4 OUTPUT, not a stub, pre-fix at `1e98b2d`: six arm-only methods, `coverage: null`, no `invisible`,
+    and `deny Exec`, `deny Unknown`, `deny Exec`+`deny Unknown` and `allow Exec git` ALL exiting **0**.
+    Calibrated on the same tree — adding `Process("id").!` turns `deny Exec` red — so the exit 0 is an
+    under-report, not a broken scan. Now the whole package with a named pure denylist.
+  - **Groovy's `ProcessGroovyMethods` — CARDINAL SIN, found by the same sweep (no row filed yet).** The
+    rule was `method.startsWith("execute")`. Every other member takes a live `java.lang.Process` and reads,
+    FEEDS, waits on or kills it: `getText`/`getIn`/`getOut`/`getErr`, `leftShift` (`proc << input` — the
+    payload carrier), `consumeProcessOutput`/`waitForProcessOutput`/`consumeProcess*Stream`,
+    `waitForOrKill`, `closeStreams`, `pipeTo`/`or`. Under `@CompileStatic` each is a direct static call on
+    this owner. Measured on a consumer compiled against groovy-4.0.22: six of seven methods ABSENT from the
+    report pre-fix with `coverage: null`; all seven `Exec` after. Now whole-type.
+  - **R487 `net.bramp.ffmpeg` — disclosed, and a gate bypass.** One-verb allowlist (`*.run`), so
+    `FFmpegBuilder.setInput`/`addOutput`/`addExtraArgs`/`build` and `FFmpegExecutor.createJob` were
+    uncharged. **The sweep found more than the row did:** `FFprobe.probe(path)`, `FFcommon.version()`,
+    `FFmpeg.codecs()/formats()/pixelFormats()/isFFmpeg()` and `FFcommon.path(List)` all FORK the binary and
+    none is named `run` — and `javap -c` shows `FFmpeg.<init>(String,ProcessFunction)` ends in
+    `invokevirtual version()`, so even `new FFmpeg(path)` forks, which only a whole-TYPE rule catches.
+    Measured pre-fix on a consumer compiled against the REAL ffmpeg-0.8.0.jar: thirteen methods
+    `inferred: []` and `deny Exec` / `deny Unknown` / `allow Exec ffmpeg` all exiting **0**.
+    Deliberately NOT whole-package — unlike commons-exec, `net.bramp.ffmpeg` is mixed (half of it is a
+    media-metadata model that performs nothing), so the rule names the payload carriers and launchers:
+    the whole `builder` and `job` packages, `FFcommon`/`FFmpeg`/`FFprobe`/`FFmpegExecutor`/
+    `ProcessFunction`/`RunProcessFunction`, and `io.ProcessUtils`. Six closed pure enums / argv-fragment
+    value types inside those two packages are carved out by name after enumerating them with `javap`.
+  - **Precision gain from the same sweep: Scala's environment reads.** `sys.env` and
+    `scala.util.Properties.envOrElse/envOrNone/envOrSome`/`jdkHome` are Scala's spelling of
+    `System.getenv` (verified with `javap -c`: each body is `invokestatic java/lang/System.getenv`) and
+    were silent for the same reason — unclassified under a κ-covered prefix. Now `Env`. The JVM PROPERTY
+    namespace (`props`, `scalaPropOrElse`) is deliberately still not `Env`.
+  - **A/B, 324 real third-party jars, `bin/corpus-ab.py`, `PRE`=`1e98b2d`:**
+    `ADDED 127  REMOVED 0  CHANGED 1059` on the wide key (`ADDED 127  REMOVED 0  CHANGED 612` on
+    `inferred` alone), REACH **1439 hits across 3 entries** (scala-library 842, ffmpeg 487, groovy 110).
+    `grpc-context-1.64.0.jar` is excluded and named: its PRE arm already exits 2. Every added and changed
+    row falls inside exactly those three jars; the other 321 are byte-identical. REMOVED is 0, and the
+    full audit of all 1059 changed rows — not a sample — finds **zero** effect-bearing losses:
+    `inferred`, `direct`, `incomplete`, `invisible`, `unknownWhy`, `netClass`, `calls` and `paths` only
+    ever GAIN. The only two loss buckets are the §5 conformance axis moving the right way — 18 rows leave
+    `undeclared` because the class's field types can now supply `Exec`, and 12 leave `overdeclared`
+    because a method of that class now performs it (checked per CLASS, since both are class-level
+    properties). Of the 127 added rows, 118 carry `Exec` and 9 are genuinely pure members newly LISTED for
+    §5 conformance because their class's envelope now carries `Exec`.
+  - The **consumer-side** over-charge control is separate: a 13-method consumer compiled against the real
+    ffmpeg-0.8.0.jar charges 8 (five arming methods plus the three forks that read like accessors) and
+    leaves 5 pure — `FFmpegProbeResult.getFormat().duration`, `MetadataSpecifier.stream(1).spec()`,
+    `FFmpegBuilder.Verbosity.QUIET.toString()`, `FFmpegJob.getState()` and `FFmpegUtils.toTimecode()`.
+    REVERT TEST: reverting `Classifier.java` alone turns 5 of the 7 new tests red; the two that stay green
+    are the absence-shaped over-charge controls, which by construction cannot discriminate the fix from
+    its absence.
+
 - **R480 — the whole-type-plus-denylist fix for `java.lang.ProcessBuilder` was never generalised to the
   THIRD-PARTY subprocess builders**, which stayed on the verb allowlist that rule's own comment records as
   MEASURED to under-report. Four payload-carrying libraries, of which two were absent from the classifier

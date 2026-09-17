@@ -91,6 +91,23 @@ final class Classifier {
             "getVolumesFroms", "getWaitStrategy", "getWorkingDirectory", "isHostAccessible",
             "isPrivilegedMode", "isShouldBeReused");
 
+    /** `scala.sys.process.package$`'s THREE members that are not about a child process — VERIFIED with
+     *  `javap -c` against scala-library 2.13.14 and 3.8.4: each body is exactly
+     *  `getstatic java/lang/System.in|out|err; areturn`. They hand back THIS JVM's own streams. See the
+     *  scala.sys.process rule (R486) for why they are carved out rather than charged. Descriptor-gated on
+     *  `()` with the rest of that package's surface, which is overload-heavy. */
+    private static final Set<String> SCALA_PROCESS_JVM_STREAMS = Set.of("stdin", "stdout", "stderr");
+
+    /** ffmpeg-cli-wrapper's pure read-backs — the stored-configuration accessors on the types charged
+     *  `Exec` by the `net.bramp.ffmpeg` rule (R487). ENUMERATED with `javap` against ffmpeg-0.8.0:
+     *  `FFcommon.getPath()` is `aload_0; getfield path; areturn`, `FFmpegJob.getState()` returns the job's
+     *  own state field, and `FFmpegBuilder.getOverrideOutputFiles()` returns a boolean field. Deliberately
+     *  EXCLUDES every `set*`/`add*` payload verb, and `FFcommon.version()`/`FFmpeg.codecs()`/`formats()`/
+     *  `pixelFormats()`/`isFFmpeg()`/`FFprobe.isFFprobe()`, which all FORK the binary despite reading like
+     *  accessors. */
+    private static final Set<String> FFMPEG_READ_BACKS =
+            Set.of("getPath", "getState", "getOverrideOutputFiles");
+
     /** κ dispatch: one bucket per leading owner package segment (java/javax/jakarta/org/com/io,
      *  everything else in classifyOther), so every bucket stays under HotSpot's
      *  DontCompileHugeMethods limit (8KB of bytecode) — the old single ~27KB cascade ran
@@ -1301,8 +1318,30 @@ final class Classifier {
                 return Effect.FS;
             return null;
         }
-        if (owner.equals("org.codehaus.groovy.runtime.ProcessGroovyMethods") && method.startsWith("execute"))
+        // ── Groovy's ProcessGroovyMethods — the R480/R486 shape a THIRD time, and SILENT ──────────────
+        // This was `method.startsWith("execute")` — the launch verb only. Every OTHER member of the class
+        // takes a live `java.lang.Process` and reads, feeds, waits on or kills it, which is the capability
+        // `Process.getInputStream()` / `Process.destroy()` are charged for ~1000 lines above. And
+        // `org.codehaus.groovy` IS in `Rules.KAPPA_COVERED_PREFIXES`, so a floored call was not ledgered:
+        // no `invisible`, no advisory — the same silence R486 has, not R480's honest floor.
+        //
+        // The members the allowlist omitted, from `javap` over groovy-4.0.22 (candor's own body scan of
+        // that jar reports DIRECT `Exec` on every one of them): `getText`/`getIn`/`getOut`/`getErr` hand
+        // back the child's captured output, `leftShift` WRITES TO THE CHILD'S STDIN (`proc << input` — the
+        // payload carrier of this class), `consumeProcessOutput`/`waitForProcessOutput`/
+        // `consumeProcessOutputStream`/`consumeProcessErrorStream` pump its streams, `waitForOrKill` and
+        // `closeStreams` tear it down, and `pipeTo`/`or` chain two children. Under `@CompileStatic` each
+        // compiles to a direct static call on this owner, which is what candor sees.
+        //
+        // Whole type with ONE carve-out, and it is not a purity claim about a capability: the class is a
+        // static-extension-methods holder, so its no-arg constructor builds nothing and performs nothing.
+        // Everything else is charged — a member this rule has not heard of over-charges loudly.
+        if (owner.equals("org.codehaus.groovy.runtime.ProcessGroovyMethods")
+                || owner.equals("org.codehaus.groovy.runtime.ProcessGroovyMethods$ProcessRunner")) {
+            if (method.equals("<init>") && "()V".equals(desc)) return null;
+            if (isObjectProtocolExempt(method, desc)) return null;
             return Effect.EXEC;
+        }
         if ((owner.equals("org.apache.http.client.HttpClient")
                 || owner.equals("org.apache.http.impl.client.CloseableHttpClient")
                 || owner.equals("org.apache.hc.client5.http.classic.HttpClient")
@@ -2198,8 +2237,72 @@ final class Classifier {
         // Mailgun (sargue) → Net.
         if (owner.equals("net.sargue.mailgun.Mail") && method.equals("send")) return Effect.NET;
         if (owner.equals("spark.Spark") && method.equals("init")) return Effect.NET;
-        // ffmpeg wrapper — *.run forks the ffmpeg/ffprobe binary → Exec.
-        if (owner.startsWith("net.bramp.ffmpeg.") && method.equals("run")) return Effect.EXEC;
+        // ── ffmpeg-cli-wrapper (net.bramp.ffmpeg) — SOUNDNESS R487 ────────────────────────────────────
+        // The R480 shape once more: this was a one-verb allowlist (`*.run`), so the builder that ASSEMBLES
+        // the invocation and the executor that ARMS it were both uncharged. DISCLOSED rather than silent —
+        // `net.bramp` is NOT in `Rules.KAPPA_COVERED_PREFIXES`, so a floored call carries
+        // `invisible: ["net.bramp.ffmpeg.builder"]` and the coverage advisory — which is why this ranked
+        // below R486. It was still a full gate bypass. MEASURED pre-fix at 1e98b2d on a consumer COMPILED
+        // AGAINST ffmpeg-0.8.0.jar (the real jar, not a stub): thirteen methods, every one `inferred: []`,
+        // and `deny Exec`, `deny Unknown` and `allow Exec ffmpeg` ALL exiting 0 —
+        //     new FFmpegBuilder().setInput(in).addExtraArgs(argv).addOutput(out).done().build()
+        //     new FFmpegExecutor(ff).createJob(b)
+        //
+        // THE SWEEP FOUND MORE THAN THE ROW DID, and they are the dangerous half: `FFprobe.probe(path)`,
+        // `FFcommon.version()`, `FFmpeg.codecs()/formats()/pixelFormats()/isFFmpeg()` and
+        // `FFcommon.path(List)` all FORK the binary and none is named `run`. `javap -c` on
+        // `FFmpeg.<init>(String,ProcessFunction)` ends `invokevirtual version:()Ljava/lang/String;` — so
+        // even `new FFmpeg("/usr/bin/ffmpeg")` forks, which only a whole-TYPE rule can catch.
+        //
+        // SCOPE, and why it is NOT whole-package. Unlike commons-exec, `net.bramp.ffmpeg` is MIXED: half of
+        // it is a media-metadata model (`probe.*`, `nut.*`, `info.*`, `options.*`, Gson adapters,
+        // modelmapper) that performs nothing, and charging that would fabricate `Exec` on every consumer
+        // that reads a probe result. So the rule names the PAYLOAD CARRIERS and the LAUNCHERS: the whole
+        // `builder` package (the argv carriers), the whole `job` package (an armed, runnable invocation),
+        // `FFcommon`/`FFmpeg`/`FFprobe`/`FFmpegExecutor`/`ProcessFunction`/`RunProcessFunction`, and
+        // `io.ProcessUtils` (it waits on and kills a live `java.lang.Process`). The carve-outs are a named
+        // DENYLIST, so a member this rule has not heard of over-charges loudly rather than vanishing.
+        if (owner.startsWith("net.bramp.ffmpeg.")) {
+            boolean payloadOwner = owner.startsWith("net.bramp.ffmpeg.builder.")
+                    || owner.startsWith("net.bramp.ffmpeg.job.")
+                    || owner.equals("net.bramp.ffmpeg.FFcommon") || owner.equals("net.bramp.ffmpeg.FFmpeg")
+                    || owner.equals("net.bramp.ffmpeg.FFprobe")
+                    || owner.equals("net.bramp.ffmpeg.FFmpegExecutor")
+                    || owner.equals("net.bramp.ffmpeg.ProcessFunction")
+                    || owner.equals("net.bramp.ffmpeg.RunProcessFunction")
+                    || owner.equals("net.bramp.ffmpeg.io.ProcessUtils");
+            if (payloadOwner) {
+                //  (i) the CLOSED PURE ENUMS and the argv-FRAGMENT value types that live inside the two
+                //      charged packages and carry no program. Enumerated with `javap` against ffmpeg-0.8.0:
+                //      `FFmpegBuilder$Verbosity`, `FFmpegBuilder$Strict` and `FFmpegJob$State` have no
+                //      surface at all beyond `values`/`valueOf`/`toString`/`<clinit>`, and
+                //      `StreamSpecifier`/`StreamSpecifierType`/`MetadataSpecifier` are string-formatting
+                //      helpers whose every member returns a `String` or another specifier. This is a
+                //      carve-out by TYPE — the one place here that could in principle hide a capability —
+                //      so it is bounded to six named types and re-derivable in one `javap`.
+                if (owner.equals("net.bramp.ffmpeg.builder.FFmpegBuilder$Verbosity")
+                        || owner.equals("net.bramp.ffmpeg.builder.FFmpegBuilder$Strict")
+                        || owner.equals("net.bramp.ffmpeg.job.FFmpegJob$State")
+                        || owner.equals("net.bramp.ffmpeg.builder.StreamSpecifier")
+                        || owner.equals("net.bramp.ffmpeg.builder.StreamSpecifierType")
+                        || owner.equals("net.bramp.ffmpeg.builder.MetadataSpecifier")) return null;
+                //  (ii) the Throwable types and the §4 Object protocol.
+                if (owner.endsWith("Exception") || isObjectProtocolExempt(method, desc)) return null;
+                //  (iii) the three proven read-backs. Descriptor-gated on `()`, because `FFcommon.path`
+                //      TAKES a List and forks while `getPath` does not, and because `version()` /
+                //      `codecs()` / `isFFmpeg()` are no-arg AND effectful — a blanket "no-arg ⇒ pure"
+                //      here would be a cardinal sin.
+                if (desc != null && desc.startsWith("()") && FFMPEG_READ_BACKS.contains(method)) return null;
+                return Effect.EXEC;
+            }
+            // Everything else under net.bramp.ffmpeg (probe/nut/info/options/progress/gson/modelmapper,
+            // FFmpegUtils, Preconditions) stays UNMODELED and therefore DISCLOSED — `net.bramp` is not a
+            // covered prefix, so an unmodeled member floors to `invisible` + the coverage advisory. The
+            // honest floor, deliberately, rather than a purity claim this rule is not entitled to make.
+            // NOT CLAIMED PURE: `progress.TcpProgressParser`/`UdpProgressParser` open a listening socket in
+            // their constructors (javap: `new java/net/ServerSocket`), which is `Net`, not `Exec` — a
+            // separate finding, left disclosed rather than mislabelled here.
+        }
         // ML — ONNX Runtime createSession(String|path) loads the model off disk → Fs (createSession(byte[])
         // is in-memory → pure); OrtSession.run is opaque native inference → Unknown (can't see into native).
         if (owner.equals("ai.onnxruntime.OrtEnvironment") && method.equals("createSession")
@@ -2287,10 +2390,74 @@ final class Classifier {
             if (method.equals("fromURL") || method.equals("fromURI")) return Effect.NET;
             return null;
         }
-        if (owner.startsWith("scala.sys.process")
-                && (method.equals("run") || method.startsWith("$bang") || method.startsWith("lazyLines")
-                    || method.startsWith("lineStream")))
+        // ── scala.sys.process — SOUNDNESS R486 ─────────────────────────────────────────────────────────
+        // The `java.lang.ProcessBuilder` doctrine (long comment on that rule) and its third-party
+        // generalisation (thirdPartySubprocessLibs, R480) applied to Scala's own stdlib: `Exec` charges
+        // reach to the subprocess CAPABILITY, not only the launch, so the WHOLE PACKAGE is charged with
+        // the proven-pure surface carved out as a NAMED DENYLIST.
+        //
+        // WHAT THIS REPLACED, AND WHY IT WAS WORSE THAN R480. The rule here was PREFIX-scoped but
+        // VERB-GATED — `run` / `$bang*` / `lazyLines*` / `lineStream*` — so the launch verbs were charged
+        // and `scala.sys.process.Process$.apply(String)`, THE CONSTRUCTOR THAT CARRIES THE PROGRAM, was
+        // not. That is R480's defect verbatim. What makes it a CARDINAL SIN rather than a disclosed
+        // under-report: `scala` IS in `Rules.KAPPA_COVERED_PREFIXES`, so the floored call is not ledgered
+        // at all — no `invisible`, no "classifier doesn't cover N packages" advisory, `coverage: null`.
+        // R480's four packages were NOT covered, so they floored to a disclosure; this one claims coverage
+        // it does not have. THE COVERED-PREFIX LIST IS A SECOND, INDEPENDENT WAY TO LOSE A CALL, AND IT
+        // CONVERTS A DISCLOSED UNDER-REPORT INTO A SILENT ONE.
+        //
+        // MEASURED END-TO-END against real scalac 3.8.4 output (not a stub), pre-fix at 1e98b2d — six
+        // arm-only methods, every one ABSENT from `functions` entirely (⟨0.21⟩ absence = certified pure),
+        // `coverage: null`, and `deny Exec`, `deny Unknown`, `deny Exec`+`deny Unknown` and
+        // `allow Exec git` ALL exiting 0:
+        //     def armString(cmd: String): ProcessBuilder = Process(cmd)          // Process$.apply
+        //     def armSeq(argv: Seq[String]): ProcessBuilder = Process(argv)      //   "
+        //     def armPiped(a: String, b: String) = Process(a) #| Process(b)      // ProcessBuilder.$hash$bar
+        // Calibrated on the SAME tree: adding `Process("id").!` turns `deny Exec` red, so the exit 0 is an
+        // under-report and not a broken scan. `#|` / `#&&` / `#||` / `###` / `#>` / `#<` were uncharged for
+        // the same reason — the allowlist did not name them.
+        //
+        // SCOPE: the whole package, because every type in it exists to assemble, launch, watchdog or pipe a
+        // child — `Process`/`ProcessCreation` build it, `ProcessBuilder`/`ProcessBuilderImpl.*` carry the
+        // payload and compose it, `ProcessImpl.*` runs it, `ProcessIO`/`ProcessLogger`/`FileProcessLogger`/
+        // `BasicIO` carry the CHILD's streams (the capability `Process.getInputStream()` is charged for),
+        // `package$`'s implicit conversions (`stringToProcess` — what `"ls".!` compiles through) carry the
+        // program, and `Parser.tokenize` splits it into argv. Whole-package also closes the spelling an
+        // owner-EQUALS rule can never see: a call on `ProcessBuilderImpl$AbstractBuilder` emits THAT owner.
+        if (owner.startsWith("scala.sys.process.")) {
+            //  (i) the Throwable types (`Parser$ParseException`) and the §4 Object protocol.
+            if (owner.endsWith("Exception") || isObjectProtocolExempt(method, desc)) return null;
+            //  (ii) `package$.stdin/stdout/stderr` — VERIFIED with `javap -c` against scala-library 2.13.14
+            //      and 3.8.4: each body is `getstatic java/lang/System.in|out|err; areturn`. They hand back
+            //      THIS JVM's own streams, not a child's, so charging them `Exec` would be the wrong
+            //      effect — the direction R480 refused for commons-exec's `DebugUtils`. Carving them out
+            //      leaves them exactly where they already were (a `System.out` read is not an effect here).
+            if ((owner.equals("scala.sys.process.package$") || owner.equals("scala.sys.process.package"))
+                    && desc != null && desc.startsWith("()") && SCALA_PROCESS_JVM_STREAMS.contains(method))
+                return null;
+            //  (iii) `BasicIO`'s two constants (`BufferSize()` = 8192, `Newline()` = the line separator).
+            if (owner.equals("scala.sys.process.BasicIO$")
+                    && (method.equals("BufferSize") || method.equals("Newline"))) return null;
             return Effect.EXEC;
+        }
+        // Scala's environment reads — `sys.env` and `scala.util.Properties.envOr*` are Scala's spelling of
+        // `System.getenv`, and they were SILENT for the same reason R486's builders were: unclassified
+        // under a κ-COVERED prefix. VERIFIED with `javap -c`: `scala.sys.package$.env()` is
+        // `invokestatic java/lang/System.getenv:()Ljava/util/Map;` and `PropertiesTrait.envOrElse/envOrNone`
+        // are `invokestatic java/lang/System.getenv:(Ljava/lang/String;)`; `envOrSome` delegates to
+        // `envOrNone`, and `jdkHome` is `envOrElse("JDK_HOME", javaHome)`. MEASURED pre-fix against real
+        // scalac output: `sys.env.get(k)` reported no effects and no `invisible`, beside a
+        // `System.getenv(k)` control in the same file that reported `Env`. Deliberately NOT `props` /
+        // `scalaPropOrElse`: those are the JVM PROPERTY namespace, which this classifier does not treat as
+        // `Env` (see the Env rule). The `$`-suffixed forms are the trait's own static forwarders.
+        if ((owner.equals("scala.sys.package$") || owner.equals("scala.sys.package"))
+                && method.equals("env")) return Effect.ENV;
+        if (owner.equals("scala.util.Properties") || owner.equals("scala.util.Properties$")
+                || owner.equals("scala.util.PropertiesTrait")) {
+            String base = method.endsWith("$") ? method.substring(0, method.length() - 1) : method;
+            if (base.startsWith("envOr") || base.equals("jdkHome")) return Effect.ENV;
+            return null;
+        }
         // HTTP / cloud-storage clients — the CONCRETE-class ubiquitous ones (parallel to the already-modeled
         // RestTemplate/WebClient/Jedis; a pinned concrete receiver resolved to pure → silent-pure). Verb-gated
         // so request/URL BUILDERS stay pure (no fabrication).

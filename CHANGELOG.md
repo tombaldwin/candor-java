@@ -10,6 +10,43 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ### ⚠ Fixed
 
+- **R477 — R464 read the program out of the ARGUMENTS and never looked at the RECEIVER.**
+  `execCallCouldNameAProgram` answers "no" for a call with no arguments, on the ground that such a call
+  cannot name a command. That is true of `p.waitFor()` and false of `b.start()`: a `ProcessBuilder` **is**
+  the program. Measured on `fd4199c` (R464's own commit), one variable — the benign sibling literal:
+  `f(ProcessBuilder b) { new ProcessBuilder("git").start(); b.start(); }` reported `cmds:["git"]`,
+  `incomplete` **absent**, and `allow Exec git` **exited 0** over a caller-supplied spawn. Delete the
+  benign line and the same function exits 1; `deny Exec` exits 1 on both, so the gate could fail. This is
+  R464's class at the other operand position, exactly as R414 was R409's — and the rust twin (R460) had
+  already closed the receiver form, so the family shipped one engine right and one wrong until
+  conformance PART 91's `e2recv` arm said so on its first execution.
+  The locator is now read from the **descriptor**, the same move `fsLocatorDetermined` makes for `Fs`: an
+  `Exec` call's receiver could be carrying the program unless it is a handle to a process that is
+  **already running** (`EXEC_LAUNCHED_HANDLE_TYPES` — `Process`, `ProcessHandle`), whose program was named
+  wherever that handle was produced. A **denylist**, not a second owner list: a third-party spawner nobody
+  listed — testcontainers' `GenericContainer.start()`, scala's `AbstractBuilder.run(Z)`, whose only
+  argument is a boolean and which therefore reads as argument-less to R464's rule — discloses instead of
+  going silent. Census over 242 real jars: 882 `Exec` call sites, 380 argument-less instance calls,
+  splitting 367 already-running handle verbs (carved out) against 13 program-carrying receivers.
+  Determinedness comes from the receiver's own provenance — a new `ProvValue.allocChain`, "built by THIS
+  method", which survives a store/load **and a self-returning builder step**, so
+  `new ProcessBuilder("git").start()`, `pb = new ProcessBuilder("git"); pb.start();` and
+  `new ProcessBuilder("git").redirectErrorStream(true).start()` all still certify. The chained form is not
+  a theoretical arm: the first cut read `newType` alone and reddened R464's own over-charge control
+  (`ctlRedirectErrorStream`) on the first `./gradlew test`, before any corpus run.
+  Priced with `bin/corpus-ab.py` over 236 real jars / 715,774 rows per arm: **31 changed, 0 added, 0
+  removed**; the only field that moved on any row was `incomplete`, every one gained it, none lost one,
+  and `inferred` changed on 0 rows. REACH 135 markings across 29 entries (`CANDOR_MASK_DEBUG=1`, marker
+  `R477MASK`), so the branch demonstrably ran; the gap between 135 and 31 is markings landing on functions
+  R464's argument rule already marked, checked entry by entry rather than assumed. **0 of the 31 rows were
+  certifiable before and are not now** — every one had `cmds: None` and so already failed closed on the
+  empty-`cmds` branch, which is the honest statement of this fix's cost on that corpus: added disclosure,
+  no gate verdict moved.
+  Stated rather than left to be found: a builder BUILT here whose program-setting verb the classifier does
+  not charge `Exec` at all still slips past both branches — `new ProcessExecutor().command(userCmd)
+  .execute()` (zt-exec) and `new GenericContainer(img).withCommand(userCmd).start()` (testcontainers) each
+  exit 0 beside a benign literal, before **and** after this fix, and exit 1 with the sibling removed.
+
 - **R464 — the `Exec` masking guard was the last owner-list one, and every other `Exec` owner walked
   past it.** The guard fired on exactly two owners — `ProcessBuilder.<init>` and `Runtime.exec` — while
   the classifier charges `Exec` on `System.load`/`loadLibrary` and their `Runtime` twins, on

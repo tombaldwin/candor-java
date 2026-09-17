@@ -182,6 +182,24 @@ final class Interp {
         // A NARROWING field like newType/declType — it collapses to null at a disagreeing join, so a
         // branch-merged locator is never claimed determined (the fail-closed direction).
         final String pathLit;
+        // SOUNDNESS R477 — THE ALLOCATION IN THIS METHOD THAT THIS VALUE IS DERIVED FROM. Internal name of a
+        // type a NEW in this method allocated, of which this value is either that allocation itself or the
+        // result of a SELF-RETURNING call on it — the builder idiom, `new ProcessBuilder("git")
+        // .redirectErrorStream(true).start()`, where `redirectErrorStream` returns the same builder and the
+        // stock interpreter hands back an indeterminate call result. It answers the one question the Exec
+        // AS-EFF-008 surface asks of a spawn whose program arrives as the RECEIVER: "was this builder built
+        // HERE, so that this function's own `cmds`/`incomplete` surface already reflects whatever program it
+        // carries?" (see Candor#provAllocatedHere for why that question is the whole soundness argument).
+        //
+        // DISTINCT FROM newType, DELIBERATELY, AND THE DIFFERENCE IS THE REASON IT IS A SEPARATE FIELD.
+        // `newType` is an EXACT-TYPE guarantee used to NARROW CHA dispatch, so it must NOT survive a call: a
+        // method declared to return T may return a SUBTYPE of T, and narrowing to T would skip that
+        // subtype's override — a silent under-report. `allocChain` makes no type claim and is read ONLY to
+        // SUPPRESS a masking mark, so the cost of it being absent is a disclosure nobody needed (loud) and
+        // never a dispatch nobody saw. Propagated only when the call's RETURN type is exactly the
+        // receiver's own allocated type; collapses to null at a disagreeing join, like every narrowing
+        // field here.
+        final String allocChain;
         ProvValue(BasicValue base, String newType) { this(base, newType, false, declTypeOf(base), null, null); }
         ProvValue(BasicValue base, String newType, boolean fromIndy) { this(base, newType, fromIndy, declTypeOf(base), null, null); }
         ProvValue(BasicValue base, String newType, boolean fromIndy, String declType) { this(base, newType, fromIndy, declType, null, null); }
@@ -205,15 +223,22 @@ final class Interp {
         ProvValue(BasicValue base, String newType, boolean fromIndy, String declType, String lambdaTarget,
                   String fieldOrigin, Set<Effect> originEffects, String samForwarder, boolean nullConst,
                   String pathLit) {
+            this(base, newType, fromIndy, declType, lambdaTarget, fieldOrigin, originEffects, samForwarder,
+                    nullConst, pathLit, newType);
+        }
+        ProvValue(BasicValue base, String newType, boolean fromIndy, String declType, String lambdaTarget,
+                  String fieldOrigin, Set<Effect> originEffects, String samForwarder, boolean nullConst,
+                  String pathLit, String allocChain) {
             this.base = base; this.newType = newType; this.fromIndy = fromIndy; this.declType = declType;
             this.lambdaTarget = lambdaTarget; this.fieldOrigin = fieldOrigin;
             this.originEffects = (originEffects == null || originEffects.isEmpty()) ? null : originEffects;
             this.samForwarder = samForwarder; this.nullConst = nullConst; this.pathLit = pathLit;
+            this.allocChain = allocChain;
         }
         /** This value with a determined locator attached — used where the producing insn names one. */
         ProvValue withPathLit(String lit) {
             return lit == null ? this : new ProvValue(base, newType, fromIndy, declType, lambdaTarget,
-                    fieldOrigin, originEffects, samForwarder, nullConst, lit);
+                    fieldOrigin, originEffects, samForwarder, nullConst, lit, allocChain);
         }
         public int getSize() { return base.getSize(); }
         public boolean equals(Object o) {
@@ -223,15 +248,16 @@ final class Interp {
                     && Objects.equals(fieldOrigin, p.fieldOrigin)
                     && Objects.equals(originEffects, p.originEffects)
                     && Objects.equals(samForwarder, p.samForwarder) && nullConst == p.nullConst
-                    && Objects.equals(pathLit, p.pathLit);
+                    && Objects.equals(pathLit, p.pathLit) && Objects.equals(allocChain, p.allocChain);
         }
         public int hashCode() {
-            return ((((((((base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode())) * 31 + (fromIndy ? 1 : 0))
+            return (((((((((base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode())) * 31 + (fromIndy ? 1 : 0))
                     * 31 + (declType == null ? 0 : declType.hashCode())) * 31 + (lambdaTarget == null ? 0 : lambdaTarget.hashCode()))
                     * 31 + (fieldOrigin == null ? 0 : fieldOrigin.hashCode()))
                     * 31 + (originEffects == null ? 0 : originEffects.hashCode()))
                     * 31 + (samForwarder == null ? 0 : samForwarder.hashCode())) * 31 + (nullConst ? 1 : 0))
-                    * 31 + (pathLit == null ? 0 : pathLit.hashCode());
+                    * 31 + (pathLit == null ? 0 : pathLit.hashCode())) * 31
+                    + (allocChain == null ? 0 : allocChain.hashCode());
         }
     }
 
@@ -411,8 +437,37 @@ final class Interp {
             // SOUNDNESS R179 — and, for an indy, whether it merely FORWARDS to a bodiless SAM.
             String sf = indy && insn instanceof InvokeDynamicInsnNode idin2 ? samForwarderTarget(idin2) : null;
             // SOUNDNESS R409 — a path FACTORY hands the locator on to its result.
+            // SOUNDNESS R477 — a SELF-RETURNING call on a locally-allocated receiver hands the ALLOCATION on.
             return new ProvValue(b, null, indy, dt, lt, null, acquisitionEffects(insn), sf, false,
-                    callPathLit(insn, values));
+                    callPathLit(insn, values), callAllocChain(insn, values));
+        }
+
+        /** SOUNDNESS R477 — the allocation IN THIS METHOD a call's RESULT is still derived from, or null.
+         *
+         *  <p>The builder idiom and nothing else: an INSTANCE call whose receiver is already derived from a
+         *  {@code new T} here, and whose declared RETURN type is exactly that same {@code T}, yields the
+         *  same object in every self-returning builder there is — {@code ProcessBuilder}'s
+         *  {@code redirectErrorStream}/{@code redirect*}/{@code command}/{@code directory}/{@code inheritIO}
+         *  all {@code return this}. THE RETURN-TYPE TEST IS THE WHOLE CARVE-OUT: a factory that hands back a
+         *  DIFFERENT type ({@code pb.start()} → {@code Process}, {@code container.getParent()}) breaks the
+         *  chain and its result is indeterminate, which is the fail-closed answer.
+         *
+         *  <p>IT CANNOT LAUNDER A PROGRAM, and that is why a self-returning step needs no further test: any
+         *  call that PUTS a program into a builder carries that program as an ARGUMENT, and R464's rule
+         *  ({@code Candor#execCallCouldNameAProgram}) marks the surface incomplete at that call's own site —
+         *  {@code new ProcessBuilder("git").command(argv).start()} discloses at {@code command}, chain or no
+         *  chain. The residual is stated at {@code Candor#provAllocatedHere}: a program-setting verb the
+         *  classifier does not charge {@code Exec} at all.
+         *
+         *  <p>STATIC and {@code <init>} calls are excluded — a static has no receiver, and an {@code <init>}
+         *  returns void, so neither can be a builder step. */
+        private static String callAllocChain(AbstractInsnNode insn, List<? extends ProvValue> values) {
+            if (!(insn instanceof MethodInsnNode mi) || values.isEmpty()) return null;
+            if (mi.getOpcode() == Opcodes.INVOKESTATIC || "<init>".equals(mi.name)) return null;
+            String recv = values.get(0).allocChain;                       // the receiver is operand 0
+            if (recv == null) return null;
+            Type ret = Type.getReturnType(mi.desc);
+            return ret.getSort() == Type.OBJECT && ret.getInternalName().equals(recv) ? recv : null;
         }
 
         /** SOUNDNESS R409 — the determined locator a call's RESULT carries, or null (indeterminate).
@@ -502,12 +557,15 @@ final class Interp {
             // consumer would otherwise certify it against whichever arm won the merge. Collapsing to null is
             // the direction that can only ADD an incompleteness marker, never remove one.
             String mpl = Objects.equals(a.pathLit, b.pathLit) ? a.pathLit : null;
+            // R477: a join keeps the allocated-here proof only when BOTH arms bring the SAME allocation —
+            // `c ? new ProcessBuilder("git") : callerSupplied` is NOT built here, and must mark.
+            String mac = Objects.equals(a.allocChain, b.allocChain) ? a.allocChain : null;
             if (mb.equals(a.base) && Objects.equals(mt, a.newType) && mi == a.fromIndy
                     && Objects.equals(mdt, a.declType) && Objects.equals(mlt, a.lambdaTarget)
                     && Objects.equals(mfo, a.fieldOrigin) && Objects.equals(moe, a.originEffects)
                     && Objects.equals(msf, a.samForwarder) && mnc == a.nullConst
-                    && Objects.equals(mpl, a.pathLit)) return a;
-            return new ProvValue(mb, mt, mi, mdt, mlt, mfo, moe, msf, mnc, mpl);
+                    && Objects.equals(mpl, a.pathLit) && Objects.equals(mac, a.allocChain)) return a;
+            return new ProvValue(mb, mt, mi, mdt, mlt, mfo, moe, msf, mnc, mpl, mac);
         }
     }
 

@@ -5245,6 +5245,77 @@ public class Candor {
         // classifier tomorrow is disclosed without anyone remembering to add it here.
         if (effect == Effect.EXEC && !capturedCmdHere && execCallCouldNameAProgram(min))
             ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Exec");
+        // SOUNDNESS R477 — R464 READ THE PROGRAM OUT OF THE ARGUMENTS AND NEVER LOOKED AT THE RECEIVER.
+        //
+        // {@link #execCallCouldNameAProgram} answers `false` for a call with NO arguments, on the stated
+        // ground that such a call "cannot name a command". That is true of `p.waitFor()` and false of
+        // `b.start()`: a `ProcessBuilder` IS the program, so a spawn whose builder arrives from anywhere
+        // but this function launches something the gate never saw — and R464's own branch, keyed on the
+        // ARGUMENT list, sees nothing to mark.
+        //
+        // MEASURED on `fd4199c` (R464's own commit), one variable — the benign sibling literal:
+        //
+        //     public static void f(ProcessBuilder b) throws Exception {
+        //       new ProcessBuilder("git").start();   // benign, captures cmds:["git"]
+        //       b.start();                           // caller-chosen program
+        //     }
+        //     -> cmds:["git"], `incomplete` ABSENT, `allow Exec git` EXIT 0, "no violations"
+        //
+        // Delete the benign line and the SAME function exits 1; `deny Exec` exits 1 on both, so the gate
+        // could fail and the exit 0 is the sibling literal and nothing else. This is R464's class at the
+        // other operand position, exactly as R414 was R409's — and the rust twin (R460) had already closed
+        // the receiver form, so the family shipped one engine right and one wrong until PART 91 arm
+        // `e2recv` said so on its first execution.
+        //
+        // THE LOCATOR IS READ FROM THE DESCRIPTOR — the same move {@link #fsLocatorDetermined} makes for
+        // `Fs`, where a `Path`/`File` operand at the RECEIVER or at ANY argument is the file. The Exec
+        // counterpart of the handle carve-out is {@link #EXEC_LAUNCHED_HANDLE_TYPES}: a `Process` /
+        // `ProcessHandle` receiver denotes a process that is ALREADY RUNNING, so its program was named
+        // wherever that handle was produced and `p.waitFor()` launches nothing. It is a DENYLIST of
+        // already-launched handles rather than an allowlist of launcher types, so a third-party spawner
+        // nobody listed — testcontainers' `GenericContainer.start()`, scala's
+        // `ProcessBuilderImpl$AbstractBuilder.run(Z)` — DISCLOSES instead of going silent. Re-introducing
+        // an owner list here is precisely what R464 removed.
+        //
+        // AND IT MUST NOT OVER-MASK A DETERMINED BUILDER. `new ProcessBuilder("git").start()`,
+        // `ProcessBuilder pb = new ProcessBuilder("git"); pb.start();` and the CHAINED
+        // `new ProcessBuilder("git").redirectErrorStream(true).start()` must all still CERTIFY (PART 91's
+        // `e3determined`, and PART 88's `a4local` caught exactly this over-mask in two other engines as
+        // R416). Determinedness is answered by the receiver's own provenance — {@link
+        // Interp.ProvValue#allocChain}, "this object was built by THIS method", which survives a
+        // store/load and a self-returning builder step and collapses to indeterminate at a branch merge.
+        //
+        // THE CHAINED FORM IS NOT A THEORETICAL ARM: the first cut of this fix read `newType` (the NEW
+        // instruction alone) and R464's OWN over-charge control — `ctlRedirectErrorStream`, a fully
+        // determined `new ProcessBuilder("git","status").redirectErrorStream(true).start()` — went red on
+        // the first `./gradlew test`, before any corpus run. That control exists because R464 measured
+        // marking it as "unusable on the commonest subprocess idiom there is"; `allocChain` is what keeps
+        // it green.
+        //
+        // WHY AN ALLOCATED-HERE RECEIVER NEEDS NO FURTHER TEST, stated because it is the whole soundness
+        // argument and it is a COUPLING to the two branches above: a program has to be PUT INTO a builder
+        // by some call, and every such call carries the program as an ARGUMENT. If that call is the
+        // `ProcessBuilder` constructor, the branch at the top of this method already captured its head or
+        // marked the surface; if it is any other program-naming call (`pb.command(argv)`), R464's branch
+        // marks it. So for a receiver allocated here, this function's surface ALREADY reflects whatever
+        // program it carries, and a second mark would be the over-mask. The residual that statement names:
+        // a third-party type whose program-setting verb `Classifier.classify` does NOT charge `Exec` would
+        // slip through on a locally-allocated receiver — that is a classifier gap, not a guard gap, and it
+        // is stated here rather than left to be found (R464's own lesson: a closed row must name the
+        // spellings its pin does not express).
+        //
+        // A null frame (bodiless, or the analyzer failed) reads as NOT allocated here — the fail-closed
+        // direction, the same answer {@link #provPathVisible} gives.
+        if (effect == Effect.EXEC && !capturedCmdHere && execReceiverCouldCarryAProgram(min, owner)
+                && !provAllocatedHere(receiverProv(provFrameAt(s, min), min))) {
+            ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Exec");
+            // REACH, measurable rather than assumed: `CANDOR_MASK_DEBUG=1` prints one line per firing, which
+            // is what `bin/corpus-ab.py --mark R477MASK` counts. "0 rows changed with 0 reaches" and "0 rows
+            // changed with 800 reaches" are different claims and this register has conflated them before
+            // (R79/R85/R87/R92 each ran a full A/B over a corpus containing zero instances of the shape).
+            // Mirrors candor-rust's `R460MASK`, whose A/B this one is the java half of.
+            if (MASK_DEBUG) System.err.println("R477MASK\t" + id + "\t" + owner + "." + min.name + min.desc);
+        }
         // …only the overload whose path is a SINGLE leading String arg (descriptor
         // `(Ljava/lang/String;)` or `(Ljava/lang/String;[…` for Path.of's varargs). A
         // two-String ctor — `RandomAccessFile(String,String)`, `File(String,String)` — can
@@ -8299,6 +8370,73 @@ public class Candor {
         }
         return false;
     }
+
+    /** SOUNDNESS R477 — the receiver types that denote a process ALREADY RUNNING, so the receiver cannot
+     *  be the program this call launches.
+     *
+     *  <p><b>A DENYLIST, for the reason {@link #EXEC_NON_PROGRAM_TYPES} is one.</b> The sound
+     *  over-approximation at the receiver position is "this object could be the program"; every narrowing
+     *  must therefore be a denylist, so a spawner type nobody listed stays MARKED. The census below found
+     *  two third-party receiver spawners in 242 jars that an allowlist of `ProcessBuilder` would have gone
+     *  silent on, and the next one is not in any list I could write.
+     *
+     *  <p>THE PROPERTY, not a name: a {@code Process} / {@code ProcessHandle} is a handle to a process that
+     *  something ELSE already started, so the program was named at the call that PRODUCED the handle and
+     *  {@code p.waitFor()} / {@code p.destroy()} / {@code p.getInputStream()} launch nothing. That is the
+     *  exact counterpart of the {@code FileOutputStream} handle carve-out {@link #FS_LOCATOR_TYPES}
+     *  describes for {@code Fs}: the locator was fixed at construction, so a later use-verb names no file.
+     *
+     *  <p>CENSUS over 242 real jars, every call site {@code Classifier.classify} charges {@code Exec}: 882
+     *  sites, 380 of them zero-argument INSTANCE calls — and they split cleanly into the two populations
+     *  this set separates. 367 are these handle verbs ({@code Process.getInputStream} 96,
+     *  {@code waitFor} 87, {@code destroy} 70, {@code getErrorStream} 63, {@code getOutputStream} 44,
+     *  {@code destroyForcibly} 6, {@code onExit} 1, {@code ProcessHandle.parent} 1), carved out here; the
+     *  other 13 are program-carrying receivers that launch — {@code ProcessBuilder.start()} 68 across 30
+     *  jars, {@code ProcessBuilder.inheritIO()} 5, {@code GenericContainer.start()} 2 — plus scala's
+     *  {@code AbstractBuilder.run(Z)} (3), whose only argument is a boolean and which therefore reads as
+     *  argument-less to R464's rule. Not marking the 367 is the difference between this fix and one nobody
+     *  can adopt. */
+    static final Set<String> EXEC_LAUNCHED_HANDLE_TYPES =
+            Set.of("java.lang.Process", "java.lang.ProcessHandle");
+
+    /** SOUNDNESS R477 — {@code CANDOR_MASK_DEBUG=1} makes each masking-guard firing print one line, so a
+     *  corpus A/B can count REACH instead of inferring it from the diff. Read once; off by default and
+     *  invisible to every report. The java counterpart of candor-rust's {@code CANDOR_MASK_DEBUG}. */
+    static final boolean MASK_DEBUG = System.getenv("CANDOR_MASK_DEBUG") != null;
+
+    /** SOUNDNESS R477 — could this {@code Exec} call's RECEIVER be the program it launches?
+     *
+     *  <p>{@code false} = "declining to read a non-signal", exactly as {@link #execCallCouldNameAProgram}
+     *  does for an argument-less call: a STATIC call has no receiver at all, an {@code <init>}'s "receiver"
+     *  is the uninitialised object the NEW pushed rather than a locator (the same exclusion
+     *  {@link #fsLocatorDetermined} makes), and a handle to an already-running process names no program.
+     *  {@code true} = this receiver could be carrying the program, so the caller must prove the builder was
+     *  built HERE before letting a benign sibling literal certify the function. */
+    static boolean execReceiverCouldCarryAProgram(MethodInsnNode min, String dottedOwner) {
+        return min.getOpcode() != Opcodes.INVOKESTATIC
+                && !"<init>".equals(min.name)
+                && !EXEC_LAUNCHED_HANDLE_TYPES.contains(dottedOwner);
+    }
+
+    /** SOUNDNESS R477 — was this value provably built BY THIS METHOD? {@link Interp.ProvValue#allocChain}
+     *  is minted only by a NEW instruction, survives copies/loads/stores and self-returning builder steps
+     *  ({@code new ProcessBuilder("git").redirectErrorStream(true)}), and collapses to null at a merge of
+     *  two different allocations or of an allocation with anything else — so a parameter, a field read, a
+     *  foreign factory's return, an array element and a branch-merged value all answer {@code false}, which
+     *  is the fail-closed direction. A null value (no frame: bodiless, or the analyzer failed) answers
+     *  {@code false} too.
+     *
+     *  <p><b>WHY THIS IS THE WHOLE TEST.</b> A program has to be PUT INTO a builder by some call, and every
+     *  such call carries the program as an ARGUMENT: the {@code ProcessBuilder} constructor, which the
+     *  branch at the top of {@link #extractLiteralSurfaces} already captures-or-marks, or a later
+     *  program-naming verb ({@code pb.command(argv)}), which R464's {@link #execCallCouldNameAProgram} marks
+     *  at its own site. So for a receiver built here, this function's surface ALREADY reflects whatever
+     *  program it carries and a second mark would be the over-mask R416 is the name of. THE RESIDUAL THAT
+     *  STATEMENT NAMES, stated rather than left to be found: a third-party type whose program-SETTING verb
+     *  {@code Classifier.classify} does not charge {@code Exec} at all would slip past both branches on a
+     *  locally-built receiver. That is a classifier gap, not a guard gap, and it is the one spelling this
+     *  pin does not express. */
+    static boolean provAllocatedHere(ProvValue v) { return v != null && v.allocChain != null; }
 
 
     /** The provenance frame in effect just before {@code min} executes, or null when this method has none

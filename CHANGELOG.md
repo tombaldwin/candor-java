@@ -8,6 +8,60 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### ⚠ Fixed
+
+- **R464 — the `Exec` masking guard was the last owner-list one, and every other `Exec` owner walked
+  past it.** The guard fired on exactly two owners — `ProcessBuilder.<init>` and `Runtime.exec` — while
+  the classifier charges `Exec` on `System.load`/`loadLibrary` and their `Runtime` twins, on
+  `Desktop.browse`/`open`, and on a dozen third-party launchers. Measured, one variable: beside a benign
+  `new ProcessBuilder("git","status")`, `System.load(argv[0])` reported `cmds:["git"]` with `incomplete`
+  **absent** and `allow Exec git` **exited 0** over a caller-chosen native library. Six spellings exited
+  0; `deny Exec` exited 1 on each, so the gate could fail. R409 recorded "Net, Exec and Db are all
+  CAUGHT" — a verdict taken on the two owners inside the guard, which is an audit boundary drawn around
+  its own trigger.
+  The rule is now the **Net general rule stated for `Exec`**: a call that contributes no visible command
+  leaves the `cmds` surface incomplete, with `capturedCmdHere` the exact counterpart of
+  `capturedHostHere`. The carve-out is a **denylist** of operand types that provably cannot be a
+  program (primitives by SORT, plus `TimeUnit` and `ProcessBuilder$Redirect`), derived from a census of
+  all 693 `Exec` call sites in 324 real jars — so an `Exec` owner added to the classifier tomorrow is
+  disclosed without anyone remembering to add it here.
+  Priced over 324 jars / 1,181,397 rows: **1,995 changed, 0 added, 0 removed**, the only field that
+  moved on any row was `incomplete`, every one gained it, none lost one, and `inferred` changed on 0
+  rows. REACH 273 markings across 40 entries. The `java.io.File` operand position is the one ambiguity
+  (`Desktop.open(File)` launches its File; `pb.directory(File)` does not) and it is kept marked, the
+  fail-closed side: 3 rows in the whole corpus change for that reason alone, and all three —
+  `MongoCryptHelper.startProcess(ProcessBuilder)`, `ProcessCreation.$anonfun$apply$1`,
+  `ProcessExecutor.directory` — take the builder or its configuration as a **parameter**, so the command
+  genuinely is caller-supplied.
+
+- **R465 — R433's stated residual, and it was wider than the sentence that stated it.** R433 gated the
+  String-locator rule on the call shape (`INVOKESTATIC` or `<init>`) and named what that left open:
+  *"`Class.getResourceAsStream(String)` is an instance call that DOES establish"*. Measured: that exits
+  0 beside a benign literal — **and so does `ClassLoader.getResourceAsStream(argv[0])`**, the instance
+  spelling of the very class whose static sibling the same sentence cited as covered. The residual was
+  recorded with one name and had two.
+  The receiver-kind test is the authority the branch already asks: `PATH_CTOR_OWNERS` is this engine's
+  statement of which types are *constructed from a path*, which is exactly what makes a later instance
+  call a use-verb. A denylist, so a receiver type nobody listed discloses rather than going silent.
+  Census of all 1,138 instance `Fs` calls with a leading String over 324 jars: 452 are use-verbs on a
+  `PATH_CTOR_OWNERS` receiver and are carved out (`FileWriter.write` 449); the other 686 fixed no path
+  and now disclose. Priced with R464 in one A/B: **41,509 changed, 0 added, 0 removed**, all gaining
+  `incomplete` (39,514 `Fs`, 1,995 `Exec`), `inferred` unchanged. Only **677** rows were certifiable
+  before and are not now — 21 under `allow Fs`, 656 under `allow Exec`, the largest being JNA, whose
+  benign `/sbin/ldconfig -p` literal was certifying `Native.load` of a caller-chosen library.
+
+- **R435 — a bolded safety assertion in shipped code was false, and so was a guard it cited.**
+  `Candor.java` read *"THIS ADDS NO CAPTURE, ONLY DISCLOSURE"* and *"`pathArgIsSingleString` remains the
+  sole authority over what enters `paths`"* twelve lines above a `pathsDirect` write on a descriptor
+  `pathArgIsSingleString` rejects. R421's commit message carried the qualifier (*"in the ambiguous
+  case"*); the in-code comment dropped it, and the in-code comment is what the next reader believes —
+  **R434 is the exact consequence.** The sentence now carries the qualifier and records why. Separately,
+  R433's comment cited *"the split-construct/use shape `isEstablishingMember` protects everywhere else
+  in this engine"*: there is no `isEstablishingMember` in this engine — `grep` finds the name in that
+  sentence and nowhere else. A citation of a guard that does not exist, in the same commit the register
+  already records for asserting a property the code did not have.
+
+
 ## [0.38.3] — 2026-09-16
 
 - The `jbang-catalog.json` pin moved to `v0.38.3`, verified by RESOLVING it (HTTP 200).

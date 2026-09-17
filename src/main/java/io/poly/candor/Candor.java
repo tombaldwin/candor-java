@@ -5185,6 +5185,7 @@ public class Candor {
         // AS-EFF-008 literal surfaces (SPEC §2 `cmds`/`paths`): the subprocess program and the
         // file path, read from the FIRST string-literal arg of the call that carries it — the
         // ProcessBuilder/Runtime.exec command, the Path.of / File / file-stream ctor path.
+        boolean capturedCmdHere = false;
         if ((owner.equals("java.lang.ProcessBuilder") && min.name.equals("<init>"))
                 || (owner.equals("java.lang.Runtime") && min.name.equals("exec"))) {
             // Only the program HEAD (argv[0]) names the command — a later argument is DATA
@@ -5199,6 +5200,7 @@ public class Candor {
             if (head != null) {
                 ctx.cmdsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(head);
                 dir.addAll(EffectSet.ofNames(commandHeadEffects(head)));
+                capturedCmdHere = true;
             } else {
                 // a program-NAMING Exec call with a RUNTIME head (no literal) — the command is
                 // invisible to the gate, so a benign sibling literal must not mask it (sweep [0],
@@ -5206,6 +5208,43 @@ public class Candor {
                 ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Exec");
             }
         }
+        // SOUNDNESS R464 — THE Exec MASKING GUARD WAS THE LAST OWNER-LIST ONE, AND EVERY OTHER Exec
+        // OWNER WALKED PAST IT.
+        //
+        // The branch above is the whole of this engine's Exec completeness rule and it fires on two
+        // owners: `ProcessBuilder.<init>` and `Runtime.exec`. `Classifier.classify` charges `Exec`
+        // on many more — `System.load`/`loadLibrary` and their `Runtime` twins (`Classifier.java:471`,
+        // arbitrary native code plus its JNI_OnLoad), `Desktop.browse`/`open`/`edit`/`print`/`mail`
+        // (`:393`, the OS default handler for a file or URI), and the third-party launchers
+        // (commons-exec, im4java, ffmpeg, groovy's ProcessGroovyMethods, scala's sys.process, JNA's
+        // `Native.load`, the attach API). None of them reached a guard, so none of them disclosed
+        // anything and a benign sibling literal certified all of them.
+        //
+        // MEASURED on this engine, one variable — the presence of the benign sibling:
+        //
+        //     new ProcessBuilder("git","status").start();   // benign, captures cmds:["git"]
+        //     System.load(argv[0]);                          // caller-chosen NATIVE LIBRARY
+        //     -> cmds:["git"], `incomplete` ABSENT, `allow Exec git` EXIT 0, "no violations"
+        //
+        // Six spellings measured exit 0: `System.load`, `System.loadLibrary`, `Runtime.load`,
+        // `Runtime.loadLibrary`, `Desktop.open(File)`, `Desktop.browse(URI)`. Calibration: `deny Exec`
+        // exits 1 on each of the same fixtures, so the gate could fail. Controls: `Runtime.exec(argv[0])`
+        // and `new ProcessBuilder(argv[0])` — the two owners the old branch names — exit 1.
+        //
+        // THIS IS R409 ONE EFFECT OVER. That row measured Fs as the one allowlist-shaped effect while
+        // Net, Exec and Db used the general rule — but "Exec is caught" was measured only on the two
+        // owners inside this branch, which is an audit boundary drawn around its own trigger. With Fs
+        // now derived (R433) Exec was the last one keyed on a list, and a list that must stay complete
+        // to be sound is the vein this register keeps paying for.
+        //
+        // THE RULE IS THE Net GENERAL RULE, STATED FOR Exec: an `Exec` call that contributes NO VISIBLE
+        // COMMAND leaves this function's `cmds` surface incomplete. `capturedCmdHere` is the exact
+        // counterpart of `capturedHostHere`, and the carve-out is the same one the Net rule already
+        // makes — {@link #execCallCouldNameAProgram} declines to read a non-signal rather than
+        // narrowing past a reach. Because the default is *incomplete*, an Exec owner added to the
+        // classifier tomorrow is disclosed without anyone remembering to add it here.
+        if (effect == Effect.EXEC && !capturedCmdHere && execCallCouldNameAProgram(min))
+            ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Exec");
         // …only the overload whose path is a SINGLE leading String arg (descriptor
         // `(Ljava/lang/String;)` or `(Ljava/lang/String;[…` for Path.of's varargs). A
         // two-String ctor — `RandomAccessFile(String,String)`, `File(String,String)` — can
@@ -5237,13 +5276,26 @@ public class Candor {
         // javadoc, as "no worse" — and a limitation written as a comment reads as CONSIDERED, which is
         // what stopped it being measured.
         //
-        // **THIS ADDS NO CAPTURE, ONLY DISCLOSURE, and that asymmetry is the whole design.** Which literal
-        // IS the path here is genuinely ambiguous — `RandomAccessFile(String,String)`'s second String is a
-        // MODE, `File(String,String)`'s is a CHILD — and guessing would fabricate a destination, so
-        // `pathArgIsSingleString` remains the sole authority over what enters `paths`. Determinedness does
-        // not need that guess: if EVERY String operand is a compile-time constant the destination is
-        // visible in the source whatever it is, and if any is not, some part of it is runtime-chosen and a
-        // sibling literal must not certify it.
+        // **IN THE AMBIGUOUS CASE — TWO OR MORE String OPERANDS — THIS ADDS NO CAPTURE, ONLY DISCLOSURE,
+        // and that asymmetry is the whole design.** Which literal IS the path there is genuinely ambiguous
+        // — `RandomAccessFile(String,String)`'s second String is a MODE, `File(String,String)`'s is a
+        // CHILD — and guessing would fabricate a destination. A SINGLE String operand is not ambiguous and
+        // IS captured, twelve lines below; see the ONE/TWO-OR-MORE split stated next.
+        //
+        // SOUNDNESS R435 — THE PRECEDING SENTENCE USED TO OMIT THAT QUALIFIER AND WAS THEREFORE FALSE.
+        // It read *"THIS ADDS NO CAPTURE, ONLY DISCLOSURE"* and *"`pathArgIsSingleString` remains the sole
+        // authority over what enters `paths`"*, both contradicted by the `pathsDirect.add(lit)` below,
+        // which writes on a descriptor `pathArgIsSingleString` REJECTS. R421's COMMIT MESSAGE carried the
+        // qualifier (*"adds no capture in the ambiguous case"*) and the in-code comment dropped it — and
+        // the in-code comment is what the next reader believes. **R434 is the exact consequence of that
+        // sentence being wrong:** the unqualified claim is what made the new capture read as safe, and the
+        // new capture is what turned a fail-closed verdict into exit 0 beside an unguarded sibling.
+        // That is `feedback-documented-limitation-is-not-measured`'s louder variant — a comment asserting
+        // SAFETY, which nobody verifies because it is the sentence that makes their own diff correct.
+        //
+        // Determinedness does not need the ambiguous guess: if EVERY String operand is a compile-time
+        // constant the destination is visible in the source whatever it is, and if any is not, some part
+        // of it is runtime-chosen and a sibling literal must not certify it.
         //
         // THE SPLIT IS ON HOW MANY STRINGS THE CTOR TAKES, and the first draft of this rule got it wrong
         // in a way worth recording. That draft said "if every String operand is a compile-time constant,
@@ -5291,16 +5343,48 @@ public class Candor {
         // The discriminator is the CALL SHAPE, not a list of handle owners: a constructor
         // (INVOKESPECIAL `<init>`) and a STATIC call have no pre-existing receiver, so nothing could
         // have fixed a locator earlier and the leading String is this call's own. An INSTANCE call may
-        // be a use-verb on an already-open handle, which is the legitimate split-construct/use shape
-        // `isEstablishingMember` protects everywhere else in this engine.
+        // be a use-verb on an already-open handle — the split construct-then-use idiom, which R465 below
+        // answers by asking whether the RECEIVER's type is one this engine constructs from a path.
         //
-        // RESIDUAL, stated rather than left to be found: `Class.getResourceAsStream(String)` is an
-        // INSTANCE call that DOES establish, so it stays uncovered — `ClassLoader.getSystemResourceAsStream`
-        // is static and is covered. Closing the instance spelling needs a receiver-kind test this engine
-        // does not yet have, and R433 stays open for it rather than being marked closed.
+        // (This paragraph used to end *"…which is the legitimate split-construct/use shape
+        // `isEstablishingMember` protects everywhere else in this engine."* There is no
+        // `isEstablishingMember` in this engine — `grep` finds the name in that sentence and nowhere
+        // else. It cited a guard that does not exist, in the same commit R435 records for asserting a
+        // safety property the code did not have.)
+        //
+        // SOUNDNESS R465 — THE RESIDUAL R433 STATED, AND IT WAS WIDER THAN THE SENTENCE THAT STATED IT.
+        //
+        // R433's own comment left this open: *"`Class.getResourceAsStream(String)` is an INSTANCE call
+        // that DOES establish, so it stays uncovered … closing the instance spelling needs a receiver-kind
+        // test this engine does not yet have"*. MEASURED at that boundary, beside
+        // `Files.write(Paths.get("/tmp/benign"), …)` under `allow Fs /tmp/benign`: `Class
+        // .getResourceAsStream(argv[0])` EXIT 0, and so is `ClassLoader.getResourceAsStream(argv[0])` —
+        // the INSTANCE spelling of the very class whose STATIC sibling
+        // (`ClassLoader.getSystemResourceAsStream`) that sentence cited as covered. The residual was
+        // recorded with one name and had two.
+        //
+        // THE RECEIVER-KIND TEST IS NOT NEW MACHINERY; IT IS THE AUTHORITY THIS BRANCH ALREADY ASKS.
+        // `PATH_CTOR_OWNERS` is the engine's statement of which types are CONSTRUCTED FROM A PATH, which
+        // is exactly the property that makes a later instance call a use-verb: the locator was fixed at
+        // the ctor, so `w.write(data)` on a `FileWriter` carries DATA. Every other receiver had no path
+        // to fix. That is the same handle carve-out {@link #FS_LOCATOR_TYPES}'s javadoc describes for the
+        // descriptor case, asked of the one list that already answers it.
+        //
+        // AND IT IS A DENYLIST, WHICH IS THE ONLY SOUND DIRECTION HERE. The default is "this call's
+        // leading String is its own locator"; a receiver type missing from `PATH_CTOR_OWNERS` therefore
+        // DISCLOSES (noisy, fails closed) instead of going silent. An allowlist of establishing owners is
+        // what produced R433 in the first place.
+        //
+        // CENSUS over 324 real jars — every instance Fs call with a leading String, 1,138 sites — says
+        // the split is clean: 452 are handle use-verbs on a `PATH_CTOR_OWNERS` receiver
+        // (`FileWriter.write` 449, `RandomAccessFile.writeUTF/writeChars/writeBytes` 3) and are carved
+        // out; 686 are on receivers that fixed no path — `ClassLoader.getResourceAsStream/getResource/
+        // getResources` (385), `Class.getResourceAsStream/getResource` (181), `Module`, the freemarker
+        // and pebble `getTemplate`s, `scala.io.Source.fromFile` — and now disclose.
         else if (effect == Effect.FS && min.desc.startsWith("(Ljava/lang/String;")
                 && (min.getOpcode() == Opcodes.INVOKESTATIC
-                    || (min.getOpcode() == Opcodes.INVOKESPECIAL && "<init>".equals(min.name)))) {
+                    || "<init>".equals(min.name)
+                    || !PATH_CTOR_OWNERS.contains(owner))) {
             Type[] ctorArgs = Type.getArgumentTypes(min.desc);
             int strings = 0;
             for (Type t : ctorArgs) if (t.getDescriptor().equals("Ljava/lang/String;")) strings++;
@@ -8167,6 +8251,54 @@ public class Candor {
      *  (`new RandomAccessFile(runtimePath, "rw")`, `getResourceAsStream(runtimeName)`) exactly where it was
      *  before this rule — no worse, and named here so the boundary is stated rather than implied. */
     static final Set<String> FS_LOCATOR_TYPES = Set.of("Ljava/io/File;", "Ljava/nio/file/Path;");
+
+    /** SOUNDNESS R464 — the operand types that provably CANNOT denote a program, so an {@code Exec}
+     *  call built entirely from them is evidence in NEITHER direction.
+     *
+     *  <p><b>A DENYLIST, and the direction is the whole point.</b> The sound over-approximation is
+     *  "this operand could be the program"; every narrowing of it must therefore be a denylist, so an
+     *  operand type nobody thought of stays MARKED rather than silent. An allowlist of program-shaped
+     *  types is what left {@code Desktop.open(File)} and {@code DefaultExecutor.execute(CommandLine)}
+     *  out — the first draft of this rule used one, and the census below is why it was thrown away.
+     *
+     *  <p>CENSUS over 325 real jars, every call site {@code Classifier.classify} charged {@code Exec}:
+     *  693 sites, 357 of them zero-argument (the {@code getInputStream}/{@code waitFor}/{@code start}
+     *  handle verbs, already excluded by the argument-count test the Net rule makes) and 336 carrying
+     *  operands. The entries here are the ones the census showed carry no program and nothing else:
+     *  {@code ProcessBuilder.redirectErrorStream(boolean)} (12 sites), {@code Process.waitFor(long,
+     *  TimeUnit)} (19), {@code ProcessHandle.of(long)} (1) and the three {@code redirect*(Redirect)}
+     *  overloads (9). Every other arg-carrying spelling in the census either captures a command head
+     *  already or genuinely cannot be certified.
+     *
+     *  <p>{@code Ljava/io/File;} is deliberately ABSENT even though {@code ProcessBuilder.directory(File)}
+     *  is a cwd rather than a program: {@code Desktop.open(File)} launches the OS handler FOR that file,
+     *  so File is a program locator at one owner and not at another and the descriptor cannot tell them
+     *  apart. Keeping it marked is the fail-closed side of that ambiguity, and the A/B in this commit
+     *  message prices it. */
+    static final Set<String> EXEC_NON_PROGRAM_TYPES = Set.of(
+            "Ljava/util/concurrent/TimeUnit;", "Ljava/lang/ProcessBuilder$Redirect;");
+
+    /** SOUNDNESS R464 — could this {@code Exec} call carry the program it launches?
+     *
+     *  <p>{@code false} means "declining to read a non-signal", exactly as the Net general rule does for
+     *  a zero-argument call: {@code p.waitFor()} and {@code pb.inheritIO()} cannot name a command, so
+     *  their silence is evidence of neither completeness nor incompleteness. {@code true} means this call
+     *  could have named a program and — at the one call site that consults this — did not, so a benign
+     *  sibling literal must not certify the function.
+     *
+     *  <p>A primitive operand is carved out by its SORT rather than by being listed: no {@code boolean},
+     *  {@code long} or {@code int} denotes a program on any API. An ARRAY is not carved out —
+     *  {@code Runtime.exec(String[])} is the argv form. */
+    static boolean execCallCouldNameAProgram(MethodInsnNode min) {
+        Type[] args = Type.getArgumentTypes(min.desc);
+        if (args.length == 0) return false;
+        for (Type t : args) {
+            if (t.getSort() != Type.OBJECT && t.getSort() != Type.ARRAY) continue;  // a primitive is not a program
+            if (EXEC_NON_PROGRAM_TYPES.contains(t.getDescriptor())) continue;
+            return true;
+        }
+        return false;
+    }
 
 
     /** The provenance frame in effect just before {@code min} executes, or null when this method has none

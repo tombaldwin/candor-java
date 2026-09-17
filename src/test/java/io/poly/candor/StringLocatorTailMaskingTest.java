@@ -117,6 +117,56 @@ class StringLocatorTailMaskingTest {
                 "a use-verb on an open handle takes DATA, not a locator — marking it is an over-mask");
     }
 
+    /** SOUNDNESS R465 — R433's STATED RESIDUAL, AND IT WAS WIDER THAN THE SENTENCE THAT STATED IT.
+     *
+     *  <p>R433's fix gated on the CALL SHAPE — {@code INVOKESTATIC} or {@code <init>} — and its own
+     *  comment named what that left open: <i>"`Class.getResourceAsStream(String)` is an INSTANCE call
+     *  that DOES establish, so it stays uncovered — `ClassLoader.getSystemResourceAsStream` is static
+     *  and is covered."</i> MEASURED at that boundary beside {@code Files.write(Paths.get("/tmp/benign"),
+     *  …)} under {@code allow Fs /tmp/benign}: {@code Class.getResourceAsStream(argv[0])} exited 0 —
+     *  and so did {@code ClassLoader.getResourceAsStream(argv[0])}, the INSTANCE spelling of the very
+     *  class whose static sibling that sentence cited as covered. <b>The residual was recorded with one
+     *  name and had two</b>, which is the audit-boundary rule arriving as a stale comment.
+     *
+     *  <p>The receiver-kind test is the authority this branch already asks: {@code PATH_CTOR_OWNERS} is
+     *  the engine's own statement of which types are CONSTRUCTED FROM A PATH, and that is exactly the
+     *  property that makes a later instance call a use-verb. A DENYLIST, so a receiver type nobody
+     *  listed discloses rather than going silent.
+     *
+     *  <p>CENSUS over 324 jars, all 1,138 instance {@code Fs} calls with a leading String: 452 are
+     *  use-verbs on a {@code PATH_CTOR_OWNERS} receiver and are carved out ({@code FileWriter.write}
+     *  449, {@code RandomAccessFile.writeUTF/writeChars/writeBytes} 3); the other 686 fixed no path and
+     *  now disclose. */
+    @Test
+    void anInstanceFsCallOnAReceiverThatFixedNoPathAlsoDiscloses() throws Exception {
+        Path cls = compile(Map.of("app/Inst.java", String.join("\n",
+            "package app;",
+            "import java.io.*;",
+            "public class Inst {",
+            "  void classRes(String p) { Inst.class.getResourceAsStream(p); }",
+            "  void classUrl(String p) { Inst.class.getResource(p); }",
+            "  void loaderRes(String p) { Inst.class.getClassLoader().getResourceAsStream(p); }",
+            "  void loaderAll(String p) throws Exception { Inst.class.getClassLoader().getResources(p); }",
+            // CONTROL: the receiver IS a handle this engine constructs from a path, so the String is
+            // DATA and the locator was fixed at the ctor. Marking it is R393's content-vs-path
+            // confusion from the other side, and it is 449 of the 1,138 sites in the census.
+            "  void handle(String data) throws Exception {",
+            "    FileWriter w = new FileWriter(\"/tmp/benign/out.txt\"); w.write(data); w.close(); }",
+            "}")));
+        Candor.runScan(cls);
+        Map<String, TreeSet<String>> inc = Literals.literalFixpoint(AnalysisState.ctx().surfaceIncomplete);
+        for (String m : new String[] {"classRes", "classUrl", "loaderRes", "loaderAll"}) {
+            assertTrue(inc.getOrDefault("app.Inst." + m, new TreeSet<>()).contains("Fs"),
+                    m + ": the receiver fixed no path, so this call's leading String is its own locator "
+                    + "— and an uncaptured locator beside a benign sibling is the masking shape");
+        }
+        assertFalse(inc.getOrDefault("app.Inst.handle", new TreeSet<>()).contains("Fs"),
+                "a use-verb on a receiver CONSTRUCTED from a path takes DATA — marking it is an over-mask");
+        assertTrue(AnalysisState.ctx().pathsDirect
+                        .getOrDefault("app.Inst.handle", new TreeSet<>()).contains("/tmp/benign/out.txt"),
+                "and the ctor's path must still be captured, else the control proves nothing about certification");
+    }
+
     @Test
     void theStringLocatorTailFailsClosedInEverySpelling() throws Exception {
         Candor.runScan(fixture());

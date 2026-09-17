@@ -298,7 +298,11 @@ class ClassifierTableTest {
             fx("org.mapdb.DBMaker", "memoryDB", null),                   // in-memory twin
             fx("org.apache.lucene.store.FSDirectory", "open", Effect.FS),
             fx("org.testcontainers.containers.GenericContainer", "start", Effect.EXEC),
-            fx("org.testcontainers.containers.GenericContainer", "withExposedPorts", null), // builder twin
+            // R480: the "builder twin" row here used to expect `null`. On a SUBPROCESS INVOCATION CARRIER
+            // the builder is the capability — `withCommand(argv)` names the program the container runs —
+            // so the whole type is Exec and the pure twin is the no-arg READ-BACK, not the setter.
+            fx("org.testcontainers.containers.GenericContainer", "withExposedPorts", Effect.EXEC),
+            fx("org.testcontainers.containers.GenericContainer", "getExposedPorts", "()Ljava/util/List;", null),
             fx("org.openqa.selenium.WebDriver", "get", Effect.NET),
             fx("org.apache.camel.ProducerTemplate", "sendBody", Effect.NET),
             fx("org.zeromq.ZMQ$Socket", "send", Effect.NET),

@@ -739,7 +739,14 @@ class HelpersTest {
         assertEquals(Effect.NET, Classifier.classify("org.apache.hc.client5.http.impl.async.CloseableHttpAsyncClient", "execute", "(Lorg/apache/hc/core5/http/nio/AsyncRequestProducer;Lorg/apache/hc/core5/http/nio/AsyncResponseConsumer;Lorg/apache/hc/core5/concurrent/FutureCallback;)Ljava/util/concurrent/Future;"));
         assertEquals(Effect.ENV, Classifier.classify("org.apache.commons.lang3.SystemUtils", "getEnvironmentVariable", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"));
         // fabrication-avoidance: config setters / builders of these owners stay pure
-        assertNull(Classifier.classify("org.zeroturnaround.exec.ProcessExecutor", "directory", "(Ljava/io/File;)Lorg/zeroturnaround/exec/ProcessExecutor;"));
+        //   …EXCEPT on a SUBPROCESS INVOCATION CARRIER. This row used to assert that zt-exec's
+        //   `ProcessExecutor.directory(File)` stays pure ("verb-gated"), and that assertion WAS the R480
+        //   defect: it is the same claim the `java.lang.ProcessBuilder` doctrine records as
+        //   MEASURED-FALSE. A ProcessExecutor configured in one method and launched in another passed
+        //   `deny Exec` at exit 0. Whole type now, with a named pure denylist — the READ-BACK twin on the
+        //   next line is the over-charge control that keeps this from being a blanket widening.
+        assertEquals(Effect.EXEC, Classifier.classify("org.zeroturnaround.exec.ProcessExecutor", "directory", "(Ljava/io/File;)Lorg/zeroturnaround/exec/ProcessExecutor;"));
+        assertNull(Classifier.classify("org.zeroturnaround.exec.ProcessExecutor", "getDirectory", "()Ljava/io/File;"));
         assertNull(Classifier.classify("org.apache.commons.io.FileUtils", "getTempDirectory", "()Ljava/io/File;")); // returns a path, no I/O
     }
 

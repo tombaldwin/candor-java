@@ -10,6 +10,50 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ### ⚠ Fixed
 
+- **R480 — the whole-type-plus-denylist fix for `java.lang.ProcessBuilder` was never generalised to the
+  THIRD-PARTY subprocess builders**, which stayed on the verb allowlist that rule's own comment records as
+  MEASURED to under-report. Four payload-carrying libraries, of which two were absent from the classifier
+  entirely: zt-exec `ProcessExecutor` (only `execute`/`executeNoTimeout`/`start` were charged), Apache
+  commons-exec (only `DefaultExecutor.execute`; **`CommandLine`, which carries the executable and the
+  argv, was not modelled at all**), testcontainers `GenericContainer` (only `start`/`execInContainer`) and
+  im4java (only `*Cmd.run`; **`IMOperation`/`ImageCommand` not modelled at all**). The program-setting
+  verbs `.commandSplit`, `.withCommand`, `.addArgument` and `.addImage` were named NOWHERE in
+  `Classifier.java`; `.command` and `.parse` were named, but for unrelated owners
+  (`ProcessHandle$Info.command` is an `Env` rule), so an owner-blind grep reported them covered.
+  MEASURED pre-fix at `5440749` against stubs whose signatures were read off the real jars with `javap`
+  (zt-exec 1.12, commons-exec 1.4.0, testcontainers 1.19.8, im4java 1.4.0): thirteen arm-only methods,
+  every one `inferred: []`, and `deny Exec`, `deny Unknown`, `deny Exec Unknown` and `allow Exec git` all
+  exiting **0** — including `arm(String[] argv) { return new ProcessExecutor().command(argv); }`, which
+  assembles a fully-armed invocation from caller-supplied argv and hands it back. The java-specific shape
+  is the **empty constructor**: `new ProcessExecutor()` names no program, so charging construction (what
+  candor-rust does for `std::process::Command::new`) cannot catch it and only the config verb can.
+  `Classifier.java`'s own line — *"The setX config setters stay pure (verb-gated)"* — is what kept this
+  alive: it read as CONSIDERED, so nobody measured it against the doctrine 900 lines above that
+  contradicts it. That sentence is now deleted and replaced by the measurement.
+  Each of the four is now WHOLE-TYPE (three of them whole-PACKAGE, which also closes the library-subclass
+  spelling: a call on `PostgreSQLContainer` or `DaemonExecutor` emits THAT owner, and the supertype walk
+  that rescues a project subclass cannot see an unscanned library one) with the proven-pure surface carved
+  out as a named DENYLIST — never the reverse, because a wrong carve-out over-charges loudly and a
+  forgotten allowlist entry under-reports silently. Precision gains found by the same sweep:
+  `commons-exec`'s `EnvironmentUtils.getProcEnvironment()` (the library's own `System.getenv`) is `Env`,
+  and reading a child's captured output (`Container.ExecResult.getStdout`, `OutputFrame.getUtf8String`,
+  im4java's output consumers) is `Exec` — the same capability `Process.getInputStream()` is charged for.
+  **A/B, 325 real third-party jars + zt-exec 1.12, `bin/corpus-ab.py`, `PRE`=5440749:**
+  `ADDED 191  REMOVED 0  CHANGED 614` on the wide key (`ADDED 191  REMOVED 0  CHANGED 256` on `inferred`
+  alone), REACH **1500 hits across 4 entries** — and every added and changed row falls inside exactly
+  those four jars; the other 321 are byte-identical. REMOVED is 0, and the full audit of the 614 changed
+  rows finds no effect-bearing field losing anything but `Unknown`: 26 rows go `Unknown` → `Exec`
+  (precision, and every one of them carries `Exec` afterwards), and 39 `undeclared` + 1 `overdeclared`
+  rows move `Exec` into `declared` because the class's field types can now supply it.
+  The **consumer-side** over-charge control is separate and is what shaped the rule: a 17-method consumer
+  compiled against the REAL testcontainers/commons-exec/im4java jars charges 6 new methods, every one a
+  genuine capability (arming a `CommandLine`, arming a container, a destroy-capable `ExecuteWatchdog`,
+  two child-output reads, arming an `IMOperation`) and leaves 11 pure. Two over-charges that only that
+  control could see were removed before shipping: `container.getMappedPort(6379)` — descriptor-gating the
+  carve-outs the way `ProcessBuilder` does would have charged the pure port read in essentially every
+  testcontainers test — and `InternetProtocol.TCP.toDockerNotation()`, one of three closed pure enums in
+  that package (`BindMode`, `InternetProtocol`, `SelinuxContext`) now carved out by name.
+
 - **R477 — R464 read the program out of the ARGUMENTS and never looked at the RECEIVER.**
   `execCallCouldNameAProgram` answers "no" for a call with no arguments, on the ground that such a call
   cannot name a command. That is true of `p.waitFor()` and false of `b.start()`: a `ProcessBuilder` **is**

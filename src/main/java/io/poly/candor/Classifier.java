@@ -32,6 +32,65 @@ final class Classifier {
             "command", "directory", "redirectInput", "redirectOutput", "redirectError",
             "redirectErrorStream");
 
+    /** zt-exec `ProcessExecutor`'s pure read-backs — the no-arg accessors that return a field verbatim.
+     *  VERIFIED with `javap -c` against zt-exec 1.12: `getEnvironment()` is `aload_0; getfield environment;
+     *  areturn`, i.e. the executor's OWN overlay map, NOT `System.getenv` — so unlike
+     *  `ProcessBuilder.environment()` it is not `Env` either, it is simply pure. Same two-part test as
+     *  PB_READ_BACKS: the name AND a `()` descriptor, because `streams()`/`environment` are overloaded with
+     *  configuring setters, and because `start()`/`execute()`/`executeNoTimeout()`/`destroyOnExit()`/
+     *  `exitValueAny()` take no arguments either — a blanket "no-arg ⇒ pure" would be a cardinal sin. */
+    private static final Set<String> ZT_EXEC_READ_BACKS = Set.of(
+            "getCommand", "getDirectory", "getEnvironment", "streams", "pumps");
+
+    /** commons-exec's pure read-backs across `CommandLine` and the `Executor` implementations — each
+     *  returns already-stored configuration (the parsed executable/argv, the watchdog, the working dir).
+     *  `toStrings()`/`isFile()` are `CommandLine`'s value views. Deliberately EXCLUDES every launcher and
+     *  every mutator: `execute`, `addArgument(s)`, `parse`, `setWorkingDirectory`, `setExitValue(s)`. */
+    private static final Set<String> COMMONS_EXEC_READ_BACKS = Set.of(
+            "getArguments", "getExecutable", "getSubstitutionMap", "isFile", "toStrings",
+            "getWorkingDirectory", "getStreamHandler", "getProcessDestroyer", "getWatchdog",
+            "getThreadFactory", "getExecutorThread");
+
+    /** im4java's pure read-backs — the no-arg accessors over the assembled argv / the starter's config.
+     *  Deliberately EXCLUDES `getErrorText()` and the `process.*Consumer.getOutput()` family: those hand
+     *  back the CHILD PROCESS's captured output, which is the same capability `Process.getInputStream()`
+     *  is charged for (a rule ~600 lines above), not a read of configuration. */
+    private static final Set<String> IM4JAVA_READ_BACKS = Set.of(
+            "getCmdArgs", "getCommand", "getDynamicOperations", "getSearchPath", "getGlobalSearchPath",
+            "isAsyncMode", "getPID");
+
+    /** Testcontainers' pure read-backs — the stored-configuration accessors declared on `GenericContainer`
+     *  and `ContainerState` (enumerated with `javap` against testcontainers 1.19.8; every entry is a no-arg
+     *  `get*`/`is*` returning a field or a value derived from one). Deliberately EXCLUDES the members that
+     *  talk to the Docker daemon or to the child: `getLogs()` (docker logs — the container's output),
+     *  `getCurrentContainerInfo()` / `isRunning()` / `isHealthy()` (a live `inspectContainerCmd` round
+     *  trip), `execInContainer`, `copyFileFromContainer`, and every `with*`/`set*`/`start`/`stop` verb.
+     *  A name this set does not carry is charged `Exec` — which is the direction a forgotten entry must
+     *  fail in (loud over-charge), and is why this is a denylist of pure members rather than an allowlist
+     *  of effectful ones.
+     *
+     *  <p>UNLIKE {@link #PB_READ_BACKS} and {@link #ZT_EXEC_READ_BACKS} this set is NOT descriptor-gated,
+     *  and the reason is measured rather than assumed: testcontainers never overloads an accessor NAME
+     *  with a configuring setter — configuration is spelled `with*`/`set*` — so a `get*`/`is*` name cannot
+     *  be the setter half of a pair. `javap` over `GenericContainer`, `ContainerState` and `Container`
+     *  finds exactly TWO argument-taking `get*` members: `getMappedPort(int)`, which is the pure read of
+     *  already-stored port state that every testcontainers consumer makes and is IN this set, and
+     *  `getLogs(OutputType...)`, which is a `docker logs` round trip and is deliberately NOT. Gating on
+     *  `()` would have charged `getMappedPort(int)` `Exec` — measured on a real consumer compiled against
+     *  testcontainers 1.19.8, and the reason this set is not simply a copy of the ProcessBuilder shape. */
+    private static final Set<String> TESTCONTAINERS_READ_BACKS = Set.of(
+            "getBinds", "getCommandParts", "getContainerDef", "getContainerId", "getContainerInfo",
+            "getContainerName", "getCopyToFileContainerPathMap", "getCopyToTransferableContainerPathMap",
+            "getCreateContainerCmdModifiers", "getDependencies", "getDockerClient", "getDockerImageName",
+            "getEnv", "getEnvMap", "getExposedPorts", "getExtraHosts", "getImage", "getIpAddress",
+            "getContainerIpAddress", "getHost", "getLabels", "getLinkedContainers",
+            "getLivenessCheckPort", "getLivenessCheckPorts", "getLivenessCheckPortNumbers",
+            "getLogConsumers", "getNetwork", "getNetworkAliases", "getNetworkMode", "getPortBindings",
+            "getBoundPortNumbers", "getMappedPort", "getFirstMappedPort", "getShmSize",
+            "getStartupAttempts", "getStartupCheckStrategy", "getTestHostIpAddress", "getTmpFsMapping",
+            "getVolumesFroms", "getWaitStrategy", "getWorkingDirectory", "isHostAccessible",
+            "isPrivilegedMode", "isShouldBeReused");
+
     /** κ dispatch: one bucket per leading owner package segment (java/javax/jakarta/org/com/io,
      *  everything else in classifyOther), so every bucket stays under HotSpot's
      *  DontCompileHugeMethods limit (8KB of bytecode) — the old single ~27KB cascade ran
@@ -761,7 +820,129 @@ final class Classifier {
         return null;
     }
 
+    /** THIRD-PARTY SUBPROCESS BUILDERS — the `java.lang.ProcessBuilder` doctrine (see the long comment on
+     *  that rule, ~700 lines above) applied to the libraries that wrap it. It says: `Exec` charges reach to
+     *  the subprocess CAPABILITY, not only the launch, so CONSTRUCTING or CONFIGURING an invocation is
+     *  `Exec`; and therefore the WHOLE TYPE is charged with the proven-pure surface carved out as a named
+     *  DENYLIST, never the reverse — a wrong carve-out over-charges loudly, a forgotten allowlist entry
+     *  under-reports silently.
+     *
+     *  THAT FIX WAS APPLIED TO `java.lang.ProcessBuilder` ONLY, AND THE LIBRARIES WERE LEFT ON THE VERB
+     *  ALLOWLIST IT CONDEMNS (SOUNDNESS R480). MEASURED pre-fix at 5440749, on stub types whose signatures
+     *  were taken from `javap` over the real jars (zt-exec 1.12, commons-exec 1.4.0, testcontainers 1.19.8,
+     *  im4java 1.4.0) — thirteen arm-only methods, every one `inferred: []`, and `deny Exec`,
+     *  `deny Unknown`, `deny Exec Unknown` and `allow Exec git` ALL exit 0:
+     *      public ProcessExecutor arm(String[] argv) { return new ProcessExecutor().command(argv); }
+     *      public GenericContainer arm(String img, String[] c) { return new GenericContainer(img).withCommand(c); }
+     *      public CommandLine arm(String line) { return CommandLine.parse(line); }
+     *      public IMOperation arm(String p) { IMOperation o = new IMOperation(); o.addImage(p); return o; }
+     *  The verbs `commandSplit`, `withCommand`, `addArgument` and `addImage` were named NOWHERE in this
+     *  file; `command` and `parse` were named, but for unrelated owners (`ProcessHandle$Info.command` is an
+     *  `Env` rule), so an owner-blind grep reported them covered.
+     *
+     *  NOT A CARDINAL SIN, AND THE ROW OVERSTATED IT — measured, not assumed: none of these four packages
+     *  is in `Rules.KAPPA_COVERED_PREFIXES`, so every floored call is DISCLOSED as
+     *  `invisible: ["org.zeroturnaround.exec"]` &c. plus the "candor's classifier doesn't cover N packages"
+     *  advisory. It is the honest floor doing its job. What it is NOT is a pass: the gate reads `inferred`,
+     *  and the gate said `no violations` and exited 0 over a method that assembles a fully-armed
+     *  invocation out of caller-supplied argv. Rules.java already names the remedy for exactly this shape
+     *  — "the real fix is to MODEL that specific member (precision), not to drop the namespace's
+     *  coverage" — and this is that.
+     *
+     *  THE JAVA-SPECIFIC SHAPE IS THE EMPTY CONSTRUCTOR. `new ProcessExecutor()` names no program, so
+     *  charging construction (which is what candor-rust does — `std::process::Command::new` is itself
+     *  `Exec`) cannot catch it; only the config verb can. candor-swift charges configuring
+     *  (`t.arguments = argv`), candor-ts models `execa` whole-module. None of the three uses the
+     *  verb-allowlist shape, so this is java matching them rather than inventing a rung.
+     *
+     *  SCOPE, and why each boundary is where it is (the audit boundary is NOT drawn around the two
+     *  instances the row was filed from — a sweep of all ten owner-scoped `Exec` rules produced these
+     *  four, and the whole-PACKAGE form for three of them closes the library-subclass hole as well: a
+     *  call on `PostgreSQLContainer` or `DaemonExecutor` emits THAT owner in bytecode, and the supertype
+     *  walk that rescues a PROJECT subclass cannot see an unscanned library one). */
+    private static Effect thirdPartySubprocessLibs(String owner, String method, String desc) {
+        // ── zt-exec ────────────────────────────────────────────────────────────────────────────────────
+        // `org.zeroturnaround.exec.ProcessExecutor` is a ProcessBuilder in every respect that matters: it
+        // holds program+argv+env+cwd and travels fully armed. Whole type; read-backs carved out above.
+        if (owner.equals("org.zeroturnaround.exec.ProcessExecutor")) {
+            if (isObjectProtocolExempt(method, desc)) return null;
+            if (desc.startsWith("()") && ZT_EXEC_READ_BACKS.contains(method)) return null;
+            return Effect.EXEC;
+        }
+        // ── Apache commons-exec ────────────────────────────────────────────────────────────────────────
+        // Whole PACKAGE. Every type in it exists to assemble, launch, watchdog or pump a child process —
+        // `CommandLine` is the payload carrier (it was absent from this file entirely), `Executor` /
+        // `DefaultExecutor` / `DaemonExecutor` launch it, `ExecuteWatchdog` and `ProcessDestroyer` kill it,
+        // the `launcher.*` types spawn it directly, and `PumpStreamHandler` / `LogOutputStream` /
+        // `StreamPumper` carry the child's streams (the capability `Process.getInputStream` is charged for).
+        // Three carve-outs, and they are the only members of the package that are not about a child:
+        if (owner.startsWith("org.apache.commons.exec.")) {
+            //  (i) `environment.EnvironmentUtils.getProcEnvironment()` really does read the OS process
+            //      environment (it is commons-exec's `System.getenv`), so it is `Env` — a PRECISION gain
+            //      found by this sweep, not a carve-out: it was silent-pure before.
+            if (owner.equals("org.apache.commons.exec.environment.EnvironmentUtils")
+                    && method.startsWith("getProc")) return Effect.ENV;
+            //  (ii) `util.*` and `OS` — enumerated with `javap -c`, not assumed: `StringUtils` quotes and
+            //      substitutes strings (its only non-JDK-collection call is `File.getAbsolutePath`),
+            //      `MapUtils` copies maps and calls nothing outside `java.util`, and `OS` reads
+            //      `System.getProperty("os.name")` — which this classifier deliberately does NOT treat as
+            //      `Env` (that is the JVM property namespace, not the OS environment; see the Env rule).
+            //      `DebugUtils` is the one member of `util.*` that is not a value helper: it writes to
+            //      `System.err` and calls `printStackTrace`. Carving it out is still a no-op rather than a
+            //      claim, because `PrintStream.println` and `Throwable.printStackTrace` classify to null in
+            //      this engine (VERIFIED by calling `Classifier.classify` on both) — so the choice here is
+            //      between charging a stderr printer `Exec`, which is simply the wrong effect, and leaving
+            //      it exactly where it already was. None of the four spawns, configures or reads a child.
+            if (owner.startsWith("org.apache.commons.exec.util.")
+                    || owner.equals("org.apache.commons.exec.OS")) return null;
+            //  (iii) the Throwable types (`ExecuteException`) and the §4 Object protocol.
+            if (owner.endsWith("Exception") || isObjectProtocolExempt(method, desc)) return null;
+            if (desc.startsWith("()") && COMMONS_EXEC_READ_BACKS.contains(method)) return null;
+            return Effect.EXEC;
+        }
+        // ── im4java ────────────────────────────────────────────────────────────────────────────────────
+        // Whole `core` + `process` packages. im4java exists only to build and fork an ImageMagick /
+        // GraphicsMagick / exiftool command line: `Operation`/`IMOps`/`IMOperation`/`GMOperation`/… are the
+        // argv carriers (`addImage`, `addRawArgs` — absent from this file entirely), the `*Cmd` types and
+        // `ImageCommand`/`ProcessStarter` are the launchers, and `process.*` is the pipe/consumer plumbing
+        // around a live child. `org.im4java.script` and `org.im4java.utils` are deliberately NOT included —
+        // a script generator and pure geometry helpers.
+        if (owner.startsWith("org.im4java.core.") || owner.startsWith("org.im4java.process.")) {
+            if (owner.endsWith("Exception") || isObjectProtocolExempt(method, desc)) return null;
+            if (desc.startsWith("()") && IM4JAVA_READ_BACKS.contains(method)) return null;
+            return Effect.EXEC;
+        }
+        // ── Testcontainers ─────────────────────────────────────────────────────────────────────────────
+        // Whole `org.testcontainers.containers` package: a container IS a subprocess capability — the image
+        // is the program and `withCommand(argv)` is the argv — and the package is nothing but container
+        // types, their wait strategies and their output consumers. The named read-back set above is the
+        // denylist; anything it does not carry (including `getLogs()` and the live-inspect predicates) is
+        // charged.
+        if (owner.startsWith("org.testcontainers.containers.")) {
+            //  (i) the three PURE ENUMS that live in this package and are not containers at all. Each was
+            //      enumerated with `javap` against testcontainers 1.19.8 and its ENTIRE member surface is
+            //      `values`/`valueOf`/`<clinit>` plus a constant-to-string mapping — `BindMode`
+            //      (READ_ONLY/READ_WRITE), `InternetProtocol` (TCP/UDP, whose `toDockerNotation()` a real
+            //      consumer calls) and `SelinuxContext`. Nothing in them spawns, configures or reads a
+            //      child. This is a carve-out by TYPE, so it is the one place here that could in principle
+            //      hide a capability; it is bounded to three closed enums and re-derivable in one `javap`.
+            if (owner.equals("org.testcontainers.containers.BindMode")
+                    || owner.equals("org.testcontainers.containers.InternetProtocol")
+                    || owner.equals("org.testcontainers.containers.SelinuxContext")) return null;
+            //  (ii) NOT carved out, and deliberately: `ExecConfig` is a payload carrier of exactly the
+            //      kind this rule exists for (`ExecConfig.builder().command(argv).build()` feeds
+            //      `execInContainer`), and `Container$ExecResult` / `output.OutputFrame` hand back the
+            //      CHILD's stdout — the capability `Process.getInputStream()` is charged for.
+            if (owner.endsWith("Exception") || isObjectProtocolExempt(method, desc)) return null;
+            if (TESTCONTAINERS_READ_BACKS.contains(method)) return null;
+            return Effect.EXEC;
+        }
+        return null;
+    }
+
     private static Effect classifyOrg(String owner, String method, String desc) {
+        Effect sp = thirdPartySubprocessLibs(owner, method, desc);
+        if (sp != null) return sp;
         if (owner.equals("org.springframework.expression.Expression") && method.startsWith("getValue")) return Effect.UNKNOWN;
         if (owner.equals("org.mvel2.MVEL") && (method.equals("eval") || method.startsWith("execute"))) return Effect.UNKNOWN;
         if (owner.equals("org.apache.commons.jexl3.JexlExpression") && method.equals("evaluate")) return Effect.UNKNOWN;
@@ -930,10 +1111,10 @@ final class Classifier {
         // Directory may be a RAM ByteBuffersDirectory), so modelling them whole-owner would fabricate on the
         // in-memory variant — left as accepted gaps (the FSDirectory.open factory is the safe disk signal).
         if (owner.equals("org.apache.lucene.store.FSDirectory") && method.equals("open")) return Effect.FS;
-        // Testcontainers — GenericContainer.start shells out to the Docker daemon → Exec; execInContainer
-        // runs a command INSIDE the running container → Exec too (was silent even for direct use).
-        if (owner.equals("org.testcontainers.containers.GenericContainer")
-                && (method.equals("start") || method.equals("execInContainer"))) return Effect.EXEC;
+        // (Testcontainers' GenericContainer.start/execInContainer used to be enumerated HERE, as a
+        // two-verb allowlist. It is now the whole `org.testcontainers.containers` package with a named
+        // pure denylist — see thirdPartySubprocessLibs, R480. One rule, not two: a second copy of a
+        // question is how the two answers drift.)
         // Selenium — WebDriver.get drives a browser / talks to a remote WebDriver server over HTTP → Net.
         // OWNER-scoped (not a global `get` rule — that would collide with bean getters).
         if ((owner.equals("org.openqa.selenium.WebDriver") || owner.equals("org.openqa.selenium.remote.RemoteWebDriver"))
@@ -976,9 +1157,9 @@ final class Classifier {
         // candor's jakarta.mail rule doesn't match (commons-email 1.6 still uses javax.mail).
         if (owner.equals("org.apache.commons.mail.Email")
                 && (method.equals("send") || method.equals("sendMimeMessage"))) return Effect.NET;
-        // im4java — *Cmd.run shells out to the ImageMagick binary (ProcessBuilder.start) → Exec.
-        if (((owner.startsWith("org.im4java.core.") && owner.endsWith("Cmd"))
-                || owner.equals("org.im4java.process.ProcessStarter")) && method.equals("run")) return Effect.EXEC;
+        // (im4java's `*Cmd.run` / `ProcessStarter.run` used to be enumerated HERE — an allowlist of one
+        // verb, which left `IMOperation.addImage` and `ImageCommand.setCommand`, the types that CARRY the
+        // argv, unmodelled entirely. Now whole-package — see thirdPartySubprocessLibs, R480.)
         // Eclipse Jetty client — GET / Request.send do the HTTP exchange → Net.
         if (owner.equals("org.eclipse.jetty.client.HttpClient") && method.equals("GET")) return Effect.NET;
         if (owner.equals("org.eclipse.jetty.client.Request") && method.equals("send")) return Effect.NET;
@@ -1243,13 +1424,12 @@ final class Classifier {
                     || method.startsWith("delete") || method.startsWith("findBy") || method.startsWith("findAll")
                     || method.equals("findById") || method.equals("count") || method.equals("existsById")))
             return Effect.DB;
-        // Subprocess convenience libs (the analog of the modeled ProcessBuilder.start/Runtime.exec):
-        // Apache commons-exec DefaultExecutor.execute, zt-exec ProcessExecutor.execute. The setX config
-        // setters stay pure (verb-gated).
-        if (owner.equals("org.apache.commons.exec.DefaultExecutor") && method.equals("execute")) return Effect.EXEC;
-        if (owner.equals("org.zeroturnaround.exec.ProcessExecutor")
-                && (method.equals("execute") || method.equals("executeNoTimeout") || method.equals("start")))
-            return Effect.EXEC;
+        // (The subprocess convenience libs — commons-exec `DefaultExecutor.execute`, zt-exec
+        // `ProcessExecutor.execute/executeNoTimeout/start` — used to be enumerated HERE, under the comment
+        // "The setX config setters stay pure (verb-gated)". THAT SENTENCE WAS THE BUG, and it survived
+        // because it read as CONSIDERED: it is the exact claim the ProcessBuilder doctrine ~900 lines above
+        // records as MEASURED-FALSE, and nobody checked one against the other. `.command(argv)` and
+        // `.commandSplit(line)` are not config, they are the program. See thirdPartySubprocessLibs, R480.)
         // Spring's Environment.getProperty reads a MERGED source that includes the OS environment, so
         // it genuinely may surface an env var — a sound over-approximation, kept as Env.
         if (owner.equals("org.springframework.core.env.Environment") && method.equals("getProperty")) return Effect.ENV;

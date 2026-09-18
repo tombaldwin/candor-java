@@ -10,6 +10,39 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ### ⚠ Fixed
 
+- **R496 — a member classified to a WEAKER effect than it performs emits no disclosure at all, and
+  `DefaultCredentialsProvider.create().resolveCredentials()` is the most common AWS credentials call
+  there is.** It answered `Env`. What it resolves is the DEFAULT CHAIN, and `javap -c` of
+  auth-2.25.60 gives the reach: a profile carrying `credential_process` builds a
+  `ProcessCredentialsProvider` and **forks** (R494's fix, one class over), the chain reads
+  `~/.aws/credentials` (`Files.newInputStream`), and the container/IMDS arms and `role_arn`/`sso_*`
+  reach the network. MEASURED on a consumer compiled against the real jars: `inferred: ['Env']`,
+  `invisible: null`, `unresolved: false` — **nothing to notice** — and `deny Exec`, `deny Fs`,
+  `deny Net` and `deny Exec Unknown` ALL exited **0**, with a `ProcessBuilder` control on the same
+  tree exiting 1. Now `Env+Fs+Net+Exec`, co-emitted at the call site the way `Llm` co-emits `Net`,
+  because `Classifier.classify` returns ONE effect and the chain performs four.
+  - **Two spellings the fix had to cover, both read off real consumer bytecode with `javap -c`.** The
+    INTERFACE — `AwsCredentialsProvider p = DefaultCredentialsProvider.create()` — emits
+    `invokeinterface` on the interface owner, which is exactly what the MongoDB driver's MONGODB-AWS
+    authenticator does (`AwsSdkV2CredentialSupplier`), so naming only the concrete classes would have
+    missed a real third-party path. And `resolveIdentity(ResolveIdentityRequest)`, the v2 SDK's own
+    default method whose whole body is `invokeinterface resolveCredentials()`, was **SILENT**: κ named
+    no rule, the package is κ-covered, and the consumer reported `0 functions reach effects` with
+    `coverage: null` — a ⟨0.21⟩ purity claim over the whole credential chain, with `deny Exec`,
+    `deny Net` and `deny Unknown` all exiting 0.
+  - **What must NOT move, asserted:** the LEAF providers keep exactly what they had — Environment /
+    SystemProperty / Static / Anonymous stay `Env` (exact-equality control), Instance / Container /
+    Http stay `Net`, Process stays `Exec`. The rule is an EXACT owner list, not a prefix.
+  - **One candidate REFUSED on evidence:** the census also reported `Exec` for
+    `WebIdentityTokenFileCredentialsProvider`; `javap -c` shows it delegating to a single STS-backed
+    factory and to nothing that forks, so its `Exec` was CHA smear over the interface call. It gets
+    `Env+Fs+Net` and a test asserting the absence.
+  - A/B over **371 jars / 1,215,638 rows: ADDED 0, REMOVED 0, CHANGED 2,820** (1,708 on `inferred`),
+    in three jars — mongodb-driver-core 2,771, auth 44, spring-vault-core 5. Every changed row only
+    GAINED values (no effect and no disclosure field lost anywhere), and **every row that gained
+    Exec/Fs/Net already carried `Env`**: the reach was already established and disclosed, only the
+    label was wrong.
+
 - **R486 / R487 — the same class one owner over, and under a κ-COVERED prefix, where the under-report is
   SILENT rather than disclosed.** [R480] below fixed the third-party subprocess builders; a sweep of the
   rest of the classifier's `Exec` surface found three more verb-allowlists on payload-carrying owners, two

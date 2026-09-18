@@ -260,7 +260,53 @@ class CoveredPrefixCensusTest {
             "package software.amazon.awssdk.auth.credentials;\npublic class InstanceProfileCredentialsProvider {"
                 + " public Object resolveCredentials() { return null; } }"),
         Map.entry("software/amazon/awssdk/auth/credentials/ProfileCredentialsProvider.java",
-            "package software.amazon.awssdk.auth.credentials;\npublic class ProfileCredentialsProvider {"
+            "package software.amazon.awssdk.auth.credentials;\npublic class ProfileCredentialsProvider"
+                + " implements AwsCredentialsProvider {"
+                + " public Object resolveCredentials() { return null; } }"),
+        // ── R496: the DELEGATING resolvers, the interface they are all reached through, and the leaf
+        //    providers that must not move. Shapes read off auth-2.25.60 with `javap -p`: the interface
+        //    declares `resolveCredentials` and carries a DEFAULT `resolveIdentity(ResolveIdentityRequest)`
+        //    whose whole body is `invokeinterface resolveCredentials()`.
+        Map.entry("software/amazon/awssdk/identity/spi/ResolveIdentityRequest.java",
+            "package software.amazon.awssdk.identity.spi;\npublic interface ResolveIdentityRequest { }"),
+        Map.entry("software/amazon/awssdk/auth/credentials/AwsCredentialsProvider.java",
+            "package software.amazon.awssdk.auth.credentials;\npublic interface AwsCredentialsProvider {"
+                + " Object resolveCredentials();"
+                + " default java.util.concurrent.CompletableFuture<Object> resolveIdentity("
+                + "software.amazon.awssdk.identity.spi.ResolveIdentityRequest r) {"
+                + " return java.util.concurrent.CompletableFuture.completedFuture(resolveCredentials()); } }"),
+        Map.entry("software/amazon/awssdk/auth/credentials/DefaultCredentialsProvider.java",
+            "package software.amazon.awssdk.auth.credentials;\npublic class DefaultCredentialsProvider"
+                + " implements AwsCredentialsProvider {"
+                + " public static DefaultCredentialsProvider create() { return null; }"
+                + " public Object resolveCredentials() { return null; } }"),
+        Map.entry("software/amazon/awssdk/auth/credentials/AwsCredentialsProviderChain.java",
+            "package software.amazon.awssdk.auth.credentials;\npublic class AwsCredentialsProviderChain"
+                + " implements AwsCredentialsProvider {"
+                + " public Object resolveCredentials() { return null; } }"),
+        Map.entry("software/amazon/awssdk/auth/credentials/internal/LazyAwsCredentialsProvider.java",
+            "package software.amazon.awssdk.auth.credentials.internal;\npublic class LazyAwsCredentialsProvider"
+                + " implements software.amazon.awssdk.auth.credentials.AwsCredentialsProvider {"
+                + " public Object resolveCredentials() { return null; } }"),
+        Map.entry("software/amazon/awssdk/auth/credentials/WebIdentityTokenFileCredentialsProvider.java",
+            "package software.amazon.awssdk.auth.credentials;\n"
+                + "public class WebIdentityTokenFileCredentialsProvider implements AwsCredentialsProvider {"
+                + " public Object resolveCredentials() { return null; } }"),
+        Map.entry("software/amazon/awssdk/auth/credentials/EnvironmentVariableCredentialsProvider.java",
+            "package software.amazon.awssdk.auth.credentials;\n"
+                + "public class EnvironmentVariableCredentialsProvider implements AwsCredentialsProvider {"
+                + " public Object resolveCredentials() { return null; } }"),
+        Map.entry("software/amazon/awssdk/auth/credentials/SystemPropertyCredentialsProvider.java",
+            "package software.amazon.awssdk.auth.credentials;\n"
+                + "public class SystemPropertyCredentialsProvider implements AwsCredentialsProvider {"
+                + " public Object resolveCredentials() { return null; } }"),
+        Map.entry("software/amazon/awssdk/auth/credentials/StaticCredentialsProvider.java",
+            "package software.amazon.awssdk.auth.credentials;\n"
+                + "public class StaticCredentialsProvider implements AwsCredentialsProvider {"
+                + " public Object resolveCredentials() { return null; } }"),
+        Map.entry("software/amazon/awssdk/auth/credentials/AnonymousCredentialsProvider.java",
+            "package software.amazon.awssdk.auth.credentials;\n"
+                + "public class AnonymousCredentialsProvider implements AwsCredentialsProvider {"
                 + " public Object resolveCredentials() { return null; } }"));
 
     // ── R493: Exposed, end to end ───────────────────────────────────────────────────────────────────
@@ -393,6 +439,91 @@ class CoveredPrefixCensusTest {
                 "InstanceProfileCredentialsProvider calls the metadata endpoint — got " + r.get("com.x.Creds.imds"));
             assertTrue(eff(r, "com.x.Creds.profile").contains(Effect.ENV),
                 "the profile chain still reads the environment — got " + r.get("com.x.Creds.profile"));
+        } finally { rm(app.getParent()); }
+    }
+
+    // ── R496: the DELEGATING resolvers, found by `weaker_claim_census.py` on its first real run ─────
+
+    /** {@code DefaultCredentialsProvider.create().resolveCredentials()} — the most common AWS credentials
+     *  call there is — answered {@code Env} while candor's own scan of auth-2.25.60 gives its body
+     *  {@code inferred: [Clock, Env, Exec, Unknown]}. MEASURED on a consumer compiled against the real
+     *  jars before the fix: {@code inferred: ['Env']} with {@code invisible: null} and
+     *  {@code unresolved: false} — nothing to notice — and {@code deny Exec}, {@code deny Fs},
+     *  {@code deny Net} and {@code deny Exec Unknown} ALL exited 0, with a {@code ProcessBuilder} control
+     *  on the same tree exiting 1.
+     *
+     *  <p>Three spellings, because a fix that named only the concrete class would be evaded by the two
+     *  that {@code javap -c} shows real consumer bytecode emitting: the INTERFACE
+     *  ({@code AwsCredentialsProvider p = DefaultCredentialsProvider.create()}) and
+     *  {@code resolveIdentity}, the default method whose body is one {@code invokeinterface
+     *  resolveCredentials}. The {@code resolveIdentity} spelling was WORSE than {@code Env}: κ named no
+     *  rule for it, the package is κ-covered, and the consumer reported {@code 0 functions reach effects}
+     *  with {@code coverage: null} — a ⟨0.21⟩ purity claim over the whole credential chain. */
+    @Test
+    void awsDelegatingResolversDiscloseTheWholeChain() throws Exception {
+        Path app = compileApp(LIB, Map.of("com/x/Chain.java", String.join("\n",
+            "package com.x;",
+            "import software.amazon.awssdk.auth.credentials.*;",
+            "import software.amazon.awssdk.auth.credentials.internal.LazyAwsCredentialsProvider;",
+            "import software.amazon.awssdk.identity.spi.ResolveIdentityRequest;",
+            "public class Chain {",
+            "  public Object dflt() { return DefaultCredentialsProvider.create().resolveCredentials(); }",
+            "  public Object iface() {",
+            "    AwsCredentialsProvider p = DefaultCredentialsProvider.create();",
+            "    return p.resolveCredentials(); }",
+            "  public Object identity(ResolveIdentityRequest q) {",
+            "    AwsCredentialsProvider p = DefaultCredentialsProvider.create();",
+            "    return p.resolveIdentity(q); }",
+            "  public Object profile(ProfileCredentialsProvider p) { return p.resolveCredentials(); }",
+            "  public Object chain(AwsCredentialsProviderChain p) { return p.resolveCredentials(); }",
+            "  public Object lazy(LazyAwsCredentialsProvider p) { return p.resolveCredentials(); }",
+            "  public Object web(WebIdentityTokenFileCredentialsProvider p) { return p.resolveCredentials(); }",
+            "}")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(app);
+            for (String fn : new String[] {"dflt", "iface", "identity", "profile", "chain", "lazy"}) {
+                EffectSet e = eff(r, "com.x.Chain." + fn);
+                assertTrue(e.contains(Effect.EXEC), fn + ": a profile carrying `credential_process` forks"
+                    + " — got " + r.get("com.x.Chain." + fn));
+                assertTrue(e.contains(Effect.FS), fn + ": the chain reads ~/.aws/credentials — got " + e);
+                assertTrue(e.contains(Effect.NET), fn + ": the chain reaches IMDS/STS — got " + e);
+                assertTrue(e.contains(Effect.ENV), fn + ": and it still reads the environment — got " + e);
+            }
+            // THE ONE CANDIDATE THIS FIX REFUSED. The census reported Exec for it too; `javap -c` shows
+            // its ctor building ONE delegate through `WebIdentityCredentialsUtils.factory()` and
+            // `resolveCredentials` calling only that. The census's Exec was CHA over the
+            // `AwsCredentialsProvider.resolveCredentials` interface call — the higher-order smear its own
+            // docstring declares. Asserted so a later widening cannot quietly absorb it.
+            EffectSet web = eff(r, "com.x.Chain.web");
+            assertTrue(web.contains(Effect.FS) && web.contains(Effect.NET) && web.contains(Effect.ENV),
+                "the web-identity provider reads the token file and calls STS — got " + web);
+            assertFalse(web.contains(Effect.EXEC),
+                "WebIdentityTokenFileCredentialsProvider reaches no fork; charging Exec would be a"
+                    + " fabrication imported from a CHA smear — got " + web);
+        } finally { rm(app.getParent()); }
+    }
+
+    /** R494's fix kept {@code Env} on the providers that only read the environment, so it could not have
+     *  merely moved the error sideways; R496 widens the same discipline. These four are LEAVES — each
+     *  reads exactly one source — and an exact-equality assertion is what makes the widening above
+     *  falsifiable: a prefix rule in place of the owner list turns every one of them red. */
+    @Test
+    void control_awsLeafCredentialProvidersDoNotMove() throws Exception {
+        Path app = compileApp(LIB, Map.of("com/x/Leaf.java", String.join("\n",
+            "package com.x;",
+            "import software.amazon.awssdk.auth.credentials.*;",
+            "public class Leaf {",
+            "  public Object env(EnvironmentVariableCredentialsProvider p) { return p.resolveCredentials(); }",
+            "  public Object prop(SystemPropertyCredentialsProvider p) { return p.resolveCredentials(); }",
+            "  public Object stat(StaticCredentialsProvider p) { return p.resolveCredentials(); }",
+            "  public Object anon(AnonymousCredentialsProvider p) { return p.resolveCredentials(); }",
+            "}")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(app);
+            for (String fn : new String[] {"env", "prop", "stat", "anon"})
+                assertEquals(EffectSet.of(Effect.ENV), eff(r, "com.x.Leaf." + fn),
+                    fn + " reads one source; the R496 co-emit must not reach it — got "
+                        + r.get("com.x.Leaf." + fn));
         } finally { rm(app.getParent()); }
     }
 

@@ -2798,14 +2798,23 @@ final class Classifier {
         //    `deny Exec`. The IMDS/container providers issue an HTTP GET to the metadata endpoint.
         //    Ordered BEFORE the Env rule; the remaining providers (profile/environment/static/default)
         //    keep Env, which is what they do.
+        // ── SOUNDNESS R496, the SECOND spelling. `resolveCredentials` was the only verb these rules
+        //    named, and `AwsCredentialsProvider` carries a DEFAULT `resolveIdentity(ResolveIdentityRequest)`
+        //    whose entire body is `invokeinterface resolveCredentials()` (javap -c, auth-2.25.60) — the
+        //    v2 SDK's own async-identity path. Unnamed here it classified NULL, and because the package is
+        //    κ-COVERED that is not a floor but SILENCE: measured on a compiled consumer, a `resolveIdentity`
+        //    call on the default chain reported `0 functions reach effects`, `coverage: null`,
+        //    `invisible: null` — a ⟨0.21⟩ purity claim — and `deny Exec`, `deny Net` and `deny Unknown`
+        //    ALL exited 0. `isResolveVerb` is the one place the verb set is spelled, so a rule cannot
+        //    cover one spelling and miss the other again.
         if (owner.equals("software.amazon.awssdk.auth.credentials.ProcessCredentialsProvider")
-                && method.startsWith("resolveCredentials")) return Effect.EXEC;
+                && isAwsCredentialResolveVerb(method)) return Effect.EXEC;
         if ((owner.equals("software.amazon.awssdk.auth.credentials.InstanceProfileCredentialsProvider")
                 || owner.equals("software.amazon.awssdk.auth.credentials.ContainerCredentialsProvider")
                 || owner.equals("software.amazon.awssdk.auth.credentials.HttpCredentialsProvider"))
-                && method.startsWith("resolveCredentials")) return Effect.NET;
+                && isAwsCredentialResolveVerb(method)) return Effect.NET;
         if (owner.startsWith("software.amazon.awssdk.auth.credentials")
-                && method.startsWith("resolveCredentials")) return Effect.ENV;
+                && isAwsCredentialResolveVerb(method)) return Effect.ENV;
         // ['java', 'misc', 'org'] shared rule — see sharedLoggingFacades below
         if (isLoggingFacadesOwner(owner)) return sharedLoggingFacades(owner, method, desc);
         // JavaFX clipboard (the AWT successor) — getSystemClipboard hands out the handle; setContent/
@@ -2816,6 +2825,15 @@ final class Classifier {
                     || method.startsWith("has") || method.equals("clear")))
             return Effect.CLIPBOARD;
         return null;
+    }
+
+    /** The verbs that RESOLVE an AWS v2 credentials provider — SOUNDNESS R496. Both spellings reach the
+     *  same body: {@code AwsCredentialsProvider.resolveIdentity(ResolveIdentityRequest)} is a DEFAULT
+     *  method whose whole body is {@code invokeinterface resolveCredentials()}. Named in one place so the
+     *  three rules above cannot diverge on it. {@code identityType()} is deliberately absent — it returns
+     *  a {@code Class} literal and resolves nothing. */
+    static boolean isAwsCredentialResolveVerb(String method) {
+        return method.startsWith("resolveCredentials") || method.startsWith("resolveIdentity");
     }
 
     // ── shared rules: owners spanning several dispatch buckets — defined ONCE, called from each

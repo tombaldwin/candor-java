@@ -4408,6 +4408,46 @@ public class Candor {
                 if (effect == null) effect = Effect.FS;
             }
         }
+        // AWS CREDENTIAL RESOLUTION IS A CHAIN, AND κ CAN NAME ONLY ONE EFFECT — SOUNDNESS R496.
+        // `DefaultCredentialsProvider.create().resolveCredentials()` is the most common AWS credentials
+        // call there is, and it answered `Env` — a positive, confident answer that satisfies every
+        // disclosure channel this engine has (no `Unknown`, no `invisible`; the package is κ-covered).
+        // What it resolves is the DEFAULT CHAIN, and `javap -c` of auth-2.25.60 gives the whole reach:
+        // `createChain` builds SystemProperty + EnvironmentVariable (Env) + WebIdentityTokenFile +
+        // Profile + Container + InstanceProfile, and `resolveCredentials` hands off to it through
+        // `LazyAwsCredentialsProvider`. Down each arm —
+        //   Exec  ProfileCredentialsProvider.resolveCredentials -> handleProfileFileReload ->
+        //         createCredentialsProvider -> lambda$createCredentialsProvider$1 ->
+        //         ProfileCredentialsUtils.credentialsProvider(Set), which reads `credential_process` and
+        //         builds a ProcessCredentialsProvider -> refreshCredentials -> executeCommand ->
+        //         `new java/lang/ProcessBuilder(List).start()`. That is [[R494]]'s fork, one class over.
+        //   Fs    ProfileFile$BuilderImpl.lambda$build$0 -> `java/nio/file/Files.newInputStream` on
+        //         ~/.aws/credentials (profiles-2.25.60), and the web-identity token file.
+        //   Net   Container/InstanceProfile hit the metadata endpoint (already κ NET on their own
+        //         owners), and `role_arn`/`source_profile`/`sso_*` reach STS.
+        // THE CONDITIONALITY IS THE ARGUMENT FOR DISCLOSING, NOT AGAINST. Which arm fires is decided by
+        // the machine's ~/.aws/config and its environment — never by anything in the caller's code. That
+        // is precisely the input candor cannot see, and the discipline is sound over-approximation: a
+        // reachable Exec is DISCLOSED, not narrowed to the arm someone expects to run.
+        // Co-emitted the way `Llm` co-emits `Net` and the S3 rule co-emits `Fs`: `dir` is a set, so the
+        // ENV `classify` returned is never displaced — these providers DO read the environment.
+        // SCOPED BY AN EXACT OWNER LIST to the DELEGATING resolvers. The LEAF providers keep exactly what
+        // they had (Environment/SystemProperty/Static/Anonymous = Env, Instance/Container/Http = Net,
+        // Process = Exec); `awsCredentialProvidersCarryTheirRealEffect` and
+        // `control_awsLeafCredentialProvidersDoNotMove` assert both halves, because a fix that merely
+        // moved the error sideways would pass the first alone.
+        if (isAwsDelegatingCredentialResolver(owner) && Classifier.isAwsCredentialResolveVerb(min.name)) {
+            dir.add(Effect.FS);
+            dir.add(Effect.NET);
+            // WebIdentityTokenFileCredentialsProvider is the ONE arm that does NOT reach Exec, and the
+            // census said it did. `javap -c` settles it: its ctor builds ONE delegate through
+            // `WebIdentityCredentialsUtils.factory()` (the STS factory — Fs on the token file, Net to
+            // STS) and `resolveCredentials` calls that delegate alone. The census's Exec came from CHA
+            // over the `AwsCredentialsProvider.resolveCredentials` INTERFACE call, which resolves to
+            // every implementor including ProfileCredentialsProvider — the higher-order smear its own
+            // docstring declares. A candidate refused on evidence, not fixed on plausibility.
+            if (!owner.equals(AWS_WEB_IDENTITY_RESOLVER)) dir.add(Effect.EXEC);
+        }
         opaqueTaskHandoff(ctx, s, min, owner);
         namedFunctionalToHof(ctx, s, min);
         xmlParseFilePrecision(ctx, s, min);
@@ -8589,6 +8629,50 @@ public class Candor {
         // records the same defect for Net on `AmazonS3URI.getBucket`; I read it and repeated it one rule
         // over, which is why this now mirrors its gate rather than inventing a looser one.
         return s3Pkg && (owner.endsWith("Client") || owner.endsWith("TransferManager"));
+    }
+
+    /** The AWS v2 credentials package, as an owner prefix. */
+    private static final String AWS_CREDS = "software.amazon.awssdk.auth.credentials.";
+
+    /** The one delegating resolver whose Exec candidate was REFUSED — `javap -c` of auth-2.25.60 shows it
+     *  delegating to a single STS-backed factory and to nothing that forks. Stated as the measurement it
+     *  is: the STS factory's own body lives in a jar this audit did not read, so what is established is
+     *  that nothing in the credentials jar takes it to a fork, not a proof over the whole SDK. */
+    static final String AWS_WEB_IDENTITY_RESOLVER = AWS_CREDS + "WebIdentityTokenFileCredentialsProvider";
+
+    /** A v2 credentials provider that RESOLVES THROUGH OTHER PROVIDERS rather than performing the read
+     *  itself — SOUNDNESS R496. Its effect set is the union of the arms it can dispatch to, which κ, a
+     *  name table returning ONE effect, cannot express; the co-emit block in {@link #handleMethodInsn}
+     *  adds the rest.
+     *
+     *  <p><b>An EXACT owner list, not a prefix.</b> The package's other providers are LEAVES — they read
+     *  exactly one source, their existing single κ answer is right, and a prefix rule would over-charge
+     *  every one of them. The list is closed against the real jar rather than guessed: {@code javap} over
+     *  every class in auth-2.25.60 gives TWELVE owners declaring {@code resolveCredentials}, and each was
+     *  read. Five delegate — Default/Chain/Lazy through a provider list or supplier, Profile through
+     *  whatever the profile section names, WebIdentityTokenFile through one STS-backed factory. The other
+     *  seven are leaves (Anonymous, Static, Process, Instance, Container, Http, SystemSettings — the base
+     *  of the Environment/SystemProperty pair) and are deliberately absent.
+     *
+     *  <p><b>The INTERFACE is in the list, and it is the spelling that matters most.</b>
+     *  {@code AwsCredentialsProvider p = DefaultCredentialsProvider.create(); p.resolveCredentials();} —
+     *  the idiomatic form — emits {@code invokeinterface} on the INTERFACE owner, so a fix that named only
+     *  the concrete classes would be evaded by the way most code is actually written (verified with
+     *  {@code javap -c} on the compiled consumer). An interface call cannot be narrowed by name: its
+     *  implementors include {@code ProcessCredentialsProvider}.
+     *
+     *  <p>{@code AwsCredentialsProviderChain} and {@code LazyAwsCredentialsProvider} wrap a CALLER-SUPPLIED
+     *  set, so a chain of nothing but {@code StaticCredentialsProvider} is over-charged here. Stated
+     *  rather than hidden: that is the sound direction, and the alternative — the {@code Env} they carried
+     *  — is a silent under-report of every chain that contains a real provider, which is the common case
+     *  and the one {@code DefaultCredentialsProvider} itself builds. */
+    static boolean isAwsDelegatingCredentialResolver(String owner) {
+        return owner.equals(AWS_CREDS + "AwsCredentialsProvider")
+                || owner.equals(AWS_CREDS + "DefaultCredentialsProvider")
+                || owner.equals(AWS_CREDS + "AwsCredentialsProviderChain")
+                || owner.equals(AWS_CREDS + "internal.LazyAwsCredentialsProvider")
+                || owner.equals(AWS_CREDS + "ProfileCredentialsProvider")
+                || owner.equals(AWS_WEB_IDENTITY_RESOLVER);
     }
 
     /** A Spring type whose NAME follows the framework's "this class performs I/O" convention — the *Template

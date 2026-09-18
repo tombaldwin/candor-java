@@ -72,6 +72,12 @@ out = subprocess.run(["java", "-cp", PROBE + ":" + CJ, "io.poly.candor.KappaQuer
 kappa = {tuple(l.split("\t")[:3]): l.split("\t")[3] for l in out}
 
 # The finding: kappa gave a CONCRETE answer, and the body reaches a concrete effect kappa did not name.
+# `k` is the SPEC name ("Env"), so `body - {k}` really removes it -- KappaQuery prints `Effect.specName()`
+# for this subtraction's sake. It printed the ENUM CONSTANT ("ENV") until SOUNDNESS R496, and that made
+# this loop unable to return a negative: every classified member with any concrete reach was a "hit", and
+# every hit listed kappa's own answer under `missing`. The four R496 candidates were real, but they
+# arrived inside a report that could not have said otherwise -- the oracle-calibration rule, in the
+# instrument written for it.
 hits = []
 for o, m, de, body in uniq:
     k = kappa.get((o, m, de), "NULL")

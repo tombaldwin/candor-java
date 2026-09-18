@@ -110,3 +110,51 @@ looked: run against the pre-fix and post-fix classifiers it printed IDENTICAL ou
 calibration failure and was not. **The identity WAS the finding** — those rows are unfixed in both. The
 lesson generalises: when a before/after run fails to discriminate, establish whether the rows are
 insensitive to the change before concluding the instrument is.
+
+### R496 closed the four, and the full-corpus sweep priced the instrument
+
+**R496 is FIXED** (see `Candor.handleMethodInsn`'s AWS co-emit block): the delegating resolvers —
+`DefaultCredentialsProvider`, `ProfileCredentialsProvider`, `AwsCredentialsProviderChain`,
+`internal.LazyAwsCredentialsProvider`, and the `AwsCredentialsProvider` INTERFACE every real consumer
+actually calls — now carry `Env+Fs+Net+Exec`. `WebIdentityTokenFileCredentialsProvider`'s `Exec` was
+**refused** on `javap` evidence and the refusal is asserted by a test.
+
+**Two defects in this instrument were found by running it, and both are fixed here:**
+
+1. **`KappaQuery` printed the ENUM CONSTANT (`ENV`), not the spec name (`Env`)**, so
+   `body_effects - {kappa_answer}` never subtracted anything: **every classified member with any concrete
+   reach was a hit**, and every hit listed κ's own answer under `missing`. The oracle could not return a
+   negative — the calibration rule, broken inside the instrument written to enforce it.
+2. **It queries the κ NAME TABLE, so it cannot see a CO-EMIT.** `Llm`+`Net`, the S3 `Fs` rule and now the
+   AWS chain rule all add effects at the CALL SITE in `handleMethodInsn`, never in `Classifier.classify`.
+   The five AWS owners therefore still appear in this census **after** the fix. Declared, not discovered
+   later — and the fix that would close it is one authority (`coEmittedEffects(owner,method,desc)`) called
+   by both `handleMethodInsn` and `KappaQuery`.
+
+**The sweep — every jar in `soundness/lib`, 371 reports (grpc-context has no classes):**
+
+    members-with-reach 414,439   kappa-classified 16,496   WEAKER-CLAIM 7,982  (48.4%)
+    worst missing effect:  Exec 146   Net 2,006   Fs 4,170   Db 3   Env 1,611   Llm 46
+
+**At 48% it is NOT a standing gate as written, and the reason is one mechanism.** Of the 42 distinct
+Exec-missing candidates, **33 reach the fork only through a functional-interface hop** — `Runnable.run`,
+`Closeable.close`, a `Handler` lambda — i.e. CHA resolving an interface call to every implementor, so a
+jar holding ONE forking `Runnable` smears `Exec` across everything that touches a `Runnable`. Traced by
+hand to a forking `Runnable.run`: liquibase (`ExecuteShellCommandChange$2.run`), kafka
+(`Shell$ShellTimeoutTimerTask.run`), vert.x (`Watcher.executeUserCommand`), zookeeper
+(`ClientCnxn$SendThread.run`). The remaining **9 are DIRECT chains**: the five AWS members (fixed), and —
+
+| candidate | status |
+|---|---|
+| `org.eclipse.jgit.api.Git.open` → `FS.readPipe` (`javap`: `new ProcessBuilder(String[]).start()`) | **CANDIDATE** — real fork, platform-selected `FS` impl; no compiled consumer yet |
+| `org.rocksdb.RocksDB.open`/`openReadOnly` | **UNTRACED** — `path` resolved a different overload |
+| `org.apache.commons.exec.environment.EnvironmentUtils.getProcEnvironment` | **REFUTED** — declared FP mode 1. κ says `Env`; the body's `Exec` is candor's OWN over-charge of `DefaultProcessingEnvironment.getProcEnvironment`, which in commons-exec **1.4.0** only calls `System.getenv()` (`javap`: no `Runtime`/`ProcessBuilder` in the class) |
+
+**What would make it a gate**, in the order that buys the most:
+
+1. **Discount a hit whose path to the effect source crosses a functional-interface hop.** The callgraph
+   sidecar already holds the path; this one filter removes 33 of the 42 Exec candidates.
+2. **Ask what the ENGINE charges at a call site, not what the table says** — defect 2 above.
+3. **Ratchet rather than threshold.** A clean absolute state is not reachable, and does not need to be:
+   gate on *no NEW weaker-claim OWNER appears*, the shape the unknown-ratchet already uses. That makes the
+   instrument usable today, at 48% noise, as a regression gate.

@@ -1221,6 +1221,23 @@ public final class Query {
         if (includeUnknown) {
             broadByFn = new LinkedHashMap<>();
             for (Effector f : fns) {
+                // ⟨0.23⟩/⟨0.39⟩ A SYNTHETIC `interfaceUnion` ENTRY IS NOT A CALLER. Its `fn` names a
+                // BODILESS declaration — an interface member, an abstract one — and the JVM never runs it,
+                // so it cannot "possibly reach" anything. It DOES carry `Unknown` + `dispatch:OWNER.M` by
+                // design (a broad union is disclosed indeterminacy, never silence), which is exactly the
+                // shape this frontier keys on, so an unfiltered read lists the declaration BESIDE the real
+                // dispatcher. This is the same ruling {@link Policy} already applies one verb over — a
+                // union entry is a publication device for a chained consumer's dispatch, not a unit — and
+                // the reach is not lost: every implementer the union covers is reported under its own
+                // entry, and the dispatcher that actually invokes the member is listed on its own merits.
+                //
+                // MEASURED: candor-spec's dispatch-frontier differential went RED across every consumer
+                // the moment ⟨0.39⟩ un-gated these entries, with `possibleViaUnknownDispatch` carrying
+                // `fr.Base.op` (the declaration) alongside `fr.Dispatcher.run` (the dispatcher). It is the
+                // FABRICATION direction — an extra row, never a missing one — and it is a CONSUMER
+                // question, so candor-scan's and candor-ts's `callers` need the same filter; that half is
+                // reported rather than patched from here.
+                if (f.interfaceUnion()) continue;
                 for (UnknownReason why : f.unknownWhy()) {
                     if (why.kind() == UnknownReason.Kind.DISPATCH) {
                         String key = why.detail(); // OWNER.M (dotted)

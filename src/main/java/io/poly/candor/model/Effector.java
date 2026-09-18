@@ -48,7 +48,37 @@ public record Effector(
          *  declared uncertifiable". This engine computed it internally and never published it, so a
          *  consumer chaining its reports had nothing to carry. */
         List<String> incomplete,
-        boolean interfaceUnion) {
+        boolean interfaceUnion,
+        /** ⟨0.39⟩ SPEC §4 obligation 1 — the ABSTRACTION MEMBERS this unit dispatches on, TRANSITIVELY,
+         *  each spelled exactly as this engine spells an entry {@code hash} for that member
+         *  ({@code iface/Backend.size()I}). A JVM hash is already fully qualified in the OWNING package's
+         *  namespace, so ⟨0.39⟩'s "an engine MUST NOT invent a second spelling for this key" costs this
+         *  engine nothing: a consumer looks the key up in its {@code crossDeps} index directly, with no
+         *  package prefixing and no second convention. (candor-scan spells the member in the producing
+         *  crate's own namespace and has the consumer form {@code crate#member}; the property is the same,
+         *  the arithmetic differs, and the ⟨0.23⟩ rule — fully qualified in the OWNING package's
+         *  namespace, the same namespace that package's entry hashes use — is what both satisfy.)
+         *
+         *  <p><b>Carried EVEN WHEN THE ROW IS OTHERWISE PURE — the deliberate exception to §2 rule 3's
+         *  "reports omit pure functions".</b> The defect is a toggle running the wrong way: a dispatching
+         *  function whose only visible implementer happens to be pure is ABSENT from the report, and
+         *  absence is a purity claim, so ADDING A PURE IMPLEMENTATION TO A LIBRARY DELETED A DISCLOSURE
+         *  FROM EVERY CONSUMER OF IT (SOUNDNESS R475, measured live on ratatui). A pure function that
+         *  dispatches is no longer a function about which there is nothing to say. */
+        List<String> dispatchesOn) {
+
+    /** The pre-⟨0.39⟩ arity: an entry naming no dispatched member. Keeps every hand-built
+     *  {@code Effector} — the read side, the fix verbs, the tests — from restating the default. */
+    public Effector(String fn, String loc, EffectSet inferred, List<String> invisible, EffectSet direct,
+            EffectSet declared, EffectSet undeclared, EffectSet overdeclared, boolean entryPoint,
+            boolean unresolved, EffectorKind kind, List<UnknownReason> unknownWhy, String hash,
+            List<String> calls, List<String> fs, List<String> hosts, List<String> cmds,
+            List<String> paths, List<String> tables, List<String> netClass, List<String> incomplete,
+            boolean interfaceUnion) {
+        this(fn, loc, inferred, invisible, direct, declared, undeclared, overdeclared, entryPoint,
+                unresolved, kind, unknownWhy, hash, calls, fs, hosts, cmds, paths, tables, netClass,
+                incomplete, interfaceUnion, List.of());
+    }
 
     /** The pre-⟨0.23⟩ arity: an ordinary entry, never a synthetic {@code interfaceUnion} union. Keeps the
      *  read side and the tests that build an {@code Effector} by hand from restating the default. */
@@ -84,5 +114,6 @@ public record Effector(
         tables = List.copyOf(tables);
         netClass = List.copyOf(netClass);
         incomplete = List.copyOf(incomplete);
+        dispatchesOn = List.copyOf(dispatchesOn);
     }
 }

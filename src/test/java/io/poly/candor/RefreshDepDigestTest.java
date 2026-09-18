@@ -301,7 +301,9 @@ class RefreshDepDigestTest {
         c.netClass = new ArrayList<>(d.netClass);
         c.incomplete = new ArrayList<>(d.incomplete);
         c.unknownWhy = new ArrayList<>(d.unknownWhy);
+        c.dispatchesOn = new ArrayList<>(d.dispatchesOn);   // ⟨0.39⟩
         c.stale = d.stale;
+        c.walkOnly = d.walkOnly;   // ⟨0.39⟩
         c.fn = d.fn;
         return c;
     }

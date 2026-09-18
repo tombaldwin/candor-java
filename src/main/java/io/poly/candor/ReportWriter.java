@@ -80,6 +80,31 @@ final class ReportWriter {
         // structurally incomplete (AS-EFF-008) fails closed to `unknown-host` even if its VISIBLE hosts are
         // all telemetry/partner — a benign visible host must not certify a fn that also reaches an invisible one.
         Map<String, TreeSet<String>> incompleteAcc = literalFixpoint(ctx().surfaceIncomplete);
+        // ⟨0.39⟩ SPEC §4 obligation 1 — the DISPATCH REACH: every unit that reaches a dispatch site, itself
+        // or through a callee. A BOOLEAN closure, not a set-valued fixpoint, and the difference is the whole
+        // economics of this rung on the JVM.
+        //
+        // §4 says the member must be named on a row TRANSITIVELY, and the literal reading is what the other
+        // per-fn surfaces do: `literalFixpoint(dispatchDirect)`, the member sets unioned up the call graph.
+        // MEASURED, that is unaffordable here and not by a small margin. The JVM dispatches through
+        // interfaces everywhere, so the closure is dense rather than sparse the way `hosts`/`paths` are:
+        // avro-1.11.3 went from 852 member strings to 157,562 and its report from 1.2 MB to 13.0 MB (an
+        // 11x report against the +16% one this ships with), spring-core from 3.2 MB to 18.4 MB, and jooq —
+        // 9,483 union entries over 37,420 rows — could not be SERIALISED at all, dying in Gson with 8 GB of
+        // heap after four minutes where the same tree takes 5.6 seconds unrung. Five more of 372 corpus jars
+        // timed out past 600 s. A rung that crashes the reference engine on 2% of a real corpus is not
+        // shipped and then explained.
+        //
+        // SO THE TRANSITIVITY MOVES TO THE JOIN, which is where this engine already puts exactly this fact
+        // one field over: `unknownWhy` is DIRECT by contract and {@link Candor#depTransitiveWhy} recovers
+        // its closure at the consumer by walking the `calls` graph the dependency itself published. §2's
+        // `calls` is that graph, it is already on the wire, and a closure over it is the same set — so the
+        // wire carries each unit's DIRECT members and {@link Candor#depTransitiveDispatch} does the walk.
+        // The property §4 requires is unchanged: a caller that never spells the dispatch still reaches the
+        // member. What changes is that the answer is COMPUTED by the consumer instead of being copied onto
+        // every row of the producer. (candor-scan publishes the transitive form; its crates are smaller and
+        // its traits sparser. The divergence is reported against the clause, not hidden here.)
+        Set<String> dispatchReach = dispatchReach();
         List<Effector> effectors = new ArrayList<>();
         inferred.entrySet().stream()
                 // Keep a method if it has effects, is an entry point, has a BLIND SPOT (an unanalyzable
@@ -111,6 +136,14 @@ final class ReportWriter {
                     // OVER-CHARGE CONTROL, measured before shipping: +0 functions on gson, commons-lang3,
                     // jackson-core and joda-time. This admits the uncertain, not the merely uninteresting.
                     if (!incompleteAcc.getOrDefault(e.getKey(), new TreeSet<>()).isEmpty()) return true;
+                    // ⟨0.39⟩ …OR IT DISPATCHES. §2 rule 3 omits pure functions and §2's chaining rule 3
+                    // makes that absence a POSITIVE purity claim — which is the whole defect (SOUNDNESS
+                    // R475): a dispatching function whose only visible implementer happens to be pure
+                    // vanished from the report, so ADDING A PURE IMPLEMENTATION TO A LIBRARY DELETED A
+                    // DISCLOSURE FROM EVERY CONSUMER OF IT. §4 ⟨0.39⟩ obligation 1 makes this one
+                    // deliberate exception: absence keeps its meaning, and a dispatching row is no longer
+                    // absent, so the claim is one the producer is entitled to make.
+                    if (dispatchReach.contains(e.getKey())) return true;
                     String dc = fnToClass.get(e.getKey());
                     return dc != null && !declaredByClass.getOrDefault(dc, EffectSet.empty()).isEmpty();
                 })
@@ -134,10 +167,17 @@ final class ReportWriter {
                             .filter(globalBlind::contains).sorted().collect(Collectors.toList());
                     // Effect-relevant local call graph (SPEC §2 `calls`): the EFFECTFUL local callees,
                     // so a consumer can answer "who calls X?" from the report without re-analysis.
+                    // ⟨0.39⟩ …AND A CALLEE THAT REACHES A DISPATCH, effect-free or not. `calls` is the
+                    // graph a consumer walks to recover a transitive fact from direct ones
+                    // ({@link Candor#depTransitiveWhy}, and now {@code depTransitiveDispatch}), so a PURE
+                    // intermediary omitted from it BREAKS the walk — the member would stop one hop short of
+                    // the row the consumer actually joins, which is the shape of the defect this rung
+                    // closes. Bounded by the same reach set that decides emission, so `calls` never names a
+                    // unit the report omits.
                     List<String> calls = ctx().edges.getOrDefault(fn, Set.of()).stream()
                             .filter(c -> {
                                 EffectSet ce = inferred.get(c);
-                                return ce != null && !ce.isEmpty();
+                                return ce != null && !ce.isEmpty() || dispatchReach.contains(c);
                             })
                             .sorted().collect(Collectors.toList());
                     // Fs read/write detail (SPEC §2 `fs`): the access kind, when known AND complete.
@@ -202,10 +242,19 @@ final class ReportWriter {
                             // what lets a CHAINED consumer carry it, which §2's join clause requires.
                             incompleteAcc.containsKey(fn)
                                     ? new ArrayList<>(incompleteAcc.get(fn)) : List.<String>of(),
-                            false));   // not a synthetic ⟨0.23⟩ interface-union entry
+                            false,   // not a synthetic ⟨0.23⟩ interface-union entry
+                            // ⟨0.39⟩ SPEC §4 obligation 1 — the abstraction members this unit dispatches
+                            // on DIRECTLY, spelled as this engine's own entry hashes. The transitive half
+                            // is the consumer's walk over `calls` above; see the reach comment.
+                            ctx().dispatchDirect.containsKey(fn)
+                                    ? new ArrayList<>(ctx().dispatchDirect.get(fn)) : List.<String>of()));
                 });
-        // ⟨0.23, gated⟩ the synthetic INTERFACE-UNION entries. Appended last so the ordinary entries above
-        // are untouched; a no-op unless CANDOR_WORKSPACE_CHAIN is set.
+        // ⟨0.23⟩/⟨0.39⟩ the synthetic INTERFACE-UNION entries, LOCAL abstractions and FOREIGN ones alike.
+        // Appended last so the ordinary entries above are untouched. NO LONGER GATED: this rode behind
+        // CANDOR_WORKSPACE_CHAIN while §2's ⟨0.23⟩ paragraph read "gated/opt-in until a floor rung pins it",
+        // and §4 ⟨0.39⟩ is that rung — the entry is REQUIRED and its absence a non-conformance. The gate is
+        // not incidental to the defect either: it is WHY the silent-purity toggle survived in default scans,
+        // which is the one thing a default scan must not let happen.
         appendInterfaceUnions(effectors, inferred, blindAcc, globalBlind,
                 hostsAcc, cmdsAcc, pathsAcc, tablesAcc, incompleteAcc);
         // v0.2 self-describing envelope (candor-spec §2): a provenance header + the entries. Readers
@@ -267,19 +316,8 @@ final class ReportWriter {
         reportUnknownSources();
     }
 
-    /** ⟨0.23⟩ Is the workspace-chain rung ON? PRESENCE of {@code CANDOR_WORKSPACE_CHAIN} in the environment,
-     *  matching candor-scan (`env::var_os(..).is_some()`) and candor-swift. A package-private field rather
-     *  than a direct read so an in-process test can drive both arms; {@link #workspaceChainOverride} is null
-     *  in every production path, so the env var is the only thing that turns the rung on. */
-    static Boolean workspaceChainOverride = null;
-
-    static boolean workspaceChain() {
-        return workspaceChainOverride != null ? workspaceChainOverride
-                : System.getenv("CANDOR_WORKSPACE_CHAIN") != null;
-    }
-
     /**
-     * ⟨0.23, gated on {@code CANDOR_WORKSPACE_CHAIN}⟩ INTERFACE-CHA UNION ENTRIES — candor-java joining the
+     * ⟨0.23⟩/⟨0.39⟩ INTERFACE-CHA UNION ENTRIES — candor-java joining the
      * rung candor-scan / candor-ts / candor-swift already ship (SPEC §2, WORKSPACE-CHAINING-DESIGN.md,
      * conformance PART 18).
      *
@@ -421,16 +459,18 @@ final class ReportWriter {
      * ({@code hosts}/{@code cmds}/{@code paths}/{@code tables}/{@code netClass}) are exactly the ones
      * {@code crossDepJoin} inherits, so the join is as informative through a union as through a real entry;
      * {@code fs} (the read/write kind) is not among them and is omitted rather than half-published. And a
-     * union entry is NOT in ⟨0.21⟩ {@code analyzed} — it is not a unit anyone analysed — so under this flag
+     * union entry is NOT in ⟨0.21⟩ {@code analyzed} — it is not a unit anyone analysed — so
      * {@code analyzed.count − |functions|} undercounts the pure set by the number of marked entries. That
-     * is what the marker is for; a consumer computing the pure count subtracts them.
+     * is what the marker is for; a consumer computing the pure count subtracts them. (⟨0.39⟩: this used to
+     * say "under this flag". There is no flag — §2's ⟨0.24⟩ paragraph already names the inequality as
+     * legitimately reachable BECAUSE of these entries, and it is now reachable in every scan.)
      */
     private static void appendInterfaceUnions(List<Effector> effectors, Map<String, EffectSet> inferred,
             Map<String, TreeSet<String>> blindAcc, Set<String> globalBlind,
             Map<String, TreeSet<String>> hostsAcc, Map<String, TreeSet<String>> cmdsAcc,
             Map<String, TreeSet<String>> pathsAcc, Map<String, TreeSet<String>> tablesAcc,
             Map<String, TreeSet<String>> incompleteAcc) {
-        if (!workspaceChain()) return;
+        if (publishUnionsOverrideForTest != null && !publishUnionsOverrideForTest) return;
         // The REAL entry claiming each hash, by index — the union MERGES into it (see the `default`-method
         // bullet above); `putIfAbsent` keeps the first, so the merge target is stable.
         Map<String, Integer> claimedAt = new HashMap<>();
@@ -438,136 +478,228 @@ final class ReportWriter {
         Set<String> published = new HashSet<>();            // one entry per hash, whatever ALL contains
         List<Effector> unions = new ArrayList<>();
         int merged = 0;
-        for (ClassNode cn : ctx().ALL) {
-            boolean iface = (cn.access & org.objectweb.asm.Opcodes.ACC_INTERFACE) != 0;
-            // An ABSTRACT CLASS declares bodiless members too — see the "abstract dep CLASS" paragraph.
-            if (!iface && (cn.access & org.objectweb.asm.Opcodes.ACC_ABSTRACT) == 0) continue;
-            for (MethodNode mn : cn.methods) {
-                if ((mn.access & (org.objectweb.asm.Opcodes.ACC_STATIC | org.objectweb.asm.Opcodes.ACC_PRIVATE
-                        | org.objectweb.asm.Opcodes.ACC_SYNTHETIC)) != 0) continue;
-                if (mn.name.startsWith("<")) continue;
-                // THE SCOPE, and the whole soundness argument for the abstract-class arm: a CLASS publishes
-                // only its ABSTRACT members. A concrete member's key names a body that exists and was
-                // analysed, so its absence from the report is a TRUE purity claim about that body and must
-                // not be overwritten by a union over overrides. An abstract member's key names a
-                // declaration the JVM will never run, so no report of any version can ever answer it —
-                // the unanswerable key. (Widening this to concrete overridable members is a separate,
-                // larger question; see the paragraph above and its pinned test.)
-                if (!iface && (mn.access & org.objectweb.asm.Opcodes.ACC_ABSTRACT) == 0) continue;
-                String hash = cn.name + "." + mn.name + mn.desc;   // the exact key crossDepJoin forms
-                if (!published.add(hash)) continue;
-                Integer at = claimedAt.get(hash);
-                Effector real = at == null ? null : effectors.get(at);
-                List<String> impls = chaTargets(cn.name, mn.name, mn.desc);
-                // BOUNDED CHA, the same bound every IN-SCAN dispatch site applies (Candor: `broad =
-                // cha.size() > CHA_FANOUT_LIMIT && !isClosedHierarchy(owner)`). Past the limit an OPEN
-                // hierarchy may have a subtype candor never saw, so its visible union is an open-world
-                // guess, and publishing it is a FABRICATION at the far end: a consumer holding the one
-                // pure implementer reads {Rand, Net, Fs} and fails `deny Net`. Only the consumer breaks,
-                // which is why nothing local caught it — the producing scan's own gate reads `inferred`,
-                // never the report it writes. A PROVABLY-closed hierarchy (a sealed family's `permits`
-                // list is the whole subtype set) is exempt exactly as in-scan: its union is exact.
-                // The in-scan formula's THIRD term, `closedWorldResolvable`, is deliberately NOT copied:
-                // CANDOR_CLOSED_WORLD asserts the scanned classes are the whole world, and that assertion
-                // is exactly what publishing for a CHAINED consumer contradicts — the consumer's own
-                // implementers are, by construction, outside this scan.
-                boolean broad = impls.size() > Rules.CHA_FANOUT_LIMIT && !isClosedHierarchy(cn.name);
-                EffectSet inf = EffectSet.empty();
-                // What the OTHER implementers contribute — the interface's own `default` body is one of
-                // `chaTargets`' targets, and only the rest is news to a claimed entry.
-                EffectSet fromOthers = EffectSet.empty();
-                TreeSet<String> inv = new TreeSet<>(), hosts = new TreeSet<>(), cmds = new TreeSet<>(),
-                        paths = new TreeSet<>(), tables = new TreeSet<>(), classes = new TreeSet<>(),
-                        // ⟨0.29⟩ the implementers' UNDETERMINED locators, unioned exactly as their
-                        // determined ones are three lines down. A union that widens the surface must widen
-                        // the doubt that qualifies it, or one implementer's benign literal certifies
-                        // another's unseen one at every consumer that joins this entry.
-                        incUnion = new TreeSet<>();
-                // UNKNOWN, not silence. Dropping the broad union and publishing nothing would be the other
-                // half of the same defect: a dep report omits its pure functions, so an absent entry IS a
-                // purity claim (§2 rule 3), and twelve pure implementers do not make the thirteenth pure.
-                // Unknown is what is true of candor's state, and it is what the in-scan site reports.
-                // The reason travels ON THE WIRE (`unknownWhy`), for a report reader and --gate-json. It
-                // does NOT reach a chained consumer's gate: {@link DepFn} carries effects and surfaces but
-                // no reasons, so an inherited Unknown classifies as `unresolved` there and only a bare
-                // `deny Unknown` bites, not `deny Unknown[dispatch]`. Measured, not assumed, and pinned as
-                // a residual in InterfaceUnionTest — it is a pre-existing gap in the cross-dep join (it
-                // costs EVERY dep Unknown its class, reflect included), not something this rung introduced.
-                List<UnknownReason> why = List.of();
-                if (broad) {
-                    inf.add(Effect.UNKNOWN);
-                    why = List.of(UnknownReason.of(UnknownReason.Kind.DISPATCH,
-                            cn.name.replace('/', '.') + "." + mn.name));
-                }
-                for (String impl : broad ? List.<String>of() : impls) {
-                    EffectSet ie = inferred.get(impl);
-                    if (ie != null) {
-                        inf.addAll(ie);
-                        if (real == null || !impl.equals(real.fn())) fromOthers.addAll(ie);
-                    }
-                    inv.addAll(blindAcc.getOrDefault(impl, new TreeSet<>()).stream()
-                            .filter(globalBlind::contains).collect(Collectors.toList()));
-                    TreeSet<String> ih = hostsAcc.getOrDefault(impl, new TreeSet<>());
-                    hosts.addAll(ih);
-                    cmds.addAll(cmdsAcc.getOrDefault(impl, new TreeSet<>()));
-                    paths.addAll(pathsAcc.getOrDefault(impl, new TreeSet<>()));
-                    tables.addAll(tablesAcc.getOrDefault(impl, new TreeSet<>()));
-                    incUnion.addAll(incompleteAcc.getOrDefault(impl, new TreeSet<>()));
-                    // ⟨0.20⟩ Net destination-class, classified PER IMPLEMENTER — the fail-closed rule is
-                    // "a Net with no visible host, or a masked surface, is unknown-host", and it has to be
-                    // asked of each body separately. Merging the host SETS first and classifying afterwards
-                    // let one implementer's literal `sentry.io` fill the set and certify a sibling whose
-                    // endpoint candor cannot see as `known-telemetry`: `deny Net[unknown-host]` then passed
-                    // on a dependency that posts to a runtime-computed address. A union of hosts is not a
-                    // host. (The masked marker was already OR-ed; the hostless branch — the one an
-                    // `HttpClient.send(request,…)` or a field-held `URLConnection` takes — was not.)
-                    if (ie != null && ie.contains(Effect.NET)) {
-                        for (String h : ih) classes.add(Literals.netDestClass(h, ctx().netPartners));
-                        if (ih.isEmpty() || incompleteAcc.getOrDefault(impl, new TreeSet<>()).contains("Net"))
-                            classes.add("unknown-host");
-                    }
-                }
-                if (inf.isEmpty() && inv.isEmpty()) continue;      // pure across every implementer
-                List<String> netClass = List.of();
-                if (inf.contains(Effect.NET)) {
-                    // A union that reaches Net with nothing classifiable behind it (an implementer whose
-                    // own entry candor never wrote) still fails closed rather than omitting the field.
-                    if (classes.isEmpty()) classes.add("unknown-host");
-                    netClass = new ArrayList<>(classes);
-                }
-                if (real != null) {
-                    Effector wide = mergeUnionInto(real, inf, fromOthers, inv, hosts, cmds, paths, tables,
-                            netClass, why, broad, incUnion);
-                    if (wide != real) { effectors.set(at, wide); merged++; }
-                    continue;
-                }
-                unions.add(new Effector(
-                        cn.name.replace('/', '.') + "." + mn.name, "", inf, new ArrayList<>(inv),
-                        EffectSet.empty(), EffectSet.empty(), EffectSet.empty(), EffectSet.empty(),
-                        false, inf.hasUnknown(), EffectorKind.FUNCTION, why, hash, List.of(),
-                        List.of(),
-                        inf.contains(Effect.NET) ? new ArrayList<>(hosts) : List.of(),
-                        inf.contains(Effect.EXEC) ? new ArrayList<>(cmds) : List.of(),
-                        inf.contains(Effect.FS) ? new ArrayList<>(paths) : List.of(),
-                        inf.contains(Effect.DB) ? new ArrayList<>(tables) : List.of(),
-                        netClass,
-                        // ⟨0.29⟩ THE UNION CARRIES THE IMPLEMENTERS' INCOMPLETENESS, and the comment that
-                        // used to sit here — "a synthetic union entry carries no `incomplete` of its own"
-                        // — reasoned itself into the exact defect this field was added to close, one hop
-                        // over. The entry PUBLISHES the union of its implementers' `paths`/`cmds`/`tables`
-                        // three lines up; a consumer joining it therefore sees implementer B's benign
-                        // literal with no marker that implementer A could not determine its own. That is
-                        // the false all-clear of B3, reached through the ⟨0.23⟩ dispatch entry instead of
-                        // through an ordinary one. If the union is allowed to widen the surface, it must
-                        // widen the doubt that qualifies it.
-                        new ArrayList<>(incUnion), true));
+        for (String[] k : unionCandidates()) {
+            String owner = k[0], name = k[1], desc = k[2];
+            String hash = owner + "." + name + desc;          // the exact key crossDepJoin forms
+            if (!published.add(hash)) continue;
+            Integer at = claimedAt.get(hash);
+            Effector real = at == null ? null : effectors.get(at);
+            List<String> impls = chaTargets(owner, name, desc);
+            // BOUNDED CHA, the same bound every IN-SCAN dispatch site applies (Candor: `broad =
+            // cha.size() > CHA_FANOUT_LIMIT && !isClosedHierarchy(owner)`). Past the limit an OPEN
+            // hierarchy may have a subtype candor never saw, so its visible union is an open-world
+            // guess, and publishing it is a FABRICATION at the far end: a consumer holding the one
+            // pure implementer reads {Rand, Net, Fs} and fails `deny Net`. Only the consumer breaks,
+            // which is why nothing local caught it — the producing scan's own gate reads `inferred`,
+            // never the report it writes. A PROVABLY-closed hierarchy (a sealed family's `permits`
+            // list is the whole subtype set) is exempt exactly as in-scan: its union is exact.
+            // The in-scan formula's THIRD term, `closedWorldResolvable`, is deliberately NOT copied:
+            // CANDOR_CLOSED_WORLD asserts the scanned classes are the whole world, and that assertion
+            // is exactly what publishing for a CHAINED consumer contradicts — the consumer's own
+            // implementers are, by construction, outside this scan.
+            boolean broad = impls.size() > Rules.CHA_FANOUT_LIMIT && !isClosedHierarchy(owner);
+            EffectSet inf = EffectSet.empty();
+            // What the OTHER implementers contribute — the interface's own `default` body is one of
+            // `chaTargets`' targets, and only the rest is news to a claimed entry.
+            EffectSet fromOthers = EffectSet.empty();
+            TreeSet<String> inv = new TreeSet<>(), hosts = new TreeSet<>(), cmds = new TreeSet<>(),
+                    paths = new TreeSet<>(), tables = new TreeSet<>(), classes = new TreeSet<>(),
+                    // ⟨0.29⟩ the implementers' UNDETERMINED locators, unioned exactly as their
+                    // determined ones are three lines down. A union that widens the surface must widen
+                    // the doubt that qualifies it, or one implementer's benign literal certifies
+                    // another's unseen one at every consumer that joins this entry.
+                    incUnion = new TreeSet<>();
+            // UNKNOWN, not silence. Dropping the broad union and publishing nothing would be the other
+            // half of the same defect: a dep report omits its pure functions, so an absent entry IS a
+            // purity claim (§2 rule 3), and twelve pure implementers do not make the thirteenth pure.
+            // Unknown is what is true of candor's state, and it is what the in-scan site reports.
+            // The reason travels ON THE WIRE (`unknownWhy`), for a report reader and --gate-json. It
+            // does NOT reach a chained consumer's gate: {@link DepFn} carries effects and surfaces but
+            // no reasons, so an inherited Unknown classifies as `unresolved` there and only a bare
+            // `deny Unknown` bites, not `deny Unknown[dispatch]`. Measured, not assumed, and pinned as
+            // a residual in InterfaceUnionTest — it is a pre-existing gap in the cross-dep join (it
+            // costs EVERY dep Unknown its class, reflect included), not something this rung introduced.
+            List<UnknownReason> why = List.of();
+            if (broad) {
+                inf.add(Effect.UNKNOWN);
+                why = List.of(UnknownReason.of(UnknownReason.Kind.DISPATCH,
+                        owner.replace('/', '.') + "." + name));
             }
+            for (String impl : broad ? List.<String>of() : impls) {
+                EffectSet ie = inferred.get(impl);
+                if (ie != null) {
+                    inf.addAll(ie);
+                    if (real == null || !impl.equals(real.fn())) fromOthers.addAll(ie);
+                }
+                inv.addAll(blindAcc.getOrDefault(impl, new TreeSet<>()).stream()
+                        .filter(globalBlind::contains).collect(Collectors.toList()));
+                TreeSet<String> ih = hostsAcc.getOrDefault(impl, new TreeSet<>());
+                hosts.addAll(ih);
+                cmds.addAll(cmdsAcc.getOrDefault(impl, new TreeSet<>()));
+                paths.addAll(pathsAcc.getOrDefault(impl, new TreeSet<>()));
+                tables.addAll(tablesAcc.getOrDefault(impl, new TreeSet<>()));
+                incUnion.addAll(incompleteAcc.getOrDefault(impl, new TreeSet<>()));
+                // ⟨0.20⟩ Net destination-class, classified PER IMPLEMENTER — the fail-closed rule is
+                // "a Net with no visible host, or a masked surface, is unknown-host", and it has to be
+                // asked of each body separately. Merging the host SETS first and classifying afterwards
+                // let one implementer's literal `sentry.io` fill the set and certify a sibling whose
+                // endpoint candor cannot see as `known-telemetry`: `deny Net[unknown-host]` then passed
+                // on a dependency that posts to a runtime-computed address. A union of hosts is not a
+                // host. (The masked marker was already OR-ed; the hostless branch — the one an
+                // `HttpClient.send(request,…)` or a field-held `URLConnection` takes — was not.)
+                if (ie != null && ie.contains(Effect.NET)) {
+                    for (String h : ih) classes.add(Literals.netDestClass(h, ctx().netPartners));
+                    if (ih.isEmpty() || incompleteAcc.getOrDefault(impl, new TreeSet<>()).contains("Net"))
+                        classes.add("unknown-host");
+                }
+            }
+            if (inf.isEmpty() && inv.isEmpty()) continue;      // pure across every implementer
+            List<String> netClass = List.of();
+            if (inf.contains(Effect.NET)) {
+                // A union that reaches Net with nothing classifiable behind it (an implementer whose
+                // own entry candor never wrote) still fails closed rather than omitting the field.
+                if (classes.isEmpty()) classes.add("unknown-host");
+                netClass = new ArrayList<>(classes);
+            }
+            if (real != null) {
+                Effector wide = mergeUnionInto(real, inf, fromOthers, inv, hosts, cmds, paths, tables,
+                        netClass, why, broad, incUnion);
+                if (wide != real) { effectors.set(at, wide); merged++; }
+                continue;
+            }
+            unions.add(new Effector(
+                    owner.replace('/', '.') + "." + name, "", inf, new ArrayList<>(inv),
+                    EffectSet.empty(), EffectSet.empty(), EffectSet.empty(), EffectSet.empty(),
+                    false, inf.hasUnknown(), EffectorKind.FUNCTION, why, hash, List.of(),
+                    List.of(),
+                    inf.contains(Effect.NET) ? new ArrayList<>(hosts) : List.of(),
+                    inf.contains(Effect.EXEC) ? new ArrayList<>(cmds) : List.of(),
+                    inf.contains(Effect.FS) ? new ArrayList<>(paths) : List.of(),
+                    inf.contains(Effect.DB) ? new ArrayList<>(tables) : List.of(),
+                    netClass,
+                    // ⟨0.29⟩ THE UNION CARRIES THE IMPLEMENTERS' INCOMPLETENESS, and the comment that
+                    // used to sit here — "a synthetic union entry carries no `incomplete` of its own"
+                    // — reasoned itself into the exact defect this field was added to close, one hop
+                    // over. The entry PUBLISHES the union of its implementers' `paths`/`cmds`/`tables`
+                    // three lines up; a consumer joining it therefore sees implementer B's benign
+                    // literal with no marker that implementer A could not determine its own. That is
+                    // the false all-clear of B3, reached through the ⟨0.23⟩ dispatch entry instead of
+                    // through an ordinary one. If the union is allowed to widen the surface, it must
+                    // widen the doubt that qualifies it.
+                    new ArrayList<>(incUnion), true));
         }
         if (unions.isEmpty() && merged == 0) return;
         unions.sort(Comparator.comparing(Effector::hash));
         effectors.addAll(unions);
         System.err.println("candor-java: emitted " + unions.size()
-                + " interface-CHA union entries, merged " + merged + " into a claimed hash (workspace chain)");
+                + " interface-CHA union entries, merged " + merged + " into a claimed hash"
+                + " (⟨0.23⟩ local abstractions and ⟨0.39⟩ foreign ones)");
+    }
+
+    /** ⟨0.39⟩ Every unit that reaches a dispatch site — itself, or through any chain of local callees.
+     *
+     *  <p>A reverse BFS from {@link AnalysisContext#dispatchDirect}'s keys over the call edges, i.e. O(V+E)
+     *  once, against the set-valued fixpoint's O(V x members) — which is the cost recorded at the call site,
+     *  and it is a runtime cost as well as a wire one (four minutes against five seconds on jooq). Two
+     *  readers: the emission filter, because a PURE unit that reaches a dispatch must be in the report at
+     *  all, and `calls`, because the consumer's walk has to pass THROUGH it. */
+    private static Set<String> dispatchReach() {
+        Map<String, List<String>> callers = new HashMap<>();
+        for (var e : ctx().edges.entrySet())
+            for (String callee : e.getValue())
+                callers.computeIfAbsent(callee, k -> new ArrayList<>()).add(e.getKey());
+        Set<String> reach = new HashSet<>();
+        ArrayDeque<String> q = new ArrayDeque<>(ctx().dispatchDirect.keySet());
+        reach.addAll(q);
+        while (!q.isEmpty())
+            for (String c : callers.getOrDefault(q.poll(), List.of()))
+                if (reach.add(c)) q.add(c);
+        return reach;
+    }
+
+    /** TEST-ONLY. ⟨0.39⟩ deleted the {@code CANDOR_WORKSPACE_CHAIN} gate — the union entry is REQUIRED and
+     *  its absence a non-conformance, so there is no production switch left and this field is never written
+     *  outside a test. It exists because the ADDITIVITY assertions need a BEFORE arm ("turning the rung on
+     *  must not touch a single ordinary entry", "inert on a tree with no abstraction"), and after the gate
+     *  went there was no other way to produce one from the same binary. Null → publish, which is what every
+     *  production path does; {@code InterfaceUnionTest#noEnvironmentVariableGatesTheRungAnyMore} proves it
+     *  in a real subprocess with the old variable UNSET, because a field a test can set is exactly the kind
+     *  of thing that comes to stand in for the product's behaviour. */
+    static Boolean publishUnionsOverrideForTest = null;
+
+    /**
+     * EVERY ABSTRACTION MEMBER this scan may publish a union for, as {@code {ownerInternal, name, desc}} —
+     * the two arms of {@link #appendInterfaceUnions}, enumerated in one place so the union body below is
+     * ONE implementation rather than two that drift (the defect this family keeps paying for; see
+     * {@code crossDepJoin}'s comment on the ⟨0.19⟩ reason class reaching one copy and not the other).
+     *
+     * <p><b>ARM 1 — LOCAL abstractions</b> (⟨0.23⟩, unchanged): a project interface's members, and a project
+     * ABSTRACT CLASS's ABSTRACT members. The scope argument is the unanswerable key: an abstract member's
+     * key names a declaration the JVM will never run, so no report of any version can answer it, while a
+     * CONCRETE member's key names a body that was analysed and whose absence from the report is a TRUE
+     * purity claim about that body — which a union over overrides must not overwrite.
+     *
+     * <p><b>ARM 2 — FOREIGN abstractions</b> (⟨0.39⟩ SPEC §4 obligation 2): a member of an abstraction this
+     * package does NOT own but DOES implement, keyed under the package that owns it. Arm 1 covers local
+     * abstractions only, and in the measured instance (SOUNDNESS R475, live on ratatui) that is exactly the
+     * leg that misses: {@code ratatui-core} declares {@code Backend} and sees one PURE implementer, the
+     * effectful {@code CrosstermBackend} lives in a THIRD package, and a consumer chained onto both is told
+     * nothing by either report. Neither this entry nor {@code dispatchesOn} is any use without the other,
+     * which is why §4 says no two of the three obligations are separable.
+     *
+     * <p>THE KEY TAKES NO NEW SPELLING RULE. A JVM entry hash is {@code owner/Class.method(desc)} — already
+     * fully qualified in the OWNING package's namespace, the same namespace that package's own entry hashes
+     * use — so this is the ⟨0.23⟩ {@code typeSurface} rule rather than a second convention, and the
+     * consumer's ORDINARY chained lookup resolves it with no special case in {@link Loader}.
+     *
+     * <p><b>THE FOREIGN ARM IS BOUNDED BY THE κ FRONTIER, and that bound is a NARROWING, not a grant.</b>
+     * {@code java/lang/Runnable.run()V} is a foreign abstraction that nearly every jar implements: publishing
+     * a union under it would charge one library's effectful {@code Runnable} onto every {@code r.run()} in
+     * every consumer — the fabrication direction §4 forbids, and candor-scan's own gate (the owner must be a
+     * DECLARED dependency, never {@code std}) refuses the same shape with the manifest this engine does not
+     * have. {@link Candor#kappaCovers} is the JVM's nearest statement of "a namespace this engine models
+     * rather than analyses", so a κ-covered owner is skipped. What that costs is a union entry under an
+     * abstraction owned by a modelled framework, which leaves those consumers reading EXACTLY what they read
+     * before this rung — no disclosure is deleted, and the residual is measured in the commit message rather
+     * than asserted here.
+     *
+     * <p>A key whose owner does not in fact declare that member (a project class's own helper method, one
+     * name away from an override) is inert wire noise: no consumer can form that key, because forming it
+     * requires a call site whose static owner IS that abstraction. Refusing it would need the foreign type's
+     * bytecode, which by construction is not in this scan.
+     */
+    private static List<String[]> unionCandidates() {
+        List<String[]> out = new ArrayList<>();
+        for (ClassNode cn : ctx().ALL) {
+            boolean iface = (cn.access & org.objectweb.asm.Opcodes.ACC_INTERFACE) != 0;
+            boolean abs = (cn.access & org.objectweb.asm.Opcodes.ACC_ABSTRACT) != 0;
+            // ARM 2's owners: the EXTERNAL supertypes of this class, outside the κ frontier. Computed once
+            // per class rather than per method.
+            List<String> foreign = new ArrayList<>();
+            for (String sup : new TreeSet<>(Candor.transSupers(cn.name))) {
+                if (ctx().projectClasses.contains(sup) || sup.equals("java/lang/Object")) continue;
+                int slash = sup.lastIndexOf('/');
+                String pkg = slash > 0 ? sup.substring(0, slash).replace('/', '.') : "";
+                if (pkg.isEmpty() || Candor.kappaCovers(pkg)) continue;
+                foreign.add(sup);
+            }
+            for (MethodNode mn : cn.methods) {
+                if ((mn.access & (org.objectweb.asm.Opcodes.ACC_STATIC | org.objectweb.asm.Opcodes.ACC_PRIVATE
+                        | org.objectweb.asm.Opcodes.ACC_SYNTHETIC)) != 0) continue;
+                if (mn.name.startsWith("<")) continue;
+                if ((iface || abs) && (iface || (mn.access & org.objectweb.asm.Opcodes.ACC_ABSTRACT) != 0))
+                    out.add(new String[] { cn.name, mn.name, mn.desc });                       // ARM 1
+                // ARM 2 publishes over a member this class actually IMPLEMENTS, so an abstract declaration
+                // contributes nothing here — its body is elsewhere and will be reached through whichever
+                // concrete class declares it. §4's Object protocol is excluded for the same reason it is at
+                // the dispatch site: "pure even when overridden", and a chained answer must not contradict
+                // the in-scan one.
+                if ((mn.access & org.objectweb.asm.Opcodes.ACC_ABSTRACT) != 0) continue;
+                if (Candor.isObjectProtocolExempt(mn.name, mn.desc)) continue;
+                for (String sup : foreign) out.add(new String[] { sup, mn.name, mn.desc });    // ARM 2
+            }
+        }
+        return out;
     }
 
     /**
@@ -648,7 +780,12 @@ final class ReportWriter {
                 // dropping the union's would let another implementer's literal certify what THIS one
                 // could not see — the same defect from the two sides, so the merge takes both.
                 incMerged,
-                real.interfaceUnion());
+                real.interfaceUnion(),
+                // ⟨0.39⟩ THE MERGE MUST NOT DROP THE DISPATCHED MEMBERS. `real` is an ordinary entry that
+                // may already name what it dispatches on; widening its effects with the union is no reason
+                // to withdraw the name, and withdrawing it would delete obligation 1's disclosure from
+                // exactly the rows the ⟨0.23⟩ merge touches.
+                real.dispatchesOn());
     }
 
     /** ⟨0.21⟩ An opaque, within-engine-stable fingerprint of a sorted qual set — FNV-1a 64-bit over the

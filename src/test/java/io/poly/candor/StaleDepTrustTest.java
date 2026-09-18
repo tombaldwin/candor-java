@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static io.poly.candor.TestCompiler.compileApp;
@@ -436,17 +437,73 @@ class StaleDepTrustTest {
         // specifically ("INCOMPLETE: an unresolvable dispatch … must stay disclosed"). Coverage is anchored
         // twice the same way, which is why the fix had to gate both of those too: gating one would have
         // been a no-op wearing a fix's clothes.
+        // ⟨0.39⟩ THE ASSERTION MOVED, AND WHAT IT PROTECTS DID NOT. Un-gating the ⟨0.23⟩ union entry means
+        // a FRESH (or merely incomplete) `lib` now PUBLISHES `Store.save`'s union, so the consumer resolves
+        // the dispatch precisely — `['Fs']` — instead of hedging `['Unknown']`. That is §2's stated effect
+        // for this rung ("Unknown → the precise union"), it is strictly more information, and it is NOT what
+        // this row is about. The row is about SILENCE: on a κ-CURATED package nothing emits `invisible`, so
+        // an empty answer here is an unqualified purity claim about a method that writes a file. So the
+        // assertion is "never empty, and never absent", per arm, plus the reason where the hedge survives.
         for (Arm arm : List.of(Arm.FRESH, Arm.STALE, Arm.INCOMPLETE)) {
             Map<String, Object> r = reportFor(arm, lib, app);
-            assertTrue(inferredOf(r, "app.T.run").contains("Unknown"),
-                    arm + ": an unresolvable dispatch into a chained dep must stay disclosed — neither §2.1 "
-                    + "distrust of the report's EFFECTS nor its own incompleteness is a reason to stop "
-                    + "saying the dispatch is unresolved. Got " + inferredOf(r, "app.T.run"));
-            assertTrue(unknownWhyOf(r, "app.T.run").stream().anyMatch(w -> w.startsWith("dispatch:")),
-                    arm + ": the Unknown carries its dispatch reason, got " + unknownWhyOf(r, "app.T.run"));
+            List<String> inf = inferredOf(r, "app.T.run");
+            assertNotNull(inf, arm + ": the caller must not be ABSENT — absence IS a purity claim");
+            assertFalse(inf.isEmpty(),
+                    arm + ": a dispatch into a chained dep must resolve or disclose, never read pure —"
+                    + " neither §2.1 distrust of the report's EFFECTS nor its own incompleteness is a reason"
+                    + " to say nothing. Got " + inf);
+            if (inf.contains("Unknown"))
+                // ⟨0.39⟩ THE REASON CLASS MOVED ON THE STALE ARM, and it is recorded rather than smoothed
+                // over. With the ⟨0.23⟩ union un-gated, `lib` now publishes `Store.save`, so on STALE the
+                // consumer JOINS that entry (its effects downgraded to Unknown by §2.1) instead of failing
+                // to form a key — so the reason is `dep-stale:<pkg>` where it used to be
+                // `dispatch:lib.Store.save`. Both project to `unresolved` (see DepFn), so a bare
+                // `deny E Unknown` and a `deny E Unknown[unresolved]` are unmoved; a
+                // `deny E Unknown[dispatch]` over a STALE chain now reads `unresolved` instead. Dropping
+                // the stale synthetic entry to restore the old spelling was considered and REFUSED: half
+                // 1's disclosure is a five-conjunct CONJUNCTION, so on any shape that fails one of them
+                // (an INVOKEVIRTUAL receiver, a dep holding no effectful body with the signature) the
+                // Unknown would not come back at all and the consumer would read PURE. A reason class is
+                // worth less than an effect.
+                assertTrue(unknownWhyOf(r, "app.T.run").stream()
+                                .anyMatch(w -> w.startsWith("dispatch:") || w.startsWith("dep-stale:")),
+                        arm + ": the Unknown carries a reason, got " + unknownWhyOf(r, "app.T.run"));
+            else
+                assertTrue(inf.contains("Fs"),
+                        arm + ": resolved rather than hedged — it must be the implementer's REAL effect and"
+                        + " not some other one. Got " + inf);
             assertEquals(List.of(), invisibleOf(r, "app.T.run"),
-                    arm + ": a κ-CURATED package emits no `invisible`, which is why losing the dispatch "
-                    + "disclosure here would be silent");
+                    arm + ": a κ-CURATED package emits no `invisible`, which is why losing the answer "
+                    + "here would be silent");
+        }
+    }
+
+    /** ⟨0.39⟩ THE ARM THAT KEEPS HALF 1 PINNED — a separate {@code @Test} on purpose, because these scans
+     *  run IN-PROCESS and the row above and this one differ only in the dependency's implementer set.
+     *
+     *  <p>With no implementer anywhere in {@code lib} there is no union to publish, so the consumer falls
+     *  back to the untyped-cross-package-receiver disclosure — the branch the row above stopped exercising
+     *  on FRESH once the ⟨0.23⟩ union was un-gated, and the one whose loss that row's paragraph measured on
+     *  logback-classic. */
+    @Test
+    void withNoImplementerInTheDependencyTheDispatchDisclosureSurvivesEveryTrustArm() throws Exception {
+        Map<String, String> app = Map.of(
+            "app/T.java", "package app;\nimport ch.qos.logback.candorfixture.Store;\n"
+                + "public class T {\n  public void run(Store s){ s.save(\"x\"); }\n}\n");
+        Map<String, String> noImpl = Map.of("ch/qos/logback/candorfixture/Store.java",
+            "package ch.qos.logback.candorfixture;\npublic interface Store { void save(String s); }\n",
+            "ch/qos/logback/candorfixture/Other.java",
+            "package ch.qos.logback.candorfixture;\nimport java.io.*;\n"
+            + "public class Other {\n  public void save(String s){ try { new FileWriter(\"/tmp/x\").close(); }"
+            + " catch (Exception e) {} }\n}\n");
+        for (Arm arm : List.of(Arm.FRESH, Arm.STALE, Arm.INCOMPLETE)) {
+            Map<String, Object> r = reportFor(arm, noImpl, app);
+            assertTrue(inferredOf(r, "app.T.run") != null && inferredOf(r, "app.T.run").contains("Unknown"),
+                    arm + " (no implementer): an unresolvable dispatch into a chained dep must stay"
+                    + " disclosed, got " + inferredOf(r, "app.T.run"));
+            assertTrue(unknownWhyOf(r, "app.T.run").stream().anyMatch(w -> w.startsWith("dispatch:")),
+                    arm + " (no implementer): the Unknown carries its dispatch reason, got "
+                    + unknownWhyOf(r, "app.T.run"));
         }
     }
 }

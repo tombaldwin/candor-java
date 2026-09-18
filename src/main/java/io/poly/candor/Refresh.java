@@ -68,8 +68,16 @@ import io.poly.candor.model.UnknownReason;
 final class Refresh {
 
     /** Bumped when the on-disk shape changes. An older file is discarded, never migrated: a cache is
-     *  rebuildable by definition, so migration code would be risk with nothing on the other side. */
-    private static final String FORMAT = "candor-refresh-1";
+     *  rebuildable by definition, so migration code would be risk with nothing on the other side.
+     *
+     *  <p><b>-2, ⟨0.39⟩.</b> The delta now carries {@code AnalysisContext#dispatchDirect}, and a {@code -1}
+     *  entry has no such key — so a warm cache written by the pre-rung build replays a delta with no
+     *  dispatched member in it and REPUBLISHES, byte for byte, the silence this rung closes. The engine
+     *  string is not enough on its own: a build that keeps its version while gaining an accumulator is
+     *  exactly this case, and SOUNDNESS R151 is the record of what a cache serving a stale dependency fact
+     *  costs (a `deny Net` that went exit 1 to exit 0 on the configuration CI uses). Pinned by
+     *  {@code RefreshDispatchesOnTest}, which EXECUTES the un-bumped case rather than reasoning about it. */
+    private static final String FORMAT = "candor-refresh-2";
 
     private final Path file;                  // null when caching is off
     private final Map<String, JsonObject> loaded = new HashMap<>();   // internal name -> stored entry
@@ -425,6 +433,16 @@ final class Refresh {
         }
         sb.append("depwhy");
         for (var e : new TreeMap<>(c.depWhyByFn).entrySet()) {
+            sb.append(e.getKey()).append('=').append(new TreeSet<>(e.getValue())).append('\u0001');
+            if (sb.length() > 1 << 16) digest.feed(sb);
+        }
+        // ⟨0.39⟩ the dependency's DIRECT dispatched members, the third map read during per-class
+        // analyze through a closure over `depCallsByFn` ({@link Candor#depTransitiveDispatch}). Same shape
+        // and same reason as the two above: a dependency that keeps its key and gains a dispatched member
+        // is a dependency that gains an EFFECT at the consumer, and a cache primed before it would replay
+        // the answer from before (SOUNDNESS R151/R163).
+        sb.append("depdispatch");
+        for (var e : new TreeMap<>(c.depDispatchByFn).entrySet()) {
             sb.append(e.getKey()).append('=').append(new TreeSet<>(e.getValue())).append('\u0001');
             if (sb.length() > 1 << 16) digest.feed(sb);
         }

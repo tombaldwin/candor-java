@@ -8,6 +8,194 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### ⚠ ⟨0.39⟩ THE CHAINED-DISPATCH UNION — a consumer now carries the effects of every implementer visible to it
+
+- **SOUNDNESS R475, SPEC §4 ⟨0.39⟩, conformance PART 92. candor-java is the SECOND engine to port this rung
+  and the family's reference engine, so this is the shape candor-ts and candor-swift copy.** The defect is a
+  TOGGLE running the wrong way: a library whose public abstraction has ZERO local implementers gave a
+  chained consumer a disclosed `Unknown`; adding ONE PURE implementer to that library SILENTLY CERTIFIED
+  the consumer pure. **Adding a pure implementation to a library removed a disclosure from every consumer of
+  it** — the ⟨0.21⟩ cardinal sin by a route no single scan can see, because nothing is wrong with either
+  package on its own and the loss exists only in the join. Measured live on ratatui: `ratatui-core`'s
+  `Terminal::size` dispatches `Backend::size` over its sole local implementer `TestBackend` (pure),
+  `ratatui-crossterm`'s `CrosstermBackend::size` performs IPC, and an app chained onto both reported that
+  function ABSENT with `deny Ipc` and `pure` over it BOTH exiting 0. PART 92's `c1_foreign_effectful` xfail
+  for java is retired in the same change, which is what that table exists to notice.
+- **Three obligations, and no two are separable** — the effectful implementer lives in a THIRD package,
+  neither the dispatching dependency nor the consumer, so any subset misses the measured instance:
+  1. **`dispatchesOn`** — the producer names the abstraction member a row dispatches on, and **even when
+     the row is otherwise PURE**. That is the deliberate exception to §2 rule 3's "reports omit pure
+     functions": the row's ABSENCE was the purity claim that deleted the disclosure. Seeded at the
+     bounded-CHA dispatch site regardless of how many implementers are visible — the toggle runs between
+     zero and one, so a field recorded only on the indeterminate branch would be absent in exactly the arm
+     that needs it — and restricted to PUBLIC abstractions, because a package-private one cannot acquire a
+     foreign implementer and so cannot host the toggle at all.
+  2. **A package implementing a FOREIGN abstraction publishes its `interfaceUnion` entry keyed under the
+     OWNING package** (`iface/backend/Backend.size()I`), not under its own. **The key takes no new spelling
+     rule and, on the JVM, costs nothing at all**: an entry hash is already fully qualified in the owning
+     package's namespace — the ⟨0.23⟩ `typeSurface` rule — so the consumer resolves it through the ORDINARY
+     `crossDeps` index with no prefixing convention and no special case. (candor-scan spells the member in
+     the producing crate's namespace and has the consumer form `crate#member`; same property, different
+     arithmetic.)
+  3. **The consumer unions per key** — its own visible implementers (which join as ordinary call EDGES, so
+     their effects flow through the same fixpoint every other local call uses) plus every chained entry
+     carrying the key. `DepFn#unionWith`, the family's entry-collision union, is what combines the
+     contributors; this adds a contributor, not a resolution rule.
+- **⚠ THE "TRANSITIVELY" IN OBLIGATION 1 IS SATISFIED AT THE JOIN, NOT ON THE WIRE — measured, and
+  reported against the clause.** §4 says the member must be named on a row transitively, and the literal
+  wire reading of that is what candor-scan ships: the member SETS unioned up the producer's call graph.
+  On the JVM that is unaffordable and not by a small margin, because interfaces are how this platform
+  dispatches, so the closure is DENSE where `hosts`/`paths` are sparse:
+  - avro-1.11.3 — 852 member strings became **157,562**, and the report **1.2 MB → 13.0 MB** (an 11×
+    report against the +16% one it ships with); spring-core-6.1.10 **3.2 MB → 18.4 MB**.
+  - jooq-3.19.10 — 9,483 union entries over 37,420 rows — **could not be SERIALISED at all**, dying inside
+    Gson with 8 GB of heap after four minutes, where the same tree takes 5.6 s. Five more of the 372 corpus
+    jars timed out past 600 s and two more died the same way. **A rung that crashes the reference engine on
+    2% of a real corpus is not shipped and then explained.**
+
+  So the wire carries each unit's DIRECT members and the CONSUMER takes the closure — which is exactly the
+  trade this engine already made for `unknownWhy` one field over (`unknownWhy` is direct by contract and
+  `Candor.depTransitiveWhy` walks the dependency's own published `calls` graph). The property §4 requires
+  is unchanged: a caller that never spells the dispatch still reaches the member. Two consequences, both
+  load-bearing:
+  - **`calls` now includes a callee that REACHES a dispatch, effect-free or not.** It used to carry
+    effectful callees only, and a pure intermediary is precisely the shape R475 is about — omitted, it
+    breaks the walk one hop short of the row the consumer joins. Bounded by the same reach set that decides
+    emission, so `calls` never names a unit the report omits.
+  - **A chained entry whose only content is `calls` is admitted as a WALK-ONLY hop.** `inferred` is
+    transitive, so a pure entry cannot have an effectful callee, which makes "pure with a non-empty
+    `calls`" exactly a hop and nothing else. It is deliberately NOT a hit: the untyped-receiver disclosure
+    still fires over it, because a rung that adds disclosure must not withdraw one on the way past.
+
+  jooq after the change: **6.3 s, 34 MB**, against 5.6 s / 31 MB for the same tree with the old opt-in
+  flag. **candor-scan publishes the transitive form and has not hit this** — its crates are smaller and its
+  traits sparser — so the divergence is reported for the clause to settle rather than hidden here.
+- **`interfaceUnion` IS NO LONGER GATED.** It rode behind `CANDOR_WORKSPACE_CHAIN` while §2's ⟨0.23⟩
+  paragraph read "gated/opt-in until a floor rung pins it"; §4 ⟨0.39⟩ is that rung, the entry is REQUIRED
+  and its absence a non-conformance — and the gate is not incidental to the defect, it is WHY the
+  silent-purity toggle survived in DEFAULT scans. The environment variable is retired (it is now read by
+  nothing); a test proves a default subprocess scan with it UNSET publishes the entry.
+- **⚠ ONE KNOWN DIVERGENCE IS NO LONGER OPT-IN, and it is named rather than discovered later.** The ⟨0.23⟩
+  merge arm widens a REAL entry that already claims an interface member's hash (an effectful `default`
+  method, an abstract class's concrete member) and leaves it UNMARKED, deliberately — it is an analysed
+  unit counted in ⟨0.21⟩ `analyzed`, and marking it would make a consumer subtract it twice. That breaks
+  §3.1's byte-equality between `scan --policy` and `gate --report` on such a program, in the FABRICATION
+  direction (an extra violation ROW, never a missing one), and it is `BACKLOG.md`'s "A MERGED
+  `interfaceUnion` entry still breaks §3.1 byte-equality — needs a format rung". Nothing about it changed
+  except its reachability: it needed `CANDOR_WORKSPACE_CHAIN` before and is now default. The remedy is the
+  wire rung that entry already specifies (a `unionWidened` state distinct from `interfaceUnion`), which is
+  cross-engine and therefore a spec item, not a local patch — so the BACKLOG entry is updated rather than
+  the arm changed. Measured scale: 31 merges over jooq-3.19.10's 37,420 rows, 0 over candor-java's own tree.
+- **A MISS ADDS NOTHING.** An engine that hedged on "a dispatch occurred" rather than on "an implementer is
+  invisible" would charge every consumer of every dispatching library for effects nobody implements — the
+  fabrication direction §4 forbids, and PART 92's `c3_pure_only` control.
+- **AND THE FIX MUST NOT DELETE A DISCLOSURE OF ITS OWN: a foreign union entry is NOT coverage of the
+  package it names.** `depCoveredPkgs` is the single authority that turns a report's SILENCE into a purity
+  claim, so reading `effimpl`'s `iface/backend/Backend.size()I` as "iface.backend was analyzed" would
+  withdraw `invisible: [iface.backend]` from every call into it — R475's own shape, manufactured by R475's
+  own fix. Withheld, along with `depChainedPkgs`, with a NEAR-MISS control: the same document with the
+  `interfaceUnion` marker removed DOES grant coverage and DOES lose the disclosure, so the arm discriminates.
+  The marker is read fail-CLOSED on shape as well as value — anything that is not literally `false` (or
+  absent) withholds the grant, because every default on that route is the permissive one and ⟨0.32⟩ already
+  measured `"interfaceUnion": "true"` taking a gate from exit 1 to exit 0 one reader over. This engine is
+  the one where a coverage grant ALREADY silently certified unmodelled members (R492/R493); there is no
+  third way to earn one.
+- **The FOREIGN arm is bounded by the κ frontier, and that bound is a NARROWING rather than a grant.**
+  `java/lang/Runnable.run()V` is a foreign abstraction nearly every jar implements: a union published under
+  it would charge one library's effectful `Runnable` onto every `r.run()` in every consumer. candor-scan
+  refuses the same shape with a manifest ("the owner must be a DECLARED dependency, never `std`") that a
+  classes-directory scan does not have, and `Candor.kappaCovers` is the JVM's nearest statement of "a
+  namespace this engine models rather than analyses". What it costs is an abstraction owned by a MODELLED
+  framework — consumers there keep reading exactly what they read before this rung, so the narrowing
+  deletes no disclosure, only declines to add one. **The SIZE of that suppressed population is NOT
+  measured, and is written down as an assumption rather than a finding**: closing it needs a producer-side
+  census of κ-owned abstractions with effectful project implementers, which this change did not run.
+- **`dispatchesOn` is recorded for a FOREIGN abstraction too, because scoping it to LOCAL ones left a
+  MEASURED silence one package further out.** Four packages — `iface.backend.Backend` ·
+  `middle.Mid.mid(Backend)` · `effimpl.Crossterm` · an app chained onto all three: `middle` owns no
+  abstraction, so it named no member, `mid` was ABSENT from its report and so was the app's caller. Nothing
+  else covered it — the untyped-receiver disclosure's fifth conjunct ("the dep demonstrably holds an
+  effectful body with this signature") is FALSE while `iface`'s own implementers are all pure, and
+  `iface.backend` is chained so the κ ledger is correctly silent. The key is the dependency's own and is
+  already fully qualified, so naming it invents nothing. Bounded to INVOKEINTERFACE (the bytecode then
+  PROVES the static owner is a declaration rather than a body — conjunct 1 of the untyped-receiver rung,
+  whose named residual for an abstract dep CLASS this inherits rather than duplicating) and to owners
+  outside the κ frontier, symmetrically with the union entries the key resolves against. **candor-scan's
+  port has the same hole** (its `dispatch_sites` records local trait dispatch only) — reported, not fixed
+  here.
+- **Two behaviour changes that follow from un-gating ⟨0.23⟩, both in the disclosure-increasing direction,
+  both re-pinned rather than smoothed over:**
+  - A chained consumer whose dispatch the dependency CAN answer now resolves it PRECISELY instead of hedging
+    — `['Unknown']` → `['Env']` on `CrossScanBoundaryTest`'s untyped-receiver fixture, which is §2's stated
+    effect for the rung. The untyped-cross-package-receiver disclosure (half 1) is still the answer where no
+    union can be published, and that branch now has its own fixture in both files rather than being reached
+    by accident of the old default.
+  - On a §2.1-DISTRUSTED (stale) chain the Unknown's REASON CLASS moves from `dispatch:<owner>.<member>` to
+    `dep-stale:<pkg>`, because the consumer now joins an entry instead of failing to form a key. Both project
+    to `unresolved`, so bare `deny Unknown` and `deny E Unknown[unresolved]` are unmoved; a
+    `deny E Unknown[dispatch]` over a stale chain now reads `unresolved`. Dropping the stale synthetic entry
+    to restore the old spelling was considered and REFUSED: half 1's disclosure is a five-conjunct
+    conjunction, so on any shape failing one of them the Unknown would not come back at all and the consumer
+    would read PURE. A reason class is worth less than an effect.
+- **The whole-program refresh digest folds in the dependency's `dispatchesOn` too** (`depDispatchByFn`),
+  beside `depCallsByFn` and `depWhyByFn` and for the same reason (SOUNDNESS R151/R163): a dependency that
+  keeps its key and gains a dispatched member is a dependency that gains an EFFECT at the consumer, and a
+  cache primed before it would replay the older answer. The reflective field tests caught this, which is
+  what they are for.
+- **Cache format `candor-refresh-1` → `-2`.** The per-class delta now carries `dispatchDirect`; a delta
+  written by the pre-rung build has no such key, so replaying it republishes the pre-rung report — and the
+  dispatching row is not merely missing a field, it is ABSENT from `functions`, which is a purity claim. The
+  engine-build check does not cover it (a build that keeps its version while gaining an accumulator is
+  exactly this case). **The un-bumped case is EXECUTED, not reasoned about**: the same stripped delta under
+  the current file name reproduces the silence, which is what makes the bump load-bearing rather than
+  claimed.
+
+- **A/B, PRODUCER SIDE — 371 of 372 corpus jars, 1,215,638 pre rows against 1,497,879 post:
+  `ADDED 282,241 · REMOVED 0 · CHANGED 330,163`** (wide key and wide value, `bin/corpus-ab.py`, `--key unit`;
+  on `inferred` alone CHANGED 3,947). One jar excluded and named: `grpc-context-1.64.0.jar`, which the PRE
+  arm cannot scan either. **The removals are the claim under test, and there are none.**
+  - **What the additions ARE**, because "282k new rows" is not a finding until it is bucketed by mechanism:
+    239,485 synthetic `interfaceUnion` entries (⟨0.23⟩, previously behind the flag), 25,778 PURE rows whose
+    only content is `dispatchesOn` (obligation 1, the rows whose ABSENCE was the defect), 16,934 pure rows
+    that are WALK HOPS — **every one of them carries `calls`**, checked, which is what makes them hops and
+    not noise — and 44 effectful rows.
+  - **The withdrawal audit is over ALL 330,163 changed rows, not a sample.** Zero lost `inferred`,
+    `invisible`, `incomplete`, `unknownWhy`, `netClass`, `declared`, `undeclared`, `hosts`, `cmds`,
+    `paths`, `tables` or `calls`, and zero went `unresolved` true → false. **51 rows lost `fs`**, all of
+    them merged interface/abstract declarations, and that is `mergeUnionInto`'s documented FAIL-CLOSED
+    rule rather than a loss: `fs` means "the access kind, known AND complete", so once another implementer
+    contributes `Fs` the body's own kinds stop being the whole story and the field is dropped rather than
+    half-published — an `allow Fs read` gate gets STRICTER, never looser. Two of the 51 also gained an
+    effect; the other 49 kept their effect set exactly.
+
+- **A/B, CONSUMER SIDE — the join, which is where this rung can LOSE a row.** 74 corpus jars scanned with
+  their FAMILY SIBLINGS' reports chained (the packages sharing their first two segments — a real dependency
+  chain rather than "chain everything", and the family map is derived ONCE from the PRE arm so both arms
+  chain an identical package set). 280,523 pre rows against 321,390 post:
+  `ADDED 40,867 · REMOVED 0 · CHANGED 88,696`, with `inferred` CHANGED 8,768 and **8,764 rows GAINING an
+  effect**.
+  - **ZERO rows lost a CONCRETE effect.** 79 lost `Unknown` — and every one is a hedge traded for an
+    ANSWER: 75 gained a concrete effect in the same row, and the other 4 already carried it, the hedge
+    going because the dispatch key is now answered by a chained union entry. That is §2's stated effect for
+    ⟨0.23⟩ ("Unknown → the precise union"), not a withdrawal.
+  - Zero lost `invisible`, `incomplete`, `netClass`, `hosts`, `cmds`, `paths`, `tables` or `calls`; 18 lost
+    `fs` by the same fail-closed rule as the producer side.
+  - **466 rows (0.14%) keep `Unknown` but lose every dispatch-CLASS reason**, because the dispatch that
+    produced it is now resolved while an Unknown from elsewhere remains — 21,834 rows kept one. Bare
+    `deny Unknown` and `deny E Unknown[unresolved]` are unmoved; a `deny E Unknown[dispatch]` scoped at one
+    of those rows stops biting, and it stops biting because the class stopped being TRUE. Same mechanism as
+    the §2.1-distrusted arm above, and recorded with its number rather than left to be found.
+- **⚠ THE CONFORMANCE DISPATCH-FRONTIER DIFFERENTIAL WENT RED, AND HALF THE FIX IS NOT THIS ENGINE'S.**
+  `callers --include-unknown` keys its frontier on `dispatch:OWNER.M`, and an un-gated synthetic union
+  entry carries exactly that by design (a BROAD union is disclosed indeterminacy, never silence) — so
+  `possibleViaUnknownDispatch` came back as `[fr.Base.op, fr.Dispatcher.run]`, the DECLARATION beside the
+  dispatcher, on every consumer reading java's report. A bodiless declaration cannot call anything, so this
+  is the fabrication direction and the same ruling `Policy` already applies one verb over: **candor-java's
+  `callers` now skips `interfaceUnion: true` entries as frontier sources.** The reach is not lost — every
+  implementer is reported under its own entry and the real dispatcher on its own merits. **candor-scan's
+  and candor-ts's `callers` need the identical one-line filter**, which is reported rather than patched
+  from here.
+
 ### ⚠ Fixed
 
 - **R496 — a member classified to a WEAKER effect than it performs emits no disclosure at all, and

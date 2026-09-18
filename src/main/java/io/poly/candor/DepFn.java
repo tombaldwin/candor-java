@@ -38,11 +38,38 @@ final class DepFn {
     /// nothing" or "this report is not the one this build produced, and re-running its scan fixes it".
     /// See {@link Loader#synthesizeReasonlessDepReasons}.
     boolean stale;
+    /// ⟨0.39⟩ This entry carries NO effect, NO marker and NO dispatched member of its own — it is in the
+    /// index solely as a HOP in the dispatch walk ({@link Candor#depTransitiveDispatch}), because the
+    /// member it leads to is named by something it CALLS. Such an entry was previously dropped, and
+    /// dropping it broke the walk one hop short of the row a consumer actually joins, which is the shape of
+    /// the defect ⟨0.39⟩ closes.
+    ///
+    /// <p><b>It is NOT a hit.</b> {@link Candor#untypedDepReceiver} discloses when no key could be formed
+    /// OR nothing answered it; admitting these entries would silently convert a "nothing answered" into a
+    /// hit and WITHDRAW that disclosure — a rung that adds disclosure must not delete one on the way past.
+    /// The flag exists so the index can grow without the verdict moving: everything reads it as absent
+    /// except the walk.
+    boolean walkOnly;
     /// The report QUAL this entry was written under (§2 `fn`), null for a report that omits it. It is the
     /// key the dependency's own `calls` array names, and so the only handle on the dep's INTERNAL call
     /// graph — which is where an INHERITED Unknown's reason lives, `unknownWhy` being direct-by-contract.
     /// See {@link Candor#depTransitiveWhy}.
     String fn;
+    /// ⟨0.39⟩ SPEC §4 obligation 1, read back on the consumer side — the ABSTRACTION MEMBERS this dependency
+    /// unit dispatches on, each already spelled as an entry hash in the OWNING package's namespace. The
+    /// consumer looks each one up in `crossDeps` and unions whatever it finds (obligation 3), which is how
+    /// an effectful implementer supplied by a THIRD package reaches a consumer that never spells the
+    /// dispatch itself.
+    ///
+    /// NOT an effect and never charged as one: a key nobody published a union entry for adds NOTHING, so a
+    /// miss falls back to whatever the dependency's own row already said — its `Unknown` at zero
+    /// implementers, or its honest purity. ⟨0.39⟩ adds a CONTRIBUTOR to the union, not a resolution rule,
+    /// and an engine that hedged on "a dispatch occurred" would charge every consumer of every dispatching
+    /// library for effects nobody implements (conformance PART 92's `c3_pure_only`).
+    ///
+    /// READ EVEN WHEN `inferred` IS EMPTY — a PURE dispatching row is the whole point of the field, and the
+    /// toggle's silent side is precisely the row that says nothing else.
+    List<String> dispatchesOn = new ArrayList<>();
 
     /** Fold another entry loaded under the SAME {@code crossDeps} key into this one — the family-wide
      *  entry-collision rule (candor-spec/ENTRY-COLLISION-DECISION.md), replacing last-non-empty-wins.
@@ -81,11 +108,14 @@ final class DepFn {
         addAllMissing(netClass, other.netClass);
         addAllMissing(incomplete, other.incomplete);
         addAllMissing(unknownWhy, other.unknownWhy);
+        addAllMissing(dispatchesOn, other.dispatchesOn);   // ⟨0.39⟩ see #dispatchesOn
         // STALE ONLY IF EVERY CONTRIBUTOR WAS. This flag decides how a synthesized reason is SPELLED
         // (`dep-stale:<pkg>` vs `dep:<hash>`; both project to `unresolved`, so no gate turns on it), and
         // once a trusted report has contributed to this entry, "this report is not the one this build
         // produced" is no longer the accurate thing to tell the reader about it.
         stale = stale && other.stale;
+        // ⟨0.39⟩ …and once ANY contributor is a real entry, this hash is answered by a real one.
+        walkOnly = walkOnly && other.walkOnly;
         if (fn == null) fn = other.fn;
     }
 

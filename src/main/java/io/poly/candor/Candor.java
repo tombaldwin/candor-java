@@ -5879,6 +5879,62 @@ public class Candor {
                 return true;
             }
             List<String> cha = chaTargets(min.owner, min.name, min.desc);
+            // ⟨0.39⟩ SPEC §4 obligation 1 — RECORD THE DISPATCHED MEMBER, whatever the CHA answers.
+            //
+            // The key is this engine's ordinary entry hash for the member (`iface/Backend.size()I`), which
+            // is already fully qualified in the OWNING package's namespace — the ⟨0.23⟩ rule — so nothing
+            // here invents a second spelling and a consumer resolves it through the SAME `crossDeps` index
+            // an ordinary call uses. This records only the DIRECT site; the transitive half is the
+            // CONSUMER's walk over `calls` ({@link #depTransitiveDispatch}) — see ReportWriter's dispatch
+            // reach for the measurement that put it there rather than on the wire.
+            //
+            // REGARDLESS OF `broad`, of `targets`, and of whether this site ends up disclosing an Unknown:
+            // the toggle R475 names runs between ZERO implementers (a disclosed Unknown, which the branches
+            // below get right) and ONE PURE implementer (silence, which they get wrong), so a field recorded
+            // only on the indeterminate branch would be absent in precisely the arm that needs it. What a
+            // consumer does with the key is union whatever some OTHER package published under it; where
+            // nobody published, a miss adds nothing (see Candor#inheritDepFn).
+            //
+            // TWO OWNERS QUALIFY, and the second one is here because scoping this to LOCAL abstractions
+            // left a measured silence one package further out.
+            //
+            //   LOCAL — an abstraction this project DECLARES. Same test as the missing-impl Unknown below,
+            //   and for the same reason: a producer may only name a member in a namespace it owns.
+            //
+            //   FOREIGN — an abstraction a DEPENDENCY owns, dispatched from a MIDDLE package. MEASURED
+            //   silent before this arm existed, on a four-package chain (`iface.backend.Backend` ·
+            //   `middle.Mid.mid(Backend)` · `effimpl.Crossterm` · an app on all three): `mid` was ABSENT
+            //   from middle's report and so was the app's caller, because `middle` owns no abstraction and
+            //   the untyped-receiver disclosure's fifth conjunct — "the dep demonstrably holds an effectful
+            //   body with this signature" — is FALSE while `iface`'s own implementers are all pure. The key
+            //   is the dependency's, already fully qualified, so naming it invents nothing. Pinned by
+            //   ChainedDispatchUnionTest#aMiddlePackageDispatchingOverItsOwnDependencysAbstractionNamesTheMemberToo.
+            //   INVOKEINTERFACE only: the bytecode then PROVES the static owner is a declaration rather
+            //   than a body, which is conjunct 1 of {@link #untypedDepReceiver} and carries the same named
+            //   residual for an abstract dep CLASS. And the κ frontier is excluded, symmetrically with the
+            //   union entries this key resolves against (ReportWriter#unionCandidates): nothing publishes
+            //   under a modelled namespace, so naming one could only be wire noise.
+            //
+            // §4's Object protocol (toString/hashCode/equals/compareTo, "pure even when overridden") is
+            // excluded from both so the chained answer cannot contradict the in-scan one; the
+            // function-object verbs (Kotlin/Scala/Groovy invoke/apply/call) are NOT excluded, because this
+            // engine already refuses to treat those as pure and a chained consumer must not be told
+            // otherwise.
+            // AND ONLY OVER AN ABSTRACTION A FOREIGN PACKAGE COULD IMPLEMENT — i.e. a PUBLIC one. A
+            // package-private interface or abstract class cannot be implemented outside the package that
+            // declares it, so the toggle this rung closes cannot fire on it: the implementer set the
+            // producer can see IS the whole set, and naming the member buys a consumer nothing but bytes.
+            // That is also the reason PART 92's `c4_sealed` control exists — a sealed abstraction's union
+            // stays EXACT and gains no hedge. This is not a precision trade, it is a scope fact, and it is
+            // load-bearing rather than cosmetic: without it a transitive `dispatchesOn` over an
+            // interface-dense JVM library grows the report several-fold (MEASURED on jooq 3.19.10, where
+            // the unbounded form could not be serialised at all).
+            if (!isObjectProtocolExempt(min.name, min.desc)
+                    && (isProjectIfaceOrAbstract(min.owner) && isPublicType(min.owner)
+                                && projectDeclaresMethod(min.owner, min.name, min.desc)
+                            || foreignAbstractionOwner(ctx, min)))
+                ctx.dispatchDirect.computeIfAbsent(id, k -> new TreeSet<>())
+                        .add(min.owner + "." + min.name + min.desc);
             // BOUNDED CHA (SPEC §4): a dispatch over a local abstraction resolves to its
             // implementors only when the fan-out is NARROW (≤ CHA_FANOUT_LIMIT); a broad
             // fan-out is honest indeterminacy. Previously only EXEMPT methods (the pure
@@ -6051,7 +6107,10 @@ public class Candor {
             }
             // Still nothing under any key we could form — the two readings of that emptiness are not
             // the same claim. Disclose the one that licenses nothing (see untypedDepReceiver).
-            if (inh == null) untypedDepReceiver(ctx, s, min, xop, monoRecv);
+            // ⟨0.39⟩ A WALK-ONLY HOP IS NOT AN ANSWER. It is in the index so the dispatch closure can pass
+            // through it; treating it as a hit would withdraw this disclosure from a key the dependency
+            // answered only with "I call something". Deliberately unchanged behaviour on this line.
+            if (inh == null || inh.walkOnly) untypedDepReceiver(ctx, s, min, xop, monoRecv);
             if (inh != null) {
                 // ONE place applies a DepFn. This block used to duplicate `inheritDepFn` line for line,
                 // and the two had already drifted: the ⟨0.19⟩ reason class was taught to one and not the
@@ -6517,6 +6576,41 @@ public class Candor {
      *  fold, because the dep's unit lives in another report and cannot be edged to as a node.
      *  A null `d` (no chained report covers that hash) is a no-op, exactly as before the lookup existed. */
     static void inheritDepFn(String callerId, DepFn d) {
+        inheritDepFn(callerId, d, null);
+    }
+
+    /**
+     * ⟨0.39⟩ SPEC §4 obligation 3 — THE CHAINED DISPATCH UNION, applied at the ONE place a {@link DepFn}
+     * reaches a caller.
+     *
+     * <p>The row just joined may say it DISPATCHES on an abstraction member ({@code dispatchesOn}), and in
+     * the measured instance (SOUNDNESS R475, live on ratatui) that is the only thing standing between this
+     * consumer and a real effect: {@code appSize} calls {@code iface.Terminal.termSize}, never spells the
+     * dispatch itself, and {@code termSize}'s own row is PURE because the only implementer {@code iface} can
+     * see is pure. The effectful implementer lives in a THIRD package and published its union under the
+     * OWNING package's key, so the key comes from the DISPATCHING dependency's row rather than from whoever
+     * implements it, and {@link DepFn#unionWith} — the family's entry-collision union — is what combines the
+     * contributors. That union already existed; this adds a contributor to it, not a resolution rule.
+     *
+     * <p><b>A MISS ADDS NOTHING</b>, deliberately, and it is conformance PART 92's {@code c3_pure_only}
+     * control. An engine that hedged on "a dispatch occurred" rather than on "an implementer is invisible"
+     * would charge every consumer of every dispatching library for effects nobody implements — the
+     * fabrication direction §4 forbids and the direction this rung was priced against. The dependency's own
+     * row has already said whatever it honestly can: its {@code Unknown} at zero implementers, its purity
+     * otherwise.
+     *
+     * <p><b>…AND THE CONSUMER'S OWN VISIBLE IMPLEMENTERS</b>, which §4 names FIRST ("its own visible
+     * implementers with every chained entry carrying that key"). Those bodies are LOCAL, so they join as
+     * ordinary call EDGES and their effects flow through the same fixpoint every other local call uses,
+     * rather than being re-derived here. The bound is the same bounded-CHA bound every in-scan dispatch site
+     * applies, and a BROAD fan-out discloses the same {@code Unknown} it discloses in-scan — the alternative
+     * is an engine whose chained answer contradicts its own in-scan answer on identical code, which is the
+     * drift this file's {@code crossDepJoin} comment records paying for once already.
+     *
+     * @param seen the member keys already followed on this caller — {@code dispatchesOn} may name an entry
+     *             that itself dispatches, and a cyclic publication must terminate.
+     */
+    static void inheritDepFn(String callerId, DepFn d, Set<String> seen) {
         if (d == null) return;
         AnalysisContext c = ctx();
         c.viaCross.computeIfAbsent(callerId, k -> EffectSet.empty()).addAll(d.effects);
@@ -6543,6 +6637,38 @@ public class Candor {
                 UnknownReason r = UnknownReason.parse(tag);
                 if (r != null) c.unknownWhy.computeIfAbsent(callerId, k -> new TreeSet<>()).add(r);
             }
+        }
+        // ⟨0.39⟩ obligation 3 — see this method's javadoc. Last, so nothing above depends on it.
+        // TRANSITIVELY: the member may be named by a unit this one merely CALLS, which is the measured
+        // instance exactly (`appSize` -> `Terminal.termSize` -> `Backend.size`), so the closure over the
+        // dependency's own published `calls` graph is taken here rather than read off the joined row.
+        List<String> members = depTransitiveDispatch(d);
+        if (members.isEmpty()) return;
+        Set<String> followed = seen == null ? new HashSet<>() : seen;
+        for (String key : members) {
+            if (!followed.add(key)) continue;
+            // CONTRIBUTOR 1 — every chained entry carrying this key. `crossDeps` has already UNIONED the
+            // contributions of every report that published it (DepFn#unionWith), so one lookup is the union.
+            DepFn union = c.crossDeps.get(key);
+            if (union != null) inheritDepFn(callerId, union, followed);
+            // CONTRIBUTOR 2 — this scan's OWN implementers of the same member.
+            int paren = key.indexOf('(');
+            int dot = paren < 0 ? -1 : key.lastIndexOf('.', paren);
+            if (dot <= 0) continue;                         // not a member key this engine can read
+            String owner = key.substring(0, dot), name = key.substring(dot + 1, paren),
+                    desc = key.substring(paren);
+            List<String> impls = chaTargets(owner, name, desc);
+            if (impls.isEmpty()) continue;
+            if (impls.size() > CHA_FANOUT_LIMIT && !isClosedHierarchy(owner)) {
+                // The identical bound, and the identical disclosure, as the in-scan site: an open hierarchy
+                // past the limit may hold a body this scan never saw, so the visible union is a guess.
+                c.viaCross.computeIfAbsent(callerId, k -> EffectSet.empty()).add(Effect.UNKNOWN);
+                c.unknownWhy.computeIfAbsent(callerId, k -> new TreeSet<>())
+                        .add(UnknownReason.of(UnknownReason.Kind.DISPATCH,
+                                owner.replace('/', '.') + "." + name));
+                continue;
+            }
+            c.edges.computeIfAbsent(callerId, k -> new java.util.LinkedHashSet<>()).addAll(impls);
         }
     }
 
@@ -6593,6 +6719,50 @@ public class Candor {
         }
         List<String> result = List.copyOf(out);
         c.depTransWhyMemo.put(d.fn, result);
+        return result;
+    }
+
+    /**
+     * ⟨0.39⟩ EVERY ABSTRACTION MEMBER THE DEPENDENCY UNIT {@code d} DISPATCHES ON — its own, PLUS those of
+     * everything it calls, transitively, through the {@code calls} graph its own report published.
+     *
+     * <p><b>Why the closure is taken here rather than read off the row.</b> §4 obligation 1 says the member
+     * must be named on a row transitively. The literal wire reading of that — the member SETS unioned up
+     * the producer's call graph — is what {@link ReportWriter}'s reach comment records measuring: an 11x
+     * report on avro, a 6x one on spring-core, and jooq-3.19.10 unserialisable in Gson with 8 GB of heap.
+     * The JVM dispatches through interfaces everywhere, so that closure is dense where {@code hosts} and
+     * {@code paths} are sparse. This method is the same trade this engine already made for
+     * {@code unknownWhy} ({@link #depTransitiveWhy}, directly above): the field rides DIRECT, and the
+     * consumer recovers the closure from {@code calls}, which §2 already puts on the wire and which is
+     * EXACTLY the edge set a dispatched member propagates along.
+     *
+     * <p><b>The one thing that makes it work, and it is a change to `calls`.</b> That array used to carry
+     * EFFECTFUL callees only. A PURE intermediary — a function that merely calls a dispatching one — is
+     * precisely the shape R475 is about, and omitting it from {@code calls} would break this walk one hop
+     * short of the row the consumer joins. {@link ReportWriter} now includes any callee that reaches a
+     * dispatch, bounded by the same set that decides emission, so {@code calls} never names a unit the
+     * report omits.
+     *
+     * <p>A report that omits {@code fn} or {@code calls} (an older or foreign producer) yields the DIRECT
+     * members, i.e. today's behaviour, never less. Memoised per qual; {@code seen} bounds a cyclic graph.
+     */
+    static List<String> depTransitiveDispatch(DepFn d) {
+        if (d.fn == null) return d.dispatchesOn;            // no qual → no handle on `calls` → direct only
+        AnalysisContext c = ctx();
+        List<String> memo = c.depTransDispatchMemo.get(d.fn);
+        if (memo != null) return memo;
+        TreeSet<String> out = new TreeSet<>(d.dispatchesOn);
+        Set<String> seen = new HashSet<>();
+        ArrayDeque<String> q = new ArrayDeque<>(c.depCallsByFn.getOrDefault(d.fn, List.of()));
+        seen.add(d.fn);
+        while (!q.isEmpty()) {
+            String n = q.poll();
+            if (!seen.add(n)) continue;
+            out.addAll(c.depDispatchByFn.getOrDefault(n, List.of()));
+            q.addAll(c.depCallsByFn.getOrDefault(n, List.of()));
+        }
+        List<String> result = List.copyOf(out);
+        c.depTransDispatchMemo.put(d.fn, result);
         return result;
     }
 
@@ -8605,6 +8775,29 @@ public class Candor {
         c.kappaBlindPkgs.add(pkg);
         c.blindDirect.computeIfAbsent(callerId, k -> new TreeSet<>()).add(pkg);
         return true;
+    }
+
+    /** ⟨0.39⟩ obligation 1's FOREIGN arm — is this call site a dispatch over an abstraction some
+     *  DEPENDENCY owns? See the call site for the four-package silence that put it there. INVOKEINTERFACE
+     *  is the bytecode proof that the static owner is a DECLARATION and not the body the JVM will run, the
+     *  same evidence {@link #untypedDepReceiver}'s conjunct 1 rests on; an abstract dep CLASS keeps that
+     *  method's named residual rather than acquiring a second, weaker one here. */
+    /** Is this PROJECT type declared {@code public}? An unknown type answers false: this gates a
+     *  disclosure that is only useful for an abstraction a FOREIGN package could implement, and a type
+     *  candor cannot see is not evidence that one could. */
+    static boolean isPublicType(String internal) {
+        ClassNode cn = ctx().byName.get(internal);
+        return cn != null && (cn.access & Opcodes.ACC_PUBLIC) != 0;
+    }
+
+    static boolean foreignAbstractionOwner(AnalysisContext c, MethodInsnNode min) {
+        if (min.getOpcode() != Opcodes.INVOKEINTERFACE) return false;
+        if (min.owner.isEmpty() || min.owner.charAt(0) == '[' || c.projectClasses.contains(min.owner))
+            return false;
+        int slash = min.owner.lastIndexOf('/');
+        if (slash <= 0) return false;                       // the default package: no namespace to key on
+        String pkg = min.owner.substring(0, slash).replace('/', '.');
+        return !kappaCovers(pkg);
     }
 
     static boolean kappaCovers(String pkg) {

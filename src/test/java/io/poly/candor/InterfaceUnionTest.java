@@ -38,7 +38,7 @@ class InterfaceUnionTest {
 
     @AfterEach
     void resetGate() {
-        ReportWriter.workspaceChainOverride = null;
+        ReportWriter.publishUnionsOverrideForTest = null;
     }
 
     // ---- harness ---------------------------------------------------------------------------------------
@@ -56,14 +56,14 @@ class InterfaceUnionTest {
         Config saved = Candor.config;
         try {
             Candor.config = Config.empty();
-            ReportWriter.workspaceChainOverride = chainFlag;
+            ReportWriter.publishUnionsOverrideForTest = chainFlag;
             Path out = libDir.getParent().resolve("dep.json");
             Files.deleteIfExists(out);              // standing-bar item 7: never read a stale arm
             ReportWriter.writeJson(Candor.runScan(libDir), out.toString());
             return Files.readString(out);
         } finally {
             Candor.config = saved;
-            ReportWriter.workspaceChainOverride = null;
+            ReportWriter.publishUnionsOverrideForTest = null;
             rm(libDir.getParent());
         }
     }
@@ -96,9 +96,9 @@ class InterfaceUnionTest {
             Candor.config = Config.empty();
             Path depReport = base.resolve("dep.json");
             Files.deleteIfExists(depReport);
-            ReportWriter.workspaceChainOverride = chainFlag;
+            ReportWriter.publishUnionsOverrideForTest = chainFlag;
             ReportWriter.writeReport(Candor.runScan(base.resolve("lib")), depReport.toString(), null);
-            ReportWriter.workspaceChainOverride = false;   // the CONSUMER never emits union entries
+            ReportWriter.publishUnionsOverrideForTest = false;   // the CONSUMER never emits union entries
             Files.createDirectories(base.resolve(".candor"));
             Files.writeString(base.resolve(".candor/config"), "deps " + depReport + "\n");
             Candor.config = Config.forTarget(appDir);
@@ -112,7 +112,7 @@ class InterfaceUnionTest {
             return byFn;
         } finally {
             Candor.config = saved;
-            ReportWriter.workspaceChainOverride = null;
+            ReportWriter.publishUnionsOverrideForTest = null;
             rm(base);
         }
     }
@@ -186,10 +186,19 @@ class InterfaceUnionTest {
                 "with nothing to publish the two arms must produce the same bytes");
     }
 
+    /**
+     * ⟨0.39⟩ THE GATE IS GONE, PROVED IN A SUBPROCESS WITH THE OLD VARIABLE UNSET.
+     *
+     * <p>This test used to be {@code theEnvironmentVariableIsTheGate} and asserted the OPPOSITE. §2's ⟨0.23⟩
+     * paragraph read "gated/opt-in until a floor rung pins it"; §4 ⟨0.39⟩ is that rung, the entry is REQUIRED
+     * and its absence a non-conformance — and the gate was not incidental to SOUNDNESS R475: it is WHY the
+     * silent-purity toggle survived in DEFAULT scans, which is the one place it must not.
+     *
+     * <p>A subprocess rather than {@code publishUnionsOverrideForTest}, deliberately: the in-process arms
+     * drive that field, so only a real CLI run with a clean environment can say what a user actually gets.
+     */
     @Test
-    void theEnvironmentVariableIsTheGate() throws Exception {
-        // The in-process tests drive `workspaceChainOverride`; this one proves the PRODUCTION gate — the env
-        // var candor-scan and candor-swift already read — is what turns the rung on, via a real subprocess.
+    void noEnvironmentVariableGatesTheRungAnyMore() throws Exception {
         Path libDir = TestCompiler.compile(Map.of("lib/Store.java", STORE, "lib/FileStore.java", FILE_STORE));
         Path off = libDir.getParent().resolve("off.json"), on = libDir.getParent().resolve("on.json");
         try {
@@ -197,10 +206,12 @@ class InterfaceUnionTest {
             Files.deleteIfExists(on);
             runCli(null, libDir.toString(), "--json", off.toString());
             runCli("1", libDir.toString(), "--json", on.toString());
-            assertFalse(Files.readString(off).contains("interfaceUnion"),
-                    "CANDOR_WORKSPACE_CHAIN unset must produce a report with no union entries");
-            assertNotNull(byHash(Files.readString(on)).get("lib/Store.save(Ljava/lang/String;)V"),
-                    "CANDOR_WORKSPACE_CHAIN=1 must produce the union entry");
+            assertNotNull(byHash(Files.readString(off)).get("lib/Store.save(Ljava/lang/String;)V"),
+                    "with CANDOR_WORKSPACE_CHAIN UNSET a default scan must still publish the union entry —"
+                            + " ⟨0.39⟩ makes it required, and the gate is what let R475 survive default scans");
+            assertEquals(byHash(Files.readString(off)).get("lib/Store.save(Ljava/lang/String;)V"),
+                    byHash(Files.readString(on)).get("lib/Store.save(Ljava/lang/String;)V"),
+                    "and the retired variable must not change the answer either way");
         } finally {
             rm(libDir.getParent());
         }
@@ -570,8 +581,18 @@ class InterfaceUnionTest {
                         + "  public String tag() { return \"q\"; }\n}\n");
         Map<String, String> app = Map.of("app/Go.java",
                 "package app;\nimport lib.Quiet;\npublic class Go { public String run(Quiet q) { return q.tag(); } }\n");
-        assertNull(chainedApp(lib, app, true).get("app.Go.run"),
-                "a pure dep interface must leave the consumer pure (absent from `functions`)");
+        // ⟨0.39⟩ THE ASSERTION MOVED FROM ABSENCE TO EMPTINESS, and the property it protects did not.
+        // Obligation 1 makes a DISPATCHING row emitted even when it is otherwise pure — the consumer is a
+        // producer too, and `app.Go.run` dispatches on `lib/Quiet.tag`. So the row is now present and
+        // EFFECT-FREE. What this control is about is that the rung ADDS NOTHING over an all-pure
+        // dependency: no effect, and no hedge either. An engine that charged something here, or that
+        // started saying `Unknown` because a dispatch occurred, reddens on this line.
+        Map<String, Object> row = chainedApp(lib, app, true).get("app.Go.run");
+        if (row != null) {
+            assertEquals(List.of(), row.get("inferred"),
+                    "a pure dep interface must leave the consumer pure; got " + row);
+            assertEquals(Boolean.FALSE, row.get("unresolved"), "…and unhedged; got " + row);
+        }
     }
 
     // ---- the ABSTRACT DEP CLASS (candor-spec SCAN-BOUNDARY-WORK-QUEUE, the row half 1 left open) --------

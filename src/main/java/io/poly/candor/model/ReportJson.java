@@ -169,6 +169,12 @@ public final class ReportJson {
         // dispatch resolves. OMITTED when false, so every ordinary entry (and every report produced without
         // CANDOR_WORKSPACE_CHAIN) is byte-identical to a pre-⟨0.23⟩ one.
         if (e.interfaceUnion()) m.put("interfaceUnion", true);
+        // ⟨0.39⟩ SPEC §4 obligation 1 — the abstraction members this unit dispatches on, transitively.
+        // LAST, and OMITTED when empty, so a unit that dispatches on nothing is byte-identical to a
+        // pre-rung entry. The field is what lets a chained consumer find the union entry a THIRD package
+        // published for the same member; it is carried on rows that are otherwise PURE, which is why this
+        // engine now emits entries it previously omitted (see Effector#dispatchesOn).
+        if (!e.dispatchesOn().isEmpty()) m.put("dispatchesOn", e.dispatchesOn());
         return m;
     }
 
@@ -238,7 +244,8 @@ public final class ReportJson {
                     strList(o, "tables"),
                     strList(o, "netClass"),
                     strList(o, "incomplete"),   // ⟨0.29⟩ absent → nothing was undetermined
-                    bool(o, "interfaceUnion")));   // ⟨0.23⟩ absent/false → an ordinary entry
+                    bool(o, "interfaceUnion"),   // ⟨0.23⟩ absent/false → an ordinary entry
+                    strList(o, "dispatchesOn")));  // ⟨0.39⟩ absent → this unit dispatches on nothing
         }
         return out;
     }

@@ -490,6 +490,34 @@ class CrossScanBoundaryTest {
         Map<String, Map<String, Object>> r = report(LIB5, Map.of("app/S.java", CALL_THROUGH_IFACE), true);
         assertTrue(r.containsKey("app.S.run"),
                 "the caller must not be ABSENT from the report — absence IS a purity claim");
+        // ⟨0.39⟩ AND IT IS NOW RESOLVED RATHER THAN HEDGED. Un-gating the ⟨0.23⟩ union entry means `lib`
+        // publishes `Store.save`'s union, so this key IS formed and answers `Env` — §2's stated effect for
+        // the rung ("Unknown → the precise union"), strictly more information than the hedge it replaces.
+        // The anti-silence property above is what this row is about and it is unchanged; the arm below is
+        // where half 1's disclosure still has to speak, because it is the case no union can answer.
+        assertTrue(field(r, "app.S.run", "inferred").contains("Env"),
+                "the union entry must carry the implementer's REAL effect to the consumer, got "
+                        + r.get("app.S.run"));
+    }
+
+    /** ⟨0.39⟩ HALF 1 STILL SPEAKS WHERE NO UNION CAN BE PUBLISHED — the control for the assertion above.
+     *
+     *  <p>{@code lib/Store} has NO implementer in `lib` here (the effectful body is an unrelated class with
+     *  the same signature), so the union entry is never emitted and the consumer's INVOKEINTERFACE key comes
+     *  back empty. That is the untyped-cross-package-receiver case exactly, and it must still disclose
+     *  {@code Unknown[dispatch:…]} rather than read pure. Without this arm, un-gating the union would have
+     *  moved the row above off the branch it was written for and nothing would have noticed. */
+    @Test
+    void withNoImplementerInTheDependencyTheUnformedKeyStillDiscloses() throws Exception {
+        Map<String, String> lib = Map.of(
+            "lib/Store.java", "package lib;\npublic interface Store {\n  void save(String s);\n}\n",
+            "lib/Elsewhere.java", "package lib;\npublic class Elsewhere {\n"
+                + "  public void save(String s){ System.getenv(\"HOME\"); }\n}\n",
+            "lib/Factory.java", "package lib;\npublic class Factory {\n"
+                + "  public static Store build(){ return null; }\n}\n");
+        Map<String, Map<String, Object>> r = report(lib, Map.of("app/S.java", CALL_THROUGH_IFACE), true);
+        assertTrue(r.containsKey("app.S.run"),
+                "the caller must not be ABSENT from the report — absence IS a purity claim");
         assertTrue(field(r, "app.S.run", "inferred").contains("Unknown"),
                 "an unformed key across the scan boundary must disclose, got " + r.get("app.S.run"));
         assertTrue(field(r, "app.S.run", "unknownWhy").contains("dispatch:lib.Store.save"),

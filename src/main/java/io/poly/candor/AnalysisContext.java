@@ -214,6 +214,18 @@ final class AnalysisContext {
     // fn -> external packages it DIRECTLY calls into where κ floored the call; post-filtered to genuinely
     // blind packages + propagated transitively -> the per-method `invisible` disclosure.
     final Map<String, TreeSet<String>> blindDirect = new HashMap<>();
+    /** ⟨0.39⟩ SPEC §4 obligation 1 — fn -> the ABSTRACTION MEMBERS its own body dispatches on, each spelled
+     *  as an entry {@code hash} ({@code iface/Backend.size()I}). DIRECT, and it stays direct on the wire:
+     *  the transitive half of §4 obligation 1 is the CONSUMER's walk over `calls`
+     *  ({@link Candor#depTransitiveDispatch}), for the measured reason recorded at {@link ReportWriter}'s
+     *  dispatch reach. What this map does feed there is the REACH — which units must be EMITTED at all,
+     *  because a pure unit that reaches a dispatch is a hop the walk has to pass through.
+     *
+     *  <p>Recorded at a bounded-CHA dispatch site REGARDLESS OF HOW MANY IMPLEMENTERS ARE VISIBLE — the
+     *  toggle R475 is about runs between ZERO implementers (a disclosed Unknown) and ONE PURE one (silence),
+     *  so a field recorded only when the dispatch was indeterminate would be absent in exactly the arm that
+     *  needs it. It is NOT an effect and is never charged as one. */
+    final Map<String, TreeSet<String>> dispatchDirect = new HashMap<>();
     // reflective calls with a LITERAL method name in the same body: a unique project match gets an EDGE
     // alongside the honest Unknown (recall without guessing).
     final List<String[]> reflectPairs = new ArrayList<>();         // [callerId, literalName]
@@ -242,6 +254,15 @@ final class AnalysisContext {
     Map<String, List<String>> depCallsByFn = new HashMap<>();
     Map<String, List<String>> depWhyByFn = new HashMap<>();
     Map<String, List<String>> depTransWhyMemo = new HashMap<>();
+    /** ⟨0.39⟩ the same arrangement one field over: a chained dep's DIRECT `dispatchesOn`, keyed by its
+     *  report QUAL, plus the memo for the closure {@link Candor#depTransitiveDispatch} takes over
+     *  {@code depCallsByFn}. §4 obligation 1 says the member must reach a caller TRANSITIVELY; on this
+     *  engine it does so through the dependency's own published call graph rather than by being copied onto
+     *  every row, for the reason recorded at {@link ReportWriter}'s emission filter — a transitive wire
+     *  field over an interface-dense JVM library grows the report eleven-fold and could not be serialised
+     *  at all on jooq 3.19.10. */
+    Map<String, List<String>> depDispatchByFn = new HashMap<>();
+    Map<String, List<String>> depTransDispatchMemo = new HashMap<>();
     // TRUE-FORWARDING for deferred-execution containers (`by lazy`, ThreadLocal.withInitial, …): per
     // field, the lambda(s) stored into a recognised container, edged to the forcing site. FIELD-SCOPED
     // (key `internalOwner/fieldName:fieldDesc`), so a pure-init lazy stays pure.
@@ -352,6 +373,7 @@ final class AnalysisContext {
         overloadDescs = master.overloadDescs;               classesWithClinit = master.classesWithClinit;
         depCoveredPkgs = master.depCoveredPkgs;             depChainedPkgs = master.depChainedPkgs;
         depCallsByFn = master.depCallsByFn;                 depWhyByFn = master.depWhyByFn;
+        depDispatchByFn = master.depDispatchByFn;           depTransDispatchMemo = master.depTransDispatchMemo;
         depSupers = master.depSupers;                       depSplitKnown = master.depSplitKnown;
         depSuperclass = master.depSuperclass;               classHash = master.classHash;
         literalFixpointMemo = master.literalFixpointMemo;
@@ -473,6 +495,7 @@ final class AnalysisContext {
     private static final Set<String> MEMOS = Set.of(
             "transSupersCache", "chaTargetsCache", "annoMetaCache", "sealedClosedMemo",
             "sealedUnseenMemo", "externalSupersCache", "resolutionOrderCache", "depTransWhyMemo",
+            "depTransDispatchMemo",
             "provFramesCache", "depOwnersBySig", "literalFixpointMemo");
 
     /** Sizes of the shared inputs, for {@link #assertNoInputGrowth}.

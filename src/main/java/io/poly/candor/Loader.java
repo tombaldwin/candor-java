@@ -852,7 +852,10 @@ final class Loader {
                                     Map.entry("paths", de.paths), Map.entry("tables", de.tables),
                                     Map.entry("netClass", de.netClass),
                                     Map.entry("incomplete", de.incomplete),   // ⟨0.29⟩ see DepFn#incomplete
-                                    Map.entry("unknownWhy", de.unknownWhy)))
+                                    Map.entry("unknownWhy", de.unknownWhy),
+                                    // ⟨0.39⟩ obligation 1. Read even when `inferred` is EMPTY — a PURE
+                                    // dispatching row is the whole point of the field; see DepFn.
+                                    Map.entry("dispatchesOn", de.dispatchesOn)))
                                 if (m.has(pair.getKey()) && m.get(pair.getKey()).isJsonArray())
                                     for (JsonElement x : m.getAsJsonArray(pair.getKey()))
                                         pair.getValue().add(x.getAsString());
@@ -867,6 +870,12 @@ final class Loader {
                                 if (!de.unknownWhy.isEmpty())
                                     ctx().depWhyByFn.computeIfAbsent(de.fn, k -> new ArrayList<>())
                                             .addAll(de.unknownWhy);
+                                // ⟨0.39⟩ the same arrangement `unknownWhy` uses: the wire field is DIRECT
+                                // and the closure is taken here, over `calls`. Recorded by QUAL because
+                                // that is what `calls` names.
+                                if (!de.dispatchesOn.isEmpty())
+                                    ctx().depDispatchByFn.computeIfAbsent(de.fn, k -> new ArrayList<>())
+                                            .addAll(de.dispatchesOn);
                                 if (m.has("calls") && m.get("calls").isJsonArray()) {
                                     List<String> cs = ctx().depCallsByFn
                                             .computeIfAbsent(de.fn, k -> new ArrayList<>());
@@ -897,7 +906,27 @@ final class Loader {
                         // effects nor a marker is still dropped. Pinned by CrossScanBoundaryTest
                         // #anEffectLessDepEntrysIncompleteReachesTheCaller, whose second arm requires that
                         // no marker is INVENTED for an entry that published none.
-                        if (!de.effects.isEmpty() || !de.incomplete.isEmpty()) {
+                        //
+                        // ⟨0.39⟩ …AND THE SAME ONE LINE OVER, for the row that is the whole defect. SPEC §4
+                        // obligation 1 makes a producer publish a dispatching row EVEN WHEN IT IS OTHERWISE
+                        // PURE, so the entry that closes R475 arrives here with no effects, no marker, and
+                        // nothing but `dispatchesOn`. Dropped, the consumer never learns the member exists
+                        // and obligation 3 has nothing to union — the fix would be inert on the exact arm it
+                        // was written for. Widened no further, for the reason the ⟨0.29⟩ paragraph gives:
+                        // `dispatchesOn` is a NAME, not a claim, and nothing newly admitted can certify
+                        // anything (a key nobody published a union entry for adds nothing at all).
+                        // ⟨0.39⟩ …AND THE PURE HOP. A unit whose only content is `calls` is a step in the
+                        // dispatch walk: `inferred` is TRANSITIVE, so a pure entry cannot have an effectful
+                        // callee, and `calls` now names dispatch-reaching callees — which makes a pure
+                        // entry with a non-empty `calls` exactly a hop and nothing else. Admitted as
+                        // WALK-ONLY so nothing but the walk can see it: see DepFn#walkOnly for why turning
+                        // one of these into a "hit" would withdraw a disclosure.
+                        boolean hop = de.effects.isEmpty() && de.incomplete.isEmpty()
+                                && de.dispatchesOn.isEmpty() && de.fn != null
+                                && !ctx().depCallsByFn.getOrDefault(de.fn, List.of()).isEmpty();
+                        de.walkOnly = hop;
+                        if (!de.effects.isEmpty() || !de.incomplete.isEmpty() || !de.dispatchesOn.isEmpty()
+                                || hop) {
                             DepFn prev = ctx().crossDeps.get(h);
                             if (prev == null) ctx().crossDeps.put(h, de);
                             else prev.unionWith(de);
@@ -914,6 +943,38 @@ final class Loader {
                         // report reaches this loop with no entries, so the ⟨0.24⟩ conjunct here bites only on
                         // the CONTRADICTORY shapes — a manifest that cannot be read, or one claiming zero
                         // while listing functions — and it fails those closed rather than picking a side.
+                        //
+                        // ⟨0.39⟩ A SYNTHETIC INTERFACE-UNION ENTRY IS NOT EVIDENCE ABOUT THE PACKAGE IT
+                        // NAMES, and under this rung it may name a package this report does not cover at
+                        // all. Obligation 2 makes a package publish a union entry keyed under the package
+                        // that OWNS the abstraction — `effimpl`'s report carries `iface/Backend.size()I` —
+                        // and the two sets below are exactly the ones that must not be earned that way:
+                        //
+                        //   depCoveredPkgs is the single authority that turns a report's SILENCE into a
+                        //   purity claim, so reading a foreign union entry as coverage of `iface` would
+                        //   withdraw `invisible: [iface]` from every call into it. That is R475's own shape
+                        //   — a disclosure deleted by a join — manufactured by R475's own fix, and this
+                        //   engine is the one where a coverage grant ALREADY silently certified unmodelled
+                        //   members (R492/R493): there must not be a third way to earn one.
+                        //
+                        //   depChainedPkgs answers "was a report configured for this package". A union
+                        //   entry is not that configuration either, and withholding it leaves
+                        //   untypedDepReceiver's conjunct 3 reading exactly what it read before the rung.
+                        //
+                        // Nothing legitimate is withheld: the report's OWN packages are registered above
+                        // from the envelope, before this loop, on both sets.
+                        // FAIL-CLOSED ON THE SHAPE, not just on the value. Every default on this route is
+                        // the permissive one — an unreadable marker read as "ordinary" GRANTS coverage of a
+                        // package this report may never have analysed — and ⟨0.32⟩ records `"interfaceUnion":
+                        // "true"` taking a gate from exit 1 to exit 0 through exactly that coercion, one
+                        // reader over. So the key is synthetic unless it is PRESENT AND LITERALLY `false`, or
+                        // absent altogether; anything else withholds the grant, which is the direction that
+                        // only ever adds disclosure.
+                        JsonElement iu = m.get("interfaceUnion");
+                        boolean ordinary = iu == null
+                                || (iu.isJsonPrimitive() && iu.getAsJsonPrimitive().isBoolean()
+                                    && !iu.getAsBoolean());
+                        if (!ordinary) continue;
                         String pkg = entryPackage(h);
                         if (pkg == null) continue;
                         ctx().depChainedPkgs.add(pkg);

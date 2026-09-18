@@ -263,7 +263,13 @@ promote it to `FieldLambdaCompletionTest` alongside a fix when this is picked up
 
 ### A MERGED `interfaceUnion` entry still breaks §3.1 byte-equality — needs a format rung
 
-**What (MEASURED 2026-07-28, `CANDOR_WORKSPACE_CHAIN=1`).** `ReportWriter.appendInterfaceUnions` has two
+**⚠ NO LONGER FLAG-GATED, 2026-09-18.** SPEC §4 ⟨0.39⟩ makes `interfaceUnion` REQUIRED and its absence a
+non-conformance, so `CANDOR_WORKSPACE_CHAIN` is gone and the merge arm below runs in EVERY scan. Nothing
+about the divergence changed — it is still the FABRICATION direction, still fails safe, and still needs a
+wire rung to close — but it is now reachable without opting in, which is the only part of this entry that
+was keeping it small. The measurement below stands; only its precondition is retired.
+
+**What (MEASURED 2026-07-28, `CANDOR_WORKSPACE_CHAIN=1`; the flag is retired and the arm is now default).** `ReportWriter.appendInterfaceUnions` has two
 arms. When the interface method's hash is UNCLAIMED it appends a fresh entry marked `interfaceUnion: true`
 — `Policy.gateInputFromReport` now reads that marker and the gate does not report it as a violator (fixed
 2026-07-28, verified byte-equal). When a REAL entry already claims the hash (an effectful `default` method,

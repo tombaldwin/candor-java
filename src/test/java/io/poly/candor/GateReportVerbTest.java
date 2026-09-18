@@ -384,7 +384,7 @@ class GateReportVerbTest {
                         "  public String run(app.api.Client c) throws Exception { return c.get(\"http://x\"); }",
                         "}")));
         try {
-            ReportWriter.workspaceChainOverride = true;      // the PRODUCER rung, opt-in
+            ReportWriter.publishUnionsOverrideForTest = true;      // the PRODUCER rung, opt-in
             Candor.resetState();
             Map<String, EffectSet> inferred = Candor.runScan(cls);
             Path rep = tmp.resolve("iu.jvm.json");
@@ -419,7 +419,7 @@ class GateReportVerbTest {
                     "and the skip must not have taken the REAL violators with it — the fabrication fix "
                     + "must not become an under-report; got " + gated);
         } finally {
-            ReportWriter.workspaceChainOverride = null;
+            ReportWriter.publishUnionsOverrideForTest = null;
             TestCompiler.rm(cls.getParent());
         }
     }

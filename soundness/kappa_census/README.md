@@ -105,11 +105,35 @@ about REACH, where the classified method performs the effect through a callee. R
 miss every instance.
 
 **Its first real run found four candidates that R494's fix did not reach** (R496), including
-`DefaultCredentialsProvider.resolveCredentials` — κ `Env`, body reaching `Exec`. Worth recording how that
-looked: run against the pre-fix and post-fix classifiers it printed IDENTICAL output, which reads like a
-calibration failure and was not. **The identity WAS the finding** — those rows are unfixed in both. The
-lesson generalises: when a before/after run fails to discriminate, establish whether the rows are
-insensitive to the change before concluding the instrument is.
+`DefaultCredentialsProvider.resolveCredentials` — κ `Env`, body reaching `Exec`. All four were real and
+were later confirmed on a compiled consumer.
+
+> ### CORRECTION — the lesson first written here was WRONG, and the instrument was broken
+>
+> This section originally said: run against the pre-fix and post-fix classifiers the census printed
+> IDENTICAL output, which "reads like a calibration failure and was not — the identity WAS the finding".
+>
+> **The identity was a BUG IN THIS INSTRUMENT.** `KappaQuery` printed the Java enum constant (`ENV`)
+> while the report carries the spec name (`Env`), so `body − {κ answer}` never subtracted anything:
+> **every classified member with any reach was reported as a hit, each one listing κ's own answer as
+> "missing". The oracle could not return a negative.**
+>
+> The four candidates were genuine, but they arrived in a report that could not have said otherwise —
+> which is not evidence, it is a coincidence. And the failure is the exact rule this project already
+> holds: *"0 violations is not evidence until the oracle is PROVEN able to fail"*. I broke it **inside
+> the instrument written to enforce that discipline**, and then drew a confident lesson from the
+> symptom rather than testing whether the tool could produce a negative at all.
+>
+> **The correct lesson: when a before/after run does not discriminate, the FIRST question is whether the
+> instrument can return a negative — not whether the rows are insensitive.** Prove the negative before
+> interpreting the positive. Fixed by asking the authority (`Effect.specName()`) rather than spelling a
+> second copy of the table in the reader — a second copy is how the two names diverged in the first place.
+
+**Second declared defect: the census is blind to CO-EMITTED effects.** It queries `Classifier.classify`,
+which is the κ table, not what the engine actually charges at a call site — so any rule that co-emits
+(`Llm`+`Net`, the S3 `Fs` rule, R496's own fix) is invisible to it, and the five AWS owners still appear
+as hits *after* being fixed. The remedy is one `coEmittedEffects(owner, method, desc)` authority called by
+both `handleMethodInsn` and `KappaQuery`, so the reader cannot drift from the writer.
 
 ### R496 closed the four, and the full-corpus sweep priced the instrument
 

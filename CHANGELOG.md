@@ -8,6 +8,66 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R508 — the VERSION-BLINDNESS sweep: every `javap`-derived carve-out re-derived across published versions
+
+A κ rule is keyed on owner + method and cannot say *"this owner forks in ≤1.2 and does not in ≥1.3"*,
+so a rule derived from the single jar that happens to sit in `soundness/lib` is a candidate to be wrong
+for some version someone is actually using. That is how R506 shipped. Every carve-out added by R480,
+R486, R487 and R493 was re-derived with `javap -c`, method by method, across the published range.
+
+**Two were wrong, and both are fixed in the loud direction — an over-charge, never a silent carve-out.**
+
+- **Exposed 1.x was SILENT — a cardinal sin, and the worse of the two.** The R493 rules were keyed as
+  `owner.equals("org.jetbrains.exposed.sql.QueriesKt")` &c. against exposed **0.52.0**. Exposed **1.0.0**
+  moved the whole library one segment down and renamed the module —
+  `org.jetbrains.exposed.v1.jdbc.QueriesKt`, `…v1.jdbc.JdbcTransaction`,
+  `…v1.jdbc.transactions.TransactionsKt` — so every owner-equals missed. `org.jetbrains` is a κ-COVERED
+  prefix, which makes the resulting `null` a **certified purity claim, not a disclosure**.
+  MEASURED on a consumer compiled with kotlinc 2.4.10 against the real exposed 1.5.0 jars, library out of
+  scope: `0 functions reach effects`, `analyzed.count: 16`, `coverage: null`, `invisible: null`, and
+  `deny Db`, `deny Unknown` and `deny Net` **all exited 0** over `Database.connect` + `transaction{}` +
+  `insert` + `selectAll` + `SchemaUtils.create` + `JdbcTransaction.exec`. The same source shape against
+  0.52.0 — same candor binary, same kotlinc — reported **9 functions `Db`** and `deny Db` exit 1; a
+  `DriverManager.getConnection` control reddens the same tree. **Fixed** by keying on the class's simple
+  name and the module-relative package segment, both scoped inside `org.jetbrains.exposed.`. Post-fix the
+  1.5.0 arm reports the same 9 rows as the 0.52.0 arm. **The price, stated:** the key is looser, so a
+  future `QueriesKt`/`SchemaUtils` anywhere under `org.jetbrains.exposed.` is charged `Db` sight-unseen,
+  including the 1.x `r2dbc` module, which has not been measured.
+- **Three names in testcontainers' read-back denylist were not read-backs** — and NOT because of version
+  drift: the set was enumerated off `GenericContainer` and `ContainerState` while the rule covers the whole
+  `org.testcontainers.containers.` package. `getContainerInfo` is ABSTRACT on `ContainerState`, and the
+  package's other implementation, `ComposeServiceWaitStrategyTarget`, answers it with
+  `inspectContainerCmd(id).exec()` — a live daemon round trip, in 1.7.3 through 2.0.5, **1.19.8 (the
+  derivation version) included**. `getHost` / `getContainerIpAddress` reach
+  `DockerClientFactory.getOrInitializeStrategy()`, which `ServiceLoader`s the docker provider strategies
+  and probes the endpoint. MEASURED on a Java consumer compiled against the real testcontainers-1.19.8
+  jar, library out of scope: pre-fix all three arms reported `inferred: []` and `deny Exec` /
+  `deny Unknown` both exited 0, beside a `c.start()` control at exit 1; post-fix all three report `Exec`
+  and `deny Exec` exits 1. **The price, stated:** `GenericContainer.getContainerInfo()` and a started
+  container's `getHost()` really are field reads and are now charged `Exec`. **The residual, stated:** the
+  `ContainerState` defaults that reach the inspect only *through* `getContainerInfo()` — `getContainerId`,
+  `getMappedPort`, `getPortBindings`, `getBoundPortNumbers` — stay carved out, because charging
+  `getMappedPort(int)` was the measured over-reach that set exists to avoid.
+
+**Measured clean, with the versions named** (a negative with evidence, so nobody re-derives it): zt-exec
+**1.4 … 1.13.0** (all 10 published); commons-exec **1.0, 1.0.1, 1.2, 1.3, 1.4.0, 1.5.0, 1.6.0** (all 7 —
+the union of every non-value call target in `util.*`+`OS` across all of them is `System.getProperty`,
+`System.err.println`, `printStackTrace` and three `java.io.File` path helpers); im4java **1.2.0, 1.4.0**
+(both published); testcontainers' three pure enums across **twelve** versions; `scala.sys.process`'s
+`stdin`/`stdout`/`stderr` and `BasicIO$` constants across **2.11.12, 2.12.20, 2.13.14, 2.13.18,
+3.10.0-RC2**; ffmpeg-cli-wrapper **0.4 … 0.9.2**; dbunit's `<init>(Connection)` and
+`AbstractDataType.loadClass` across **2.4.9 … 3.5.2**; commons-validator **1.4.1 … 1.11.0**;
+commons-beanutils **1.9.4 … 1.11.0**; redisson **3.15.6 … 4.7.0**; commons-codec **1.11 … 1.22.1**; and
+ktor's `startsWith` rules against **3.4.0 / 3.6.0**.
+
+**A/B over 371 jars, 1,497,879 rows per arm, via `bin/corpus-ab.py`: ADDED 0 — REMOVED 0 — CHANGED 18.**
+All 18 audited, not sampled: 0 lost a concrete effect, 0 had `inferred` shrink, 0 lost an `invisible`
+entry — every one is a gain. All 18 are in `testcontainers-1.19.8.jar` itself. **The Exposed fix has ZERO
+corpus REACH, and that is the point rather than a caveat**: a census of all 372 jars found `0` referencing
+`org/jetbrains/exposed/v1` and exactly `1` referencing `org/testcontainers/containers` (testcontainers'
+own jar), because the corpus pins one version per library — which is precisely the blind spot R508 names.
+The compiled consumers above are the evidence.
+
 ### ⚠ SOUNDNESS R497 — `candor path` / `candor impact` answered ABOUT A FUNCTION NOBODY ASKED FOR
 
 - **Both verbs resolved their `<fn>` argument as `equals(q)` else the FIRST `contains(q)`** — not

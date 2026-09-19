@@ -349,12 +349,16 @@ class ThirdPartySubprocessBuilderTest {
      *  <p>The gate is dropped for testcontainers ONLY, and on a checked property: `javap` over
      *  `GenericContainer`/`ContainerState`/`Container` finds exactly two argument-taking `get*` members,
      *  `getMappedPort(int)` (pure, carved out) and `getLogs(OutputType...)` (a `docker logs` round trip,
-     *  NOT carved out) — so the last two rows here are the discriminator, not decoration. */
+     *  NOT carved out) — so the last two rows here are the discriminator, not decoration.
+     *
+     *  <p>{@code getHost} WAS ASSERTED NULL HERE AND THAT ASSERTION WAS WRONG — removed 2026-09-20 with
+     *  the carve-out it defended, see {@link #versionSweep_hostAndContainerInfoAreNotReadBacks()}. It is
+     *  the [[R506]] shape a third time: a test written to pin a carve-out becomes the suite's defence of
+     *  the carve-out's defect. */
     @Test
     void control_testcontainersPureAccessorsAndEnums() {
         assertNull(Classifier.classify("org.testcontainers.containers.GenericContainer", "getMappedPort", "(I)Ljava/lang/Integer;"));
         assertNull(Classifier.classify("org.testcontainers.containers.ContainerState", "getFirstMappedPort", "()Ljava/lang/Integer;"));
-        assertNull(Classifier.classify("org.testcontainers.containers.ContainerState", "getHost", "()Ljava/lang/String;"));
         assertNull(Classifier.classify("org.testcontainers.containers.InternetProtocol", "toDockerNotation", "()Ljava/lang/String;"));
         assertNull(Classifier.classify("org.testcontainers.containers.InternetProtocol", "values", "()[Lorg/testcontainers/containers/InternetProtocol;"));
         assertNull(Classifier.classify("org.testcontainers.containers.BindMode", "valueOf", "(Ljava/lang/String;)Lorg/testcontainers/containers/BindMode;"));
@@ -364,6 +368,44 @@ class ThirdPartySubprocessBuilderTest {
             "([Lorg/testcontainers/containers/output/OutputFrame$OutputType;)Ljava/lang/String;"));
         assertEquals(Effect.EXEC, Classifier.classify("org.testcontainers.containers.ExecConfig$ExecConfigBuilder", "command",
             "([Ljava/lang/String;)Lorg/testcontainers/containers/ExecConfig$ExecConfigBuilder;"));
+    }
+
+    /** SOUNDNESS R508's version sweep, and the one carve-out in this file it broke. THE DEFECT WAS NOT
+     *  VERSION DRIFT — the read-back set was enumerated off `GenericContainer` and `ContainerState`
+     *  while the RULE covers the whole {@code org.testcontainers.containers.} package, and three names
+     *  are not read-backs anywhere in it, 1.19.8 (the derivation version) included:
+     *  <ul>
+     *  <li>{@code getContainerInfo} — {@code ContainerState.getContainerInfo()} is ABSTRACT.
+     *      {@code GenericContainer} answers it from a field; the package's OTHER implementation,
+     *      {@code ComposeServiceWaitStrategyTarget}, answers it with
+     *      {@code dockerClient.inspectContainerCmd(id).exec()}. Verified with {@code javap -c} in
+     *      1.7.3 / 1.10.7 / 1.12.5 / 1.15.3 / 1.16.3 / 1.17.6 / 1.18.3 / 1.19.8 / 1.20.6 / 1.21.4 /
+     *      2.0.5. A consumer reaches it through the {@code wait.strategy.WaitStrategyTarget} interface,
+     *      which is inside the charged package.</li>
+     *  <li>{@code getHost} / {@code getContainerIpAddress} — {@code DockerClientFactory.instance()
+     *      .dockerHostIpAddress()} is {@code getOrInitializeStrategy()}, which {@code ServiceLoader}s
+     *      the docker provider strategies and probes the endpoint (javap -c: 1.15.3, 1.19.8, 2.0.5).</li>
+     *  </ul>
+     *  MEASURED end to end on a Java consumer compiled against the real testcontainers-1.19.8 jar with
+     *  the library OUT of scope: pre-fix the three arms reported {@code inferred: []} and
+     *  {@code deny Exec} / {@code deny Unknown} BOTH exited 0; a {@code c.start()} control in a sibling
+     *  tree exited 1, so the instrument could fail. Post-fix all three report {@code Exec} and
+     *  {@code deny Exec} exits 1. */
+    @Test
+    void versionSweep_hostAndContainerInfoAreNotReadBacks() {
+        assertEquals(Effect.EXEC, Classifier.classify("org.testcontainers.containers.ContainerState",
+            "getContainerInfo", "()Lcom/github/dockerjava/api/command/InspectContainerResponse;"));
+        assertEquals(Effect.EXEC, Classifier.classify("org.testcontainers.containers.wait.strategy.WaitStrategyTarget",
+            "getContainerInfo", "()Lcom/github/dockerjava/api/command/InspectContainerResponse;"));
+        assertEquals(Effect.EXEC, Classifier.classify("org.testcontainers.containers.ContainerState",
+            "getHost", "()Ljava/lang/String;"));
+        assertEquals(Effect.EXEC, Classifier.classify("org.testcontainers.containers.GenericContainer",
+            "getContainerIpAddress", "()Ljava/lang/String;"));
+        // CONTROL — the names the sweep cleared stay carved out, so this is a change of three entries
+        // and not a quiet collapse of the denylist.
+        assertNull(Classifier.classify("org.testcontainers.containers.GenericContainer", "getEnvMap", "()Ljava/util/Map;"));
+        assertNull(Classifier.classify("org.testcontainers.containers.GenericContainer", "getDockerImageName", "()Ljava/lang/String;"));
+        assertNull(Classifier.classify("org.testcontainers.containers.ContainerState", "getContainerId", "()Ljava/lang/String;"));
     }
 
     /** The CHILD-OUTPUT surface: reading a subprocess's stdout is the capability `Process.getInputStream()`

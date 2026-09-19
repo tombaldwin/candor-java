@@ -637,6 +637,86 @@ class CoveredPrefixCensusTest {
             "loadClass is a Class.forName; the Connection argument is unused");
     }
 
+    /** SOUNDNESS R508 — THE EXPOSED RULE WAS VERSION-BLIND AND THAT MADE IT SILENT AGAIN.
+     *
+     *  <p>Every rule in this batch was written against the {@code exposed-core/jdbc 0.52.0} jars that sit
+     *  in {@code soundness/lib}, keyed as {@code owner.equals("org.jetbrains.exposed.sql.QueriesKt")}.
+     *  Exposed <b>1.0.0</b> moved the whole library one segment down and renamed the module —
+     *  {@code org.jetbrains.exposed.v1.jdbc.QueriesKt}, {@code …v1.jdbc.JdbcTransaction},
+     *  {@code …v1.jdbc.transactions.TransactionsKt} — so every owner-equals missed and the block fell to
+     *  its trailing {@code return null}. {@code org.jetbrains} is a κ-COVERED prefix, so that null is an
+     *  unqualified purity claim, not a disclosure: the [[R493]] cardinal sin reopened by a rename.
+     *
+     *  <p>MEASURED on a consumer compiled with kotlinc 2.4.10 against the real exposed 1.5.0 jars,
+     *  library out of scope: {@code 0 functions reach effects}, {@code analyzed.count: 16},
+     *  {@code coverage: null}, {@code invisible: null}, and {@code deny Db} / {@code deny Unknown} /
+     *  {@code deny Net} ALL exit 0. The same source shape against 0.52.0 — same candor binary, same
+     *  kotlinc, only the library version differing — reported <b>9 functions Db</b> and {@code deny Db}
+     *  exit 1; a {@code DriverManager.getConnection} control on the same tree reddens it. Post-fix the
+     *  1.5.0 arm reports the same 9 rows as the 0.52.0 arm.
+     *
+     *  <p>The rows below are the owner spellings {@code javap} showed the 1.5.0 fixture actually emitting
+     *  ({@code connect$default}, {@code create$default}, {@code exec$default}, {@code transaction$default}),
+     *  not a guess at them. */
+    @Test
+    void exposedOneDotXPackageMoveIsStillCharged() {
+        assertEquals(Effect.DB, Classifier.classify("org.jetbrains.exposed.v1.jdbc.QueriesKt",
+            "insert", "(Lorg/jetbrains/exposed/v1/core/Table;Lkotlin/jvm/functions/Function2;)Ljava/lang/Object;"));
+        assertEquals(Effect.DB, Classifier.classify("org.jetbrains.exposed.v1.jdbc.QueriesKt",
+            "selectAll", "(Lorg/jetbrains/exposed/v1/core/FieldSet;)Ljava/lang/Object;"));
+        assertEquals(Effect.DB, Classifier.classify("org.jetbrains.exposed.v1.jdbc.Database$Companion",
+            "connect$default", "(Lorg/jetbrains/exposed/v1/jdbc/Database$Companion;Ljava/lang/String;)Ljava/lang/Object;"));
+        assertEquals(Effect.DB, Classifier.classify("org.jetbrains.exposed.v1.jdbc.JdbcTransaction",
+            "exec$default", "(Lorg/jetbrains/exposed/v1/jdbc/JdbcTransaction;Ljava/lang/String;)Lkotlin/Unit;"));
+        assertEquals(Effect.DB, Classifier.classify("org.jetbrains.exposed.v1.jdbc.transactions.TransactionsKt",
+            "transaction$default", "(Lorg/jetbrains/exposed/v1/jdbc/Database;Lkotlin/jvm/functions/Function1;)Ljava/lang/Object;"));
+        assertEquals(Effect.DB, Classifier.classify("org.jetbrains.exposed.v1.jdbc.transactions.TransactionsKt",
+            "suspendTransaction", "(Lkotlin/jvm/functions/Function1;)Ljava/lang/Object;"));
+        assertEquals(Effect.DB, Classifier.classify("org.jetbrains.exposed.v1.jdbc.SchemaUtils",
+            "create$default", "(Lorg/jetbrains/exposed/v1/jdbc/SchemaUtils;[Lorg/jetbrains/exposed/v1/core/Table;Z)V"));
+        assertEquals(Effect.DB, Classifier.classify("org.jetbrains.exposed.v1.jdbc.statements.InsertStatement",
+            "executeInternal", "(Ljava/lang/Object;)Ljava/lang/Object;"));
+        assertEquals(Effect.DB, Classifier.classify("org.jetbrains.exposed.v1.dao.EntityClass",
+            "findById", "(Ljava/lang/Object;)Ljava/lang/Object;"));
+        // …and the 0.x spellings still answer identically — this widened the key, it did not move it.
+        assertEquals(Effect.DB, Classifier.classify("org.jetbrains.exposed.sql.QueriesKt",
+            "insert", "(Lorg/jetbrains/exposed/sql/Table;Lkotlin/jvm/functions/Function2;)Ljava/lang/Object;"));
+        assertEquals(Effect.DB, Classifier.classify("org.jetbrains.exposed.sql.Transaction",
+            "exec$default", "(Lorg/jetbrains/exposed/sql/Transaction;Ljava/lang/String;)Lkotlin/Unit;"));
+    }
+
+    /** CONTROL for the row above: the widened key must not swallow the carve-outs or the delegate
+     *  factories, in EITHER spelling. {@code sortTablesByReferences}/{@code createStatements}/
+     *  {@code createFKey}/{@code createIndex}/{@code checkCycle} were re-derived with {@code javap -c}
+     *  against exposed-jdbc <b>1.5.0</b> as well as 0.52.0 — each still holds zero
+     *  TransactionManager/exec/java.sql references, against {@code listDatabases} which holds three in
+     *  both, so the re-derivation could have failed. */
+    @Test
+    void control_exposedCarveOutsSurviveBothSpellings() {
+        for (String owner : new String[] {"org.jetbrains.exposed.sql.SchemaUtils",
+                "org.jetbrains.exposed.v1.jdbc.SchemaUtils"}) {
+            assertNull(Classifier.classify(owner, "sortTablesByReferences", "(Ljava/lang/Iterable;)Ljava/util/List;"));
+            assertNull(Classifier.classify(owner, "checkCycle", "([Lorg/jetbrains/exposed/v1/core/Table;)Z"));
+            assertNull(Classifier.classify(owner, "createStatements", "([Lorg/jetbrains/exposed/v1/core/Table;)Ljava/util/List;"));
+            assertNull(Classifier.classify(owner, "createFKey", "(Lorg/jetbrains/exposed/v1/core/ForeignKeyConstraint;)Ljava/util/List;"));
+            assertNull(Classifier.classify(owner, "createIndex", "(Lorg/jetbrains/exposed/v1/core/Index;)Ljava/util/List;"));
+            assertEquals(Effect.DB, Classifier.classify(owner, "listDatabases", "()Ljava/util/List;"));
+            assertNull(Classifier.classify(owner, "<clinit>", "()V"));
+            assertNull(Classifier.classify(owner, "<init>", "()V"));
+        }
+        // The DELEGATE FACTORIES in the transactions package stay pure in both spellings — the reason
+        // that rule is an exact verb set and not a `transaction*` prefix (four fabricated `<clinit>`
+        // rows in the R493 corpus A/B).
+        assertNull(Classifier.classify("org.jetbrains.exposed.sql.transactions.TransactionScopeKt",
+            "transactionScope", "(Lkotlin/jvm/functions/Function0;)Ljava/lang/Object;"));
+        assertNull(Classifier.classify("org.jetbrains.exposed.v1.jdbc.transactions.TransactionScopeKt",
+            "nullableTransactionScope", "(Lkotlin/jvm/functions/Function0;)Ljava/lang/Object;"));
+        // A value type in the 1.x `core.dao.id` package carries none of the DAO verbs and must stay pure.
+        assertNull(Classifier.classify("org.jetbrains.exposed.v1.core.dao.id.EntityID", "getValue", "()Ljava/lang/Comparable;"));
+        // And a neighbouring JetBrains namespace that is not Exposed is untouched.
+        assertNull(Classifier.classify("org.jetbrains.annotations.NotNull", "value", "()Ljava/lang/String;"));
+    }
+
     // ── harness ─────────────────────────────────────────────────────────────────────────────────────
 
     private static EffectSet eff(Map<String, EffectSet> r, String fn) {

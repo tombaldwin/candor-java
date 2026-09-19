@@ -20,6 +20,18 @@ final class Classifier {
         return close > 0 ? desc.substring(1, close) : desc;
     }
 
+    /** True when {@code tail} — an owner with {@code org.jetbrains.exposed.} and any {@code v<major>.}
+     *  segment already stripped — sits under the module-relative package {@code seg}, either at the top
+     *  ({@code dao.EntityClass}, exposed 0.x) or one module segment down ({@code jdbc.transactions.…},
+     *  exposed 1.x). Matching the SEGMENT rather than the absolute package path is what survives
+     *  Exposed 1.0's move of the whole library from {@code …exposed.sql.*} to {@code …exposed.v1.jdbc.*};
+     *  see the R508 note on the Exposed rule. */
+    private static boolean exposedModule(String tail, String seg) {
+        if (tail.startsWith(seg)) return true;
+        int i = tail.indexOf('.');
+        return i > 0 && tail.startsWith(seg, i + 1);
+    }
+
     /** The PURE READ-BACK half of `java.lang.ProcessBuilder`'s overloaded pairs: each of these names is a
      *  CONFIGURING SETTER when it takes arguments (charged `Exec` — see the subprocess rules) and a plain
      *  accessor for state already stored when it takes NONE (`pb.command()` → the argv list already set).
@@ -77,13 +89,41 @@ final class Classifier {
      *  already-stored port state that every testcontainers consumer makes and is IN this set, and
      *  `getLogs(OutputType...)`, which is a `docker logs` round trip and is deliberately NOT. Gating on
      *  `()` would have charged `getMappedPort(int)` `Exec` — measured on a real consumer compiled against
-     *  testcontainers 1.19.8, and the reason this set is not simply a copy of the ProcessBuilder shape. */
+     *  testcontainers 1.19.8, and the reason this set is not simply a copy of the ProcessBuilder shape.
+     *
+     *  <p>THREE NAMES WERE REMOVED 2026-09-20 (SOUNDNESS R508's sweep), and the reason is the audit
+     *  boundary, not a version: the set was derived from `GenericContainer` and `ContainerState`, and
+     *  the RULE applies to the whole `org.testcontainers.containers.` package — including
+     *  `wait.strategy.WaitStrategyTarget`, the interface a custom wait strategy is handed.
+     *  <ul>
+     *  <li>{@code getContainerInfo} — `ContainerState.getContainerInfo()` is ABSTRACT. `GenericContainer`
+     *      answers it from a field, but the package's other implementation,
+     *      `ComposeServiceWaitStrategyTarget`, answers it with
+     *      `dockerClient.inspectContainerCmd(id).exec()` — a live daemon round trip. `javap -c` over
+     *      testcontainers 1.7.3 / 1.10.7 / 1.12.5 / 1.15.3 / 1.16.3 / 1.17.6 / 1.18.3 / 1.19.8 /
+     *      1.20.6 / 1.21.4 / 2.0.5: true in every one of them, 1.19.8 included. NOT a version drift —
+     *      the derivation version had it too, and the two types it was read off did not.</li>
+     *  <li>{@code getHost} / {@code getContainerIpAddress} — `ContainerState.getHost()` is
+     *      `DockerClientFactory.instance().dockerHostIpAddress()`, and that is
+     *      `getOrInitializeStrategy()`, which `ServiceLoader`s the provider strategies and probes the
+     *      docker endpoint (javap -c, 1.15.3 / 1.19.8 / 2.0.5). `getContainerIpAddress` is the
+     *      pre-1.15 spelling and reached the same method directly from `GenericContainer` in 1.5.0.
+     *      Neither is a stored-field read.</li>
+     *  </ul>
+     *  THE PRICE, stated rather than hidden: `GenericContainer.getContainerInfo()` and a started
+     *  container's `getHost()` really are field reads, and are now charged `Exec`. That is the loud
+     *  direction R508 settles on, and it is cheap here because a consumer that asks a container for its
+     *  host almost always started it in the same unit. The RESIDUAL, also stated: the `ContainerState`
+     *  defaults that reach the live inspect only THROUGH `getContainerInfo()` — `getContainerId`,
+     *  `getMappedPort`, `getPortBindings`, `getBoundPortNumbers` — are still carved out, because
+     *  `getMappedPort(int)` was measured as the read every consumer makes and charging it was the
+     *  over-reach this set exists to avoid. */
     private static final Set<String> TESTCONTAINERS_READ_BACKS = Set.of(
-            "getBinds", "getCommandParts", "getContainerDef", "getContainerId", "getContainerInfo",
+            "getBinds", "getCommandParts", "getContainerDef", "getContainerId",
             "getContainerName", "getCopyToFileContainerPathMap", "getCopyToTransferableContainerPathMap",
             "getCreateContainerCmdModifiers", "getDependencies", "getDockerClient", "getDockerImageName",
             "getEnv", "getEnvMap", "getExposedPorts", "getExtraHosts", "getImage", "getIpAddress",
-            "getContainerIpAddress", "getHost", "getLabels", "getLinkedContainers",
+            "getLabels", "getLinkedContainers",
             "getLivenessCheckPort", "getLivenessCheckPorts", "getLivenessCheckPortNumbers",
             "getLogConsumers", "getNetwork", "getNetworkAliases", "getNetworkMode", "getPortBindings",
             "getBoundPortNumbers", "getMappedPort", "getFirstMappedPort", "getShmSize",
@@ -876,7 +916,30 @@ final class Classifier {
      *  instances the row was filed from — a sweep of all ten owner-scoped `Exec` rules produced these
      *  four, and the whole-PACKAGE form for three of them closes the library-subclass hole as well: a
      *  call on `PostgreSQLContainer` or `DaemonExecutor` emits THAT owner in bytecode, and the supertype
-     *  walk that rescues a PROJECT subclass cannot see an unscanned library one). */
+     *  walk that rescues a PROJECT subclass cannot see an unscanned library one).
+     *
+     *  VERSION SWEEP, 2026-09-20 (SOUNDNESS R508). Every carve-out below was derived from ONE version of
+     *  one jar, which is exactly the shape that made [[R506]] a shipped sin one package over. Re-derived
+     *  with `javap -c`, method-by-method, across the PUBLISHED range of each:
+     *    zt-exec        1.4 … 1.13.0 (all 10) — `ZT_EXEC_READ_BACKS` pure in every one. `getCommand` /
+     *                   `getDirectory` do not exist before 1.9 and delegate to `ProcessBuilder.command()`
+     *                   / `.directory()` (themselves `PB_READ_BACKS`) after; `getEnvironment` is
+     *                   `getfield environment` throughout, never `System.getenv`.
+     *    commons-exec   1.0, 1.0.1, 1.2, 1.3, 1.4.0, 1.5.0, 1.6.0 (all 7) — the `util.*` + `OS` carve-out
+     *                   and `COMMONS_EXEC_READ_BACKS` both hold. The UNION of every non-JDK-value call
+     *                   target in `util.*`+`OS` across all seven versions is: `System.getProperty`,
+     *                   `System.err.println`, `Throwable.printStackTrace`, `File.separatorChar`,
+     *                   `File.pathSeparator`, `File.getAbsolutePath` — no spawn, no open, no `getenv`.
+     *                   (The `EnvironmentUtils.getProc*` carve-out that WAS version-wrong is [[R506]],
+     *                   already deleted; see the commons-exec rule body.)
+     *    im4java        1.2.0, 1.4.0 (both published) — `IM4JAVA_READ_BACKS` pure in both.
+     *    testcontainers 1.5.0, 1.7.3, 1.10.7, 1.12.5, 1.15.3, 1.16.3, 1.17.6, 1.18.3, 1.19.8, 1.20.6,
+     *                   1.21.4, 2.0.5 — the three pure ENUMS hold in every version they exist in. The
+     *                   READ-BACK set did NOT: see the three names removed from
+     *                   `TESTCONTAINERS_READ_BACKS`, wrong in the derivation version too.
+     *  So of the four subprocess libraries, only testcontainers' carve-out was wrong, and it was wrong
+     *  for a reason that is NOT version drift. The clean negatives are recorded here rather than dropped
+     *  because "we checked one jar" is the thing R508 says not to leave implicit. */
     private static Effect thirdPartySubprocessLibs(String owner, String method, String desc) {
         // ── zt-exec ────────────────────────────────────────────────────────────────────────────────────
         // `org.zeroturnaround.exec.ProcessExecutor` is a ProcessBuilder in every respect that matters: it
@@ -1682,42 +1745,92 @@ final class Classifier {
         //  - SchemaUtils is MIXED, so it is whole-type plus a NAMED PURE DENYLIST — the five members that
         //    build DDL strings without a round trip. Verified by disassembly: each has zero
         //    TransactionManager/exec references, against listDatabases (the control) which has three.
+        //  - MODULE-RELATIVE, NOT PACKAGE-ABSOLUTE — SOUNDNESS R508, measured 2026-09-20. Every rule
+        //    here was originally written against the exposed **0.52.0** jar that sits in `soundness/lib`,
+        //    as `owner.equals("org.jetbrains.exposed.sql.QueriesKt")` &c. Exposed **1.0.0** moved the
+        //    whole library one segment down and renamed the module:
+        //        org.jetbrains.exposed.sql.QueriesKt       ->  org.jetbrains.exposed.v1.jdbc.QueriesKt
+        //        org.jetbrains.exposed.sql.Transaction     ->  org.jetbrains.exposed.v1.jdbc.JdbcTransaction
+        //        …sql.transactions.ThreadLocalTransactionManagerKt
+        //                                                  ->  …v1.jdbc.transactions.TransactionsKt
+        //    so EVERY owner-equals missed and the block fell to its trailing `return null` — and
+        //    `org.jetbrains` is in `Rules.KAPPA_COVERED_PREFIXES`, which makes that null a CERTIFIED
+        //    PURITY CLAIM rather than a disclosure. This is [[R493]]'s own cardinal sin, reopened by a
+        //    package rename.
+        //
+        //    MEASURED on a consumer compiled with kotlinc 2.4.10 against the real exposed-core /
+        //    exposed-jdbc **1.5.0** jars, library OUT of scope: `0 functions reach effects`,
+        //    `analyzed.count: 16`, `coverage: null`, `invisible: null`, and `deny Db`, `deny Unknown`
+        //    and `deny Net` ALL exited 0 over Database.connect + transaction{} + insert + selectAll +
+        //    SchemaUtils.create + JdbcTransaction.exec. The SAME source shape against **0.52.0** —
+        //    same candor binary, same kotlinc, only the library version differing — reported
+        //    **9 functions Db** and `deny Db` exit 1. A `DriverManager.getConnection` control on the
+        //    same tree reddens `deny Db`, so the exit 0 is an under-report, not a broken scan.
+        //
+        //    The fix keys on what did NOT move: the class's SIMPLE NAME, and the module-relative
+        //    package tail (`transactions.` / `statements.` / `dao.`), both scoped inside
+        //    `org.jetbrains.exposed.` — a namespace that is a SQL framework end to end. THE PRICE,
+        //    stated rather than hidden: this is looser than the owner-equals it replaces, so a future
+        //    `QueriesKt` or `SchemaUtils` anywhere under `org.jetbrains.exposed.` is charged `Db`
+        //    sight-unseen, including in the 1.x `r2dbc` module which has NOT been measured here. Per
+        //    R508 the direction to fail in is the loud over-charge; re-deriving an absolute package
+        //    path per major version is the thing that just failed.
         if (owner.startsWith("org.jetbrains.exposed.")) {
             // A Kotlin `object`/multifile facade's <clinit>+<init> allocate the singleton and nothing
             // else — javap: SchemaUtils.<clinit> is `new SchemaUtils; invokespecial <init>()V`, three
             // instructions. The whole-type rules below must not charge them, or every class that merely
             // TOUCHES SchemaUtils reads Db. (Caught by the corpus A/B's ADDED column, not by a fixture.)
             if (method.equals("<init>") || method.equals("<clinit>")) return null;
-            if (owner.equals("org.jetbrains.exposed.sql.QueriesKt")) return Effect.DB;
-            if (owner.equals("org.jetbrains.exposed.sql.SchemaUtils")) {
+            // `exposedTail` is the owner with `org.jetbrains.exposed.` and any `v<major>.` segment
+            // stripped, so 0.x `sql.transactions.Foo` and 1.x `jdbc.transactions.Foo` end in the same
+            // module-relative path. `exposedSimple` is the class name alone.
+            String exposedTail = owner.substring("org.jetbrains.exposed.".length());
+            int exposedSeg = exposedTail.indexOf('.');
+            if (exposedSeg > 1 && exposedTail.charAt(0) == 'v'
+                    && exposedTail.substring(1, exposedSeg).chars().allMatch(Character::isDigit))
+                exposedTail = exposedTail.substring(exposedSeg + 1);
+            String exposedSimple = owner.substring(owner.lastIndexOf('.') + 1);
+            if (exposedSimple.equals("QueriesKt")) return Effect.DB;
+            if (exposedSimple.equals("SchemaUtils")) {
+                // The five members that build DDL strings without a round trip. RE-DERIVED with
+                // `javap -c` against exposed-jdbc **1.5.0** as well as the original 0.52.0: each still
+                // holds zero TransactionManager/exec/java.sql references, against `listDatabases` (the
+                // control) which holds three in both — so the instrument could have failed. Checked
+                // 0.30.1 / 0.38.2 / 0.44.1 / 0.52.0 / 0.61.0 / 1.0.0 / 1.5.0; the set is stable in all.
                 if (method.equals("sortTablesByReferences") || method.equals("checkCycle")
                         || method.equals("createStatements") || method.equals("createFKey")
                         || method.equals("createIndex")) return null;
                 return Effect.DB;
             }
             // Database.connect opens the pool; Transaction.exec runs raw SQL; the transaction{} builders
-            // and the Statement.execute family drive the connection.
-            if (owner.equals("org.jetbrains.exposed.sql.Database$Companion") && method.startsWith("connect"))
+            // and the Statement.execute family drive the connection. `JdbcTransaction`/`R2dbcTransaction`
+            // are 1.x's split of 0.x's single `Transaction`.
+            if (exposedSimple.equals("Database$Companion") && method.startsWith("connect")) return Effect.DB;
+            if ((exposedSimple.equals("Transaction") || exposedSimple.equals("JdbcTransaction")
+                    || exposedSimple.equals("R2dbcTransaction")) && method.startsWith("exec"))
                 return Effect.DB;
-            if (owner.equals("org.jetbrains.exposed.sql.Transaction") && method.startsWith("exec")) return Effect.DB;
             // EXACT verbs, not a `transaction*` prefix: `javap` on the two facades in that package shows
             // TransactionScopeKt.transactionScope / nullableTransactionScope are DELEGATE FACTORIES that
             // open nothing, and a prefix match charged them — measured as four fabricated `<clinit>` rows
             // in the corpus A/B (EntityHookKt, EntityCacheKt, EntityLifecycleInterceptorKt), each of which
             // would have made every class merely TOUCHING the DAO read Db. The `$default` suffix is
             // kotlinc's bridge for default arguments and is the spelling a call site actually emits.
+            // `suspendTransaction` / `inTopLevelSuspendTransaction` are 1.x's spelling of 0.x's
+            // `newSuspendedTransaction` (javap over exposed-jdbc 1.5.0 `transactions.TransactionsKt`).
             String exposedVerb = method.endsWith("$default")
                     ? method.substring(0, method.length() - "$default".length()) : method;
-            if (owner.startsWith("org.jetbrains.exposed.sql.transactions.")
+            if (exposedModule(exposedTail, "transactions.")
                     && (exposedVerb.equals("transaction") || exposedVerb.equals("inTopLevelTransaction")
                         || exposedVerb.equals("newSuspendedTransaction")
                         || exposedVerb.equals("withSuspendTransaction")
-                        || exposedVerb.equals("suspendedTransactionAsync"))) return Effect.DB;
-            if (owner.startsWith("org.jetbrains.exposed.sql.statements.") && method.startsWith("execute"))
-                return Effect.DB;
+                        || exposedVerb.equals("suspendedTransactionAsync")
+                        || exposedVerb.equals("suspendTransaction")
+                        || exposedVerb.equals("inTopLevelSuspendTransaction"))) return Effect.DB;
+            if (exposedModule(exposedTail, "statements.") && method.startsWith("execute")) return Effect.DB;
             // The DAO layer: EntityClass find/new/all/count/reload are queries; the Entity property
-            // delegates and the id/table accessors are pure.
-            if (owner.startsWith("org.jetbrains.exposed.dao.")
+            // delegates and the id/table accessors are pure. 0.x spells it `dao.`, 1.x `v1.dao.` and
+            // `v1.core.dao.id.*` — the latter a value package carrying none of these verbs.
+            if (exposedModule(exposedTail, "dao.")
                     && (method.startsWith("find") || method.startsWith("all") || method.equals("new")
                         || method.equals("count") || method.startsWith("reload") || method.equals("forIds")
                         || method.startsWith("delete") || method.equals("flush"))) return Effect.DB;

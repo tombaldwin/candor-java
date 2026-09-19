@@ -894,11 +894,42 @@ final class Classifier {
         // `StreamPumper` carry the child's streams (the capability `Process.getInputStream` is charged for).
         // Three carve-outs, and they are the only members of the package that are not about a child:
         if (owner.startsWith("org.apache.commons.exec.")) {
-            //  (i) `environment.EnvironmentUtils.getProcEnvironment()` really does read the OS process
-            //      environment (it is commons-exec's `System.getenv`), so it is `Env` — a PRECISION gain
-            //      found by this sweep, not a carve-out: it was silent-pure before.
-            if (owner.equals("org.apache.commons.exec.environment.EnvironmentUtils")
-                    && method.startsWith("getProc")) return Effect.ENV;
+            //  (i) WAS a carve-out to `Env`, and it was a SILENT UNDER-REPORT. It read:
+            //      "`environment.EnvironmentUtils.getProcEnvironment()` really does read the OS process
+            //      environment (it is commons-exec's `System.getenv`), so it is `Env`". That sentence is
+            //      TRUE OF commons-exec 1.3 AND 1.4 ONLY, and this classifier cannot see a version.
+            //
+            //      MEASURED with `javap -c` over the published jars 1.0, 1.1, 1.2, 1.3 and 1.4.0. In
+            //      1.0/1.1/1.2 the chain is
+            //          EnvironmentUtils.getProcEnvironment()
+            //            -> DefaultProcessingEnvironment.getProcEnvironment()
+            //              -> createProcEnvironment() -> runProcEnvCommand()
+            //                -> new DefaultExecutor(); new PumpStreamHandler(ByteArrayOutputStream);
+            //                   Executor.setStreamHandler(..); Executor.execute(getProcEnvCommand())
+            //      and `getProcEnvCommand()` assembles the literal argv `cmd /c set` (Windows) or
+            //      `/bin/env` / `/usr/bin/env` / `env` (Unix). It FORKS A CHILD. Only 1.3 gutted
+            //      `runProcEnvCommand`/`getProcEnvCommand` to `return null` and switched
+            //      `createProcEnvironment` to `System.getenv()`.
+            //
+            //      PROVEN, not reasoned: a two-method consumer compiled against the real commons-exec 1.2
+            //      jar (`javac -cp commons-exec-1.2.jar`) and scanned with the library OUT of scope —
+            //      the shape this whole rule exists for. Pre-fix, `Arm.readEnv` reported
+            //      `inferred: ["Env"]`, no `Unknown`, no `unknownWhy`, and `deny Exec`, `deny Unknown`,
+            //      `deny Exec Unknown` and the scoped `deny Exec app` ALL exited 0 — four policy forms,
+            //      a real subprocess, silence. The CONTROL in the same report (`viaImpl`, calling
+            //      `DefaultProcessingEnvironment.getProcEnvironment` one owner over, which this carve-out
+            //      does not cover) was charged `Exec` and gated at exit 1, so the instrument could fail.
+            //
+            //      So it falls through to the package's `Exec`. This is R480's own admission test applied
+            //      to R480's own carve-out — "the whole type is charged with the PROVEN-PURE surface
+            //      carved out as a named denylist" — and this member is not proven pure, it is proven
+            //      impure in three published versions. The price is named rather than hidden: on 1.3/1.4
+            //      this is now an OVER-charge (`Exec` where the truth is `Env`), and because `classify`
+            //      returns ONE effect the `Env` read is no longer charged for an unscanned dep at all.
+            //      That is the loud direction, and it is the direction the family's ruling picks.
+            //      SOUNDNESS R499 is the mirror of this and is REFUTED by the same evidence: carving
+            //      `DefaultProcessingEnvironment` out by name, as that row's remedy proposed, would
+            //      install exactly the defect this comment is removing, one class over.
             //  (ii) `util.*` and `OS` — enumerated with `javap -c`, not assumed: `StringUtils` quotes and
             //      substitutes strings (its only non-JDK-collection call is `File.getAbsolutePath`),
             //      `MapUtils` copies maps and calls nothing outside `java.util`, and `OS` reads

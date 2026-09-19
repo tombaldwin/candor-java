@@ -294,9 +294,10 @@ class ThirdPartySubprocessBuilderTest {
         assertEquals(Effect.EXEC, Classifier.classify("org.testcontainers.containers.GenericContainer", "stop", "()V"));
     }
 
-    /** The non-subprocess members of the same packages: pure value helpers stay pure, the Throwables stay
-     *  pure, and commons-exec's OS-environment probe is Env (a precision gain of this sweep — it read
-     *  silent-pure before, and it is the library's own `System.getenv`). */
+    /** The non-subprocess members of the same packages: pure value helpers stay pure and the Throwables
+     *  stay pure. commons-exec's OS-environment probe is NOT among them — see the rows below, which
+     *  reverse this sweep's original "it is the library's own `System.getenv`" precision claim on
+     *  `javap` evidence from five published versions. */
     @Test
     void neighboursInThosePackagesAreNotAllExec() {
         assertNull(Classifier.classify("org.apache.commons.exec.util.StringUtils", "toString",
@@ -311,8 +312,25 @@ class ThirdPartySubprocessBuilderTest {
             "(Ljava/lang/String;Ljava/lang/Exception;)V"));
         assertNull(Classifier.classify("java.io.PrintStream", "println", "(Ljava/lang/String;)V"));
         assertNull(Classifier.classify("org.apache.commons.exec.ExecuteException", "getExitValue", "()I"));
-        assertEquals(Effect.ENV, Classifier.classify("org.apache.commons.exec.environment.EnvironmentUtils",
+        // WAS `assertEquals(Effect.ENV, …)`, AND THAT ASSERTION PINNED A SILENT UNDER-REPORT.
+        // `EnvironmentUtils.getProcEnvironment()` reads the environment WITHOUT a child process in
+        // commons-exec 1.3/1.4 only. `javap -c` over the published 1.0/1.1/1.2 jars shows it delegating
+        // to `DefaultProcessingEnvironment.getProcEnvironment` -> `createProcEnvironment` ->
+        // `runProcEnvCommand` -> `Executor.execute(…)` on the literal argv `cmd /c set` / `/usr/bin/env`.
+        // This classifier cannot see a version, so the Env answer was a positive claim that is FALSE for
+        // three published releases, and it silenced the package rule that had it right.
+        // Proven on a consumer compiled against the real commons-exec 1.2 jar with the library out of
+        // scope: `inferred: ["Env"]`, no Unknown, and `deny Exec` / `deny Unknown` / `deny Exec Unknown`
+        // / `deny Exec <scope>` ALL exited 0 over a call that forks a child. See the classifier comment.
+        assertEquals(Effect.EXEC, Classifier.classify("org.apache.commons.exec.environment.EnvironmentUtils",
             "getProcEnvironment", "()Ljava/util/Map;"));
+        // The class the carve-out would have been EXTENDED to under SOUNDNESS R499 — refuted by the same
+        // version evidence, and pinned here so the refutation cannot be silently undone. In 1.0-1.2 this
+        // IS the method that forks; in 1.4.0 it is `System.getenv()`. Exec is the only version-blind
+        // answer that is not a false negative for a published release.
+        assertEquals(Effect.EXEC,
+            Classifier.classify("org.apache.commons.exec.environment.DefaultProcessingEnvironment",
+                "getProcEnvironment", "()Ljava/util/Map;"));
         // im4java's script generator and geometry helpers are deliberately outside the rule.
         assertNull(Classifier.classify("org.im4java.utils.Colors", "toColor", "(Ljava/lang/String;)Ljava/awt/Color;"));
         assertNull(Classifier.classify("org.im4java.core.IM4JavaException", "getMessage", "()Ljava/lang/String;"));

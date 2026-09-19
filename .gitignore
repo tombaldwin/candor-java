@@ -11,3 +11,4 @@ build/
 .candor/*.callgraph.json
 .candor/*.hierarchy.json
 .DS_Store
+scratchpad/

@@ -5557,18 +5557,82 @@ public final class Query {
      *  radius to trace; that's the honest limit of working from the report). */
     /** ⟨0.32⟩ `ref` may be null (a unit caller with no locator) — see the javadoc on {@link
      *  #callers(List, List, String, boolean, boolean, ReportRef)} for the defect and the boundary. */
+    /** One resolved selector target, or a refusal ({@code fn == null}, {@code exit} the code to return).
+     *  {@code exit 2} both for NO match and for MANY — see {@link #selectOne}. */
+    record Selected(Effector fn, int exit) {}
+
+    /** SOUNDNESS R497 — resolve a ONE-FUNCTION selector for a verb that ANSWERS ABOUT THE FUNCTION IT
+     *  PICKED, and refuse rather than substitute a subject.
+     *
+     *  <p>MEASURED PRE-FIX on {@code soundness/lib/auth-2.25.60.jar}:
+     *  {@code path ProfileCredentialsProvider.resolveCredentials Exec} printed
+     *  <em>"InstanceProfileCredentialsProvider.resolveCredentials does not perform Exec (inferred: [])"</em>
+     *  at exit 0. Two stacked defects, and the fix needs BOTH halves:
+     *  <ol>
+     *    <li><b>The match was not SEGMENT-ANCHORED.</b> The old resolution was
+     *        {@code equals(q) else FIRST contains(q)}, so {@code ProfileCredentialsProvider} matched
+     *        INSIDE the longer identifier {@code InstanceProfileCredentialsProvider}. The function
+     *        actually asked about is in the same report, is the ONLY dot-anchored match, and DOES perform
+     *        {@code Exec} — so the answer was a false NEGATIVE on the real question, not merely a wrong
+     *        subject. {@link #matchTier} already encodes the family's anchored ladder and four other
+     *        verbs already use it; these two verbs never did.</li>
+     *    <li><b>With several candidates it PICKED instead of refusing.</b> Anchoring alone does not close
+     *        it: {@code path resolveCredentials Exec} has FOURTEEN dot-anchored candidates on the same
+     *        jar, and pre-fix it answered a confident "does not perform Exec" about
+     *        {@code AnonymousCredentialsProvider} while three of the fourteen do perform it.</li>
+     *  </ol>
+     *
+     *  <p>Note the asymmetry that made this survive: these verbs ALREADY refuse at exit 2 when ZERO
+     *  functions match — only MANY was answered silently. And the family has already ruled this class one
+     *  ARGUMENT over: candor-swift's {@code FixCLI.swift} records that {@code path caller Fsz} once printed
+     *  "caller does not perform Fsz" at exit 0, "a typo scored as a confident NEGATIVE, in the verb people
+     *  reach for to check one specific claim", and grew a guard for the EFFECT argument. The guard was
+     *  built for argument 2 and never for argument 1.
+     *
+     *  <p>AMBIGUITY IS COUNTED OVER DISTINCT NAMES, not rows: a report SET unions siblings, so the same
+     *  qual can arrive more than once and a row count would refuse a question that has one answer.
+     *
+     *  <p>BOUNDARY (audited, not assumed — {@code grep} over every selector-taking verb in this file):
+     *  {@code show}/{@code callers}/{@code whatif} answer over the WHOLE best-tier set, so many matches
+     *  widen an answer rather than substituting its subject; {@code fix} is anchored and picks, but
+     *  PREFERS a match that performs the effect, so it cannot emit "nothing to hoist" while a sibling
+     *  match performs it. {@code path} and {@code impact} were the only two that both picked arbitrarily
+     *  and phrase their answer as a determined negative about the picked name. */
+    static Selected selectOne(List<Effector> fns, String q, String verb) {
+        int tier = bestTier(fns.stream().map(Effector::fn), q);
+        if (tier == 0) {
+            System.err.println("candor " + verb + ": no function matching '" + q + "'");
+            return new Selected(null, 2);
+        }
+        Map<String, Effector> hits = new LinkedHashMap<>();
+        for (Effector f : fns) if (matchTier(f.fn(), q) >= tier) hits.putIfAbsent(f.fn(), f);
+        if (hits.size() == 1) return new Selected(hits.values().iterator().next(), 0);
+        // REFUSE. Naming the candidates is the whole remedy: the user's next command is one of these
+        // lines pasted back. Capped, because a one-segment selector over a large report can match
+        // hundreds and an unreadable refusal is a refusal people work around.
+        List<String> names = new ArrayList<>(hits.keySet());
+        Collections.sort(names);
+        System.err.println("candor " + verb + ": `" + q + "` is AMBIGUOUS — " + names.size()
+                + " functions match it equally well. This verb answers ABOUT ONE function, so picking "
+                + "one would state a fact about a function you did not ask about. Re-run with one of:");
+        for (String n : names.subList(0, Math.min(names.size(), 12))) System.err.println("    " + n);
+        if (names.size() > 12)
+            System.err.println("    … and " + (names.size() - 12) + " more (candor show `" + q + "` lists them all)");
+        return new Selected(null, 2);
+    }
+
     static int impact(List<Effector> fns, String fnArg, boolean json) { return impact(fns, fnArg, json, null); }
 
     static int impact(List<Effector> fns, String fnArg, boolean json, ReportRef ref) {
         if (fnArg == null) return usage("impact <fn-substring> [--report <locator>] [--json]");
         Map<String, Effector> byName = new HashMap<>();
         for (Effector f : fns) byName.putIfAbsent(f.fn(), f);
-        Effector target = fns.stream().filter(f -> f.fn().equals(fnArg)).findFirst()
-                .orElseGet(() -> fns.stream().filter(f -> f.fn().contains(fnArg)).findFirst().orElse(null));
-        if (target == null) {
-            System.err.println("candor impact: no function matching '" + fnArg + "'");
-            return 2;
-        }
+        // SOUNDNESS R497 — anchored resolution, and a REFUSAL on many. `affectedCount: 0` is this verb's
+        // strongest claim ("nothing calls this, safe to change"); pre-fix it made that claim about
+        // whichever longer identifier happened to contain the selector. See #selectOne.
+        Selected sel = selectOne(fns, fnArg, "impact");
+        if (sel.fn() == null) return sel.exit();
+        Effector target = sel.fn();
         // Reverse the effect-relevant call graph: callee -> [callers], then BFS backward from the target.
         Map<String, List<String>> rev = new HashMap<>();
         for (Effector f : fns) for (String c : f.calls()) rev.computeIfAbsent(c, k -> new ArrayList<>()).add(f.fn());
@@ -5695,12 +5759,12 @@ public final class Query {
         }
         Map<String, Effector> byName = new HashMap<>();
         for (Effector f : fns) byName.putIfAbsent(f.fn(), f);
-        Effector start = fns.stream().filter(f -> f.fn().equals(fnArg)).findFirst()
-                .orElseGet(() -> fns.stream().filter(f -> f.fn().contains(fnArg)).findFirst().orElse(null));
-        if (start == null) {
-            System.err.println("candor path: no function matching '" + fnArg + "'");
-            return 2;
-        }
+        // SOUNDNESS R497 — anchored resolution, and a REFUSAL on many. All three of this verb's emits
+        // phrase a fact ABOUT `start`, and two of them are determined negatives, so a substituted subject
+        // is a fabricated claim rather than an unhelpful one. See #selectOne.
+        Selected sel = selectOne(fns, fnArg, "path");
+        if (sel.fn() == null) return sel.exit();
+        Effector start = sel.fn();
         // ⟨0.32⟩ THE COMPLETENESS READER THIS VERB DID NOT HAVE, read ONCE for all three emit sites below.
         // A hop through an unread unit BREAKS the chain, so a hedging report can answer `path: []` — *this
         // method does not reach that effect* — for a method that really does. AFTER the unknown-effect and

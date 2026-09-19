@@ -8,6 +8,61 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R497 — `candor path` / `candor impact` answered ABOUT A FUNCTION NOBODY ASKED FOR
+
+- **Both verbs resolved their `<fn>` argument as `equals(q)` else the FIRST `contains(q)`** — not
+  segment-anchored, and no refusal when several functions matched. Measured on a scan of
+  `soundness/lib/auth-2.25.60.jar`:
+  `candor path ProfileCredentialsProvider.resolveCredentials Exec` printed
+  *"InstanceProfileCredentialsProvider.resolveCredentials does not perform Exec (inferred: [])"* at exit 0.
+  The selector matched INSIDE a longer identifier, and the function actually asked about is in the same
+  report, is the only dot-anchored match, and **does** perform `Exec` — so the answer was a false NEGATIVE
+  on the real question, not merely a wrong subject. `impact` carried identical code and reported
+  *"0 effectful functions transitively call it"* about the same substituted name; the function asked about
+  has four callers.
+- **The fix is both halves.** Resolution now goes through `Query.matchTier` (exact > segment-suffix at a
+  `.`/`$` boundary > substring), which `show`/`callers`/`whatif`/`fix` already used and these two never did;
+  and when more than one DISTINCT name survives at the best tier the verb **refuses at exit 2 and names the
+  candidates**. Anchoring alone is not enough — `path resolveCredentials Exec` has fourteen dot-anchored
+  candidates on that jar and pre-fix answered a confident negative about the first of them while three
+  performed the effect. Refusing alone is not enough either — it would reject a question with one right
+  answer. Ambiguity is counted over distinct names, so a unioned report SET does not manufacture it.
+- The asymmetry that let it survive: both verbs **already** refused at exit 2 on ZERO matches; only MANY was
+  answered silently. This is the guard candor-swift grew for `path`'s EFFECT argument, on its FUNCTION
+  argument. `show`/`callers`/`whatif` answer over the whole best-tier set (many widens an answer rather than
+  substituting its subject) and `fix` prefers a tier match that performs the effect, so those are out of
+  scope and stay as they are — the boundary was drawn by grepping every selector-taking verb in `Query.java`,
+  not around the verb the defect was reported in.
+
+### ⚠ commons-exec `EnvironmentUtils.getProcEnvironment` was charged `Env`, and that silenced a real fork
+
+- **A carve-out added with SOUNDNESS R480 read "it is the library's own `System.getenv`". That is true of
+  commons-exec 1.3 and 1.4 ONLY**, and the classifier cannot see a version. `javap -c` over the published
+  1.0/1.1/1.2 jars shows `EnvironmentUtils.getProcEnvironment()` delegating to
+  `DefaultProcessingEnvironment.getProcEnvironment` -> `createProcEnvironment` -> `runProcEnvCommand` ->
+  `Executor.execute(...)` on the literal argv `cmd /c set` (Windows) or `/bin/env` / `/usr/bin/env` / `env`
+  (Unix). 1.3 gutted those two methods to `return null`.
+- **Proven on a consumer compiled against the real commons-exec 1.2 jar**, scanned with the library out of
+  scope — the shape the rule exists for. Pre-fix the caller reported `inferred: ["Env"]`, no `Unknown`, no
+  `unknownWhy`, and `deny Exec`, `deny Unknown`, `deny Exec Unknown` and a scoped `deny Exec <scope>` **all
+  exited 0** over a call that forks a child. The control in the same report — the identical capability one
+  owner over, which the carve-out did not cover — was charged `Exec` and gated at exit 1.
+- The member now falls through to the package's `Exec`. The price is stated rather than hidden: on 1.3/1.4
+  this is an OVER-charge, and because `Classifier.classify` returns one effect the `Env` read is no longer
+  charged for an unscanned dependency. That is the loud direction, and it is what R480's own admission test
+  ("the whole type is charged with the PROVEN-PURE surface carved out") requires — this member is not proven
+  pure, it is proven impure in three published releases.
+- **SOUNDNESS R499 is refuted by the same evidence.** That row proposed carving
+  `DefaultProcessingEnvironment` out of the package rule by name; on 1.0/1.1/1.2 that class is the one that
+  forks, so the carve-out would have installed this defect one class over. Both classes are now pinned.
+- A/B over 371 of the 372 jars in `soundness/lib` (1,497,880 rows, wide key, `bin/corpus-ab.py`):
+  **ADDED 0, REMOVED 0, CHANGED 0**, with an instrumented REACH probe recording **0 hits across the real
+  corpus** — not one of those jars references `org.apache.commons.exec`. This A/B is **SAFETY-ONLY** and is
+  recorded as such; the evidence for the change is the compiled 1.2 consumer, not the corpus. (With that
+  consumer added as a 373rd entry the same run reports REACH 1 hit / 1 entry and CHANGED 1, ADDED 0,
+  REMOVED 0 — the single row the change is about.)
+
+
 ### ⚠ ⟨0.39⟩ THE CHAINED-DISPATCH UNION — a consumer now carries the effects of every implementer visible to it
 
 - **SOUNDNESS R475, SPEC §4 ⟨0.39⟩, conformance PART 92. candor-java is the SECOND engine to port this rung

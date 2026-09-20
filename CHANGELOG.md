@@ -8,6 +8,8 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+## [0.39.0] — 2026-09-20
+
 ### SOUNDNESS R508/R509 — a standing "does the rule still FIRE?" probe, and R508's two named version gaps closed
 
 R509 shipped because a κ rule derived from one jar went on pointing at a class the library had moved:
@@ -603,6 +605,17 @@ The compiled consumers above are the evidence.
   before and are not now — 21 under `allow Fs`, 656 under `allow Exec`, the largest being JNA, whose
   benign `/sbin/ldconfig -p` literal was certifying `Native.load` of a caller-chosen library.
 
+- **R516 — R435's OWN class recurred in the sentence R435 wrote, one commit later.** The fix added
+  *"A SINGLE String operand is not ambiguous and IS captured, twelve lines below"*. Capture needs TWO
+  conjuncts — one String **and** `PATH_CTOR_OWNERS.contains(owner)` — and the capture had moved ~95
+  lines down, not twelve. Falsified on the shipped jar: `new PrintWriter("/tmp/pw.txt")` is one
+  determined String, `Fs`-classified, and **not** captured. The comment was corrected, not the code:
+  the behaviour is the direction R425 measured, where capturing on position alone published 2,910 fake
+  `paths` over 119 jars. **The conjunct was also unpinned** — five arms of
+  `StringLocatorTailMaskingTest` covered the one-vs-two-String half and none the owner half; the new
+  arm is the only one of six that fails against a mutated engine, which is simultaneously the proof
+  the other five never covered it. It points the FLATTERING way (claiming more capture than happens),
+  which is why nobody re-read it.
 - **R435 — a bolded safety assertion in shipped code was false, and so was a guard it cited.**
   `Candor.java` read *"THIS ADDS NO CAPTURE, ONLY DISCLOSURE"* and *"`pathArgIsSingleString` remains the
   sole authority over what enters `paths`"* twelve lines above a `pathsDirect` write on a descriptor

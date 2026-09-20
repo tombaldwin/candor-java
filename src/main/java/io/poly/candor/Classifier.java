@@ -1151,6 +1151,51 @@ final class Classifier {
         if (owner.equals("org.eclipse.jgit.api.InitCommand")
                 || owner.equals("org.eclipse.jgit.api.CloneCommand"))
             return method.equals("call");
+        // (4) THE HOOK SURFACE — a SECOND mechanism, found by sweeping the class rather than stopping at
+        //     the entry point the row was filed from. A jgit commit runs the REPOSITORY'S OWN
+        //     `.git/hooks/*` scripts, which is arbitrary code the caller never wrote.
+        //     MEASURED: a consumer doing `Git.init()…call(); add(); commit().setMessage(m).call()` against
+        //     a repository carrying an executable `.git/hooks/pre-commit` recorded the hook RUNNING —
+        //     three forks in that JVM, the two config forks plus the hook itself.
+        //     `javap -c` with method context gives the rest: `CommitCommand.call()` calls
+        //     `Hooks.preCommit(..).call()`, `Hooks.commitMsg(..).call()` AND `Hooks.postCommit(..).call()`;
+        //     `Transport.push(..)` calls `Hooks.prePush(..)` and hands it to `PushProcess.execute`, which
+        //     calls `PrePushHook.call()`; `PushCommand.call()` reaches `Transport.push`.
+        //     Whether a hook FILE exists is a property of the repository on disk, never of the caller's
+        //     code — the same argument as the PATH arms above, and the same answer: disclose.
+        //     WHOLE PACKAGE for `org.eclipse.jgit.hooks`: it holds exactly six types (GitHook, Hooks and
+        //     the four concrete hooks) and every one of them exists to run a hook script. The setters
+        //     (`setCommitMessage`, `setRefs`, `setRemoteName`) are the PAYLOAD CARRIERS this family keeps
+        //     charging — [[R480]]'s shape — so they are deliberately not carved out.
+        //     The §4 Object protocol is exempt, as it is in every other whole-type rule here: charging
+        //     `toString()` on a hook would make a logger that dumps one a subprocess violation.
+        //     PRICE STATED RATHER THAN HIDDEN, from the A/B: the whole-package rule also charges the six
+        //     hook CONSTRUCTORS (which store a repository and two streams and fork nothing) and three
+        //     internal read-backs (`CommitMsgHook.getParameters`/`canRun`/`getCommitEditMessageFilePath`).
+        //     Both are over-charges in the LOUD direction and both are library-internal — the `Hooks`
+        //     factory is what a consumer touches — so no read-back denylist is spelled for them. A
+        //     constructor here is the ARMING of a runner whose only verb forks, the same reading that
+        //     makes `commons.exec.ExecuteWatchdog.<init>(J)` Exec one rule up.
+        if (owner.startsWith("org.eclipse.jgit.hooks."))
+            return desc == null || !isObjectProtocolExempt(method, desc);
+        if (owner.equals("org.eclipse.jgit.api.CommitCommand")
+                || owner.equals("org.eclipse.jgit.api.PushCommand"))
+            return method.equals("call");
+        if (owner.equals("org.eclipse.jgit.transport.Transport")) return method.equals("push");
+        if (owner.equals("org.eclipse.jgit.transport.PushProcess")) return method.equals("execute");
+        //     RESIDUAL, SWEPT AND STATED RATHER THAN LEFT IMPLICIT. Every class in the 6.10.0 jar was
+        //     enumerated for a body call to FS's fork surface, not just the ones this row was handed.
+        //     Six callers exist beyond FS itself: `hooks.GitHook` (covered above), and five whose fork
+        //     sites are all PRIVATE methods behind a public API this predicate does not name —
+        //     `DirCacheCheckout.runExternalFilterCommand`, `PatchApplier.filterClean`,
+        //     `WorkingTreeIterator.filterClean` (the gitattributes `filter.*.clean` driver, which runs a
+        //     program the REPOSITORY names), `internal.diffmergetool.CommandExecutor.run`, and
+        //     `TransportLocal.spawn` (`git-upload-pack` over a `file://` URI). Each is left to the
+        //     `invisible` floor DELIBERATELY: closing them means charging `CheckoutCommand.call`,
+        //     `ApplyCommand.call` and a local `fetch` — the most common jgit operations there are — on a
+        //     driver that fires only when a repo's own gitattributes configure one, and NONE of those was
+        //     run. An unrun widening is a guess; the floor is a disclosure. This comment is the record so
+        //     the next reader does not mistake absence here for a purity finding.
         return false;
     }
 
@@ -1165,6 +1210,9 @@ final class Classifier {
                 || (owner.equals("org.eclipse.jgit.api.InitCommand") && method.equals("call"))
                 || (owner.equals("org.eclipse.jgit.api.CloneCommand") && method.equals("call"))
                 || (owner.equals("org.eclipse.jgit.lib.RepositoryCache") && method.equals("open"))
+                // `CommitCommand.call()` WRITES the repository (index, objects, refs) before and after it
+                // runs the hooks, so it is Fs for a reason of its own rather than by association.
+                || (owner.equals("org.eclipse.jgit.api.CommitCommand") && method.equals("call"))
                 || owner.equals("org.eclipse.jgit.lib.BaseRepositoryBuilder")
                 || owner.equals("org.eclipse.jgit.lib.RepositoryBuilder")
                 || owner.equals("org.eclipse.jgit.storage.file.FileRepositoryBuilder")

@@ -644,6 +644,10 @@ class ClassifierTableTest {
         r.add(fx("org.eclipse.jgit.util.FS", "detect", "()Lorg/eclipse/jgit/util/FS;", null)); // carve-out twin
         r.add(fx("org.eclipse.jgit.lib.BaseRepositoryBuilder", "build", "()LR;", Effect.EXEC));
         r.add(fx("org.eclipse.jgit.lib.BaseRepositoryBuilder", "setGitDir", "(Ljava/io/File;)LB;", null)); // setter twin
+        r.add(fx("org.eclipse.jgit.hooks.PreCommitHook", "call", "()Ljava/lang/Void;", Effect.EXEC));
+        r.add(fx("org.eclipse.jgit.hooks.PreCommitHook", "toString", "()Ljava/lang/String;", null)); // §4 twin
+        r.add(fx("org.eclipse.jgit.api.CommitCommand", "call", "()LR;", Effect.EXEC));
+        r.add(fx("org.eclipse.jgit.api.AddCommand", "call", "()LR;", null)); // same verb, no hook — twin
         r.add(fx("org.apache.tika.Tika", "parseToString", "(Ljava/nio/file/Path;)Ljava/lang/String;", Effect.FS));
         r.add(fx("org.apache.pdfbox.Loader", "loadPDF", "(Ljava/nio/file/Path;)LD;", Effect.FS));
         r.add(fx("org.apache.velocity.app.VelocityEngine", "mergeTemplate", Effect.FS));

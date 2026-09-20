@@ -65,8 +65,48 @@ channel contradicted it and nothing anywhere said the `Exec` was missing.
   platform implementation and fork nothing (`javap` shows only `FS$FSFactory.detect`; a consumer touching
   `FS.detect()` and `FS.DETECTED` recorded **zero** forks on both arms), and `FS.searchPath` is a regex
   split over `$PATH` plus `File` existence checks. Both are pinned as controls.
-- `JgitRepositoryOpenExecTest` — 6 tests, falsified against the same tree with the fix made inert:
-  **3 fail, the 2 over-charge controls pass**, which is the shape a real fix has.
+- **A SECOND MECHANISM, found by sweeping the class rather than stopping at the entry point the row was
+  filed from: a jgit COMMIT runs the repository's own `.git/hooks/*` scripts.** MEASURED — a consumer
+  doing `Git.init()…call(); add(); commit().setMessage(m).call()` against a repository carrying an
+  executable `.git/hooks/pre-commit` recorded the hook RUNNING (three forks in that JVM: the two config
+  forks plus the hook). `javap -c` with method context gives the rest: `CommitCommand.call()` calls
+  `Hooks.preCommit(..).call()`, `Hooks.commitMsg(..).call()` AND `Hooks.postCommit(..).call()`;
+  `Transport.push(..)` calls `Hooks.prePush(..)` and hands it to `PushProcess.execute`, which calls
+  `PrePushHook.call()`; `PushCommand.call()` reaches `Transport.push`. Whether a hook FILE exists is a
+  property of the repository on disk, never of the caller's code — the same argument as the PATH arms,
+  and the same answer. `org.eclipse.jgit.hooks` is charged WHOLE-PACKAGE (six types, every one of which
+  exists to run a hook script; the payload-carrying setters are deliberately not carved out), plus
+  `CommitCommand.call`, `PushCommand.call`, `Transport.push` and `PushProcess.execute`. The control that
+  keeps it honest: `add().call()` — the same verb one command over — runs no hook and stays `Exec`-free,
+  as does `Transport.fetch`.
+- `JgitRepositoryOpenExecTest` — 7 tests, falsified against the same tree twice: with the repository half
+  made inert **3 fail and the 2 over-charge controls pass**; with the hook half made inert **2 fail**.
+- **A/B, `bin/corpus-ab.py`, wide key and wide value, 373-374 of 375 entries** (grpc-context-1.64.0.jar
+  fails in BOTH arms), ~1,497,88x rows per arm. Repository half: **ADDED 0, REMOVED 0, CHANGED 48**. Hook
+  half on top of it: **ADDED 9, REMOVED 0, CHANGED 32**. **Zero rows lost a direct or inferred effect in
+  either run**, and no library other than jgit moved at all. Every new charge traced to a body with
+  `javap`: `Monitoring.registerMBean`, `SHA1.fromConfig`, `LsRemoteCommand.translate` and
+  `FS_POSIX.supportsAtomicCreateNewFile` all reach `SystemReader.getUserConfig()`;
+  `FS_Win32_Cygwin.resolve` forks `cygpath --windows --absolute` outright; and `MergeCommand`,
+  `RebaseCommand`, `CherryPickCommand` and `RevertCommand` gained `Exec`+`Fs` because they commit, which
+  runs the hooks. The 9 ADDED are the six hook CONSTRUCTORS plus three internal read-backs — over-charges
+  in the loud direction, priced in the rule's own comment rather than left for a reader to find.
+- **CORPUS REACH IS ZERO and that is the finding, not a caveat**: of the 372 jars in `soundness/lib` only
+  jgit's own references `org/eclipse/jgit`. Both A/Bs are **SAFETY-ONLY**; the compiled consumer is the
+  evidence.
+- **RESIDUAL, swept and stated.** Every class in the 6.10.0 jar was enumerated for a body call to `FS`'s
+  fork surface. Beyond `FS` and `hooks.GitHook` there are five callers, all forking from PRIVATE methods
+  behind a public API this fix does not name: `DirCacheCheckout.runExternalFilterCommand`,
+  `PatchApplier.filterClean`, `WorkingTreeIterator.filterClean` (the gitattributes `filter.*.clean`
+  driver — it runs a program the REPOSITORY names), `internal.diffmergetool.CommandExecutor.run`, and
+  `TransportLocal.spawn` (`git-upload-pack` over a `file://` URI). Closing them means charging
+  `CheckoutCommand.call`, `ApplyCommand.call` and a local `fetch` — the most common jgit operations there
+  are — and **none of those was run**. An unrun widening is a guess; the `invisible` floor is a
+  disclosure. Left open deliberately and recorded in the rule so the next reader does not mistake the
+  absence for a purity finding.
+- **One correction to the row's wording, measured:** `FS.DETECTED` / `FS.detect()` fork NOTHING (zero on
+  both PATH arms). The fork is not at FS SELECTION — it is at repository materialisation, through
+  `FS.getGitSystemConfig`.
 
 ## [0.39.0] — 2026-09-20
 

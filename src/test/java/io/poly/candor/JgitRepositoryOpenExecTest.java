@@ -52,8 +52,9 @@ class JgitRepositoryOpenExecTest {
 
     // ── the stub library (compiled to a separate -classpath dir, never scanned) ─────────────────────
 
-    private static final Map<String, String> LIB = Map.of(
-        "org/eclipse/jgit/util/FS.java", String.join("\n",
+    private static final Map<String, String> LIB = Map.ofEntries(
+        Map.entry("org/eclipse/jgit/util/FS.java",
+            String.join("\n",
             "package org.eclipse.jgit.util;",
             "import java.io.File;",
             "public abstract class FS {",
@@ -66,8 +67,9 @@ class JgitRepositoryOpenExecTest {
             "  public Object runHookIfPresent(Object repo, String name, String[] args) { return null; }",
             "  public File resolve(File dir, String name) { return null; }",
             "  public boolean isCaseSensitive() { return true; }",
-            "}"),
-        "org/eclipse/jgit/util/SystemReader.java", String.join("\n",
+            "}")),
+        Map.entry("org/eclipse/jgit/util/SystemReader.java",
+            String.join("\n",
             "package org.eclipse.jgit.util;",
             "public abstract class SystemReader {",
             "  public static SystemReader getInstance() { return null; }",
@@ -75,15 +77,16 @@ class JgitRepositoryOpenExecTest {
             "  public Object getSystemConfig() { return null; }",
             "  public String getenv(String v) { return null; }",
             "  public String getHostname() { return null; }",
-            "}"),
-        "org/eclipse/jgit/lib/Repository.java",
+            "}")),
+        Map.entry("org/eclipse/jgit/lib/Repository.java",
             "package org.eclipse.jgit.lib;\npublic abstract class Repository implements AutoCloseable {"
-                + " public void close() {} public String getBranch() { return null; } }",
-        "org/eclipse/jgit/lib/ObjectId.java",
+                + " public void close() {} public String getBranch() { return null; } }"),
+        Map.entry("org/eclipse/jgit/lib/ObjectId.java",
             "package org.eclipse.jgit.lib;\npublic class ObjectId {"
                 + " public static ObjectId fromString(String s) { return null; }"
-                + " public String name() { return null; } }",
-        "org/eclipse/jgit/lib/BaseRepositoryBuilder.java", String.join("\n",
+                + " public String name() { return null; } }"),
+        Map.entry("org/eclipse/jgit/lib/BaseRepositoryBuilder.java",
+            String.join("\n",
             "package org.eclipse.jgit.lib;",
             "import java.io.File;",
             "public class BaseRepositoryBuilder {",
@@ -92,18 +95,29 @@ class JgitRepositoryOpenExecTest {
             "  public File getGitDir() { return null; }",
             "  public BaseRepositoryBuilder setup() { return this; }",
             "  public Repository build() { return null; }",
-            "}"),
-        "org/eclipse/jgit/storage/file/FileRepositoryBuilder.java",
+            "}")),
+        Map.entry("org/eclipse/jgit/storage/file/FileRepositoryBuilder.java",
             "package org.eclipse.jgit.storage.file;\nimport org.eclipse.jgit.lib.BaseRepositoryBuilder;\n"
-                + "public class FileRepositoryBuilder extends BaseRepositoryBuilder {}",
-        "org/eclipse/jgit/lib/RepositoryCache.java",
+                + "public class FileRepositoryBuilder extends BaseRepositoryBuilder {}"),
+        Map.entry("org/eclipse/jgit/lib/RepositoryCache.java",
             "package org.eclipse.jgit.lib;\nimport java.io.File;\npublic class RepositoryCache {"
                 + " public static Repository open(File key) { return null; }"
-                + " public static void clear() {} }",
-        "org/eclipse/jgit/api/InitCommand.java",
+                + " public static void clear() {} }"),
+        Map.entry("org/eclipse/jgit/api/InitCommand.java",
             "package org.eclipse.jgit.api;\nimport java.io.File;\npublic class InitCommand {"
-                + " public InitCommand setDirectory(File d) { return this; } public Git call() { return null; } }",
-        "org/eclipse/jgit/api/Git.java", String.join("\n",
+                + " public InitCommand setDirectory(File d) { return this; } public Git call() { return null; } }"),
+        Map.entry("org/eclipse/jgit/api/CommitCommand.java",
+            "package org.eclipse.jgit.api;\npublic class CommitCommand {"
+                + " public CommitCommand setMessage(String m) { return this; }"
+                + " public Object call() { return null; } }"),
+        Map.entry("org/eclipse/jgit/api/AddCommand.java",
+            "package org.eclipse.jgit.api;\npublic class AddCommand {"
+                + " public AddCommand addFilepattern(String p) { return this; }"
+                + " public Object call() { return null; } }"),
+        Map.entry("org/eclipse/jgit/hooks/PreCommitHook.java",
+            "package org.eclipse.jgit.hooks;\npublic class PreCommitHook { public Void call() { return null; } }"),
+        Map.entry("org/eclipse/jgit/api/Git.java",
+            String.join("\n",
             "package org.eclipse.jgit.api;",
             "import java.io.File;",
             "import org.eclipse.jgit.lib.Repository;",
@@ -111,8 +125,10 @@ class JgitRepositoryOpenExecTest {
             "  public static Git open(File dir) { return null; }",
             "  public static Git wrap(Repository r) { return null; }",
             "  public static InitCommand init() { return null; }",
+            "  public CommitCommand commit() { return null; }",
+            "  public AddCommand add() { return null; }",
             "  public void close() {}",
-            "}"));
+            "}")));
 
     // ── the gap fixture ────────────────────────────────────────────────────────────────────────────
 
@@ -172,6 +188,41 @@ class JgitRepositoryOpenExecTest {
                 assertTrue(eff(r, "com.x.Fs." + m).contains(Effect.EXEC),
                     m + " is on jgit's fork path — must be Exec, got " + r.get("com.x.Fs." + m));
             }
+        } finally { rm(app.getParent()); }
+    }
+
+    /** THE SECOND MECHANISM, found by sweeping the class rather than stopping at the entry point the row
+     *  was filed from: a jgit commit runs the REPOSITORY'S OWN {@code .git/hooks/*} scripts — arbitrary
+     *  code the caller never wrote. MEASURED: a consumer doing {@code Git.init()…call(); add(); commit()
+     *  .setMessage(m).call()} against a repository carrying an executable {@code .git/hooks/pre-commit}
+     *  recorded the hook RUNNING. Whether a hook file exists is a property of the repository on disk,
+     *  never of the caller's code — the same argument as the PATH arms, and the same answer.
+     *
+     *  <p>The CONTROL in the same fixture is what keeps this honest: {@code add().call()} touches the
+     *  index and runs no hook, so it must stay {@code Exec}-free even though it is the same
+     *  {@code call()} verb on the same {@code Git} handle one command over. */
+    @Test
+    void committingRunsTheRepositorysHooksAndIsExec() throws Exception {
+        Path app = compileApp(LIB, Map.of("com/x/Hooked.java", String.join("\n",
+            "package com.x;",
+            "import org.eclipse.jgit.api.Git;",
+            "public class Hooked {",
+            "  public Object commit(Git g) { return g.commit().setMessage(\"m\").call(); }",
+            "  public Object hook(org.eclipse.jgit.hooks.PreCommitHook h) { return h.call(); }",
+            "  public Object stage(Git g) { return g.add().addFilepattern(\"f\").call(); }",
+            "}")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(app);
+            for (String m : new String[] {"commit", "hook"}) {
+                assertTrue(eff(r, "com.x.Hooked." + m).contains(Effect.EXEC),
+                    m + " runs the repository's own hook scripts — must be Exec, got " + r.get("com.x.Hooked." + m));
+            }
+            assertTrue(eff(r, "com.x.Hooked.commit").contains(Effect.FS),
+                "a commit also writes the index/objects/refs — the Fs must ride too, got "
+                    + r.get("com.x.Hooked.commit"));
+            assertFalse(eff(r, "com.x.Hooked.stage").contains(Effect.EXEC),
+                "`add().call()` runs no hook — the same verb one command over must NOT gain Exec, got "
+                    + r.get("com.x.Hooked.stage"));
         } finally { rm(app.getParent()); }
     }
 
@@ -267,6 +318,23 @@ class JgitRepositoryOpenExecTest {
             "()Lorg/eclipse/jgit/lib/Repository;"));
         assertEquals(Effect.EXEC, Classifier.classify("org.eclipse.jgit.api.CloneCommand", "call",
             "()Lorg/eclipse/jgit/api/Git;"));
+        // The hook surface — whole package, payload-carrying setters included.
+        assertEquals(Effect.EXEC, Classifier.classify("org.eclipse.jgit.hooks.PreCommitHook", "call", "()Ljava/lang/Void;"));
+        assertEquals(Effect.EXEC, Classifier.classify("org.eclipse.jgit.hooks.CommitMsgHook", "setCommitMessage",
+            "(Ljava/lang/String;)Lorg/eclipse/jgit/hooks/CommitMsgHook;"));
+        // CONTROL — the §4 Object protocol is exempt from the whole-package rule.
+        assertNull(Classifier.classify("org.eclipse.jgit.hooks.PreCommitHook", "toString", "()Ljava/lang/String;"));
+        assertEquals(Effect.EXEC, Classifier.classify("org.eclipse.jgit.hooks.Hooks", "prePush",
+            "(Lorg/eclipse/jgit/lib/Repository;Ljava/io/PrintStream;Ljava/io/PrintStream;)Lorg/eclipse/jgit/hooks/PrePushHook;"));
+        assertEquals(Effect.EXEC, Classifier.classify("org.eclipse.jgit.transport.Transport", "push",
+            "(Lorg/eclipse/jgit/lib/ProgressMonitor;Ljava/util/Collection;Ljava/io/OutputStream;)Lorg/eclipse/jgit/transport/PushResult;"));
+        // CONTROL — `push` is charged because it runs the pre-push hook; its sibling `fetch` runs NO hook
+        // and must not be dragged in with it. Note what this does NOT claim: `TransportLocal.spawn`
+        // forks `git-upload-pack` on a `file://` URI, so a LOCAL fetch does reach a subprocess. That is
+        // left to the `invisible` floor with the rest of the unmodelled surface and is recorded as a
+        // stated residual, NOT asserted here to be pure.
+        assertNull(Classifier.classify("org.eclipse.jgit.transport.Transport", "fetch",
+            "(Lorg/eclipse/jgit/lib/ProgressMonitor;Ljava/util/Collection;)Lorg/eclipse/jgit/transport/FetchResult;"));
         // CONTROLS — the two carve-outs, each derived rather than assumed, and FS's inner VALUE types,
         // which the `FS_` prefix must not reach.
         assertNull(Classifier.classify("org.eclipse.jgit.util.FS", "detect", "()Lorg/eclipse/jgit/util/FS;"));

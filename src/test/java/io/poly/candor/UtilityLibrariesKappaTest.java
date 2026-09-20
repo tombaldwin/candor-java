@@ -60,6 +60,43 @@ class UtilityLibrariesKappaTest {
         assertNull(Classifier.classify("org.ehcache.Cache", "get", "(Ljava/lang/Object;)Ljava/lang/Object;"));
     }
 
+    /**
+     * SOUNDNESS R508's ehcache carve-out — the one the version-blindness sweep checked at a SINGLE
+     * version (3.10.8) and said so. Closed with {@code javap -c}, method-scoped, over all 56 published
+     * 3.x releases: the XML source entry point on {@code ConfigurationParser} took a STRING systemId in
+     * 3.0.0–3.5.3 (the constructor) and 3.6.0–3.6.3 ({@code parseXml}), reaching
+     * {@code DocumentBuilder.parse(Ljava/lang/String;)} — and only from 3.7.0 does it take a
+     * {@code URI}, which is the shape the descriptor gate was written against. {@code org.ehcache} is
+     * κ-COVERED, so on those 25 releases the fall-through {@code null} was a certified purity claim.
+     *
+     * <p>Both directions are pinned, because the whole risk of a fix like this is the over-charge it
+     * introduces one member over.
+     */
+    @Test
+    void ehcacheXmlStringSystemIdIsFsAndTheSiblingsStayPure() {
+        assertEquals(Effect.FS, Classifier.classify("org.ehcache.xml.ConfigurationParser", "<init>",
+                        "(Ljava/lang/String;)V"),
+                "ehcache 3.0.0–3.5.3: the public ConfigurationParser(String) READS the document at that systemId");
+        assertEquals(Effect.FS, Classifier.classify("org.ehcache.xml.ConfigurationParser", "parseXml",
+                        "(Ljava/lang/String;)Lorg/ehcache/xml/model/ConfigType;"),
+                "ehcache 3.6.0–3.6.3: parseXml(String) is DocumentBuilder.parse(systemId)");
+        // The ANTI-FABRICATION twins. Each is a member javap shows taking no source.
+        assertNull(Classifier.classify("org.ehcache.xml.ConfigurationParser", "<init>", "()V"),
+                "3.7.0+ the no-arg ctor only compiles the classpath schema — charging it would fabricate Fs "
+                        + "on every consumer that merely constructs a parser");
+        assertNull(Classifier.classify("org.ehcache.xml.XmlConfiguration", "getClassForName",
+                        "(Ljava/lang/String;Ljava/lang/ClassLoader;)Ljava/lang/Class;"),
+                "a String parameter is NOT the trigger — the two named members are");
+        assertNull(Classifier.classify("org.ehcache.xml.ConfigurationParser", "documentToText",
+                        "(Lorg/w3c/dom/Document;)Ljava/lang/String;"));
+        // And the gate the rule sits in front of still answers as it did.
+        assertEquals(Effect.NET, Classifier.classify("org.ehcache.xml.ConfigurationParser", "uriToDocument",
+                        "(Ljava/net/URI;)Lorg/w3c/dom/Document;"),
+                "3.7.0+ the URI entry point stays Net — the new rule must not shadow the descriptor gate");
+        assertEquals(Effect.NET, Classifier.classify("org.ehcache.xml.XmlConfiguration", "<init>",
+                        "(Ljava/net/URL;)V"));
+    }
+
     @Test
     void pureSurfacePackagesHaveNoClassificationsAndAreCovered() {
         assertNull(Classifier.classify("org.apache.commons.validator.GenericValidator", "isBlankOrNull", "(Ljava/lang/String;)Z"));

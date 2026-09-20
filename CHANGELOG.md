@@ -8,6 +8,79 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### SOUNDNESS R508/R509 — a standing "does the rule still FIRE?" probe, and R508's two named version gaps closed
+
+R509 shipped because a κ rule derived from one jar went on pointing at a class the library had moved:
+Exposed 1.0.0 renamed `org.jetbrains.exposed.sql.QueriesKt` to `org.jetbrains.exposed.v1.jdbc.QueriesKt`,
+every `owner.equals` missed, and because `org.jetbrains` is κ-COVERED the fall-through `null` was a
+**certified purity claim** over a complete data layer. Its **corpus reach was ZERO** — no jar of 372
+references `org/jetbrains/exposed/v1` — so the A/B could never have found it.
+
+- **New: `bash soundness/rule_fires.sh`** (`soundness/kappa_census/RuleFireProbe.java` +
+  `rule_fires.py`). For each κ-covered library it downloads **one** jar — the latest published release —
+  enumerates its members with ASM, asks `Classifier.classify` about each, and asserts that **at least one
+  rule still matches**. A package rename takes that count to zero. It is deliberately NOT a second
+  census: no N-jar enumeration, no per-version sweep, one question of one jar.
+  - **Scope: the κ-COVERED prefixes only.** On a non-covered prefix (testcontainers, `net.bramp`,
+    commons-exec, zt-exec, im4java) a rename floors the call to `invisible` and is DISCLOSED. Coverage is
+    the only place a rename is a cardinal sin, so it is the only place the download cost is justified.
+  - **In-scope set is authority-derived, not parsed out of `Classifier.java`:** a library is in scope iff
+    its pinned jar in `soundness/lib` already matches ≥1 rule. A prefix that is pure by grant has a
+    baseline of 0 and can never raise a phantom. **84 of the 372 jars are in scope.**
+  - **CALIBRATED IN BOTH DIRECTIONS**, against the defect that motivated it, by
+    `bash soundness/rule_fires.sh --calibrate`: the PRE-R509-fix classifier (compiled from `92994fd`,
+    the rules exactly as shipped) × exposed 1.5.0 matches **0** and the gate exits **1**; the fixed
+    classifier × the same jars matches **265** and the gate exits **0**; and the control — the pre-fix
+    classifier against its OWN version, exposed 0.52.0 — matches **209**, which is what makes the zero
+    mean something rather than being a probe that prints zero for everything.
+  - **Cost, measured: 40s wall clock and 83 MB over 71 downloads from a cold cache** (18s warm). That is
+    cheap, but the run is **not hermetic** — its verdict depends on what Maven Central published today,
+    not on the commit — so it belongs in a **scheduled/manual sweep, not a blocking PR gate**: a red
+    lands independently of any change, and a PR gate that goes red for reasons the PR did not cause is
+    the shape that gets disabled.
+  - Two zeros on its first real run, **both adjudicated as module consolidations, with the evidence in
+    the denylist entry**: `exposed-core` 1.x is the pure AST after the execution surface moved to
+    `exposed-jdbc` (which matches 239), and `ktor-server-host-common-jvm` 3.6.0 is a **one-class
+    compatibility stub** (`StubKt.stub(); 0: return`) after Ktor 3 folded it into `ktor-server-core`
+    (58 → 115 matches). 82 of 84 passed untouched.
+
+**R508 named two carve-outs it had checked at fewer versions than the library has. Both are now closed.**
+
+- **ffmpeg-cli-wrapper — CLEAN across all 13 published versions** (0.1 … 0.9.2; the sweep covered 6).
+  Re-derived with `javap -c`, method-scoped: the six named pure types (`FFmpegBuilder$Verbosity`,
+  `$Strict`, `FFmpegJob$State`, `StreamSpecifier`, `StreamSpecifierType`, `MetadataSpecifier`) hold
+  **0** IO or charged-type targets in every version, and every no-arg declarer of the three read-backs
+  (`getPath`, `getState`, `getOverrideOutputFiles`) is a field read — the only apparent exception,
+  `FFprobe.getPath()` from 0.6 on, is `super.getPath()` onto `FFcommon`'s own field read. The filter was
+  calibrated rather than trusted: pointed at `FFcommon`/`FFmpeg`/`RunProcessFunction` on the same jars it
+  flags 9/28, 22/71 and 30/85 members.
+- **⚠ ehcache — WRONG, and silent.** The `org.ehcache.xml` gate charges `URL`/`URI` → `Net` and
+  `File`/`Path` → `Fs` and claims everything else pure. It was derived at **3.10.8**, where the XML
+  source entry point takes a `URI`. `javap -c` over **all 56 published 3.x releases** says it did not
+  always: `ConfigurationParser(String)` in **3.0.0–3.5.3** and `public ConfigType parseXml(String)` in
+  **3.6.0–3.6.3** both reach `DocumentBuilder.parse(Ljava/lang/String;)` — the document at that systemId
+  — and a `String` is invisible to that gate. `org.ehcache` is κ-COVERED, so the `return null` was a
+  certified purity claim, not a disclosure.
+  - **MEASURED on a consumer compiled against the real ehcache-3.6.0 jar, library OUT of scope**, arms
+    differing only in `Classifier`: pre-fix `functions: []`, `coverage: null`, `invisible: null`, and
+    `deny Fs`, `deny Unknown`, `deny Fs Unknown` and `deny Net` **all exit 0**; post-fix `Fs` and
+    `deny Fs` exits 1. The instrument was calibrated — a `Files.readAllBytes` control on the same tree
+    reddens `deny Fs` at exit 1 through the PRE arm.
+  - **The reach is narrower than the κ table suggests, and the narrowing is measured, not assumed:**
+    `ConfigurationParser` is **package-private in 3.0.0–3.5.3** and only becomes `public` at 3.6.0, so
+    no external consumer can reach the constructor on those 21 releases. The consumer-reachable window
+    is **3.6.0–3.6.3**.
+  - `Fs` rather than `Net` because a systemId is a path far more often than a URL, and the SAXBuilder
+    rule already settles `String systemId → Fs`. **The price, stated:** on an `http://…` systemId this
+    answers `Fs` where `Net` is the truth — a mislabel, not a silence.
+  - **A/B over 371 jars, 1,497,879 rows per arm, `bin/corpus-ab.py`, wide key and wide value:
+    ADDED 0 — REMOVED 0 — CHANGED 0. That is ZERO REACH, not inert, and it is measured:** exactly one
+    jar of the 372 holds any `org.ehcache` class (3.10.8), and no constant pool in the corpus names
+    `parseXml(Ljava/lang/String;)Lorg/ehcache/xml/model/ConfigType;`. The corpus pins one version per
+    library — R508's blind spot exactly, and the same reason R509's fix had zero reach.
+  - The fix costs nothing from **3.7.0** on: neither member exists there with a `String` parameter,
+    enumerated with javap over all 56 releases rather than read off a changelog.
+
 ### ⚠ SOUNDNESS R508 — the VERSION-BLINDNESS sweep: every `javap`-derived carve-out re-derived across published versions
 
 A κ rule is keyed on owner + method and cannot say *"this owner forks in ≤1.2 and does not in ≥1.3"*,

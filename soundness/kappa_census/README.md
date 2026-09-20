@@ -6,15 +6,23 @@ member of it** — so a member the classifier does not name is not merely unknow
 This census enumerates which members still need modelling, so the grant does not outlive the survey that
 justified it.
 
-## Why this is NOT a second copy of `soundness/kappa_libs_probe.py`
+## Why this is NOT a second copy of `soundness/kappa_libs_probe.py` (nor of `rule_fires.py`)
 
 They answer different questions and **must not be unified** — the difference is the point:
 
-| | `kappa_libs_probe.py` | this census |
-|---|---|---|
-| member set | a **CURATED** list of known effect leaves | **EXHAUSTIVE** over a jar's members |
-| asks | does this leaf classify? | which members with a concrete effect does κ **fail** to classify? |
-| fails when | a modelled leaf regresses | a grant covers a member nobody surveyed |
+| | `kappa_libs_probe.py` | this census | `rule_fires.py` |
+|---|---|---|---|
+| member set | a **CURATED** list of known effect leaves | **EXHAUSTIVE** over a jar's members | **EXHAUSTIVE** over a jar's members |
+| version | the pinned jar | the pinned jar | the **LATEST PUBLISHED** release |
+| asks | does this leaf classify? | which members with a concrete effect does κ **fail** to classify? | do these rules still MATCH ANYTHING? |
+| fails when | a modelled leaf regresses | a grant covers a member nobody surveyed | the library MOVED and every rule now misses |
+
+`rule_fires.py` is the R509 instrument and is described in its own docstring and in
+`soundness/rule_fires.sh`. Run it with `bash soundness/rule_fires.sh`; prove it can still fail with
+`bash soundness/rule_fires.sh --calibrate`. It is deliberately **not** a version sweep: the R508 sweep
+argued against making this census read N jars per prefix — that multiplies an exhaustive enumeration by
+N and answers a question no single user has — so `rule_fires.py` asks ONE question of ONE jar instead,
+and the only signal it reads is the match count going to **zero**.
 
 A hand list cannot find what nobody thought to list, and that is exactly the failure R492 records: the
 `org.apache.commons.csv` grant reads *"CSV stacks (pure-relative over caller sources)"* and the package
@@ -182,3 +190,72 @@ hand to a forking `Runnable.run`: liquibase (`ExecuteShellCommandChange$2.run`),
 3. **Ratchet rather than threshold.** A clean absolute state is not reachable, and does not need to be:
    gate on *no NEW weaker-claim OWNER appears*, the shape the unknown-ratchet already uses. That makes the
    instrument usable today, at 48% noise, as a regression gate.
+
+## The third instrument: `rule_fires.py` — "does the rule still FIRE?" (SOUNDNESS R508/R509)
+
+This census asks *"κ says NULL — is the grant certifying an unmodelled member?"*, and
+`weaker_claim_census.py` asks *"κ gave a concrete answer — is it wrong in the dangerous direction?"*.
+Neither can see R509, and the reason is structural: **both read the ONE jar that happens to sit in
+`soundness/lib`.** R509 was a rule that was correct for that jar and matched nothing at all in the
+library's current release — Exposed 1.0.0 moved `org.jetbrains.exposed.sql.QueriesKt` to
+`org.jetbrains.exposed.v1.jdbc.QueriesKt`, every `owner.equals` missed, the block fell to `return null`,
+and `org.jetbrains` is κ-COVERED, so that null was a certified purity claim. Its **corpus reach was
+ZERO** — no jar of 372 references `org/jetbrains/exposed/v1` — so the A/B could not have found it either.
+
+    bash soundness/rule_fires.sh              # the probe
+    bash soundness/rule_fires.sh --calibrate  # prove it can FIRE and can be SILENT
+    bash soundness/rule_fires.sh --offline    # re-probe what is already downloaded
+
+**Scope is the κ-COVERED prefixes and no further.** On a non-covered prefix a rename floors the call to
+`invisible` and is DISCLOSED — loud. Coverage is the only place a rename is a cardinal sin.
+
+**In scope = a jar in `soundness/lib` whose members already match ≥1 rule** (84 of the 372). That is the
+authority-derived spelling of *"this prefix has owner rules"*: a prefix that is pure by grant has a
+baseline of 0 and cannot raise a phantom. `probe_coords.json` maps each in-scope jar to its Maven
+coordinate; entries without a single `META-INF/maven/**/pom.properties` are filled by hand and every one
+resolves (`--check-coords`).
+
+**Jars land in `kappa_census/latest_jars/`, NOT in `soundness/lib`** — gitignored, and separate on
+purpose: two versions of one library on `kappa_libs_probe`'s shared compile classpath is the
+shared-instrument contamination `CLAUDE.md` warns about, and a previous agent had to move a second
+hibernate out of that directory for exactly this reason.
+
+**Where it belongs: a scheduled or pre-release sweep, not a blocking PR gate.** Cost is small — 40s and
+83 MB over 71 downloads cold, 18s warm — but the run is **not hermetic**: its verdict depends on what
+Maven Central published today, not on the commit under test. A red lands independently of any change,
+and a PR gate that reddens for reasons the PR did not cause is the shape that gets switched off.
+
+**Adjudicated zeros live in `ADJUDICATED` in `rule_fires.py`, as a DENYLIST with the evidence in each
+entry**, never as a threshold. Two exist, both module consolidations: `exposed-core` (1.x is the pure
+AST; the execution surface moved to `exposed-jdbc`, which matches 239) and `ktor-server-host-common-jvm`
+(3.6.0 is a one-class compatibility stub, `StubKt.stub(); 0: return`, after Ktor 3 folded it into
+`ktor-server-core`). Both name the SIBLING artifact that still carries the rules, so the entry cannot
+quietly cover a real regression there.
+
+**A version note in a comment is not the mechanism.** R508 added those deliberately — they record which
+versions were checked so the next agent does not re-derive a clean negative — but a comment cannot
+notice a rename that happens after it was written. This probe is the mechanism.
+
+## `javap_calls.py` — the carve-out derivation tool, with the defect it had
+
+Every `javap`-derived carve-out in `Classifier.java` (R480, R486, R487, R493, R508 and the ehcache gap
+above) was derived by reading a method's call targets out of `javap -c`. That was a fresh ad-hoc pipeline
+each time, which is §G of the corpus brief — *fifteen paths computing one fact* — so it is a file now:
+
+    python3 soundness/kappa_census/javap_calls.py <jar> '<class-path-regex>'
+
+One line per member: `<class>#<javap member line>` then its call/allocation targets. **Method-scoped, so
+a reference in a DIFFERENT member cannot be misread as this one's** — which is the whole reason to run
+this rather than `javap -c … | grep ProcessBuilder`.
+
+**The defect it shipped with, recorded so the next hand-rolled copy does not reintroduce it:** the member
+regex matched only method-SHAPED lines, so javap's `static {};` did not reset the current member and a
+class initializer's calls were attributed to the accessor printed above it. That falsely flagged
+`net.bramp.ffmpeg.FFmpeg.getPath()` in 0.3/0.4/0.5 as reading `System.getenv` — javap shows it as
+`aload_0; getfield path; areturn`, and the `getenv` belongs to `static {}` initialising `DEFAULT_PATH`.
+**Every line javap prints at indent 2 ending in `;` is a member boundary**, fields and `static {}`
+included.
+
+And when a sweep with it comes back clean: **point it at a member you KNOW is effectful first.** On
+ffmpeg the six carved-out pure types flag 0 targets while `FFcommon`/`FFmpeg`/`RunProcessFunction` on the
+same jars flag 9/28, 22/71 and 30/85 — that contrast is what makes the zero a measurement.

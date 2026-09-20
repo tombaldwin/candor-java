@@ -1933,6 +1933,27 @@ final class Classifier {
         // XmlConfiguration(URL) FETCHES the config document (MEASURED absent on a compiled consumer),
         // and the File/Path overloads read it from disk. Descriptor-driven on the xml package only.
         if (owner.startsWith("org.ehcache.xml")) {
+            // SOUNDNESS R508's ehcache carve-out, CLOSED across all 56 published 3.x releases (it was the
+            // one the sweep checked at a SINGLE version, 3.10.8, and said so). The descriptor gate below
+            // was derived where every XML SOURCE entry point in this package takes a URL/URI/File/Path.
+            // It did not in the earlier releases — `javap -c`, method-scoped, over every published jar:
+            //     3.0.0 … 3.5.3   public ConfigurationParser(String)   → DocumentBuilder.parse(String)
+            //     3.6.0 … 3.6.3   public ConfigType parseXml(String)   → DocumentBuilder.parse(String)
+            //     3.7.0 … 3.12.0  public Document uriToDocument(URI)   → the gate below CATCHES it
+            // — so on TWENTY-FIVE published releases a String systemId naming the config document fell
+            // through to `return null`, and `org.ehcache` IS in KAPPA_COVERED_PREFIXES, which makes that
+            // null a CERTIFIED PURITY CLAIM rather than an `invisible` disclosure. R509's shape exactly,
+            // one library over: a rule derived from the one jar in soundness/lib, wrong for the versions
+            // that jar is not.
+            // `Fs`, not `Net`: a systemId is a path far more often than a URL, and the SAXBuilder rule
+            // above already settles `String systemId → Fs` for this same shape. THE PRICE, stated: on an
+            // `http://…` systemId this answers Fs where Net is the truth — a MISLABEL, not a silence,
+            // and one effect is all `classify` can return.
+            // It costs NOTHING from 3.7.0 on: neither member exists there with a String parameter
+            // (enumerated with javap over all 56 releases, not inferred from a changelog).
+            if (owner.equals("org.ehcache.xml.ConfigurationParser")
+                    && (method.equals("<init>") || method.equals("parseXml"))
+                    && desc != null && desc.startsWith("(Ljava/lang/String;")) return Effect.FS;
             String ehParams = paramsOf(desc);
             if (ehParams.contains("Ljava/net/URL;") || ehParams.contains("Ljava/net/URI;")) return Effect.NET;
             if (ehParams.contains("Ljava/io/File;") || ehParams.contains("Ljava/nio/file/Path;")) return Effect.FS;

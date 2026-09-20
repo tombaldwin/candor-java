@@ -10,6 +10,8 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.39.0] — 2026-09-20
 
+- **`jbang-catalog.json` points at the 0.39.0 shadow jar**, resolved (HTTP 200) before being pinned.
+
 ### SOUNDNESS R508/R509 — a standing "does the rule still FIRE?" probe, and R508's two named version gaps closed
 
 R509 shipped because a κ rule derived from one jar went on pointing at a class the library had moved:

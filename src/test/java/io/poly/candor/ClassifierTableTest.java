@@ -637,6 +637,13 @@ class ClassifierTableTest {
         r.add(fx("org.springframework.data.redis.core.SetOperations", "add", Effect.DB));
         r.add(fx("org.apache.poi.xssf.usermodel.XSSFWorkbookFactory", "create", "(Ljava/io/File;)LW;", Effect.FS));
         r.add(fx("org.eclipse.jgit.api.Git", "open", "(Ljava/nio/file/Path;)LG;", Effect.FS));
+        // SOUNDNESS R498 — jgit's fork surface. `Git.open` stays Fs here and gains its Exec as a
+        // co-emission (see JgitRepositoryOpenExecTest); these are the members that are Exec outright.
+        r.add(fx("org.eclipse.jgit.util.FS", "getGitSystemConfig", "()Ljava/io/File;", Effect.EXEC));
+        r.add(fx("org.eclipse.jgit.util.FS_POSIX", "discoverGitExe", "()Ljava/io/File;", Effect.EXEC));
+        r.add(fx("org.eclipse.jgit.util.FS", "detect", "()Lorg/eclipse/jgit/util/FS;", null)); // carve-out twin
+        r.add(fx("org.eclipse.jgit.lib.BaseRepositoryBuilder", "build", "()LR;", Effect.EXEC));
+        r.add(fx("org.eclipse.jgit.lib.BaseRepositoryBuilder", "setGitDir", "(Ljava/io/File;)LB;", null)); // setter twin
         r.add(fx("org.apache.tika.Tika", "parseToString", "(Ljava/nio/file/Path;)Ljava/lang/String;", Effect.FS));
         r.add(fx("org.apache.pdfbox.Loader", "loadPDF", "(Ljava/nio/file/Path;)LD;", Effect.FS));
         r.add(fx("org.apache.velocity.app.VelocityEngine", "mergeTemplate", Effect.FS));

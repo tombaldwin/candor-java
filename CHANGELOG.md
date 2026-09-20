@@ -8,6 +8,66 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R498 — opening a git repository with JGit forks `git`, and candor answered `Fs`
+
+`org.eclipse.jgit.api.Git.open(File)` was classified `Fs`. The call reaches a real
+`new java.lang.ProcessBuilder(String[]).start()`. This is the [[R494]]/[[R496]] WEAKER-CLAIM class rather
+than an absence: `Fs` is a positive, entirely plausible answer for "open a repository", so no disclosure
+channel contradicted it and nothing anywhere said the `Exec` was missing.
+
+- **The chain, `javap -c` with method context over org.eclipse.jgit-6.10.0:** `Git.open(File)` →
+  `Git.open(File,FS)` → `RepositoryBuilder.build()` → `new FileRepository(builder)` →
+  `SystemReader.getInstance().getUserConfig()` → `getSystemConfig()` →
+  `SystemReader$Default.openSystemConfig(Config,FS)` → `FS.getGitSystemConfig()` →
+  `FS.discoverGitSystemConfig()` → `FS.readPipe(File,String[],String)`, whose body is
+  `new ProcessBuilder(argv); .directory(f); .start()`.
+- **MEASURED on a consumer compiled against the real jar, library OUT of scope.** Pre-fix
+  `inferred: ["Fs"]` and `deny Exec` / `deny Exec Unknown` BOTH exit 0; post-fix `["Exec","Fs"]` and both
+  exit 1. **Calibration on the same tree, same jar, same policy file:** a sibling doing
+  `new ProcessBuilder("id").start()` reddens `deny Exec` in both arms, so the pre-fix exit 0 is an
+  under-report and not a broken scan.
+- **CONFIRMED AT RUNTIME, not only by `javap`.** The same consumer run with a logging `git` shim first on
+  PATH forks **twice** from that one call: `git --version` and
+  `git config --system --show-origin --list -z`. With **no** `git` on PATH it forks
+  `bash --login -c "which git"` instead. **Which arm fires is decided by the machine's PATH, never by
+  anything in the caller's code** — precisely the input candor cannot see — so the sound answer is
+  disclosure, exactly as R496 settled for the AWS credential chain. There is no arm that forks nothing.
+- **SEVERITY: a DISCLOSED under-report and a live gate bypass, NOT a cardinal sin.** `org.eclipse` is not
+  in `Rules.KAPPA_COVERED_PREFIXES` — measured rather than read off the list: the pre-fix report carried
+  `invisible: ["org.eclipse.jgit.api"]` and the coverage advisory alongside the `Fs`. That is R480's
+  direction, not R486/R509's.
+- **VERSION RANGE (R508 — the classifier cannot see a version).** Fifteen published jars measured by
+  compiling and RUNNING the consumer against each under the shim. `Git.open(File)` does not exist in
+  1.3.0/2.0.0/3.0.0. Every version from **3.7.1 through 7.3.0** forks — 3.7.1, 4.0.0, 4.5.0, 4.11.9,
+  5.0.0, 5.5.0, 5.13.3, 6.0.0, 6.5.0, 6.10.0, 6.10.1, 7.0.0, 7.3.0. 3.7.1 is the only one that forks
+  *nothing* when git is on PATH, and it still forks `bash --login -c "which git"` when git is absent.
+  4.0.0–5.5.0 spell the second fork `git config --system --edit`; 5.13.3 and 6.x/7.x spell it
+  `git config --system --show-origin --list -z`. So unlike commons-exec (R499/R508) there is **no**
+  published version for which this charge is an over-charge on every machine.
+- **The fix is a co-emission, not a replacement.** `classify` returns ONE effect, so `Git.open` keeps its
+  `Fs` at the table and gains `Exec` in `Candor.handleMethodInsn`. Both halves are pinned, because an
+  `Exec` that arrived by displacing the `Fs` would be a sideways move that quietly passes `deny Fs`.
+- **The boundary is stated and justified, and it is not drawn around the row's own instance.** The same
+  funnel is reached by every spelling of "give me a Repository" — `FileRepositoryBuilder.build()`,
+  `RepositoryCache.open()`, `Git.init()…call()`, `CloneCommand.call()` — and by
+  `SystemReader.getUserConfig()`/`getSystemConfig()` and JGit's own `FS` subprocess surface
+  (`readPipe`, `runProcess`, `runInShell` — the payload CARRIER — `execute`, `discoverGitExe`,
+  `discoverGitSystemConfig`, `getGitSystemConfig`, the hook runners). Each of the entry points was run in
+  a fresh JVM under the shim and each forked on both PATH arms; `CloneCommand.call()` is `javap`-derived
+  (it needs a remote) and calls `init()` → the same build.
+- **Why this is an ENUMERATION and not R480's whole-type-plus-denylist, said plainly.** R480 mandates the
+  denylist shape because an omitted member of a κ-COVERED namespace is SILENT. `org.eclipse` is not
+  covered, so a member this predicate misses keeps its honest `invisible` floor — the condition R480's
+  mandate depends on does not hold here. Charging the whole of `org.eclipse.jgit` `Exec` would put that
+  label on `ObjectId`, `Ref`, `RevWalk` and the config parser, polluting the body-side ground truth every
+  weaker-claim instrument reads; R499 is what that costs.
+- **Two carve-outs, each derived rather than guessed.** `FS.detect()`/`detect(Boolean)` select the
+  platform implementation and fork nothing (`javap` shows only `FS$FSFactory.detect`; a consumer touching
+  `FS.detect()` and `FS.DETECTED` recorded **zero** forks on both arms), and `FS.searchPath` is a regex
+  split over `$PATH` plus `File` existence checks. Both are pinned as controls.
+- `JgitRepositoryOpenExecTest` — 6 tests, falsified against the same tree with the fix made inert:
+  **3 fail, the 2 over-charge controls pass**, which is the shape a real fix has.
+
 ## [0.39.0] — 2026-09-20
 
 - **`jbang-catalog.json` points at the 0.39.0 shadow jar**, resolved (HTTP 200) before being pinned.

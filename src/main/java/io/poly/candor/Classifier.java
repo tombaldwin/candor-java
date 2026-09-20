@@ -1048,7 +1048,127 @@ final class Classifier {
             if (TESTCONTAINERS_READ_BACKS.contains(method)) return null;
             return Effect.EXEC;
         }
+        // ── Eclipse JGit ───────────────────────────────────────────────────────────────────────────────
+        // SOUNDNESS R498 — see jgitForksGitSubprocess below for the chain, the runtime proof and the
+        // version range.
+        if (jgitForksGitSubprocess(owner, method, desc)) {
+            // `Git.open(File|Path)` keeps the `Fs` its own rule in classifyOrg gives it — opening a
+            // repository IS a filesystem read, and `classify` returns ONE effect. Its `Exec` half is
+            // CO-EMITTED in `Candor.handleMethodInsn` off this SAME predicate, so the two spellings of
+            // the rule cannot drift apart. Returning null here keeps the cascade going to that rule.
+            if (owner.equals("org.eclipse.jgit.api.Git")) return null;
+            return Effect.EXEC;
+        }
         return null;
+    }
+
+    /** The JGit members that reach a real {@code new java.lang.ProcessBuilder(String[]).start()} —
+     *  SOUNDNESS R498, and the reason a jgit consumer's {@code deny Exec} exited 0.
+     *
+     *  <p><b>The chain, from {@code javap -c} with method context over org.eclipse.jgit-6.10.0.</b>
+     *  {@code Git.open(File)} → {@code Git.open(File,FS)} → {@code RepositoryBuilder.build()} →
+     *  {@code new FileRepository(builder)} → {@code SystemReader.getInstance().getUserConfig()} →
+     *  {@code getSystemConfig()} → {@code SystemReader$Default.openSystemConfig(Config,FS)} →
+     *  {@code FS.getGitSystemConfig()} → {@code FS.discoverGitSystemConfig()} →
+     *  {@code FS.readPipe(File,String[],String)}, whose body is
+     *  {@code new ProcessBuilder(argv); .directory(f); .start()}.
+     *
+     *  <p><b>CONFIRMED AT RUNTIME, not only by javap.</b> A consumer compiled against the real jar and
+     *  run with a logging {@code git} shim on PATH forks TWICE from that one call —
+     *  {@code git --version} and {@code git config --system --show-origin --list -z}. With no {@code git}
+     *  on PATH at all it forks {@code bash --login -c "which git"} instead (FS_POSIX.discoverGitExe;
+     *  FS_Win32 has the same fallback, and on macOS there is a third arm, {@code xcode-select -p}).
+     *
+     *  <p><b>WHICH ARM FIRES IS DECIDED BY THE MACHINE'S PATH, NEVER BY THE CALLER'S CODE</b> — precisely
+     *  the input candor cannot see — so the sound answer is to disclose the {@code Exec}, exactly as
+     *  [[R496]] settled for the AWS credential chain. There is no arm that forks nothing.
+     *
+     *  <p><b>VERSION RANGE (SOUNDNESS R508 — this classifier cannot see a version).</b> Measured on
+     *  fifteen published jars: {@code Git.open(File)} does not exist in 1.3.0/2.0.0/3.0.0. From 3.7.1
+     *  through 7.3.0 — 3.7.1, 4.0.0, 4.5.0, 4.11.9, 5.0.0, 5.5.0, 5.13.3, 6.0.0, 6.5.0, 6.10.0, 6.10.1,
+     *  7.0.0, 7.3.0 — every one forks. 3.7.1 is the one that forks NOTHING when git is on PATH (it
+     *  derives the system config from the git prefix instead of asking git), and it still forks
+     *  {@code bash --login -c "which git"} when git is absent. 4.0.0 through 5.5.0 spell the second fork
+     *  {@code git config --system --edit}; 5.13.3 and 6.x/7.x spell it
+     *  {@code git config --system --show-origin --list -z}. So unlike commons-exec ([[R499]]/[[R508]])
+     *  there is NO published version for which this charge is an over-charge on every machine.
+     *
+     *  <p><b>Why this is an enumeration and not R480's whole-type-plus-denylist.</b> R480 mandates the
+     *  denylist shape because an omitted member of a κ-COVERED namespace is SILENT. {@code org.eclipse}
+     *  is NOT in {@link Rules#KAPPA_COVERED_PREFIXES} — MEASURED, not read off the list: a consumer whose
+     *  only jgit call is {@code Git.open} reports {@code invisible: ["org.eclipse.jgit.api"]} plus the
+     *  coverage advisory. So a jgit member this predicate misses keeps its honest {@code invisible} floor
+     *  rather than becoming a purity claim, which is the exact condition under which the denylist mandate
+     *  does not apply — and charging the whole of {@code org.eclipse.jgit} {@code Exec} would put that
+     *  label on ObjectId, Ref, RevWalk and the config parser, polluting the body-side ground truth every
+     *  weaker-claim instrument reads ([[R499]] is what that costs).
+     *
+     *  <p><b>Two carve-outs, each derived rather than assumed.</b> {@code FS.detect()} /
+     *  {@code FS.detect(Boolean)} select the platform implementation and fork NOTHING — javap shows only
+     *  {@code FS$FSFactory.detect}, and a consumer touching {@code FS.detect()} and {@code FS.DETECTED}
+     *  forked zero on both PATH arms. {@code FS.searchPath} is a regex split over {@code $PATH} plus
+     *  {@code File} existence checks. Neither is on the list below. */
+    static boolean jgitForksGitSubprocess(String owner, String method, String desc) {
+        if (!owner.startsWith("org.eclipse.jgit.")) return false;
+        // (1) FS's OWN subprocess surface, enumerated with `javap -c` + method context over 6.10.0:
+        //     readPipe/runProcess construct or start the ProcessBuilder; `execute` delegates to
+        //     runProcess; `runInShell` is the payload CARRIER (it hands back an armed ProcessBuilder —
+        //     R480's shape, a builder configured here and launched elsewhere); discoverGitExe /
+        //     discoverGitSystemConfig / getGitSystemConfig are the discovery chain; the hook runners fork
+        //     the repository's own pre-commit/commit-msg scripts. Platform subclasses carry the same
+        //     names (FS_POSIX, FS_Win32, FS_Win32_Cygwin) — the `FS_` prefix reaches them without
+        //     reaching FS's inner value types (`FS$ExecutionResult`, `FS$FileStoreAttributes`).
+        if (owner.equals("org.eclipse.jgit.util.FS") || owner.startsWith("org.eclipse.jgit.util.FS_")) {
+            switch (method) {
+                case "readPipe": case "runProcess": case "runInShell": case "execute":
+                case "discoverGitExe": case "discoverGitSystemConfig": case "getGitSystemConfig":
+                case "runHookIfPresent": case "internalRunHookIfPresent":
+                    return true;
+                default: return false;
+            }
+        }
+        // (2) the config readers that funnel into FS.getGitSystemConfig. MEASURED: a consumer whose only
+        //     jgit call is `SystemReader.getInstance().getUserConfig()` forks on both PATH arms.
+        if (owner.equals("org.eclipse.jgit.util.SystemReader")
+                || owner.startsWith("org.eclipse.jgit.util.SystemReader$"))
+            return method.equals("getUserConfig") || method.equals("getSystemConfig")
+                    || method.equals("openSystemConfig");
+        // (3) REPOSITORY MATERIALISATION — the spellings of "give me a Repository", every one of which
+        //     reaches (2). Each was run under the git shim in a fresh JVM and each forked on both arms:
+        //     Git.open, FileRepositoryBuilder.build, RepositoryCache.open, Git.init()…call().
+        //     CloneCommand.call() is javap-derived rather than run (it needs a remote): its body calls
+        //     `init()` → the same Repository build. The descriptor gate on `open` mirrors the Fs rule's.
+        if (owner.equals("org.eclipse.jgit.api.Git"))
+            return method.equals("open") && desc != null
+                    && (desc.startsWith("(Ljava/io/File;") || desc.startsWith("(Ljava/nio/file/Path;"));
+        if (owner.equals("org.eclipse.jgit.lib.BaseRepositoryBuilder")
+                || owner.equals("org.eclipse.jgit.lib.RepositoryBuilder")
+                || owner.equals("org.eclipse.jgit.storage.file.FileRepositoryBuilder"))
+            return method.equals("build") || method.equals("setup");
+        if (owner.equals("org.eclipse.jgit.lib.RepositoryCache")) return method.equals("open");
+        if (owner.equals("org.eclipse.jgit.internal.storage.file.FileRepository"))
+            return method.equals("<init>");
+        if (owner.equals("org.eclipse.jgit.api.InitCommand")
+                || owner.equals("org.eclipse.jgit.api.CloneCommand"))
+            return method.equals("call");
+        return false;
+    }
+
+    /** The subset of {@link #jgitForksGitSubprocess} that also READS THE REPOSITORY OFF DISK — SOUNDNESS
+     *  R498. Materialising a {@code Repository} loads {@code .git/config} through
+     *  {@code FileBasedConfig.load()} and stats the object directory, so these members are {@code Fs} as
+     *  well as {@code Exec}. Named separately because {@code FS.readPipe}/{@code runProcess} are NOT —
+     *  they fork and read a pipe, they touch no repository. Charging only {@code Exec} here would have
+     *  installed the very shape this row is about: a positive answer weaker than the body. */
+    static boolean jgitMaterialisesARepository(String owner, String method) {
+        return (owner.equals("org.eclipse.jgit.api.Git") && method.equals("open"))
+                || (owner.equals("org.eclipse.jgit.api.InitCommand") && method.equals("call"))
+                || (owner.equals("org.eclipse.jgit.api.CloneCommand") && method.equals("call"))
+                || (owner.equals("org.eclipse.jgit.lib.RepositoryCache") && method.equals("open"))
+                || owner.equals("org.eclipse.jgit.lib.BaseRepositoryBuilder")
+                || owner.equals("org.eclipse.jgit.lib.RepositoryBuilder")
+                || owner.equals("org.eclipse.jgit.storage.file.FileRepositoryBuilder")
+                || owner.equals("org.eclipse.jgit.internal.storage.file.FileRepository");
     }
 
     private static Effect classifyOrg(String owner, String method, String desc) {

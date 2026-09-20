@@ -4448,6 +4448,25 @@ public class Candor {
             // docstring declares. A candidate refused on evidence, not fixed on plausibility.
             if (!owner.equals(AWS_WEB_IDENTITY_RESOLVER)) dir.add(Effect.EXEC);
         }
+        // OPENING A GIT REPOSITORY FORKS `git` — SOUNDNESS R498, and κ CAN NAME ONLY ONE EFFECT.
+        // `org.eclipse.jgit.api.Git.open(File)` answered `Fs`, a positive and entirely plausible answer
+        // that no disclosure channel contradicts, while the call reaches a real
+        // `new java.lang.ProcessBuilder(String[]).start()` through `FS.readPipe`. MEASURED on a consumer
+        // compiled against the real jar with the library OUT of scope: `deny Exec` and `deny Exec Unknown`
+        // both exited 0, and a `git` shim on PATH recorded the call forking `git --version` and
+        // `git config --system --show-origin --list -z`. The whole chain and the 13-version sweep live on
+        // `Classifier.jgitForksGitSubprocess`, which is the ONE place the member set is spelled — the
+        // classifier rule and this co-emission both read it, so they cannot drift apart.
+        // Co-emitted the way `Llm` co-emits `Net` and the S3 rule co-emits `Fs`: `dir` is a set, so the
+        // `Fs` that `classify` returns for `Git.open` is never displaced — a repository open really does
+        // read the filesystem.
+        if (Classifier.jgitForksGitSubprocess(owner, min.name, min.desc)) {
+            dir.add(Effect.EXEC);
+            if (effect == null) effect = Effect.EXEC;
+            // The repository-materialising half also loads `.git/config` off disk. Charging it `Exec`
+            // alone would have replaced one weaker-than-the-body claim with another.
+            if (Classifier.jgitMaterialisesARepository(owner, min.name)) dir.add(Effect.FS);
+        }
         opaqueTaskHandoff(ctx, s, min, owner);
         namedFunctionalToHof(ctx, s, min);
         xmlParseFilePrecision(ctx, s, min);

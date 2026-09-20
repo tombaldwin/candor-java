@@ -5390,8 +5390,22 @@ public class Candor {
         // **IN THE AMBIGUOUS CASE — TWO OR MORE String OPERANDS — THIS ADDS NO CAPTURE, ONLY DISCLOSURE,
         // and that asymmetry is the whole design.** Which literal IS the path there is genuinely ambiguous
         // — `RandomAccessFile(String,String)`'s second String is a MODE, `File(String,String)`'s is a
-        // CHILD — and guessing would fabricate a destination. A SINGLE String operand is not ambiguous and
-        // IS captured, twelve lines below; see the ONE/TWO-OR-MORE split stated next.
+        // CHILD — and guessing would fabricate a destination. A SINGLE String operand is not ambiguous
+        // about WHICH operand a locator would be — but unambiguous is not the same as being a path, and
+        // it is captured only where `PATH_CTOR_OWNERS` says the owner names one; see the ONE/TWO-OR-MORE
+        // split stated next and the `ownerNamesAPath` conjunct it lands on below.
+        //
+        // AND THAT QUALIFIER IS R435 RECURRING IN THE SENTENCE R435 FIXED. This read *"A SINGLE String
+        // operand is not ambiguous and IS captured, twelve lines below"* — true when written, false from
+        // the commit that added `ownerNamesAPath` (R425's census: capturing across the whole widened set
+        // published 2,910 new "paths" over 119 jars, SEVEN distinct values, not one of them a filesystem
+        // path). It also still said *"twelve lines below"* once the capture had moved ~95 lines down.
+        // MEASURED on the shipped jar rather than read: `new PrintWriter("/tmp/pw.txt")` — ONE String
+        // operand, determined, Fs-classified — publishes NO `paths` and discloses `incomplete: ["Fs"]`,
+        // while `new FileOutputStream("/tmp/log", true)` publishes `paths: ["/tmp/log"]`. The stale half
+        // pointed the FLATTERING way — it claimed MORE capture than happens, so what it hid is a
+        // disclosure and not a silence — which is precisely why it was never re-read: a sentence that
+        // overstates your own safety is the one nobody measures.
         //
         // SOUNDNESS R435 — THE PRECEDING SENTENCE USED TO OMIT THAT QUALIFIER AND WAS THEREFORE FALSE.
         // It read *"THIS ADDS NO CAPTURE, ONLY DISCLOSURE"* and *"`pathArgIsSingleString` remains the sole
@@ -5417,9 +5431,14 @@ public class Candor {
         //
         //   ONE String operand  — it is arg 0 and there is nothing else it could be, so the ambiguity
         //                         that keeps `pathArgIsSingleString` narrow does not exist here. CAPTURE
-        //                         it when determined (which also fixes the over-mask on
-        //                         `new FileOutputStream("/tmp/log", true)`, previously uncertifiable),
-        //                         and disclose when not.
+        //                         it when determined AND the owner is one `PATH_CTOR_OWNERS` says names a
+        //                         path (which fixes the over-mask on `new FileOutputStream("/tmp/log",
+        //                         true)`, previously uncertifiable) — and DISCLOSE otherwise, including
+        //                         for a determined literal on an owner whose leading String is not known
+        //                         to be one. That second conjunct is `ownerNamesAPath` below and it is
+        //                         R425's, not this rung's: unambiguous POSITION is not evidence of a
+        //                         PATH, and capturing on position alone published `top`, `messages` and
+        //                         five other non-paths 2,910 times.
         //   TWO OR MORE         — `RandomAccessFile(path, mode)`, `File(parent, child)`: we cannot say
         //                         WHICH is the locator, and guessing fabricates a destination. Disclose,
         //                         always. That is the same answer {@link Interp.ProvValue} already gives

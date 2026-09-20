@@ -208,4 +208,51 @@ class StringLocatorTailMaskingTest {
                         .getOrDefault("app.Tail.determinedOneString", new TreeSet<>()).contains("/tmp/benign"),
                 "and it must be CAPTURED: a path left out of `paths` cannot be certified by any allowlist");
     }
+
+    /** SOUNDNESS R435 — THE OTHER HALF OF THE ONE-STRING RULE, WHICH NO FIXTURE PINNED.
+     *
+     *  <p>Capture on this branch needs TWO conjuncts — exactly one String operand AND an owner that
+     *  {@code Rules#PATH_CTOR_OWNERS} says names a path. Every arm above pins the FIRST: two Strings
+     *  disclose, one determined String on a {@code FileOutputStream} is captured, an undetermined String
+     *  discloses whoever owns it. Nothing pinned the SECOND, so dropping {@code ownerNamesAPath} left
+     *  this whole class green while re-publishing R425's 2,910 fabricated "paths" over 119 jars — whose
+     *  distinct values were {@code top}, {@code messages}, two JSF bundle base names, {@code Operation
+     *  Cancelled} and {@code warmup}, not one of them a filesystem path.
+     *
+     *  <p>The sentence this pins was itself stale: the ONE/TWO-OR-MORE paragraph in {@code Candor} said
+     *  a single String operand "IS captured" with no owner qualifier, which was true when written and
+     *  false from the commit that added the conjunct. Unambiguous POSITION is not evidence of a PATH.
+     *
+     *  <p>Both directions, because one of them alone is satisfiable by an engine that captures nothing:
+     *  {@code PrintWriter} is Fs-classified with a single determined String and must DISCLOSE and
+     *  publish no path, while {@code FileOutputStream} on the same shape must CAPTURE and stay
+     *  certifiable. */
+    @Test
+    void aDeterminedSingleStringIsCapturedOnlyWhereTheOwnerNamesAPath() throws Exception {
+        Path cls = compile(Map.of("app/Owner.java", String.join("\n",
+            "package app;",
+            "import java.io.*;",
+            "public class Owner {",
+            // Fs-classified, ONE String operand, fully determined — but `PrintWriter` is not a type this
+            // engine constructs from a path, so the literal is not known to BE one.
+            "  void notAPathOwner() throws Exception { new PrintWriter(\"/tmp/pw.txt\").close(); }",
+            // The paired control on the identical shape, differing only in the owner.
+            "  void isAPathOwner() throws Exception { new FileOutputStream(\"/tmp/log\").close(); }",
+            "}")));
+        Candor.runScan(cls);
+        Map<String, TreeSet<String>> inc = Literals.literalFixpoint(AnalysisState.ctx().surfaceIncomplete);
+        var paths = AnalysisState.ctx().pathsDirect;
+
+        assertTrue(inc.getOrDefault("app.Owner.notAPathOwner", new TreeSet<>()).contains("Fs"),
+                "a determined leading String on an owner that names no path is still a destination this "
+                + "report does not name — it must DISCLOSE, not go silent because the string was readable");
+        assertFalse(paths.getOrDefault("app.Owner.notAPathOwner", new TreeSet<>()).contains("/tmp/pw.txt"),
+                "and it must NOT be captured: that is R425 — a string in a leading position is not a "
+                + "locator just because the call touches the filesystem");
+
+        assertFalse(inc.getOrDefault("app.Owner.isAPathOwner", new TreeSet<>()).contains("Fs"),
+                "the control must stay certifiable, or this test passes on an engine that captures nothing");
+        assertTrue(paths.getOrDefault("app.Owner.isAPathOwner", new TreeSet<>()).contains("/tmp/log"),
+                "an owner PATH_CTOR_OWNERS names still captures its single determined String");
+    }
 }

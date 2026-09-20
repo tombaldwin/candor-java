@@ -33,7 +33,7 @@ references `org/jetbrains/exposed/v1` — so the A/B could never have found it.
     classifier × the same jars matches **265** and the gate exits **0**; and the control — the pre-fix
     classifier against its OWN version, exposed 0.52.0 — matches **209**, which is what makes the zero
     mean something rather than being a probe that prints zero for everything.
-  - **Cost, measured: 40s wall clock and 83 MB over 71 downloads from a cold cache** (18s warm). That is
+  - **Cost, measured: 33s wall clock and 83 MB over 71 downloads from a cold cache, 17s warm.** That is
     cheap, but the run is **not hermetic** — its verdict depends on what Maven Central published today,
     not on the commit — so it belongs in a **scheduled/manual sweep, not a blocking PR gate**: a red
     lands independently of any change, and a PR gate that goes red for reasons the PR did not cause is

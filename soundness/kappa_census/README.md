@@ -220,8 +220,8 @@ purpose: two versions of one library on `kappa_libs_probe`'s shared compile clas
 shared-instrument contamination `CLAUDE.md` warns about, and a previous agent had to move a second
 hibernate out of that directory for exactly this reason.
 
-**Where it belongs: a scheduled or pre-release sweep, not a blocking PR gate.** Cost is small — 40s and
-83 MB over 71 downloads cold, 18s warm — but the run is **not hermetic**: its verdict depends on what
+**Where it belongs: a scheduled or pre-release sweep, not a blocking PR gate.** Cost is small — 33s and
+83 MB over 71 downloads cold, 17s warm — but the run is **not hermetic**: its verdict depends on what
 Maven Central published today, not on the commit under test. A red lands independently of any change,
 and a PR gate that reddens for reasons the PR did not cause is the shape that gets switched off.
 

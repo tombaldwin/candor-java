@@ -1081,6 +1081,24 @@ public class Candor {
         // caller's real path for a `dispatch-widened` disclosure.
         List<String> primarySourceFileRecords = List.copyOf(ctx().sourceFiles);
         Path root = ctx().scanRoot;
+        // ⟨0.19⟩ SOUNDNESS R530 — THE PEEK PARSES WITH THE GATE'S VOCABULARY, captured on the CALLING
+        // thread for exactly the reason the source-file inventory two lines up is: `unknownAliases` is
+        // THREAD-LOCAL (LB-1b) and the peek thread's context starts EMPTY. `Policy.parsePolicy` reads it
+        // as its ONLY ctx input, so a config-defined `Unknown[<alias>]` — resolved by `policyVocabularyFor`
+        // into the MAIN thread's context before this method is called — was an unrecognised reason class
+        // on the peek thread. That is a POLICY ERROR (§6.2), so the parse returned false, the peek
+        // returned before `answered`, and `outOfScope`/`scannedUnder` were both ABSENT while the gate
+        // enforced the very same policy without complaint. Same root cause as candor-rust's R525, failing
+        // CLOSED instead of open: nothing went green, but the ⟨0.30⟩ disclosure the rung exists for was
+        // silently withheld — the operator is told the verdict is incomplete and NOT which unit is out of
+        // scope. Measured on PART 55's `deny-unknown-alias` cell.
+        //
+        // The map is COPIED from the resolved gate-side context rather than re-derived from a second
+        // `Config` read: `policyVocabularyFor` anchors at the POLICY file and falls back to the target's
+        // config, so re-reading `peekConfig` here (the TARGET's config, which is what the ⟨0.30⟩
+        // net-partner fix hands `runScan`) would resolve aliases from a DIFFERENT file whenever the
+        // policy lives outside the scan root. One resolution, one vocabulary, both parses.
+        final Map<String, Set<ReasonClass>> peekAliases = Map.copyOf(ctx().unknownAliases);
         // The peek's own stderr is DISCARDED for its duration. It parses the policy (to learn what is
         // denied) and scans jars, and both are chatty — an ignored-policy-line warning printed once by the
         // peek and again by the gate reads as two problems, and a jar's unparseable-class notice is about
@@ -1089,6 +1107,9 @@ public class Candor {
         try {
             System.setErr(new PrintStream(java.io.OutputStream.nullOutputStream()));
             Thread t = new Thread(() -> {
+                // R530: the vocabulary FIRST — `parsePolicy` resolves `Unknown[<alias>]` against it, and
+                // this thread's context is a fresh one. Installed before the parse, never after.
+                ctx().unknownAliases.putAll(peekAliases);
                 // THE SAME PARSER THE GATE USES, over the same bytes — one extra read, not a second
                 // interpretation of the grammar. It runs on this thread because `parsePolicy` fills the
                 // THREAD-LOCAL ctx().denyRules, and a parse on the main thread would leave the gate's own

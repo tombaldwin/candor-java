@@ -401,6 +401,58 @@ class FileSetScopeTest {
     }
 
     /**
+     * ⟨0.19⟩+⟨0.30⟩ THE PEEK MUST PARSE WITH THE GATE'S VOCABULARY — SOUNDNESS R530.
+     *
+     * <p>{@code unknownAliases} is THREAD-LOCAL (AnalysisState/LB-1b) and the peek runs on its own
+     * thread, whose context starts empty. The main thread resolves the policy's {@code .candor/config}
+     * vocabulary into ITS context before calling {@link Candor#peekExcluded}; the peek thread's
+     * {@code Policy.parsePolicy} then read an EMPTY alias map, so a config-defined {@code Unknown[corp]}
+     * was an unrecognised reason class, the parse went fatal, and the peek returned before setting
+     * {@code answered} — {@code outOfScope} and {@code scannedUnder} both ABSENT.
+     *
+     * <p>THE DISCRIMINATOR IS THE CONTROL ARM, not the presence of the key. {@code Unknown[corp]} with
+     * {@code corp = unresolved} is the SAME policy as {@code Unknown[unresolved]}, so the two runs must
+     * produce the same exit code and the same {@code outOfScope}. A peek that silently drops the
+     * vocabulary diverges from its own gate on a policy that means exactly what the line above it means
+     * — which is §6.2's "the gate and the disclosure must apply the same rule".
+     */
+    @Test void thePeekResolvesAConfigDefinedUnknownAliasExactlyAsTheBuiltinClass() throws Exception {
+        Path root = repoRoot();
+        Files.createDirectories(root.resolve(".candor"));
+        Files.writeString(root.resolve(".candor/config"), "unknown-alias corp = unresolved\n");
+        // BOTH policies live beside the config, so the ⟨0.24⟩ policy-anchored vocabulary lookup finds the
+        // same file for each arm — the two runs differ in the alias spelling and in nothing else.
+        Path aliasPol = root.resolve("alias.policy");
+        Files.writeString(aliasPol, "deny Exec Unknown[corp]\n");
+        Path builtinPol = root.resolve("builtin.policy");
+        Files.writeString(builtinPol, "deny Exec Unknown[unresolved]\n");
+
+        Path bOut = tmp.resolve("vocab-builtin.json");
+        Run b = runCli(root.toString(), "--json", bOut.toString(), "--policy", builtinPol.toString());
+        JsonArray bOos = report(bOut).getAsJsonArray("outOfScope");
+        assertNotNull(bOos, "CONTROL: the builtin class must answer at all: " + report(bOut));
+        assertEquals(2, bOos.size(), "CONTROL: the jar's Exec and the uncompiled source's: " + bOos);
+
+        Path aOut = tmp.resolve("vocab-alias.json");
+        Run a = runCli(root.toString(), "--json", aOut.toString(), "--policy", aliasPol.toString());
+        JsonObject aRpt = report(aOut);
+        assertNotNull(aRpt.get("outOfScope"),
+            "R530: the alias resolved for the gate, so the peek answered under a policy that STOOD — "
+            + "an absent key here says the peek refused a policy nobody else refused: " + aRpt);
+        assertEquals(bOos.toString(), aRpt.getAsJsonArray("outOfScope").toString(),
+            "R530: `Unknown[corp]` where `corp = unresolved` IS `Unknown[unresolved]`: " + aRpt.get("outOfScope"));
+        assertEquals(report(bOut).get("scannedUnder").toString(), aRpt.get("scannedUnder").toString(),
+            "…and ⟨0.33⟩ records the same question, expanded the same way: " + aRpt.get("scannedUnder"));
+        assertEquals(b.exit(), a.exit(), "…and the verdicts agree: " + a.stderr());
+        // …and the class may still claim to have been read. The pre-fix peek returned before opening a
+        // single file, so this flag is what separates "answered []" from "never looked".
+        JsonObject jarCls = excludedClass(aRpt, "archive-under-the-scan-root");
+        assertNotNull(jarCls, aRpt.get("excluded").toString());
+        assertTrue(jarCls.get("peeked").getAsBoolean(),
+            "the peek must have READ the archive under an alias policy too: " + jarCls);
+    }
+
+    /**
      * THE FUNCTION THE GATE ALREADY JUDGED IS NOT AN OUT-OF-SCOPE FINDING. A repo root routinely holds
      * both {@code build/classes} and {@code build/libs/app.jar} — the same code twice — and without this
      * filter the peek would report every effect in the project as unjudged while the gate was judging it.

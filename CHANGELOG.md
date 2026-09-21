@@ -8,6 +8,51 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R526/R530a — the peek parsed the policy with an EMPTY alias vocabulary
+
+`Unknown[<alias>]`, where the alias comes from a `.candor/config` `unknown-alias` line, was a POLICY
+ERROR inside the ⟨0.30⟩ peek while the gate one line later enforced that same policy without complaint.
+The peek therefore returned before setting `answered`, and the report carried **no `outOfScope` and no
+`scannedUnder` at all**, with every excluded class marked `peeked: false`.
+
+The cause is a thread boundary, not a parser: `ctx().unknownAliases` is THREAD-LOCAL (LB-1b) and the peek
+runs on its own `candor-peek` thread, whose `AnalysisContext` starts empty. `Policy.parsePolicy` reads
+that map as its **only** context input. The main thread resolves the vocabulary (`policyVocabularyFor`,
+anchored at the POLICY file) into its own context just before calling `peekExcluded`; nothing carried it
+across. The source-file inventory two lines above is captured for exactly this reason — the alias map
+was simply never added to that list.
+
+Same root cause as candor-rust's R525 and the OPPOSITE failure direction: rust took a real violation from
+exit 2 to exit 0, java refuses and fails CLOSED. Nothing went green; what was lost is the ⟨0.30⟩
+disclosure the rung exists for — the operator is told the verdict is INCOMPLETE and not which unit is out
+of scope.
+
+- **Fix:** copy the resolved gate-side map on the calling thread and install it on the peek thread before
+  the parse. Copied rather than re-derived from `peekConfig`: that is the TARGET's config, and a policy
+  living outside the scan root resolves its aliases from a different file.
+- **Calibrated.** `FileSetScopeTest#thePeekResolvesAConfigDefinedUnknownAliasExactlyAsTheBuiltinClass`
+  was written first and run RED at `f2749b1`: *"R530: the alias resolved for the gate, so the peek
+  answered under a policy that STOOD — an absent key here says the peek refused a policy nobody else
+  refused"*, over a report whose keys were `[candor, packages, resolves, analyzed, excluded, functions]`.
+  Green after the fix. The discriminator is a CONTROL ARM, not the key's presence: `Unknown[corp]` with
+  `corp = unresolved` must answer exactly as `Unknown[unresolved]` — same `outOfScope`, same
+  `scannedUnder`, same exit.
+- **Conformance.** `conformance/part.sh 55`, `deny-unknown-alias` java cell: pre-fix `outOfScope` ABSENT,
+  `scannedUnder` ABSENT, both classes `peeked: false`; post-fix 2 findings, `scannedUnder`
+  `{"deny": ["deny Net Unknown[unresolved]"]}` — the alias EXPANDED, byte-identical to the
+  `deny-unknown-class` cell. The part now reports **XFAIL-PASSING**: `candor-spec`'s
+  `gen_policy_matrix.py` XFAIL line `("java", "deny-unknown-alias")` must be RETIRED.
+- **A/B, `bin/corpus-ab.py`, 5 repo-root entries over real third-party jars** (commons-lang3, gson,
+  jackson-core, joda-time, sqlite-jdbc, each as `classes/` + the jar under `libs/`, under
+  `deny Net Unknown[corp]` with `corp = unresolved`): headline `--key unit`, wide value,
+  **ADDED 0 REMOVED 0 CHANGED 0**, and **REACH 5 hits across 5 entries** on an instrumented post arm.
+  That zero is the OVER-CHARGE CONTROL and nothing more — corpus-ab keys on `functions[]` rows and this
+  fix moves envelope keys, so it is structurally blind to the recall side.
+- **The recall side, measured on the same 5 entries as an envelope diff:** `outOfScope` ABSENT → 0/1/3/0/28
+  findings (**32 real out-of-scope disclosures withheld pre-fix**), `scannedUnder` ABSENT → set, and the
+  archive class `peeked: false` → `true` on all five. `functions[]` unchanged (1 row each, both arms), exit
+  1/1 on both arms.
+
 ### ⚠ SOUNDNESS R498 — opening a git repository with JGit forks `git`, and candor answered `Fs`
 
 `org.eclipse.jgit.api.Git.open(File)` was classified `Fs`. The call reaches a real

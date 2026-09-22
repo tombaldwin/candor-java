@@ -10,6 +10,12 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## [0.39.2] — 2026-09-22
 
+- `jbang-catalog.json` points at the v0.39.2 release jar. The pin is moved AFTER the release exists,
+  never with it: at 0.24 a jbang pin naming a release that had not been created 404'd for every user while
+  `release-preflight [3]` stayed green, because a pin SAYING the right version is a different question from
+  the thing it names existing.
+
+
 ### ⚠ SOUNDNESS R530b — a LAMBDA was never an implementor, and the empty-CHA test is what armed the disclosure
 
 `Cha#chaTargets` answers "which project bodies implement this member" by walking loaded `ClassNode`s. A

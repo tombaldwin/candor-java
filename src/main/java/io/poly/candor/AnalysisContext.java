@@ -164,6 +164,26 @@ final class AnalysisContext {
      *  cache of a pure function recomputed on demand — it is enumerated once, up front, over the whole
      *  program). */
     Map<String, List<String>> fieldLambdaBindings = new HashMap<>();
+    /** SOUNDNESS R530b — {@code iface/Name.sam(desc)} -> the project method ids of every
+     *  LambdaMetafactory-produced implementor coerced to that SAM anywhere in this scan (an inline
+     *  lambda's synthetic body, a method reference's real target, a constructor reference's
+     *  {@code <init>}). A lambda has NO class file, so {@link Cha#chaTargets} — which walks
+     *  {@code subtypeIndex} over loaded {@code ClassNode}s — cannot see it, and neither can
+     *  {@code ReportWriter#unionCandidates}, which enumerates {@code ClassNode}s with foreign supertypes.
+     *  That is the index-vs-walk gap the row names: this engine CAN name {@code app.Widget.lambda$fire$0}
+     *  and does analyse its body; the implementor INDEX simply never held it.
+     *
+     *  <p><b>Deliberately NOT unioned into {@code chaTargets}.</b> Several branches read an EMPTY CHA as
+     *  "nothing resolves here, so disclose" — {@code untypedDepReceiver}'s conjunct 4, the
+     *  abstract-dep-Unknown suppression, the {@code callback:}/{@code dispatch:} arms, and the private
+     *  functional-param forwarding gate, which only runs on an empty candidate set. Making the index
+     *  non-empty at that chokepoint SUPPRESSES those disclosures, which is the measured failure recorded
+     *  in {@link Cha#collectFieldLambdaBindings}'s doc (a project-wide union into {@code chaTargets} broke
+     *  four {@code PrivateFunctionalParamForwardingTest} cases). So this is a SEPARATE set, consumed only
+     *  where an implementor set is built to PROPAGATE EFFECTS, never where emptiness arms a hedge. Built
+     *  ONCE by {@link Cha#collectSamLambdaImplementors} beside {@code fieldLambdaBindings} — a shared
+     *  INPUT, not a memo. */
+    Map<String, List<String>> samLambdaImpls = new HashMap<>();
     /** Memoized chaTargets(owner,name,desc) results. chaTargets is a PURE function of the (post-load,
      *  fixed) class hierarchy — the same call-key recurs across the many call sites that invoke a method
      *  on a given declared type — so caching collapses the analyze pass's dominant super-linear cost
@@ -370,6 +390,7 @@ final class AnalysisContext {
         repoTables = master.repoTables;                     feignTypes = master.feignTypes;
         httpClientTypes = master.httpClientTypes;           subtypeIndex = master.subtypeIndex;
         fieldLambdaBindings = master.fieldLambdaBindings;
+        samLambdaImpls = master.samLambdaImpls;   // SOUNDNESS R530b — a shared INPUT, like the line above
         overloadDescs = master.overloadDescs;               classesWithClinit = master.classesWithClinit;
         depCoveredPkgs = master.depCoveredPkgs;             depChainedPkgs = master.depChainedPkgs;
         depCallsByFn = master.depCallsByFn;                 depWhyByFn = master.depWhyByFn;

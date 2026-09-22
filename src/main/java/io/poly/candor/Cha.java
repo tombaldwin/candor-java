@@ -563,6 +563,98 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         ctx().fieldLambdaBindings.putAll(bindings);
     }
 
+    /** SOUNDNESS R530b — INDEX THE LAMBDAS AS IMPLEMENTORS OF THE SAM THEY ARE COERCED TO.
+     *
+     *  <p><b>The gap, and it is an INDEX gap rather than a naming one.</b> {@link #chaTargets} answers
+     *  "which project bodies implement (owner,name,desc)" by walking {@code subtypeIndex}, which is built
+     *  from loaded {@code ClassNode}s. A Java lambda has no class file — javac emits its body as a
+     *  synthetic {@code lambda$…} method on the CAPTURING class and wires it up at runtime through
+     *  {@code LambdaMetafactory} — so it is a project body this engine can NAME
+     *  ({@code app.Widget.lambda$fire$0}), DOES analyse, and never files under the interface it
+     *  implements. {@code ReportWriter#unionCandidates} has the same hole one level out: its ARM 2
+     *  enumerates {@code ClassNode}s with foreign supertypes, and additionally skips
+     *  {@code ACC_SYNTHETIC} members.
+     *
+     *  <p><b>Why that is a CARDINAL SIN and not a precision loss.</b> Every branch that turns an
+     *  unresolvable dispatch into an honest {@code Unknown} is armed by an EMPTY candidate set. So one
+     *  unrelated pure {@code class Repaint implements Runnable} anywhere in the scan makes
+     *  {@code chaTargets} non-empty, the disclosure never fires, the dispatch resolves to the pure
+     *  sibling, and {@code static void dispatch(Runnable h) {{ h.run(); }}} — handed
+     *  {@code () -> socket.connect()} — is reported ABSENT, which under §2 rule 3 is an affirmative claim
+     *  of purity. Measured on the published 0.39.0 jar: with zero implementors the dispatcher carries
+     *  {@code Unknown + unresolved:true ['callback:java.lang.Runnable.run']}; add the pure sibling and the
+     *  row disappears.
+     *
+     *  <p><b>WHAT THIS IS NOT: a union into {@code chaTargets}.</b> That was tried first, in ⟨0.35⟩, and
+     *  it is written up in {@link #collectFieldLambdaBindings}'s doc — it closed PART 87 and broke four
+     *  {@code PrivateFunctionalParamForwardingTest} cases, because the forwarding gate only runs on an
+     *  EMPTY candidate set and a project-wide union makes that set non-empty the instant ANY lambda
+     *  targets the interface. The same objection applies to {@code untypedDepReceiver}'s conjunct 4 and to
+     *  the abstract-dep-Unknown suppression: both read emptiness as "disclose". Keeping this index
+     *  SEPARATE means no emptiness test moves, so no disclosure this engine emits today can be suppressed
+     *  by it — the fix can only ADD effects or ADD an Unknown, never remove either. That is the direction
+     *  it fails in, stated before the change and measured by the A/B in the commit message.
+     *
+     *  <p><b>The key.</b> A {@code LambdaMetafactory} indy names its SAM three ways at once: the call
+     *  site's RETURN TYPE is the functional interface, {@code idin.name} is the SAM's name, and
+     *  {@code bsmArgs[0]} is the erased {@code samMethodType}. That triple is exactly the
+     *  {@code owner.name+desc} key {@code chaTargets} is asked with and that {@code dispatchesOn}
+     *  publishes, so nothing here invents a second spelling (§F1 q7 — a key two paths can spell
+     *  differently is this family's most-repeated defect). {@code altMetafactory} carries the same first
+     *  three bsmArgs, so both bootstraps are read by one path.
+     *
+     *  <p><b>The VALUE is {@link Candor#indyLambdaTarget}, reused verbatim</b> (§G — ask the authority):
+     *  it already resolves an inline lambda's synthetic body, a bound or unbound method reference's real
+     *  target and a constructor reference's {@code <init>}, and it already filters to PROJECT owners with
+     *  a concrete body. A method reference into a dependency therefore registers NOTHING and the site
+     *  keeps whatever it reports today — a sound under-approximation, the same one that method already
+     *  makes for {@code fieldLambdaBindings}.
+     *
+     *  <p><b>No taint contract here, and that is a real difference from the field index.</b>
+     *  {@code collectFieldLambdaBindings} must prove a field is written ONLY by clean lambdas, because it
+     *  RESOLVES the receiver and returns — an opaque write would be silently dropped. This index never
+     *  resolves anything: it is unioned WITH the CHA answer at sites that propagate effects, so an
+     *  unrecognised producer elsewhere leaves those sites exactly as they are. Over-approximation in the
+     *  disclosing direction, never a substitution. */
+    static void collectSamLambdaImplementors(List<ClassNode> classes) {
+        Map<String, List<String>> out = new HashMap<>();
+        for (ClassNode cn : classes) {
+            for (MethodNode mn : cn.methods) {
+                if (mn.instructions == null) continue;
+                for (AbstractInsnNode insn : mn.instructions.toArray()) {
+                    if (!(insn instanceof InvokeDynamicInsnNode idin)) continue;
+                    String impl = indyLambdaTarget(idin);
+                    if (impl == null) continue;                 // not a project body we can walk
+                    String key = samKeyOf(idin);
+                    if (key == null) continue;
+                    List<String> l = out.computeIfAbsent(key, k -> new ArrayList<>());
+                    if (!l.contains(impl)) l.add(impl);
+                }
+            }
+        }
+        ctx().samLambdaImpls.putAll(out);
+    }
+
+    /** The {@code owner.name+desc} of the SAM a {@code LambdaMetafactory} indy implements, or null. The
+     *  return type of the indy's own descriptor IS the functional interface (that is what the call site
+     *  produces), and {@code bsmArgs[0]} is the ERASED {@code samMethodType} — erased is the right one,
+     *  because it is the descriptor the eventual {@code invokeinterface} carries and therefore the
+     *  descriptor {@code chaTargets} and {@code dispatchesOn} are keyed with. A non-object return (an
+     *  indy that is not a lambda factory at all) yields null rather than a bogus key. */
+    static String samKeyOf(InvokeDynamicInsnNode idin) {
+        Type ret = Type.getReturnType(idin.desc);
+        if (ret.getSort() != Type.OBJECT) return null;
+        if (idin.bsmArgs == null || idin.bsmArgs.length == 0) return null;
+        if (!(idin.bsmArgs[0] instanceof Type sam) || sam.getSort() != Type.METHOD) return null;
+        return ret.getInternalName() + "." + idin.name + sam.getDescriptor();
+    }
+
+    /** The project lambda/method-ref bodies coerced to the SAM {@code owner.name+desc} anywhere in this
+     *  scan — {@link #collectSamLambdaImplementors}'s index, read. Never null. */
+    static List<String> samLambdaImplementors(String owner, String name, String desc) {
+        return ctx().samLambdaImpls.getOrDefault(owner + "." + name + desc, List.of());
+    }
+
     /** The bound implementor(s) of the receiver `min` dispatches on, if it is a GETFIELD read of a field
      *  {@link #collectFieldLambdaBindings} proved is written ONLY by project lambdas/method-refs — or null
      *  (not a field receiver, or that field carries at least one unrecognised write and was never bound).

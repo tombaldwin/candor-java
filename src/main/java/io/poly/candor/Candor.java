@@ -283,6 +283,8 @@ public class Candor {
                                                 // the lambda/method-ref(s) written into it; MUST run before
                                                 // any per-class analyze overlay (see AnalysisContext's
                                                 // fieldLambdaBindings doc — it is a shared INPUT).
+        collectSamLambdaImplementors(classes);  // SOUNDNESS R530b — index each lambda under the SAM it is
+                                                // coerced to; same shared-INPUT contract as the line above.
         computeSpringTypes(classes);
         computeStreamFieldOrigins(classes); // VALUE-PROVENANCE Phase 2: which stream fields are provably all-concrete
         computeStreamFieldSources(classes); // SOUNDNESS R147: which stream fields hold an EFFECTFUL acquisition
@@ -6028,6 +6030,49 @@ public class Candor {
             // a reason to drop a real reachable effect; a broad fan-out still drops to Unknown.
             List<String> targets = broad ? List.of() : cha;
             ctx.edges.get(id).addAll(targets);
+            // SOUNDNESS R530b — THE CANDIDATE SET IS INCOMPLETE WHENEVER A LAMBDA IMPLEMENTS THE SAM.
+            //
+            // `cha` is built from loaded ClassNodes, and a Java lambda has none: its body is a synthetic
+            // `lambda$…` method on the CAPTURING class, wired to the interface only at runtime through
+            // LambdaMetafactory. So `dispatch(Runnable h) { h.run(); }` handed `() -> s.write()` sees a
+            // candidate set that does not contain the thing that will actually run. With ZERO named
+            // implementors that costs nothing — the `callback:`/`dispatch:` arms below are armed by an
+            // EMPTY set and disclose honestly. The sin is the TOGGLE: one unrelated pure
+            // `class Repaint implements Runnable` makes `cha` non-empty, every disclosure arm goes
+            // silent, the dispatch resolves to the pure sibling, and the dispatcher is reported ABSENT —
+            // a §2 rule 3 purity claim over a real socket. Measured on published 0.39.0.
+            //
+            // SCOPED TO `!cha.isEmpty()`, AND THAT IS NOT A NARROWING OF A SOUND OVER-APPROXIMATION —
+            // the direction this family's denylist rule warns about. It is the exact converse: the
+            // empty-CHA case is ALREADY disclosed (or is a separate, pre-existing residual owned by a
+            // different row), so this branch widens only where a demonstrated suppression happened.
+            // Keeping it off the empty path is what leaves `Cha#collectFieldLambdaBindings`'s measured
+            // regression — a project-wide union into chaTargets broke four private functional-param
+            // forwarding cases, whose gate runs ONLY on an empty candidate set — unreachable from here.
+            //
+            // NEVER REMOVES AN EDGE. `broad`, `targets` and every Unknown arm below still read `cha`
+            // alone, so no site loses an effect it reports today; this can only ADD the lambda bodies'
+            // effects or ADD an Unknown. That direction is stated before the change because the opposite
+            // one — recomputing `broad` over the widened set — would drop real `Fs` edges in exchange for
+            // an `Unknown`, and a scoped `deny Fs` would go exit 1 -> exit 0 on the trade.
+            //
+            // THE BOUND IS THE ENGINE'S OWN, not a second one (§G): past CHA_FANOUT_LIMIT candidates an
+            // open hierarchy is an open-world guess, so the answer is the same honest `dispatch:` Unknown
+            // the named-implementor path gives — measured cost in the commit message, not asserted here.
+            if (!broad && !cha.isEmpty() && effect == null && !springTyped
+                    && !isObjectProtocolExempt(min.name, min.desc)) {
+                List<String> lam = new ArrayList<>(samLambdaImplementors(min.owner, min.name, min.desc));
+                lam.removeAll(targets);
+                if (!lam.isEmpty()) {
+                    if (lam.size() + targets.size() <= CHA_FANOUT_LIMIT || isClosedHierarchy(min.owner))
+                        ctx.edges.get(id).addAll(lam);
+                    else {
+                        dir.add(Effect.UNKNOWN);
+                        ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                                .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
+                    }
+                }
+            }
             // PROVABLE-INCOMPLETENESS: a sealed type whose permit-closure names an off-classpath
             // subtype is KNOWN-incomplete — the narrow path resolves only the visible permits and
             // would read silent-pure on the unseen one. Disclose Unknown (the visible impls' edges
@@ -6448,6 +6493,29 @@ public class Candor {
                                     .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, h.getOwner() + "." + h.getName()));
                         } else {
                             ctx.edges.get(id).addAll(cha);
+                            // SOUNDNESS R530b, THE SAME TOGGLE ONE SITE OVER (§9 — an audit's boundary must
+                            // not be drawn around its own trigger). `Doer::go` is an UNBOUND abstract
+                            // project method-ref: the body that runs is decided by the element the HOF
+                            // hands it, and `cha` cannot contain a lambda coerced to `Doer`. With no named
+                            // implementor at all that leaves this site silent — `cha` is empty, nothing is
+                            // edged, and there is no disclosure arm here to catch it — so unlike the direct
+                            // dispatch site this one is widened whether `cha` is empty or not. Bounded and
+                            // additive on the same terms: never removes an edge, and past the limit says
+                            // `dispatch:` rather than guessing.
+                            List<String> lam = new ArrayList<>(
+                                    samLambdaImplementors(h.getOwner(), h.getName(), h.getDesc()));
+                            lam.removeAll(cha);
+                            if (!lam.isEmpty()) {
+                                if (lam.size() + cha.size() <= CHA_FANOUT_LIMIT
+                                        || isClosedHierarchy(h.getOwner()))
+                                    ctx.edges.get(id).addAll(lam);
+                                else {
+                                    dir.add(Effect.UNKNOWN);
+                                    ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                                            .add(UnknownReason.of(UnknownReason.Kind.DISPATCH,
+                                                    h.getOwner() + "." + h.getName()));
+                                }
+                            }
                         }
                     }
                     // A static method-ref / ctor-ref (`H::staticM`, `H::new`) TRIGGERS H's class
@@ -6561,6 +6629,26 @@ public class Candor {
                                     h.getOwner().replace('/', '.') + "." + h.getName()));
                         } else {
                             ctx.edges.get(id).addAll(samCha);
+                            // SOUNDNESS R530b, THE THIRD INSTANCE OF THE TOGGLE. `task::run` forwards to a
+                            // SAM with no body of its own, so the answer is whatever implements that SAM —
+                            // and the project's LAMBDAS do, invisibly to `samCha`. The empty arm above
+                            // already discloses `callback:` and is deliberately untouched (widening the
+                            // EMPTINESS test would delete that disclosure); this widens only the branch
+                            // that claims to have resolved the question, which is where the sin lives.
+                            List<String> lam = new ArrayList<>(
+                                    samLambdaImplementors(h.getOwner(), h.getName(), h.getDesc()));
+                            lam.removeAll(samCha);
+                            if (!lam.isEmpty()) {
+                                if (lam.size() + samCha.size() <= CHA_FANOUT_LIMIT
+                                        || isClosedHierarchy(h.getOwner()))
+                                    ctx.edges.get(id).addAll(lam);
+                                else {
+                                    dir.add(Effect.UNKNOWN);
+                                    ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                                            .add(UnknownReason.of(UnknownReason.Kind.DISPATCH,
+                                                    h.getOwner().replace('/', '.') + "." + h.getName()));
+                                }
+                            }
                         }
                     }
                 }
@@ -6716,7 +6804,14 @@ public class Candor {
             if (dot <= 0) continue;                         // not a member key this engine can read
             String owner = key.substring(0, dot), name = key.substring(dot + 1, paren),
                     desc = key.substring(paren);
-            List<String> impls = chaTargets(owner, name, desc);
+            // SOUNDNESS R530b — this scan's own implementers include its LAMBDAS. `chaTargets` walks
+            // loaded ClassNodes and a lambda has none, so a consumer that SUPPLIES the implementor as
+            // `Backend b = () -> { … };` contributed nothing here and its own dispatching unit came back
+            // ABSENT. Unlike the in-scan site this arm has no disclosure to suppress — an empty answer
+            // means "contribute nothing", never "hedge" — so the two sets are simply unioned, and the
+            // fan-out bound below then sees the true candidate count rather than the visible one.
+            List<String> impls = new ArrayList<>(chaTargets(owner, name, desc));
+            for (String l : samLambdaImplementors(owner, name, desc)) if (!impls.contains(l)) impls.add(l);
             if (impls.isEmpty()) continue;
             if (impls.size() > CHA_FANOUT_LIMIT && !isClosedHierarchy(owner)) {
                 // The identical bound, and the identical disclosure, as the in-scan site: an open hierarchy

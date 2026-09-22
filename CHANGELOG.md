@@ -8,6 +8,124 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R530b — a LAMBDA was never an implementor, and the empty-CHA test is what armed the disclosure
+
+`Cha#chaTargets` answers "which project bodies implement this member" by walking loaded `ClassNode`s. A
+Java lambda has none: javac emits its body as a synthetic `lambda$…` method on the CAPTURING class and
+binds it to the interface at runtime through `LambdaMetafactory`. So a lambda was never in any implementor
+set this engine built — and neither `ReportWriter#unionCandidates` (which enumerates `ClassNode`s with
+foreign supertypes, and skips `ACC_SYNTHETIC` members besides) nor the ⟨0.39⟩ consumer join could see one.
+**The class is `index != walk`, not "an implementor the engine cannot NAME": java can name
+`app.Widget.lambda$fire$0` and does analyse its body.**
+
+With ZERO named implementors that cost nothing, because every arm that discloses an unresolvable dispatch
+is armed by an EMPTY candidate set. **The sin is the TOGGLE.** Adding one unrelated, pure
+`class Repaint implements Runnable` makes the set non-empty, the disclosure goes silent, the dispatch
+resolves to the pure sibling, and the dispatching method is reported ABSENT — a §2 rule 3 claim of purity
+over a real socket:
+
+    static void dispatch(Runnable h) { h.run(); }         // handed () -> socket.connect()
+    zero implementors  ->  ['Unknown'] unresolved:true ['callback:java.lang.Runnable.run']
+    + one pure sibling ->  ABSENT from functions[]        <- the cardinal sin
+
+Cross-package it is worse: three packages, one variable — `() -> {…}` versus `new Handler(){…}` — and the
+lambda arm's consumer `app.App.go` was ABSENT with `deny Net`, `deny Net Unknown` and `pure` ALL exit 0,
+while the anonymous-class control read `['Net']` and exited 1 on all three.
+
+**Four sites build an implementor set, and the audit boundary was not drawn around the trigger.** The row
+arrived with two arms; a sweep of every `chaTargets` caller found four that propagate effects, all four
+closed here:
+
+  1. the in-scan virtual dispatch (`Candor#virtualDispatch`);
+  2. an UNBOUND abstract project method-ref CHA-fanned at its creation site (`list.forEach(H::go)`);
+  3. a SAM-forwarding method-ref at the same site (`list.forEach(Runnable::run)`);
+  4. the published `interfaceUnion` entry — plus a new ARM 3 key in `unionCandidates` for an abstraction
+     NO class in the scan implements.
+
+**Three further `chaTargets` callers were examined and deliberately LEFT ALONE**, because each reads
+emptiness as *"disclose"* and widening it would DELETE a disclosure: the abstract-dep-Unknown suppression,
+`untypedDepReceiver`'s conjunct 4, and the Object-protocol reentry walk (exempt by §4, and unreachable
+through `LambdaMetafactory` anyway). For the same reason the new index is a SEPARATE map rather than a
+union into `chaTargets`: the ⟨0.35⟩ attempt at that broke four `PrivateFunctionalParamForwardingTest`
+cases, whose gate runs only on an empty candidate set.
+
+**WHICH DIRECTION IT FAILS IN, and the first version of it failed in the other one.** Folding the lambdas
+into the union's `impls` BEFORE the fan-out bound was computed let bodies this scan had actually SEEN push
+entries past `CHA_FANOUT_LIMIT`, and the entry then published a bare `Unknown` in place of its precise
+union: **49 rows lost their effects on the 372-jar corpus**, `org.jooq.RecordMapper.map` among them
+({Clock, Db, Fs, Log, Rand, Unknown} -> {Unknown}) — a consumer-visible trade of an effect set for a
+hedge, which is where a scoped `deny Db` stops firing. A widening must not be able to DELETE what it
+widens, so every site now prices the bound on the CHA alone and drops the lambdas in favour of an ADDED
+`Unknown` when they would carry the total past the limit. Re-measured: **zero rows lose anything.**
+
+**A/B, `bin/corpus-ab.py`, 372 jars (`soundness/lib`), PRE = build/libs/candor-java-0.39.0-all.jar proven
+to be HEAD (no source newer than the jar), 371 compared / 1 excluded (a pre-existing pre-arm failure on
+grpc-context):**
+
+    entry+package+fn+hash, multiset, WIDE      ADDED 2765   REMOVED 0   CHANGED 50047
+    entry+package+fn+hash, multiset, inferred  ADDED 2765   REMOVED 0   CHANGED  9743
+
+    of the 50047 CHANGED rows:  40304 moved only non-`inferred` fields (invisible 29649, declared 7660)
+                                 4869 gained ONLY Unknown
+                                 4589 gained ONLY effect(s)
+                                  285 gained BOTH
+                                    0 LOST anything
+    ADDED: 741 Unknown-only, 70 effect-only, 534 both, 1420 with an empty `inferred`
+
+    REACH (counted in the changed branches, instrumented build):
+      in-scan dispatch      9111 hits / 154 entries
+      union publication     1860 hits / 192 entries      (past the bound: 270 / 87)
+      unbound method-ref     207 hits /  25 entries
+      SAM-forwarding ref      70 hits /  30 entries
+      consumer join (⟨0.39⟩)    0 hits /   0 entries  <- SAFETY-ONLY on this corpus
+
+**The consumer-join leg has ZERO corpus reach and that is said here rather than discovered later:** every
+jar is scanned standalone with no chained deps, so obligation 3 never runs. Its evidence is the
+`chainedApp` fixture in `SamLambdaImplementorTest` and conformance PART 92 `c8_body_local_implementor`,
+not the A/B.
+
+Ground-truthed from BYTECODE, not from candor's own report: `org.jdbi.v3.core.ConnectionFactory` is a SAM
+whose only implementors in jdbi3-core are lambdas in `Jdbi` calling `DriverManager.getConnection`; the
+published entry went ABSENT -> `['Db']`. `spring-data-redis`'s `InitialBackoffExecution.nextBackOff`
+dispatches on a `BackOffExecution` field and now also edges to
+`RedisMessageListenerContainer.lambda$handleSubscriptionException$17`, whose body really does call
+`Log.info` — the same over-approximation bounded CHA already makes for the two named sibling records it
+edged to before.
+
+**R183's over-charge does NOT transfer, and that was measured rather than argued.** The row's brief
+warned that widening `isJdkFunctionalSam` over-charges `map(Iterable::iterator)` / `map(Principal::getName)`.
+This change never touches that predicate's membership — it widens only the branch that has ALREADY decided
+it resolved the question. On a fixture holding all five of R183's named controls (`Iterable::iterator`,
+`Principal::getName`, `String::trim`, `CharSequence::length`, `Objects::nonNull`) beside effectful
+`Function`/`Runnable`/`Supplier` lambdas, the instrumented build fires **zero** times and both arms' reports
+are identical — those rows stay absent. Add one project consumer of the same SAM
+(`static String call(Function<String,String> fn) { return fn.apply("h"); }` with one pure named
+implementor) and the probe fires once and `Use.call` goes ABSENT -> `['Net']`: the toggle, inside the
+`java.util.function` family the R183 note is about, closing in the intended direction.
+
+**Conformance, both arms declared against this row are now PASSING XFAILS and must be RETIRED in
+candor-spec:** PART 87 `argstore:one` (`P87_XFAIL`) and PART 92 `c8_body_local_implementor` java. All four
+PART 87 over-charge controls stay green, including `java-pure-argstore` — and that control is what decided
+the shape of the fix: a blanket hedge passes the sin arm and fails the control, so this COMPLETES the
+candidate set rather than disclosing. Incidentally, PART 87's `mrefhof` `one` arm (SOUNDNESS R179,
+committed red) moved from a disclosed `Unknown` to `Fs` — site 3 resolves it.
+
+**Incremental-refresh coverage, because this is R163's class one index over.** The new index is a
+whole-program pre-pass INPUT derived from other classes' BODIES, so class A's cached delta depends on
+class B's body — the one thing the structural digest does not cover. `Refresh#wholeProgramDigest` renders
+it, and `bin/refresh-equiv.sh` gains a fourth axis that proves it. Calibrated per §1b: with the
+`samlambdas` block removed the axis reads
+
+    ── sam-lambda axis       FAIL — a class whose BODY added a lambda implementor was replayed from cache
+         Disp.dispatch comes back PURE over a program that writes a file.
+
+and with it restored, `sam-lambda axis OK (cache engaged: reused 5 on the unchanged rerun)`.
+
+`SamLambdaImplementorTest` — 10 cases. 7 were run RED against the pre-fix source before the fix landed;
+the other 3 are CONTROLS that must pass in both directions (a pure lambda through the identical shape
+gains nothing and is not hedged; the zero-implementor `callback:` disclosure is untouched; the key
+spelling is pinned for both the inline-lambda and method-reference forms).
+
 ### ⚠ SOUNDNESS R526/R530a — the peek parsed the policy with an EMPTY alias vocabulary
 
 `Unknown[<alias>]`, where the alias comes from a `.candor/config` `unknown-alias` line, was a POLICY

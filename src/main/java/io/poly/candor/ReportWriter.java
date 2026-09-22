@@ -484,7 +484,30 @@ final class ReportWriter {
             if (!published.add(hash)) continue;
             Integer at = claimedAt.get(hash);
             Effector real = at == null ? null : effectors.get(at);
-            List<String> impls = chaTargets(owner, name, desc);
+            // SOUNDNESS R530b — the implementer set includes this package's LAMBDAS. `chaTargets` is built
+            // from loaded ClassNodes and a lambda has none, so a package whose only implementer of a
+            // foreign abstraction is `return () -> { … };` published a union entry over its PURE siblings
+            // alone — and a chained consumer read that as the whole answer.
+            //
+            // THE LAMBDAS ARE PRICED AGAINST THE BOUND SEPARATELY, AND THE FIRST VERSION OF THIS LINE THAT
+            // DID NOT WAS MEASURED WRONG. Folding them into `impls` BEFORE `broad` is computed lets a set
+            // of bodies this scan has actually SEEN push the entry past CHA_FANOUT_LIMIT, and the entry
+            // then publishes a bare `Unknown` in place of the precise union it published before: on the
+            // 372-jar corpus that cost 49 real rows their effects — `org.jooq.RecordMapper.map` went
+            // {Clock, Db, Fs, Log, Rand, Unknown} -> {Unknown} — every one of them a consumer-visible
+            // trade of an effect set for a hedge, which is exactly the direction a scoped `deny Db` stops
+            // firing in. The bound is a statement about an OPEN HIERARCHY's unseen subtypes, so counting
+            // bodies we can see into it is answering a different question; a widening must not be able to
+            // DELETE what it widens. So `broad` still prices the CHA alone, and if the lambdas would carry
+            // the total past the limit they are dropped in favour of an ADDED `Unknown` — the entry keeps
+            // every effect it published before and gains the disclosure. Never a substitution.
+            List<String> cha = chaTargets(owner, name, desc);
+            List<String> lam = new ArrayList<>(Cha.samLambdaImplementors(owner, name, desc));
+            lam.removeAll(cha);
+            boolean lamBroad = !lam.isEmpty()
+                    && cha.size() + lam.size() > Rules.CHA_FANOUT_LIMIT && !isClosedHierarchy(owner);
+            List<String> impls = new ArrayList<>(cha);
+            if (!lamBroad) impls.addAll(lam);
             // BOUNDED CHA, the same bound every IN-SCAN dispatch site applies (Candor: `broad =
             // cha.size() > CHA_FANOUT_LIMIT && !isClosedHierarchy(owner)`). Past the limit an OPEN
             // hierarchy may have a subtype candor never saw, so its visible union is an open-world
@@ -497,7 +520,7 @@ final class ReportWriter {
             // CANDOR_CLOSED_WORLD asserts the scanned classes are the whole world, and that assertion
             // is exactly what publishing for a CHAINED consumer contradicts — the consumer's own
             // implementers are, by construction, outside this scan.
-            boolean broad = impls.size() > Rules.CHA_FANOUT_LIMIT && !isClosedHierarchy(owner);
+            boolean broad = cha.size() > Rules.CHA_FANOUT_LIMIT && !isClosedHierarchy(owner);
             EffectSet inf = EffectSet.empty();
             // What the OTHER implementers contribute — the interface's own `default` body is one of
             // `chaTargets`' targets, and only the rest is news to a claimed entry.
@@ -520,7 +543,7 @@ final class ReportWriter {
             // a residual in InterfaceUnionTest — it is a pre-existing gap in the cross-dep join (it
             // costs EVERY dep Unknown its class, reflect included), not something this rung introduced.
             List<UnknownReason> why = List.of();
-            if (broad) {
+            if (broad || lamBroad) {   // R530b: `lamBroad` ADDS the hedge and keeps the union below
                 inf.add(Effect.UNKNOWN);
                 why = List.of(UnknownReason.of(UnknownReason.Kind.DISPATCH,
                         owner.replace('/', '.') + "." + name));
@@ -563,7 +586,10 @@ final class ReportWriter {
             }
             if (real != null) {
                 Effector wide = mergeUnionInto(real, inf, fromOthers, inv, hosts, cmds, paths, tables,
-                        netClass, why, broad, incUnion);
+                        // R530b: `lamBroad` is the same declaration of unresolvability as `broad`, so
+                        // the `unknown-host` fail-closed rule inside must see it too — a benign literal
+                        // host cannot certify a dispatch we have just said we cannot enumerate.
+                        netClass, why, broad || lamBroad, incUnion);
                 if (wide != real) { effectors.set(at, wide); merged++; }
                 continue;
             }
@@ -698,6 +724,33 @@ final class ReportWriter {
                 if (Candor.isObjectProtocolExempt(mn.name, mn.desc)) continue;
                 for (String sup : foreign) out.add(new String[] { sup, mn.name, mn.desc });    // ARM 2
             }
+        }
+        // ARM 3 — SOUNDNESS R530b: the implementer that has no ClassNode at all. Arms 1 and 2 both
+        // enumerate loaded classes, so a package whose ONLY implementer of a foreign abstraction is a
+        // LAMBDA (`return () -> { socket… };`) publishes nothing under that abstraction and a chained
+        // consumer is told, by a dep that really does hold an effectful body, that the member is pure.
+        // Keyed off {@link Cha#collectSamLambdaImplementors}'s index, whose keys are ALREADY this
+        // engine's ordinary entry hash for the member, so no second spelling is invented here either.
+        //
+        // THE SAME TWO BOUNDS ARM 2 CARRIES, for the same reasons and by the same tests rather than a
+        // second copy: a PROJECT-owned abstraction is arm 1's business (its own ClassNode is enumerated
+        // above, and the lambda now reaches it through the widened `impls` at the call site), and a
+        // κ-COVERED owner is skipped — `java/lang/Runnable.run()V` is implemented by nearly every jar, so
+        // publishing a union under it would charge one library's effectful lambda onto every `r.run()` in
+        // every consumer, which is the fabrication direction §4 forbids. A default-package owner is
+        // dropped for arm 2's reason as well: it has no namespace a consumer could resolve against.
+        for (String key : ctx().samLambdaImpls.keySet()) {
+            int paren = key.indexOf('(');
+            int dot = paren < 0 ? -1 : key.lastIndexOf('.', paren);
+            if (dot <= 0) continue;
+            String owner = key.substring(0, dot), name = key.substring(dot + 1, paren),
+                    desc = key.substring(paren);
+            if (ctx().projectClasses.contains(owner)) continue;            // arm 1's business
+            if (Candor.isObjectProtocolExempt(name, desc)) continue;
+            int slash = owner.lastIndexOf('/');
+            String pkg = slash > 0 ? owner.substring(0, slash).replace('/', '.') : "";
+            if (pkg.isEmpty() || Candor.kappaCovers(pkg)) continue;
+            out.add(new String[] { owner, name, desc });                   // ARM 3
         }
         return out;
     }

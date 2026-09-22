@@ -330,6 +330,99 @@ JAVA
   fi
 fi
 
+# ── AXIS 3: THE SAM→LAMBDA IMPLEMENTOR INDEX (SOUNDNESS R530b) ────────────────────────────────────
+# The SAME class as the field-binding axis above, one index over, and it is here because the index it
+# guards was added the same day. `Cha#collectSamLambdaImplementors` walks every method's INVOKEDYNAMIC
+# instructions to file each lambda under the SAM it is coerced to, and `Disp.dispatch`'s delta is
+# computed from it — so class A's cached delta depends on class B's BODY, which is precisely what the
+# structural digest does not cover. Without the `samlambdas` rendering in Refresh#wholeProgramDigest a
+# warm cache primed before the lambda existed replays `Disp.dispatch` as PURE over a program that
+# writes a file.
+#
+# THE METHOD-REFERENCE SPELLING IS LOAD-BEARING, exactly as in the axis above: `Effector::act` adds no
+# synthetic method to Widget, so Widget's STRUCTURE holds still across the arms and the digest cannot
+# move for a reason other than the index. An inline `() -> Effector.act()` would add `lambda$bind$0`
+# and the axis would arm for the wrong reason.
+if [ -z "$javac_bin" ]; then
+  echo "refresh-equiv: CANNOT ARM the sam-lambda axis — no javac on PATH (the fixture must compile)"
+  fail=1
+else
+  G="$WORK/samaxis"; mkdir -p "$G/src" "$G/v1" "$G/v2"
+  cat > "$G/src/Disp.java" <<'JAVA'
+public class Disp { public static void dispatch(Runnable h) { h.run(); } }
+JAVA
+  # The unrelated PURE implementor is what makes this the R530b toggle rather than the zero-implementor
+  # case: without it `Disp.dispatch` discloses `callback:` in BOTH arms and the axis measures nothing.
+  cat > "$G/src/Repaint.java" <<'JAVA'
+public class Repaint implements Runnable { public static int n; public void run() { n++; } }
+JAVA
+  cat > "$G/src/Effector.java" <<'JAVA'
+import java.nio.file.*;
+public class Effector {
+  public static void act() {
+    try { Files.write(Path.of("/tmp/candor-r530b-witness"), "ran\n".getBytes(),
+            StandardOpenOption.CREATE, StandardOpenOption.APPEND); }
+    catch (Exception e) { throw new RuntimeException(e); }
+  }
+}
+JAVA
+  cat > "$G/src/Main.java" <<'JAVA'
+public class Main { public static void main(String[] a) { new Widget().bind(); new Repaint().run(); } }
+JAVA
+  cat > "$G/v1/Widget.java" <<'JAVA'
+public class Widget { public void bind() { int noop = 0; } }
+JAVA
+  cat > "$G/v2/Widget.java" <<'JAVA'
+public class Widget { public void bind() { Disp.dispatch(Effector::act); } }
+JAVA
+  gfail=0
+  javac -nowarn -d "$G/ca" "$G/src"/*.java "$G/v1/Widget.java" >"$G/javac.log" 2>&1 || gfail=1
+  javac -nowarn -d "$G/cb" "$G/src"/*.java "$G/v2/Widget.java" >>"$G/javac.log" 2>&1 || gfail=1
+  if [ "$gfail" != 0 ]; then
+    echo "refresh-equiv: CANNOT ARM the sam-lambda axis — the fixture did not compile:"
+    sed 's/^/     /' "$G/javac.log" | head -20
+    fail=1
+  else
+    onevar=1
+    for c in Disp.class Repaint.class Effector.class Main.class; do
+      cmp -s "$G/ca/$c" "$G/cb/$c" || onevar=0
+    done
+    cmp -s "$G/ca/Widget.class" "$G/cb/Widget.class" && onevar=0
+    gt="$G/tree"; mkdir -p "$gt"
+    cp "$G/ca"/*.class "$gt/"
+    scan 0       "$gt" "$G/coldA/report" "$G/coldA.log"
+    scan "$G/fc" "$gt" "$G/prime/report" "$G/prime.log"
+    scan "$G/fc" "$gt" "$G/sameA/report" "$G/sameA.log"
+    cp "$G/cb/Widget.class" "$gt/Widget.class"          # the BODY changes; the structure does not
+    scan 0       "$gt" "$G/coldB/report" "$G/coldB.log"
+    scan "$G/fc" "$gt" "$G/warmB/report" "$G/warmB.log"
+
+    snap "$G/coldA" >"$G/ga"; snap "$G/coldB" >"$G/gb"; snap "$G/warmB" >"$G/gw"
+    gn="$(reuse_of "$G/sameA.log")"
+    printf -- '── %-22s' "sam-lambda axis"
+    if [ "$onevar" != 1 ]; then
+      echo "CANNOT ARM — the two arms differ in more than Widget's body (or not at all)"
+      fail=1
+    elif diff -q "$G/ga" "$G/gb" >/dev/null 2>&1; then
+      echo "CANNOT ARM — the body change moved no cold report (the lambda never reached the dispatch)"
+      fail=1
+    elif [ -z "$gn" ] || [ "$gn" = 0 ]; then
+      echo "CANNOT ARM — the unchanged rerun reused ${gn:-no} class(es); the cache never engaged"
+      fail=1
+    elif diff -u "$G/gb" "$G/gw" >"$G/gdiff" 2>&1; then
+      controls=$((controls+1))
+      echo "sam-lambda axis OK (cache engaged: reused $gn on the unchanged rerun)"
+    else
+      echo "FAIL — a class whose BODY added a lambda implementor was replayed from cache"
+      echo "     Widget's structure held still, so the whole-program digest did not move and Disp's"
+      echo "     delta was replayed under the old SAM->implementor index. This is SOUNDNESS R530b in"
+      echo "     R163's clothing: Disp.dispatch comes back PURE over a program that writes a file."
+      sed 's/^/     /' "$G/gdiff" | head -40
+      fail=1
+    fi
+  fi
+fi
+
 echo
 if [ "$fail" != 0 ]; then
   echo "refresh-equiv: FAILED — see the diffs above"

@@ -391,6 +391,20 @@ final class Refresh {
             sb.append(e.getKey()).append('=').append(new TreeSet<>(e.getValue())).append('\u0001');
             if (sb.length() > 1 << 16) digest.feed(sb);
         }
+        // THE SAM->LAMBDA IMPLEMENTOR INDEX, DERIVED FROM OTHER CLASSES' BODIES (SOUNDNESS R530b — the
+        // same class as R163 above, and the reason this block was written the same day as the fix). 
+        // `Cha#collectSamLambdaImplementors` walks every method's INVOKEDYNAMIC instructions, and three
+        // sites read it during analyze (the in-scan dispatch widening, the ⟨0.39⟩ consumer join, the union
+        // publication). So class A's cached delta depends on class B's BODY exactly as the block above
+        // does: a warm cache primed before `dispatch(() -> s.write())` existed would replay the
+        // dispatcher as PURE. Rendered as a sorted map of sorted SETS for the reason stated there — the
+        // lists are built in walk order and consumed into a Set, so neither order nor duplication
+        // carries meaning, and a digest that flapped with them would miss every run.
+        sb.append("samlambdas");
+        for (var e : new TreeMap<>(c.samLambdaImpls).entrySet()) {
+            sb.append(e.getKey()).append('=').append(new TreeSet<>(e.getValue())).append('\u0001');
+            if (sb.length() > 1 << 16) digest.feed(sb);
+        }
         sb.append("deps");
         // EVERY DEP VALUE, NOT THE KEY SET (SOUNDNESS R151). This fed `crossDeps.keySet()` and nothing
         // else, while Candor#inheritDepFn writes the VALUES into the per-class accumulators this cache

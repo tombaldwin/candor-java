@@ -8,6 +8,8 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+## [0.39.2] — 2026-09-22
+
 ### ⚠ SOUNDNESS R530b — a LAMBDA was never an implementor, and the empty-CHA test is what armed the disclosure
 
 `Cha#chaTargets` answers "which project bodies implement this member" by walking loaded `ClassNode`s. A

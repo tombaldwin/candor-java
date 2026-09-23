@@ -8,6 +8,43 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### §9 SWEEP — candor-ts SOUNDNESS R558's class, asked of java: **CLEAN**, and now pinned
+
+candor-ts lost the whole report ROW for `[n].map(d.roll)` where `d` is interface-typed (R558), and
+candor-rust lost the dispatch KEY for `xs.front().map(Buf::chunk)` (R549 mechanism B) — two engines,
+one question, the same day. "Filed against one engine" has been a poor guide to scope, so the
+QUESTION was translated rather than the defect: **a method reference to an INTERFACE member, passed
+as a value rather than called.** Measured 2026-09-23 against candor-java 0.39.2 and it is **clean** —
+`d::roll` (class implementor), `L::roll` (lambda implementor) and the unbound spelling all carry
+`inferred: ["Fs"]`, alongside the plain-static, class-member and CALLED-member controls, and
+`pure Main.refDeclared` exits 1 over the write. No engine change; `test/smoke.sh` gains the fixture so
+the result is durable rather than a note. It is clean because java reads bytecode and
+`invokedynamic`/`LambdaMetafactory` names the target in the constant pool — which is also why a future
+change to the indy handling could quietly stop it being clean, with ABSENCE, the sin's own signature,
+as the only symptom.
+
+**Calibration (§1b), in the same commit**, and both halves of it caught a real defect in the fixture:
+
+- The twin with every implementor emptied must DROP the charge, or the positive rows could not have
+  discriminated a working engine from one that charges on sight of a method reference. The first cut
+  wrote that twin to `MainPure.java` while the class stayed `public class Main`, so **javac compiled
+  nothing behind a `2>/dev/null` and all three `absent` rows passed over an EMPTY report.** The gate
+  row (`--policy` exit 2, "cannot read a report") is what caught it, so it stays a gate row and not a
+  grep, and the twin now pins `analyzed.count > 0` (SOUNDNESS R242, one level down).
+- Every row reads `inferred` **and nothing else**. Grepping the whole row object matched
+  `declared: ["Fs"]` — the ⟨0.24⟩ CONTRIBUTES field, which stays populated when `inferred` empties —
+  so the calibration arm went red over a correctly-pure engine, and the positive arms would have
+  passed for one that had lost the effect entirely. A key satisfiable by a neighbouring field is the
+  vacuous-guard class.
+
+Gates run serially on this tree: `compileJava`, `gradlew test`, `test/smoke.sh` (**559 passed, 0
+failed**), `soundness/run.sh 40`, `soundness/reentrancy.sh`, `shadowJar`, `ci/self-gate.sh`,
+`soundness/run_kotlin.sh` (16/16), `verifyNativeImageResources`, `shadowJar nativeParityClasses` — all
+green. `nativeCompile` and the `./dist/… --version` asset check were NOT run: this machine has no
+GraalVM (`native-image` absent from the 17.0.14-amzn JDK), and they are left to CI. The diff is
+`test/smoke.sh` + this file — no production code — so it cannot move a native build.
+
+
 ### SOUNDNESS R547 — the README claimed CHA coverage a chained, zero-implementor foreign dispatch does not have
 
 `README.md`'s dispatch section said *"All other dispatch — including over external interfaces with

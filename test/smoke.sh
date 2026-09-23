@@ -2400,6 +2400,94 @@ else
   fail=$((fail+1))
 fi
 
+# ── §9 SWEEP — candor-ts SOUNDNESS R558's CLASS, ASKED OF JAVA: AN INTERFACE MEMBER AS A VALUE ────
+#
+# candor-ts lost the whole ROW for `[n].map(d.roll)` where `d` is interface-typed (R558), and
+# candor-rust lost the dispatch KEY for `xs.front().map(Buf::chunk)` (R549 mechanism B) — two engines,
+# one question, the same day. "Filed against one engine" has been a poor guide to scope, so the
+# question was translated rather than the defect: **a method reference to an INTERFACE member, passed
+# as a value rather than called.** MEASURED 2026-09-23 against this engine and it is CLEAN — every arm
+# carries `Fs`, including the unbound and lambda-implementor spellings. This block exists so that stays
+# true: java reads bytecode and `invokedynamic`/`LambdaMetafactory` names the target in the constant
+# pool, which is the REASON it is clean and also the reason a future change to the indy handling could
+# quietly stop it being clean, with absence — the sin's signature — as the only symptom.
+#
+# EVERY ROW HERE READS `inferred` AND NOTHING ELSE. The first cut grepped the whole row object and
+# matched `declared: ["Fs"]` — the ⟨0.24⟩ CONTRIBUTES field, which stays populated when `inferred`
+# empties — so the calibration arm went red over a correctly-pure engine and the POSITIVE arms would
+# have passed for one that lost the effect entirely. A key that can be satisfied by a neighbouring
+# field is the vacuous-guard class.
+#
+# CALIBRATED, not asserted: the second fixture is byte-identical but for both implementors' bodies
+# being emptied, and it must drop the charge. Without that arm every row here would pass for an engine
+# that charged Fs on sight of a method reference. (Measured while writing it: `pure`-ing only ONE
+# implementor keeps the charge, correctly — CHA unions the interface's implementors.)
+echo "== §9 sweep: an INTERFACE member passed as a method reference (candor-ts R558's class) =="
+mkdir -p "$W/mref"
+cat > "$W/mref/Main.java" <<'J'
+import java.nio.file.*;
+import java.util.*;
+import java.util.stream.*;
+
+interface Declared { int roll(int n); }
+class Plain {                        // a CLASS that implements nothing — the control referent
+  int roll(int n) { try { Files.writeString(Path.of("/tmp/candor-r558-jc"), String.valueOf(n)); } catch (Exception e) {} return n; }
+}
+class DeclImpl implements Declared { // a CLASS implementor of the interface
+  public int roll(int n) { try { Files.writeString(Path.of("/tmp/candor-r558-ji"), String.valueOf(n)); } catch (Exception e) {} return n; }
+}
+public class Main {
+  static int plain(int n) { try { Files.writeString(Path.of("/tmp/candor-r558-jp"), String.valueOf(n)); } catch (Exception e) {} return n; }
+  static Plain c = new Plain();
+  static Declared d = new DeclImpl();
+  static Declared L = (n) -> { try { Files.writeString(Path.of("/tmp/candor-r558-jl"), String.valueOf(n)); } catch (Exception e) {} return n; };
+  public static List<Integer> refPlain(int n)    { return Stream.of(n).map(Main::plain).collect(Collectors.toList()); }   // CONTROL
+  public static List<Integer> refClass(int n)    { return Stream.of(n).map(c::roll).collect(Collectors.toList()); }       // CONTROL
+  public static int           callDeclared(int n){ return d.roll(n); }                                                    // CONTROL
+  public static List<Integer> refDeclared(int n) { return Stream.of(n).map(d::roll).collect(Collectors.toList()); }       // UNDER TEST
+  public static List<Integer> refLambda(int n)   { return Stream.of(L).map(x -> x.roll(n)).collect(Collectors.toList()); }// UNDER TEST
+  public static List<Integer> refUnbound(int n)  { return Stream.of(d).map(x -> x.roll(n)).collect(Collectors.toList()); }// UNDER TEST
+}
+J
+javac -d "$W/mrefcls" "$W/mref/Main.java" 2>/dev/null
+mrefjson="$("$CJ" "$W/mrefcls" --json 2>/dev/null)"
+for fn in refDeclared refLambda refUnbound; do
+  want "§9/R558 [$fn]: an interface member as a method REFERENCE carries its implementor's Fs" \
+       "$(printf '%s' "$mrefjson" | python3 -c 'import json,sys;d=json.load(sys.stdin);print([f["inferred"] for f in d["functions"] if f["fn"]=="Main.'"$fn"'"])')" "'Fs'"
+done
+for fn in refPlain refClass callDeclared; do
+  want "§9/R558 CONTROL [$fn]: the plain-fn, class-member and CALLED-member arms are charged too" \
+       "$(printf '%s' "$mrefjson" | python3 -c 'import json,sys;d=json.load(sys.stdin);print([f["inferred"] for f in d["functions"] if f["fn"]=="Main.'"$fn"'"])')" "'Fs'"
+done
+printf 'pure Main.refDeclared\npure Main.refLambda\npure Main.refUnbound\n' > "$W/mref/pure.pol"
+"$CJ" "$W/mrefcls" --policy "$W/mref/pure.pol" >/dev/null 2>&1; mrefrc=$?
+if [ "$mrefrc" -eq 1 ]; then echo "  ok   §9/R558 GATE: \`pure\` over the three reference arms exits 1"; pass=$((pass+1));
+else echo "  FAIL §9/R558 GATE: \`pure\` over the three reference arms exited $mrefrc (want 1)"; fail=$((fail+1)); fi
+# CALIBRATION — the same fixture with BOTH implementors emptied must drop the charge, or the rows above
+# could not have discriminated a working engine from one that charges on sight.
+# The pure twin keeps the file NAME `Main.java` in its own directory: javac refuses a public class
+# whose file disagrees, and the first cut of this arm wrote `MainPure.java`, compiled NOTHING behind a
+# `2>/dev/null`, and every `absent` below passed over an EMPTY report — a vacuous calibration, which is
+# the exact failure the calibration exists to prevent. The gate row four lines down (exit 2, "cannot
+# read a report") is what caught it, so it stays a gate row and not a grep.
+mkdir -p "$W/mrefpure" "$W/mrefpurecls"
+sed -e 's#try { Files.writeString(Path.of("/tmp/candor-r558-ji"), String.valueOf(n)); } catch (Exception e) {}##' \
+    -e 's#try { Files.writeString(Path.of("/tmp/candor-r558-jl"), String.valueOf(n)); } catch (Exception e) {}##' \
+    "$W/mref/Main.java" > "$W/mrefpure/Main.java"
+javac -d "$W/mrefpurecls" "$W/mrefpure/Main.java" 2>/dev/null
+mrefpure="$("$CJ" "$W/mrefpurecls" --json 2>/dev/null)"
+# …and the calibration fixture must actually have been JUDGED. An empty report prints the same absence
+# a correct one does (SOUNDNESS R242, one level down), so pin a row that must be THERE.
+want "§9/R558 CALIBRATION: the pure twin really compiled and was judged" \
+     "$(printf '%s' "$mrefpure" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d["analyzed"]["count"] > 0, sorted(f["fn"] for f in d["functions"])[:3])')" "True"
+for fn in refDeclared refLambda refUnbound; do
+  absent "§9/R558 CALIBRATION [$fn]: with every implementor PURE the charge is gone — the rows above can fail" \
+         "$(printf '%s' "$mrefpure" | python3 -c 'import json,sys;d=json.load(sys.stdin);print([f["inferred"] for f in d["functions"] if f["fn"]=="Main.'"$fn"'"])')" "'Fs'"
+done
+"$CJ" "$W/mrefpurecls" --policy "$W/mref/pure.pol" >/dev/null 2>&1; mrefprc=$?
+if [ "$mrefprc" -eq 0 ]; then echo "  ok   §9/R558 CALIBRATION GATE: \`pure\` over the same three arms exits 0 once the implementors are pure"; pass=$((pass+1));
+else echo "  FAIL §9/R558 CALIBRATION GATE: exited $mrefprc (want 0)"; fail=$((fail+1)); fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -8,6 +8,19 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### SOUNDNESS R547 — the README claimed CHA coverage a chained, zero-implementor foreign dispatch does not have
+
+`README.md`'s dispatch section said *"All other dispatch — including over external interfaces with
+project impls (`java.util.Iterator`) — is still CHA-resolved,"* which a reader takes as coverage of a
+foreign interface with no visible implementor too. It isn't: verified first-hand on a two-package
+fixture (a dependency `iface` declaring `Backend` with zero implementors, a consumer `App.appSize`
+dispatching on it directly) — unchained, the call discloses via the coverage ledger
+(`invisible: ["iface"]`); with `iface`'s report on `CANDOR_DEPS`, the same call reads `inferred: []`,
+`unresolved: false`, no `unknownWhy`, though `dispatchesOn` is still present. Silent purity, not a
+missing measurement. This is documentation-only — no behaviour changed — but candor-spec §4 permits the
+silence ONLY if it's named as a miss (§7 item 7), and the README instead implied coverage. Fixed to state
+what the engine actually does, matching candor-rust's README:181 model. SOUNDNESS R547.
+
 ## [0.39.2] — 2026-09-22
 
 - `jbang-catalog.json` points at the v0.39.2 release jar. The pin is moved AFTER the release exists,

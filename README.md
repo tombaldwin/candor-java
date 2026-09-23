@@ -120,8 +120,24 @@ candidate target and one effectful override would smear across the whole report:
   points** (the runtime invokes them), so their effects are never orphaned; an event loop's
   `task.run()` is not charged with every task in the jar.
 
-All other dispatch — including over external interfaces with project impls (`java.util.Iterator`) —
-is still CHA-resolved.
+All other dispatch — including over external interfaces with a visible implementor somewhere on the
+analyzed classpath (`java.util.Iterator`) — is still CHA-resolved to the union of what's visible.
+
+**Named miss (candor-spec §7 item 7).** Dispatch over a **foreign** abstraction — declared in a
+dependency rather than the project — that has **no visible implementor anywhere on the classpath**
+resolves to nothing and is **not disclosed**, provided the dependency that owns the abstraction is
+chained in via `CANDOR_DEPS`. Scanned without that dependency's report, the same call correctly
+discloses through the coverage ledger (`invisible: [<dep>]` — candor doesn't yet know the classpath is
+complete). Chain the dependency's own report in and that ledger entry closes, because candor now knows
+the classpath *is* complete — but CHA still has no implementation to resolve the call to, and unlike the
+zero-impl case one hop up (which correctly reads `Unknown`), the call site itself is silently omitted:
+`inferred: []`, `unresolved: false`, no `unknownWhy`, even though the entry still carries
+`dispatchesOn`. `pure`/`deny` over such a call answers as if it were proven pure. This is a real gap,
+not a defensive caveat: verified first-hand on a two-package fixture (a dependency declaring an
+interface with zero implementors, a consumer dispatching on it directly, the dependency's report on
+`CANDOR_DEPS`) before this paragraph was written. It misses — *silently*, by design, until candor-spec
+§4 ⟨0.40⟩ settles whether this must tighten — dispatch over a foreign, unimplemented abstraction once
+its owning dependency is chained.
 
 **Cross-jar (multi-module).** Each entry carries a stable, descriptor-bearing `hash`
 (`owner/Class.method(desc)ret` — the exact ref a call site uses), so a dependent module can inherit a

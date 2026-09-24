@@ -189,6 +189,12 @@ final class AnalysisContext {
      *  on a given declared type — so caching collapses the analyze pass's dominant super-linear cost
      *  (CHA fan-out × super-walk, re-done per call site). Immutable values → safe to share. */
     Map<String, List<String>> chaTargetsCache = new HashMap<>();
+    /** SOUNDNESS R131 — memo for {@link Candor#externalSupertypeEffects}: the effects an EXTERNAL owner
+     *  inherits from a CLASSIFIER-MODELLED supertype, keyed {@code owner \t name+desc}. A pure function of
+     *  the classifier's rules and the (fixed) external hierarchy, exactly like {@code chaTargetsCache},
+     *  and it is memoized for the same reason: without it every unclassified external call site repeats a
+     *  transSupers walk and a full `classify` sweep per supertype, on the hottest path in the engine. */
+    Map<String, List<Effect>> extSuperEffectMemo = new HashMap<>();
     /** Overload index: `dottedClass.methodName` -> the distinct JVM descriptors declared under that name,
      *  so an overloaded node gets a param-type suffix and a pure overload never unions an effectful one. */
     Map<String, Set<String>> overloadDescs = new HashMap<>();
@@ -408,6 +414,7 @@ final class AnalysisContext {
         annoMetaCache = master.annoMetaCache;               sealedClosedMemo = master.sealedClosedMemo;
         sealedUnseenMemo = master.sealedUnseenMemo;         externalSupersCache = master.externalSupersCache;
         resolutionOrderCache = master.resolutionOrderCache; depTransWhyMemo = master.depTransWhyMemo;
+        extSuperEffectMemo = master.extSuperEffectMemo;
         // Scalars — read by analyze, never an output of it.
         taintEnabled = master.taintEnabled;                 unknownRatchet = master.unknownRatchet;
         closedWorld = master.closedWorld;                   peekVersioned = master.peekVersioned;
@@ -517,6 +524,7 @@ final class AnalysisContext {
             "transSupersCache", "chaTargetsCache", "annoMetaCache", "sealedClosedMemo",
             "sealedUnseenMemo", "externalSupersCache", "resolutionOrderCache", "depTransWhyMemo",
             "depTransDispatchMemo",
+            "extSuperEffectMemo",
             "provFramesCache", "depOwnersBySig", "literalFixpointMemo");
 
     /** Sizes of the shared inputs, for {@link #assertNoInputGrowth}.

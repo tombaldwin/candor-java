@@ -2553,6 +2553,97 @@ else echo "  FAIL R595 GATE [unbound lib]: exited $r595u (want 1)"; fail=$((fail
 if [ "$r595b" -eq 0 ]; then echo "  ok   R595 GATE [bound lib] today: the SAME scoped gate exits 0 — the 1->0 flip, pinned"; pass=$((pass+1));
 else echo "  FAIL R595 GATE [bound lib]: exited $r595b (want 0 today; if this is 1, R595 is FIXED — invert the row)"; fail=$((fail+1)); fi
 
+# SOUNDNESS R131 — THE JDK-SUBTYPE SUPERTYPE WALK, AND ITS OVER-CHARGE CONTROL.
+# `handleMethodInsn`'s supertype re-classification was gated on a PROJECT owner, so no JDK subtype of a
+# modelled type ever got it: `DataInputStream.read`, `GZIPInputStream.read`, `JarInputStream.read`,
+# `CipherInputStream.read`, `GZIPOutputStream.write/close` all read SILENT-PURE while
+# `FilterInputStream.read` — their own declaring supertype, one hop up — reads `Unknown`, which is what
+# that rule says it INTENDS. Four hand enumerations had patched the leaves; this walks the hierarchy.
+#
+# TWO CALIBRATIONS, both measured, neither of them this block asserting its own correctness:
+#   · the GAIN rows below are RED against the pre-change jar (they were `pure` at HEAD — that is the
+#     whole finding), so reverting the walk fails them;
+#   · the DENYLIST is calibrated by `SecondSpellingRouteTest#control_sslServerSocketConfigStaysPure`,
+#     which was ALREADY IN THE TREE and went RED against the first, denylist-less cut of the change:
+#     `SSLServerSocket` extends `ServerSocket`, whose rule is whole-owner `Net` minus a carve-out list,
+#     and `setNeedClientAuth`/`setUseClientMode`/… are declared only on the SUBTYPE, so no carve-out
+#     could ever have named them. That is the real fabrication source; `CachedRowSet`, the one
+#     SOUNDNESS R131 named, is NOT one (see the crs rows below — unchanged in both directions).
+echo "== SOUNDNESS R131: a JDK subtype of a modelled type inherits its supertype's rule =="
+mkdir -p "$W/r131"
+cat > "$W/r131/R131.java" <<'J'
+import java.io.*;
+import java.util.zip.*;
+import java.util.jar.*;
+import java.util.prefs.*;
+import javax.crypto.CipherInputStream;
+import javax.sql.rowset.CachedRowSet;
+import javax.script.AbstractScriptEngine;
+import com.sun.net.httpserver.HttpsServer;
+
+public class R131 {
+  // GAINS — every one silent-pure before the walk, and every one a subtype of a type whose own rule
+  // already answers. The java.io decorator family is 66 of the 68 distinct JDK members the 170-jar
+  // corpus A/B reached; the other two are the `Fs` pair below.
+  public static void disRead(DataInputStream s)      throws Exception { s.read(new byte[8]); }
+  public static void lnrRead(LineNumberReader s)     throws Exception { s.read(); }
+  public static void gzRead(GZIPInputStream s)       throws Exception { s.read(new byte[8]); }
+  public static void jarRead(JarInputStream s)       throws Exception { s.read(new byte[8]); }
+  public static void cipRead(CipherInputStream s)    throws Exception { s.read(new byte[8]); }
+  public static void gzoWrite(GZIPOutputStream s)    throws Exception { s.write(new byte[8]); }
+  public static void gzoClose(GZIPOutputStream s)    throws Exception { s.close(); }
+  public static void scriptEval(AbstractScriptEngine e) throws Exception { e.eval("1"); }
+  // …and the two NON-Unknown gains, i.e. the only positive claims this change makes. Both were
+  // ground-truthed from bytecode on the corpus (xmlbeans `XmlError.<clinit>` really does
+  // `invokestatic java/util/PropertyResourceBundle.getBundle`, and `PropertyResourceBundle` declares
+  // no `getBundle` at all — the JVM resolves `ResourceBundle.getBundle`, which reads a .properties).
+  public static void httpsServer(HttpsServer s)                      { s.start(); }
+  public static void prefsGet(AbstractPreferences p)                 { p.get("k", "d"); }
+  public static void bundle()                                        { java.util.PropertyResourceBundle.getBundle("m", java.util.Locale.ROOT); }
+
+  // OVER-CHARGE CONTROL — IN-MEMORY decorators and containers. A charge on any of these is a
+  // FABRICATION, not a disclosure: the base they extend is abstract and unmodelled, and their own
+  // bytes never leave the heap.
+  public static void baosWrite(ByteArrayOutputStream s) throws Exception { s.write(new byte[8]); }
+  public static void baisRead(ByteArrayInputStream s)   throws Exception { s.read(new byte[8]); }
+  public static void swWrite(StringWriter w)            throws Exception { w.write("x"); }
+  public static void srRead(StringReader r)             throws Exception { r.read(); }
+  public static void cawWrite(CharArrayWriter w)        throws Exception { w.write("x"); }
+  public static void sbApp(StringBuilder b)                             { b.append("x"); }
+
+  // THE ROW'S OWN NAMED CARVE-OUT, MEASURED AND UNCHANGED IN BOTH DIRECTIONS. `next()` is ALREADY
+  // `Db` at HEAD through the direct `javax.sql.*RowSet` rule — it is the positive row that proves this
+  // fixture was judged — and the non-cursor verbs classify null at the subtype AND at every supertype,
+  // because `sharedResultSet` is verb-gated at both levels. The walk adds nothing here.
+  public static void crsNext(CachedRowSet r)        throws Exception { r.next(); }
+  public static void crsGetString(CachedRowSet r)   throws Exception { r.getString(1); }
+  public static void crsSetPageSize(CachedRowSet r) throws Exception { r.setPageSize(10); }
+  public static void crsSize(CachedRowSet r)                         { r.size(); }
+}
+J
+javac -d "$W/r131cls" "$W/r131/R131.java" 2>/dev/null
+r131json="$("$CJ" "$W/r131cls" --json 2>/dev/null)"
+r131eff() { printf '%s' "$r131json" | python3 -c 'import json,sys;d=json.load(sys.stdin);r=[f["inferred"] for f in d["functions"] if f["fn"]=="R131.'"$1"'"];print(r[0] if r else [])'; }
+# The fixture must have COMPILED AND BEEN JUDGED before any absence below means anything (R242).
+want "R131 fixture really compiled and was judged" \
+     "$(printf '%s' "$r131json" | python3 -c 'import json,sys;d=json.load(sys.stdin);print("JUDGED" if d["analyzed"]["count"]>0 else "EMPTY", d["analyzed"]["count"])')" "JUDGED"
+want "R131 CONTROL crsNext: already Db at HEAD — the positive row this fixture turns on" "$(r131eff crsNext)" "'Db'"
+for fn in disRead lnrRead gzRead jarRead cipRead gzoWrite gzoClose scriptEval; do
+  want "R131 [$fn]: a JDK decorator subtype inherits its base's Unknown instead of reading pure" \
+       "$(r131eff $fn)" "'Unknown'"
+done
+want "R131 [httpsServer]: HttpsServer extends HttpServer — start() binds a socket"   "$(r131eff httpsServer)" "'Net'"
+want "R131 [prefsGet]: AbstractPreferences extends Preferences — get() hits the store" "$(r131eff prefsGet)" "'Fs'"
+want "R131 [bundle]: PropertyResourceBundle.getBundle resolves ResourceBundle.getBundle — reads a file" \
+     "$(r131eff bundle)" "'Fs'"
+for fn in baosWrite baisRead swWrite srRead cawWrite sbApp; do
+  absent "R131 OVER-CHARGE CONTROL [$fn]: an in-memory decorator must gain NOTHING" "$(r131eff $fn)" "'"
+done
+for fn in crsGetString crsSetPageSize crsSize; do
+  absent "R131 CONTROL [$fn]: CachedRowSet's non-cursor verbs stay pure — the walk adds nothing here" \
+         "$(r131eff $fn)" "'"
+done
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

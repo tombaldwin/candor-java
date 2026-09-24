@@ -4389,6 +4389,31 @@ public class Candor {
                 if (se != null) { dir.add(se); effect = se; }
             }
         }
+        // SOUNDNESS R131 — THE SAME RE-CLASSIFICATION, FOR AN **EXTERNAL** OWNER.
+        // The block above fires only when `min.owner` is a PROJECT class, so no JDK/library subtype of a
+        // modelled type ever got the supertype walk: `DataInputStream.read`, `GZIPInputStream.read`,
+        // `JarInputStream.read`, `CipherInputStream.read`, `GZIPOutputStream.write/close` all read
+        // SILENT-PURE while `FilterInputStream.read` — their own declaring supertype, one hop up — reads
+        // `Unknown`. That shape has been patched by hand four times (MulticastSocket, SSLSocket,
+        // Conscrypt, R130's thirteen); each enumeration drew its boundary around its own trigger and the
+        // next sibling was silent again. This walks the hierarchy instead of enumerating the leaves.
+        //
+        // THE DIRECTION IT FAILS IN, and it is STRUCTURAL rather than asserted. It unions into `dir` and
+        // **deliberately does not assign `effect`**. That local is not just "the answer" — it is the gate
+        // on three downstream branches that only run when the classifier found NOTHING: `crossDepJoin`
+        // (`effect == null && !projectClasses.contains(owner)` — the cross-jar inheritance AND
+        // `untypedDepReceiver`'s disclosure, both on precisely this external-owner path),
+        // `externalStreamUtility` (`if (effect != null) return`) and `entryAbstractStream`. Assigning
+        // `effect` here would SUPPRESS those, so the first cut of this change could remove a disclosure
+        // while its own comment claimed it could only add one — the §K shape, in the commit that needed
+        // it to be true. Leaving `effect` null costs the literal surface (`effectMetadata` /
+        // `extractLiteralSurfaces` refine only a CLASSIFIED effect) and buys a change that cannot
+        // subtract. Nearly everything it adds is `Unknown`, which has no literal surface anyway.
+        //
+        // It is a DENYLIST over a sound over-approximation, not an allowlist of blessed supertypes — an
+        // allowlist would be the fourth hand enumeration and its boundary would again be its own trigger.
+        if (effect == null && !ctx.byName.containsKey(min.owner))
+            for (Effect se : externalSupertypeEffects(min.owner, min.name, min.desc)) dir.add(se);
         if (effect != null) dir.add(effect);
         // SPEC §1 ⟨0.13⟩ `Llm` model-SDK surface (Rules.MODEL_SDK_PACKAGES): a call into a curated
         // model-provider client dispatches a request → Llm + Net (Net is never dropped — a model call IS
@@ -8143,6 +8168,81 @@ public class Candor {
         for (String s : sup) { r.add(s); r.addAll(transSupers(s)); }
         return r;
     }
+
+    /** SOUNDNESS R131 — the effects an EXTERNAL owner inherits from a CLASSIFIER-MODELLED supertype.
+     *  Empty when nothing above it is modelled, which is the overwhelming majority of call sites.
+     *
+     *  <p><b>UNION, not nearest-wins.</b> {@link #transSupers} is a {@code HashSet}, so a `break` would
+     *  make the chosen effect order-dependent when two modelled supers declare the same method with
+     *  different effects — the exact defect the PROJECT-owner block above was fixed for. `dir` is a set,
+     *  so the union is deterministic and is the sound over-approximation of the possible dispatches.
+     *
+     *  <p><b>MEMOIZED</b> on {@code owner+name+desc}: `classify` is a long rule chain and this runs at
+     *  every unclassified external call site, which is most of them. Same contract as
+     *  {@code chaTargetsCache} — a pure function of the classifier and the fixed external hierarchy. */
+    static List<Effect> externalSupertypeEffects(String ownerInternal, String name, String desc) {
+        AnalysisContext c = ctx();
+        String key = ownerInternal + '\t' + name + desc;
+        List<Effect> memo = c.extSuperEffectMemo.get(key);
+        if (memo != null) return memo;
+        List<Effect> out = List.of();
+        for (String sup : transSupers(ownerInternal)) {
+            if (c.byName.containsKey(sup)) continue;              // external supers only, as above
+            String dotted = sup.replace('/', '.');
+            Effect se = Classifier.classify(dotted, name, desc);
+            if (se == null) continue;
+            if (isOwnerBlanketRule(dotted, desc)) continue;       // the denylist — see below
+            if (out.isEmpty()) out = new ArrayList<>();
+            if (!out.contains(se)) out.add(se);
+        }
+        c.extSuperEffectMemo.put(key, out);
+        if (!out.isEmpty() && R131_DEBUG)
+            System.err.println("CANDOR_R131_HIT " + ownerInternal + "." + name + desc + " " + out);
+        return out;
+    }
+
+    /** {@code CANDOR_R131_DEBUG=1} — print one line per DISTINCT (owner,name,desc) the R131 walk charges.
+     *  This exists because "the A/B was byte-identical" is not evidence until the corpus is shown to REACH
+     *  the changed branch: four rows in this register ran a full A/B, returned identical, and only
+     *  afterwards was it found by grep that the corpus contained zero instances of the shape. Printed at
+     *  the MEMO MISS, so the count is distinct call KEYS rather than call sites. */
+    private static final boolean R131_DEBUG = System.getenv("CANDOR_R131_DEBUG") != null;
+
+    /** THE DENYLIST FOR {@link #externalSupertypeEffects}, ASKED OF THE CLASSIFIER RATHER THAN WRITTEN
+     *  BY HAND — whether the rule that just fired for {@code owner} is an OWNER-BLANKET rule (every
+     *  method of that type, a denylist-with-exemptions) rather than a VERB-GATED one.
+     *
+     *  <p><b>The fabrication this exists to stop, measured — and it is NOT the one SOUNDNESS R131
+     *  predicted.</b> R131 named {@code javax.sql.rowset.CachedRowSet} as the sampled fabrication source.
+     *  It is not one: {@code CachedRowSet.next()}/{@code execute()} are ALREADY {@code Db} at HEAD through
+     *  the direct {@code javax.sql.*RowSet} rule, and the non-cursor verbs classify null at the subtype
+     *  AND at every supertype, because {@code sharedResultSet} is verb-gated at both levels. The walk
+     *  changes nothing there in either direction. The real source is the shape one level up:
+     *  {@code javax.net.ssl.SSLServerSocket} extends {@code java.net.ServerSocket}, whose rule is
+     *  WHOLE-OWNER {@code Net} minus a carve-out list of config accessors. {@code setNeedClientAuth},
+     *  {@code setUseClientMode}, {@code setEnabledProtocols}, {@code setSSLParameters} and
+     *  {@code getEnabledCipherSuites} are declared only on the SUBTYPE, so no carve-out could ever have
+     *  named them — every TLS server's setup code would become a {@code Net} violation. Found by
+     *  {@code SecondSpellingRouteTest#control_sslServerSocketConfigStaysPure}, which already existed.
+     *
+     *  <p><b>Why a probe and not a list of blanket-ruled base types.</b> Hand enumeration is what R131 is
+     *  a row ABOUT — the same shape had been patched by hand four times and each boundary was drawn
+     *  around its own trigger. A list here would be the fifth. Asking the classifier "would this rule fire
+     *  for a method name that cannot exist, at this same descriptor?" reads the rule's own shape, cannot
+     *  drift from it, and covers every blanket rule written after this line (§G — ask the authority).
+     *
+     *  <p><b>The residual, stated:</b> a rule that is broad but not literally blanket — one matching a
+     *  name PREFIX or SUFFIX — reads as verb-gated and is still applied. That is the direction this
+     *  errs in, and it errs toward disclosure; the corpus A/B in this commit is the measurement of how
+     *  often, not an argument that it does not happen. */
+    static boolean isOwnerBlanketRule(String dottedOwner, String desc) {
+        return Classifier.classify(dottedOwner, BLANKET_PROBE, desc) != null;
+    }
+
+    /** A method name no rule can name and no class can declare: not a legal Java identifier, so it cannot
+     *  be hit by an {@code equals}, and it starts and ends with NUL so no {@code startsWith}/{@code
+     *  endsWith} in the classifier can match it either. */
+    private static final String BLANKET_PROBE = "\u0000candor$blanketProbe\u0000";
 
     /** Whether `internal` is a RUNTIME-INVOKED task type — implements Runnable/Callable or extends Thread
      *  (transitively, including through external supertypes via {@link #transSupers}). Such a class's

@@ -8,6 +8,78 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R131 — a JDK subtype of a modelled type now inherits its supertype's rule
+
+`Candor#handleMethodInsn`'s supertype re-classification was gated on `ctx.byName.containsKey(min.owner)`
+— a PROJECT owner — so **no JDK or library subtype of a modelled type ever got the walk**. The effect,
+measured on a probe fixture before any code changed: `DataInputStream.read`, `LineNumberReader.read`,
+`GZIPInputStream.read`, `ZipInputStream.read`, `JarInputStream.read`, `CipherInputStream.read`,
+`GZIPOutputStream.write`/`close` all read **silent-pure**, while `FilterInputStream.read` — the
+supertype that declares them, one hop up — reads `Unknown`, which is exactly what that rule's own
+comment says it intends. This shape had been patched by hand four times (`MulticastSocket`, `SSLSocket`,
+Conscrypt, R130's thirteen) and each enumeration drew its boundary around its own trigger.
+
+**Additive by construction, not by assertion.** The new branch unions into the direct effect set and
+deliberately does **not** assign `effect`, because that local gates three downstream branches that only
+run when the classifier found nothing — `crossDepJoin` (cross-jar inheritance *and*
+`untypedDepReceiver`'s disclosure, both on this very external-owner path), `externalStreamUtility` and
+`entryAbstractStream`. The first cut of the change did assign it, and would have suppressed them.
+
+**The denylist is asked of the classifier, not written by hand.** A supertype rule is skipped when it is
+OWNER-BLANKET (whole-owner minus carve-outs) rather than verb-gated, detected by classifying a method
+name that cannot exist at the same descriptor. **The fabrication this stops is not the one R131
+predicted.** `javax.sql.rowset.CachedRowSet`, the sampled source the row names, is not one:
+`next()`/`execute()` are *already* `Db` at HEAD via the direct `javax.sql.*RowSet` rule, and the
+non-cursor verbs classify null at the subtype and at every supertype. The real source is
+`javax.net.ssl.SSLServerSocket extends java.net.ServerSocket` — whole-owner `Net` minus a carve-out
+list that could never have named `setNeedClientAuth`/`setUseClientMode`/`setEnabledProtocols`, because
+those are declared only on the subtype. Every TLS server's setup code would have become a `Net`
+violation. Caught by `SecondSpellingRouteTest#control_sslServerSocketConfigStaysPure`, which was
+already in the tree and went **RED** against the denylist-less cut.
+
+**A/B — `bin/corpus-ab.py`, 170 real third-party jars, 111,307 class files, 864,426 analysed units**
+(125 from the local Gradle cache + 48 from Maven Central; 3 dropped because they judged nothing, which
+the tool refused to count as zero-change). Pre arm = the jar built from `d6419ae`.
+
+    key `unit` (entry+package+fn+hash, multiset), wide value
+    ADDED 372   REMOVED 0   CHANGED 3648        (inferred-only: ADDED 372, REMOVED 0, CHANGED 1502)
+    rows that LOST an effect: 0
+    rows that GAINED Unknown: 1784  (0.206% of 864,426)   [1488 changed + 296 added]
+    rows that GAINED Fs:        24  (0.0028%)             [  14 changed +  10 added]
+    total rows with an effect-set change: 1874 (0.217%)
+    REACH (CANDOR_R131_DEBUG): 301 hits, 68 distinct JDK members across 23 types, 53 of 170 entries
+
+The remaining 66 added rows carry no effect at all — only `declared`/`overdeclared` bookkeeping that
+became reportable once a callee gained `Unknown`.
+
+**The 24 `Fs` rows are the only positive claims this makes, and all 24 were ground-truthed from
+bytecode** (`javap`, not candor's own report), in two mechanisms:
+`org.apache.xmlbeans.XmlError.<clinit>` really executes
+`invokestatic java/util/PropertyResourceBundle.getBundle` — and `PropertyResourceBundle` declares no
+`getBundle` at all, so the JVM resolves `ResourceBundle.getBundle`, which loads a `.properties` file
+(23 rows, xmlbeans); and `org.apache.kafka.common.utils.ChildFirstClassLoader.getResource` calls
+`super.getResource` → `invokespecial java/net/URLClassLoader.getResource`, a classpath resource lookup
+(1 row, kafka-clients). Both are the same "second spelling of a modelled member" class the engine
+already has a test file named for.
+
+The other 66 of 68 reached members are the `java.io` decorator family — `Data*Stream`, `PrintStream`,
+`Pushback*`, `LineNumberReader`, `Deflater`/`Inflater`, `GZIP*`, `Zip*`, `Jar*`, `Checked*`,
+`java.security.Digest*Stream`, `javax.crypto.Cipher*Stream` — every one `Unknown`.
+
+**Native parity**: the walk reads `Candor#transSupers`, which in a GraalVM image falls back to the
+build-time `jdk-supertypes.idx.gz`. Every type in the measured surface is present in that index
+(checked directly against the generated resource: 26,771 entries, all 12 probed types found), so the
+native binary resolves the same hierarchy the jar does.
+
+`test/smoke.sh` gains 22 rows — the gains, an in-memory over-charge control (`ByteArrayOutputStream`,
+`StringWriter`, `CharArrayWriter`, `StringReader`, `StringBuilder` must gain nothing) and the
+`CachedRowSet` rows. Revert-calibrated: with the walk disabled, **11 of them go red**
+(`577 passed, 11 failed`) while every control stays green.
+
+**Not examined**: `sun.nio.fs.*` (needs `--add-exports`, as R131 already noted), and chained-dependency
+types — `transSupers` deliberately does not consult `depSupers`, so a dep type's supers are invisible
+to this walk and it cannot fire for them.
+
 ### SOUNDNESS R94 answered, and R595 found answering it — a field-bound callback a CHAINED consumer reassigns
 
 R94 asked whether `Cha#collectFieldLambdaBindings` binding a `public static` non-final field on the

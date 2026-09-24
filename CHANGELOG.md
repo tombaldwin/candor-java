@@ -8,6 +8,38 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### SOUNDNESS R94 answered, and R595 found answering it — a field-bound callback a CHAINED consumer reassigns
+
+R94 asked whether `Cha#collectFieldLambdaBindings` binding a `public static` non-final field on the
+same evidence it binds a `private final` one should be **stated** as a closed-world scope limit or
+**enforced**. Against an unscanned downstream caller, stated: that is the open-world trade candor-spec
+`SPEC.md` §4.0 accepts everywhere ("a downstream implementor is invisible … the accepted trade
+everywhere else in this contract").
+
+**Against a CHAINED consumer it is neither — it is a silent under-report, and it is measured.** Two
+arms differing in ONE LINE OF THE LIBRARY (whether `public static Hook afterStage` has an in-scan
+initialiser), with the consumer byte-identical: the consumer reassigns the field to
+`() -> new FileWriter("/tmp/candor-r595").close()` and calls the library's `firePublic()`.
+
+| library's `afterStage` | `app.Main.main` | scoped `deny Fs Unknown app.Main.main` |
+|---|---|---|
+| never written in-scan | `["Fs","Unknown"]`, `unknownWhy: ["dispatch:lib.Hooks$Hook.run"]`, `paths: ["/tmp/candor-r595"]` | exit **1** |
+| `= () -> { }` (pure default) | `inferred: []`, `unresolved: false`, no `unknownWhy` | exit **0** |
+
+So **adding a pure default to a library deletes a disclosure *and* a real effect from every consumer
+of it** — the ⟨0.39⟩ toggle, reached through a field rather than through a CHA implementor. A blanket
+`deny Fs Unknown` still exits 1, but only incidentally: the consumer's own lambda is reported as its
+own row and the *caller* is never judged either way.
+
+No engine change in this entry. The join that makes the correct arm work already exists — the unbound
+library publishes `dispatchesOn` and the consumer resolves its own implementor against it — so the fix
+shape is to keep publishing that key when a binding came from an externally reassignable field, an
+added disclosure rather than a refusal to bind. `README.md` names both halves as a **named miss**
+(candor-spec §7 item 7) and says where enforcement would belong (`CANDOR_CLOSED_WORLD`) instead of
+implementing it. `test/smoke.sh` gains 7 rows pinning the toggle, calibrated by pointing the unbound
+arm at the bound report: **4 of them go red** (`562 passed, 4 failed`) and the real run is
+`566 passed, 0 failed`. If the "today: SILENT" row ever goes red, R595 is fixed — invert it.
+
 ### §9 SWEEP — candor-ts SOUNDNESS R558's class, asked of java: **CLEAN**, and now pinned
 
 candor-ts lost the whole report ROW for `[n].map(d.roll)` where `d` is interface-typed (R558), and

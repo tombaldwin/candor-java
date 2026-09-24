@@ -2488,6 +2488,71 @@ done
 if [ "$mrefprc" -eq 0 ]; then echo "  ok   §9/R558 CALIBRATION GATE: \`pure\` over the same three arms exits 0 once the implementors are pure"; pass=$((pass+1));
 else echo "  FAIL §9/R558 CALIBRATION GATE: exited $mrefprc (want 0)"; fail=$((fail+1)); fi
 
+# SOUNDNESS R595 — A FIELD-BOUND CALLBACK THAT A CHAINED CONSUMER REASSIGNS.
+# `Cha#collectFieldLambdaBindings` binds a `public static` non-final field on exactly the evidence it
+# binds a `private final` one (no visibility/finality check anywhere in it). Against an UNSCANNED
+# downstream caller that is the open-world trade SPEC §4.0 accepts. Against a CHAINED one it is the
+# ⟨0.39⟩ toggle reached through a field: adding a pure default to a library deletes both a disclosure
+# and a real effect from every consumer.
+#
+# The two arms differ in ONE LINE OF THE LIBRARY — whether `afterStage` has an in-scan initialiser.
+# The app is byte-identical across both. What is asserted here is the arm that WORKS (the consumer
+# joins its own implementor through the library's published `dispatchesOn`), because that join is the
+# machinery R595's fix would reuse; the bound arm is recorded as today's silent behaviour. IF THE
+# "today: SILENT" ROW BELOW GOES RED, R595 IS FIXED — invert it, do not delete it.
+echo "== SOUNDNESS R595: a public non-final field-bound callback, reassigned by a CHAINED consumer =="
+mkdir -p "$W/r595/lib" "$W/r595/lib0" "$W/r595/app"
+cat > "$W/r595/lib0/Hooks.java" <<'J'
+package lib;
+import java.io.IOException;
+public class Hooks {
+  public interface Hook { void run() throws IOException; }
+  public static Hook afterStage;                                  // NO in-scan write -> unbound
+  public static void firePublic() throws IOException { afterStage.run(); }
+}
+J
+sed 's#public static Hook afterStage;#public static Hook afterStage = () -> { };#' \
+    "$W/r595/lib0/Hooks.java" > "$W/r595/lib/Hooks.java"          # the ONE line that differs
+cat > "$W/r595/app/Main.java" <<'J'
+package app;
+import lib.Hooks;
+import java.io.FileWriter;
+import java.io.IOException;
+public class Main {
+  public static void main(String[] a) throws IOException {
+    Hooks.afterStage = () -> { new FileWriter("/tmp/candor-r595").close(); };   // downstream REASSIGNMENT
+    Hooks.firePublic();
+  }
+}
+J
+javac -d "$W/r595/lib0cls" "$W/r595/lib0/Hooks.java" 2>/dev/null
+javac -d "$W/r595/libcls"  "$W/r595/lib/Hooks.java"  2>/dev/null
+javac -cp "$W/r595/lib0cls" -d "$W/r595/appcls" "$W/r595/app/Main.java" 2>/dev/null
+"$CJ" "$W/r595/lib0cls" --json "$W/r595/lib0.json" >/dev/null 2>&1
+"$CJ" "$W/r595/libcls"  --json "$W/r595/lib.json"  >/dev/null 2>&1
+r595main() { printf '%s' "$1" | python3 -c 'import json,sys;d=json.load(sys.stdin);r=[f for f in d["functions"] if f["fn"]=="app.Main.main"];print(r[0] if r else {}, d["analyzed"]["count"])'; }
+# The fixture must have COMPILED AND BEEN JUDGED — an empty report prints the same absence a silent
+# one does (R242), so pin a row that must be there before reading anything into what is not.
+r595unbound="$(CANDOR_DEPS="$W/r595/lib0.json" "$CJ" "$W/r595/appcls" --json 2>/dev/null)"
+r595bound="$(CANDOR_DEPS="$W/r595/lib.json"  "$CJ" "$W/r595/appcls" --json 2>/dev/null)"
+want "R595 fixture really compiled and was judged (both arms)" \
+     "$(printf '%s|%s' "$(r595main "$r595unbound")" "$(r595main "$r595bound")")" "app.Main.main"
+want "R595 [unbound lib]: the consumer JOINS its own implementor — Fs reaches app.Main.main" \
+     "$(r595main "$r595unbound")" "'Fs'"
+want "R595 [unbound lib]: …and the dispatch is disclosed, not guessed" \
+     "$(r595main "$r595unbound")" "dispatch:lib.Hooks\$Hook.run"
+want "R595 [unbound lib]: the real path survives the join" \
+     "$(r595main "$r595unbound")" "/tmp/candor-r595"
+absent "R595 [bound lib] today: SILENT — one pure default in the LIBRARY deletes the consumer's Fs" \
+       "$(r595main "$r595bound")" "'Fs'"
+printf 'deny Fs Unknown app.Main.main\n' > "$W/r595/scoped.pol"
+CANDOR_DEPS="$W/r595/lib0.json" "$CJ" "$W/r595/appcls" --policy "$W/r595/scoped.pol" >/dev/null 2>&1; r595u=$?
+CANDOR_DEPS="$W/r595/lib.json"  "$CJ" "$W/r595/appcls" --policy "$W/r595/scoped.pol" >/dev/null 2>&1; r595b=$?
+if [ "$r595u" -eq 1 ]; then echo "  ok   R595 GATE [unbound lib]: scoped \`deny Fs Unknown app.Main.main\` exits 1"; pass=$((pass+1));
+else echo "  FAIL R595 GATE [unbound lib]: exited $r595u (want 1)"; fail=$((fail+1)); fi
+if [ "$r595b" -eq 0 ]; then echo "  ok   R595 GATE [bound lib] today: the SAME scoped gate exits 0 — the 1->0 flip, pinned"; pass=$((pass+1));
+else echo "  FAIL R595 GATE [bound lib]: exited $r595b (want 0 today; if this is 1, R595 is FIXED — invert the row)"; fail=$((fail+1)); fi
+
 echo
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

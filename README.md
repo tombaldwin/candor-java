@@ -139,6 +139,46 @@ interface with zero implementors, a consumer dispatching on it directly, the dep
 §4 ⟨0.40⟩ settles whether this must tighten — dispatch over a foreign, unimplemented abstraction once
 its owning dependency is chained.
 
+**Named miss — a field-bound callback that a chained consumer REASSIGNS (SOUNDNESS R94, R595).**
+`Cha#collectFieldLambdaBindings` resolves a dispatch on a field whose every in-scan write is a
+recognisable project lambda: `this.hook.run()` becomes a call to that lambda's body instead of an
+`Unknown`. **The pass makes no visibility or finality check** — a `public static` non-final field is
+bound on exactly the same evidence as a `private final` one. Against an *unscanned* downstream caller
+that is the ordinary open-world trade this contract takes everywhere (candor-spec `SPEC.md` §4.0:
+resolving to visible implementors is "an under-approximation across the open world (a downstream
+implementor is invisible); both are the accepted trade everywhere else in this contract").
+
+**A CHAINED consumer is not downstream, and there this misses.** Measured on a two-package fixture
+whose two arms differ in one line of the *library*: a `lib` whose `public static Hook afterStage` is
+assigned a pure lambda in-scan, chained via `CANDOR_DEPS` into an `app` that reassigns it to
+`() -> new FileWriter("/tmp/pwned").close()` and then calls `lib`'s `firePublic()`.
+
+- library **with** the pure default → `app.Main.main` reports `inferred: []`, `unresolved: false`, no
+  `unknownWhy`. The reassignment and the effectful lambda are both in the scanned bytecode.
+- library **without** it (field never written in-scan, everything else byte-identical) → the same
+  `app.Main.main` reports `["Fs","Unknown"]`, `unknownWhy: ["dispatch:lib.Hooks$Hook.run"]`,
+  `paths: ["/tmp/pwned"]`.
+
+So **adding a pure default to a library deletes a disclosure *and* a real effect from every consumer
+of it** — the toggle candor-spec ⟨0.39⟩ rules out for the CHA-implementor mechanism, reached here
+through a field instead. Gate exits on that fixture: scoped `deny Fs Unknown app.Main.main` goes
+**1 → 0**; blanket `deny Fs Unknown` stays 1 only incidentally, because the consumer's lambda is
+reported as its own row — the *caller* is never judged either way.
+
+The join that makes the second arm correct already exists: the unbound library publishes
+`dispatchesOn: ["lib/Hooks$Hook.run()V"]` and the consumer resolves its own implementor against it.
+The bound library publishes no such key, because it believes it resolved the call. The fix shape is
+therefore to keep publishing `dispatchesOn` when a binding came from an *externally reassignable*
+field (non-private, non-final) — an added disclosure, not a refusal to bind. **Not implemented; this
+paragraph describes the engine as it is.**
+
+**If enforcement is ever wanted it belongs behind `CANDOR_CLOSED_WORLD`.** Binding only private/final
+fields and disclosing `Unknown` for the rest is the fail-closed direction, and it costs precision on
+real single-jar code that genuinely is closed. `AnalysisContext#closedWorld` is already the flag that
+asserts "the scanned classes ARE the complete world", and it already carries the hazard warning for
+the case where the flag moved a verdict; gating public/non-final binding on that flag is the
+consistent form, and the place to put it.
+
 **Cross-jar (multi-module).** Each entry carries a stable, descriptor-bearing `hash`
 (`owner/Class.method(desc)ret` — the exact ref a call site uses), so a dependent module can inherit a
 dependency's effects across the jar boundary (candor-spec §2). Point `CANDOR_DEPS` at the

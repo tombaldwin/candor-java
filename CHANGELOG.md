@@ -8,6 +8,117 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R674 FIXED (R623 + R624) — the R131 supertype walk's Fs charge now reaches the masking guards and the read/write poison
+
+**R622 is NOT fixed here. It stays OPEN and is re-pointed at R675**, on a ruling recorded in the row: its
+repair, as first written, relaxed a real policy form. The details are below because the measurement is
+what re-pointed it.
+
+`18752cb` (R131) extended the supertype re-classification to EXTERNAL owners, unioning into `dir` and
+**deliberately leaving the `effect` local null** so that `crossDepJoin`, `externalStreamUtility`,
+`entryAbstractStream` and `kappaLedger` — all gated on `effect == null` — kept firing. That half was right
+and is untouched. What the commit priced wrong is the cost: its comment named ONE precision loss ("the
+literal surface") and omitted **three fail-closed consumers**, every one of which stopped firing on
+exactly the rows the walk adds. Each reproduced against the pre-fix jar with its classified-spelling
+control in the same class and the same scan, the only variable being the static receiver type:
+
+| row | arm (the walk charges) | control (the modelled supertype) | status |
+|---|---|---|---|
+| **R623** `extractLiteralSurfaces` skipped → both Fs masking guards | `PropertyResourceBundle.getBundle("secret.config")` beside `new File("allowed.txt").exists()`: `paths:["allowed.txt"]`, `incomplete` **ABSENT**, `allow Fs allowed.txt` exit **0** | the `ResourceBundle` spelling: `incomplete:["Fs"]`, exit **1** on AS-EFF-008 | **FIXED** |
+| **R624** `fsDirect` never poisoned → `fsFixpoint` seeds from it | `new FileWriter("out.txt").write("x")` beside that bundle read: `fs:["write"]` — "writes but never reads", over a read it had just charged | the `ResourceBundle` spelling: no `fs` claim (PART 31) | **FIXED** |
+| **R622** `effectMetadata`'s `Unknown` label skipped → the only reasonless `Unknown` in the engine | `d.read()` on `DataInputStream`: no `unknownWhy`, so `reasonClassesOf` floors it at `{unresolved}` | `f.read()` on `FilterInputStream`: `unknownWhy:["reflect:…"]` | **OPEN → R675** |
+
+**THE FIX ROUTES THE CHARGE, NOT THE LOCAL.** `effect` is still never assigned by that branch, so every
+`effect == null` fallback is untouched **by construction** — that is the half a naive fix gets wrong, and
+R131's own first cut was caught doing it. The boundary was drawn around the whole consumer set rather
+than the three rows in hand (§9): `effect` has SIX consumers in `handleMethodInsn` and they partition
+cleanly — four FALLBACKS (`entryAbstractStream`, `externalStreamUtility`, `crossDepJoin` and
+**`kappaLedger`**, which R131's own comment did not name and whose `effect == null` arms record the κ
+blind spot and the Spring floor `Unknown`), two REFINERS (`effectMetadata`, `extractLiteralSurfaces`).
+Mechanically checked: the five `effect = …` sites are byte-identical pre and post. The refiners are
+re-run per supertype effect at the ordinary call site with the SAME code the classified path uses: no
+second copy of a guard to drift. `supEff` is empty unless the walk fired, so every other call site in the
+engine is byte-identical.
+
+**AND THE `Unknown` LABEL IS WITHHELD — one guard, `if (se != Effect.UNKNOWN)`, and it is the whole
+difference between this and the first cut.** `effectMetadata`'s only arm that fires on `Effect.UNKNOWN`
+is the one tagging `unknownWhy` with `reflect:`; the other two are gated `INJECTION.contains(effect)`
+(`{Fs,Exec,Db,Net,Llm,Env,Ipc}` — never `Unknown`) and `effect == Effect.FS`. So the guard subtracts
+exactly that label and nothing else — **and it subtracts a label R675 files as WRONG for this hole**: the
+java.io filter/buffered delegation the walk lands on is a *dispatch*, by the classifier's own comment.
+Routing it anyway moved **918** `Unknown[unresolved]` holes onto `reflect`, **not** onto `dispatch` where
+`deny Unknown[dispatch,unresolved]` would still have caught them — that policy lost exactly 918 in the
+same sweep — and relaxed `deny Unknown[unresolved]` **alone from 918 violations to 0, flipping 20 of 25
+jars FAIL → PASS**. It bought consistency between two spellings *onto the wrong class*; R675 delivers the
+same consistency correctly and for free.
+
+The two refiners are independent, **checked by enumerating the writes rather than assumed**:
+`effectMetadata` writes `ctx.tainted` / `ctx.unknownWhy` / `ctx.fsDirect`; `extractLiteralSurfaces` writes
+`ctx.cmdsDirect` / `ctx.pathsDirect` / `ctx.hostsDirect` / `ctx.tablesDirect` / `ctx.surfaceIncomplete`
+and reads none of the first three — it branches only on `effect`, `min`, `owner` and the frame state. So
+R623's guards do not need the withheld label, and R624's poison lives on the `effect == Effect.FS` arm the
+guard cannot reach. Both refiners write only `computeIfAbsent(…).add(…)` over sets and hold no counter, so
+the extra pass is idempotent — **measured, not asserted** (§K): a probe build calling BOTH refiners twice
+at EVERY call site produced byte-identical reports over 30 of the highest-reach census jars.
+
+**A/B — `bin/corpus-ab.py`, `~/.candor/census/java`, 452 sha1- and fitness-verified jars, 452/452
+compared, 1,220,848 rows per arm, key `entry+package+fn+hash` over a multiset, ALL fields. Pre arm rebuilt
+from `04eb782` (sha1 `aa08496…` vs post `f955ecd…`, so the comparison could have failed):**
+
+    ADDED 0    REMOVED 0    CHANGED 6    (0.0005% of post rows)
+    inferred-only key:  ADDED 0  REMOVED 0  CHANGED 0     — no effect set moved anywhere
+    REACH: R674ROUTE 1,097 hits across 110 of 452 entries  (CANDOR_R674_DEBUG=1)
+    verdict buckets: 1 (absent→concrete) 0 · 2 (absent→Unknown) 0 · 3 (concrete LOST) 0 · 4 (other) 6
+
+**All 6 rows are the same single change — `incomplete: absent → ["Fs"]` — and every one was
+ground-truthed from `javap`, not from candor's own report.** Five are a classloader `getResource`/`getURL`
+delegating to a JDK supertype with the method's own String parameter as the locator, so the surface is
+genuinely uncertifiable: `groovy` 3 and 4 `RootLoader.getResource` and kafka `ChildFirstClassLoader.
+getResource` are both `invokespecial java/net/URLClassLoader.getResource` on `aload_1`; cxf
+`FireWallClassLoader.getResource` is `invokespecial java/security/SecureClassLoader.getResource` on
+`aload_1`; plexus `ZipFileResource.getURL` is `invokevirtual java/net/URLClassLoader.getResource` on a
+`StringBuilder`-derived name. The sixth, plexus `PlexusIoURLResource.getURL`, is an `interfaceUnion` row
+(the type is not in the jar) inheriting the disclosure from that last one. **Zero losses of any field.**
+
+**THE DIRECTION IT FAILS IN — and with the withhold it is nowhere. Every `deny Unknown[…]` form is
+byte-identical.** Scan route (what a user runs), the same 25 highest-R674-reach jars the original cut was
+priced on, six policy forms × 2 arms × 25 jars = 300 runs, 0 errors:
+
+| policy | pre | post | exit transitions | jars differing |
+|---|---|---|---|---|
+| `deny Unknown` | 158,243 | 158,243 | `1→1` ×25 | 0 |
+| `deny Unknown[reflect]` | 134,831 | 134,831 | `0→0` ×1, `1→1` ×24 | 0 |
+| `deny Unknown[reflect,unresolved]` | 135,749 | 135,749 | `1→1` ×25 | 0 |
+| `deny Unknown[dispatch,unresolved]` | 146,375 | 146,375 | `1→1` ×25 | 0 |
+| `deny Unknown[unresolved]` **alone** | 918 | **918** | `0→0` ×3, `1→1` ×22 | 0 |
+| `deny Unknown[dynamic]` | 158,243 | 158,243 | `1→1` ×25 | 0 |
+
+The pre column reproduces the first cut's pre column digit for digit, which is what makes this a
+comparison and not a fresh number.
+
+**The gate flip the fix DOES buy is the fail-closed one, and it is calibrated.** On the R623 fixture
+scanned alone, `allow Fs allowed.txt` goes **exit 0 / 0 violations → exit 1 / 1 violation**
+(AS-EFF-008 on `app.F.viaSubtype`), and `fs:["read"]` → no claim at all (R624). Calibration, because a
+policy that cannot fail is not evidence: `allow Fs nothing.txt` fires on **both** arms, so the pre arm's
+exit 0 is a real pass rather than a dead check.
+
+**Known interaction, filed as SOUNDNESS R675 and NOT fixed here:** `effectMetadata` labels *every*
+classifier-returned `Unknown` `reflect:` (38 rules), including that java.io delegation and
+`com.sun.jna.Function.invoke`, which is **native**. Pre-existing, and it applies to both spellings.
+**R675 alone will not re-enable R622's two tests** — it moves the supertype spelling only, so
+`deny Unknown[dispatch]` would then fire on `FilterInputStream.read` and not on `DataInputStream.read`,
+the second-spelling defect with the classes swapped. **Delete the `se != Effect.UNKNOWN` guard and the two
+`@Disabled`s in the same change as R675.**
+
+Tests: `SupertypeWalkGuardRoutingTest` — four tests, every arm PAIRED with its classified-spelling
+control. Two are live and **2/2 RED with the loop body neutered** (§A). The two R622 tests are
+`@Disabled("SOUNDNESS R675 delivers this")` and are R675's acceptance tests unchanged — **proved to be
+genuinely blocked rather than silently passing: with the `@Disabled` removed, 2/2 FAIL under the
+withhold.** `theWalksFsPoisonsTheReadWriteKind#writeAlone` is the over-charge control and the half that
+matters most: the R624 fix works by POISONING, and a poison one call too wide deletes every honest
+`fs:["write"]` in the corpus. `./gradlew test` green, `test/smoke.sh` **600 passed / 0 failed** (its 13
+R131 arms and 9 over-charge controls included).
+
 ### ⚠ SOUNDNESS R595 FIXED — a field-bound callback a CHAINED consumer reassigns now NAMES the member
 
 **The defect, as measured and shipped in 0.39.2.** `Cha#collectFieldLambdaBindings` bound a

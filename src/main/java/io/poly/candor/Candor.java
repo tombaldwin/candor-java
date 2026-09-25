@@ -4406,14 +4406,88 @@ public class Candor {
         // `externalStreamUtility` (`if (effect != null) return`) and `entryAbstractStream`. Assigning
         // `effect` here would SUPPRESS those, so the first cut of this change could remove a disclosure
         // while its own comment claimed it could only add one — the §K shape, in the commit that needed
-        // it to be true. Leaving `effect` null costs the literal surface (`effectMetadata` /
-        // `extractLiteralSurfaces` refine only a CLASSIFIED effect) and buys a change that cannot
-        // subtract. Nearly everything it adds is `Unknown`, which has no literal surface anyway.
+        // it to be true. So `effect` stays null here, and it still does.
+        //
+        // SOUNDNESS R674 — BUT THE SENTENCE THAT PRICED THAT CHOICE NAMED ONE PRECISION COST AND OMITTED
+        // THREE FAIL-CLOSED GUARDS. It used to read: *"Leaving `effect` null costs the literal surface
+        // (`effectMetadata` / `extractLiteralSurfaces` refine only a CLASSIFIED effect) and buys a change
+        // that cannot subtract. Nearly everything it adds is `Unknown`, which has no literal surface
+        // anyway."* THREE consumers ride on `effect`, not one, and all three stopped firing on exactly the
+        // rows this walk adds — the 24 `Fs` rows the commit itself measured and ground-truthed with
+        // `javap` are the ones "no literal surface anyway" waves away. Each MEASURED against the built jar
+        // before anything was changed, each with its classified-spelling CONTROL in the same class:
+        //
+        //   [R622] STILL OPEN, RE-POINTED AT R675 — see the withhold in the loop below. Stated here
+        //          because the measurement is what re-pointed it, not a preference.
+        //          `effectMetadata` never ran, so this was the ONLY reasonless `dir.add(Effect.UNKNOWN)` in
+        //          the engine. `Policy.reasonClassesOf` floors an EMPTY token set at `{unresolved}` and
+        //          otherwise returns only the PARSED tokens, so `deny Unknown[reflect]` flagged
+        //          `f.read()` on a `FilterInputStream` and NOT `d.read()` on a `DataInputStream` — one
+        //          syscall, two spellings, two verdicts — while `deny Unknown[unresolved]` flagged only
+        //          the second. Put both calls in ONE unit and the `{reflect}` from the first lifts the
+        //          floor, so `deny Unknown[unresolved]` sees this hole nowhere at all.
+        //          THAT DIAGNOSIS STANDS; THE REPAIR DOES NOT. Routing the label through `effectMetadata`
+        //          gives the hole `reflect:`, and R675 is the row saying `reflect:` is the WRONG class for
+        //          exactly this delegation. Measured over the 25 highest-reach census jars, the 918 holes
+        //          did not move to `dispatch` (where `deny Unknown[dispatch,unresolved]` still catches
+        //          them; that policy lost exactly 918) — they moved to `reflect`, and
+        //          `deny Unknown[unresolved]` ALONE went 918 violations -> 0, flipping 20 of 25 jars
+        //          FAIL -> PASS. So R622's own fix is R675's: label the delegation `dispatch:` at the
+        //          source and the parity it asks for holds with no policy relaxing at all.
+        //   [R623] `extractLiteralSurfaces` never ran, so BOTH Fs masking guards (the path-ctor capture
+        //          below and R421's stat-locator rung, each gated `effect == Effect.FS`) skipped an `Fs`
+        //          this walk had just charged. MEASURED: `PropertyResourceBundle.getBundle("secret.config")`
+        //          beside `new File("allowed.txt").exists()` published `paths:["allowed.txt"]` with
+        //          `incomplete` ABSENT and passed `allow Fs allowed.txt`; the `ResourceBundle` spelling of
+        //          the same call, same jar, exits 1 on AS-EFF-008. A fail-OPEN under a scoped allow.
+        //   [R624] `fsDirect` was never poisoned, and `fsFixpoint` seeds only from `fsDirect`/`viaCross`.
+        //          MEASURED: `new FileWriter("out.txt").write("x")` beside that same bundle read reported
+        //          `fs:["write"]` — "writes but never reads" over a read it had just charged, the PART 31
+        //          partial claim `effectMetadata`'s own comment forbids.
+        //
+        // THE FIX ROUTES THE CHARGE, NOT THE LOCAL. This branch still never assigns `effect`, so every
+        // `effect == null` FALLBACK is untouched BY CONSTRUCTION — that is the half a naive fix gets
+        // wrong, and it was caught once before shipping.
+        //
+        // AND THE BOUNDARY IS THE WHOLE CONSUMER SET, NOT THE THREE THIS PARAGRAPH NAMED (§9 — an audit's
+        // boundary must not be drawn around its own trigger). Enumerated rather than recalled, `effect`
+        // has SIX consumers in this method and they partition cleanly:
+        //   FALLBACKS, fire when `effect == null`, must stay live — `entryAbstractStream`,
+        //     `externalStreamUtility`, `crossDepJoin` and **`kappaLedger`**, which the sentence above did
+        //     NOT name: its `effect == null` arms record the κ blind spot and the Spring floor `Unknown`,
+        //     so assigning `effect` would delete those too. Untouched here.
+        //   REFINERS, fire when `effect != null`, were being skipped — `effectMetadata` and
+        //     `extractLiteralSurfaces`. These two, and only these two, are what the loop below re-runs —
+        //     `effectMetadata` for a CONCRETE supertype effect only, the `UNKNOWN` arm withheld pending
+        //     R675 (the loop states why, and enumerates the writes that make the two independent).
+        //   and `if (effect != null) dir.add(effect)`, which the walk does for itself.
+        // Instead the two refiners
+        // are re-run per supertype effect at the ordinary call site below, with the SAME code the
+        // classified path uses: no second copy of a guard to drift (§G — ask the authority), and the
+        // walk's charge now reaches every consumer its own classified spelling reaches. Both refiners write
+        // only `computeIfAbsent(…).add(…)` over sets and hold no counter, so a second pass over the same
+        // instruction adds nothing — and that is MEASURED, not asserted (§K): an instrumented build that
+        // calls BOTH refiners twice at EVERY call site, not just this one, produced byte-identical reports
+        // over a sample of the 452-jar census. The figure is in this commit's message.
+        //
+        // THE DIRECTION IT FAILS IN, MEASURED NOT ASSERTED — AND WITH THE R683 WITHHOLD IT IS NOWHERE.
+        // Additive on `paths`/`hosts`/`cmds`/`tables`, on `incomplete`, on the `fs` poison and on
+        // `tainted`. The one place it COULD subtract was the reason-class BACKSTOP — a unit whose only
+        // `Unknown` was this walk's would move off the `{unresolved}` floor onto whatever class the label
+        // named, so a policy naming `unresolved` and not that class would lose it. That is why the label
+        // is withheld: the class it would land on is `reflect`, which R675 says is wrong here, so the
+        // relaxation bought consistency onto the wrong class. With the withhold, NO `Unknown[...]` count
+        // moves at all — measured, all five policy forms byte-identical over the 25 highest-reach census
+        // jars — and the whole change is additive. The A/B over the 452-jar census is in this commit's
+        // message, removals traced.
         //
         // It is a DENYLIST over a sound over-approximation, not an allowlist of blessed supertypes — an
         // allowlist would be the fourth hand enumeration and its boundary would again be its own trigger.
-        if (effect == null && !ctx.byName.containsKey(min.owner))
-            for (Effect se : externalSupertypeEffects(min.owner, min.name, min.desc)) dir.add(se);
+        List<Effect> supEff = List.of();
+        if (effect == null && !ctx.byName.containsKey(min.owner)) {
+            supEff = externalSupertypeEffects(min.owner, min.name, min.desc);
+            for (Effect se : supEff) dir.add(se);
+        }
         if (effect != null) dir.add(effect);
         // SPEC §1 ⟨0.13⟩ `Llm` model-SDK surface (Rules.MODEL_SDK_PACKAGES): a call into a curated
         // model-provider client dispatches a request → Llm + Net (Net is never dropped — a model call IS
@@ -4527,6 +4601,68 @@ public class Candor {
         kappaLedger(ctx, s, min, owner, effect);
         effectMetadata(ctx, s, min, owner, effect);
         extractLiteralSurfaces(ctx, s, min, owner, effect);
+        // SOUNDNESS R674 (R622/R623/R624) — THE SUPERTYPE WALK'S CHARGE GETS THE SAME TWO REFINERS.
+        // `supEff` is EMPTY unless the R131 walk fired, and the walk fires only when `effect == null`, so
+        // this loop is inert on every other call site in the engine and the pre-image is byte-identical
+        // there. When it does fire, the charge reaches both Fs masking guards (R623) and the `fsDirect`
+        // kind poison (R624) — the same code, same owner, same instruction that the modelled-supertype
+        // spelling of this very call already reaches. It does NOT reach the reason tag (R622): that arm is
+        // withheld, see the block inside the loop. `effect` itself is NOT assigned: the four
+        // `effect == null` fallbacks above stay live, which is the whole reason this is a loop here rather
+        // than an assignment up there.
+        for (Effect se : supEff) {
+            // REACH, because "the A/B was byte-identical" is not evidence until the corpus is shown to
+            // reach the changed branch — the R131_DEBUG paragraph below states why, and this is the same
+            // rule one branch further in. `bin/corpus-ab.py --mark R674ROUTE
+            // --mark-env CANDOR_R674_DEBUG=1 --mark-arm post` counts it.
+            if (R674_DEBUG) System.err.println("R674ROUTE\t" + s.id + "\t" + owner + "." + min.name
+                    + min.desc + "\t" + se);
+            // SOUNDNESS R683 - THE `UNKNOWN` ARM IS WITHHELD UNTIL R675, AND THE WITHHOLD IS THE WHOLE
+            // DIFFERENCE BETWEEN THIS AND THE FIRST CUT. `effectMetadata`'s ONLY arm that fires on
+            // `Effect.UNKNOWN` is the one that tags `unknownWhy` with `Kind.REFLECT` - the other two are
+            // `INJECTION.contains(effect)` (`Effect.INJECTION` is `{Fs,Exec,Db,Net,Llm,Env,Ipc}`, so never
+            // UNKNOWN) and `effect == Effect.FS`. So this guard subtracts EXACTLY the label and nothing
+            // else, and it subtracts a label R675 has already filed as WRONG for this hole: the java.io
+            // filter/buffered delegation the walk lands on is a DISPATCH, by the classifier's own comment.
+            //
+            // Routing it anyway would have moved 918 `Unknown[unresolved]` holes onto `reflect` across the
+            // 25 highest-reach census jars - NOT onto `dispatch`, where `deny Unknown[dispatch,unresolved]`
+            // would still have caught them; that policy lost exactly 918 in the same sweep. It bought
+            // consistency between two spellings ONTO THE WRONG CLASS, and relaxed `deny Unknown[unresolved]`
+            // alone from 918 violations to 0 (20 of 25 jars FAIL -> PASS) to do it. R675's fix delivers the
+            // same consistency for free and onto the right class.
+            //
+            // WHAT STILL SHIPS is every fail-closed half: R623 (both Fs masking guards, in
+            // `extractLiteralSurfaces`, gated `effect == Effect.FS`), R624 (the `fsDirect` kind poison, in
+            // `effectMetadata`, same gate) and the AS-EFF-007 injection-taint arm - none of which the guard
+            // can reach, and none of which moves an `Unknown[...]` count anywhere. MEASURED, the numbers
+            // stated BEFORE the run: over the 452-jar census this loop changes 6 rows and only 6, every
+            // one `incomplete: absent -> ["Fs"]` (ADDED 0, REMOVED 0, zero losses of any field, all six
+            // ground-truthed from `javap`), and all SIX `deny Unknown[...]` forms — bare, `[reflect]`,
+            // `[reflect,unresolved]`, `[dispatch,unresolved]`, `[unresolved]`, `[dynamic]` — are
+            // byte-identical pre -> post across the 25 highest-reach jars, 0 exit-code transitions.
+            // Figures in the commit message.
+            //
+            // THE TWO REFINERS ARE INDEPENDENT, which is what makes withholding one of them coherent rather
+            // than half a fix. Verified by ENUMERATING the writes, not assumed: `effectMetadata` writes
+            // `ctx.tainted` / `ctx.unknownWhy` / `ctx.fsDirect`; `extractLiteralSurfaces` writes
+            // `ctx.cmdsDirect` / `ctx.pathsDirect` / `ctx.hostsDirect` / `ctx.tablesDirect` /
+            // `ctx.surfaceIncomplete` and READS none of the first three - it branches only on `effect`,
+            // `min`, `owner` and the frame state. So R623's guards do not need the withheld label.
+            //
+            // WHEN R675 LANDS, DELETE THIS GUARD - not the loop - AND R675 ALONE IS NOT ENOUGH, which is
+            // why this says so here rather than leaving it to be rediscovered. R675 relabels the
+            // delegation at the SOURCE, so it moves the supertype spelling; while this guard stands the
+            // subtype spelling stays reasonless and floors at `{unresolved}`, so `deny Unknown[dispatch]`
+            // would fire on `FilterInputStream.read` and not on `DataInputStream.read` — R674's row names
+            // that trap by name ("the second-spelling defect reintroduced with the classes swapped").
+            // `SupertypeWalkGuardRoutingTest`'s two R622 tests are `@Disabled` pointing here and are
+            // R675's acceptance tests unchanged: they assert reason-class PARITY between the two
+            // spellings, which holds once BOTH halves are in. Delete the guard and the two `@Disabled`s
+            // in one change.
+            if (se != Effect.UNKNOWN) effectMetadata(ctx, s, min, owner, se);
+            extractLiteralSurfaces(ctx, s, min, owner, se);
+        }
         boolean springTyped = declarativeIoRules(ctx, s, min);
 
         int op = min.getOpcode();
@@ -8188,6 +8324,12 @@ public class Candor {
      *  afterwards was it found by grep that the corpus contained zero instances of the shape. Printed at
      *  the MEMO MISS, so the count is distinct call KEYS rather than call sites. */
     private static final boolean R131_DEBUG = System.getenv("CANDOR_R131_DEBUG") != null;
+
+    /** {@code CANDOR_R674_DEBUG=1} — print one line per (unit, call, effect) the R131 walk's charge is
+     *  ROUTED through {@link #effectMetadata}/{@link #extractLiteralSurfaces} for. Printed per SITE, not
+     *  per memo miss: the question this answers is how much of a corpus reaches the R674 loop at all, and
+     *  a zero here means an A/B over that corpus is SAFETY-ONLY however clean it looks. */
+    private static final boolean R674_DEBUG = System.getenv("CANDOR_R674_DEBUG") != null;
 
     /** THE DENYLIST FOR {@link #externalSupertypeEffects}, ASKED OF THE CLASSIFIER RATHER THAN WRITTEN
      *  BY HAND — whether the rule that just fired for {@code owner} is an OWNER-BLANKET rule (every

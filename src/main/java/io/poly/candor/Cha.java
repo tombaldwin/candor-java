@@ -661,6 +661,16 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
      *  Mirrors {@link Interp#monomorphicReceiver}'s stack-slot arithmetic exactly (the receiver sits below
      *  the call's argument slots), reading {@code fieldOrigin} instead of {@code newType}. */
     static List<String> fieldBoundImplementors(Frame<ProvValue> f, MethodInsnNode min) {
+        String key = fieldReceiverKey(f, min);
+        return key == null ? null : ctx().fieldLambdaBindings.get(key);
+    }
+
+    /** The {@link #fieldKey}-normalized {@code owner#name} of the FIELD `min`'s receiver was read from, or
+     *  null when the receiver is not a field read at all. Split out of {@link #fieldBoundImplementors} so
+     *  the binding lookup and SOUNDNESS R595's reassignability question read the receiver through ONE
+     *  piece of stack arithmetic rather than two — §G, and the same reason R274 folded the slot maths into
+     *  {@link #receiverValueIndex} in the first place. */
+    static String fieldReceiverKey(Frame<ProvValue> f, MethodInsnNode min) {
         if (f == null) return null;
         // R274 — shared with {@link Interp#monomorphicReceiver} via ONE authority rather than mirrored by
         // hand, which is how the two drifted into the same slot-vs-value defect twice. MEASURED fail
@@ -671,8 +681,51 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         int recvIdx = receiverValueIndex(f.getStackSize(), Type.getArgumentTypes(min.desc));
         if (recvIdx < 0) return null;
         ProvValue rv = f.getStack(recvIdx);
-        if (rv == null || rv.fieldOrigin == null) return null;
-        return ctx().fieldLambdaBindings.get(rv.fieldOrigin);
+        return rv == null ? null : rv.fieldOrigin;
+    }
+
+    /** SOUNDNESS R595 — IS THIS FIELD WRITABLE FROM OUTSIDE THE SCAN THAT BOUND IT?
+     *
+     *  <p>{@link #collectFieldLambdaBindings}'s taint contract proves a field is written ONLY by clean
+     *  project lambdas <i>in this scan</i>. For a {@code private} or {@code final} field that IS the whole
+     *  write set — the JVM permits no other writer (a private field only from its own class and its
+     *  nestmates, which a scan holding the class holds too; a final field only from the declaring class's
+     *  {@code <init>}/{@code <clinit>}). For a {@code public static} non-final one it is not: any code that
+     *  can name the field may reassign it, and the binding then describes only the DEFAULT.
+     *
+     *  <p>Against an UNSCANNED downstream caller that is the open-world trade candor-spec {@code SPEC.md}
+     *  §4.0 accepts everywhere. <b>Across a CHAIN it is not</b>, and ⟨0.39⟩ says so in as many words: the
+     *  implementor is no longer downstream — the consumer supplies it and the engine can see it. MEASURED
+     *  on candor-java 0.39.2, two arms differing in ONE line of the library and a byte-identical consumer:
+     *  with {@code public static Hook afterStage = () -> { };} the consumer's {@code main} read
+     *  {@code inferred: []}, {@code unresolved: false}, no {@code unknownWhy}, and a scoped
+     *  {@code deny Fs Unknown app.Main.main} exited 0; deleting only that initialiser gave
+     *  {@code ["Fs","Unknown"]}, {@code unknownWhy: ["dispatch:lib.Hooks$Hook.run"]} and exit 1. Adding a
+     *  pure default to a library deleted a disclosure AND a real {@code Fs} from every consumer of it.
+     *
+     *  <p><b>The answer is an ADDED DISCLOSURE, not a refusal to bind.</b> The binding stays — dropping it
+     *  re-opens the ⟨0.35⟩ silence it was written for, and "bind only what cannot be reassigned" is the
+     *  CLOSED-WORLD question, which belongs behind {@code CANDOR_CLOSED_WORLD}. The dispatched member is
+     *  simply NAMED as well ({@link Candor#recordDispatchedMember}), so a chained consumer unions its own
+     *  implementor against it exactly as it already does on the unbound arm — which is why the correct arm
+     *  already worked and no new join had to be invented.
+     *
+     *  <p><b>FAILS OPEN (discloses) on every uncertainty</b>: an unparseable key, an off-classpath
+     *  declarer, a field the declaring node does not list. Naming a member costs a consumer nothing where
+     *  nobody published a union under it ({@code Candor#inheritDepFn}), while a wrong "closed" verdict is
+     *  the silence this row is about. Returns false only for "this is not a field receiver" and for a
+     *  field this scan can SEE is private or final. */
+    static boolean externallyReassignableField(String fieldKey) {
+        if (fieldKey == null) return false;                 // not a field receiver at all
+        int hash = fieldKey.lastIndexOf('#');
+        if (hash < 0) return true;
+        ClassNode cn = ctx().byName.get(fieldKey.substring(0, hash));
+        if (cn == null || cn.fields == null) return true;   // declarer off-classpath — cannot prove closed
+        String name = fieldKey.substring(hash + 1);
+        for (FieldNode fn : cn.fields)
+            if (fn.name.equals(name))
+                return (fn.access & Opcodes.ACC_PRIVATE) == 0 && (fn.access & Opcodes.ACC_FINAL) == 0;
+        return true;                                        // not found where the key says it lives
     }
 
     /** CHA: project subtypes-or-self of `owner` that provide a concrete (name,desc) impl. */

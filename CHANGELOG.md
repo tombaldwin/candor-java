@@ -8,6 +8,94 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R595 FIXED — a field-bound callback a CHAINED consumer reassigns now NAMES the member
+
+**The defect, as measured and shipped in 0.39.2.** `Cha#collectFieldLambdaBindings` bound a
+`public static` non-final field on exactly the evidence it binds a `private final` one — no visibility
+or finality check anywhere in it — and the field-bound branch in `virtualDispatch` returned before
+⟨0.39⟩ obligation 1 ever recorded the dispatched member. Against an *unscanned* downstream caller that
+is the open-world trade candor-spec `SPEC.md` §4.0 accepts everywhere. **Across a CHAIN it is not**, and
+⟨0.39⟩ says so in as many words: *"the implementor is no longer downstream: the consumer supplies it,
+and the engine can see it."*
+
+Two arms differing in ONE LINE OF THE LIBRARY, consumer byte-identical:
+
+| library's `afterStage` | `app.Main.main` | scoped `deny Fs Unknown app.Main.main` |
+|---|---|---|
+| `= () -> { }` (pure default) — BEFORE | `inferred: []`, `unresolved: false`, no `unknownWhy` | exit **0** |
+| `= () -> { }` (pure default) — AFTER  | `["Fs"]`, `paths: ["/tmp/candor-r595"]` | exit **1** |
+| never written in-scan (control, unchanged) | `["Fs","Unknown"]`, `unknownWhy: ["dispatch:lib.Hooks$Hook.run"]` | exit **1** |
+
+So adding a pure default to a library deleted a disclosure *and* a real `Fs` from every consumer of it.
+It no longer does, and the consumer's verdict no longer turns on whether its dependency shipped a
+default.
+
+**AN ADDED DISCLOSURE, NOT A REFUSAL TO BIND**, and that direction is stated before the change rather
+than after it. The binding stays — dropping it re-opens the ⟨0.35⟩ silence it was written for, and
+"bind only what cannot be reassigned" is the CLOSED-WORLD question, which stays behind
+`CANDOR_CLOSED_WORLD` (README says where). What is added is `dispatchesOn`, the key the UNBOUND arm
+already published and the consumer already knew how to union against, so no new join had to be
+invented and **no site loses an effect or acquires an `Unknown`**.
+
+`Cha#externallyReassignableField` is the new predicate and it **fails open** (discloses) on every
+uncertainty: an unparseable key, an off-classpath declarer, a field the declaring node does not list.
+`Cha#fieldKey`'s existing normalization is what makes the question answerable at all — the key already
+names the *declaring* class, so the access flags are a direct lookup rather than a second walk.
+
+**TWO PATHS BECAME ONE (§G, §F1 q7).** The obligation-1 recording was inline at the CHA site and simply
+absent from the field-bound one. It is now `Candor#recordDispatchedMember`, called from both, so the
+owner qualification, the Object-protocol exemption and the member SPELLING cannot drift apart —
+"a key two paths can spell differently" is this family's most-repeated defect. `Cha#fieldReceiverKey`
+is the same move one level down: the binding lookup and the reassignability question read the receiver
+through ONE piece of stack arithmetic (the R274 slot maths) rather than two.
+
+**A/B — DISCLOSURE-ONLY, AND THE ZERO IS GROUND-TRUTHED RATHER THAN HOPED FOR.**
+`bin/corpus-ab.py` (never a fresh `ab.py` — R288), 150 real third-party jars, 145 compared,
+**293,482 rows pre and post** (so the corpus is not hollow):
+
+    HEADLINE (--key unit, wide value):  ADDED 0   REMOVED 0   CHANGED 0   (keys +0 -0 ~0)
+    every key (unit / pkgfn / fn / fn-last-wins) and the narrow `inferred` key: 0 / 0 / 0
+
+`REMOVED 0` is the claim under test and it is 0 — this change cannot remove a row, because it only adds
+to `dispatchDirect`. **REACH, measured rather than inferred** (`CANDOR_R595_DEBUG=1`, the same
+convention as `CANDOR_MASK_DEBUG`/`CANDOR_R131_DEBUG`): the field-bound branch fires **26 times over 23
+distinct fields** in that corpus, and the new disclosure fires **0 times** — because **all 23 of those
+fields are `private`**, checked with `javap` and not with candor's own report (22 `private final`, one
+`private` non-final). So the byte-identical A/B is not the flattering kind: the corpus reaches the
+branch and the gate correctly declines every instance. Cost on real code: **0 rows of 293,482 (0.00%),
+0 jars of 145.**
+
+A separate class-file census of the same 150 jars (49,771 classes, 170,960 fields, parsed directly)
+prices the shape rather than the firing: **7,387 SAM-typed fields, of which 207 are non-private and
+non-final** — the R595 precondition exists in real code and is not rare; it simply never co-occurs
+there with a write-set the taint contract accepts (those 207 are builder fields written from
+parameters, which is exactly the case that must NOT bind). The residual this leaves named: the corpus
+is 150 STANDALONE library scans, and R595's shape is about a library read as a *dependency*, so the
+0-of-145 says the change is quiet on real code, not that the shape is rare in real chains.
+
+**`test/smoke.sh`: the ledger instruction honoured, +13 rows, and BOTH failure directions calibrated.**
+The previous revision said *"if the 'today: SILENT' row goes red, R595 is FIXED — invert it, do not
+delete it."* Exactly two rows went red and both are inverted in place. Added: the library-side
+mechanism row (the bound arm's report must carry `dispatchesOn`), an ARMS-STILL-DIFFER control (the
+unbound arm's `unknownWhy` must be present and the bound arm's absent — red if the one-line `sed` ever
+stops substituting, and red if the fix ever became a refusal to bind), and an OVER-CHARGE CONTROL pair:
+two functions in ONE class, one line apart, differing only in `private static final` vs `public
+static`, **both reaching a real `FileWriter` so both rows are present** (an absence control over an
+absent row proves nothing) — only the open twin may gain the key. And a CONSUMER-side over-charge
+control for the one safety assertion this fix rests on (`assert-audit.sh` flagged exactly that line):
+a consumer that calls the same library method but never implements `Hook` publishes no union under the
+newly-named key, and reads byte-identically pre and post — no effect, no `Unknown`, gate exit 0. Those
+last rows are absence-shaped, and what makes them discriminating is the pair: the SAME library report
+gives `app.Main.main` an `Fs` and `app2.Plain.main` nothing.
+
+    fix reverted (`if (false) recordDispatchedMember(…)`)              → 595 passed, 5 failed
+    gate a rubber stamp (`externallyReassignableField` → always true)  → 599 passed, 1 failed
+    as committed                                                       → 600 passed, 0 failed
+
+Gates, run SERIALLY and alone (the four-way suite and `gate-run.sh` read every engine's working tree):
+`./gradlew test` BUILD SUCCESSFUL, `test/smoke.sh` **600 passed / 0 failed**, `ci/self-gate.sh` OK,
+`soundness/run.sh 40` **40 passed / 0 failed** with all five probes OK.
+
 ### ⚠ SOUNDNESS R131 — a JDK subtype of a modelled type now inherits its supertype's rule
 
 `Candor#handleMethodInsn`'s supertype re-classification was gated on `ctx.byName.containsKey(min.owner)`

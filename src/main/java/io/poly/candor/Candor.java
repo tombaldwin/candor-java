@@ -5958,69 +5958,50 @@ public class Candor {
             // See Cha.collectFieldLambdaBindings for why this is scoped to FIELDS rather than a
             // project-wide per-interface union (the wider version fabricated across the private
             // functional-param forwarding tests).
-            List<String> fieldImpls = fieldBoundImplementors(
-                    provFrames == null ? null : provFrames[mn.instructions.indexOf(min)], min);
+            Frame<ProvValue> recvFrame =
+                    provFrames == null ? null : provFrames[mn.instructions.indexOf(min)];
+            List<String> fieldImpls = fieldBoundImplementors(recvFrame, min);
             if (fieldImpls != null) {
                 ctx.edges.get(id).addAll(fieldImpls);
+                // SOUNDNESS R595 — …BUT NAME THE MEMBER ANYWAY WHEN THE FIELD IS EXTERNALLY REASSIGNABLE.
+                // The binding above proves the field's write set WITHIN THIS SCAN; for a non-private,
+                // non-final field that is not the whole write set, because a chained consumer can reassign
+                // it and the engine CAN see that (⟨0.39⟩: "across a CHAIN that trade stops being
+                // acceptable … the consumer supplies it, and the engine can see it"). Measured: adding
+                // `= () -> { }` to a library's `public static Hook afterStage` deleted the consumer's real
+                // `Fs` and its `dispatch:` disclosure, scoped `deny Fs Unknown` exit 1 -> 0.
+                //
+                // AN ADDED DISCLOSURE, NOT A REFUSAL TO BIND — the edges above are untouched, so no site
+                // loses an effect it reports today and nothing this engine resolves becomes an Unknown.
+                // The one thing that changes is that the member is named, which is exactly what the
+                // UNBOUND arm already publishes and what the consumer already knows how to union against
+                // (obligation 3). Enforcement — bind only a private/final field, Unknown otherwise —
+                // is the CLOSED-WORLD question and stays behind CANDOR_CLOSED_WORLD.
+                //
+                // ONE recording implementation, shared with the CHA path below (§G, and §F1 q7: a key two
+                // paths can spell differently is this family's most-repeated defect), so the owner
+                // qualification, the Object-protocol exemption and the spelling cannot drift apart.
+                String recvField = fieldReceiverKey(recvFrame, min);
+                boolean open = externallyReassignableField(recvField);
+                if (open) recordDispatchedMember(ctx, id, min);
+                // Both halves are printed, because the NUMERATOR alone cannot say whether a zero means
+                // "no reassignable field" or "this whole ⟨0.35⟩ branch never fires on the corpus" — two
+                // completely different things to write in a row, and the second is the one that makes an
+                // A/B safety-only. R595BOUND is every field-bound resolution; R595FIELD is the subset that
+                // gains the disclosure.
+                if (R595_DEBUG)
+                    System.err.println((open ? "R595FIELD\t" : "R595BOUND\t") + id + "\t" + recvField
+                            + "\t" + min.owner + "." + min.name + min.desc);
                 return true;
             }
             List<String> cha = chaTargets(min.owner, min.name, min.desc);
             // ⟨0.39⟩ SPEC §4 obligation 1 — RECORD THE DISPATCHED MEMBER, whatever the CHA answers.
-            //
-            // The key is this engine's ordinary entry hash for the member (`iface/Backend.size()I`), which
-            // is already fully qualified in the OWNING package's namespace — the ⟨0.23⟩ rule — so nothing
-            // here invents a second spelling and a consumer resolves it through the SAME `crossDeps` index
-            // an ordinary call uses. This records only the DIRECT site; the transitive half is the
-            // CONSUMER's walk over `calls` ({@link #depTransitiveDispatch}) — see ReportWriter's dispatch
-            // reach for the measurement that put it there rather than on the wire.
-            //
             // REGARDLESS OF `broad`, of `targets`, and of whether this site ends up disclosing an Unknown:
             // the toggle R475 names runs between ZERO implementers (a disclosed Unknown, which the branches
             // below get right) and ONE PURE implementer (silence, which they get wrong), so a field recorded
-            // only on the indeterminate branch would be absent in precisely the arm that needs it. What a
-            // consumer does with the key is union whatever some OTHER package published under it; where
-            // nobody published, a miss adds nothing (see Candor#inheritDepFn).
-            //
-            // TWO OWNERS QUALIFY, and the second one is here because scoping this to LOCAL abstractions
-            // left a measured silence one package further out.
-            //
-            //   LOCAL — an abstraction this project DECLARES. Same test as the missing-impl Unknown below,
-            //   and for the same reason: a producer may only name a member in a namespace it owns.
-            //
-            //   FOREIGN — an abstraction a DEPENDENCY owns, dispatched from a MIDDLE package. MEASURED
-            //   silent before this arm existed, on a four-package chain (`iface.backend.Backend` ·
-            //   `middle.Mid.mid(Backend)` · `effimpl.Crossterm` · an app on all three): `mid` was ABSENT
-            //   from middle's report and so was the app's caller, because `middle` owns no abstraction and
-            //   the untyped-receiver disclosure's fifth conjunct — "the dep demonstrably holds an effectful
-            //   body with this signature" — is FALSE while `iface`'s own implementers are all pure. The key
-            //   is the dependency's, already fully qualified, so naming it invents nothing. Pinned by
-            //   ChainedDispatchUnionTest#aMiddlePackageDispatchingOverItsOwnDependencysAbstractionNamesTheMemberToo.
-            //   INVOKEINTERFACE only: the bytecode then PROVES the static owner is a declaration rather
-            //   than a body, which is conjunct 1 of {@link #untypedDepReceiver} and carries the same named
-            //   residual for an abstract dep CLASS. And the κ frontier is excluded, symmetrically with the
-            //   union entries this key resolves against (ReportWriter#unionCandidates): nothing publishes
-            //   under a modelled namespace, so naming one could only be wire noise.
-            //
-            // §4's Object protocol (toString/hashCode/equals/compareTo, "pure even when overridden") is
-            // excluded from both so the chained answer cannot contradict the in-scan one; the
-            // function-object verbs (Kotlin/Scala/Groovy invoke/apply/call) are NOT excluded, because this
-            // engine already refuses to treat those as pure and a chained consumer must not be told
-            // otherwise.
-            // AND ONLY OVER AN ABSTRACTION A FOREIGN PACKAGE COULD IMPLEMENT — i.e. a PUBLIC one. A
-            // package-private interface or abstract class cannot be implemented outside the package that
-            // declares it, so the toggle this rung closes cannot fire on it: the implementer set the
-            // producer can see IS the whole set, and naming the member buys a consumer nothing but bytes.
-            // That is also the reason PART 92's `c4_sealed` control exists — a sealed abstraction's union
-            // stays EXACT and gains no hedge. This is not a precision trade, it is a scope fact, and it is
-            // load-bearing rather than cosmetic: without it a transitive `dispatchesOn` over an
-            // interface-dense JVM library grows the report several-fold (MEASURED on jooq 3.19.10, where
-            // the unbounded form could not be serialised at all).
-            if (!isObjectProtocolExempt(min.name, min.desc)
-                    && (isProjectIfaceOrAbstract(min.owner) && isPublicType(min.owner)
-                                && projectDeclaresMethod(min.owner, min.name, min.desc)
-                            || foreignAbstractionOwner(ctx, min)))
-                ctx.dispatchDirect.computeIfAbsent(id, k -> new TreeSet<>())
-                        .add(min.owner + "." + min.name + min.desc);
+            // only on the indeterminate branch would be absent in precisely the arm that needs it. See
+            // {@link #recordDispatchedMember} for the key, the two qualifying owners and the bound.
+            recordDispatchedMember(ctx, id, min);
             // BOUNDED CHA (SPEC §4): a dispatch over a local abstraction resolves to its
             // implementors only when the fan-out is NARROW (≤ CHA_FANOUT_LIMIT); a broad
             // fan-out is honest indeterminacy. Previously only EXEMPT methods (the pure
@@ -8868,6 +8849,14 @@ public class Candor {
      *  invisible to every report. The java counterpart of candor-rust's {@code CANDOR_MASK_DEBUG}. */
     static final boolean MASK_DEBUG = System.getenv("CANDOR_MASK_DEBUG") != null;
 
+    /** SOUNDNESS R595 — {@code CANDOR_R595_DEBUG=1} prints one line per FIELD-BOUND dispatch whose field is
+     *  externally reassignable, i.e. per firing of the added disclosure. Same reason as {@link #MASK_DEBUG}
+     *  and {@code CANDOR_R131_DEBUG}: "the A/B moved N rows" is not evidence until the corpus is shown to
+     *  REACH the changed branch, and four rows in this register ran a full A/B, came back identical, and
+     *  only afterwards was it found by grep that the corpus held zero instances of the shape. Off by
+     *  default and invisible to every report. */
+    static final boolean R595_DEBUG = System.getenv("CANDOR_R595_DEBUG") != null;
+
     /** SOUNDNESS R477 — could this {@code Exec} call's RECEIVER be the program it launches?
      *
      *  <p>{@code false} = "declining to read a non-signal", exactly as {@link #execCallCouldNameAProgram}
@@ -9031,11 +9020,6 @@ public class Candor {
         return true;
     }
 
-    /** ⟨0.39⟩ obligation 1's FOREIGN arm — is this call site a dispatch over an abstraction some
-     *  DEPENDENCY owns? See the call site for the four-package silence that put it there. INVOKEINTERFACE
-     *  is the bytecode proof that the static owner is a DECLARATION and not the body the JVM will run, the
-     *  same evidence {@link #untypedDepReceiver}'s conjunct 1 rests on; an abstract dep CLASS keeps that
-     *  method's named residual rather than acquiring a second, weaker one here. */
     /** Is this PROJECT type declared {@code public}? An unknown type answers false: this gates a
      *  disclosure that is only useful for an abstraction a FOREIGN package could implement, and a type
      *  candor cannot see is not evidence that one could. */
@@ -9044,6 +9028,70 @@ public class Candor {
         return cn != null && (cn.access & Opcodes.ACC_PUBLIC) != 0;
     }
 
+    /** ⟨0.39⟩ SPEC §4 obligation 1 — RECORD THE DISPATCHED MEMBER on `callerId`.
+     *
+     *  <p>ONE implementation, TWO call sites: the ordinary CHA dispatch path, and SOUNDNESS R595's
+     *  field-bound path, which resolves locally and returns before CHA ever runs. They were a copy and a
+     *  gap rather than one function, which is §F1 q7 — a key two paths can spell differently is this
+     *  family's most-repeated defect — so the owner qualification, the Object-protocol exemption and the
+     *  SPELLING now cannot drift between them.
+     *
+     *  <p>The key is this engine's ordinary entry hash for the member ({@code iface/Backend.size()I}),
+     *  already fully qualified in the OWNING package's namespace — the ⟨0.23⟩ rule — so nothing here
+     *  invents a second spelling and a consumer resolves it through the SAME {@code crossDeps} index an
+     *  ordinary call uses. This records only the DIRECT site; the transitive half is the CONSUMER's walk
+     *  over {@code calls} ({@link #depTransitiveDispatch}) — see {@code ReportWriter}'s dispatch reach for
+     *  the measurement that put it there rather than on the wire. What a consumer does with the key is
+     *  union whatever some OTHER package published under it; where nobody published, a miss adds nothing
+     *  (see {@link #inheritDepFn}).
+     *
+     *  <p>TWO OWNERS QUALIFY, and the second one is here because scoping this to LOCAL abstractions left a
+     *  measured silence one package further out.
+     *
+     *  <p>LOCAL — an abstraction this project DECLARES. Same test as the missing-impl Unknown at the CHA
+     *  call site, and for the same reason: a producer may only name a member in a namespace it owns.
+     *
+     *  <p>FOREIGN — an abstraction a DEPENDENCY owns, dispatched from a MIDDLE package. MEASURED silent
+     *  before this arm existed, on a four-package chain ({@code iface.backend.Backend} ·
+     *  {@code middle.Mid.mid(Backend)} · {@code effimpl.Crossterm} · an app on all three): {@code mid} was
+     *  ABSENT from middle's report and so was the app's caller, because {@code middle} owns no abstraction
+     *  and the untyped-receiver disclosure's fifth conjunct — "the dep demonstrably holds an effectful body
+     *  with this signature" — is FALSE while {@code iface}'s own implementers are all pure. The key is the
+     *  dependency's, already fully qualified, so naming it invents nothing. Pinned by
+     *  {@code ChainedDispatchUnionTest#aMiddlePackageDispatchingOverItsOwnDependencysAbstractionNamesTheMemberToo}.
+     *  INVOKEINTERFACE only: the bytecode then PROVES the static owner is a declaration rather than a body,
+     *  which is conjunct 1 of {@link #untypedDepReceiver} and carries the same named residual for an
+     *  abstract dep CLASS. And the κ frontier is excluded, symmetrically with the union entries this key
+     *  resolves against ({@code ReportWriter#unionCandidates}): nothing publishes under a modelled
+     *  namespace, so naming one could only be wire noise.
+     *
+     *  <p>§4's Object protocol (toString/hashCode/equals/compareTo, "pure even when overridden") is excluded
+     *  from both so the chained answer cannot contradict the in-scan one; the function-object verbs
+     *  (Kotlin/Scala/Groovy invoke/apply/call) are NOT excluded, because this engine already refuses to
+     *  treat those as pure and a chained consumer must not be told otherwise.
+     *
+     *  <p>AND ONLY OVER AN ABSTRACTION A FOREIGN PACKAGE COULD IMPLEMENT — i.e. a PUBLIC one. A
+     *  package-private interface or abstract class cannot be implemented outside the package that declares
+     *  it, so the toggle this rung closes cannot fire on it: the implementer set the producer can see IS the
+     *  whole set, and naming the member buys a consumer nothing but bytes. That is also the reason PART 92's
+     *  {@code c4_sealed} control exists — a sealed abstraction's union stays EXACT and gains no hedge. This
+     *  is not a precision trade, it is a scope fact, and it is load-bearing rather than cosmetic: without it
+     *  a transitive {@code dispatchesOn} over an interface-dense JVM library grows the report several-fold
+     *  (MEASURED on jooq 3.19.10, where the unbounded form could not be serialised at all). */
+    static void recordDispatchedMember(AnalysisContext ctx, String callerId, MethodInsnNode min) {
+        if (!isObjectProtocolExempt(min.name, min.desc)
+                && (isProjectIfaceOrAbstract(min.owner) && isPublicType(min.owner)
+                            && projectDeclaresMethod(min.owner, min.name, min.desc)
+                        || foreignAbstractionOwner(ctx, min)))
+            ctx.dispatchDirect.computeIfAbsent(callerId, k -> new TreeSet<>())
+                    .add(min.owner + "." + min.name + min.desc);
+    }
+
+    /** ⟨0.39⟩ obligation 1's FOREIGN arm — is this call site a dispatch over an abstraction some
+     *  DEPENDENCY owns? See the call site for the four-package silence that put it there. INVOKEINTERFACE
+     *  is the bytecode proof that the static owner is a DECLARATION and not the body the JVM will run, the
+     *  same evidence {@link #untypedDepReceiver}'s conjunct 1 rests on; an abstract dep CLASS keeps that
+     *  method's named residual rather than acquiring a second, weaker one here. */
     static boolean foreignAbstractionOwner(AnalysisContext c, MethodInsnNode min) {
         if (min.getOpcode() != Opcodes.INVOKEINTERFACE) return false;
         if (min.owner.isEmpty() || min.owner.charAt(0) == '[' || c.projectClasses.contains(min.owner))

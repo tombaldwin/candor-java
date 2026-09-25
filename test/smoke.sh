@@ -2496,10 +2496,19 @@ else echo "  FAIL §9/R558 CALIBRATION GATE: exited $mrefprc (want 0)"; fail=$((
 # and a real effect from every consumer.
 #
 # The two arms differ in ONE LINE OF THE LIBRARY — whether `afterStage` has an in-scan initialiser.
-# The app is byte-identical across both. What is asserted here is the arm that WORKS (the consumer
-# joins its own implementor through the library's published `dispatchesOn`), because that join is the
-# machinery R595's fix would reuse; the bound arm is recorded as today's silent behaviour. IF THE
-# "today: SILENT" ROW BELOW GOES RED, R595 IS FIXED — invert it, do not delete it.
+# The app is byte-identical across both.
+#
+# FIXED 2026-09-25, and these rows are the INVERSION the previous revision asked for ("if the
+# 'today: SILENT' row goes red, R595 is fixed — invert it, do not delete it"). Exactly two rows went
+# red on the fix and both are below, now pinning the FIXED behaviour: the bound arm keeps the
+# consumer's `Fs`, and the same scoped gate exits 1 on BOTH arms. The fix is an ADDED DISCLOSURE —
+# the library still binds the field, and additionally NAMES the member it dispatches on, which is
+# what the consumer already knew how to union against (⟨0.39⟩ obligation 3).
+#
+# THE ARMS MUST STILL DIFFER, or these rows measure nothing: the `sed` below is one literal away from
+# producing two identical libraries, and then every row would pass for the wrong reason. The control
+# for that is the `unknownWhy` row — present in the unbound arm, absent in the bound one — which is a
+# difference the fix deliberately does NOT erase.
 echo "== SOUNDNESS R595: a public non-final field-bound callback, reassigned by a CHAINED consumer =="
 mkdir -p "$W/r595/lib" "$W/r595/lib0" "$W/r595/app"
 cat > "$W/r595/lib0/Hooks.java" <<'J'
@@ -2543,15 +2552,100 @@ want "R595 [unbound lib]: …and the dispatch is disclosed, not guessed" \
      "$(r595main "$r595unbound")" "dispatch:lib.Hooks\$Hook.run"
 want "R595 [unbound lib]: the real path survives the join" \
      "$(r595main "$r595unbound")" "/tmp/candor-r595"
-absent "R595 [bound lib] today: SILENT — one pure default in the LIBRARY deletes the consumer's Fs" \
-       "$(r595main "$r595bound")" "'Fs'"
+# INVERTED (was `absent … today: SILENT`): the whole defect was that ONE pure default in the LIBRARY
+# deleted the consumer's real Fs. It no longer does.
+want "R595 FIXED [bound lib]: the library's pure default no longer deletes the consumer's Fs" \
+     "$(r595main "$r595bound")" "'Fs'"
+want "R595 FIXED [bound lib]: …and the real path survives too, not just the effect label" \
+     "$(r595main "$r595bound")" "/tmp/candor-r595"
+# THE MECHANISM, asserted where it happens rather than only through its consequence: the LIBRARY binds
+# the field AND names the member, so the consumer has a key to union its own implementor against.
+want "R595 FIXED [bound lib]: the LIBRARY publishes the dispatched member despite binding the field" \
+     "$(cat "$W/r595/lib.json")" '"lib/Hooks$Hook.run()V"'
+# THE ARMS-STILL-DIFFER CONTROL. Goes red if the one-line `sed` above ever stops substituting (both
+# libraries would then be the UNBOUND one and every row above would pass for the wrong reason), and
+# red also if the fix ever started REFUSING to bind — which is the CANDOR_CLOSED_WORLD variant this
+# deliberately did not implement, and would show up here as the bound arm acquiring an Unknown.
+want "R595 CONTROL: the UNBOUND arm is genuinely unresolved — `unknownWhy` says so" \
+     "$(r595main "$r595unbound")" "dispatch:lib.Hooks\$Hook.run"
+absent "R595 CONTROL: …and the BOUND arm still RESOLVES — an added disclosure, not a refusal to bind" \
+       "$(r595main "$r595bound")" "unknownWhy"
 printf 'deny Fs Unknown app.Main.main\n' > "$W/r595/scoped.pol"
 CANDOR_DEPS="$W/r595/lib0.json" "$CJ" "$W/r595/appcls" --policy "$W/r595/scoped.pol" >/dev/null 2>&1; r595u=$?
 CANDOR_DEPS="$W/r595/lib.json"  "$CJ" "$W/r595/appcls" --policy "$W/r595/scoped.pol" >/dev/null 2>&1; r595b=$?
 if [ "$r595u" -eq 1 ]; then echo "  ok   R595 GATE [unbound lib]: scoped \`deny Fs Unknown app.Main.main\` exits 1"; pass=$((pass+1));
 else echo "  FAIL R595 GATE [unbound lib]: exited $r595u (want 1)"; fail=$((fail+1)); fi
-if [ "$r595b" -eq 0 ]; then echo "  ok   R595 GATE [bound lib] today: the SAME scoped gate exits 0 — the 1->0 flip, pinned"; pass=$((pass+1));
-else echo "  FAIL R595 GATE [bound lib]: exited $r595b (want 0 today; if this is 1, R595 is FIXED — invert the row)"; fail=$((fail+1)); fi
+# INVERTED (was `want 0 … the 1->0 flip, pinned`): the flip is gone — the SAME gate now exits 1 on
+# both arms, which is the property a consumer actually needs: its verdict does not turn on whether
+# its dependency happened to ship a default.
+if [ "$r595b" -eq 1 ]; then echo "  ok   R595 GATE FIXED [bound lib]: the SAME scoped gate exits 1 — the 1->0 flip is GONE"; pass=$((pass+1));
+else echo "  FAIL R595 GATE [bound lib]: exited $r595b (want 1; 0 means the 1->0 flip is back)"; fail=$((fail+1)); fi
+
+# R595 OVER-CHARGE CONTROL — THE GATE IS A GATE, NOT A RUBBER STAMP.
+# Two functions in ONE class, one line apart, differing ONLY in `private static final` vs
+# `public static`, both reaching a REAL FileWriter so BOTH rows are present in the report (an absence
+# control over a row that is itself absent proves nothing — §E3). Only the externally reassignable
+# one may gain `dispatchesOn`. This is the row that goes red in BOTH failure directions: a gate that
+# always said "open" gives the sealed twin the key, and one that always said "closed" takes it off
+# the open twin. Measured against the 150-jar corpus, every one of the 23 distinct fields this
+# engine actually binds is `private` — javap, not candor's own report — so on real code this branch
+# fires 26 times and discloses 0.
+echo "== SOUNDNESS R595 over-charge control: a private-final twin must gain NOTHING =="
+mkdir -p "$W/r595seal/src/lib2"
+cat > "$W/r595seal/src/lib2/Sealed.java" <<'J'
+package lib2;
+import java.io.FileWriter;
+import java.io.IOException;
+public class Sealed {
+  public interface Hook { void run() throws IOException; }
+  private static final Hook sealedHook = () -> { new FileWriter("/tmp/candor-r595-sealed").close(); };
+  public  static       Hook openHook   = () -> { new FileWriter("/tmp/candor-r595-open").close(); };
+  public static void fireSealed() throws IOException { sealedHook.run(); }
+  public static void fireOpen()   throws IOException { openHook.run(); }
+}
+J
+javac -d "$W/r595seal/cls" "$W/r595seal/src/lib2/Sealed.java" 2>/dev/null
+"$CJ" "$W/r595seal/cls" --json "$W/r595seal/r.json" >/dev/null 2>&1
+r595row() { python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));r=[f for f in d["functions"] if f["fn"]==sys.argv[2]];print(r[0] if r else {}, d["analyzed"]["count"])' "$W/r595seal/r.json" "$1"; }
+want "R595 CONTROL: the sealed twin really compiled and was JUDGED (both rows present)" \
+     "$(printf '%s|%s' "$(r595row lib2.Sealed.fireSealed)" "$(r595row lib2.Sealed.fireOpen)")" \
+     "lib2.Sealed.fireSealed"
+want "R595 CONTROL [private final]: the effect is still reported — this row is not absent" \
+     "$(r595row lib2.Sealed.fireSealed)" "'Fs'"
+absent "R595 CONTROL [private final]: …and it gains NO dispatchesOn — nothing outside can reassign it" \
+       "$(r595row lib2.Sealed.fireSealed)" "dispatchesOn"
+want "R595 CONTROL [public non-final]: the same-class twin DOES name the member" \
+     "$(r595row lib2.Sealed.fireOpen)" "lib2/Sealed\$Hook.run()V"
+
+# R595 CONSUMER-SIDE OVER-CHARGE CONTROL — "where nobody published, a miss adds nothing".
+# That sentence is the safety assertion the fix rests on (assert-audit.sh flagged exactly it), so it is
+# measured rather than reasoned about: a consumer that calls the SAME library method but never
+# implements `Hook` publishes no union under the newly-named key, and must therefore read EXACTLY what
+# it read before the key existed — no effect, no Unknown, gate exit 0. The fixture compiles and runs
+# (§E3), and the row is PRESENT in the report (an entry point), so its emptiness is a real assertion
+# about a judged unit rather than an absence indistinguishable from a broken scan.
+mkdir -p "$W/r595nopub/app2"
+cat > "$W/r595nopub/app2/Plain.java" <<'J'
+package app2;
+import lib.Hooks;
+import java.io.IOException;
+public class Plain {
+  public static void main(String[] a) throws IOException { Hooks.firePublic(); }
+}
+J
+javac -cp "$W/r595/libcls" -d "$W/r595nopub/cls" "$W/r595nopub/app2/Plain.java" 2>/dev/null
+r595nopub="$(CANDOR_DEPS="$W/r595/lib.json" "$CJ" "$W/r595nopub/cls" --json 2>/dev/null)"
+r595plain() { printf '%s' "$r595nopub" | python3 -c 'import json,sys;d=json.load(sys.stdin);r=[f for f in d["functions"] if f["fn"]=="app2.Plain.main"];print(r[0] if r else {}, d["analyzed"]["count"])'; }
+want "R595 CONTROL [no publisher]: the non-implementing consumer really compiled and was JUDGED" \
+     "$(r595plain)" "app2.Plain.main"
+absent "R595 CONTROL [no publisher]: …and it gains NO effect from the newly-named key" \
+       "$(r595plain)" "'Fs'"
+absent "R595 CONTROL [no publisher]: …and no Unknown either — the key is a NAME, not a hedge" \
+       "$(r595plain)" "'Unknown'"
+printf 'deny Fs Unknown app2.Plain.main\n' > "$W/r595nopub/p.pol"
+CANDOR_DEPS="$W/r595/lib.json" "$CJ" "$W/r595nopub/cls" --policy "$W/r595nopub/p.pol" >/dev/null 2>&1; r595np=$?
+if [ "$r595np" -eq 0 ]; then echo "  ok   R595 CONTROL GATE [no publisher]: the same scoped gate still exits 0 — no over-charge"; pass=$((pass+1));
+else echo "  FAIL R595 CONTROL GATE [no publisher]: exited $r595np (want 0)"; fail=$((fail+1)); fi
 
 # SOUNDNESS R131 — THE JDK-SUBTYPE SUPERTYPE WALK, AND ITS OVER-CHARGE CONTROL.
 # `handleMethodInsn`'s supertype re-classification was gated on a PROJECT owner, so no JDK subtype of a

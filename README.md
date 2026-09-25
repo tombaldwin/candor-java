@@ -139,11 +139,14 @@ interface with zero implementors, a consumer dispatching on it directly, the dep
 §4 ⟨0.40⟩ settles whether this must tighten — dispatch over a foreign, unimplemented abstraction once
 its owning dependency is chained.
 
-**Named miss — a field-bound callback that a chained consumer REASSIGNS (SOUNDNESS R94, R595).**
+**CLOSED — a field-bound callback that a chained consumer REASSIGNS (SOUNDNESS R94, R595).** Kept
+here because the measurement is the reason the fix has the shape it does, and because the ENFORCEMENT
+half is still open.
 `Cha#collectFieldLambdaBindings` resolves a dispatch on a field whose every in-scan write is a
 recognisable project lambda: `this.hook.run()` becomes a call to that lambda's body instead of an
-`Unknown`. **The pass makes no visibility or finality check** — a `public static` non-final field is
-bound on exactly the same evidence as a `private final` one. Against an *unscanned* downstream caller
+`Unknown`. **The pass made no visibility or finality check** — a `public static` non-final field was
+bound on exactly the same evidence as a `private final` one, and nothing was published to let a
+consumer correct it. Against an *unscanned* downstream caller
 that is the ordinary open-world trade this contract takes everywhere (candor-spec `SPEC.md` §4.0:
 resolving to visible implementors is "an under-approximation across the open world (a downstream
 implementor is invisible); both are the accepted trade everywhere else in this contract").
@@ -167,13 +170,26 @@ reported as its own row — the *caller* is never judged either way.
 
 The join that makes the second arm correct already exists: the unbound library publishes
 `dispatchesOn: ["lib/Hooks$Hook.run()V"]` and the consumer resolves its own implementor against it.
-The bound library publishes no such key, because it believes it resolved the call. The fix shape is
-therefore to keep publishing `dispatchesOn` when a binding came from an *externally reassignable*
-field (non-private, non-final) — an added disclosure, not a refusal to bind. **Not implemented; this
-paragraph describes the engine as it is.**
+The bound library published no such key, because it believed it had resolved the call.
 
-**If enforcement is ever wanted it belongs behind `CANDOR_CLOSED_WORLD`.** Binding only private/final
-fields and disclosing `Unknown` for the rest is the fail-closed direction, and it costs precision on
+**FIXED (2026-09-25).** A binding whose field is *externally reassignable* — non-private, non-final —
+now publishes `dispatchesOn` as well, so the consumer unions its own implementor against exactly the
+key the unbound arm already gave it. The binding itself is unchanged: this is an **added disclosure**,
+not a refusal to bind, and no site loses an effect or acquires an `Unknown`. On the fixture above, the
+bound arm's `app.Main.main` now reports `["Fs"]` with `paths: ["/tmp/candor-r595"]` and the scoped
+`deny Fs Unknown app.Main.main` exits **1 on both arms** — the 1 → 0 flip is gone. `Cha#fieldKey`'s
+normalization is what makes the reassignability question answerable: the key already names the
+*declaring* class, so the field's own access flags are a direct lookup.
+
+The gate fails **open** on every uncertainty (an unparseable key, an off-classpath declarer, a field
+the declaring node does not list): naming a member costs a consumer nothing where nobody published a
+union under it, while a wrong "closed" verdict is the silence this row was about. Measured on a
+150-jar corpus: this engine binds 23 distinct fields at 26 dispatch sites, and **every one of the 23
+is `private`** (`javap`, not candor's own report), so the added disclosure fires 0 times there and the
+A/B is byte-identical — `ADDED 0 / REMOVED 0 / CHANGED 0` over 293,482 rows in 145 jars.
+
+**ENFORCEMENT is a different question and still belongs behind `CANDOR_CLOSED_WORLD`.** Binding only
+private/final fields and disclosing `Unknown` for the rest is the fail-closed direction, and it costs precision on
 real single-jar code that genuinely is closed. `AnalysisContext#closedWorld` is already the flag that
 asserts "the scanned classes ARE the complete world", and it already carries the hazard warning for
 the case where the flag moved a verdict; gating public/non-final binding on that flag is the

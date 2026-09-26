@@ -11,4 +11,7 @@ build/
 .candor/*.callgraph.json
 .candor/*.hierarchy.json
 .DS_Store
-scratchpad/
+# scratchpad/ is DELIBERATELY NOT IGNORED — see CLAUDE.md. A read-only agent once left 203 MB
+# inside a repo because its brief gave a RELATIVE scratch path, and `git status` showing
+# `?? scratchpad/` is what caught it. This line existed until 2026-09-26 and 240 MB had
+# accumulated behind it, cited by no register row. Agents get the ABSOLUTE session path instead.

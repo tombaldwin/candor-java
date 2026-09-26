@@ -10,6 +10,8 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ### ⚠ SOUNDNESS R716 + R717 FIXED — the last two `Unknown` charges in the engine that named no hole at all
 
+**READ THE TABLE THE OTHER WAY UP: the finding is `[reflect]` 1 → 34, not `[dispatch,unresolved]` 34 → 22.** A user who wrote exactly the class the spec assigns to `Class.forName` was silently missing 33 units on commons-cli. The 12 that leave `[dispatch,unresolved]` are that same fix seen from the other side — and **the direct spelling `Class.forName(s)` has projected to `reflect` since 0.19, so it was ALREADY outside those forms. The reference spelling was inside them only for want of a label**, and only in units with no other `Unknown` reach, because the `{unresolved}` floor fires only on an EMPTY class set. Coverage that depends on how a dependency spells a call, and disappears the moment any tagged neighbour is present, is not coverage anyone could rely on.
+
 Two sites charged `Unknown` with **`unknownWhy` absent**, and a token that is absent contributes NOTHING to
 the §6.2 reason class: `Policy.reasonClassesOf` floors at `{unresolved}` only on an **empty** token set, so a
 reasonless charge was visible to `deny Unknown[unresolved]` exactly while it was the unit's ONLY `Unknown`

@@ -2760,5 +2760,51 @@ for fn in crsGetString crsSetPageSize crsSize; do
 done
 
 echo
+# ── EVERY DIRECT `Unknown` CARRIES A REASON — SOUNDNESS R716/R717 ────────────────────────────────
+# `Policy.java`'s comment now says the `{unresolved}` floor is unreachable on the scan route, because
+# R716 closed the 22nd charging site and R717 the 23rd. That sentence is a DATED ABSENCE: a new
+# charging site added without a reason makes it false again, silently, and nothing here would say so.
+# This is the gate for it.
+#
+# It is deliberately ORDER-INDEPENDENT, which is why it also backstops R717's own residual: that
+# fixture exercises the rescue only while `transSupers`' HashSet order puts the second supertype last,
+# so on a JDK where the order flips the fixture goes VACUOUS rather than red. A census over real
+# output cannot go vacuous that way — if a reasonless charge exists anywhere in these scans, it is here.
+echo "== every direct Unknown carries a reason (R716/R717) =="
+_rl_total=0; _rl_bad=0
+for _rl_j in "$W"/*.jar "$ROOT"/build/libs/*-all.jar; do
+  [ -f "$_rl_j" ] || continue
+  "$CJ" "$_rl_j" --json "$W/rl.json" >/dev/null 2>&1 || continue
+  _rl_out="$(python3 - "$W/rl.json" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print("0 0"); raise SystemExit
+tot = bad = 0
+for f in d.get("functions") or []:
+    if "Unknown" not in (f.get("direct") or []):
+        continue
+    tot += 1
+    if not (f.get("unknownWhy") or []):
+        bad += 1
+        print("REASONLESS " + str(f.get("fn")), file=sys.stderr)
+print(f"{tot} {bad}")
+PY
+)"
+  _rl_total=$((_rl_total + ${_rl_out% *}))
+  _rl_bad=$((_rl_bad + ${_rl_out#* }))
+done
+# A CENSUS THAT EXAMINED NOTHING IS NOT A PASS — the same fail-closed shape as the zero-gate guards.
+if [ "$_rl_total" -eq 0 ]; then
+  echo "  FAIL the reasonless-Unknown census examined 0 direct-Unknown rows — it cannot have checked anything"
+  fail=$((fail+1))
+elif [ "$_rl_bad" -eq 0 ]; then
+  echo "  ok   every direct Unknown carries a reason ($_rl_total row(s) examined)"; pass=$((pass+1))
+else
+  echo "  FAIL $_rl_bad of $_rl_total direct-Unknown row(s) carry NO reason — a new charging site skipped unknownWhy"
+  fail=$((fail+1))
+fi
+
 echo "smoke: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

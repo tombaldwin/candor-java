@@ -1425,4 +1425,149 @@ class CrossScanBoundaryTest {
             + "above passes because nothing joined at all. Got: "
             + plain.getOrDefault("app.A.run", EffectSet.empty()).toNames());
     }
+
+    // ---- SOUNDNESS R685 — a classify answer must not REPLACE the dependency's own row -------------------
+
+    /** The library lives in a package the CLASSIFIER models whole ({@code org.apache.commons.exec.*} →
+     *  {@code Exec}), so every member of it gets a non-null {@code classify} answer. That is the whole
+     *  point: the collision between a classifier rule and a key the dependency's report also publishes is
+     *  the trigger, and this is the cheapest way to build one that compiles and runs. Two effects that are
+     *  NOT {@code Exec} — {@code Fs} and the reflective {@code Unknown} — so the rule's own answer cannot
+     *  be mistaken for the dep row's (brief §4: prefer distinguishable effects per mechanism). */
+    private static final Map<String, String> MODELLED_LIB = Map.of(
+        "org/apache/commons/exec/Runner.java", String.join("\n",
+            "package org.apache.commons.exec;",
+            "public abstract class Runner { public abstract void launch(String s); }"),
+        "org/apache/commons/exec/RealRunner.java", String.join("\n",
+            "package org.apache.commons.exec;",
+            "public class RealRunner extends Runner {",
+            "  public void launch(String s) {",
+            "    try { new java.io.FileOutputStream(\"out.txt\").close(); } catch (Throwable t) {}",
+            "    try { Class.forName(s); } catch (Throwable t) {}",
+            "  }",
+            "}"),
+        "org/apache/commons/exec/Base.java", String.join("\n",
+            "package org.apache.commons.exec;",
+            "public class Base {",
+            "  public void inherited() {",
+            "    try { new java.io.FileOutputStream(\"base.txt\").close(); } catch (Throwable t) {}",
+            "  }",
+            "}"),
+        "org/apache/commons/exec/Quiet.java", String.join("\n",
+            "package org.apache.commons.exec;",
+            "public class Quiet {",
+            "  public int twice(int x) {",
+            "    try { new java.io.FileOutputStream(\"q.txt\").close(); } catch (Throwable t) {}",
+            "    return x + x;",
+            "  }",
+            "}"));
+
+    /**
+     * SOUNDNESS R685 (filed as R672): a CLASSIFY answer replaced the chained dependency row for the same
+     * member, so the consumer read MORE certainty than the report it was handed.
+     *
+     * <p>MEASURED IN THE WILD before this fixture existed, on the published 0.39.2 jar with jgit 6.9.0
+     * chained: jgit publishes {@code org/eclipse/jgit/hooks/GitHook.call()} as
+     * {@code ['Clock','Env','Exec','Fs','Log','Net','Rand','Unknown']}, {@code unresolved: true},
+     * {@code incomplete ['Exec','Fs','Net']}; the consumer answered {@code ['Exec']},
+     * {@code unresolved: false}, and {@code deny Fs} / {@code deny Fs Unknown} / {@code deny Net} all went
+     * exit 1 → exit 0 against that same report, with {@code deny Exec} the control that stayed 1.
+     *
+     * <p>The SINGLE-TREE control is the standard of this class: what candor says with nothing split is what
+     * the chained arrangement must reproduce. It does not need the fix to pass — in one tree the classify
+     * answer already UNIONS with the local resolution — which is exactly why the chained answer diverging
+     * from it was a defect and not a limitation.
+     */
+    @Test
+    void aClassifyAnswerDoesNotReplaceTheChainedDepRow() throws Exception {
+        Map<String, String> app = Map.of("app/A.java", String.join("\n",
+            "package app;",
+            "public class A {",
+            "  public void viaAbstract(org.apache.commons.exec.Runner r) { r.launch(\"x\"); }",
+            "}"));
+
+        TreeSet<String> one = new TreeSet<>(scanOneTree(MODELLED_LIB, app)
+                .getOrDefault("app.A.viaAbstract", EffectSet.empty()).toNames());
+        assertTrue(one.containsAll(List.of("Exec", "Fs", "Unknown")),
+            "fixture precondition: in ONE tree the classify answer must union with the implementor's own "
+            + "Fs and reflective Unknown, or this test has nothing to compare the chained arm against. "
+            + "Got: " + one);
+
+        TreeSet<String> chained = new TreeSet<>(scanChained(MODELLED_LIB, app)
+                .getOrDefault("app.A.viaAbstract", EffectSet.empty()).toNames());
+        assertTrue(chained.contains("Fs"),
+            "the classify answer REPLACED the dependency's published row: the dep report carries Fs for "
+            + "this member and the consumer dropped it, so `deny Fs` passes over a real write one scan "
+            + "boundary away. Single-tree control said " + one + "; chained said " + chained);
+        assertTrue(chained.contains("Unknown"),
+            "the consumer read MORE certainty than the report it was handed — the dep row is `unresolved` "
+            + "and the consumer answered resolved. A classify answer may ADD to a dep row; it must never "
+            + "clear its Unknown. Single-tree control said " + one + "; chained said " + chained);
+        assertTrue(chained.contains("Exec"),
+            "the classifier's own answer must survive the join — this fix adds, it does not replace in the "
+            + "other direction either. Got: " + chained);
+    }
+
+    /**
+     * R685, THE SECOND ARM — the same guard, the other owner kind (brief §9: the boundary is the GUARD, not
+     * the instance). A PROJECT class extending a modelled dependency base and calling an INHERITED method
+     * compiles to an INVOKEVIRTUAL whose owner is the project class, so it is the {@code nearestDepFn} walk
+     * — not the hash join — that has to read the base's real body. The external-supertype
+     * re-classification assigns {@code effect}, which used to skip that walk.
+     */
+    @Test
+    void aSupertypeClassifyAnswerDoesNotReplaceTheInheritedDepBody() throws Exception {
+        Map<String, String> app = Map.of("app/Sub.java", String.join("\n",
+            "package app;",
+            "public class Sub extends org.apache.commons.exec.Base {",
+            "  public void use() { inherited(); }",
+            "}"));
+
+        // The single-tree control here carries `Fs` and NOT `Exec`, and that asymmetry is correct rather
+        // than a defect: in one tree `org.apache.commons.exec.Base` IS a project class, so
+        // `nearestConcreteSuper` resolves the inherited body locally and the external-supertype
+        // re-classification (whose gate is `nearestConcreteSuper(...) == null`) never runs. The thing under
+        // test is `Fs` — the dependency's own recorded body — and that must be in BOTH arms.
+        TreeSet<String> one = new TreeSet<>(scanOneTree(MODELLED_LIB, app)
+                .getOrDefault("app.Sub.use", EffectSet.empty()).toNames());
+        assertTrue(one.contains("Fs"),
+            "fixture precondition: in ONE tree the inherited body's Fs must reach the caller. Got: " + one);
+
+        TreeSet<String> chained = new TreeSet<>(scanChained(MODELLED_LIB, app)
+                .getOrDefault("app.Sub.use", EffectSet.empty()).toNames());
+        assertTrue(chained.contains("Fs"),
+            "the supertype classify answer replaced the inherited dependency body: the base's recorded Fs "
+            + "never reached the subclass's caller. Single-tree control said " + one + "; chained said "
+            + chained);
+    }
+
+    /**
+     * R685's OVER-CHARGE CONTROL, in the direction the fix did NOT intend. A classified call whose chained
+     * row is RESOLVED must come back as exactly the union of the rule and the row — no hedge.
+     * A fix that hedged everything it newly admits would pass both arms above and make every modelled
+     * third-party call in every chained scan read uncertain (the 8–25% false-uncertainty flood
+     * {@code untypedDepReceiver}'s own javadoc prices), which is why {@code untypedDepReceiver} stays
+     * gated on {@code effect == null}.
+     *
+     * <p>The corpus form of this control is the one that bounds it: the 452-jar standalone census,
+     * 1,220,848 rows, is BYTE-IDENTICAL across the fix, because a scan with no chained report has no row
+     * to join.
+     */
+    @Test
+    void aClassifiedCallWithAResolvedDepRowGainsNoHedge() throws Exception {
+        Map<String, String> app = Map.of("app/A.java", String.join("\n",
+            "package app;",
+            "public class A {",
+            "  public int quiet(org.apache.commons.exec.Quiet q) { return q.twice(2); }",
+            "}"));
+
+        TreeSet<String> chained = new TreeSet<>(scanChained(MODELLED_LIB, app)
+                .getOrDefault("app.A.quiet", EffectSet.empty()).toNames());
+        assertEquals(List.of("Exec", "Fs"), List.copyOf(chained),
+            "a classified call into a dependency whose row is RESOLVED came back with more than the union "
+            + "of the rule and the row — the join is hedging rather than reading, which is the "
+            + "false-uncertainty flood and not a disclosure. Expected exactly [Exec, Fs] (Exec from the "
+            + "package rule, Fs from the dependency's own recorded body, no Unknown because the dependency "
+            + "published none). Got: " + chained);
+    }
 }

@@ -8,6 +8,76 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R685 FIXED (filed as R672) — a `classify` answer no longer REPLACES the chained dependency's own row
+
+A consumer read **more certainty than the report it was handed**, at the one boundary SPEC §2 exists to
+police, and it shipped in 0.39.2. `Candor.crossDepJoin` was gated `effect == null`, so wherever the
+classifier had a rule for a member, the dependency's published row for that exact key — sitting in
+`crossDeps` under the hash the call site forms — was never read.
+
+MEASURED on the published 0.39.2 jar, org.eclipse.jgit 6.9.0 chained into a consumer calling
+`GitHook.call()`:
+
+| | jgit's own published row | the consumer |
+|---|---|---|
+| `inferred` | `['Clock','Env','Exec','Fs','Log','Net','Rand','Unknown']` | `['Exec']` |
+| `unresolved` | `true` | `false` |
+| `incomplete` | `['Exec','Fs','Net']` | `['Exec']` |
+| `netClass` | `['unknown-host']` | absent |
+
+`deny Fs`, `deny Fs Unknown` and `deny Net` each went **exit 1 → exit 0** against that same dependency
+report; `deny Exec` stayed 1 as the control. A direct `PreCommitHook.call()` and
+`Hooks.preCommit(r,o).call()` collapse identically, so it was never dispatch-specific.
+
+**Not a jgit rule and not a package-grant rule.** The trigger is a KEY COLLISION: any classify answer,
+prefix grant or exact owner, for a member a chained report also publishes. Instrumented over the 112-entry
+chained census arm, **1,835 distinct keys across 20 entries** had both a classify answer and a `crossDeps`
+entry — 1,807 where the dep row says strictly more than the rule, 1,671 where it carries `Unknown`. The
+owners include log4j/slf4j `Logger`, `io.lettuce.core.api.*`, `scala.sys.process.*`,
+`com.rabbitmq.client.Channel`, `org.apache.http.client.HttpClient`, netty, groovy `Script` and
+`org.eclipse.jgit.util.FS`. The table holds 64 package-prefix grants in all.
+
+**And the engine already contradicted itself on identical source.** IN-SCAN a classify answer UNIONS with
+the local resolution: `class Impl implements org.apache.commons.exec.Executor` whose `execute` opens a
+socket, called through the interface, reports `['Exec','Net']` in one tree — and reported `['Exec']` the
+moment the two classes were split across a scan boundary. CHAINED-ONLY, which is why 452 standalone
+census scans had never seen it.
+
+The same guard is fixed in `crossDepJoin`'s second arm, where the external-supertype re-classification
+assigns `effect` for a PROJECT owner: `class Sub extends <a modelled dep base>` calling an inherited
+method skipped the `nearestDepFn` walk that reads the base's real recorded body.
+
+**THE DIRECTION IT FAILS IN.** `inheritDepFn` only ever unions into `viaCross`, `surfaceIncomplete`,
+`unknownWhy` and `edges`, so this adds and cannot subtract. `untypedDepReceiver` — the *disclosure* for a
+key nothing answered — stays gated on `effect == null`: a classified call into a library with NO chained
+entry gains nothing, because a classifier answer IS an answer and hedging there is the 8–25%
+false-uncertainty flood rather than a disclosure.
+
+MEASURED, both arms, `bin/corpus-ab.py`:
+
+* **chained** (112 entries, 8,405 rows/arm, wide key + wide value): **ADDED 0, REMOVED 0, CHANGED 87**
+  (61 on the narrow `inferred` key). CONCRETE-EFFECT-LOST **0**. 47 quals gained a concrete effect
+  (0.2431% of 19,333 analysed consumer units); 23 new (package, effect) pairs; 3 new (entry, effect).
+* **gate-validated, not predicted**: all **47 of 47** scoped `deny <E> <qual>` predictions confirmed
+  0 → 1 on both real arms, 0 mispredictions.
+* **standalone** (452-jar census, 1,220,848 rows/arm): **BYTE-IDENTICAL**, wide and narrow — a scan with
+  no chained report has no row to join, which is the containment claim rather than a flattering zero.
+
+Six rows' `unknownWhy` tags changed OVERLOAD spelling rather than count; that is **SOUNDNESS R686**, a
+pre-existing order-dependence found by this A/B and documented on `depTransitiveWhy` — see below.
+
+### SOUNDNESS R686 filed — `depTransitiveWhy`'s "it cannot over-attribute" was false, and its memo is order-dependent
+
+DOCUMENTATION ONLY here; no behaviour change. The §2 report qual `fn` is **not unique per entry** —
+measured on log4j-api-2.23.1, 1,740 rows carry 1,327 distinct `fn` values, and
+`org.apache.logging.log4j.Logger.debug` alone names **48** rows, one per overload. `depWhyByFn` /
+`depCallsByFn` / `depTransWhyMemo` are all keyed on it, so one overload's DIRECT tags (including the
+per-hash `dep:<hash>` `Loader.synthesizeReasonlessDepReasons` synthesises) are handed to its siblings, and
+*which* sibling's tags a caller sees depends on which entry was queried first. The direction is LOUD —
+extra reason CLASSES, never a lost `Unknown` and never a lost `{unresolved}` floor — which is why it is
+recorded rather than fixed inside R685's diff: a closed fix needs `fn` to identify an entry and `calls`
+names quals, so it is a report-FORMAT question for candor-spec.
+
 ### ⚠ SOUNDNESS R674 FIXED (R623 + R624) — the R131 supertype walk's Fs charge now reaches the masking guards and the read/write poison
 
 **R622 is NOT fixed here. It stays OPEN and is re-pointed at R675**, on a ruling recorded in the row: its

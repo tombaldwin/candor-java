@@ -6332,7 +6332,43 @@ public class Candor {
         // separately — inherit its recorded effects via the stable method-ref hash. Only
         // for external, non-built-in, non-Spring calls (project calls trace locally;
         // reflection is already Unknown via classify).
-        if (effect == null && !springTyped && !ctx.projectClasses.contains(min.owner)) {
+        //
+        // SOUNDNESS R685 — AND *NOT* ONLY WHEN `classify` FOUND NOTHING. This guard used to read
+        // `effect == null && …`, so a classifier answer did not merely take precedence over the
+        // dependency's own published row — it REPLACED it, unread. The row was in `crossDeps` under the
+        // exact key the call site forms; nothing looked at it.
+        //
+        // MEASURED, on the published 0.39.2 jar, jgit 6.9.0 chained into a consumer that calls
+        // `GitHook.call()`. jgit's own report publishes that member as
+        // `inferred ['Clock','Env','Exec','Fs','Log','Net','Rand','Unknown']`, `unresolved: true`,
+        // `incomplete ['Exec','Fs','Net']`, `netClass ['unknown-host']`. The consumer read `['Exec']`,
+        // `unresolved: false`, `incomplete ['Exec']` — `deny Fs`, `deny Fs Unknown` and `deny Net` all
+        // went exit 1 -> exit 0 on the SAME dependency report, with `deny Exec` as the control that still
+        // exits 1. A consumer read MORE certainty than the report it was handed, which is the cardinal
+        // sin at the one boundary §2 exists to police. It shipped in 0.39.2.
+        //
+        // IT IS NOT A JGIT RULE AND NOT A PACKAGE-GRANT RULE. The trigger is a key collision: ANY
+        // `classify` answer — prefix grant or exact owner — for a member a chained report also publishes.
+        // Instrumented over the 112-entry chained census arm, 1,835 distinct keys across 20 entries had
+        // BOTH a classify answer and a `crossDeps` entry, 1,807 of them where the dep row says strictly
+        // more than the rule does and 1,671 where it carries `Unknown`; `org.eclipse.jgit.hooks` is one
+        // owner of about twenty, and the table holds 64 package-prefix grants. jgit is where it was
+        // CAUGHT (R672), not where it lives.
+        //
+        // AND THE ENGINE ALREADY CONTRADICTED ITSELF ON IDENTICAL SOURCE, which is the argument this
+        // file's own comment below records paying for once. IN-SCAN, a classify answer UNIONS with the
+        // local resolution: `class Impl implements org.apache.commons.exec.Executor` whose `execute`
+        // opens a socket, called through the interface, reports `['Exec','Net']` in one tree. CHAINED, the
+        // same two classes reported `['Exec']`. The fix makes the chained answer agree with the answer
+        // the engine gives when nothing is split.
+        //
+        // THE DIRECTION IT FAILS IN. `inheritDepFn` only ever `addAll`s / `add`s into `viaCross`,
+        // `surfaceIncomplete`, `unknownWhy` and `edges`, so this can add and cannot subtract; and
+        // `untypedDepReceiver` is still gated on `effect == null` below, so a classified call into a
+        // library with NO chained entry gains nothing — the classifier is exactly what that case is for,
+        // and hedging there is the false-uncertainty flood, not a disclosure. MEASURED: the 452-jar
+        // standalone census (1,220,848 rows, no `CANDOR_DEPS` anywhere) is BYTE-IDENTICAL across the fix.
+        if (!springTyped && !ctx.projectClasses.contains(min.owner)) {
             DepFn inh = ctx.crossDeps.get(min.owner + "." + min.name + min.desc);
             // INTERFACE/SUPERTYPE-typed dep call: `Store s = new FileStore(); s.save()`
             // compiles to INVOKEINTERFACE on `lib/Store`, but the dep report keys the body
@@ -6356,7 +6392,12 @@ public class Candor {
             // ⟨0.39⟩ A WALK-ONLY HOP IS NOT AN ANSWER. It is in the index so the dispatch closure can pass
             // through it; treating it as a hit would withdraw this disclosure from a key the dependency
             // answered only with "I call something". Deliberately unchanged behaviour on this line.
-            if (inh == null || inh.walkOnly) untypedDepReceiver(ctx, s, min, xop, monoRecv);
+            // R685: the DISCLOSURE half stays gated on `effect == null`. `untypedDepReceiver` speaks to
+            // "no key could be formed, or nothing answered it"; a classifier answer IS an answer, so
+            // firing it here would hedge every modelled third-party call in every chained scan — the
+            // 8–25% false-uncertainty flood this method's own javadoc prices. The join above is about a
+            // row that EXISTS and was overridden; this line is about one that does not.
+            if (effect == null && (inh == null || inh.walkOnly)) untypedDepReceiver(ctx, s, min, xop, monoRecv);
             if (inh != null) {
                 // ONE place applies a DepFn. This block used to duplicate `inheritDepFn` line for line,
                 // and the two had already drifted: the ⟨0.19⟩ reason class was taught to one and not the
@@ -6379,7 +6420,14 @@ public class Candor {
         // subclass is in this scan and its ClassNode names its dependency parent — and stops at the first
         // declaration, so a project override (concrete or abstract) shadows the dependency body and nothing
         // is charged. With no chained report it short-circuits and the scan is unchanged.
-        if (effect == null && !springTyped && ctx.projectClasses.contains(min.owner)) {
+        //
+        // R685 HERE TOO — the boundary is the GUARD, not the instance it was found on (§9). This arm's
+        // `effect` is non-null in exactly one way: the external-supertype re-classification above assigns
+        // `effect = se` for a PROJECT owner. So `class Sub extends <a modelled dep base>` calling an
+        // inherited method got the supertype's classify answer and then skipped the `nearestDepFn` walk
+        // that would have read the base's REAL recorded body out of the dependency's report — the same
+        // replacement, one owner-kind over, and the same fix.
+        if (!springTyped && ctx.projectClasses.contains(min.owner)) {
             DepFn inherited = nearestDepFn(min.owner, min.name, min.desc);
             // A dep entry whose ENTIRE content is Unknown carries no positive effect — it is the
             // dependency saying "I could not resolve this dispatch", which is what its own scan reports for
@@ -6993,11 +7041,31 @@ public class Candor {
      *  omitted from {@code calls} for the same reason. So the closure over {@code calls} from a unit that
      *  carries Unknown is precisely the set of units whose reasons that Unknown could have come from.
      *
-     *  <p><b>It cannot over-attribute.</b> Applied only when the joined unit itself carries Unknown, and
-     *  every tag it returns belongs to a unit this caller demonstrably reaches through it — the same
-     *  transitive rule §2 already uses for the EFFECT. A report that omits {@code fn} or {@code calls}
-     *  (an older or foreign producer) simply yields the direct tags, i.e. today's behaviour, never less.
-     *  Memoised per qual; {@code seen} bounds a cyclic call graph. */
+     *  <p><b>It DOES over-attribute across OVERLOADS, and the sentence that used to stand here said it
+     *  could not (SOUNDNESS R686).</b> The claim was: "Applied only when the joined unit itself carries
+     *  Unknown, and every tag it returns belongs to a unit this caller demonstrably reaches through it."
+     *  The second half is false, because {@code fn} — the §2 report qual these indexes are keyed on — is
+     *  NOT unique per entry. MEASURED on log4j-api-2.23.1: 1,740 rows carry 1,327 distinct {@code fn}
+     *  values, 29 of them shared, and {@code org.apache.logging.log4j.Logger.debug} alone names <b>48</b>
+     *  rows (one per overload, all under the one qual). So {@code depWhyByFn} / {@code depCallsByFn} union
+     *  every overload sharing a qual, and {@code depTransWhyMemo} — keyed the same way — hands one
+     *  overload's DIRECT tags (including the per-hash {@code dep:<hash>} that
+     *  {@link Loader#synthesizeReasonlessDepReasons} synthesises) to its siblings, so which sibling's tags
+     *  a caller sees depends on which entry was queried first.
+     *
+     *  <p><b>The direction is LOUD, which is why it is documented here rather than fixed under R685.</b> A
+     *  caller of one overload sees the union over all of them: extra reason CLASSES, never a missing
+     *  {@code Unknown} (the effect travels on {@code effects}, not on these tags) and never a lost floor
+     *  ({@code ReasonClass} maps both {@code dep:} and an EMPTY token set to {@code unresolved}). It was
+     *  found BY R685's A/B — reordering the joins moved 6 rows' {@code dep:} tags from one overload's
+     *  spelling to another's, which is the order-dependence above, and the fix for it belongs in a change
+     *  that can audit its own removal column. A closed fix needs {@code fn} to identify an entry, and
+     *  {@code calls} names quals, so that is a report-FORMAT question for candor-spec rather than one this
+     *  engine can settle alone.
+     *
+     *  <p>A report that omits {@code fn} or {@code calls} (an older or foreign producer) simply yields the
+     *  direct tags, i.e. today's behaviour, never less. Memoised per qual; {@code seen} bounds a cyclic
+     *  call graph. */
     static List<String> depTransitiveWhy(DepFn d) {
         if (d.fn == null) return d.unknownWhy;              // no qual → no handle on `calls` → direct only
         AnalysisContext c = ctx();

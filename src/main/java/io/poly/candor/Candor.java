@@ -6772,8 +6772,19 @@ public class Candor {
                         if (wouldBeBroad && !broad) ctx.closedWorldResolvedOwners.add(h.getOwner());
                         if (broad) {
                             dir.add(Effect.UNKNOWN);
+                            // SOUNDNESS R218 — DOTTED. `h.getOwner()` is an INTERNAL name, so this site and
+                            // the one below used to spell `dispatch:java/lang/Runnable.run` while the other
+                            // eight producers (all reached through `handleMethodInsn`, whose `owner` local is
+                            // `min.owner.replace('/', '.')`) spell the same fact dotted. Measured on the
+                            // 452-jar census: 18 jars carried BOTH spellings in ONE report, and on
+                            // jedis-5.1.3 / reactor-core / ant the very same owner+member appeared twice —
+                            // `redis/clients/jedis/Builder.build` beside `redis.clients.jedis.Builder.build`.
+                            // A consumer grouping or matching on `unknownWhy` then sees two reasons where
+                            // there is one, which is the whole point of the key (§F1 q7). The comment on the
+                            // `samCha` producer below already named this as "a separate, pre-existing defect".
                             ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
-                                    .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, h.getOwner() + "." + h.getName()));
+                                    .add(UnknownReason.of(UnknownReason.Kind.DISPATCH,
+                                            h.getOwner().replace('/', '.') + "." + h.getName()));
                         } else {
                             ctx.edges.get(id).addAll(cha);
                             // SOUNDNESS R530b, THE SAME TOGGLE ONE SITE OVER (§9 — an audit's boundary must
@@ -6794,9 +6805,10 @@ public class Candor {
                                     ctx.edges.get(id).addAll(lam);
                                 else {
                                     dir.add(Effect.UNKNOWN);
+                                    // SOUNDNESS R218 — DOTTED, as at the sibling site above.
                                     ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                                             .add(UnknownReason.of(UnknownReason.Kind.DISPATCH,
-                                                    h.getOwner() + "." + h.getName()));
+                                                    h.getOwner().replace('/', '.') + "." + h.getName()));
                                 }
                             }
                         }
@@ -6945,11 +6957,11 @@ public class Candor {
                                     UnknownReason.Kind.CALLBACK, h.getOwner().replace('/', '.') + "." + h.getName()));
                         } else if (samCha.size() > CHA_FANOUT_LIMIT && !isClosedHierarchy(h.getOwner())) {
                             dir.add(Effect.UNKNOWN);
-                            // DOTTED, like the seven other DISPATCH producers and unlike the project-owner
-                            // branch above (which spells the same fact `java/lang/Runnable.run`). Measured
-                            // on xnio-api 3.8.16, where both spellings land in ONE report: that is §F1 q7,
-                            // a key two paths spell differently, and this line is not going to add a third
-                            // instance of it. The neighbour's slash form is a separate, pre-existing defect.
+                            // DOTTED, like every other DISPATCH producer. Measured on xnio-api 3.8.16, both
+                            // spellings once landed in ONE report: that is §F1 q7, a key two paths spell
+                            // differently, and this line was not going to add a third instance of it.
+                            // ⟨R218⟩ THE NEIGHBOUR'S SLASH FORM — named here as "a separate, pre-existing
+                            // defect" — IS NOW FIXED, at the project-owner branch above. Both sites dot.
                             ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(
                                     UnknownReason.Kind.DISPATCH,
                                     h.getOwner().replace('/', '.') + "." + h.getName()));
@@ -8616,8 +8628,11 @@ public class Candor {
 
     /** A method name no rule can name and no class can declare: not a legal Java identifier, so it cannot
      *  be hit by an {@code equals}, and it starts and ends with NUL so no {@code startsWith}/{@code
-     *  endsWith} in the classifier can match it either. */
-    private static final String BLANKET_PROBE = "\u0000candor$blanketProbe\u0000";
+     *  endsWith} in the classifier can match it either.
+     *
+     *  <p>SOUNDNESS R626 — package-private (not private) so {@code OwnerBlanketProbeGateTest} pins the
+     *  probe's two directions against THIS definition rather than a copy of the string (§G). */
+    static final String BLANKET_PROBE = "\u0000candor$blanketProbe\u0000";
 
     /** Whether `internal` is a RUNTIME-INVOKED task type — implements Runnable/Callable or extends Thread
      *  (transitively, including through external supertypes via {@link #transSupers}). Such a class's

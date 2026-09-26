@@ -8,6 +8,64 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### SOUNDNESS R218 FIXED — one fact was spelled two ways in one report, and R626's silent probe now has a gate
+
+**R218 — `handleInvokeDynamic`'s project-owner branch spelled its `dispatch:` owner with SLASHES.** It built
+the detail from `h.getOwner()`, an ASM INTERNAL name, while the other eight `DISPATCH` producers — all
+reached through `handleMethodInsn`, whose `owner` local is `min.owner.replace('/', '.')` — spell the same
+fact dotted. So a consumer grouping or matching on `unknownWhy` saw two reasons where there is one, which
+is the whole purpose of the key (§F1 q7: a key two paths spell differently). The `samCha` producer one
+branch over already dotted its owner and its comment named the neighbour as *"a separate, pre-existing
+defect"*; both sites now dot, and that comment is corrected rather than left to go stale.
+
+**PRE, measured on the 452-jar census: 105 slashed details across 18 jars** — and on three of them the very
+same owner+member appeared under BOTH spellings in one report (`redis/clients/jedis/Builder.build` beside
+`redis.clients.jedis.Builder.build` in jedis-5.1.3 and 6.0.0, `reactor/core/CoreSubscriber.currentContext`
+in reactor-core 3.6.7 and 3.8.0-M3, and four owners at once in ant-1.10.14). **POST: 0 slashed details in
+452 jars.**
+
+**A/B — `bin/corpus-ab.py`, 452 jars, 1,220,848 rows, arms `0dd64ea4` (pre jar) vs `d23ac8bd` (post jar):
+ADDED 0 / REMOVED 0 / CHANGED 99** (0.0081%), `inferred`-only key **0 changed**. All 99 audited in full:
+`unknownWhy` is the only field that differs on any of them — **84 pure re-spellings and 15 rows whose
+pre-image carried BOTH spellings and whose post-image carries one**, which is the defect collapsing rather
+than anything being lost. 20 distinct details re-spelled, across 18 of 452 entries.
+**Gate parity: 108 pairs (6 policy forms x the 18 touched jars), 0 exit-code and 0 violation-count
+differences** — expected, because the reason KIND is `DISPATCH` on both sides and `Policy.reasonClassesOf`
+reads the kind, never the detail. (That sweep is non-vacuous: on jedis-5.1.3 the same instrument reads
+4,061 / 3,062 / 0 violations for `deny Unknown` / `deny Net` / `deny Clipboard`.)
+
+`DispatchReasonSpellingTest` lands with it and is calibrated by REVERT, not by reasoning: with the two
+lines put back, two of its three tests go red with
+`one report, one spelling. Got app/Sam.size among [app/Sam.size, java.io.DataInputStream.read, java.io.FilterInputStream.read]`
+— the defect reproduced inside the test's own fixture. **And the fixture had to be proven to reach the
+code first:** a `return Sam::size;` spelling produced ZERO `dispatch:` reasons, because a reference that
+ESCAPES UNINVOKED is deliberately skipped by that branch; handing it to `mapToInt` is what runs it.
+`twelveImplementorsIsTheControlThatKeepsThisArmHonest` pins the other side of `CHA_FANOUT_LIMIT` so a
+future silencing of the arm cannot leave the main test green for the wrong reason.
+
+**R626 — the owner-blanket denylist probe is a SILENT instrument, and now it has a gate.**
+`isOwnerBlanketRule` asks the classifier *"would your rule fire for a method name that cannot exist?"*, and
+a TRUE answer denylists the owner from R131's supertype walk. `Classifier.classify` consults
+`isPureHandleAccessor` FIRST, so the first carve-out written in a NEGATED or predicate shape
+(`!method.startsWith("read")`, `!isEffectfulVerb(method)`) swallows the probe, the denylist switches **off
+for exactly the owners that have carve-outs**, and R131's walk starts fabricating — with nothing going red.
+`OwnerBlanketProbeGateTest` pins both of the row's directions over the 15 owners that carry both a blanket
+rule and a carve-out, plus the residual the original commit did not state (a DESCRIPTOR-ONLY rule reads as
+blanket to the probe, so R131 is inert over that rule family — pinned in both directions on
+`org.redisson.config.Config`). Calibrated by injection TWICE, in two unrelated arms, because a gate that
+fires only for the arm its author was looking at is the §9 failure:
+
+```
+java.net.Socket: isPureHandleAccessor answered TRUE for a NUL-bracketed non-identifier … ==> expected: <false> but was: <true>
+java.net.Socket has a blanket rule AND an isPureHandleAccessor carve-out …              ==> expected: <true>  but was: <false>
+java.io.File:    isPureHandleAccessor answered TRUE for a NUL-bracketed non-identifier … ==> expected: <false> but was: <true>
+```
+
+`BLANKET_PROBE` becomes package-private so the test pins the ONE definition rather than a copy of the
+string (§G). No behaviour change from that, and none intended: green is 1,119 gradle tests + 601 smoke
+assertions, 0 failures.
+
+
 ### ⚠ SOUNDNESS R716 + R717 FIXED — the last two `Unknown` charges in the engine that named no hole at all
 
 **READ THE TABLE THE OTHER WAY UP: the finding is `[reflect]` 1 → 34, not `[dispatch,unresolved]` 34 → 22.** A user who wrote exactly the class the spec assigns to `Class.forName` was silently missing 33 units on commons-cli. The 12 that leave `[dispatch,unresolved]` are that same fix seen from the other side — and **the direct spelling `Class.forName(s)` has projected to `reflect` since 0.19, so it was ALREADY outside those forms. The reference spelling was inside them only for want of a label**, and only in units with no other `Unknown` reach, because the `{unresolved}` floor fires only on an EMPTY class set. Coverage that depends on how a dependency spells a call, and disappears the moment any tagged neighbour is present, is not coverage anyone could rely on.

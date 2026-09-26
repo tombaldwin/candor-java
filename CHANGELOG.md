@@ -20,6 +20,13 @@ that constant was not cosmetic:
 - **`com.sun.jna.Function.invoke`**, **`java.lang.foreign.SymbolLookup.find`/`Linker.upcallStub`**, both
   `Unsafe` spellings and **`ai.onnxruntime.OrtSession.run`** were filed `reflect:` and are **native**.
 
+**IF YOU WROTE `deny Unknown[reflect]` TO CATCH JNA, `Unsafe`, Panama OR ONNX, WRITE
+`deny Unknown[reflect,native]`.** Those 590 tokens are now `native:`, so `[reflect]` alone stops seeing
+them — and that is the one FAIL→PASS a reader of this entry could hit without knowing why. The label was
+wrong before and the policy was relying on the mislabel, but nobody relying on it can tell that from the
+table above, which is why it is spelled out here rather than left to be inferred. `deny Unknown` and
+`deny Unknown[dynamic]` are byte-identical across this change; `[dispatch,unresolved]` GAINS 895.
+
 Six of the 38 rules move; 32 are genuinely reflection or metaprogramming and do not. The kind now comes
 from `Classifier.unknownKind`, a per-rule table keyed on the rule's OWNER (every one of the 38 rules is
 owner-keyed and no owner appears in two of them, and the table is consulted only once `classify` has

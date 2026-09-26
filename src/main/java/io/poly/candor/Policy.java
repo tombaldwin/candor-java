@@ -768,7 +768,24 @@ final class Policy {
                 // An Unknown inherited from a reason-tagged callee is classified by that callee's reason,
                 // not defaulted to unresolved; a reasonless direct Unknown has already CONTRIBUTED
                 // `unresolved` at its source, so a fn reaching both a reasonless hole and a `dispatch:` one
-                // is caught by `[unresolved]` AND by `[dispatch]`. Net is the same shape one key over:
+                // is caught by `[unresolved]` AND by `[dispatch]`.
+                //
+                // THAT SECOND CLAUSE WAS FALSE ON THE SCAN ROUTE UNTIL SOUNDNESS R716/R717, and it is worth
+                // saying which way, because the sentence reads as a property of the design and was a property
+                // of nothing. `reasonClassesOf` floors at `{unresolved}` only on an EMPTY token set, so a
+                // reasonless charge contributes NOTHING beside a tagged one — the "AND by `[dispatch]`" half
+                // held and the "`[unresolved]`" half did not, which is precisely the masking a floor is
+                // supposed to prevent. It is now true because the ANTECEDENT is empty: R712 closed R131's
+                // walk (R622), R716 closed the method-REFERENCE spelling, R717 closed the project-owner walk's
+                // union-versus-local gap, and the census behind those three enumerated every READER of a
+                // classifier `Unknown` — six `Classifier.classify(` call sites and five
+                // `dir.add(<non-literal>)` sites — rather than grepping for one spelling of the charge. So
+                // this is a measured absence with a date on it, not an invariant: a 23rd charging site added
+                // without a reason would make the clause false again, silently, and no gate here would say
+                // so. `MethodRefUnknownReasonTest` and `SupertypeWalkGuardRoutingTest` are where that is
+                // pinned.
+                //
+                // Net is the same shape one key over:
                 // fail-closed, so `deny Net[unknown-host]` bites anything candor can't positively identify
                 // as telemetry/partner. Concrete effects in `bad` are untouched by either.
                 for (Effect w : List.of(Effect.UNKNOWN, Effect.NET))

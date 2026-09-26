@@ -8,6 +8,43 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R716 + R717 FIXED — the last two `Unknown` charges in the engine that named no hole at all
+
+Two sites charged `Unknown` with **`unknownWhy` absent**, and a token that is absent contributes NOTHING to
+the §6.2 reason class: `Policy.reasonClassesOf` floors at `{unresolved}` only on an **empty** token set, so a
+reasonless charge was visible to `deny Unknown[unresolved]` exactly while it was the unit's ONLY `Unknown`
+and invisible to every scoped form the moment a tagged one stood beside it.
+
+- **R716 — a method REFERENCE to a classifier-`Unknown` non-project target.** `Converter.CLASS = Class::forName`
+  reported `inferred:['Unknown']` with `unknownWhy` and `calls` both absent, while the direct call
+  `Class.forName(s)` in the same class reported `reflect:java.lang.Class.forName`. One variable, the spelling.
+  It also **corrects R622's census**, which enumerated 21 `dir.add(Effect.UNKNOWN)` sites and called R131's
+  walk the only reasonless one: this is the 22nd, invisible to that grep because it adds a *variable*
+  (`dir.add(eff)`).
+- **R717 — the project-owner supertype walk unions into `dir` but keeps ONE `effect`.** Two modelled
+  supertypes disagreeing, with `Unknown` not last in HashSet order, published `Unknown` while
+  `effectMetadata` — the only route that names one — was handed the other effect.
+
+Both take the kind from `Classifier.unknownKind`, the same authority the direct call uses. **No effect moves:
+`inferred` is byte-identical across the 452-jar census** (`ADDED 0 / REMOVED 0`, `inferred`-keyed diff
+`0/0/0`), and bare `deny Unknown` / `deny Unknown[dynamic]` are unchanged on every jar measured. What moves
+is which NARROWED form bites.
+
+**IF YOU WROTE `deny Unknown[unresolved]` OR `deny Unknown[dispatch,unresolved]`, RE-READ IT.** A hole that
+acquires a correct class is no longer *unclassifiable*, so it leaves the `unresolved` floor. On the one census
+jar that reaches R716 — **commons-cli 1.8.0**, `Converter.<clinit>` — 33 units gain `reflect` transitively:
+
+    deny Unknown                      72 ->  72   (unchanged)
+    deny Unknown[dynamic]             72 ->  72   (unchanged)
+    deny Unknown[reflect]              1 ->  34   GAINS 33
+    deny Unknown[reflect,unresolved]  13 ->  34   GAINS 21
+    deny Unknown[dispatch,unresolved] 34 ->  22   LOSES 12
+    deny Unknown[unresolved] ALONE    12 ->   0   exit 1 -> 0  ← a real FAIL->PASS
+
+The 25 highest-reach census jars are **byte-identical on all six forms** (300 runs, 0 errors), and R717's
+reach over all 452 jars is **zero** — its fix is demonstrated by fixture, not by corpus, and is written down
+as safety-only rather than presented as a measured win.
+
 ### ⚠ SOUNDNESS R675 FIXED (filed as R712) — a classifier `Unknown` carries the reason CLASS ITS OWN RULE licenses, not a constant `reflect:`, and R622's withheld label lands with it
 
 `effectMetadata` tagged **every** `Unknown` the κ classifier returns — all 38 rules — with the constant

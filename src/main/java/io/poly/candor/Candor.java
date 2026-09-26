@@ -4386,6 +4386,7 @@ public class Candor {
         // defect R674's row names, in a THIRD spelling: R675's audit boundary was drawn around the
         // EXTERNAL walk, which is its trigger, and this block sits ten lines above it (§9).
         UnknownReason.Kind superUnknownKind = null;
+        boolean projWalkChargedUnknown = false;   // SOUNDNESS R717 — see below
         if (effect == null && ctx.byName.containsKey(min.owner)
                 && !declaresConcrete(ctx.byName.get(min.owner), min.name, min.desc)
                 && nearestConcreteSuper(min.owner, min.name, min.desc) == null) {
@@ -4399,10 +4400,48 @@ public class Candor {
                 if (se != null) {
                     dir.add(se); effect = se;
                     // FIRST Unknown-charging super wins the KIND, the same tie-break (and the same
-                    // HashSet-order caveat) as `externalSupertypeUnknownKind`. Read only on the
-                    // `Unknown` arm, so a later concrete `effect` leaves it harmlessly set.
+                    // HashSet-order caveat) as `externalSupertypeUnknownKind`.
                     if (se == Effect.UNKNOWN && superUnknownKind == null)
                         superUnknownKind = Classifier.unknownKind(sup.replace('/', '.'));
+                    // SOUNDNESS R717 — AND THE UNION IS EXACTLY WHY ONE `effect` IS NOT ENOUGH. The line
+                    // above used to end *"read only on the `Unknown` arm, so a later concrete `effect`
+                    // leaves it harmlessly set"* — §K, in the comment that needed it to be true. `dir` gets
+                    // EVERY matching super; `effect` gets the LAST one in HashSet order. So two modelled
+                    // supers disagreeing with `Unknown` NOT last publish `Unknown` in `inferred` while
+                    // `effectMetadata` is handed the concrete effect, its `effect == Effect.UNKNOWN` arm
+                    // never runs, and the charge is reasonless — the R716 defect one block up, by a
+                    // different mechanism, which is §9 (an audit's boundary must not be drawn around its
+                    // own trigger) with R714's own three-line fix as the trigger.
+                    //
+                    // REACHED, not latent, and it took a probe to establish that rather than a reading:
+                    // `abstract class W extends java.io.FilterInputStream implements
+                    // java.util.random.RandomGenerator`, calling the inherited `read()I`. FilterInputStream's
+                    // rule answers `Unknown` (delegation) and RandomGenerator's whole-owner rule answers
+                    // `Rand` for ANY name — the walk consults classify per supertype and never asks whether
+                    // that supertype DECLARES the member, so a blanket rule anywhere in the hierarchy
+                    // collides with every other rule in it. Measured on the pre-fix jar:
+                    // `inferred ['Rand','Unknown']`, `unknownWhy` ABSENT, against
+                    // `dispatch:app.W$OnlyUnknownSuper.read` on the one-super control in the same scan.
+                    //
+                    // AND THE SHAPE IS NOT A ONE-OFF — the first draft of this comment said it was, on a
+                    // probe whose boundary was its own trigger (§9), and the wider probe refuted it before it
+                    // shipped. Crossing all 613 classifier owner literals against every loadable owner's real
+                    // method table PLUS the file's own method-name literals: **243 distinct disagreeing pairs
+                    // are co-inheritable with both sides loadable, 212 of them JDK-only** — 23 UNKNOWN-side
+                    // JDK owners (the eight java.io filter/buffered streams, `ObjectInputStream`,
+                    // `XMLDecoder`, `ClassLoader`, `URLClassLoader`, `MethodHandle`, `Proxy`,
+                    // `Instrumentation`, the four `javax.script` interfaces, `JavaCompiler`,
+                    // `DocumentBuilder`/`SAXParser`/`Transformer`) against blanket-ruled INTERFACES
+                    // (`RandomGenerator`, `ProcessHandle`, `Registry`) and whole-owner classes. A further
+                    // 6,307 pair shapes involve a third-party owner absent from this classpath and could not
+                    // be decided, so the figure is a floor. What is rare is a real project DOING it:
+                    // R717 reach over the 452-jar census is ZERO, so the A/B is SAFETY-ONLY for this half and
+                    // says so in the commit message rather than being discovered later.
+                    //
+                    // (Worth keeping: the FIRST cut of the probe reported zero conflicts of any kind, because
+                    // ASM was off its classpath and it caught the resulting NoClassDefFoundError once per
+                    // call — §6, an instrument that could not fail, and it read exactly like a clean sweep.)
+                    if (se == Effect.UNKNOWN) projWalkChargedUnknown = true;
                 }
             }
         }
@@ -4621,6 +4660,20 @@ public class Candor {
         kappaLedger(ctx, s, min, owner, effect);
         effectMetadata(ctx, s, min, owner, effect, superUnknownKind);   // R714: null unless the
                                                                         // project-owner walk charged it
+        // SOUNDNESS R717 — THE PROJECT-OWNER WALK'S `Unknown` WHEN `effect` ENDED UP SOMETHING ELSE. The
+        // call above is the ONLY route that names an `Unknown` at this site, and it reads `effect`, which
+        // that walk overwrites per matching supertype; this re-asks the SAME authority for the charge the
+        // union made and the local lost. Deliberately `Unknown` ONLY, not a loop over every effect the walk
+        // charged: the OTHER refiner (`extractLiteralSurfaces`) and `effectMetadata`'s Fs arm would then
+        // move `fs` kinds and `paths` on the same rows, which is a precision change and a separate row —
+        // R683's reason for shipping R623/R624 and withholding R622's one arm, applied again so the two stay
+        // separately measurable. Inert unless the walk both fired AND disagreed with itself, so every other
+        // call site in the engine is byte-identical.
+        if (projWalkChargedUnknown && effect != Effect.UNKNOWN) {
+            if (R717_DEBUG) System.err.println("R717WALK\t" + id + "\t" + owner + "." + min.name + min.desc
+                    + "\teffectEndedAs=" + effect + "\tkind=" + superUnknownKind);
+            effectMetadata(ctx, s, min, owner, Effect.UNKNOWN, superUnknownKind);
+        }
         extractLiteralSurfaces(ctx, s, min, owner, effect);
         // SOUNDNESS R674 (R622/R623/R624) — THE SUPERTYPE WALK'S CHARGE GETS THE SAME TWO REFINERS.
         // `supEff` is EMPTY unless the R131 walk fired, and the walk fires only when `effect == null`, so
@@ -6763,8 +6816,51 @@ public class Candor {
                     // call (`f.delete()`) classifies; the ref (`removeIf(File::delete)`) did not —
                     // a silent-pure hole found by a streams/method-ref sweep. A pure target →
                     // null → nothing added (no fabrication).
-                    Effect eff = Classifier.classify(h.getOwner().replace('/', '.'), h.getName(), h.getDesc());
+                    String refOwner = h.getOwner().replace('/', '.');
+                    Effect eff = Classifier.classify(refOwner, h.getName(), h.getDesc());
                     if (eff != null) dir.add(eff);
+                    // SOUNDNESS R716 — …AND WHEN THAT ANSWER IS `Unknown` IT ARRIVED WITH NO REASON AT ALL.
+                    // `LongUnaryOperator op = u::getLong` charged `Unknown` here with `unknownWhy` ABSENT and
+                    // no `calls` entry to inherit one from, while the DIRECT call `u.getLong(addr)` — same
+                    // owner, same name, same descriptor, same class, same scan — published
+                    // `native:sun.misc.Unsafe.getLong`. One variable, the SPELLING, and §4's reason class is
+                    // what `deny Unknown[class…]` quantifies over, so the reference form was invisible to
+                    // every scoped gate the call form fires.
+                    //
+                    // IT CORRECTS R622's CENSUS, and why that census could not see it is the interesting
+                    // half: R622 enumerated all 21 `dir.add(Effect.UNKNOWN)` sites and called R131's walk the
+                    // only reasonless one. This is the 22nd, and it adds a VARIABLE (`dir.add(eff)`) — a grep
+                    // for the literal cannot find a charge spelled that way. §F1 q7 one level up: a boundary
+                    // drawn around a SPELLING, in an audit whose whole subject was spellings. The re-census
+                    // that found it enumerated every READER of a classifier `Unknown` instead — six
+                    // `Classifier.classify(` call sites and five `dir.add(<non-literal>)` sites — which is
+                    // what makes "this is the last one" a measurement rather than a hope.
+                    //
+                    // THE KIND COMES FROM `Classifier.unknownKind`, THE SAME AUTHORITY THE DIRECT CALL USES
+                    // (§G), asked about the SAME owner — a method handle carries the exact owner the
+                    // classifier just answered for, so unlike the R131 walk there is no supertype to read the
+                    // rule off and no second copy of a rule condition to drift. The DETAIL is
+                    // `<dotted owner>.<name>`, the same spelling `effectMetadata` writes, so the two
+                    // spellings of one call join on ONE token rather than becoming a third instance of
+                    // §F1 q7. {@code MethodRefUnknownReasonTest} pins the pair and carries the over-charge
+                    // controls (`String::trim`, `Objects::nonNull` — classify answers null, so nothing is
+                    // added and nothing is named).
+                    //
+                    // NAMING ONLY — no effect moves. `dir.add(eff)` above is untouched, so this can neither
+                    // add nor remove a charge; it can only move a hole OFF `reasonClassesOf`'s empty-set
+                    // `{unresolved}` floor and onto the class its own rule names. That floor is why the
+                    // charge was not merely untidy: a reasonless token beside a tagged one contributes
+                    // NOTHING, because the floor fires only on an EMPTY set — so `Policy`'s claim that "a
+                    // reasonless direct Unknown has already CONTRIBUTED `unresolved` at its source" was false
+                    // on the scan route for exactly these charges. Which gate forms move, and in which
+                    // direction, is in this commit's six-policy sweep rather than asserted here.
+                    if (eff == Effect.UNKNOWN) {
+                        if (R716_DEBUG) System.err.println("R716REF\t" + id + "\t" + refOwner + "."
+                                + h.getName() + h.getDesc() + "\t" + Classifier.unknownKind(refOwner));
+                        ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                                .add(UnknownReason.of(Classifier.unknownKind(refOwner),
+                                        refOwner + "." + h.getName()));
+                    }
                     // ACROSS THE SCAN BOUNDARY. `Classifier` knows the JDK and the frameworks; it knows
                     // nothing about the user's OWN dependency, so `xs.forEach(DepUtil::write)` and
                     // `xs.forEach(d::writeInst)` fell through it and read silent-pure — while the direct
@@ -8471,6 +8567,21 @@ public class Candor {
      *  per memo miss: the question this answers is how much of a corpus reaches the R674 loop at all, and
      *  a zero here means an A/B over that corpus is SAFETY-ONLY however clean it looks. */
     private static final boolean R674_DEBUG = System.getenv("CANDOR_R674_DEBUG") != null;
+
+    /** {@code CANDOR_R716_DEBUG=1} — print one line per METHOD-REFERENCE site whose classifier answer is
+     *  {@code Unknown} and therefore now carries a reason. Same purpose as the two above and the same
+     *  reason they exist: a byte-identical A/B is not evidence until the corpus is shown to REACH the
+     *  changed branch, and four rows in this register ran a full A/B, came back identical, and were only
+     *  afterwards found by grep to have had zero instances of the shape. A zero here means the sweep is
+     *  SAFETY-ONLY, whatever else it says. */
+    private static final boolean R716_DEBUG = System.getenv("CANDOR_R716_DEBUG") != null;
+
+    /** {@code CANDOR_R717_DEBUG=1} — print one line per PROJECT-OWNER-walk site where the walk charged
+     *  {@code Unknown} but {@code effect} ended up something else, i.e. the reasonless charge R717 names.
+     *  Expected to be ZERO on this census — it needs two modelled supertypes of one project class that
+     *  DISAGREE — so this flag is what turns "we think it is rare" into a number, and the fixture in
+     *  {@code SupertypeWalkGuardRoutingTest} is what proves the branch can fire at all. */
+    private static final boolean R717_DEBUG = System.getenv("CANDOR_R717_DEBUG") != null;
 
     /** THE DENYLIST FOR {@link #externalSupertypeEffects}, ASKED OF THE CLASSIFIER RATHER THAN WRITTEN
      *  BY HAND — whether the rule that just fired for {@code owner} is an OWNER-BLANKET rule (every

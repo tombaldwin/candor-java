@@ -200,6 +200,86 @@ class SupertypeWalkGuardRoutingTest {
         } finally { rm(cls.getParent()); }
     }
 
+    /**
+     * SOUNDNESS R717 — <b>THE PROJECT-OWNER WALK UNIONS INTO {@code dir} AND KEEPS ONE {@code effect}, SO
+     * THE UNION CAN OUTLIVE THE LOCAL.</b> That loop writes every matching supertype's effect into
+     * {@code dir} but overwrites {@code effect} each time, and {@code effectMetadata} — the only route that
+     * names an {@code Unknown} at that call site — reads {@code effect}. So two modelled supertypes
+     * DISAGREEING, with {@code Unknown} not last in {@code transSupers}' HashSet order, publish
+     * {@code Unknown} in {@code inferred} while the reason arm never runs: R716's reasonless charge again, by
+     * a different mechanism, in the block R714's own fix had just touched. The comment that stood there said
+     * a later concrete {@code effect} "leaves it harmlessly set" — §K, in the sentence that needed it to be
+     * true.
+     *
+     * <p><b>REACHED, and a probe rather than a reading is what established that.</b> The walk consults
+     * {@code classify} per supertype and never asks whether that supertype DECLARES the member, so a
+     * WHOLE-OWNER rule anywhere in the hierarchy collides with every other rule in it:
+     * {@code java.util.random.RandomGenerator} answers {@code Rand} for any name and
+     * {@code java.io.FilterInputStream} answers {@code Unknown} for {@code read}. Measured on the pre-fix
+     * jar, {@code twoSupersDisagree} reported {@code inferred:['Rand','Unknown']} with {@code unknownWhy}
+     * ABSENT, against {@code dispatch:…} on the one-super control in the same scan.
+     *
+     * <p><b>AND THE SHAPE IS BROAD, WHICH THE FIRST PROBE GOT WRONG.</b> A probe restricted to each owner's
+     * DECLARED methods found every disagreeing pair to be two unrelated classes and concluded "not a class" —
+     * its boundary was its own trigger (§9). The walk never asks whether the supertype declares the member,
+     * so the right cross is owner literals against ALL probe keys: **243 distinct disagreeing pairs are
+     * co-inheritable with both sides loadable, 212 of them JDK-only**, pairing 23 UNKNOWN-side JDK owners
+     * against blanket-ruled interfaces ({@code RandomGenerator}, {@code ProcessHandle}, {@code Registry}) and
+     * whole-owner classes; 6,307 further pair shapes involve a third-party owner off this classpath and could
+     * not be decided. What is rare is a real project doing it: R717's reach over the 452-jar census is ZERO,
+     * so this arm is a FIXTURE-only demonstration and the corpus A/B is safety-only for it.
+     *
+     * <p><b>THE RESIDUAL, STATED.</b> Which supertype wins {@code effect} is {@code transSupers}' HashSet
+     * order, so this fixture exercises the RESCUE only while that order puts {@code RandomGenerator} last —
+     * which it does on JDK 21, verified by CALIBRATION: reverting the two lines in {@code handleMethodInsn}
+     * turns this test RED and nothing else in this class. It cannot be asserted from inside the test, because
+     * the rescue and {@code effectMetadata} produce the byte-identical token by design; the calibration is
+     * the evidence and it is in the commit message.
+     */
+    @Test
+    void theProjectOwnerWalksUnknownIsNamedEvenWhenAnotherSuperWinsTheEffectLocal() throws Exception {
+        Path cls = compile(Map.of("app/W.java", String.join("\n",
+            "package app;",
+            "import java.io.*;",
+            "import java.util.random.RandomGenerator;",
+            "public class W {",
+            // TWO modelled external supers, disagreeing on `read()I`: Unknown (delegation) vs Rand (blanket)
+            "  public abstract static class TwoSupers extends FilterInputStream implements RandomGenerator {",
+            "    protected TwoSupers(InputStream in) { super(in); }",
+            "  }",
+            // the one-super control: `effect` can only end as UNKNOWN here
+            "  public abstract static class OneSuper extends FilterInputStream {",
+            "    protected OneSuper(InputStream in) { super(in); }",
+            "  }",
+            "  public int twoSupersDisagree(TwoSupers t) throws Exception { return t.read(); }",
+            "  public int oneSuperOnly(OneSuper o) throws Exception { return o.read(); }",
+            "  public int viaModelled(FilterInputStream f) throws Exception { return f.read(); }",
+            "}")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            assertTrue(eff(r, "app.W.twoSupersDisagree").contains(Effect.UNKNOWN),
+                    "the union still charges Unknown — R717 names it, it does not add or remove it. Got "
+                    + eff(r, "app.W.twoSupersDisagree"));
+            assertTrue(eff(r, "app.W.twoSupersDisagree").contains(Effect.RAND),
+                    "…and still charges the OTHER supertype's effect: the union is the sound answer, and the "
+                    + "fix must not narrow it to whichever one won the local. Got "
+                    + eff(r, "app.W.twoSupersDisagree"));
+            assertFalse(whyOf("app.W.twoSupersDisagree").isEmpty(),
+                    "an Unknown the walk charged must NAME its hole whatever `effect` ended up as — "
+                    + "`effectMetadata` reads `effect`, and the union does not");
+            assertEquals(classesOf("app.W.oneSuperOnly"), classesOf("app.W.twoSupersDisagree"),
+                    "ONE syscall, ONE verdict: the reason class must not turn on whether a SECOND modelled "
+                    + "supertype happened to be iterated after the Unknown-charging one. Got two="
+                    + whyOf("app.W.twoSupersDisagree") + " one=" + whyOf("app.W.oneSuperOnly"));
+            assertEquals(classesOf("app.W.viaModelled"), classesOf("app.W.twoSupersDisagree"),
+                    "…and the same class as the modelled owner it inherits the method from. Got two="
+                    + whyOf("app.W.twoSupersDisagree") + " modelled=" + whyOf("app.W.viaModelled"));
+            assertTrue(whyOf("app.W.twoSupersDisagree").toString().contains("app.W$TwoSupers.read"),
+                    "…and the detail names THIS call's own owner, as every other arm in this file does. Got "
+                    + whyOf("app.W.twoSupersDisagree"));
+        } finally { rm(cls.getParent()); }
+    }
+
     // ── R623: the walk's `Fs` reaches the masking guards ────────────────────────────────────────────
 
     /**

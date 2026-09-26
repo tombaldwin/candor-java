@@ -8,6 +8,122 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R675 FIXED (filed as R712) — a classifier `Unknown` carries the reason CLASS ITS OWN RULE licenses, not a constant `reflect:`, and R622's withheld label lands with it
+
+`effectMetadata` tagged **every** `Unknown` the κ classifier returns — all 38 rules — with the constant
+`Kind.REFLECT`. §6.2's reason CLASS is the closed vocabulary `deny E Unknown[class…]` quantifies over, so
+that constant was not cosmetic:
+
+- the **java.io filter/buffered delegation** was filed `reflect:` while the rule's own comment calls it a
+  delegation *"to a wrapped stream of unknown concrete type … which candor cannot resolve"* — a
+  **dispatch**, and the single biggest `Unknown` family this engine has;
+- **`com.sun.jna.Function.invoke`**, **`java.lang.foreign.SymbolLookup.find`/`Linker.upcallStub`**, both
+  `Unsafe` spellings and **`ai.onnxruntime.OrtSession.run`** were filed `reflect:` and are **native**.
+
+Six of the 38 rules move; 32 are genuinely reflection or metaprogramming and do not. The kind now comes
+from `Classifier.unknownKind`, a per-rule table keyed on the rule's OWNER (every one of the 38 rules is
+owner-keyed and no owner appears in two of them, and the table is consulted only once `classify` has
+answered `UNKNOWN`, so the method/descriptor dimension cannot change the answer). The derivation is
+written down rule by rule, with its two near-misses, in `UnknownReasonKindTableTest`.
+
+**R622 lands in the same change, which is the only way it lands.** `ef7b210` shipped R623 + R624 and
+WITHHELD the R131 supertype walk's `Unknown` label (`if (se != Effect.UNKNOWN) effectMetadata(…)`) because
+the label it would have got was the wrong one. R675 alone would have moved the SUPERTYPE spelling only,
+leaving `deny Unknown[dispatch]` firing on `FilterInputStream.read` and not on `DataInputStream.read` — the
+second-spelling defect with the classes swapped. The guard is gone and the walk's kind is read off the
+CHARGING SUPERTYPE's rule, so both spellings land in one class; `SupertypeWalkGuardRoutingTest`'s two
+`@Disabled` R622 tests are live again, unedited.
+
+**THIS IS A RELABEL, SO IT MOVES GATES BOTH WAYS.** Six policy forms × the 25 highest-reach census jars ×
+2 arms, 300 runs, 0 errors:
+
+| policy | pre | post | exit transitions |
+|---|---|---|---|
+| `deny Unknown` | 158,243 | 158,243 | none |
+| `deny Unknown[dynamic]` | 158,243 | 158,243 | none |
+| `deny Unknown[dispatch,unresolved]` | 146,375 | **147,270** | none (19 jars gain) |
+| `deny Unknown[reflect]` | 134,831 | **130,926** | none (20 jars lose) |
+| `deny Unknown[reflect,unresolved]` | 135,749 | **130,926** | **1 jar 1 → 0** (fontbox 28 → 0) |
+| `deny Unknown[unresolved]` ALONE | 918 | **0** | **20 jars 1 → 0**, 2 jars 1 → 2 |
+
+`deny Unknown` and `Unknown[dynamic]` — every class — are byte-identical: nothing goes silent, no unit
+loses its `Unknown`, and no effect set moves. What changes is WHICH narrowed form bites. `[unresolved]`
+named alone relaxes to zero, and that is what a hole acquiring a correct class MEANS: holes that were
+unclassifiable are now classified, and `[dispatch,unresolved]` gains 895 violations. **Those two figures
+are NOT a reconciliation** — the 918 and the 895 are violation counts over the same 25 jars but over
+different rule populations, and a violation propagates transitively while the A/B's 1,935 is a count of
+DIRECT reason tokens on rows. What is checkable, and checked, is the DIRECTION of each form. The 2 jars going 1 → 2 (h2 ×2) are not a new refusal: their scans were already INCOMPLETE
+(a nested archive candor did not read), and that verdict surfaces once the violation count reaches 0.
+
+**A/B OVER THE 452-JAR CENSUS — `bin/corpus-ab.py`, `~/.candor/census/java` (`--check` COMPLETE), 452/452
+compared, 1,220,848 rows per arm, key entry+package+fn+hash over a MULTISET, ALL fields.** Pre arm built
+from `283d524`, jar sha1 prefixes 4081edf (pre) vs d453dbb (post), so the comparison could have failed.
+Five predictions were written down before the run and all five held:
+
+    ADDED 0    REMOVED 0    CHANGED 1,935   (0.1585% of post rows; 1,894 of them change the reason-CLASS
+                                             SET, across 167 of 452 entries)
+    inferred-only key: ADDED 0 REMOVED 0 CHANGED 0     — no effect set moves anywhere
+    REACH: R674ROUTE 1,097 hits across 110 of 452 entries — IDENTICAL to R683's, so the walk runs exactly
+           as often and what changed is the label inside it
+    buckets: 1 (absent->concrete) 0 · 2 (absent->Unknown) 0 · 3 (concrete LOST) 0 · 4 (other) 1,935
+
+**ALL 1,935 AUDITED BY MECHANISM — every token transition counted, none sampled — and `unknownWhy` is the
+ONLY field that changed on any of them. ZERO tokens lost** (a `owner.member` detail present pre and absent
+post: none), zero list-field losses of any kind. Matched on the detail, which does not move:
+
+| transition | tokens | mechanism, ground-truthed from `javap` and not from candor's own report |
+|---|---|---|
+| `reflect:` → `dispatch:` | 960 | `BufferedReader.close` (220), `FilterInputStream.read` (69), `BufferedWriter.write` (68)… `javap` of `DataOutputStream.write(int)`: `getfield out:Ljava/io/OutputStream; invokevirtual java/io/OutputStream.write` — a dispatch on a caller-supplied field, no reflection in it |
+| ABSENT → `dispatch:` | 697 | R622's withheld label landing: `DataOutputStream.write` (100), `PrintStream.flush` (84), `ZipInputStream.close`, `JarInputStream.close`, `PushbackInputStream.read`… |
+| `reflect:` → `native:` | 590 | `jna.Function.invokeInt` (104), `Unsafe.getObject`/`putObject`/`getLong`/`copyMemory`… `javap`: `Function.invokeInt` → `com.sun.jna.Native.invokeInt`, declared **`static native int`** |
+| ABSENT → `reflect:` | 7 | enumerated IN FULL: class-loader `defineClass`/`loadClass` reached through the walk from `java.lang.ClassLoader`'s rule (groovy ×2, tomcat ×2, h2 ×2, cxf). `javap`: `GroovyClassLoader.defineClass` → `invokespecial java/net/URLClassLoader.defineClass` |
+| unchanged token beside a moved one | 165 | 128 `dispatch`, 32 `reflect`, 5 `callback` — the 41 rows whose class SET does not move |
+
+**Consumer-visible beyond the gate, measured rather than predicted:** a `dispatch:OWNER.M` reason feeds
+§3.1's unresolved-dispatch frontier, so `callers --include-unknown` discloses more. On commons-compress
+`ZipArchiveInputStream.read`, `possibleViaUnknownDispatch` goes 75 → 106 while `direct` (63) and
+`transitive` (350) are unchanged — the CONFIRMED sets are identical and only the disclosed lower bound
+widens, which is what that field is for.
+
+**AND THE AUDIT BOUNDARY WAS DRAWN AROUND R675's OWN TRIGGER — SOUNDNESS R714, found by grepping the
+mechanism rather than the site.** `handleMethodInsn` runs TWO supertype re-classifications: R131's
+EXTERNAL-owner walk (which every row in this vein is about) and, ten lines above it, the PROJECT-owner
+walk, which assigns `effect` and so tags under the PROJECT class's own name — a name that matches no
+classifier rule. Measured on a three-arm fixture before the fix existed: a project
+`class MyStream extends FilterInputStream` calling the inherited `read()` reported
+`reflect:app.T$MyStream.read` while both other spellings of that one syscall reported `dispatch:`. One
+syscall, THREE spellings, two classes — R674's named trap one spelling further out. Its reach is not
+marginal: closing it took `deny Unknown[reflect]` from −1,701 to −3,905 over the same 25 jars
+(commons-compress 611 → 38, bcprov 2,590 → 1,028), i.e. 2,204 units in 25 jars would otherwise have kept
+the wrong class.
+
+
+**R713 FILED, NOT FOLDED IN.** Widening the boundary past R675's own trigger (`effectMetadata`) to *every*
+consumer of a `Classifier.classify` `Unknown` found a FOURTH spelling: a method REFERENCE to a
+classifier-`Unknown` non-project target (`Candor.java:6766-6767`) charges `Unknown` **with no reason at
+all**, in both arms. Reproduced: `LongUnaryOperator op = u::getLong` handed to a sink reports
+`inferred:['Unknown']` with `unknownWhy` ABSENT and `calls` ABSENT, while the direct `u.getLong(a)` reports
+`native:sun.misc.Unsafe.getLong`. It is PRE-EXISTING and this change neither creates nor worsens it, and it
+is a hole-NAMING change rather than a relabel — the distinction R675's own row was filed to keep
+measurable — so it is a row, not a line in this diff. It also corrects R622's enumeration: that row said
+R131's was "the ONLY reasonless `dir.add(Effect.UNKNOWN)` in the engine — all 21 sites enumerated", and
+this is a 22nd, invisible to that census because it adds a VARIABLE (`dir.add(eff)`) rather than the
+literal the grep looked for.
+
+**Calibration (§1b), all four arms executed, not reasoned:**
+
+- neuter `Classifier.unknownKind` to a bare `return REFLECT` → `UnknownReasonKindTableTest` 2/3 RED …
+  **and every test in `SupertypeWalkGuardRoutingTest` stays GREEN.** Those tests assert PARITY, which is
+  satisfiable by making all arms wrong, so they could never have caught R675 — which is why the kind table
+  has its own test beside them.
+- restore the `se != Effect.UNKNOWN` withhold → the two R622 parity tests RED, kind table green.
+- make `externalSupertypeUnknownKind` read the CALL's owner instead of the charging supertype's → the two
+  R622 tests RED with `sub=[reflect:java.io.DataInputStream.read] sup=[dispatch:java.io.FilterInputStream.read]`,
+  which is the trap R683's comment predicted, reproduced.
+- drop R714's kind capture → the three-spelling test RED, the rest green.
+
+Each half of the change is protected by a test the other half cannot make pass.
+
 ### ⚠ SOUNDNESS R685 FIXED (filed as R672) — a `classify` answer no longer REPLACES the chained dependency's own row
 
 A consumer read **more certainty than the report it was handed**, at the one boundary SPEC §2 exists to

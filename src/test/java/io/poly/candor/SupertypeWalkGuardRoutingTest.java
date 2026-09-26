@@ -13,7 +13,6 @@ import static io.poly.candor.TestCompiler.rm;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.TreeSet;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -34,28 +33,29 @@ import org.junit.jupiter.api.Test;
  * spellings, two verdicts" is what these three rows are all about, and parity is the only form of the
  * claim that cannot be satisfied by making both arms wrong.
  *
- * <p><b>SOUNDNESS R683 — THE TWO R622 TESTS ARE {@code @Disabled} AND ARE R675'S ACCEPTANCE TESTS,
- * UNCHANGED. Do not delete them.</b> R674's first cut routed the walk's {@code Unknown} through
- * {@code effectMetadata} too, which is what made those two green — and that call's only {@code UNKNOWN}
- * arm tags the hole {@code reflect:}, the label R675 has already filed as WRONG for a java.io
- * filter/buffered delegation (a DISPATCH, by the classifier's own comment). Measured over the 25
- * highest-reach census jars, the 918 {@code Unknown[unresolved]} holes did not move to {@code dispatch},
- * where {@code deny Unknown[dispatch,unresolved]} would still catch them — they moved to {@code reflect},
- * and {@code deny Unknown[unresolved]} ALONE went 918 violations to 0, flipping 20 of 25 jars FAIL to
- * PASS. So the label is withheld.
+ * <p><b>SOUNDNESS R683 — THE TWO R622 TESTS WERE {@code @Disabled} AND ARE LIVE AGAIN AS OF R675
+ * (row R712), UNCHANGED.</b> They were written as R675's acceptance tests and were never edited to pass:
+ * R674's first cut routed the walk's {@code Unknown} through {@code effectMetadata} too, which is what
+ * made them green the first time — but that call's only {@code UNKNOWN} arm tagged the hole
+ * {@code reflect:}, the label R675 had already filed as WRONG for a java.io filter/buffered delegation
+ * (a DISPATCH, by the classifier's own comment). Measured over the 25 highest-reach census jars, the 918
+ * {@code Unknown[unresolved]} holes did not move to {@code dispatch}, where
+ * {@code deny Unknown[dispatch,unresolved]} would still catch them — they moved to {@code reflect}, and
+ * {@code deny Unknown[unresolved]} ALONE went 918 violations to 0. So the label was withheld until the
+ * class was right.
  *
- * <p><b>RE-ENABLING THEM TAKES BOTH HALVES, AND SAYING SO IS THE POINT — R675 ALONE IS NOT ENOUGH.</b>
- * R675 relabels the delegation {@code dispatch:} at the source, which moves the SUPERTYPE spelling; the
- * subtype spelling stays reasonless and floors at {@code {unresolved}} while the guard in {@code Candor}
- * withholds it, so {@code deny Unknown[dispatch]} would then fire on {@code FilterInputStream.read} and
- * not on {@code DataInputStream.read} — R674's row names that exact trap ("the second-spelling defect
- * reintroduced with the classes swapped"). What these two assert is reason-class PARITY between the two
- * spellings, and parity holds when R675 has landed AND the {@code se != Effect.UNKNOWN} guard has been
- * deleted. Delete the guard, delete these {@code @Disabled}s, in one change.
+ * <p><b>AND IT TOOK BOTH HALVES, WHICH IS WHY THEY LANDED IN ONE CHANGE — R675 ALONE WAS NOT ENOUGH.</b>
+ * R675 relabels the delegation {@code dispatch:} at the source, which moves the SUPERTYPE spelling only;
+ * while the {@code se != Effect.UNKNOWN} guard stood, the subtype spelling stayed reasonless and floored
+ * at {@code {unresolved}}, so {@code deny Unknown[dispatch]} would have fired on
+ * {@code FilterInputStream.read} and not on {@code DataInputStream.read} — R674's row names that exact
+ * trap ("the second-spelling defect reintroduced with the classes swapped"). What these two assert is
+ * reason-class PARITY between the two spellings, and parity needs the relabel AND the routed label. Both
+ * are in; the guard is gone.
  *
- * <p>The TWO tests that remain live are the fail-closed halves — {@code theWalksFsReachesTheMaskingGuard}
- * (R623) and {@code theWalksFsPoisonsTheReadWriteKind} (R624, with its {@code writeAlone} over-charge
- * control) — and neither moves an {@code Unknown[…]} count anywhere.
+ * <p>The other TWO tests are the fail-closed halves — {@code theWalksFsReachesTheMaskingGuard} (R623) and
+ * {@code theWalksFsPoisonsTheReadWriteKind} (R624, with its {@code writeAlone} over-charge control) — and
+ * neither moves an {@code Unknown[…]} count anywhere.
  *
  * <p><b>Measured against the pre-fix jar, all three reproduced:</b>
  * <ul>
@@ -89,7 +89,6 @@ class SupertypeWalkGuardRoutingTest {
      * DISJOINT reason classes and no single {@code deny Unknown[…]} rule could name both.
      */
     @Test
-    @Disabled("SOUNDNESS R675 delivers this — re-enable with the R683 withhold in Candor.java, not before")
     void theWalksUnknownCarriesAReasonLikeItsSupertypeSpelling() throws Exception {
         Path cls = compile(Map.of("app/R.java", String.join("\n",
             "package app;",
@@ -125,7 +124,6 @@ class SupertypeWalkGuardRoutingTest {
      * {@code unresolved} (the set is non-empty) and not by the tagged class (it was never tagged).
      */
     @Test
-    @Disabled("SOUNDNESS R675 delivers this — re-enable with the R683 withhold in Candor.java, not before")
     void aSecondTaggedUnknownNoLongerHidesTheWalksHole() throws Exception {
         Path cls = compile(Map.of("app/M.java", String.join("\n",
             "package app;",
@@ -143,6 +141,62 @@ class SupertypeWalkGuardRoutingTest {
             assertEquals(classesOf("app.M.alone"), classesOf("app.M.both"),
                     "the hole's reason class must not depend on what ELSE the unit happens to reach — that "
                     + "dependence is the masking. Got both=" + whyOf("app.M.both"));
+        } finally { rm(cls.getParent()); }
+    }
+
+    /**
+     * SOUNDNESS R714 — <b>THE THIRD SPELLING, and the one this vein's audit boundary kept excluding.</b>
+     * {@code handleMethodInsn} runs TWO supertype re-classifications: the PROJECT-owner one
+     * ({@code Candor.java:~4379}, which assigns {@code effect}) and R131's EXTERNAL-owner one below it
+     * (which does not). Every row in this file, and R675's own relabel, was about the second. The first
+     * has the identical shape: it charges the supertype's effect under the PROJECT class's owner name, and
+     * that name matches no classifier rule, so the reason kind would come from
+     * {@code Classifier.unknownKind}'s majority default rather than from the charging rule.
+     *
+     * <p>MEASURED before the fix existed, on this fixture: {@code viaProjectSubtype} reported
+     * {@code reflect:app.T$MyStream.read} while {@code viaExternalSubtype} and {@code viaModelled}
+     * reported {@code dispatch:…} — ONE syscall, THREE spellings, two classes. That is R674's named trap
+     * ("the second-spelling defect reintroduced with the classes swapped") arriving one spelling further
+     * out, and R675 alone would have shipped it.
+     *
+     * <p>The assertion is again PARITY across all three, because parity is the only form of the claim that
+     * cannot be satisfied by making every arm wrong — and note that it CAN be satisfied that way, which is
+     * why {@code UnknownReasonKindTableTest} exists beside this file: neutering the kind table to a bare
+     * {@code return REFLECT} leaves every test in THIS class green.
+     */
+    @Test
+    void theProjectOwnerWalksUnknownCarriesTheSameClassAsBothOtherSpellings() throws Exception {
+        Path cls = compile(Map.of("app/T.java", String.join("\n",
+            "package app;",
+            "import java.io.*;",
+            "public class T {",
+            "  public static class MyStream extends FilterInputStream {",
+            "    public MyStream(InputStream in) { super(in); }",
+            "  }",
+            // the PROJECT-owner walk's arm: owner of the invoke is app.T$MyStream
+            "  public int viaProjectSubtype(MyStream m) throws Exception { return m.read(); }",
+            // the R131 EXTERNAL-owner walk's arm
+            "  public int viaExternalSubtype(DataInputStream d) throws Exception { return d.read(); }",
+            // the classifier's own modelled owner
+            "  public int viaModelled(FilterInputStream f) throws Exception { return f.read(); }",
+            "}")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(cls);
+            for (String fn : java.util.List.of("app.T.viaProjectSubtype", "app.T.viaExternalSubtype",
+                                               "app.T.viaModelled"))
+                assertTrue(eff(r, fn).contains(Effect.UNKNOWN), fn + " still charges Unknown");
+            assertEquals(classesOf("app.T.viaModelled"), classesOf("app.T.viaProjectSubtype"),
+                    "ONE syscall, ONE verdict — a PROJECT subclass of a modelled java.io stream must land "
+                    + "in the same reason CLASS as the modelled owner it inherits the method from. Got "
+                    + "project=" + whyOf("app.T.viaProjectSubtype") + " modelled="
+                    + whyOf("app.T.viaModelled"));
+            assertEquals(classesOf("app.T.viaExternalSubtype"), classesOf("app.T.viaProjectSubtype"),
+                    "…and the same class as the EXTERNAL subtype spelling, or no single `deny Unknown[c]` "
+                    + "names all three. Got project=" + whyOf("app.T.viaProjectSubtype") + " external="
+                    + whyOf("app.T.viaExternalSubtype"));
+            assertTrue(whyOf("app.T.viaProjectSubtype").toString().contains("app.T$MyStream.read"),
+                    "…and the detail names THIS call's own owner, not the supertype the rule was found on. "
+                    + "Got " + whyOf("app.T.viaProjectSubtype"));
         } finally { rm(cls.getParent()); }
     }
 

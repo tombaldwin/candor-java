@@ -1,6 +1,7 @@
 package io.poly.candor;
 
 import io.poly.candor.model.Effect;
+import io.poly.candor.model.UnknownReason;
 
 import java.util.*;
 import static io.poly.candor.Candor.*;
@@ -176,6 +177,72 @@ final class Classifier {
             case "io": return classifyIo(owner, method, desc);
             default: return classifyOther(owner, method, desc);
         }
+    }
+
+    /** The java.io DELEGATING stream owners — the one {@link #classifyJava} rule whose {@code Unknown} is a
+     *  DISPATCH and not reflection at all. A filter/buffered stream's I/O method forwards to the wrapped
+     *  {@code in}/{@code out} field, whose CONCRETE type is whatever the caller passed; the rule's own
+     *  comment says so — *"DELEGATES to a wrapped stream of unknown concrete type … which candor cannot
+     *  resolve"*. That is §4's {@code dispatch:<type>.<method>} exactly: an OWNER TYPE WAS FORMED and the
+     *  member is named, which is what §4 keys {@code dispatch:} on — as against {@code reflect:}/
+     *  {@code native:}, where there is no such member to name.
+     *
+     *  <p><b>NOT because a better pass would resolve it</b> — an earlier draft of this comment said so and
+     *  that was wrong in the flattering direction (§K). candor-spec's VALUE-PROVENANCE-DESIGN Phase 2 was
+     *  ATTEMPTED and STOPPED on exactly this field: {@code java/io/FilterInputStream#in} is JDK-inherited,
+     *  so a context-insensitive field-origin summary merges every subclass in the program and essentially
+     *  never suppresses; precise resolution is per-instance POINTS-TO, which candor deliberately does not
+     *  do. The class turns on the SHAPE of the hole, not on our odds of closing it.
+     *
+     *  <p>These eight owners occur in exactly one rule in this file, so an owner key cannot conflate two
+     *  rules here. */
+    private static final Set<String> DELEGATING_STREAM_OWNERS = Set.of(
+            "java.io.FilterOutputStream", "java.io.BufferedOutputStream",
+            "java.io.FilterInputStream", "java.io.BufferedInputStream",
+            "java.io.FilterReader", "java.io.BufferedReader",
+            "java.io.FilterWriter", "java.io.BufferedWriter");
+
+    /** The owners whose {@code Unknown} is the FFI / NATIVE boundary — §4's {@code native:<method>}, "no
+     *  analysable body". Every one of these is machine code or an intrinsic, not metaprogramming: Panama's
+     *  {@code SymbolLookup}/{@code Linker} (the downcall symbol and the upcall stub), JNA's
+     *  {@code Function.invoke*}, both {@code Unsafe} spellings (raw memory through JVM intrinsics) and ONNX
+     *  Runtime's {@code OrtSession.run} (native inference), which this file's own comments already describe
+     *  as native — *"a native call runs arbitrary machine code"*, *"opaque native inference (can't see into
+     *  native)"*. They were all labelled {@code reflect:}. */
+    private static final Set<String> NATIVE_UNKNOWN_OWNERS = Set.of(
+            "java.lang.foreign.SymbolLookup", "java.lang.foreign.Linker",
+            "com.sun.jna.Function",
+            "sun.misc.Unsafe", "jdk.internal.misc.Unsafe",
+            "ai.onnxruntime.OrtSession");
+
+    /**
+     * The §4 reason KIND for a rule that returned {@link Effect#UNKNOWN} — SOUNDNESS R675.
+     *
+     * <p><b>Every classifier-returned {@code Unknown} used to be tagged {@code reflect:}, all 38 rules</b>,
+     * so the §6.2 reason CLASS a scoped gate quantifies over was wrong for the delegation and native
+     * families and {@code deny Unknown[dispatch,unresolved]} — the form the engine's own parse-time lint
+     * steers users toward — could not see 918 java.io delegation holes across the census.
+     *
+     * <p><b>Keyed on the OWNER ALONE, and that is a property of the rules rather than a shortcut.</b> All 38
+     * {@code return Effect.UNKNOWN} rules in this file are owner-keyed, and no owner appears in two of
+     * them; this is consulted ONLY when {@code classify} has already answered {@code UNKNOWN}, so the
+     * method/descriptor dimension cannot change the answer. An owner key therefore cannot drift from the
+     * rule the way a second copy of the rule's CONDITION would (§G — ask the authority, never reimplement
+     * it), which is the alternative this replaced.
+     *
+     * <p><b>The default is the MAJORITY class, and nothing about the default makes a future rule safe — the
+     * source census in {@code UnknownReasonKindTableTest} does.</b> 32 of the 38 rules are genuinely
+     * reflection or metaprogramming (core reflection, {@code MethodHandle}, class loading and definition,
+     * instrumentation, every {@code eval}/EL/scripting engine, and the deserialization sinks, which
+     * reflectively construct an attacker-chosen object graph — the same class candor-ts gives
+     * {@code eval()}, {@code reflect:eval}). The two families that are NOT are enumerated above as
+     * DENYLISTS. A 39th rule added without a row in that test's table is a RED test, not a silent
+     * {@code reflect:} — that, and not this method's fallthrough, is what stops R675 recurring.
+     */
+    static UnknownReason.Kind unknownKind(String owner) {
+        if (NATIVE_UNKNOWN_OWNERS.contains(owner)) return UnknownReason.Kind.NATIVE;
+        if (DELEGATING_STREAM_OWNERS.contains(owner)) return UnknownReason.Kind.DISPATCH;
+        return UnknownReason.Kind.REFLECT;
     }
 
     private static Effect classifyJava(String owner, String method, String desc) {

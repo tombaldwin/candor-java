@@ -4376,6 +4376,16 @@ public class Candor {
         // dispatches to. Gated: only when the project owner has NO concrete body of its own for the
         // method (not overridden — else that analysed body wins) and no PROJECT super provides one.
         // Orthogonal to the persistence registries (which cover bases classify does NOT model).
+        // SOUNDNESS R714 — AND THIS WALK NEEDS THE SUPERTYPE'S REASON KIND FOR EXACTLY THE REASON THE
+        // EXTERNAL ONE BELOW DOES. It assigns `effect`, so an `Unknown` it charges reaches
+        // `effectMetadata` with `owner` = the PROJECT class, which names no classifier rule — so
+        // `Classifier.unknownKind` would answer its majority default and a project
+        // `class MyStream extends FilterInputStream` calling the inherited `read()` would be tagged
+        // `reflect:app.MyStream.read` while BOTH other spellings of that one syscall are `dispatch:`.
+        // MEASURED on a three-arm fixture before this line existed, and it is the same second-spelling
+        // defect R674's row names, in a THIRD spelling: R675's audit boundary was drawn around the
+        // EXTERNAL walk, which is its trigger, and this block sits ten lines above it (§9).
+        UnknownReason.Kind superUnknownKind = null;
         if (effect == null && ctx.byName.containsKey(min.owner)
                 && !declaresConcrete(ctx.byName.get(min.owner), min.name, min.desc)
                 && nearestConcreteSuper(min.owner, min.name, min.desc) == null) {
@@ -4386,7 +4396,14 @@ public class Candor {
                 // a `break` made the chosen effect order-dependent (nondeterministic) when two
                 // modeled supers declare the same method with different effects. dir is a set →
                 // union is deterministic + sound (it's the over-approx of the possible dispatches).
-                if (se != null) { dir.add(se); effect = se; }
+                if (se != null) {
+                    dir.add(se); effect = se;
+                    // FIRST Unknown-charging super wins the KIND, the same tie-break (and the same
+                    // HashSet-order caveat) as `externalSupertypeUnknownKind`. Read only on the
+                    // `Unknown` arm, so a later concrete `effect` leaves it harmlessly set.
+                    if (se == Effect.UNKNOWN && superUnknownKind == null)
+                        superUnknownKind = Classifier.unknownKind(sup.replace('/', '.'));
+                }
             }
         }
         // SOUNDNESS R131 — THE SAME RE-CLASSIFICATION, FOR AN **EXTERNAL** OWNER.
@@ -4417,8 +4434,8 @@ public class Candor {
         // `javap` are the ones "no literal surface anyway" waves away. Each MEASURED against the built jar
         // before anything was changed, each with its classified-spelling CONTROL in the same class:
         //
-        //   [R622] STILL OPEN, RE-POINTED AT R675 — see the withhold in the loop below. Stated here
-        //          because the measurement is what re-pointed it, not a preference.
+        //   [R622] CLOSED 2026-09-26 WITH R675 (row R712), having been re-pointed at it by the measurement
+        //          below rather than by a preference — see the loop.
         //          `effectMetadata` never ran, so this was the ONLY reasonless `dir.add(Effect.UNKNOWN)` in
         //          the engine. `Policy.reasonClassesOf` floors an EMPTY token set at `{unresolved}` and
         //          otherwise returns only the PARSED tokens, so `deny Unknown[reflect]` flagged
@@ -4433,7 +4450,10 @@ public class Candor {
         //          them; that policy lost exactly 918) — they moved to `reflect`, and
         //          `deny Unknown[unresolved]` ALONE went 918 violations -> 0, flipping 20 of 25 jars
         //          FAIL -> PASS. So R622's own fix is R675's: label the delegation `dispatch:` at the
-        //          source and the parity it asks for holds with no policy relaxing at all.
+        //          source, which is now done — and the parity it asks for holds, with `[dispatch]` and
+        //          `[dispatch,unresolved]` keeping every one of those holes. `[unresolved]` NAMED ALONE
+        //          still loses them, which is what a class arriving on an unclassified hole MEANS; the
+        //          commit message states that movement rather than this comment claiming it away.
         //   [R623] `extractLiteralSurfaces` never ran, so BOTH Fs masking guards (the path-ctor capture
         //          below and R421's stat-locator rung, each gated `effect == Effect.FS`) skipped an `Fs`
         //          this walk had just charged. MEASURED: `PropertyResourceBundle.getBundle("secret.config")`
@@ -4458,8 +4478,9 @@ public class Candor {
         //     so assigning `effect` would delete those too. Untouched here.
         //   REFINERS, fire when `effect != null`, were being skipped — `effectMetadata` and
         //     `extractLiteralSurfaces`. These two, and only these two, are what the loop below re-runs —
-        //     `effectMetadata` for a CONCRETE supertype effect only, the `UNKNOWN` arm withheld pending
-        //     R675 (the loop states why, and enumerates the writes that make the two independent).
+        //     ⟨R712⟩ for EVERY supertype effect now, `UNKNOWN` included, since R675 gave that arm a label
+        //     that is right (the loop states the history, and enumerates the writes that make the two
+        //     refiners independent).
         //   and `if (effect != null) dir.add(effect)`, which the walk does for itself.
         // Instead the two refiners
         // are re-run per supertype effect at the ordinary call site below, with the SAME code the
@@ -4470,16 +4491,15 @@ public class Candor {
         // calls BOTH refiners twice at EVERY call site, not just this one, produced byte-identical reports
         // over a sample of the 452-jar census. The figure is in this commit's message.
         //
-        // THE DIRECTION IT FAILS IN, MEASURED NOT ASSERTED — AND WITH THE R683 WITHHOLD IT IS NOWHERE.
+        // THE DIRECTION IT FAILS IN, MEASURED NOT ASSERTED — AND ⟨R712⟩ IT IS NO LONGER NOWHERE.
         // Additive on `paths`/`hosts`/`cmds`/`tables`, on `incomplete`, on the `fs` poison and on
-        // `tainted`. The one place it COULD subtract was the reason-class BACKSTOP — a unit whose only
-        // `Unknown` was this walk's would move off the `{unresolved}` floor onto whatever class the label
-        // named, so a policy naming `unresolved` and not that class would lose it. That is why the label
-        // is withheld: the class it would land on is `reflect`, which R675 says is wrong here, so the
-        // relaxation bought consistency onto the wrong class. With the withhold, NO `Unknown[...]` count
-        // moves at all — measured, all five policy forms byte-identical over the 25 highest-reach census
-        // jars — and the whole change is additive. The A/B over the 452-jar census is in this commit's
-        // message, removals traced.
+        // `tainted`. The one place it SUBTRACTS is the reason-class BACKSTOP — a unit whose only `Unknown`
+        // is this walk's moves off the `{unresolved}` floor onto the class the label names, so a policy
+        // naming `unresolved` and NOT that class loses it. R683 withheld the label because that class was
+        // `reflect`, which R675 filed as wrong; with R675 landed the class is `dispatch`, so
+        // `[dispatch]`/`[dispatch,unresolved]`/`[dynamic]`/bare `Unknown` all keep the hole and
+        // `[unresolved]` NAMED ALONE does not. That movement is REPORTED in the commit message with the
+        // six-policy sweep, not reasoned away here — it is a relabel, so it moves gates both ways.
         //
         // It is a DENYLIST over a sound over-approximation, not an allowlist of blessed supertypes — an
         // allowlist would be the fourth hand enumeration and its boundary would again be its own trigger.
@@ -4599,17 +4619,19 @@ public class Candor {
         deferredForce(ctx, s, min);
         reflectionPair(ctx, s, min, owner);
         kappaLedger(ctx, s, min, owner, effect);
-        effectMetadata(ctx, s, min, owner, effect);
+        effectMetadata(ctx, s, min, owner, effect, superUnknownKind);   // R714: null unless the
+                                                                        // project-owner walk charged it
         extractLiteralSurfaces(ctx, s, min, owner, effect);
         // SOUNDNESS R674 (R622/R623/R624) — THE SUPERTYPE WALK'S CHARGE GETS THE SAME TWO REFINERS.
         // `supEff` is EMPTY unless the R131 walk fired, and the walk fires only when `effect == null`, so
         // this loop is inert on every other call site in the engine and the pre-image is byte-identical
         // there. When it does fire, the charge reaches both Fs masking guards (R623) and the `fsDirect`
         // kind poison (R624) — the same code, same owner, same instruction that the modelled-supertype
-        // spelling of this very call already reaches. It does NOT reach the reason tag (R622): that arm is
-        // withheld, see the block inside the loop. `effect` itself is NOT assigned: the four
-        // `effect == null` fallbacks above stay live, which is the whole reason this is a loop here rather
-        // than an assignment up there.
+        // spelling of this very call already reaches. ⟨R712⟩ It NOW ALSO reaches the reason tag (R622):
+        // the `se != Effect.UNKNOWN` withhold is GONE, because R675 has landed and the label the walk
+        // gets is the CHARGING SUPERTYPE RULE's own kind — see the block inside the loop. `effect` itself
+        // is NOT assigned: the four `effect == null` fallbacks above stay live, which is the whole reason
+        // this is a loop here rather than an assignment up there.
         for (Effect se : supEff) {
             // REACH, because "the A/B was byte-identical" is not evidence until the corpus is shown to
             // reach the changed branch — the R131_DEBUG paragraph below states why, and this is the same
@@ -4617,50 +4639,47 @@ public class Candor {
             // --mark-env CANDOR_R674_DEBUG=1 --mark-arm post` counts it.
             if (R674_DEBUG) System.err.println("R674ROUTE\t" + s.id + "\t" + owner + "." + min.name
                     + min.desc + "\t" + se);
-            // SOUNDNESS R683 - THE `UNKNOWN` ARM IS WITHHELD UNTIL R675, AND THE WITHHOLD IS THE WHOLE
-            // DIFFERENCE BETWEEN THIS AND THE FIRST CUT. `effectMetadata`'s ONLY arm that fires on
-            // `Effect.UNKNOWN` is the one that tags `unknownWhy` with `Kind.REFLECT` - the other two are
-            // `INJECTION.contains(effect)` (`Effect.INJECTION` is `{Fs,Exec,Db,Net,Llm,Env,Ipc}`, so never
-            // UNKNOWN) and `effect == Effect.FS`. So this guard subtracts EXACTLY the label and nothing
-            // else, and it subtracts a label R675 has already filed as WRONG for this hole: the java.io
-            // filter/buffered delegation the walk lands on is a DISPATCH, by the classifier's own comment.
+            // SOUNDNESS R622 CLOSED HERE, WITH R675 (row R712) — THE WITHHOLD IS GONE AND THE HISTORY IS
+            // THE ARGUMENT FOR WHY IT CANNOT COME BACK ON ITS OWN. What stood here until R675 landed was
             //
-            // Routing it anyway would have moved 918 `Unknown[unresolved]` holes onto `reflect` across the
-            // 25 highest-reach census jars - NOT onto `dispatch`, where `deny Unknown[dispatch,unresolved]`
-            // would still have caught them; that policy lost exactly 918 in the same sweep. It bought
-            // consistency between two spellings ONTO THE WRONG CLASS, and relaxed `deny Unknown[unresolved]`
-            // alone from 918 violations to 0 (20 of 25 jars FAIL -> PASS) to do it. R675's fix delivers the
-            // same consistency for free and onto the right class.
+            //     if (se != Effect.UNKNOWN) effectMetadata(ctx, s, min, owner, se);
             //
-            // WHAT STILL SHIPS is every fail-closed half: R623 (both Fs masking guards, in
-            // `extractLiteralSurfaces`, gated `effect == Effect.FS`), R624 (the `fsDirect` kind poison, in
-            // `effectMetadata`, same gate) and the AS-EFF-007 injection-taint arm - none of which the guard
-            // can reach, and none of which moves an `Unknown[...]` count anywhere. MEASURED, the numbers
-            // stated BEFORE the run: over the 452-jar census this loop changes 6 rows and only 6, every
-            // one `incomplete: absent -> ["Fs"]` (ADDED 0, REMOVED 0, zero losses of any field, all six
-            // ground-truthed from `javap`), and all SIX `deny Unknown[...]` forms — bare, `[reflect]`,
-            // `[reflect,unresolved]`, `[dispatch,unresolved]`, `[unresolved]`, `[dynamic]` — are
-            // byte-identical pre -> post across the 25 highest-reach jars, 0 exit-code transitions.
-            // Figures in the commit message.
+            // because `effectMetadata`'s only arm that fires on `Effect.UNKNOWN` is the reason tag (the
+            // other two are `INJECTION.contains(effect)` — `{Fs,Exec,Db,Net,Llm,Env,Ipc}`, never UNKNOWN —
+            // and `effect == Effect.FS`), so the guard subtracted EXACTLY the label; and the label that
+            // arm produced was the constant `Kind.REFLECT`, which R675 had already filed as WRONG for this
+            // hole. Routing it anyway moved 918 `Unknown[unresolved]` holes onto `reflect` across the 25
+            // highest-reach census jars — NOT onto `dispatch`, where `deny Unknown[dispatch,unresolved]`
+            // still catches them; that policy lost exactly 918 in the same sweep. It bought consistency
+            // between two spellings ONTO THE WRONG CLASS. R683 therefore shipped R623 + R624 and withheld
+            // this one arm, which is why the register carries three rows for one loop.
             //
-            // THE TWO REFINERS ARE INDEPENDENT, which is what makes withholding one of them coherent rather
-            // than half a fix. Verified by ENUMERATING the writes, not assumed: `effectMetadata` writes
-            // `ctx.tainted` / `ctx.unknownWhy` / `ctx.fsDirect`; `extractLiteralSurfaces` writes
-            // `ctx.cmdsDirect` / `ctx.pathsDirect` / `ctx.hostsDirect` / `ctx.tablesDirect` /
-            // `ctx.surfaceIncomplete` and READS none of the first three - it branches only on `effect`,
-            // `min`, `owner` and the frame state. So R623's guards do not need the withheld label.
+            // WHAT CHANGED: the label is no longer a constant. `Classifier.unknownKind` reads the class off
+            // the RULE, and here the rule fired on a SUPERTYPE, so the kind comes from
+            // `externalSupertypeUnknownKind` rather than from this call's own owner — which names no rule
+            // and would answer the classifier's majority default. That is R675 ALONE NOT BEING ENOUGH,
+            // stated as code: relabelling at the source moves the SUPERTYPE spelling, and without this
+            // line the subtype spelling would still be reasonless and floor at `{unresolved}`, so
+            // `deny Unknown[dispatch]` would fire on `FilterInputStream.read` and not on
+            // `DataInputStream.read` — R674's row names that trap ("the second-spelling defect
+            // reintroduced with the classes swapped"). `SupertypeWalkGuardRoutingTest`'s two R622 tests
+            // assert reason-class PARITY between the two spellings and are the acceptance test for both
+            // halves together; they were `@Disabled` pointing at this line and are live again.
             //
-            // WHEN R675 LANDS, DELETE THIS GUARD - not the loop - AND R675 ALONE IS NOT ENOUGH, which is
-            // why this says so here rather than leaving it to be rediscovered. R675 relabels the
-            // delegation at the SOURCE, so it moves the supertype spelling; while this guard stands the
-            // subtype spelling stays reasonless and floors at `{unresolved}`, so `deny Unknown[dispatch]`
-            // would fire on `FilterInputStream.read` and not on `DataInputStream.read` — R674's row names
-            // that trap by name ("the second-spelling defect reintroduced with the classes swapped").
-            // `SupertypeWalkGuardRoutingTest`'s two R622 tests are `@Disabled` pointing here and are
-            // R675's acceptance tests unchanged: they assert reason-class PARITY between the two
-            // spellings, which holds once BOTH halves are in. Delete the guard and the two `@Disabled`s
-            // in one change.
-            if (se != Effect.UNKNOWN) effectMetadata(ctx, s, min, owner, se);
+            // THE TWO REFINERS ARE INDEPENDENT, which is what made withholding one of them coherent rather
+            // than half a fix, and it is still the reason this is two calls. Verified by ENUMERATING the
+            // writes, not assumed: `effectMetadata` writes `ctx.tainted` / `ctx.unknownWhy` /
+            // `ctx.fsDirect`; `extractLiteralSurfaces` writes `ctx.cmdsDirect` / `ctx.pathsDirect` /
+            // `ctx.hostsDirect` / `ctx.tablesDirect` / `ctx.surfaceIncomplete` and READS none of the first
+            // three — it branches only on `effect`, `min`, `owner` and the frame state.
+            //
+            // AND THIS IS NOT A DISCLOSURE-ONLY CHANGE. A relabel moves gates BOTH ways; the six-policy
+            // sweep in this commit's message states which forms move and in which direction, and
+            // `deny Unknown[unresolved]` NAMED ALONE is the one that relaxes — by design, because a hole
+            // that now has a class is no longer unclassifiable. The figures are in the commit message, not
+            // asserted here.
+            effectMetadata(ctx, s, min, owner, se,
+                    se == Effect.UNKNOWN ? externalSupertypeUnknownKind(min.owner, min.name, min.desc) : null);
             extractLiteralSurfaces(ctx, s, min, owner, se);
         }
         boolean springTyped = declarativeIoRules(ctx, s, min);
@@ -5386,9 +5405,24 @@ public class Candor {
         }
     }
 
-    /** Per-effect metadata for a classified call: the AS-EFF-007 taint surface, the reflect
+    /** Per-effect metadata for a classified call: the AS-EFF-007 taint surface, the classifier-derived
      *  unknownWhy, and the Fs read/write kind refinement. */
     static void effectMetadata(AnalysisContext ctx, MethodScan s, MethodInsnNode min, String owner, Effect effect) {
+        effectMetadata(ctx, s, min, owner, effect, null);
+    }
+
+    /**
+     * As above, with the §4 reason KIND supplied by the caller — SOUNDNESS R675.
+     *
+     * <p>{@code kind} is {@code null} for a call the classifier answered on THIS owner, where
+     * {@link Classifier#unknownKind} reads the kind off the rule that fired. The R131 supertype walk is
+     * the one caller that must pass it: there the rule fired on a SUPERTYPE, so the subtype's own owner
+     * names no rule and asking the classifier about it would answer the majority default rather than the
+     * charging rule's own class. The reason DETAIL stays THIS call's owner either way — the reason is a
+     * site, and the site is here.
+     */
+    static void effectMetadata(AnalysisContext ctx, MethodScan s, MethodInsnNode min, String owner, Effect effect,
+                               UnknownReason.Kind kind) {
         MethodNode mn = s.mn;
         String id = s.id;
         Frame<TaintValue>[] taintFrames = s.taintFrames;
@@ -5396,9 +5430,15 @@ public class Candor {
         if (taintFrames != null && effect != null && INJECTION.contains(effect)
                 && argsTainted(taintFrames[mn.instructions.indexOf(min)], min))
             ctx.tainted.computeIfAbsent(id, k -> EffectSet.empty()).add(effect);
-        if (effect == Effect.UNKNOWN) // reflection / dynamic invoke (classify §)
+        // SOUNDNESS R675 — THE KIND COMES FROM THE RULE THAT FIRED, NOT FROM A CONSTANT. This line read
+        // `Kind.REFLECT` for every one of the classifier's 38 `Unknown` rules, so the java.io filter/
+        // buffered DELEGATION and the JNA/Panama/Unsafe/ONNX NATIVE boundary were both filed under
+        // `reflect` — and §6.2's reason class is what `deny Unknown[class…]` quantifies over, so every
+        // reason-scoped gate was asking the wrong question of ~700 of this engine's Unknown tokens.
+        if (effect == Effect.UNKNOWN)
             ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
-                    .add(UnknownReason.of(UnknownReason.Kind.REFLECT, owner + "." + min.name));
+                    .add(UnknownReason.of(kind != null ? kind : Classifier.unknownKind(owner),
+                            owner + "." + min.name));
         if (effect == Effect.FS) { // non-breaking read/write refinement of Fs
             List<String> k = fsKind(owner, min.name);
             // A verb that reveals no direction must POISON the fixpoint, not merely abstain. Recording
@@ -8372,11 +8412,8 @@ public class Candor {
         if (memo != null) return memo;
         List<Effect> out = List.of();
         for (String sup : transSupers(ownerInternal)) {
-            if (c.byName.containsKey(sup)) continue;              // external supers only, as above
-            String dotted = sup.replace('/', '.');
-            Effect se = Classifier.classify(dotted, name, desc);
+            Effect se = supertypeCharge(c, sup, name, desc);
             if (se == null) continue;
-            if (isOwnerBlanketRule(dotted, desc)) continue;       // the denylist — see below
             if (out.isEmpty()) out = new ArrayList<>();
             if (!out.contains(se)) out.add(se);
         }
@@ -8384,6 +8421,42 @@ public class Candor {
         if (!out.isEmpty() && R131_DEBUG)
             System.err.println("CANDOR_R131_HIT " + ownerInternal + "." + name + desc + " " + out);
         return out;
+    }
+
+    /** THE WALK'S PER-SUPERTYPE DECISION, IN ONE PLACE — the effect this external supertype's rule charges
+     *  for {@code name+desc}, or {@code null} for "this supertype contributes nothing". Extracted because
+     *  {@link #externalSupertypeUnknownKind} needs the SAME selection and a second copy of these three
+     *  guards is the §G shape this repo keeps paying for: an `isOwnerBlanketRule` exemption fixed in one
+     *  copy and not the other would put a fabricated reason on a charge the walk never made. */
+    private static Effect supertypeCharge(AnalysisContext c, String sup, String name, String desc) {
+        if (c.byName.containsKey(sup)) return null;               // external supers only
+        String dotted = sup.replace('/', '.');
+        Effect se = Classifier.classify(dotted, name, desc);
+        if (se == null) return null;
+        if (isOwnerBlanketRule(dotted, desc)) return null;        // the denylist — see below
+        return se;
+    }
+
+    /** SOUNDNESS R675 — the §4 reason KIND for an {@code Unknown} the R131 walk charged, read off the
+     *  SUPERTYPE RULE that charged it rather than off the call's own owner (which names no rule, so
+     *  {@link Classifier#unknownKind} would answer its majority default). The detail still names this
+     *  call's own owner; only the KIND comes from up the hierarchy.
+     *
+     *  <p>FIRST UNKNOWN-charging supertype in {@link #transSupers} order wins, which is the same one the
+     *  effect list's single {@code UNKNOWN} came from (that list dedups by effect, so two modelled supers
+     *  both answering {@code Unknown} contribute one entry). {@code transSupers} is a {@code HashSet}, so
+     *  were two of them to disagree on the KIND the answer would be order-dependent — no JDK or library
+     *  hierarchy in the census does (the delegation rule's eight owners are siblings, not a chain, and the
+     *  native owners are all final or interfaces), and if one ever did, both kinds are true of the call.
+     *
+     *  <p>Asked only when the walk already charged {@code Unknown} at this site, so the fallthrough to the
+     *  owner's own rule is unreachable in practice rather than a guess standing in for a miss. */
+    static UnknownReason.Kind externalSupertypeUnknownKind(String ownerInternal, String name, String desc) {
+        AnalysisContext c = ctx();
+        for (String sup : transSupers(ownerInternal))
+            if (supertypeCharge(c, sup, name, desc) == Effect.UNKNOWN)
+                return Classifier.unknownKind(sup.replace('/', '.'));
+        return Classifier.unknownKind(ownerInternal.replace('/', '.'));
     }
 
     /** {@code CANDOR_R131_DEBUG=1} — print one line per DISTINCT (owner,name,desc) the R131 walk charges.

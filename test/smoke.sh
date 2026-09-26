@@ -15,9 +15,30 @@ CJ="$ROOT/build/install/candor-java/bin/candor-java"
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 
 pass=0; fail=0
-want()   { if printf '%s' "$2" | grep -qF -- "$3"; then echo "  ok   $1"; pass=$((pass+1)); else echo "  FAIL $1 — missing: $3"; echo "        in: $2"; fail=$((fail+1)); fi; }
-wantnot(){ if printf '%s' "$2" | grep -qF -- "$3"; then echo "  FAIL $1 — unexpected: $3"; echo "        in: $2"; fail=$((fail+1)); else echo "  ok   $1"; pass=$((pass+1)); fi; }
-absent() { if printf '%s' "$2" | grep -qF -- "$3"; then echo "  FAIL $1 — unexpected: $3"; fail=$((fail+1)); else echo "  ok   $1"; pass=$((pass+1)); fi; }
+# THESE THREE USE A HERESTRING, NOT A PIPE, AND THAT IS THE WHOLE POINT — SOUNDNESS R707.
+#
+# They were `printf '%s' "$2" | grep -qF -- "$3"`, under the `set -o pipefail` on line 6. `grep -q`
+# exits the instant it matches and stops reading; on a haystack bigger than the pipe buffer `printf`
+# then takes EPIPE, and **pipefail makes the PIPELINE's status non-zero even though the reader
+# succeeded**. So the assertion could fail BECAUSE the needle was found early in a large haystack.
+#
+# Observed on candor-java CI at `a75cdbd`, where the log carries the mechanism verbatim:
+#     test/smoke.sh: line 18: printf: write error: Broken pipe
+#     FAIL README pins the spec floor (spec 0.39) — missing: spec 0.39
+# while the very next line dumps a README that plainly contains `spec 0.39`. The same commit's smoke
+# run passed 600/0 on a laptop, so it is a buffering race and the local pass was luck, not evidence.
+#
+# AND THE DANGEROUS HALF IS `wantnot`/`absent`, NOT `want`. A spurious non-zero makes `want` report a
+# FALSE FAIL — loud, and it merely costs an investigation. It makes `wantnot` and `absent` take their
+# ELSE branch, which is `ok` — a FALSE PASS, on exactly the assertions that exist to prove something
+# is NOT in the output. That direction was not separately reproduced here; it follows from the same
+# status reaching an inverted `if`, and it is the reason this was worth fixing rather than retrying.
+#
+# A herestring writes via a temp file, so there is no pipe, no EPIPE, and no pipefail interaction.
+# Do not "simplify" these back to a pipe.
+want()   { if grep -qF -- "$3" <<<"$2"; then echo "  ok   $1"; pass=$((pass+1)); else echo "  FAIL $1 — missing: $3"; echo "        in: $2"; fail=$((fail+1)); fi; }
+wantnot(){ if grep -qF -- "$3" <<<"$2"; then echo "  FAIL $1 — unexpected: $3"; echo "        in: $2"; fail=$((fail+1)); else echo "  ok   $1"; pass=$((pass+1)); fi; }
+absent() { if grep -qF -- "$3" <<<"$2"; then echo "  FAIL $1 — unexpected: $3"; fail=$((fail+1)); else echo "  ok   $1"; pass=$((pass+1)); fi; }
 
 # ── fixtures ──────────────────────────────────────────────────────────────────────────────────────
 mkdir -p "$W/src"

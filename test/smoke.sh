@@ -1639,6 +1639,143 @@ printf 'allow Db in q orders\nallow Db in q ledger.*\n' > "$W/sql2.pol"
 SQL_PERRULE=$(CANDOR_POLICY="$W/sql2.pol" "$CJ" "$W/sqlcls" 2>&1 | grep -c "AS-EFF-008.*q\.Dao\.multi")
 want "two half-covering allow rules don't pass by union" "$SQL_PERRULE" "2"
 
+# ── SOUNDNESS R794: the Db masking guard is DERIVED from the effect, not from an owner list ──────
+echo "== SOUNDNESS R794: Db masking is derived from the effect, not an owner list =="
+# The defect: `surfaceIncomplete.add("Db")` was gated on `isSqlBearingOwner`, an owner INCLUSION list
+# naming 13 of the 65 families `Classifier.classify` charges Db.  Everything outside it — all of Redis,
+# both Mongo drivers, Couchbase, Cassandra, Elasticsearch, Exposed, groovy.sql.Sql — reached NO guard, so
+# a benign sibling SQL literal certified a caller-supplied Redis key.  Ground-truthed against real Jedis
+# 5.1.3 and a local RESP listener before this fixture was written: the server logged
+# `GET session:victim:token` while `allow Db in <fn> users` exited 0 on the unit AND on its caller.
+#
+# The stub `redis.clients.jedis.Jedis` is the same trick spring-sample uses: classify keys on the OWNER
+# NAME, so a source stub with that FQN exercises the real rule with no dependency to download.
+mkdir -p "$W/r794/redis/clients/jedis" "$W/r794/app"
+cat > "$W/r794/redis/clients/jedis/Jedis.java" <<'J'
+package redis.clients.jedis;
+public class Jedis { public String get(String key) { return key; } }
+J
+cat > "$W/r794/app/D.java" <<'J'
+package app;
+import java.sql.*;
+import redis.clients.jedis.Jedis;
+public class D {
+    // MASKED: a benign SQL literal beside a caller-supplied cache key.
+    public static String masked(Connection c, Jedis j, String k) throws SQLException {
+        c.prepareStatement("SELECT id FROM users").executeQuery();
+        return j.get(k);
+    }
+    // …and its CALLER, because a gate exit on the narrow scope alone has certified a half-fix before.
+    public static String caller(Connection c, Jedis j, String k) throws SQLException { return masked(c, j, k); }
+    // OVER-CHARGE CONTROL: pure JDBC with a determined query must STILL certify.
+    public static void sqlOnly(Connection c) throws SQLException {
+        c.prepareStatement("SELECT id FROM users").executeQuery();
+    }
+    // FABRICATION CONTROL: the old guard fired on ANY `java.sql.*` owner with a String and no literal,
+    // WITHOUT asking whether the call was Db at all — so this pure function carried `incomplete: [Db]`.
+    // 17,436 such rows existed across 372 corpus jars; the derived guard must publish none of them.
+    public static Exception noDbAtAll(String m) { return new SQLException(m); }
+}
+J
+javac -d "$W/r794cls" $(find "$W/r794" -name '*.java') 2>/dev/null
+"$CJ" "$W/r794cls" --json "$W/r794.json" >/dev/null 2>&1
+R794_MASKED=$(python3 -c "import json;r=json.load(open('$W/r794.json'));print(next((f.get('incomplete') for f in r['functions'] if f['fn']=='app.D.masked'), 'ROW-ABSENT'))")
+want "R794: the unguarded Db owner marks the surface incomplete" "$R794_MASKED" "Db"
+R794_SQL=$(python3 -c "import json;r=json.load(open('$W/r794.json'));print(next((f.get('incomplete') for f in r['functions'] if f['fn']=='app.D.sqlOnly'), 'ROW-ABSENT'))")
+absent "R794 OVER-CHARGE CONTROL: a determined JDBC query gains NOTHING" "$R794_SQL" "Db"
+R794_FAB=$(python3 -c "import json;r=json.load(open('$W/r794.json'));print(next((f.get('incomplete') for f in r['functions'] if f['fn']=='app.D.noDbAtAll'), 'ROW-ABSENT'))")
+absent "R794 FABRICATION CONTROL: a row with no Db effect carries no Db hedge" "$R794_FAB" "Db"
+printf 'allow Db in app.D.masked users\n' > "$W/r794.pol"
+CANDOR_POLICY="$W/r794.pol" "$CJ" "$W/r794cls" >/dev/null 2>&1; r794m=$?
+if [ "$r794m" -eq 1 ]; then echo "  ok   R794 GATE: \`allow Db … users\` exits 1 over the caller-supplied key"; pass=$((pass+1));
+else echo "  FAIL R794 GATE on the unit — exit $r794m (want 1)"; fail=$((fail+1)); fi
+printf 'allow Db in app.D.caller users\n' > "$W/r794.pol"
+CANDOR_POLICY="$W/r794.pol" "$CJ" "$W/r794cls" >/dev/null 2>&1; r794c=$?
+if [ "$r794c" -eq 1 ]; then echo "  ok   R794 GATE: …and on its CALLER too"; pass=$((pass+1));
+else echo "  FAIL R794 GATE on the caller — exit $r794c (want 1)"; fail=$((fail+1)); fi
+printf 'allow Db in app.D.sqlOnly users\n' > "$W/r794.pol"
+CANDOR_POLICY="$W/r794.pol" "$CJ" "$W/r794cls" >/dev/null 2>&1; r794s=$?
+if [ "$r794s" -eq 0 ]; then echo "  ok   R794 CONTROL GATE: the pure-JDBC method still CERTIFIES (exit 0)"; pass=$((pass+1));
+else echo "  FAIL R794 CONTROL GATE — exit $r794s (want 0); the guard is over-masking"; fail=$((fail+1)); fi
+
+# ── SOUNDNESS R795: a zero-argument Net call can still name its destination — at the RECEIVER ─────
+echo "== SOUNDNESS R795: the Net masking guard reads the receiver, not the argument count =="
+# The defect: `carriesArgs = !min.desc.startsWith("()")` declined every zero-argument Net call, so
+# `c.getInputStream()` / `connect()` / `getResponseCode()` on a caller-supplied URLConnection marked
+# nothing — while `c.getHeaderField("X")`, which opens no connection, DID mark, purely because it takes
+# a String.  Ground-truthed against a real local HTTP server: `GET /exfil-path` was fetched while
+# `allow Net in <fn> …` exited 0 on the unit and its caller.
+mkdir -p "$W/r795/app"
+cat > "$W/r795/app/N.java" <<'J'
+package app;
+import java.io.*;
+import java.net.*;
+public class N {
+    // MASKED: a benign literal endpoint beside a caller-supplied connection that is really fetched.
+    public static String masked(URLConnection c) throws IOException {
+        new URL("http://good.example.com/ok").openStream().close();
+        try (InputStream in = c.getInputStream()) { return new String(in.readAllBytes()); }
+    }
+    public static String caller(URLConnection c) throws IOException { return masked(c); }
+    // OVER-CHARGE CONTROL 1: the inline chained idiom — the destination IS visible.
+    public static String chained() throws IOException {
+        try (InputStream in = new URL("http://good.example.com/ok").openConnection().getInputStream()) {
+            return new String(in.readAllBytes());
+        }
+    }
+    // OVER-CHARGE CONTROL 2: the two-statement split, through a local, with the CHECKCAST spelling.
+    public static int split() throws IOException {
+        HttpURLConnection c = (HttpURLConnection) new URL("http://good.example.com/ok").openConnection();
+        return c.getResponseCode();
+    }
+    // THE SECOND RECEIVER TYPE, and the reason the rule is keyed on `isHostBearingOwner` rather than on
+    // a new list of connection owners: a caller-supplied Socket is its own destination.  Ground-truthed
+    // against a local listener, which really received the bytes, while the gate exited 0.
+    public static void sockMasked(Socket s) throws IOException {
+        new Socket("good.example.com", 18081).close();
+        s.getOutputStream().write(1);
+    }
+    // OVER-CHARGE CONTROL 3: a socket built HERE from a literal — its ctor already named the endpoint.
+    public static void sockDetermined() throws IOException {
+        Socket s = new Socket("good.example.com", 18081);
+        s.getOutputStream().write(1);
+        s.close();
+    }
+}
+J
+javac -d "$W/r795cls" "$W/r795/app/N.java" 2>/dev/null
+"$CJ" "$W/r795cls" --json "$W/r795.json" >/dev/null 2>&1
+R795_M=$(python3 -c "import json;r=json.load(open('$W/r795.json'));print(next((f.get('incomplete') for f in r['functions'] if f['fn']=='app.N.masked'), 'ROW-ABSENT'))")
+want "R795: a foreign URLConnection's establishing verb marks the surface" "$R795_M" "Net"
+R795_C=$(python3 -c "import json;r=json.load(open('$W/r795.json'));print(next((f.get('incomplete') for f in r['functions'] if f['fn']=='app.N.chained'), 'ROW-ABSENT'))")
+absent "R795 OVER-CHARGE CONTROL: the inline chained idiom gains NOTHING" "$R795_C" "Net"
+R795_S=$(python3 -c "import json;r=json.load(open('$W/r795.json'));print(next((f.get('incomplete') for f in r['functions'] if f['fn']=='app.N.split'), 'ROW-ABSENT'))")
+absent "R795 OVER-CHARGE CONTROL: the split/CHECKCAST spelling gains NOTHING" "$R795_S" "Net"
+printf 'allow Net in app.N.masked good.example.com\n' > "$W/r795.pol"
+CANDOR_POLICY="$W/r795.pol" "$CJ" "$W/r795cls" >/dev/null 2>&1; r795m=$?
+if [ "$r795m" -eq 1 ]; then echo "  ok   R795 GATE: \`allow Net … good.example.com\` exits 1 on the unit"; pass=$((pass+1));
+else echo "  FAIL R795 GATE on the unit — exit $r795m (want 1)"; fail=$((fail+1)); fi
+printf 'allow Net in app.N.caller good.example.com\n' > "$W/r795.pol"
+CANDOR_POLICY="$W/r795.pol" "$CJ" "$W/r795cls" >/dev/null 2>&1; r795c=$?
+if [ "$r795c" -eq 1 ]; then echo "  ok   R795 GATE: …and on its CALLER too"; pass=$((pass+1));
+else echo "  FAIL R795 GATE on the caller — exit $r795c (want 1)"; fail=$((fail+1)); fi
+printf 'allow Net in app.N.chained good.example.com\n' > "$W/r795.pol"
+CANDOR_POLICY="$W/r795.pol" "$CJ" "$W/r795cls" >/dev/null 2>&1; r795h=$?
+if [ "$r795h" -eq 0 ]; then echo "  ok   R795 CONTROL GATE: the determined chain still CERTIFIES (exit 0)"; pass=$((pass+1));
+else echo "  FAIL R795 CONTROL GATE — exit $r795h (want 0); the guard is over-masking"; fail=$((fail+1)); fi
+R795_SM=$(python3 -c "import json;r=json.load(open('$W/r795.json'));print(next((f.get('incomplete') for f in r['functions'] if f['fn']=='app.N.sockMasked'), 'ROW-ABSENT'))")
+want "R795: a foreign SOCKET receiver marks the surface too" "$R795_SM" "Net"
+R795_SD=$(python3 -c "import json;r=json.load(open('$W/r795.json'));print(next((f.get('incomplete') for f in r['functions'] if f['fn']=='app.N.sockDetermined'), 'ROW-ABSENT'))")
+absent "R795 OVER-CHARGE CONTROL: a socket NEWed here gains NOTHING" "$R795_SD" "Net"
+printf 'allow Net in app.N.sockMasked good.example.com\n' > "$W/r795.pol"
+CANDOR_POLICY="$W/r795.pol" "$CJ" "$W/r795cls" >/dev/null 2>&1; r795sm=$?
+if [ "$r795sm" -eq 1 ]; then echo "  ok   R795 GATE: the foreign-socket write exits 1"; pass=$((pass+1));
+else echo "  FAIL R795 GATE on the socket arm — exit $r795sm (want 1)"; fail=$((fail+1)); fi
+printf 'allow Net in app.N.sockDetermined good.example.com\n' > "$W/r795.pol"
+CANDOR_POLICY="$W/r795.pol" "$CJ" "$W/r795cls" >/dev/null 2>&1; r795sd=$?
+if [ "$r795sd" -eq 0 ]; then echo "  ok   R795 CONTROL GATE: the locally-built socket still CERTIFIES (exit 0)"; pass=$((pass+1));
+else echo "  FAIL R795 CONTROL GATE (socket) — exit $r795sd (want 0); the guard is over-masking"; fail=$((fail+1)); fi
+
 # ── κ-coverage ledger: an unlisted external package the code calls is NAMED in the receipt ───────
 echo "== κ-coverage ledger =="
 mkdir -p "$W/kap/src/com/thirdparty/json" "$W/kap/src/org/acme"

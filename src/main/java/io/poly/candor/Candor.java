@@ -4149,10 +4149,14 @@ public class Candor {
             // runtime-built URL stays unattributable → the terminal reads incomplete (the URL split-construct
             // /use AS-EFF-008 fail-closed, replacing the old value-flow backlog at the Net surface below).
             Map<Integer, String> urlLocals = constUrlLocals(mn, constLocals, joins);
+            // (R795) …and the same for the CONNECTION those URLs were opened into, so `URLConnection c =
+            // new URL("lit").openConnection(); c.getInputStream();` still attributes its host while a
+            // connection arriving from anywhere else reads incomplete at every establishing verb.
+            Map<Integer, String> connLocals = constConnLocals(mn, urlLocals, constLocals, joins);
             // This method's entry-point status is settled before the loop (entry detection above) and `id`
             // is fixed, so hoist it out of the per-instruction loop (used by the R17 gate below).
             MethodScan s = new MethodScan(mn, id, dir, taintFrames(ctx, cn, mn), provFrames(cn, mn),
-                    constLocals, urlLocals, ctx.entryPoints.contains(id), joins);
+                    constLocals, urlLocals, connLocals, ctx.entryPoints.contains(id), joins);
             for (AbstractInsnNode insn : mn.instructions) {
                 if (insn instanceof MethodInsnNode min) {
                     handleMethodInsn(ctx, s, min);
@@ -4183,11 +4187,13 @@ public class Candor {
         final Frame<ProvValue>[] provFrames;     // receiver-provenance frames (null on bodiless/failed)
         final Map<Integer, String> constLocals;  // local slot -> const String (the literal-window resolver)
         final Map<Integer, String> urlLocals;    // local slot -> URL/URI value with a literal host
+        final Map<Integer, String> connLocals;   // (R795) local slot -> URLConnection opened from a literal URL
         final boolean isEntry;                   // entry-point status, settled before the loop (R17 gate)
         final Set<LabelNode> joinLabels;         // (R86) control-flow join labels — bounds literal walks
         MethodScan(MethodNode mn, String id, EffectSet dir, Frame<TaintValue>[] taintFrames,
                 Frame<ProvValue>[] provFrames, Map<Integer, String> constLocals,
-                Map<Integer, String> urlLocals, boolean isEntry, Set<LabelNode> joinLabels) {
+                Map<Integer, String> urlLocals, Map<Integer, String> connLocals, boolean isEntry,
+                Set<LabelNode> joinLabels) {
             this.mn = mn;
             this.id = id;
             this.dir = dir;
@@ -4195,6 +4201,7 @@ public class Candor {
             this.provFrames = provFrames;
             this.constLocals = constLocals;
             this.urlLocals = urlLocals;
+            this.connLocals = connLocals;
             this.isEntry = isEntry;
             this.joinLabels = joinLabels;
         }
@@ -5569,9 +5576,22 @@ public class Candor {
         //
         // THIS IS R409 ONE EFFECT OVER. That row measured Fs as the one allowlist-shaped effect while
         // Net, Exec and Db used the general rule — but "Exec is caught" was measured only on the two
-        // owners inside this branch, which is an audit boundary drawn around its own trigger. With Fs
-        // now derived (R433) Exec was the last one keyed on a list, and a list that must stay complete
-        // to be sound is the vein this register keeps paying for.
+        // owners inside this branch, which is an audit boundary drawn around its own trigger.
+        //
+        // SOUNDNESS R794 — AND THE TWO SENTENCES THAT USED TO END THIS PARAGRAPH WERE BOTH FALSE, FOR
+        // THE SAME REASON THEY WERE WRITTEN. They said R409 had measured *Db as using the general rule*
+        // and that *with Fs derived, Exec was the LAST one keyed on a list*. Db was never on the general
+        // rule: its mark was gated on `isSqlBearingOwner`, an owner inclusion list naming 13 of the 65
+        // families `Classifier.classify` charges Db, and it outlived this fix by eleven months. So Exec
+        // was the SECOND-last, and R794 is the last — measured live on the shipped 0.39.2 jar, with a
+        // caller-supplied Redis key reaching a real server under `allow Db … users` at exit 0.
+        //
+        // The claim inherited R409's own recorded verdict without re-measuring it, in the very comment
+        // that explains why that verdict was unsafe to inherit — and being a sentence asserting SAFETY,
+        // it is the one nobody re-checks: it is what made this fix's own diff read complete. Every
+        // masking guard is now keyed on `effect == Effect.<E>`; there is no owner list left to fall
+        // behind the classifier, which is why this paragraph states a property of the CODE rather than
+        // a count of effects that could go stale again.
         //
         // THE RULE IS THE Net GENERAL RULE, STATED FOR Exec: an `Exec` call that contributes NO VISIBLE
         // COMMAND leaves this function's `cmds` surface incomplete. `capturedCmdHere` is the exact
@@ -6004,8 +6024,82 @@ public class Candor {
             // `new Socket("api.x.com", 443).close()` and flagged a method whose host is fully visible —
             // caught by an existing masking test, which is the argument for running the whole suite.
             boolean carriesArgs = !min.desc.startsWith("()");
-            if (carriesArgs && !capturedHostHere && !urlTerminalCapturedHost)
+            // SOUNDNESS R795 — …AND THE ARGUMENT COUNT IS NOT THE QUESTION. THE RECEIVER CAN BE THE
+            // DESTINATION, EXACTLY AS IT CAN BE THE PROGRAM ([[R477]]).
+            //
+            // The paragraph above is right that `socket.close()` names no destination and wrong that
+            // "a zero-argument Net call cannot carry one". `URLConnection.getInputStream()`,
+            // `connect()`, `getOutputStream()`, `getResponseCode()` and `getContent()` all take NO
+            // arguments and all ESTABLISH the connection — to a destination fixed at the
+            // `URL.openConnection()` that produced the receiver, which may be anywhere. So a
+            // caller-supplied connection was fetched with the surface reading complete.
+            //
+            // MEASURED on the shipped 0.39.2 jar against a real local HTTP server, one variable — the
+            // benign sibling literal:
+            //
+            //     public static String unit(URLConnection c) throws IOException {
+            //       new URL("http://127.0.0.1:18081/ok").openStream().close();  // benign, captures hosts
+            //       try (InputStream in = c.getInputStream()) { … }             // caller-chosen endpoint
+            //     }
+            //     -> the server logged `GET /exfil-path  Host: 127.0.0.1:18080`, and
+            //        `allow Net in <fn> 127.0.0.1:18081 127.0.0.1` EXIT 0 on the unit AND on its caller.
+            //
+            // Delete the benign line and the same function exits 1; `deny Net <fn>` exits 1 on both, so
+            // the gate could fail and the exit 0 is the sibling literal and nothing else.
+            //
+            // THE INVERSION IS THE CLEANEST STATEMENT OF WHY A DESCRIPTOR IS NOT A RULE: on the SAME
+            // class, `c.getHeaderField("X")` — a header read off an already-received response, which
+            // opens nothing — DID mark `incomplete: ['Net']`, purely because it happens to take a
+            // String. The guard was answering *did this call take an argument* when the question is
+            // *did this call reach a destination I cannot see*.
+            //
+            // DETERMINEDNESS IS THE RECEIVER'S OWN ATTRIBUTION, NOT `allocChain`. R477 could ask "was
+            // this ProcessBuilder NEWed here", because a builder is built by a NEW. A connection is
+            // NOT: `openConnection()` is a factory call, so `provAllocatedHere` answers false for the
+            // two idioms that must keep certifying — `new URL("lit").openConnection().getInputStream()`
+            // and its two-statement split — and keying on it would over-mask the commonest form of the
+            // very idiom this rule is about (R416's class, and R477's own first cut made exactly this
+            // mistake one type over). {@link Literals#connTerminalHost} answers it instead, by taking
+            // {@link Literals#urlTerminalHost} ONE HOP FURTHER OUT through the `openConnection()`.
+            //
+            // AND THE OWNER TEST IS {@link #isHostBearingOwner} — THE LIST THAT ALREADY EXISTS, NOT A
+            // SECOND ONE. The first cut of this fix named `URLConnection`/`HttpURLConnection`/
+            // `HttpsURLConnection` in a new predicate of its own. That is the R794 vein reintroduced by
+            // the fix for R795: two owner tables answering one question ("is this owner a network
+            // endpoint"), where only the one the host-CAPTURE rule uses would ever get updated. Reusing
+            // the capture rule's own list makes the receiver rule impossible to leave behind it.
+            //
+            // AND THE WIDER LIST IS NOT FREE — IT WAS PRICED, AND IT CLOSES A SECOND LIVE BYPASS THE
+            // ROW DID NOT NAME. `Socket` is a host-bearing owner, so `f(Socket s) { s.getOutputStream()
+            // .write(secret); }` beside a benign `new Socket("127.0.0.1",18081)` is R795 at another
+            // receiver type — EXECUTED against a local listener, which really received
+            // `SECRET=hunter2`, while `allow Net in <fn> 127.0.0.1:18081 …` exited 0 on the unit AND on
+            // its caller. CENSUS over 372 corpus jars: 18,725 Net call sites, 3,524 zero-argument, 382
+            // on the URL-connection family and 2,901 on other instance receivers led by `Socket.close()`
+            // (291), `Socket.getOutputStream()` (151) and `Socket.getInputStream()` (139). A/B over
+            // 2,306,281 analysed units: the narrow form moved 129 rows and the derived form moves 4,887
+            // (0.212%), with 5 rows of the corpus's 76 certifiable Net rows losing certifiability.
+            //
+            // DETERMINEDNESS THEREFORE HAS TWO CREDITS, one per shape of "the destination is visible":
+            // {@link Literals#connTerminalHost} for a connection opened from a literal URL (a FACTORY
+            // return, so `allocChain` cannot see it), and {@link #provAllocatedHere} for a receiver
+            // NEWed here — `new Socket("api.x.com",443).close()`, whose ctor the branch above already
+            // captured-or-marked, so a second mark would be the over-mask R416 is the name of. A
+            // parameter, a field read and a branch merge all answer false, which is fail-closed.
+            boolean receiverCouldCarryHost = !carriesArgs
+                    && min.getOpcode() != Opcodes.INVOKESTATIC && !min.name.equals("<init>")
+                    && isHostBearingOwner(min.owner);
+            boolean connReceiverHostVisible = receiverCouldCarryHost
+                    && (connTerminalHost(min, s.connLocals, urlLocals, constLocals, s.joinLabels) != null
+                        || provAllocatedHere(receiverProv(provFrameAt(s, min), min)));
+            if ((carriesArgs || (receiverCouldCarryHost && !connReceiverHostVisible))
+                    && !capturedHostHere && !urlTerminalCapturedHost) {
                 ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
+                // REACH, measurable rather than assumed — see the R477MASK note below for why a diff
+                // alone is not evidence. Only the NEWLY-reaching branch is marked.
+                if (MASK_DEBUG && !carriesArgs)
+                    System.err.println("R795MASK\t" + id + "\t" + owner + "." + min.name + min.desc);
+            }
         }
         // Table literals from THIS SQL-bearing call's OWN argument (the executed/prepared SQL) —
         // same per-call attribution. tablesInSql needs a leading SQL keyword so a non-SQL arg
@@ -6022,19 +6116,60 @@ public class Candor {
         // The same carve-out shape as `FS_USE_VERBS`/`EXEC_USE_VERBS`: a method on a bearing owner whose
         // argument is data. Forgetting a binder here fabricates; wrongly listing a query-bearing method
         // would UNDER-report — so the set is the JDBC binder prefix, which is closed and named by the API.
+        // A DECLARATIVE repository call carries its locator on the ENTITY, not in this call's argument
+        // window — `repo.findByEmail(email)` publishes `tables: ["users"]` from `@Table(name="users")`.
+        // That is a VISIBLE locator, so the guard below must not withdraw it. Asked of the same
+        // predicate the synthesis uses ({@link #repoCallSynthesizesDb}), never re-derived.
+        boolean capturedTableHere = repoCallSynthesizesDb(ctx, min) && ctx.repoTables.get(min.owner) != null;
         if (isSqlBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;")
                 && !isSqlParameterBinder(min.name)) {
-            boolean anySqlLiteral = false;
             for (String lit : literalArgsInWindow(min, constLocals, s.joinLabels)) {
-                anySqlLiteral = true;
+                capturedTableHere = true;
                 List<String> tl = tablesInSql(lit);
                 if (!tl.isEmpty()) ctx.tablesDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(tl);
             }
-            // a SQL-establishing call with a RUNTIME query (String arg, no literal) — the table is
-            // invisible to the gate (masking guard generalized to Db, sweep [0]). A literal SQL
-            // with no table (`SELECT 1`) is visible-but-tableless, NOT incomplete.
-            if (!anySqlLiteral)
-                ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Db");
+        }
+        // SOUNDNESS R794 — THE Db MASKING GUARD WAS THE LAST ONE KEYED ON AN OWNER INCLUSION LIST.
+        //
+        // The CAPTURE above stays keyed on {@link #isSqlBearingOwner}, and must: a `tables` entry is a
+        // positive claim about a destination, so widening the capture FABRICATES one (R425 measured a
+        // widened Fs capture publishing 2,910 new "paths" of seven distinct values, none of them a
+        // path). The MARK is the opposite direction and was keyed on the same list, which is the vein:
+        // two tables answering one question, and only the capture list was ever updated.
+        //
+        // `Classifier.classify` charges Db on 65 owner families; `isSqlBearingOwner` names 13. All of
+        // Redis (`Jedis`, `JedisCluster`, Redisson, `RedisTemplate`, Lettuce), both Mongo drivers,
+        // Couchbase, Elasticsearch, `groovy.sql.Sql` (which takes LITERAL SQL) and the Exposed/Liquibase
+        // families are outside it, so none of them reached a guard and a benign sibling literal
+        // certified all of them.
+        //
+        // MEASURED on the shipped 0.39.2 jar against real Jedis 5.1.3 and a local RESP listener, one
+        // variable — the presence of the benign sibling:
+        //
+        //     c.prepareStatement("SELECT id FROM users").executeQuery();   // benign, captures tables
+        //     return j.get(key);                                           // caller-chosen Redis key
+        //     -> the listener logged `*2 $3 GET $20 session:victim:token` — the key really left the
+        //        process — while `allow Db in <fn> users` EXIT 0 on the unit AND on its caller.
+        //
+        // Delete the benign line and the same function exits 1; `deny Db <fn>` exits 1 on both, so the
+        // gate could fail. The calibration arm (a sql-bearing owner with a runtime query) marked
+        // `incomplete: ['Db']` throughout, so the mechanism was sound and only the list was wrong.
+        //
+        // THE RULE IS THE Net GENERAL RULE, STATED FOR Db: a Db call that contributes NO VISIBLE
+        // LOCATOR leaves this function's `tables` surface incomplete. Because the default is
+        // *incomplete*, a Db owner added to the classifier tomorrow is disclosed without anyone
+        // remembering to add it here — which is the whole of what this change buys.
+        //
+        // AND THE HONEST PART: for a NON-SQL Db owner this engine captures no locator at ALL, so the
+        // mark fires even on `j.get("session:known")`, whose key is a literal in plain sight. That is
+        // not an over-mark, it is the accurate statement that candor publishes no Redis/Mongo key
+        // surface for `allow Db` to be checked against — but it does mean a Redis-touching function
+        // can no longer be certified by `allow Db`, only by `deny`. Publishing key literals as a
+        // surface is a SPEC-shaped change (a `tables` entry that is not a table) and is deliberately
+        // not smuggled in here.
+        if (effect == Effect.DB && !capturedTableHere && dbCallCouldNameALocator(min)) {
+            ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Db");
+            if (MASK_DEBUG) System.err.println("R794MASK\t" + id + "\t" + owner + "." + min.name + min.desc);
         }
     }
 
@@ -6056,10 +6191,7 @@ public class Candor {
             // effects the CHA edge already attributes, so synthesizing Db there FABRICATES Db on
             // a pure default helper (a soundness sweep found `repo.greet()` → {Db} for a default
             // returning a constant). Only synthesize when the call resolves to NO visible body.
-            ClassNode ro = ctx.byName.get(min.owner);
-            boolean visibleBody = (ro != null && declaresConcrete(ro, min.name, min.desc))
-                    || nearestConcreteSuper(min.owner, min.name, min.desc) != null;
-            if (!visibleBody) {
+            if (repoCallSynthesizesDb(ctx, min)) {
                 dir.add(Effect.DB);
                 String tbl = ctx.repoTables.get(min.owner); // the declarative `tables` surface
                 if (tbl != null) ctx.tablesDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(tbl);
@@ -9220,6 +9352,62 @@ public class Candor {
         for (Type t : args) {
             if (t.getSort() != Type.OBJECT && t.getSort() != Type.ARRAY) continue;  // a primitive is not a program
             if (EXEC_NON_PROGRAM_TYPES.contains(t.getDescriptor())) continue;
+            return true;
+        }
+        return false;
+    }
+
+    /** Whether a call on a Spring-Data / Jakarta-Data repository type resolves to NO visible body, so
+     *  {@link #declarativeIoRules} synthesizes {@code Db} for it and publishes the entity's DECLARATIVE
+     *  table (from {@code @Table}, via {@code ctx.repoTables}) as this function's {@code tables} surface.
+     *
+     *  <p>ONE definition, consulted by the synthesis AND by the R794 masking guard, because the two
+     *  answering differently is exactly the defect R794 is (§G — where two paths compute one fact, make
+     *  them the same path). The masking guard needs it because a repository call's locator IS visible, it
+     *  just is not a literal in the call's own argument window: it is declared on the entity. Without the
+     *  credit the guard marked `repo.findByEmail(email)` incomplete and withdrew a `tables: ["users"]`
+     *  surface that the engine had correctly derived — caught by smoke's JPA arm on the first run. */
+    static boolean repoCallSynthesizesDb(AnalysisContext ctx, MethodInsnNode min) {
+        if (!ctx.repoTypes.contains(min.owner)) return false;
+        ClassNode ro = ctx.byName.get(min.owner);
+        boolean visibleBody = (ro != null && declaresConcrete(ro, min.name, min.desc))
+                || nearestConcreteSuper(min.owner, min.name, min.desc) != null;
+        return !visibleBody;
+    }
+
+    /** SOUNDNESS R794 — could this {@code Db} call name the locator (table / collection / key) it reads
+     *  or writes?
+     *
+     *  <p>{@code false} means "declining to read a non-signal", exactly as the Net general rule does for
+     *  a zero-argument call and {@link #execCallCouldNameAProgram} does for {@code p.waitFor()}:
+     *  {@code jedis.close()} and {@code ds.getConnection()} carry no locator, so their silence is
+     *  evidence in neither direction. {@code true} means this call could have named one and — at the one
+     *  call site that consults this — did not, so a benign sibling literal must not certify the function.
+     *
+     *  <p><b>THERE IS NO TYPE DENYLIST HERE, AND THAT IS A MEASUREMENT RATHER THAN AN OMISSION.</b>
+     *  {@link #EXEC_NON_PROGRAM_TYPES} exists because a census found operand types that provably cannot
+     *  be a program ({@code TimeUnit}, {@code ProcessBuilder$Redirect}). The same census over Db has no
+     *  such population: of 6,062 arg-carrying non-binder Db call sites across 372 jars, the operand
+     *  types that appear as a call's ONLY object operand are led by {@code Object} (1,161),
+     *  {@code String} (908), {@code byte[]} (162) and {@code Class} (135) — and every one of those IS a
+     *  locator somewhere (a Redis key is a {@code String} or a {@code byte[]}, a JPA entity is an
+     *  {@code Object}, {@code MongoTemplate.getCollectionName(Class)} derives the collection from the
+     *  class). The tail is entirely library-specific types, and a denylist of THOSE would be the owner
+     *  table this change exists to delete. A primitive operand is carved out by its SORT instead.
+     *
+     *  <p>The ONE carve-out is the JDBC PARAMETER BINDER, and note it is now correctly SCOPED. {@code
+     *  ps.setString(1, v)} binds a VALUE into a placeholder whose query was named (and captured, or
+     *  marked) at {@code prepareStatement}; marking it would fail-close the commonest JDBC idiom there
+     *  is. But {@link #isSqlParameterBinder} is a bare {@code startsWith("set")} — sound only under the
+     *  {@code java.sql}/JPA naming convention it was derived from — and Redis's {@code set}/{@code setex}
+     *  /{@code setnx} carry the KEY as their first argument. The old guard never noticed, because it
+     *  could not see a non-SQL owner at all; conjoining the owner test here is what keeps
+     *  {@code jedis.set(key, v)} marked. */
+    static boolean dbCallCouldNameALocator(MethodInsnNode min) {
+        if (isSqlBearingOwner(min.owner) && isSqlParameterBinder(min.name)) return false;
+        Type[] args = Type.getArgumentTypes(min.desc);
+        for (Type t : args) {
+            if (t.getSort() != Type.OBJECT && t.getSort() != Type.ARRAY) continue;  // not a locator
             return true;
         }
         return false;

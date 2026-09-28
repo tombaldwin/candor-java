@@ -8,6 +8,68 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R794 + R795 FIXED — every masking guard is now keyed on the EFFECT, and no owner table is left to fall behind the classifier
+
+**R794 — the `Db` masking guard was the last one keyed on an owner INCLUSION list.** `surfaceIncomplete.add("Db")`
+fired only inside `isSqlBearingOwner`, which names 13 of the 65 owner families `Classifier.classify` charges
+`Db`. Everything outside it — all of Redis (Jedis, JedisCluster, Redisson, `RedisTemplate`, Lettuce), both
+Mongo drivers, Couchbase, Elasticsearch, Cassandra, Exposed, Liquibase, `groovy.sql.Sql` — reached **no
+guard at all**, so a benign sibling SQL literal certified them. MEASURED against real Jedis 5.1.3 and a
+local RESP listener, which logged `GET session:victim:token` — the caller's key really left the process —
+while `allow Db in <fn> users` exited **0** on the unit AND on its caller. The mark now keys on
+`effect == Effect.DB`; the table CAPTURE stays owner-gated, because widening a capture fabricates a
+destination while widening a mark only discloses.
+
+**R795 — the `Net` guard asked "did this call take an argument" when the question is "did this call reach a
+destination I cannot see".** `carriesArgs = !desc.startsWith("()")` declined every zero-argument call, so
+`c.getInputStream()` / `connect()` / `getResponseCode()` on a caller-supplied `URLConnection` marked
+nothing — while `c.getHeaderField("X")`, which opens no connection, DID. MEASURED against a real local HTTP
+server, which served `GET /exfil-path`, at gate exit **0** on the unit and its caller. The rule now reads the
+RECEIVER, exactly as R477 did for `ProcessBuilder` — and it is keyed on `isHostBearingOwner`, the list the
+host-CAPTURE rule already uses, rather than a second table of connection owners. That wider keying closed a
+second live bypass the row did not name: `f(Socket s) { s.getOutputStream().write(secret); }` beside a benign
+`new Socket(…)` literal, ground-truthed against a listener that really received the bytes.
+
+**A/B — `bin/corpus-ab.py`, 372 jars, 2,306,281 analysed units, 1,501,297 → 1,497,384 rows.** `inferred` is
+unmoved; `incomplete` is the only field that differs on any row.
+
+| | rows | % of analysed units |
+|---|---|---|
+| GAINED `incomplete[Db]` (every one on a row that carries `Db`) | 43,834 | 1.90% |
+| GAINED `incomplete[Net]` (every one on a row that carries `Net`) | 4,887 | 0.21% |
+| LOST `incomplete[Db]` — a hedge the old guard fabricated | 49,692 | 2.15% |
+| …of which the row carried no `Db` effect at all | 13,523 | 0.59% |
+| rows that vanished entirely (their only content was that fabricated hedge) | 3,913 | 0.17% |
+| **gate flips** (a row that was certifiable and no longer is) | **5** | 0.0002% |
+
+**It is not a disclosure-ONLY change, and the removals are the larger half.** The old `Db` block was never
+gated on the effect, so it marked any call on a `java.sql.*` / `org.hibernate.*` / `org.jooq.*` owner that
+carried a `String` — including `new SQLException(msg)`. **17,436 rows carried `incomplete: ["Db"]` while
+performing no `Db` at all; the new guard publishes none of them.** Executed control: those rows' gate exits
+are identical on both arms (a function with no `Db` cannot be gated by `allow Db`), and the one shape whose
+verdict does move — a method reaching only `users` that also constructs a `SQLException` — goes from a FALSE
+failure (exit 1) to a pass.
+
+**Gate flips are 5 in 372 jars because only 78 rows in 2.3M analysed units were certifiable to begin with**
+(2 `Db`, 76 `Net`) — java is already ~97% hedged on both surfaces (345,175 of 355,230 `Net` rows and 141,819
+of 199,193 `Db` rows carried `incomplete` before this change). That number is a statement about the
+corpus, not a safety claim: the shape that flips is by construction a function holding BOTH a captured
+literal and an invisible locator, i.e. the masking shape itself. The user-visible cost, stated as a shape:
+a method that reads a declared SQL table AND touches a cache candor publishes no key surface for can no
+longer be certified by `allow Db` — even when the cache key is a literal, because candor models no Redis/
+Mongo key surface for a policy to be checked against. A pure-JDBC method is unaffected.
+
+**The one over-mask this found and fixed before shipping:** a Spring-Data repository call carries its
+locator on the ENTITY (`@Table(name="users")`), not in its own argument window, so the derived guard
+withdrew a `tables: ["users"]` surface the engine had correctly derived. `repoCallSynthesizesDb` is now ONE
+predicate consulted by both the synthesis and the guard — smoke's JPA arm caught it on the first run.
+
+`test/smoke.sh` gains 16 assertions for the two rows, calibrated by replaying their exact fixtures against
+the pre-fix jar: **8 fail on it** (3 of R794's 6, 5 of R795's 10 — every `incomplete` pin and every masked
+gate exit, on the unit and on its caller). The 8 that pass are the over-charge controls, whose job is the
+other direction: they fail if the FIX over-masks, which is what caught the JPA declarative-table regression
+below on the first run.
+
 ### SOUNDNESS R218 FIXED — one fact was spelled two ways in one report, and R626's silent probe now has a gate
 
 **R218 — `handleInvokeDynamic`'s project-owner branch spelled its `dispatch:` owner with SLASHES.** It built

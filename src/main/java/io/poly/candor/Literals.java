@@ -354,6 +354,68 @@ final class Literals {
         return null;
     }
 
+    /** SOUNDNESS R795 — the host literal attributable to a {@code URLConnection} RECEIVER, or null when
+     *  none is cheaply attributable (then the Net surface must fail CLOSED).
+     *
+     *  <p>This is {@link #urlTerminalHost} ONE HOP FURTHER OUT, and the two shapes are the same two:
+     *  <ul><li>INLINE — {@code new URL("lit").openConnection().getInputStream()}: the receiver is produced
+     *  by the {@code openConnection()} immediately preceding, so ask {@link #urlTerminalHost} about THAT
+     *  call's own receiver.</li>
+     *  <li>THROUGH A LOCAL — {@code URLConnection c = new URL("lit").openConnection(); c.getInputStream();}:
+     *  the receiver is an ALOAD of a local whose EVERY definition is such a chain ({@link
+     *  #constConnLocals}).</li></ul>
+     *
+     *  <p>A CHECKCAST between the two is skipped: {@code (HttpURLConnection) url.openConnection()} is the
+     *  idiomatic spelling and a cast does not change the value. A join label BOUNDS the walk exactly as it
+     *  does in {@link #urlTerminalHost} — {@code (cond ? a : b).getInputStream()} must not resolve to
+     *  whichever branch sits adjacent. Anything else → null = incomplete, the sound over-approximation. */
+    static String connTerminalHost(AbstractInsnNode terminal, Map<Integer, String> connLocals,
+            Map<Integer, String> urlLocals, Map<Integer, String> constLocals, Set<LabelNode> joins) {
+        AbstractInsnNode r = receiverProducer(terminal, joins);
+        if (r == null) return null;
+        if (r instanceof MethodInsnNode oc && isUrlValueOwner(oc.owner) && oc.name.equals("openConnection"))
+            return urlTerminalHost(oc, urlLocals, constLocals, joins);
+        if (r instanceof VarInsnNode v && v.getOpcode() == Opcodes.ALOAD && connLocals.containsKey(v.var))
+            return connLocals.get(v.var);
+        return null;
+    }
+
+    /** The instruction that produced a ZERO-ARGUMENT call's receiver (or the value an ASTORE is about to
+     *  store), or null when a control-flow JOIN intervenes. Skips pseudo-instructions and CHECKCAST. */
+    private static AbstractInsnNode receiverProducer(AbstractInsnNode at, Set<LabelNode> joins) {
+        AbstractInsnNode r = at.getPrevious();
+        while (r != null && (r.getOpcode() < 0 || r.getOpcode() == Opcodes.CHECKCAST)) {
+            if (r instanceof LabelNode lbl && joins.contains(lbl)) return null;
+            r = r.getPrevious();
+        }
+        return r;
+    }
+
+    /** SOUNDNESS R795 — locals provably bound to a single {@code new URL(lit).openConnection()} chain whose
+     *  host is statically known. The {@code URLConnection} counterpart of {@link #constUrlLocals}, and
+     *  built the same way: a slot that ever stores a runtime-URL connection, two different literal hosts,
+     *  or any other value is ambiguous and EXCLUDED, so a later {@code c.getInputStream()} reads
+     *  incomplete (fail-closed) rather than inheriting a benign host. */
+    static Map<Integer, String> constConnLocals(MethodNode mn, Map<Integer, String> urlLocals,
+            Map<Integer, String> constLocals, Set<LabelNode> joins) {
+        Map<Integer, String> m = new HashMap<>();
+        Set<Integer> ambiguous = new HashSet<>();
+        for (AbstractInsnNode n = mn.instructions.getFirst(); n != null; n = n.getNext()) {
+            if (!(n instanceof VarInsnNode v) || v.getOpcode() != Opcodes.ASTORE) continue;
+            AbstractInsnNode p = receiverProducer(v, joins);
+            String host = null;
+            if (p instanceof MethodInsnNode oc && isUrlValueOwner(oc.owner) && oc.name.equals("openConnection"))
+                host = urlTerminalHost(oc, urlLocals, constLocals, joins);
+            if (host == null || (m.containsKey(v.var) && !m.get(v.var).equals(host))) {
+                ambiguous.add(v.var);
+                m.remove(v.var);
+            } else if (!ambiguous.contains(v.var)) {
+                m.put(v.var, host);
+            }
+        }
+        return m;
+    }
+
     /** Locals provably bound to a single `new URL(lit)`/`URI.create(lit)` whose host literal is statically
      *  known — the two-statement split `URL u = new URL("https://good.com"); u.openStream();`. An index ever
      *  stored a runtime URL, two different literal hosts, or a non-URL value is ambiguous and EXCLUDED, so a

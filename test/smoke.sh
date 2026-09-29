@@ -1830,6 +1830,45 @@ for pair in argProjU:1 argProjC:1 argVirtU:1 execFieldU:1 fieldSameU:1 staticSam
     else echo "  FAIL R819 GATE app.R.$m — exit $got (want $want)"; fail=$((fail+1)); fi
 done
 
+# ── SOUNDNESS R824: a handle round-tripped through a JDK container (or array, or a lambda) and executed ──
+echo "== SOUNDNESS R824: a container absorbs the handle handed INTO it =="
+# 49d61cd's forward walk followed only a consuming call's RESULT — for `List.add` a boolean, for `Map.put`
+# the previous value — so `m.put(k, em.createNativeQuery(sql)); m.get(k).getResultList()` exited 0 where
+# v0.39.2 exited 1. The two over-follow controls pin the direction that must NOT move: a handle put in a
+# container and never executed, and a bound VALUE (`createArrayOf`) handed to a JDBC binder.
+cat > "$W/r794b/app/C2.java" <<'J'
+package app;
+import java.sql.*;
+import java.util.*;
+import jakarta.persistence.*;
+public class C2 {
+    static void lit(Connection c) throws SQLException { c.prepareStatement("SELECT id FROM users").executeQuery(); }
+    Map<String, jakarta.persistence.Query> cache = new HashMap<>();
+    jakarta.persistence.Query[] slots = new jakarta.persistence.Query[2];
+    public static Object mapU(Connection c, EntityManager em, String sql) throws SQLException { lit(c); Map<String, jakarta.persistence.Query> m = new HashMap<>(); m.put(sql, em.createNativeQuery(sql)); return m.get(sql).getResultList(); }
+    public static Object listAddU(Connection c, EntityManager em, String sql) throws SQLException { lit(c); List<jakarta.persistence.Query> l = new ArrayList<>(); l.add(em.createNativeQuery(sql)); return l.get(0).getResultList(); }
+    public void cachePut(EntityManager em, String sql) { cache.put(sql, em.createNativeQuery(sql)); }
+    public Object cacheExecU(Connection c, String k) throws SQLException { lit(c); return cache.get(k).getResultList(); }
+    public Object cacheBothU(Connection c, EntityManager em, String sql) throws SQLException { cachePut(em, sql); return cacheExecU(c, sql); }
+    public static Object arrU(Connection c, EntityManager em, String sql) throws SQLException { lit(c); jakarta.persistence.Query[] a = { em.createNativeQuery(sql) }; return a[0].getResultList(); }
+    public void slotPut(EntityManager em, String sql) { slots[0] = em.createNativeQuery(sql); }
+    public Object slotExecU(Connection c) throws SQLException { lit(c); return slots[0].getResultList(); }
+    public static Object cifaU(Connection c, EntityManager em, String sql) throws SQLException { lit(c); Map<String, jakarta.persistence.Query> m = new HashMap<>(); return m.computeIfAbsent(sql, k -> em.createNativeQuery(k)).getResultList(); }
+    // CONTROLS
+    public static Object jdkSinkOnly(Connection c, EntityManager em, String sql) throws SQLException { lit(c); List<Object> l = new ArrayList<>(); l.add(em.createNativeQuery(sql)); return l.size(); }
+    public static Object okArrLit(Connection c, EntityManager em) throws SQLException { lit(c); jakarta.persistence.Query[] a = { em.createNativeQuery("SELECT id FROM users") }; return a[0].getResultList(); }
+    public static Object okArrayBind(Connection c, String type, Object[] xs) throws SQLException { PreparedStatement ps = c.prepareStatement("SELECT id FROM users WHERE a = ANY(?)"); ps.setArray(1, c.createArrayOf(type, xs)); return ps.execute(); }
+}
+J
+javac -cp "$W/r794bcls" -d "$W/r794bcls" "$W/r794b/app/C2.java" 2>/dev/null
+for pair in mapU:1 listAddU:1 cacheExecU:1 cacheBothU:1 arrU:1 slotExecU:1 cifaU:1 jdkSinkOnly:0 okArrLit:0 okArrayBind:0; do
+    m=${pair%%:*}; want=${pair##*:}
+    printf 'allow Db in app.C2.%s users\n' "$m" > "$W/r824.pol"
+    CANDOR_POLICY="$W/r824.pol" "$CJ" "$W/r794bcls" >/dev/null 2>&1; got=$?
+    if [ "$got" -eq "$want" ]; then echo "  ok   R824 GATE app.C2.$m exits $want"; pass=$((pass+1));
+    else echo "  FAIL R824 GATE app.C2.$m — exit $got (want $want)"; fail=$((fail+1)); fi
+done
+
 # ── SOUNDNESS R795: a zero-argument Net call can still name its destination — at the RECEIVER ─────
 echo "== SOUNDNESS R795: the Net masking guard reads the receiver, not the argument count =="
 # The defect: `carriesArgs = !min.desc.startsWith("()")` declined every zero-argument Net call, so

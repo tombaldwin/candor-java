@@ -9,6 +9,50 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R824 FIXED — a query handle round-tripped through a JDK container and then executed
+
+The R819 forward walk followed a value only into the RESULT of the call that consumed it — for `List.add`
+a boolean, for `Map.put` the previous value — so the container itself was never tainted:
+`m.put(k, q); m.get(k).getResultList()`, `l.add(q); l.get(0)…`, and a `Map<String,Query>` field `put` in one
+method and executed in another each exited **0** at 49d61cd and at ae2d903, and **1** on v0.39.2 and at the
+pre-R794 commit. EXECUTED on H2 through jOOQ: `mapU` returned `hunter2`, `listU` `api`, `bothU` `hunter2`.
+
+**The fix: a container ABSORBS the handle handed into it.** An argument that is tracked taints the call's
+receiver (`put`, `add`, `push`, `set`, an array store), and a read back out of it (`get`, `pop`, an iterator,
+an array load) is the handle again. Fields are covered by the same index R819 built — a field that is itself
+a container of runtime-loaded handles (`cache.put(k, em.createNativeQuery(sql))`, `slots[0] = …`) marks a
+terminal on anything read out of it. The same review found one more container-like shape v0.39.2 caught and
+49d61cd missed, closed here by the same mechanism: a handle PRODUCED by a project lambda handed to the call
+(`m.computeIfAbsent(sql, k -> em.createNativeQuery(k)).getResultList()`).
+
+**The direction that must not move, pinned:** a receiver that is itself SQL-bearing — a statement, a session,
+an entity manager — does NOT absorb, so `ps.setArray(1, conn.createArrayOf(type, xs)); ps.execute()` beside a
+literal query still certifies (the R794 partition's over-follow), and a Hibernate session handed a query does
+not hedge its unrelated `getTransaction().rollback()`. A handle put in a container and never executed stays
+unmarked. Walk STARTS now exclude builders returning query text or a bound value (`String`, `Object`, boxed
+and `java.sql` value types); without that, `vals.add(rs.getObject(col)); jdbc.update("… ?", vals.toArray())`
+would charge a bound value as an unseen query. A first cut of the field index also treated a `String`
+operand as a stored handle (`delegate.addBatch(sql)` found itself as its own loader) and hedged every
+JDBC/JPA wrapper's `delegate` field — 2,312 rows in `jakarta.faces`' `ResultSetDataModel` alone; the A/B
+caught it, and only handle-typed operands count now.
+
+**A/B, 49d61cd → this build:** 372 jars, **+1** `incomplete[Db]` row; 452 jars, **0**. Nothing loses a
+marker, 0 gate flips either way, 0 classes skipped as unanalyzable in any arm. The one new row is an
+over-mark of another row's class, named: liquibase `ExecutablePreparedStatementBase.getCachedStatement`,
+whose statement cache really holds runtime SQL but whose terminal is `PreparedStatement.getConnection()` —
+the classifier charges that `Db` (SOUNDNESS R821's class). 6 new mark sites in all (mybatis
+`BatchExecutor.statementList`, a `List<Statement>` executed with `executeBatch`, is the textbook case), and
+50 sites that stopped marking through the walk — all String/Object starts on rows the Db call's own rule
+still marks.
+
+**The R819 entry's parity price was of the wrong thing.** Its "hand-off to unseen code" option started from
+String and Object returns as well as handles, and would have closed this defect only by also marking a
+handle put in a list and never run. The real price of closing it is the one row above.
+
+Fixtures (`test/smoke.sh`, 10 assertions): 7 fail on 49d61cd; on v0.39.2 `cacheExecU`/`slotExecU` fail
+(silent there too — now better than 0.39.2) and the two controls fail (0.39.2 marked the never-executed
+container and the bound `createArrayOf`).
+
 ### ⚠ SOUNDNESS R819 FIXED — a query handle that reaches its terminal as a PARAMETER or through a FIELD
 
 The R794-builder fix below walks back from the terminal, so it could not see a handle that ARRIVES there:

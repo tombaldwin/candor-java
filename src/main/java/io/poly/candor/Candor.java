@@ -6247,7 +6247,8 @@ public class Candor {
             // the 5,785-mark fabrication measured above. (A handle stored in a FIELD is judged at the
             // terminal instead, by {@link #dbLoadedFields}.)
             Frame<SourceValue>[] fr = srcFrames(s);
-            if (fr != null && runtimeStringSlot(fr, s.mn.instructions, min) >= 0) {
+            if (fr != null && runtimeStringSlot(fr, s.mn.instructions, min) >= 0
+                    && !DB_NON_HANDLE_TYPES.contains(Type.getReturnType(min.desc).getInternalName())) {
                 String why = dbForwardExec(ctx, s.mn, fr, Set.of(min), 0);
                 if (why != null) ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Db");
                 if (MASK_DEBUG && why != null)
@@ -6277,16 +6278,43 @@ public class Candor {
      *  builder whose handle is merely STORED in a field, or loaded into a caller's statement (full parity
      *  with 0.39.2 on the R819 fixtures), costs +2,924 / +114, +2,844 / +3,451 and +269 / +284, led by
      *  `appendSql`, loggers and `StringHelper`. This rule instead marks where the handle is executed:
-     *  17 new rows over both corpora, every one a real runtime-SQL execution. */
+     *  17 new rows over both corpora, every one a real runtime-SQL execution.
+     *
+     *  <p><b>AND THAT PRICE WAS OF THE WRONG THING (SOUNDNESS R824).</b> Its start set included builders
+     *  returning a `String` or an `Object` — query TEXT and bound values, not handles — and the silence it
+     *  was meant to price was not "handed to unseen code" but a handle round-tripped through a JDK
+     *  container and executed in project code, which that option would have closed only by also marking a
+     *  handle put in a list and never run. The container shape is closed by RECEIVER absorption below, at a
+     *  cost of 1 row over both corpora; starts now exclude {@link #DB_NON_HANDLE_TYPES}. */
     static String dbForwardExec(AnalysisContext ctx, MethodNode mn, Frame<SourceValue>[] fr,
             Set<Object> start, int depth) {
         InsnList insns = mn.instructions;
         Set<Object> tracked = new HashSet<>(start);
+        Set<String> trackedFields = new HashSet<>();
         boolean changed = true;
         while (changed) {
             changed = false;
             for (int j = 0; j < insns.size(); j++) {
-                if (!(insns.get(j) instanceof MethodInsnNode m) || fr[j] == null || tracked.contains(m)) continue;
+                AbstractInsnNode ins = insns.get(j);
+                // Arrays are containers too: `a[i] = q` taints the array, and `a[i]` read back is the handle.
+                if (fr[j] != null && ins.getOpcode() == Opcodes.AASTORE && fr[j].getStackSize() >= 3) {
+                    Frame<SourceValue> f = fr[j];
+                    boolean valueHit = false;
+                    for (Object r : dbRoots(fr, insns, f.getStack(f.getStackSize() - 1)))
+                        valueHit |= dbTracked(tracked, trackedFields, r);
+                    if (valueHit) for (Object r : dbRoots(fr, insns, f.getStack(f.getStackSize() - 3))) {
+                        if (r instanceof Integer slot0 && slot0 == 0 && (mn.access & Opcodes.ACC_STATIC) == 0) continue;
+                        if (tracked.add(r)) changed = true;
+                        if (r instanceof FieldInsnNode gf && trackedFields.add(gf.owner + "." + gf.name)) changed = true;
+                    }
+                    continue;
+                }
+                if (fr[j] != null && ins.getOpcode() == Opcodes.AALOAD && !tracked.contains(ins) && fr[j].getStackSize() >= 2) {
+                    for (Object r : dbRoots(fr, insns, fr[j].getStack(fr[j].getStackSize() - 2)))
+                        if (dbTracked(tracked, trackedFields, r)) { tracked.add(ins); changed = true; break; }
+                    continue;
+                }
+                if (!(ins instanceof MethodInsnNode m) || fr[j] == null || tracked.contains(m)) continue;
                 Frame<SourceValue> f = fr[j];
                 Type[] args = Type.getArgumentTypes(m.desc);
                 boolean isStatic = m.getOpcode() == Opcodes.INVOKESTATIC;
@@ -6295,7 +6323,7 @@ public class Candor {
                 int hitArg = -2;   // -1 = receiver, >= 0 = argument index
                 for (int k = base; k < f.getStackSize() && hitArg == -2; k++) {
                     for (Object r : dbRoots(fr, insns, f.getStack(k)))
-                        if (tracked.contains(r)) { hitArg = isStatic ? k - base : k - base - 1; break; }
+                        if (dbTracked(tracked, trackedFields, r)) { hitArg = isStatic ? k - base : k - base - 1; break; }
                 }
                 if (hitArg == -2) continue;
                 if (Classifier.classify(m.owner.replace('/', '.'), m.name, m.desc) == Effect.DB)
@@ -6311,6 +6339,23 @@ public class Candor {
                         if (why != null) return "param-of:" + m.owner + "." + m.name + ">" + why;
                     }
                 }
+                // SOUNDNESS R824 — the value handed IN as an argument is absorbed by the RECEIVER: `m.put(k, q)`,
+                // `l.add(q)`, `cache.put(k, q)`. Without this the walk followed only the call's RESULT, which
+                // for `List.add` is a boolean and for `Map.put` the PREVIOUS value, so a handle round-tripped
+                // through a JDK container and executed (`m.get(k).getResultList()`) was never reached. NOT when
+                // the receiver is itself a SQL-bearing object — a statement, session or entity manager is the
+                // FACTORY or the executor of queries, not a container of them: tainting `ps` in
+                // `ps.setArray(1, conn.createArrayOf(type, xs))` is the over-follow the R794 partition's
+                // instrument made, and tainting a Hibernate session handed a query marked its unrelated
+                // `getTransaction().rollback()`.
+                if (hitArg >= 0 && !isStatic && !isSqlBearingOwner(m.owner)) {
+                    SourceValue rv = dbReceiverOf(fr, insns, m);
+                    if (rv != null) for (Object r : dbRoots(fr, insns, rv)) {
+                        if (r instanceof Integer slot0 && slot0 == 0 && (mn.access & Opcodes.ACC_STATIC) == 0) continue;
+                        if (tracked.add(r)) changed = true;
+                        if (r instanceof FieldInsnNode gf && trackedFields.add(gf.owner + "." + gf.name)) changed = true;
+                    }
+                }
                 if (Type.getReturnType(m.desc).getSort() == Type.OBJECT || Type.getReturnType(m.desc).getSort() == Type.ARRAY) {
                     tracked.add(m);
                     changed = true;
@@ -6319,6 +6364,38 @@ public class Candor {
         }
         return null;
     }
+
+    /** The project body a {@code LambdaMetafactory} indy's implementation handle names, else null. */
+    static MethodNode dbLambdaBody(AnalysisContext ctx, InvokeDynamicInsnNode idin) {
+        if (idin.bsm == null || !idin.bsm.getOwner().equals("java/lang/invoke/LambdaMetafactory")) return null;
+        for (Object a : idin.bsmArgs)
+            if (a instanceof Handle h && h.getTag() >= Opcodes.H_INVOKEVIRTUAL) {
+                ClassNode cn = ctx.byName.get(h.getOwner());
+                MethodNode mn = cn == null ? null : findMethod(cn, h.getName(), h.getDesc());
+                if (mn != null && (mn.access & Opcodes.ACC_ABSTRACT) == 0) return mn;
+            }
+        return null;
+    }
+
+    /** Is producer {@code r} tracked — itself, or (for a field read) any read of a tracked field? */
+    private static boolean dbTracked(Set<Object> tracked, Set<String> fields, Object r) {
+        if (tracked.contains(r)) return true;
+        return r instanceof FieldInsnNode gf && (gf.getOpcode() == Opcodes.GETFIELD || gf.getOpcode() == Opcodes.GETSTATIC)
+                && fields.contains(gf.owner + "." + gf.name);
+    }
+
+    /** Return types a builder START can have that are provably not a query handle — a value, not a thing that
+     *  later runs. A DENYLIST (any other type starts a walk). Needed once {@link #dbForwardExec} follows a
+     *  value INTO a container: `args.add(rs.getObject(col)); jdbc.update("… ?", args.toArray())` would
+     *  otherwise charge a bound VALUE as an unseen query. */
+    static final Set<String> DB_NON_HANDLE_TYPES = Set.of(
+            "java/lang/String", "java/lang/Object", "java/lang/CharSequence", "java/lang/Integer",
+            "java/lang/Long", "java/lang/Short", "java/lang/Byte", "java/lang/Boolean", "java/lang/Double",
+            "java/lang/Float", "java/lang/Character", "java/lang/Number", "java/math/BigDecimal",
+            "java/math/BigInteger", "java/sql/Timestamp", "java/sql/Date", "java/sql/Time", "java/sql/Array",
+            "java/sql/Blob", "java/sql/Clob", "java/sql/NClob", "java/sql/Ref", "java/sql/RowId",
+            "java/sql/SQLXML", "java/sql/Struct", "java/sql/SQLWarning", "java/io/InputStream",
+            "java/io/Reader", "java/net/URL");
 
     /** Every project body a call can land on: the owner's own concrete declaration, or, for a virtual or
      *  interface call, each project subtype's (CHA over the reverse-subtype index). */
@@ -6364,15 +6441,62 @@ public class Candor {
                 if (cn.methods == null) continue;
                 for (MethodNode mn : cn.methods) {
                     if (mn.instructions == null || mn.instructions.size() == 0) continue;
-                    boolean stores = false, loads = false;
+                    boolean stores = false, loads = false, reads = false, builds = false;
                     for (AbstractInsnNode in : mn.instructions) {
                         if (in instanceof FieldInsnNode fi && (fi.getOpcode() == Opcodes.PUTFIELD
                                 || fi.getOpcode() == Opcodes.PUTSTATIC) && fi.desc.startsWith("L")) stores = true;
+                        if (in instanceof FieldInsnNode fi && (fi.getOpcode() == Opcodes.GETFIELD
+                                || fi.getOpcode() == Opcodes.GETSTATIC)
+                                && (fi.desc.startsWith("L") || fi.desc.startsWith("["))) reads = true;
                         if (in instanceof MethodInsnNode m && Type.getArgumentTypes(m.desc).length > 0) loads = true;
+                        if (in instanceof MethodInsnNode m && isSqlBearingOwner(m.owner)) builds = true;
                     }
-                    if (!stores || !loads) continue;
+                    boolean container = reads && builds;
+                    if (!(stores && loads) && !container) continue;
                     Frame<SourceValue>[] fr = srcFramesOf(mn);
                     if (fr == null) continue;
+                    // SOUNDNESS R824 — a field that is a CONTAINER of such handles: `cache.put(k,
+                    // em.createNativeQuery(sql))` in one method, `cache.get(k).getResultList()` in another.
+                    if (container) for (int j = 0; j < mn.instructions.size(); j++) {
+                        if (mn.instructions.get(j).getOpcode() == Opcodes.AASTORE && fr[j] != null
+                                && fr[j].getStackSize() >= 3) {
+                            SourceValue av = fr[j].getStack(fr[j].getStackSize() - 1);
+                            for (Object r : dbRoots(fr, mn.instructions, fr[j].getStack(fr[j].getStackSize() - 3)))
+                                if (r instanceof FieldInsnNode gf && (gf.getOpcode() == Opcodes.GETFIELD
+                                        || gf.getOpcode() == Opcodes.GETSTATIC)
+                                        && dbValueLoad(ctx, mn, fr, dbRoots(fr, mn.instructions, av), null, 1) != null)
+                                    out.add(gf.owner + "." + gf.name);
+                            continue;
+                        }
+                        if (!(mn.instructions.get(j) instanceof MethodInsnNode q) || fr[j] == null
+                                || q.getOpcode() == Opcodes.INVOKESTATIC || isSqlBearingOwner(q.owner)) continue;
+                        Type[] qa = Type.getArgumentTypes(q.desc);
+                        int base = fr[j].getStackSize() - qa.length;
+                        SourceValue rv = dbReceiverOf(fr, mn.instructions, q);
+                        if (rv == null || base < 0) continue;
+                        String key = null;
+                        for (Object r : dbRoots(fr, mn.instructions, rv))
+                            if (r instanceof FieldInsnNode gf && (gf.getOpcode() == Opcodes.GETFIELD
+                                    || gf.getOpcode() == Opcodes.GETSTATIC)) key = gf.owner + "." + gf.name;
+                        if (key == null) continue;
+                        for (int a = 0; a < qa.length; a++) {
+                            // Only a HANDLE-typed operand can be the thing the container keeps: a String operand
+                            // is the query TEXT (`delegate.addBatch(sql)`, `em.createQuery(hql)`), and asking the
+                            // loader walk about it finds this very call as its own loader — which, on the first
+                            // cut, made every JDBC/JPA wrapper's `delegate` field "loaded" (2,312 rows in
+                            // jakarta.faces' ResultSetDataModel alone).
+                            if (qa[a].getSort() != Type.OBJECT && qa[a].getSort() != Type.ARRAY) continue;
+                            // (`Object` stays: a generic container's `put`/`add` erases to it.)
+                            if (qa[a].getSort() == Type.OBJECT && !qa[a].getInternalName().equals("java/lang/Object")
+                                    && DB_NON_HANDLE_TYPES.contains(qa[a].getInternalName())) continue;
+                            SourceValue av = fr[j].getStack(base + a);
+                            if (dbValueLoad(ctx, mn, fr, dbRoots(fr, mn.instructions, av), q, 1) != null) {
+                                out.add(key);
+                                break;
+                            }
+                        }
+                    }
+                    if (!(stores && loads)) continue;
                     for (int j = 0; j < mn.instructions.size(); j++) {
                         if (!(mn.instructions.get(j) instanceof FieldInsnNode fi) || fr[j] == null
                                 || !(fi.getOpcode() == Opcodes.PUTFIELD || fi.getOpcode() == Opcodes.PUTSTATIC)
@@ -6544,8 +6668,34 @@ public class Candor {
                     || gf.getOpcode() == Opcodes.GETSTATIC) && !DB_FIELDS_BUILDING.get()
                     && dbLoadedFields(ctx).contains(gf.owner + "." + gf.name))
                 return "field-loaded:" + gf.owner + "." + gf.name;
+            if (root instanceof AbstractInsnNode aa && aa.getOpcode() == Opcodes.AALOAD) {
+                int ai = insns.indexOf(aa);
+                if (ai >= 0 && fr[ai] != null && fr[ai].getStackSize() >= 2)
+                    work.addAll(dbRoots(fr, insns, fr[ai].getStack(fr[ai].getStackSize() - 2)));
+                continue;
+            }
             if (root instanceof MethodInsnNode p && !"<init>".equals(p.name)) {
                 if (dbLoadsLocator(fr, insns, p)) return "chain:" + p.owner + "." + p.name;
+                // SOUNDNESS R824 — a handle PRODUCED by a project lambda handed to this call:
+                // `m.computeIfAbsent(sql, k -> em.createNativeQuery(k)).getResultList()`.
+                if (depth < 3) {
+                    int pi = insns.indexOf(p);
+                    Frame<SourceValue> pf = pi >= 0 ? fr[pi] : null;
+                    int na = Type.getArgumentTypes(p.desc).length;
+                    if (pf != null) for (int k = Math.max(0, pf.getStackSize() - na); k < pf.getStackSize(); k++) {
+                        for (Object ar : dbRoots(fr, insns, pf.getStack(k))) {
+                            MethodNode lam = ar instanceof InvokeDynamicInsnNode idin ? dbLambdaBody(ctx, idin) : null;
+                            Frame<SourceValue>[] lf = lam == null ? null : srcFramesOf(lam);
+                            if (lf == null) continue;
+                            for (int j = 0; j < lam.instructions.size(); j++) {
+                                if (lam.instructions.get(j).getOpcode() != Opcodes.ARETURN || lf[j] == null) continue;
+                                String why = dbValueLoad(ctx, lam, lf,
+                                        dbRoots(lf, lam.instructions, lf[j].getStack(lf[j].getStackSize() - 1)), null, depth + 1);
+                                if (why != null) return "lambda-returned:" + p.owner + "." + p.name + ">" + why;
+                            }
+                        }
+                    }
+                }
                 SourceValue pr = dbReceiverOf(fr, insns, p);
                 if (pr != null) work.addAll(dbRoots(fr, insns, pr));
                 // A project helper that RETURNED the handle: ask its own body the same question.

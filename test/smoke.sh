@@ -1776,6 +1776,83 @@ CANDOR_POLICY="$W/r795.pol" "$CJ" "$W/r795cls" >/dev/null 2>&1; r795sd=$?
 if [ "$r795sd" -eq 0 ]; then echo "  ok   R795 CONTROL GATE: the locally-built socket still CERTIFIES (exit 0)"; pass=$((pass+1));
 else echo "  FAIL R795 CONTROL GATE (socket) — exit $r795sd (want 0); the guard is over-masking"; fail=$((fail+1)); fi
 
+# ── SOUNDNESS R799: a path VALUE that never reaches a disk-touching call carries no Fs hedge ─────
+echo "== SOUNDNESS R799: the Path.of/Paths.get/new File mark follows the value to its uses =="
+# The defect: the runtime-path branch marked `incomplete: [Fs]` at `Path.of(p)` / `Paths.get(p)` /
+# `new File(p)` — none of which touches the disk — without asking what the value was USED for, so a
+# CORRECT `allow Fs in <m> /tmp/benign` exited 1 over a method that only inspected a caller's path.
+# The mark now stays unless every use is judged elsewhere (an Fs call's Path/File operand, which R409
+# marks at that call) or is path algebra with a non-String result.  The MUST-STAY arms were written
+# first and EXECUTED before this fixture: each really wrote or read the caller's file.
+mkdir -p "$W/r799/app"
+cat > "$W/r799/app/P.java" <<'J'
+package app;
+import java.io.*;
+import java.nio.file.*;
+public class P {
+    static void benign() throws IOException { Files.write(Paths.get("/tmp/benign"), new byte[]{1}); }
+    // FABRICATION: the caller's path is only inspected — no I/O reaches it.
+    public static boolean inspectOnly(String p) throws IOException {
+        benign();
+        return Path.of(p).getFileName().startsWith("x") || new File(p).isAbsolute();
+    }
+    public static boolean inspectCaller(String p) throws IOException { return inspectOnly(p); }
+    // MUST STAY (1): the value really reaches an Fs call — R409 must mark it there.
+    public static void realWrite(String p) throws IOException { benign(); Files.write(Path.of(p), new byte[]{2}); }
+    public static void realWriteCaller(String p) throws IOException { realWrite(p); }
+    // MUST STAY (2): a sink the classifier does NOT charge Fs — this mark is the only disclosure.
+    public static void unclassifiedSink(String p) throws IOException {
+        benign();
+        new javax.imageio.stream.FileImageOutputStream(new File(p)).close();
+    }
+    public static void unclassifiedCaller(String p) throws IOException { unclassifiedSink(p); }
+    // MUST STAY (3): the value leaves the frame — its uses are not visible here.
+    public static Path escapes(String p) throws IOException { benign(); return Paths.get(p); }
+    // MUST STAY (5): a File SUBCLASS built from the caller's path by `super(p)` — measured on derby's
+    // `DirFile`. The deletion is invoked on owner `P$Sub`, which R409's receiver test does not read, so
+    // the mark on the ctor, propagated here, is the only disclosure.
+    public static class Sub extends File { public Sub(String p) { super(p); } }
+    public static boolean subclassDelete(String p) throws IOException { benign(); return new Sub(p).delete(); }
+    // MUST STAY (6): a CONST-LOCAL path. Provenance calls it determined, so R409 does not mark the read,
+    // but `firstLiteralArg` never captured it into `paths` — this mark is all that stops the benign
+    // sibling certifying a read of /etc/hosts. An intermediate cut of R799 exited 0 here.
+    public static int constLocal() throws IOException {
+        benign();
+        String s = "/etc/hosts"; return Files.readAllBytes(Paths.get(s)).length;
+    }
+    // MUST STAY (4): the value is COMPOSED into a new File that then reaches an unclassified sink.
+    public static void composed(String p) throws IOException {
+        benign();
+        new javax.imageio.stream.FileImageOutputStream(new File(new File(p), "x")).close();
+    }
+}
+J
+javac -d "$W/r799cls" "$W/r799/app/P.java" 2>/dev/null
+"$CJ" "$W/r799cls" --json "$W/r799.json" >/dev/null 2>&1
+r799inc() { python3 -c "import json;r=json.load(open('$W/r799.json'));print(next((f.get('incomplete') for f in r['functions'] if f['fn']=='app.P.$1'), 'ROW-ABSENT'))"; }
+absent "R799: path algebra alone carries no Fs hedge" "$(r799inc inspectOnly)" "Fs"
+want "R799 MUST-STAY: a runtime Path handed to Files.write is marked" "$(r799inc realWrite)" "Fs"
+want "R799 MUST-STAY: a runtime File handed to an unclassified sink is marked" "$(r799inc unclassifiedSink)" "Fs"
+want "R799 MUST-STAY: a runtime Path returned to the caller is marked" "$(r799inc escapes)" "Fs"
+want "R799 MUST-STAY: a runtime File composed into a new File is marked" "$(r799inc composed)" "Fs"
+want "R799 MUST-STAY: a File subclass built by super(path) is marked" "$(r799inc subclassDelete)" "Fs"
+want "R799 MUST-STAY: a determined-but-uncaptured const-local path is marked" "$(r799inc constLocal)" "Fs"
+r799gate() {
+    printf 'allow Fs in app.P.%s /tmp/benign\n' "$1" > "$W/r799.pol"
+    CANDOR_POLICY="$W/r799.pol" "$CJ" "$W/r799cls" >/dev/null 2>&1; local rc=$?
+    if [ "$rc" -eq "$2" ]; then echo "  ok   R799 GATE: allow Fs in $1 exits $2"; pass=$((pass+1));
+    else echo "  FAIL R799 GATE: allow Fs in $1 exited $rc (want $2)"; fail=$((fail+1)); fi
+}
+r799gate inspectOnly 0
+r799gate inspectCaller 0
+r799gate realWrite 1
+r799gate realWriteCaller 1
+r799gate unclassifiedSink 1
+r799gate unclassifiedCaller 1
+r799gate composed 1
+r799gate subclassDelete 1
+r799gate constLocal 1
+
 # ── κ-coverage ledger: an unlisted external package the code calls is NAMED in the receipt ───────
 echo "== κ-coverage ledger =="
 mkdir -p "$W/kap/src/com/thirdparty/json" "$W/kap/src/org/acme"

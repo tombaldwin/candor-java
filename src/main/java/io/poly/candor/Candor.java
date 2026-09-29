@@ -18,6 +18,8 @@ import org.objectweb.asm.tree.analysis.BasicInterpreter;
 import org.objectweb.asm.tree.analysis.BasicValue;
 import org.objectweb.asm.tree.analysis.Frame;
 import org.objectweb.asm.tree.analysis.Interpreter;
+import org.objectweb.asm.tree.analysis.SourceInterpreter;
+import org.objectweb.asm.tree.analysis.SourceValue;
 import org.objectweb.asm.tree.analysis.Value;
 
 import java.io.IOException;
@@ -4190,6 +4192,10 @@ public class Candor {
         final Map<Integer, String> connLocals;   // (R795) local slot -> URLConnection opened from a literal URL
         final boolean isEntry;                   // entry-point status, settled before the loop (R17 gate)
         final Set<LabelNode> joinLabels;         // (R86) control-flow join labels — bounds literal walks
+        // (R799) def-use frames, computed LAZILY by {@link #pathValueEscape} — only a method holding a
+        // runtime-path `Path.of`/`Paths.get`/`new File` pays for them. Null + tried = the analyzer failed.
+        Frame<SourceValue>[] srcFrames;
+        boolean srcFramesTried;
         MethodScan(MethodNode mn, String id, EffectSet dir, Frame<TaintValue>[] taintFrames,
                 Frame<ProvValue>[] provFrames, Map<Integer, String> constLocals,
                 Map<Integer, String> urlLocals, Map<Integer, String> connLocals, boolean isEntry,
@@ -5685,7 +5691,36 @@ public class Candor {
             if (p != null) ctx.pathsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(p);
             // a path-establishing call with a RUNTIME path (single-String arg, no literal) — the
             // path is invisible to the gate (masking guard generalized to Fs, sweep [0]).
-            else ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Fs");
+            //
+            // SOUNDNESS R799 — AN Fs CALL IS MARKED AS BEFORE; A PATH *VALUE* IS MARKED UNLESS ITS USES ARE
+            // ALL JUDGED. `Path.of`, `Paths.get` and `new File(String)` touch no disk (the classifier
+            // returns null for them), and marking them unconditionally hedged corpus rows whose value
+            // was only inspected — `new File(p).isAbsolute()` beside a benign write made a CORRECT `allow
+            // Fs … /tmp/benign` exit 1. But this is NOT R794's shape and `effect == FS` alone is the wrong
+            // fix: that first cut went silent on five EXECUTED arms where the value reaches a sink the
+            // classifier does not charge Fs (`Font.createFont(int,File)`, `FileImageOutputStream(File)`,
+            // `StreamResult(File)`, `DocumentBuilder.parse(File)`, `ProcessBuilder.redirectOutput(File)`)
+            // — for those, this mark was the only disclosure. So the mark is dropped only when
+            // {@link #pathValueEscape} proves every use judged or harmless; anything else keeps it.
+            else if (effect == Effect.FS) ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Fs");
+            else {
+                // THE UNIT TEST THAT PINS WHERE THE TWO Fs GUARDS DISAGREE IS THE REASON FOR THIS CHECK.
+                // `String s = "/etc/hosts"; Files.readAllBytes(Paths.get(s))`: provenance calls that path
+                // DETERMINED, so R409 does not mark the read — but `firstLiteralArg` above stops at the
+                // ASTORE and never CAPTURED it, so it is not in `paths` either. Only this mark stood
+                // between that read and a benign sibling literal certifying it: an intermediate cut of
+                // R799 dropped it and `allow Fs in <m> /tmp/benign` EXITED 0 over a real read of
+                // /etc/hosts, on the unit and its caller. So "judged downstream" is only true for a value
+                // R409 will call INDETERMINATE; a determined-but-uncaptured one keeps the mark here.
+                Frame<ProvValue> pf = provFrameAt(s, min);
+                int ai = argValueIndex(pf == null ? 0 : pf.getStackSize(), Type.getArgumentTypes(min.desc), 0);
+                boolean determinedUncaptured = pf == null
+                        || (ai >= 0 && ai < pf.getStackSize() && pf.getStack(ai) != null && pf.getStack(ai).pathLit != null);
+                String escape = determinedUncaptured ? "determined-uncaptured" : pathValueEscape(s, min);
+                if (escape != null) ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Fs");
+                if (MASK_DEBUG) System.err.println((escape == null ? "R799UNMARK\t" : "R799KEEP\t") + id + "\t"
+                        + owner + "." + min.name + (escape == null ? "" : "\t" + escape));
+            }
         }
         // SOUNDNESS R421 — THE STRING-LOCATOR TAIL, WHICH REACHED NEITHER GUARD.
         //
@@ -9539,6 +9574,166 @@ public class Candor {
         if (f == null || idx < 0 || idx >= f.getStackSize()) return false;
         ProvValue v = f.getStack(idx);
         return v != null && v.pathLit != null;
+    }
+
+    /** SOUNDNESS R799 — can the path VALUE built by {@code site} ({@code Path.of}/{@code Paths.get}/
+     *  {@code new File}, none of which touches the disk) reach the disk through a call that no Fs masking
+     *  guard judges? {@code null} = no: every use of the value in this frame is one of
+     *  <ul><li>an operand in a {@code Path}/{@code File} slot of a call {@code Classifier.classify} charges
+     *  {@code Fs} — R409's {@link #fsLocatorDetermined} reads that operand's provenance at that call and
+     *  marks there, so the use site owns the verdict;</li>
+     *  <li>path ALGEBRA on {@code Path}/{@code File} (the classifier returns null for it), whose result
+     *  is followed if it is itself a {@code Path}/{@code File} and ends the walk if it is a primitive;</li>
+     *  <li>a discard, a null test, a reference comparison, or a copy (DUP/SWAP/CHECKCAST/local).</li></ul>
+     *  Otherwise a short reason naming the first use that is none of those.
+     *
+     *  <p><b>AN ALLOWLIST OF JUDGED USES, which is the sound direction here:</b> any use not proven
+     *  judged — a return, a field or array store, a {@code String} conversion, an argument to any other
+     *  call — keeps the mark, exactly as before this row. The first cut of R799 did not ask this at all
+     *  (it copied R794's {@code effect == Effect.DB} shape), and EXECUTED fixtures showed why Fs is not
+     *  Db: a path value handed to a sink the classifier does not charge {@code Fs}
+     *  ({@code Font.createFont(int, File)}, {@code FileImageOutputStream(File)},
+     *  {@code StreamResult(File)}, {@code ProcessBuilder.redirectOutput(File)}) really reads or writes the
+     *  caller's file, and this mark was the ONLY disclosure of it. A {@code Db} call has no such
+     *  value-then-sink split; a path value has nothing else. */
+    static String pathValueEscape(MethodScan s, MethodInsnNode site) {
+        if (!s.srcFramesTried) {
+            s.srcFramesTried = true;
+            try { s.srcFrames = new Analyzer<>(new SourceInterpreter()).analyze("java/lang/Object", s.mn); }
+            catch (Throwable t) { s.srcFrames = null; }
+        }
+        Frame<SourceValue>[] fr = s.srcFrames;
+        if (fr == null) return "no-frames";
+        InsnList insns = s.mn.instructions;
+        Deque<AbstractInsnNode> work = new ArrayDeque<>();
+        Set<AbstractInsnNode> producers = new HashSet<>();
+        if ("<init>".equals(site.name)) {
+            // The value is the object NEW pushed; the ctor consumes a DUP of it. Track both.
+            Frame<SourceValue> f = fr[insns.indexOf(site)];
+            if (f == null) return "no-frame";
+            int recv = f.getStackSize() - Type.getArgumentTypes(site.desc).length - 1;
+            if (recv < 0) return "no-receiver";
+            for (AbstractInsnNode p : f.getStack(recv).insns) {
+                work.add(p);
+                if (p.getOpcode() == Opcodes.DUP) {
+                    Frame<SourceValue> df = fr[insns.indexOf(p)];
+                    if (df == null) return "no-frame";
+                    for (AbstractInsnNode q : df.getStack(df.getStackSize() - 1).insns) {
+                        if (q.getOpcode() != Opcodes.NEW) return "receiver-not-new";
+                        work.add(q);
+                    }
+                } else if (p.getOpcode() != Opcodes.NEW) {
+                    // A `super(path)` / `this(path)` call: the object is `this`, built from a runtime
+                    // path and handed back to whoever NEWed the subclass. MEASURED on derby, whose
+                    // `DirFile extends java.io.File`: the ctor's own body only calls `super(path)`, and a
+                    // caller's `dirFile.delete()` is invoked on owner `DirFile` — which R409's receiver
+                    // test (`FS_LOCATOR_TYPES` holds File and Path only) does not read. So this mark,
+                    // propagated from the ctor, was the caller's only disclosure. Keep it.
+                    return "super-ctor";
+                }
+            }
+        } else {
+            work.add(site);
+        }
+        while (!work.isEmpty()) {
+            AbstractInsnNode prod = work.poll();
+            if (!producers.add(prod)) continue;
+            // A local store: every load that can read it produces the value again.
+            if (prod.getOpcode() == Opcodes.ASTORE) {
+                int var = ((VarInsnNode) prod).var;
+                for (int j = 0; j < insns.size(); j++) {
+                    AbstractInsnNode in = insns.get(j);
+                    if (in.getOpcode() == Opcodes.ALOAD && ((VarInsnNode) in).var == var && fr[j] != null
+                            && fr[j].getLocal(var).insns.contains(prod)) work.add(in);
+                }
+                continue;
+            }
+            for (int j = 0; j < insns.size(); j++) {
+                AbstractInsnNode in = insns.get(j);
+                Frame<SourceValue> f = fr[j];
+                if (f == null || in == site) continue;
+                int n = consumedStackEntries(in);
+                int top = f.getStackSize();
+                for (int k = 0; k < n && k < top; k++) {
+                    if (!f.getStack(top - 1 - k).insns.contains(prod)) continue;   // k = 0 is the top
+                    String why = pathValueUse(in, n, k, work);
+                    if (why != null) return why;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** How many stack entries {@code in} consumes, for every opcode that can consume a REFERENCE. Any
+     *  other opcode consumes none that a path value could occupy. */
+    private static int consumedStackEntries(AbstractInsnNode in) {
+        if (in instanceof MethodInsnNode m)
+            return Type.getArgumentTypes(m.desc).length + (m.getOpcode() == Opcodes.INVOKESTATIC ? 0 : 1);
+        if (in instanceof InvokeDynamicInsnNode d) return Type.getArgumentTypes(d.desc).length;
+        switch (in.getOpcode()) {
+            case Opcodes.ARETURN: case Opcodes.ATHROW: case Opcodes.PUTSTATIC: case Opcodes.MONITORENTER:
+            case Opcodes.MONITOREXIT: case Opcodes.IFNULL: case Opcodes.IFNONNULL: case Opcodes.CHECKCAST:
+            case Opcodes.INSTANCEOF: case Opcodes.ASTORE: case Opcodes.POP: case Opcodes.DUP:
+                return 1;
+            case Opcodes.PUTFIELD: case Opcodes.IF_ACMPEQ: case Opcodes.IF_ACMPNE: case Opcodes.SWAP:
+            case Opcodes.POP2: case Opcodes.DUP_X1: case Opcodes.DUP2:
+                return 2;
+            case Opcodes.AASTORE: case Opcodes.DUP_X2: case Opcodes.DUP2_X1:
+                return 3;
+            case Opcodes.DUP2_X2:
+                return 4;
+            default:
+                return 0;
+        }
+    }
+
+    /** One use of a tracked path value: {@code null} when it is judged or harmless (queueing any value it
+     *  propagates to), else the reason the mark must stay. {@code k} is the value's depth among the
+     *  {@code n} entries {@code in} consumes, 0 = top. */
+    private static String pathValueUse(AbstractInsnNode in, int n, int k, Deque<AbstractInsnNode> work) {
+        switch (in.getOpcode()) {
+            case Opcodes.POP: case Opcodes.POP2: case Opcodes.IFNULL: case Opcodes.IFNONNULL:
+            case Opcodes.IF_ACMPEQ: case Opcodes.IF_ACMPNE: case Opcodes.INSTANCEOF:
+            case Opcodes.MONITORENTER: case Opcodes.MONITOREXIT:
+                return null;
+            case Opcodes.DUP: case Opcodes.DUP_X1: case Opcodes.DUP_X2: case Opcodes.DUP2:
+            case Opcodes.DUP2_X1: case Opcodes.DUP2_X2: case Opcodes.SWAP: case Opcodes.CHECKCAST:
+            case Opcodes.ASTORE:
+                work.add(in);
+                return null;
+            default: break;
+        }
+        if (!(in instanceof MethodInsnNode m)) return "insn:" + in.getOpcode();
+        Type[] args = Type.getArgumentTypes(m.desc);
+        boolean isStatic = m.getOpcode() == Opcodes.INVOKESTATIC;
+        // Which operand is it? k counts down from the last argument; the receiver sits below them all.
+        boolean asReceiver = !isStatic && k == n - 1;
+        String slotDesc = asReceiver ? "L" + m.owner + ";" : args[args.length - 1 - k].getDescriptor();
+        String dotted = m.owner.replace('/', '.');
+        Effect eff = Classifier.classify(dotted, m.name, m.desc);
+        if (eff == Effect.FS) {
+            // Judged at that call by R409 — but only through a Path/File-typed slot, which is all
+            // `fsLocatorDetermined` reads (and never an `<init>` receiver).
+            if (FS_LOCATOR_TYPES.contains(slotDesc) && !(asReceiver && "<init>".equals(m.name))) return null;
+            return "fs-untyped-slot:" + dotted + "." + m.name;
+        }
+        boolean algebraOwner = m.owner.equals("java/nio/file/Path") || m.owner.equals("java/io/File");
+        if (eff == null && algebraOwner) {
+            // `new File(V, child)`: the value is COMPOSED into a new object that is the NEW, not this
+            // call's (void) return — so the void return below would read as "done" and drop the child
+            // path on the floor. Found by the A/B partition, not by reasoning: tomcat's
+            // `DiskFileItem.getTempFile` builds `new File(new File(tmpdir), name)`, stores it and
+            // returns it, and the first cut of this walk called that harmless.
+            if ("<init>".equals(m.name) && !asReceiver) return "composed-into:" + dotted + ".<init>";
+            Type ret = Type.getReturnType(m.desc);
+            if (ret.getSort() != Type.OBJECT && ret.getSort() != Type.ARRAY) return null;   // void/boolean/int
+            if (FS_LOCATOR_TYPES.contains(ret.getDescriptor())) { work.add(m); return null; }
+            return "algebra-result:" + dotted + "." + m.name + "->" + ret.getClassName();
+        }
+        // `equals`/`hashCode` wherever they are declared return a primitive and open nothing.
+        if ((m.name.equals("equals") && m.desc.equals("(Ljava/lang/Object;)Z"))
+                || (m.name.equals("hashCode") && m.desc.equals("()I"))) return null;
+        return "call:" + dotted + "." + m.name;
     }
 
     /** For a call ALREADY classified `Fs`, the read/write direction its verb implies: ["read"],

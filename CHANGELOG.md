@@ -8,6 +8,32 @@ after upgrading; review policies and regenerate baselines with the new build.
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R799 FIXED — a runtime path VALUE is hedged by where it goes, not by being built
+
+`Path.of(p)`, `Paths.get(p)` and `new File(p)` touch no disk, but the runtime-path branch marked
+`incomplete: ["Fs"]` at them unconditionally, so `Path.of(p).getFileName().startsWith("x")` beside a
+benign write made a correct `allow Fs in <m> /tmp/benign` exit 1. The mark is now dropped only when the
+path is INDETERMINATE (so R409 marks any Fs use of it) AND every use of the value in that frame is either a
+`Path`/`File` operand of a call the classifier charges `Fs` or path algebra ending in a primitive.
+Anything else keeps the mark: a return, a field/array store, a `String` conversion, an argument to any
+other call, composition into `new File(v, child)`, a `super(path)` in a `File` subclass, or a
+determined path that the capture did not record.
+
+**Not R794's remedy, and the difference is measured.** Keying the mark on `effect == Fs` alone went silent
+on five EXECUTED arms where the value reaches a sink the classifier does not charge `Fs`
+(`Font.createFont(int, File)`, `FileImageOutputStream(File)`, `StreamResult(File)`,
+`DocumentBuilder.parse(File)`, `ProcessBuilder.redirectOutput(File)`). Three more silences appeared in
+intermediate cuts and each is pinned in smoke: composition into a new `File` (tomcat
+`DiskFileItem.getTempFile`), a `File` subclass's `delete()` (derby `DirFile`, which R409 cannot read), and
+`String s = "/etc/hosts"; Files.readAllBytes(Paths.get(s))` beside a benign literal (exit 0 over a real
+read — provenance calls it determined, the capture never recorded it).
+
+A/B — `bin/corpus-ab.py`, 452-jar census, 1,215,656 → 1,215,650 rows: ADDED 0, REMOVED 6, CHANGED 10,
+`incomplete` the only field that moves, and none of the 16 rows carries `Fs` in `inferred`. The row's
+"1,415 rows with no Fs" is mostly NOT recoverable: of 1,831 sites the old rule marked, 578 are proven
+harmless, and the rest hand the value on — often to code that really does Fs (ant `FileUtils.copyFile`,
+POI, PDFBox).
+
 ### ⚠ SOUNDNESS R794 + R795 FIXED — every masking guard is now keyed on the EFFECT, and no owner table is left to fall behind the classifier
 
 **R794 — the `Db` masking guard was the last one keyed on an owner INCLUSION list.** `surfaceIncomplete.add("Db")`

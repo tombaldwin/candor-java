@@ -1789,6 +1789,47 @@ for m in hibX jooqQX; do
     else echo "  FAIL R794b CLASSIFIER app.X.$m — deny Db exit $got (want 1)"; fail=$((fail+1)); fi
 done
 
+# ── SOUNDNESS R819: the handle reaches its terminal as a PARAMETER, through a FIELD, or via a container ──
+echo "== SOUNDNESS R819: a runtime-loaded query handle is followed to where it really runs =="
+# The terminal-side walk above cannot see a handle that arrives as a parameter or a field, so each of these
+# exited 0 at ae2d903 — and every one but `execFieldU` exited 1 on the v0.39.2 jar, whose owner-list guard
+# marked the builder unconditionally. `execFieldU` was silent on 0.39.2 too and is marked now.
+cat > "$W/r794b/app/R.java" <<'J'
+package app;
+import java.sql.*;
+import java.util.*;
+import jakarta.persistence.*;
+public class R {
+    interface QExec { Object run(jakarta.persistence.Query q); }
+    static class ListExec implements QExec { public Object run(jakarta.persistence.Query q) { return q.getResultList(); } }
+    static void lit(Connection c) throws SQLException { c.prepareStatement("SELECT id FROM users").executeQuery(); }
+    static Object runQ(jakarta.persistence.Query q) { return q.getResultList(); }
+    static jakarta.persistence.Query SQ;
+    jakarta.persistence.Query fq, gq;
+    public static Object argProjU(Connection c, EntityManager em, String sql) throws SQLException { lit(c); return runQ(em.createNativeQuery(sql)); }
+    public static Object argProjC(Connection c, EntityManager em, String sql) throws SQLException { return argProjU(c, em, sql); }
+    public static Object argVirtU(Connection c, EntityManager em, QExec ex, String sql) throws SQLException { lit(c); return ex.run(em.createNativeQuery(sql)); }
+    public void storeU(EntityManager em, String sql) { fq = em.createNativeQuery(sql); }
+    public Object execFieldU(Connection c) throws SQLException { lit(c); return fq.getResultList(); }
+    public Object fieldSameU(Connection c, EntityManager em, String sql) throws SQLException { lit(c); fq = em.createNativeQuery(sql); return fq.getResultList(); }
+    public static Object staticSameU(Connection c, EntityManager em, String sql) throws SQLException { lit(c); SQ = em.createNativeQuery(sql); return SQ.getResultList(); }
+    public static Object listU(Connection c, EntityManager em, String sql) throws SQLException { lit(c); List<jakarta.persistence.Query> l = List.of(em.createNativeQuery(sql)); return l.get(0).getResultList(); }
+    public Object initThenExecU(Connection c, EntityManager em, String sql) throws SQLException { storeU(em, sql); return execFieldU(c); }
+    // OVER-CHARGE CONTROLS
+    public static Object okArgLit(Connection c, EntityManager em) throws SQLException { lit(c); return runQ(em.createNativeQuery("SELECT id FROM users")); }
+    public Object okFieldLit(Connection c, EntityManager em) throws SQLException { lit(c); gq = em.createNativeQuery("SELECT id FROM users"); return gq.getResultList(); }
+    public static Object okRsParam(Connection c, ResultSet rs) throws SQLException { lit(c); while (rs.next()) {} return null; }
+}
+J
+javac -cp "$W/r794bcls" -d "$W/r794bcls" "$W/r794b/app/R.java" 2>/dev/null
+for pair in argProjU:1 argProjC:1 argVirtU:1 execFieldU:1 fieldSameU:1 staticSameU:1 listU:1 initThenExecU:1 okArgLit:0 okFieldLit:0 okRsParam:0; do
+    m=${pair%%:*}; want=${pair##*:}
+    printf 'allow Db in app.R.%s users\n' "$m" > "$W/r819.pol"
+    CANDOR_POLICY="$W/r819.pol" "$CJ" "$W/r794bcls" >/dev/null 2>&1; got=$?
+    if [ "$got" -eq "$want" ]; then echo "  ok   R819 GATE app.R.$m exits $want"; pass=$((pass+1));
+    else echo "  FAIL R819 GATE app.R.$m — exit $got (want $want)"; fail=$((fail+1)); fi
+done
+
 # ── SOUNDNESS R795: a zero-argument Net call can still name its destination — at the RECEIVER ─────
 echo "== SOUNDNESS R795: the Net masking guard reads the receiver, not the argument count =="
 # The defect: `carriesArgs = !min.desc.startsWith("()")` declined every zero-argument Net call, so

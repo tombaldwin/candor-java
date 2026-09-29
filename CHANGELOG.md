@@ -9,6 +9,47 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R819 FIXED — a query handle that reaches its terminal as a PARAMETER or through a FIELD
+
+The R794-builder fix below walks back from the terminal, so it could not see a handle that ARRIVES there:
+`runQ(em.createNativeQuery(sql))` with `runQ(q) { return q.getResultList(); }`, a handle stored in a field and
+executed later, a static field, a container hop (`List.of(q).get(0).getResultList()`) or an interface
+implementation. Each exited **0** under `allow Db in <m> users` beside a benign literal, where the v0.39.2 jar
+exited 1. EXECUTED on H2 through jOOQ: `argC(c, d, "SELECT v FROM secrets")` returned `hunter2` and
+`initExec(…, "SELECT k FROM secrets")` returned `api`, both at exit 0 before this change.
+
+**Two mechanisms, both keyed on a Db call that really runs.** (1) A builder that takes a runtime `String` is
+followed FORWARD — through copies, through the result of any call that consumes it, and (depth-bounded, CHA
+over project subtypes) into the matching parameter of every project body it is handed to — and its function is
+marked only if that walk reaches a Db call. (2) A field that some project method stores a runtime-loaded query
+handle into is recorded, and a terminal invoked on a read of that field is marked wherever it runs. The field
+index counts only loaders on a SQL-bearing owner or ones the classifier charges `Db`, and never a Connection/
+DataSource acquisition — without that narrowing a `TransactionManager` field wired by component name hedged
+11,223 infinispan rows, and liquibase's runtime-URL connection field flipped a correct `tables: [iiviews]` row.
+
+**Versus v0.39.2, shape by shape** (fixtures in `test/smoke.sh`; `rel` = the v0.39.2 jar):
+handle to a project helper, through an interface, in a field executed in the same frame, in a static field, via
+a container, stored then executed by a callee — `rel` 1, now 1. A field executed by ANOTHER method than the one
+that loaded it — `rel` **0**, now 1 (better than 0.39.2). **Still weaker than 0.39.2, all SILENT and named:**
+a handle handed to code this scan has no body for (`f.apply(em.createNativeQuery(sql))` with an opaque
+`Function`); and a function that only LOADS a handle it never executes (`store` into a field, `addTo(st, sql)`
+into a caller's statement) — `rel` 1, now 0 on that function, while the function that executes it is marked.
+
+**Parity was measured and not bought.** Also marking a handle handed to unseen code costs, over 372 / 452
+corpus jars, +519 / +52 hedged rows carrying `Db`, +2,176 / +1,847 rows carrying NO `Db` and +173 / +127 rows
+that exist only for the hedge, led by `StringBuilder.append`, `Map.put`, `List.add`, `Class.isInstance`. Full
+fixture parity (also marking pure loaders) costs +2,924 / +114, +2,844 / +3,451 and +269 / +284, led by
+`appendSql`, loggers and `StringHelper`. None of those marks is a query executor.
+
+**A/B, R794-builder fix → this build:** 372 jars, +2 `incomplete[Db]` rows (hazelcast `WriteJdbcP`, whose
+statement field holds the user-supplied sink SQL); 452 jars, +15 (pgjdbc-benchmark `InsertBatch`, a statement
+field prepared from a built SQL string, and its generated JMH stubs). Every one audited as a real runtime-SQL
+execution; 0 rows lose anything; 0 gate flips in either direction on either corpus (2 and 5 certifiable
+rows — R798's caveat, the flip count is not evidence). One engine defect caught on the way by the A/B rather
+than by any test: the field index recursed into itself, overflowed the stack and made the scanner SKIP whole
+classes as unanalyzable, dropping their effects (88,242 rows lost `Db` in that run). It is guarded; the final
+arms were checked for zero `unanalyzable` classes, which a green suite does not show.
+
 ### ⚠ SOUNDNESS R794 REGRESSION FIXED — a query BUILDER loads the SQL one call before the terminal runs it
 
 **The R794 entry below shipped a silent under-report, and this entry is its correction.** R794 keyed the `Db`
@@ -34,8 +75,8 @@ them took a runtime `String`. The alternative — mark every builder whose handl
 measured first: 5,785 marks over 372 jars, led by loggers, `appendSql`, `Identifier.toIdentifier` and jOOQ's own
 DSL internals, i.e. R794's fabrication class again. **Which way it fails, all SILENT and named:** a handle that
 arrives as a PARAMETER or FIELD (`void run(Query q) { q.getResultList(); }` called as
-`run(em.createNativeQuery(sql))` — still exit 0, and still regressed against 0.39.2, which marked the
-builder unconditionally); a helper reached by virtual dispatch or living in a chained dependency; a non-`String`
+`run(em.createNativeQuery(sql))` — exit 0 at this entry's commit and regressed against 0.39.2; **closed by the
+R819 entry above**); a helper reached by virtual dispatch or living in a chained dependency; a non-`String`
 locator; a LITERAL locator on a non-SQL builder (`mongo.getCollection("secrets").drop()`, which no `tables`
 surface captures).
 

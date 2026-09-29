@@ -389,6 +389,21 @@ class HelpersTest {
         assertEquals(Effect.DB, Classifier.classify("java.sql.Connection", "setAutoCommit", "(Z)V"));
     }
 
+    @Test
+    void queryTerminalsNamedByTheirStaticSubtypeStillChargeDb() {
+        // SOUNDNESS R794 (builders): javac names the receiver's STATIC type as the owner, so the terminal of
+        // `session.createNativeQuery(sql).list()` / `dsl.query(sql).execute()` / a QueryRunner-typed Cypher
+        // arrived as an owner no rule named, and `deny Db` exited 0 over each.
+        assertEquals(Effect.DB, Classifier.classify("org.hibernate.query.NativeQuery", "list", "()Ljava/util/List;"));
+        assertEquals(Effect.DB, Classifier.classify("org.hibernate.query.NativeQuery", "getResultList", "()Ljava/util/List;"));
+        assertEquals(Effect.DB, Classifier.classify("org.hibernate.SQLQuery", "list", "()Ljava/util/List;"));
+        assertEquals(Effect.DB, Classifier.classify("org.jooq.RowCountQuery", "execute", "()I"));
+        assertEquals(Effect.DB, Classifier.classify("org.neo4j.driver.QueryRunner", "run", "(Ljava/lang/String;Ljava/util/Map;)Lorg/neo4j/driver/Result;"));
+        // …and the builders that load them stay pure.
+        assertNull(Classifier.classify("org.hibernate.Session", "createNativeQuery", "(Ljava/lang/String;)Lorg/hibernate/query/NativeQuery;"));
+        assertNull(Classifier.classify("org.jooq.DSLContext", "query", "(Ljava/lang/String;)Lorg/jooq/RowCountQuery;"));
+    }
+
     /** JPA/Hibernate query EXECUTION verbs are the round-trip (createQuery is a pure builder) — without
      *  these the whole JPA query path read pure. */
     @Test

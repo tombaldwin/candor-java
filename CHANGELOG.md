@@ -4,9 +4,74 @@ All notable changes to candor-java are recorded here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); candor-java is pre-1.0, so minor versions may
 include behavioural changes (always in the soundness-increasing direction — the §4 trust contract).
 **⚠ marks a verdict-affecting change** — a gate/guard/report that was green may read differently
-after upgrading; review policies and regenerate baselines with the new build.
+after upgrading; review policies and regenerate baselines with the new build. **A PATCH release can and
+routinely does change gate verdicts — read every ⚠ entry before bumping a pin.**
 
 ## Unreleased
+
+### ⚠ SOUNDNESS R794 REGRESSION FIXED — a query BUILDER loads the SQL one call before the terminal runs it
+
+**The R794 entry below shipped a silent under-report, and this entry is its correction.** R794 keyed the `Db`
+mark on `effect == DB` and — through `dbCallCouldNameALocator` — declined every zero-argument `Db` call. The
+builder idiom lives exactly in that gap: the call that takes the SQL is a builder the classifier deliberately
+leaves pure, and the call that runs it takes no argument. Before R794 the old owner-list guard had marked the
+builder by accident; after it, nothing marked either call, so a benign sibling literal certified caller-chosen
+SQL. EXECUTED against H2: `batch_c(c, st, "UPDATE secrets …")` really rewrote `secrets` and jOOQ's
+`resultQuery(sql).fetch()` really read it, while `allow Db in <fn> users` exited **0** on the unit AND its
+caller. Reproduced at the R794 commit on ten spellings — JPA `em.createNativeQuery(sql).getResultList()` and
+`createQuery`, Hibernate `session.createNativeQuery(sql).list()` / `createQuery(hql, T).list()`, jOOQ
+`resultQuery(sql).fetch()` and `query(sql).execute()`, R2DBC `createStatement(sql).execute()`, JDBC
+`addBatch(sql); executeBatch()`, and a helper `Query q(String s) { return em.createNativeQuery(s); }` —
+every one exit 1 on the pre-R794 jar and exit 0 at R794. **R794's own named case was never closed either:**
+`MongoDatabase.getCollection(param).drop()` is the same zero-argument shape and exited 0 at the R794 commit.
+
+**The rule is keyed on the effect at the TERMINAL, not on a builder table.** A `Db` call that names no locator
+of its own is only as visible as the calls that loaded its receiver: the mark walks the receiver back through
+the builder chain (`createNativeQuery(sql).setParameter(1, v).getResultList()`), the void loaders on the same
+object (`st.addBatch(sql)`, or a helper handed the statement and the string), and — depth-bounded — the body of
+a project method that returned the handle (`em.createNativeQuery(this.sql)` in a helper), and marks if any of
+them took a runtime `String`. The alternative — mark every builder whose handle leaves its frame — was built and
+measured first: 5,785 marks over 372 jars, led by loggers, `appendSql`, `Identifier.toIdentifier` and jOOQ's own
+DSL internals, i.e. R794's fabrication class again. **Which way it fails, all SILENT and named:** a handle that
+arrives as a PARAMETER or FIELD (`void run(Query q) { q.getResultList(); }` called as
+`run(em.createNativeQuery(sql))` — still exit 0, and still regressed against 0.39.2, which marked the
+builder unconditionally); a helper reached by virtual dispatch or living in a chained dependency; a non-`String`
+locator; a LITERAL locator on a non-SQL builder (`mongo.getCollection("secrets").drop()`, which no `tables`
+surface captures).
+
+**Three classifier misses of the same shape, found by the fixture and the partition:** javac names a call's
+receiver by its STATIC type, so `org.hibernate.query.NativeQuery.list` (Hibernate 5.2+/6, and `SQLQuery`
+before it), jOOQ's `RowCountQuery.execute` (what `DSLContext.query(String)` returns since 3.14) and Neo4j's
+`QueryRunner.run` (Spring Data Neo4j runs its Cypher through it) matched no rule — `deny Db` exited **0** over
+all three, on both the pre-R794 jar and R794. Each now charges `Db`, and each new charge was ground-truthed:
+372 rows gain `Db`, all in `neo4j-java-driver` / `spring-data-neo4j`, reaching 17 methods whose bodies run a
+Cypher query.
+
+**A/B, two corpora, R794 → this build.** 372 jars (2,306,281 analysed units): 416 rows gain `incomplete[Db]`,
+0 lose it, 372 rows gain `Db` in `inferred` (above), 0 lose it. 452 jars (1,669,927 units): 16 gain
+`incomplete[Db]`, nothing else moves. Of the 416, 13 are over-marks, named rather than hidden: liquibase's
+`ps.getConnection()` beside a `SqlTypeValue.setTypeValue(ps, …, typeName)` (6), and quartz's JNDI
+`lookup(url).getConnection()`, where the runtime string names the database, not a table (7). **Gate flips: 0 in
+either direction on either corpus — and that is not evidence of safety**: only 2 (372) and 5 (452) rows are
+certifiable under `allow Db` at all, because java is heavily hedged on `Db` (see R794's entry). What licenses
+the change is the executed fixtures and their gate flips (`test/smoke.sh`: 14 of 18 new assertions fail on the
+R794 jar, the 4 that pass are over-charge controls).
+
+**The 36,169 rows R794 moved and nobody audited.** R794's evidence partitioned only the 13,523 lost markers on
+rows WITHOUT `Db`. The rest — **36,169 rows that carry `Db` and lost `incomplete[Db]`** (not ~32,000: that figure
+subtracted the 3,913 vanished rows twice) — are partitioned here by an instrument independent of the fix: a
+forward walk from each pre-R794 mark site in reach of the row, calibrated first on 5 seeded rows (a seeded
+real loss the fix misses must land in the real-loss bucket, and did). On the 35,833 rows keyed by name:
+32,087 DETERMINED (every origin value dies, or leaves as a `String`/primitive/exception whose consumer is
+itself guarded, or the jar has no other kind of origin); 19 RESTORED by this fix; 899 whose origin is an
+object that leaves its frame and 2,789 whose origin the call-graph sidecar could not attribute — both
+hand-audited BY ORIGIN SHAPE (jdbi binders, lexer and mapper internals, `java.sql` value types such as
+`Timestamp`/`Array`/`Struct`, Spring's `SQLErrorCodes`: none a query handle; one real shape, Neo4j
+`QueryRunner.run`, fixed above); 39 flagged by the instrument as real losses — two shapes, both a bound VALUE
+(`createArrayOf`, `AbstractSqlTypeValue.createTypeValue`) that the instrument over-followed into
+`ps.getConnection()`. So the unaudited half was, as far as this instrument reaches, overwhelmingly R794's
+fabrications going away — the regression lived in shapes the corpus barely contains, which is why the corpus
+A/B could not have found it.
 
 ### ⚠ SOUNDNESS R799 FIXED — a runtime path VALUE is hedged by where it goes, not by being built
 
@@ -34,7 +99,20 @@ A/B — `bin/corpus-ab.py`, 452-jar census, 1,215,656 → 1,215,650 rows: ADDED 
 harmless, and the rest hand the value on — often to code that really does Fs (ant `FileUtils.copyFile`,
 POI, PDFBox).
 
+**What stays OPEN in `Fs`, so nobody reads this entry as the surface being closed:** SOUNDNESS R812 (a
+two-argument `new File(parent, child)` with a RUNTIME child is never masked, so a benign literal beside it
+certifies a caller-chosen path), R813 (`File` subclasses, whose `delete()`/`exists()` arrive on
+an owner the receiver test does not read — pinned here for derby's `DirFile`, open in general) and R814 (~150
+JDK `File`/`Path` sinks the classifier does not charge `Fs` at all; the five executed above are examples, not
+the list). For those, the runtime-path mark this entry keeps is the only disclosure.
+
 ### ⚠ SOUNDNESS R794 + R795 FIXED — every masking guard is now keyed on the EFFECT, and no owner table is left to fall behind the classifier
+
+**⚠ READ THE ENTRY ABOVE FIRST: this change introduced a silent under-report.** Keying the mark on the effect
+and exempting zero-argument calls dropped every query BUILDER (`em.createNativeQuery(sql).getResultList()`,
+`st.addBatch(sql); st.executeBatch()`, jOOQ, Hibernate, R2DBC) — the old guard had marked them by accident — and
+never closed the `MongoDatabase.getCollection(param).drop()` shape this entry names below. The "Mongo drivers"
+claim in the next paragraph was true only for calls that carry the key as an argument.
 
 **R794 — the `Db` masking guard was the last one keyed on an owner INCLUSION list.** `surfaceIncomplete.add("Db")`
 fired only inside `isSqlBearingOwner`, which names 13 of the 65 owner families `Classifier.classify` charges
@@ -77,8 +155,9 @@ verdict does move — a method reaching only `users` that also constructs a `SQL
 failure (exit 1) to a pass.
 
 **Gate flips are 5 in 372 jars because only 78 rows in 2.3M analysed units were certifiable to begin with**
-(2 `Db`, 76 `Net`) — java is already ~97% hedged on both surfaces (345,175 of 355,230 `Net` rows and 141,819
-of 199,193 `Db` rows carried `incomplete` before this change). That number is a statement about the
+(2 `Db`, 76 `Net`) — java is heavily hedged on both surfaces: 97% on `Net` (345,175 of 355,230 rows) and
+71% on `Db` (141,819 of 199,193 rows) carried `incomplete` before this change. (This sentence said "~97% on both
+surfaces" until the next release's review; the `Db` figure was always 71%.) That number is a statement about the
 corpus, not a safety claim: the shape that flips is by construction a function holding BOTH a captured
 literal and an invisible locator, i.e. the masking shape itself. The user-visible cost, stated as a shape:
 a method that reads a declared SQL table AND touches a cache candor publishes no key surface for can no

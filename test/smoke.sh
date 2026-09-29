@@ -1698,6 +1698,97 @@ CANDOR_POLICY="$W/r794.pol" "$CJ" "$W/r794cls" >/dev/null 2>&1; r794s=$?
 if [ "$r794s" -eq 0 ]; then echo "  ok   R794 CONTROL GATE: the pure-JDBC method still CERTIFIES (exit 0)"; pass=$((pass+1));
 else echo "  FAIL R794 CONTROL GATE — exit $r794s (want 0); the guard is over-masking"; fail=$((fail+1)); fi
 
+# ── SOUNDNESS R794, second half: a query BUILDER loads the SQL one call before the terminal runs it ──
+echo "== SOUNDNESS R794 (builders): a runtime query loaded into a handle is disclosed at its terminal =="
+# R794 keyed the Db mark on `effect == DB` and exempted zero-argument calls, so a builder the classifier
+# leaves pure (`createNativeQuery`, `resultQuery`, `addBatch`) followed by a zero-arg terminal marked
+# NOTHING — where the pre-R794 guard had marked the builder. EXECUTED against H2 before this fixture was
+# written: `batch_c(c, st, "UPDATE secrets …")` rewrote `secrets` and jOOQ `resultQuery(sql).fetch()`
+# read it, while `allow Db in <fn> users` exited 0 on the unit AND the caller beside a benign `users`
+# literal. Stubs carry the real FQNs, because `Classifier.classify` keys on the owner name. The same
+# section pins two classifier misses the fixture exposed (Hibernate `NativeQuery`, jOOQ `RowCountQuery`:
+# javac names the receiver's STATIC type, so `deny Db` exited 0 over both).
+mkdir -p "$W/r794b/jakarta/persistence" "$W/r794b/org/hibernate/query" "$W/r794b/org/jooq" "$W/r794b/io/r2dbc/spi" "$W/r794b/app"
+cat > "$W/r794b/jakarta/persistence/Query.java" <<'J'
+package jakarta.persistence;
+public interface Query { java.util.List<?> getResultList(); Query setParameter(int i, Object v); Query setMaxResults(int n); }
+J
+cat > "$W/r794b/jakarta/persistence/EntityManager.java" <<'J'
+package jakarta.persistence;
+public interface EntityManager { Query createNativeQuery(String sql); }
+J
+cat > "$W/r794b/org/hibernate/query/NativeQuery.java" <<'J'
+package org.hibernate.query;
+public interface NativeQuery { java.util.List<?> list(); }
+J
+cat > "$W/r794b/org/hibernate/Session.java" <<'J'
+package org.hibernate;
+public interface Session { org.hibernate.query.NativeQuery createNativeQuery(String sql); }
+J
+cat > "$W/r794b/org/jooq/ResultQuery.java" <<'J'
+package org.jooq;
+public interface ResultQuery { Object fetch(); }
+J
+cat > "$W/r794b/org/jooq/RowCountQuery.java" <<'J'
+package org.jooq;
+public interface RowCountQuery { int execute(); }
+J
+cat > "$W/r794b/org/jooq/DSLContext.java" <<'J'
+package org.jooq;
+public interface DSLContext { ResultQuery resultQuery(String sql); RowCountQuery query(String sql); }
+J
+cat > "$W/r794b/io/r2dbc/spi/Statement.java" <<'J'
+package io.r2dbc.spi;
+public interface Statement { Object execute(); }
+J
+cat > "$W/r794b/io/r2dbc/spi/Connection.java" <<'J'
+package io.r2dbc.spi;
+public interface Connection { Statement createStatement(String sql); }
+J
+cat > "$W/r794b/app/B.java" <<'J'
+package app;
+import java.sql.*;
+public class B {
+    static void lit(Connection c) throws SQLException { c.prepareStatement("SELECT id FROM users").executeQuery(); }
+    public static Object jpaU(Connection c, jakarta.persistence.EntityManager em, String sql) throws SQLException { lit(c); return em.createNativeQuery(sql).getResultList(); }
+    public static Object jpaC(Connection c, jakarta.persistence.EntityManager em, String sql) throws SQLException { return jpaU(c, em, sql); }
+    public static Object chainU(Connection c, jakarta.persistence.EntityManager em, String sql, Object v) throws SQLException { lit(c); return em.createNativeQuery(sql).setParameter(1, v).getResultList(); }
+    public static Object splitU(Connection c, jakarta.persistence.EntityManager em, String sql) throws SQLException { lit(c); jakarta.persistence.Query q = em.createNativeQuery(sql); q.setMaxResults(5); return q.getResultList(); }
+    public static Object hibU(Connection c, org.hibernate.Session s, String sql) throws SQLException { lit(c); return s.createNativeQuery(sql).list(); }
+    public static Object jooqRU(Connection c, org.jooq.DSLContext d, String sql) throws SQLException { lit(c); return d.resultQuery(sql).fetch(); }
+    public static Object jooqQU(Connection c, org.jooq.DSLContext d, String sql) throws SQLException { lit(c); return d.query(sql).execute(); }
+    public static Object r2U(Connection c, io.r2dbc.spi.Connection r, String sql) throws SQLException { lit(c); return r.createStatement(sql).execute(); }
+    public static Object batchU(Connection c, Statement st, String sql) throws SQLException { lit(c); st.addBatch(sql); return st.executeBatch(); }
+    public static Object batchC(Connection c, Statement st, String sql) throws SQLException { return batchU(c, st, sql); }
+    static jakarta.persistence.Query helper(jakarta.persistence.EntityManager em, String s) { return em.createNativeQuery(s); }
+    static jakarta.persistence.Query fieldHelper(jakarta.persistence.EntityManager em) { return em.createNativeQuery(SQL); }
+    static String SQL = System.getenv("Q");
+    public static Object viaHelperU(Connection c, jakarta.persistence.EntityManager em, String sql) throws SQLException { lit(c); return helper(em, sql).getResultList(); }
+    public static Object viaFieldU(Connection c, jakarta.persistence.EntityManager em) throws SQLException { lit(c); return fieldHelper(em).getResultList(); }
+    // OVER-CHARGE CONTROLS — each must still certify.
+    public static Object okNative(Connection c, jakarta.persistence.EntityManager em, Object v) throws SQLException { lit(c); return em.createNativeQuery("SELECT id FROM users").setParameter(1, v).getResultList(); }
+    public static Object okBind(Connection c, String v) throws SQLException { PreparedStatement ps = c.prepareStatement("SELECT id FROM users WHERE n = ?"); ps.setString(1, v); return ps.executeQuery(); }
+    public static Object okColumn(Connection c, String col) throws SQLException { ResultSet rs = c.prepareStatement("SELECT id FROM users").executeQuery(); while (rs.next()) rs.getString(col); return rs; }
+    public static Object okBatch(Connection c, Statement st) throws SQLException { lit(c); st.addBatch("UPDATE users SET n = 1"); return st.executeBatch(); }
+}
+J
+javac -d "$W/r794bcls" $(find "$W/r794b" -name '*.java') 2>/dev/null
+for pair in jpaU:1 jpaC:1 chainU:1 splitU:1 hibU:1 jooqRU:1 jooqQU:1 r2U:1 batchU:1 batchC:1 viaHelperU:1 viaFieldU:1 okNative:0 okBind:0 okColumn:0 okBatch:0; do
+    m=${pair%%:*}; want=${pair##*:}
+    printf 'allow Db in app.B.%s users\n' "$m" > "$W/r794b.pol"
+    CANDOR_POLICY="$W/r794b.pol" "$CJ" "$W/r794bcls" >/dev/null 2>&1; got=$?
+    if [ "$got" -eq "$want" ]; then echo "  ok   R794b GATE app.B.$m exits $want"; pass=$((pass+1));
+    else echo "  FAIL R794b GATE app.B.$m — exit $got (want $want)"; fail=$((fail+1)); fi
+done
+printf 'package app;\npublic class X {\n  public static Object hibX(org.hibernate.Session s, String q) { return s.createNativeQuery(q).list(); }\n  public static Object jooqQX(org.jooq.DSLContext d, String q) { return d.query(q).execute(); }\n}\n' > "$W/r794b/app/X.java"
+javac -cp "$W/r794bcls" -d "$W/r794bcls" "$W/r794b/app/X.java" 2>/dev/null
+for m in hibX jooqQX; do
+    printf 'deny Db app.X.%s\n' "$m" > "$W/r794b.pol"
+    CANDOR_POLICY="$W/r794b.pol" "$CJ" "$W/r794bcls" >/dev/null 2>&1; got=$?
+    if [ "$got" -eq 1 ]; then echo "  ok   R794b CLASSIFIER: \`deny Db\` bites app.X.$m"; pass=$((pass+1));
+    else echo "  FAIL R794b CLASSIFIER app.X.$m — deny Db exit $got (want 1)"; fail=$((fail+1)); fi
+done
+
 # ── SOUNDNESS R795: a zero-argument Net call can still name its destination — at the RECEIVER ─────
 echo "== SOUNDNESS R795: the Net masking guard reads the receiver, not the argument count =="
 # The defect: `carriesArgs = !min.desc.startsWith("()")` declined every zero-argument Net call, so

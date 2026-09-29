@@ -136,8 +136,9 @@ zero-impl case one hop up (which correctly reads `Unknown`), the call site itsel
 not a defensive caveat: verified first-hand on a two-package fixture (a dependency declaring an
 interface with zero implementors, a consumer dispatching on it directly, the dependency's report on
 `CANDOR_DEPS`) before this paragraph was written. It misses — *silently* — dispatch over a foreign, unimplemented abstraction once its owning
-dependency is chained. This is NOT by design: candor-spec §4's ⟨0.39⟩ rung already requires such a
-call to be disclosed, and the gap is tracked as SOUNDNESS R533 (open in java and swift).
+dependency is chained. This is NOT by design: candor-spec §4's trust contract (SPEC.md `:4299-4302`)
+already requires it — dispatch over an unknown type MUST contribute `Unknown` and set
+`unresolved: true` — and the gap is tracked as SOUNDNESS R533 (open in java and swift).
 
 **CLOSED — a field-bound callback that a chained consumer REASSIGNS (SOUNDNESS R94, R595).** Kept
 here because the measurement is the reason the fix has the shape it does, and because the ENFORCEMENT
@@ -426,7 +427,8 @@ forbid domain -> infra          # the domain layer must not depend on the infras
   ("billing may only touch `ledger.*`", by qualified table name from SQL string literals). Certifies the *visible*
   surface only — a literal is read from the call that carries it (the `ProcessBuilder`/`exec` program,
   the `Path.of`/`File`/stream-ctor path, a scheme-URL/`host:port`/IP host); a runtime-computed value is
-  disclosed as invisible, never over-claimed (validated on a real Spring app — the extractor takes the
+  designed to be disclosed as invisible rather than over-claimed — known open gaps are tracked in
+  candor-spec's SOUNDNESS.md (validated on a real Spring app — the extractor takes the
   *first* arg, so a `ProcessBuilder("git","clone")` is `git` and a `RandomAccessFile(path,"r")` mode is
   never mistaken for a path).
 - **`forbid <A> -> <B>`** (`AS-EFF-009`) — *who* a layer may depend on. A method in scope A must not

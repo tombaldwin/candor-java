@@ -1721,7 +1721,12 @@ final class Classifier {
                     || method.equals("saveOrUpdate") || method.equals("merge") || method.equals("refresh")
                     || method.equals("flush") || method.equals("byId")))
             return Effect.DB;
-        if ((owner.equals("org.hibernate.query.Query") || owner.equals("org.hibernate.Query"))
+        // SOUNDNESS R794 (second half): javac names the receiver's STATIC type as the owner, and
+        // `session.createNativeQuery(sql)` returns `NativeQuery` (Hibernate 5.2+/6; `SQLQuery` before), so
+        // `.list()` arrived as `org/hibernate/query/NativeQuery.list` and matched nothing — `deny Db` EXITED 0
+        // over a native query that runs. Both extend `Query` and inherit these exact verbs.
+        if ((owner.equals("org.hibernate.query.Query") || owner.equals("org.hibernate.Query")
+                || owner.equals("org.hibernate.query.NativeQuery") || owner.equals("org.hibernate.SQLQuery"))
                 && (method.equals("list") || method.equals("uniqueResult") || method.equals("getResultList")
                     || method.equals("getSingleResult") || method.equals("executeUpdate")
                     || method.equals("scroll") || method.equals("stream")))
@@ -1767,7 +1772,10 @@ final class Classifier {
                     || method.equals("batchStore") || method.equals("batchInsert") || method.equals("batchUpdate")
                     || method.equals("batchDelete") || method.equals("batchMerge")
                     || method.startsWith("transactionResult"))) return Effect.DB;
-        if ((owner.equals("org.jooq.Query") || owner.equals("org.jooq.ResultQuery"))
+        // `RowCountQuery` is what `DSLContext.query(String)` returns since jOOQ 3.14 — the same javac
+        // static-owner miss as Hibernate's NativeQuery above: `dsl.query(sql).execute()` read silent-pure.
+        if ((owner.equals("org.jooq.Query") || owner.equals("org.jooq.ResultQuery")
+                || owner.equals("org.jooq.RowCountQuery"))
                 && (method.equals("execute") || method.startsWith("fetch"))) return Effect.DB;
         // MyBatis SqlSession.
         if (owner.equals("org.apache.ibatis.session.SqlSession")
@@ -1780,6 +1788,17 @@ final class Classifier {
                 || owner.equals("org.neo4j.driver.async.AsyncSession"))
                 && (method.equals("run") || method.startsWith("execute") || method.startsWith("read")
                     || method.startsWith("write"))) return Effect.DB;
+        // The QueryRunner SUPERTYPES of the four owners above. javac names the receiver's STATIC type, so
+        // code typed to the interface — Spring Data Neo4j's own `SimpleNeo4jRepository.deleteAll` runs its
+        // Cypher through `QueryRunner.run(String, Map)` — arrived here as an owner nothing matched and read
+        // Db-free at that call. Found by the SOUNDNESS R794 builder partition. `run*` only: these types
+        // declare nothing else that reaches the server.
+        if ((owner.equals("org.neo4j.driver.QueryRunner") || owner.equals("org.neo4j.driver.SimpleQueryRunner")
+                || owner.equals("org.neo4j.driver.async.AsyncQueryRunner")
+                || owner.equals("org.neo4j.driver.reactive.ReactiveQueryRunner")
+                || owner.equals("org.neo4j.driver.reactive.RxQueryRunner")
+                || owner.equals("org.neo4j.driver.reactivestreams.ReactiveQueryRunner"))
+                && method.startsWith("run")) return Effect.DB;
         // jdbi3 — Handle/Jdbi terminal verbs run the SQL (createQuery/createUpdate return builders, stay pure).
         if ((owner.equals("org.jdbi.v3.core.Handle") || owner.equals("org.jdbi.v3.core.Jdbi"))
                 && (method.equals("execute") || method.startsWith("select") || method.equals("inTransaction")

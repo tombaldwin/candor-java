@@ -9,6 +9,71 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R825 FIXED — the `Db` handle rule failed OPEN; it is now one forward pass that fails CLOSED
+
+The builder rule from R794b, R819 and R824 marked a function only when a trace from where a runtime `String` was
+loaded into a query handle reached the terminal that ran it, so every hop it did not model was SILENT. A release
+review EXECUTED 17 such shapes on H2, each of which read `secrets` beside a benign `users` literal. Each exited
+**1** under `allow Db in <fn> users` on v0.39.2 and **0** at 5f695f9. They include
+`Objects.requireNonNull(prep(c,sql)).executeBatch()`, `Optional.ofNullable(mk(em,sql)).orElseThrow()…`,
+`List.of(mk2(em,sql)).get(0)…`, a lambda capture, `q::getResultList`, a record component, a `static final`
+container filled by a helper, and `st.addBatch(sql); l.add(st); l.get(0).executeBatch()`. Ten more were found
+the same way and also executed: an anonymous class, `CompletableFuture.supplyAsync`, `Optional.map(this::run)`,
+a ternary merge, `stream().forEach`, a stored `Supplier`, an exception carrying the handle, and Kotlin
+`listOf(…).first()`, `Pair` and `map { }`. HEAD was silent on all ten; v0.39.2 was silent on none of them.
+
+**The fix is a restructure, not a tenth hop.** `DbHandleFlow` is a whole-program pass that follows a handle
+FORWARD from the call that loads it. The call's owner is SQL-bearing, or its result is a type some `Db` call in
+the program runs, and it has no body in the scan. The pass follows the handle through copies, builder steps,
+project calls (per-parameter summaries), returns to in-scan callers, fields, containers, lambda captures and
+callbacks. **The default for a use it cannot follow is to MARK.** Every rule that does not mark is a stated
+carve-out: a runtime data structure, a log sink, a builder step, or a factory or result type. Forgetting one
+over-marks. The mark lands on the frame whose extent runs the handle. A helper that is handed a handle marks
+its caller, not itself, so a caller passing it a literal query still certifies.
+
+**Controls that stay 0**, all pinned in `test/smoke.sh`: a handle put in a container and never run, one only
+printed or hashed, one only configured (`setMaxResults`), `ps.getConnection().commit()`, `rs.updateString(col,
+…)`, `new SQLException(m)`, `createArrayOf → setArray → execute(literal)`, and a literal query in a generic `Box`
+while another `Box` holds a runtime one. The two literal-helper fixtures `okH1`/`okE1` ARE marked. The engine
+is context-insensitive about `String` parameters (`mk(em, s)` loads a runtime handle), as every guard here is.
+They certified at 5f695f9 only because that trace failed at `List.of`, and v0.39.2 marked them too.
+
+**Two engine changes the corpus forced, each measured.** (1) A `ResultSet` and its kin are the PRODUCT of an
+execution, not a handle. Tracked as handles, one Hikari proxy made every `rs.next()` in hazelcast inherit a
+hedge through CHA: 31,762 rows from 147 marks. (2) A per-call `Db` rule hole, `capturedTableHere`: a literal
+anywhere in the window counted as a captured locator even when another `String` argument was runtime, so
+`md.getColumns(null, null, table, "%")` left the caller-chosen table unmarked. 5f695f9 had caught that shape
+only through the `ResultSet` in (1).
+
+**Named residual, SILENT and pinned:** a PROJECT `Map` whose `put` runs the handle, reached through the
+`java.util.Map` declaration (`z1MapIface`), because carrier calls do not fan out to project implementors. Also
+named: a handle RETURNED out of the scan, or stored in a field with no in-scan reader, is not marked. No
+"returns a runtime handle" fact is published for a chained consumer.
+
+**A/B, 5f695f9 → this build** (`incomplete[Db]` rows; every arm analysed the same units, 0 classes newly skipped,
+0 scan failures):
+
+| corpus | gained on a `Db` row | gained on a row with no `Db` | new rows | lost | net | of all rows |
+|---|---|---|---|---|---|---|
+| 372 jars | 87 | 1,598 | 61 | 13 | +1,733 | 0.12% |
+| 452 jars | 76 | 1,206 | 85 | 14 | +1,353 | 0.11% |
+
+The gains sit in DB frameworks' own internals: neo4j-java-driver, spring-data-cassandra, hibernate-core, commons-
+dbcp2 and assertj-db. They are fail-closed escapes (depth bound, an interface with no implementor in the scan,
+a handle returned into library dispatch). Every one of the 27 losses was traced to its 5f695f9 reason. All are
+C1, the old walk's own over-follows, which the R794b entry below named as over-marks. liquibase's
+`ps.getConnection()` beside a bound `SqlTypeValue` type name (6 rows) runs no query, and the bytecode shows
+only binders and metadata. quartz's JNDI `lookup(name).getConnection()` (7 + 7 + 7 rows) names a database, not
+a table. **Gate flips: 0 in either direction on either corpus, and that is not evidence.** Only 2 rows in
+1,497,440 are certifiable under `allow Db` at all.
+
+**The alternative priced beside it: restore v0.39.2's owner-list mark and keep everything else.** It costs
++53,191 rows on 372 jars (3.55%: 36,123 on `Db` rows, 13,155 on rows with no `Db`, 3,913 rows that exist only
+for the hedge) and +31,892 on 452 jars (2.61%). It flips 2 correct certifications, hibernate's Oracle and HANA
+literal-query probes. It still misses 5 shapes that v0.39.2 missed (`s1Run`, `s3Run`, `a1Run`, `e4Run`,
+all four executed through their `*Both` callers; and `l4U`) and over-marks 13 controls that this build
+certifies.
+
 ### ⚠ SOUNDNESS R824 FIXED — a query handle round-tripped through a JDK container and then executed
 
 The R819 forward walk followed a value only into the RESULT of the call that consumed it — for `List.add`
@@ -45,6 +110,10 @@ the classifier charges that `Db` (SOUNDNESS R821's class). 6 new mark sites in a
 50 sites that stopped marking through the walk — all String/Object starts on rows the Db call's own rule
 still marks.
 
+**Superseded by R825 above — this entry closed the shapes its fixtures name, not the container class.** A handle
+built by a helper and put in a container (`List.of(mk2(em, sql)).get(0)`), a same-frame `addBatch` into a list,
+and a `static final` map filled through a helper all stayed silent at this commit and were executed on H2.
+
 **The R819 entry's parity price was of the wrong thing.** Its "hand-off to unseen code" option started from
 String and Object returns as well as handles, and would have closed this defect only by also marking a
 handle put in a list and never run. The real price of closing it is the one row above.
@@ -74,7 +143,7 @@ DataSource acquisition — without that narrowing a `TransactionManager` field w
 **Versus v0.39.2, shape by shape** (fixtures in `test/smoke.sh`; `rel` = the v0.39.2 jar):
 handle to a project helper, through an interface, in a field executed in the same frame, in a static field, via
 a container, stored then executed by a callee — `rel` 1, now 1. A field executed by ANOTHER method than the one
-that loaded it — `rel` **0**, now 1 (better than 0.39.2). **Still weaker than 0.39.2, all SILENT and named:**
+that loaded it — `rel` **0**, now 1 (better than 0.39.2). **Still weaker than 0.39.2, SILENT — and this list was NOT exhaustive (R825 above executed 17 more):**
 a handle handed to code this scan has no body for (`f.apply(em.createNativeQuery(sql))` with an opaque
 `Function`); and a function that only LOADS a handle it never executes (`store` into a field, `addTo(st, sql)`
 into a caller's statement) — `rel` 1, now 0 on that function, while the function that executes it is marked.
@@ -117,7 +186,7 @@ object (`st.addBatch(sql)`, or a helper handed the statement and the string), an
 a project method that returned the handle (`em.createNativeQuery(this.sql)` in a helper), and marks if any of
 them took a runtime `String`. The alternative — mark every builder whose handle leaves its frame — was built and
 measured first: 5,785 marks over 372 jars, led by loggers, `appendSql`, `Identifier.toIdentifier` and jOOQ's own
-DSL internals, i.e. R794's fabrication class again. **Which way it fails, all SILENT and named:** a handle that
+DSL internals, i.e. R794's fabrication class again. **Which way it fails, SILENT — the named cases below, and (R825) every other hop the walk did not model:** a handle that
 arrives as a PARAMETER or FIELD (`void run(Query q) { q.getResultList(); }` called as
 `run(em.createNativeQuery(sql))` — exit 0 at this entry's commit and regressed against 0.39.2; **closed by the
 R819 entry above**); a helper reached by virtual dispatch or living in a chained dependency; a non-`String`

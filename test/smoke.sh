@@ -1869,6 +1869,83 @@ for pair in mapU:1 listAddU:1 cacheExecU:1 cacheBothU:1 arrU:1 slotExecU:1 cifaU
     else echo "  FAIL R824 GATE app.C2.$m — exit $got (want $want)"; fail=$((fail+1)); fi
 done
 
+# ── SOUNDNESS R825: the handle is followed FORWARD and anything the walk cannot follow MARKS ─────────
+echo "== SOUNDNESS R825: a runtime-loaded query handle the walk cannot follow is disclosed, not dropped =="
+# R794b/R819/R824 marked only when a trace from load to terminal SUCCEEDED, so every hop they did not model
+# was silent. A release review EXECUTED 17 such shapes on H2 — each read `secrets` beside a benign `users`
+# literal — that exited 1 on v0.39.2 and 0 at 5f695f9; ten more (anonymous class, CompletableFuture,
+# Optional.map, a ternary merge, forEach, a stored Supplier, Kotlin listOf/Pair/map) were found the same way.
+# The rule is now inverted (DbHandleFlow): the default for an unmodelled use is to MARK.
+mkdir -p "$W/r794b/app"
+cat > "$W/r794b/app/R825.java" <<'J'
+package app;
+import java.sql.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.*;
+import jakarta.persistence.*;
+public class R825 {
+  static void lit(Connection c) throws SQLException { c.prepareStatement("SELECT id FROM users").executeQuery(); }
+  static jakarta.persistence.Query mk(EntityManager em, String s) { return em.createNativeQuery(s); }
+  static jakarta.persistence.Query mk2(EntityManager em, String s) { return mk(em, s); }
+  static Statement prep(Connection c, String sql) throws SQLException { Statement st = c.createStatement(); st.addBatch(sql); return st; }
+  record Job(jakarta.persistence.Query q) {}
+  static final Map<String, jakarta.persistence.Query> S1 = new HashMap<>();
+  static void reg(String k, jakarta.persistence.Query q) { S1.put(k, q); }
+  public static void s1Prep(EntityManager em, String sql) { reg(sql, em.createNativeQuery(sql)); }
+  public static Object s1Run(Connection c, String k) throws Exception { lit(c); return S1.get(k).getResultList(); }
+  static final List<Statement> PENDING = new ArrayList<>();
+  public static void e4Prep(Connection c, String sql) throws SQLException { Statement st = c.createStatement(); st.addBatch(sql); PENDING.add(st); }
+  public static int e4Run(Connection c) throws Exception { lit(c); int n = 0; for (Statement st : PENDING) n += st.executeBatch().length; return n; }
+  public static Object h1U(Connection c, EntityManager em, String sql) throws Exception { lit(c); return List.of(mk2(em, sql)).get(0).getResultList(); }
+  public static Object h2U(Connection c, EntityManager em, String sql) throws Exception { lit(c); return Objects.requireNonNull(mk(em, sql)).getResultList(); }
+  public static Object h3U(Connection c, EntityManager em, String sql) throws Exception { lit(c); return Optional.ofNullable(mk(em, sql)).orElseThrow().getResultList(); }
+  public static Object l1U(Connection c, EntityManager em, String sql) throws Exception { lit(c); jakarta.persistence.Query q = em.createNativeQuery(sql); Supplier<Object> s = () -> q.getResultList(); return s.get(); }
+  public static Object l2U(Connection c, EntityManager em, String sql) throws Exception { lit(c); jakarta.persistence.Query q = em.createNativeQuery(sql); Supplier<List<?>> s = q::getResultList; return s.get(); }
+  public static Object l4U(Connection c, EntityManager em, List<String> sqls) throws Exception { lit(c); return sqls.stream().map(em::createNativeQuery).map(jakarta.persistence.Query::getResultList).toList(); }
+  public static Object r1U(Connection c, EntityManager em, String sql) throws Exception { lit(c); return new Job(mk(em, sql)).q().getResultList(); }
+  public static int[] e3U(Connection c, String sql) throws Exception { lit(c); return Objects.requireNonNull(prep(c, sql)).executeBatch(); }
+  public static int[] e6U(Connection c, String sql) throws Exception { lit(c); Statement st = c.createStatement(); st.addBatch(sql); List<Statement> l = new ArrayList<>(); l.add(st); return l.get(0).executeBatch(); }
+  public static Object n6Anon(Connection c, EntityManager em, String sql) throws Exception { lit(c); jakarta.persistence.Query q = em.createNativeQuery(sql); Callable<Object> k = new Callable<>() { public Object call() { return q.getResultList(); } }; return k.call(); }
+  public static Object n9Async(Connection c, EntityManager em, String sql) throws Exception { lit(c); jakarta.persistence.Query q = em.createNativeQuery(sql); return CompletableFuture.supplyAsync(() -> q.getResultList(), Runnable::run).get(); }
+  public static Object n14Merge(Connection c, EntityManager em, String sql, boolean b) throws Exception { lit(c); jakarta.persistence.Query q = b ? mk(em, "SELECT id FROM users") : mk(em, sql); return List.of(q).get(0).getResultList(); }
+  static Object libExec(jakarta.persistence.Query q) { return q.getResultList(); }
+  public static Object n8OptMap(Connection c, EntityManager em, String sql) throws Exception { lit(c); return Optional.of(em.createNativeQuery(sql)).map(R825::libExec).orElse(null); }
+  public static Object argLamU(Connection c, EntityManager em, Function<jakarta.persistence.Query, Object> f, String sql) throws Exception { lit(c); return f.apply(em.createNativeQuery(sql)); }
+  // CONTROLS — must still certify: the handle is never run, or only printed, or only configured.
+  public static Object k1Print(Connection c, EntityManager em, String sql) throws Exception { lit(c); jakarta.persistence.Query q = em.createNativeQuery(sql); System.out.println(q); return Objects.hash(q); }
+  public static Object k3SetOnly(Connection c, EntityManager em, String sql) throws Exception { lit(c); em.createNativeQuery(sql).setMaxResults(5).setParameter(1, "x"); return null; }
+  public static Object k7Dead(Connection c, EntityManager em, String sql) throws Exception { lit(c); Map<String, jakarta.persistence.Query> m = new HashMap<>(); m.put(sql, em.createNativeQuery(sql)); return m.size(); }
+  public static Object k8ConnFromStmt(Connection c) throws Exception { PreparedStatement ps = c.prepareStatement("SELECT id FROM users"); ps.executeQuery(); ps.getConnection().commit(); return null; }
+  public static Object k10Col(Connection c, String col) throws Exception { ResultSet rs = c.prepareStatement("SELECT id FROM users").executeQuery(); rs.next(); rs.updateString(col, "x"); rs.updateRow(); return rs; }
+  // Generic holder: a literal query in a Box must not be marked because some other Box somewhere holds a runtime one.
+  static final class Box<T> { final T v; Box(T v) { this.v = v; } T get() { return v; } }
+  public static Object n1Box(Connection c, EntityManager em, String sql) throws Exception { lit(c); return new Box<>(em.createNativeQuery(sql)).get().getResultList(); }
+  public static Object k4LitBox(Connection c, EntityManager em) throws Exception { lit(c); return new Box<>(em.createNativeQuery("SELECT id FROM users")).get().getResultList(); }
+  // A literal handed to a helper that takes query TEXT: the engine is context-insensitive about String
+  // PARAMETERS, as every guard here is, so this is MARKED. It certified at 5f695f9 only because the trace
+  // there failed at `List.of`. Pinned so a change to that model is a decision, not a drift.
+  public static Object okH1(Connection c, EntityManager em) throws Exception { lit(c); return List.of(mk2(em, "SELECT id FROM users")).get(0).getResultList(); }
+  // NAMED RESIDUAL — a PROJECT Map whose put() runs the handle, reached through the java.util.Map
+  // declaration: carrier calls do not fan out to project implementors. SILENT, and pinned as silent.
+  static final class ExecMap extends HashMap<String, jakarta.persistence.Query> { @Override public jakarta.persistence.Query put(String k, jakarta.persistence.Query q) { q.getResultList(); return super.put(k, q); } }
+  public static Object z1MapIface(Connection c, EntityManager em, String sql) throws Exception { lit(c); Map<String, jakarta.persistence.Query> m = new ExecMap(); m.put(sql, em.createNativeQuery(sql)); return m.size(); }
+}
+J
+javac -cp "$W/r794bcls" -d "$W/r794bcls" "$W/r794b/app/R825.java" 2>/dev/null
+for pair in s1Run:1 e4Run:1 h1U:1 h2U:1 h3U:1 l1U:1 l2U:1 l4U:1 r1U:1 e3U:1 e6U:1 n6Anon:1 n9Async:1 n14Merge:1 n8OptMap:1 argLamU:1 n1Box:1 okH1:1 k1Print:0 k3SetOnly:0 k7Dead:0 k8ConnFromStmt:0 k10Col:0 k4LitBox:0 z1MapIface:0; do
+    m=${pair%%:*}; want=${pair##*:}
+    printf 'allow Db in app.R825.%s users\n' "$m" > "$W/r825.pol"
+    CANDOR_POLICY="$W/r825.pol" "$CJ" "$W/r794bcls" >/dev/null 2>&1; got=$?
+    if [ "$got" -eq "$want" ]; then echo "  ok   R825 GATE app.R825.$m exits $want"; pass=$((pass+1));
+    else echo "  FAIL R825 GATE app.R825.$m — exit $got (want $want)"; fail=$((fail+1)); fi
+done
+# …and the gate can FAIL: the same fixtures under `deny Db` bite, so an exit 0 above is a certification.
+printf 'deny Db app.R825.k7Dead\n' > "$W/r825.pol"
+CANDOR_POLICY="$W/r825.pol" "$CJ" "$W/r794bcls" >/dev/null 2>&1; r825d=$?
+if [ "$r825d" -eq 1 ]; then echo "  ok   R825 CALIBRATION: \`deny Db\` bites the control that \`allow Db\` certifies"; pass=$((pass+1));
+else echo "  FAIL R825 CALIBRATION — deny Db exit $r825d (want 1)"; fail=$((fail+1)); fi
+
 # ── SOUNDNESS R795: a zero-argument Net call can still name its destination — at the RECEIVER ─────
 echo "== SOUNDNESS R795: the Net masking guard reads the receiver, not the argument count =="
 # The defect: `carriesArgs = !min.desc.startsWith("()")` declined every zero-argument Net call, so

@@ -396,6 +396,9 @@ public class Candor {
             }
         }
 
+        // SOUNDNESS R825 — where a runtime-loaded query handle goes, followed forward, fail-closed. Whole
+        // program, so it runs after the per-class loop (and outside the refresh overlay: it reads every body).
+        DbHandleFlow.run(classes);
         phase("analyze+edges");
         classifySourceScope();
         phase("classify-scope");
@@ -6202,192 +6205,30 @@ public class Candor {
         // can no longer be certified by `allow Db`, only by `deny`. Publishing key literals as a
         // surface is a SPEC-shaped change (a `tables` entry that is not a table) and is deliberately
         // not smuggled in here.
+        // SOUNDNESS R825 — a literal SOMEWHERE in the window is not a captured locator when another String
+        // argument is a runtime value: `md.getColumns(null, null, table, "%")` held the literal "%" and so
+        // counted as captured, and the caller-chosen TABLE went unmarked. (HEAD caught that shape only by
+        // accident, through the ResultSet it returned; R825 stops treating a ResultSet as a query handle.)
+        if (effect == Effect.DB && capturedTableHere && isSqlBearingOwner(min.owner) && !isSqlParameterBinder(min.name)
+                && !(repoCallSynthesizesDb(ctx, min) && ctx.repoTables.get(min.owner) != null)
+                && runtimeStringSlot(srcFrames(s), s.mn.instructions, min) >= 0)
+            capturedTableHere = false;
         if (effect == Effect.DB && !capturedTableHere && dbCallCouldNameALocator(min)) {
             ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Db");
             if (MASK_DEBUG) System.err.println("R794MASK\t" + id + "\t" + owner + "." + min.name + min.desc);
         }
-        // SOUNDNESS R794, SECOND HALF — THE QUERY IS LOADED ONE CALL BEFORE IT RUNS.
-        //
-        // The rule above asks the Db call for its locator, and for a zero-argument Db call the answer is
-        // "none of its own" — so `dbCallCouldNameALocator` declines it. That is right for `conn.commit()`
-        // and WRONG for a TERMINAL whose query was loaded into its receiver by an earlier call that the
-        // classifier deliberately leaves pure (a builder is not I/O, so charging it would fabricate Db):
-        //
-        //     em.createNativeQuery(sql).getResultList();       // JPA — `createNativeQuery` classifies null
-        //     session.createQuery(hql, T.class).list();        // Hibernate
-        //     dsl.resultQuery(sql).fetch();                    // jOOQ
-        //     conn.createStatement(sql).execute();             // R2DBC
-        //     st.addBatch(sql); st.executeBatch();             // JDBC — loaded into the SAME receiver
-        //
-        // Before R794 these were marked by accident: the old guard fired on ANY String-carrying call on a
-        // SQL-bearing owner, builder included. R794 keyed the mark on `effect == DB`, which is right, and
-        // so dropped every one of them. EXECUTED against H2: `batch_c(c, st, "UPDATE secrets …")` really
-        // rewrote `secrets` and `jooqRes_c(…, "SELECT k, v FROM secrets")` really read it, while
-        // `allow Db in <fn> users` exited 0 on the unit AND its caller beside a benign `users` literal.
-        //
-        // THE RULE IS KEYED ON THE EFFECT AT THE TERMINAL, not on a builder table: a Db call that names no
-        // locator of its own is only as visible as the calls that LOADED its receiver, and
-        // {@link #dbReceiverLoad} walks back to them. The mark therefore lands only where a Db terminal
-        // really runs on the handle. The obvious alternative — mark every builder whose handle LEAVES the
-        // frame — was built and measured first: 5,785 marks over 372 jars, led by loggers, `appendSql`,
-        // `Identifier.toIdentifier` and jOOQ's own DSL internals, i.e. R794's fabrication class again.
-        if (effect == Effect.DB && !dbCallCouldNameALocator(min) && min.getOpcode() != Opcodes.INVOKESTATIC
-                && !"<init>".equals(min.name)) {
-            String why = dbReceiverLoad(ctx, s.mn, srcFrames(s), min, 0);
-            if (why != null) ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Db");
-            if (MASK_DEBUG && why != null)
-                System.err.println("R794LOAD\t" + id + "\t" + owner + "." + min.name + min.desc + "\t" + why);
-        } else if (effect != Effect.DB && isSqlBearingOwner(min.owner) && !isSqlParameterBinder(min.name)
-                && !"<init>".equals(min.name) && Type.getReturnType(min.desc).getSort() == Type.OBJECT) {
-            // SOUNDNESS R819 — the same handle, followed FORWARD from the builder, for the shapes the
-            // terminal cannot walk back from: the handle reaches its terminal as a PARAMETER of a project
-            // method (`runQ(em.createNativeQuery(sql))`), through an interface to a project
-            // implementation, or through a container hop (`List.of(q).get(0).getResultList()`). Marked only
-            // when the walk reaches a Db call — never merely because the handle leaves the frame, which is
-            // the 5,785-mark fabrication measured above. (A handle stored in a FIELD is judged at the
-            // terminal instead, by {@link #dbLoadedFields}.)
-            Frame<SourceValue>[] fr = srcFrames(s);
-            if (fr != null && runtimeStringSlot(fr, s.mn.instructions, min) >= 0
-                    && !DB_NON_HANDLE_TYPES.contains(Type.getReturnType(min.desc).getInternalName())) {
-                String why = dbForwardExec(ctx, s.mn, fr, Set.of(min), 0);
-                if (why != null) ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Db");
-                if (MASK_DEBUG && why != null)
-                    System.err.println("R819FWD\t" + id + "\t" + owner + "." + min.name + min.desc + "\t" + why);
-            }
-        }
+        // SOUNDNESS R794 (second half), R819, R824 → R825: a query LOADED into a handle by a builder the
+        // classifier leaves pure (`em.createNativeQuery(sql)`, `st.addBatch(sql)`) and RUN by a zero-argument
+        // terminal is judged by {@link DbHandleFlow}, one whole-program forward pass that runs after every
+        // class is analysed. It replaced a backward walk from the terminal and a forward walk from the builder
+        // that marked only when a trace SUCCEEDED — so every hop they did not model was silent (R825).
+
     }
 
-    /** SOUNDNESS R819 — does a value produced by one of {@code start} (instructions, or {@link Integer}
-     *  parameter slots) reach a Db-classified call in this body? Follows copies; the RESULT of any call that
-     *  consumes it and returns an object (a builder step, a container, a wrapper — taint, not identity); and,
-     *  depth-bounded, the corresponding PARAMETER of every project body the call can land on (the declared
-     *  owner's own body, or each project subtype's under CHA). Returns the reason, or null.
-     *
-     *  <p>NOT followed, deliberately: a VOID call the value is handed to does not taint that call's
-     *  receiver. That step is what made the R794 partition's instrument over-follow a bound VALUE
-     *  (`ps.setArray(1, conn.createArrayOf(type, xs))`) into `ps.getConnection()`. A value handed to code
-     *  this scan has no body for (a lambda, a library collection it is never read back from) is not
-     *  followed either — that is the residual, and it is SILENT: `f.apply(em.createNativeQuery(sql))` with
-     *  an opaque `Function` exits 0 where the 0.39.2 owner-list guard exited 1.
-     *
-     *  <p><b>PARITY WITH 0.39.2 WAS MEASURED, NOT ASSUMED, AND IS NOT BOUGHT.</b> Marking a runtime-loaded
-     *  handle whenever it is handed to a body this scan cannot see closes that shape and costs, over 372
-     *  / 452 corpus jars, +519 / +52 hedged rows that carry Db, +2,176 / +1,847 rows that carry NO Db and
-     *  +173 / +127 rows that only exist to carry the hedge — led by `StringBuilder.append`, `Map.put`,
-     *  `List.add` and `Class.isInstance`, not one of them a query executor. Additionally marking every
-     *  builder whose handle is merely STORED in a field, or loaded into a caller's statement (full parity
-     *  with 0.39.2 on the R819 fixtures), costs +2,924 / +114, +2,844 / +3,451 and +269 / +284, led by
-     *  `appendSql`, loggers and `StringHelper`. This rule instead marks where the handle is executed:
-     *  17 new rows over both corpora, every one a real runtime-SQL execution.
-     *
-     *  <p><b>AND THAT PRICE WAS OF THE WRONG THING (SOUNDNESS R824).</b> Its start set included builders
-     *  returning a `String` or an `Object` — query TEXT and bound values, not handles — and the silence it
-     *  was meant to price was not "handed to unseen code" but a handle round-tripped through a JDK
-     *  container and executed in project code, which that option would have closed only by also marking a
-     *  handle put in a list and never run. The container shape is closed by RECEIVER absorption below, at a
-     *  cost of 1 row over both corpora; starts now exclude {@link #DB_NON_HANDLE_TYPES}. */
-    static String dbForwardExec(AnalysisContext ctx, MethodNode mn, Frame<SourceValue>[] fr,
-            Set<Object> start, int depth) {
-        InsnList insns = mn.instructions;
-        Set<Object> tracked = new HashSet<>(start);
-        Set<String> trackedFields = new HashSet<>();
-        boolean changed = true;
-        while (changed) {
-            changed = false;
-            for (int j = 0; j < insns.size(); j++) {
-                AbstractInsnNode ins = insns.get(j);
-                // Arrays are containers too: `a[i] = q` taints the array, and `a[i]` read back is the handle.
-                if (fr[j] != null && ins.getOpcode() == Opcodes.AASTORE && fr[j].getStackSize() >= 3) {
-                    Frame<SourceValue> f = fr[j];
-                    boolean valueHit = false;
-                    for (Object r : dbRoots(fr, insns, f.getStack(f.getStackSize() - 1)))
-                        valueHit |= dbTracked(tracked, trackedFields, r);
-                    if (valueHit) for (Object r : dbRoots(fr, insns, f.getStack(f.getStackSize() - 3))) {
-                        if (r instanceof Integer slot0 && slot0 == 0 && (mn.access & Opcodes.ACC_STATIC) == 0) continue;
-                        if (tracked.add(r)) changed = true;
-                        if (r instanceof FieldInsnNode gf && trackedFields.add(gf.owner + "." + gf.name)) changed = true;
-                    }
-                    continue;
-                }
-                if (fr[j] != null && ins.getOpcode() == Opcodes.AALOAD && !tracked.contains(ins) && fr[j].getStackSize() >= 2) {
-                    for (Object r : dbRoots(fr, insns, fr[j].getStack(fr[j].getStackSize() - 2)))
-                        if (dbTracked(tracked, trackedFields, r)) { tracked.add(ins); changed = true; break; }
-                    continue;
-                }
-                if (!(ins instanceof MethodInsnNode m) || fr[j] == null || tracked.contains(m)) continue;
-                Frame<SourceValue> f = fr[j];
-                Type[] args = Type.getArgumentTypes(m.desc);
-                boolean isStatic = m.getOpcode() == Opcodes.INVOKESTATIC;
-                int base = f.getStackSize() - args.length - (isStatic ? 0 : 1);
-                if (base < 0) continue;
-                int hitArg = -2;   // -1 = receiver, >= 0 = argument index
-                for (int k = base; k < f.getStackSize() && hitArg == -2; k++) {
-                    for (Object r : dbRoots(fr, insns, f.getStack(k)))
-                        if (dbTracked(tracked, trackedFields, r)) { hitArg = isStatic ? k - base : k - base - 1; break; }
-                }
-                if (hitArg == -2) continue;
-                if (Classifier.classify(m.owner.replace('/', '.'), m.name, m.desc) == Effect.DB)
-                    return "exec:" + m.owner + "." + m.name;
-                if (hitArg >= 0 && depth < 3) {
-                    int slot = (isStatic ? 0 : 1);
-                    for (int a = 0; a < hitArg; a++) slot += args[a].getSize();
-                    for (MethodNode callee : dbProjectBodies(ctx, m)) {
-                        Frame<SourceValue>[] cf = srcFramesOf(callee);
-                        if (cf == null) continue;
-                        if (((callee.access & Opcodes.ACC_STATIC) != 0) != isStatic) continue;
-                        String why = dbForwardExec(ctx, callee, cf, Set.of(slot), depth + 1);
-                        if (why != null) return "param-of:" + m.owner + "." + m.name + ">" + why;
-                    }
-                }
-                // SOUNDNESS R824 — the value handed IN as an argument is absorbed by the RECEIVER: `m.put(k, q)`,
-                // `l.add(q)`, `cache.put(k, q)`. Without this the walk followed only the call's RESULT, which
-                // for `List.add` is a boolean and for `Map.put` the PREVIOUS value, so a handle round-tripped
-                // through a JDK container and executed (`m.get(k).getResultList()`) was never reached. NOT when
-                // the receiver is itself a SQL-bearing object — a statement, session or entity manager is the
-                // FACTORY or the executor of queries, not a container of them: tainting `ps` in
-                // `ps.setArray(1, conn.createArrayOf(type, xs))` is the over-follow the R794 partition's
-                // instrument made, and tainting a Hibernate session handed a query marked its unrelated
-                // `getTransaction().rollback()`.
-                if (hitArg >= 0 && !isStatic && !isSqlBearingOwner(m.owner)) {
-                    SourceValue rv = dbReceiverOf(fr, insns, m);
-                    if (rv != null) for (Object r : dbRoots(fr, insns, rv)) {
-                        if (r instanceof Integer slot0 && slot0 == 0 && (mn.access & Opcodes.ACC_STATIC) == 0) continue;
-                        if (tracked.add(r)) changed = true;
-                        if (r instanceof FieldInsnNode gf && trackedFields.add(gf.owner + "." + gf.name)) changed = true;
-                    }
-                }
-                if (Type.getReturnType(m.desc).getSort() == Type.OBJECT || Type.getReturnType(m.desc).getSort() == Type.ARRAY) {
-                    tracked.add(m);
-                    changed = true;
-                }
-            }
-        }
-        return null;
-    }
-
-    /** The project body a {@code LambdaMetafactory} indy's implementation handle names, else null. */
-    static MethodNode dbLambdaBody(AnalysisContext ctx, InvokeDynamicInsnNode idin) {
-        if (idin.bsm == null || !idin.bsm.getOwner().equals("java/lang/invoke/LambdaMetafactory")) return null;
-        for (Object a : idin.bsmArgs)
-            if (a instanceof Handle h && h.getTag() >= Opcodes.H_INVOKEVIRTUAL) {
-                ClassNode cn = ctx.byName.get(h.getOwner());
-                MethodNode mn = cn == null ? null : findMethod(cn, h.getName(), h.getDesc());
-                if (mn != null && (mn.access & Opcodes.ACC_ABSTRACT) == 0) return mn;
-            }
-        return null;
-    }
-
-    /** Is producer {@code r} tracked — itself, or (for a field read) any read of a tracked field? */
-    private static boolean dbTracked(Set<Object> tracked, Set<String> fields, Object r) {
-        if (tracked.contains(r)) return true;
-        return r instanceof FieldInsnNode gf && (gf.getOpcode() == Opcodes.GETFIELD || gf.getOpcode() == Opcodes.GETSTATIC)
-                && fields.contains(gf.owner + "." + gf.name);
-    }
-
-    /** Return types a builder START can have that are provably not a query handle — a value, not a thing that
-     *  later runs. A DENYLIST (any other type starts a walk). Needed once {@link #dbForwardExec} follows a
-     *  value INTO a container: `args.add(rs.getObject(col)); jdbc.update("… ?", args.toArray())` would
-     *  otherwise charge a bound VALUE as an unseen query. */
+    /** Return types a loader can have that are provably not a query handle — a value, not a thing that
+     *  later runs. A DENYLIST (any other type is a handle). Needed once {@link DbHandleFlow} follows a value
+     *  INTO a container: `args.add(rs.getObject(col)); jdbc.update("… ?", args.toArray())` would otherwise
+     *  charge a bound VALUE as an unseen query. */
     static final Set<String> DB_NON_HANDLE_TYPES = Set.of(
             "java/lang/String", "java/lang/Object", "java/lang/CharSequence", "java/lang/Integer",
             "java/lang/Long", "java/lang/Short", "java/lang/Byte", "java/lang/Boolean", "java/lang/Double",
@@ -6415,102 +6256,6 @@ public class Candor {
         return out;
     }
 
-    /** SOUNDNESS R819 — the fields ({@code owner.name}) some project method stores a handle into whose
-     *  receiver chain {@link #dbReceiverLoad}'s own walk says was loaded with a runtime String. A terminal
-     *  invoked on a read of such a field — in the storing method or any other — is marked. Computed once
-     *  per loaded class set; a field is keyed by its DECLARED owner in the instruction, so a store through
-     *  a subclass reference and a read through the declarer do not meet (SILENT, named). */
-    private static final Map<List<ClassNode>, Set<String>> DB_LOADED_FIELDS =
-            Collections.synchronizedMap(new WeakHashMap<>());
-    // The index is built WITH {@link #dbValueLoad}, which consults the index: without this guard the build
-    // re-entered itself until the stack overflowed and the class was skipped as unanalyzable — which
-    // DROPPED its effects (88,242 rows lost `Db` in the first corpus run; caught by the A/B, not by a test).
-    private static final ThreadLocal<Boolean> DB_FIELDS_BUILDING = ThreadLocal.withInitial(() -> false);
-    static Set<String> dbLoadedFields(AnalysisContext ctx) {
-        Set<String> have = DB_LOADED_FIELDS.get(ctx.ALL);
-        if (have != null) return have;
-        DB_FIELDS_BUILDING.set(true);
-        try { return DB_LOADED_FIELDS.computeIfAbsent(ctx.ALL, Candor::dbBuildLoadedFields); }
-        finally { DB_FIELDS_BUILDING.set(false); }
-    }
-    private static Set<String> dbBuildLoadedFields(List<ClassNode> all) {
-        AnalysisContext ctx = ctx();
-        {
-            Set<String> out = new HashSet<>();
-            for (ClassNode cn : all) {
-                if (cn.methods == null) continue;
-                for (MethodNode mn : cn.methods) {
-                    if (mn.instructions == null || mn.instructions.size() == 0) continue;
-                    boolean stores = false, loads = false, reads = false, builds = false;
-                    for (AbstractInsnNode in : mn.instructions) {
-                        if (in instanceof FieldInsnNode fi && (fi.getOpcode() == Opcodes.PUTFIELD
-                                || fi.getOpcode() == Opcodes.PUTSTATIC) && fi.desc.startsWith("L")) stores = true;
-                        if (in instanceof FieldInsnNode fi && (fi.getOpcode() == Opcodes.GETFIELD
-                                || fi.getOpcode() == Opcodes.GETSTATIC)
-                                && (fi.desc.startsWith("L") || fi.desc.startsWith("["))) reads = true;
-                        if (in instanceof MethodInsnNode m && Type.getArgumentTypes(m.desc).length > 0) loads = true;
-                        if (in instanceof MethodInsnNode m && isSqlBearingOwner(m.owner)) builds = true;
-                    }
-                    boolean container = reads && builds;
-                    if (!(stores && loads) && !container) continue;
-                    Frame<SourceValue>[] fr = srcFramesOf(mn);
-                    if (fr == null) continue;
-                    // SOUNDNESS R824 — a field that is a CONTAINER of such handles: `cache.put(k,
-                    // em.createNativeQuery(sql))` in one method, `cache.get(k).getResultList()` in another.
-                    if (container) for (int j = 0; j < mn.instructions.size(); j++) {
-                        if (mn.instructions.get(j).getOpcode() == Opcodes.AASTORE && fr[j] != null
-                                && fr[j].getStackSize() >= 3) {
-                            SourceValue av = fr[j].getStack(fr[j].getStackSize() - 1);
-                            for (Object r : dbRoots(fr, mn.instructions, fr[j].getStack(fr[j].getStackSize() - 3)))
-                                if (r instanceof FieldInsnNode gf && (gf.getOpcode() == Opcodes.GETFIELD
-                                        || gf.getOpcode() == Opcodes.GETSTATIC)
-                                        && dbValueLoad(ctx, mn, fr, dbRoots(fr, mn.instructions, av), null, 1) != null)
-                                    out.add(gf.owner + "." + gf.name);
-                            continue;
-                        }
-                        if (!(mn.instructions.get(j) instanceof MethodInsnNode q) || fr[j] == null
-                                || q.getOpcode() == Opcodes.INVOKESTATIC || isSqlBearingOwner(q.owner)) continue;
-                        Type[] qa = Type.getArgumentTypes(q.desc);
-                        int base = fr[j].getStackSize() - qa.length;
-                        SourceValue rv = dbReceiverOf(fr, mn.instructions, q);
-                        if (rv == null || base < 0) continue;
-                        String key = null;
-                        for (Object r : dbRoots(fr, mn.instructions, rv))
-                            if (r instanceof FieldInsnNode gf && (gf.getOpcode() == Opcodes.GETFIELD
-                                    || gf.getOpcode() == Opcodes.GETSTATIC)) key = gf.owner + "." + gf.name;
-                        if (key == null) continue;
-                        for (int a = 0; a < qa.length; a++) {
-                            // Only a HANDLE-typed operand can be the thing the container keeps: a String operand
-                            // is the query TEXT (`delegate.addBatch(sql)`, `em.createQuery(hql)`), and asking the
-                            // loader walk about it finds this very call as its own loader — which, on the first
-                            // cut, made every JDBC/JPA wrapper's `delegate` field "loaded" (2,312 rows in
-                            // jakarta.faces' ResultSetDataModel alone).
-                            if (qa[a].getSort() != Type.OBJECT && qa[a].getSort() != Type.ARRAY) continue;
-                            // (`Object` stays: a generic container's `put`/`add` erases to it.)
-                            if (qa[a].getSort() == Type.OBJECT && !qa[a].getInternalName().equals("java/lang/Object")
-                                    && DB_NON_HANDLE_TYPES.contains(qa[a].getInternalName())) continue;
-                            SourceValue av = fr[j].getStack(base + a);
-                            if (dbValueLoad(ctx, mn, fr, dbRoots(fr, mn.instructions, av), q, 1) != null) {
-                                out.add(key);
-                                break;
-                            }
-                        }
-                    }
-                    if (!(stores && loads)) continue;
-                    for (int j = 0; j < mn.instructions.size(); j++) {
-                        if (!(mn.instructions.get(j) instanceof FieldInsnNode fi) || fr[j] == null
-                                || !(fi.getOpcode() == Opcodes.PUTFIELD || fi.getOpcode() == Opcodes.PUTSTATIC)
-                                || !fi.desc.startsWith("L")) continue;
-                        SourceValue v = fr[j].getStack(fr[j].getStackSize() - 1);
-                        if (dbValueLoad(ctx, mn, fr, dbRoots(fr, mn.instructions, v), null, 1) != null)
-                            out.add(fi.owner + "." + fi.name);
-                    }
-                }
-            }
-            return out;
-        }
-    }
-
     /** Def-use frames for {@code s}, computed once and lazily (R799). Null = the analyzer failed. */
     static Frame<SourceValue>[] srcFrames(MethodScan s) {
         if (!s.srcFramesTried) {
@@ -6520,7 +6265,7 @@ public class Candor {
         return s.srcFrames;
     }
 
-    /** Def-use frames of an arbitrary method body (a callee {@link #dbReceiverLoad} looks into), cached
+    /** Def-use frames of an arbitrary method body (a callee {@link DbHandleFlow} looks into), cached
      *  by node identity. Null = no body, or the analyzer failed. */
     private static final Map<MethodNode, Optional<Frame<SourceValue>[]>> SRC_FRAMES =
             Collections.synchronizedMap(new WeakHashMap<>());
@@ -6581,153 +6326,13 @@ public class Candor {
         return -1;
     }
 
-    /** Does {@code m} carry a RUNTIME String into the object it returns or is invoked on? A JDBC parameter
-     *  binder on a SQL-bearing owner binds a VALUE, never the query, so it is not a loader. */
-    static boolean dbLoadsRuntimeString(Frame<SourceValue>[] fr, InsnList insns, MethodInsnNode m) {
-        if (isSqlBearingOwner(m.owner) && isSqlParameterBinder(m.name)) return false;
-        return runtimeStringSlot(fr, insns, m) >= 0;
-    }
-
-    /** The receiver value of instance call {@code m}; null for a static call or a missing frame. */
-    private static SourceValue dbReceiverOf(Frame<SourceValue>[] fr, InsnList insns, MethodInsnNode m) {
-        int i = insns.indexOf(m);
-        Frame<SourceValue> f = i >= 0 ? fr[i] : null;
-        if (f == null || m.getOpcode() == Opcodes.INVOKESTATIC) return null;
-        int ri = f.getStackSize() - Type.getArgumentTypes(m.desc).length - 1;
-        return ri < 0 ? null : f.getStack(ri);
-    }
-
-    /** The PROJECT body a call lands on when its owner declares it concretely, else null. No CHA: an
-     *  override in a subclass is not looked at (see {@link #dbReceiverLoad} on which way that fails). */
+    /** The PROJECT body a call lands on when its owner declares it concretely, else null. No CHA here —
+     *  {@link #dbProjectBodies} adds the project subtypes, and {@link DbHandleFlow} the inherited body. */
     private static MethodNode dbProjectBody(AnalysisContext ctx, MethodInsnNode m) {
         ClassNode cn = ctx.byName.get(m.owner);
         if (cn == null) return null;
         MethodNode mn = findMethod(cn, m.name, m.desc);
         return mn != null && (mn.access & Opcodes.ACC_ABSTRACT) == 0 ? mn : null;
-    }
-
-    /** SOUNDNESS R794 (second half) — was the RECEIVER of the locator-less Db call {@code terminal} loaded
-     *  with a runtime String? Walks the receiver's producers back through the builder chain
-     *  ({@code em.createNativeQuery(sql).setParameter(1, x).getResultList()}: each step's receiver), and at
-     *  every object on that chain asks two more questions:
-     *  <ul><li>was a VOID call made on it, or handed it as an argument, together with a runtime String —
-     *  {@code st.addBatch(sql)}, {@code addTo(st, sql)} — which loads it in place;</li>
-     *  <li>was it RETURNED by a project method whose own body loaded it that way — the helper
-     *  {@code Query q() { return em.createNativeQuery(this.sql); }}, whose row carried
-     *  {@code incomplete: [Db]} to its callers before R794 and nothing after. Depth-bounded.</li></ul>
-     *  Returns the first loader found, or null.
-     *
-     *  <p><b>WHICH WAY THIS FAILS, stated rather than left to be found — all SILENT:</b> it answers only
-     *  from bodies it can see. (1) A handle that arrives as a PARAMETER yields no loader here; SOUNDNESS
-     *  R819 discloses it at the CALLER instead ({@link #dbForwardExec}), and a handle in a FIELD is judged
-     *  here through {@link #dbLoadedFields}. (2) A helper reached by virtual dispatch to an override, or living in a chained dependency, is
-     *  not looked into. (3) A NON-String locator ({@code DSL.table(Name)}) and a LITERAL one on a non-SQL
-     *  builder ({@code mongo.getCollection("secrets").drop()}, which no {@code tables} surface captures)
-     *  are not loaders. A missing frame fails CLOSED. */
-    static String dbReceiverLoad(AnalysisContext ctx, MethodNode mn, Frame<SourceValue>[] fr,
-            MethodInsnNode terminal, int depth) {
-        if (fr == null) return "no-frames";
-        InsnList insns = mn.instructions;
-        int ti = insns.indexOf(terminal);
-        if (ti < 0 || fr[ti] == null) return null;   // unreachable code: never executes, nothing to disclose
-        SourceValue recv = dbReceiverOf(fr, insns, terminal);
-        if (recv == null) return "no-receiver";
-        return dbValueLoad(ctx, mn, fr, dbRoots(fr, insns, recv), terminal, depth);
-    }
-
-    /** {@link #dbLoadsRuntimeString}, narrowed while the FIELD index is being built: there, only a loader on
-     *  a SQL-bearing owner (the query text) or one the classifier charges {@code Db} (a Redis/Mongo key)
-     *  counts. A field's mark reaches every method that reads it, so a string that names the DATABASE
-     *  rather than a table — a JNDI name, a JDBC URL, a dependency-injection component name — would hedge
-     *  every terminal on that field corpus-wide: MEASURED, 11,223 rows in infinispan alone from one
-     *  `TransactionManager` field wired by component name. Inside one frame the unnarrowed test stands. */
-    static boolean dbLoadsLocator(Frame<SourceValue>[] fr, InsnList insns, MethodInsnNode m) {
-        if (!dbLoadsRuntimeString(fr, insns, m)) return false;
-        if (!DB_FIELDS_BUILDING.get()) return true;
-        // A CONNECTION acquired from a runtime URL names the database, not a table: liquibase's
-        // `JdbcConnection.con` hedged `commit()`/`setAutoCommit()` and flipped a `tables: [iiviews]` row.
-        String ret = Type.getReturnType(m.desc).getInternalName();
-        if (ret.equals("java/sql/Connection") || ret.equals("javax/sql/DataSource")
-                || ret.equals("javax/sql/XAConnection") || ret.equals("javax/sql/PooledConnection")) return false;
-        return isSqlBearingOwner(m.owner) || Classifier.classify(m.owner.replace('/', '.'), m.name, m.desc) == Effect.DB;
-    }
-
-    private static String dbValueLoad(AnalysisContext ctx, MethodNode mn, Frame<SourceValue>[] fr,
-            Collection<Object> start, AbstractInsnNode exclude, int depth) {
-        InsnList insns = mn.instructions;
-        Deque<Object> work = new ArrayDeque<>(start);
-        Set<Object> seen = new HashSet<>();
-        while (!work.isEmpty()) {
-            Object root = work.poll();
-            if (!seen.add(root)) continue;
-            // `this` is the CONTAINER of a factory method (`this.createDataSource(url)`), never a handle
-            // that a call on it loads — following it made every void `this.log(msg)` a "loader".
-            if (root instanceof Integer slot && slot == 0 && (mn.access & Opcodes.ACC_STATIC) == 0) continue;
-            // SOUNDNESS R819 — a handle read from a FIELD some project method loaded with a runtime String.
-            if (root instanceof FieldInsnNode gf && (gf.getOpcode() == Opcodes.GETFIELD
-                    || gf.getOpcode() == Opcodes.GETSTATIC) && !DB_FIELDS_BUILDING.get()
-                    && dbLoadedFields(ctx).contains(gf.owner + "." + gf.name))
-                return "field-loaded:" + gf.owner + "." + gf.name;
-            if (root instanceof AbstractInsnNode aa && aa.getOpcode() == Opcodes.AALOAD) {
-                int ai = insns.indexOf(aa);
-                if (ai >= 0 && fr[ai] != null && fr[ai].getStackSize() >= 2)
-                    work.addAll(dbRoots(fr, insns, fr[ai].getStack(fr[ai].getStackSize() - 2)));
-                continue;
-            }
-            if (root instanceof MethodInsnNode p && !"<init>".equals(p.name)) {
-                if (dbLoadsLocator(fr, insns, p)) return "chain:" + p.owner + "." + p.name;
-                // SOUNDNESS R824 — a handle PRODUCED by a project lambda handed to this call:
-                // `m.computeIfAbsent(sql, k -> em.createNativeQuery(k)).getResultList()`.
-                if (depth < 3) {
-                    int pi = insns.indexOf(p);
-                    Frame<SourceValue> pf = pi >= 0 ? fr[pi] : null;
-                    int na = Type.getArgumentTypes(p.desc).length;
-                    if (pf != null) for (int k = Math.max(0, pf.getStackSize() - na); k < pf.getStackSize(); k++) {
-                        for (Object ar : dbRoots(fr, insns, pf.getStack(k))) {
-                            MethodNode lam = ar instanceof InvokeDynamicInsnNode idin ? dbLambdaBody(ctx, idin) : null;
-                            Frame<SourceValue>[] lf = lam == null ? null : srcFramesOf(lam);
-                            if (lf == null) continue;
-                            for (int j = 0; j < lam.instructions.size(); j++) {
-                                if (lam.instructions.get(j).getOpcode() != Opcodes.ARETURN || lf[j] == null) continue;
-                                String why = dbValueLoad(ctx, lam, lf,
-                                        dbRoots(lf, lam.instructions, lf[j].getStack(lf[j].getStackSize() - 1)), null, depth + 1);
-                                if (why != null) return "lambda-returned:" + p.owner + "." + p.name + ">" + why;
-                            }
-                        }
-                    }
-                }
-                SourceValue pr = dbReceiverOf(fr, insns, p);
-                if (pr != null) work.addAll(dbRoots(fr, insns, pr));
-                // A project helper that RETURNED the handle: ask its own body the same question.
-                MethodNode callee = depth < 3 ? dbProjectBody(ctx, p) : null;
-                if (callee != null) {
-                    Frame<SourceValue>[] cf = srcFramesOf(callee);
-                    if (cf == null) return "no-frames:" + p.owner + "." + p.name;
-                    for (int j = 0; j < callee.instructions.size(); j++) {
-                        AbstractInsnNode in = callee.instructions.get(j);
-                        if (in.getOpcode() != Opcodes.ARETURN || cf[j] == null) continue;
-                        String why = dbValueLoad(ctx, callee, cf,
-                                dbRoots(cf, callee.instructions, cf[j].getStack(cf[j].getStackSize() - 1)),
-                                null, depth + 1);
-                        if (why != null) return "returned-by:" + p.owner + "." + p.name + ">" + why;
-                    }
-                }
-            }
-            // The VOID calls that load this same object in place: invoked ON it, or handed it as an
-            // argument, alongside a runtime String.
-            for (int j = 0; j < insns.size(); j++) {
-                if (!(insns.get(j) instanceof MethodInsnNode q) || q == exclude || fr[j] == null) continue;
-                if (Type.getReturnType(q.desc).getSort() != Type.VOID) continue;
-                Frame<SourceValue> qf = fr[j];
-                Type[] qa = Type.getArgumentTypes(q.desc);
-                int base = qf.getStackSize() - qa.length - (q.getOpcode() == Opcodes.INVOKESTATIC ? 0 : 1);
-                boolean touches = false;
-                for (int k = Math.max(base, 0); k < qf.getStackSize() && !touches; k++)
-                    touches = dbRoots(fr, insns, qf.getStack(k)).contains(root);
-                if (touches && dbLoadsLocator(fr, insns, q)) return "loader:" + q.owner + "." + q.name;
-            }
-        }
-        return null;
     }
 
     /** Declarative-I/O call rules: Spring-Data/Jakarta repos (generated CRUD → Db), Feign +
@@ -10119,7 +9724,7 @@ public class Candor {
      *  caller's file, and this mark was the ONLY disclosure of it. (This paragraph used to add that "a
      *  {@code Db} call has no such value-then-sink split". That was FALSE: a query BUILDER is exactly that
      *  split — `em.createNativeQuery(sql)` loads, `getResultList()` runs — and R794's effect-keyed mark
-     *  dropped it. See {@link #dbReceiverLoad}.) */
+     *  dropped it. See {@link DbHandleFlow}.) */
     static String pathValueEscape(MethodScan s, MethodInsnNode site) {
         Frame<SourceValue>[] fr = srcFrames(s);
         if (fr == null) return "no-frames";

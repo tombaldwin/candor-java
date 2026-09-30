@@ -42,16 +42,19 @@ import static io.poly.candor.AnalysisState.ctx;
  * <li>(3) Only fields of a handle-capable declared type are keyed globally. An {@code Object}-typed generic
  * {@code Box<T>.v}, a raw field or a {@code SoftReference} reached through another field drops the taint.</li>
  * <li>(4) Loggers and {@code java.io} are sinks.</li>
- * <li>(5) CHA stops after 17 bodies ({@link Candor#dbProjectBodies}), and at the cap this pass marks.</li>
+ * <li>(5) CHA stops after 17 bodies ({@link Candor#dbProjectBodies}); at the cap the handle is recorded as LOST
+ * ({@code R825LOST}) and marks nothing.</li>
  * <li>(6) Summaries stop at depth {@value #MAX_DEPTH}.</li>
  * <li>(7) A handle returned out of the scan, or stored in a field with no in-scan reader, reaches no mark
  * here. For a CHAINED consumer the floor covers the storing function, whose own report carries the mark.</li></ul>
- * Rules (5) and (6) mark on truncation. The others are allow-shaped. Each has an executed fixture in this
+ * NONE of these rules marks on truncation — a lost handle is printed for reach and marks nothing, so beyond
+ * the v0.39.2 floor every rule here fails SILENT. Each has an executed fixture in this
  * repository's R840 evidence showing it silent in an EXECUTING frame; the same shape is silent on v0.39.2 too.
  *
- * <p><b>Where the mark lands.</b> On a frame that executes a handle this pass followed there, on a frame that
- * passes a handle into a callee whose summary executes it, and on the frame where this pass lost the handle
- * (depth, no body, a library call). R841: seeding once took every String-carrying {@code org/hibernate/}-style
+ * <p><b>Where the mark lands.</b> Only on a SEEN execution: a frame that executes a handle this pass followed
+ * there ({@code exec:}), a frame that passes a handle into a callee whose summary executes it
+ * ({@code bound-exec:}), or a callback that runs it ({@code callback-exec:}). A handle lost to depth, a missing
+ * body or a library call marks NOTHING — an earlier draft of this comment said it did, and the code never has. R841: seeding once took every String-carrying {@code org/hibernate/}-style
  * call as a loader, and 13 of 22 audited marks were not query handles. Seeds are now limited to results of a
  * type some {@code Db} call in the program runs or is handed.
  */

@@ -83,8 +83,8 @@ releases; `deny Db` is 1 on both; `deny Unknown` does not read `incomplete`. The
 move are `Db ∧ tables ∧ ¬incomplete` — 2 on the 372-jar corpus, 3 on the census — and none did. 92% of the
 marks (40,320) are transitive propagation from 3,547 own-call sites in 27 non-SQL database-client jars
 (orientdb, redisson, lettuce, spring-data-redis, jedis, spring-data-mongodb, spanner…) — the key- and
-collection-taking owners R794 named. The one change in this entry that DOES flip a user-visible gate is the
-Neo4j classifier addition above: +372 rows gain a concrete `Db`, so `deny Db`/`pure` go 0 → 1 on them.
+collection-taking owners R794 named. The one change in this tree that DOES flip a user-visible gate through
+`Db` is the Neo4j classifier addition in the R794-regression entry below (from `ae2d903`): +372 rows gain a concrete `Db`, so `deny Db`/`pure` go 0 → 1 on them.
 
 **The costs, named.** The floor brings back v0.39.2's over-marks:
 - `new SQLException(msg)`;
@@ -501,7 +501,9 @@ that constant was not cosmetic:
 
 **IF YOU WROTE `deny Unknown[reflect]` TO CATCH JNA, `Unsafe`, Panama OR ONNX, WRITE
 `deny Unknown[reflect,native]`.** Those 590 tokens are now `native:`, so `[reflect]` alone stops seeing
-them — and that is the one FAIL→PASS a reader of this entry could hit without knowing why. The label was
+them — and that is one FAIL→PASS a reader of this entry could hit without knowing why. **A second:** a scoped
+`deny Unknown[reflect] <fn>` over a `java.io` delegation (`FilterInputStream.read()`) also goes FAIL → PASS,
+because that dispatch is now `dispatch:` — measured by the v0.39.3 re-review; bare `deny Unknown` is unchanged. The label was
 wrong before and the policy was relying on the mislabel, but nobody relying on it can tell that from the
 table above, which is why it is spelled out here rather than left to be inferred. `deny Unknown` and
 `deny Unknown[dynamic]` are byte-identical across this change; `[dispatch,unresolved]` GAINS 895.

@@ -9,6 +9,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+## [0.39.3] — 2026-09-30
+
 ### ⚠ SOUNDNESS R840 + R833 + R834 FIXED: the v0.39.2 `Db` mark is restored as a FLOOR, so no shape v0.39.2 discloses goes silent
 
 **What went wrong.** R825 (below) replaced the 0.39.2 mark with `DbHandleFlow`, a forward follower of query

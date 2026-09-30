@@ -1684,7 +1684,8 @@ want "R794: the unguarded Db owner marks the surface incomplete" "$R794_MASKED" 
 R794_SQL=$(python3 -c "import json;r=json.load(open('$W/r794.json'));print(next((f.get('incomplete') for f in r['functions'] if f['fn']=='app.D.sqlOnly'), 'ROW-ABSENT'))")
 absent "R794 OVER-CHARGE CONTROL: a determined JDBC query gains NOTHING" "$R794_SQL" "Db"
 R794_FAB=$(python3 -c "import json;r=json.load(open('$W/r794.json'));print(next((f.get('incomplete') for f in r['functions'] if f['fn']=='app.D.noDbAtAll'), 'ROW-ABSENT'))")
-absent "R794 FABRICATION CONTROL: a row with no Db effect carries no Db hedge" "$R794_FAB" "Db"
+# SOUNDNESS R840: v0.39.2's mark is the FLOOR again, so its over-mark of `new SQLException(m)` is back, on purpose.
+want "R840 FLOOR: the 0.39.2 over-mark of a String-taking java.sql call is restored" "$R794_FAB" "Db"
 printf 'allow Db in app.D.masked users\n' > "$W/r794.pol"
 CANDOR_POLICY="$W/r794.pol" "$CJ" "$W/r794cls" >/dev/null 2>&1; r794m=$?
 if [ "$r794m" -eq 1 ]; then echo "  ok   R794 GATE: \`allow Db … users\` exits 1 over the caller-supplied key"; pass=$((pass+1));
@@ -1773,7 +1774,7 @@ public class B {
 }
 J
 javac -d "$W/r794bcls" $(find "$W/r794b" -name '*.java') 2>/dev/null
-for pair in jpaU:1 jpaC:1 chainU:1 splitU:1 hibU:1 jooqRU:1 jooqQU:1 r2U:1 batchU:1 batchC:1 viaHelperU:1 viaFieldU:1 okNative:0 okBind:0 okColumn:0 okBatch:0; do
+for pair in jpaU:1 jpaC:1 chainU:1 splitU:1 hibU:1 jooqRU:1 jooqQU:1 r2U:1 batchU:1 batchC:1 viaHelperU:1 viaFieldU:1 okNative:0 okBind:0 okColumn:1 okBatch:0; do
     m=${pair%%:*}; want=${pair##*:}
     printf 'allow Db in app.B.%s users\n' "$m" > "$W/r794b.pol"
     CANDOR_POLICY="$W/r794b.pol" "$CJ" "$W/r794bcls" >/dev/null 2>&1; got=$?
@@ -1861,7 +1862,7 @@ public class C2 {
 }
 J
 javac -cp "$W/r794bcls" -d "$W/r794bcls" "$W/r794b/app/C2.java" 2>/dev/null
-for pair in mapU:1 listAddU:1 cacheExecU:1 cacheBothU:1 arrU:1 slotExecU:1 cifaU:1 jdkSinkOnly:0 okArrLit:0 okArrayBind:0; do
+for pair in mapU:1 listAddU:1 cacheExecU:1 cacheBothU:1 arrU:1 slotExecU:1 cifaU:1 jdkSinkOnly:1 okArrLit:0 okArrayBind:1; do
     m=${pair%%:*}; want=${pair##*:}
     printf 'allow Db in app.C2.%s users\n' "$m" > "$W/r824.pol"
     CANDOR_POLICY="$W/r824.pol" "$CJ" "$W/r794bcls" >/dev/null 2>&1; got=$?
@@ -1869,13 +1870,13 @@ for pair in mapU:1 listAddU:1 cacheExecU:1 cacheBothU:1 arrU:1 slotExecU:1 cifaU
     else echo "  FAIL R824 GATE app.C2.$m — exit $got (want $want)"; fail=$((fail+1)); fi
 done
 
-# ── SOUNDNESS R825: the handle is followed FORWARD and anything the walk cannot follow MARKS ─────────
-echo "== SOUNDNESS R825: a runtime-loaded query handle the walk cannot follow is disclosed, not dropped =="
+# ── SOUNDNESS R825 / R840: shapes 5f695f9's handle follower dropped — held by the restored 0.39.2 floor ──
+echo "== SOUNDNESS R825/R840: a runtime-loaded query handle is disclosed whether or not the follower reaches its terminal =="
 # R794b/R819/R824 marked only when a trace from load to terminal SUCCEEDED, so every hop they did not model
 # was silent. A release review EXECUTED 17 such shapes on H2 — each read `secrets` beside a benign `users`
 # literal — that exited 1 on v0.39.2 and 0 at 5f695f9; ten more (anonymous class, CompletableFuture,
 # Optional.map, a ternary merge, forEach, a stored Supplier, Kotlin listOf/Pair/map) were found the same way.
-# The rule is now inverted (DbHandleFlow): the default for an unmodelled use is to MARK.
+# R825 claimed its follower (DbHandleFlow) failed closed; R840 showed it did not. The 0.39.2 mark is the floor again.
 mkdir -p "$W/r794b/app"
 cat > "$W/r794b/app/R825.java" <<'J'
 package app;
@@ -1926,14 +1927,17 @@ public class R825 {
   // PARAMETERS, as every guard here is, so this is MARKED. It certified at 5f695f9 only because the trace
   // there failed at `List.of`. Pinned so a change to that model is a decision, not a drift.
   public static Object okH1(Connection c, EntityManager em) throws Exception { lit(c); return List.of(mk2(em, "SELECT id FROM users")).get(0).getResultList(); }
-  // NAMED RESIDUAL — a PROJECT Map whose put() runs the handle, reached through the java.util.Map
-  // declaration: carrier calls do not fan out to project implementors. SILENT, and pinned as silent.
+  // R833 — a PROJECT Map whose put() runs the handle, reached through the java.util.Map declaration. The
+  // follower does not fan out through carriers; the 0.39.2 floor marks the loading frame, so this is 1.
   static final class ExecMap extends HashMap<String, jakarta.persistence.Query> { @Override public jakarta.persistence.Query put(String k, jakarta.persistence.Query q) { q.getResultList(); return super.put(k, q); } }
   public static Object z1MapIface(Connection c, EntityManager em, String sql) throws Exception { lit(c); Map<String, jakarta.persistence.Query> m = new ExecMap(); m.put(sql, em.createNativeQuery(sql)); return m.size(); }
 }
 J
 javac -cp "$W/r794bcls" -d "$W/r794bcls" "$W/r794b/app/R825.java" 2>/dev/null
-for pair in s1Run:1 e4Run:1 h1U:1 h2U:1 h3U:1 l1U:1 l2U:1 l4U:1 r1U:1 e3U:1 e6U:1 n6Anon:1 n9Async:1 n14Merge:1 n8OptMap:1 argLamU:1 n1Box:1 okH1:1 k1Print:0 k3SetOnly:0 k7Dead:0 k8ConnFromStmt:0 k10Col:0 k4LitBox:0 z1MapIface:0; do
+# SOUNDNESS R840 — `okColumn`, `jdkSinkOnly`, `okArrayBind`, `k1Print`, `k3SetOnly` and `k7Dead` are 1 again: the
+# 0.39.2 mark (any String-taking call on a SQL-bearing owner with no literal) is restored as the floor, and those
+# are its over-marks. `z1MapIface` — R825's named silence, R833 — is 1 for the same reason.
+for pair in s1Run:1 e4Run:1 h1U:1 h2U:1 h3U:1 l1U:1 l2U:1 l4U:1 r1U:1 e3U:1 e6U:1 n6Anon:1 n9Async:1 n14Merge:1 n8OptMap:1 argLamU:1 n1Box:1 okH1:1 k1Print:1 k3SetOnly:1 k7Dead:1 k8ConnFromStmt:0 k10Col:0 k4LitBox:0 z1MapIface:1; do
     m=${pair%%:*}; want=${pair##*:}
     printf 'allow Db in app.R825.%s users\n' "$m" > "$W/r825.pol"
     CANDOR_POLICY="$W/r825.pol" "$CJ" "$W/r794bcls" >/dev/null 2>&1; got=$?
@@ -1945,6 +1949,96 @@ printf 'deny Db app.R825.k7Dead\n' > "$W/r825.pol"
 CANDOR_POLICY="$W/r825.pol" "$CJ" "$W/r794bcls" >/dev/null 2>&1; r825d=$?
 if [ "$r825d" -eq 1 ]; then echo "  ok   R825 CALIBRATION: \`deny Db\` bites the control that \`allow Db\` certifies"; pass=$((pass+1));
 else echo "  FAIL R825 CALIBRATION — deny Db exit $r825d (want 1)"; fail=$((fail+1)); fi
+
+# ── SOUNDNESS R840 / R833 / R834: the shapes R825's follower dropped — each 1 on v0.39.2, 0 at e180c84 ─────
+echo "== SOUNDNESS R840: no shape v0.39.2 discloses goes silent (the 0.39.2 mark is the floor) =="
+# EXECUTED by the v0.39.3 re-review on H2 through real jOOQ 3.19: each read `secrets` (a4 rewrote it) beside a
+# benign `users` literal. Stubs carry the real FQNs; the classifier keys on owner names.
+mkdir -p "$W/r840/org/jooq" "$W/r840/org/hibernate/query" "$W/r840/app" "$W/r840lib/lib" "$W/r840app/app"
+cat > "$W/r840/org/jooq/ResultQuery.java" <<'J'
+package org.jooq;
+public interface ResultQuery { Object fetch(); java.util.stream.Stream<Object> stream(); }
+J
+cat > "$W/r840/org/jooq/RowCountQuery.java" <<'J'
+package org.jooq;
+public interface RowCountQuery { int execute(); java.util.concurrent.CompletionStage<Integer> executeAsync(java.util.concurrent.Executor e); }
+J
+cat > "$W/r840/org/jooq/DSLContext.java" <<'J'
+package org.jooq;
+public interface DSLContext { ResultQuery resultQuery(String sql); RowCountQuery query(String sql); }
+J
+cat > "$W/r840/org/hibernate/query/NativeQuery.java" <<'J'
+package org.hibernate.query;
+public interface NativeQuery { java.util.List<?> list(); java.util.Optional<?> uniqueResultOptional(); java.util.stream.Stream<?> getResultStream(); Object getSingleResultOrNull(); long getResultCount(); }
+J
+cat > "$W/r840/org/hibernate/Session.java" <<'J'
+package org.hibernate;
+public interface Session { org.hibernate.query.NativeQuery createNativeQuery(String sql, Class<?> c); }
+J
+cat > "$W/r840/app/P.java" <<'J'
+package app;
+import java.sql.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.lang.ref.SoftReference;
+import org.jooq.*;
+public class P {
+  static void lit(Connection c) throws SQLException { c.prepareStatement("SELECT id FROM users").executeQuery(); }
+  public static long a1Stream(Connection c, DSLContext d, String sql) throws Exception { lit(c); return d.resultQuery(sql).stream().count(); }
+  public static Object a4Async(Connection c, DSLContext d, String sql) throws Exception { lit(c); return d.query(sql).executeAsync(Runnable::run).toCompletableFuture().get(); }
+  static final class Box<T> { T v; void set(T v) { this.v = v; } T get() { return v; } }
+  static final Box<ResultQuery> HOLD = new Box<>();
+  public static void b1Load(DSLContext d, String sql) { HOLD.set(d.resultQuery(sql)); }
+  public static Object b1Both(Connection c, DSLContext d, String sql) throws Exception { b1Load(d, sql); lit(c); return HOLD.get().fetch(); }
+  static final Box<ResultQuery> HOLD3 = new Box<>();
+  public static Object b3Both(Connection c, DSLContext d, String sql) throws Exception { lit(c); HOLD3.v = d.resultQuery(sql); return HOLD3.v.fetch(); }
+  static final CompletableFuture<ResultQuery> CF = new CompletableFuture<>();
+  static final List<Object> OUT = new ArrayList<>();
+  static void arm() { CF.thenAccept(q -> OUT.add(q.fetch())); }
+  public static void c1Complete(Connection c, DSLContext d, String sql) throws Exception { lit(c); arm(); CF.complete(d.resultQuery(sql)); }
+  static SoftReference<ResultQuery> SR;
+  public static Object c2Both(Connection c, DSLContext d, String sql) throws Exception { lit(c); SR = new SoftReference<>(d.resultQuery(sql)); return SR.get().fetch(); }
+  static final class RunSub implements Flow.Subscriber<ResultQuery> {
+    public void onSubscribe(Flow.Subscription s) {} public void onNext(ResultQuery q) { OUT.add(q.fetch()); }
+    public void onError(Throwable t) {} public void onComplete() {} }
+  public static void e1Flow(Connection c, DSLContext d, String sql) throws Exception { lit(c); Flow.Subscriber<ResultQuery> s = new RunSub(); s.onNext(d.resultQuery(sql)); }
+  public static Object h1Opt(Connection c, org.hibernate.Session s, String sql) throws Exception { lit(c); return s.createNativeQuery(sql, Object.class).uniqueResultOptional(); }
+  public static Object h4Count(Connection c, org.hibernate.Session s, String sql) throws Exception { lit(c); return s.createNativeQuery(sql, Object.class).getResultCount(); }
+  public static Object k1Lit(Connection c, DSLContext d) throws Exception { lit(c); return d.resultQuery("SELECT id FROM users").fetch(); }
+}
+J
+javac -d "$W/r840cls" $(find "$W/r840" -name '*.java') 2>/dev/null
+for pair in a1Stream:1 a4Async:1 b1Both:1 b3Both:1 c1Complete:1 c2Both:1 e1Flow:1 h1Opt:1 h4Count:1 k1Lit:0; do
+    m=${pair%%:*}; want=${pair##*:}
+    printf 'allow Db in app.P.%s users\n' "$m" > "$W/r840.pol"
+    CANDOR_POLICY="$W/r840.pol" "$CJ" "$W/r840cls" >/dev/null 2>&1; got=$?
+    if [ "$got" -eq "$want" ]; then echo "  ok   R840 GATE app.P.$m exits $want"; pass=$((pass+1));
+    else echo "  FAIL R840 GATE app.P.$m — exit $got (want $want)"; fail=$((fail+1)); fi
+done
+# R834, the FIELD half: a library scanned ALONE stores the handle; a CHAINED app runs it. The 0.39.2 mark on the
+# library's storing function travels in its report's `incomplete` and the app inherits it.
+cat > "$W/r840lib/lib/Lib.java" <<'J'
+package lib;
+public class Lib {
+  public static org.jooq.ResultQuery FIELD;
+  public static void store(org.jooq.DSLContext dsl, String sql) { FIELD = dsl.resultQuery(sql); }
+}
+J
+cat > "$W/r840app/app/App.java" <<'J'
+package app;
+import java.sql.*;
+public class App {
+  static void lit(Connection c) throws SQLException { c.prepareStatement("SELECT id FROM users").executeQuery(); }
+  public static Object viaField(Connection c, org.jooq.DSLContext dsl, String sql) throws Exception { lit(c); lib.Lib.store(dsl, sql); return lib.Lib.FIELD.fetch(); }
+}
+J
+javac -cp "$W/r840cls" -d "$W/r840libcls" "$W/r840lib/lib/Lib.java" 2>/dev/null
+javac -cp "$W/r840cls:$W/r840libcls" -d "$W/r840appcls" "$W/r840app/app/App.java" 2>/dev/null
+"$CJ" "$W/r840libcls" --json "$W/r840dep.json" >/dev/null 2>&1
+printf 'allow Db in app.App.viaField users\n' > "$W/r840.pol"
+CANDOR_DEPS="$W/r840dep.json" CANDOR_POLICY="$W/r840.pol" "$CJ" "$W/r840appcls" >/dev/null 2>&1; r834=$?
+if [ "$r834" -eq 1 ]; then echo "  ok   R834 GATE: a chained app running a library-stored handle exits 1"; pass=$((pass+1));
+else echo "  FAIL R834 GATE — chained viaField exit $r834 (want 1)"; fail=$((fail+1)); fi
 
 # ── SOUNDNESS R795: a zero-argument Net call can still name its destination — at the RECEIVER ─────
 echo "== SOUNDNESS R795: the Net masking guard reads the receiver, not the argument count =="

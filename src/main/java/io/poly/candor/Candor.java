@@ -6161,10 +6161,35 @@ public class Candor {
         boolean capturedTableHere = repoCallSynthesizesDb(ctx, min) && ctx.repoTables.get(min.owner) != null;
         if (isSqlBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;")
                 && !isSqlParameterBinder(min.name)) {
+            boolean anySqlLiteral = false;
             for (String lit : literalArgsInWindow(min, constLocals, s.joinLabels)) {
                 capturedTableHere = true;
+                anySqlLiteral = true;
                 List<String> tl = tablesInSql(lit);
                 if (!tl.isEmpty()) ctx.tablesDirect.computeIfAbsent(id, x -> new TreeSet<>()).addAll(tl);
+            }
+            // SOUNDNESS R840 — THE v0.39.2 MARK IS THE FLOOR, RESTORED VERBATIM. A call on a SQL-bearing owner
+            // that takes a String with no literal in its window marks this function, whatever the call is and
+            // wherever its result goes. This is the released 0.39.2 guard, byte for byte in its condition.
+            //
+            // R794 removed it as a fabrication (17,436 rows over 372 jars — `new SQLException(msg)`,
+            // `rs.getString(col)`), and the three fixes that followed (R794b, R819, R824) and then R825's
+            // `DbHandleFlow` each tried to put back only the part of it that mattered by FOLLOWING the handle.
+            // Every one of them failed open somewhere the follower had no rule for: R825's re-review executed
+            // ten more shapes (a jOOQ `stream()` the classifier does not list as a terminal, a generic Box in a
+            // field, a `SoftReference`, `CompletableFuture.complete`, a project `Flow.Subscriber` called
+            // through the interface, a field read by a chained consumer) that exited 1 on 0.39.2 and 0 after.
+            // A follower's non-marking rules are each correct only if some list is complete — the terminal
+            // classifier, the carrier set, the handle-capable field types — and none of those lists is.
+            //
+            // So the follower no longer carries the guarantee. This line does: no shape 0.39.2 discloses can
+            // go silent, because this is the mark 0.39.2 made. {@link DbHandleFlow} runs as well and only ADDS —
+            // the frames that EXECUTE a handle loaded elsewhere (a field read, a helper's return), which 0.39.2
+            // never marked. Narrowing this floor back to precision is a later release's job, and it has to
+            // prove each carve-out fails closed before it removes anything.
+            if (!anySqlLiteral) {
+                ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Db");
+                if (MASK_DEBUG) System.err.println("R840FLOOR\t" + id + "\t" + owner + "." + min.name + min.desc);
             }
         }
         // SOUNDNESS R794 — THE Db MASKING GUARD WAS THE LAST ONE KEYED ON AN OWNER INCLUSION LIST.

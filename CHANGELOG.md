@@ -9,70 +9,117 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
-### ⚠ SOUNDNESS R825 FIXED — the `Db` handle rule failed OPEN; it is now one forward pass that fails CLOSED
+### ⚠ SOUNDNESS R840 + R833 + R834 FIXED: the v0.39.2 `Db` mark is restored as a FLOOR, so no shape v0.39.2 discloses goes silent
 
-The builder rule from R794b, R819 and R824 marked a function only when a trace from where a runtime `String` was
-loaded into a query handle reached the terminal that ran it, so every hop it did not model was SILENT. A release
-review EXECUTED 17 such shapes on H2, each of which read `secrets` beside a benign `users` literal. Each exited
-**1** under `allow Db in <fn> users` on v0.39.2 and **0** at 5f695f9. They include
-`Objects.requireNonNull(prep(c,sql)).executeBatch()`, `Optional.ofNullable(mk(em,sql)).orElseThrow()…`,
-`List.of(mk2(em,sql)).get(0)…`, a lambda capture, `q::getResultList`, a record component, a `static final`
-container filled by a helper, and `st.addBatch(sql); l.add(st); l.get(0).executeBatch()`. Ten more were found
-the same way and also executed: an anonymous class, `CompletableFuture.supplyAsync`, `Optional.map(this::run)`,
-a ternary merge, `stream().forEach`, a stored `Supplier`, an exception carrying the handle, and Kotlin
-`listOf(…).first()`, `Pair` and `map { }`. HEAD was silent on all ten; v0.39.2 was silent on none of them.
+**What went wrong.** R825 (below) replaced the 0.39.2 mark with `DbHandleFlow`, a forward follower of query
+handles, and called it fail-closed. It was not. Its non-marking rules are each correct only if some list is
+complete, and none is:
+- the terminal classifier (jOOQ `stream()`, `collect()` and `executeAsync`; Hibernate `uniqueResultOptional`,
+  `getResultStream`, `getSingleResultOrNull` and `getResultCount` are not charged `Db`);
+- the carrier set (`CompletableFuture.complete` runs dependents);
+- the handle-capable field types (a generic `Box<T>` held in a field, a `SoftReference`).
 
-**The fix is a restructure, not a tenth hop.** `DbHandleFlow` is a whole-program pass that follows a handle
-FORWARD from the call that loads it. The call's owner is SQL-bearing, or its result is a type some `Db` call in
-the program runs, and it has no body in the scan. The pass follows the handle through copies, builder steps,
-project calls (per-parameter summaries), returns to in-scan callers, fields, containers, lambda captures and
-callbacks. **The default for a use it cannot follow is to MARK.** Every rule that does not mark is a stated
-carve-out: a runtime data structure, a log sink, a builder step, or a factory or result type. Forgetting one
-over-marks. The mark lands on the frame whose extent runs the handle. A helper that is handed a handle marks
-its caller, not itself, so a caller passing it a literal query still certifies.
+It also did not fan out through `java.util.*` declarations to project implementors (a project `Map.put`,
+`Flow.Subscriber.onNext` or `Observer.update`). And it published nothing for a chained consumer of a
+library-stored handle.
 
-**Controls that stay 0**, all pinned in `test/smoke.sh`: a handle put in a container and never run, one only
-printed or hashed, one only configured (`setMaxResults`), `ps.getConnection().commit()`, `rs.updateString(col,
-…)`, `new SQLException(m)`, `createArrayOf → setArray → execute(literal)`, and a literal query in a generic `Box`
-while another `Box` holds a runtime one. The two literal-helper fixtures `okH1`/`okE1` ARE marked. The engine
-is context-insensitive about `String` parameters (`mk(em, s)` loads a runtime handle), as every guard here is.
-They certified at 5f695f9 only because that trace failed at `List.of`, and v0.39.2 marked them too.
+A re-review EXECUTED the jOOQ shapes on H2 through real jOOQ 3.19, and I re-executed them here: each read
+`secrets`, and `executeAsync` rewrote it. Every one exited 1 under `allow Db in <fn> users` on v0.39.2 and 0 at
+e180c84. The Hibernate shapes were checked by gate only.
 
-**Two engine changes the corpus forced, each measured.** (1) A `ResultSet` and its kin are the PRODUCT of an
-execution, not a handle. Tracked as handles, one Hikari proxy made every `rs.next()` in hazelcast inherit a
-hedge through CHA: 31,762 rows from 147 marks. (2) A per-call `Db` rule hole, `capturedTableHere`: a literal
-anywhere in the window counted as a captured locator even when another `String` argument was runtime, so
-`md.getColumns(null, null, table, "%")` left the caller-chosen table unmarked. 5f695f9 had caught that shape
-only through the `ResultSet` in (1).
+**The fix restores the release's own mark, verbatim, as a floor.** A call on a SQL-bearing owner that takes a
+`String` with no literal in its window marks its function, whatever the call is and wherever its result goes.
+That is exactly the v0.39.2 condition, so a shape the release disclosed cannot go silent.
 
-**Named residual, SILENT and pinned:** a PROJECT `Map` whose `put` runs the handle, reached through the
-`java.util.Map` declaration (`z1MapIface`), because carrier calls do not fan out to project implementors. Also
-named: a handle RETURNED out of the scan, or stored in a field with no in-scan reader, is not marked. No
-"returns a runtime handle" fact is published for a chained consumer.
+`DbHandleFlow` stays, and it only ADDS. It marks the frames that EXECUTE a handle loaded somewhere else (a
+field read, a helper's return, a callee handed the handle, a lambda capture), which v0.39.2 never marked. It
+now marks only a SEEN execution. A handle it loses (a library call, an interface with no implementor, the depth
+or CHA bound) is printed for reach and marks nothing (R841: 13 of 22 audited "lost" marks were not query handles
+at all). Its seeds are limited to loaders whose result is a type some `Db` call in the program runs or is
+handed. Its remaining non-marking rules, and the list each depends on, are stated in the `DbHandleFlow` header.
+Beyond the floor they fail SILENT. Five fixtures that attack those rules in an EXECUTING frame (the load happens elsewhere) are silent here
+and on v0.39.2 alike.
 
-**A/B, 5f695f9 → this build** (`incomplete[Db]` rows; every arm analysed the same units, 0 classes newly skipped,
-0 scan failures):
+**Monotone against v0.39.2, measured.**
 
-| corpus | gained on a `Db` row | gained on a row with no `Db` | new rows | lost | net | of all rows |
-|---|---|---|---|---|---|---|
-| 372 jars | 87 | 1,598 | 61 | 13 | +1,733 | 0.12% |
-| 452 jars | 76 | 1,206 | 85 | 14 | +1,353 | 0.11% |
+*Fixtures.* 235 fixtures across the release review, the R794/R819/R824/R825 lanes, R840's re-review and new
+attacks, run on v0.39.2, 5f695f9, e180c84 and this build. **0 exit 1 on v0.39.2 and anything else here.** 24
+exit 0 on v0.39.2 and 1 here: the executing frames above, the Redis/Mongo owners R794 added, and a classifier
+miss R794b fixed.
 
-The gains sit in DB frameworks' own internals: neo4j-java-driver, spring-data-cassandra, hibernate-core, commons-
-dbcp2 and assertj-db. They are fail-closed escapes (depth bound, an interface with no implementor in the scan,
-a handle returned into library dispatch). Every one of the 27 losses was traced to its 5f695f9 reason. All are
-C1, the old walk's own over-follows, which the R794b entry below named as over-marks. liquibase's
-`ps.getConnection()` beside a bound `SqlTypeValue` type name (6 rows) runs no query, and the bytecode shows
-only binders and metadata. quartz's JNDI `lookup(name).getConnection()` (7 + 7 + 7 rows) names a database, not
-a table. **Gate flips: 0 in either direction on either corpus, and that is not evidence.** Only 2 rows in
-1,497,440 are certifiable under `allow Db` at all.
+*Corpus* (`incomplete[Db]` rows against v0.39.2; 0 classes newly skipped):
 
-**The alternative priced beside it: restore v0.39.2's owner-list mark and keep everything else.** It costs
-+53,191 rows on 372 jars (3.55%: 36,123 on `Db` rows, 13,155 on rows with no `Db`, 3,913 rows that exist only
-for the hedge) and +31,892 on 452 jars (2.61%). It flips 2 correct certifications, hibernate's Oracle and HANA
-literal-query probes. It still misses 5 shapes that v0.39.2 missed (`s1Run`, `s3Run`, `a1Run`, `e4Run`,
-all four executed through their `*Both` callers; and `l4U`) and over-marks 13 controls that this build
-certifies.
+| corpus | gained, `Db` row | gained, no-`Db` row | new rows | lost | removed rows |
+|---|---|---|---|---|---|
+| 372 jars | 43,867 | 18 | 1 | 0 | 5 |
+| 452 jars | 20,111 | 8 | 0 | 0 | 6 |
+
+Nothing that was hedged on v0.39.2 is unhedged here, and no row loses `Db`. The 11 removed rows are R799's
+(`Fs`, not `Db`): pure path predicates (`FilePathDisk.isAbsolute`, `Parseable.relativeTo`,
+`FileResolver.isUnreasonableName`) whose only content was an `incomplete[Fs]` hedge. **Gate flips against
+v0.39.2: 0 either way, and that is not evidence.** Only 2 rows in 1.5M are certifiable under `allow Db`.
+
+**Where the added disclosure comes from**, by ablation over the same corpora:
+
+| source | 372 jars | 452 jars |
+|---|---|---|
+| R794's effect-keyed mark (every Redis, Mongo, Cassandra and other `Db` owner) | +43,838 | +20,096 |
+| the partial-literal fix (R825) | +11 | 0 |
+| `DbHandleFlow` | +37 | +23 |
+
+Of the follower's 24 direct new marks, I read every one. 16 are real executions of a runtime-loaded
+statement: pgjdbc-benchmark `InsertBatch`, dbunit, Exposed's `JdbcPreparedStatementImpl`, groovy-sql
+`BatchingStatementWrapper`, and a Hibernate `executeUpdate` reached through `IdentityMap.forEach`. 6 exist
+because the classifier charges `Db` on `PreparedStatement.getConnection()` (R821's class) or on a Spring Data
+Cassandra lambda. 2 are Spring Data Mongo aggregations whose pipeline may not be caller-chosen.
+
+Against analysed units the total is 1.90% (43,886 of 2,306,281) and 1.20% (20,119 of 1,669,927). R794 priced its share at 1.90% when it was paired with
+removing 49,692 fabricated hedges. With the floor back, that removal is undone, so the share now stands alone:
+**between the bands on the 372-jar corpus.**
+
+**The costs, named.** The floor brings back v0.39.2's over-marks:
+- `new SQLException(msg)`;
+- `rs.getString(col)`;
+- a handle put in a container and never run;
+- `createArrayOf → setArray → execute(literal)`;
+- a handle only printed or configured.
+
+Eight `test/smoke.sh` controls that R794/R824/R825 pinned at 0 are 1 again and say why. R825's named silence
+`z1MapIface` (R833) is 1. **R834's field half is closed by the floor:** the library's storing function carries
+the mark in its own report, and a chained consumer inherits it. The general "this returns or stores a runtime
+handle" publication is contract work and is not attempted.
+
+
+### SOUNDNESS R825: the frames that EXECUTE a runtime-loaded query handle are marked (`DbHandleFlow`), and the partial-literal hole is closed
+
+**This entry was rewritten by R840 above, because as first written it was false.** It claimed the pass failed
+closed ("every rule that does not mark is a stated carve-out … forgetting one over-marks"). It claimed the mark
+lands on the frame whose extent runs the handle. It claimed its controls stayed 0. It called its disclosures
+fail-closed escapes. And it named `z1MapIface` as a pre-existing residual rather than a regression. A
+re-review disproved all five.
+
+**What it did find is real.** At 5f695f9 the builder rule from R794b, R819 and R824 marked only when a trace
+from the load to the terminal succeeded. A release review EXECUTED 17 shapes on H2, and ten more were found and
+executed the same way. Each read `secrets` beside a benign `users` literal and exited 1 on v0.39.2, 0 at
+5f695f9. Examples:
+- `Objects.requireNonNull(prep(c,sql)).executeBatch()`
+- `Optional.ofNullable(mk(em,sql)).orElseThrow()…`
+- `List.of(mk2(em,sql)).get(0)…`
+- a lambda capture, and `q::getResultList`
+- a record component
+- an anonymous class
+- `CompletableFuture.supplyAsync`
+- Kotlin `listOf(…).first()`, `Pair` and `map { }`
+
+**In the tree that ships, every one of them is disclosed by the restored 0.39.2 floor (R840).** `DbHandleFlow`
+adds what 0.39.2 never marked: the frame that EXECUTES a handle loaded elsewhere. That includes a field read
+(`s1Run`, `e4Run`, `a1Run`), a helper's return, a callee handed the handle, and a stream of loader references
+(`l4U`). It marks only a seen execution.
+
+**Two engine changes it made, both kept.** (1) A `ResultSet` and its kin are the product of an execution, not
+a handle. Tracked as handles, one Hikari proxy hedged 31,762 hazelcast rows through CHA. (2) A per-call `Db`
+rule hole: a literal anywhere in the argument window counted as a captured locator even when another `String`
+argument was runtime, so `md.getColumns(null, null, table, "%")` left the caller-chosen table unmarked.
 
 ### ⚠ SOUNDNESS R824 FIXED — a query handle round-tripped through a JDK container and then executed
 
@@ -90,7 +137,7 @@ terminal on anything read out of it. The same review found one more container-li
 49d61cd missed, closed here by the same mechanism: a handle PRODUCED by a project lambda handed to the call
 (`m.computeIfAbsent(sql, k -> em.createNativeQuery(k)).getResultList()`).
 
-**The direction that must not move, pinned:** a receiver that is itself SQL-bearing — a statement, a session,
+**The direction that must not move, pinned** (R840: no longer, because the restored 0.39.2 floor marks `createArrayOf` and the never-run container again; smoke now expects 1 for both): a receiver that is itself SQL-bearing — a statement, a session,
 an entity manager — does NOT absorb, so `ps.setArray(1, conn.createArrayOf(type, xs)); ps.execute()` beside a
 literal query still certifies (the R794 partition's over-follow), and a Hibernate session handed a query does
 not hedge its unrelated `getTransaction().rollback()`. A handle put in a container and never executed stays
@@ -261,6 +308,11 @@ JDK `File`/`Path` sinks the classifier does not charge `Fs` at all; the five exe
 the list). For those, the runtime-path mark this entry keeps is the only disclosure.
 
 ### ⚠ SOUNDNESS R794 + R795 FIXED — every masking guard is now keyed on the EFFECT, and no owner table is left to fall behind the classifier
+
+**Amended by R840 (top of this section).** The owner-list guard this entry removed is BACK, as a floor beside
+the effect-keyed mark. So the "LOST" rows in the table below, including the 17,436 no-`Db` hedges, are
+published again by the tree that ships. What this entry ADDS still stands: the effect-keyed mark on every
+`Db` owner, and the Net rule.
 
 **⚠ READ THE ENTRY ABOVE FIRST: this change introduced a silent under-report.** Keying the mark on the effect
 and exempting zero-argument calls dropped every query BUILDER (`em.createNativeQuery(sql).getResultList()`,

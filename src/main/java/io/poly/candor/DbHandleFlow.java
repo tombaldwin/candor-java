@@ -22,45 +22,46 @@ import static io.poly.candor.AnalysisState.ctx;
  * .orElseThrow()}, a lambda capture, {@code q::getResultList}, a record component, a static container
  * filled by a helper, …) exited 1 on v0.39.2 and 0 at 5f695f9. The default had gone from closed to open.
  *
- * <p><b>The inversion.</b> This pass follows a handle forward from where the runtime String is LOADED, and
- * the DEFAULT for anything it cannot follow is to MARK. Every rule below that does NOT mark is a carve-out
- * whose failure direction is stated beside it; forgetting one over-marks, it never goes silent. The only
- * way a handle ends unmarked is that every one of its uses was proven to be a copy, a builder step, a
- * JDK/Kotlin/Scala data structure that gives it back through its receiver or result, a log sink, or a dead
- * end — or that it reached no code at all.
+ * <p><b>What this pass is NOT (SOUNDNESS R840).</b> R825 shipped it as a fail-closed replacement for the
+ * 0.39.2 mark. It is not one. A re-review executed ten shapes that 0.39.2 marks and this pass alone did not,
+ * because every rule below that declines to mark is correct only if some list is complete, and none is. So
+ * the 0.39.2 mark is restored in {@code Candor} as the FLOOR, and this pass only ADDS: it marks the frames
+ * that EXECUTE a handle loaded somewhere else (a field read, a helper's return, a callee handed the handle),
+ * which 0.39.2 never marked. Nothing here can remove a mark, so no shape 0.39.2 discloses can go silent.
  *
- * <p><b>Where the mark lands.</b> On the frame whose DYNAMIC EXTENT runs the handle, never on a frame that
- * merely builds one: a definite source (a load in this body, a read of a field some load reached, the
- * result of a project method that returns a loaded handle) marks the frame where it is executed or lost; a
- * handle passed DOWN as an argument marks the frame that passed it when the callee's summary for that
- * parameter executes or loses it — so {@code runQ(q)} is not marked on its own, and a caller passing it a
- * literal query ({@code okArgLit}) stays certifiable. Marks then climb the call graph through the ordinary
- * {@code literalFixpoint}.
+ * <p><b>The non-marking rules, and the list each one depends on.</b> Beyond the floor, each fails SILENT when
+ * its list is incomplete:
+ * <ul><li>(1) A call the classifier does not charge {@code Db}, made on a handle owned by a SQL-bearing type,
+ * is taken as a BUILDER STEP. This depends on the terminal classifier being complete. It is not: jOOQ
+ * {@code stream()}/{@code collect()}/{@code executeAsync} and Hibernate {@code uniqueResultOptional}/
+ * {@code getResultStream}/{@code getSingleResultOrNull}/{@code getResultCount}.</li>
+ * <li>(2) {@link #isCarrier} owners store the handle and hand it back only through their receiver or result.
+ * This depends on the carrier list, and it is false for {@code CompletableFuture}, whose dependents run inside
+ * {@code complete()}. Carrier calls also do not fan out to PROJECT implementors of the declaration, so a
+ * project {@code Map} or {@code Flow.Subscriber} that runs the handle is missed.</li>
+ * <li>(3) Only fields of a handle-capable declared type are keyed globally. An {@code Object}-typed generic
+ * {@code Box<T>.v}, a raw field or a {@code SoftReference} reached through another field drops the taint.</li>
+ * <li>(4) Loggers and {@code java.io} are sinks.</li>
+ * <li>(5) CHA stops after 17 bodies ({@link Candor#dbProjectBodies}), and at the cap this pass marks.</li>
+ * <li>(6) Summaries stop at depth {@value #MAX_DEPTH}.</li>
+ * <li>(7) A handle returned out of the scan, or stored in a field with no in-scan reader, reaches no mark
+ * here. For a CHAINED consumer the floor covers the storing function, whose own report carries the mark.</li></ul>
+ * Rules (5) and (6) mark on truncation. The others are allow-shaped. Each has an executed fixture in this
+ * repository's R840 evidence showing it silent in an EXECUTING frame; the same shape is silent on v0.39.2 too.
  *
- * <p><b>The residuals, named (the SILENT ones first):</b>
- * <ul><li>SILENT, pinned in test/smoke.sh ({@code z1MapIface}): a PROJECT container whose {@code put} RUNS
- * the handle, called through the {@code java.util.Map} declaration — a call on a runtime data-structure type
- * does not fan out to project implementors ({@link #call}), because doing so reached every project
- * {@code equals}/{@code Map} and drowned the pass.</li>
- * <li>A loader whose body IS in the scan is not a loader here: its String reaches the driver in visible code,
- * where the per-call Db rule marks the JDBC/driver call and the mark climbs. That relies on the per-call rule.</li>
- * <li>A handle RETURNED out of the scan (a public helper with no in-scan caller) is not marked here —
- * its caller lives in another scan, and this engine publishes no "returns a runtime handle" fact for a
- * consumer to join. A function that builds and returns a handle performs no Db itself.</li>
- * <li>A handle stored into a field that has no in-scan reader is likewise not marked.</li>
- * <li>Field taint is keyed by the DECLARING class and is not path-sensitive: a field written once with a
- * runtime handle marks every executing read of it, including a read that follows a literal write in the
- * same frame. This fails CLOSED.</li>
- * <li>Parameter-carried query TEXT is treated as runtime, as every other guard in this engine treats it: a
- * helper {@code mk(em, s)} loads a runtime handle, so a caller that passes it a literal and executes the
- * result IS marked. That is the engine's context-insensitive model, not new here, and it fails CLOSED.</li></ul>
+ * <p><b>Where the mark lands.</b> On a frame that executes a handle this pass followed there, on a frame that
+ * passes a handle into a callee whose summary executes it, and on the frame where this pass lost the handle
+ * (depth, no body, a library call). R841: seeding once took every String-carrying {@code org/hibernate/}-style
+ * call as a loader, and 13 of 22 audited marks were not query handles. Seeds are now limited to results of a
+ * type some {@code Db} call in the program runs or is handed.
  */
 final class DbHandleFlow {
 
     /** A per-parameter (or per-receiver) answer about one body: does a handle arriving in that slot get
      *  executed or lost ({@code why}), returned, stored into the receiver, or stored into another parameter. */
     static final class Summ {
-        String why;
+        String why;    // a SEEN execution — the only thing that marks
+        String lost;   // where the handle was lost instead — REACH only, never a mark (R840/R841)
         boolean returns, intoRecv;
         final BitSet intoParams = new BitSet();
     }
@@ -121,6 +122,14 @@ final class DbHandleFlow {
     private final Set<MethodNode> queued = Collections.newSetFromMap(new IdentityHashMap<>());
     private final Map<MethodNode, String> marked = new IdentityHashMap<>();
     static final int MAX_DEPTH = 6;
+    /** Summaries computed per scan before the follower stops. It only ADDS marks over the 0.39.2 floor, so
+     *  stopping early loses additions, never a floor mark; the stop is printed. */
+    static final int WORK_BUDGET = 200_000;
+    private int work;
+    private static final class Budget extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+        Budget() { super("DbHandleFlow work budget exhausted", null, false, false); }
+    }
 
     private DbHandleFlow(AnalysisContext ctx) { this.ctx = ctx; }
 
@@ -152,6 +161,12 @@ final class DbHandleFlow {
                     }
             }
         }
+    }
+
+    /** Is {@code why} a SEEN execution (its last hop ran a Db call on the handle), not a loss? */
+    static boolean seenExec(String why) {
+        String last = why.substring(why.lastIndexOf('>') + 1);
+        return last.startsWith("exec:") || last.startsWith("bound-exec:") || last.startsWith("callback-exec:");
     }
 
     static final boolean TRACE = System.getenv("CANDOR_R825_TRACE") != null;
@@ -196,9 +211,13 @@ final class DbHandleFlow {
                         }
                         // The receiver type of every Db-classified INSTANCE call: a value of that type is
                         // something a terminal runs, so a runtime String loaded into one is a locator.
-                        if (m.getOpcode() != Opcodes.INVOKESTATIC && !"<init>".equals(m.name)
-                                && Classifier.classify(m.owner.replace('/', '.'), m.name, m.desc) == Effect.DB)
-                            handleTypes.add(m.owner);
+                        if (!"<init>".equals(m.name)
+                                && Classifier.classify(m.owner.replace('/', '.'), m.name, m.desc) == Effect.DB) {
+                            if (m.getOpcode() != Opcodes.INVOKESTATIC) handleTypes.add(m.owner);
+                            // …and the declared type of every object a Db call is HANDED (`session.execute(stmt)`).
+                            for (Type at : Type.getArgumentTypes(m.desc))
+                                if (at.getSort() == Type.OBJECT) handleTypes.add(at.getInternalName());
+                        }
                     } else if (in instanceof FieldInsnNode fi && (fi.getOpcode() == Opcodes.GETFIELD
                             || fi.getOpcode() == Opcodes.GETSTATIC)) {
                         fieldReaders.computeIfAbsent(fkey(fi), k -> new ArrayList<>()).add(mn);
@@ -223,14 +242,30 @@ final class DbHandleFlow {
         sourceTypes.remove("java/lang/Object");
         if (candidates.isEmpty()) return;
         for (MethodNode mn : candidates) enqueue(mn);
-        while (!queue.isEmpty()) {
-            MethodNode mn = queue.poll();
-            queued.remove(mn);
-            definite(mn);
+        try {
+            while (!queue.isEmpty()) {
+                MethodNode mn = queue.poll();
+                queued.remove(mn);
+                definite(mn);
+            }
+        } catch (Budget b) {
+            System.err.println("candor-java: Db handle follower stopped at its work budget (" + WORK_BUDGET
+                    + " summaries); the marks it found are kept, and the 0.39.2 floor is unaffected");
         }
         for (Map.Entry<MethodNode, String> e : marked.entrySet()) {
             ClassNode cn = ownerOf.get(e.getKey());
             String id = Cha.methodId(cn.name.replace('/', '.'), e.getKey().name, e.getKey().desc);
+            // SOUNDNESS R840/R841 — only a SEEN execution marks. A handle this pass LOST (a library call, an
+            // interface with no implementor, the depth or CHA bound, a return into library dispatch) used to
+            // mark too, as a fail-closed escape; audited, 13 of 22 such marks were not query handles at all
+            // (R841), and the escapes never made the pass fail closed anyway (R840) — the 0.39.2 floor in
+            // Candor is what does that now. A lost handle is printed for REACH, and marks nothing.
+            String last = e.getValue().substring(e.getValue().lastIndexOf('>') + 1);
+            boolean seen = last.startsWith("exec:") || last.startsWith("bound-exec:") || last.startsWith("callback-exec:");
+            if (!seen) {
+                if (Candor.MASK_DEBUG) System.err.println("R825LOST\t" + id + "\t" + e.getValue());
+                continue;
+            }
             ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Db");
             if (Candor.MASK_DEBUG) System.err.println("R825MARK\t" + id + "\t" + e.getValue());
         }
@@ -270,12 +305,17 @@ final class DbHandleFlow {
         if (rt.getSort() == Type.VOID) {
             if (!sql || m.getOpcode() == Opcodes.INVOKESTATIC) return false;
             if (m.owner.equals("java/sql/ResultSet")) return false;
+            if (!handleTypes.contains(m.owner)) return false;   // R841: a receiver no Db call in the program runs
             return Candor.runtimeStringSlot(fr, insns, m) >= 0;
         }
         if (rt.getSort() != Type.OBJECT && rt.getSort() != Type.ARRAY) return false;
         String rn = rt.getSort() == Type.OBJECT ? rt.getInternalName() : "";
         if (NON_HANDLE.contains(rn) || NON_HOLDER.contains(rn) || rn.equals("java/lang/Object")) return false;
-        if (!sql && !handleTypes.contains(rn)) return false;
+        // SOUNDNESS R841 — the result must be a type some Db call in this program RUNS (or is handed). The
+        // `org/hibernate/` etc. owner prefix alone seeded `AnnotationDescriptor.getAttribute(String)`, result
+        // assemblers and value lists — 13 of 22 audited marks. This narrows only what the FOLLOWER adds: the
+        // load frame is marked by the 0.39.2 floor in Candor regardless (R840).
+        if (!handleTypes.contains(rn)) return false;
         return Candor.runtimeStringSlot(fr, insns, m) >= 0;
     }
 
@@ -353,6 +393,8 @@ final class DbHandleFlow {
         if (seeds.isEmpty()) return;
         if (TRACE) for (Object o : seeds) System.err.println("R825SEED\t" + nameOf(mn) + "\t" + describe(o));
         Summ r = walk(mn, fr, seeds, -1, 0, true);
+        if (r.why == null && r.lost != null && Candor.MASK_DEBUG)
+            System.err.println("R825LOST\t" + nameOf(mn) + "\t" + r.lost);
         // A loaded handle that IS one of this body's parameters (a void loader on a caller's statement:
         // `addTo(st, sql) { st.addBatch(sql); }`) leaves through that parameter; the caller's argument holds it.
         Type[] ps = Type.getArgumentTypes(mn.desc);
@@ -407,12 +449,14 @@ final class DbHandleFlow {
         if (have != null) return have;
         String key = System.identityHashCode(b) + ":" + slot;
         if (depth > MAX_DEPTH) {
-            provisional = true;
+            // Not provisional: a truncated summary is CACHED. Recomputing it at every shallower query made the
+            // walk exponential once a lost handle stopped ending it (hibernate-core: 26 s → over 16 min).
             Summ s = new Summ();
-            s.why = "depth:" + nameOf(b);
+            s.lost = "depth:" + nameOf(b);
             return s;
         }
         if (!inProgress.add(key)) { provisional = true; return new Summ(); }
+        if (++work > WORK_BUDGET) throw new Budget();
         boolean outer = provisional;
         provisional = false;
         Summ s;
@@ -420,12 +464,15 @@ final class DbHandleFlow {
             Frame<SourceValue>[] fr = Candor.srcFramesOf(b);
             if (fr == null) {
                 s = new Summ();
-                s.why = "no-frames:" + nameOf(b);
+                s.lost = "no-frames:" + nameOf(b);
             } else s = walk(b, fr, Set.of(slot), slot, depth, false);
         } finally {
             inProgress.remove(key);
         }
-        if (!provisional) summaries.computeIfAbsent(b, k -> new HashMap<>()).put(slot, s);
+        // Cached even when it consulted an in-progress summary (a recursion, answered optimistically). Leaving
+        // such results uncached let a recursive visitor re-derive the same summaries exponentially. The error
+        // this admits is a MISSED addition inside a recursion; the 0.39.2 floor is untouched by it.
+        summaries.computeIfAbsent(b, k -> new HashMap<>()).put(slot, s);
         provisional |= outer;
         return s;
     }
@@ -481,8 +528,7 @@ final class DbHandleFlow {
                         taintField(fkey(fi));
                     else if (op == Opcodes.PUTFIELD && definite && inst && sz >= 2
                             && roots(fr, insns, f.getStack(sz - 2)).contains(0)) {
-                        res.why = "stored-into-this:" + fi.owner + "." + fi.name;
-                        return res;
+                        if (res.lost == null) res.lost = "stored-into-this:" + fi.owner + "." + fi.name;
                     }
                 } else if ((op == Opcodes.GETFIELD || op == Opcodes.GETSTATIC) && !tracked.contains(ins)) {
                     FieldInsnNode fi = (FieldInsnNode) ins;
@@ -500,12 +546,12 @@ final class DbHandleFlow {
                     if (hit(fr, insns, tracked, f.getStack(sz - 1))) res.returns = true;
                 } else if (ins instanceof InvokeDynamicInsnNode idin) {
                     String why = indy(mn, fr, insns, f, idin, tracked, depth, done);
-                    if (why != null) { res.why = why; return res; }
+                    if (why != null) { if (seenExec(why)) { res.why = why; return res; } if (res.lost == null) res.lost = why; }
                     if (tracked.contains(idin) && !done.containsKey(idin)) { done.put(idin, ""); changed = true; }
                 } else if (ins instanceof MethodInsnNode m) {
                     int before = tracked.size();
                     String why = call(mn, fr, insns, f, m, tracked, depth, inst, seedSlot, res, done);
-                    if (why != null) { res.why = why; return res; }
+                    if (why != null) { if (seenExec(why)) { res.why = why; return res; } if (res.lost == null) res.lost = why; }
                     if (tracked.size() != before) changed = true;
                 }
             }
@@ -568,6 +614,8 @@ final class DbHandleFlow {
         // says what such a call does with a handle. A project Map whose `put` RUNS a query is the one shape
         // this forgets — named, SILENT.
         List<MethodNode> bodies = !ctx.projectClasses.contains(m.owner) && isCarrier(m.owner) ? List.of() : bodiesOf(m);
+        // `dbProjectBodies` stops at 17: past that the implementor that runs the handle may be the one cut off.
+        if (bodies.size() > 16) return "cha-cap:" + where;
         if (!bodies.isEmpty()) {
             for (MethodNode b : bodies) {
                 if (((b.access & Opcodes.ACC_STATIC) != 0) != isStatic) continue;
@@ -605,7 +653,7 @@ final class DbHandleFlow {
                 Handle h = implHandle(idin);
                 if (h == null) continue;
                 if (Classifier.classify(h.getOwner().replace('/', '.'), h.getName(), h.getDesc()) == Effect.DB)
-                    return "callback-exec:" + where + ">" + h.getOwner() + "." + h.getName();
+                    return "callback-exec:" + h.getOwner() + "." + h.getName() + " via " + where;
                 MethodNode b = projectBody(h.getOwner(), h.getName(), h.getDesc());
                 if (b == null) continue;   // a library method reference (`Object::toString`): a value, not a runner
                 int captured = Type.getArgumentTypes(idin.desc).length;

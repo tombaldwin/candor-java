@@ -73,9 +73,18 @@ statement: pgjdbc-benchmark `InsertBatch`, dbunit, Exposed's `JdbcPreparedStatem
 because the classifier charges `Db` on `PreparedStatement.getConnection()` (R821's class) or on a Spring Data
 Cassandra lambda. 2 are Spring Data Mongo aggregations whose pipeline may not be caller-chosen.
 
-Against analysed units the total is 1.90% (43,886 of 2,306,281) and 1.20% (20,119 of 1,669,927). R794 priced its share at 1.90% when it was paired with
-removing 49,692 fabricated hedges. With the floor back, that removal is undone, so the share now stands alone:
-**between the bands on the 372-jar corpus.**
+Against analysed units the total is 1.90% (43,886 of 2,306,281) and 1.20% (20,119 of 1,669,927) — **but a
+unit percentage is the wrong measure for this change, and the first cut of this entry misapplied it.** It adds an
+`incomplete[Db]` marker, not `Unknown`, so it is priced by whether its charges are genuine and by the gate
+flips it causes, not by reach. **Gate flips: 0.** Every one of the 43,867 / 20,111 newly marked rows had an
+EMPTY `tables` surface on v0.39.2, and `allow Db` already refuses an empty surface (`Policy.checkAllowlist`,
+AS-EFF-008 "performs Db with no visible literal"), so those rows exit 1 under `allow Db … <v>` on both
+releases; `deny Db` is 1 on both; `deny Unknown` does not read `incomplete`. The only rows whose answer can
+move are `Db ∧ tables ∧ ¬incomplete` — 2 on the 372-jar corpus, 3 on the census — and none did. 92% of the
+marks (40,320) are transitive propagation from 3,547 own-call sites in 27 non-SQL database-client jars
+(orientdb, redisson, lettuce, spring-data-redis, jedis, spring-data-mongodb, spanner…) — the key- and
+collection-taking owners R794 named. The one change in this entry that DOES flip a user-visible gate is the
+Neo4j classifier addition above: +372 rows gain a concrete `Db`, so `deny Db`/`pure` go 0 → 1 on them.
 
 **The costs, named.** The floor brings back v0.39.2's over-marks:
 - `new SQLException(msg)`;

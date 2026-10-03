@@ -56,7 +56,8 @@ class AnalysisContextInputGrowthTest {
             "entityTables", "repoTables", "feignTypes", "httpClientTypes", "ALL", "byName",
             "subtypeIndex", "fieldLambdaBindings", "samLambdaImpls", "overloadDescs", "classesWithClinit", "taintEnabled", "unknownRatchet",
             "closedWorld", "peekVersioned", "depCoveredPkgs", "depChainedPkgs", "depReportsRead",
-            "depCallsByFn", "depWhyByFn", "depDispatchByFn", "depSupers", "depSplitKnown", "depSuperclass", "classHash",
+            "depCallsByFn", "depWhyByFn", "depDispatchByFn", "depSupers", "depSplitKnown", "depSuperclass",
+            "depIndexed", "depSubtypes", "depMembersByName", "classHash",
             "denyRules", "allowRules", "forbidRules", "onlyRules");
 
     @Test

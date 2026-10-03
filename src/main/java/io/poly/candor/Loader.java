@@ -435,6 +435,11 @@ final class Loader {
                 List<String> sup = new ArrayList<>();
                 for (JsonElement x : e.getValue().getAsJsonArray())
                     if (x.isJsonPrimitive()) sup.add(x.getAsString().replace('.', '/'));
+                // SOUNDNESS R867: recorded BEFORE the empty-list skip below. That skip (R860) makes a type with
+                // no supertypes indistinguishable from one no sidecar ever named, and the override walk needs
+                // exactly that distinction: a dependency's ROOT class is the owner consumers call through.
+                // Only the new set reads it; `depSupers` keeps the shape every other reader was written for.
+                ctx().depIndexed.add(e.getKey().replace('.', '/'));
                 if (sup.isEmpty()) continue;
                 String internal = e.getKey().replace('.', '/');
                 // The split must come from the SAME sidecar as the list, or a later report's kinds would be
@@ -991,6 +996,31 @@ final class Loader {
             }
         }
         synthesizeReasonlessDepReasons();
+        indexDepOverrides();
+    }
+
+    /** SOUNDNESS R867 — the two indexes the dependency OVERRIDE walk reads ({@link Candor#depHierarchyJoin}),
+     *  built once after every report and sidecar is in. {@code depSubtypes} inverts {@code depSupers};
+     *  {@code depMembersByName} groups each SUBTYPE's chained entries by member name, which is the only handle
+     *  on a covariant-return override whose bridge the producer never publishes ({@link Candor#depOverrideAt}).
+     *  Sorted lists, so the walk — and anything a debug line prints — is order-independent. */
+    private static void indexDepOverrides() {
+        AnalysisContext c = ctx();
+        if (c.depSupers.isEmpty()) return;
+        Map<String, TreeSet<String>> subs = new HashMap<>();
+        for (var e : c.depSupers.entrySet())
+            for (String sup : e.getValue()) subs.computeIfAbsent(sup, k -> new TreeSet<>()).add(e.getKey());
+        for (var e : subs.entrySet()) c.depSubtypes.put(e.getKey(), List.copyOf(e.getValue()));
+        for (var e : c.crossDeps.entrySet()) {
+            String h = e.getKey();
+            int paren = h.indexOf('(');
+            int dot = paren < 0 ? -1 : h.lastIndexOf('.', paren);
+            if (dot <= 0) continue;
+            String owner = h.substring(0, dot);
+            if (!c.depSupers.containsKey(owner)) continue;   // only a SUBTYPE can hold an override
+            c.depMembersByName.computeIfAbsent(h.substring(0, paren), k -> new TreeMap<>())
+                    .put(h.substring(paren), e.getValue());
+        }
     }
 
     /**

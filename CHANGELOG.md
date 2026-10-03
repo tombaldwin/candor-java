@@ -9,6 +9,49 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R867 FIXED: a call on a chained dependency's class now reaches that dependency's own subclass overrides
+
+**What went wrong.** A dependency declares `class BaseO { void m() {Fs} }` and its own
+`class SubO extends BaseO { void m() {Env} }`. A consumer chained onto its report calls `b.m()` on a `BaseO`
+parameter, a factory result or a factory-bound local, and at run time that is a `SubO`, so the program reads
+the environment. The join keyed the call site's static owner (`dep/BaseO.m()V`), found `BaseO.m`'s row and
+stopped. The consumer read `[Fs]`, and `deny Env` and `deny Env Unknown` both exited 0. The same source
+scanned as one tree reads `[Env, Fs]`. The dependency's hierarchy sidecar was already loaded, but it was
+only ever walked UP, never DOWN. Pre-existing on v0.39.2 and v0.39.3. Pinned four-way as conformance PART 94.
+
+**The fix is on the consumer, and it only ADDS.** At an `INVOKEVIRTUAL` on a type a chained dependency
+declared, the consumer walks the hierarchy sidecar DOWN and joins each subtype's own published override.
+A provably-exact receiver (`BaseO b = new SubO()`) joins the body its type runs instead. The producer's row
+for a concrete member is unchanged: it is a true claim about that body, and widening it would charge
+`super.m()` (INVOKESPECIAL) and `new BaseO().m()` with overrides the JVM never runs.
+`InterfaceUnionTest`'s concrete-method row recorded measuring exactly that and refusing it. That row is now
+flipped to closed.
+
+What it does not do:
+- It walks only owners a chained hierarchy sidecar NAMED (`[]` included; see R860). So a dependency's
+  `InputStream.read()` override is never charged to the consumer's `in.read()`.
+- It leaves `INVOKEINTERFACE` alone, because the producer's union already answers interface members.
+- Past `CHA_FANOUT_LIMIT` overrides it discloses `Unknown[dispatch:<owner>.<m>]`, as the one-tree scan does,
+  instead of unioning them.
+- A COVARIANT-RETURN override is reached through the bridge the report never keys. The match needs a
+  single, bare-qual'd same-name member, IDENTICAL parameters, and a return that is provably a subtype.
+
+Residuals, named rather than fixed:
+- **A generic-PARAMETER override** (`BaseG<T>.m(T)` -> `SubG.m(String)`) still reads as before. The report
+  cannot tell its bridge from a subclass OVERLOAD. A wider match was built and audited against bytecode over
+  the corpus: 141 genuine bridges and 51 overloads the JVM never dispatches to, a 26% fabrication rate. So it
+  is not made. Closing it needs the producer to publish the bridge's descriptor.
+- **An INHERITED member called through a dependency SUBTYPE** (`SubK s; s.m()` where SubK inherits `m`) is
+  still ABSENT. This is pre-existing and was found while attacking this row's siblings. The obvious walk UP
+  fabricates on a PURE override at the static owner, because a pure body publishes no row. Separating the
+  two needs the report to say which members a type declares.
+
+Over-approximations it accepts (each one charges, never hides):
+- a package-private member "overridden" from another package is unioned, the same as the one-tree scan does;
+- an exact receiver can skip a PURE override three levels down.
+
+A/B: see the commit message.
+
 ## [0.39.3] — 2026-09-30
 
 - `jbang-catalog.json` points at the v0.39.3 release jar.

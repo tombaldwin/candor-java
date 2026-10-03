@@ -282,6 +282,12 @@ class RefreshFieldLambdaDigestTest {
                 "classHash")) m.put(n, STRUCTURE);
         for (String n : List.of("depFnsByOwner", "depFnsByOwnerName", "depOwnersBySigBuilt"))
             m.put(n, DEP_DERIVED);
+        // SOUNDNESS R867: the override walk's two indexes, rebuilt from scratch on every run by
+        // Loader#indexDepOverrides out of `depSupers` and `crossDeps` — both folded into the digest — and
+        // nothing else. (`depIndexed`, the third, is NOT derivable from either and IS digested.)
+        for (String n : List.of("depSubtypes", "depMembersByName"))
+            m.put(n, "derived once, after loading, from depSupers and crossDeps, both of which the digest "
+                    + "folds in value-by-value");
         for (String n : List.of("vocabularySource", "netPartnersSource", "unanalyzed", "excluded",
                 "archives", "sourceFiles", "classpathRoots", "scanRoot", "outOfScope", "scannedUnder",
                 "peekedClasses")) m.put(n, AFTER_ANALYZE);

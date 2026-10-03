@@ -465,6 +465,10 @@ final class Refresh {
           .append(new TreeMap<>(c.depSupers)).append('\u0001')
           .append(new TreeSet<>(c.depSplitKnown)).append('\u0001')
           .append(new TreeMap<>(c.depSuperclass)).append('\u0001')
+          // SOUNDNESS R867: the sidecar's KEY set, `[]` included — it gates the override walk and is the one
+          // hierarchy fact `depSupers` drops (R860). `depSubtypes`/`depMembersByName` are derived from
+          // `depSupers` and `crossDeps`, both digested above, so they need no line of their own.
+          .append(new TreeSet<>(c.depIndexed)).append('\u0001')
           .append(c.depReportsRead).append('\u0001');
         sb.append("flags");
         sb.append(c.taintEnabled).append(c.closedWorld).append(c.unknownRatchet).append(c.peekVersioned)

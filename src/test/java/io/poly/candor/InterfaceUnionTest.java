@@ -89,6 +89,16 @@ class InterfaceUnionTest {
     @SuppressWarnings("unchecked")
     private static Map<String, Map<String, Object>> chainedApp(Map<String, String> lib, Map<String, String> app,
             boolean chainFlag) throws Exception {
+        return chainedApp(lib, app, chainFlag, true);
+    }
+
+    /** {@code keepHierarchy=false} deletes the dependency's hierarchy sidecar before the consumer scan — the
+     *  input the consumer-side override walk (SOUNDNESS R867, {@code Candor#depHierarchyJoin}) reads. It is how
+     *  a test isolates the PRODUCER's union from the consumer's walk now that either one alone closes the
+     *  abstract-class row. */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Map<String, Object>> chainedApp(Map<String, String> lib, Map<String, String> app,
+            boolean chainFlag, boolean keepHierarchy) throws Exception {
         Path appDir = compileApp(lib, app);
         Path base = appDir.getParent();
         Config saved = Candor.config;
@@ -99,6 +109,9 @@ class InterfaceUnionTest {
             ReportWriter.publishUnionsOverrideForTest = chainFlag;
             ReportWriter.writeReport(Candor.runScan(base.resolve("lib")), depReport.toString(), null);
             ReportWriter.publishUnionsOverrideForTest = false;   // the CONSUMER never emits union entries
+            if (!keepHierarchy)
+                assertTrue(Files.deleteIfExists(base.resolve("dep.hierarchy.json")),
+                        "the hierarchy sidecar this arm removes must have existed");
             Files.createDirectories(base.resolve(".candor"));
             Files.writeString(base.resolve(".candor/config"), "deps " + depReport + "\n");
             Candor.config = Config.forTarget(appDir);
@@ -708,10 +721,15 @@ class InterfaceUnionTest {
     @Test
     void aConcreteDepMethodOverriddenEffectfullyStaysNARROWAcrossTheBoundary() throws Exception {
         Map<String, Map<String, Object>> after = chainedApp(absLib(), concreteRowApp(), true);
-        assertNull(after.get("app.S.viaDispatch"),
-                "TODAY the concrete-method row is narrow across the boundary. If this now has effects the "
-                        + "row was closed — flip this assertion to assertEquals([\"Env\"]); got "
-                        + after.get("app.S.viaDispatch"));
+        // CLOSED by SOUNDNESS R867 (conformance PART 94), and closed by exactly the route the comment above
+        // names as the one that remained — an OPCODE-GATED CONSUMER lookup — with no new key and no synthetic
+        // entry: `Candor#depHierarchyJoin` walks the chained hierarchy sidecar DOWN from an INVOKEVIRTUAL
+        // site's owner and joins each subtype's own published override. The `super.label()` arm below is
+        // INVOKESPECIAL and never reaches it, which is why that fixture stays green unchanged.
+        assertNotNull(after.get("app.S.viaDispatch"), "the polymorphic site must not be absent");
+        assertEquals(List.of("Env"), after.get("app.S.viaDispatch").get("inferred"),
+                "a polymorphic site on a dependency's CONCRETE member reaches the dependency's own effectful "
+                        + "override, as the single-tree control below does; got " + after.get("app.S.viaDispatch"));
         // THE SINGLE-TREE CONTROL: in one tree candor already charges the dispatch site the CHA union, so
         // the narrowing IS a boundary effect and not a general limitation.
         Path oneTree = TestCompiler.compile(merge(absLib(), concreteRowApp()));
@@ -770,9 +788,18 @@ class InterfaceUnionTest {
                 "}"));
         // CONTROL — the dep report as produced today: SILENT-PURE, i.e. absent from `functions` while
         // counted in ⟨0.21⟩ `analyzed`. That is the cardinal sin, and INVOKEVIRTUAL is why half 1 misses it.
-        Map<String, Map<String, Object>> before = chainedApp(absLib(), app, false);
+        // The pre-rung state needs BOTH mechanisms off: the producer's union (the flag) AND the consumer's
+        // R867 override walk, which reads the hierarchy sidecar and would close this row on its own.
+        Map<String, Map<String, Object>> before = chainedApp(absLib(), app, false, false);
         assertNull(before.get("app.S.viaFactory"), "the control must reproduce the silent-pure row");
         assertNull(before.get("app.S.viaParam"), "the control must reproduce the silent-pure row");
+        // …and each mechanism ALONE closes it, which is the redundancy worth pinning: the consumer walk with
+        // no union entry published (an older or foreign producer that wrote the sidecar but not the union).
+        Map<String, Map<String, Object>> walkOnly = chainedApp(absLib(), app, false, true);
+        assertEquals(List.of("Fs"), walkOnly.get("app.S.viaParam") == null ? null
+                        : walkOnly.get("app.S.viaParam").get("inferred"),
+                "R867: the consumer's own walk down the dependency hierarchy reaches FileStore.save with no "
+                        + "union entry to read; got " + walkOnly.get("app.S.viaParam"));
         // WITH the rung — the consumer is UNCHANGED (it never sets the producer flag) and resolves.
         Map<String, Map<String, Object>> after = chainedApp(absLib(), app, true);
         assertNotNull(after.get("app.S.viaFactory"), "the row is still silent; got " + after.keySet());

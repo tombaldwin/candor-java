@@ -6818,6 +6818,15 @@ public class Candor {
                 // rung ends up shipped-but-inert in half the places it matters.
                 inheritDepFn(id, inh);
             }
+            // SOUNDNESS R867 — the dependency's OWN hierarchy, walked DOWN to its subtypes' overrides (and,
+            // for a provably-typed receiver, to the one body that type runs). Additive: it only ever calls
+            // `inheritDepFn` / adds an `Unknown`, so nothing joined above can be withdrawn by it. See
+            // depHierarchyJoin.
+            if (xop == Opcodes.INVOKEVIRTUAL) {
+                String recv = monoRecv != null ? monoRecv : monomorphicReceiver(provFrames == null ? null
+                        : provFrames[mn.instructions.indexOf(min)], min);
+                depHierarchyJoin(ctx, id, min, inh, recv);
+            }
         }
         // INHERITED / DEFAULT METHOD FROM A DEPENDENCY SUPERTYPE. The join above requires a NON-project
         // owner, and that is exactly why this shape escaped it: `this.load()` on a project class extending
@@ -7622,6 +7631,202 @@ public class Candor {
             if (d != null) return d;
         }
         return null;
+    }
+
+    static final boolean R867_DEBUG = System.getenv("CANDOR_R867_DEBUG") != null;
+
+    /**
+     * SOUNDNESS R867 — A CALL ON A CHAINED DEPENDENCY'S CLASS RUNS THAT DEPENDENCY'S OWN OVERRIDES TOO.
+     *
+     * <p>The defect, executed: {@code dep} declares {@code class BaseO { void m() {Fs} }} and its own
+     * {@code class SubO extends BaseO { void m() {Env} }}; the consumer's {@code f(BaseO b) { b.m(); }} runs
+     * with a {@code SubO} and reads the environment. The join above keys the call site's static owner,
+     * {@code dep/BaseO.m()V}, finds {@code BaseO.m}'s row and stops — so the consumer read {@code [Fs]} and
+     * {@code deny Env} and {@code deny Env Unknown} both exited 0, where the SAME source scanned as one
+     * package reads {@code [Env, Fs]}. Chaining did not just fail to help; it deleted an effect the engine's
+     * own unchained CHA attributes. SPEC §4 ⟨0.39⟩ binds it: "every implementor visible to the consumer —
+     * its own and any chained report's". {@code SubO.m} IS a row in a chained report, and the hierarchy that
+     * says it overrides {@code BaseO.m} is already loaded ({@code depSupers}, from the sidecar) — it was
+     * only ever walked UP, never DOWN.
+     *
+     * <p><b>Why the consumer, not the producer.</b> The producer's ⟨0.23⟩ union cannot be extended to a
+     * CONCRETE member: {@code dep/BaseO.m()V} names a body that was analysed, its row is a true claim about
+     * that body, and widening it with the overrides would charge {@code new BaseO().m()} — a provably exact
+     * receiver — with {@code SubO}'s Env ({@link ReportWriter}'s ARM 1 comment refuses exactly this). Only
+     * the consumer knows whether the receiver is exact, so the consumer walks.
+     *
+     * <p>TWO WALKS, each an ADDITION to whatever the exact-key join above already inherited:
+     * <ol>
+     *   <li><b>DOWN</b>, for a receiver that is NOT provably one {@code new T}: every chained subtype of the
+     *       owner (transitively, {@code depSubtypes}) that publishes an override of the member is a dispatch
+     *       target, so its entry is joined. Bounded by the in-scan rule — past {@code CHA_FANOUT_LIMIT}
+     *       targets (counting the owner's own body, as in-scan {@code chaTargets} does) an open hierarchy
+     *       is disclosed as {@code Unknown[dispatch]} rather than unioned, so the chained answer agrees with
+     *       the one-package answer instead of out-guessing it; for the §4 Object protocol a broad fan-out
+     *       adds nothing, as in-scan. A subtype whose override is PURE publishes no row and adds nothing,
+     *       which is exact.</li>
+     *   <li><b>EXACT</b>, for a receiver that IS one {@code new T} of a dependency type: the body T resolves
+     *       to, nearest-first. {@code BaseO b = new SubO(); b.m()} keyed {@code BaseO.m} and never looked at
+     *       {@code SubO}.</li>
+     * </ol>
+     *
+     * <p><b>THE WALK IT DELIBERATELY DOES NOT TAKE: UP from a dependency owner whose own key is absent.</b>
+     * {@code SubK s; s.m()} on an INHERITED {@code m} compiles to {@code invokevirtual dep/SubK.m()V}, no row
+     * answers it, and the consumer row is ABSENT — a silent under-report, pre-existing, measured EXECUTED and
+     * reported with this change rather than fixed by it. The obvious fix ({@link #nearestDepFn}'s walk from a
+     * dependency owner) was built and measured, and it FABRICATES on the commonest shape of all: a subclass
+     * that overrides {@code m} with a PURE body publishes no row, so "SubK inherits m" and "SubK declares a
+     * pure m" are the same bytes in the report, and the walk charges the base's body to a call that runs
+     * nothing (executed: no effect; walk: {@code [Fs]}). Separating them needs a fact the report does not
+     * carry — which members a type DECLARES — so it is a wire question, not a guess to make here.
+     *
+     * <p><b>WHAT IT DOES NOT DO.</b> Only an owner a chained hierarchy sidecar DECLARED is walked
+     * ({@code depIndexed}): {@code java/io/InputStream.read()} must not pick up one library's override, the
+     * κ-frontier fabrication {@code ReportWriter.unionCandidates} refuses. INVOKEINTERFACE is untouched —
+     * the producer's ⟨0.23⟩/⟨0.39⟩ union already answers an interface member, and a second union here
+     * would re-price its fan-out bound. A FINAL member has no override to find; a PRIVATE base member is
+     * never the consumer's call target. A project subtype is the in-scan CHA's business, never this one's.
+     *
+     * <p><b>THE OVER-APPROXIMATIONS IT ACCEPTS, named so they can be measured rather than assumed away.</b>
+     * (a) EXACT cannot see a PURE override between the receiver's type and the next published one — a pure
+     * body publishes no row, so the walk passes it and charges the next one up; {@link #nearestDepFn} has made
+     * the same trade for project owners since it shipped, and here it needs a THREE-level dependency chain to
+     * reach a body the static-owner join had not already charged. (b) A package-private base member "overridden" from another package is not an
+     * override, and DOWN unions it anyway — the report carries no access flags, and the one-package scan
+     * makes the same over-charge. Both charge, never hide. (The bridge match below was built wider, matching a
+     * generic PARAMETER override too, and the corpus audit measured that version mistaking a subclass OVERLOAD
+     * for an override 51 times in 192; it is narrowed to covariant returns, and the generic-parameter override
+     * is a residual — see {@link #bridgeCompatible}.)
+     */
+    static void depHierarchyJoin(AnalysisContext ctx, String id, MethodInsnNode min, DepFn inh, String recv) {
+        if (ctx.depIndexed.isEmpty() || !ctx.depIndexed.contains(min.owner)) return;
+        if (min.name.startsWith("<")) return;
+        String name = min.name, desc = min.desc;
+        // EXACT — a provably-monomorphic dependency receiver resolves to one body.
+        if (recv != null) {
+            if (!ctx.byName.containsKey(recv) && !recv.equals(min.owner)) {
+                DepFn exact = nearestDepOverride(recv, name, desc);
+                if (exact != null && exact != inh) {
+                    if (R867_DEBUG) System.err.println("R867\tEXACT\t" + id + "\t" + min.owner + "." + name + desc
+                            + "\t" + exact.fn + "\t" + exact.effects);
+                    inheritDepFn(id, exact);
+                }
+            }
+            return;          // exact type: no sibling, no subtype can run (a project `new T` traced locally)
+        }
+        // DOWN — every chained subtype's override.
+        if (ctx.depSubtypes.isEmpty()) return;
+        List<DepFn> overrides = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        ArrayDeque<String> q = new ArrayDeque<>(ctx.depSubtypes.getOrDefault(min.owner, List.of()));
+        while (!q.isEmpty()) {
+            String t = q.poll();
+            if (!seen.add(t)) continue;
+            q.addAll(ctx.depSubtypes.getOrDefault(t, List.of()));
+            if (ctx.byName.containsKey(t)) continue;         // a project subtype: in-scan CHA already edged it
+            DepFn d = depOverrideAt(t, name, desc);
+            if (d != null && d != inh && !overrides.contains(d)) overrides.add(d);
+        }
+        if (R867_DEBUG && !seen.isEmpty())
+            System.err.println("R867REACH\t" + id + "\t" + min.owner + "." + name + desc + "\tsubs=" + seen.size()
+                    + "\toverrides=" + overrides.size());
+        if (overrides.isEmpty()) return;
+        if (overrides.size() + 1 > CHA_FANOUT_LIMIT) {
+            if (isObjectProtocolExempt(name, desc)) return;   // §4: pure even when overridden, as in-scan
+            ctx.viaCross.computeIfAbsent(id, k -> EffectSet.empty()).add(Effect.UNKNOWN);
+            ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                    .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, min.owner.replace('/', '.') + "." + name));
+            if (R867_DEBUG) System.err.println("R867\tBROAD\t" + id + "\t" + min.owner + "." + name + desc
+                    + "\t" + overrides.size());
+            return;
+        }
+        for (DepFn d : overrides) {
+            if (R867_DEBUG) System.err.println("R867\tDOWN\t" + id + "\t" + min.owner + "." + name + desc
+                    + "\t" + d.fn + "\t" + d.effects);
+            inheritDepFn(id, d);
+        }
+    }
+
+    /** {@link #nearestDepFn} with {@link #depOverrideAt}'s bridge match at each level: the body a receiver of
+     *  static (or exact) type {@code start} reaches for {@code (name,desc)}, nearest-first, or null. A
+     *  project declaration on the way still wins, exactly as there. */
+    static DepFn nearestDepOverride(String start, String name, String desc) {
+        AnalysisContext c = ctx();
+        if (c.crossDeps.isEmpty()) return null;
+        for (String t : Cha.resolutionOrder(start, true)) {
+            ClassNode cn = c.byName.get(t);
+            if (cn != null && declaresMethod(cn, name, desc)) return null;
+            DepFn d = depOverrideAt(t, name, desc);
+            if (d != null) return d;
+        }
+        return null;
+    }
+
+    /** The chained entry for type {@code t}'s own declaration of {@code (name,desc)}, or null.
+     *
+     *  <p>The exact key first. Failing it, the COVARIANT-RETURN override, whose key the consumer cannot form:
+     *  {@code class SubC extends BaseC { SubC self() }} overrides {@code BaseC self()} through a synthetic BRIDGE,
+     *  the engine excludes bridges from the method index (they would split a unique method's id), so the report
+     *  keys only {@code dep/SubC.self()Ldep/SubC;} and the call site's {@code self()Ldep/BaseC;} never hits.
+     *  Accepted as the override when ALL of: {@code t} published exactly ONE entry under that name, its report
+     *  qual is BARE (the engine disambiguates the qual whenever a class declares two non-bridge overloads of
+     *  a name, so bare means there is no second, pure, exact-descriptor declaration to prefer), the parameters
+     *  are IDENTICAL, and {@code t}'s return is a PROVABLE subtype of the call site's (or the call site's is
+     *  {@code Object}) — Java cannot overload on return type alone, so with identical parameters a narrower
+     *  return IS the override. See {@link #bridgeCompatible} for the two shapes the corpus refused: a GENERIC
+     *  PARAMETER override ({@code m(T)} -> {@code m(String)}) is indistinguishable from an overload in the
+     *  report and is a named residual; a SUPERtype return is a different member. */
+    static DepFn depOverrideAt(String t, String name, String desc) {
+        AnalysisContext c = ctx();
+        DepFn d = c.crossDeps.get(t + "." + name + desc);
+        if (d != null) return d;
+        Map<String, DepFn> byDesc = c.depMembersByName.get(t + "." + name);
+        if (byDesc == null || byDesc.size() != 1) return null;
+        Map.Entry<String, DepFn> only = byDesc.entrySet().iterator().next();
+        DepFn e = only.getValue();
+        if (e.fn == null || e.fn.indexOf('(') >= 0 || !e.fn.endsWith("." + name)) return null;
+        if (!bridgeCompatible(desc, only.getKey())) return null;
+        if (R867_DEBUG) System.err.println("R867BRIDGE\t" + t + "." + name + desc + "\t" + only.getKey() + "\t" + e.fn);
+        return e;
+    }
+
+    /** Whether a member declared with {@code sub} overrides the call site's {@code base} through a bridge —
+     *  see {@link #depOverrideAt}. Fails soft (false) on a malformed descriptor. */
+    static boolean bridgeCompatible(String base, String sub) {
+        if (base.equals(sub)) return false;
+        try {
+            Type[] a = Type.getArgumentTypes(base), b = Type.getArgumentTypes(sub);
+            // PARAMETERS MUST BE IDENTICAL. A generic override `m(T)` -> `m(String)` also differs only in an
+            // `Object` parameter, and an earlier version of this method matched it. The bytecode audit of every
+            // firing over the reach arm refused it: 141 such matches were genuine bridges and 51 were a
+            // subclass OVERLOAD the JVM never dispatches to (jjwt's `DelegatingMap.get(Object)` against a
+            // subclass's own `get(Parameter)`, `AbstractJwk.equals(Object)` against `equals(PublicJwk)`,
+            // avro's `addProp(String,Object)` against `addProp(String,String)`). The report carries nothing
+            // that tells the two apart — the bridge's own descriptor is never published — so a match here is
+            // a guess with a 26% fabrication rate, and it is not made. The generic-PARAMETER override stays
+            // where the exact-key join left it: a residual, named in the CHANGELOG, not a regression.
+            if (!java.util.Arrays.equals(a, b)) return false;
+            // A covariant override's return is a SUBTYPE of the overridden one's. "Both references" is not
+            // enough, and the corpus said so: guava's `CharMatcher$And` publishes its synthetic
+            // `negate()Ljava/util/function/Predicate;` bridge (it forwards to `super.negate()`), and that
+            // matched a call to `CharMatcher.negate()Lcom/google/common/base/CharMatcher;` — 7,169 of 7,783
+            // bridge matches on the reach arm were return-only, and the bytecode audit found the misses among
+            // them were exactly this shape, a return type that is a SUPERtype. Proven through the same
+            // hierarchy the walk itself uses (project, chained sidecar, JDK classpath); an unprovable return
+            // does not match, which leaves the call exactly where the exact-key join already left it.
+            Type ra = Type.getReturnType(base), rb = Type.getReturnType(sub);
+            if (ra.equals(rb)) return true;
+            if (!isRef(ra) || !isRef(rb)) return false;
+            if (ra.getDescriptor().equals("Ljava/lang/Object;")) return true;
+            if (ra.getSort() != Type.OBJECT || rb.getSort() != Type.OBJECT) return false;
+            return Cha.resolutionOrder(rb.getInternalName(), true).contains(ra.getInternalName());
+        } catch (RuntimeException ex) {
+            return false;
+        }
+    }
+
+    private static boolean isRef(Type t) {
+        return t.getSort() == Type.OBJECT || t.getSort() == Type.ARRAY;
     }
 
     /** EVERY chained-dependency unit declared by `internalOwner`, whatever the descriptor. Used where the

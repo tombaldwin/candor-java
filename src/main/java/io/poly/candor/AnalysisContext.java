@@ -324,6 +324,22 @@ final class AnalysisContext {
     // of `depSplitKnown` with no `depSuperclass` entry is a FACT — every listed supertype is an interface.
     Set<String> depSplitKnown = new HashSet<>();
     Map<String, String> depSuperclass = new HashMap<>();
+    // SOUNDNESS R867 — THE DEPENDENCY HIERARCHY WALKED DOWN, and the one fact `depSupers` cannot answer.
+    //
+    // `depIndexed` is every type a chained hierarchy sidecar NAMED, `[]` included. `depSupers` cannot stand
+    // in for it: `Loader.loadDepHierarchy` skips an empty list (R860), so a dependency's root class — the
+    // very `BaseO` a consumer calls through — is absent from `depSupers` exactly like a type no report ever
+    // mentioned. The override walk must only run for an owner some chained dependency DECLARED: run for
+    // `java/io/InputStream` it would charge one library's `read()` override onto every `in.read()` in the
+    // consumer, the κ-frontier fabrication `ReportWriter.unionCandidates` refuses for the same reason.
+    //
+    // `depSubtypes` is `depSupers` inverted (type -> its DIRECT chained subtypes), and `depMembersByName`
+    // groups the chained entries of those subtypes by `owner.name` (-> descriptor -> entry), for the
+    // covariant-return bridge match in Candor#depOverrideAt. All three are built ONCE, by Loader#loadCrossDeps, and
+    // never grow during analyze: shared INPUTS, hence non-final and assigned in the overlay constructor.
+    Set<String> depIndexed = new HashSet<>();
+    Map<String, List<String>> depSubtypes = new HashMap<>();
+    Map<String, Map<String, DepFn>> depMembersByName = new HashMap<>();
     // The SHA-256 of each class's bytes AS READ, keyed by internal name — the refresh cache's per-class
     // key. Filled by the loader at the one point where bytes exist, because after ASM has parsed them
     // the bytes are gone and only a re-read could recover them. CONTENT, never mtime: a wrong hit here
@@ -403,6 +419,8 @@ final class AnalysisContext {
         depDispatchByFn = master.depDispatchByFn;           depTransDispatchMemo = master.depTransDispatchMemo;
         depSupers = master.depSupers;                       depSplitKnown = master.depSplitKnown;
         depSuperclass = master.depSuperclass;               classHash = master.classHash;
+        depIndexed = master.depIndexed;                     depSubtypes = master.depSubtypes;   // R867
+        depMembersByName = master.depMembersByName;
         literalFixpointMemo = master.literalFixpointMemo;
         denyRules = master.denyRules;
         allowRules = master.allowRules;                     forbidRules = master.forbidRules;

@@ -576,7 +576,28 @@ final class ReportWriter {
                         classes.add("unknown-host");
                 }
             }
-            if (inf.isEmpty() && inv.isEmpty()) continue;      // pure across every implementer
+            // SOUNDNESS R919 (java's twin of rust's R609) — "EVERY IMPLEMENTER IS PURE" IS PUBLISHED, NOT
+            // DROPPED. This line used to `continue` here ("pure across every implementer — silence = purity"),
+            // which put "every implementer is pure" and "nothing implements this" on the wire as the SAME
+            // bytes. A chained consumer then had to choose between hedging both (R533's consumer-only port,
+            // which PART 92 `c12_consumer_pure_only_union` reds) and silencing both (R533 itself). So a
+            // pure-only union is now emitted as an `interfaceUnion` entry with `inferred: []`.
+            //
+            // A ZERO-implementer abstraction still publishes NOTHING — that absence is what lets the
+            // consumer's R533 disclosure fire. A claimed hash (`real != null`) needs no entry: merging a pure
+            // union into it changes nothing. The consumer reads these entries into their OWN set
+            // (`Loader` -> `depPureUnionKeys`), never into `crossDeps`, so a pure entry can never produce a
+            // join HIT that short-circuits another disclosure (R764's mechanism in ts).
+            //
+            // ONLY A FULLY EMPTY union is newly published. One whose implementers carry `incomplete` but no
+            // effect stays dropped exactly as before: published, it would be a `crossDeps` HIT at the consumer
+            // (the loader admits an incomplete-only entry), and a hit skips the untyped-receiver disclosure a
+            // miss falls through to — the R609/R764 "REMOVED 0 is a measurement, not a construction" trap.
+            // Dropped, the consumer finds no pure-only key and discloses, which is the safe direction.
+            if (inf.isEmpty() && inv.isEmpty()
+                    && (real != null || impls.isEmpty() || !incUnion.isEmpty())) continue;
+            if (inf.isEmpty() && inv.isEmpty() && System.getenv("CANDOR_R533_DEBUG") != null)
+                System.err.println("CANDOR_R919_PUREUNION " + hash);
             List<String> netClass = List.of();
             if (inf.contains(Effect.NET)) {
                 // A union that reaches Net with nothing classifiable behind it (an implementer whose

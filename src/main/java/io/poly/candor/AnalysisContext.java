@@ -338,6 +338,11 @@ final class AnalysisContext {
     // covariant-return bridge match in Candor#depOverrideAt. All three are built ONCE, by Loader#loadCrossDeps, and
     // never grow during analyze: shared INPUTS, hence non-final and assigned in the overlay constructor.
     Set<String> depIndexed = new HashSet<>();
+    // SOUNDNESS R919/R533 — the keys of TRUSTED chained `interfaceUnion` entries whose implementers are ALL
+    // PURE (`inferred: []`). Kept out of `crossDeps` on purpose: a pure entry there would be a join HIT, and a
+    // hit short-circuits disclosures a miss falls through to (R764). Its only reader is
+    // Candor#untypedDepReceiver, which may decline to hedge a key the producer enumerated and found pure.
+    Set<String> depPureUnionKeys = new HashSet<>();
     Map<String, List<String>> depSubtypes = new HashMap<>();
     Map<String, Map<String, DepFn>> depMembersByName = new HashMap<>();
     // The SHA-256 of each class's bytes AS READ, keyed by internal name — the refresh cache's per-class
@@ -420,6 +425,7 @@ final class AnalysisContext {
         depSupers = master.depSupers;                       depSplitKnown = master.depSplitKnown;
         depSuperclass = master.depSuperclass;               classHash = master.classHash;
         depIndexed = master.depIndexed;                     depSubtypes = master.depSubtypes;   // R867
+        depPureUnionKeys = master.depPureUnionKeys;   // R919: a shared INPUT, filled only by loadCrossDeps
         depMembersByName = master.depMembersByName;
         literalFixpointMemo = master.literalFixpointMemo;
         denyRules = master.denyRules;

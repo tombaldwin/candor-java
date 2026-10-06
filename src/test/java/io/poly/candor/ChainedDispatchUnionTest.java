@@ -316,10 +316,11 @@ class ChainedDispatchUnionTest {
                     + " the dependency's and is already fully qualified, so naming it invents nothing."
                     + " Got " + mid.keySet());
             assertEquals(List.of("iface/backend/Backend.size()I"), midRow.get("dispatchesOn"));
-            // SOUNDNESS R533 changed this line on purpose. The middle package sees only PURE implementors of
-            // `Backend`, publishes no pure-only union, and a consumer cannot tell that from ZERO implementors
-            // — the silent case R533 closes. So the row now names AND hedges; the THIRD package's Net still
-            // reaches the app below, which is the property this test exists for.
+            // SOUNDNESS R533 changed this line on purpose. `iface` here declares `Backend` and NOTHING
+            // implements it in either package `middle` can see — the zero-implementor shape (PART 92 c9), not
+            // an all-pure one (the javadoc's "all pure" predates the fixture; with a pure implementor `iface`
+            // now publishes a pure-only union, R919, and this row would stay `[]`). So the row names AND
+            // hedges; the THIRD package's Net still reaches the app below, which is what this test is for.
             assertEquals(List.of("Unknown"), midRow.get("inferred"), "…it names, and (R533) it hedges");
 
             String middle = t.scanChained("middle", iface), eff = t.scanChained("effimpl", iface);
@@ -461,6 +462,44 @@ class ChainedDispatchUnionTest {
         } finally {
             t.close();
         }
+    }
+
+    /** SOUNDNESS R919 — the PRODUCER half of R533. A pure-only implementer set is published as an
+     *  {@code interfaceUnion} entry with {@code inferred: []}, so a consumer can tell it from an abstraction
+     *  NOTHING implements, which still publishes nothing. One variable: the pure implementer's presence. */
+    @Test
+    void aPureOnlyUnionIsPublishedAndAZeroImplementorAbstractionIsNot() throws Exception {
+        Tree withImpl = Tree.of(Map.of("iface/backend/Backend.java", BACKEND, "iface/TestBackend.java", TEST_BACKEND));
+        Tree bare = Tree.of(Map.of("iface/backend/Backend.java", BACKEND));
+        try {
+            Map<String, Object> u = byFn(withImpl.scan("iface")).get("iface.backend.Backend.size");
+            assertNotNull(u, "a pure-only union must be PUBLISHED, not dropped (R919)");
+            assertEquals(Boolean.TRUE, u.get("interfaceUnion"), "got " + u);
+            assertEquals(List.of(), u.get("inferred"), "…and it charges nothing, got " + u);
+            assertNull(byFn(bare.scan("iface")).get("iface.backend.Backend.size"),
+                    "a zero-implementor abstraction publishes NOTHING — that absence is what R533 hedges");
+        } finally { withImpl.close(); bare.close(); }
+    }
+
+    /** SOUNDNESS R764's shape, ported to java BEFORE it could bite: package {@code b} is chained and PURELY
+     *  implements an abstraction owned by package {@code a}, which is NOT chained. {@code b} now publishes
+     *  {@code a/Svc.run()V {inferred: []}} under {@code a}'s key (obligation 2). If that entry were a join
+     *  HIT it could short-circuit the owner's ledger and delete {@code invisible: [a]}. It must not. */
+    @Test
+    void aForeignPureOnlyUnionDoesNotDeleteTheUnchainedOwnersInvisible() throws Exception {
+        Tree t = Tree.of(
+                Map.of("a/Svc.java", "package a;\npublic interface Svc { void run(); }\n"),
+                Map.of("b/PureSvc.java", "package b;\npublic class PureSvc implements a.Svc { public void run() { } }\n"),
+                Map.of("app/App.java", "package app;\npublic class App { public static void go(a.Svc s) { s.run(); } }\n"));
+        try {
+            String b = t.scan("b");
+            assertTrue(Files.readString(Path.of(b)).contains("a/Svc.run()V"),
+                    "precondition: b publishes the pure union under a's key, else this guard measures nothing");
+            Map<String, Object> row = byFn(t.scanChained("app", b)).get("app.App.go");
+            assertNotNull(row, "the dispatching row must be present, got nothing");
+            assertTrue(((List<?>) row.getOrDefault("invisible", List.of())).contains("a"),
+                    "the unchained owner's invisible disclosure must survive a foreign pure-only union, got " + row);
+        } finally { t.close(); }
     }
 
     // ---- harness ---------------------------------------------------------------------------------------

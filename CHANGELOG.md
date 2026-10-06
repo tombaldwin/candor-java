@@ -9,47 +9,65 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
-### ⚠ SOUNDNESS R533 (java half) FIXED: a dispatch on a chained interface that nothing implements now discloses `Unknown`
+### ⚠ SOUNDNESS R533 (java half) + R919 FIXED: a dispatch on a chained interface that nothing implements discloses `Unknown`, and an all-pure one stays pure
 
 **What went wrong.** `int go(Handler h) { return h.handle(); }`, where `Handler` is an interface from a
 chained dependency and nothing in either scan implements it, read `[]` with `dispatchesOn` only. `deny Fs`
 and `deny Unknown` exited 0, while the implementor a plugin supplied at run time wrote a file (executed).
-The same source scanned as one tree reads `Unknown[dispatch]`. That is what SPEC §4 requires for a dispatch
-over an unknown type. The untyped-receiver disclosure had a fifth condition: the dependency must hold an
-EFFECTFUL body with that signature somewhere. An abstraction with zero implementors can never meet it.
+The same source scanned as one tree reads `Unknown[dispatch]`, which SPEC §4 requires. Underneath it was
+R919: the producer dropped a union entry whose implementers are all pure, so "every implementer is pure"
+and "nothing implements this" were the same bytes on the wire. The consumer could only silence both
+(R533) or hedge both, and hedging both reds PART 92 `c12_consumer_pure_only_union`. Rust measured that
+over-disclosure and rejected it (R608), and closed R533 with both halves (R608 + R609). This does the same.
 
-**The fix removes that condition.** The other four are unchanged: `INVOKEINTERFACE`, a receiver that is not
-provably typed, a chained package, and no project implementor.
+**Two halves, and their directions.**
+- **Producer (R919): adds rows.** A pure-only implementer set is published as an `interfaceUnion` entry
+  with `inferred: []`. A ZERO-implementer abstraction still publishes nothing. Neither does a union whose
+  implementers carry `incomplete` but no effect. The loader would admit that entry as a `crossDeps` hit,
+  and a hit skips the disclosure a miss falls through to.
+- **Consumer (R533): adds `Unknown` only.** The untyped-receiver disclosure no longer requires an
+  effectful same-signature body elsewhere (conjunct 5). It fires unless a trusted chained report
+  published a pure-only union for that exact key. Conjunct 5 is kept as an OR, so every site that
+  disclosed before still does.
+- **Pure entries never enter `crossDeps`.** The loader reads them into their own set, so they cannot
+  produce a join hit. A guard pins that a foreign pure-only union leaves the unchained owner's
+  `invisible` intact (R764's shape). Honestly stated: routing the entries into `crossDeps` on purpose did
+  not red that guard either. java's ledger does not hinge on the hit, so the test is a regression pin,
+  not a proven catch.
 
-**What it costs, and in which direction.** The change only ADDS `Unknown`. A consumer cannot tell "no
-implementor" from "every implementor pure", because java publishes no pure-only union. The hierarchy
-sidecar cannot tell them apart either, because a sub-interface is a subtype that implements nothing. So
-an interface whose dependency implementors are all pure now discloses too.
-Three tests pinned that silence as a design property ("it names, it does not hedge"), and all three are
-flipped to pin the hedge: `CrossScanBoundaryTest`'s `Store.label` arm,
-`InterfaceUnionTest.aPureDepInterfaceStillReadsPureAcrossTheBoundary`, and
-`ChainedDispatchUnionTest`'s middle package. The no-fabrication half of each is still asserted.
+**Measured.** PRE = `62046b1` (before any R533 change), POST = this build, with the same engine on the
+producer and consumer side. REACH was counted with `CANDOR_R533_DEBUG` markers.
+- **8 real chained pairs** (jackson, logback, HikariCP, jul-to-slf4j, httpclient 4/5, okhttp, s3):
+  - 164 of 45,200 analysed consumer units newly carry `Unknown` (0.36%).
+  - 0 rows lose an effect, an `incomplete` or an `invisible`.
+  - Reach: 258 new hedges, and 368 hedges declined on a pure-only key.
+  - Bare `deny Unknown` flips: 164 at function scope, 0 of 153 packages, 0 of 8 jars.
+  - The consumer-only form flipped 337 functions and 2 packages.
+- **Standalone 372 + 452 jars:**
+  - ADDED 138,174 and 65,863 rows, REMOVED 0, CHANGED 0.
+  - ADDED equals REACH exactly, and every added row is an empty `interfaceUnion` entry.
+  - That is 9.2% and 5.4% row growth, mostly AWS SDK builder interfaces and hibernate. It is wire bytes,
+    not a verdict change.
+- **Generated chained census (305 entries):**
+  - 1,639 probes move, all toward `Unknown` (624 were ABSENT, 1,015 were pure).
+  - 0 lose anything.
+  - Every probe there is a dispatch, so its 4.1% is all reach, not real-code cost.
 
-A narrower rule was built and measured, and then rejected. It disclosed only when the chained hierarchy
-names the interface and lists no subtype of it. That costs 105 rows (0.23%) and flips 0 packages on the
-same pairs, and it keeps all-pure interfaces silent. But it leaves an executed sin open: an interface
-whose only dependency subtype is a sub-INTERFACE still reads `[]`, and a plugin's implementor of it
-wrote a file.
+PART 92 java-only after this change: `c3`, `c4` and `c12` stay OK. `c9_consumer_zero_union` passes, so its
+java XFAIL line in `candor-spec/conformance/gen_chained_dispatch.py` must be retired. That edit is in
+candor-spec, not here.
 
-Measured on 8 real chained library pairs (jackson, logback, HikariCP, jul-to-slf4j, httpclient 4/5,
-okhttp, s3), the same engine on both halves:
-- 337 of 45,200 analysed consumer units newly carry `Unknown`, which is 0.75%.
-- 0 rows lose an effect.
-- Bare `deny Unknown` gate flips: 337 at function scope, 2 of 153 packages, and 0 of 8 jars.
-
-The standalone corpora (372 + 452 jars) are byte-identical, because nothing is chained there. On the
-generated chained census (304 entries, every probe a dispatch), 4,025 probes change, all toward `Unknown`.
-1,227 of them were ABSENT before.
+**Tests.** The two c12/c3-shape guards keep their meaning: `CrossScanBoundaryTest`'s `Store.label` and
+`InterfaceUnionTest.aPureDepInterfaceStillReadsPureAcrossTheBoundary` both still read pure. Three tests
+change on purpose:
+- Two `InterfaceUnionTest` producer tests asserted that a pure-only union publishes NOTHING. They now
+  assert it publishes no EFFECT, as R609's tests did in rust.
+- `ChainedDispatchUnionTest`'s middle package now hedges. Its fixture has ZERO implementers, so it is the
+  c9 shape. Its javadoc said "all pure", but that predates the fixture.
 
 **Not fixed: the abstract-CLASS twin (R917).** `goAbs(AbsH h)` over an abstract dependency class with no
-subclass is still ABSENT. A consumer cannot tell an abstract dependency-class member from a concrete
-pure one: the report, the hierarchy sidecar and the callgraph sidecar all lack that fact. Closing it needs
-the producer to publish one, which is pinned in the new test as a residual.
+subclass is still ABSENT. No wire fact tells an abstract dependency-class member from a concrete pure
+one, and the new test pins that as the residual.
 
 ### ⚠ SOUNDNESS R813 FIXED: a `File` subclass's receiver names its file
 

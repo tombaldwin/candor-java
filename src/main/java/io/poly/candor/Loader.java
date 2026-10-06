@@ -930,6 +930,16 @@ final class Loader {
                                 && de.dispatchesOn.isEmpty() && de.fn != null
                                 && !ctx().depCallsByFn.getOrDefault(de.fn, List.of()).isEmpty();
                         de.walkOnly = hop;
+                        // SOUNDNESS R919: a PURE-ONLY union entry — the producer enumerated this abstraction's
+                        // implementers and every one was pure. Recorded in its own set, never in crossDeps
+                        // (see AnalysisContext#depPureUnionKeys), and only from a report trusted for the same
+                        // three reasons as coverage: a stale, self-declared-incomplete or judged-nothing
+                        // report's "all pure" is not evidence. The marker must be LITERALLY `true`.
+                        JsonElement iuPure = m.get("interfaceUnion");
+                        if (iuPure != null && iuPure.isJsonPrimitive() && iuPure.getAsJsonPrimitive().isBoolean()
+                                && iuPure.getAsBoolean() && de.effects.isEmpty() && de.incomplete.isEmpty()
+                                && de.dispatchesOn.isEmpty() && !stale && !incomplete && !judgedNothing)
+                            ctx().depPureUnionKeys.add(h);
                         if (!de.effects.isEmpty() || !de.incomplete.isEmpty() || !de.dispatchesOn.isEmpty()
                                 || hop) {
                             DepFn prev = ctx().crossDeps.get(h);

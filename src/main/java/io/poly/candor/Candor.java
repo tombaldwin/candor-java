@@ -6909,7 +6909,8 @@ public class Candor {
      *       invisible} to take its place because {@code ch.qos.logback} is a κ-CURATED-covered prefix.
      *   <li><b>No project impl.</b> A non-empty CHA means the dispatch HAS a local answer; whether that
      *       answer is complete is the documented bounded-CHA trade, not this rung.
-     *   <li><b>[REMOVED by SOUNDNESS R533 — see the call site.]</b> The dep demonstrably holds an effectful body with this exact signature, under some
+     *   <li><b>[SOUNDNESS R533: now an OR with "no trusted pure-only union for this key" — see the call
+     *       site.]</b> The dep demonstrably holds an effectful body with this exact signature, under some
      *       other owner. Without it the disclosure lands overwhelmingly on interfaces whose every
      *       implementation in the dep is a pure accessor ({@code Header.getValue}, {@code
      *       HttpRequest.getMethod}) — 2.1% of functions hedged to say nothing.
@@ -6932,25 +6933,24 @@ public class Candor {
         if (slash <= 0) return;
         if (!ctx.depChainedPkgs.contains(min.owner.substring(0, slash).replace('/', '.'))) return; // conjunct 3
         if (!chaTargets(min.owner, min.name, min.desc).isEmpty()) return;  // conjunct 4
-        // SOUNDNESS R533 — CONJUNCT 5 ("the dep holds an effectful body with this signature elsewhere") IS
-        // REMOVED. It made the disclosure require evidence that an effectful implementor EXISTS, which is
-        // precisely the evidence a zero-implementor abstraction can never supply: `go(Handler h) {
-        // h.handle(); }` over a chained interface nothing implements read `[]` with `dispatchesOn` only,
-        // and `deny Fs`/`deny Unknown` exited 0 over an executed plugin implementor that wrote a file. The
-        // one-tree scan of the same source reads `Unknown[dispatch]` (SPEC §4: dispatch over an unknown type
-        // MUST contribute Unknown). This is the "broad form" priced in R533. It also hedges an abstraction
-        // whose dep implementors are all PURE, because java publishes no pure-only union and a consumer
-        // cannot tell "none" from "all pure" — the hierarchy sidecar cannot either (a sub-INTERFACE is a
-        // subtype and implements nothing). That hedge is the cost; the opposite error is the silence.
+        // SOUNDNESS R533 + R919, BOTH HALVES. Conjunct 5 alone silenced a ZERO-implementor abstraction; dropping
+        // it alone hedged an ALL-PURE one (PART 92 c12 red — the shape rust measured and rejected, R608). The
+        // producer now publishes a pure-only union (R919), so the two are different bytes: disclose unless a
+        // trusted chained report enumerated this member's implementers and found them all pure. Conjunct 5 is
+        // kept as an OR, so nothing the previous rule disclosed is withdrawn (monotone against v0.39.3).
+        // CANDOR_R533_DEBUG prints the two new outcomes, so an A/B can measure REACH rather than infer it.
+        if (!depDeclaresSigElsewhere(ctx, min)) {
+            String key = min.owner + "." + min.name + min.desc;
+            boolean pure = ctx.depPureUnionKeys.contains(key);
+            if (R533_DEBUG) System.err.println((pure ? "CANDOR_R533_PURESKIP " : "CANDOR_R533_NEWHEDGE ") + key);
+            if (pure) return;
+        }
         s.dir.add(Effect.UNKNOWN);
         ctx.unknownWhy.computeIfAbsent(s.id, k -> new TreeSet<>()).add(UnknownReason.of(
                 UnknownReason.Kind.DISPATCH, min.owner.replace('/', '.') + "." + min.name));
     }
 
-    /** NO LONGER A CONJUNCT (SOUNDNESS R533 removed it from {@link #untypedDepReceiver}); kept, with its
-     *  latch test, as the measured instrument the R533 pricing used.
-     *
-     *  <p>Does a chained dep report hold an EFFECTFUL body with this exact {@code name+desc} under a
+    /** Does a chained dep report hold an EFFECTFUL body with this exact {@code name+desc} under a
      *  DIFFERENT owner? Evidence that the interface this site dispatches on has a reachable effectful
      *  implementation whose key this scan cannot name. Inverts {@code crossDeps} once, lazily.
      *
@@ -9109,6 +9109,7 @@ public class Candor {
      *  afterwards was it found by grep that the corpus contained zero instances of the shape. Printed at
      *  the MEMO MISS, so the count is distinct call KEYS rather than call sites. */
     private static final boolean R131_DEBUG = System.getenv("CANDOR_R131_DEBUG") != null;
+    private static final boolean R533_DEBUG = System.getenv("CANDOR_R533_DEBUG") != null;
 
     /** {@code CANDOR_R674_DEBUG=1} — print one line per (unit, call, effect) the R131 walk's charge is
      *  ROUTED through {@link #effectMetadata}/{@link #extractLiteralSurfaces} for. Printed per SITE, not

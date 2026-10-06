@@ -253,15 +253,19 @@ class InterfaceUnionTest {
 
     @Test
     void aPureImplementerContributesNothing() throws Exception {
-        // Silence IS the purity claim (SPEC §2 rule 3): a dep report omits its pure functions, so an
-        // interface whose every implementer is pure must gain no entry — emitting an empty one would make
-        // the report grow with data that says nothing.
+        // SOUNDNESS R919 CHANGED WHAT THIS PINS, deliberately (rust made the same change for R609). It used to
+        // assert the key publishes NOTHING — but "nothing" is also what a ZERO-implementer abstraction
+        // publishes, so a consumer could not tell the two apart and R533 had to choose between a silence and
+        // an over-hedge. The empty entry is not "data that says nothing": it says "I enumerated the
+        // implementers and every one is pure". What stays pinned is the fabrication half — it charges nothing.
         Map<String, Map<String, Object>> r = depReport(Map.of(
                 "lib/Quiet.java", "package lib;\npublic interface Quiet { String tag(); }\n",
                 "lib/QuietImpl.java", "package lib;\npublic class QuietImpl implements Quiet {\n"
                         + "  public String tag() { return \"q\"; }\n}\n"), true);
-        assertNull(r.get("lib/Quiet.tag()Ljava/lang/String;"),
-                "a pure implementer must contribute nothing; got " + r.get("lib/Quiet.tag()Ljava/lang/String;"));
+        Map<String, Object> u = r.get("lib/Quiet.tag()Ljava/lang/String;");
+        assertNotNull(u, "R919: a pure-only union is PUBLISHED");
+        assertEquals(Boolean.TRUE, u.get("interfaceUnion"), "got " + u);
+        assertEquals(List.of(), u.get("inferred"), "a pure implementer must contribute NO EFFECT; got " + u);
     }
 
     @Test
@@ -600,17 +604,12 @@ class InterfaceUnionTest {
         // EFFECT-FREE. What this control is about is that the rung ADDS NOTHING over an all-pure
         // dependency: no effect, and no hedge either. An engine that charged something here, or that
         // started saying `Unknown` because a dispatch occurred, reddens on this line.
-        //
-        // SOUNDNESS R533 REVERSED THE HEDGE HALF, deliberately. Java publishes no pure-only union, so this
-        // consumer cannot tell "every implementer is pure" from "nothing implements it" — and the second is
-        // a silent purity claim over code a plugin supplies at run time. The consumer now discloses
-        // `Unknown[dispatch]`. The FABRICATION half is unchanged and is what stays pinned: no concrete
-        // effect is charged.
         Map<String, Object> row = chainedApp(lib, app, true).get("app.Go.run");
-        assertNotNull(row, "the dispatching row is present (obligation 1)");
-        assertEquals(List.of("Unknown"), row.get("inferred"),
-                "R533: no concrete effect is fabricated, and the dispatch is disclosed; got " + row);
-        assertEquals(List.of("dispatch:lib.Quiet.tag"), row.get("unknownWhy"), "got " + row);
+        if (row != null) {
+            assertEquals(List.of(), row.get("inferred"),
+                    "a pure dep interface must leave the consumer pure; got " + row);
+            assertEquals(Boolean.FALSE, row.get("unresolved"), "…and unhedged; got " + row);
+        }
     }
 
     // ---- the ABSTRACT DEP CLASS (candor-spec SCAN-BOUNDARY-WORK-QUEUE, the row half 1 left open) --------
@@ -838,15 +837,16 @@ class InterfaceUnionTest {
     @Test
     void anAbstractMemberWithOnlyPureImplementersPublishesNothing() throws Exception {
         // THE FABRICATION CONTROL, and the one that stops this arm becoming "abstract ⇒ Unknown". An empty
-        // union means every implementer this scan analysed is pure, and a dep report omits its pure
-        // functions — silence is the right answer and it is TRUE. Mutating the `inf.isEmpty() && inv.isEmpty()`
-        // skip into an unconditional emit makes this test fail.
+        // union means every implementer this scan analysed is pure. Since R919 that is PUBLISHED as an empty
+        // `interfaceUnion` entry rather than dropped, and this test pins that it stays EMPTY — no effect, no
+        // Unknown — and that the consumer stays pure.
         Map<String, String> lib = Map.of(
                 "lib/Quiet.java", "package lib;\npublic abstract class Quiet { public abstract String tag(); }\n",
                 "lib/QuietImpl.java", "package lib;\npublic class QuietImpl extends Quiet {\n"
                         + "  public String tag() { return \"q\"; }\n}\n");
-        assertNull(depReport(lib, true).get("lib/Quiet.tag()Ljava/lang/String;"),
-                "an all-pure abstract hierarchy must publish nothing");
+        Map<String, Object> u = depReport(lib, true).get("lib/Quiet.tag()Ljava/lang/String;");
+        assertNotNull(u, "R919: the all-pure abstract hierarchy publishes its (empty) union");
+        assertEquals(List.of(), u.get("inferred"), "an all-pure abstract hierarchy must publish no effect; got " + u);
         Map<String, String> app = Map.of("app/Go.java",
                 "package app;\nimport lib.Quiet;\npublic class Go { public String run(Quiet q) { return q.tag(); } }\n");
         assertNull(chainedApp(lib, app, true).get("app.Go.run"),

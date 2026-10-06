@@ -195,6 +195,10 @@ final class AnalysisContext {
      *  and it is memoized for the same reason: without it every unclassified external call site repeats a
      *  transSupers walk and a full `classify` sweep per supertype, on the hottest path in the engine. */
     Map<String, List<Effect>> extSuperEffectMemo = new HashMap<>();
+    // SOUNDNESS R868/R916 — Candor#depUpWalk and Candor#depFrontierEffects, memoised: pure functions of the
+    // chained index and the fixed hierarchy, asked at every call site whose dependency owner has no row.
+    Map<String, Candor.DepUpWalk> depUpWalkMemo = new HashMap<>();
+    Map<String, List<Effect>> depFrontierMemo = new HashMap<>();
     /** Overload index: `dottedClass.methodName` -> the distinct JVM descriptors declared under that name,
      *  so an overloaded node gets a param-type suffix and a pure overload never unions an effectful one. */
     Map<String, Set<String>> overloadDescs = new HashMap<>();
@@ -433,6 +437,7 @@ final class AnalysisContext {
         sealedUnseenMemo = master.sealedUnseenMemo;         externalSupersCache = master.externalSupersCache;
         resolutionOrderCache = master.resolutionOrderCache; depTransWhyMemo = master.depTransWhyMemo;
         extSuperEffectMemo = master.extSuperEffectMemo;
+        depUpWalkMemo = master.depUpWalkMemo;                depFrontierMemo = master.depFrontierMemo;   // R868
         // Scalars — read by analyze, never an output of it.
         taintEnabled = master.taintEnabled;                 unknownRatchet = master.unknownRatchet;
         closedWorld = master.closedWorld;                   peekVersioned = master.peekVersioned;
@@ -542,7 +547,7 @@ final class AnalysisContext {
             "transSupersCache", "chaTargetsCache", "annoMetaCache", "sealedClosedMemo",
             "sealedUnseenMemo", "externalSupersCache", "resolutionOrderCache", "depTransWhyMemo",
             "depTransDispatchMemo",
-            "extSuperEffectMemo",
+            "extSuperEffectMemo", "depUpWalkMemo", "depFrontierMemo",
             "provFramesCache", "depOwnersBySig", "literalFixpointMemo");
 
     /** Sizes of the shared inputs, for {@link #assertNoInputGrowth}.

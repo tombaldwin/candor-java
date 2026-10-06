@@ -257,6 +257,9 @@ final class ReportWriter {
         // which is the one thing a default scan must not let happen.
         appendInterfaceUnions(effectors, inferred, blindAcc, globalBlind,
                 hostsAcc, cmdsAcc, pathsAcc, tablesAcc, incompleteAcc);
+        // SOUNDNESS R869 — the bridge descriptors the method index collapses away, published under their own
+        // hash. Appended after everything else so no existing entry moves; see appendBridgeRows.
+        appendBridgeRows(effectors);
         // v0.2 self-describing envelope (candor-spec §2): a provenance header + the entries. Readers
         // still accept the legacy v0.1 bare array (see loadBaseline) during migration.
         String[] prov = provenance();
@@ -620,6 +623,89 @@ final class ReportWriter {
         System.err.println("candor-java: emitted " + unions.size()
                 + " interface-CHA union entries, merged " + merged + " into a claimed hash"
                 + " (⟨0.23⟩ local abstractions and ⟨0.39⟩ foreign ones)");
+    }
+
+    /**
+     * SOUNDNESS R869 — A BRIDGE IS A REAL JVM METHOD, AND A CHAINED CONSUMER'S CALL CAN NAME IT.
+     *
+     * <p>{@code class SubG extends BaseG<String> { void m(String s) {Env} }} compiles to TWO methods on
+     * {@code SubG}: the declared {@code m(Ljava/lang/String;)V} and a synthetic BRIDGE
+     * {@code m(Ljava/lang/Object;)V} that overrides {@code BaseG.m(T)} and forwards to it. The method index
+     * excludes bridges from overload detection (they are not overloads — see {@code Candor.runScan}), so
+     * both collapse onto ONE node, {@code dep.SubG.m}, whose {@code hash} is whichever was registered first:
+     * the declared one. The bridge's own descriptor was therefore never published, and a consumer's
+     * {@code BaseG<String> g; g.m("x")} — {@code invokevirtual dep/BaseG.m(Ljava/lang/Object;)V}, which the
+     * JVM dispatches to that bridge — had no key to find {@code SubG}'s body under. Executed: the program
+     * reads the environment, the chained consumer read {@code [Fs]} from {@code BaseG.m} alone, and
+     * {@code deny Env} exited 0. The consumer cannot guess the match from the declared descriptor: the
+     * R867 audit measured that a parameter-differing match is a subclass OVERLOAD 26% of the time
+     * ({@code Candor#bridgeCompatible}). Only the producer has the bridge, so the producer says so.
+     *
+     * <p><b>What is published.</b> For every method whose node id it shares with another method of the same
+     * class (in practice: a bridge or synthetic forwarder, the only methods the overload index leaves out),
+     * whose own {@code owner.name+desc} is not already some entry's hash, and whose PARAMETERS differ from the
+     * node's own descriptor, a copy of that node's entry under the method's own hash. (A covariant-return
+     * bridge is left out: R867's covariant match already reaches it.) The node's content IS the bridge's content — the bridge body was analysed
+     * into that node, its forwarding call included — so the copy republishes facts the report already
+     * states, under a key a consumer can form. Nothing is published for a node with no entry (a pure body
+     * has nothing to say under either key).
+     *
+     * <p><b>Marked {@code interfaceUnion: true}, with its own {@code fn}.</b> It is not a unit anyone
+     * analysed — ⟨0.21⟩ {@code analyzed} counts the node once and stays exact — so it carries the marker
+     * that already means "a synthetic entry published under a key a consumer forms, not a unit": the gate
+     * does not gate it as a function (its effects are gated under the real entry), {@code callers} skips
+     * it, and {@link Loader} grants no coverage from it. Its {@code fn} is the node id with the bridge's
+     * FULLY-QUALIFIED parameter list ({@code dep.SubG.m(java.lang.Object)}): sharing the real entry's
+     * {@code fn} would make that name AMBIGUOUS to {@code gate --report}'s call resolution, which turns an
+     * ambiguous callee into an {@code Unknown} the scan route never charges. The fully-qualified form cannot
+     * collide with a real overload's id, because a real method with the bridge's exact descriptor cannot
+     * coexist with it. {@code calls} names the real entry, which is what the bridge does.
+     *
+     * <p>ADDITIVE: no existing entry changes, and a report with no collapsed method is byte-identical.
+     */
+    static void appendBridgeRows(List<Effector> effectors) {
+        Map<String, Effector> byFn = new HashMap<>();
+        Set<String> claimed = new HashSet<>();
+        for (Effector e : effectors) {
+            claimed.add(e.hash());
+            if (!e.interfaceUnion()) byFn.putIfAbsent(e.fn(), e);
+        }
+        TreeMap<String, Effector> rows = new TreeMap<>();
+        for (ClassNode cn : ctx().ALL) {
+            String dc = cn.name.replace('/', '.');
+            for (MethodNode mn : cn.methods) {
+                if ((mn.access & (org.objectweb.asm.Opcodes.ACC_BRIDGE | org.objectweb.asm.Opcodes.ACC_SYNTHETIC)) == 0)
+                    continue;
+                if (mn.name.startsWith("<")) continue;
+                String id = methodId(dc, mn.name, mn.desc);
+                String hash = cn.name + "." + mn.name + mn.desc;
+                if (hash.equals(ctx().hashOf.get(id)) || claimed.contains(hash) || rows.containsKey(hash)) continue;
+                Effector real = byFn.get(id);
+                if (real == null) continue;
+                // ONLY A PARAMETER-DIFFERING BRIDGE. A covariant-RETURN bridge has the declared method's parameters,
+                // and R867's covariant match already reaches it from the declared row (Candor#depOverrideAt);
+                // publishing it as well added ~70k rows to the 452-jar census for no join the consumer lacked.
+                String realHash = real.hash();
+                int rp = realHash.indexOf('(');
+                if (rp < 0 || paramsOf(realHash.substring(rp)).equals(paramsOf(mn.desc))) continue;
+                rows.put(hash, new Effector(
+                        id + "(" + paramTypeListFq(mn.desc) + ")", real.loc(), real.inferred(), real.invisible(),
+                        EffectSet.empty(), EffectSet.empty(), EffectSet.empty(), EffectSet.empty(),
+                        false, real.unresolved(), real.kind(), real.unknownWhy(), hash, List.of(real.fn()),
+                        List.of(), real.hosts(), real.cmds(), real.paths(), real.tables(), real.netClass(),
+                        real.incomplete(), true, real.dispatchesOn()));
+            }
+        }
+        if (rows.isEmpty()) return;
+        effectors.addAll(rows.values());
+        System.err.println("candor-java: emitted " + rows.size()
+                + " bridge-descriptor entr" + (rows.size() == 1 ? "y" : "ies") + " (SOUNDNESS R869)");
+    }
+
+    /** The parameter part of a method descriptor, {@code (…)} inclusive. */
+    private static String paramsOf(String desc) {
+        int close = desc.indexOf(')');
+        return close < 0 ? desc : desc.substring(0, close + 1);
     }
 
     /** ⟨0.39⟩ Every unit that reaches a dispatch site — itself, or through any chain of local callees.

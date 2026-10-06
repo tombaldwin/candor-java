@@ -388,6 +388,24 @@ final class Loader {
 
     /** The `<report>.hierarchy.json` sidecar path for a report file, or null if `f` is not a report name.
      *  Mirrors {@link ReportWriter#writeHierarchy}'s naming exactly — one producer, one consumer, one rule. */
+    /** SOUNDNESS R868 — the types a report's OWN hierarchy sidecar keys, as internal names, or null when there
+     *  is no readable sidecar beside it (the caller then falls back to the envelope's packages). Only the
+     *  key set is read; {@link #loadDepHierarchy} owns the edges. */
+    static Set<String> ownSidecarTypes(Path report) {
+        Path sib = hierarchySidecarOf(report);
+        if (sib == null || !Files.isRegularFile(sib)) return null;
+        try {
+            JsonElement root = JsonParser.parseString(Files.readString(sib));
+            if (!root.isJsonObject()) return null;
+            Set<String> out = new HashSet<>();
+            for (String k : root.getAsJsonObject().keySet())
+                if (!k.startsWith("@")) out.add(k.replace('.', '/'));
+            return out;
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
     static Path hierarchySidecarOf(Path f) {
         String n = f.getFileName().toString();
         if (!n.endsWith(".json") || n.endsWith(".hierarchy.json")) return null;
@@ -827,6 +845,12 @@ final class Loader {
                     // apart. See {@link #claimsToHaveJudgedNothing}.
                     if (!stale && !incomplete && !judgedNothing)
                         ctx().depCoveredPkgs.addAll(reportPackages(obj));
+                    // R868 — what THIS report declares, read once (see DepFn#ownerDeclared): the types its own
+                    // hierarchy sidecar keys, and failing a sidecar, the packages its envelope covers. The type
+                    // set is the precise test — a package can be SPLIT across jars, so a foreign union keyed under
+                    // another jar's class in a shared package is still foreign.
+                    Set<String> ownPkgs = new HashSet<>(reportPackages(obj));
+                    Set<String> ownTypes = ownSidecarTypes(f);
                     for (JsonElement el : fns) {
                         if (!el.isJsonObject()) continue;                 // a non-object entry → skip (not pure-able)
                         JsonObject m = el.getAsJsonObject();
@@ -930,6 +954,24 @@ final class Loader {
                                 && de.dispatchesOn.isEmpty() && de.fn != null
                                 && !ctx().depCallsByFn.getOrDefault(de.fn, List.of()).isEmpty();
                         de.walkOnly = hop;
+                        // SOUNDNESS R868 — see DepFn#ownerDeclared. Read with the same fail-closed shape test
+                        // as the coverage grant below: anything but an absent or literally-false marker is
+                        // synthetic. A synthetic entry counts as the owner's own declaration only when its
+                        // hash names a package THIS report says it covers (ARM 1, an R869 bridge row); a
+                        // foreign key (ARM 2/3) does not, and the walk past it continues.
+                        {
+                            JsonElement iu0 = m.get("interfaceUnion");
+                            boolean ordinary0 = iu0 == null
+                                    || (iu0.isJsonPrimitive() && iu0.getAsJsonPrimitive().isBoolean()
+                                        && !iu0.getAsBoolean());
+                            String ep = entryPackage(h);
+                            int pr = h.indexOf('('), dt = pr < 0 ? -1 : h.lastIndexOf('.', pr);
+                            String ownerType = dt > 0 ? h.substring(0, dt) : null;
+                            de.syntheticOnly = !ordinary0;
+                            de.ownerDeclared = ordinary0
+                                    || (ownTypes != null ? ownerType != null && ownTypes.contains(ownerType)
+                                                         : ep != null && ownPkgs.contains(ep));
+                        }
                         if (!de.effects.isEmpty() || !de.incomplete.isEmpty() || !de.dispatchesOn.isEmpty()
                                 || hop) {
                             DepFn prev = ctx().crossDeps.get(h);
@@ -1018,6 +1060,7 @@ final class Loader {
             if (dot <= 0) continue;
             String owner = h.substring(0, dot);
             if (!c.depSupers.containsKey(owner)) continue;   // only a SUBTYPE can hold an override
+            if (e.getValue().isBridgeRow()) continue;          // R869 — the covariant match predates bridge rows
             c.depMembersByName.computeIfAbsent(h.substring(0, paren), k -> new TreeMap<>())
                     .put(h.substring(paren), e.getValue());
         }

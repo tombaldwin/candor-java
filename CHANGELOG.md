@@ -9,6 +9,98 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R868 (java) + R916 + R869 FIXED: a chained consumer reaches the members a dependency type INHERITS, and a generic override through its bridge
+
+**What went wrong.** Executed, three shapes, all silent when the dependency is chained:
+- **R868.** A dependency declares `class BaseO { void m() {Fs} }` and `class SubK extends BaseO {}`. The consumer's
+  `u(SubK s) { s.m(); }` compiles to `invokevirtual dep/SubK.m()V`, and no entry is keyed there. The row was
+  ABSENT, and `deny Fs` and `deny Unknown` both exited 0, over a call that wrote a file. The same holds for
+  an interface `default` inherited by a dependency class, for `super.m()` from a consumer subclass, and for an
+  inherited static. The one-tree scan reads `[Fs]`.
+- **R916.** The same walk, ending in the JDK. A dependency has `class MyOut extends FileOutputStream {}`, and
+  the consumer calls `o.write(1)`. The row was ABSENT, while the one-tree scan reads `[Fs]`. When run, the file
+  got one byte.
+- **R869.** A dependency has `BaseG<T>.m(T)` overridden by `SubG.m(String)`. The JVM dispatches the consumer's
+  `g.m("x")` to `SubG`'s synthetic bridge `m(Object)`, and the report never keyed that bridge. The consumer
+  read `[Fs]` and `deny Env` exited 0. The bounded generic (`<V extends CharSequence>`) behaved the same way.
+
+**The fix.**
+- **Consumer: walk UP (`Candor#depUpWalk`).** When the static owner is a type a chained hierarchy sidecar
+  named, and no entry its owning package published answers the key, walk its supertypes in JVM resolution
+  order:
+  - join each chained entry on the way, and stop at the first the owning package published;
+  - charge a classpath-readable (JDK) supertype's classifier rule through the same routing as the R131
+    external walk. A whole-owner rule such as `FileOutputStream`'s fires only for a member that type really
+    declares, read off its bytecode;
+  - **ADD `Unknown[dispatch]`** on a supertype that is neither chained nor loadable. This is SPEC ⟨0.40⟩'s
+    structural MISS rule.
+
+  The walk applies to `invokevirtual`, `invokespecial` and `invokestatic`. It is NOT applied to
+  `invokeinterface`: an absent interface key also means "every implementor is pure" (ARM 1 omits that
+  union), and the inherited-default case is already disclosed by `untypedDepReceiver`. The walk is additive,
+  and R867's DOWN walk is unchanged and unioned with it.
+- **Producer: publish generic bridge descriptors (`ReportWriter#appendBridgeRows`).** The method index
+  collapses a bridge onto the declared method's node, so its descriptor was never published. Each bridge
+  whose PARAMETERS differ from the declared method's is now published as its own row: a synthetic
+  `interfaceUnion: true` row with its own `fn` (`dep.SubG.m(java.lang.Object)`) and the node's content.
+  Covariant-return bridges are not published, because R867's covariant match already reaches them.
+  Existing rows do not move, and ⟨0.21⟩ `analyzed` is unchanged.
+- **A bridge row answers EXACT-KEY lookups only (`DepFn#isBridgeRow`).** Every by-name or by-signature
+  index keeps its pre-bridge shape: `untypedDepReceiver`'s conjunct 5, the hand-off and reentry joins, and
+  R867's covariant index. Before this was restricted, the first cut manufactured `Unknown[dispatch]` on 759
+  standard-arm consumer rows (amqp-client `Command.getMethod`, a PURE covariant implementor).
+- **A FOREIGN union does not stop the walk (`DepFn#ownerDeclared`).** A third package's ⟨0.39⟩ union keyed
+  under a type that only inherits the member is not that type's declaration. Ownership is decided by the
+  producing report's OWN hierarchy-sidecar types, not by package, because packages split across jars.
+  Before the fix, `dep2.D2 extends dep.SubKD` overriding an inherited `m` made the consumer drop `BaseO.m`'s
+  `Fs`.
+- **Bridge rows do not move R867's fan-out bound.** The first cut counted the newly-findable bridged
+  overrides into `CHA_FANOUT_LIMIT`. Its corpus A/B caught this: 8 rows LOST a concrete effect (for example
+  jackson-databind's `StdSerializer` lost `Clock`/`Log`), because a site that used to UNION its overrides
+  crossed the bound and read a bare `Unknown`. The bound is now priced on the matches R867 made: exact
+  non-bridge keys, then its covariant match, then bridge rows. Bridged overrides that would cross the bound
+  are replaced by an ADDED `Unknown[dispatch]`, the R530b trade. This is pinned by
+  `bridgeRowsCannotPushAnOverrideUnionPastTheBound`.
+
+**THE ACCEPTED FABRICATION.** This is SPEC ⟨0.40⟩ §2, "the walk reads absence as 'may be inherited'"
+(SPEC.md:655-664 at candor-spec 305f2bb). A PURE override publishes no row, so the walk passes it and
+charges the next body up:
+- `SubP extends BaseO { void m() {} }` is charged `Fs`;
+- `MyOutP extends FileOutputStream { void write(int) {} }` is charged `Fs`;
+- so is a pure override at an intermediate level.
+
+R867 pinned the opposite (`aPureOverrideAtTheStaticOwnerIsNotChargedTheBaseBody`). That pin is now
+`aPureOverrideAtTheStaticOwnerIsChargedTheBaseBody_licensedByV040`, and it cites the clause. Removing the
+fabrication needs a member manifest (rung B). The §2.2 callgraph sidecar is NOT that manifest: it keys a
+uniquely-named member by its bare name, so `OvK { m(int) }` plus an inherited `m()` would read as "declares
+m" and the walk would stop silent. The MISS rule makes a matching trade: a dependency type that declares a
+pure override of a member inherited from an unchained library reads `Unknown`.
+
+**Residuals.**
+- The GraalVM native image cannot load JDK method tables, so a frontier member under a whole-owner rule
+  (R916's shape) stays silent there while the jar charges it.
+- A chained report with no hierarchy sidecar is not walked.
+- A bridge row republishes its NODE, and the method index merges every same-name synthetic method into
+  that node. So a bridge forwarding to a different method (2,027 of 12,404 in the reach arm) and a Kotlin
+  `$default` or Groovy synthetic overload (1,106) are published with a SUPERSET of their own effects.
+  That is the over-charge the node's own row already carries.
+
+**What it costs, measured.** Corpus numbers, POST against 15bbc57:
+- **Standard chained arm.** ConsumerGen calls only the members an abstract type DECLARES, so it never
+  exercises an inherited member. Every one of its walk firings is the licensed fabrication or a false MISS:
+  bytecode-audited 1,815 pure-override joins, 51 abstract re-declarations and 2,501 false misses.
+  - At the unit scope: 289 units of 40,540 newly fail `deny Unknown <unit>` (0.71%, under the 1.5% band).
+  - 5 of 305 consumers newly fail an unscoped `deny Unknown`.
+  - 211 (unit, effect) pairs newly fail a concrete `deny E <unit>`, all over pure overrides.
+- **Reach arm.** Every inherited member of every public class is called:
+  - 447,369 of 497,653 UP joins are GENUINE (the nearest JVM declaration, from bytecode);
+  - 141,325 of 182,348 misses are genuine;
+  - 2,971 of 3,264 JDK charges are genuine;
+  - the rest are the licensed fabrication.
+- **452-jar standalone census.** ADDED 17,429 bridge rows, REMOVED 0, CHANGED 0.
+
+The full A/B and audit tables are in the commit message.
+
 ### ⚠ SOUNDNESS R867 FIXED: a call on a chained dependency's class now reaches that dependency's own subclass overrides
 
 **What went wrong.** A dependency declares `class BaseO { void m() {Fs} }` and its own

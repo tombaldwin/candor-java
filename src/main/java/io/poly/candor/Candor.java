@@ -4561,6 +4561,10 @@ public class Candor {
         List<Effect> supEff = List.of();
         if (effect == null && !ctx.byName.containsKey(min.owner)) {
             supEff = externalSupertypeEffects(min.owner, min.name, min.desc);
+            // SOUNDNESS R916 — a CHAINED DEPENDENCY owner is not loadable, so `transSupers` reads no
+            // supertype for it and the walk above saw nothing; its supertypes are in the dependency's
+            // hierarchy sidecar. Only when the owner does not itself declare the member — see depUpWalk.
+            if (supEff.isEmpty()) supEff = depFrontierEffects(ctx, min);
             for (Effect se : supEff) dir.add(se);
         }
         if (effect != null) dir.add(effect);
@@ -6822,11 +6826,18 @@ public class Candor {
             // for a provably-typed receiver, to the one body that type runs). Additive: it only ever calls
             // `inheritDepFn` / adds an `Unknown`, so nothing joined above can be withdrawn by it. See
             // depHierarchyJoin.
+            String recv = null;
             if (xop == Opcodes.INVOKEVIRTUAL) {
-                String recv = monoRecv != null ? monoRecv : monomorphicReceiver(provFrames == null ? null
+                recv = monoRecv != null ? monoRecv : monomorphicReceiver(provFrames == null ? null
                         : provFrames[mn.instructions.indexOf(min)], min);
                 depHierarchyJoin(ctx, id, min, inh, recv);
             }
+            // SOUNDNESS R868 — …and UP, to the declaration the static owner INHERITS. Additive, like the walk
+            // above: it only calls `inheritDepFn` or adds an `Unknown`. A receiver PROVABLY of a stricter
+            // dependency type is skipped, because depHierarchyJoin's EXACT branch has already walked up from
+            // that type, which is the nearer and more precise start. See depUpJoin.
+            if (recv == null || recv.equals(min.owner) || ctx.byName.containsKey(recv))
+                depUpJoin(ctx, id, min);
         }
         // INHERITED / DEFAULT METHOD FROM A DEPENDENCY SUPERTYPE. The join above requires a NON-project
         // owner, and that is exactly why this shape escaped it: `this.load()` on a project class extending
@@ -6956,7 +6967,11 @@ public class Candor {
     static boolean depDeclaresSigElsewhere(AnalysisContext ctx, MethodInsnNode min) {
         if (ctx.crossDeps.isEmpty()) return false;
         if (!ctx.depOwnersBySigBuilt) {
-            for (String h : ctx.crossDeps.keySet()) {
+            for (Map.Entry<String, DepFn> be : ctx.crossDeps.entrySet()) {
+            // SOUNDNESS R869 — bridge rows answer EXACT-KEY lookups only (see DepFn#isBridgeRow). Every by-name or
+            // by-signature index keeps the shape it had before they were published.
+                if (be.getValue().isBridgeRow()) continue;
+                String h = be.getKey();
                 int paren = h.indexOf('(');
                 int dot = paren < 0 ? -1 : h.lastIndexOf('.', paren);
                 if (dot > 0) ctx.depOwnersBySig
@@ -7633,6 +7648,204 @@ public class Candor {
         return null;
     }
 
+    static final boolean R868_DEBUG = System.getenv("CANDOR_R868_DEBUG") != null;
+
+    /** What the walk UP from a chained dependency owner reaches — see {@link #depUpWalk}. {@code joins}:
+     *  the chained entries to inherit, nearest first, ending at the first one the owning package published
+     *  as a declaration. {@code frontier}: the classpath-readable NON-dependency types (the JDK, in practice)
+     *  passed on the way, whose classifier rules {@link #depFrontierEffects} charges. {@code missAt}: the
+     *  first type on the way that is neither a chained dependency type nor readable, or null. */
+    record DepUpWalk(List<DepFn> joins, List<String> frontier, String missAt) {
+        static final DepUpWalk NONE = new DepUpWalk(List.of(), List.of(), null);
+    }
+
+    /**
+     * SOUNDNESS R868 / R916 — A MEMBER INHERITED THROUGH A CHAINED DEPENDENCY'S TYPE.
+     *
+     * <p><b>The defect, executed.</b> {@code dep} declares {@code class BaseO { void m() {Fs} }} and
+     * {@code class SubK extends BaseO {}}; the consumer's {@code u(SubK s) { s.m(); }} compiles to
+     * {@code invokevirtual dep/SubK.m()V}. No entry is keyed there — {@code SubK} declares no {@code m} — so
+     * the join found nothing, the row was ABSENT, and {@code deny Fs} and {@code deny Unknown} both exited 0
+     * over a call that wrote a file. The same source scanned as one tree reads {@code [Fs]}. Its sibling
+     * (R916) is the same walk ending in the JDK: {@code class MyOut extends FileOutputStream {}} in the
+     * dependency, {@code o.write(1)} in the consumer — absent chained, {@code [Fs]} in one tree, one byte
+     * written when run.
+     *
+     * <p><b>The walk.</b> When the static owner is a type a chained hierarchy sidecar named
+     * ({@code depIndexed}) and no entry the owning package published answers the key there
+     * ({@link DepFn#ownerDeclared}), walk the owner's supertypes in JVM resolution order
+     * ({@link Cha#resolutionOrder}, the dependency's own sidecar supplying the edges):
+     * <ul>
+     *   <li>a chained dependency type: join its entry for the member if it has one; stop at the first
+     *       entry its owning package published (that is the nearest declaration a report can name);</li>
+     *   <li>a classpath-readable type (the JDK): collected as the FRONTIER, whose classifier rules
+     *       {@link #depFrontierEffects} charges at the call site exactly as the R131 walk charges an
+     *       external owner's modelled supertypes, so the locator and reason routing is that walk's own;</li>
+     *   <li>a type that is neither — a supertype from a package nobody chained and candor cannot load — is a
+     *       MISS: the walk cannot know what it contributes, and the caller ADDS {@code Unknown} (SPEC ⟨0.40⟩,
+     *       "a path that reaches a type with no {@code types} key … is a MISS").</li>
+     * </ul>
+     *
+     * <p><b>THE FABRICATION THIS ACCEPTS, BY NAME — and the R867 lane refused this walk for it.</b> A pure
+     * override publishes no row, so "{@code SubP} declares a pure {@code m}" and "{@code SubP} inherits
+     * {@code m}" are the same bytes in the report, and the walk charges {@code BaseO.m}'s body to a call that
+     * runs nothing (executed: no effect; walk: {@code [Fs]}). SPEC.md ⟨0.40⟩ (§2, "the walk reads absence as
+     * 'may be inherited'", SPEC.md:655-664 at candor-spec 305f2bb) rules on exactly this: the consumer CONTINUES past an absent key,
+     * and "where T in fact declares a pure override, the ancestors' effects are charged to a body that never
+     * runs: a FABRICATION this rung accepts as the sound direction, removable only by a member manifest,
+     * which is rung B" — citing this row by number. The JDK half makes the same trade
+     * ({@code MyOutP extends FileOutputStream { void write(int) {} }} is charged {@code Fs}).
+     * {@code DepOverrideUnionTest#aPureOverrideAtTheStaticOwnerIsChargedTheBaseBody_licensedByV040} pins it
+     * as deliberate.
+     *
+     * <p><b>WHY NOT THE §2.2 CALLGRAPH SIDECAR AS THE MANIFEST.</b> It keys a uniquely-named member by its
+     * BARE name ({@code dep.SubP.m}) with no descriptor, so "SubP has an {@code m}" cannot be told from
+     * "SubP has an {@code m(int)} and inherits {@code m()}" — stopping the walk on that key would read the
+     * second as a purity claim, a silent under-report, which is the direction this walk exists to close.
+     * The only case it decides exactly (an overloaded name, whose keys carry a parameter list) is the rare
+     * one. It is not read.
+     *
+     * <p>Only an INHERITED lookup: {@code <init>}/{@code <clinit>} are never inherited. A project type on
+     * the way that declares the member ends the walk with nothing, as in {@link #nearestDepFn}.
+     */
+    static DepUpWalk depUpWalk(AnalysisContext c, String owner, String name, String desc) {
+        if (c.depIndexed.isEmpty() || !c.depIndexed.contains(owner) || name.startsWith("<")) return DepUpWalk.NONE;
+        String key = owner + '\t' + name + desc;
+        DepUpWalk memo = c.depUpWalkMemo.get(key);
+        if (memo != null) return memo;
+        DepUpWalk w = depUpWalkUncached(c, owner, name, desc);
+        c.depUpWalkMemo.put(key, w);
+        return w;
+    }
+
+    private static DepUpWalk depUpWalkUncached(AnalysisContext c, String owner, String name, String desc) {
+        DepFn at = c.crossDeps.get(owner + "." + name + desc);
+        if (at != null && at.ownerDeclared) return DepUpWalk.NONE;
+        List<DepFn> joins = new ArrayList<>();
+        List<String> frontier = new ArrayList<>();
+        String miss = null;
+        List<String> order = Cha.resolutionOrder(owner, true);
+        for (int i = 1; i < order.size(); i++) {
+            String t = order.get(i);
+            ClassNode cn = c.byName.get(t);
+            if (cn != null) {
+                if (declaresMethod(cn, name, desc)) break;            // a project declaration wins
+                continue;
+            }
+            if (c.depIndexed.contains(t)) {
+                DepFn d = c.crossDeps.get(t + "." + name + desc);
+                if (d != null) {
+                    joins.add(d);
+                    if (d.ownerDeclared) break;                        // the nearest declaration a report names
+                }
+                continue;
+            }
+            if (Cha.externalSupersSplit(t) == Cha.ExtSupers.NONE) {   // neither chained nor loadable
+                if (miss == null) miss = t;
+                continue;
+            }
+            frontier.add(t);
+        }
+        if (joins.isEmpty() && frontier.isEmpty() && miss == null) return DepUpWalk.NONE;
+        return new DepUpWalk(joins, frontier, miss);
+    }
+
+    /** R916 — the classifier charges of {@link #depUpWalk}'s FRONTIER for a call whose static owner is a
+     *  chained dependency type, unioned the way {@link #externalSupertypeEffects} unions an external
+     *  owner's modelled supertypes (and through the same per-supertype decision, its blanket-rule denylist
+     *  included). Returned to the R131 loop in {@code handleMethodInsn}, so the charge is routed through
+     *  {@code effectMetadata} and {@code extractLiteralSurfaces} exactly as that walk's is. */
+    static List<Effect> depFrontierEffects(AnalysisContext c, MethodInsnNode min) {
+        if (min.getOpcode() == Opcodes.INVOKEINTERFACE) return List.of();   // see depUpJoin
+        DepUpWalk w = depUpWalk(c, min.owner, min.name, min.desc);
+        if (w.frontier().isEmpty()) return List.of();
+        String key = min.owner + '\t' + min.name + min.desc;
+        List<Effect> out = c.depFrontierMemo.get(key);
+        if (out == null) {
+            out = new ArrayList<>();
+            for (String t : w.frontier()) {
+                Effect se = frontierCharge(c, t, min.name, min.desc);
+                if (se != null && !out.contains(se)) out.add(se);
+            }
+            out = List.copyOf(out);
+            c.depFrontierMemo.put(key, out);
+        }
+        if (R868_DEBUG && !out.isEmpty())
+            System.err.println("R868\tJDK\t" + min.owner + "." + min.name + min.desc + "\t" + w.frontier() + "\t" + out);
+        return out;
+    }
+
+    /** R916 — one FRONTIER type's charge. {@link #supertypeCharge}'s selection, which is the R131 walk's
+     *  (blanket-rule denylist included), PLUS the type's own rule when the type DECLARES the member in its
+     *  bytecode.
+     *
+     *  <p>The second arm is the one R916 needs, and the denylist is why. {@code FileOutputStream}'s rule is
+     *  WHOLE-OWNER {@code Fs}, so {@code isOwnerBlanketRule} withholds it from the R131 walk: that walk never
+     *  asks whether a supertype declares the member, and a blanket rule would otherwise charge every member a
+     *  JDK SUBtype adds ({@code SSLServerSocket.setNeedClientAuth} read as {@code Net}). Here the question
+     *  CAN be asked — the frontier type is loadable — so the rule fires only for a member the type really
+     *  has: {@code MyOut.write(I)V} resolves to {@code FileOutputStream.write(I)V} and is charged; a
+     *  dependency subtype's own extra method is not a member of {@code FileOutputStream} and is not. The one
+     *  case the bytes cannot settle is a dependency type that OVERRIDES the JDK member with a PURE body
+     *  ({@code MyOutP}): charged, the ⟨0.40⟩ fabrication {@link #depUpWalk} names.
+     *
+     *  <p>In a GraalVM native image no JDK class is loadable, so this arm is inert there and the R131
+     *  selection is what applies — the native binary under-reports a blanket-ruled frontier member that the
+     *  jar charges. Named, not fixed: the build-time JDK index carries supertypes, not members. */
+    static Effect frontierCharge(AnalysisContext c, String t, String name, String desc) {
+        Effect se = supertypeCharge(c, t, name, desc);
+        if (se != null) return se;
+        if (!externalDeclares(t, name, desc)) return null;
+        return Classifier.classify(t.replace('/', '.'), name, desc);
+    }
+
+    /** Whether the loadable external type {@code t} itself declares {@code (name, desc)}, read off its
+     *  bytecode (method table only). False when it cannot be loaded. Cached for the process: candor's own
+     *  runtime classpath does not change under it. */
+    static boolean externalDeclares(String t, String name, String desc) {
+        Set<String> sigs = EXT_MEMBERS.computeIfAbsent(t, k -> {
+            Set<String> out = new HashSet<>();
+            try {
+                new ClassReader(k).accept(new org.objectweb.asm.ClassVisitor(Opcodes.ASM9) {
+                    @Override public org.objectweb.asm.MethodVisitor visitMethod(int acc, String n, String d,
+                            String sig, String[] ex) {
+                        out.add(n + d);
+                        return null;
+                    }
+                }, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+            } catch (Throwable ex) { /* not loadable: declares nothing we can see */ }
+            return out;
+        });
+        return sigs.contains(name + desc);
+    }
+    private static final java.util.concurrent.ConcurrentHashMap<String, Set<String>> EXT_MEMBERS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** R868 — the dependency half of {@link #depUpWalk}, applied at the call site: join every entry the walk
+     *  reached and, on a MISS, ADD {@code Unknown[dispatch]} naming the call (⟨0.40⟩'s structural-miss rule).
+     *  Every opcode that resolves a CLASS member by inheritance: a virtual call, a {@code super.m()}
+     *  ({@code invokespecial} on the dependency superclass), and an inherited static. */
+    static void depUpJoin(AnalysisContext ctx, String id, MethodInsnNode min) {
+        // NOT an interface call. An absent key at an interface owner does not mean "inherited": ARM 1 omits the
+        // union of a member whose every implementor is pure, so the walk would pass a member the interface
+        // DECLARES and charge or hedge its super-interfaces. The interface hole is untypedDepReceiver's
+        // (R533), which already discloses `j.d()` on an inherited default; this walk adds nothing there.
+        if (min.getOpcode() == Opcodes.INVOKEINTERFACE) return;
+        DepUpWalk w = depUpWalk(ctx, min.owner, min.name, min.desc);
+        for (DepFn d : w.joins()) {
+            if (R868_DEBUG) System.err.println("R868\tUP\t" + id + "\t" + min.owner + "." + min.name + min.desc
+                    + "\t" + d.fn + "\t" + d.effects + (d.ownerDeclared ? "" : "\tforeign-union"));
+            inheritDepFn(id, d);
+        }
+        if (w.missAt() != null) {
+            if (R868_DEBUG) System.err.println("R868\tMISS\t" + id + "\t" + min.owner + "." + min.name + min.desc
+                    + "\t" + w.missAt());
+            ctx.viaCross.computeIfAbsent(id, k -> EffectSet.empty()).add(Effect.UNKNOWN);
+            ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                    .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, min.owner.replace('/', '.') + "." + min.name));
+        }
+    }
+
     static final boolean R867_DEBUG = System.getenv("CANDOR_R867_DEBUG") != null;
 
     /**
@@ -7670,15 +7883,12 @@ public class Candor {
      *       {@code SubO}.</li>
      * </ol>
      *
-     * <p><b>THE WALK IT DELIBERATELY DOES NOT TAKE: UP from a dependency owner whose own key is absent.</b>
-     * {@code SubK s; s.m()} on an INHERITED {@code m} compiles to {@code invokevirtual dep/SubK.m()V}, no row
-     * answers it, and the consumer row is ABSENT — a silent under-report, pre-existing, measured EXECUTED and
-     * reported with this change rather than fixed by it. The obvious fix ({@link #nearestDepFn}'s walk from a
-     * dependency owner) was built and measured, and it FABRICATES on the commonest shape of all: a subclass
-     * that overrides {@code m} with a PURE body publishes no row, so "SubK inherits m" and "SubK declares a
-     * pure m" are the same bytes in the report, and the walk charges the base's body to a call that runs
-     * nothing (executed: no effect; walk: {@code [Fs]}). Separating them needs a fact the report does not
-     * carry — which members a type DECLARES — so it is a wire question, not a guess to make here.
+     * <p><b>THE WALK UP is {@link #depUpJoin}'s, not this one's.</b> {@code SubK s; s.m()} on an INHERITED
+     * {@code m} compiles to {@code invokevirtual dep/SubK.m()V} and no row answers it. When R867 landed this
+     * paragraph said the walk up was refused because it fabricates over a PURE override at the static owner
+     * (the report cannot tell "inherits m" from "declares a pure m"), and that the row needed a wire fact. Both
+     * halves were superseded: SPEC ⟨0.40⟩ (SPEC.md:655-664 at candor-spec 305f2bb) accepts that fabrication as the sound direction,
+     * and SOUNDNESS R868 now walks up in {@link #depUpJoin}; this method still does only DOWN and EXACT.
      *
      * <p><b>WHAT IT DOES NOT DO.</b> Only an owner a chained hierarchy sidecar DECLARED is walked
      * ({@code depIndexed}): {@code java/io/InputStream.read()} must not pick up one library's override, the
@@ -7696,7 +7906,8 @@ public class Candor {
      * makes the same over-charge. Both charge, never hide. (The bridge match below was built wider, matching a
      * generic PARAMETER override too, and the corpus audit measured that version mistaking a subclass OVERLOAD
      * for an override 51 times in 192; it is narrowed to covariant returns, and the generic-parameter override
-     * is a residual — see {@link #bridgeCompatible}.)
+     * is reached through the bridge row the producer now publishes (SOUNDNESS R869) — see
+     * {@link #bridgeCompatible}.)
      */
     static void depHierarchyJoin(AnalysisContext ctx, String id, MethodInsnNode min, DepFn inh, String recv) {
         if (ctx.depIndexed.isEmpty() || !ctx.depIndexed.contains(min.owner)) return;
@@ -7731,7 +7942,30 @@ public class Candor {
             System.err.println("R867REACH\t" + id + "\t" + min.owner + "." + name + desc + "\tsubs=" + seen.size()
                     + "\toverrides=" + overrides.size());
         if (overrides.isEmpty()) return;
-        if (overrides.size() + 1 > CHA_FANOUT_LIMIT) {
+        // SOUNDNESS R869 — THE BOUND IS PRICED ON WHAT IT PRICED BEFORE BRIDGE ROWS EXISTED. Bridge rows made more
+        // overrides findable, and counting them into the bound turned sites that used to UNION their overrides
+        // into a bare `Unknown` — a widening deleting what it widened (jackson-databind's
+        // `StdScalarSerializer.serialize`: `Clock` lost; see DepFn#isBridgeRow). So the bound counts the
+        // non-bridge matches; when bridge matches would carry the total past it they are dropped in favour of
+        // an ADDED `Unknown[dispatch]` and the priced union is kept — the trade
+        // `ReportWriter.appendInterfaceUnions` makes for lambda implementers (R530b).
+        List<DepFn> priced = new ArrayList<>(), synthetic = new ArrayList<>();
+        for (DepFn d : overrides) (d.isBridgeRow() ? synthetic : priced).add(d);
+        if (priced.size() + 1 <= CHA_FANOUT_LIMIT && overrides.size() + 1 > CHA_FANOUT_LIMIT) {
+            for (DepFn d : priced) {
+                if (R867_DEBUG) System.err.println("R867\tDOWN\t" + id + "\t" + min.owner + "." + name + desc
+                        + "\t" + d.fn + "\t" + d.effects);
+                inheritDepFn(id, d);
+            }
+            if (isObjectProtocolExempt(name, desc)) return;
+            ctx.viaCross.computeIfAbsent(id, k -> EffectSet.empty()).add(Effect.UNKNOWN);
+            ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                    .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, min.owner.replace('/', '.') + "." + name));
+            if (R867_DEBUG) System.err.println("R867\tBROADSYN\t" + id + "\t" + min.owner + "." + name + desc
+                    + "\t" + priced.size() + "+" + synthetic.size());
+            return;
+        }
+        if (priced.size() + 1 > CHA_FANOUT_LIMIT) {
             if (isObjectProtocolExempt(name, desc)) return;   // §4: pure even when overridden, as in-scan
             ctx.viaCross.computeIfAbsent(id, k -> EffectSet.empty()).add(Effect.UNKNOWN);
             ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
@@ -7775,11 +8009,20 @@ public class Candor {
      *  {@code Object}) — Java cannot overload on return type alone, so with identical parameters a narrower
      *  return IS the override. See {@link #bridgeCompatible} for the two shapes the corpus refused: a GENERIC
      *  PARAMETER override ({@code m(T)} -> {@code m(String)}) is indistinguishable from an overload in the
-     *  report and is a named residual; a SUPERtype return is a different member. */
+     *  declared descriptor, so it is never guessed here — the producer publishes the bridge's own descriptor
+     *  (SOUNDNESS R869) and the exact key above hits it; a SUPERtype return is a different member. */
     static DepFn depOverrideAt(String t, String name, String desc) {
         AnalysisContext c = ctx();
         DepFn d = c.crossDeps.get(t + "." + name + desc);
-        if (d != null) return d;
+        if (d != null && !d.isBridgeRow()) return d;
+        // R869 — a BRIDGE-ROW hit is taken only where the covariant match below (which predates bridge rows,
+        // and whose index excludes them) does not answer, so every match R867 made is made the same way and
+        // priced the same way by depHierarchyJoin's bound.
+        DepFn cov = covariantOverrideAt(c, t, name, desc);
+        return cov != null ? cov : d;
+    }
+
+    private static DepFn covariantOverrideAt(AnalysisContext c, String t, String name, String desc) {
         Map<String, DepFn> byDesc = c.depMembersByName.get(t + "." + name);
         if (byDesc == null || byDesc.size() != 1) return null;
         Map.Entry<String, DepFn> only = byDesc.entrySet().iterator().next();
@@ -7803,8 +8046,9 @@ public class Candor {
             // subclass's own `get(Parameter)`, `AbstractJwk.equals(Object)` against `equals(PublicJwk)`,
             // avro's `addProp(String,Object)` against `addProp(String,String)`). The report carries nothing
             // that tells the two apart — the bridge's own descriptor is never published — so a match here is
-            // a guess with a 26% fabrication rate, and it is not made. The generic-PARAMETER override stays
-            // where the exact-key join left it: a residual, named in the CHANGELOG, not a regression.
+            // a guess with a 26% fabrication rate, and it is not made. The generic-PARAMETER override is
+            // reached instead through the bridge's OWN descriptor, which the producer now publishes as a
+            // synthetic row (SOUNDNESS R869, ReportWriter#appendBridgeRows) and the exact key above hits.
             if (!java.util.Arrays.equals(a, b)) return false;
             // A covariant override's return is a SUBTYPE of the overridden one's. "Both references" is not
             // enough, and the corpus said so: guava's `CharMatcher$And` publishes its synthetic
@@ -8075,6 +8319,7 @@ public class Candor {
             String name = h.substring(prefix.length(), paren);
             if (name.indexOf('/') >= 0) continue;   // a nested owner, not a member of this type
             if (!allowed.contains(name)) continue;
+            if (e.getValue().isBridgeRow()) continue;   // R869 — exact-key lookups only
             out.add(e.getValue());
         }
         return out;
@@ -8094,6 +8339,7 @@ public class Candor {
             if (!h.startsWith(prefix)) continue;
             int paren = h.indexOf('(', prefix.length());
             if (paren < 0 || h.lastIndexOf('/', paren) >= prefix.length()) continue;
+            if (e.getValue().isBridgeRow()) continue;   // R869 — exact-key lookups only
             out.add(e.getValue());
         }
         c.depFnsByOwner.put(internalOwner, out);
@@ -8113,7 +8359,8 @@ public class Candor {
         Map<String, DepFn> out = new LinkedHashMap<>();
         String prefix = key + "(";       // `owner.name(desc)ret` — the '(' pins the member name exactly
         for (Map.Entry<String, DepFn> e : c.crossDeps.entrySet())
-            if (e.getKey().startsWith(prefix)) out.put(e.getKey().substring(key.length()), e.getValue());
+            if (e.getKey().startsWith(prefix) && !e.getValue().isBridgeRow())   // R869 — exact-key lookups only
+                out.put(e.getKey().substring(key.length()), e.getValue());
         c.depFnsByOwnerName.put(key, out);
         return out;
     }
@@ -9087,6 +9334,11 @@ public class Candor {
         AnalysisContext c = ctx();
         for (String sup : transSupers(ownerInternal))
             if (supertypeCharge(c, sup, name, desc) == Effect.UNKNOWN)
+                return Classifier.unknownKind(sup.replace('/', '.'));
+        // R916 — the same selection over a chained dependency owner's FRONTIER, which is where
+        // depFrontierEffects found the charge (transSupers cannot load a dependency type).
+        for (String sup : depUpWalk(c, ownerInternal, name, desc).frontier())
+            if (frontierCharge(c, sup, name, desc) == Effect.UNKNOWN)
                 return Classifier.unknownKind(sup.replace('/', '.'));
         return Classifier.unknownKind(ownerInternal.replace('/', '.'));
     }

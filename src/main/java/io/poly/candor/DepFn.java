@@ -50,6 +50,32 @@ final class DepFn {
     /// The flag exists so the index can grow without the verdict moving: everything reads it as absent
     /// except the walk.
     boolean walkOnly;
+    /// SOUNDNESS R868 — whether the type this key names DECLARES the member, as far as the wire can say:
+    /// true once ANY contributor is an ordinary entry, or a synthetic one published by the package that
+    /// owns the type (a ⟨0.23⟩ ARM-1 union over its own abstract member, an R869 bridge row). False when
+    /// every contributor is a FOREIGN package's ⟨0.39⟩ union keyed under this type (ARM 2/3) — a third
+    /// package's override says nothing about whether this type declares the member or inherits it, so a
+    /// key answered only by such a union must not stop the inherited-member walk
+    /// ({@link Candor#depUpWalk}). Measured: `dep2.D2 extends dep.SubKD` overriding an `m` that `SubKD`
+    /// inherits from `BaseO` published `dep/SubKD.m()V` with D2's `Env`, and the consumer read that one
+    /// row as the whole answer — `BaseO.m`'s `Fs`, which a plain `SubKD` runs, was dropped.
+    boolean ownerDeclared;
+    /// Every contributor to this key was a SYNTHETIC entry (`interfaceUnion: true`) — a ⟨0.23⟩/⟨0.39⟩ union or an
+    /// R869 bridge row — never an analysed body. Read only through {@link #isBridgeRow}.
+    boolean syntheticOnly;
+
+    /** SOUNDNESS R869 — this key is answered ONLY by a bridge row ({@code ReportWriter#appendBridgeRows}): a
+     *  synthetic entry whose {@code fn} carries a parameter list. A ⟨0.23⟩/⟨0.39⟩ union's {@code fn} is
+     *  {@code owner.name} and never does, so the two are told apart without a new wire field.
+     *
+     *  <p>Why the distinction is needed at all: {@link Candor#depHierarchyJoin} prices its fan-out bound on
+     *  the matches it made BEFORE bridge rows existed. Counting bridge matches into the bound turned sites
+     *  that used to UNION their overrides into a bare {@code Unknown} — measured on jackson-databind,
+     *  {@code StdScalarSerializer.serialize} went from a DOWN union carrying {@code Clock} to BROAD
+     *  {@code [Unknown]}: a widening deleting what it widened. */
+    boolean isBridgeRow() {
+        return syntheticOnly && fn != null && fn.indexOf('(') >= 0;
+    }
     /// The report QUAL this entry was written under (§2 `fn`), null for a report that omits it. It is the
     /// key the dependency's own `calls` array names, and so the only handle on the dep's INTERNAL call
     /// graph — which is where an INHERITED Unknown's reason lives, `unknownWhy` being direct-by-contract.
@@ -116,6 +142,9 @@ final class DepFn {
         stale = stale && other.stale;
         // ⟨0.39⟩ …and once ANY contributor is a real entry, this hash is answered by a real one.
         walkOnly = walkOnly && other.walkOnly;
+        // R868 — and once ANY contributor says the owner declares the member, it does.
+        ownerDeclared = ownerDeclared || other.ownerDeclared;
+        syntheticOnly = syntheticOnly && other.syntheticOnly;   // R869 — real once anything real contributes
         if (fn == null) fn = other.fn;
     }
 

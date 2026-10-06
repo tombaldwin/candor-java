@@ -4568,6 +4568,23 @@ public class Candor {
             for (Effect se : supEff) dir.add(se);
         }
         if (effect != null) dir.add(effect);
+        // SOUNDNESS R814 (R812) — a JDK call can carry an effect BESIDE the one `classify`'s single slot names:
+        // `ProcessBuilder.redirectOutput(File)` is Exec there, and start() then opens that file. The set is
+        // `KappaJdkSinks.alsoCharges`, one authority; the charge is routed through both refiners below, after
+        // the classified effect, so its locator is judged exactly as a classified Fs call's is. `effect` is
+        // NOT assigned — every `effect == null` fallback stays as it was.
+        List<Effect> alsoCharged = KappaJdkSinks.alsoCharges(owner, min.name, min.desc);
+        for (Effect ae : alsoCharged) dir.add(ae);
+        // REACH, so a corpus A/B can tell "inert" from "never reached": `bin/corpus-ab.py --mark R814REACH
+        // --mark-env CANDOR_R814_DEBUG=1 --mark-arm post`. `charge` runs LAST in its bucket, so a non-null
+        // answer from it that equals `effect` is this rule's (the API-surface diff found no member where an
+        // earlier rule gives the same answer).
+        if (R814_DEBUG) {
+            Effect k = KappaJdkSinks.charge(owner, min.name, min.desc);
+            if ((k != null && k == effect) || !alsoCharged.isEmpty())
+                System.err.println("R814REACH\t" + s.id + "\t" + owner + "." + min.name + min.desc + "\t"
+                        + (k != null && k == effect ? k : alsoCharged));
+        }
         // SPEC §1 ⟨0.13⟩ `Llm` model-SDK surface (Rules.MODEL_SDK_PACKAGES): a call into a curated
         // model-provider client dispatches a request → Llm + Net (Net is never dropped — a model call IS
         // network I/O). Set `effect` to LLM so the injection-taint surface (a caller-derived prompt) fires,
@@ -4695,6 +4712,16 @@ public class Candor {
             effectMetadata(ctx, s, min, owner, Effect.UNKNOWN, superUnknownKind);
         }
         extractLiteralSurfaces(ctx, s, min, owner, effect);
+        for (Effect ae : alsoCharged) {
+            if (ae == effect) continue;
+            effectMetadata(ctx, s, min, owner, ae);
+            extractLiteralSurfaces(ctx, s, min, owner, ae);
+        }
+        // …and the one co-emission that predates that authority. `xmlParseFilePrecision` adds `Fs` for
+        // `DocumentBuilder.parse(File)`/`SAXParser.parse(File, …)` beside the XXE `Unknown`, and sets its own
+        // `fs` kind ("read"), so only the LOCATOR refiner is missing. EXECUTED (R814 fixture `parse_u`):
+        // `parse(f)` on a caller's File beside a benign sibling literal passed `allow Fs … <benign>` at exit 0.
+        if (isXmlParseFile(min)) extractLiteralSurfaces(ctx, s, min, owner, Effect.FS);
         // SOUNDNESS R674 (R622/R623/R624) — THE SUPERTYPE WALK'S CHARGE GETS THE SAME TWO REFINERS.
         // `supEff` is EMPTY unless the R131 walk fired, and the walk fires only when `effect == null`, so
         // this loop is inert on every other call site in the engine and the pre-image is byte-identical
@@ -4994,6 +5021,14 @@ public class Candor {
 
     /** XML parse(File) precision: the File overload definitely reads the file — add Fs beside the
      *  XXE Unknown classify() already yields. */
+    /** The XML parse overloads that read a File — one definition, read by {@link #xmlParseFilePrecision}
+     *  (which adds the `Fs`) and by the call handler (which judges that File as the locator, R814). */
+    static boolean isXmlParseFile(MethodInsnNode min) {
+        return (min.owner.equals("javax/xml/parsers/DocumentBuilder")
+                || min.owner.equals("javax/xml/parsers/SAXParser"))
+                && min.name.equals("parse") && min.desc.startsWith("(Ljava/io/File;");
+    }
+
     static void xmlParseFilePrecision(AnalysisContext ctx, MethodScan s, MethodInsnNode min) {
         EffectSet dir = s.dir;
         // XML parse(File) PRECISION: the parser's `parse` already classifies as the XXE/external-
@@ -5002,9 +5037,7 @@ public class Candor {
         // (reads this file for sure; may resolve external entities). The InputStream/InputSource
         // overloads (caller stream) and the (String systemId) overload (path-vs-URL ambiguous)
         // get no Fs. Added in the call handler because classify()'s single slot is the Unknown.
-        if ((min.owner.equals("javax/xml/parsers/DocumentBuilder")
-                || min.owner.equals("javax/xml/parsers/SAXParser"))
-                && min.name.equals("parse") && min.desc.startsWith("(Ljava/io/File;")) {
+        if (isXmlParseFile(min)) {
             dir.add(Effect.FS);
             // ⟨0.29⟩ …AND ITS DIRECTION. This branch adds `Fs` OUTSIDE `effectMetadata`, the single place
             // that refines a classified effect, so `fs` came back ABSENT here — and absent is not neutral.
@@ -5938,6 +5971,12 @@ public class Candor {
             Boolean det = fsLocatorDetermined(min, owner, provFrameAt(s, min));
             if (Boolean.FALSE.equals(det))
                 ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Fs");
+            // SOUNDNESS R814 — A DESTINATION NO TYPED OPERAND NAMES. An ImageIO stream-cache temp file, a font
+            // copied to a temp file, a chooser's default directory, an image input handed in as `Object`: the
+            // descriptor read above answers "no claim" (or judges only the typed operand), and a benign sibling
+            // literal would then certify a write it never saw. These members mark, whatever `det` said.
+            else if (KappaJdkSinks.fsUnnamedDestination(owner, min.name, min.desc))
+                ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Fs");
         }
         // A bare-hostname Net endpoint: `new Socket("api.stripe.com", 443)` /
         // `new InetSocketAddress("api.stripe.com", 443)` names the host as a STRING argv[0]
@@ -6032,7 +6071,11 @@ public class Candor {
                     && min.desc.startsWith("(Ljava/lang/String;") && !capturedHostHere;
             boolean urlTerminal = isUrlValueOwner(min.owner) && !min.desc.startsWith("(Ljava/lang/String;")
                     && (min.name.equals("openStream") || min.name.equals("openConnection")
-                            || min.name.equals("getContent"));
+                            || min.name.equals("getContent")
+                            // SOUNDNESS R814 — `URL.hashCode()` RESOLVES its receiver's host (it is Net
+                            // now). It takes no argument, so without this it would be credited by
+                            // `provAllocatedHere` for an inline `new URL("http://evil/")` it never captured.
+                            || (min.name.equals("hashCode") && min.owner.equals("java/net/URL")));
             boolean urlTerminalCapturedHost = false;
             if (urlTerminal) {
                 String h = urlTerminalHost(min, urlLocals, constLocals, s.joinLabels);
@@ -9368,6 +9411,7 @@ public class Candor {
      *  per memo miss: the question this answers is how much of a corpus reaches the R674 loop at all, and
      *  a zero here means an A/B over that corpus is SAFETY-ONLY however clean it looks. */
     private static final boolean R674_DEBUG = System.getenv("CANDOR_R674_DEBUG") != null;
+    private static final boolean R814_DEBUG = System.getenv("CANDOR_R814_DEBUG") != null;
 
     /** {@code CANDOR_R716_DEBUG=1} — print one line per METHOD-REFERENCE site whose classifier answer is
      *  {@code Unknown} and therefore now carries a reason. Same purpose as the two above and the same

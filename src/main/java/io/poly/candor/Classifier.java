@@ -769,7 +769,9 @@ final class Classifier {
                 && (method.equals("getSystemClipboard") || method.equals("getSystemSelection")))
                 || owner.equals("java.awt.datatransfer.Clipboard"))
             return Effect.CLIPBOARD;
-        return null;
+        // SOUNDNESS R814 — LAST, so it can only turn this bucket's `null` into an effect, never change an
+        // answer above. See KappaJdkSinks for how its members were enumerated and ground-truthed.
+        return KappaJdkSinks.charge(owner, method, desc);
     }
 
     private static Effect classifyJavax(String owner, String method, String desc) {
@@ -790,9 +792,10 @@ final class Classifier {
         if (s5 != null) return s5;
         if (owner.equals("javax.xml.transform.Transformer") && method.equals("transform")) return Effect.UNKNOWN;
         // javax.imageio.ImageIO — the dominant image read/write API (analog of FileReader/Files). Gate to the
-        // FILE-descriptor overloads: read(File)/write(…,File) do Fs; read(URL) does Net; the stream overloads
-        // (read(InputStream)/write(…,OutputStream)) wrap a caller-supplied stream and stay pure (the Fs is on
-        // the underlying FileInputStream, caught at its construction).
+        // FILE-descriptor overloads: read(File)/write(…,File) do Fs; read(URL) does Net. The stream overloads
+        // (read(InputStream)/write(…,OutputStream)) were said here to "wrap a caller-supplied stream and stay
+        // pure" — FALSE with ImageIO's default useCache=true, which spills them to a temp cache file. SOUNDNESS
+        // R814 charges them in KappaJdkSinks (executed; the useCache=false control is silent).
         if (owner.equals("javax.imageio.ImageIO")) {
             if (method.equals("read") && desc.startsWith("(Ljava/io/File;")) return Effect.FS;
             if (method.equals("read") && desc.startsWith("(Ljava/net/URL;")) return Effect.NET;
@@ -872,7 +875,9 @@ final class Classifier {
         // ['com', 'io', 'jakarta', 'java', 'javax', 'misc', 'org'] shared rule — see sharedPanacheQueryTerminals below
         Effect s25 = sharedPanacheQueryTerminals(owner, method, desc);
         if (s25 != null) return s25;
-        return null;
+        // SOUNDNESS R814 — LAST, so it can only turn this bucket's `null` into an effect, never change an
+        // answer above. See KappaJdkSinks for how its members were enumerated and ground-truthed.
+        return KappaJdkSinks.charge(owner, method, desc);
     }
 
     private static Effect classifyJakarta(String owner, String method, String desc) {
@@ -941,7 +946,9 @@ final class Classifier {
         // ['com', 'io', 'jakarta', 'java', 'javax', 'misc', 'org'] shared rule — see sharedPanacheQueryTerminals below
         Effect s42 = sharedPanacheQueryTerminals(owner, method, desc);
         if (s42 != null) return s42;
-        return null;
+        // SOUNDNESS R814 — LAST, so it can only turn this bucket's `null` into an effect, never change an
+        // answer above. See KappaJdkSinks for how its members were enumerated and ground-truthed.
+        return KappaJdkSinks.charge(owner, method, desc);
     }
 
     /** THIRD-PARTY SUBPROCESS BUILDERS — the `java.lang.ProcessBuilder` doctrine (see the long comment on
@@ -2621,7 +2628,9 @@ final class Classifier {
         // javacsv — the path-taking constructors open the file; Reader/Writer-based ones are pure-relative.
         if ((owner.equals("com.csvreader.CsvReader") || owner.equals("com.csvreader.CsvWriter"))
                 && method.equals("<init>") && desc.startsWith("(Ljava/lang/String;")) return Effect.FS;
-        return null;
+        // SOUNDNESS R814 — LAST, so it can only turn this bucket's `null` into an effect, never change an
+        // answer above. See KappaJdkSinks for how its members were enumerated and ground-truthed.
+        return KappaJdkSinks.charge(owner, method, desc);
     }
 
     private static Effect classifyIo(String owner, String method, String desc) {
@@ -3243,7 +3252,9 @@ final class Classifier {
                 && (method.equals("getSystemClipboard") || method.startsWith("get") || method.startsWith("set")
                     || method.startsWith("has") || method.equals("clear")))
             return Effect.CLIPBOARD;
-        return null;
+        // SOUNDNESS R814 — LAST, so it can only turn this bucket's `null` into an effect, never change an
+        // answer above. See KappaJdkSinks for how its members were enumerated and ground-truthed.
+        return KappaJdkSinks.charge(owner, method, desc);
     }
 
     /** The verbs that RESOLVE an AWS v2 credentials provider — SOUNDNESS R496. Both spellings reach the

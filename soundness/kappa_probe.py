@@ -89,6 +89,16 @@ EFFECT_CASES = [
     # Rand — crypto key generation draws entropy
     ("keyPairGen", "Rand", "java.security.KeyPairGenerator g", "g.generateKeyPair()"),
     ("keyGen", "Rand", "javax.crypto.KeyGenerator g", "g.generateKey()"),
+    # SOUNDNESS R814 — JDK members the covered-prefix grant had certified PURE (each EXECUTED; see KappaJdkSinks)
+    ("fontFile", "Fs", "java.io.File f", "java.awt.Font.createFont(0, f)"),
+    ("keystoreFile", "Fs", "java.io.File f", "java.security.KeyStore.getInstance(f, new char[0])"),
+    ("imageReadStream", "Fs", "java.io.InputStream in", "javax.imageio.ImageIO.read(in)"),
+    ("redirectFile", "Fs", "java.io.File f", "ProcessBuilder.Redirect.to(f)"),
+    ("streamResultFile", "Fs", "java.io.File f", "new javax.xml.transform.stream.StreamResult(f)"),
+    ("urlHashCode", "Net", "URL u", "u.hashCode()"),
+    ("isReachable", "Net", "InetAddress a", "a.isReachable(100)"),
+    ("rmiExport", "Net", "java.rmi.Remote r", "java.rmi.server.UnicastRemoteObject.exportObject(r, 0)"),
+    ("shuffle", "Rand", "List<Integer> l", "Collections.shuffle(l)"),
 ]
 
 # Deliberately-PURE neighbours — anti-over-classification anchors (a future κ widening must keep these pure).
@@ -97,6 +107,9 @@ PURE_CASES = [
     ("isLoggablePure", "boolean b=l.isLoggable(System.Logger.Level.INFO)", "System.Logger l"),
     ("loggerNamePure", "String n=l.getName()", "Logger l"),
     ("desktopGetPure", "java.awt.Desktop d=java.awt.Desktop.getDesktop()", ""),  # factory, not a launch
+    # R814 neighbours: path / URI algebra touches nothing
+    ("pathToFilePure", "java.io.File g=p.toFile()", "java.nio.file.Path p"),
+    ("uriHostPure", "String h=u.getHost()", "java.net.URI u"),
 ]
 
 

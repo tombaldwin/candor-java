@@ -9,6 +9,81 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R814 (+R812) FIXED: JDK members that really perform an effect are charged — the κ grant had certified them pure
+
+**What went wrong.** The κ covered-prefix grant (`java`, `javax`, `jdk`, `com.sun`, …) treats an
+unmodelled JDK member as PURE, with no `invisible` and no advisory. R812 was one instance, executed:
+`new ProcessBuilder(..).redirectOutput(new File("/tmp/benign", child)).start()` wrote outside
+`/tmp/benign`, and `allow Fs … /tmp/benign` exited 0 on the unit and its caller, and `deny Fs` exited 0
+on the sink alone. `redirectOutput` is charged `Exec` and the file is opened by `start()`, so the file
+never reached an `Fs` guard. Measured the same way: `Font.createFont(int, File)`,
+`KeyStore.getInstance(File, …)`, `StreamResult(File)`, `ImageIO.read(InputStream)` (it writes a cache temp
+file), `FileSystemView.createNewFolder`, `ImageIcon(String)`, `Recording.dump(Path)`,
+`Collections.shuffle`, `URL.hashCode()` (it resolves the host), `UnicastRemoteObject.exportObject` (it
+listens). Every one was silent at HEAD. Every one was executed and really did the thing.
+
+**How the members were found.** They were derived mechanically, not from memory:
+- **E1.** Every public/protected member of every public type in the 227 unqualified-exported JDK 21
+  packages that takes, or is invoked on, a `File`/`Path`/`FileDescriptor`/`URI`/`URL`. That is 532
+  members. Each was asked of the ENGINE: a synthetic consumer calls it and is scanned. 320 were uncharged,
+  and every one was decided. 114 are charged now. The other 206 are path, URI and URL algebra, value or
+  parameter objects whose terminal is already charged, interfaces with no JDK implementation, or a
+  working directory (executed: no syscall).
+- **E2.** A JDK-internal call-graph reach from every call the classifier itself charges, plus the I/O
+  natives, joined with the 824-jar corpus' call sites. Most of its residue is the JDK reading its own
+  installation, class loading, and socket-option accessors, all left uncharged by design. It added what
+  E1 cannot see: the ImageIO cache writes, `isReachable`, RMI export and socket factories, the JMX
+  connector server, and `Collections.shuffle`.
+- **A descriptor pass for `Rand`.** Members taking a `Random`, `SecureRandom` or `RandomGenerator`.
+
+Ground truth is an EXECUTED SecurityManager oracle. It records the `checkRead`/`checkWrite`/
+`checkConnect`/`checkListen` the JDK makes before each syscall, and it is calibrated on controls that
+stay silent. Across the whole 44,195-member API surface, HEAD vs this build: **217 members newly carry
+an effect, 11 gain a second one, 0 lose anything.**
+
+**What changes.**
+- `KappaJdkSinks.charge` runs LAST in each classifier bucket, so it can only turn a `null` into an
+  effect.
+- `KappaJdkSinks.alsoCharges` co-emits `Fs` beside `Exec`/`Net` on the `ProcessBuilder.redirect*(File)`
+  setters, `Desktop.open/edit/print/browseFileDirectory(File)` (each stats the file first) and
+  `SimpleFileServer.createFileServer`. It is routed through the same two refiners as a classified
+  effect, so the File is judged by the R409 locator guard.
+- The existing `DocumentBuilder.parse(File)` co-emission gets the same locator refiner. `parse(f)` on a
+  caller's File beside a benign literal passed `allow Fs` at exit 0.
+- Members whose destination no typed operand names are now marked `incomplete: ["Fs"]`: ImageIO cache
+  files, a temp font file, a chooser's default directory, and an image input passed as `Object`.
+- `URL.hashCode()` attributes its receiver's host like `openStream()` does.
+
+**Some charges ARM rather than perform.** `Redirect.to(File)` and `redirectOutput(File)` are written by
+`start()`, `BodyHandlers.ofFile` by `HttpClient.send`, and `KeyTab.getInstance(File)` is read by
+`exists()`/`getKeys()`. They are charged where the locator is visible, for the reason SPEC §1 ⟨0.32⟩
+gives for `Exec`.
+
+**Direction: concrete effects added; nothing removed.** Every new charge was audited per member (the
+oracle). The corpus sites were audited one stratum per member: 43 members and 279 sites in the 372 jars.
+`bin/corpus-ab.py`, REACH counted with `CANDOR_R814_DEBUG`:
+
+| arm | corpus | REMOVED | rows gaining a concrete effect | effect values lost | REACH |
+|---|---|---|---|---|---|
+| HEAD → this | 372 lib | 0 | 29,930 (1.80%) | 0 | 279 sites / 71 jars |
+| HEAD → this | 452 census | 0 | 8,352 (0.64%) | 0 | 290 sites / 59 jars |
+| 0.39.3 → this | 372 / 452 | 0 / 0 | 29,930 / 8,352 | 0 / 0 | — |
+
+- **One site drives most of the 372 figure.** jOOQ `MiniJAXB.getSchema` calls `SchemaFactory.newSchema(URL)`.
+  That puts Net on 33,905 rows of jOOQ's already-merged call graph. The rows already carried
+  Db/Fs/Rand/Log/Unknown. The URL is usually a classpath `jar:`/`file:` URL, and the label follows the
+  existing URL→Net rule.
+- **Jar-scope `deny` flips:** 5 of 372 jars and 4 of 452. Each traces to a genuine site:
+  - `Collections.shuffle` in arangodb, junit, kotlinx-coroutines and kafka;
+  - ImageIO's stream cache in spring-ai;
+  - `StreamResult(File)` in jempbox;
+  - byte-buddy's `URL.equals/hashCode` in assertj-db;
+  - jOOQ, above.
+- **`fs` kind withdrawn on 52 / 41 rows.** A newly reached `Fs` whose read/write kind is undetermined
+  poisons the kind, as `effectMetadata` requires. It is not a lost effect.
+- **Pins changed:** `HelpersTest` pinned `ImageIO.read(InputStream)` as pure. That pin is now reversed,
+  on execution.
+
 ### ⚠ SOUNDNESS R533 (java half) + R919 FIXED: a dispatch on a chained interface that nothing implements discloses `Unknown`, and an all-pure one stays pure
 
 **What went wrong.** `int go(Handler h) { return h.handle(); }`, where `Handler` is an interface from a

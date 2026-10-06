@@ -91,6 +91,9 @@ class UnknownReasonKindTableTest {
                 UnknownReason.Kind.REFLECT, "loads + initializes a class named at runtime"),
         new Rule("java.net.URLClassLoader", "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;",
                 UnknownReason.Kind.REFLECT, "ditto, off caller-supplied search URLs"),
+        // SOUNDNESS R814 — in KappaJdkSinks, not Classifier; the census below reads both files.
+        new Rule("java.rmi.server.RMIClassLoader", "loadClass", "(Ljava/net/URL;Ljava/lang/String;)Ljava/lang/Class;",
+                UnknownReason.Kind.REFLECT, "defines a class fetched from an RMI codebase URL — URLClassLoader's class"),
         new Rule("java.lang.instrument.Instrumentation", "redefineClasses", "()V",
                 UnknownReason.Kind.REFLECT, "rewrites loaded bytecode — metaprogramming"),
         // ── irreducible: the target rides a PAYLOAD (deserialization / eval / expression languages) ───
@@ -201,7 +204,7 @@ class UnknownReasonKindTableTest {
                         + " — " + r.why());
         }
         assertTrue(bad.isEmpty(), String.join("\n", bad));
-        assertEquals(38, TABLE.size(), "one row per `return Effect.UNKNOWN` site in Classifier");
+        assertEquals(39, TABLE.size(), "one row per `return Effect.UNKNOWN` site in Classifier + KappaJdkSinks");
     }
 
     /**
@@ -243,6 +246,11 @@ class UnknownReasonKindTableTest {
         // change. So: skip comment lines and require the semicolon. (The family's standing note on source
         // censuses is that `contains` over a whole file is how a check becomes vacuous or wrong; here it
         // was wrong in the loud direction, which is the lucky one.)
+        // SOUNDNESS R814 — the κ rules for JDK members the table had certified pure live in their own file;
+        // a census of Classifier.java alone would be blind to an Unknown rule added there.
+        Path sinks = Path.of("src/main/java/io/poly/candor/KappaJdkSinks.java");
+        assertTrue(Files.isRegularFile(sinks), "KappaJdkSinks must be findable too: " + sinks.toAbsolutePath());
+        s = s + "\n" + Files.readString(sinks);
         int sites = 0;
         for (String line : s.split("\n")) {
             String t = line.strip();

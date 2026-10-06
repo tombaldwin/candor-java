@@ -88,6 +88,7 @@ compile_all() {
   compile_one "$WORK/absreader"      "$CORPUS_SRC/AbstractReaderParse.java"
   compile_one "$WORK/asyncnetfs"     "$CORPUS_SRC/AsyncNetFs.java"
   compile_one "$WORK/asyncexec"      "$CORPUS_SRC/AsyncExec.java"
+  compile_one "$WORK/jdksinks"       "$CORPUS_SRC/JdkSinks.java"
 
   echo "== compiled =="
 }
@@ -120,6 +121,10 @@ corpus_entries() {
   #     parallel streams — runtime ground truth for the lambda-attribution the synthetic sweep checked statically ---
   entry async-netfs     "$WORK/asyncnetfs"     corpus.AsyncNetFs             jfr   corpus
   entry async-exec      "$WORK/asyncexec"      corpus.AsyncExec              agent corpus
+
+  # --- SOUNDNESS R814: JDK members the κ covered-prefix grant had certified pure (keystore read,
+  #     ImageIO stream-cache temp file, a Transformer writing a StreamResult(File)) ---
+  entry jdk-sinks       "$WORK/jdksinks"       corpus.JdkSinks               jfr   corpus
 }
 
 # ---------------------------------------------------------------------------------------------

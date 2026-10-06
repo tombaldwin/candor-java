@@ -154,16 +154,27 @@ class DepOverrideUnionTest {
                 + " exactly nothing for it");
     }
 
-    /** The walk this change deliberately does NOT take, pinned from the side that would break: a static owner
-     *  whose override is PURE publishes no row, and a naive walk UP would charge the base body to a call that
-     *  runs nothing (executed: no effect). */
+    /** THE ⟨0.40⟩-LICENSED FABRICATION, PINNED AS DELIBERATE (SOUNDNESS R868). A static owner whose override is
+     *  PURE publishes no row, so "SubO declares a pure m" and "SubO inherits m" are the same bytes in the report.
+     *  R867 refused to walk up for exactly this reason and pinned the OPPOSITE here ({@code
+     *  aPureOverrideAtTheStaticOwnerIsNotChargedTheBaseBody}), which left every genuinely INHERITED member silent
+     *  (executed: {@code SubK s; s.m()} writes a file, the row was ABSENT, {@code deny Fs} exited 0).
+     *
+     *  <p>SPEC.md ⟨0.40⟩, §2, "the walk reads absence as 'may be inherited'" (SPEC.md:655-664 at candor-spec 305f2bb), decides it:
+     *  "where T in fact declares a pure override, the ancestors' effects are charged to a body that never runs:
+     *  a FABRICATION this rung accepts as the sound direction, removable only by a member manifest, which is
+     *  rung B" — and it cites R868 by number. So the walk now continues past the absent key and charges
+     *  BaseO's Fs here although the JVM runs SubO's empty body (executed: no effect). Over-charge, never
+     *  silence. If a member manifest lands (rung B) and this starts reading empty, check that
+     *  {@code DepInheritedMemberTest#anInheritedMemberIsChargedOnTheUnitAndAgreesWithTheOneTreeScan} is still
+     *  green before flipping it. */
     @Test
-    void aPureOverrideAtTheStaticOwnerIsNotChargedTheBaseBody() throws Exception {
+    void aPureOverrideAtTheStaticOwnerIsChargedTheBaseBody_licensedByV040() throws Exception {
         String app = "package app;\nimport dep.*;\npublic class App {\n"
                 + "  public static void viaSub(SubO s) { s.m(); }\n}\n";
         Map<String, EffectSet> c = chained(dep("  @Override public void m() { }\n"), Map.of("app/App.java", app));
-        assertTrue(eff(c, "app.App.viaSub").isEmpty(), "SubO.m is a pure body the JVM runs instead of BaseO.m;"
-                + " charging BaseO's Fs here is a fabrication. Got " + eff(c, "app.App.viaSub"));
+        assertEquals(set("FS"), eff(c, "app.App.viaSub"), "⟨0.40⟩ walks past the absent SubO.m key to BaseO.m:"
+                + " the accepted fabrication over a pure override, never a silent inherited member");
     }
 
     @Test
@@ -206,21 +217,21 @@ class DepOverrideUnionTest {
         assertFalse(eff(c, "app.App.viaMid").contains("ENV"), "…and SubO, a SIBLING of Mid, is not");
     }
 
-    /** RESIDUAL, pinned so that closing it is a deliberate act. {@code SubG.m(String)} overrides
-     *  {@code BaseG.m(Object)} through a synthetic bridge the report never keys. The report cannot tell that
-     *  apart from a subclass OVERLOAD (the next test), and a wider match measured 51 overloads in 192 on the
-     *  corpus — so the consumer reads exactly what it read before this change (executed: Env). Closing it
-     *  needs the producer to publish the bridge's descriptor. If this starts carrying Env, check the
-     *  overload control below is still green, then flip this assertion. */
+    /** CLOSED by SOUNDNESS R869 — was the residual pinned here. {@code SubG.m(String)} overrides
+     *  {@code BaseG.m(Object)} through a synthetic bridge, and the report never keyed the bridge: the method
+     *  index collapses it onto the declared method's node, whose hash is the declared descriptor. The producer
+     *  now publishes that bridge's own descriptor as a synthetic row ({@code ReportWriter#appendBridgeRows}),
+     *  so the exact-key DOWN walk hits it without the consumer guessing at a parameter-differing match. The
+     *  overload control below is the reason the guess is still not made. (Executed: Env.) */
     @Test
-    void aGenericParameterOverrideIsAResidual() throws Exception {
+    void aGenericParameterOverrideIsReachedThroughItsPublishedBridge() throws Exception {
         Map<String, String> lib = new LinkedHashMap<>();
         lib.put("dep/BaseG.java", "package dep;\npublic class BaseG<T> {\n  public void m(T t) { " + FS + " }\n}\n");
         lib.put("dep/SubG.java", "package dep;\npublic class SubG extends BaseG<String> {\n"
                 + "  @Override public void m(String s) { " + ENV + " }\n}\n");
         String app = "package app;\nimport dep.*;\npublic class App {\n"
                 + "  public static void viaG(BaseG<String> g) { g.m(\"x\"); }\n}\n";
-        assertEquals(set("FS"), eff(chained(lib, Map.of("app/App.java", app)), "app.App.viaG"));
+        assertEquals(set("ENV", "FS"), eff(chained(lib, Map.of("app/App.java", app)), "app.App.viaG"));
     }
 
     /** THE CONTROL the generic residual is priced against: a NON-generic {@code m(Object)} and a subclass

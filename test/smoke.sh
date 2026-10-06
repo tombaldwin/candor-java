@@ -2040,6 +2040,69 @@ CANDOR_DEPS="$W/r840dep.json" CANDOR_POLICY="$W/r840.pol" "$CJ" "$W/r840appcls" 
 if [ "$r834" -eq 1 ]; then echo "  ok   R834 GATE: a chained app running a library-stored handle exits 1"; pass=$((pass+1));
 else echo "  FAIL R834 GATE — chained viaField exit $r834 (want 1)"; fail=$((fail+1)); fi
 
+# ── SOUNDNESS R820: a LITERAL locator on a non-SQL navigator is no more visible than a runtime one ─────
+echo "== SOUNDNESS R820: a literal Mongo collection / Redisson key loaded into a handle is disclosed where it runs =="
+# For a SQL owner a literal is CAPTURED (tablesInSql publishes it), so DbHandleFlow only follows RUNTIME
+# Strings. For every other Db owner nothing is captured, so `db.getCollection("secrets").drop()` was as
+# invisible as `db.getCollection(name).drop()` — but only the runtime one was followed. The terminal is
+# zero-argument (R794's per-call mark exempts it) and the navigator is not Db, so the literal marked nothing.
+# EXECUTED before this fixture was written, against mongo:7 and redis:7 in Docker through the real
+# mongodb-driver-sync 5.1.1 and redisson 3.31.0: `litDrop` dropped `secrets` and `bktLit` deleted the
+# `secrets` bucket, while `allow Db in <fn> users` EXITED 0 on the unit and on its caller (v0.39.3 and
+# 2a658d6). Stubs carry the real FQNs; the classifier keys on owner names.
+mkdir -p "$W/r820/com/mongodb/client" "$W/r820/org/redisson/api" "$W/r820/app"
+cat > "$W/r820/com/mongodb/client/MongoCollection.java" <<'J'
+package com.mongodb.client;
+public interface MongoCollection { void drop(); long countDocuments(); String getNamespace(); }
+J
+cat > "$W/r820/com/mongodb/client/MongoDatabase.java" <<'J'
+package com.mongodb.client;
+public interface MongoDatabase { MongoCollection getCollection(String name); }
+J
+cat > "$W/r820/org/redisson/api/RBucket.java" <<'J'
+package org.redisson.api;
+public interface RBucket { Object get(); boolean delete(); }
+J
+cat > "$W/r820/org/redisson/api/RedissonClient.java" <<'J'
+package org.redisson.api;
+public interface RedissonClient { RBucket getBucket(String name); }
+J
+cat > "$W/r820/app/N.java" <<'J'
+package app;
+import java.sql.*;
+import com.mongodb.client.*;
+import org.redisson.api.*;
+public class N {
+  static void lit(Connection c) throws SQLException { c.prepareStatement("SELECT id FROM users").executeQuery(); }
+  public static void litDrop(Connection c, MongoDatabase db) throws SQLException { lit(c); db.getCollection("secrets").drop(); }
+  public static void callLit(Connection c, MongoDatabase db) throws SQLException { litDrop(c, db); }
+  static MongoCollection secretsColl(MongoDatabase db) { return db.getCollection("secrets"); }
+  public static long helperCount(Connection c, MongoDatabase db) throws SQLException { lit(c); return secretsColl(db).countDocuments(); }
+  static MongoCollection F;
+  public static void store(MongoDatabase db) { F = db.getCollection("secrets"); }
+  public static void fieldDrop(Connection c) throws SQLException { lit(c); F.drop(); }
+  public static boolean bktLit(Connection c, RedissonClient r) throws SQLException { lit(c); return r.getBucket("secrets").delete(); }
+  public static boolean callBkt(Connection c, RedissonClient r) throws SQLException { return bktLit(c, r); }
+  // CALIBRATION: the runtime twin, disclosed before this change.
+  public static void rtDrop(Connection c, MongoDatabase db, String n) throws SQLException { lit(c); db.getCollection(n).drop(); }
+  // CONTROLS: a literal handle loaded but never RUN by a Db call stays certifiable.
+  public static String loadOnly(Connection c, MongoDatabase db) throws SQLException { lit(c); return db.getCollection("secrets").getNamespace(); }
+}
+J
+javac -d "$W/r820cls" $(find "$W/r820" -name '*.java') 2>/dev/null
+for pair in litDrop:1 callLit:1 helperCount:1 fieldDrop:1 bktLit:1 callBkt:1 rtDrop:1 loadOnly:0; do
+    m=${pair%%:*}; want=${pair##*:}
+    printf 'allow Db in app.N.%s users\n' "$m" > "$W/r820.pol"
+    CANDOR_POLICY="$W/r820.pol" "$CJ" "$W/r820cls" >/dev/null 2>&1; got=$?
+    if [ "$got" -eq "$want" ]; then echo "  ok   R820 GATE app.N.$m exits $want"; pass=$((pass+1));
+    else echo "  FAIL R820 GATE app.N.$m — exit $got (want $want)"; fail=$((fail+1)); fi
+done
+# …and the gate can FAIL on the control: `deny Db` bites `loadOnly`, so its exit 0 above is a certification.
+printf 'deny Db app.N.loadOnly\n' > "$W/r820.pol"
+CANDOR_POLICY="$W/r820.pol" "$CJ" "$W/r820cls" >/dev/null 2>&1; r820d=$?
+if [ "$r820d" -eq 1 ]; then echo "  ok   R820 CALIBRATION: \`deny Db\` bites the control that \`allow Db\` certifies"; pass=$((pass+1));
+else echo "  FAIL R820 CALIBRATION — deny Db exit $r820d (want 1)"; fail=$((fail+1)); fi
+
 # ── SOUNDNESS R795: a zero-argument Net call can still name its destination — at the RECEIVER ─────
 echo "== SOUNDNESS R795: the Net masking guard reads the receiver, not the argument count =="
 # The defect: `carriesArgs = !min.desc.startsWith("()")` declined every zero-argument Net call, so

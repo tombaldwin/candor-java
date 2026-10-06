@@ -9,6 +9,57 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R820 FIXED: a literal Mongo collection or Redisson key loaded into a handle is disclosed where the handle runs
+
+**What went wrong.** `db.getCollection("secrets").drop()` beside a benign `SELECT … FROM users` read
+`tables: ["users"]` with no `incomplete`, so `allow Db in <fn> users` exited 0, on the unit and on its caller.
+Executed against mongo:7 through the real driver, the call dropped `secrets`. Redisson's
+`r.getBucket("secrets").delete()` was the same, and it deleted the key on redis:7. The runtime-name twin
+(`getCollection(name)`) was already marked. Pre-existing on v0.39.3 and v0.39.2. It was not a regression.
+
+**Why.** For a SQL owner a literal is captured as a table, so `DbHandleFlow` follows only RUNTIME Strings into
+a handle. For a non-SQL Db owner nothing is ever captured, so a literal is just as invisible. But the follower
+did not take it as a seed. The terminal (`drop()`, `countDocuments()`, `RBucket.get()`) takes no argument, so
+R794's per-call mark skips it, and the navigator is not Db.
+
+**The fix only ADDS.** A call on a non-SQL owner that takes a String and returns a type some Db call in the
+program runs is now a loader, whether its String is a literal or not. The existing follower marks the frames
+that run the handle, as it does for a runtime name: same frame, helper return, field, caller. The v0.39.2
+floor and every existing seed are untouched. Two narrowings, each measured:
+- Run types only (receivers of a Db call), not types a Db call is handed. A `Bson` filter is not a seed.
+- A String operand only. Taking any object operand seeded redisson's `RFuture`-returning calls and put
+  `incomplete: [Db]` on 5 redisson pubsub rows that infer no Db.
+
+**Measured.** Executed fixture with the engine as the only variable (v0.39.3, `2a658d6`, this build). Five
+units flip `allow Db … users` from 0 to 1: `litDrop`, its caller, a helper-returned handle,
+`bktLit` and its caller. `deny Db` is 1 throughout. The controls hold: a literal handle that is loaded but
+never run stays at 0, and so does a `users`-only body. Pinned in `test/smoke.sh` with FQN stubs. Those stubs
+fail 6 of 9 on v0.39.3 and on `2a658d6`.
+
+Corpus A/B (`bin/corpus-ab.py`) against this build:
+
+| pre arm | 372 jars | 452 jars |
+|---|---|---|
+| `2a658d6` | 0 added, 0 removed, 0 changed | 0 added, 0 removed, 0 changed |
+| v0.39.3 (release jar) | 158,365 added, 0 removed, 12 changed | 83,292 added, 0 removed, 3 changed |
+
+Every v0.39.3 add and change is already in `2a658d6` (the `2a658d6` arm is empty). None of the 15 changed
+rows touches Db.
+
+Reach is 0 in both pools, because library code names its collections at run time. So the A/B is the
+fabrication control only, and the evidence for the fix is the executed fixture.
+
+**Residuals, not fixed here:**
+- A handle built from a literal INSIDE a chained dependency and returned with no String crossing the
+  boundary (`dep.secrets(db).drop()`). The dependency's row is `[]`. Runtime names inside a dependency
+  behave the same way.
+- An Object-typed key navigator (`boundValueOps(K)`) whose handle runs in another frame. The load frame is
+  marked by R794.
+- A method-reference navigator (`map(db::getCollection)`). Literal and runtime both stay silent.
+- Whole-database zero-argument calls (`jedis.flushAll()`, Lettuce `flushall()`) carry no locator, and
+  R794 exempts them.
+- `MongoDatabase.drop()` is not classified, so `deny Db` exits 0 over it.
+
 ### ⚠ SOUNDNESS R533 (java half) + R919 FIXED: a dispatch on a chained interface that nothing implements discloses `Unknown`, and an all-pure one stays pure
 
 **What went wrong.** `int go(Handler h) { return h.handle(); }`, where `Handler` is an interface from a

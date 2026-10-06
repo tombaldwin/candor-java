@@ -111,6 +111,11 @@ final class DbHandleFlow {
     private final Map<String, Set<String>> siteOwners = new HashMap<>();
     private final Map<String, List<MethodNode>> indyUsersByImpl = new HashMap<>();
     private final Set<String> handleTypes = new HashSet<>();
+    /** SOUNDNESS R820 — the RECEIVER types of every Db-classified instance call: a value some Db call RUNS
+     *  ({@code MongoCollection.drop()}, {@code RBucket.get()}), as opposed to one it is merely HANDED (a
+     *  {@code Bson} filter). The narrower half of {@link #handleTypes}, used only by the non-SQL navigator rule
+     *  in {@link #isLoader}. */
+    private final Set<String> runTypes = new HashSet<>();
     /** The types a LOADER in this program produces (its result, or a void loader's receiver): the only
      *  declared types, besides containers and function values, a field is keyed globally by. Keying on every
      *  SQL-bearing type made each `org.hibernate` field global in hibernate's own scan (89,207 seeds). */
@@ -216,7 +221,7 @@ final class DbHandleFlow {
                         // something a terminal runs, so a runtime String loaded into one is a locator.
                         if (!"<init>".equals(m.name)
                                 && Classifier.classify(m.owner.replace('/', '.'), m.name, m.desc) == Effect.DB) {
-                            if (m.getOpcode() != Opcodes.INVOKESTATIC) handleTypes.add(m.owner);
+                            if (m.getOpcode() != Opcodes.INVOKESTATIC) { handleTypes.add(m.owner); runTypes.add(m.owner); }
                             // …and the declared type of every object a Db call is HANDED (`session.execute(stmt)`).
                             for (Type at : Type.getArgumentTypes(m.desc))
                                 if (at.getSort() == Type.OBJECT) handleTypes.add(at.getInternalName());
@@ -238,6 +243,9 @@ final class DbHandleFlow {
             }
         }
         handleTypes.removeAll(NON_HANDLE);
+        runTypes.removeAll(NON_HANDLE);
+        runTypes.removeAll(NON_HOLDER);
+        runTypes.remove("java/lang/Object");
         for (Object[] tc : typedCandidates)
             if (handleTypes.contains((String) tc[1])) { candidates.add((MethodNode) tc[0]); sourceTypes.add((String) tc[1]); }
         sourceTypes.removeAll(NON_HANDLE);
@@ -299,6 +307,12 @@ final class DbHandleFlow {
         if (ctx.projectClasses.contains(m.owner) && !bodiesOf(m).isEmpty()) return false;
         boolean sql = Candor.isSqlBearingOwner(m.owner);
         if (sql && Candor.isSqlParameterBinder(m.name)) return false;
+        if (!sql && isNonSqlNavigator(m)) {
+            // REACH for the A/B: only the seeds the pre-R820 rule would NOT have taken.
+            if (Candor.MASK_DEBUG && Candor.runtimeStringSlot(fr, insns, m) < 0)
+                System.err.println("R820NAV\t" + m.owner + "." + m.name + m.desc);
+            return true;
+        }
         if (!m.desc.contains("Ljava/lang/String;")) return false;
         if ("<init>".equals(m.name)) {
             if (!sql || isThrowableName(m.owner)) return false;
@@ -320,6 +334,42 @@ final class DbHandleFlow {
         // load frame is marked by the 0.39.2 floor in Candor regardless (R840).
         if (!handleTypes.contains(rn)) return false;
         return Candor.runtimeStringSlot(fr, insns, m) >= 0;
+    }
+
+    /** SOUNDNESS R820 — A NON-SQL NAVIGATOR IS A LOADER WHETHER ITS LOCATOR IS A LITERAL OR NOT.
+     *
+     *  <p>For a SQL-bearing owner a LITERAL locator is captured: {@code tablesInSql} reads the table out of it
+     *  and publishes it, so only a RUNTIME String needs following, which is why {@link #isLoader} asks
+     *  {@link Candor#runtimeStringSlot}. For every other Db owner nothing is ever captured — the engine
+     *  publishes no collection or key surface at all (see the R794 note in {@code Candor}) — so a literal is
+     *  exactly as invisible to {@code allow Db … <tables>} as a runtime value. MEASURED on v0.39.3 and on HEAD
+     *  {@code 2a658d6}, one variable (literal vs parameter) with the same benign {@code SELECT … FROM users}
+     *  sibling: {@code db.getCollection(name).drop()} marks {@code incomplete: [Db]} and {@code allow Db in
+     *  <fn> users} exits 1, while {@code db.getCollection("secrets").drop()} marks nothing and exits 0, on the
+     *  unit and on its caller. The same for Redisson {@code getBucket("secrets").get()}. The terminal is
+     *  zero-argument, so the per-call R794 mark ({@link Candor#dbCallCouldNameALocator}) cannot see it, and the
+     *  builder is not classified Db, so nothing else did either.
+     *
+     *  <p>So a call on a non-SQL owner that takes a String and returns a type some Db call in this program RUNS
+     *  ({@link #runTypes}) loads a locator into a handle, and the frames that run that handle are marked by the
+     *  same follower as the runtime case. Two narrowings, each measured, and each narrows only what this rule
+     *  ADDS:
+     *  <ul><li>The receiver set, not {@link #handleTypes}: a type a Db call is only HANDED ({@code Bson}, from
+     *  {@code find(filter)}) would seed every {@code Filters.eq("field", v)}, whose String is a field name.</li>
+     *  <li>A String operand, as the runtime rule already requires. Taking ANY object operand seeded redisson's
+     *  {@code RemoteExecutorServiceAsync.executeRunnable(TaskParameters)} and {@code invoke(Object)}, whose
+     *  {@code RFuture} result is a run type only because the R* verb rule charges {@code RFuture.get()}; over
+     *  372 jars that put {@code incomplete: [Db]} on five redisson pubsub rows that infer no Db at all. An
+     *  Object-typed key ({@code boundValueOps(K)}) is therefore NOT a seed here: its load frame is marked by the
+     *  per-call R794 rule (the call is Db and takes an object), and a frame that runs such a handle loaded
+     *  elsewhere stays the same residual it is for a runtime key.</li></ul>
+     *
+     *  <p>Only ADDS (R840): it widens the follower's seeds, and the follower marks nothing it did not see run. */
+    private boolean isNonSqlNavigator(MethodInsnNode m) {
+        if ("<init>".equals(m.name)) return false;
+        Type rt = Type.getReturnType(m.desc);
+        if (rt.getSort() != Type.OBJECT) return false;
+        return runTypes.contains(rt.getInternalName()) && m.desc.contains("Ljava/lang/String;");
     }
 
     private static boolean isThrowableName(String owner) {

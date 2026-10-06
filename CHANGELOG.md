@@ -9,6 +9,15 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### Report and query JSON write `<` and `>` as themselves (`<init>`, not `\u003cinit\u003e`)
+
+Gson's default HTML-safe escaping wrote every `<init>` / `<clinit>` in a report, its `.callgraph.json`
+sidecar and `--json` query output as `\u003cinit\u003e`, which made committed baselines read as if they
+held Unicode (a uflexi field report: 636 of each in one baseline). Both serializers now disable it. **The
+parsed JSON is identical, so no gate, guard or ratchet verdict changes** — but the BYTES do: a baseline
+regenerated with this build differs line-for-line from one written before it. Regenerate once, in its own
+PR. Pinned by `JsonHtmlEscapingTest`.
+
 ### ⚠ SOUNDNESS R925 FIXED: every effect a call adds BESIDE its classified one is judged by the masking guards
 
 **What went wrong.** Four call-site rules add an effect next to the classifier's single answer:

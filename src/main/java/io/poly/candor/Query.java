@@ -27,7 +27,7 @@ public final class Query {
             Set.of("show", "where", "callers", "map", "diff", "containment", "reachable", "path", "impact",
                     "blindspots", "tour", "gains", "whatif", "fix", "fix-gate", "unverified", "rewire",
                     "gate");   // ⟨0.24⟩ SPEC §3.1 — apply a policy to an EXISTING report, with no scan
-    static final Gson JSON = new GsonBuilder().setPrettyPrinting().create();
+    static final Gson JSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
 
     // Boundary effects SHOULD live in a dedicated layer — their dispersion is the architecture signal
     // (NOT raw counts, which are domain-dependent). Ambient effects are expected to be cross-cutting
@@ -5506,7 +5506,7 @@ public final class Query {
             comp.writeJson(out);
             // Pure JSON to stdout, compact (no pretty-printing) — matches the Rust reference's
             // serde_json::to_string. The shared JSON serializer here pretty-prints, so build a compact one.
-            System.out.println(new GsonBuilder().create().toJson(out));
+            System.out.println(new GsonBuilder().disableHtmlEscaping().create().toJson(out));
             return 0;
         }
 

@@ -5505,9 +5505,9 @@ public class Candor {
             // silently invisible, with no uncovered entry and no blind propagation to its callers. Every
             // package-qualified owner discloses at a single call; only the one whose key could not be
             // formed vanished, which is the shape the family's could-not-form-a-key rule exists for.
-            // The stand-in avoids `<>`: the serializer HTML-escapes them, and the ledger key reached the report
-            // as "\u003cdefault\u003e". A real Java package cannot contain parentheses or a space, so this
-            // cannot collide with one and needs no escaping.
+            // The stand-in avoids `<>`: the serializer USED TO HTML-escape them (fixed 2026-10-06, ReportJson), and the
+            // key reached the report as "\u003cdefault\u003e". Kept as-is so existing ledger keys do not move. A
+            // real Java package cannot contain parentheses or a space, so this cannot collide with one.
             String pkg = slash > 0 ? min.owner.substring(0, slash).replace('/', '.') : "(default package)";
             if (!pkg.isEmpty() && !kappaCovers(pkg)) {
                 // A FLOORED call (classifier returned pure) into an uncurated external package is a

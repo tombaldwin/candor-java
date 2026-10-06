@@ -2103,6 +2103,61 @@ CANDOR_POLICY="$W/r820.pol" "$CJ" "$W/r820cls" >/dev/null 2>&1; r820d=$?
 if [ "$r820d" -eq 1 ]; then echo "  ok   R820 CALIBRATION: \`deny Db\` bites the control that \`allow Db\` certifies"; pass=$((pass+1));
 else echo "  FAIL R820 CALIBRATION — deny Db exit $r820d (want 1)"; fail=$((fail+1)); fi
 
+# ── SOUNDNESS R920: the Db client command surfaces are charged whole-owner minus a DERIVED pure set ─────
+echo "== SOUNDNESS R920: a Db client member the hand rules never listed is charged, a derived-local one stays pure =="
+# The classifier listed Db VERBS per client, so every member nobody listed was pure: `MongoDatabase.drop()`,
+# `JedisPooled.del(k)`, Redisson `RMap.clear()` and `RAtomicLong.incrementAndGet()`. Redisson sits in a
+# kappa-covered package, so its misses were not even disclosed. EXECUTED against mongo:7 / redis:7 before this
+# fixture was written: each dropped, cleared, incremented or deleted, while `deny Db` exited 0 on the unit and
+# on its caller (v0.39.3 and 2a658d6). DbClientSurface is generated from the client jars' bytecode; stubs carry
+# the real FQNs because it keys on the owner name.
+mkdir -p "$W/r920/com/mongodb/client" "$W/r920/org/redisson/api" "$W/r920/redis/clients/jedis" "$W/r920/app"
+cat > "$W/r920/com/mongodb/client/MongoDatabase.java" <<'J'
+package com.mongodb.client;
+public interface MongoDatabase { void drop(); String getName(); MongoDatabase withReadConcern(Object c); }
+J
+cat > "$W/r920/org/redisson/api/RMap.java" <<'J'
+package org.redisson.api;
+public interface RMap { void clear(); String getName(); }
+J
+cat > "$W/r920/org/redisson/api/RedissonClient.java" <<'J'
+package org.redisson.api;
+public interface RedissonClient { RMap getMap(String n); RLock getLock(String n); }
+J
+cat > "$W/r920/org/redisson/api/RLock.java" <<'J'
+package org.redisson.api;
+public interface RLock { void lock(); String getName(); }
+J
+cat > "$W/r920/redis/clients/jedis/JedisPooled.java" <<'J'
+package redis.clients.jedis;
+public class JedisPooled { public long del(String k) { return 0; } public void setJsonObjectMapper(Object m) {} }
+J
+cat > "$W/r920/app/S.java" <<'J'
+package app;
+import com.mongodb.client.MongoDatabase;
+import org.redisson.api.*;
+public class S {
+  public static void dbDrop(MongoDatabase db) { db.drop(); }
+  public static void callDbDrop(MongoDatabase db) { dbDrop(db); }
+  public static void mapClear(RMap m) { m.clear(); }
+  public static void lockIt(RedissonClient r) { r.getLock("l").lock(); }
+  public static long pooledDel(redis.clients.jedis.JedisPooled j) { return j.del("k"); }
+  public static void callPooledDel(redis.clients.jedis.JedisPooled j) { pooledDel(j); }
+  // CONTROLS: members derived LOCAL stay pure.
+  public static Object dbName(MongoDatabase db) { return db.withReadConcern(null).getName(); }
+  public static Object lockName(RedissonClient r) { return r.getLock("l").getName(); }
+  public static void mapper(redis.clients.jedis.JedisPooled j) { j.setJsonObjectMapper(null); }
+}
+J
+javac -d "$W/r920cls" $(find "$W/r920" -name '*.java') 2>/dev/null
+for pair in dbDrop:1 callDbDrop:1 mapClear:1 lockIt:1 pooledDel:1 callPooledDel:1 dbName:0 lockName:0 mapper:0; do
+    m=${pair%%:*}; want=${pair##*:}
+    printf 'deny Db app.S.%s\n' "$m" > "$W/r920.pol"
+    CANDOR_POLICY="$W/r920.pol" "$CJ" "$W/r920cls" >/dev/null 2>&1; got=$?
+    if [ "$got" -eq "$want" ]; then echo "  ok   R920 GATE deny Db app.S.$m exits $want"; pass=$((pass+1));
+    else echo "  FAIL R920 GATE deny Db app.S.$m — exit $got (want $want)"; fail=$((fail+1)); fi
+done
+
 # ── SOUNDNESS R795: a zero-argument Net call can still name its destination — at the RECEIVER ─────
 echo "== SOUNDNESS R795: the Net masking guard reads the receiver, not the argument count =="
 # The defect: `carriesArgs = !min.desc.startsWith("()")` declined every zero-argument Net call, so

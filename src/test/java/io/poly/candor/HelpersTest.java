@@ -689,6 +689,34 @@ class HelpersTest {
                     g + " is a pure config getter, must NOT be Net");
     }
 
+    /** SOUNDNESS R926: every operation of an AWS service client is Net — not only the 22 listed verbs — and a
+     *  member that is no operation stays pure. Operation names are the SDK's own (one marshaller per operation). */
+    @Test
+    void awsServiceClientOperationsAreNetWhateverTheirVerb() {
+        String v2 = "software.amazon.awssdk.services.cognitoidentityprovider.CognitoIdentityProviderClient";
+        for (String op : new String[] {"adminInitiateAuth", "adminGetUser", "initiateAuth", "confirmSignUp",
+                "respondToAuthChallenge", "forgotPassword", "globalSignOut"})
+            assertEquals(Effect.NET, Classifier.classify(v2, op, "(Ljava/lang/Object;)Ljava/lang/Object;"), op);
+        assertEquals(Effect.NET, Classifier.classify("software.amazon.awssdk.services.dynamodb.DynamoDbClient",
+                "transactWriteItems", "(Ljava/lang/Object;)Ljava/lang/Object;"));
+        assertEquals(Effect.NET, Classifier.classify("software.amazon.awssdk.services.sts.StsClient",
+                "assumeRole", "(Ljava/lang/Object;)Ljava/lang/Object;"));
+        assertEquals(Effect.NET, Classifier.classify("com.amazonaws.services.s3.AmazonS3Client",
+                "completeMultipartUpload", "(Ljava/lang/Object;)Ljava/lang/Object;"));
+        // Pinpoint's GetEndpoint is an operation; the zero-argument config getter of that name is not.
+        assertEquals(Effect.NET, Classifier.classify("com.amazonaws.services.pinpoint.AmazonPinpointClient",
+                "getEndpoint", "(Lcom/amazonaws/services/pinpoint/model/GetEndpointRequest;)Ljava/lang/Object;"));
+        for (String pure : new String[] {"serviceName", "close", "serviceClientConfiguration", "utilities", "waiter",
+                "builder", "serviceMetadata", "toString"})
+            assertNull(Classifier.classify(v2, pure, "()Ljava/lang/Object;"), pure);
+        // (getExecutorService stays Net: the older `get*` VERB rule fabricates it, and this change only adds.)
+        for (String pure : new String[] {"setRegion", "setEndpoint", "shutdown", "withRegion"})
+            assertNull(Classifier.classify("com.amazonaws.services.sqs.AmazonSQSAsyncClient", pure, "()Ljava/lang/Object;"), pure);
+        // Not a service client: the SWF Flow framework's decision builders.
+        assertNull(Classifier.classify("com.amazonaws.services.simpleworkflow.flow.generic.GenericActivityClient",
+                "scheduleActivityTask", "(Ljava/lang/Object;)Ljava/lang/Object;"));
+    }
+
     /** Round-11: the DatabaseMetaData catalog-query verb list was incomplete (getColumnPrivileges/getUDTs/…
      *  run a system-catalog SELECT) and Druid/Oracle/PG/H2 pools were missing → silent-pure. Capability
      *  getters stay pure. */

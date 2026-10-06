@@ -167,16 +167,110 @@ final class Classifier {
         // whole-owner rules below would fabricate the type's effect on it (the cardinal sin). Subtract
         // these explicitly; everything else on the type keeps its effect. (See isPureHandleAccessor.)
         if (isPureHandleAccessor(owner, method)) return null;
+        Effect e = classifyByHand(owner, method, desc);
+        // SOUNDNESS R920 — the Db client command surfaces, derived from bytecode (DbClientSurface). Consulted
+        // only after every hand rule above declined, so it can turn a null into Db and nothing else: no
+        // existing charge, and no existing pure carve-out that returned early, is changed.
+        if (e != null) return e;
+        e = DbClientSurface.classify(owner, method);
+        if (e != null) return e;
+        // SOUNDNESS R926 — the AWS SDK service clients, whole-owner minus the members that are no operation.
+        e = awsClientSurface(owner, method, desc);
+        if (e != null && Candor.MASK_DEBUG) System.err.println("R926SURF\t" + owner + "." + method);
+        return e;
+    }
+
+    /** SOUNDNESS R926 — AN AWS SERVICE CLIENT'S EVERY OPERATION IS A REQUEST; THE VERB LIST NAMED 22 OF THEM.
+     *
+     *  <p>{@link #sharedAwsSdkClients} charges {@code Net} on a {@code *Client} member only when its name starts
+     *  with one of 22 verbs. Censused against each SDK jar's OWN operation list — the SDK generates one
+     *  {@code transform/<Op>RequestMarshaller} per operation, so the jar names its operations — that rule left
+     *  uncharged 585 of 2,628 operation members over 8 v2 services (cognito-idp, dynamodb, iam, kms, s3, sns, sqs,
+     *  sts) and 10,700 of 46,971 over 376 v1 services: Cognito's {@code adminInitiateAuth} (the reported case),
+     *  DynamoDB {@code transactWriteItems}/{@code batchWriteItem}/{@code executeStatement}, S3 {@code headObject}
+     *  and {@code completeMultipartUpload}, STS {@code assumeRole}, every {@code tag}/{@code start}/{@code attach}.
+     *  The package is not κ-covered, so each disclosed {@code invisible} and {@code deny Net} passed over it.
+     *
+     *  <p>The same model defect as R920: an allowlist of what to charge on an owner whose members are almost all
+     *  charged. So the direction is reversed. This is consulted only after every hand rule declined, and charges
+     *  {@code Net} on every member of a public service {@code *Client} type EXCEPT {@link
+     *  #AWS_CLIENT_NON_OPERATIONS}, so a member nobody listed is charged and an omission from the exception list
+     *  over-charges (loud) rather than certifying. Every name in that list was checked against the union of all
+     *  384 jars' operation names and is none of them. */
+    static Effect awsClientSurface(String owner, String method, String desc) {
+        if (!(owner.startsWith("software.amazon.awssdk.services.") || owner.startsWith("com.amazonaws.services."))) return null;
+        if (!owner.endsWith("Client") || owner.indexOf('$') >= 0 || owner.contains(".internal.")
+                || owner.contains(".model.") || owner.contains(".transform.")
+                // The SWF Flow FRAMEWORK, not a service client: its *Client types build decisions inside a
+                // workflow (scheduleActivityTask records a decision; the decider sends it later).
+                || owner.startsWith("com.amazonaws.services.simpleworkflow.flow.")) return null;
+        if (method.startsWith("<") || isConventionallyPure(method) || AWS_CLIENT_NON_OPERATIONS.contains(method)) return null;
+        // A zero-argument `getEndpoint()` is a config read; the operation of that name takes its request.
+        if (method.equals("getEndpoint") && desc != null && desc.startsWith("()")) return null;
+        return Effect.NET;
+    }
+
+    /** The members of an AWS service client that are not operations. Three sources, each a measurement:
+     *  <ul><li>the public members of the v1 base class {@code com.amazonaws.AmazonWebServiceClient}
+     *  ({@code javap -public}, aws-java-sdk-core 1.12.720) — a call through {@code AmazonS3Client} names the
+     *  subclass as owner, so the inherited config members arrive under it;</li>
+     *  <li>the v2 base interfaces {@code SdkClient}/{@code AwsClient} plus {@code close} (sdk-core 2.25.60);</li>
+     *  <li>every public member DECLARED on a {@code *Client} type, over 376 v1 and 8 v2 service jars, whose name
+     *  is no operation of any of them: {@code shutdown}, {@code getCachedResponseMetadata},
+     *  {@code getExecutorService}, {@code waiters}/{@code waiter}, {@code utilities}, {@code delegate},
+     *  {@code presigners}. Two census non-operations are deliberately NOT here because they make a request:
+     *  EC2's {@code dryRun} (a DryRun call) and the buffered SQS client's {@code flush} (sends the batch).</li>
+     *  <li>the static factories ({@code builder}, {@code asyncBuilder}, {@code serviceMetadata}, S3's CRT pair), the
+     *  S3 v1 client's local members, and {@code Object}'s monitor methods.</li></ul>
+     *  <p>{@link Candor#isAwsPureClientGetter} is NOT consulted here: it carries {@code getEndpoint}, which is a
+     *  real operation of Pinpoint and IoT Device Advisor ({@code GetEndpointRequestMarshaller}), so the verb rule
+     *  has been certifying that request pure. Only the ZERO-argument {@code getEndpoint()} is treated as config
+     *  (the operation takes its request). Its other names are listed above. */
+    static final Set<String> AWS_CLIENT_NON_OPERATIONS = Set.of(
+            "setEndpoint", "getSignerByURI", "setRegion", "configureRegion", "shutdown", "addRequestHandler",
+            "removeRequestHandler", "setTimeOffset", "withTimeOffset", "getTimeOffset", "getRequestMetricsCollector",
+            "getMonitoringListeners", "getServiceName", "getEndpointPrefix", "setServiceNameIntern",
+            "getSignerRegionOverride", "setSignerRegionOverride", "withRegion", "withEndpoint", "makeImmutable",
+            "getSignerOverride", "getClientConfiguration",
+            "serviceName", "serviceClientConfiguration", "close",
+            "getCachedResponseMetadata", "getExecutorService", "waiters", "waiter", "utilities", "delegate", "presigners",
+            "builder", "asyncBuilder", "serviceMetadata", "crtBuilder", "crtCreate",
+            // the generated clients' own NON-public helpers, met only when the SDK jar itself is scanned (census of
+            // non-public members: 398 `init`, 357 `getProtocolFactory`, 18+18+10+6 in the v2 Default* impls). Their
+            // request-making siblings `invoke`/`doInvoke`/`anonymousInvoke`/`invokeOperation`/`execute*` stay Net.
+            "init", "getProtocolFactory", "updateSdkClientConfiguration", "resolveMetricPublishers",
+            "createErrorResponseHandler", "updateRetryStrategyClientConfiguration",
+            // the S3 v1 client is hand-written (no per-operation marshaller to read), so its local members are
+            // named from javap: option and URL builders and the cached-region accessors.
+            "setS3ClientOptions", "getUrl", "getResourceUrl", "getRegion", "getRegionName",
+            "getRegionNameFromAuthorityOrSigner", "getSignerRegion", "getServiceNameIntern",
+            "wait", "notify", "notifyAll");
+
+    private static Effect classifyByHand(String owner, String method, String desc) {
         int dot = owner.indexOf('.');
-        switch (dot > 0 ? owner.substring(0, dot) : owner) {
-            case "java": return classifyJava(owner, method, desc);
-            case "javax": return classifyJavax(owner, method, desc);
-            case "jakarta": return classifyJakarta(owner, method, desc);
-            case "org": return classifyOrg(owner, method, desc);
-            case "com": return classifyCom(owner, method, desc);
-            case "io": return classifyIo(owner, method, desc);
-            default: return classifyOther(owner, method, desc);
-        }
+        return switch (dot > 0 ? owner.substring(0, dot) : owner) {
+            case "java" -> classifyJava(owner, method, desc);
+            case "javax" -> classifyJavax(owner, method, desc);
+            case "jakarta" -> classifyJakarta(owner, method, desc);
+            case "org" -> classifyOrg(owner, method, desc);
+            case "com" -> classifyCom(owner, method, desc);
+            case "io" -> classifyIo(owner, method, desc);
+            default -> classifyOther(owner, method, desc);
+        };
+    }
+
+    /** SOUNDNESS R920 / R926 — did {@link #classify} charge this member ONLY because a derived whole-owner surface
+     *  ({@link DbClientSurface}, {@link #awsClientSurface}) defaulted it?
+     *
+     *  <p>True when no hand rule spoke and a derived surface supplied the effect. Such a charge is a claim
+     *  that the member reaches the client's wire, made for members nobody reviewed one by one (unlisted and
+     *  future members are charged by default). It is not a claim that the wire is ALL the member does: the
+     *  driver bodies behind {@code MongoDatabase.drop()} also open connections, read credentials and can spawn
+     *  {@code mongocryptd}. So the κ ledger keeps such a call in its {@code invisible} disclosure — the charge is
+     *  added, the hedge it replaced is not taken away. See {@code Candor.kappaLedger}. */
+    static boolean chargedOnlyByDerivedSurface(String owner, String method, String desc) {
+        if (isPureHandleAccessor(owner, method) || classifyByHand(owner, method, desc) != null) return false;
+        return DbClientSurface.classifyQuiet(owner, method) != null || awsClientSurface(owner, method, desc) != null;
     }
 
     /** The java.io DELEGATING stream owners — the one {@link #classifyJava} rule whose {@code Unknown} is a

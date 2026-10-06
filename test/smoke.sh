@@ -2103,6 +2103,238 @@ CANDOR_POLICY="$W/r820.pol" "$CJ" "$W/r820cls" >/dev/null 2>&1; r820d=$?
 if [ "$r820d" -eq 1 ]; then echo "  ok   R820 CALIBRATION: \`deny Db\` bites the control that \`allow Db\` certifies"; pass=$((pass+1));
 else echo "  FAIL R820 CALIBRATION — deny Db exit $r820d (want 1)"; fail=$((fail+1)); fi
 
+# ── SOUNDNESS R920: the Db client command surfaces are charged whole-owner minus a DERIVED pure set ─────
+echo "== SOUNDNESS R920: a Db client member the hand rules never listed is charged, a derived-local one stays pure =="
+# The classifier listed Db VERBS per client, so every member nobody listed was pure: `MongoDatabase.drop()`,
+# `JedisPooled.del(k)`, Redisson `RMap.clear()` and `RAtomicLong.incrementAndGet()`. Redisson sits in a
+# kappa-covered package, so its misses were not even disclosed. EXECUTED against mongo:7 / redis:7 before this
+# fixture was written: each dropped, cleared, incremented or deleted, while `deny Db` exited 0 on the unit and
+# on its caller (v0.39.3 and 2a658d6). DbClientSurface is generated from the client jars' bytecode; stubs carry
+# the real FQNs because it keys on the owner name.
+mkdir -p "$W/r920/com/mongodb/client" "$W/r920/org/redisson/api" "$W/r920/redis/clients/jedis" "$W/r920/app"
+cat > "$W/r920/com/mongodb/client/MongoDatabase.java" <<'J'
+package com.mongodb.client;
+public interface MongoDatabase { void drop(); String getName(); MongoDatabase withReadConcern(Object c); }
+J
+cat > "$W/r920/org/redisson/api/RMap.java" <<'J'
+package org.redisson.api;
+public interface RMap { void clear(); String getName(); }
+J
+cat > "$W/r920/org/redisson/api/RedissonClient.java" <<'J'
+package org.redisson.api;
+public interface RedissonClient { RMap getMap(String n); RLock getLock(String n); }
+J
+cat > "$W/r920/org/redisson/api/RLock.java" <<'J'
+package org.redisson.api;
+public interface RLock { void lock(); String getName(); }
+J
+cat > "$W/r920/redis/clients/jedis/JedisPooled.java" <<'J'
+package redis.clients.jedis;
+public class JedisPooled { public long del(String k) { return 0; } public void setJsonObjectMapper(Object m) {} }
+J
+cat > "$W/r920/app/S.java" <<'J'
+package app;
+import com.mongodb.client.MongoDatabase;
+import org.redisson.api.*;
+public class S {
+  public static void dbDrop(MongoDatabase db) { db.drop(); }
+  public static void callDbDrop(MongoDatabase db) { dbDrop(db); }
+  public static void mapClear(RMap m) { m.clear(); }
+  public static void lockIt(RedissonClient r) { r.getLock("l").lock(); }
+  public static long pooledDel(redis.clients.jedis.JedisPooled j) { return j.del("k"); }
+  public static void callPooledDel(redis.clients.jedis.JedisPooled j) { pooledDel(j); }
+  // CONTROLS: members derived LOCAL stay pure.
+  public static Object dbName(MongoDatabase db) { return db.withReadConcern(null).getName(); }
+  public static Object lockName(RedissonClient r) { return r.getLock("l").getName(); }
+  public static void mapper(redis.clients.jedis.JedisPooled j) { j.setJsonObjectMapper(null); }
+}
+J
+javac -d "$W/r920cls" $(find "$W/r920" -name '*.java') 2>/dev/null
+for pair in dbDrop:1 callDbDrop:1 mapClear:1 lockIt:1 pooledDel:1 callPooledDel:1 dbName:0 lockName:0 mapper:0; do
+    m=${pair%%:*}; want=${pair##*:}
+    printf 'deny Db app.S.%s\n' "$m" > "$W/r920.pol"
+    CANDOR_POLICY="$W/r920.pol" "$CJ" "$W/r920cls" >/dev/null 2>&1; got=$?
+    if [ "$got" -eq "$want" ]; then echo "  ok   R920 GATE deny Db app.S.$m exits $want"; pass=$((pass+1));
+    else echo "  FAIL R920 GATE deny Db app.S.$m — exit $got (want $want)"; fail=$((fail+1)); fi
+done
+
+# ── SOUNDNESS R920, second half: the DERIVED charge must not delete the `invisible` hedge it sits on ─────
+echo "== SOUNDNESS R920: a Db charge the derived surface made by default keeps the call's \`invisible\` package =="
+# The first cut cleared the κ ledger on every call the surface charged: 5,404 rows of the 372-jar corpus lost an
+# `invisible` package. The surface vouches that a member reaches the wire, not that the wire is all it does, so
+# the call is charged AND stays disclosed. The CONTROL is a hand-listed verb (`Jedis.get`), which was never
+# ledgered and must not start to be — that is what stops the fix being "ledger every Db call". The client
+# stubs are compiled OUT of the scan, so the packages are external, as they are for a real consumer.
+mkdir -p "$W/r920k/stub/com/mongodb/client" "$W/r920k/stub/redis/clients/jedis" "$W/r920k/app/app"
+cat > "$W/r920k/stub/com/mongodb/client/MongoDatabase.java" <<'J'
+package com.mongodb.client;
+public interface MongoDatabase { void drop(); String getName(); }
+J
+cat > "$W/r920k/stub/redis/clients/jedis/Jedis.java" <<'J'
+package redis.clients.jedis;
+public class Jedis { public String get(String k) { return null; } }
+J
+cat > "$W/r920k/stub/redis/clients/jedis/JedisPooled.java" <<'J'
+package redis.clients.jedis;
+public class JedisPooled { public long del(String k) { return 0; } }
+J
+cat > "$W/r920k/app/app/K.java" <<'J'
+package app;
+public class K {
+  public static void dbDrop(com.mongodb.client.MongoDatabase db) { db.drop(); }
+  public static void callDbDrop(com.mongodb.client.MongoDatabase db) { dbDrop(db); }
+  public static long pooledDel(redis.clients.jedis.JedisPooled j) { return j.del("k"); }
+  public static String handGet(redis.clients.jedis.Jedis j) { return j.get("k"); }
+}
+J
+javac -d "$W/r920k/stubcls" $(find "$W/r920k/stub" -name '*.java') 2>/dev/null
+javac -cp "$W/r920k/stubcls" -d "$W/r920k/appcls" "$W/r920k/app/app/K.java" 2>/dev/null
+"$CJ" "$W/r920k/appcls" --json "$W/r920k.json" >/dev/null 2>&1
+r920k=$(python3 - "$W/r920k.json" <<'P'
+import json, sys
+for f in json.load(open(sys.argv[1]))["functions"]:
+    print(f["fn"], ",".join(f.get("inferred") or []), "inv=" + ",".join(f.get("invisible") or []))
+P
+)
+want   "R920 derived charge on Mongo keeps its package: dbDrop"      "$r920k" "app.K.dbDrop Db inv=com.mongodb.client"
+want   "R920 ...and its caller keeps it too: callDbDrop"             "$r920k" "app.K.callDbDrop Db inv=com.mongodb.client"
+want   "R920 derived charge on Jedis keeps its package: pooledDel"   "$r920k" "app.K.pooledDel Db inv=redis.clients.jedis"
+want   "R920 CONTROL: a hand-listed verb is charged"                 "$r920k" "app.K.handGet Db inv="
+wantnot "R920 CONTROL: ...and NOT ledgered"                          "$r920k" "app.K.handGet Db inv=redis"
+
+# ── SOUNDNESS R924 / R921 / R922: a non-SQL Db call with NO object operand still touches data ─────
+echo "== SOUNDNESS R924/R921/R922: an operand-free Redis/Mongo call marks the Db surface unless it touches no data =="
+# R794 exempted every Db call with no object operand. EXECUTED against redis:7 / mongo:7 beside a benign `users`
+# query, each of these did the operation while `allow Db in <fn> users` exited 0: `jedis.swapDB(0, 1)` and
+# `flushAll()` (the whole keyspace), `db.drop()` (a whole database), `coll.drop()` on a handle passed in (R924);
+# `dep.secrets(db).drop()` with the collection chosen inside a chained dependency (R921); `F.get()` on a bound
+# handle created elsewhere with a non-String key (R922). The exemption list is now of what touches NO data
+# (redis COMMAND INFO categories, plus connection/transaction lifecycle), so `ping`/`close` stay certifiable.
+# Stubs carry the real FQNs (the classifier keys on owner names) and are compiled OUT of the scan.
+mkdir -p "$W/r924/stub/redis/clients/jedis" "$W/r924/stub/com/mongodb/client" "$W/r924/stub/org/springframework/data/redis/core" "$W/r924/app/app"
+cat > "$W/r924/stub/redis/clients/jedis/Jedis.java" <<'J'
+package redis.clients.jedis;
+public class Jedis { public String flushAll() { return "OK"; } public String swapDB(int a, int b) { return "OK"; }
+  public String ping() { return "PONG"; } public void close() {} }
+J
+cat > "$W/r924/stub/com/mongodb/client/MongoDatabase.java" <<'J'
+package com.mongodb.client;
+public interface MongoDatabase { void drop(); MongoCollection getCollection(String n); }
+J
+cat > "$W/r924/stub/com/mongodb/client/MongoCollection.java" <<'J'
+package com.mongodb.client;
+public interface MongoCollection { void drop(); }
+J
+cat > "$W/r924/stub/org/springframework/data/redis/core/BoundValueOperations.java" <<'J'
+package org.springframework.data.redis.core;
+public interface BoundValueOperations<K, V> { V get(); K getKey(); }
+J
+cat > "$W/r924/app/app/K.java" <<'J'
+package app;
+import java.sql.*;
+import com.mongodb.client.*;
+public class K {
+  static void lit(Connection c) throws SQLException { c.prepareStatement("SELECT id FROM users").executeQuery(); }
+  public static void wipe(Connection c, redis.clients.jedis.Jedis j) throws SQLException { lit(c); j.flushAll(); }
+  public static void callWipe(Connection c, redis.clients.jedis.Jedis j) throws SQLException { wipe(c, j); }
+  public static void swap(Connection c, redis.clients.jedis.Jedis j) throws SQLException { lit(c); j.swapDB(0, 1); }
+  public static void dbDrop(Connection c, MongoDatabase db) throws SQLException { lit(c); db.drop(); }
+  public static void collDrop(Connection c, MongoCollection coll) throws SQLException { lit(c); coll.drop(); }
+  public static void helperDrop(Connection c, MongoDatabase db) throws SQLException { lit(c); pick(db).drop(); }
+  static MongoCollection pick(MongoDatabase db) { return db.getCollection("secrets"); }
+  static org.springframework.data.redis.core.BoundValueOperations<Long, String> F;
+  public static Object readF(Connection c) throws SQLException { lit(c); return F.get(); }
+  // CONTROLS: calls that touch no data keep the function certifiable.
+  public static String pong(Connection c, redis.clients.jedis.Jedis j) throws SQLException { lit(c); return j.ping(); }
+  public static void shut(Connection c, redis.clients.jedis.Jedis j) throws SQLException { lit(c); j.close(); }
+  // The commonest JDBC idiom: opening a connection names no data. (The first cut of R924 failed this closed.)
+  public static void jdbc(javax.sql.DataSource ds) throws SQLException { try (Connection c = ds.getConnection()) { lit(c); } }
+}
+J
+javac -d "$W/r924/stubcls" $(find "$W/r924/stub" -name '*.java') 2>/dev/null
+javac -cp "$W/r924/stubcls" -d "$W/r924/appcls" "$W/r924/app/app/K.java" 2>/dev/null
+for pair in wipe:1 callWipe:1 swap:1 dbDrop:1 collDrop:1 helperDrop:1 readF:1 pong:0 shut:0 jdbc:0; do
+    m=${pair%%:*}; want=${pair##*:}
+    printf 'allow Db in app.K.%s users\n' "$m" > "$W/r924.pol"
+    CANDOR_POLICY="$W/r924.pol" "$CJ" "$W/r924/appcls" >/dev/null 2>&1; got=$?
+    if [ "$got" -eq "$want" ]; then echo "  ok   R924 GATE allow Db app.K.$m users exits $want"; pass=$((pass+1));
+    else echo "  FAIL R924 GATE allow Db app.K.$m users — exit $got (want $want)"; fail=$((fail+1)); fi
+done
+printf 'deny Db app.K.pong\n' > "$W/r924.pol"
+CANDOR_POLICY="$W/r924.pol" "$CJ" "$W/r924/appcls" >/dev/null 2>&1; r924d=$?
+if [ "$r924d" -eq 1 ]; then echo "  ok   R924 CALIBRATION: \`deny Db\` bites the ping control that \`allow Db\` certifies"; pass=$((pass+1));
+else echo "  FAIL R924 CALIBRATION — deny Db exit $r924d (want 1)"; fail=$((fail+1)); fi
+
+# ── SOUNDNESS R923: an effect charged through a METHOD REFERENCE reaches the locator guards ─────
+echo "== SOUNDNESS R923: \`forEach(MongoCollection::drop)\` and \`forEach(File::delete)\` leave their surfaces incomplete =="
+# The reference branch classified the target and added the effect, and no masking guard ever saw it: EXECUTED,
+# `names.stream().map(db::getCollection).forEach(MongoCollection::drop)` dropped the named collections and
+# `files.forEach(File::delete)` deleted a file outside /tmp/benign, while `allow Db in <fn> users` /
+# `allow Fs in <fn> /tmp/benign` exited 0 beside a benign sibling. The LAMBDA spelling of each exited 1.
+mkdir -p "$W/r923/app/app"
+cat > "$W/r923/app/app/R.java" <<'J'
+package app;
+import java.sql.*; import java.util.*; import java.io.File;
+import com.mongodb.client.*;
+public class R {
+  static void lit(Connection c) throws SQLException { c.prepareStatement("SELECT id FROM users").executeQuery(); }
+  public static void mref(Connection c, MongoDatabase db, List<String> ns) throws SQLException { lit(c); ns.stream().map(db::getCollection).forEach(MongoCollection::drop); }
+  public static void lam(Connection c, MongoDatabase db, List<String> ns) throws SQLException { lit(c); ns.forEach(n -> db.getCollection(n).drop()); }
+  static void sibFs() { new File("/tmp/benign/ok").delete(); }
+  public static void fsRef(List<File> fs) { sibFs(); fs.forEach(File::delete); }
+  public static void fsLam(List<File> fs) { sibFs(); fs.forEach(f -> f.delete()); }
+  // CONTROL: a reference to a member that touches no data.
+  public static void closeRef(Connection c, List<redis.clients.jedis.Jedis> js) throws SQLException { lit(c); js.forEach(redis.clients.jedis.Jedis::close); }
+}
+J
+javac -cp "$W/r924/stubcls" -d "$W/r923/appcls" "$W/r923/app/app/R.java" 2>/dev/null
+for spec in "mref:Db:users:1" "lam:Db:users:1" "fsRef:Fs:/tmp/benign:1" "fsLam:Fs:/tmp/benign:1" "closeRef:Db:users:0"; do
+    IFS=: read -r m eff loc want <<<"$spec"
+    printf 'allow %s in app.R.%s %s\n' "$eff" "$m" "$loc" > "$W/r923.pol"
+    CANDOR_POLICY="$W/r923.pol" "$CJ" "$W/r923/appcls" >/dev/null 2>&1; got=$?
+    if [ "$got" -eq "$want" ]; then echo "  ok   R923 GATE allow $eff app.R.$m exits $want"; pass=$((pass+1));
+    else echo "  FAIL R923 GATE allow $eff app.R.$m — exit $got (want $want)"; fail=$((fail+1)); fi
+done
+
+# ── SOUNDNESS R926: an AWS service client's every OPERATION is charged Net, not only 22 verbs ─────
+echo "== SOUNDNESS R926: Cognito adminGetUser/adminInitiateAuth/globalSignOut are Net; serviceName/close are not =="
+# The verb list left 585 of 2,862 v2 and 10,700 of 46,971 v1 operation members uncharged (censused against each
+# jar's own per-operation marshallers). EXECUTED with the real cognitoidentityprovider-2.31.70 client against a
+# local listener: AdminGetUser, AdminInitiateAuth and GlobalSignOut each POSTed while `deny Net` exited 0.
+mkdir -p "$W/r926/stub/software/amazon/awssdk/services/cognitoidentityprovider" "$W/r926/app/app"
+cat > "$W/r926/stub/software/amazon/awssdk/services/cognitoidentityprovider/CognitoIdentityProviderClient.java" <<'J'
+package software.amazon.awssdk.services.cognitoidentityprovider;
+public interface CognitoIdentityProviderClient extends AutoCloseable {
+  Object adminGetUser(Object r); Object adminInitiateAuth(Object r); Object globalSignOut(Object r); Object signUp(Object r);
+  String serviceName(); void close(); }
+J
+cat > "$W/r926/app/app/C.java" <<'J'
+package app;
+import software.amazon.awssdk.services.cognitoidentityprovider.CognitoIdentityProviderClient;
+public class C {
+  public static void adminGet(CognitoIdentityProviderClient c) { c.adminGetUser(null); }
+  public static void initiate(CognitoIdentityProviderClient c) { c.adminInitiateAuth(null); }
+  public static void callInitiate(CognitoIdentityProviderClient c) { initiate(c); }
+  public static void signOut(CognitoIdentityProviderClient c) { c.globalSignOut(null); }
+  public static void signUp(CognitoIdentityProviderClient c) { c.signUp(null); }
+  // CONTROLS: members that are no operation.
+  public static String name(CognitoIdentityProviderClient c) { return c.serviceName(); }
+  public static void shut(CognitoIdentityProviderClient c) { c.close(); }
+}
+J
+javac -d "$W/r926/stubcls" $(find "$W/r926/stub" -name '*.java') 2>/dev/null
+javac -cp "$W/r926/stubcls" -d "$W/r926/appcls" "$W/r926/app/app/C.java" 2>/dev/null
+for pair in adminGet:1 initiate:1 callInitiate:1 signOut:1 signUp:1 name:0 shut:0; do
+    m=${pair%%:*}; want=${pair##*:}
+    printf 'deny Net app.C.%s\n' "$m" > "$W/r926.pol"
+    CANDOR_POLICY="$W/r926.pol" "$CJ" "$W/r926/appcls" >/dev/null 2>&1; got=$?
+    if [ "$got" -eq "$want" ]; then echo "  ok   R926 GATE deny Net app.C.$m exits $want"; pass=$((pass+1));
+    else echo "  FAIL R926 GATE deny Net app.C.$m — exit $got (want $want)"; fail=$((fail+1)); fi
+done
+"$CJ" "$W/r926/appcls" --json "$W/r926.json" >/dev/null 2>&1
+r926inv=$(python3 -c 'import json,sys; [print(f["fn"], ",".join(f.get("invisible") or [])) for f in json.load(open(sys.argv[1]))["functions"]]' "$W/r926.json")
+want "R926 the derived charge keeps its package disclosed (as R920's does)" "$r926inv" "app.C.adminGet software.amazon.awssdk.services.cognitoidentityprovider"
+
 # ── SOUNDNESS R795: a zero-argument Net call can still name its destination — at the RECEIVER ─────
 echo "== SOUNDNESS R795: the Net masking guard reads the receiver, not the argument count =="
 # The defect: `carriesArgs = !min.desc.startsWith("()")` declined every zero-argument Net call, so

@@ -133,6 +133,166 @@ oracle). The corpus sites were audited one stratum per member: 43 members and 27
   poisons the kind, as `effectMetadata` requires. It is not a lost effect.
 - **Pins changed:** `HelpersTest` pinned `ImageIO.read(InputStream)` as pure. That pin is now reversed,
   on execution.
+### ⚠ SOUNDNESS R926 FIXED: every operation of an AWS SDK service client is charged `Net`, not only 22 verbs
+
+**What went wrong.** `Net` was charged on a `*Client` member only when its name began with one of 22 verbs
+(`get`, `put`, `list`, `create`, `delete`, `send`, …). Cognito's `adminInitiateAuth`, `adminGetUser` and
+`globalSignOut` matched none. EXECUTED with the real `cognitoidentityprovider-2.31.70` client against a local
+listener: each POSTed (`X-Amz-Target: AWSCognitoIdentityProviderService.AdminGetUser`, …) while `deny Net` exited
+0 on the unit and its caller. The package is not κ-covered, so the call was disclosed `invisible` — which arms
+no policy.
+
+**It was not seven verbs.** Each SDK jar names its own operations (one generated `<Op>RequestMarshaller` per
+operation). Censused against that list, the verb rule left uncharged **585 of 2,862** operation members over 8 v2
+services (cognito-idp, dynamodb, iam, kms, s3, sns, sqs, sts) and **10,700 of 46,971** over 376 v1 services:
+DynamoDB `transactWriteItems`/`batchWriteItem`/`executeStatement`, S3 `headObject`/`completeMultipartUpload`,
+STS `assumeRole`, every `tag`/`start`/`attach`/`associate`. And the verb rule's pure carve-out
+`getEndpoint` is a real operation of Pinpoint and IoT Device Advisor.
+
+**The fix reverses the direction, as R920 did for Db.** A derived rule, consulted only after every hand rule
+declines: every member of a public service `*Client` type is `Net`, except a list of 54 names that are no
+operation — the v1 `AmazonWebServiceClient` and v2 `SdkClient`/`AwsClient` members, the census's declared
+non-operations (`shutdown`, `waiter`, `utilities`, …), static factories, and the generated clients' internal
+helpers. None of the 54 is an operation of any of the 384 jars. An omission over-charges; it cannot certify.
+The SWF Flow framework's decision-builder `*Client` types are excluded (they are not service clients). Like
+R920's, the derived charge keeps the call's `invisible` package.
+
+**Measured.** Census after the change: 649 (v2) and 10,700 (v1) operation members newly charged, 0 operations
+left uncharged, 0 existing charges changed; the only new charges not on the operation list are 67 S3-v1
+members (the hand-written client has no marshallers; each is an S3 request — `setBucketPolicy`, `headBucket`,
+`initiateMultipartUpload`, …), EC2 `dryRun` and the buffered SQS client's `flush`, all requests. Gates:
+`deny Net` 0 -> 1 on 4 executed units/callers; `serviceName()`/`close()` stay 0. Corpus A/B (7 AWS jars of the
+372): 244 rows changed, REMOVED 0, no field lost; 240 gain `direct` Net on rows already `Net`, 8 paginator
+overloads gain `Net` beside their `Unknown`. 452-jar corpus: no reach. Direction: adds a concrete effect; every
+new charge was checked against the operation list rather than priced by a band.
+
+**Not changed here:** the verb rule still charges v1 async `getExecutorService()` (a field read) — a
+pre-existing over-charge. v1 service INTERFACES (`AmazonS3`) are still not charged (reverted in 0.8.3 for
+`AmazonS3URI`); a call typed that way stays `invisible`. Waiter types (`S3Waiter.waitUntil…`) are not covered.
+
+### ⚠ SOUNDNESS R923 FIXED: an effect charged through a METHOD REFERENCE reaches the locator guards
+
+**What went wrong.** The reference branch of `handleInvokeDynamic` classified the target and added the effect;
+no masking guard ever saw it. EXECUTED: `names.stream().map(db::getCollection).forEach(MongoCollection::drop)`
+dropped the named collections, and `files.forEach(File::delete)` deleted a file outside `/tmp/benign`, while
+`allow Db in <fn> users` / `allow Fs in <fn> /tmp/benign` exited 0 beside a benign sibling. The lambda spelling
+of each exits 1. Wider than the row: `Fs`, `Net` and `Exec` references were equally unguarded.
+
+**Fix.** A reference has no operand at its site — the receiver of an unbound reference and every argument come
+from whoever invokes it — so an `Fs`/`Net`/`Exec` charge marks the surface incomplete outright, and a `Db` charge
+does unless the member touches no data (the same predicate as the call path, below).
+
+**Measured.** Gates 0 -> 1: `mref`, `mrefRt` (Db), `fsRef` (Fs), executed; `jedis::close` stays 0. Corpus A/B:
+adds `incomplete` only — 372 jars: Db 152, Fs 131, Net 118, Exec 9 rows (within the combined figures below);
+reach 838 / 92 sites.
+
+### ⚠ SOUNDNESS R924 (+ R921, R922) FIXED: a non-SQL Db call with no object operand still touches data
+
+**What went wrong.** R794 exempted every Db call with no object operand, on the ground that `close()`/`ping()`
+name nothing. EXECUTED against redis:7 and mongo:7 beside a benign `users` query, each of these did the operation
+while `allow Db in <fn> users` exited 0 on the unit and its caller: `jedis.swapDB(0, 1)` and `flushAll()` (the
+whole keyspace), `db.drop()` (a whole database), `coll.drop()` on a handle passed in (R924);
+`dep.secrets(db).drop()` and a runtime name chosen inside a chained dependency (R921); `F.get()` on a bound handle
+created elsewhere with a `Long` key (R922). The operand count is not where these calls keep their locator — it is
+the receiver, or the whole keyspace — and this engine publishes no key or collection surface for any non-SQL owner.
+
+**Fix — the list is now of what touches NO data.** A first cut listed the four keyless `@keyspace` commands and
+marked only those: an allowlist, which left `swapDB`, every handle receiver and `db.drop()` silent. Now a non-SQL
+Db call with no object operand marks the surface unless its name is a redis command carrying none of the
+`@keyspace`/`@read`/`@write` ACL categories in redis 7.4's own `COMMAND INFO` (168 names; `SYNC`, `PSYNC`,
+`CLUSTER GETKEYSINSLOT`/`COUNTKEYSINSLOT`, `DEBUG`, `MONITOR` taken back out because they expose data), or a
+connection/transaction lifecycle member (`close`, `getConnection`, `begin`/`commit`/`rollback`, pipelines,
+`opsFor*` handle factories). JDBC/JTA plumbing owners (`javax.sql`, `javax|jakarta.transaction`, Spring tx) are
+excluded: their statements are judged where they run. Measured on the way: without that exclusion,
+`ds.getConnection()` + `SELECT … FROM users` failed `allow Db in <fn> users` — now pinned in `test/smoke.sh`.
+
+**Measured.** Executed fixture: 11 of 11 `allow Db` gates 0 -> 1 (R924 swap/wipe/dbDrop/callDbDrop/collDrop, R921
+depDrop/depChosenDrop, R922 readF/callReadF, R923 mref/mrefRt); controls `ping`, `close`, a users-only function and
+the JDBC idiom stay 0, and `deny Db` bites each control. Combined corpus A/B against `6ca7d25` (R920 + this +
+R923 + R926): 372 jars ADDED 17, REMOVED 0, CHANGED 8,671; 452 jars ADDED 11, REMOVED 0, CHANGED 7,771. Field
+losses: one `Unknown[dispatch]` per lettuce version (accounted under R920), nothing else; `invisible` lost: 0.
+`incomplete[Db]` added: 5,289 / 4,323 rows, **0 of them on a row with `tables`** — so no table-certified function
+loses its `allow Db` certification in either corpus. Direction: adds `incomplete` only. Of the 1,943 operand-free
+marks in the 372 corpus most sit on Db charges the classifier already makes on library internals (Jedis
+`checkIsInMultiOrPipeline` 775, Redisson JCache accessors, repository getters) — an over-mark on an existing
+over-charge, loud, inside the client libraries' own scans.
+
+### ⚠ SOUNDNESS R920, second half: a derived Db charge keeps the `invisible` package it sits on
+
+The first cut of R920 let a `DbClientSurface` charge clear the κ ledger for that call, which deleted an
+`invisible` package from 5,404 rows of the 372-jar corpus. The table vouches that a member reaches the client's
+wire — for unlisted and future members by default — not that the wire is all it does (the Mongo driver body
+behind `drop()` also connects, reads credentials and can fork `mongocryptd`). Replacing a hedge with a confident
+answer is a silent under-report even where no gate flips (SPEC ⟨0.39⟩: a mechanism that makes reports better must
+not make silence cheaper). Now a call charged ONLY by a derived surface (`Classifier.chargedOnlyByDerivedSurface`)
+is charged and stays on the ledger; a hand-listed verb (`Jedis.get`) is unchanged. A/B against `6ca7d25`: rows
+losing an `invisible` package 5,404 -> **0** (372 jars) and 0 (452 jars), with the same 3,334 Db gains. The partition
+script that counts it found the 5,404 on the first cut, so it can fire. Pinned in `test/smoke.sh`
+(`app.K.dbDrop Db inv=com.mongodb.client`, with `Jedis.get` as the not-ledgered control).
+
+### ⚠ SOUNDNESS R920 FIXED: Db client members nobody listed are charged, from a table derived from the clients' bytecode
+
+**What went wrong.** The classifier listed Db VERBS per client, so every member nobody listed read as pure.
+Executed against mongo:7 and redis:7, each of these did the operation while `deny Db` exited 0 on the unit and
+on its caller (v0.39.3 and `2a658d6`):
+- `MongoDatabase.drop()` and `createCollection("made")`;
+- Redisson `RMap.clear()` and `RAtomicLong.incrementAndGet()`;
+- Jedis `JedisPooled.del("victim")`, which is the main Jedis 4+ API. `UnifiedJedis`, `Pipeline` and
+  `Transaction` were not charged at all.
+
+Redisson and Spring Data Redis's connection layer are worse than the rest. Their packages are κ-covered, so an
+unlisted member was certified pure with nothing disclosed. In the other clients, the miss was disclosed
+through `invisible` but did not fail `deny Db`.
+
+**The fix is a rule, not a longer list.** `DbClientSurface` is generated by `soundness/db_surface/derive.sh`
+from the client jars. A handle type is one reachable from the client's entry type (`MongoClient`,
+`RedissonClient`, `JedisPooled`…) through member return types and in-family supertypes, with at least one
+member whose implementation reaches the client's wire choke point over a CHA call graph. On a handle type
+every member is Db, except names measured local, which means:
+- no overload reaches the choke point;
+- no reach goes through an interface with no implementer, or a reflective invoke (both count as wire);
+- no overload returns a new lazy handle (a JDK collection, iterator, stream, I/O or reactive type that is a
+  live view).
+
+An unlisted or future member is therefore charged, not certified pure. For the two κ-covered families, a
+handle-shaped type the table did not measure defaults to Db. The table is consulted only when every hand
+rule returns null, so no existing charge or carve-out changes.
+
+Also covered, by rules rather than the generated table:
+- Lettuce command interfaces outside `io.lettuce.core.api.` (cluster, pub/sub, sentinel), with the 11 names
+  measured local.
+- The Datastax `execute*`/`prepare*` verbs on `Session`, `SyncCqlSession` and `AsyncCqlSession`.
+
+**Measured.**
+- Examined: 1,792 / 17,134 / 25,248 / 9,582 member signatures in the Mongo, Redisson, Jedis and Spring Data
+  Redis APIs. Handle types: 22 / 230 / 124 / 54.
+- Executed fixture: 8 of 8 `deny Db` gates flip 0 to 1, on units and callers. The pure controls stay 0
+  (`getCollection(..).withReadConcern(..).getNamespace()`, `FindIterable.limit/skip/sort`,
+  `getBucket(..).getName()`, `keyCommands()`, `getStatefulConnection()`). Pinned in `test/smoke.sh`; those
+  stubs fail 6 of 9 on v0.39.3.
+- Corpus A/B (`bin/corpus-ab.py`): 0 rows removed against v0.39.3 or `2a658d6`, and no Db mark or Db effect
+  lost anywhere.
+  - Against `2a658d6`: 372 jars, 3,334 rows gain Db and 3,280 gain `incomplete[Db]`; 452 jars, 2,380 and
+    2,140. All of them are inside the client libraries themselves. Jar-scope `deny Db` flips are 0, because
+    each reached jar already had Db on v0.39.3.
+  - The first cut also removed an `invisible` package from 5,404 rows; the entry above this one restores every
+    one of them (0 removed in the final A/B, both corpora).
+  - One `Unknown[dispatch]` (lettuce `RedisCommandFactory.getCommands`) resolves to Db.
+- Reach: 9,455 table hits over 8 jars. Of the 1,516 distinct members charged in the corpus:
+  - 1,189 measured wire;
+  - 291 Lettuce proxy commands;
+  - 5 Datastax verbs;
+  - 14 lazy views (`getList`, `values`, `listCollections`…);
+  - 13 JDK-inherited members that do the operation (`RMap.clear`, `RLock.unlock`, `FindIterable.forEach`);
+  - 4 over-charges: `MongoCursor.remove` throws, and `StringRedisConnection.entryIds`,
+    `ClusterPipeline.createClusterCommandObjects` and `RedisSentinelConnection.close` are library internals.
+
+**Not changed here:**
+- Spring `*Operations` and `*Template` types (`MongoOperations`, `StringRedisTemplate`…) still read
+  `Unknown[dispatch]`. That is disclosed, so `deny Db Unknown` catches it.
+- Datastax `ResultSet` paging is still unmodelled.
+- `declared` on 17 client-library impl rows now lists Db with `inferred` unchanged.
+
 ### ⚠ SOUNDNESS R820 FIXED: a literal Mongo collection or Redisson key loaded into a handle is disclosed where the handle runs
 
 **What went wrong.** `db.getCollection("secrets").drop()` beside a benign `SELECT … FROM users` read

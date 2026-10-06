@@ -9,6 +9,37 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R925 FIXED: every effect a call adds BESIDE its classified one is judged by the masking guards
+
+**What went wrong.** Four call-site rules add an effect next to the classifier's single answer:
+- the S3 transfer `Fs`;
+- the AWS default credential chain's `Fs`/`Net`/`Exec`;
+- jgit's `Exec` (it forks `git`) and its repository `Fs`;
+- R814's `KappaJdkSinks.alsoCharges`.
+
+Only the last was routed through the literal-surface refiners. The others went straight into the effect
+set, so a benign literal of the same effect certified them.
+
+**Executed against a local S3 endpoint.** `s3.getObject(req, path)` wrote a caller-chosen file and
+`putObject(req, path)` read and uploaded one. Beside a benign `Files.writeString`,
+`allow Fs in <unit> <benign>` exited 0. The credential chain read a credentials file named only by
+configuration, under the same gate. Measured statically: `allow Net` beside the chain, and `allow Exec`
+beside `Git.open`/`FileRepositoryBuilder.build`, each exited 0.
+
+**The fix.** Each of those calls now goes through `effectMetadata` and `extractLiteralSurfaces`.
+`markUnnamedSideCharge` then marks what the call cannot name:
+- `Fs` is marked unless a File/Path operand names it. If one does, R409 judges that operand.
+- `Net` and `Exec` are always marked. No side charge names its endpoint or program in source.
+
+**Direction: `incomplete` added only.** A/B vs `6fde089`, REACH = `R925SIDE`:
+
+| corpus | REMOVED | rows gaining `incomplete` | reach |
+|---|---|---|---|
+| 372 lib | 0 | 2,050 (Exec 2,024, mostly jgit; Fs 22; Net 11) | 70 sites, 5 jars |
+| 452 census | 0 | 7 | 40 sites, 3 jars |
+
+No effect was added or lost.
+
 ### ⚠ SOUNDNESS R814 (+R812) FIXED: JDK members that really perform an effect are charged — the κ grant had certified them pure
 
 **What went wrong.** The κ covered-prefix grant (`java`, `javax`, `jdk`, `com.sun`, …) treats an

@@ -4575,6 +4575,13 @@ public class Candor {
         // NOT assigned — every `effect == null` fallback stays as it was.
         List<Effect> alsoCharged = KappaJdkSinks.alsoCharges(owner, min.name, min.desc);
         for (Effect ae : alsoCharged) dir.add(ae);
+        // SOUNDNESS R925 — EVERY effect a call site adds BESIDE `classify`'s single slot, not just this
+        // authority's. The S3 transfer `Fs`, the AWS credential chain's `Fs`/`Net`/`Exec` and jgit's
+        // `Exec`/`Fs` were each added straight into `dir`, so no refiner ever saw them: EXECUTED, an S3
+        // `getObject(req, path)` wrote a caller's file and `putObject(req, path)` read one beside a benign
+        // literal write, and `allow Fs … <benign>` exited 0; the credential chain read a credentials file
+        // named only by machine configuration under the same gate. Collected here and refined below.
+        List<Effect> sideCharged = new ArrayList<>(alsoCharged);
         // REACH, so a corpus A/B can tell "inert" from "never reached": `bin/corpus-ab.py --mark R814REACH
         // --mark-env CANDOR_R814_DEBUG=1 --mark-arm post`. `charge` runs LAST in its bucket, so a non-null
         // answer from it that equals `effect` is this rule's (the API-surface diff found no member where an
@@ -4623,6 +4630,7 @@ public class Candor {
             String p = Classifier.paramsOf(min.desc);
             if (p.contains("Ljava/io/File;") || p.contains("Ljava/nio/file/Path;")) {
                 dir.add(Effect.FS);
+                sideCharged.add(Effect.FS);
                 if (effect == null) effect = Effect.FS;
             }
         }
@@ -4657,6 +4665,8 @@ public class Candor {
         if (isAwsDelegatingCredentialResolver(owner) && Classifier.isAwsCredentialResolveVerb(min.name)) {
             dir.add(Effect.FS);
             dir.add(Effect.NET);
+            sideCharged.add(Effect.FS);
+            sideCharged.add(Effect.NET);
             // WebIdentityTokenFileCredentialsProvider is the ONE arm that does NOT reach Exec, and the
             // census said it did. `javap -c` settles it: its ctor builds ONE delegate through
             // `WebIdentityCredentialsUtils.factory()` (the STS factory — Fs on the token file, Net to
@@ -4664,7 +4674,7 @@ public class Candor {
             // over the `AwsCredentialsProvider.resolveCredentials` INTERFACE call, which resolves to
             // every implementor including ProfileCredentialsProvider — the higher-order smear its own
             // docstring declares. A candidate refused on evidence, not fixed on plausibility.
-            if (!owner.equals(AWS_WEB_IDENTITY_RESOLVER)) dir.add(Effect.EXEC);
+            if (!owner.equals(AWS_WEB_IDENTITY_RESOLVER)) { dir.add(Effect.EXEC); sideCharged.add(Effect.EXEC); }
         }
         // OPENING A GIT REPOSITORY FORKS `git` — SOUNDNESS R498, and κ CAN NAME ONLY ONE EFFECT.
         // `org.eclipse.jgit.api.Git.open(File)` answered `Fs`, a positive and entirely plausible answer
@@ -4680,10 +4690,11 @@ public class Candor {
         // read the filesystem.
         if (Classifier.jgitForksGitSubprocess(owner, min.name, min.desc)) {
             dir.add(Effect.EXEC);
+            sideCharged.add(Effect.EXEC);
             if (effect == null) effect = Effect.EXEC;
             // The repository-materialising half also loads `.git/config` off disk. Charging it `Exec`
             // alone would have replaced one weaker-than-the-body claim with another.
-            if (Classifier.jgitMaterialisesARepository(owner, min.name)) dir.add(Effect.FS);
+            if (Classifier.jgitMaterialisesARepository(owner, min.name)) { dir.add(Effect.FS); sideCharged.add(Effect.FS); }
         }
         opaqueTaskHandoff(ctx, s, min, owner);
         namedFunctionalToHof(ctx, s, min);
@@ -4712,10 +4723,13 @@ public class Candor {
             effectMetadata(ctx, s, min, owner, Effect.UNKNOWN, superUnknownKind);
         }
         extractLiteralSurfaces(ctx, s, min, owner, effect);
-        for (Effect ae : alsoCharged) {
+        for (Effect ae : new LinkedHashSet<>(sideCharged)) {
             if (ae == effect) continue;
             effectMetadata(ctx, s, min, owner, ae);
             extractLiteralSurfaces(ctx, s, min, owner, ae);
+            markUnnamedSideCharge(ctx, s, min, owner, ae);
+            if (R814_DEBUG && !alsoCharged.contains(ae))
+                System.err.println("R925SIDE	" + s.id + "	" + owner + "." + min.name + min.desc + "	" + ae);
         }
         // …and the one co-emission that predates that authority. `xmlParseFilePrecision` adds `Fs` for
         // `DocumentBuilder.parse(File)`/`SAXParser.parse(File, …)` beside the XXE `Unknown`, and sets its own
@@ -5021,6 +5035,23 @@ public class Candor {
 
     /** XML parse(File) precision: the File overload definitely reads the file — add Fs beside the
      *  XXE Unknown classify() already yields. */
+    /** SOUNDNESS R925 — a side charge whose destination this call does not name leaves the surface
+     *  incomplete. The refiners judge a typed operand when there is one; these charges usually have none.
+     *  <ul><li>{@code Fs}: marks unless the call names a File/Path operand (then R409 has already judged it,
+     *  determined or not). An S3 transfer names its file; a credential chain reads one named by machine
+     *  configuration; a jgit builder reads the repository its setters named earlier.</li>
+     *  <li>{@code Net}/{@code Exec}: always. No side charge names its endpoint or its program in source — the
+     *  credential chain's STS/IMDS endpoint and {@code credential_process}, jgit's {@code git} — so a sibling
+     *  literal must never certify them.</li></ul> */
+    static void markUnnamedSideCharge(AnalysisContext ctx, MethodScan s, MethodInsnNode min, String owner, Effect e) {
+        if (e == Effect.FS) {
+            if (fsLocatorDetermined(min, owner, provFrameAt(s, min)) == null)
+                ctx.surfaceIncomplete.computeIfAbsent(s.id, x -> new TreeSet<>()).add("Fs");
+        } else if (e == Effect.NET || e == Effect.EXEC) {
+            ctx.surfaceIncomplete.computeIfAbsent(s.id, x -> new TreeSet<>()).add(e == Effect.NET ? "Net" : "Exec");
+        }
+    }
+
     /** The XML parse overloads that read a File — one definition, read by {@link #xmlParseFilePrecision}
      *  (which adds the `Fs`) and by the call handler (which judges that File as the locator, R814). */
     static boolean isXmlParseFile(MethodInsnNode min) {

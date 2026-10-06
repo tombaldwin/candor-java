@@ -9,6 +9,35 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R796 FIXED: every JAX-RS and Micronaut request designator now roots its handler
+
+**What went wrong.** The entry-point list carried six of JAX-RS's seven designators. `@OPTIONS` was missing,
+and so were Micronaut's `@Head`, `@Options`, `@Trace`, `@CustomHttpMethod` and `@Error`. Root status is the
+only gate on R17's disclosure (an entry point reading a container-supplied stream reports `Unknown`), and the
+container is the only caller of a handler, so nothing downstream could recover it. An `@OPTIONS` handler
+draining its injected `InputStream` was ABSENT from the report: `deny Unknown` exited 0 over a body that,
+executed, read a caller-opened file. `@GET` on the identical body exited 1.
+
+**The fix is a rule, with the list kept as its closure.** A designator is any annotation type
+meta-annotated `@HttpMethod` (JAX-RS) or `@HttpMethodMapping` (Micronaut). Both markers are now in the list,
+and the engine's existing meta-annotation walk applies them, so a team's own designator (a WebDAV
+`@PROPFIND`) roots when its type is in the scan. The API jars are normally NOT in the scan, so the walk
+cannot read the standard designators' own meta-annotations; their names stay listed as the rule's closure
+over `jakarta.ws.rs-api` 3.1.0 and `micronaut-http` 4.5.1, both enumerated from bytecode (7 and 10).
+
+Matching is by substring, and the new Micronaut entries end in `;`: `micronaut/http/annotation/Head` would
+also match `@Header`, which targets METHOD on declarative clients and is not a route. Pinned in both
+directions by `R796DesignatorRootingTest` (removing the `;` turns the `@Header` control red).
+
+Who sees a different verdict: a project with an `@OPTIONS`, Micronaut `@Head`/`@Options`/`@Trace`/
+`@CustomHttpMethod`/`@Error`, or custom-designator handler. Each such handler is now an entry point, and one
+that reads its injected abstract stream now carries `Unknown`, as does its caller. Corpus A/B (372 + 452
+library jars): 0 added, 0 removed, 0 changed. Reach is 0, because no library jar contains such a handler;
+the only references to these annotations are their own declarations. So the A/B is the fabrication control
+only, and the evidence for the fix is the fixture.
+
+Residual, not changed: a custom designator declared in a jar outside the scan is unresolvable, as before.
+
 ### ⚠ SOUNDNESS R867 FIXED: a call on a chained dependency's class now reaches that dependency's own subclass overrides
 
 **What went wrong.** A dependency declares `class BaseO { void m() {Fs} }` and its own

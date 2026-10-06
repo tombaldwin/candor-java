@@ -241,11 +241,27 @@ final class Rules {
             // factory methods (Spring calls them at context startup) + the multi-method @KafkaHandler form.
             "scheduling/annotation/Async", "context/annotation/Bean", "kafka/annotation/KafkaHandler",
             // JAX-RS / Jakarta REST resource methods (container-invoked) — covers javax.ws.rs + jakarta.ws.rs.
-            "ws/rs/GET", "ws/rs/POST", "ws/rs/PUT", "ws/rs/DELETE", "ws/rs/PATCH", "ws/rs/HEAD", "ws/rs/Path",
-            // Micronaut HTTP controller methods (container-invoked).
+            // R796: a request-method DESIGNATOR is defined by a RULE, not a list — it is any annotation type
+            // meta-annotated `@HttpMethod` (whose @Target is ANNOTATION_TYPE only, so it marks nothing else).
+            // The rule is the `ws/rs/HttpMethod;` marker, reached through annoDescMatchesMeta's meta walk; it
+            // catches a team's own designator (WebDAV `@PROPFIND`) when its type is in the scan. The seven
+            // names below are that rule's closure over the API jar, listed because the API jar is NOT in the
+            // scan and not on candor's classpath, so the meta walk cannot read their `@HttpMethod`. The list
+            // carried six of seven — `OPTIONS` was missing, and root status is the only gate on R17's
+            // disclosure, so an `@OPTIONS` handler draining a container-supplied stream read PURE.
+            "ws/rs/GET", "ws/rs/POST", "ws/rs/PUT", "ws/rs/DELETE", "ws/rs/PATCH", "ws/rs/HEAD",
+            "ws/rs/OPTIONS;", "ws/rs/HttpMethod;", "ws/rs/Path",
+            // Micronaut HTTP controller methods (container-invoked). Same rule, Micronaut's spelling: every
+            // route annotation is meta-annotated `@HttpMethodMapping`; the names are its closure over
+            // micronaut-http (Head/Options/Trace/CustomHttpMethod/Error were missing — R796). The new entries
+            // end in `;` because matching is by SUBSTRING and `micronaut/http/annotation/Head` would also
+            // match `@Header`, which targets METHOD and is not a route (a declarative-client header).
             "micronaut/http/annotation/Get", "micronaut/http/annotation/Post",
             "micronaut/http/annotation/Put", "micronaut/http/annotation/Delete",
-            "micronaut/http/annotation/Patch",
+            "micronaut/http/annotation/Patch", "micronaut/http/annotation/Head;",
+            "micronaut/http/annotation/Options;", "micronaut/http/annotation/Trace;",
+            "micronaut/http/annotation/CustomHttpMethod;", "micronaut/http/annotation/Error;",
+            "micronaut/http/annotation/HttpMethodMapping;",
             // AspectJ advice — the weaver invokes it at every matched join point; effectful advice (audit
             // logging, metrics push) has no in-project call site.
             "aspectj/lang/annotation/Around", "aspectj/lang/annotation/Before",

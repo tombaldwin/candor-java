@@ -40,6 +40,16 @@ beside `Git.open`/`FileRepositoryBuilder.build`, each exited 0.
 
 No effect was added or lost.
 
+**The declarative sibling.** A Feign or `@HttpExchange` client call is `Net` to the endpoint named in its
+interface's annotation. That `Net` is added after the refiners have run, so a sibling literal certified it.
+Statically, `allow Net in <unit> good.example` exited 0 over a `@FeignClient(url = "https://evil.example")`
+call. It now marks `incomplete: ["Net"]`.
+
+| corpus | REMOVED | rows gaining `incomplete: ["Net"]` |
+|---|---|---|
+| 372 lib | 0 | 1,778 |
+| 452 census | 0 | 0 |
+
 ### ⚠ SOUNDNESS R814 (+R812) FIXED: JDK members that really perform an effect are charged — the κ grant had certified them pure
 
 **What went wrong.** The κ covered-prefix grant (`java`, `javax`, `jdk`, `com.sun`, …) treats an

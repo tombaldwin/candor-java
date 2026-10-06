@@ -6462,10 +6462,20 @@ public class Candor {
                 if (tbl != null) ctx.tablesDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(tbl);
             }
         }
-        if (ctx.feignTypes.contains(min.owner)) dir.add(Effect.NET);
+        // SOUNDNESS R925, the declarative sibling: a Feign / @HttpExchange client call is Net to the endpoint
+        // its interface ANNOTATION names, never this call's arguments, and these adds run after the literal
+        // refiners — so a benign sibling literal certified it (`allow Net in <unit> good.example` exited 0
+        // over a `@FeignClient(url = "https://evil.example")` call). Its endpoint is not on this call: mark.
+        if (ctx.feignTypes.contains(min.owner)) {
+            dir.add(Effect.NET);
+            ctx.surfaceIncomplete.computeIfAbsent(s.id, x -> new TreeSet<>()).add("Net");
+        }
         // A declarative HTTP-client interface call is a wire call → Net (Object-protocol excluded so
         // a client's toString()/equals() doesn't fabricate Net).
-        if (ctx.httpClientTypes.contains(min.owner) && !isConventionallyPure(min.name)) dir.add(Effect.NET);
+        if (ctx.httpClientTypes.contains(min.owner) && !isConventionallyPure(min.name)) {
+            dir.add(Effect.NET);
+            ctx.surfaceIncomplete.computeIfAbsent(s.id, x -> new TreeSet<>()).add("Net");
+        }
         // Quarkus Panache ACTIVE-RECORD: a project class extends PanacheEntity[Base], so its
         // persist/delete/flush + inherited static finders (listAll/find/findById/count/…) are DB
         // ops — but the call-site owner is the PROJECT entity (`Fruit.listAll()`), not the external

@@ -61,4 +61,21 @@ class SideChargeLocatorTest {
             assertFalse(inc("app.A.ctlS3", "Fs"), "a determined literal transfer path must stay certifiable");
         } finally { rm(app.getParent()); }
     }
+
+    /** R925's declarative sibling: a Feign client call goes to the endpoint its interface ANNOTATION names, which
+     *  is never on the call, so a benign sibling host literal must not certify it. */
+    @Test
+    void aDeclarativeHttpClientCallMarksItsInvisibleEndpoint() throws Exception {
+        Path app = compileApp(Map.of("org/springframework/cloud/openfeign/FeignClient.java",
+                "package org.springframework.cloud.openfeign; @java.lang.annotation.Retention(java.lang.annotation.RetentionPolicy.RUNTIME)"
+                + " public @interface FeignClient { String name() default \"\"; String url() default \"\"; }"),
+            Map.of("app/Cl.java", "package app; @org.springframework.cloud.openfeign.FeignClient(name = \"x\", url = \"https://evil.example\")"
+                    + " public interface Cl { String get(); }",
+                "app/U.java", "package app; public class U { String u(Cl c) throws Exception {"
+                    + " new java.net.URL(\"https://good.example/\").openStream(); return c.get(); } }"));
+        try {
+            Candor.runScan(app);
+            assertTrue(inc("app.U.u", "Net"), "the Feign endpoint is in an annotation, not on the call — must mark Net");
+        } finally { rm(app.getParent()); }
+    }
 }

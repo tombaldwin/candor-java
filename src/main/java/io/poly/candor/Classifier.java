@@ -168,15 +168,19 @@ final class Classifier {
         // these explicitly; everything else on the type keeps its effect. (See isPureHandleAccessor.)
         if (isPureHandleAccessor(owner, method)) return null;
         int dot = owner.indexOf('.');
-        switch (dot > 0 ? owner.substring(0, dot) : owner) {
-            case "java": return classifyJava(owner, method, desc);
-            case "javax": return classifyJavax(owner, method, desc);
-            case "jakarta": return classifyJakarta(owner, method, desc);
-            case "org": return classifyOrg(owner, method, desc);
-            case "com": return classifyCom(owner, method, desc);
-            case "io": return classifyIo(owner, method, desc);
-            default: return classifyOther(owner, method, desc);
-        }
+        Effect e = switch (dot > 0 ? owner.substring(0, dot) : owner) {
+            case "java" -> classifyJava(owner, method, desc);
+            case "javax" -> classifyJavax(owner, method, desc);
+            case "jakarta" -> classifyJakarta(owner, method, desc);
+            case "org" -> classifyOrg(owner, method, desc);
+            case "com" -> classifyCom(owner, method, desc);
+            case "io" -> classifyIo(owner, method, desc);
+            default -> classifyOther(owner, method, desc);
+        };
+        // SOUNDNESS R920 — the Db client command surfaces, derived from bytecode (DbClientSurface). Consulted
+        // only after every hand rule above declined, so it can turn a null into Db and nothing else: no
+        // existing charge, and no existing pure carve-out that returned early, is changed.
+        return e != null ? e : DbClientSurface.classify(owner, method);
     }
 
     /** The java.io DELEGATING stream owners — the one {@link #classifyJava} rule whose {@code Unknown} is a

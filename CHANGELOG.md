@@ -9,6 +9,28 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R813 FIXED: a `File` subclass's receiver names its file
+
+**What went wrong.** R409's masking test asks whether an `Fs` call names a file the gate cannot see. For the
+receiver it read only the exact owners `java.io.File` and `java.nio.file.Path`. `f.delete()` on a
+`class DirFile extends File` compiles with owner `DirFile`, which the classifier charges `Fs` through the
+supertype walk, so the test saw no locator. A benign sibling literal then certified the function:
+`allow Fs in <fn> /tmp/benign` exited 0 over an executed delete of a caller-chosen file.
+
+**The fix asks the hierarchy.** A receiver or argument type is a locator when it is `File` or `Path` or a
+subtype of either, read from the project's classes, a chained dependency's hierarchy sidecar, and the JDK.
+The test can only turn "no claim" or "determined" into "not determined", so it only ADDS `incomplete[Fs]`
+marks. R799's path-value walk keeps the exact list on purpose: widening there would remove marks.
+
+Corpus A/B (372 + 452 library jars): 0 added, 0 removed, 4 rows changed, each gaining only
+`incomplete: [Fs]`, with `inferred` unchanged everywhere. All four were read in bytecode and are genuine:
+- jgit 6.9 and 6.10 `Pack.toString` calls `packFile.length()` on a field-held `PackFile`.
+- derby `DirFile.releaseExclusiveFileLock` calls `this.exists()` and `this.delete()` on its runtime path.
+- derby's `StorageFile.releaseExclusiveFileLock` is the interface union that inherits that mark.
+
+Residual, not this row: a `File` subclass declared in a CHAINED dependency gets no `Fs` charge at all at
+the consumer, so this test is never reached there. That is the vein-D sibling of R868.
+
 ### ⚠ SOUNDNESS R796 FIXED: every JAX-RS and Micronaut request designator now roots its handler
 
 **What went wrong.** The entry-point list carried six of JAX-RS's seven designators. `@OPTIONS` was missing,

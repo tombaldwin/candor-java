@@ -9911,17 +9911,50 @@ public class Candor {
         boolean names = false, determined = true;
         // The RECEIVER, when the type it is invoked on is itself a file (`file.exists()`). Never for
         // `<init>`, whose "receiver" is the uninitialised object the NEW pushed, not a locator.
+        // SOUNDNESS R813: "is a locator" is a HIERARCHY question, not an owner spelling. `f.delete()` on a
+        // `class DirFile extends File` compiles with owner `DirFile`, which the classifier charges Fs through
+        // the external-supertype walk — and an exact-owner test then read it as naming no file, so a benign
+        // sibling literal certified it (`allow Fs in … /tmp/benign` exit 0 over an executed delete of a
+        // caller-chosen file). Widening can only turn null/TRUE into FALSE, i.e. ADD marks, never remove one.
         if (min.getOpcode() != Opcodes.INVOKESTATIC && !min.name.equals("<init>")
-                && FS_LOCATOR_TYPES.contains("L" + min.owner + ";")) {
+                && isFsLocatorType(min.owner)) {
             names = true;
             determined &= provPathVisible(f, receiverValueIndex(f == null ? 0 : f.getStackSize(), args));
         }
         for (int i = 0; i < args.length; i++) {
-            if (!FS_LOCATOR_TYPES.contains(args[i].getDescriptor())) continue;
+            if (args[i].getSort() != Type.OBJECT || !isFsLocatorType(args[i].getInternalName())) continue;
             names = true;
             determined &= provPathVisible(f, argValueIndex(f == null ? 0 : f.getStackSize(), args, i));
         }
         return names ? determined : null;
+    }
+
+    /** SOUNDNESS R813 — is {@code internal} {@code java.io.File} or {@code java.nio.file.Path}, or a subtype of
+     *  either? The hierarchy comes from the same three sources the rest of the engine reads: a project
+     *  ClassNode, a chained dependency's hierarchy sidecar, and candor's own classpath for the JDK
+     *  ({@link #transSupers} covers the first and last; {@link Cha#depDirectSupers} adds the second).
+     *  An unresolvable ancestor answers "not a locator", which is today's behaviour for that type, so the
+     *  result is never narrower than the exact-owner test it replaces. Only {@link #fsLocatorDetermined}
+     *  reads it — R799's {@link #pathValueEscape} keeps the exact list, because there a wider answer would
+     *  REMOVE a mark (the R840 floor). */
+    static boolean isFsLocatorType(String internal) {
+        if (FS_LOCATOR_TYPES.contains("L" + internal + ";")) return true;
+        if (internal.startsWith("[")) return false;
+        Set<String> sup = transSupers(internal);
+        if (sup.contains("java/io/File") || sup.contains("java/nio/file/Path")) return true;
+        Deque<String> work = new ArrayDeque<>(List.of(internal));
+        Set<String> seen = new HashSet<>();
+        while (!work.isEmpty() && seen.size() < 64) {
+            String t = work.pop();
+            if (!seen.add(t)) continue;
+            if (t.equals("java/io/File") || t.equals("java/nio/file/Path")) return true;
+            if (ctx().byName.containsKey(t)) {
+                for (String x : transSupers(t)) work.push(x);
+            } else {
+                work.addAll(depDirectSupers(t));
+            }
+        }
+        return false;
     }
 
     /** Whether the stack entry at {@code idx} carries a statically-determined path. A null frame, an

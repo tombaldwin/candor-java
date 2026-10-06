@@ -527,11 +527,16 @@ class CrossScanBoundaryTest {
 
     @Test
     void aKeyedAndMissedDependencyLookupStaysSilent() throws Exception {
-        // THE CONTROL THAT MAKES THE RUNG NARROW. A lookup whose key WAS formed and came back empty is a
+        // THE CONTROL THAT KEEPS THE RUNG NARROW. A lookup whose key WAS formed and came back empty is a
         // genuine purity claim — a dep report omits its pure functions (SPEC §2 rule 3) — so silence is
-        // the honest answer and a hedge here would be manufactured uncertainty. Two forms: an exact
-        // static key (`Pure.twice`), and an interface member whose signature has no effectful body
-        // anywhere in the chained report (`Store.label` — conjunct 5).
+        // the honest answer and a hedge here would be manufactured uncertainty: `Pure.twice` is an exact
+        // static key.
+        //
+        // SOUNDNESS R533 FLIPPED THE SECOND ARM ON PURPOSE. `Store.label` — an interface member whose every
+        // dep implementor is pure — used to stay silent by conjunct 5 ("the dep holds an effectful body with
+        // this signature"). That conjunct also silenced a member with ZERO implementors, which is the R533
+        // sin, and a consumer cannot tell "none" from "all pure": java publishes no pure-only union. So the
+        // all-pure arm now discloses too. It is the measured cost of the fix, pinned here as such.
         Map<String, Map<String, Object>> r = report(LIB5, Map.of("app/S.java", String.join("\n",
             "package app; import lib.*;",
             "public class S {",
@@ -540,9 +545,37 @@ class CrossScanBoundaryTest {
             "}")), true);
         assertFalse(field(r, "app.S.calc", "inferred").contains("Unknown"),
                 "an EXACT key that missed is a purity claim, not a gap, got " + r.get("app.S.calc"));
-        assertFalse(field(r, "app.S.lbl", "inferred").contains("Unknown"),
-                "an interface member with no effectful body in the chained report must stay silent, got "
-                        + r.get("app.S.lbl"));
+        assertTrue(field(r, "app.S.lbl", "inferred").contains("Unknown"),
+                "R533: an interface dispatch with no published union now discloses even when the dep's own "
+                        + "implementors are pure (the priced hedge), got " + r.get("app.S.lbl"));
+    }
+
+    /** SOUNDNESS R533 — a consumer dispatching on a chained dependency's interface that NOTHING implements.
+     *  The implementor arrives at run time from a jar neither scan saw. Before: `[]` with `dispatchesOn` only,
+     *  `deny Unknown` exit 0, over an executed implementor that wrote a file. The one-tree scan reads
+     *  `Unknown[dispatch]`. Its CALLER must carry it too. The abstract-CLASS twin (R917) is pinned as the
+     *  named residual: a consumer cannot tell an abstract dep-class member from a concrete pure one. */
+    @Test
+    void aDispatchOnAZeroImplementorDependencyInterfaceDiscloses() throws Exception {
+        Map<String, String> lib = Map.of(
+            "lib/Handler.java", "package lib;\npublic interface Handler { int handle(); }\n",
+            "lib/AbsH.java", "package lib;\npublic abstract class AbsH { public abstract int handle(); }\n");
+        Map<String, Map<String, Object>> r = report(lib, Map.of("app/A.java", String.join("\n",
+            "package app; import lib.*;",
+            "public class A {",
+            "  public static int go(Handler h){ return h.handle(); }",
+            "  public static int caller(Handler h){ return go(h); }",
+            "  public static int goAbs(AbsH h){ return h.handle(); }",
+            "}")), true);
+        assertTrue(field(r, "app.A.go", "inferred").contains("Unknown"),
+                "a dispatch with an EMPTY implementor union must disclose, got " + r.get("app.A.go"));
+        assertTrue(field(r, "app.A.go", "unknownWhy").contains("dispatch:lib.Handler.handle"),
+                "and name the dispatch, got " + field(r, "app.A.go", "unknownWhy"));
+        assertTrue(field(r, "app.A.caller", "inferred").contains("Unknown"),
+                "the caller inherits the disclosure, got " + r.get("app.A.caller"));
+        assertFalse(r.containsKey("app.A.goAbs"),
+                "R917 RESIDUAL, pinned so a fix flips it: the abstract-class twin is still ABSENT — the wire "
+                        + "carries no fact that tells an abstract dep-class member from a concrete pure one");
     }
 
     @Test

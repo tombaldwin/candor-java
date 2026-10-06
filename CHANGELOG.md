@@ -9,6 +9,48 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R533 (java half) FIXED: a dispatch on a chained interface that nothing implements now discloses `Unknown`
+
+**What went wrong.** `int go(Handler h) { return h.handle(); }`, where `Handler` is an interface from a
+chained dependency and nothing in either scan implements it, read `[]` with `dispatchesOn` only. `deny Fs`
+and `deny Unknown` exited 0, while the implementor a plugin supplied at run time wrote a file (executed).
+The same source scanned as one tree reads `Unknown[dispatch]`. That is what SPEC §4 requires for a dispatch
+over an unknown type. The untyped-receiver disclosure had a fifth condition: the dependency must hold an
+EFFECTFUL body with that signature somewhere. An abstraction with zero implementors can never meet it.
+
+**The fix removes that condition.** The other four are unchanged: `INVOKEINTERFACE`, a receiver that is not
+provably typed, a chained package, and no project implementor.
+
+**What it costs, and in which direction.** The change only ADDS `Unknown`. A consumer cannot tell "no
+implementor" from "every implementor pure", because java publishes no pure-only union. The hierarchy
+sidecar cannot tell them apart either, because a sub-interface is a subtype that implements nothing. So
+an interface whose dependency implementors are all pure now discloses too.
+Three tests pinned that silence as a design property ("it names, it does not hedge"), and all three are
+flipped to pin the hedge: `CrossScanBoundaryTest`'s `Store.label` arm,
+`InterfaceUnionTest.aPureDepInterfaceStillReadsPureAcrossTheBoundary`, and
+`ChainedDispatchUnionTest`'s middle package. The no-fabrication half of each is still asserted.
+
+A narrower rule was built and measured, and then rejected. It disclosed only when the chained hierarchy
+names the interface and lists no subtype of it. That costs 105 rows (0.23%) and flips 0 packages on the
+same pairs, and it keeps all-pure interfaces silent. But it leaves an executed sin open: an interface
+whose only dependency subtype is a sub-INTERFACE still reads `[]`, and a plugin's implementor of it
+wrote a file.
+
+Measured on 8 real chained library pairs (jackson, logback, HikariCP, jul-to-slf4j, httpclient 4/5,
+okhttp, s3), the same engine on both halves:
+- 337 of 45,200 analysed consumer units newly carry `Unknown`, which is 0.75%.
+- 0 rows lose an effect.
+- Bare `deny Unknown` gate flips: 337 at function scope, 2 of 153 packages, and 0 of 8 jars.
+
+The standalone corpora (372 + 452 jars) are byte-identical, because nothing is chained there. On the
+generated chained census (304 entries, every probe a dispatch), 4,025 probes change, all toward `Unknown`.
+1,227 of them were ABSENT before.
+
+**Not fixed: the abstract-CLASS twin (R917).** `goAbs(AbsH h)` over an abstract dependency class with no
+subclass is still ABSENT. A consumer cannot tell an abstract dependency-class member from a concrete
+pure one: the report, the hierarchy sidecar and the callgraph sidecar all lack that fact. Closing it needs
+the producer to publish one, which is pinned in the new test as a residual.
+
 ### ⚠ SOUNDNESS R813 FIXED: a `File` subclass's receiver names its file
 
 **What went wrong.** R409's masking test asks whether an `Fs` call names a file the gate cannot see. For the

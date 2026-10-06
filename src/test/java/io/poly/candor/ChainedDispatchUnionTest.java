@@ -316,7 +316,11 @@ class ChainedDispatchUnionTest {
                     + " the dependency's and is already fully qualified, so naming it invents nothing."
                     + " Got " + mid.keySet());
             assertEquals(List.of("iface/backend/Backend.size()I"), midRow.get("dispatchesOn"));
-            assertEquals(List.of(), midRow.get("inferred"), "…effect-free: it names, it does not hedge");
+            // SOUNDNESS R533 changed this line on purpose. The middle package sees only PURE implementors of
+            // `Backend`, publishes no pure-only union, and a consumer cannot tell that from ZERO implementors
+            // — the silent case R533 closes. So the row now names AND hedges; the THIRD package's Net still
+            // reaches the app below, which is the property this test exists for.
+            assertEquals(List.of("Unknown"), midRow.get("inferred"), "…it names, and (R533) it hedges");
 
             String middle = t.scanChained("middle", iface), eff = t.scanChained("effimpl", iface);
             Map<String, Object> app = byFn(t.scanChained("app", iface, middle, eff)).get("app.App.appSize");

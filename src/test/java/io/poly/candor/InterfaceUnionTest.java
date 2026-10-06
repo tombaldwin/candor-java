@@ -600,12 +600,17 @@ class InterfaceUnionTest {
         // EFFECT-FREE. What this control is about is that the rung ADDS NOTHING over an all-pure
         // dependency: no effect, and no hedge either. An engine that charged something here, or that
         // started saying `Unknown` because a dispatch occurred, reddens on this line.
+        //
+        // SOUNDNESS R533 REVERSED THE HEDGE HALF, deliberately. Java publishes no pure-only union, so this
+        // consumer cannot tell "every implementer is pure" from "nothing implements it" — and the second is
+        // a silent purity claim over code a plugin supplies at run time. The consumer now discloses
+        // `Unknown[dispatch]`. The FABRICATION half is unchanged and is what stays pinned: no concrete
+        // effect is charged.
         Map<String, Object> row = chainedApp(lib, app, true).get("app.Go.run");
-        if (row != null) {
-            assertEquals(List.of(), row.get("inferred"),
-                    "a pure dep interface must leave the consumer pure; got " + row);
-            assertEquals(Boolean.FALSE, row.get("unresolved"), "…and unhedged; got " + row);
-        }
+        assertNotNull(row, "the dispatching row is present (obligation 1)");
+        assertEquals(List.of("Unknown"), row.get("inferred"),
+                "R533: no concrete effect is fabricated, and the dispatch is disclosed; got " + row);
+        assertEquals(List.of("dispatch:lib.Quiet.tag"), row.get("unknownWhy"), "got " + row);
     }
 
     // ---- the ABSTRACT DEP CLASS (candor-spec SCAN-BOUNDARY-WORK-QUEUE, the row half 1 left open) --------

@@ -97,6 +97,11 @@ final class DbClientSurface {{
         return e;
     }}
 
+    /** {{@link #classify}} without the reach mark, for a caller asking where a charge CAME from. */
+    static Effect classifyQuiet(String owner, String method) {{
+        return classify0(owner, method);
+    }}
+
     private static Effect classify0(String owner, String method) {{
         if (method.equals("<init>") || method.equals("<clinit>") || Candor.isConventionallyPure(method)) return null;
         Set<String> p;

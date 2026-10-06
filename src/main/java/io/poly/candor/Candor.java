@@ -5052,6 +5052,33 @@ public class Candor {
         }
     }
 
+    /** SOUNDNESS R923 — AN EFFECT CHARGED THROUGH A METHOD REFERENCE NEVER REACHED A LOCATOR GUARD.
+     *
+     *  <p>The reference branch of {@link #handleInvokeDynamic} classifies {@code File::delete} or
+     *  {@code MongoCollection::drop} and adds the effect, and that was all: every masking guard (R409's Fs use-site
+     *  test, the Net and Exec marks, R794's Db mark) lives on the CALL path, which a reference never takes. So
+     *  {@code names.stream().map(db::getCollection).forEach(MongoCollection::drop)} beside a benign {@code users}
+     *  query passed {@code allow Db in <fn> users}, and {@code files.forEach(File::delete)} beside a benign literal
+     *  delete passed {@code allow Fs in <fn> /tmp/benign}, while the LAMBDA spelling of each ({@code f -> f.delete()})
+     *  exits 1 — one operation, two spellings, two verdicts.
+     *
+     *  <p>A reference has no operand at this site: the receiver of an unbound reference and every argument are
+     *  supplied later by whatever invokes the functional value. So nothing here can be a captured locator, and
+     *  the surface is incomplete for {@code Fs}, {@code Net} and {@code Exec} outright. {@code Db} keeps the one
+     *  carve-out the call path has for an operand-free call, {@link #REDIS_DATA_FREE_COMMANDS} and
+     *  {@link #DB_LIFECYCLE_MEMBERS} ({@code jedis::close}, {@code session::commitTransaction}), asked through the
+     *  same two predicates so the spellings cannot drift. */
+    static void markMethodRefLocator(AnalysisContext ctx, MethodScan s, Handle h, Effect e) {
+        String key = e == Effect.FS ? "Fs" : e == Effect.NET ? "Net" : e == Effect.EXEC ? "Exec" : e == Effect.DB ? "Db" : null;
+        if (key == null) return;
+        if (e == Effect.DB) {
+            MethodInsnNode as = new MethodInsnNode(Opcodes.INVOKEVIRTUAL, h.getOwner(), h.getName(), h.getDesc(), h.isInterface());
+            if (!dbCallCouldNameALocator(as) && dbMemberNamesNoData(h.getName())) return;
+        }
+        ctx.surfaceIncomplete.computeIfAbsent(s.id, x -> new TreeSet<>()).add(key);
+        if (MASK_DEBUG) System.err.println("R923MASK\t" + s.id + "\t" + key + "\t" + h.getOwner() + "." + h.getName() + h.getDesc());
+    }
+
     /** The XML parse overloads that read a File — one definition, read by {@link #xmlParseFilePrecision}
      *  (which adds the `Fs`) and by the call handler (which judges that File as the locator, R814). */
     static boolean isXmlParseFile(MethodInsnNode min) {
@@ -5518,7 +5545,17 @@ public class Candor {
                 // which is why kappaUncovered() no longer consults a package-wide "was ever classified"
                 // set. The tally must mean the same thing as the name beside it: calls whose effects this
                 // scan could not see.
-                if (effect == null) {
+                //
+                // SOUNDNESS R920 — EXCEPT a charge the derived Db surface made by DEFAULT. That table charges
+                // every member of a client handle type that nobody measured as local, including unlisted and
+                // future ones, so its `Db` vouches that the call reaches the wire and for nothing else the
+                // member does (the Mongo driver body behind `drop()` also connects, reads credentials and can
+                // fork `mongocryptd`). Before that table existed the same call was floored here and named the
+                // package; letting the new charge clear it would turn a hedge into a confident answer on 5,404
+                // rows of the 372-jar corpus — "a mechanism that makes reports better must not make silence
+                // cheaper" (SPEC ⟨0.39⟩). So the call is charged AND stays on the ledger.
+                if (effect == null || ((effect == Effect.DB || effect == Effect.NET)
+                        && Classifier.chargedOnlyByDerivedSurface(owner, min.name, min.desc))) {
                     ctx.kappaSeen.merge(pkg, 1, Integer::sum);
                     ctx.blindDirect.computeIfAbsent(id, k -> new TreeSet<>()).add(pkg);
                 }
@@ -6319,6 +6356,10 @@ public class Candor {
         if (effect == Effect.DB && !capturedTableHere && dbCallCouldNameALocator(min)) {
             ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Db");
             if (MASK_DEBUG) System.err.println("R794MASK\t" + id + "\t" + owner + "." + min.name + min.desc);
+        } else if (effect == Effect.DB && !capturedTableHere && nonSqlDbCallWithNoOperandTouchesData(min)) {
+            // SOUNDNESS R924 — see nonSqlDbCallWithNoOperandTouchesData.
+            ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Db");
+            if (MASK_DEBUG) System.err.println("R924MASK\t" + id + "\t" + owner + "." + min.name + min.desc);
         }
         // SOUNDNESS R794 (second half), R819, R824 → R825: a query LOADED into a handle by a builder the
         // classifier leaves pure (`em.createNativeQuery(sql)`, `st.addBatch(sql)`) and RUN by a zero-argument
@@ -7270,6 +7311,7 @@ public class Candor {
                     String refOwner = h.getOwner().replace('/', '.');
                     Effect eff = Classifier.classify(refOwner, h.getName(), h.getDesc());
                     if (eff != null) dir.add(eff);
+                    if (eff != null) markMethodRefLocator(ctx, s, h, eff);
                     // SOUNDNESS R716 — …AND WHEN THAT ANSWER IS `Unknown` IT ARRIVED WITH NO REASON AT ALL.
                     // `LongUnaryOperator op = u::getLong` charged `Unknown` here with `unknownWhy` ABSENT and
                     // no `calls` entry to inherit one from, while the DIRECT call `u.getLong(addr)` — same
@@ -10115,6 +10157,91 @@ public class Candor {
         boolean visibleBody = (ro != null && declaresConcrete(ro, min.name, min.desc))
                 || nearestConcreteSuper(min.owner, min.name, min.desc) != null;
         return !visibleBody;
+    }
+
+    /** SOUNDNESS R924 — A NON-SQL Db CALL WITH NO OBJECT OPERAND STILL TOUCHES DATA, AND NAMES IT NOWHERE.
+     *
+     *  <p>R794's per-call mark ({@link #dbCallCouldNameALocator}) exempts a call with no object operand, on the ground
+     *  that {@code jedis.close()} or {@code ping()} names nothing. That ground holds for those and fails for the rest:
+     *  EXECUTED against redis:7, {@code jedis.flushAll()} deleted every key while {@code allow Db in <fn> users}
+     *  exited 0 beside a benign {@code SELECT … FROM users}. And the operand count is not where a Redis or Mongo call
+     *  keeps its locator: {@code swapDB(0, 1)} takes two {@code int}s and swaps every key; {@code coll.drop()},
+     *  {@code rmap.clear()} and {@code boundOps.get()} carry theirs on the RECEIVER (the ⟨0.37⟩ stat-locator rule:
+     *  receiver and argument are both the call's own); {@code db.drop()} carries a whole database. This engine
+     *  publishes no key or collection surface for any non-SQL owner, so none of those locators is ever captured.
+     *
+     *  <p>So the default is reversed. A Db call on a non-SQL owner with no object operand marks the surface, UNLESS its
+     *  name is a command that touches no data. A first cut listed the four keyless {@code @keyspace} commands
+     *  (FLUSHALL, FLUSHDB, DBSIZE, RANDOMKEY) and marked only those — an allowlist of what to mark, which left
+     *  {@code swapDB}, every handle receiver and Mongo's {@code db.drop()} silent. The list here is of what NOT to
+     *  mark, so an omission over-marks (loud) and never certifies.
+     *
+     *  <p>{@link #REDIS_DATA_FREE_COMMANDS} is read off redis 7.4's own {@code COMMAND INFO} (379 commands and
+     *  subcommands): every one carrying none of the {@code @keyspace}, {@code @read} or {@code @write} ACL categories,
+     *  spelt as a client method would be (container and subcommand joined: {@code CLIENT LIST} is {@code clientlist}).
+     *  Six are then taken back OUT by hand because their categories understate them: {@code SYNC}/{@code PSYNC}
+     *  stream the whole dataset to the caller, {@code CLUSTER GETKEYSINSLOT}/{@code COUNTKEYSINSLOT} read key names,
+     *  {@code DEBUG} can reload or dump it, {@code MONITOR} echoes every client's commands with their values.
+     *  {@link #DB_LIFECYCLE_MEMBERS} are client members that are no command at all — opening and closing a
+     *  connection, a pipeline or a transaction, whose data-bearing commands are each judged where they were issued. */
+    static final Set<String> REDIS_DATA_FREE_COMMANDS = Set.of(
+            "acl", "aclcat", "acldeluser", "acldryrun", "aclgenpass", "aclgetuser", "aclhelp", "acllist", "aclload",
+            "acllog", "aclsave", "aclsetuser", "aclusers", "aclwhoami", "asking", "auth", "bgrewriteaof", "bgsave",
+            "client", "clientcaching", "clientgetname", "clientgetredir", "clienthelp", "clientid", "clientinfo",
+            "clientkill", "clientlist", "clientnoevict", "clientnotouch", "clientpause", "clientreply",
+            "clientsetinfo", "clientsetname", "clienttracking", "clienttrackinginfo", "clientunblock",
+            "clientunpause", "cluster", "clusteraddslots", "clusteraddslotsrange", "clusterbumpepoch",
+            "clustercountfailurereports", "clusterdelslots", "clusterdelslotsrange", "clusterfailover",
+            "clusterflushslots", "clusterforget", "clusterhelp", "clusterinfo", "clusterkeyslot", "clusterlinks",
+            "clustermeet", "clustermyid", "clustermyshardid", "clusternodes", "clusterreplicas", "clusterreplicate",
+            "clusterreset", "clustersaveconfig", "clustersetconfigepoch", "clustersetslot", "clustershards",
+            "clusterslaves", "clusterslots", "command", "commandcount", "commanddocs", "commandgetkeys",
+            "commandgetkeysandflags", "commandhelp", "commandinfo", "commandlist", "config", "configget",
+            "confighelp", "configresetstat", "configrewrite", "configset", "discard", "echo", "eval", "evalro",
+            "evalsha", "evalsharo", "exec", "failover", "fcall", "fcallro", "function", "functiondump",
+            "functionhelp", "functionkill", "functionlist", "functionstats", "hello", "info", "lastsave", "latency",
+            "latencydoctor", "latencygraph", "latencyhelp", "latencyhistogram", "latencyhistory", "latencylatest",
+            "latencyreset", "memory", "memorydoctor", "memoryhelp", "memorymallocstats", "memorypurge",
+            "memorystats", "module", "modulehelp", "modulelist", "moduleload", "moduleloadex", "moduleunload",
+            "multi", "object", "pfselftest", "ping", "psubscribe", "publish", "pubsub", "pubsubchannels",
+            "pubsubhelp", "pubsubnumpat", "pubsubnumsub", "pubsubshardchannels", "pubsubshardnumsub", "punsubscribe",
+            "quit", "readonly", "readwrite", "replconf", "replicaof", "reset", "role", "save", "script",
+            "scriptdebug", "scriptexists", "scriptflush", "scripthelp", "scriptkill", "scriptload", "select",
+            "shutdown", "slaveof", "slowlog", "slowlogget", "slowloghelp", "slowloglen", "slowlogreset", "spublish",
+            "ssubscribe", "subscribe", "sunsubscribe", "time", "unsubscribe", "unwatch", "wait", "waitaof", "watch",
+            "xgroup", "xgrouphelp", "xinfo", "xinfohelp");
+
+    static final Set<String> DB_LIFECYCLE_MEMBERS = Set.of("close", "connect", "disconnect", "openpipeline",
+            "closepipeline", "starttransaction", "committransaction", "aborttransaction",
+            // MEASURED on the first cut, which lacked these: `ds.getConnection()` beside
+            // `prepareStatement("SELECT id FROM users")` made `allow Db in <fn> users` exit 1 — the commonest JDBC
+            // idiom there is, failed closed. Opening a connection or a transaction, and initialising a template,
+            // names no data; every statement run inside them is judged where it runs.
+            "getconnection", "begin", "commit", "rollback", "afterpropertiesset", "resetstate");
+
+    /** Owners whose Db members are connection and transaction plumbing around SQL statements — a statement is
+     *  judged by the SQL guards where it runs, so an operand-free call here adds no locator. */
+    static boolean isSqlPlumbingOwner(String internalOwner) {
+        return internalOwner.startsWith("javax/sql/") || internalOwner.startsWith("jakarta/sql/")
+                || internalOwner.startsWith("javax/transaction/") || internalOwner.startsWith("jakarta/transaction/")
+                || internalOwner.startsWith("org/springframework/transaction/");
+    }
+
+    static boolean nonSqlDbCallWithNoOperandTouchesData(MethodInsnNode min) {
+        if (min.getOpcode() == Opcodes.INVOKESTATIC || "<init>".equals(min.name) || isSqlBearingOwner(min.owner)
+                || isSqlPlumbingOwner(min.owner)) return false;
+        if (dbCallCouldNameALocator(min)) return false;
+        return !dbMemberNamesNoData(min.name);
+    }
+
+    /** Is this Db member, called with no object operand, one that touches no data? Read in each client's own
+     *  spelling: lower-cased, {@code Binary} dropped ({@code randomBinaryKey}), an {@code Async} suffix dropped. */
+    static boolean dbMemberNamesNoData(String member) {
+        String n = member.toLowerCase(java.util.Locale.ROOT).replace("binary", "");
+        if (n.endsWith("async")) n = n.substring(0, n.length() - 5);
+        // Spring Data Redis `opsForValue()`/`opsForHash()`/…: a handle factory; the keyed call on the handle is judged.
+        if (n.startsWith("opsfor")) return true;
+        return REDIS_DATA_FREE_COMMANDS.contains(n) || DB_LIFECYCLE_MEMBERS.contains(n);
     }
 
     /** SOUNDNESS R794 — could this {@code Db} call name the locator (table / collection / key) it reads

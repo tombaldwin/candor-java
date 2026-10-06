@@ -778,7 +778,13 @@ class HelpersTest {
         assertEquals(Effect.FS, Classifier.classify("javax.imageio.ImageIO", "read", "(Ljava/io/File;)Ljava/awt/image/BufferedImage;"));
         assertEquals(Effect.NET, Classifier.classify("javax.imageio.ImageIO", "read", "(Ljava/net/URL;)Ljava/awt/image/BufferedImage;"));
         assertEquals(Effect.FS, Classifier.classify("javax.imageio.ImageIO", "write", "(Ljava/awt/image/RenderedImage;Ljava/lang/String;Ljava/io/File;)Z"));
-        assertNull(Classifier.classify("javax.imageio.ImageIO", "read", "(Ljava/io/InputStream;)Ljava/awt/image/BufferedImage;")); // stream overload pure
+        // SOUNDNESS R814 — the stream overload is NOT pure, and this line used to pin that it was. With ImageIO's
+        // default useCache=true, read(InputStream) wraps the stream in a FileCacheImageInputStream, i.e. a temp
+        // file under the cache directory. EXECUTED (SecurityManager oracle): checkWrite/checkRead/checkDelete on
+        // $TMPDIR/imageio*.tmp; the control with setUseCache(false) records nothing.
+        assertEquals(Effect.FS, Classifier.classify("javax.imageio.ImageIO", "read", "(Ljava/io/InputStream;)Ljava/awt/image/BufferedImage;"));
+        // the ImageInputStream overload reads the caller's stream and creates no cache — still pure-relative
+        assertNull(Classifier.classify("javax.imageio.ImageIO", "read", "(Ljavax/imageio/stream/ImageInputStream;)Ljava/awt/image/BufferedImage;"));
         // JMX remote
         assertEquals(Effect.NET, Classifier.classify("javax.management.remote.JMXConnectorFactory", "connect", "(Ljavax/management/remote/JMXServiceURL;)Ljavax/management/remote/JMXConnector;"));
         // the new SQL-bearing owners (so their table literals reach the gate)

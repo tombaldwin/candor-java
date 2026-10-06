@@ -6245,6 +6245,10 @@ public class Candor {
         if (effect == Effect.DB && !capturedTableHere && dbCallCouldNameALocator(min)) {
             ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Db");
             if (MASK_DEBUG) System.err.println("R794MASK\t" + id + "\t" + owner + "." + min.name + min.desc);
+        } else if (effect == Effect.DB && !capturedTableHere && wholeKeyspaceCall(min)) {
+            // SOUNDNESS R924 — see wholeKeyspaceCall.
+            ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Db");
+            if (MASK_DEBUG) System.err.println("R924MASK\t" + id + "\t" + owner + "." + min.name + min.desc);
         }
         // SOUNDNESS R794 (second half), R819, R824 → R825: a query LOADED into a handle by a builder the
         // classifier leaves pure (`em.createNativeQuery(sql)`, `st.addBatch(sql)`) and RUN by a zero-argument
@@ -10060,6 +10064,38 @@ public class Candor {
      *  /{@code setnx} carry the KEY as their first argument. The old guard never noticed, because it
      *  could not see a non-SQL owner at all; conjoining the owner test here is what keeps
      *  {@code jedis.set(key, v)} marked. */
+    /** SOUNDNESS R924 — a Db call with no locator operand that nonetheless touches EVERY key: the receiver is the
+     *  whole keyspace, so the locator is "all of them" and no `tables` entry can stand for it.
+     *
+     *  <p>R794's per-call mark exempts a call with no object operand, on the ground that {@code jedis.close()}
+     *  or {@code ping()} names nothing. That ground is right for those and wrong for {@code flushAll()}: beside
+     *  a benign {@code SELECT … FROM users}, {@code allow Db in <fn> users} exited 0 over a function that,
+     *  executed against redis:7, deleted every key. Separating the two needs a fact about the COMMAND, not the
+     *  method shape, and Redis publishes it: {@code COMMAND INFO} gives each command's first key position and ACL
+     *  categories. Over all 379 commands of redis 7.4, the {@code @keyspace} commands with first key 0 are DBSIZE,
+     *  FLUSHALL, FLUSHDB, KEYS, OBJECT, RANDOMKEY, SCAN and SWAPDB; of those, only FLUSHALL, FLUSHDB, DBSIZE and
+     *  RANDOMKEY can be issued with no argument (KEYS needs a pattern, SCAN a cursor, SWAPDB two indexes, OBJECT
+     *  a subcommand and key). PING and QUIT are {@code @connection}, INFO/TIME/LASTSAVE carry no data category, and
+     *  {@code close()} is no command at all, so none of those is marked. Every other keyless data command
+     *  (BLMPOP, ZUNION, XREAD …) takes its keys as arguments, which R794 already reads.
+     *
+     *  <p>The client method name is the command name in each client's own spelling: Jedis {@code flushAll},
+     *  {@code flushDB}, {@code dbSize}, {@code randomKey}/{@code randomBinaryKey}; Lettuce {@code flushall},
+     *  {@code flushallAsync}; Spring {@code flushDb}. Redisson's {@code RKeys} is itself the keyspace handle
+     *  ({@code count()} is DBSIZE, {@code getKeys()} iterates all keys), so every Db call on it with no locator
+     *  operand is marked. A SQL-bearing owner is excluded: there a zero-argument terminal runs a statement whose
+     *  locator was captured, or marked, where it was loaded. */
+    static final Set<String> REDIS_WHOLE_KEYSPACE_COMMANDS = Set.of("flushall", "flushdb", "dbsize", "randomkey");
+
+    static boolean wholeKeyspaceCall(MethodInsnNode min) {
+        if (min.getOpcode() == Opcodes.INVOKESTATIC || "<init>".equals(min.name) || isSqlBearingOwner(min.owner)) return false;
+        if (dbCallCouldNameALocator(min)) return false;
+        if (min.owner.startsWith("org/redisson/api/RKeys")) return true;
+        String n = min.name.toLowerCase(java.util.Locale.ROOT).replace("binary", "");
+        if (n.endsWith("async")) n = n.substring(0, n.length() - 5);
+        return REDIS_WHOLE_KEYSPACE_COMMANDS.contains(n);
+    }
+
     static boolean dbCallCouldNameALocator(MethodInsnNode min) {
         if (isSqlBearingOwner(min.owner) && isSqlParameterBinder(min.name)) return false;
         Type[] args = Type.getArgumentTypes(min.desc);

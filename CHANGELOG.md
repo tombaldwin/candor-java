@@ -9,6 +9,37 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R924 FIXED: a zero-argument command that touches every key leaves the Db surface incomplete
+
+**What went wrong.** R794 exempts a Db call with no object operand, because `close()` and `ping()` name no
+locator. `flushAll()` names none either, but it deletes every key. Executed against redis:7, `callWipe` took
+dbsize from 3 to 0, while `allow Db in <fn> users` exited 0 beside a benign `users` query, on the unit and its
+caller. The same held for Jedis `dbSize()`, Lettuce `flushall()` and Redisson `getKeys().flushdb()`.
+
+**The rule uses the command, not the method's shape.** Redis publishes each command's first-key position and
+ACL categories through `COMMAND INFO`. Over the 379 commands of redis 7.4:
+- the `@keyspace` commands with first key 0 are DBSIZE, FLUSHALL, FLUSHDB, KEYS, OBJECT, RANDOMKEY, SCAN and
+  SWAPDB;
+- of those, only FLUSHALL, FLUSHDB, DBSIZE and RANDOMKEY can be issued with no argument;
+- PING and QUIT are `@connection`, and INFO, TIME and LASTSAVE carry no data category.
+
+A Db call on a non-SQL owner with no locator operand whose name is one of those four now marks
+`incomplete: [Db]`. Each client's spelling is matched (`flushAll`, `flushDB`, `flushallAsync`,
+`randomBinaryKey`). Redisson's `RKeys` is itself the keyspace handle, so every Db call on it with no locator
+operand marks too. `close()` and `ping()` are untouched. The change only adds marks.
+
+**Measured.**
+- Executed fixture: 5 of 5 gates flip 0 to 1: Jedis `wipe` and its caller, `dbSize`, Redisson `RKeys`,
+  Lettuce `flushall`. The `ping()` and `close()` controls stay 0.
+- Pinned in `test/smoke.sh` with FQN stubs. They fail 4 of 7 on the R920 build.
+- Corpus A/B against R920:
+  - 372 jars: 6 rows gain `incomplete[Db]`; 452 jars: 0. Removed 0.
+  - Reach: 19 hits on 372, 12 on 452.
+  - All 6 rows already carry Db with no `tables`, so they flip no `allow Db` gate.
+  - Three of them are `randomKey()` on a bound hash (HRANDFIELD, a name collision). The mark is still genuine
+    there, because the bound key is not captured either.
+- Against v0.39.3: removed 0, and no Db mark or effect lost.
+
 ### ⚠ SOUNDNESS R920 FIXED: Db client members nobody listed are charged, from a table derived from the clients' bytecode
 
 **What went wrong.** The classifier listed Db VERBS per client, so every member nobody listed read as pure.

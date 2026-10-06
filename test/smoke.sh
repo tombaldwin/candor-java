@@ -2158,6 +2158,48 @@ for pair in dbDrop:1 callDbDrop:1 mapClear:1 lockIt:1 pooledDel:1 callPooledDel:
     else echo "  FAIL R920 GATE deny Db app.S.$m — exit $got (want $want)"; fail=$((fail+1)); fi
 done
 
+# ── SOUNDNESS R924: a zero-argument command that touches EVERY key leaves the Db surface incomplete ─────
+echo "== SOUNDNESS R924: flushAll/flushdb/dbSize/randomKey and Redisson RKeys mark the surface; ping/close do not =="
+# R794 exempts a Db call with no object operand (close, ping name nothing). FLUSHALL also names nothing, and
+# it deletes every key. EXECUTED against redis:7: `callWipe` took dbsize 3 -> 0 while `allow Db in <fn> users`
+# exited 0 beside a benign `users` literal, on the unit and its caller. The command set is read off redis's own
+# COMMAND INFO (keyless @keyspace commands callable with no argument). Stubs carry the real FQNs.
+mkdir -p "$W/r924/redis/clients/jedis" "$W/r924/org/redisson/api" "$W/r924/app"
+cat > "$W/r924/redis/clients/jedis/Jedis.java" <<'J'
+package redis.clients.jedis;
+public class Jedis { public String flushAll() { return "OK"; } public String ping() { return "PONG"; } public void close() {} public long dbSize() { return 0; } }
+J
+cat > "$W/r924/org/redisson/api/RKeys.java" <<'J'
+package org.redisson.api;
+public interface RKeys { long count(); void flushdb(); }
+J
+cat > "$W/r924/app/K.java" <<'J'
+package app;
+import java.sql.*;
+public class K {
+  static void lit(Connection c) throws SQLException { c.prepareStatement("SELECT id FROM users").executeQuery(); }
+  public static void wipe(Connection c, redis.clients.jedis.Jedis j) throws SQLException { lit(c); j.flushAll(); }
+  public static void callWipe(Connection c, redis.clients.jedis.Jedis j) throws SQLException { wipe(c, j); }
+  public static long size(Connection c, redis.clients.jedis.Jedis j) throws SQLException { lit(c); return j.dbSize(); }
+  public static long rkCount(Connection c, org.redisson.api.RKeys k) throws SQLException { lit(c); return k.count(); }
+  // CONTROLS: commands that touch no key keep the function certifiable.
+  public static String pong(Connection c, redis.clients.jedis.Jedis j) throws SQLException { lit(c); return j.ping(); }
+  public static void shut(Connection c, redis.clients.jedis.Jedis j) throws SQLException { lit(c); j.close(); }
+}
+J
+javac -d "$W/r924cls" $(find "$W/r924" -name '*.java') 2>/dev/null
+for pair in wipe:1 callWipe:1 size:1 rkCount:1 pong:0 shut:0; do
+    m=${pair%%:*}; want=${pair##*:}
+    printf 'allow Db in app.K.%s users\n' "$m" > "$W/r924.pol"
+    CANDOR_POLICY="$W/r924.pol" "$CJ" "$W/r924cls" >/dev/null 2>&1; got=$?
+    if [ "$got" -eq "$want" ]; then echo "  ok   R924 GATE app.K.$m exits $want"; pass=$((pass+1));
+    else echo "  FAIL R924 GATE app.K.$m — exit $got (want $want)"; fail=$((fail+1)); fi
+done
+printf 'deny Db app.K.pong\n' > "$W/r924.pol"
+CANDOR_POLICY="$W/r924.pol" "$CJ" "$W/r924cls" >/dev/null 2>&1; r924d=$?
+if [ "$r924d" -eq 1 ]; then echo "  ok   R924 CALIBRATION: \`deny Db\` bites the ping control that \`allow Db\` certifies"; pass=$((pass+1));
+else echo "  FAIL R924 CALIBRATION — deny Db exit $r924d (want 1)"; fail=$((fail+1)); fi
+
 # ── SOUNDNESS R795: a zero-argument Net call can still name its destination — at the RECEIVER ─────
 echo "== SOUNDNESS R795: the Net masking guard reads the receiver, not the argument count =="
 # The defect: `carriesArgs = !min.desc.startsWith("()")` declined every zero-argument Net call, so

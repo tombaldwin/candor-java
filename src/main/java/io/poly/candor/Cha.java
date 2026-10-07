@@ -728,22 +728,29 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         return true;                                        // not found where the key says it lives
     }
 
-    /** SOUNDNESS R601 — {@link #externallyReassignableField}, narrowed to a field a code in ANOTHER PACKAGE can
-     *  write: public or protected, and not final or private. That predicate answers "is the scan's write set
-     *  the whole one?" and keeps package-private fields in, which is right for the cost-free member key R595
-     *  publishes; the R601 hedge is a verdict, so it asks the chained-consumer question instead. MEASURED on
-     *  the 372-jar corpus: 3 of 72 sites were package-private (ignite {@code CacheListCommand#FILTER},
-     *  spring-data-commons {@code QueryMethodValidator#pageableCannotHaveSortOrLimit}). Fails OPEN exactly
-     *  where the wider test does — an unparseable key, an off-classpath declarer, a field not found.
+    /** SOUNDNESS R601 + R965 — {@link #externallyReassignableField}, narrowed to a field code in ANOTHER PACKAGE
+     *  can write: PUBLIC, or PROTECTED in a class that can be subclassed (not final); never final or private.
+     *  That predicate answers "is the scan's write set the whole one?" and keeps package-private fields in,
+     *  which is right for the cost-free member key R595 publishes; the R601 hedge is a verdict, so it asks the
+     *  chained-consumer question instead. MEASURED on the 372-jar corpus: 3 of 72 sites were package-private
+     *  (ignite {@code CacheListCommand#FILTER}, spring-data-commons
+     *  {@code QueryMethodValidator#pageableCannotHaveSortOrLimit}). Fails OPEN exactly where the wider test
+     *  does — an unparseable key, an off-classpath declarer, a field not found.
      *
-     *  <p><b>PUBLIC ONLY — a PROTECTED field is not hedged, and that is a recorded residual, not a finding.</b>
-     *  The first cut took public OR protected, and four-way conformance PART 87 went red on exactly that: its
-     *  inherited-field OVER-CHARGE CONTROL ({@code class Base { protected Runnable task; install(q){ task = () ->
-     *  q.bump(); } }}, {@code Sub.fire(){ task.run(); }}) is a resolved binding the clause requires to stay
-     *  UNHEDGED, and this hedge tagged {@code Sub.fire} {@code Unknown[callback:]}. A protected field IS
-     *  writable by a subclass in another package, so a chained consumer's subclass can still reassign it
-     *  silently — that residual is named for the register rather than closed by overriding a pinned cell.
-     *  MEASURED: 0 of the 372-corpus sites were protected, so the corpus price is unchanged. */
+     *  <p><b>PROTECTED IS IN SINCE R965.</b> R601's first cut took public OR protected, and four-way PART 87
+     *  went red on its inherited-field OVER-CHARGE CONTROL ({@code class Base { protected Runnable task;
+     *  install(q){ task = () -> q.bump(); } }}, {@code Sub.fire(){ task.run(); }}), so the cut shipped
+     *  public-only. That left the protected half SILENT, EXECUTED: a dependency's {@code protected Runnable task
+     *  = () -> {}} dispatched by its own {@code fire()}, a chained consumer's subclass in another package
+     *  reassigning it to an {@code Fs} lambda, and {@code deny Unknown} / {@code deny Fs Unknown app.C.run}
+     *  exiting 0 over a file the program wrote twice. The control's shape HAS that hazard: {@code Base} is
+     *  public and non-final, so any downstream subclass may reassign {@code task}, and candor-ts
+     *  ({@code openCallSlot}, {@code callback:this.task}), candor-swift (every {@code var} closure property)
+     *  and candor-rust ({@code callback:unresolved call}) all hedge the identical shape — the cell held java
+     *  LESS disclosed than the other three. PART 87 was amended with this change to accept a {@code callback:}
+     *  {@code Unknown} BESIDE the resolved edge (never {@code Fs}); the private controls still pin the
+     *  "hedge everywhere" direction. The edges are untouched: the in-scan {@code one} arm still charges
+     *  {@code Fs}. A protected field of a FINAL class has no subclass outside its package, so it stays out. */
     static boolean foreignReassignableField(String fieldKey) {
         if (!externallyReassignableField(fieldKey)) return false;
         int hash = fieldKey.lastIndexOf('#');
@@ -752,7 +759,9 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         if (cn == null || cn.fields == null) return true;
         String name = fieldKey.substring(hash + 1);
         for (FieldNode fn : cn.fields)
-            if (fn.name.equals(name)) return (fn.access & Opcodes.ACC_PUBLIC) != 0;
+            if (fn.name.equals(name))
+                return (fn.access & Opcodes.ACC_PUBLIC) != 0
+                        || (fn.access & Opcodes.ACC_PROTECTED) != 0 && (cn.access & Opcodes.ACC_FINAL) == 0;
         return true;
     }
 

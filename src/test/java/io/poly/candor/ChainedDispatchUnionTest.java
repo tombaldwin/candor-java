@@ -678,7 +678,13 @@ class ChainedDispatchUnionTest {
             assertNull(r.get("lib3.Jdk.firePriv"), "a private field's write set is the scan's — pure");
             assertNull(r.get("lib3.Jdk.fireFin"), "a final field's write set is the scan's — pure");
             assertNull(r.get("lib3.Jdk.firePkg"), "a package-private field: no consumer in another package can write it");
-            assertNull(r.get("lib3.Jdk.fireProt"), "a PROTECTED field stays unhedged (PART 87's inherited control; named residual)");
+            // SOUNDNESS R965 — INVERTED, not deleted. This line pinned "a PROTECTED field stays unhedged" while
+            // PART 87's inherited-field control required it; that left a chained consumer's subclass able to
+            // reassign the field silently (executed). The control was amended alongside this change; see
+            // Cha#foreignReassignableField and r965AProtectedFieldAConsumerSubclassReassignsDiscloses below.
+            assertEquals(List.of("callback:java.util.function.Consumer.accept"),
+                    r.getOrDefault("lib3.Jdk.fireProt", Map.of()).get("unknownWhy"),
+                    "R965: a PROTECTED field of a subclassable class is writable from another package — hedged");
             Map<String, Object> named = r.get("lib3.Jdk.fireNamed");
             assertNotNull(named, "R595: a nameable member is named");
             assertEquals(List.of("lib3/Hook.on(Ljava/lang/String;)V"), named.get("dispatchesOn"), "got " + named);
@@ -686,6 +692,56 @@ class ChainedDispatchUnionTest {
             Map<String, Object> run = byFn(t.scanChained("app", lib)).get("app.C.run");
             assertNotNull(run, "R601: the consumer's caller must not be ABSENT");
             assertTrue(((List<?>) run.get("inferred")).contains("Unknown"), "got " + run);
+        } finally {
+            t.close();
+        }
+    }
+
+    /** SOUNDNESS R965 — R601's PROTECTED half. A dependency's {@code protected Runnable task = () -> {}} is
+     *  dispatched by its own {@code fire()}; a CHAINED consumer's subclass in another package reassigns it to an
+     *  effectful lambda. Before: {@code fire} published nothing and the consumer's callers read ABSENT (executed
+     *  in the lane fixture: {@code deny Unknown} exit 0 over a written file). Now the producer discloses
+     *  {@code Unknown[callback:java.lang.Runnable.run]} and the consumer's callers inherit it — through a
+     *  {@code Base} receiver and through the inherited {@code Sub.fire}. Bare {@code Fs} is NOT claimed: naming
+     *  the consumer's lambda needs the field-keyed join. Controls: a protected field of a FINAL class (no
+     *  subclass outside the package can exist) stays unhedged, and the in-scan binding still resolves its edge
+     *  (an effectful default still charges {@code Fs} — the hedge is added beside it, never in its place). */
+    @Test
+    void r965AProtectedFieldAConsumerSubclassReassignsDiscloses() throws Exception {
+        Tree t = Tree.of(
+                Map.of("lib5/Base.java", "package lib5;\npublic class Base {\n"
+                                + "  protected Runnable task = () -> {};\n"
+                                + "  public void fire() { task.run(); }\n}\n",
+                        "lib5/Sealed.java", "package lib5;\npublic final class Sealed {\n"
+                                + "  protected Runnable task = () -> {};\n"
+                                + "  public void fire() { task.run(); }\n}\n",
+                        "lib5/Loud.java", "package lib5;\npublic class Loud {\n"
+                                + "  protected Runnable task = () -> { " + FS_SINK + " };\n"
+                                + "  public void fire() { task.run(); }\n}\n"),
+                Map.of("app/Sub.java", "package app;\npublic class Sub extends lib5.Base {\n"
+                                + "  public void arm() { task = () -> { " + FS_SINK + " }; }\n}\n",
+                        "app/C.java", "package app;\npublic class C {\n"
+                                + "  public static void run(lib5.Base b) { b.fire(); }\n"
+                                + "  public static void runSub(Sub s) { s.fire(); }\n}\n"));
+        try {
+            String lib = t.scan("lib5");
+            Map<String, Map<String, Object>> r = byFn(lib);
+            Map<String, Object> fire = r.get("lib5.Base.fire");
+            assertNotNull(fire, "R965: the producer must not read silent; got " + r.keySet());
+            assertEquals(List.of("Unknown"), fire.get("inferred"), "got " + fire);
+            assertEquals(List.of("callback:java.lang.Runnable.run"), fire.get("unknownWhy"));
+            assertNull(r.get("lib5.Sealed.fire"), "a protected field of a FINAL class has no foreign writer — pure");
+            Map<String, Object> loud = r.get("lib5.Loud.fire");
+            assertNotNull(loud, "the bound effectful default still resolves");
+            assertTrue(((List<?>) loud.get("inferred")).contains("Fs"), "edge kept, hedge beside it: " + loud);
+            Map<String, Map<String, Object>> app = byFn(t.scanChained("app", lib));
+            for (String fn : List.of("app.C.run", "app.C.runSub")) {
+                Map<String, Object> row = app.get(fn);
+                assertNotNull(row, fn + " ABSENT — the purity claim R965 is about; got " + app.keySet());
+                assertTrue(((List<?>) row.get("inferred")).contains("Unknown"), fn + " got " + row);
+                assertFalse(((List<?>) row.get("inferred")).contains("Fs"),
+                        fn + ": Fs needs the field-keyed join and must not be minted here; got " + row);
+            }
         } finally {
             t.close();
         }

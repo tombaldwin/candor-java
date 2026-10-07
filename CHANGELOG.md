@@ -9,6 +9,28 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R965 FIXED (disclosed): R601's protected half
+
+**What went wrong.** R601's `Unknown[callback:]` hedge was limited to PUBLIC fields. A dependency's
+`protected Runnable task = () -> {}` dispatched by its own `fire()`, reassigned by a chained consumer's
+subclass in another package, left the consumer's callers ABSENT: `deny Unknown` and `deny Fs Unknown
+app.C.run` exited 0 over a file the program wrote (executed, two callers).
+
+**The fix.** `Cha#foreignReassignableField` also accepts a PROTECTED field of a non-final class. The edges are
+untouched, so the in-scan binding still charges its default's effects. Bare `deny Fs app.C.run` stays 0: naming
+the consumer's lambda needs a field-keyed join, which is new wire (filed as a designed rung, not built).
+Conformance PART 87's `java-pure-inherited` control was amended in candor-spec to accept a `callback:` hedge
+beside a still-resolved edge. The other three engines already hedge this shape.
+
+**Measured** (PRE = `2d428c9`, POST = this):
+- `fx/r965`: `deny Unknown`, `deny Fs Unknown app.C.run`, `deny Fs Unknown app.C.runSub` 0 -> 1; bare
+  `deny Fs` on both stays 0.
+- `bin/corpus-ab.py`: 372 jars, 452 jars, and 15 chained pairs all ADDED 0 / REMOVED 0 / CHANGED 0, with no
+  field values lost. The hedge fired at the same 68 public sites as before. None of the 66 protected κ-SAM
+  fields in the 372 jars is write-set-bound: 51 bound fields in those same jars, 0 protected.
+- `ChainedDispatchUnionTest`: R601's "protected stays unhedged" assertion is inverted, not deleted, and a
+  new R965 test pins the consumer route plus a final-class control. Both fail before the change.
+
 ### SOUNDNESS R949 (java half): a literal name that is resolved is published in `hosts`
 
 SPEC §2 ⟨0.40⟩, PART 96 arm `g_litdiscard`. A resolution's locator is the NAME. Before this change,

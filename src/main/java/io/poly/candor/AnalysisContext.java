@@ -241,6 +241,11 @@ final class AnalysisContext {
      *  scan-completeness threshold: counting `Cls.INSTANCE.m()` as two reaches (the GETSTATIC and the call)
      *  double-counts one reach and moved that threshold — measured, it nearly doubled a 49-call fixture. */
     final java.util.Set<String> kappaBlindPkgs = new TreeSet<>();
+    /** Floored calls into an external package a FRAMEWORK grant covers (`kappaCovers` true, not a platform or
+     *  language-runtime prefix — {@link Rules#isKappaRuntimePrefix}). Not a disclosure and never on the wire:
+     *  read ONLY by the scan-completeness nudge, whose trigger summed `kappaSeen` alone and so stayed silent on
+     *  an app-only Spring/Struts scan, where the unscanned library bodies are not even `invisible`. */
+    final Map<String, Integer> kappaFrameworkSeen = new TreeMap<>();
     // fn -> external packages it DIRECTLY calls into where κ floored the call; post-filtered to genuinely
     // blind packages + propagated transitively -> the per-method `invisible` disclosure.
     final Map<String, TreeSet<String>> blindDirect = new HashMap<>();

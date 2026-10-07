@@ -9,6 +9,185 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### SOUNDNESS R949 (java half): a literal name that is resolved is published in `hosts`
+
+SPEC §2 ⟨0.40⟩, PART 96 arm `g_litdiscard`. A resolution's locator is the NAME. Before this change,
+`InetAddress.getByName("evil.example")` marked `Net` incomplete but never named the host. The per-call
+literal window reads through `netHostLiteral`, which rejects a bare dotted name by design. So `hosts`
+never said what was reached, and an allowlist that named it could not certify it.
+
+**The fix.** `getByName`/`getAllByName` capture their operand as a host when it is ONE literal on every
+path and has the shape of a DNS name or IPv4 address. Two literals on a merge, a template, a concat, a
+dotless name, a field-held name and a computed name all keep the mark, which is R949's other half.
+
+**Measured.**
+- `g_litdiscard`: `hosts` gains `evil.example`; `allow Net ok.example` stays 1; `allow Net ok.example
+  evil.example` goes 1 → 0. `e_rtname` and `f_rtresolve` stay 1.
+- `bin/corpus-ab.py` over 372 jars, PRE = the R817 change: ADDED 0, REMOVED 0, `inferred` 0. 20,371
+  rows gained a host, from 2 captures (geode, 20,184 rows; hazelcast, 187 rows).
+- Every added value is the one name captured in its entry. No row that was complete before gained a
+  host, so no `allow` gate can go 0 → 1. One row lost `incomplete`: the capture site itself,
+  `DistributionConfig._getDefaultMcastAddress`, whose only `Net` is `getByName("239.192.81.1")`
+  through a local.
+
+### ⚠ SOUNDNESS R817 (java half): a bind address is not a destination, a bind marks nothing, an accept marks
+
+SPEC §2 ⟨0.40⟩, pinned by PART 96. Before this change the engine got bind and listen wrong in both
+directions:
+- `new DatagramSocket(new InetSocketAddress("10.0.0.5", 9))` published `hosts: ['10.0.0.5','10.0.0.5:9']`.
+  That is the process's own address, reported as a destination it never reaches.
+- Every JDK bind (`new DatagramSocket(0)`, `new ServerSocket(8080)`, `ds.bind(a)`, `ch.bind(a)`) marked
+  `Net` incomplete. So a UDP client sending to one literal could never be certified.
+- `s.send(new DatagramPacket(b, 1, InetAddress.getByName("10.9.9.9"), 53))` marked incomplete even though
+  `10.9.9.9` was captured, at the `getByName` call.
+
+**The fix.**
+- A JDK bind no longer marks.
+- A literal address that reaches only a bind is neither captured nor marked.
+- A datagram send marks nothing when its packet is provably built here from a captured address and
+  nothing can re-aim it (no `receive`, `setAddress`, helper call, field, return or merge).
+- An ACCEPT on `ServerSocket`, `ServerSocketChannel` or `AsynchronousServerSocketChannel` (or a subtype)
+  now marks `Net` explicitly. Before, an accept marked only when the server socket was not allocated in
+  the same method; `new ServerSocket(8080).accept()` was covered by the bind hedge this change removes.
+
+**Not changed: a runtime host NAME that is resolved still marks.** `new InetSocketAddress(h, 0)` and
+`getByName(h)` send `h` to the resolver, whatever the address is used for. So PART 96's `b_rtbind` body
+still exits 1 on this engine, through the resolution and not the bind. The same bind over a
+`SocketAddress` parameter now certifies.
+
+**Measured.**
+- PART 96's java arms: `a_litbind` publishes no host and fails closed on the empty surface;
+  `d_ephemeral` 1 → 0; `c_accept` stays 1.
+- Executed: a peer the source never names received the accepted socket's byte, and `allow Net
+  127.0.0.1` exits 1. The UDP client's datagram reached `127.0.0.1:18082`, and `allow Net 127.0.0.1`
+  went 1 → 0.
+- `bin/corpus-ab.py` over 372 jars (1,671,831 rows): ADDED 0, REMOVED 0, CHANGED 123, `inferred` changed
+  on 0 rows, no `hosts` value removed.
+- All 123 changes are a lost `Net` `incomplete`, each traced to a bind exemption: 85 in the unit itself,
+  18 through a callee, 20 through an interface union. A seeded C3 is found by the same partition. Every
+  one of the 123 has empty `hosts`, so `allow Net <host>` still fails closed on it: 0 gate flips.
+- The first cut of this change was a cardinal sin. It treated a value with NO uses as "used only by
+  binds", so a discarded `getByName("evil.example")` beside a benign literal certified (1 → 0).
+  Reading the A/B's `bind-address` firings found it (hazelcast's `defaultKubernetesMasterReachable`).
+  It is fixed, and pinned in `BindListenSurfaceTest`.
+
+### ⚠ SOUNDNESS R682 FIXED: `scan --policy` gates the report entries `gate --report` gates
+
+**What went wrong.** When the writer merged an interface union into a real bodiless entry, the two
+routes stopped agreeing. Such an entry is an abstract member kept because its class declares a capability.
+The written report then carried the union's effects, while `scan --policy` gated the classifier's map,
+where that member is empty.
+
+On `abstract class A { protected Eff e; abstract void m(); }` with one effectful subclass:
+- `pure p.A` and `deny Fs p.A.m` exited 0 on the scan route.
+- The same policies exited 1 on `gate --report`, over the report the same scan wrote.
+
+The verdict documents differed on 190 of 372 jars and 152 of 452. That is 3,460 and 2,985 functions
+judged by the gate route only, and never one judged by the scan route only.
+
+**The fix.** `ReportWriter.buildEntries` builds the report's entries once. The scan route serialises
+them and gates them. `Policy.withReportEntries` adds each real entry's own fields to the scan route's gate
+input. That is a no-op for an entry nothing widened, and it never recomputes the merge.
+
+**Measured.**
+- Reports: byte-identical, with ADDED/REMOVED/CHANGED 0/0/0 on both 372 and 452.
+- Route equality, the `--gate-json` documents from both routes compared byte for byte:
+  - 372 jars: 190 differing → 1. The 1 is a target with no class files, which the scan refuses.
+  - 452 jars: 152 differing → 0.
+- Every newly judged function in a sampled 110 of 110 is a bodiless abstract entry.
+
+### ⚠ SOUNDNESS R917 residual FIXED: a zero-implementer member with a real bodiless entry discloses
+
+**What went wrong.** R917's `Unknown` was not merged into a hash claimed by a real bodiless entry, because
+that merge used to reach only the report route. Those entries published `inferred: []`. A chained
+consumer's join hit that empty set, so `goClaimed(AbsC h){ h.handle(); }` read ABSENT. `deny Unknown`
+exited 0 over a plugin subclass that wrote a file (executed).
+
+**The fix and its effect.** Since the R682 fix, the merge is seen by both routes, so the `Unknown` is now
+merged. The executed fixture goes from 0 to 1 on `deny Unknown` and `deny Fs Unknown`. The producer's own
+routes stay byte-equal.
+
+**Cost.** Changed rows (372 / 452): 241 / 79 rows change, every one the abstract entry itself gaining its
+own `dispatch:`.
+- REMOVED 0, and 0 values lost.
+- Flips across 76 jars and 1,144,801 analysed units: 296 at function scope (0.026%), 5 at class scope,
+  0 at package scope, 0 at jar scope.
+- Chained pairs: 4 rows change, all the consumer jars' own abstract entries.
+
+### ⚠ SOUNDNESS R917 FIXED: a dispatch on a chained abstract class that nothing implements discloses `Unknown`
+
+**What went wrong.** `goAbs(AbsH h){ return h.handle(); }`, where `AbsH` is a chained dependency's public
+abstract class with no subclass anywhere, read ABSENT with no `dispatchesOn`. `deny Unknown` and
+`deny Fs Unknown` exited 0 while a plugin subclass loaded at run time wrote a file (executed). The one-tree
+scan reads `Unknown[dispatch:iface.AbsH.handle]`. This is R533's abstract-class twin: R533 discloses on an
+INVOKEINTERFACE miss, but an abstract class's member is called by INVOKEVIRTUAL, the opcode of every
+concrete method, so a miss there was an ordinary purity claim.
+
+**Three parts.**
+- **Producer: adds rows only.** A public abstract class's public or protected abstract member with no
+  implementer publishes an `interfaceUnion` entry carrying `Unknown[dispatch:]`. That is what the producer
+  reports in-scan for the same dispatch. A sealed class, a package-private class, and a hash already
+  claimed by a real entry are left out.
+- **Consumer: drops that hedge where its own subclasses answer.** The dependency's hierarchy sidecar must
+  show the owner with no subtype. This mirrors R533's conjunct 4. Without the sidecar the hedge is kept.
+- **Obligation 1's foreign arm now covers INVOKEVIRTUAL.** It needs evidence that the key names a
+  dependency abstraction: a pure-only union, or a union the owning package published. Before this, a
+  middle package dispatching on an abstract class with one pure implementer named nothing. A third
+  package's effectful subclass then left the app's caller ABSENT (executed, `deny Fs` 0 → 1).
+
+**Not closed (residual).** A zero-implementer abstract member whose hash is already claimed by a real
+bodiless entry is still a hit with `[]`. This happens when its class `declares` a capability, or it is
+an entry point. Merging `Unknown` into that entry would put it on the report route only, which is R682's
+mechanism. Count: 308 such members over 372 jars, 98 over 452.
+
+### ⚠ SOUNDNESS R601 FIXED: a reassignable field whose member cannot be named discloses `Unknown`
+
+**What went wrong.** `public static Consumer<String> hook = s -> {}; fire(x){ hook.accept(x); }`
+published no row for `fire`. R595 names the member for a reassignable field, but not for a κ-covered owner,
+and the κ exclusion is right. A consumer that reassigned `hook` to an `Fs` lambda read its caller ABSENT:
+`deny Unknown` and `deny Fs Unknown` exited 0 over a written file (executed).
+
+**The fix.** Where R595's reassignability test fires and the member cannot be named, the site adds
+`Unknown[callback:]` (`dispatch:` for a non-functional owner). The binding's edges are kept. The rule is
+limited to public fields. A protected field is left unhedged on purpose: PART 87 pins an inherited
+protected binding as a control that must stay unhedged, so the consumer-subclass reassignment path is a
+recorded residual. The precise answer, a
+field-keyed join, is new wire and is not built here.
+
+**Measured** (PRE = `6c000a4`, POST = this; the same engine produces and consumes in each arm; reach comes
+from `CANDOR_R533_DEBUG` and `CANDOR_R595_DEBUG`):
+- **Standalone corpora.**
+  - 372 jars: ADDED 1,912, REMOVED 0, CHANGED 85, 0 values lost.
+    - 1,911 of the added rows are R917 union rows, which no gate addresses at their own qual.
+    - R601's 68 sites (public only, after narrowing) put `Unknown` on 29 functions that lacked it:
+      23 in couchbase-core-io, out of 143,939 analysed; 6 in spring-data-neo4j, out of 2,626.
+    - That costs 0 package flips, 0 jar flips and 7 class-scope flips. The couchbase sites are its
+      transaction test hooks, which are public instance fields.
+  - 452 jars: ADDED 1,887 (all R917 union rows), REMOVED 0, and no `inferred` changes. After narrowing,
+    R601 reaches 0.
+- **15 real chained pairs** (63,455 analysed consumer units): REMOVED 0, 0 values lost.
+  - 7 functions newly `Unknown`, all in s3: a function-scope over-hedge. sdk-core publishes
+    `SdkRequest.overrideConfiguration` as zero-implementer, while aws-core's implementer arrives only as a
+    pure-only union.
+  - 25 added union rows.
+  - About 560 rows gained `dispatchesOn` only, which is wire bytes.
+- **PART 92 and PART 94, java-only arms:** all OK on both arms.
+
+### ⚠ ⟨0.40⟩ The baseline guard compares a function ABSENT from the baseline against ∅ (SOUNDNESS R932)
+
+`CANDOR_BASELINE` used to skip every function absent from the baseline as "new code, reviewed normally" —
+so a whole new effectful package merged under a green gate. Now `prior(fn) = baseline[fn] ?? ∅`: a new
+function that performs a real effect is **AS-EFF-005, exit 1**, and its message says it is *absent from the
+baseline* (a key can also be "absent" because an added overload or a renumbered lambda renamed it) and leads
+with `candor diff <this run's report> <baseline>`, then re-recording. A new pure function passes; a new
+`Unknown`-only one is advisory but now **named** in a separate note (under `unknown-ratchet` it fails, prior
+∅). Every AS-EFF-005 `--gate-json` row carries `origin`: `existing` / `new` / `unknown` (the ⟨0.12⟩ rule);
+the callgraph sidecar now decides only that label — without it a formerly-pure function turning effectful
+fires as `unknown` instead of slipping through. A missing baseline FILE, a corrupt sidecar and a
+different-build baseline keep their postures (note / exit 2 / exit 2), so the upgrade flips nothing on day
+one. Pinned by `NewFunctionBaselineTest` (PART 15d n1–n4 + 15b `absent`).
+
+
 ### Report and query JSON write `<` and `>` as themselves (`<init>`, not `\u003cinit\u003e`)
 
 Gson's default HTML-safe escaping wrote every `<init>` / `<clinit>` in a report, its `.callgraph.json`

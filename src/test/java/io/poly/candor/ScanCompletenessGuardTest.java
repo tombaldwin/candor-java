@@ -176,6 +176,31 @@ class ScanCompletenessGuardTest {
             "50 calls is the bar — fires: " + at.stderr());
     }
 
+    /** The FRAMEWORK grants count toward the nudge. An app whose only dependency is a κ-covered framework
+     *  (here a stub in `org.springframework`) scanned app-only used to get NO hint — the sum read the
+     *  uncovered ledger alone — though that is the scan where an unmodelled library member is silent rather
+     *  than `invisible`. A language-runtime prefix (`kotlin`) is not evidence of missing dependency jars and
+     *  must not fire it. Same call volume in both arms; only the namespace differs. */
+    @Test
+    void frameworkCoveredCallsCountTowardTheNudgeAndRuntimeCallsDoNot() throws Exception {
+        Run fw = runCli(Map.of(), appCallingStatic("org.springframework.fw", 50).toString());
+        assertTrue(fw.stderr().contains("not scanned, so their effects are invisible here"),
+            "50 floored calls into a framework grant — fires: " + fw.stderr());
+        assertTrue(fw.stderr().contains("framework packages"), "and says which kind: " + fw.stderr());
+        Run rt = runCli(Map.of(), appCallingStatic("kotlin.rt", 50).toString());
+        assertFalse(rt.stderr().contains("not scanned, so"), "a language runtime is not a missing jar: " + rt.stderr());
+        Run below = runCli(Map.of(), appCallingStatic("org.springframework.fw", 49).toString());
+        assertFalse(below.stderr().contains("not scanned, so"), "the threshold is unchanged: " + below.stderr());
+    }
+
+    private Path appCallingStatic(String pkg, int calls) throws Exception {
+        StringBuilder body = new StringBuilder("package app;\npublic class A {\n  public void f(){\n");
+        for (int c = 0; c < calls; c++) body.append("    ").append(pkg).append(".W.go();\n");
+        body.append("  }\n}\n");
+        return compileApp(Map.of("W.java", "package " + pkg + "; public class W { public static void go(){} }"),
+            Map.of("A.java", body.toString()));
+    }
+
     // ── 3. the safety contract both advisories must honour ────────────────────────────────────────
 
     /** The load-bearing property: an advisory rides on stderr and CANNOT corrupt a machine consumer.

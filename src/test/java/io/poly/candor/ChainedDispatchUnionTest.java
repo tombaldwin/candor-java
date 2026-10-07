@@ -502,6 +502,195 @@ class ChainedDispatchUnionTest {
         } finally { t.close(); }
     }
 
+    // ---- SOUNDNESS R917: the abstract-CLASS twin of R533 ------------------------------------------------
+
+    private static final String FS_SINK = "try { new java.io.FileOutputStream(\"/tmp/r917\").close(); } catch (Exception e) {}";
+
+    /** The producer half. A public abstract class's abstract member that NOTHING implements publishes a union
+     *  entry carrying {@code Unknown[dispatch:]} — the in-scan answer for the same dispatch. The scope bounds
+     *  are pinned with it: a package-private class, a concrete member, and an all-pure hierarchy publish no
+     *  {@code Unknown} (the last is R919's empty union, unchanged). */
+    @Test
+    void r917AZeroImplementorAbstractClassMemberPublishesItsUnknown() throws Exception {
+        Map<String, String> lib = new LinkedHashMap<>();
+        lib.put("lib/AbsH.java", "package lib;\npublic abstract class AbsH { public abstract int handle();"
+                + " public int tag() { return 1; } }\n");
+        lib.put("lib/Hidden.java", "package lib;\nabstract class Hidden { public abstract int handle(); }\n");
+        lib.put("lib/AbsP.java", "package lib;\npublic abstract class AbsP { public abstract int handle(); }\n");
+        lib.put("lib/PureP.java", "package lib;\npublic class PureP extends AbsP { public int handle() { return 7; } }\n");
+        Tree t = Tree.of(lib);
+        try {
+            Map<String, Map<String, Object>> r = byHash(t.scan("lib"));
+            Map<String, Object> u = r.get("lib/AbsH.handle()I");
+            assertNotNull(u, "R917: the zero-implementer abstract member must publish; got " + r.keySet());
+            assertEquals(List.of("Unknown"), u.get("inferred"), "got " + u);
+            assertEquals(List.of("dispatch:lib.AbsH.handle"), u.get("unknownWhy"), "got " + u);
+            assertEquals(Boolean.TRUE, u.get("interfaceUnion"), "a union entry, never a unit; got " + u);
+            assertNull(r.get("lib/AbsH.tag()I"), "a CONCRETE pure member's absence is a true purity claim");
+            assertNull(r.get("lib/Hidden.handle()I"), "a package-private class cannot be subclassed abroad");
+            assertEquals(List.of(), r.get("lib/AbsP.handle()I").get("inferred"), "R919's all-pure union stays empty");
+        } finally {
+            t.close();
+        }
+    }
+
+    /** The R917 RESIDUAL, closed once R682 made both routes gate the same entries. {@code AbsC} declares a field of
+     *  an effect-performing type, so its abstract {@code handle} is kept as a REAL bodiless entry, and that entry
+     *  used to publish {@code inferred: []} — a consumer join HIT reading purity on a key nothing can answer
+     *  (executed: a plugin subclass writes a file, `deny Unknown` 0). The zero-implementer {@code Unknown} is now
+     *  merged into it, on the producer's report AND its scan verdict. */
+    @Test
+    void r917AZeroImplementorMemberWithARealBodilessEntryDisclosesToo() throws Exception {
+        Tree t = Tree.of(
+                Map.of("lib/Eff.java", "package lib;\npublic class Eff { public void w() { " + FS_SINK + " } }\n",
+                        "lib/AbsC.java", "package lib;\npublic abstract class AbsC { protected Eff e = new Eff(); public abstract int handle(); }\n"),
+                Map.of("app/A.java", "package app;\npublic class A { public static int goClaimed(lib.AbsC h) { return h.handle(); } }\n"));
+        try {
+            String lib = t.scan("lib");
+            Map<String, Object> real = byHash(lib).get("lib/AbsC.handle()I");
+            assertNotNull(real, "the bodiless entry is kept (its class declares a capability)");
+            assertNull(real.get("interfaceUnion"), "…as a REAL entry, which is what made this the residual");
+            assertEquals(List.of("Unknown"), real.get("inferred"), "got " + real);
+            Map<String, Object> app = byFn(t.scanChained("app", lib)).get("app.A.goClaimed");
+            assertNotNull(app, "the consumer's caller must not be ABSENT");
+            assertTrue(((List<?>) app.get("inferred")).contains("Unknown"), "got " + app);
+        } finally {
+            t.close();
+        }
+    }
+
+    /** The consumer half, with its three controls. {@code goAbs} is the defect: zero implementors, ABSENT before.
+     *  {@code goLocal}: the consumer's OWN pure subclass answers the dispatch, so — as in the one-tree scan, and
+     *  as conjunct 4 does for an interface — no hedge. {@code goLocalFs}: an effectful own subclass carries its
+     *  effect and no hedge. {@code goBroad}: thirteen dependency subclasses (a BROAD union, also
+     *  {@code Unknown}-only) plus an own subclass KEEPS the {@code Unknown} — the case the sidecar test exists
+     *  to tell apart; dropping it there would delete the disclosure for the unseen bodies. */
+    @Test
+    void r917AChainedConsumerDisclosesAZeroImplementorAbstractClassAndOnlyThat() throws Exception {
+        Map<String, String> lib = new LinkedHashMap<>();
+        lib.put("lib/AbsH.java", "package lib;\npublic abstract class AbsH { public abstract int handle(); }\n");
+        lib.put("lib/AbsL.java", "package lib;\npublic abstract class AbsL { public abstract int handle(); }\n");
+        lib.put("lib/AbsF.java", "package lib;\npublic abstract class AbsF { public abstract int handle(); }\n");
+        lib.put("lib/AbsB.java", "package lib;\npublic abstract class AbsB { public abstract int handle(); }\n");
+        for (int i = 0; i < 13; i++)
+            lib.put("lib/B" + i + ".java", "package lib;\npublic class B" + i + " extends AbsB { public int handle() { return "
+                    + i + "; } }\n");
+        Map<String, String> app = new LinkedHashMap<>();
+        app.put("app/LocL.java", "package app;\npublic class LocL extends lib.AbsL { public int handle() { return 2; } }\n");
+        app.put("app/LocF.java", "package app;\npublic class LocF extends lib.AbsF { public int handle() { " + FS_SINK
+                + " return 2; } }\n");
+        app.put("app/LocB.java", "package app;\npublic class LocB extends lib.AbsB { public int handle() { return 2; } }\n");
+        app.put("app/A.java", "package app;\nimport lib.*;\npublic class A {\n"
+                + "  public static int goAbs(AbsH h) { return h.handle(); }\n"
+                + "  public static int callerOfGoAbs(AbsH h) { return goAbs(h); }\n"
+                + "  public static int goLocal(AbsL h) { return h.handle(); }\n"
+                + "  public static int goLocalFs(AbsF h) { return h.handle(); }\n"
+                + "  public static int goBroad(AbsB h) { return h.handle(); }\n}\n");
+        Tree t = Tree.of(lib, app);
+        try {
+            // Without the hierarchy sidecar the consumer cannot tell the zero-implementer union from a broad
+            // one, so it keeps the hedge everywhere — over-disclosure, the safe direction, pinned as such.
+            Map<String, Map<String, Object>> bare = byFn(t.scanChained("app", t.scan("lib")));
+            assertTrue(((List<?>) bare.get("app.A.goLocal").get("inferred")).contains("Unknown"),
+                    "no sidecar: the hedge is kept; got " + bare.get("app.A.goLocal"));
+            Map<String, Map<String, Object>> r = byFn(t.scanChained("app", t.scanWithSidecars("lib")));
+            assertNotNull(r.get("app.A.goAbs"), "R917: absence IS the purity claim; got " + r.keySet());
+            assertTrue(((List<?>) r.get("app.A.goAbs").get("inferred")).contains("Unknown"), "got " + r.get("app.A.goAbs"));
+            assertTrue(((List<?>) r.get("app.A.callerOfGoAbs").get("inferred")).contains("Unknown"),
+                    "the caller inherits it; got " + r.get("app.A.callerOfGoAbs"));
+            Map<String, Object> loc = r.get("app.A.goLocal");
+            assertTrue(loc == null || ((List<?>) loc.get("inferred")).isEmpty(),
+                    "the consumer's own pure subclass answers — no hedge; got " + loc);
+            assertEquals(List.of("Fs"), r.get("app.A.goLocalFs").get("inferred"),
+                    "the own effectful subclass carries its effect and no hedge; got " + r.get("app.A.goLocalFs"));
+            assertTrue(((List<?>) r.get("app.A.goBroad").get("inferred")).contains("Unknown"),
+                    "a BROAD dependency union keeps its Unknown beside an own subclass; got " + r.get("app.A.goBroad"));
+        } finally {
+            t.close();
+        }
+    }
+
+    /** The obligation-1 half, four packages out: the ratatui toggle at an abstract CLASS. {@code iface}'s only
+     *  implementer of {@code AbsP} is pure (so it publishes R919's pure-only union), {@code middle} dispatches on
+     *  it, the effectful subclass is in a THIRD package. Before: {@code middle.Mid.mid} absent with no
+     *  {@code dispatchesOn}, and the app's caller ABSENT — `deny Fs` 0 over an executed write. */
+    @Test
+    void r917AMiddlePackageNamesADependencyAbstractClassMember() throws Exception {
+        Tree t = Tree.of(
+                Map.of("iface/AbsP.java", "package iface;\npublic abstract class AbsP { public abstract int handle(); }\n",
+                        "iface/PureP.java", "package iface;\npublic class PureP extends AbsP { public int handle() { return 7; } }\n"),
+                Map.of("middle/Mid.java", "package middle;\npublic class Mid { public static int mid(iface.AbsP p) { return p.handle(); } }\n"),
+                Map.of("effimpl/Eff.java", "package effimpl;\npublic class Eff extends iface.AbsP { public int handle() { "
+                        + FS_SINK + " return 1; } }\n"),
+                Map.of("app/App.java", "package app;\npublic class App {\n"
+                        + "  public static int useP(iface.AbsP p) { return middle.Mid.mid(p); }\n"
+                        + "  public static int run() { return useP(new effimpl.Eff()); }\n}\n"));
+        try {
+            String iface = t.scan("iface");
+            Map<String, Object> mid = byFn(t.scanChained("middle", iface)).get("middle.Mid.mid");
+            assertNotNull(mid, "the middle package must name the member it dispatches on");
+            assertEquals(List.of("iface/AbsP.handle()I"), mid.get("dispatchesOn"), "got " + mid);
+            assertEquals(List.of(), mid.get("inferred"), "…and charge nothing: the visible implementer is pure");
+            String middle = t.scanChained("middle", iface), eff = t.scanChained("effimpl", iface);
+            Map<String, Object> app = byFn(t.scanChained("app", iface, middle, eff)).get("app.App.useP");
+            assertNotNull(app, "R917: the third package's subclass must reach the app; absence is the R475 claim");
+            assertEquals(List.of("Fs"), app.get("inferred"), "got " + app);
+        } finally {
+            t.close();
+        }
+    }
+
+    // ---- SOUNDNESS R601: a reassignable field whose member cannot be named ----------------------------
+
+    /** {@code public static Consumer<String> hook = s -> {}; fire(x){ hook.accept(x); }}: the binding resolves
+     *  {@code fire} to the pure default, the field is externally reassignable (R595), and the member is
+     *  κ-covered so it cannot be NAMED. Before: no row for {@code fire} and none for a consumer's caller of it;
+     *  a consumer that reassigned {@code hook} to an {@code Fs} lambda read its caller ABSENT. Now the producer
+     *  discloses {@code Unknown[callback:]} and the consumer inherits it. Controls: a PRIVATE and a FINAL field
+     *  of the same type stay pure (their write set IS the scan's), and a field typed by a PUBLIC project
+     *  interface keeps R595's answer — the member is named, so no hedge is added beside it. */
+    @Test
+    void r601AReassignableFieldWhoseMemberCannotBeNamedDiscloses() throws Exception {
+        Tree t = Tree.of(
+                Map.of("lib3/Jdk.java", "package lib3;\nimport java.util.function.Consumer;\npublic class Jdk {\n"
+                        + "  public static Consumer<String> hook = s -> {};\n"
+                        + "  private static Consumer<String> priv = s -> {};\n"
+                        + "  public static final Consumer<String> fin = s -> {};\n"
+                        + "  static Consumer<String> pkg = s -> {};\n"
+                        + "  protected static Consumer<String> prot = s -> {};\n"
+                        + "  public static Hook named = s -> {};\n"
+                        + "  public static void fire(String x) { hook.accept(x); }\n"
+                        + "  public static void firePriv(String x) { priv.accept(x); }\n"
+                        + "  public static void fireFin(String x) { fin.accept(x); }\n"
+                        + "  public static void firePkg(String x) { pkg.accept(x); }\n"
+                        + "  public static void fireProt(String x) { prot.accept(x); }\n"
+                        + "  public static void fireNamed(String x) { named.on(x); }\n}\n",
+                        "lib3/Hook.java", "package lib3;\npublic interface Hook { void on(String s); }\n"),
+                Map.of("app/C.java", "package app;\npublic class C {\n"
+                        + "  public static void run() { lib3.Jdk.fire(\"/tmp/r601\"); }\n"
+                        + "  public static void main(String[] a) { lib3.Jdk.hook = s -> { " + FS_SINK + " }; run(); }\n}\n"));
+        try {
+            String lib = t.scan("lib3");
+            Map<String, Map<String, Object>> r = byFn(lib);
+            assertNotNull(r.get("lib3.Jdk.fire"), "R601: the producer must not read silent; got " + r.keySet());
+            assertEquals(List.of("Unknown"), r.get("lib3.Jdk.fire").get("inferred"), "got " + r.get("lib3.Jdk.fire"));
+            assertEquals(List.of("callback:java.util.function.Consumer.accept"), r.get("lib3.Jdk.fire").get("unknownWhy"));
+            assertNull(r.get("lib3.Jdk.firePriv"), "a private field's write set is the scan's — pure");
+            assertNull(r.get("lib3.Jdk.fireFin"), "a final field's write set is the scan's — pure");
+            assertNull(r.get("lib3.Jdk.firePkg"), "a package-private field: no consumer in another package can write it");
+            assertNull(r.get("lib3.Jdk.fireProt"), "a PROTECTED field stays unhedged (PART 87's inherited control; named residual)");
+            Map<String, Object> named = r.get("lib3.Jdk.fireNamed");
+            assertNotNull(named, "R595: a nameable member is named");
+            assertEquals(List.of("lib3/Hook.on(Ljava/lang/String;)V"), named.get("dispatchesOn"), "got " + named);
+            assertEquals(List.of(), named.get("inferred"), "…and only named: no hedge beside it; got " + named);
+            Map<String, Object> run = byFn(t.scanChained("app", lib)).get("app.C.run");
+            assertNotNull(run, "R601: the consumer's caller must not be ABSENT");
+            assertTrue(((List<?>) run.get("inferred")).contains("Unknown"), "got " + run);
+        } finally {
+            t.close();
+        }
+    }
+
     // ---- harness ---------------------------------------------------------------------------------------
 
     /** One compiled tree split into per-package CLASS DIRECTORIES — the same arrangement conformance
@@ -556,6 +745,19 @@ class ChainedDispatchUnionTest {
                 Candor.config = Config.forTarget(dir);
             }
             ReportWriter.writeJson(Candor.runScan(dir), out.toString());
+            return out.toString();
+        }
+
+        /** As {@link #scan} but through the CLI's {@code writeReport}, so the §2.2 sidecars are written beside the
+         *  report — R917's consumer reads the HIERARCHY sidecar to tell a zero-implementer union from a broad one. */
+        String scanWithSidecars(String pkg) throws Exception {
+            Path dir = base.resolve("d_" + pkg);
+            Path out = base.resolve(pkg + "-sidecars.json");
+            Files.deleteIfExists(out);
+            Files.createDirectories(base.resolve(".candor"));
+            Files.deleteIfExists(base.resolve(".candor/config"));
+            Candor.config = Config.empty();
+            ReportWriter.writeReport(Candor.runScan(dir), out.toString(), null);
             return out.toString();
         }
 

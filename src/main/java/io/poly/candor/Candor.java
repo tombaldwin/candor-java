@@ -2327,9 +2327,17 @@ public class Candor {
         // than recompute (the §5 two-pass walk) on a --json + CANDOR_STRICT run.
         ClassConformance ccFull = (jsonOut != null) ? classConformance(inferred) : null;
         phase("class-conformance");
+        // SOUNDNESS R682 — the report's ENTRIES are the policy subject on BOTH routes (SPEC §3.1: `gate --report
+        // <this report>` must be byte-equal to this scan's verdict). Built once, here, and handed to the
+        // writer and to the policy gate below, so the union a bodiless entry absorbs at write time is judged
+        // by `scan --policy` exactly as `gate --report` judges it. Without a policy and without --json nothing
+        // reads them, and nothing is built.
+        java.util.List<io.poly.candor.model.Effector> reportEntries =
+                (jsonOut != null || policyPath != null)
+                        ? buildEntries(inferred, ccFull != null ? ccFull : classConformance(inferred)) : null;
         if (jsonOut != null) {
             try {
-                writeReport(inferred, jsonOut, ccFull);
+                writeReport(jsonOut, reportEntries);
                 phase("report-write");
             } catch (IOException e) {
                 // Same one-line-diagnostic + exit 2 posture as an unreadable scan target above: an
@@ -2394,14 +2402,30 @@ public class Candor {
         // candor's own `build/classes` calls 518 times into just 4 unscanned packages (gson, asm), the
         // textbook "you pointed it at classes, not the artifact" scan, which a count threshold misses
         // entirely, while a small app touching 5 tiny util packages would be nudged for nothing.
+        //
+        // AND THE FRAMEWORK GRANTS COUNT TOWARD IT. The sum used to be `unlisted` alone — packages OUTSIDE κ
+        // coverage — so an app whose dependencies are all covered by a framework grant (Spring, Struts,
+        // displaytag, ktor …) scanned app-only never got this hint, though that is the scan where an unmodelled
+        // library member is SILENT rather than `invisible` (SOUNDNESS R492/R727) and where pointing candor at
+        // the deployed artifact helps most: the library's bodies become scanned code and are judged. Platform
+        // and language-runtime prefixes are excluded ({@link Rules#isKappaRuntimePrefix}) — the JDK is not in
+        // the artifact, and a scan of it would not change their answer. Floored calls only, the same meaning
+        // `kappaSeen` carries; packages a chained dependency report covers are excluded, as they are above.
         int uncoveredCalls = unlisted.stream().mapToInt(Map.Entry::getValue).sum();
-        if (uncoveredCalls >= UNCOVERED_CALLS_NUDGE_MIN)
+        Map<String, Integer> frameworkSeen = new TreeMap<>(ctx().kappaFrameworkSeen);
+        frameworkSeen.keySet().removeAll(ctx().depCoveredPkgs);
+        int frameworkCalls = frameworkSeen.values().stream().mapToInt(Integer::intValue).sum();
+        int nudgeCalls = uncoveredCalls + frameworkCalls;
+        int nudgePkgs = unlisted.size() + frameworkSeen.size();
+        if (nudgeCalls >= UNCOVERED_CALLS_NUDGE_MIN)
             System.err.printf("candor-java: hint — %d call%s go into %d package%s that %s not scanned, so their "
-                    + "effects are invisible here. If you scanned only your app's classes, point candor at the "
+                    + "effects are invisible here%s. If you scanned only your app's classes, point candor at the "
                     + "full deployed artifact (the .war/.jar AND its dependency jars): those reaches then resolve "
                     + "to DETERMINED effects instead of being absent.%n",
-                    uncoveredCalls, uncoveredCalls == 1 ? "" : "s",
-                    unlisted.size(), unlisted.size() == 1 ? "" : "s", unlisted.size() == 1 ? "is" : "are");
+                    nudgeCalls, nudgeCalls == 1 ? "" : "s",
+                    nudgePkgs, nudgePkgs == 1 ? "" : "s", nudgePkgs == 1 ? "is" : "are",
+                    frameworkCalls == 0 ? "" : " (" + frameworkCalls + " of them into framework packages candor "
+                            + "models by name — an unmodelled member there is not even listed as uncovered)");
 
         // Gate modes (candor-spec §3), each selected by its Mode's env var: CANDOR_STRICT (conformance
         // via DI), CANDOR_BASELINE (regression guard), CANDOR_NO_AMBIENT, CANDOR_POLICY.
@@ -2489,6 +2513,7 @@ public class Candor {
                 ? checkConformance(ccFull, strict)        // reuse the report's full conformance
                 : checkConformance(inferred, strict);     // gate-only: scope-filtered declared
         if (noAmbient != null) violations += checkNoAmbient(inferred, noAmbient);
+        Policy.runReportPath = jsonOut;   // ⟨0.40⟩ the AS-EFF-005 remedy names THIS run's report for `candor diff`
         if (baseline != null) violations += checkBaseline(inferred, baseline,
                 config.fromFile("baseline", Mode.BASELINE.envVar()));
         // ⟨0.24⟩ PRECEDENCE BINDS THE VERDICT, NOT THE POLICY GATE (SPEC §3.1). The three producers above
@@ -2504,7 +2529,7 @@ public class Candor {
         java.util.List<String[]> unevaluated = new ArrayList<>();     // ⟨0.24⟩ {rule, why}, one row per rule
         if (policy != null) {
             phase("gate-pre");
-            Policy.PolicyOutcome po = Policy.checkPolicyOutcome(inferred, policy);
+            Policy.PolicyOutcome po = Policy.checkPolicyOutcome(inferred, policy, reportEntries);
             phase("gate-policy");
             violations += po.violations();
             if (po.refusal() != null) {
@@ -3925,12 +3950,26 @@ public class Candor {
     static void diagUnit(DiagnosticCode code, java.util.List<String> effects,
                          java.util.List<String> reasonClass, java.util.List<String> netClass,
                          String hash, String format, Object... args) {
-        diagCapture(code, effects, reasonClass, netClass, hash, format, args);
+        diagCaptureOrigin(code, effects, reasonClass, netClass, hash, null, format, args);
+    }
+
+    /** ⟨0.40⟩ SPEC §3/§3.3 — an AS-EFF-005 row, which MUST carry the ⟨0.12⟩ {@code origin}
+     *  (`"existing"`/`"new"`/`"unknown"`). Its own method so no other code can acquire the field. */
+    static void diagBaselineGain(java.util.List<String> effects, String hash, String origin,
+                                 String format, Object... args) {
+        diagCaptureOrigin(DiagnosticCode.AS_EFF_005, effects, java.util.List.of(), java.util.List.of(), hash, origin,
+                format, args);
     }
 
     private static void diagCapture(DiagnosticCode code, java.util.List<String> effects,
                                     java.util.List<String> reasonClass, java.util.List<String> netClass,
                                     String hash, String format, Object... args) {
+        diagCaptureOrigin(code, effects, reasonClass, netClass, hash, null, format, args);
+    }
+
+    private static void diagCaptureOrigin(DiagnosticCode code, java.util.List<String> effects,
+                                    java.util.List<String> reasonClass, java.util.List<String> netClass,
+                                    String hash, String origin, String format, Object... args) {
         String body = String.format(format, args);
         diagOut.println(new Diagnostic(code, body).render());
         // --gate-json capture: EVERY AS-EFF site passes the offending entity (a fn, or a class for the
@@ -3953,6 +3992,7 @@ public class Candor {
             // ⟨0.20⟩ Net destination-class: the fn's destination classes when Net is denied (SPEC §6.2). Omitted
             // when empty, so a non-Net violation's verdict stays byte-identical to pre-feature.
             if (!netClass.isEmpty()) m.put("netClass", netClass);
+            if (origin != null) m.put("origin", origin);
             gateViolations.add(m);
         }
     }
@@ -4199,6 +4239,10 @@ public class Candor {
         // runtime-path `Path.of`/`Paths.get`/`new File` pays for them. Null + tried = the analyzer failed.
         Frame<SourceValue>[] srcFrames;
         boolean srcFramesTried;
+        // SOUNDNESS R817 — the call sites in this method at which a Net host literal was CAPTURED into
+        // `hosts`. Read only by {@link #datagramPacketDetermined}: a packet's address is visible to the gate
+        // exactly when the call that produced it put its host on this unit's surface.
+        final Set<AbstractInsnNode> hostCapturedAt = new HashSet<>();
         MethodScan(MethodNode mn, String id, EffectSet dir, Frame<TaintValue>[] taintFrames,
                 Frame<ProvValue>[] provFrames, Map<Integer, String> constLocals,
                 Map<Integer, String> urlLocals, Map<Integer, String> connLocals, boolean isEntry,
@@ -5536,6 +5580,8 @@ public class Candor {
             // key reached the report as "\u003cdefault\u003e". Kept as-is so existing ledger keys do not move. A
             // real Java package cannot contain parentheses or a space, so this cannot collide with one.
             String pkg = slash > 0 ? min.owner.substring(0, slash).replace('/', '.') : "(default package)";
+            if (effect == null && !pkg.isEmpty() && kappaCovers(pkg) && !isKappaRuntimePrefix(pkg))
+                ctx.kappaFrameworkSeen.merge(pkg, 1, Integer::sum);   // the nudge's second input — see below
             if (!pkg.isEmpty() && !kappaCovers(pkg)) {
                 // A FLOORED call (classifier returned pure) into an uncurated external package is a
                 // per-method blind spot, propagated to callers. A call κ actually CLASSIFIED is not — its
@@ -5576,7 +5622,60 @@ public class Candor {
                 ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                         .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
             }
+        } else if (effect == null && ctx.byName.containsKey(min.owner)
+                && !declaresConcrete(ctx.byName.get(min.owner), min.name, min.desc)
+                && nearestConcreteSuper(min.owner, min.name, min.desc) == null
+                && !projectDeclaresMethod(min.owner, min.name, min.desc)) {
+            // AN INHERITED EXTERNAL MEMBER CALLED THROUGH A PROJECT TYPE. `class Sub extends com.acme.Base`
+            // calling the inherited `save(p)` compiles with owner `app/Sub`, so the branch above skipped it as
+            // a project call; no project type declares the member, so the JVM runs an EXTERNAL body. The unit
+            // read ABSENT — no effect, no `invisible` — while `new Base().save(p)`, the same body, named
+            // `com.acme`. SPEC §2 `invisible`: "an engine MUST do at least one, never silently pure". EXECUTED
+            // on a fixture: the inherited spelling really writes the file. `effect == null` here means the
+            // project-owner supertype walk in handleMethodInsn classified nothing either. Ledgered under the
+            // external type(s) whose body the call can land in — {@link #inheritedExternalDeclarers}.
+            for (String t : inheritedExternalDeclarers(ctx, min.owner, min.name, min.desc)) {
+                int sl = t.lastIndexOf('/');
+                String pkg = sl > 0 ? t.substring(0, sl).replace('/', '.') : "(default package)";
+                if (kappaCovers(pkg)) continue;
+                ctx.kappaSeen.merge(pkg, 1, Integer::sum);
+                ctx.blindDirect.computeIfAbsent(id, k -> new TreeSet<>()).add(pkg);
+                if (R814_DEBUG) System.err.println("KCINHERIT\t" + id + "\t" + min.owner + "." + min.name + "\t" + pkg);
+            }
         }
+    }
+
+    /** The external types whose body an inherited call on the project type {@code owner} can run, in JVM
+     *  resolution order (JLS 15.12.4.4: the superclass chain first, then superinterface defaults).
+     *
+     *  <p>Walks the SUPERCLASS chain: a loadable external class that declares the member is the answer and
+     *  ends the walk; one candor cannot load (a third-party library — the common case) may declare it and
+     *  hides its own supertypes, so it is a candidate and the chain is unknown past it. A chain that reaches
+     *  {@code java/lang/Object} with no declarer, Object itself declaring the member ({@code hashCode},
+     *  {@code toString}), has its answer in the JDK. Otherwise every external INTERFACE in resolution order
+     *  that declares the member or cannot be loaded is a candidate too — an OVER-approximation where the
+     *  chain is unknown, which costs at most an extra `invisible` name and never a lost one. A loadable
+     *  external type that provably does NOT declare the member is never named, so a marker interface on a
+     *  JDK-backed project class contributes nothing. */
+    static List<String> inheritedExternalDeclarers(AnalysisContext ctx, String owner, String name, String desc) {
+        List<String> out = new ArrayList<>();
+        Set<String> chain = new HashSet<>();
+        boolean chainUnknown = false;
+        String t = owner;
+        while (t != null && !t.equals("java/lang/Object") && chain.add(t)) {
+            ClassNode cn = ctx.byName.get(t);
+            if (cn != null) { t = cn.superName; continue; }
+            if (externalDeclares(t, name, desc)) { out.add(t); return out; }
+            Cha.ExtSupers es = externalSupersSplit(t);
+            if (es == Cha.ExtSupers.NONE) { out.add(t); chainUnknown = true; break; }
+            t = es.superClass();
+        }
+        if (!chainUnknown && externalDeclares("java/lang/Object", name, desc)) return out;
+        for (String i : resolutionOrder(owner, false)) {
+            if (chain.contains(i) || ctx.byName.containsKey(i)) continue;
+            if (externalDeclares(i, name, desc) || externalSupersSplit(i) == Cha.ExtSupers.NONE) out.add(i);
+        }
+        return out;
     }
 
     /** Per-effect metadata for a classified call: the AS-EFF-007 taint surface, the classifier-derived
@@ -6055,7 +6154,11 @@ public class Candor {
         // Gated to the `(Ljava/lang/String;I…` shape, so the `(InetAddress,int)` and
         // `(String,int,InetAddress,int)`-with-computed-host overloads add nothing.
         boolean capturedHostHere = false;
-        if ((owner.equals("java.net.Socket") || owner.equals("java.net.InetSocketAddress")
+        // SOUNDNESS R817 — an address built from a literal and handed ONLY to a bind is the process's own
+        // address (SPEC §2 ⟨0.40⟩: "It MUST NOT enter `hosts`"). Neither capture block below runs for it,
+        // and the Net completeness block marks nothing for it. See {@link #bindOnlyLiteralAddress}.
+        boolean bindOnlyAddr = effect == Effect.NET && bindOnlyLiteralAddress(s, min);
+        if (!bindOnlyAddr && (owner.equals("java.net.Socket") || owner.equals("java.net.InetSocketAddress")
                 // java.util.logging.SocketHandler(String host, int port) opens a log socket to that
                 // host — same `(String,int)` shape. Its host must reach the AS-EFF-008 surface, else
                 // a forbidden exfil host (e.g. evil.exfil.com) is invisible and a benign co-located
@@ -6092,7 +6195,7 @@ public class Candor {
         // evasion) / a never-contacted host poison the allowlist. netHostLiteral rejects
         // non-hosts, so a benign non-URL arg adds nothing; the bare `Socket(host,port)` case is
         // handled above (netHostLiteral rejects a scheme-less bare host by design).
-        if (isHostBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;")) {
+        if (isHostBearingOwner(min.owner) && min.desc.contains("Ljava/lang/String;") && !bindOnlyAddr) {
             boolean hostCaptured = false;
             for (String lit : literalArgsInWindow(min, constLocals, s.joinLabels)) {
                 String hl = netHostLiteral(lit);
@@ -6133,7 +6236,41 @@ public class Candor {
         //      formerly a value-flow backlog). FAIL-CLOSED unless the host is cheaply attributable
         //      to the terminal's receiver — inline `new URL("lit").openStream()` or a const-URL
         //      local — so the common inline-literal-URL case still certifies (urlTerminalHost).
+        // SOUNDNESS R949 — A RESOLUTION'S LOCATOR IS THE NAME, so a LITERAL name resolved is captured, even
+        // when the result is discarded (SPEC §2 ⟨0.40⟩: "A LITERAL name resolved enters `hosts`"). The window
+        // capture above goes through `netHostLiteral`, which rejects a bare dotted name by design (no scheme,
+        // no port), so `InetAddress.getByName("evil.example")` was MARKED incomplete without its name — fail
+        // closed, but `hosts` never said what was reached, and an allowlist naming it could not certify it.
+        // The CALL SITE disambiguates here exactly as it does for `new Socket(String, int)` above: the only
+        // String a `getByName` takes is a host name. Gated on ONE literal on every path (every root an LDC,
+        // all equal — a `c ? "a.example" : "b.example"` merge publishes neither) and a hostname shape; anything else keeps the mark below. A computed name is untouched — it
+        // still marks, which is R949's other half. No Llm refinement: a DNS lookup of a model host is not a
+        // model call.
+        if (!bindOnlyAddr && !capturedHostHere && effect == Effect.NET && min.owner.equals("java/net/InetAddress")
+                && (min.name.equals("getByName") || min.name.equals("getAllByName"))
+                && min.desc.startsWith("(Ljava/lang/String;)")) {
+            String h = resolvedLiteralName(s, min);
+            if (h != null && h.indexOf('.') > 0 && RESOLVED_NAME.matcher(h).matches()) {
+                ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(h);
+                capturedHostHere = true;
+                if (MASK_DEBUG) System.err.println("R949CAPTURE\t" + id + "\t" + h);
+            }
+        }
+        if (capturedHostHere) s.hostCapturedAt.add(min);   // R817 — read by datagramPacketDetermined
         if (effect == Effect.NET) {
+            // SOUNDNESS R817 (SPEC §2 ⟨0.40⟩) — three calls that name no destination they reach, so the
+            // marks below do not apply to them: a BIND ("a bind marks nothing" — the address is the
+            // process's own; an outbound call beside it carries its own locator), a literal address used
+            // only by a bind (above), and a datagram send whose packet is provably aimed at a host this
+            // unit already captured. And one call that MUST mark however its receiver arrived: an ACCEPT.
+            boolean r817NoDestination = bindOnlyAddr || isNetBindCall(min) || datagramPacketDetermined(s, min);
+            if (isNetAcceptCall(min)) {
+                ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
+                if (MASK_DEBUG) System.err.println("R817ACCEPT\t" + id + "\t" + owner + "." + min.name + min.desc);
+            }
+            if (MASK_DEBUG && r817NoDestination)
+                System.err.println("R817EXEMPT\t" + id + "\t" + owner + "." + min.name + min.desc
+                        + (bindOnlyAddr ? "\tbind-address" : isNetBindCall(min) ? "\tbind" : "\tdetermined-packet"));
             boolean hostLessOwner = !isHostBearingOwner(min.owner);
             boolean runtimeStringHost = isHostBearingOwner(min.owner)
                     && min.desc.startsWith("(Ljava/lang/String;") && !capturedHostHere;
@@ -6153,7 +6290,7 @@ public class Candor {
                     dir.addAll(EffectSet.ofNames(modelHostEffects(h))); // §1 ⟨0.13⟩ Llm host-literal refinement
                 } else ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
             }
-            if (hostLessOwner || runtimeStringHost)
+            if ((hostLessOwner || runtimeStringHost) && !r817NoDestination)
                 ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
             // THE GENERAL RULE, and the two above are special cases of it: a Net call that contributes NO
             // VISIBLE HOST leaves this function's host surface incomplete. Stating it per-idiom missed the
@@ -6246,7 +6383,7 @@ public class Candor {
                     && (connTerminalHost(min, s.connLocals, urlLocals, constLocals, s.joinLabels) != null
                         || provAllocatedHere(receiverProv(provFrameAt(s, min), min)));
             if ((carriesArgs || (receiverCouldCarryHost && !connReceiverHostVisible))
-                    && !capturedHostHere && !urlTerminalCapturedHost) {
+                    && !capturedHostHere && !urlTerminalCapturedHost && !r817NoDestination) {
                 ctx.surfaceIncomplete.computeIfAbsent(id, x -> new TreeSet<>()).add("Net");
                 // REACH, measurable rather than assumed — see the R477MASK note below for why a diff
                 // alone is not evidence. Only the NEWLY-reaching branch is marked.
@@ -6660,7 +6797,29 @@ public class Candor {
                 // qualification, the Object-protocol exemption and the spelling cannot drift apart.
                 String recvField = fieldReceiverKey(recvFrame, min);
                 boolean open = externallyReassignableField(recvField);
-                if (open) recordDispatchedMember(ctx, id, min);
+                boolean named = open && recordDispatchedMember(ctx, id, min);
+                // SOUNDNESS R601 — …AND WHERE THE MEMBER CANNOT BE NAMED, SAY SO. The naming above is the
+                // whole of R595's answer, and it is withheld for a κ-covered owner (`java.util.function.*`,
+                // `java.lang.Runnable`): publishing `java/util/function/Consumer.accept` would charge one
+                // library's effectful lambda onto every `c.accept(x)` in every consumer, so the κ exclusion is
+                // right. But withholding the key left the row saying NOTHING — `public static Consumer<String>
+                // hook = s -> {}; hook.accept(x);` published no row, and a chained consumer that reassigned
+                // `hook` to an `Fs` lambda read `run` ABSENT: `pure`, `deny Fs` and `deny Unknown` all exit 0
+                // over a written file (executed). The engine KNOWS the binding describes only the default and
+                // KNOWS it cannot name the target; SPEC §4 says that is a callback it could not resolve, which
+                // MUST contribute `Unknown`. So it is disclosed here, beside the edges — nothing the binding
+                // resolved is withdrawn. The precise answer (the FIELD's identity as a join key) is new wire
+                // and is not built here. Not for the §4 Object protocol (pure even when overridden), and not
+                // for a NON-public project abstraction, which nothing outside its package can implement.
+                if (open && !named && foreignReassignableField(recvField) && !isObjectProtocolExempt(min.name, min.desc)
+                        && !(ctx.projectClasses.contains(min.owner) && !isPublicType(min.owner))) {
+                    dir.add(Effect.UNKNOWN);
+                    String ow = min.owner.replace('/', '.');
+                    ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.parse(
+                            (isJdkFunctionalSam(min.owner, min.name) ? "callback:" : "dispatch:") + ow + "." + min.name));
+                    if (R595_DEBUG) System.err.println("R601HEDGE\t" + id + "\t" + recvField + "\t"
+                            + min.owner + "." + min.name + min.desc);
+                }
                 // Both halves are printed, because the NUMERATOR alone cannot say whether a zero means
                 // "no reassignable field" or "this whole ⟨0.35⟩ branch never fires on the corpus" — two
                 // completely different things to write in a row, and the second is the one that makes an
@@ -6928,6 +7087,19 @@ public class Candor {
                 if (cRecv != null && !ctx.byName.containsKey(cRecv) && !cRecv.equals(min.owner))
                     inh = ctx.crossDeps.get(cRecv + "." + min.name + min.desc);
             }
+            // SOUNDNESS R917 — a dependency's ZERO-implementer union over an abstract class member
+            // (ReportWriter#appendInterfaceUnions) is the dependency saying "nothing I can see implements
+            // this". Where THIS scan's own subclasses implement it, the consumer has the answer the
+            // dependency lacked, and the same source scanned as one tree resolves narrow to them with no
+            // `Unknown`; so the hedge is not inherited — conjunct 4 of untypedDepReceiver, for the opcode
+            // that method does not cover. Only when the dependency's hierarchy sidecar indexes the owner
+            // and lists NO subtype of it: an `Unknown`-only union is also what a BROAD one publishes, and
+            // dropping that would delete the disclosure for twelve unseen bodies.
+            if (inh != null && xop == Opcodes.INVOKEVIRTUAL && isZeroImplementorUnion(ctx, min.owner, inh)
+                    && !chaTargets(min.owner, min.name, min.desc).isEmpty()) {
+                if (R533_DEBUG) System.err.println("CANDOR_R917_LOCALSKIP " + min.owner + "." + min.name + min.desc);
+                inh = null;
+            }
             // Still nothing under any key we could form — the two readings of that emptiness are not
             // the same claim. Disclose the one that licenses nothing (see untypedDepReceiver).
             // ⟨0.39⟩ A WALK-ONLY HOP IS NOT AN ANSWER. It is in the index so the dispatch closure can pass
@@ -7101,6 +7273,18 @@ public class Candor {
      *  already guard exactly this way, so the inconsistency was the tell. Returning without latching is
      *  behaviourally identical today (an empty inversion yields a null lookup, hence false) and leaves
      *  the memo rebuildable if a future ordering ever does reach it early. */
+    /** SOUNDNESS R917 — is this chained entry a dependency's ZERO-implementer union over an abstract class
+     *  member (ReportWriter#appendInterfaceUnions)? Synthetic, `Unknown` and nothing else, and its owner is a
+     *  type the dependency's hierarchy sidecar indexes with NO subtype — which is what tells it from a BROAD
+     *  union (also `Unknown`-only, but over more than twelve subtypes). Without a sidecar the answer is no, so
+     *  every caller of this keeps the behaviour it had before the entry existed. */
+    static boolean isZeroImplementorUnion(AnalysisContext ctx, String owner, DepFn d) {
+        return d.syntheticOnly && !d.isBridgeRow()
+                && d.effects.size() == 1 && d.effects.contains(Effect.UNKNOWN)
+                && ctx.depIndexed.contains(owner)
+                && ctx.depSubtypes.getOrDefault(owner, List.of()).isEmpty();
+    }
+
     static boolean depDeclaresSigElsewhere(AnalysisContext ctx, MethodInsnNode min) {
         if (ctx.crossDeps.isEmpty()) return false;
         if (!ctx.depOwnersBySigBuilt) {
@@ -7111,6 +7295,10 @@ public class Candor {
                 String h = be.getKey();
                 int paren = h.indexOf('(');
                 int dot = paren < 0 ? -1 : h.lastIndexOf('.', paren);
+                // SOUNDNESS R917 — nor does a zero-implementer union: it holds no body at all, and counting it
+                // as "an effectful body elsewhere" hedged an all-pure INTERFACE that shares its signature
+                // (CrossScanBoundaryTest goPure, measured). Excluded so this index keeps its pre-R917 shape.
+                if (dot > 0 && isZeroImplementorUnion(ctx, h.substring(0, dot), be.getValue())) continue;
                 if (dot > 0) ctx.depOwnersBySig
                         .computeIfAbsent(h.substring(dot + 1), k -> new HashSet<>()).add(h.substring(0, dot));
             }
@@ -7312,6 +7500,22 @@ public class Candor {
                     Effect eff = Classifier.classify(refOwner, h.getName(), h.getDesc());
                     if (eff != null) dir.add(eff);
                     if (eff != null) markMethodRefLocator(ctx, s, h, eff);
+                    // SOUNDNESS R929 — …AND THE κ LEDGER, WHICH THE CALL PATH CONSULTS AND THIS ONE NEVER DID.
+                    // `ns.forEach(mc::getDatabase)` read ABSENT where `mc.getDatabase(n)` names
+                    // `invisible: [com.mongodb.client]`: a reference to an unclassified member of an uncovered
+                    // package was neither charged nor ledgered. The SAME ledger function the call path runs,
+                    // asked about the handle's exact owner/name/descriptor (§G — so the R920 derived-surface
+                    // exception and the Spring I/O-convention floor apply here too, rather than a second copy of
+                    // either). Not gated on `deferred`, exactly as `dir.add(eff)` above is not: a classified
+                    // reference is charged at its creation site whether or not it runs here, and the ledger is the
+                    // unclassified half of that same answer.
+                    int kcBefore = R814_DEBUG ? ctx.blindDirect.getOrDefault(id, new TreeSet<>()).size() : 0;
+                    kappaLedger(ctx, s, new MethodInsnNode(h.getTag() == Opcodes.H_INVOKEINTERFACE
+                            ? Opcodes.INVOKEINTERFACE : h.getTag() == Opcodes.H_INVOKESTATIC ? Opcodes.INVOKESTATIC
+                            : Opcodes.INVOKEVIRTUAL, h.getOwner(), h.getName(), h.getDesc(), h.isInterface()),
+                            refOwner, eff);
+                    if (R814_DEBUG && ctx.blindDirect.getOrDefault(id, new TreeSet<>()).size() > kcBefore)
+                        System.err.println("KCREF\t" + id + "\t" + h.getOwner() + "." + h.getName());
                     // SOUNDNESS R716 — …AND WHEN THAT ANSWER IS `Unknown` IT ARRIVED WITH NO REASON AT ALL.
                     // `LongUnaryOperator op = u::getLong` charged `Unknown` here with `unknownWhy` ABSENT and
                     // no `calls` entry to inherit one from, while the DIRECT call `u.getLong(addr)` — same
@@ -10466,6 +10670,20 @@ public class Candor {
      *  split — `em.createNativeQuery(sql)` loads, `getResultList()` runs — and R794's effect-keyed mark
      *  dropped it. See {@link DbHandleFlow}.) */
     static String pathValueEscape(MethodScan s, MethodInsnNode site) {
+        return valueEscape(s, site, Candor::pathValueUse);
+    }
+
+    /** One use of a value tracked by {@link #valueEscape}: {@code null} when judged or harmless (queueing
+     *  any value it propagates to on {@code work}), else the reason the caller's conclusion must not hold. */
+    @FunctionalInterface
+    interface ValueUse { String judge(AbstractInsnNode in, int n, int k, Deque<AbstractInsnNode> work); }
+
+    /** R799's def-use walk, with the per-use question as a parameter: does the value produced by
+     *  {@code site} (a call's result, or — for an {@code <init>} — the object its NEW pushed) reach any use
+     *  {@code use} does not accept? {@code null} = every use was accepted. SOUNDNESS R817 asks it of a bind
+     *  address and of a datagram packet with the same walk, so the two questions cannot drift apart from
+     *  R799's on how a value travels through locals, DUPs and casts. */
+    static String valueEscape(MethodScan s, MethodInsnNode site, ValueUse use) {
         Frame<SourceValue>[] fr = srcFrames(s);
         if (fr == null) return "no-frames";
         InsnList insns = s.mn.instructions;
@@ -10520,7 +10738,7 @@ public class Candor {
                 int top = f.getStackSize();
                 for (int k = 0; k < n && k < top; k++) {
                     if (!f.getStack(top - 1 - k).insns.contains(prod)) continue;   // k = 0 is the top
-                    String why = pathValueUse(in, n, k, work);
+                    String why = use.judge(in, n, k, work);
                     if (why != null) return why;
                 }
             }
@@ -10598,6 +10816,269 @@ public class Candor {
         if ((m.name.equals("equals") && m.desc.equals("(Ljava/lang/Object;)Z"))
                 || (m.name.equals("hashCode") && m.desc.equals("()I"))) return null;
         return "call:" + dotted + "." + m.name;
+    }
+
+    // ---------------------------------------------------------------------------------------------------
+    // SOUNDNESS R817 — SPEC §2 ⟨0.40⟩: A BIND OR LISTEN ADDRESS IS WHERE THE PROCESS LISTENS, NEVER A
+    // DESTINATION IT REACHES; A UNIT THAT ACCEPTS A CONNECTION TALKS TO PEERS NO LITERAL CAN NAME.
+    //
+    // MEASURED ON THIS ENGINE BEFORE THE CHANGE (PART 96's java arms, plus this row's own fixtures):
+    //   `new DatagramSocket(new InetSocketAddress("10.0.0.5", 9))` published hosts ['10.0.0.5','10.0.0.5:9']
+    //       — the process's OWN address, read as a destination (a FABRICATION; `allow Net 10.0.0.5` was
+    //       then an allow over somewhere the program never goes);
+    //   `new DatagramSocket(0)`, `new ServerSocket(8080)`, `ds.bind(a)`, `ch.bind(a)` each marked `Net`
+    //       incomplete through the general no-visible-host rule, because a bind CARRIES ARGUMENTS and
+    //       captures no host — so a UDP client sending to one literal could never be certified;
+    //   `s.send(new DatagramPacket(b, 1, InetAddress.getByName("10.9.9.9"), 53))` marked incomplete even
+    //       though `10.9.9.9` WAS captured, at the `getByName` — the send's own window holds no literal.
+    //
+    // THE THREE CHANGES ARE ALL REMOVALS, SO EACH IS NARROW AND EACH IS AN ALLOWLIST OF WHAT IT EXEMPTS:
+    // a call missing from {@link #isNetBindCall} keeps its mark, an address whose uses are not ALL binds
+    // keeps its capture, and a packet not provably built here from a captured literal keeps the send's mark.
+    // The one ADDITION, {@link #isNetAcceptCall}, is a subtype test, because there the wide answer is the
+    // fail-closed one.
+    // ---------------------------------------------------------------------------------------------------
+
+    /** SOUNDNESS R817 — a JDK BIND: a call whose address operands (if any) name the process's OWN address
+     *  and which itself reaches no peer. Exact owners on purpose — a project subclass's {@code bind} is not
+     *  read as one, and keeps whatever mark it had. NOT here: {@code new Socket(host, port, localAddr,
+     *  localPort)}, which also CONNECTS; {@code HttpServer.create/bind} and netty's {@code ServerBootstrap
+     *  .bind}, which begin ACCEPTING (§2 ⟨0.40⟩ — those keep the mark their host-less owner gives them). */
+    static boolean isNetBindCall(MethodInsnNode m) {
+        String n = m.name;
+        switch (m.owner) {
+            case "java/net/DatagramSocket": case "java/net/MulticastSocket":
+                return n.equals("bind")
+                        || (n.equals("<init>") && !m.desc.equals("(Ljava/net/DatagramSocketImpl;)V"));
+            case "java/net/ServerSocket": case "javax/net/ssl/SSLServerSocket":
+                return n.equals("bind") || (n.equals("<init>") && !m.desc.equals("(Ljava/net/SocketImpl;)V"));
+            case "java/net/Socket": case "javax/net/ssl/SSLSocket":
+                return n.equals("bind");
+            case "java/nio/channels/DatagramChannel": case "java/nio/channels/ServerSocketChannel":
+            case "java/nio/channels/SocketChannel": case "java/nio/channels/AsynchronousServerSocketChannel":
+            case "java/nio/channels/AsynchronousSocketChannel":
+                return n.equals("bind");
+            case "javax/net/ServerSocketFactory": case "javax/net/ssl/SSLServerSocketFactory":
+                return n.equals("createServerSocket");
+            default:
+                return false;
+        }
+    }
+
+    /** SOUNDNESS R817 — an ACCEPT on a JDK server socket or server channel, or on a subtype of one. The call
+     *  that FIXES the peer for a server, as {@code connect} does for a client, so §2 ⟨0.40⟩ makes it mark.
+     *  Before this row the mark was incidental — R795's zero-argument receiver rule fired on an accept only
+     *  when the server socket was NOT allocated in the same method, so {@code new ServerSocket(8080).accept()}
+     *  was covered only by the bind's hedge, which this row removes. */
+    static boolean isNetAcceptCall(MethodInsnNode m) {
+        if (!m.name.equals("accept") || m.getOpcode() == Opcodes.INVOKESTATIC) return false;
+        if (NET_ACCEPT_OWNERS.contains(m.owner)) return true;
+        Set<String> sup = transSupers(m.owner);
+        for (String o : NET_ACCEPT_OWNERS) if (sup.contains(o)) return true;
+        return false;
+    }
+    /** SOUNDNESS R949 — the one literal a resolver's String operand is on EVERY path, or null: each root
+     *  (through locals and copies) an {@code LDC} String, and all of them the same string. Not the
+     *  per-call literal window, which would pick one arm of a merge and leave the other arm's name unseen. */
+    static String resolvedLiteralName(MethodScan s, MethodInsnNode m) {
+        Frame<SourceValue>[] fr = srcFrames(s);
+        InsnList insns = s.mn.instructions;
+        int i = insns.indexOf(m);
+        if (fr == null || i < 0 || fr[i] == null || fr[i].getStackSize() < 1) return null;
+        String v = null;
+        for (Object r : dbRoots(fr, insns, fr[i].getStack(fr[i].getStackSize() - 1))) {
+            if (!(r instanceof LdcInsnNode ldc && ldc.cst instanceof String lit)) return null;
+            if (v != null && !v.equals(lit)) return null;
+            v = lit;
+        }
+        return v;
+    }
+
+    /** SOUNDNESS R949 — the shape of a literal a resolver is handed that this engine will publish as a host:
+     *  DNS label characters and dots only, no leading/trailing dot. A template (`%s.example`), a URL or an
+     *  IPv6 literal does not match and keeps the resolver's `incomplete` mark. */
+    static final java.util.regex.Pattern RESOLVED_NAME =
+            java.util.regex.Pattern.compile("[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+");
+    private static final Set<String> NET_ACCEPT_OWNERS = Set.of("java/net/ServerSocket",
+            "java/nio/channels/ServerSocketChannel", "java/nio/channels/AsynchronousServerSocketChannel");
+
+    /** SOUNDNESS R817 — is {@code m} an address PRODUCER ({@code new InetSocketAddress(String, int)} or
+     *  {@code InetAddress.getByName(String)}) over a DETERMINED string, whose value reaches nothing but the
+     *  address slot of a {@link #isNetBindCall bind}? Then the address is the process's own, so it is not
+     *  captured into {@code hosts} and the producer marks nothing.
+     *
+     *  <p><b>A COMPUTED NAME IS NOT EXEMPT, AND THAT IS NOT THE BIND RULE — IT IS THE RESOLUTION.</b> Both
+     *  producers RESOLVE their string: {@code new InetSocketAddress(h, 0)} and {@code getByName(h)} send
+     *  {@code h} to the resolver whatever the address is later used for, so {@code getByName(secret +
+     *  ".x.example")} is a channel out of the process with the bind beside it or not. That mark is this
+     *  engine's rule (2) for a runtime host string and it stays; only a literal, whose lookup carries
+     *  nothing the source does not show, is exempted. */
+    static boolean bindOnlyLiteralAddress(MethodScan s, MethodInsnNode m) {
+        boolean producer = (m.owner.equals("java/net/InetSocketAddress") && m.name.equals("<init>")
+                        && m.desc.equals("(Ljava/lang/String;I)V"))
+                || (m.owner.equals("java/net/InetAddress") && m.name.equals("getByName")
+                        && m.desc.equals("(Ljava/lang/String;)Ljava/net/InetAddress;"));
+        if (!producer) return false;
+        Frame<SourceValue>[] fr = srcFrames(s);
+        if (fr == null || runtimeStringSlot(fr, s.mn.instructions, m) != -1) return false;
+        boolean[] bound = {false};
+        return valueEscape(s, m, (in, n, k, w) -> bindAddressUse(s, in, n, k, w, 0, bound)) == null && bound[0];
+    }
+
+    /** One use of a candidate bind address: harmless, a copy, or the ARGUMENT of a bind. Anything else —
+     *  a connect, a packet, a field, a return, an unlisted call — is a use as a destination, or may be.
+     *  One composition is followed: {@code new InetSocketAddress(thisAddress, port)} is a bind address
+     *  exactly when THAT object reaches only binds. Without it `getByName("10.0.0.5")` wrapped and bound
+     *  kept its capture after the bind hedge beside it was removed, and `allow Net 10.0.0.5` certified the
+     *  fabricated destination — measured on this row's own fixture before the walk was extended.
+     *
+     *  <p><b>{@code bound} MUST BE SET BY A REAL BIND, OR THE ANSWER IS NO.</b> "Every use is accepted" is
+     *  vacuously true of a value nobody uses, and the first cut of this walk read it that way: a
+     *  {@code getByName("evil.example")} whose result is DISCARDED — a lookup whose only effect is a DNS
+     *  query naming {@code evil.example} — lost its capture, and {@code allow Net ok.example} beside it
+     *  went 1 → 0. That is a cardinal sin, found by reading the corpus A/B's two {@code bind-address}
+     *  firings (hazelcast's {@code defaultKubernetesMasterReachable} is exactly that probe), not by any
+     *  fixture this row had. */
+    private static String bindAddressUse(MethodScan s, AbstractInsnNode in, int n, int k,
+                                         Deque<AbstractInsnNode> work, int depth, boolean[] bound) {
+        String common = copyOrHarmlessUse(in, work);
+        if (common != null) return common.isEmpty() ? null : common;
+        MethodInsnNode m = (MethodInsnNode) in;
+        boolean asReceiver = m.getOpcode() != Opcodes.INVOKESTATIC && k == n - 1;
+        if (!asReceiver && isNetBindCall(m)) { bound[0] = true; return null; }
+        if (!asReceiver && depth == 0 && m.owner.equals("java/net/InetSocketAddress") && m.name.equals("<init>")
+                && m.desc.equals("(Ljava/net/InetAddress;I)V")) {
+            boolean[] innerBound = {false};
+            if (valueEscape(s, m, (i2, n2, k2, w2) -> bindAddressUse(s, i2, n2, k2, w2, 1, innerBound)) == null
+                    && innerBound[0]) { bound[0] = true; return null; }
+        }
+        return "call:" + m.owner + "." + m.name;
+    }
+
+    /** The opcode-level half of a def-use judgement shared by R817's walks: {@code ""} for a harmless use
+     *  or a copy (queued on {@code work}), {@code null} for a method call the caller must judge, and a
+     *  reason for any other consuming insn (a store to a field or array, a return, a throw). */
+    private static String copyOrHarmlessUse(AbstractInsnNode in, Deque<AbstractInsnNode> work) {
+        switch (in.getOpcode()) {
+            case Opcodes.POP: case Opcodes.POP2: case Opcodes.IFNULL: case Opcodes.IFNONNULL:
+            case Opcodes.IF_ACMPEQ: case Opcodes.IF_ACMPNE: case Opcodes.INSTANCEOF:
+            case Opcodes.MONITORENTER: case Opcodes.MONITOREXIT:
+                return "";
+            case Opcodes.DUP: case Opcodes.DUP_X1: case Opcodes.DUP_X2: case Opcodes.DUP2:
+            case Opcodes.DUP2_X1: case Opcodes.DUP2_X2: case Opcodes.SWAP: case Opcodes.CHECKCAST:
+            case Opcodes.ASTORE:
+                work.add(in);
+                return "";
+            default:
+                return in instanceof MethodInsnNode ? null : "insn:" + in.getOpcode();
+        }
+    }
+
+    /** SOUNDNESS R817 — is the packet a {@code DatagramSocket.send} sends provably addressed to a host this
+     *  unit already CAPTURED? True only when every producer of the packet operand is a {@code new
+     *  DatagramPacket(…, address, …)} in this method whose address is itself a captured literal
+     *  ({@link #captureDeterminedAddress}), and whose packet value reaches nothing but a send and the
+     *  address-neutral accessors — so no {@code receive} (which OVERWRITES the address with the sender's),
+     *  {@code setAddress}/{@code setSocketAddress}, helper call, field or return can have re-aimed it. A
+     *  parameter, a field read, a call's result and a branch merge with any of those all answer false: the
+     *  send keeps its mark, which is the behaviour before this row. */
+    static boolean datagramPacketDetermined(MethodScan s, MethodInsnNode send) {
+        if (!send.name.equals("send")
+                || !(send.owner.equals("java/net/DatagramSocket") || send.owner.equals("java/net/MulticastSocket")))
+            return false;
+        Type[] args = Type.getArgumentTypes(send.desc);
+        if (args.length < 1 || !args[0].getDescriptor().equals("Ljava/net/DatagramPacket;")) return false;
+        Frame<SourceValue>[] fr = srcFrames(s);
+        InsnList insns = s.mn.instructions;
+        int i = insns.indexOf(send);
+        if (fr == null || i < 0 || fr[i] == null) return false;
+        int idx = fr[i].getStackSize() - args.length;       // the packet is the FIRST argument
+        if (idx < 0) return false;
+        Set<Object> roots = dbRoots(fr, insns, fr[i].getStack(idx));
+        if (roots.isEmpty()) return false;
+        for (Object r : roots) {
+            if (!(r instanceof TypeInsnNode t) || t.getOpcode() != Opcodes.NEW
+                    || !t.desc.equals("java/net/DatagramPacket")) return false;
+            MethodInsnNode init = initOf(fr, insns, t);
+            if (init == null) return false;
+            Type[] ia = Type.getArgumentTypes(init.desc);
+            int ai = -1;
+            for (int a = 0; a < ia.length; a++) {
+                String d = ia[a].getDescriptor();
+                if (d.equals("Ljava/net/InetAddress;") || d.equals("Ljava/net/SocketAddress;")) ai = a;
+            }
+            if (ai < 0) return false;                       // no address at construction — set elsewhere
+            Frame<SourceValue> fi = fr[insns.indexOf(init)];
+            if (fi == null || !captureDeterminedAddress(s, fr, insns, fi.getStack(fi.getStackSize() - ia.length + ai), 0))
+                return false;
+            if (valueEscape(s, init, Candor::packetUse) != null) return false;
+        }
+        return true;
+    }
+
+    /** One use of a tracked datagram packet: a send of it, or an accessor that cannot re-aim it. */
+    private static String packetUse(AbstractInsnNode in, int n, int k, Deque<AbstractInsnNode> work) {
+        String common = copyOrHarmlessUse(in, work);
+        if (common != null) return common.isEmpty() ? null : common;
+        MethodInsnNode m = (MethodInsnNode) in;
+        boolean asReceiver = m.getOpcode() != Opcodes.INVOKESTATIC && k == n - 1;
+        if (!asReceiver && m.name.equals("send")
+                && (m.owner.equals("java/net/DatagramSocket") || m.owner.equals("java/net/MulticastSocket")))
+            return null;
+        if (asReceiver && m.owner.equals("java/net/DatagramPacket")) {
+            switch (m.name) {
+                case "getData": case "getLength": case "getOffset": case "getPort": case "getAddress":
+                case "getSocketAddress": case "setData": case "setLength":
+                    return null;
+                default: break;
+            }
+        }
+        return "call:" + m.owner + "." + m.name;
+    }
+
+    /** Whether every producer of {@code v} is an address whose host this unit CAPTURED from a literal: a
+     *  {@code getByName("…")} or {@code new InetSocketAddress("…", port)} recorded in
+     *  {@link MethodScan#hostCapturedAt}, or (one level) {@code new InetSocketAddress(thatAddress, port)}.
+     *  Keyed on the capture, not on the literal, so a name the capture rules decline ({@code "localhost"})
+     *  stays undetermined here too and the send keeps its mark. */
+    private static boolean captureDeterminedAddress(MethodScan s, Frame<SourceValue>[] fr, InsnList insns,
+                                                    SourceValue v, int depth) {
+        Set<Object> roots = dbRoots(fr, insns, v);
+        if (roots.isEmpty()) return false;
+        for (Object r : roots) {
+            if (r instanceof MethodInsnNode m && m.owner.equals("java/net/InetAddress") && m.name.equals("getByName")
+                    && s.hostCapturedAt.contains(m) && runtimeStringSlot(fr, insns, m) == -1) continue;
+            if (r instanceof TypeInsnNode t && t.getOpcode() == Opcodes.NEW && t.desc.equals("java/net/InetSocketAddress")) {
+                MethodInsnNode init = initOf(fr, insns, t);
+                if (init == null) return false;
+                if (init.desc.equals("(Ljava/lang/String;I)V") && s.hostCapturedAt.contains(init)
+                        && runtimeStringSlot(fr, insns, init) == -1) continue;
+                if (init.desc.equals("(Ljava/net/InetAddress;I)V") && depth == 0) {
+                    Frame<SourceValue> fi = fr[insns.indexOf(init)];
+                    if (fi != null && captureDeterminedAddress(s, fr, insns, fi.getStack(fi.getStackSize() - 2), 1))
+                        continue;
+                }
+            }
+            return false;
+        }
+        return true;
+    }
+
+    /** The single {@code <init>} that initialises the object {@code nw} allocated, or null when there is
+     *  not exactly one — the fail-closed answer for every caller. */
+    private static MethodInsnNode initOf(Frame<SourceValue>[] fr, InsnList insns, TypeInsnNode nw) {
+        MethodInsnNode found = null;
+        for (int j = 0; j < insns.size(); j++) {
+            if (!(insns.get(j) instanceof MethodInsnNode m) || m.getOpcode() != Opcodes.INVOKESPECIAL
+                    || !m.name.equals("<init>") || !m.owner.equals(nw.desc) || fr[j] == null) continue;
+            int recv = fr[j].getStackSize() - Type.getArgumentTypes(m.desc).length - 1;
+            if (recv < 0) continue;
+            Set<Object> roots = dbRoots(fr, insns, fr[j].getStack(recv));
+            if (!roots.contains(nw)) continue;
+            if (roots.size() != 1 || found != null) return null;
+            found = m;
+        }
+        return found;
     }
 
     /** For a call ALREADY classified `Fs`, the read/write direction its verb implies: ["read"],
@@ -10734,13 +11215,16 @@ public class Candor {
      *  is not a precision trade, it is a scope fact, and it is load-bearing rather than cosmetic: without it
      *  a transitive {@code dispatchesOn} over an interface-dense JVM library grows the report several-fold
      *  (MEASURED on jooq 3.19.10, where the unbounded form could not be serialised at all). */
-    static void recordDispatchedMember(AnalysisContext ctx, String callerId, MethodInsnNode min) {
+    static boolean recordDispatchedMember(AnalysisContext ctx, String callerId, MethodInsnNode min) {
         if (!isObjectProtocolExempt(min.name, min.desc)
                 && (isProjectIfaceOrAbstract(min.owner) && isPublicType(min.owner)
                             && projectDeclaresMethod(min.owner, min.name, min.desc)
-                        || foreignAbstractionOwner(ctx, min)))
+                        || foreignAbstractionOwner(ctx, min))) {
             ctx.dispatchDirect.computeIfAbsent(callerId, k -> new TreeSet<>())
                     .add(min.owner + "." + min.name + min.desc);
+            return true;
+        }
+        return false;
     }
 
     /** ⟨0.39⟩ obligation 1's FOREIGN arm — is this call site a dispatch over an abstraction some
@@ -10749,13 +11233,27 @@ public class Candor {
      *  same evidence {@link #untypedDepReceiver}'s conjunct 1 rests on; an abstract dep CLASS keeps that
      *  method's named residual rather than acquiring a second, weaker one here. */
     static boolean foreignAbstractionOwner(AnalysisContext c, MethodInsnNode min) {
-        if (min.getOpcode() != Opcodes.INVOKEINTERFACE) return false;
+        int op = min.getOpcode();
+        if (op != Opcodes.INVOKEINTERFACE && op != Opcodes.INVOKEVIRTUAL) return false;
         if (min.owner.isEmpty() || min.owner.charAt(0) == '[' || c.projectClasses.contains(min.owner))
             return false;
         int slash = min.owner.lastIndexOf('/');
         if (slash <= 0) return false;                       // the default package: no namespace to key on
         String pkg = min.owner.substring(0, slash).replace('/', '.');
-        return !kappaCovers(pkg);
+        if (kappaCovers(pkg)) return false;
+        if (op == Opcodes.INVOKEINTERFACE) return true;
+        // SOUNDNESS R917 — AN ABSTRACT DEPENDENCY CLASS IS AN ABSTRACTION TOO (SPEC §4 ⟨0.39⟩: "Implementor"
+        // includes a subclass that overrides a class's member). INVOKEVIRTUAL does not prove it, so the
+        // evidence is the chained report's own: a union entry published under this exact key — a pure-only one
+        // (R919) or a synthetic one that the OWNING package published (ARM 1, which for a class is an abstract
+        // member; its zero-implementer form is R917's). Measured without this: `mid(AbsP p){ p.handle(); }`
+        // in a middle package, with AbsP's only dependency implementer pure and an effectful one in a third
+        // package, left the app's caller ABSENT — `deny Fs` and `deny Unknown` exit 0 over a written file,
+        // the ratatui toggle at a class.
+        String key = min.owner + "." + min.name + min.desc;
+        if (c.depPureUnionKeys.contains(key)) return true;
+        DepFn d = c.crossDeps.get(key);
+        return d != null && d.syntheticOnly && d.ownerDeclared && !d.isBridgeRow();
     }
 
     static boolean kappaCovers(String pkg) {

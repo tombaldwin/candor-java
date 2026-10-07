@@ -1492,7 +1492,10 @@ final class Classifier {
         // JpaRepository/Reactive*…) — a DIRECT call on the base interface (`CrudRepository<X,Y> r; r.save(x)`)
         // hits the datastore → Db. (The 1851 detection marks PROJECT sub-interfaces; this covers the base
         // interface call site itself.) Every declared method is a store op; exclude only the Object protocol.
-        if (owner.startsWith("org.springframework.data.") && owner.endsWith("Repository")
+        // The Kotlin facade `repo.findByIdOrNull(id)` is a non-inline extension whose whole body is
+        // `findById(id).orElse(null)` on this same base interface — the second spelling of `findById`.
+        if ((owner.startsWith("org.springframework.data.") && owner.endsWith("Repository")
+                    || owner.equals("org.springframework.data.repository.CrudRepositoryExtensionsKt"))
                 && !isConventionallyPure(method)) return Effect.DB;
         // Apache Avro container files — DataFileReader ctor / DataFileWriter.create on a File open the file
         // off disk → Fs. desc CONTAINS java.io.File (create's File is the 2nd arg, after the Schema); the
@@ -1525,7 +1528,16 @@ final class Classifier {
         // client now carries Db (RedisTemplate already did; Jedis/Lettuce/Redisson/these Operations were
         // Net) — Redis is a datastore, so its semantic boundary effect is Db (like JDBC-over-TCP is Db, not
         // Net). Cross-engine-consistent with candor-ts's redis→Db. Whole-owner; Object protocol excluded.
-        if (owner.startsWith("org.springframework.data.redis.core.") && owner.endsWith("Operations")
+        // …AND THEIR KOTLIN FACADES, the second spelling of the same surface. `ops.setAndAwait(k, v)` is a NON-inline
+        // suspend extension, so kotlinc emits `ReactiveValueOperationsExtensionsKt.setAndAwait(ops, k, v, cont)`
+        // and the owner above never matched: the unit read PURE under the κ-covered `org.springframework` grant
+        // while `ops.set(k, v)` beside it read Db. MEASURED over spring-data-redis-3.3.1: every public member of
+        // the nine `Reactive*OperationsExtensionsKt` classes invokes its `*Operations` receiver (the `$default`
+        // bridges via their sibling), so the receiver's whole-owner rule is the facade's too. Gated on the
+        // `OperationsExtensionsKt` suffix, so `PartialUpdateExtensionsKt`/`RedisScriptExtensionsKt` — pure
+        // builders over no receiver — stay pure.
+        if (owner.startsWith("org.springframework.data.redis.core.")
+                && (owner.endsWith("Operations") || owner.endsWith("OperationsExtensionsKt"))
                 && !isConventionallyPure(method)) return Effect.DB;
         // Elasticsearch / OpenSearch low-level REST clients — performRequest is the HTTP round-trip → Net.
         if ((owner.equals("org.elasticsearch.client.RestClient") || owner.equals("org.opensearch.client.RestClient"))
@@ -1960,6 +1972,13 @@ final class Classifier {
         return classifyOrgTail2(owner, method, desc);
     }
 
+    /** SOUNDNESS R727 — the struts {@code RequestProcessor} members that reach {@code Net} in candor's own scan of
+     *  struts-1.2.9 AND struts-core-1.3.10 (plus TilesRequestProcessor's {@code processTilesDefinition}). */
+    static final Set<String> STRUTS_RP_NET = Set.of("doForward", "doInclude", "internalModuleRelativeForward",
+            "internalModuleRelativeInclude", "process", "processActionCreate", "processForward",
+            "processForwardConfig", "processInclude", "processMapping", "processPath", "processRoles",
+            "processValidate", "processTilesDefinition");
+
     private static Effect classifyOrgTail2(String owner, String method, String desc) {
         if (owner.equals("org.apache.commons.lang3.SystemProperties")) {
             if (method.startsWith("get")) return Effect.ENV;
@@ -1977,6 +1996,28 @@ final class Classifier {
         if (owner.equals("org.apache.struts.upload.FormFile")
                 && (method.equals("getInputStream") || method.equals("getFileData")
                     || method.equals("destroy"))) return Effect.FS;
+        // SOUNDNESS R727 — THE REQUEST PIPELINE, WHICH THAT INVENTORY DID NOT REACH. `javap` of struts-1.2.9 and
+        // struts-core-1.3.10: `RequestProcessor.doForward`/`doInclude` call `RequestDispatcher.forward`/`include`
+        // and `HttpServletResponse.sendError`; `processPath`/`processMapping`/`processRoles`/`processValidate`/
+        // `processActionCreate`/`processForwardConfig` call `sendError`/`sendRedirect` directly; `process`,
+        // `processForward`/`processInclude` and `internalModuleRelative*` reach those. Every member here reads
+        // `Net` in candor's own scan of BOTH struts jars (and TilesRequestProcessor's overrides in 1.2.9). These
+        // are PROTECTED hooks a project `extends RequestProcessor` to call, so the call arrives on the PROJECT
+        // owner and reaches this rule through the supertype walk; listing Tiles too matters, because neither
+        // struts class is loadable by candor and the walk sees only the DIRECT supertype. MEASURED on a compiled
+        // consumer before this rule: `deny Net` AND `deny Unknown` exit 0 over a real forward. One effect, the
+        // classifier's single slot: these members' wider reach (`Fs`/`Unknown`, through the abstract
+        // `MessageResources` lookup and the reflective Action instantiation) is NOT carried here. Deliberately
+        // absent: `processActionPerform`/`processException`, which read `Net` only in 1.3.10 (via the user's
+        // Action) — charging `Net` would fabricate on 1.2.9.
+        if ((owner.equals("org.apache.struts.action.RequestProcessor")
+                || owner.equals("org.apache.struts.tiles.TilesRequestProcessor"))
+                && STRUTS_RP_NET.contains(method)) return Effect.NET;
+        // SOUNDNESS R727 — displaytag's message lookup. `Messages.<clinit>` is `ResourceBundle.getBundle(...)`
+        // (javap, displaytag-1.2), so the FIRST `getString` loads the bundle — the same `Fs` this engine charges
+        // a direct `ResourceBundle.getBundle`. The batch-29 note below said displaytag has NO effectful members;
+        // that was measured on the member frontier one app touched, and this one it did not.
+        if (owner.equals("org.displaytag.Messages") && method.equals("getString")) return Effect.FS;
 
         // ── κ batch 29 — the next ledger tier (same inventory method as batch 28: a real app's complete
         //    68-member frontier, triaged member-by-member). commons-validator / beanutils / displaytag /

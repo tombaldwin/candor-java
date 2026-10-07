@@ -98,17 +98,18 @@ class PolicyGateTest {
     }
 
     @Test
-    void baselineFlagsAGainedEffectButNotNewCode() throws Exception {
+    void baselineFlagsAGainedEffectAndANewEffectfulFunction() throws Exception {
         // the fixture must carry THIS build's provenance — a stale/absent version now fails closed (exit 2)
         String v = ReportWriter.provenance()[0];
         Path base = file("base", "{\"candor\":{\"version\":\"" + v + "\"},\"functions\":[{\"fn\":\"a.B.c\",\"inferred\":[\"Fs\"]}]}");
-        // No sidecar here (report-only): a.B.c gained Net vs the baseline → AS-EFF-005; a.B.New is
-        // absent from the report AND there is no callgraph to prove it existed → reviewed as new code.
+        // a.B.c gained Net vs the baseline → AS-EFF-005. ⟨0.40⟩ a.B.New is absent from the baseline, so its
+        // prior is ∅ and its Net is a gain too — it USED to be exempt as "new code" (SOUNDNESS R932).
         Map<String, EffectSet> inferred = new HashMap<>();
         inferred.put("a.B.c", EffectSet.of(Effect.FS, Effect.NET));
         inferred.put("a.B.New", EffectSet.of(Effect.NET));
-        assertEquals(1, Policy.checkBaseline(inferred, base.toString()),
-            "only the function that gained an effect vs the baseline is a regression");
+        inferred.put("a.B.Pure", EffectSet.empty());
+        assertEquals(2, Policy.checkBaseline(inferred, base.toString()),
+            "both the widened function and the new effectful one fire; the new pure one does not");
     }
 
     /** ⟨0.16⟩ Write a callgraph sidecar next to a baseline report path (strip a trailing `.json`,
@@ -184,17 +185,18 @@ class PolicyGateTest {
     }
 
     @Test
-    void baselineWithoutSidecarDegradesToReportOnly() throws Exception {
-        // ⟨0.16⟩ No sidecar → existence is report-only (pre-⟨0.16⟩): a fn absent from the report is
-        // indistinguishable from new code, so the pure→effectful transition slips through — NOT a failure,
-        // the weaker guard, disclosed once on stderr. (Sidecar-present is baselineSidecarCatchesPureToEffectful.)
+    void baselineWithoutSidecarStillFiresOnlyTheLabelDegrades() throws Exception {
+        // ⟨0.40⟩ The sidecar decides only the `origin` LABEL now. Without it a function absent from the
+        // report cannot be told from new code — so it is labelled "unknown" — but its prior is ∅ either way
+        // and a real effect fires. (Was: "degrades to report-only — the pure→effectful transition slips
+        // through, NOT a failure"; that exemption is what ⟨0.40⟩ ends.)
         String v = ReportWriter.provenance()[0];
         Path base = file("base", "{\"candor\":{\"version\":\"" + v + "\"},\"functions\":[]}");
         // deliberately NO writeSidecar — the .callgraph.json is absent
         Map<String, EffectSet> inferred = new HashMap<>();
         inferred.put("util.Fmt.fmt", EffectSet.of(Effect.FS));
-        assertEquals(0, Policy.checkBaseline(inferred, base.toString()),
-            "without a sidecar a pure→effectful fn reads as new code — the degraded guard does not fail");
+        assertEquals(1, Policy.checkBaseline(inferred, base.toString()),
+            "without a sidecar a function absent from the baseline report still fires (origin unknown)");
     }
 
     @Test

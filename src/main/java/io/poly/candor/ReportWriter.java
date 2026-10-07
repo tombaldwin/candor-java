@@ -24,7 +24,13 @@ final class ReportWriter {
      *  single shared sequence used by the normal scan, selftest-reentrant, and {@code --parallel}, so the
      *  three can't drift (the three were previously copy-pasted). */
     static void writeReport(Map<String, EffectSet> inferred, String out, ClassConformance cc) throws IOException {
-        if (cc != null) writeJson(inferred, out, cc); else writeJson(inferred, out);
+        writeReport(out, buildEntries(inferred, cc != null ? cc : classConformance(inferred)));
+    }
+
+    /** As above, over entries the caller already built — the scan route builds them once and gates them
+     *  too (SOUNDNESS R682), so the report and the verdict are read off the same list. */
+    static void writeReport(String out, List<Effector> entries) throws IOException {
+        writeEntries(out, entries);
         // The "-" sentinel is the --json-stdout pipe form: report ENVELOPE only, NO sidecars (matching
         // the Rust reference) — there's nowhere on stdout to put a second/third document, and a piped
         // `| jq .` wants exactly one. The callgraph/hierarchy are a file-mode affordance for queries.
@@ -53,6 +59,16 @@ final class ReportWriter {
     }
 
     static void writeJson(Map<String, EffectSet> inferred, String out, ClassConformance cc) throws IOException {
+        writeEntries(out, buildEntries(inferred, cc));
+    }
+
+    /** SOUNDNESS R682 — THE REPORT'S ENTRIES, built ONCE and read by BOTH the report and the scan route's
+     *  policy gate. A union merged into a real entry ({@link #appendInterfaceUnions} -> {@link #mergeUnionInto})
+     *  is part of that entry, so it is part of the policy subject on both routes (SPEC §3.1 byte-equality);
+     *  the scan route used to gate the classifier's map while {@code gate --report} gated these entries, and
+     *  the two disagreed exactly on the merged ones. One builder, two readers — never a second copy of the
+     *  merge. */
+    static List<Effector> buildEntries(Map<String, EffectSet> inferred, ClassConformance cc) {
         // Per-class conformance (candor-spec §5), computed the ONE shared way (see classConformance):
         // declared = effects the class's injected dependency types can supply; performed = union over
         // its methods. We attach declared/undeclared/overdeclared to each method entry so an agent can
@@ -260,6 +276,12 @@ final class ReportWriter {
         // SOUNDNESS R869 — the bridge descriptors the method index collapses away, published under their own
         // hash. Appended after everything else so no existing entry moves; see appendBridgeRows.
         appendBridgeRows(effectors);
+        return effectors;
+    }
+
+    /** Serialise prebuilt {@link #buildEntries} to {@code out} ("-" = stdout). */
+    static void writeEntries(String out, List<Effector> effectors) throws IOException {
+        List<Map.Entry<String, Integer>> uncovered = Candor.kappaUncovered();
         // v0.2 self-describing envelope (candor-spec §2): a provenance header + the entries. Readers
         // still accept the legacy v0.1 bare array (see loadBaseline) during migration.
         String[] prov = provenance();
@@ -597,6 +619,34 @@ final class ReportWriter {
             // (the loader admits an incomplete-only entry), and a hit skips the untyped-receiver disclosure a
             // miss falls through to — the R609/R764 "REMOVED 0 is a measurement, not a construction" trap.
             // Dropped, the consumer finds no pure-only key and discloses, which is the safe direction.
+            // SOUNDNESS R917 — …EXCEPT AT AN ABSTRACT CLASS, where that absence is read the other way. The
+            // consumer discloses a zero-implementer INTERFACE on a miss because INVOKEINTERFACE proves the key
+            // names a declaration (`Candor#untypedDepReceiver`, conjunct 1). An abstract class's member is
+            // called by INVOKEVIRTUAL, the opcode of every concrete dependency method too, and there a miss
+            // is the ordinary §2 purity claim about a body that was analysed. No wire fact told the two
+            // apart, so `goAbs(AbsH h){ h.handle(); }` over a chained abstract class nothing implements read
+            // ABSENT — `deny Unknown` and `pure` exited 0 over a plugin subclass that wrote a file (executed).
+            // ACC_ABSTRACT is the fact (the "THE ABSTRACT DEP CLASS" note above), and only the producer has
+            // it, so the producer states what its own in-scan site states for the same dispatch (SPEC §4
+            // bounded CHA: "a local abstraction with no visible implementor … MUST read `Unknown`"): a union
+            // entry carrying `Unknown[dispatch:]`. It is an ordinary `crossDeps` hit, so the consumer needs
+            // no new path; `Candor#crossDepJoin` drops it again where the consumer's OWN subclasses answer
+            // the dispatch, exactly as conjunct 4 does for an interface.
+            // Scope: a PUBLIC class's public/protected abstract member (a foreign package can subclass it),
+            // not a sealed one.
+            boolean r917 = impls.isEmpty() && k.length > 3 && "absclass".equals(k[3])
+                    && !isClosedHierarchy(owner);
+            // …AND A CLAIMED HASH IS NO EXCEPTION ANY MORE (the R917 residual). A zero-implementer member whose
+            // class declares a capability is kept as a REAL bodiless entry with `inferred: []`, and a consumer's
+            // join HIT that `[]` — a purity claim on a key nothing can answer. The `Unknown` is MERGED into that
+            // entry like any other union (below), which used to put it on the report route alone; since R682
+            // the scan route gates the same entries (Policy#withReportEntries), so both routes now see it.
+            if (r917) {
+                inf.add(Effect.UNKNOWN);
+                why = List.of(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner.replace('/', '.') + "." + name));
+                if (System.getenv("CANDOR_R533_DEBUG") != null)
+                    System.err.println((real != null ? "CANDOR_R917_CLAIMED " : "CANDOR_R917_ZEROUNION ") + hash);
+            }
             if (inf.isEmpty() && inv.isEmpty()
                     && (real != null || impls.isEmpty() || !incUnion.isEmpty())) continue;
             if (inf.isEmpty() && inv.isEmpty() && System.getenv("CANDOR_R533_DEBUG") != null)
@@ -821,7 +871,14 @@ final class ReportWriter {
                         | org.objectweb.asm.Opcodes.ACC_SYNTHETIC)) != 0) continue;
                 if (mn.name.startsWith("<")) continue;
                 if ((iface || abs) && (iface || (mn.access & org.objectweb.asm.Opcodes.ACC_ABSTRACT) != 0))
-                    out.add(new String[] { cn.name, mn.name, mn.desc });                       // ARM 1
+                    // ARM 1. The fourth slot marks an abstract CLASS's abstract member that a FOREIGN package
+                    // could implement (public class, public/protected member) — the only candidate for
+                    // which a ZERO-implementer union is published (SOUNDNESS R917, see the call site).
+                    out.add(new String[] { cn.name, mn.name, mn.desc,
+                            !iface && (cn.access & org.objectweb.asm.Opcodes.ACC_PUBLIC) != 0
+                                    && (mn.access & (org.objectweb.asm.Opcodes.ACC_PUBLIC
+                                            | org.objectweb.asm.Opcodes.ACC_PROTECTED)) != 0
+                                    ? "absclass" : "" });
                 // ARM 2 publishes over a member this class actually IMPLEMENTS, so an abstract declaration
                 // contributes nothing here — its body is elsewhere and will be reached through whichever
                 // concrete class declares it. §4's Object protocol is excluded for the same reason it is at

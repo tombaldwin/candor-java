@@ -547,6 +547,19 @@ final class Rules {
      *  or app + dependency jars) sits at or near zero. Advisory only — never affects a verdict. */
     static final int UNCOVERED_CALLS_NUDGE_MIN = 50;
 
+    /** The κ-covered prefixes that are the PLATFORM or a LANGUAGE RUNTIME (R492's "defensible" kind), as opposed
+     *  to the application-framework grants. Read only by the scan-completeness nudge: a call into one of these is
+     *  not evidence the scan is missing its dependency jars. Segment-exact, like {@code kappaCovers}. */
+    static final String[] KAPPA_RUNTIME_PREFIXES = { "java", "javax", "jakarta", "jdk", "sun", "com.sun",
+            "kotlin", "kotlinx", "scala", "groovy", "org.codehaus.groovy", "org.jetbrains", "org.w3c.dom",
+            "org.xml.sax" };
+
+    static boolean isKappaRuntimePrefix(String pkg) {
+        for (String p : KAPPA_RUNTIME_PREFIXES)
+            if (pkg.equals(p) || (pkg.length() > p.length() && pkg.charAt(p.length()) == '.' && pkg.startsWith(p))) return true;
+        return false;
+    }
+
     /** The single-ABSTRACT-method names of java.util.function.* (Function/BiFunction/operators → apply*;
      *  Consumer → accept; Predicate → test; Supplier → get*). Matched by NAME so the package's pure DEFAULT
      *  methods (andThen/compose/and/or/negate — known JDK plumbing that wraps the receiver into a new

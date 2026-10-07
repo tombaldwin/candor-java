@@ -2394,14 +2394,30 @@ public class Candor {
         // candor's own `build/classes` calls 518 times into just 4 unscanned packages (gson, asm), the
         // textbook "you pointed it at classes, not the artifact" scan, which a count threshold misses
         // entirely, while a small app touching 5 tiny util packages would be nudged for nothing.
+        //
+        // AND THE FRAMEWORK GRANTS COUNT TOWARD IT. The sum used to be `unlisted` alone — packages OUTSIDE κ
+        // coverage — so an app whose dependencies are all covered by a framework grant (Spring, Struts,
+        // displaytag, ktor …) scanned app-only never got this hint, though that is the scan where an unmodelled
+        // library member is SILENT rather than `invisible` (SOUNDNESS R492/R727) and where pointing candor at
+        // the deployed artifact helps most: the library's bodies become scanned code and are judged. Platform
+        // and language-runtime prefixes are excluded ({@link Rules#isKappaRuntimePrefix}) — the JDK is not in
+        // the artifact, and a scan of it would not change their answer. Floored calls only, the same meaning
+        // `kappaSeen` carries; packages a chained dependency report covers are excluded, as they are above.
         int uncoveredCalls = unlisted.stream().mapToInt(Map.Entry::getValue).sum();
-        if (uncoveredCalls >= UNCOVERED_CALLS_NUDGE_MIN)
+        Map<String, Integer> frameworkSeen = new TreeMap<>(ctx().kappaFrameworkSeen);
+        frameworkSeen.keySet().removeAll(ctx().depCoveredPkgs);
+        int frameworkCalls = frameworkSeen.values().stream().mapToInt(Integer::intValue).sum();
+        int nudgeCalls = uncoveredCalls + frameworkCalls;
+        int nudgePkgs = unlisted.size() + frameworkSeen.size();
+        if (nudgeCalls >= UNCOVERED_CALLS_NUDGE_MIN)
             System.err.printf("candor-java: hint — %d call%s go into %d package%s that %s not scanned, so their "
-                    + "effects are invisible here. If you scanned only your app's classes, point candor at the "
+                    + "effects are invisible here%s. If you scanned only your app's classes, point candor at the "
                     + "full deployed artifact (the .war/.jar AND its dependency jars): those reaches then resolve "
                     + "to DETERMINED effects instead of being absent.%n",
-                    uncoveredCalls, uncoveredCalls == 1 ? "" : "s",
-                    unlisted.size(), unlisted.size() == 1 ? "" : "s", unlisted.size() == 1 ? "is" : "are");
+                    nudgeCalls, nudgeCalls == 1 ? "" : "s",
+                    nudgePkgs, nudgePkgs == 1 ? "" : "s", nudgePkgs == 1 ? "is" : "are",
+                    frameworkCalls == 0 ? "" : " (" + frameworkCalls + " of them into framework packages candor "
+                            + "models by name — an unmodelled member there is not even listed as uncovered)");
 
         // Gate modes (candor-spec §3), each selected by its Mode's env var: CANDOR_STRICT (conformance
         // via DI), CANDOR_BASELINE (regression guard), CANDOR_NO_AMBIENT, CANDOR_POLICY.
@@ -5536,6 +5552,8 @@ public class Candor {
             // key reached the report as "\u003cdefault\u003e". Kept as-is so existing ledger keys do not move. A
             // real Java package cannot contain parentheses or a space, so this cannot collide with one.
             String pkg = slash > 0 ? min.owner.substring(0, slash).replace('/', '.') : "(default package)";
+            if (effect == null && !pkg.isEmpty() && kappaCovers(pkg) && !isKappaRuntimePrefix(pkg))
+                ctx.kappaFrameworkSeen.merge(pkg, 1, Integer::sum);   // the nudge's second input — see below
             if (!pkg.isEmpty() && !kappaCovers(pkg)) {
                 // A FLOORED call (classifier returned pure) into an uncurated external package is a
                 // per-method blind spot, propagated to callers. A call κ actually CLASSIFIED is not — its

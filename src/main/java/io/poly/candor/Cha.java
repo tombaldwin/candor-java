@@ -728,6 +728,34 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         return true;                                        // not found where the key says it lives
     }
 
+    /** SOUNDNESS R601 — {@link #externallyReassignableField}, narrowed to a field a code in ANOTHER PACKAGE can
+     *  write: public or protected, and not final or private. That predicate answers "is the scan's write set
+     *  the whole one?" and keeps package-private fields in, which is right for the cost-free member key R595
+     *  publishes; the R601 hedge is a verdict, so it asks the chained-consumer question instead. MEASURED on
+     *  the 372-jar corpus: 3 of 72 sites were package-private (ignite {@code CacheListCommand#FILTER},
+     *  spring-data-commons {@code QueryMethodValidator#pageableCannotHaveSortOrLimit}). Fails OPEN exactly
+     *  where the wider test does — an unparseable key, an off-classpath declarer, a field not found.
+     *
+     *  <p><b>PUBLIC ONLY — a PROTECTED field is not hedged, and that is a recorded residual, not a finding.</b>
+     *  The first cut took public OR protected, and four-way conformance PART 87 went red on exactly that: its
+     *  inherited-field OVER-CHARGE CONTROL ({@code class Base { protected Runnable task; install(q){ task = () ->
+     *  q.bump(); } }}, {@code Sub.fire(){ task.run(); }}) is a resolved binding the clause requires to stay
+     *  UNHEDGED, and this hedge tagged {@code Sub.fire} {@code Unknown[callback:]}. A protected field IS
+     *  writable by a subclass in another package, so a chained consumer's subclass can still reassign it
+     *  silently — that residual is named for the register rather than closed by overriding a pinned cell.
+     *  MEASURED: 0 of the 372-corpus sites were protected, so the corpus price is unchanged. */
+    static boolean foreignReassignableField(String fieldKey) {
+        if (!externallyReassignableField(fieldKey)) return false;
+        int hash = fieldKey.lastIndexOf('#');
+        if (hash < 0) return true;
+        ClassNode cn = ctx().byName.get(fieldKey.substring(0, hash));
+        if (cn == null || cn.fields == null) return true;
+        String name = fieldKey.substring(hash + 1);
+        for (FieldNode fn : cn.fields)
+            if (fn.name.equals(name)) return (fn.access & Opcodes.ACC_PUBLIC) != 0;
+        return true;
+    }
+
     /** CHA: project subtypes-or-self of `owner` that provide a concrete (name,desc) impl. */
     static List<String> chaTargets(String owner, String name, String desc) {
         AnalysisContext c = ctx();   // hoist the ThreadLocal lookup out of the per-subtype loop below

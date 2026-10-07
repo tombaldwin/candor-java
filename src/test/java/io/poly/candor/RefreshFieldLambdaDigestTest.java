@@ -156,8 +156,14 @@ class RefreshFieldLambdaDigestTest {
                     + "Caller.go's dispatch, so every other assertion here is vacuous");
             assertTrue(coldV2.report.contains("Caller.go"),
                     "cold v2 must report Caller.go as reaching the effect: " + coldV2.report);
-            assertTrue(!coldV1.report.contains("Caller.go"),
-                    "cold v1 must report Caller.go as pure (absent): " + coldV1.report);
+            // SOUNDNESS R601: `task` is PUBLIC and non-final, so any code can reassign it and the v1 binding
+            // describes only the default — Runnable is κ-covered, so the member cannot be NAMED either, and
+            // Caller.go now DISCLOSES that (`Unknown`, callback) rather than reading pure. What this arm needs
+            // is unchanged: v1 attributes no EFFECT to Caller.go, v2 attributes Fs.
+            assertTrue(!callerGoEffects(coldV1.report).contains("Fs"),
+                    "cold v1 must not attribute Fs to Caller.go: " + coldV1.report);
+            assertTrue(callerGoEffects(coldV2.report).contains("Fs"),
+                    "cold v2 must attribute Fs to Caller.go: " + coldV2.report);
 
             // …AND THE CACHE HAS TO ENGAGE. A build that ignored the refresh entirely would pass the
             // equality too, having compared two cold scans. The run that has to show reuse is the
@@ -178,6 +184,14 @@ class RefreshFieldLambdaDigestTest {
             rm(v1.getParent());
             rm(v2.getParent());
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<String> callerGoEffects(String report) {
+        Map<String, Object> root = new com.google.gson.Gson().fromJson(report, Map.class);
+        for (Map<String, Object> e : (List<Map<String, Object>>) root.get("functions"))
+            if ("Caller.go".equals(e.get("fn"))) return (List<String>) e.get("inferred");
+        return List.of();
     }
 
     /** EVERY SHARED INPUT, FROM THE ENGINE'S OWN LIST, IS EITHER IN THE DIGEST OR EXCUSED IN WRITING.

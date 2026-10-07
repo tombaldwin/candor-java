@@ -6755,7 +6755,29 @@ public class Candor {
                 // qualification, the Object-protocol exemption and the spelling cannot drift apart.
                 String recvField = fieldReceiverKey(recvFrame, min);
                 boolean open = externallyReassignableField(recvField);
-                if (open) recordDispatchedMember(ctx, id, min);
+                boolean named = open && recordDispatchedMember(ctx, id, min);
+                // SOUNDNESS R601 — …AND WHERE THE MEMBER CANNOT BE NAMED, SAY SO. The naming above is the
+                // whole of R595's answer, and it is withheld for a κ-covered owner (`java.util.function.*`,
+                // `java.lang.Runnable`): publishing `java/util/function/Consumer.accept` would charge one
+                // library's effectful lambda onto every `c.accept(x)` in every consumer, so the κ exclusion is
+                // right. But withholding the key left the row saying NOTHING — `public static Consumer<String>
+                // hook = s -> {}; hook.accept(x);` published no row, and a chained consumer that reassigned
+                // `hook` to an `Fs` lambda read `run` ABSENT: `pure`, `deny Fs` and `deny Unknown` all exit 0
+                // over a written file (executed). The engine KNOWS the binding describes only the default and
+                // KNOWS it cannot name the target; SPEC §4 says that is a callback it could not resolve, which
+                // MUST contribute `Unknown`. So it is disclosed here, beside the edges — nothing the binding
+                // resolved is withdrawn. The precise answer (the FIELD's identity as a join key) is new wire
+                // and is not built here. Not for the §4 Object protocol (pure even when overridden), and not
+                // for a NON-public project abstraction, which nothing outside its package can implement.
+                if (open && !named && foreignReassignableField(recvField) && !isObjectProtocolExempt(min.name, min.desc)
+                        && !(ctx.projectClasses.contains(min.owner) && !isPublicType(min.owner))) {
+                    dir.add(Effect.UNKNOWN);
+                    String ow = min.owner.replace('/', '.');
+                    ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.parse(
+                            (isJdkFunctionalSam(min.owner, min.name) ? "callback:" : "dispatch:") + ow + "." + min.name));
+                    if (R595_DEBUG) System.err.println("R601HEDGE\t" + id + "\t" + recvField + "\t"
+                            + min.owner + "." + min.name + min.desc);
+                }
                 // Both halves are printed, because the NUMERATOR alone cannot say whether a zero means
                 // "no reassignable field" or "this whole ⟨0.35⟩ branch never fires on the corpus" — two
                 // completely different things to write in a row, and the second is the one that makes an
@@ -7023,6 +7045,19 @@ public class Candor {
                 if (cRecv != null && !ctx.byName.containsKey(cRecv) && !cRecv.equals(min.owner))
                     inh = ctx.crossDeps.get(cRecv + "." + min.name + min.desc);
             }
+            // SOUNDNESS R917 — a dependency's ZERO-implementer union over an abstract class member
+            // (ReportWriter#appendInterfaceUnions) is the dependency saying "nothing I can see implements
+            // this". Where THIS scan's own subclasses implement it, the consumer has the answer the
+            // dependency lacked, and the same source scanned as one tree resolves narrow to them with no
+            // `Unknown`; so the hedge is not inherited — conjunct 4 of untypedDepReceiver, for the opcode
+            // that method does not cover. Only when the dependency's hierarchy sidecar indexes the owner
+            // and lists NO subtype of it: an `Unknown`-only union is also what a BROAD one publishes, and
+            // dropping that would delete the disclosure for twelve unseen bodies.
+            if (inh != null && xop == Opcodes.INVOKEVIRTUAL && isZeroImplementorUnion(ctx, min.owner, inh)
+                    && !chaTargets(min.owner, min.name, min.desc).isEmpty()) {
+                if (R533_DEBUG) System.err.println("CANDOR_R917_LOCALSKIP " + min.owner + "." + min.name + min.desc);
+                inh = null;
+            }
             // Still nothing under any key we could form — the two readings of that emptiness are not
             // the same claim. Disclose the one that licenses nothing (see untypedDepReceiver).
             // ⟨0.39⟩ A WALK-ONLY HOP IS NOT AN ANSWER. It is in the index so the dispatch closure can pass
@@ -7196,6 +7231,18 @@ public class Candor {
      *  already guard exactly this way, so the inconsistency was the tell. Returning without latching is
      *  behaviourally identical today (an empty inversion yields a null lookup, hence false) and leaves
      *  the memo rebuildable if a future ordering ever does reach it early. */
+    /** SOUNDNESS R917 — is this chained entry a dependency's ZERO-implementer union over an abstract class
+     *  member (ReportWriter#appendInterfaceUnions)? Synthetic, `Unknown` and nothing else, and its owner is a
+     *  type the dependency's hierarchy sidecar indexes with NO subtype — which is what tells it from a BROAD
+     *  union (also `Unknown`-only, but over more than twelve subtypes). Without a sidecar the answer is no, so
+     *  every caller of this keeps the behaviour it had before the entry existed. */
+    static boolean isZeroImplementorUnion(AnalysisContext ctx, String owner, DepFn d) {
+        return d.syntheticOnly && !d.isBridgeRow()
+                && d.effects.size() == 1 && d.effects.contains(Effect.UNKNOWN)
+                && ctx.depIndexed.contains(owner)
+                && ctx.depSubtypes.getOrDefault(owner, List.of()).isEmpty();
+    }
+
     static boolean depDeclaresSigElsewhere(AnalysisContext ctx, MethodInsnNode min) {
         if (ctx.crossDeps.isEmpty()) return false;
         if (!ctx.depOwnersBySigBuilt) {
@@ -7206,6 +7253,10 @@ public class Candor {
                 String h = be.getKey();
                 int paren = h.indexOf('(');
                 int dot = paren < 0 ? -1 : h.lastIndexOf('.', paren);
+                // SOUNDNESS R917 — nor does a zero-implementer union: it holds no body at all, and counting it
+                // as "an effectful body elsewhere" hedged an all-pure INTERFACE that shares its signature
+                // (CrossScanBoundaryTest goPure, measured). Excluded so this index keeps its pre-R917 shape.
+                if (dot > 0 && isZeroImplementorUnion(ctx, h.substring(0, dot), be.getValue())) continue;
                 if (dot > 0) ctx.depOwnersBySig
                         .computeIfAbsent(h.substring(dot + 1), k -> new HashSet<>()).add(h.substring(0, dot));
             }
@@ -10845,13 +10896,16 @@ public class Candor {
      *  is not a precision trade, it is a scope fact, and it is load-bearing rather than cosmetic: without it
      *  a transitive {@code dispatchesOn} over an interface-dense JVM library grows the report several-fold
      *  (MEASURED on jooq 3.19.10, where the unbounded form could not be serialised at all). */
-    static void recordDispatchedMember(AnalysisContext ctx, String callerId, MethodInsnNode min) {
+    static boolean recordDispatchedMember(AnalysisContext ctx, String callerId, MethodInsnNode min) {
         if (!isObjectProtocolExempt(min.name, min.desc)
                 && (isProjectIfaceOrAbstract(min.owner) && isPublicType(min.owner)
                             && projectDeclaresMethod(min.owner, min.name, min.desc)
-                        || foreignAbstractionOwner(ctx, min)))
+                        || foreignAbstractionOwner(ctx, min))) {
             ctx.dispatchDirect.computeIfAbsent(callerId, k -> new TreeSet<>())
                     .add(min.owner + "." + min.name + min.desc);
+            return true;
+        }
+        return false;
     }
 
     /** ⟨0.39⟩ obligation 1's FOREIGN arm — is this call site a dispatch over an abstraction some
@@ -10860,13 +10914,27 @@ public class Candor {
      *  same evidence {@link #untypedDepReceiver}'s conjunct 1 rests on; an abstract dep CLASS keeps that
      *  method's named residual rather than acquiring a second, weaker one here. */
     static boolean foreignAbstractionOwner(AnalysisContext c, MethodInsnNode min) {
-        if (min.getOpcode() != Opcodes.INVOKEINTERFACE) return false;
+        int op = min.getOpcode();
+        if (op != Opcodes.INVOKEINTERFACE && op != Opcodes.INVOKEVIRTUAL) return false;
         if (min.owner.isEmpty() || min.owner.charAt(0) == '[' || c.projectClasses.contains(min.owner))
             return false;
         int slash = min.owner.lastIndexOf('/');
         if (slash <= 0) return false;                       // the default package: no namespace to key on
         String pkg = min.owner.substring(0, slash).replace('/', '.');
-        return !kappaCovers(pkg);
+        if (kappaCovers(pkg)) return false;
+        if (op == Opcodes.INVOKEINTERFACE) return true;
+        // SOUNDNESS R917 — AN ABSTRACT DEPENDENCY CLASS IS AN ABSTRACTION TOO (SPEC §4 ⟨0.39⟩: "Implementor"
+        // includes a subclass that overrides a class's member). INVOKEVIRTUAL does not prove it, so the
+        // evidence is the chained report's own: a union entry published under this exact key — a pure-only one
+        // (R919) or a synthetic one that the OWNING package published (ARM 1, which for a class is an abstract
+        // member; its zero-implementer form is R917's). Measured without this: `mid(AbsP p){ p.handle(); }`
+        // in a middle package, with AbsP's only dependency implementer pure and an effectful one in a third
+        // package, left the app's caller ABSENT — `deny Fs` and `deny Unknown` exit 0 over a written file,
+        // the ratatui toggle at a class.
+        String key = min.owner + "." + min.name + min.desc;
+        if (c.depPureUnionKeys.contains(key)) return true;
+        DepFn d = c.crossDeps.get(key);
+        return d != null && d.syntheticOnly && d.ownerDeclared && !d.isBridgeRow();
     }
 
     static boolean kappaCovers(String pkg) {

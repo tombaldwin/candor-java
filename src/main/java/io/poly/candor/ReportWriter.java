@@ -619,6 +619,32 @@ final class ReportWriter {
             // (the loader admits an incomplete-only entry), and a hit skips the untyped-receiver disclosure a
             // miss falls through to — the R609/R764 "REMOVED 0 is a measurement, not a construction" trap.
             // Dropped, the consumer finds no pure-only key and discloses, which is the safe direction.
+            // SOUNDNESS R917 — …EXCEPT AT AN ABSTRACT CLASS, where that absence is read the other way. The
+            // consumer discloses a zero-implementer INTERFACE on a miss because INVOKEINTERFACE proves the key
+            // names a declaration (`Candor#untypedDepReceiver`, conjunct 1). An abstract class's member is
+            // called by INVOKEVIRTUAL, the opcode of every concrete dependency method too, and there a miss
+            // is the ordinary §2 purity claim about a body that was analysed. No wire fact told the two
+            // apart, so `goAbs(AbsH h){ h.handle(); }` over a chained abstract class nothing implements read
+            // ABSENT — `deny Unknown` and `pure` exited 0 over a plugin subclass that wrote a file (executed).
+            // ACC_ABSTRACT is the fact (the "THE ABSTRACT DEP CLASS" note above), and only the producer has
+            // it, so the producer states what its own in-scan site states for the same dispatch (SPEC §4
+            // bounded CHA: "a local abstraction with no visible implementor … MUST read `Unknown`"): a union
+            // entry carrying `Unknown[dispatch:]`. It is an ordinary `crossDeps` hit, so the consumer needs
+            // no new path; `Candor#crossDepJoin` drops it again where the consumer's OWN subclasses answer
+            // the dispatch, exactly as conjunct 4 does for an interface.
+            // Scope: a PUBLIC class's public/protected abstract member (a foreign package can subclass it),
+            // not a sealed one, and only where no real entry claims the hash — merging an `Unknown` into a
+            // claimed bodiless entry would put it on the report route alone (SOUNDNESS R682's mechanism), so
+            // that residual is counted (`CANDOR_R917_CLAIMED`) rather than widened.
+            boolean r917 = impls.isEmpty() && k.length > 3 && "absclass".equals(k[3])
+                    && !isClosedHierarchy(owner);
+            if (r917 && real != null) {
+                if (System.getenv("CANDOR_R533_DEBUG") != null) System.err.println("CANDOR_R917_CLAIMED " + hash);
+            } else if (r917) {
+                inf.add(Effect.UNKNOWN);
+                why = List.of(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner.replace('/', '.') + "." + name));
+                if (System.getenv("CANDOR_R533_DEBUG") != null) System.err.println("CANDOR_R917_ZEROUNION " + hash);
+            }
             if (inf.isEmpty() && inv.isEmpty()
                     && (real != null || impls.isEmpty() || !incUnion.isEmpty())) continue;
             if (inf.isEmpty() && inv.isEmpty() && System.getenv("CANDOR_R533_DEBUG") != null)
@@ -843,7 +869,14 @@ final class ReportWriter {
                         | org.objectweb.asm.Opcodes.ACC_SYNTHETIC)) != 0) continue;
                 if (mn.name.startsWith("<")) continue;
                 if ((iface || abs) && (iface || (mn.access & org.objectweb.asm.Opcodes.ACC_ABSTRACT) != 0))
-                    out.add(new String[] { cn.name, mn.name, mn.desc });                       // ARM 1
+                    // ARM 1. The fourth slot marks an abstract CLASS's abstract member that a FOREIGN package
+                    // could implement (public class, public/protected member) — the only candidate for
+                    // which a ZERO-implementer union is published (SOUNDNESS R917, see the call site).
+                    out.add(new String[] { cn.name, mn.name, mn.desc,
+                            !iface && (cn.access & org.objectweb.asm.Opcodes.ACC_PUBLIC) != 0
+                                    && (mn.access & (org.objectweb.asm.Opcodes.ACC_PUBLIC
+                                            | org.objectweb.asm.Opcodes.ACC_PROTECTED)) != 0
+                                    ? "absclass" : "" });
                 // ARM 2 publishes over a member this class actually IMPLEMENTS, so an abstract declaration
                 // contributes nothing here — its body is elsewhere and will be reached through whichever
                 // concrete class declares it. §4's Object protocol is excluded for the same reason it is at

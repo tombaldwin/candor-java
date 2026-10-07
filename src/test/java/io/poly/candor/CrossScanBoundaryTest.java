@@ -581,9 +581,14 @@ class CrossScanBoundaryTest {
                 "and name the dispatch, got " + field(r, "app.A.go", "unknownWhy"));
         assertTrue(field(r, "app.A.caller", "inferred").contains("Unknown"),
                 "the caller inherits the disclosure, got " + r.get("app.A.caller"));
-        assertFalse(r.containsKey("app.A.goAbs"),
-                "R917 RESIDUAL, pinned so a fix flips it: the abstract-class twin is still ABSENT — the wire "
-                        + "carries no fact that tells an abstract dep-class member from a concrete pure one");
+        // SOUNDNESS R917 — the abstract-CLASS twin, flipped from the residual this line used to pin. The
+        // producer now publishes the zero-implementer union (`Unknown[dispatch:]`) only it can know is one.
+        assertTrue(field(r, "app.A.goAbs", "inferred").contains("Unknown"),
+                "R917: a dispatch on a chained abstract class nothing implements must disclose, got " + r.get("app.A.goAbs"));
+        assertTrue(field(r, "app.A.goAbs", "unknownWhy").contains("dispatch:lib.AbsH.handle"),
+                "and name the dispatch, got " + field(r, "app.A.goAbs", "unknownWhy"));
+        assertEquals(List.of("lib/AbsH.handle()I"), r.get("app.A.goAbs").get("dispatchesOn"),
+                "R917: and name the member (obligation 1), as the one-tree scan does; got " + r.get("app.A.goAbs"));
     }
 
     @Test

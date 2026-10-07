@@ -849,8 +849,15 @@ class InterfaceUnionTest {
         assertEquals(List.of(), u.get("inferred"), "an all-pure abstract hierarchy must publish no effect; got " + u);
         Map<String, String> app = Map.of("app/Go.java",
                 "package app;\nimport lib.Quiet;\npublic class Go { public String run(Quiet q) { return q.tag(); } }\n");
-        assertNull(chainedApp(lib, app, true).get("app.Go.run"),
-                "and the consumer must stay pure — the union must not manufacture uncertainty");
+        // SOUNDNESS R917: the consumer now NAMES the member (⟨0.39⟩ obligation 1's foreign arm, which used to
+        // be INVOKEINTERFACE-only), so the row is present the way any dispatching row is — with nothing in
+        // `inferred`. What this test protects is unchanged: no effect and no Unknown is manufactured.
+        Map<String, Object> run = chainedApp(lib, app, true).get("app.Go.run");
+        assertTrue(run == null || ((List<?>) run.get("inferred")).isEmpty(),
+                "and the consumer must stay pure — the union must not manufacture uncertainty; got " + run);
+        if (run != null)
+            assertEquals(List.of("lib/Quiet.tag()Ljava/lang/String;"), run.get("dispatchesOn"),
+                    "a present row is present only because it names the dispatched member; got " + run);
     }
 
     @Test

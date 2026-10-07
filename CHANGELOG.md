@@ -9,6 +9,65 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R917 FIXED: a dispatch on a chained abstract class that nothing implements discloses `Unknown`
+
+**What went wrong.** `goAbs(AbsH h){ return h.handle(); }`, where `AbsH` is a chained dependency's public
+abstract class with no subclass anywhere, read ABSENT with no `dispatchesOn`. `deny Unknown` and
+`deny Fs Unknown` exited 0 while a plugin subclass loaded at run time wrote a file (executed). The one-tree
+scan reads `Unknown[dispatch:iface.AbsH.handle]`. This is R533's abstract-class twin: R533 discloses on an
+INVOKEINTERFACE miss, but an abstract class's member is called by INVOKEVIRTUAL, the opcode of every
+concrete method, so a miss there was an ordinary purity claim.
+
+**Three parts.**
+- **Producer: adds rows only.** A public abstract class's public or protected abstract member with no
+  implementer publishes an `interfaceUnion` entry carrying `Unknown[dispatch:]`. That is what the producer
+  reports in-scan for the same dispatch. A sealed class, a package-private class, and a hash already
+  claimed by a real entry are left out.
+- **Consumer: drops that hedge where its own subclasses answer.** The dependency's hierarchy sidecar must
+  show the owner with no subtype. This mirrors R533's conjunct 4. Without the sidecar the hedge is kept.
+- **Obligation 1's foreign arm now covers INVOKEVIRTUAL.** It needs evidence that the key names a
+  dependency abstraction: a pure-only union, or a union the owning package published. Before this, a
+  middle package dispatching on an abstract class with one pure implementer named nothing. A third
+  package's effectful subclass then left the app's caller ABSENT (executed, `deny Fs` 0 → 1).
+
+**Not closed (residual).** A zero-implementer abstract member whose hash is already claimed by a real
+bodiless entry is still a hit with `[]`. This happens when its class `declares` a capability, or it is
+an entry point. Merging `Unknown` into that entry would put it on the report route only, which is R682's
+mechanism. Count: 308 such members over 372 jars, 98 over 452.
+
+### ⚠ SOUNDNESS R601 FIXED: a reassignable field whose member cannot be named discloses `Unknown`
+
+**What went wrong.** `public static Consumer<String> hook = s -> {}; fire(x){ hook.accept(x); }`
+published no row for `fire`. R595 names the member for a reassignable field, but not for a κ-covered owner,
+and the κ exclusion is right. A consumer that reassigned `hook` to an `Fs` lambda read its caller ABSENT:
+`deny Unknown` and `deny Fs Unknown` exited 0 over a written file (executed).
+
+**The fix.** Where R595's reassignability test fires and the member cannot be named, the site adds
+`Unknown[callback:]` (`dispatch:` for a non-functional owner). The binding's edges are kept. The rule is
+limited to public fields. A protected field is left unhedged on purpose: PART 87 pins an inherited
+protected binding as a control that must stay unhedged, so the consumer-subclass reassignment path is a
+recorded residual. The precise answer, a
+field-keyed join, is new wire and is not built here.
+
+**Measured** (PRE = `6c000a4`, POST = this; the same engine produces and consumes in each arm; reach comes
+from `CANDOR_R533_DEBUG` and `CANDOR_R595_DEBUG`):
+- **Standalone corpora.**
+  - 372 jars: ADDED 1,912, REMOVED 0, CHANGED 85, 0 values lost.
+    - 1,911 of the added rows are R917 union rows, which no gate addresses at their own qual.
+    - R601's 68 sites (public only, after narrowing) put `Unknown` on 29 functions that lacked it:
+      23 in couchbase-core-io, out of 143,939 analysed; 6 in spring-data-neo4j, out of 2,626.
+    - That costs 0 package flips, 0 jar flips and 7 class-scope flips. The couchbase sites are its
+      transaction test hooks, which are public instance fields.
+  - 452 jars: ADDED 1,887 (all R917 union rows), REMOVED 0, and no `inferred` changes. After narrowing,
+    R601 reaches 0.
+- **15 real chained pairs** (63,455 analysed consumer units): REMOVED 0, 0 values lost.
+  - 7 functions newly `Unknown`, all in s3: a function-scope over-hedge. sdk-core publishes
+    `SdkRequest.overrideConfiguration` as zero-implementer, while aws-core's implementer arrives only as a
+    pure-only union.
+  - 25 added union rows.
+  - About 560 rows gained `dispatchesOn` only, which is wire bytes.
+- **PART 92 and PART 94, java-only arms:** all OK on both arms.
+
 ### ⚠ ⟨0.40⟩ The baseline guard compares a function ABSENT from the baseline against ∅ (SOUNDNESS R932)
 
 `CANDOR_BASELINE` used to skip every function absent from the baseline as "new code, reviewed normally" —
@@ -22,6 +81,7 @@ the callgraph sidecar now decides only that label — without it a formerly-pure
 fires as `unknown` instead of slipping through. A missing baseline FILE, a corrupt sidecar and a
 different-build baseline keep their postures (note / exit 2 / exit 2), so the upgrade flips nothing on day
 one. Pinned by `NewFunctionBaselineTest` (PART 15d n1–n4 + 15b `absent`).
+
 
 ### Report and query JSON write `<` and `>` as themselves (`<init>`, not `\u003cinit\u003e`)
 

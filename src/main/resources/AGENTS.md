@@ -154,7 +154,11 @@ Name queries resolve exact > segment-suffix (`Svc.save` matches `com.example.Svc
   folds into its block message. Advisory: candor names the structure, you write the code; the gate re-scan
   verifies. Needs a policy (the fix is defined relative to the boundary it crosses).
 - **Enforce in CI** → `--policy <file>` (or `CANDOR_POLICY`) (candor-spec §6.2: `deny`/`pure`/`allow`/`forbid`) +
-  `CANDOR_BASELINE` (regression guard). Deterministic — not an LLM opinion.
+  `CANDOR_BASELINE` (regression guard: AS-EFF-005 + exit 1 when a function gains a real effect vs the
+  baseline — ⟨0.40⟩ including a function ABSENT from it, which is compared against ∅, so new effectful code
+  fails until reviewed: `candor diff <this run's report> <baseline>`, then re-record. A new pure function
+  passes; a new Unknown-only one is named in a note; each 005 row in `--gate-json` carries `origin`
+  `existing`/`new`/`unknown`). Deterministic — not an LLM opinion.
 - **Gate a report you did not produce** ⟨0.24⟩ → `gate --report <locator> --policy <file>`. Applies the
   policy to an EXISTING report with **no scan** — the supply-chain gate: check a dependency's published
   report against your rules without re-analysing code you do not have. Exit codes and `--gate-json`

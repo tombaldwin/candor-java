@@ -9,6 +9,20 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### ⚠ ⟨0.40⟩ The baseline guard compares a function ABSENT from the baseline against ∅ (SOUNDNESS R932)
+
+`CANDOR_BASELINE` used to skip every function absent from the baseline as "new code, reviewed normally" —
+so a whole new effectful package merged under a green gate. Now `prior(fn) = baseline[fn] ?? ∅`: a new
+function that performs a real effect is **AS-EFF-005, exit 1**, and its message says it is *absent from the
+baseline* (a key can also be "absent" because an added overload or a renumbered lambda renamed it) and leads
+with `candor diff <this run's report> <baseline>`, then re-recording. A new pure function passes; a new
+`Unknown`-only one is advisory but now **named** in a separate note (under `unknown-ratchet` it fails, prior
+∅). Every AS-EFF-005 `--gate-json` row carries `origin`: `existing` / `new` / `unknown` (the ⟨0.12⟩ rule);
+the callgraph sidecar now decides only that label — without it a formerly-pure function turning effectful
+fires as `unknown` instead of slipping through. A missing baseline FILE, a corrupt sidecar and a
+different-build baseline keep their postures (note / exit 2 / exit 2), so the upgrade flips nothing on day
+one. Pinned by `NewFunctionBaselineTest` (PART 15d n1–n4 + 15b `absent`).
+
 ### Report and query JSON write `<` and `>` as themselves (`<init>`, not `\u003cinit\u003e`)
 
 Gson's default HTML-safe escaping wrote every `<init>` / `<clinit>` in a report, its `.callgraph.json`

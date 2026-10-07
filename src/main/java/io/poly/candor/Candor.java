@@ -2505,6 +2505,7 @@ public class Candor {
                 ? checkConformance(ccFull, strict)        // reuse the report's full conformance
                 : checkConformance(inferred, strict);     // gate-only: scope-filtered declared
         if (noAmbient != null) violations += checkNoAmbient(inferred, noAmbient);
+        Policy.runReportPath = jsonOut;   // ⟨0.40⟩ the AS-EFF-005 remedy names THIS run's report for `candor diff`
         if (baseline != null) violations += checkBaseline(inferred, baseline,
                 config.fromFile("baseline", Mode.BASELINE.envVar()));
         // ⟨0.24⟩ PRECEDENCE BINDS THE VERDICT, NOT THE POLICY GATE (SPEC §3.1). The three producers above
@@ -3941,12 +3942,26 @@ public class Candor {
     static void diagUnit(DiagnosticCode code, java.util.List<String> effects,
                          java.util.List<String> reasonClass, java.util.List<String> netClass,
                          String hash, String format, Object... args) {
-        diagCapture(code, effects, reasonClass, netClass, hash, format, args);
+        diagCaptureOrigin(code, effects, reasonClass, netClass, hash, null, format, args);
+    }
+
+    /** ⟨0.40⟩ SPEC §3/§3.3 — an AS-EFF-005 row, which MUST carry the ⟨0.12⟩ {@code origin}
+     *  (`"existing"`/`"new"`/`"unknown"`). Its own method so no other code can acquire the field. */
+    static void diagBaselineGain(java.util.List<String> effects, String hash, String origin,
+                                 String format, Object... args) {
+        diagCaptureOrigin(DiagnosticCode.AS_EFF_005, effects, java.util.List.of(), java.util.List.of(), hash, origin,
+                format, args);
     }
 
     private static void diagCapture(DiagnosticCode code, java.util.List<String> effects,
                                     java.util.List<String> reasonClass, java.util.List<String> netClass,
                                     String hash, String format, Object... args) {
+        diagCaptureOrigin(code, effects, reasonClass, netClass, hash, null, format, args);
+    }
+
+    private static void diagCaptureOrigin(DiagnosticCode code, java.util.List<String> effects,
+                                    java.util.List<String> reasonClass, java.util.List<String> netClass,
+                                    String hash, String origin, String format, Object... args) {
         String body = String.format(format, args);
         diagOut.println(new Diagnostic(code, body).render());
         // --gate-json capture: EVERY AS-EFF site passes the offending entity (a fn, or a class for the
@@ -3969,6 +3984,7 @@ public class Candor {
             // ⟨0.20⟩ Net destination-class: the fn's destination classes when Net is denied (SPEC §6.2). Omitted
             // when empty, so a non-Net violation's verdict stays byte-identical to pre-feature.
             if (!netClass.isEmpty()) m.put("netClass", netClass);
+            if (origin != null) m.put("origin", origin);
             gateViolations.add(m);
         }
     }

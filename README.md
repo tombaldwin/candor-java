@@ -378,7 +378,7 @@ quality gate. Pair it with `cargo candor snapshot`-style baselines in CI.
 |---|---|---|
 | **audit** (default) | `gradle run --args="<classes>"` | per-method effect map |
 | **JSON** | add `--json <file>` | the candor JSON report — per method: `inferred`, `direct`, and **conformance** (`declared`/`undeclared`/`overdeclared`, projected from the class's injected deps) so an agent can consume conformance, not just the diagnostics |
-| **regression guard** | `CANDOR_BASELINE=<saved.json> gradle run --args="<classes>"` | `AS-EFF-005` + **exit 1** if any function gained an effect vs the snapshot |
+| **regression guard** | `CANDOR_BASELINE=<saved.json> gradle run --args="<classes>"` | `AS-EFF-005` + **exit 1** if any function gained an effect vs the snapshot — ⟨0.40⟩ including a function absent from it (compared against ∅; a new pure function passes) |
 | **no-ambient** | `CANDOR_NO_AMBIENT=1` (or a name prefix) | `AS-EFF-004` for direct ambient-authority use (route it through an injected collaborator) |
 | **conformance** | `CANDOR_STRICT=1` (or a class-name prefix) | `AS-EFF-001/002/003` — a class performs an effect no injected dependency provides (or injects one it never uses) |
 | **policy** | add `--policy <file>` (or `CANDOR_POLICY=<file>`) | `AS-EFF-006/008/009` + **exit 1** — architecture-as-code: a method violates a `deny`/`pure`/`allow`/`forbid` boundary (transitively) |
@@ -507,7 +507,9 @@ gradle run --args="build/classes/java/main --json .candor/baseline.json"
 
 # in CI:
 CANDOR_BASELINE=.candor/baseline.json gradle run --args="build/classes/java/main"
-# exits non-zero (AS-EFF-005) if a function gained an effect; a missing/garbled baseline
+# exits non-zero (AS-EFF-005) if a function gained an effect — including NEW code absent from the
+# snapshot (⟨0.40⟩; review with `candor diff <this run's report> .candor/baseline.json`, then re-record);
+# a missing/garbled baseline
 # fails LOUD ("guard is NOT active") rather than passing silently.
 ```
 

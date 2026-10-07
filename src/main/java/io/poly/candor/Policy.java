@@ -63,7 +63,12 @@ final class Policy {
     }
 
 
-    /** AS-EFF-005: flag a function that gained an effect versus a saved baseline report. */
+    /** ⟨0.40⟩ the path of THIS run's `--json` report, so the AS-EFF-005 remedy can name
+     *  `candor diff <it> <baseline>` (current first, §3.1). Null when the run writes none. */
+    static String runReportPath;
+
+    /** AS-EFF-005: flag a function that gained an effect versus a saved baseline report — ⟨0.40⟩ including a
+     *  function absent from it, whose prior is ∅. */
     static int checkBaseline(Map<String, EffectSet> inferred, String path) {
         return checkBaseline(inferred, path, false);
     }
@@ -127,26 +132,22 @@ final class Policy {
                     + " Regenerate deliberately with this build: candor <target> --json " + path);
             System.exit(2);
         }
-        // ⟨0.16⟩ Callgraph-aware existence. A function ABSENT from the baseline REPORT is not
-        // necessarily new: reports OMIT pure functions (§2), so a formerly-PURE fn that turns effectful
-        // reads as "new code" and escapes the guard — the sharpest supply-chain shape. Key existence on
-        // the baseline CALLGRAPH sidecar instead (§2.2 — it lists pure leaves), exactly as `gains --json`'s
-        // `origin` field does: reuse Query's signalled callgraph load + the caller∪callee node-union.
-        //   - sidecar PRESENT: a fn that is a node in it (even with an empty/pure baseline effect set)
-        //     and now performs ANY effect is a GAIN → violation. A fn genuinely ABSENT from the graph is
-        //     real new code → exempt. This makes pure→effectful a violation.
-        //   - sidecar ABSENT: degrade to report-only existence (a formerly-pure fn reads as new — the
-        //     pre-⟨0.16⟩ semantics; the guard still catches widening on already-effectful fns). Not a
-        //     failure — just the weaker guard, disclosed once on stderr.
-        //   - sidecar PRESENT-but-corrupt: fail closed (exit 2), same as a corrupt baseline report — a
-        //     broken sidecar must not silently NARROW the guard (drop its pure-leaf nodes → pure→effectful
-        //     would masquerade as new). This mirrors gains' "a partial graph proves absence of nothing".
+        // ⟨0.40⟩ SPEC §3 baseline guard — A FUNCTION ABSENT FROM THE BASELINE IS COMPARED AGAINST ∅. For
+        // every analysed function prior(key) = baseline[key] ?? ∅, so a function absent from a PRESENT
+        // baseline that performs a real effect is an AS-EFF-005 gain. Before this rung an absent function was
+        // skipped as "new code, reviewed normally" — and review does not read effects (SOUNDNESS R932; the
+        // field report was a whole package merged under a green gate whose baseline lacked it).
+        //
+        // The ⟨0.16⟩ callgraph sidecar no longer decides whether the guard FIRES, only how a firing is
+        // LABELLED — the ⟨0.12⟩ `origin` every 005 verdict row now carries: "existing" (in the baseline report
+        // or a node of its sidecar), "new" (in neither, sidecar present), "unknown" (absent from the report,
+        // sidecar absent). A PRESENT-but-corrupt sidecar still fails closed: a broken label source must not
+        // be read as "new" any more than it could narrow the guard before.
         Query.CallgraphLoad cgl = Query.loadCallgraphSignalled(path); // discloses a corrupt sidecar on stderr
         if (cgl.partial()) {
             System.err.println("candor-java: the baseline call-graph sidecar beside " + path + " is corrupt/"
-                    + "unreadable — failing (exit 2); the guard must not silently narrow to report-only "
-                    + "existence on a broken sidecar (a formerly-pure→effectful gain would masquerade as new "
-                    + "code). Regenerate the baseline: candor <target> --json " + path);
+                    + "unreadable — failing (exit 2); a broken sidecar must not silently decide which functions "
+                    + "the baseline knew. Regenerate the baseline: candor <target> --json " + path);
             System.exit(2);
         }
         Set<String> baseCgNodes = new HashSet<>();
@@ -157,35 +158,31 @@ final class Policy {
                 baseCgNodes.addAll(cge.getValue());
             }
         } else {
-            // Report-only degradation: a formerly-pure fn is indistinguishable from new code, so the
-            // pure→effectful transition slips through. Say it once — the guard is weaker here.
             System.err.println("candor-java: no call-graph sidecar beside the baseline " + path
-                    + " (looked for its .callgraph.json) — the regression guard degrades to report-only "
-                    + "existence: a formerly-pure function that turns effectful reads as new code and is NOT "
-                    + "flagged. Regenerate the baseline with a file-mode --json to emit the sidecar and get "
-                    + "the full pure→effectful guard.");
+                    + " (looked for its .callgraph.json) — the guard still compares every function, but cannot "
+                    + "tell a formerly-pure function from new code, so a firing on a function absent from the "
+                    + "baseline report is labelled origin \"unknown\". Regenerate the baseline with a file-mode "
+                    + "--json to emit the sidecar.");
         }
+        String runReport = runReportPath == null || runReportPath.equals("-") ? "<this run's --json report>" : runReportPath;
+        String remedy = "review it: candor diff " + runReport + " " + path
+                + " — then, if intended, re-record the baseline: candor <target> --json " + path;
         int v = 0;
         // ⟨0.16⟩ Functions whose ONLY gain vs the baseline is `Unknown` — the §4 trust marker,
         // NOT an effect (`pure` policies already exclude it). On real dependency bumps an Unknown-only
         // gain is dominated by resolution noise (dispatch-resolution variance; a JVM anonymous class's
         // positional `$N` differs across versions — SOUNDNESS-LOG 2026-07-16), so it is ADVISORY, never a
         // regression: collect the names and disclose them once, don't raise AS-EFF-005 or exit 1.
+        // ⟨0.40⟩ A function ABSENT from the baseline whose only effect is `Unknown` is listed SEPARATELY and
+        // by name — before this rung it was not mentioned at all.
         List<String> unknownOnly = new ArrayList<>();
+        List<String> newUnknownOnly = new ArrayList<>();
         for (var e : new TreeMap<>(inferred).entrySet()) {
-            EffectSet prior = base.get(e.getKey());
-            if (prior == null) {
-                // Absent from the baseline REPORT. With a sidecar we can tell a formerly-pure fn (a graph
-                // node, baseline effect set ∅) from genuinely new code (absent from the graph too):
-                //   - graph node → treat its baseline as ∅ (empty): ANY current effect is a gain.
-                //   - not a graph node → real new code → exempt (reviewed as new, not a regression).
-                // Without a sidecar, existence is report-only: absent means "new" → exempt (pre-⟨0.16⟩).
-                if (sidecarPresent && baseCgNodes.contains(e.getKey())) {
-                    prior = EffectSet.empty(); // formerly pure — a graph node with no report entry
-                } else {
-                    continue; // new function (or report-only degradation) — reviewed as new code
-                }
-            }
+            EffectSet inReport = base.get(e.getKey());
+            boolean absent = inReport == null;
+            EffectSet prior = absent ? EffectSet.empty() : inReport;
+            String origin = !absent || (sidecarPresent && baseCgNodes.contains(e.getKey())) ? "existing"
+                    : sidecarPresent ? "new" : "unknown";
             EffectSet gainedSet = e.getValue().minus(prior);
             if (gainedSet.isEmpty()) {
                 continue;
@@ -199,27 +196,34 @@ final class Policy {
                 // This is what makes `deny E Unknown` adoptable on legacy DI/reflection-heavy code: the CURRENT
                 // Unknown surface is GRANDFATHERED (a fn already Unknown in the baseline shows no gain ⇒ never
                 // flagged), and only a NEWLY-introduced Unknown — a blind spot the baseline did not have — fails.
-                // So a team freezes today's report as the baseline and the strict gate ratchets the Unknown
-                // surface DOWN instead of failing everywhere on day one. Grandfather one by regenerating the
-                // baseline. Default OFF preserves the ⟨0.16⟩ advisory posture (Unknown-gains = resolution noise).
+                // ⟨0.40⟩ a function absent from the baseline has prior ∅, so its Unknown is newly introduced.
                 if (ctx().unknownRatchet) {
                     // ⟨0.32⟩ SPEC §2 — every verdict row carries the unit it is about. From the SAME map
                     // ReportWriter writes into each entry's `hash`, so the row's identity and the report's
                     // cannot spell one unit two ways.
-                    diagUnit(DiagnosticCode.AS_EFF_005, List.of("Unknown"), List.of(), List.of(),
-                            ctx().hashOf.getOrDefault(e.getKey(), ""), "`%s` gained an unresolved call (Unknown) "
-                            + "not in the baseline — a NEW blind spot (unknown-ratchet); resolve it, or regenerate "
-                            + "the baseline to grandfather it", e.getKey());
+                    diagBaselineGain(List.of("Unknown"), ctx().hashOf.getOrDefault(e.getKey(), ""), origin,
+                            "`%s` gained an unresolved call (Unknown) not in the baseline — a NEW blind spot "
+                            + "(unknown-ratchet); resolve it, or regenerate the baseline to grandfather it", e.getKey());
                     v++;
-                } else {
+                } else if (origin.equals("existing")) {
                     unknownOnly.add(e.getKey());
+                } else {
+                    newUnknownOnly.add(e.getKey());
                 }
                 continue;
             }
-            diagUnit(DiagnosticCode.AS_EFF_005, gained, List.of(), List.of(),   // ⟨0.32⟩ SPEC §2 — the unit
-                    ctx().hashOf.getOrDefault(e.getKey(), ""),
-                    "`%s` gained effect { %s } not present in the baseline",
-                    e.getKey(), String.join(", ", gained));
+            if (origin.equals("existing")) {
+                diagBaselineGain(gained, ctx().hashOf.getOrDefault(e.getKey(), ""), origin,  // ⟨0.32⟩ the unit
+                        "`%s` gained effect { %s } not present in the baseline", e.getKey(), String.join(", ", gained));
+            } else {
+                // ⟨0.40⟩ "absent" means absent UNDER THIS KEY: candor-java suffixes an overloaded method with its
+                // descriptor and javac renumbers lambdas class-wide, so a renamed key reads as absent. Say what
+                // was measured — absent from the baseline — never that the function "gained" an effect.
+                diagBaselineGain(gained, ctx().hashOf.getOrDefault(e.getKey(), ""), origin,
+                        "`%s` is absent from the baseline (new code, or a key renamed by an added overload or a "
+                        + "renumbered lambda) and performs effect { %s } — compared against nothing; %s",
+                        e.getKey(), String.join(", ", gained), remedy);
+            }
             v++;
         }
         if (!unknownOnly.isEmpty()) {
@@ -230,6 +234,14 @@ final class Policy {
                     + "regression (Unknown is the §4 trust marker, dominated by resolution noise on version "
                     + "bumps): " + String.join(", ", shown) + more + ".");
         }
+        if (!newUnknownOnly.isEmpty()) {
+            List<String> shown = newUnknownOnly.subList(0, Math.min(10, newUnknownOnly.size()));
+            String more = newUnknownOnly.size() > 10 ? " (+" + (newUnknownOnly.size() - 10) + " more)" : "";
+            System.err.println("candor-java: note — " + newUnknownOnly.size() + " new function(s) carry only "
+                    + "Unknown (absent from the baseline; advisory, not a regression): "
+                    + String.join(", ", shown) + more + ".");
+        }
+        if (v > 0) System.err.println("candor-java: AS-EFF-005 — " + remedy + ".");
         return v;
     }
 

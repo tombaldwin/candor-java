@@ -9,6 +9,13 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **Declares spec 0.40** (was 0.39) — the family floor bump. This engine implements both ⟨0.40⟩
+  halves that bind it: the AS-EFF-005 baseline guard no longer exempts a function absent from the
+  baseline (SOUNDNESS R932; a new function performing a real effect now fails the gate, exit 1, with
+  `origin:"new"`), and bind/listen for `Net` (SOUNDNESS R817/R949; a bind over an already-resolved address
+  no longer enters `hosts` or hedges). The type-surface half is declared NOT APPLICABLE to the JVM (§2).
+  **A gate that passed on 0.39.x can exit 1 on identical bytes** — see candor-spec SPEC §8 ⟨0.40⟩.
+
 ### ⚠ SOUNDNESS R965 FIXED (disclosed): R601's protected half
 
 **What went wrong.** R601's `Unknown[callback:]` hedge was limited to PUBLIC fields. A dependency's

@@ -7424,6 +7424,10 @@ public class Candor {
                 if (ctx.projectClasses.contains(h.getOwner())) {
                     if (!deferred) {
                         ctx.edges.get(id).add(methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc()));
+                        // SOUNDNESS R939 — ⟨0.39⟩ obligation 1 for the REFERENCE spelling; see
+                        // {@link #recordDispatchedMethodRef}. Project arm: an unbound `Doer::go` over a public
+                        // project abstraction names its member exactly as `d.go()` does.
+                        recordDispatchedMethodRef(ctx, id, h);
                         // An UNBOUND interface/abstract method-ref (`stream.forEach(Doer::go)`,
                         // `list.removeIf(Rule::stale)`) targets an ABSTRACT method with no body, so the edge
                         // above is silent-pure — the ubiquitous idiomatic-streams shape the LAMBDA form
@@ -7571,6 +7575,10 @@ public class Candor {
                     // exactly as it gates the project edge: a reference merely stowed for later must not be
                     // attributed here. Also the class-load trigger, as for a project static/ctor ref.
                     if (!deferred) inheritDepFn(id, ctx.crossDeps.get(h.getOwner() + "." + h.getName() + h.getDesc()));
+                    // SOUNDNESS R939 — and the member a reference DISPATCHES on is named on the row, as the call
+                    // spelling names it (foreign arm). Gated on `deferred` exactly as the edge above and the lambda
+                    // spelling's creation edge are: see {@link #recordDispatchedMethodRef}.
+                    if (!deferred) recordDispatchedMethodRef(ctx, id, h);
                     inheritDepClinit(id, h.getOwner());
                     // SOUNDNESS R183 — AND WHEN THE HANDLE NAMES NO BODY AT ALL, THE TWO LINES ABOVE BOTH
                     // FIND NOTHING AND THE SITE IS SILENT. `Optional.ofNullable(sup).map(Supplier::get)`:
@@ -11215,6 +11223,44 @@ public class Candor {
      *  is not a precision trade, it is a scope fact, and it is load-bearing rather than cosmetic: without it
      *  a transitive {@code dispatchesOn} over an interface-dense JVM library grows the report several-fold
      *  (MEASURED on jooq 3.19.10, where the unbounded form could not be serialised at all). */
+    /** SOUNDNESS R939 — ⟨0.39⟩ OBLIGATION 1 FOR A METHOD REFERENCE. {@code mc.getDatabase(n)} named
+     *  {@code iface/Client.getDatabase(…)} on its row through {@link #recordDispatchedMember}; the reference
+     *  spelling {@code ns.forEach(mc::getDatabase)} — same owner, name and descriptor, handed to a HOF that
+     *  runs it here — named nothing, so a chained consumer that supplied an effectful {@code Client} never
+     *  joined its implementor to the caller. EXECUTED (three packages, one pure dependency implementor, the
+     *  toggle): the call spelling gave the app's caller {@code Fs} and {@code deny Fs app.Main.go} exit 1; the
+     *  reference spelling left it ABSENT, exit 0, over a file the program really wrote. The lambda spelling
+     *  {@code n -> mc.getDatabase(n)} already worked, because its synthetic body records the member at its own
+     *  call instruction and the creation-site edge carries it up — so this is parity with the lambda arm, and
+     *  {@code deferred} gates it for the same reason it gates that edge (a reference merely stowed is named
+     *  where it is later invoked, or disclosed there as an unpinned SAM, never here).
+     *
+     *  <p>Only a DISPATCHING handle — {@code REF_invokeVirtual}/{@code REF_invokeInterface}. A static, special
+     *  or constructor reference names one body, and the project arm of {@link #recordDispatchedMember} would
+     *  otherwise accept a {@code static} method on a public project interface. The predicate itself is the
+     *  call path's, unchanged (§G): the κ frontier, the Object protocol and non-public abstractions are
+     *  excluded here exactly as there, so this can only ADD a {@code dispatchesOn} key the call spelling of
+     *  the same expression already publishes. */
+    static void recordDispatchedMethodRef(AnalysisContext ctx, String callerId, Handle h) {
+        int tag = h.getTag();
+        if (tag != Opcodes.H_INVOKEVIRTUAL && tag != Opcodes.H_INVOKEINTERFACE) return;
+        // …and never a lambda's own synthetic body or another private member. javac may spell a lambda captured in
+        // an INTERFACE's default method as an interface-tagged handle to that interface's private `lambda$…`, and
+        // the project arm's {@code projectDeclaresMethod} accepts any declared member, so without this a junk key
+        // naming a private body would be published. A private member has no implementor but itself.
+        ClassNode on = ctx.byName.get(h.getOwner());
+        if (on != null && on.methods != null)
+            for (MethodNode mn : on.methods)
+                if (mn.name.equals(h.getName()) && mn.desc.equals(h.getDesc())
+                        && (mn.access & (Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC)) != 0)
+                    return;
+        boolean named = recordDispatchedMember(ctx, callerId, new MethodInsnNode(
+                tag == Opcodes.H_INVOKEINTERFACE ? Opcodes.INVOKEINTERFACE : Opcodes.INVOKEVIRTUAL,
+                h.getOwner(), h.getName(), h.getDesc(), h.isInterface()));
+        if (named && R939_DEBUG) System.err.println("R939REF\t" + callerId + "\t" + h.getOwner() + "." + h.getName() + h.getDesc());
+    }
+    static final boolean R939_DEBUG = System.getenv("CANDOR_R939_DEBUG") != null;
+
     static boolean recordDispatchedMember(AnalysisContext ctx, String callerId, MethodInsnNode min) {
         if (!isObjectProtocolExempt(min.name, min.desc)
                 && (isProjectIfaceOrAbstract(min.owner) && isPublicType(min.owner)

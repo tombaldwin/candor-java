@@ -9,6 +9,27 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### SOUNDNESS R949 (java half): a literal name that is resolved is published in `hosts`
+
+SPEC §2 ⟨0.40⟩, PART 96 arm `g_litdiscard`. A resolution's locator is the NAME. Before this change,
+`InetAddress.getByName("evil.example")` marked `Net` incomplete but never named the host. The per-call
+literal window reads through `netHostLiteral`, which rejects a bare dotted name by design. So `hosts`
+never said what was reached, and an allowlist that named it could not certify it.
+
+**The fix.** `getByName`/`getAllByName` capture their operand as a host when it is ONE literal on every
+path and has the shape of a DNS name or IPv4 address. Two literals on a merge, a template, a concat, a
+dotless name, a field-held name and a computed name all keep the mark, which is R949's other half.
+
+**Measured.**
+- `g_litdiscard`: `hosts` gains `evil.example`; `allow Net ok.example` stays 1; `allow Net ok.example
+  evil.example` goes 1 → 0. `e_rtname` and `f_rtresolve` stay 1.
+- `bin/corpus-ab.py` over 372 jars, PRE = the R817 change: ADDED 0, REMOVED 0, `inferred` 0. 20,371
+  rows gained a host, from 2 captures (geode, 20,184 rows; hazelcast, 187 rows).
+- Every added value is the one name captured in its entry. No row that was complete before gained a
+  host, so no `allow` gate can go 0 → 1. One row lost `incomplete`: the capture site itself,
+  `DistributionConfig._getDefaultMcastAddress`, whose only `Net` is `getByName("239.192.81.1")`
+  through a local.
+
 ### ⚠ SOUNDNESS R817 (java half): a bind address is not a destination, a bind marks nothing, an accept marks
 
 SPEC §2 ⟨0.40⟩, pinned by PART 96. Before this change the engine got bind and listen wrong in both

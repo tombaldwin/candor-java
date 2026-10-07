@@ -115,6 +115,19 @@ class BindListenSurfaceTest {
             "  static void isaDiscarded() throws Exception {", BENIGN, " new InetSocketAddress(\"evil.example\", 80); }",
             "  static boolean lookupNullCheck() throws Exception {", BENIGN,
             "    return InetAddress.getByName(\"evil.example\") != null; }",
+            // ── SOUNDNESS R949: a resolution's locator is the NAME. One literal → published; anything else
+            //    (two literals on a merge, a template, a concat, a dotless name, a field) keeps the mark.
+            "  static Object allByName() throws Exception {", BENIGN, " return InetAddress.getAllByName(\"evil.example\"); }",
+            "  static void localName() throws Exception {", BENIGN, " String n = \"evil.example\"; InetAddress.getByName(n); }",
+            "  static void mergedNames(boolean c) throws Exception {", BENIGN,
+            "    InetAddress.getByName(c ? \"a.example\" : \"b.example\"); }",
+            "  static void templateName(String h) throws Exception {", BENIGN,
+            "    InetAddress.getByName(String.format(\"%s.example\", h)); }",
+            "  static void concatName(String h) throws Exception {", BENIGN, " InetAddress.getByName(h + \".evil.example\"); }",
+            "  static void dotlessName() throws Exception {", BENIGN, " InetAddress.getByName(\"intranet\"); }",
+            "  static String NAME = \"evil.example\";",
+            "  static void fieldName() throws Exception {", BENIGN, " InetAddress.getByName(NAME); }",
+            "  static Object resolveRuntime(String h) throws Exception {", BENIGN, " return InetAddress.getByName(h); }",
             // PART 96's b_rtbind body: the resolution of `h`, not the bind, is what marks it.
             "  static Object runtimeNameBind(String h) throws Exception {", BENIGN,
             "    return new DatagramSocket(new InetSocketAddress(h, 0)); }",
@@ -161,6 +174,23 @@ class BindListenSurfaceTest {
         for (String fn : new String[] {"lookupDiscarded", "isaDiscarded", "lookupNullCheck"})
             assertTrue(names(hosts(fn), "evil.example") || netIncomplete(fn),
                     fn + ": evil.example is looked up — it must be on the surface or the surface incomplete");
+    }
+
+    /** SOUNDNESS R949 — a literal name resolved is a reach and enters {@code hosts}, even discarded; on
+     *  BASE it was marked {@code incomplete} WITHOUT its name. Every shape that is not one literal on every
+     *  path keeps the mark — a merge of two literals must not publish one arm and certify the other. */
+    @Test
+    void aLiteralNameResolvedIsPublishedAndNothingElseIs() throws Exception {
+        scan();
+        for (String fn : new String[] {"lookupDiscarded", "lookupNullCheck", "allByName", "localName"}) {
+            assertTrue(names(hosts(fn), "evil.example"), fn + ": the resolved name is the locator — hosts=" + hosts(fn));
+            assertFalse(netIncomplete(fn), fn + ": and with it named, the surface is complete");
+        }
+        for (String fn : new String[] {"mergedNames", "templateName", "concatName", "dotlessName", "fieldName",
+                "resolveRuntime", "runtimeNameBind"})
+            assertTrue(netIncomplete(fn), fn + ": no single visible name — the resolution must keep its mark");
+        assertFalse(names(hosts("mergedNames"), "a.example") || names(hosts("mergedNames"), "b.example"),
+                "a merge publishes neither arm");
     }
 
     @Test

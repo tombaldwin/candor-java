@@ -6236,6 +6236,26 @@ public class Candor {
         //      formerly a value-flow backlog). FAIL-CLOSED unless the host is cheaply attributable
         //      to the terminal's receiver — inline `new URL("lit").openStream()` or a const-URL
         //      local — so the common inline-literal-URL case still certifies (urlTerminalHost).
+        // SOUNDNESS R949 — A RESOLUTION'S LOCATOR IS THE NAME, so a LITERAL name resolved is captured, even
+        // when the result is discarded (SPEC §2 ⟨0.40⟩: "A LITERAL name resolved enters `hosts`"). The window
+        // capture above goes through `netHostLiteral`, which rejects a bare dotted name by design (no scheme,
+        // no port), so `InetAddress.getByName("evil.example")` was MARKED incomplete without its name — fail
+        // closed, but `hosts` never said what was reached, and an allowlist naming it could not certify it.
+        // The CALL SITE disambiguates here exactly as it does for `new Socket(String, int)` above: the only
+        // String a `getByName` takes is a host name. Gated on ONE literal on every path (every root an LDC,
+        // all equal — a `c ? "a.example" : "b.example"` merge publishes neither) and a hostname shape; anything else keeps the mark below. A computed name is untouched — it
+        // still marks, which is R949's other half. No Llm refinement: a DNS lookup of a model host is not a
+        // model call.
+        if (!bindOnlyAddr && !capturedHostHere && effect == Effect.NET && min.owner.equals("java/net/InetAddress")
+                && (min.name.equals("getByName") || min.name.equals("getAllByName"))
+                && min.desc.startsWith("(Ljava/lang/String;)")) {
+            String h = resolvedLiteralName(s, min);
+            if (h != null && h.indexOf('.') > 0 && RESOLVED_NAME.matcher(h).matches()) {
+                ctx.hostsDirect.computeIfAbsent(id, x -> new TreeSet<>()).add(h);
+                capturedHostHere = true;
+                if (MASK_DEBUG) System.err.println("R949CAPTURE\t" + id + "\t" + h);
+            }
+        }
         if (capturedHostHere) s.hostCapturedAt.add(min);   // R817 — read by datagramPacketDetermined
         if (effect == Effect.NET) {
             // SOUNDNESS R817 (SPEC §2 ⟨0.40⟩) — three calls that name no destination they reach, so the
@@ -10857,6 +10877,28 @@ public class Candor {
         for (String o : NET_ACCEPT_OWNERS) if (sup.contains(o)) return true;
         return false;
     }
+    /** SOUNDNESS R949 — the one literal a resolver's String operand is on EVERY path, or null: each root
+     *  (through locals and copies) an {@code LDC} String, and all of them the same string. Not the
+     *  per-call literal window, which would pick one arm of a merge and leave the other arm's name unseen. */
+    static String resolvedLiteralName(MethodScan s, MethodInsnNode m) {
+        Frame<SourceValue>[] fr = srcFrames(s);
+        InsnList insns = s.mn.instructions;
+        int i = insns.indexOf(m);
+        if (fr == null || i < 0 || fr[i] == null || fr[i].getStackSize() < 1) return null;
+        String v = null;
+        for (Object r : dbRoots(fr, insns, fr[i].getStack(fr[i].getStackSize() - 1))) {
+            if (!(r instanceof LdcInsnNode ldc && ldc.cst instanceof String lit)) return null;
+            if (v != null && !v.equals(lit)) return null;
+            v = lit;
+        }
+        return v;
+    }
+
+    /** SOUNDNESS R949 — the shape of a literal a resolver is handed that this engine will publish as a host:
+     *  DNS label characters and dots only, no leading/trailing dot. A template (`%s.example`), a URL or an
+     *  IPv6 literal does not match and keeps the resolver's `incomplete` mark. */
+    static final java.util.regex.Pattern RESOLVED_NAME =
+            java.util.regex.Pattern.compile("[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+");
     private static final Set<String> NET_ACCEPT_OWNERS = Set.of("java/net/ServerSocket",
             "java/nio/channels/ServerSocketChannel", "java/nio/channels/AsynchronousServerSocketChannel");
 

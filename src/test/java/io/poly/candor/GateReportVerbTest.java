@@ -327,6 +327,51 @@ class GateReportVerbTest {
 
     /** …and the equivalence is not vacuous: at least one of those policies actually FAILED and at least
      *  one PASSED. A suite where every row is green on both sides proves nothing about the gate. */
+    /** SOUNDNESS R682 — an interface union MERGED into a real bodiless entry is part of that entry on BOTH
+     *  routes. {@code A} declares a field of an effect-performing type, so its abstract {@code m} is kept as a
+     *  real entry and the writer merges {@code B.m}'s {@code Fs} into it. Before: {@code pure app.A} and
+     *  {@code deny Fs app.A.m} exited 0 on the scan and 1 on {@code gate --report} over the report the same
+     *  scan wrote. The MUTATION CONTROL gates the classifier's map alone (the pre-fix scan route) and must
+     *  DIFFER, so this comparison is shown able to find the disagreement it pins. */
+    @Test
+    void aUnionMergedIntoABodilessEntryIsJudgedAlikeByBothRoutes() throws Exception {
+        Path cls = compile(Map.of(
+                "app/Eff.java", "package app;\npublic class Eff { public void w() { try { new java.io.FileOutputStream(\"/tmp/r682\").close(); } catch (Exception x) {} } }\n",
+                "app/A.java", "package app;\npublic abstract class A { protected Eff e = new Eff(); public abstract void m(); }\n",
+                "app/B.java", "package app;\npublic class B extends A { public void m() { e.w(); } }\n"));
+        try {
+            for (String body : List.of("pure app.A\n", "deny Fs app.A.m\n")) {
+                String tag = "r682" + Math.abs(body.hashCode());
+                Path rep = tmp.resolve(tag + ".json"), pol = policy(body);
+                Path a = tmp.resolve(tag + ".scan.json"), b = tmp.resolve(tag + ".gate.json"),
+                        old = tmp.resolve(tag + ".old.json");
+                Candor.resetState();
+                Map<String, EffectSet> inferred = Candor.runScan(cls);
+                List<io.poly.candor.model.Effector> entries =
+                        ReportWriter.buildEntries(inferred, Candor.classConformance(inferred));
+                ReportWriter.writeReport(rep.toString(), entries);
+                Candor.gateCapture = true;
+                Candor.gateViolations.clear();
+                int scanV = Policy.checkPolicyOutcome(inferred, pol.toString(), entries).violations();
+                Candor.writeGateJson(a.toString(), scanV);
+                Candor.gateViolations.clear();
+                int oldV = Policy.checkPolicyOutcome(inferred, pol.toString(), null).violations();
+                Candor.writeGateJson(old.toString(), oldV);
+                Candor.resetState();
+                Candor.gateViolations.clear();
+                int gateExit = gate(rep, pol, "--gate-json", b.toString());
+                assertEquals(1, gateExit, "the report holds A.m [Fs]: the gate route fires for `" + body.trim() + "`");
+                assertTrue(scanV > 0, "R682: the scan route must fire too for `" + body.trim() + "`");
+                assertEquals(Files.readString(b), Files.readString(a), "§3.1 byte-equality for `" + body.trim() + "`");
+                assertEquals(0, oldV, "control: the classifier's map alone does NOT fire — the pre-fix route");
+                assertNotEquals(Files.readString(b), Files.readString(old), "control: the checker can see the difference");
+            }
+        } finally {
+            Candor.gateCapture = false;
+            TestCompiler.rm(cls.getParent());
+        }
+    }
+
     @Test
     void theEquivalenceCorpusContainsBothVerdicts() throws Exception {
         Path cls = compile(Map.of("app/Svc.java", String.join("\n",

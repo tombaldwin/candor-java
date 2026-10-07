@@ -2327,9 +2327,17 @@ public class Candor {
         // than recompute (the §5 two-pass walk) on a --json + CANDOR_STRICT run.
         ClassConformance ccFull = (jsonOut != null) ? classConformance(inferred) : null;
         phase("class-conformance");
+        // SOUNDNESS R682 — the report's ENTRIES are the policy subject on BOTH routes (SPEC §3.1: `gate --report
+        // <this report>` must be byte-equal to this scan's verdict). Built once, here, and handed to the
+        // writer and to the policy gate below, so the union a bodiless entry absorbs at write time is judged
+        // by `scan --policy` exactly as `gate --report` judges it. Without a policy and without --json nothing
+        // reads them, and nothing is built.
+        java.util.List<io.poly.candor.model.Effector> reportEntries =
+                (jsonOut != null || policyPath != null)
+                        ? buildEntries(inferred, ccFull != null ? ccFull : classConformance(inferred)) : null;
         if (jsonOut != null) {
             try {
-                writeReport(inferred, jsonOut, ccFull);
+                writeReport(jsonOut, reportEntries);
                 phase("report-write");
             } catch (IOException e) {
                 // Same one-line-diagnostic + exit 2 posture as an unreadable scan target above: an
@@ -2521,7 +2529,7 @@ public class Candor {
         java.util.List<String[]> unevaluated = new ArrayList<>();     // ⟨0.24⟩ {rule, why}, one row per rule
         if (policy != null) {
             phase("gate-pre");
-            Policy.PolicyOutcome po = Policy.checkPolicyOutcome(inferred, policy);
+            Policy.PolicyOutcome po = Policy.checkPolicyOutcome(inferred, policy, reportEntries);
             phase("gate-policy");
             violations += po.violations();
             if (po.refusal() != null) {

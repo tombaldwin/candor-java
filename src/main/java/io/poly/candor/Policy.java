@@ -309,6 +309,15 @@ final class Policy {
 
     /** See {@link PolicyOutcome}. Parses, and either gates or reports why it could not. */
     static PolicyOutcome checkPolicyOutcome(Map<String, EffectSet> inferred, String path) {
+        // The entries the scan's report would hold — built here when the caller has none, so this seam gates
+        // what Candor.main gates (SOUNDNESS R682). Main builds them once and passes them in.
+        return checkPolicyOutcome(inferred, path,
+                ReportWriter.buildEntries(inferred, Candor.classConformance(inferred)));
+    }
+
+    /** As above, gating the REPORT ENTRIES the scan built ({@code entries}; null = none were built) — see
+     *  {@link #withReportEntries}. SOUNDNESS R682. */
+    static PolicyOutcome checkPolicyOutcome(Map<String, EffectSet> inferred, String path, List<Effector> entries) {
         if (!parsePolicy(path)) {
             String why = policyFailure(path);
             return new PolicyOutcome(0, why, unhonouredRules(path));
@@ -322,7 +331,68 @@ final class Policy {
         if (policyYieldedNoRules()) {
             return new PolicyOutcome(0, zeroRulePolicyFailure(path), zeroRuleUnevaluated(path));
         }
-        return new PolicyOutcome(gate(gateInputFromScan(inferred)), null, List.of());
+        return new PolicyOutcome(gate(withReportEntries(gateInputFromScan(inferred), entries)), null, List.of());
+    }
+
+    /**
+     * SOUNDNESS R682 — THE POLICY SUBJECT IS THE REPORT ENTRY, ON BOTH ROUTES. {@code gate --report} gates the
+     * entries a report holds (SPEC §6: AS-EFF-006 is over the functions in the report), and §3.1 makes its
+     * verdict byte-equal to {@code scan --policy}'s. The two read different things wherever the writer WIDENS
+     * an entry: {@link ReportWriter#mergeUnionInto} merges an interface union into a REAL bodiless entry (an
+     * abstract member kept because its class declares a capability), and the scan route gated the
+     * classifier's map, where that member is empty. Measured: {@code abstract class A { Eff e; abstract void
+     * m(); }} with one effectful subclass — {@code pure p.A} and {@code deny Fs p.A.m} exited 0 on the scan and
+     * 1 on {@code gate --report} over the report THE SAME RUN WROTE; commons-compress, 857 vs 866.
+     *
+     * <p>So the scan route unions each real entry's own fields into its gate input — the SAME entry objects
+     * the report is serialised from ({@link ReportWriter#buildEntries}), never a recomputation of the merge.
+     * For an entry nothing widened this is a no-op by construction: its {@code inferred} and literal surfaces
+     * ARE the scan's accumulated values, and its {@code unknownWhy} is the scan's direct reasons, already in
+     * the transitive class set. Synthetic {@code interfaceUnion} entries are not units on either route and
+     * are skipped, as {@link #gateInputFromReport} skips them. Only ADDS: a union can widen, never narrow. */
+    static GateInput withReportEntries(GateInput gi, List<Effector> entries) {
+        if (entries == null || entries.isEmpty()) return gi;
+        Map<String, EffectSet> inferred = new HashMap<>(gi.inferred());
+        Map<String, TreeSet<String>> reasons = copyDeep(gi.reasonClasses());
+        Map<String, List<String>> netClasses = new HashMap<>();
+        gi.netClasses().forEach((k, v) -> netClasses.put(k, new ArrayList<>(v)));
+        Map<String, TreeSet<String>> hosts = copyDeep(gi.hosts()), cmds = copyDeep(gi.cmds()),
+                paths = copyDeep(gi.paths()), tables = copyDeep(gi.tables()),
+                incomplete = copyDeep(gi.surfaceIncomplete());
+        boolean moved = false;
+        for (Effector e : entries) {
+            if (e.interfaceUnion()) continue;
+            String fn = e.fn();
+            EffectSet was = inferred.getOrDefault(fn, EffectSet.empty());
+            EffectSet now = was.join(e.inferred());
+            if (!now.equals(was)) { inferred.put(fn, now); moved = true; }
+            for (UnknownReason ur : e.unknownWhy())
+                moved |= reasons.computeIfAbsent(fn, k -> new TreeSet<>())
+                        .add(ReasonClass.classify(ur.format()).token());
+            moved |= addAll(hosts, fn, e.hosts()) | addAll(cmds, fn, e.cmds()) | addAll(paths, fn, e.paths())
+                    | addAll(tables, fn, e.tables()) | addAll(incomplete, fn, e.incomplete());
+            if (!e.netClass().isEmpty()) {
+                List<String> nc = netClasses.computeIfAbsent(fn, k -> new ArrayList<>());
+                for (String c : e.netClass()) if (!nc.contains(c)) { nc.add(c); moved = true; }
+            }
+        }
+        if (!moved) return gi;
+        if (R682_DEBUG) System.err.println("CANDOR_R682_WIDENED");
+        return new GateInput(inferred, reasons, netClasses, hosts, cmds, paths, tables, incomplete,
+                gi.edges(), gi.synthetic(), gi.display(), gi.keyOf(), gi.hash());
+    }
+
+    static final boolean R682_DEBUG = System.getenv("CANDOR_R682_DEBUG") != null;
+
+    private static Map<String, TreeSet<String>> copyDeep(Map<String, TreeSet<String>> m) {
+        Map<String, TreeSet<String>> out = new HashMap<>();
+        m.forEach((k, v) -> out.put(k, new TreeSet<>(v)));
+        return out;
+    }
+
+    private static boolean addAll(Map<String, TreeSet<String>> m, String fn, List<String> vs) {
+        if (vs.isEmpty()) return false;
+        return m.computeIfAbsent(fn, k -> new TreeSet<>()).addAll(vs);
     }
 
     /**

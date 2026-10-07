@@ -24,7 +24,13 @@ final class ReportWriter {
      *  single shared sequence used by the normal scan, selftest-reentrant, and {@code --parallel}, so the
      *  three can't drift (the three were previously copy-pasted). */
     static void writeReport(Map<String, EffectSet> inferred, String out, ClassConformance cc) throws IOException {
-        if (cc != null) writeJson(inferred, out, cc); else writeJson(inferred, out);
+        writeReport(out, buildEntries(inferred, cc != null ? cc : classConformance(inferred)));
+    }
+
+    /** As above, over entries the caller already built — the scan route builds them once and gates them
+     *  too (SOUNDNESS R682), so the report and the verdict are read off the same list. */
+    static void writeReport(String out, List<Effector> entries) throws IOException {
+        writeEntries(out, entries);
         // The "-" sentinel is the --json-stdout pipe form: report ENVELOPE only, NO sidecars (matching
         // the Rust reference) — there's nowhere on stdout to put a second/third document, and a piped
         // `| jq .` wants exactly one. The callgraph/hierarchy are a file-mode affordance for queries.
@@ -53,6 +59,16 @@ final class ReportWriter {
     }
 
     static void writeJson(Map<String, EffectSet> inferred, String out, ClassConformance cc) throws IOException {
+        writeEntries(out, buildEntries(inferred, cc));
+    }
+
+    /** SOUNDNESS R682 — THE REPORT'S ENTRIES, built ONCE and read by BOTH the report and the scan route's
+     *  policy gate. A union merged into a real entry ({@link #appendInterfaceUnions} -> {@link #mergeUnionInto})
+     *  is part of that entry, so it is part of the policy subject on both routes (SPEC §3.1 byte-equality);
+     *  the scan route used to gate the classifier's map while {@code gate --report} gated these entries, and
+     *  the two disagreed exactly on the merged ones. One builder, two readers — never a second copy of the
+     *  merge. */
+    static List<Effector> buildEntries(Map<String, EffectSet> inferred, ClassConformance cc) {
         // Per-class conformance (candor-spec §5), computed the ONE shared way (see classConformance):
         // declared = effects the class's injected dependency types can supply; performed = union over
         // its methods. We attach declared/undeclared/overdeclared to each method entry so an agent can
@@ -260,6 +276,12 @@ final class ReportWriter {
         // SOUNDNESS R869 — the bridge descriptors the method index collapses away, published under their own
         // hash. Appended after everything else so no existing entry moves; see appendBridgeRows.
         appendBridgeRows(effectors);
+        return effectors;
+    }
+
+    /** Serialise prebuilt {@link #buildEntries} to {@code out} ("-" = stdout). */
+    static void writeEntries(String out, List<Effector> effectors) throws IOException {
+        List<Map.Entry<String, Integer>> uncovered = Candor.kappaUncovered();
         // v0.2 self-describing envelope (candor-spec §2): a provenance header + the entries. Readers
         // still accept the legacy v0.1 bare array (see loadBaseline) during migration.
         String[] prov = provenance();

@@ -9,6 +9,47 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R817 (java half): a bind address is not a destination, a bind marks nothing, an accept marks
+
+SPEC §2 ⟨0.40⟩, pinned by PART 96. Before this change the engine got bind and listen wrong in both
+directions:
+- `new DatagramSocket(new InetSocketAddress("10.0.0.5", 9))` published `hosts: ['10.0.0.5','10.0.0.5:9']`.
+  That is the process's own address, reported as a destination it never reaches.
+- Every JDK bind (`new DatagramSocket(0)`, `new ServerSocket(8080)`, `ds.bind(a)`, `ch.bind(a)`) marked
+  `Net` incomplete. So a UDP client sending to one literal could never be certified.
+- `s.send(new DatagramPacket(b, 1, InetAddress.getByName("10.9.9.9"), 53))` marked incomplete even though
+  `10.9.9.9` was captured, at the `getByName` call.
+
+**The fix.**
+- A JDK bind no longer marks.
+- A literal address that reaches only a bind is neither captured nor marked.
+- A datagram send marks nothing when its packet is provably built here from a captured address and
+  nothing can re-aim it (no `receive`, `setAddress`, helper call, field, return or merge).
+- An ACCEPT on `ServerSocket`, `ServerSocketChannel` or `AsynchronousServerSocketChannel` (or a subtype)
+  now marks `Net` explicitly. Before, an accept marked only when the server socket was not allocated in
+  the same method; `new ServerSocket(8080).accept()` was covered by the bind hedge this change removes.
+
+**Not changed: a runtime host NAME that is resolved still marks.** `new InetSocketAddress(h, 0)` and
+`getByName(h)` send `h` to the resolver, whatever the address is used for. So PART 96's `b_rtbind` body
+still exits 1 on this engine, through the resolution and not the bind. The same bind over a
+`SocketAddress` parameter now certifies.
+
+**Measured.**
+- PART 96's java arms: `a_litbind` publishes no host and fails closed on the empty surface;
+  `d_ephemeral` 1 → 0; `c_accept` stays 1.
+- Executed: a peer the source never names received the accepted socket's byte, and `allow Net
+  127.0.0.1` exits 1. The UDP client's datagram reached `127.0.0.1:18082`, and `allow Net 127.0.0.1`
+  went 1 → 0.
+- `bin/corpus-ab.py` over 372 jars (1,671,831 rows): ADDED 0, REMOVED 0, CHANGED 123, `inferred` changed
+  on 0 rows, no `hosts` value removed.
+- All 123 changes are a lost `Net` `incomplete`, each traced to a bind exemption: 85 in the unit itself,
+  18 through a callee, 20 through an interface union. A seeded C3 is found by the same partition. Every
+  one of the 123 has empty `hosts`, so `allow Net <host>` still fails closed on it: 0 gate flips.
+- The first cut of this change was a cardinal sin. It treated a value with NO uses as "used only by
+  binds", so a discarded `getByName("evil.example")` beside a benign literal certified (1 → 0).
+  Reading the A/B's `bind-address` firings found it (hazelcast's `defaultKubernetesMasterReachable`).
+  It is fixed, and pinned in `BindListenSurfaceTest`.
+
 ### ⚠ SOUNDNESS R682 FIXED: `scan --policy` gates the report entries `gate --report` gates
 
 **What went wrong.** When the writer merged an interface union into a real bodiless entry, the two

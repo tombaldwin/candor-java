@@ -1,5 +1,8 @@
 package io.poly.candor;
 
+import io.poly.candor.model.Effect;
+import io.poly.candor.model.EffectSet;
+
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static io.poly.candor.TestCompiler.compileApp;
@@ -24,6 +27,10 @@ class KappaSecondSpellingTest {
 
     private static Set<String> blind(String fn) {
         return AnalysisState.ctx().blindDirect.getOrDefault(fn, new TreeSet<>());
+    }
+
+    private static EffectSet eff(Map<String, EffectSet> r, String fn) {
+        return r.getOrDefault(fn, EffectSet.empty());
     }
 
     /** An inherited external member reached through a project subclass compiles with the PROJECT owner, so the
@@ -75,6 +82,77 @@ class KappaSecondSpellingTest {
             assertTrue(blind("app.Q.call").contains("com.mongodb.client"), "control: the call spelling is ledgered");
             assertTrue(blind("app.Q.ref").contains("com.mongodb.client"), "the reference spelling must be ledgered too");
             assertTrue(blind("app.Q.pureRef").isEmpty(), "a covered JDK reference ledgers nothing");
+        } finally { rm(app.getParent()); }
+    }
+
+    /** Kotlin facades: kotlinc emits `ReactiveValueOperationsExtensionsKt.setAndAwait(ops, …)` and
+     *  `CrudRepositoryExtensionsKt.findByIdOrNull(repo, id)` — non-inline extensions over a receiver the
+     *  classifier already charges. The pure builder facade beside them stays pure. */
+    @Test
+    void kotlinExtensionFacadesCarryTheirReceiversCharge() throws Exception {
+        Path app = compileApp(Map.of(
+                "org/springframework/data/redis/core/ReactiveValueOperations.java",
+                "package org.springframework.data.redis.core; public interface ReactiveValueOperations<K, V> { Object set(K k, V v); }",
+                "org/springframework/data/redis/core/ReactiveValueOperationsExtensionsKt.java",
+                "package org.springframework.data.redis.core; public final class ReactiveValueOperationsExtensionsKt {"
+                    + " public static Object setAndAwait(ReactiveValueOperations o, Object k, Object v, Object cont) { return null; } }",
+                "org/springframework/data/redis/core/RedisScriptExtensionsKt.java",
+                "package org.springframework.data.redis.core; public final class RedisScriptExtensionsKt {"
+                    + " public static Object RedisScript(String s) { return null; } }",
+                "org/springframework/data/repository/CrudRepository.java",
+                "package org.springframework.data.repository; public interface CrudRepository<T, ID> { java.util.Optional<T> findById(ID id); }",
+                "org/springframework/data/repository/CrudRepositoryExtensionsKt.java",
+                "package org.springframework.data.repository; public final class CrudRepositoryExtensionsKt {"
+                    + " public static Object findByIdOrNull(CrudRepository r, Object id) { return null; } }"),
+            Map.of("app/K.java", String.join("\n",
+                "package app;",
+                "import org.springframework.data.redis.core.*; import org.springframework.data.repository.*;",
+                "public class K {",
+                "  Object facade(ReactiveValueOperations<String, String> o) { return ReactiveValueOperationsExtensionsKt.setAndAwait(o, \"k\", \"v\", null); }",
+                "  Object direct(ReactiveValueOperations<String, String> o) { return o.set(\"k\", \"v\"); }",
+                "  Object script() { return RedisScriptExtensionsKt.RedisScript(\"return 1\"); }",
+                "  Object repoFacade(CrudRepository<Object, Long> r) { return CrudRepositoryExtensionsKt.findByIdOrNull(r, 1L); }",
+                "}")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(app);
+            assertTrue(eff(r, "app.K.direct").contains(Effect.DB), "control: the receiver spelling is Db");
+            assertTrue(eff(r, "app.K.facade").contains(Effect.DB), "the Kotlin facade is the same Redis call");
+            assertTrue(eff(r, "app.K.repoFacade").contains(Effect.DB), "findByIdOrNull is findById");
+            assertTrue(eff(r, "app.K.script").isEmpty(), "a pure builder facade over no receiver stays pure");
+        } finally { rm(app.getParent()); }
+    }
+
+    /** SOUNDNESS R727: struts' request pipeline, reached as the protected hooks a project subclass calls, and
+     *  displaytag's bundle lookup. The member the pipeline does NOT charge stays pure. */
+    @Test
+    void strutsPipelineAndDisplaytagLookupAreCharged() throws Exception {
+        String rp = "package org.apache.struts.action; public class RequestProcessor {"
+                + " protected void doForward(String u, Object rq, Object rs) {} protected void doInclude(String u, Object rq, Object rs) {}"
+                + " public void process(Object rq, Object rs) {} protected void log(String m) {} }";
+        Path app = compileApp(Map.of(
+                "org/apache/struts/action/RequestProcessor.java", rp,
+                "org/apache/struts/tiles/TilesRequestProcessor.java",
+                "package org.apache.struts.tiles; public class TilesRequestProcessor extends org.apache.struts.action.RequestProcessor {}",
+                "org/displaytag/Messages.java",
+                "package org.displaytag; public final class Messages { public static String getString(String k) { return k; } }"),
+            Map.of("app/Fwd.java", String.join("\n",
+                "package app;",
+                "public class Fwd extends org.apache.struts.action.RequestProcessor {",
+                "  void fwd() { doForward(\"/x\", null, null); }",
+                "  void inc() { doInclude(\"/x\", null, null); }",
+                "  void quiet() { log(\"x\"); }",
+                "}"),
+                "app/Tiles.java", "package app; public class Tiles extends org.apache.struts.tiles.TilesRequestProcessor {"
+                    + " void fwd() { doForward(\"/x\", null, null); } }",
+                "app/D.java", "package app; public class D {"
+                    + " void run(org.apache.struts.action.RequestProcessor p) { p.process(null, null); }"
+                    + " String msg() { return org.displaytag.Messages.getString(\"k\"); } }"));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(app);
+            for (String fn : new String[] {"app.Fwd.fwd", "app.Fwd.inc", "app.Tiles.fwd", "app.D.run"})
+                assertTrue(eff(r, fn).contains(Effect.NET), fn + " forwards/includes/sends — must read Net, got " + eff(r, fn));
+            assertTrue(eff(r, "app.D.msg").contains(Effect.FS), "Messages.getString loads its bundle — Fs");
+            assertTrue(eff(r, "app.Fwd.quiet").isEmpty(), "log() is not on the pipeline list — stays pure");
         } finally { rm(app.getParent()); }
     }
 }

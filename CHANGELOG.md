@@ -9,6 +9,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+## [0.40.0] — 2026-10-07
+
 - ⚠ **Declares spec 0.40** (was 0.39) — the family floor bump. This engine implements both ⟨0.40⟩
   halves that bind it: the AS-EFF-005 baseline guard no longer exempts a function absent from the
   baseline (SOUNDNESS R932; a new function performing a real effect now fails the gate, exit 1, with

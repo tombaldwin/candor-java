@@ -697,6 +697,99 @@ class ChainedDispatchUnionTest {
      *  PART 92 renders for this engine, and the only way to express a THREE-package chain: everything is
      *  compiled together so the fixture is guaranteed to build, then the class files are dealt out so each
      *  scan sees exactly one package. */
+    /**
+     * SOUNDNESS R939 — THE METHOD-REFERENCE SPELLING OF OBLIGATION 1. {@code ns.forEach(b::size)} and
+     * {@code List.of(b).forEach(Backend::size)} dispatch on {@code Backend.size} exactly as {@code b.size()}
+     * does, and named nothing: the middle row was ABSENT and the app's caller read pure over a real effect
+     * (executed in the lane fixture, {@code deny Fs app.Main.go} exit 0 over a written file). Three arms per
+     * abstraction owner — FOREIGN (the middle package dispatches over its dependency's interface) and PROJECT
+     * (over its own) — and in each the dependency holds ONE PURE implementer, the toggle's silent side.
+     *
+     * <p>Controls: a STATIC method reference on the same public interface and a reference to a CONCRETE
+     * class's method dispatch on nothing and must name nothing.
+     */
+    @Test
+    void aMethodReferenceNamesTheMemberItDispatchesOn() throws Exception {
+        String midSrc = "package middle;\nimport iface.backend.Backend;\n"
+                + "public class Mid {\n"
+                + "  public static void boundRef(Backend b) { java.util.function.IntSupplier s = b::size; s.getAsInt(); }\n"
+                + "  public static void unboundRef(Backend b) { java.util.List.of(b).forEach(Backend::size); }\n"
+                + "  public static void own(Doer d) { java.util.List.of(d).forEach(Doer::go); }\n"
+                + "  public static void staticRef() { Runnable r = Doer::util; r.run(); }\n"
+                + "  public static void concreteRef(Plain p) { Runnable r = p::run; r.run(); }\n}\n";
+        Tree t = Tree.of(
+                Map.of("iface/backend/Backend.java", BACKEND, "iface/TestBackend.java", TEST_BACKEND),
+                Map.of("middle/Mid.java", midSrc,
+                        "middle/Doer.java", "package middle;\npublic interface Doer { void go(); static void util() { } }\n",
+                        "middle/Quiet.java", "package middle;\npublic class Quiet implements Doer { public void go() { } }\n",
+                        "middle/Plain.java", "package middle;\npublic class Plain { public void run() { } }\n"),
+                Map.of("effimpl/Crossterm.java", CROSSTERM),
+                Map.of("app/App.java", "package app;\nimport iface.backend.Backend;\n"
+                        + "public class App {\n"
+                        + "  public static void viaBoundRef() { middle.Mid.boundRef(new effimpl.Crossterm()); }\n"
+                        + "  public static void viaUnboundRef() { middle.Mid.unboundRef(new effimpl.Crossterm()); }\n"
+                        + "  public static void viaOwn() { middle.Mid.own(new App.NetDoer()); }\n"
+                        + "  static class NetDoer implements middle.Doer { public void go() { " + NET_SINK + " } }\n}\n"));
+        try {
+            String iface = t.scan("iface");
+            String middle = t.scanChained("middle", iface);
+            Map<String, Map<String, Object>> mid = byFn(middle);
+            assertEquals(List.of("iface/backend/Backend.size()I"),
+                    mid.getOrDefault("middle.Mid.boundRef", Map.of()).get("dispatchesOn"),
+                    "a BOUND reference to a dependency's abstraction names it, as the call spelling does. Got " + mid.keySet());
+            assertEquals(List.of("iface/backend/Backend.size()I"),
+                    mid.getOrDefault("middle.Mid.unboundRef", Map.of()).get("dispatchesOn"), "…and an UNBOUND one");
+            assertEquals(List.of("middle/Doer.go()V"),
+                    mid.getOrDefault("middle.Mid.own", Map.of()).get("dispatchesOn"), "…and over its OWN public abstraction");
+            assertNull(mid.getOrDefault("middle.Mid.staticRef", Map.of()).get("dispatchesOn"),
+                    "a STATIC interface method reference dispatches on nothing");
+            assertNull(mid.getOrDefault("middle.Mid.concreteRef", Map.of()).get("dispatchesOn"),
+                    "a reference to a CONCRETE class's method dispatches on nothing");
+
+            String eff = t.scanChained("effimpl", iface);
+            Map<String, Map<String, Object>> app = byFn(t.scanChained("app", iface, middle, eff));
+            for (String fn : List.of("app.App.viaBoundRef", "app.App.viaUnboundRef", "app.App.viaOwn")) {
+                Map<String, Object> r = app.get(fn);
+                assertNotNull(r, fn + " ABSENT — the purity claim R939 is about. Got " + app.keySet());
+                assertTrue(((List<?>) r.get("inferred")).contains("Net"), fn + " got " + r);
+            }
+        } finally {
+            t.close();
+        }
+    }
+
+    /**
+     * SOUNDNESS R939 — the DEFAULT-METHOD shape the corpus A/B found (langchain4j
+     * {@code DocumentTransformer.transformAll}, telegrambots {@code LongPollingBot.onUpdatesReceived}): an
+     * interface's default method maps {@code this::transform} over its argument. The dependency published only a
+     * pure-only {@code interfaceUnion} entry for {@code transformAll} and no {@code dispatchesOn}, so a consumer
+     * supplying an effectful {@code transform} read its caller ABSENT (executed: {@code deny Fs} exit 0 over a
+     * written file). Now the default body is a real row naming {@code transform}, and the caller carries it.
+     */
+    @Test
+    void aDefaultMethodMappingThisMethodReferenceNamesTheMember() throws Exception {
+        Tree t = Tree.of(
+                Map.of("dt/T.java", "package dt;\nimport java.util.*; import java.util.stream.*;\n"
+                                + "public interface T { String transform(String s);\n"
+                                + "  default List<String> transformAll(List<String> xs) {"
+                                + " return xs.stream().map(this::transform).collect(Collectors.toList()); } }\n",
+                        "dt/Up.java", "package dt;\npublic class Up implements T { public String transform(String s) { return s; } }\n"),
+                Map.of("app/App.java", "package app;\n"
+                        + "public class App {\n"
+                        + "  public static void direct(java.util.List<String> xs) { new NetT().transformAll(xs); }\n"
+                        + "  static class NetT implements dt.T { public String transform(String s) { " + NET_SINK + " return s; } }\n}\n"));
+        try {
+            String dt = t.scan("dt");
+            assertEquals(List.of("dt/T.transform(Ljava/lang/String;)Ljava/lang/String;"),
+                    byFn(dt).getOrDefault("dt.T.transformAll", Map.of()).get("dispatchesOn"), "got " + byFn(dt).keySet());
+            Map<String, Object> r = byFn(t.scanChained("app", dt)).get("app.App.direct");
+            assertNotNull(r, "ABSENT — the purity claim R939 is about");
+            assertTrue(((List<?>) r.get("inferred")).contains("Net"), "got " + r);
+        } finally {
+            t.close();
+        }
+    }
+
     private static final class Tree implements AutoCloseable {
         final Path base;
         private final Config saved = Candor.config;

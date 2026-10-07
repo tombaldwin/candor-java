@@ -633,17 +633,19 @@ final class ReportWriter {
             // no new path; `Candor#crossDepJoin` drops it again where the consumer's OWN subclasses answer
             // the dispatch, exactly as conjunct 4 does for an interface.
             // Scope: a PUBLIC class's public/protected abstract member (a foreign package can subclass it),
-            // not a sealed one, and only where no real entry claims the hash — merging an `Unknown` into a
-            // claimed bodiless entry would put it on the report route alone (SOUNDNESS R682's mechanism), so
-            // that residual is counted (`CANDOR_R917_CLAIMED`) rather than widened.
+            // not a sealed one.
             boolean r917 = impls.isEmpty() && k.length > 3 && "absclass".equals(k[3])
                     && !isClosedHierarchy(owner);
-            if (r917 && real != null) {
-                if (System.getenv("CANDOR_R533_DEBUG") != null) System.err.println("CANDOR_R917_CLAIMED " + hash);
-            } else if (r917) {
+            // …AND A CLAIMED HASH IS NO EXCEPTION ANY MORE (the R917 residual). A zero-implementer member whose
+            // class declares a capability is kept as a REAL bodiless entry with `inferred: []`, and a consumer's
+            // join HIT that `[]` — a purity claim on a key nothing can answer. The `Unknown` is MERGED into that
+            // entry like any other union (below), which used to put it on the report route alone; since R682
+            // the scan route gates the same entries (Policy#withReportEntries), so both routes now see it.
+            if (r917) {
                 inf.add(Effect.UNKNOWN);
                 why = List.of(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner.replace('/', '.') + "." + name));
-                if (System.getenv("CANDOR_R533_DEBUG") != null) System.err.println("CANDOR_R917_ZEROUNION " + hash);
+                if (System.getenv("CANDOR_R533_DEBUG") != null)
+                    System.err.println((real != null ? "CANDOR_R917_CLAIMED " : "CANDOR_R917_ZEROUNION ") + hash);
             }
             if (inf.isEmpty() && inv.isEmpty()
                     && (real != null || impls.isEmpty() || !incUnion.isEmpty())) continue;

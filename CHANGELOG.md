@@ -9,6 +9,49 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+### ⚠ SOUNDNESS R682 FIXED: `scan --policy` gates the report entries `gate --report` gates
+
+**What went wrong.** When the writer merged an interface union into a real bodiless entry, the two
+routes stopped agreeing. Such an entry is an abstract member kept because its class declares a capability.
+The written report then carried the union's effects, while `scan --policy` gated the classifier's map,
+where that member is empty.
+
+On `abstract class A { protected Eff e; abstract void m(); }` with one effectful subclass:
+- `pure p.A` and `deny Fs p.A.m` exited 0 on the scan route.
+- The same policies exited 1 on `gate --report`, over the report the same scan wrote.
+
+The verdict documents differed on 190 of 372 jars and 152 of 452. That is 3,460 and 2,985 functions
+judged by the gate route only, and never one judged by the scan route only.
+
+**The fix.** `ReportWriter.buildEntries` builds the report's entries once. The scan route serialises
+them and gates them. `Policy.withReportEntries` adds each real entry's own fields to the scan route's gate
+input. That is a no-op for an entry nothing widened, and it never recomputes the merge.
+
+**Measured.**
+- Reports: byte-identical, with ADDED/REMOVED/CHANGED 0/0/0 on both 372 and 452.
+- Route equality, the `--gate-json` documents from both routes compared byte for byte:
+  - 372 jars: 190 differing → 1. The 1 is a target with no class files, which the scan refuses.
+  - 452 jars: 152 differing → 0.
+- Every newly judged function in a sampled 110 of 110 is a bodiless abstract entry.
+
+### ⚠ SOUNDNESS R917 residual FIXED: a zero-implementer member with a real bodiless entry discloses
+
+**What went wrong.** R917's `Unknown` was not merged into a hash claimed by a real bodiless entry, because
+that merge used to reach only the report route. Those entries published `inferred: []`. A chained
+consumer's join hit that empty set, so `goClaimed(AbsC h){ h.handle(); }` read ABSENT. `deny Unknown`
+exited 0 over a plugin subclass that wrote a file (executed).
+
+**The fix and its effect.** Since the R682 fix, the merge is seen by both routes, so the `Unknown` is now
+merged. The executed fixture goes from 0 to 1 on `deny Unknown` and `deny Fs Unknown`. The producer's own
+routes stay byte-equal.
+
+**Cost.** Changed rows (372 / 452): 241 / 79 rows change, every one the abstract entry itself gaining its
+own `dispatch:`.
+- REMOVED 0, and 0 values lost.
+- Flips across 76 jars and 1,144,801 analysed units: 296 at function scope (0.026%), 5 at class scope,
+  0 at package scope, 0 at jar scope.
+- Chained pairs: 4 rows change, all the consumer jars' own abstract entries.
+
 ### ⚠ SOUNDNESS R917 FIXED: a dispatch on a chained abstract class that nothing implements discloses `Unknown`
 
 **What went wrong.** `goAbs(AbsH h){ return h.handle(); }`, where `AbsH` is a chained dependency's public

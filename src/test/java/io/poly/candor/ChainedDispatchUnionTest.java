@@ -534,6 +534,31 @@ class ChainedDispatchUnionTest {
         }
     }
 
+    /** The R917 RESIDUAL, closed once R682 made both routes gate the same entries. {@code AbsC} declares a field of
+     *  an effect-performing type, so its abstract {@code handle} is kept as a REAL bodiless entry, and that entry
+     *  used to publish {@code inferred: []} — a consumer join HIT reading purity on a key nothing can answer
+     *  (executed: a plugin subclass writes a file, `deny Unknown` 0). The zero-implementer {@code Unknown} is now
+     *  merged into it, on the producer's report AND its scan verdict. */
+    @Test
+    void r917AZeroImplementorMemberWithARealBodilessEntryDisclosesToo() throws Exception {
+        Tree t = Tree.of(
+                Map.of("lib/Eff.java", "package lib;\npublic class Eff { public void w() { " + FS_SINK + " } }\n",
+                        "lib/AbsC.java", "package lib;\npublic abstract class AbsC { protected Eff e = new Eff(); public abstract int handle(); }\n"),
+                Map.of("app/A.java", "package app;\npublic class A { public static int goClaimed(lib.AbsC h) { return h.handle(); } }\n"));
+        try {
+            String lib = t.scan("lib");
+            Map<String, Object> real = byHash(lib).get("lib/AbsC.handle()I");
+            assertNotNull(real, "the bodiless entry is kept (its class declares a capability)");
+            assertNull(real.get("interfaceUnion"), "…as a REAL entry, which is what made this the residual");
+            assertEquals(List.of("Unknown"), real.get("inferred"), "got " + real);
+            Map<String, Object> app = byFn(t.scanChained("app", lib)).get("app.A.goClaimed");
+            assertNotNull(app, "the consumer's caller must not be ABSENT");
+            assertTrue(((List<?>) app.get("inferred")).contains("Unknown"), "got " + app);
+        } finally {
+            t.close();
+        }
+    }
+
     /** The consumer half, with its three controls. {@code goAbs} is the defect: zero implementors, ABSENT before.
      *  {@code goLocal}: the consumer's OWN pure subclass answers the dispatch, so — as in the one-tree scan, and
      *  as conjunct 4 does for an interface — no hedge. {@code goLocalFs}: an effectful own subclass carries its

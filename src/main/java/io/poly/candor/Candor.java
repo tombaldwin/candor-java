@@ -5576,7 +5576,60 @@ public class Candor {
                 ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                         .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, owner + "." + min.name));
             }
+        } else if (effect == null && ctx.byName.containsKey(min.owner)
+                && !declaresConcrete(ctx.byName.get(min.owner), min.name, min.desc)
+                && nearestConcreteSuper(min.owner, min.name, min.desc) == null
+                && !projectDeclaresMethod(min.owner, min.name, min.desc)) {
+            // AN INHERITED EXTERNAL MEMBER CALLED THROUGH A PROJECT TYPE. `class Sub extends com.acme.Base`
+            // calling the inherited `save(p)` compiles with owner `app/Sub`, so the branch above skipped it as
+            // a project call; no project type declares the member, so the JVM runs an EXTERNAL body. The unit
+            // read ABSENT — no effect, no `invisible` — while `new Base().save(p)`, the same body, named
+            // `com.acme`. SPEC §2 `invisible`: "an engine MUST do at least one, never silently pure". EXECUTED
+            // on a fixture: the inherited spelling really writes the file. `effect == null` here means the
+            // project-owner supertype walk in handleMethodInsn classified nothing either. Ledgered under the
+            // external type(s) whose body the call can land in — {@link #inheritedExternalDeclarers}.
+            for (String t : inheritedExternalDeclarers(ctx, min.owner, min.name, min.desc)) {
+                int sl = t.lastIndexOf('/');
+                String pkg = sl > 0 ? t.substring(0, sl).replace('/', '.') : "(default package)";
+                if (kappaCovers(pkg)) continue;
+                ctx.kappaSeen.merge(pkg, 1, Integer::sum);
+                ctx.blindDirect.computeIfAbsent(id, k -> new TreeSet<>()).add(pkg);
+                if (R814_DEBUG) System.err.println("KCINHERIT\t" + id + "\t" + min.owner + "." + min.name + "\t" + pkg);
+            }
         }
+    }
+
+    /** The external types whose body an inherited call on the project type {@code owner} can run, in JVM
+     *  resolution order (JLS 15.12.4.4: the superclass chain first, then superinterface defaults).
+     *
+     *  <p>Walks the SUPERCLASS chain: a loadable external class that declares the member is the answer and
+     *  ends the walk; one candor cannot load (a third-party library — the common case) may declare it and
+     *  hides its own supertypes, so it is a candidate and the chain is unknown past it. A chain that reaches
+     *  {@code java/lang/Object} with no declarer, Object itself declaring the member ({@code hashCode},
+     *  {@code toString}), has its answer in the JDK. Otherwise every external INTERFACE in resolution order
+     *  that declares the member or cannot be loaded is a candidate too — an OVER-approximation where the
+     *  chain is unknown, which costs at most an extra `invisible` name and never a lost one. A loadable
+     *  external type that provably does NOT declare the member is never named, so a marker interface on a
+     *  JDK-backed project class contributes nothing. */
+    static List<String> inheritedExternalDeclarers(AnalysisContext ctx, String owner, String name, String desc) {
+        List<String> out = new ArrayList<>();
+        Set<String> chain = new HashSet<>();
+        boolean chainUnknown = false;
+        String t = owner;
+        while (t != null && !t.equals("java/lang/Object") && chain.add(t)) {
+            ClassNode cn = ctx.byName.get(t);
+            if (cn != null) { t = cn.superName; continue; }
+            if (externalDeclares(t, name, desc)) { out.add(t); return out; }
+            Cha.ExtSupers es = externalSupersSplit(t);
+            if (es == Cha.ExtSupers.NONE) { out.add(t); chainUnknown = true; break; }
+            t = es.superClass();
+        }
+        if (!chainUnknown && externalDeclares("java/lang/Object", name, desc)) return out;
+        for (String i : resolutionOrder(owner, false)) {
+            if (chain.contains(i) || ctx.byName.containsKey(i)) continue;
+            if (externalDeclares(i, name, desc) || externalSupersSplit(i) == Cha.ExtSupers.NONE) out.add(i);
+        }
+        return out;
     }
 
     /** Per-effect metadata for a classified call: the AS-EFF-007 taint surface, the classifier-derived
@@ -7312,6 +7365,22 @@ public class Candor {
                     Effect eff = Classifier.classify(refOwner, h.getName(), h.getDesc());
                     if (eff != null) dir.add(eff);
                     if (eff != null) markMethodRefLocator(ctx, s, h, eff);
+                    // SOUNDNESS R929 — …AND THE κ LEDGER, WHICH THE CALL PATH CONSULTS AND THIS ONE NEVER DID.
+                    // `ns.forEach(mc::getDatabase)` read ABSENT where `mc.getDatabase(n)` names
+                    // `invisible: [com.mongodb.client]`: a reference to an unclassified member of an uncovered
+                    // package was neither charged nor ledgered. The SAME ledger function the call path runs,
+                    // asked about the handle's exact owner/name/descriptor (§G — so the R920 derived-surface
+                    // exception and the Spring I/O-convention floor apply here too, rather than a second copy of
+                    // either). Not gated on `deferred`, exactly as `dir.add(eff)` above is not: a classified
+                    // reference is charged at its creation site whether or not it runs here, and the ledger is the
+                    // unclassified half of that same answer.
+                    int kcBefore = R814_DEBUG ? ctx.blindDirect.getOrDefault(id, new TreeSet<>()).size() : 0;
+                    kappaLedger(ctx, s, new MethodInsnNode(h.getTag() == Opcodes.H_INVOKEINTERFACE
+                            ? Opcodes.INVOKEINTERFACE : h.getTag() == Opcodes.H_INVOKESTATIC ? Opcodes.INVOKESTATIC
+                            : Opcodes.INVOKEVIRTUAL, h.getOwner(), h.getName(), h.getDesc(), h.isInterface()),
+                            refOwner, eff);
+                    if (R814_DEBUG && ctx.blindDirect.getOrDefault(id, new TreeSet<>()).size() > kcBefore)
+                        System.err.println("KCREF\t" + id + "\t" + h.getOwner() + "." + h.getName());
                     // SOUNDNESS R716 — …AND WHEN THAT ANSWER IS `Unknown` IT ARRIVED WITH NO REASON AT ALL.
                     // `LongUnaryOperator op = u::getLong` charged `Unknown` here with `unknownWhy` ABSENT and
                     // no `calls` entry to inherit one from, while the DIRECT call `u.getLong(addr)` — same

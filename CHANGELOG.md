@@ -9,6 +9,23 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **A GENERATED framework member -> effect table now charges what κ-covered framework members really do
+  (SOUNDNESS R492/R727).** The covered-prefix grant certified every unmodelled member of ~51 namespaces pure, so
+  e.g. groovy `ResourceGroovyMethods.deleteDir`, commons-csv `CSVParser.parse(File,…)`, Spring
+  `FileSystemResource.contentLength`, JNA `Native.loadLibrary` and struts `DownloadAction.FileStreamInfo
+  .getInputStream` left their callers absent and `deny Fs`/`deny Exec` exiting 0. `src/main/resources/candor/
+  framework-reach.tsv` (51,766 members) is derived by `soundness/kappa_table/derive.sh` from this engine's own
+  scan of 117 pinned framework jars (Maven Central coordinates + SHA-256 in `sources.tsv`): each consumer-callable
+  member is closed over statically-resolved edges to the bodies whose `direct` effects the scan reported. It only
+  ADDS side charges (an unnamed locator marks the surface incomplete); a member without a row is treated exactly as
+  before. Charges present in only one surveyed version are not made; the logging frameworks and `<clinit>`s a
+  library touches internally are not followed (see the generator). Every push checks the table's content and
+  generator checksums (`KappaFrameworkReachTest`); the weekly workflow regenerates it byte-for-byte
+  (`derive.sh --check`). Corpus (823 jars vs v0.40.1): ADDED 24,472 rows, CHANGED 90,522, REMOVED 0, no effect lost.
+- **Exposed `SchemaUtils.createStatements` reads `Db` (SOUNDNESS R1050).** It was on the hand-written pure
+  denylist, but calls `QueriesKt.exists` -> `DatabaseDialect.tableExists`, a metadata round trip — executed against
+  H2 (`getMetaData`/`getTables`/`executeQuery` inside the call). Charged by the generated table.
+
 ## [0.40.1] — 2026-10-08
 
 - **`jbang-catalog.json` points at the v0.40.1 jar.**

@@ -4626,6 +4626,11 @@ public class Candor {
         // literal write, and `allow Fs … <benign>` exited 0; the credential chain read a credentials file
         // named only by machine configuration under the same gate. Collected here and refined below.
         List<Effect> sideCharged = new ArrayList<>(alsoCharged);
+        // SOUNDNESS R492/R727 — the GENERATED framework table ({@link FrameworkReach}): a member of a κ-covered
+        // framework whose own body, per this engine's scan of the framework jar, reaches a concrete effect. A SIDE
+        // charge like the line above: unioned into `dir`, `effect` left alone (every `effect == null` fallback
+        // below still runs), and routed through the side-charge loop so its surface is marked incomplete.
+        for (Effect fe : frameworkReachCharges(ctx, s, min)) { dir.add(fe); sideCharged.add(fe); }
         // REACH, so a corpus A/B can tell "inert" from "never reached": `bin/corpus-ab.py --mark R814REACH
         // --mark-env CANDOR_R814_DEBUG=1 --mark-arm post`. `charge` runs LAST in its bucket, so a non-null
         // answer from it that equals `effect` is this rule's (the API-surface diff found no member where an
@@ -5643,6 +5648,34 @@ public class Candor {
                 if (R814_DEBUG) System.err.println("KCINHERIT\t" + id + "\t" + min.owner + "." + min.name + "\t" + pkg);
             }
         }
+    }
+
+    static final boolean FWREACH_DEBUG = System.getenv("CANDOR_FWREACH_DEBUG") != null;
+
+    /** SOUNDNESS R492/R727 — the {@link FrameworkReach} charges for this call site. Two spellings reach the same
+     *  library body and both are asked: the EXTERNAL owner itself, and an inherited member called through a project
+     *  subclass ({@code class Fwd extends RequestProcessor} calling {@code doForward}), which compiles with the
+     *  PROJECT owner and is resolved here exactly as {@link #kappaLedger} resolves it for the ledger — no project
+     *  type declares the member, so the JVM runs the external body {@link #inheritedExternalDeclarers} names. */
+    static List<Effect> frameworkReachCharges(AnalysisContext ctx, MethodScan s, MethodInsnNode min) {
+        if (min.owner.isEmpty() || min.owner.charAt(0) == '[') return List.of();
+        List<Effect> out;
+        if (!ctx.projectClasses.contains(min.owner)) {
+            out = FrameworkReach.charges(min.owner, min.name, min.desc);
+        } else if (ctx.byName.containsKey(min.owner)
+                && !declaresConcrete(ctx.byName.get(min.owner), min.name, min.desc)
+                && nearestConcreteSuper(min.owner, min.name, min.desc) == null
+                && !projectDeclaresMethod(min.owner, min.name, min.desc)) {
+            java.util.EnumSet<Effect> acc = java.util.EnumSet.noneOf(Effect.class);
+            for (String t : inheritedExternalDeclarers(ctx, min.owner, min.name, min.desc))
+                acc.addAll(FrameworkReach.charges(t, min.name, min.desc));
+            out = new ArrayList<>(acc);
+        } else {
+            return List.of();
+        }
+        if (FWREACH_DEBUG && !out.isEmpty())
+            System.err.println("FWREACH\t" + s.id + "\tcall\t" + min.owner + "." + min.name + min.desc + "\t" + out);
+        return out;
     }
 
     /** The external types whose body an inherited call on the project type {@code owner} can run, in JVM
@@ -7504,6 +7537,15 @@ public class Candor {
                     Effect eff = Classifier.classify(refOwner, h.getName(), h.getDesc());
                     if (eff != null) dir.add(eff);
                     if (eff != null) markMethodRefLocator(ctx, s, h, eff);
+                    // SOUNDNESS R492/R727 — the reference spelling of a call the framework table charges: one
+                    // operation, two spellings, one verdict (the R923 rule, applied to the generated table).
+                    for (Effect fe : FrameworkReach.charges(h.getOwner(), h.getName(), h.getDesc())) {
+                        if (fe == eff) continue;
+                        dir.add(fe);
+                        markMethodRefLocator(ctx, s, h, fe);
+                        if (FWREACH_DEBUG) System.err.println("FWREACH\t" + id + "\tref\t" + h.getOwner() + "."
+                                + h.getName() + h.getDesc() + "\t" + fe);
+                    }
                     // SOUNDNESS R929 — …AND THE κ LEDGER, WHICH THE CALL PATH CONSULTS AND THIS ONE NEVER DID.
                     // `ns.forEach(mc::getDatabase)` read ABSENT where `mc.getDatabase(n)` names
                     // `invisible: [com.mongodb.client]`: a reference to an unclassified member of an uncovered

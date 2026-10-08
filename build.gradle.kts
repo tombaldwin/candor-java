@@ -134,6 +134,9 @@ graalvmNative {
             // leaving it out would make the native binary SILENT on exactly the callbacks the jar
             // discloses, which is the one-artifact guard §L is about.
             buildArgs.add("-H:IncludeResources=candor/jdk-hof-invokes\\.idx\\.gz")
+            // SOUNDNESS R492/R727 — the GENERATED framework member -> effect table (FrameworkReach). Missing from
+            // the image, the native binary would read every member it charges as silently pure again.
+            buildArgs.add("-H:IncludeResources=candor/framework-reach\\.tsv")
         }
     }
 }

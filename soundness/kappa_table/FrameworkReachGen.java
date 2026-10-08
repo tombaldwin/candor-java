@@ -1,0 +1,414 @@
+package io.poly.candor;   // compiled by soundness/kappa_table/derive.sh against the engine jar; not part of the build
+
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import io.poly.candor.model.Effect;
+import java.io.InputStream;
+import java.io.Reader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.*;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.Handle;
+import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.tree.AbstractInsnNode;
+import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.InvokeDynamicInsnNode;
+import org.objectweb.asm.tree.MethodInsnNode;
+import org.objectweb.asm.tree.MethodNode;
+
+/**
+ * SOUNDNESS R492 / R727 — generate {@code src/main/resources/candor/framework-reach.tsv}, the machine-derived
+ * member -> effect table for the κ-covered framework namespaces.
+ *
+ * <p>Args: {@code <out.tsv> <witness.tsv> <header-file> (<jar> <report.json>)...}. Each report is the ENGINE's
+ * own scan of that jar, taken with {@code -Dcandor.frameworkReach=off} so the table never feeds itself.
+ *
+ * <p><b>What a charge means.</b> A row {@code owner.name+desc -> E} says: in EVERY surveyed artefact that declares
+ * {@code owner}, the body the JVM resolves for that call (JVMS 5.4.3.3 — the static target, superclass chain
+ * first, then superinterface defaults) reaches a body to which the engine's own scan attributed {@code E} in
+ * {@code direct}, along edges that are each STATICALLY RESOLVED: invokestatic/special, the static target of an
+ * invokevirtual/interface (never its overriders), and a lambda/method-reference implementation handle. A static
+ * member or constructor also runs the {@code <clinit>} of its own class and superclasses (JVMS 5.5) — the class the
+ * consumer NAMES, which is the edge the engine itself draws at a consumer's static access ({@code clinitEdge} /
+ * {@code inheritDepClinit}). The {@code <clinit>} of a class a library body touches INTERNALLY is not followed:
+ * measured over the 117 surveyed jars, those edges added 19,629 rows, and their leaves are one-time framework
+ * bootstrap — JCL/SLF4J reading their classpath config through a {@code URL} the classifier must charge {@code Net},
+ * groovy's plugin and DGM loading — which made e.g. struts 1.2.9 {@code RequestProcessor.processActionPerform}
+ * read {@code Net} through {@code RequestUtils.<clinit> -> LogFactory.getLog}, the exact charge R727 declined as a
+ * fabrication on 1.2.9. Leaving them out is not a purity claim: those members keep the treatment they had.
+ * {@code direct}, not {@code inferred}: {@code inferred}
+ * includes the engine's CHA fan-out, which in a library scan joins every {@code hashCode} to every other
+ * (measured: beanutils {@code DynaProperty.hashCode -> Clock,Db,Log} through {@code ResultSetIterator.hasNext}),
+ * and a consumer calling the member does not run those bodies. Only concrete effects: an {@code Unknown} in a
+ * library body is the engine saying it cannot see, which is not a charge.
+ *
+ * <p><b>Absence is not a claim.</b> A member with no row keeps exactly the treatment it had before the table
+ * existed (the κ grant). The table can only ADD a charge; nothing reads a missing row as purity.
+ *
+ * <p><b>Versions.</b> When two surveyed artefacts declare the same owner (struts 1.2.9 / 1.3.10), the row carries
+ * the INTERSECTION of their charges; a charge present in one version only is written to the witness file as
+ * {@code DIVERGENT} and charged nowhere.
+ */
+public class FrameworkReachGen {
+    static final Effect[] CONC = { Effect.CLIPBOARD, Effect.CLOCK, Effect.DB, Effect.ENV, Effect.EXEC, Effect.FS,
+            Effect.IPC, Effect.LLM, Effect.LOG, Effect.NET, Effect.RAND };
+
+    /** THE LOGGING FRAMEWORKS ARE THE CLASSIFIER'S FRONTIER, NOT TABLE INPUT — neither rows nor closure targets.
+     *  The classifier already charges logging where it happens, at the emit call ({@code Logger.info} -> {@code Log});
+     *  what their bodies reach BEYOND that is one-time configuration discovery (JCL/SLF4J/log4j scanning the class
+     *  path for their config and bindings — a {@code URL} read the classifier must charge {@code Net}). Composed
+     *  through the table, that put {@code Fs}/{@code Net} on {@code LoggerFactory.getLogger} itself and on every
+     *  framework member that obtains a logger (measured: see the R492 commit), i.e. on every class in every app
+     *  that holds one. Cut, those members keep exactly the treatment they had; nothing is claimed pure. */
+    static final String[] LOGGING_FRONTIER = { "org/slf4j/", "org/apache/commons/logging/", "org/apache/logging/",
+            "ch/qos/logback/" };
+
+    static boolean loggingFrontier(String internalName) {
+        for (String p : LOGGING_FRONTIER) if (internalName.startsWith(p)) return true;
+        return false;
+    }
+
+    static int bit(String specName) {
+        for (int i = 0; i < CONC.length; i++) if (CONC[i].specName().equals(specName)) return 1 << i;
+        return 0;
+    }
+
+    static String names(int mask) {
+        StringJoiner j = new StringJoiner(",");
+        for (int i = 0; i < CONC.length; i++) if ((mask & (1 << i)) != 0) j.add(CONC[i].specName());
+        return j.toString();
+    }
+
+    // ── the class universe ──────────────────────────────────────────────────────────────────────────────
+    static final List<String> jarNames = new ArrayList<>();
+    static final List<Map<String, ClassNode>> jarClasses = new ArrayList<>();
+    static final Map<String, List<Integer>> classJars = new HashMap<>();
+
+    // ── nodes: every method with a body, id'd in sorted order ──────────────────────────────────────────
+    static final Map<String, Integer> nodeId = new HashMap<>();   // "j|owner.name+desc"
+    static final List<String> nodeKey = new ArrayList<>();
+    static final List<MethodNode> nodeMethod = new ArrayList<>();
+    static final List<String> nodeOwner = new ArrayList<>();
+    static final List<Integer> nodeJar = new ArrayList<>();
+
+    static Integer node(int j, String owner, String nameDesc) { return nodeId.get(j + "|" + owner + "." + nameDesc); }
+
+    public static void main(String[] a) throws Exception {
+        Path out = Path.of(a[0]), witness = Path.of(a[1]);
+        List<String> header = Files.readAllLines(Path.of(a[2]), StandardCharsets.UTF_8);
+        List<String[]> pairs = new ArrayList<>();
+        for (int i = 3; i + 1 < a.length; i += 2) pairs.add(new String[] { a[i], a[i + 1] });
+        pairs.sort(Comparator.comparing(p -> Path.of(p[0]).getFileName().toString()));
+
+        // 1. load classes
+        for (String[] p : pairs) {
+            int j = jarNames.size();
+            jarNames.add(Path.of(p[0]).getFileName().toString());
+            Map<String, ClassNode> m = new TreeMap<>();
+            try (ZipFile z = new ZipFile(p[0])) {
+                List<? extends ZipEntry> es = Collections.list(z.entries());
+                es.sort(Comparator.comparing(ZipEntry::getName));
+                for (ZipEntry e : es) {
+                    String n = e.getName();
+                    if (!n.endsWith(".class") || n.startsWith("META-INF/") || n.endsWith("module-info.class")
+                            || n.endsWith("package-info.class")) continue;
+                    ClassNode cn = new ClassNode();
+                    try (InputStream in = z.getInputStream(e)) { new ClassReader(in).accept(cn, ClassReader.SKIP_FRAMES); }
+                    catch (RuntimeException ex) { continue; }
+                    m.putIfAbsent(cn.name, cn);
+                }
+            }
+            jarClasses.add(m);
+            for (String c : m.keySet()) classJars.computeIfAbsent(c, k -> new ArrayList<>()).add(j);
+        }
+        // 2. nodes
+        List<String> keys = new ArrayList<>();
+        for (int j = 0; j < jarClasses.size(); j++)
+            for (ClassNode cn : jarClasses.get(j).values())
+                for (MethodNode mn : cn.methods)
+                    if ((mn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE)) == 0)
+                        keys.add(String.format("%04d", j) + "|" + cn.name + "." + mn.name + mn.desc);
+        Collections.sort(keys);
+        Map<String, MethodNode> byKey = new HashMap<>();
+        for (int j = 0; j < jarClasses.size(); j++)
+            for (ClassNode cn : jarClasses.get(j).values())
+                for (MethodNode mn : cn.methods) byKey.put(j + "|" + cn.name + "." + mn.name + mn.desc, mn);
+        for (String k : keys) {
+            int bar = k.indexOf('|');
+            int j = Integer.parseInt(k.substring(0, bar));
+            String rest = k.substring(bar + 1);
+            String owner = rest.substring(0, rest.lastIndexOf('.', rest.indexOf('(')));
+            String id = j + "|" + rest;
+            nodeId.put(id, nodeKey.size());
+            nodeKey.add(rest);
+            nodeMethod.add(byKey.get(id));
+            nodeOwner.add(owner);
+            nodeJar.add(j);
+        }
+        int N = nodeKey.size();
+        // 3. direct effects from the engine's own scan
+        int[] eff = new int[N];
+        int[][] ptr = new int[N][];
+        for (int j = 0; j < pairs.size(); j++) {
+            JsonObject r;
+            try (Reader rd = Files.newBufferedReader(Path.of(pairs.get(j)[1]), StandardCharsets.UTF_8)) {
+                r = JsonParser.parseReader(rd).getAsJsonObject();
+            }
+            for (JsonElement fe : r.getAsJsonArray("functions")) {
+                JsonObject f = fe.getAsJsonObject();
+                if (!f.has("hash") || !f.has("direct")) continue;
+                int mask = 0;
+                for (JsonElement d : f.getAsJsonArray("direct")) mask |= bit(d.getAsString());
+                if (mask == 0) continue;
+                String h = f.get("hash").getAsString();
+                Integer id = nodeId.get(j + "|" + h);
+                if (id == null) continue;
+                eff[id] |= mask;
+            }
+        }
+        for (int n = 0; n < N; n++) if (eff[n] != 0) { ptr[n] = new int[CONC.length]; Arrays.fill(ptr[n], n); }
+        // 4. statically-resolved edges -> reverse adjacency
+        List<int[]> preds = new ArrayList<>(N);
+        int[][] succ = new int[N][];
+        int[] pc = new int[N];
+        for (int n = 0; n < N; n++) {
+            TreeSet<Integer> s = new TreeSet<>(successors(n));
+            s.remove(n);
+            int[] arr = new int[s.size()];
+            int i = 0;
+            for (int x : s) { arr[i++] = x; pc[x]++; }
+            succ[n] = arr;
+        }
+        int[][] pred = new int[N][];
+        for (int n = 0; n < N; n++) pred[n] = new int[pc[n]];
+        int[] fill = new int[N];
+        for (int n = 0; n < N; n++) for (int x : succ[n]) pred[x][fill[x]++] = n;
+        // 5. least fixpoint, deterministic worklist; ptr[n][e] = the successor that first supplied e
+        ArrayDeque<Integer> wl = new ArrayDeque<>();
+        boolean[] inWl = new boolean[N];
+        for (int n = 0; n < N; n++) if (eff[n] != 0) { wl.add(n); inWl[n] = true; }
+        while (!wl.isEmpty()) {
+            int n = wl.poll();
+            inWl[n] = false;
+            for (int p : pred[n]) {
+                int add = eff[n] & ~eff[p];
+                if (add == 0) continue;
+                if (ptr[p] == null) { ptr[p] = new int[CONC.length]; Arrays.fill(ptr[p], -1); }
+                for (int i = 0; i < CONC.length; i++) if ((add & (1 << i)) != 0) ptr[p][i] = n;
+                eff[p] |= add;
+                if (!inWl[p]) { wl.add(p); inWl[p] = true; }
+            }
+        }
+        // 6. entries: every consumer-callable member of every public class under a covered prefix
+        TreeMap<String, TreeMap<Integer, Integer>> perJar = new TreeMap<>();   // key -> jar -> mask
+        TreeMap<String, TreeMap<Integer, int[]>> roots = new TreeMap<>();      // key -> jar -> resolved roots
+        for (int j = 0; j < jarClasses.size(); j++) {
+            for (ClassNode cn : jarClasses.get(j).values()) {
+                if ((cn.access & Opcodes.ACC_PUBLIC) == 0 || (cn.access & Opcodes.ACC_SYNTHETIC) != 0) continue;
+                int sl = cn.name.lastIndexOf('/');
+                if (sl <= 0 || !Candor.kappaCovers(cn.name.substring(0, sl).replace('/', '.')) || loggingFrontier(cn.name)) continue;
+                for (String sig : visibleSignatures(j, cn)) {
+                    int p = sig.indexOf('(');
+                    String name = sig.substring(0, p), desc = sig.substring(p);
+                    List<Integer> tg = resolve(j, cn.name, name, desc);
+                    if (tg.isEmpty()) continue;
+                    MethodNode decl = nodeMethod.get(tg.get(0));
+                    boolean callable = (decl.access & (Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED)) != 0;
+                    if (!callable || name.equals("<clinit>")) continue;
+                    LinkedHashSet<Integer> rs = new LinkedHashSet<>(tg);
+                    if ((decl.access & Opcodes.ACC_STATIC) != 0 || name.equals("<init>")) rs.addAll(clinits(j, cn.name));
+                    int mask = 0;
+                    for (int r : rs) mask |= eff[r];
+                    String key = cn.name + "." + sig;
+                    perJar.computeIfAbsent(key, k -> new TreeMap<>()).put(j, mask);
+                    roots.computeIfAbsent(key, k -> new TreeMap<>()).put(j, rs.stream().mapToInt(Integer::intValue).toArray());
+                }
+            }
+        }
+        // 7. emit
+        List<String> rows = new ArrayList<>();
+        List<String> wit = new ArrayList<>();
+        for (Map.Entry<String, TreeMap<Integer, Integer>> e : perJar.entrySet()) {
+            String key = e.getKey();
+            int inter = -1, union = 0;
+            for (int m : e.getValue().values()) { inter &= m; union |= m; }
+            if (union == 0) continue;
+            if (inter != union) {
+                StringJoiner sj = new StringJoiner(" ");
+                for (Map.Entry<Integer, Integer> pj : e.getValue().entrySet()) sj.add(jarNames.get(pj.getKey()) + "=" + names(pj.getValue()));
+                wit.add(key + "\t" + names(union & ~inter) + "\tDIVERGENT\t" + sj);
+            }
+            if (inter == 0) continue;
+            rows.add(key + "\t" + names(inter));
+            for (int i = 0; i < CONC.length; i++) {
+                if ((inter & (1 << i)) == 0) continue;
+                int j = e.getValue().firstKey();
+                int start = -1;
+                for (int r : roots.get(key).get(j)) if ((eff[r] & (1 << i)) != 0) { start = r; break; }
+                StringJoiner path = new StringJoiner(" > ");
+                int cur = start, guard = 0;
+                while (cur >= 0 && guard++ < 10_000) {
+                    path.add(nodeKey.get(cur));
+                    int nx = ptr[cur][i];
+                    if (nx == cur) break;
+                    cur = nx;
+                }
+                wit.add(key + "\t" + CONC[i].specName() + "\t" + jarNames.get(j) + "\t" + path);
+            }
+        }
+        Collections.sort(rows);
+        Collections.sort(wit);
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+        for (String r : rows) md.update((r + "\n").getBytes(StandardCharsets.UTF_8));
+        StringBuilder sb = new StringBuilder();
+        for (String h : header) sb.append(h).append('\n');
+        sb.append("# entries ").append(rows.size()).append('\n');
+        sb.append("# content-sha256 ").append(HexFormat.of().formatHex(md.digest())).append('\n');
+        for (String r : rows) sb.append(r).append('\n');
+        Files.writeString(out, sb.toString(), StandardCharsets.UTF_8);
+        StringBuilder wb = new StringBuilder();
+        for (String w : wit) wb.append(w).append('\n');
+        Files.writeString(witness, wb.toString(), StandardCharsets.UTF_8);
+        System.err.println("framework-reach: " + N + " bodies, " + perJar.size() + " callable members, "
+                + rows.size() + " charged rows");
+    }
+
+    /** The class {@code owner} as seen from jar {@code j}: its own copy first, else the first surveyed jar that has
+     *  one (deterministic: jars are sorted). */
+    static int jarOf(int j, String owner) {
+        if (jarClasses.get(j).containsKey(owner)) return j;
+        List<Integer> js = classJars.get(owner);
+        return js == null ? -1 : js.get(0);
+    }
+
+    static ClassNode cls(int j, String owner) { return j < 0 ? null : jarClasses.get(j).get(owner); }
+
+    /** JVMS 5.4.3.3/5.4.3.4 method resolution against the surveyed bodies only. Returns the resolved body's node, or
+     *  every maximally-specific default when the class chain has none; empty when the chain leaves the surveyed
+     *  jars (a JDK or unsurveyed body — the engine's own `direct` already classified that call) or resolves to an
+     *  abstract/native declaration. */
+    static List<Integer> resolve(int from, String owner, String name, String desc) {
+        if (loggingFrontier(owner)) return List.of();
+        String nd = name + desc;
+        String c = owner;
+        int j = jarOf(from, c);
+        Set<String> seen = new HashSet<>();
+        List<String[]> ifaceRoots = new ArrayList<>();
+        while (c != null && j >= 0 && seen.add(c)) {
+            ClassNode cn = cls(j, c);
+            if (cn == null || loggingFrontier(c)) break;
+            for (MethodNode mn : cn.methods) {
+                if (mn.name.equals(name) && mn.desc.equals(desc)) {
+                    if ((mn.access & Opcodes.ACC_PRIVATE) != 0 && !c.equals(owner)) continue;   // not inherited
+                    if ((mn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE)) != 0) return List.of();
+                    Integer id = node(j, c, nd);
+                    return id == null ? List.of() : List.of(id);
+                }
+            }
+            ifaceRoots.add(new String[] { String.valueOf(j), c });
+            if (name.equals("<init>") || name.equals("<clinit>")) return List.of();
+            String sup = cn.superName;
+            if (sup == null) break;
+            int sj = jarOf(j, sup);
+            c = sup; j = sj;
+        }
+        // superinterface defaults
+        List<Integer> out = new ArrayList<>();
+        ArrayDeque<String[]> q = new ArrayDeque<>();
+        Set<String> vis = new HashSet<>();
+        for (String[] r : ifaceRoots) {
+            ClassNode cn = cls(Integer.parseInt(r[0]), r[1]);
+            if (cn != null) for (String i : cn.interfaces) q.add(new String[] { r[0], i });
+        }
+        while (!q.isEmpty()) {
+            String[] x = q.poll();
+            int ij = jarOf(Integer.parseInt(x[0]), x[1]);
+            if (ij < 0 || !vis.add(x[1])) continue;
+            ClassNode in = cls(ij, x[1]);
+            if (in == null || loggingFrontier(x[1])) continue;
+            boolean found = false;
+            for (MethodNode mn : in.methods) {
+                if (mn.name.equals(name) && mn.desc.equals(desc)
+                        && (mn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_STATIC | Opcodes.ACC_PRIVATE)) == 0) {
+                    Integer id = node(ij, x[1], nd);
+                    if (id != null && !out.contains(id)) out.add(id);
+                    found = true;
+                }
+            }
+            if (!found) for (String i : in.interfaces) q.add(new String[] { String.valueOf(ij), i });
+        }
+        return out;
+    }
+
+    /** The {@code <clinit>} bodies initialising {@code owner} runs (its own, then its superclasses'). */
+    static List<Integer> clinits(int from, String owner) {
+        List<Integer> out = new ArrayList<>();
+        String c = owner;
+        int j = jarOf(from, c);
+        Set<String> seen = new HashSet<>();
+        while (c != null && j >= 0 && seen.add(c)) {
+            ClassNode cn = cls(j, c);
+            if (cn == null) break;
+            Integer id = node(j, c, "<clinit>()V");
+            if (id != null) out.add(id);
+            if ((cn.access & Opcodes.ACC_INTERFACE) != 0) break;
+            c = cn.superName;
+            j = c == null ? -1 : jarOf(j, c);
+        }
+        return out;
+    }
+
+    /** The statically-resolved successors of a body: every call's resolved target and every lambda/method-reference
+     *  implementation. NOT the {@code <clinit>} a {@code new}/static access inside the body would trigger — see the
+     *  class comment: that edge is taken once, at the ENTRY (the class the consumer names), never transitively. */
+    static List<Integer> successors(int n) {
+        MethodNode mn = nodeMethod.get(n);
+        int j = nodeJar.get(n);
+        List<Integer> out = new ArrayList<>();
+        if (mn.instructions == null) return out;
+        for (AbstractInsnNode in : mn.instructions) {
+            if (in instanceof MethodInsnNode m) {
+                if (m.owner.startsWith("[")) continue;
+                out.addAll(resolve(j, m.owner, m.name, m.desc));
+            } else if (in instanceof InvokeDynamicInsnNode d && d.bsm != null
+                    && d.bsm.getOwner().equals("java/lang/invoke/LambdaMetafactory") && d.bsmArgs.length > 1
+                    && d.bsmArgs[1] instanceof Handle h) {
+                out.addAll(resolve(j, h.getOwner(), h.getName(), h.getDesc()));
+            }
+        }
+        return out;
+    }
+
+    /** Every name+desc a consumer can name on {@code cn}: its own non-private members and every non-private member
+     *  inherited along the surveyed superclass chain and superinterfaces. Resolution then decides which body runs. */
+    static Set<String> visibleSignatures(int j, ClassNode cn) {
+        TreeSet<String> out = new TreeSet<>();
+        ArrayDeque<String[]> q = new ArrayDeque<>();
+        Set<String> vis = new HashSet<>();
+        q.add(new String[] { String.valueOf(j), cn.name });
+        boolean first = true;
+        while (!q.isEmpty()) {
+            String[] x = q.poll();
+            int cj = jarOf(Integer.parseInt(x[0]), x[1]);
+            if (cj < 0 || !vis.add(x[1])) continue;
+            ClassNode c = cls(cj, x[1]);
+            if (c == null) continue;
+            for (MethodNode mn : c.methods) {
+                if ((mn.access & Opcodes.ACC_PRIVATE) != 0 || mn.name.equals("<clinit>")) continue;
+                if (!first && mn.name.equals("<init>")) continue;
+                out.add(mn.name + mn.desc);
+            }
+            first = false;
+            if (c.superName != null) q.add(new String[] { String.valueOf(cj), c.superName });
+            for (String i : c.interfaces) q.add(new String[] { String.valueOf(cj), i });
+        }
+        return out;
+    }
+}

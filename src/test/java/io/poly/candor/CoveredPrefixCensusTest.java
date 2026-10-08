@@ -574,9 +574,29 @@ class CoveredPrefixCensusTest {
             "}")));
         try {
             Map<String, EffectSet> r = Candor.runScan(app);
-            for (String m : new String[] {"scope", "ddlText", "txId", "route", "env", "chan", "sockBuilder",
-                    "b64", "shaBytes", "shaStream", "memRows", "schema", "shut", "cfgMap", "dynaName", "copy",
-                    "emptyRules", "streamRules", "form"})
+            // NOT `ddlText`: SchemaUtils.createStatements is NOT a pure DDL builder. Its body calls
+            // `QueriesKt.exists(table)` -> `DatabaseDialect.tableExists`, a metadata round trip; EXECUTED against H2
+            // with JDBC tracing, the call issued `getMetaData` / `getTables` / `executeQuery` (SOUNDNESS R1050). The
+            // denylist below the name rule missed it because the check was "no TransactionManager/exec reference IN
+            // THIS BODY", and the round trip is one call away. The generated framework table charges it Db.
+            assertTrue(eff(r, "com.x.Pure.ddlText").contains(Effect.DB),
+                    "createStatements queries the database (exists -> tableExists): " + r.get("com.x.Pure.ddlText"));
+            // `shut`: SQLHelper.close(ResultSet) closes the CALLER's result set (no round trip) and logs at debug
+            // (javap: `org.slf4j.Logger.debug`), which the generated framework table now charges — `Log`, and
+            // nothing that opens or round-trips.
+            assertEquals(EffectSet.of(Effect.LOG), eff(r, "com.x.Pure.shut"),
+                    "close(rs) logs and opens nothing: " + r.get("com.x.Pure.shut"));
+            // `streamRules`: the caller's stream is still pure-relative, but the constructor's `initDigester` loads
+            // the library's OWN `digester-rules.xml` through `Class.getResource` (javap) — the read this engine charges
+            // `Fs` at any call site — and logs it at debug. The generated framework table carries both.
+            assertEquals(EffectSet.of(Effect.FS, Effect.LOG), eff(r, "com.x.Pure.streamRules"),
+                    "ValidatorResources(InputStream) reads its own rules resource: " + r.get("com.x.Pure.streamRules"));
+            // `copy`: BeanUtilsBean.copyProperties logs at debug through JCL's `Log` (javap) — same reading.
+            assertEquals(EffectSet.of(Effect.LOG), eff(r, "com.x.Pure.copy"),
+                    "copyProperties logs and opens nothing: " + r.get("com.x.Pure.copy"));
+            for (String m : new String[] {"scope", "txId", "route", "env", "chan", "sockBuilder",
+                    "b64", "shaBytes", "shaStream", "memRows", "schema", "cfgMap", "dynaName",
+                    "emptyRules", "form"})
                 assertTrue(eff(r, "com.x.Pure." + m).isEmpty(),
                     m + " opens nothing and round-trips nowhere — must stay pure, got " + r.get("com.x.Pure." + m));
         } finally { rm(app.getParent()); }

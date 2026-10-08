@@ -2396,14 +2396,6 @@ PURE_CASES = [
     ("jsonbFromJsonReaderPure", "String r = j.fromJson(rd, String.class)",   "jakarta.json.bind.Jsonb j, Reader rd"),
     ("jsonbFromJsonStreamPure", "String r = j.fromJson(in, String.class)",   "jakarta.json.bind.Jsonb j, InputStream in"),
 
-    # --- JSON-P (jakarta.json.Json) factory leaves are ALL caller-stream: createReader/createParser(Reader|
-    #     InputStream), createWriter/createGenerator(Writer|OutputStream). The reader/writer wraps the caller's
-    #     stream; the file open is the caller's. Must stay pure (no Fs/Net fab).
-    ("jsonpCreateReaderPure",   "jakarta.json.JsonReader r = jakarta.json.Json.createReader(rd)",          "Reader rd"),
-    ("jsonpCreateParserPure",   "jakarta.json.stream.JsonParser p = jakarta.json.Json.createParser(in)",   "InputStream in"),
-    ("jsonpCreateWriterPure",   "jakarta.json.JsonWriter w2 = jakarta.json.Json.createWriter(w)",          "Writer w"),
-    ("jsonpCreateGeneratorPure","jakarta.json.stream.JsonGenerator g = jakarta.json.Json.createGenerator(os)","OutputStream os"),
-
     # --- JPA pure BUILDERS: createQuery(String)/createNativeQuery(String) compile/prepare a Query object
     #     locally (no DB round-trip until a terminal getResultList/getSingleResult/executeUpdate). getTransaction
     #     returns the EntityTransaction object (pure accessor). Must stay pure (the terminals are the Db leaves).
@@ -2563,6 +2555,19 @@ PURE_CASES = [
         "com.newrelic.telemetry.TelemetryClient tc, com.newrelic.telemetry.metrics.MetricBatch mb"),
 ]
 
+
+# SOUNDNESS R492/R727 — the JSON-P factory leaves were PURE cases ("caller-stream: the reader/writer wraps the
+# caller's stream"). That stance still holds for the STREAM, but `Json.createReader/Parser/Writer/Generator` first
+# resolve the provider — `JsonProvider.provider()` -> `ServiceLoader.load` (javap, jakarta.json-api-2.1.3) — a
+# META-INF/services read this engine charges `Fs` at any call site (Classifier: "Classpath RESOURCE reads ... All
+# Fs"), and the generated framework table now reads that body. So they are EFFECT cases: Fs from provider
+# discovery, not from the caller's stream.
+EFFECT_CASES += [
+    ("jsonpCreateReaderProvider",   "Fs", "Reader rd",       "jakarta.json.JsonReader r = jakarta.json.Json.createReader(rd)"),
+    ("jsonpCreateParserProvider",   "Fs", "InputStream in",  "jakarta.json.stream.JsonParser p = jakarta.json.Json.createParser(in)"),
+    ("jsonpCreateWriterProvider",   "Fs", "Writer w",        "jakarta.json.JsonWriter w2 = jakarta.json.Json.createWriter(w)"),
+    ("jsonpCreateGeneratorProvider","Fs", "OutputStream os", "jakarta.json.stream.JsonGenerator g = jakarta.json.Json.createGenerator(os)"),
+]
 
 # Library jars FETCHED ON DEMAND from Maven Central into LIBDIR (gitignored — 14 MB, not vendored).
 # To test a new library: add its coordinate here and a case to EFFECT_CASES.

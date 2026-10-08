@@ -11,6 +11,7 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## [0.40.1] — 2026-10-08
 
+- **`jbang-catalog.json` points at the v0.40.1 jar.**
 - **A scoped `allow` whose scope binds no function is now disclosed as a zero-match (SOUNDNESS R952).**
   SPEC §4 ⟨0.27⟩ covers any rule whose scope matches nothing, but the counting pass enrolled
   `deny`/`forbid`/`only` only: `allow Net in zzz.nomatch h` exited 0 in silence. It now prints the same

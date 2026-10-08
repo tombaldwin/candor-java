@@ -799,6 +799,8 @@ Over-approximations it accepts (each one charges, never hides):
 
 A/B: see the commit message.
 
+- jbang catalog points at the v0.40.0 jar (`jbang-catalog.json`).
+
 ## [0.39.3] — 2026-09-30
 
 - `jbang-catalog.json` points at the v0.39.3 release jar.

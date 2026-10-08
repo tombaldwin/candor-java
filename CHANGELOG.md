@@ -9,6 +9,13 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **A scoped `allow` whose scope binds no function is now disclosed as a zero-match (SOUNDNESS R952).**
+  SPEC §4 ⟨0.27⟩ covers any rule whose scope matches nothing, but the counting pass enrolled
+  `deny`/`forbid`/`only` only: `allow Net in zzz.nomatch h` exited 0 in silence. It now prints the same
+  `matched NO function` line and rides the verdict's `zeroMatch`; exit codes are unchanged, a scopeless
+  `allow` stays exempt, and `gate --report` still refuses every `allow` (exit 2, no `zeroMatch`).
+  Conformance PART 36 (c5)-(c7).
+
 ## [0.40.0] — 2026-10-07
 
 - ⚠ **Declares spec 0.40** (was 0.39) — the family floor bump. This engine implements both ⟨0.40⟩

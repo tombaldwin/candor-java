@@ -5610,7 +5610,14 @@ public class Candor {
                     ctx.kappaSeen.merge(pkg, 1, Integer::sum);
                     ctx.blindDirect.computeIfAbsent(id, k -> new TreeSet<>()).add(pkg);
                 }
-            } else if (!pkg.isEmpty() && effect == null
+            }
+            // SOUNDNESS R1051 — the Spring floor no longer hangs off grant MEMBERSHIP. It was the `else` of the
+            // ledger branch above, so it ran only while `org.springframework` sat in KAPPA_COVERED_PREFIXES:
+            // MEASURED on the 823-jar corpus with that prefix dropped from the grant, 475 rows lost this `Unknown`
+            // for a non-arming `invisible` (`deny Unknown` 1 -> 0). SPEC §2 `invisible` permits either posture but
+            // this is the gating one, so it must not be traded away by a coverage decision made elsewhere. With
+            // the grant as it is, every call site reaches exactly the same branch as before.
+            if (!pkg.isEmpty() && effect == null
                     && pkg.startsWith("org.springframework")
                     && isSpringIoOwner(min.owner) && !isConventionallyPure(min.name)) {
                 // STRUCTURAL SPRING-FLOOR FIX: org.springframework.* is a κ-covered prefix, so an

@@ -1071,6 +1071,15 @@ final class Policy {
         for (PolicyRule.Deny r : ctx().denyRules) if (!r.scope().isEmpty()) matches.putIfAbsent(r.src(), 0);
         for (PolicyRule.Forbid r : ctx().forbidRules) matches.putIfAbsent(r.src(), 0);
         for (PolicyRule.Only r : ctx().onlyRules) matches.putIfAbsent(r.src(), 0);
+        // SOUNDNESS R952 — …AND A SCOPED `allow`. §4's clause is headed "a rule whose SCOPE matches no
+        // function" and names no form, but this pass enrolled deny/forbid/only and never `allow`. Measured on
+        // 0.40.0: `allow Net in zzz.nomatch h` exited 0, `ok: true`, no stderr line and no `zeroMatch` — over
+        // a fixture whose `entry` connects to `h`. An `allow` is a CERTIFICATION, so one that binds nothing
+        // is the worse typo: the operator believes a surface was checked. A SCOPELESS `allow` binds every
+        // function by construction and stays exempt, exactly like a scopeless `deny`. Counted with the same
+        // `scopeMatches` the AS-EFF-008 loop (checkAllowlist) skips on, so "bound" means the same thing to
+        // both. Conformance PART 36 (c5)-(c7).
+        for (PolicyRule.Allow r : ctx().allowRules) if (!r.scope().isEmpty()) matches.putIfAbsent(r.src(), 0);
         if (matches.isEmpty()) return;
         Set<String> keys = new TreeSet<>(gi.inferred().keySet());
         keys.addAll(gi.edges().keySet());
@@ -1081,6 +1090,9 @@ final class Policy {
             }
             for (PolicyRule.Forbid r : ctx().forbidRules) {
                 if (scopeMatches(fn, r.from()) || scopeMatches(fn, r.to())) matches.merge(r.src(), 1, Integer::sum);
+            }
+            for (PolicyRule.Allow r : ctx().allowRules) {
+                if (!r.scope().isEmpty() && scopeMatches(fn, r.scope())) matches.merge(r.src(), 1, Integer::sum);
             }
             // ⟨0.29⟩ ON `from` ONLY, deliberately NOT either endpoint the way a `forbid` counts. A
             // forbid's subject is the pair; an `only`'s subject is the scope it makes a PROMISE about, so

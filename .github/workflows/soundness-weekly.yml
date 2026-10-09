@@ -53,6 +53,16 @@ jobs:
       - name: κ library-leaf probe (kappa_libs_probe)
         run: CJ=build/install/candor-java/bin/candor-java python3 soundness/kappa_libs_probe.py
 
+      # SOUNDNESS R492/R727 — the GENERATED framework member -> effect table must be exactly what its pinned
+      # inputs (sources.tsv jars, the generator, THIS engine) produce. Exit 1 = hand-edited, or stale against a
+      # classifier change: rerun `bash soundness/kappa_table/derive.sh build/libs/candor-java-*-all.jar` and read
+      # the diff. (Every push already checks the cheap half — content and generator checksums — in
+      # KappaFrameworkReachTest; this is the half that needs the jars.)
+      - name: Framework-reach table reproduces (derive.sh --check)
+        run: |
+          ./gradlew --no-daemon -q shadowJar
+          bash soundness/kappa_table/derive.sh --check build/libs/candor-java-*-all.jar
+
       # Inject each curated known-soundness-bug into the engine, rebuild, and require the paired probe
       # to go red. Exit 1 = a MISSED mutation (a blind spot in our own gates) — fail the workflow.
       - name: Mutation probe (do our gates still have teeth?)

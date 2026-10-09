@@ -2188,6 +2188,11 @@ final class Classifier {
             String exposedSimple = owner.substring(owner.lastIndexOf('.') + 1);
             if (exposedSimple.equals("QueriesKt")) return Effect.DB;
             if (exposedSimple.equals("SchemaUtils")) {
+                // SOUNDNESS R1050 — `createStatements` IS NOT ONE OF THEM: it calls `QueriesKt.exists(table)`, a
+                // dialect metadata round trip (EXECUTED against H2: getMetaData/getTables/executeQuery inside the
+                // call). The check below counted references IN THE BODY and the round trip is one call away. Left on
+                // this name list deliberately: the generated framework table (FrameworkReach) charges it `Db` from the
+                // body, and that is the authority that reads bodies.
                 // The five members that build DDL strings without a round trip. RE-DERIVED with
                 // `javap -c` against exposed-jdbc **1.5.0** as well as the original 0.52.0: each still
                 // holds zero TransactionManager/exec/java.sql references, against `listDatabases` (the

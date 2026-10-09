@@ -96,8 +96,8 @@ class KappaSecondSpellingTest {
                 "org/springframework/data/redis/core/ReactiveValueOperationsExtensionsKt.java",
                 "package org.springframework.data.redis.core; public final class ReactiveValueOperationsExtensionsKt {"
                     + " public static Object setAndAwait(ReactiveValueOperations o, Object k, Object v, Object cont) { return null; } }",
-                "org/springframework/data/redis/core/RedisScriptExtensionsKt.java",
-                "package org.springframework.data.redis.core; public final class RedisScriptExtensionsKt {"
+                "org/springframework/data/redis/core/script/RedisScriptExtensionsKt.java",
+                "package org.springframework.data.redis.core.script; public final class RedisScriptExtensionsKt {"
                     + " public static Object RedisScript(String s) { return null; } }",
                 "org/springframework/data/repository/CrudRepository.java",
                 "package org.springframework.data.repository; public interface CrudRepository<T, ID> { java.util.Optional<T> findById(ID id); }",
@@ -110,7 +110,7 @@ class KappaSecondSpellingTest {
                 "public class K {",
                 "  Object facade(ReactiveValueOperations<String, String> o) { return ReactiveValueOperationsExtensionsKt.setAndAwait(o, \"k\", \"v\", null); }",
                 "  Object direct(ReactiveValueOperations<String, String> o) { return o.set(\"k\", \"v\"); }",
-                "  Object script() { return RedisScriptExtensionsKt.RedisScript(\"return 1\"); }",
+                "  Object script() { return org.springframework.data.redis.core.script.RedisScriptExtensionsKt.RedisScript(\"return 1\"); }",
                 "  Object repoFacade(CrudRepository<Object, Long> r) { return CrudRepositoryExtensionsKt.findByIdOrNull(r, 1L); }",
                 "}")));
         try {

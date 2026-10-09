@@ -9,6 +9,38 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **A GENERATED framework member -> effect table now charges what κ-covered framework members really do
+  (SOUNDNESS R492/R727).** The covered-prefix grant certified every unmodelled member of ~51 namespaces pure, so
+  e.g. groovy `ResourceGroovyMethods.deleteDir`, commons-csv `CSVParser.parse(File,…)`, Spring
+  `FileSystemResource.contentLength`, JNA `Native.loadLibrary` and struts `DownloadAction.FileStreamInfo
+  .getInputStream` left their callers absent and `deny Fs`/`deny Exec` exiting 0. `src/main/resources/candor/
+  framework-reach.tsv` (51,766 members) is derived by `soundness/kappa_table/derive.sh` from this engine's own
+  scan of 117 pinned framework jars (Maven Central coordinates + SHA-256 in `sources.tsv`): each consumer-callable
+  member is closed over statically-resolved edges to the bodies whose `direct` effects the scan reported. It only
+  ADDS side charges (an unnamed locator marks the surface incomplete); a member without a row is treated exactly as
+  before. Charges present in only one surveyed version are not made; the logging frameworks and `<clinit>`s a
+  library touches internally are not followed (see the generator). Every push checks the table's content and
+  generator checksums (`KappaFrameworkReachTest`); the weekly workflow regenerates it byte-for-byte
+  (`derive.sh --check`). **What it costs** (823 jars vs v0.40.1; detail in `soundness/kappa_table/README.md`):
+  55,229 rows newly carry a concrete effect, 51.8% of them cross-cutting only (Clock/Log/Rand), concentrated
+  in hubs — geode-core 16,224 rows from 5 `Native.register` sites, `new ObjectMapper()` → Clock, jna-platform
+  `Structure.<init>` → Log, groovy `castToType` (narrowed to its ladder arm for a constant `String`/`Object`/…
+  class: −812 of rest-assured's 1,802). A correct scoped `allow Fs in f /path` can go red: the side charge
+  names no locator and marks the surface `incomplete` — 21 strict rows (bcjmail, spring-beans), 1,883 Fs /
+  132 Net loose.
+- ⚠ **The residue the table cannot vouch for now discloses `Unknown` (SOUNDNESS R492).** A call into a
+  covered FRAMEWORK owner (not the JDK, kotlin/scala/groovy or the logging frameworks) with no classifier
+  verdict and no table row discloses `Unknown` when the member has no surveyed body and a surveyed
+  implementer is charged/unreadable or none exists (`dispatch:`), when the scan could read its body only as
+  `Unknown` (`dep:`), or when its class is in no surveyed jar (`dep:`; e.g. `org.hibernate.criterion`).
+  Members the table examined and found pure stay silent. 31,520 units (0.79%) newly carry `Unknown`.
+- **The Spring `*Template`/`*Operations` `Unknown` floor no longer depends on grant membership (SOUNDNESS
+  R1051).** Dropping `org.springframework` from the grant traded 475 of those `Unknown`s for a non-arming
+  `invisible`; it is now independent (inert with the grant as shipped).
+- **Exposed `SchemaUtils.createStatements` reads `Db` (SOUNDNESS R1050).** It was on the hand-written pure
+  denylist, but calls `QueriesKt.exists` -> `DatabaseDialect.tableExists`, a metadata round trip — executed against
+  H2 (`getMetaData`/`getTables`/`executeQuery` inside the call). Charged by the generated table.
+
 ## [0.40.1] — 2026-10-08
 
 - **`jbang-catalog.json` points at the v0.40.1 jar.**

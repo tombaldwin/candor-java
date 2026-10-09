@@ -4626,6 +4626,17 @@ public class Candor {
         // literal write, and `allow Fs … <benign>` exited 0; the credential chain read a credentials file
         // named only by machine configuration under the same gate. Collected here and refined below.
         List<Effect> sideCharged = new ArrayList<>(alsoCharged);
+        // SOUNDNESS R492/R727 — the GENERATED framework table ({@link FrameworkReach}): a member of a κ-covered
+        // framework whose own body, per this engine's scan of the framework jar, reaches a concrete effect. A SIDE
+        // charge like the line above: unioned into `dir`, `effect` left alone (every `effect == null` fallback
+        // below still runs), and routed through the side-charge loop so its surface is marked incomplete.
+        List<Effect> fwCharged = frameworkReachCharges(ctx, s, min);
+        for (Effect fe : fwCharged) { dir.add(fe); sideCharged.add(fe); }
+        // …and the RESIDUE the table cannot vouch for (FrameworkReach#hedgeKind): only where nothing else answered —
+        // no classifier verdict, no table charge, no supertype-walk or co-emitted charge — so it never sits beside a
+        // concrete answer for the same call and never replaces one.
+        if (effect == null && fwCharged.isEmpty() && supEff.isEmpty() && alsoCharged.isEmpty())
+            frameworkHedge(ctx, s, min, owner);
         // REACH, so a corpus A/B can tell "inert" from "never reached": `bin/corpus-ab.py --mark R814REACH
         // --mark-env CANDOR_R814_DEBUG=1 --mark-arm post`. `charge` runs LAST in its bucket, so a non-null
         // answer from it that equals `effect` is this rule's (the API-surface diff found no member where an
@@ -5605,7 +5616,14 @@ public class Candor {
                     ctx.kappaSeen.merge(pkg, 1, Integer::sum);
                     ctx.blindDirect.computeIfAbsent(id, k -> new TreeSet<>()).add(pkg);
                 }
-            } else if (!pkg.isEmpty() && effect == null
+            }
+            // SOUNDNESS R1051 — the Spring floor no longer hangs off grant MEMBERSHIP. It was the `else` of the
+            // ledger branch above, so it ran only while `org.springframework` sat in KAPPA_COVERED_PREFIXES:
+            // MEASURED on the 823-jar corpus with that prefix dropped from the grant, 475 rows lost this `Unknown`
+            // for a non-arming `invisible` (`deny Unknown` 1 -> 0). SPEC §2 `invisible` permits either posture but
+            // this is the gating one, so it must not be traded away by a coverage decision made elsewhere. With
+            // the grant as it is, every call site reaches exactly the same branch as before.
+            if (!pkg.isEmpty() && effect == null
                     && pkg.startsWith("org.springframework")
                     && isSpringIoOwner(min.owner) && !isConventionallyPure(min.name)) {
                 // STRUCTURAL SPRING-FLOOR FIX: org.springframework.* is a κ-covered prefix, so an
@@ -5642,6 +5660,99 @@ public class Candor {
                 ctx.blindDirect.computeIfAbsent(id, k -> new TreeSet<>()).add(pkg);
                 if (R814_DEBUG) System.err.println("KCINHERIT\t" + id + "\t" + min.owner + "." + min.name + "\t" + pkg);
             }
+        }
+    }
+
+    static final boolean FWREACH_DEBUG = System.getenv("CANDOR_FWREACH_DEBUG") != null;
+
+    /** SOUNDNESS R492/R727 — the {@link FrameworkReach} charges for this call site. Two spellings reach the same
+     *  library body and both are asked: the EXTERNAL owner itself, and an inherited member called through a project
+     *  subclass ({@code class Fwd extends RequestProcessor} calling {@code doForward}), which compiles with the
+     *  PROJECT owner and is resolved here exactly as {@link #kappaLedger} resolves it for the ledger — no project
+     *  type declares the member, so the JVM runs the external body {@link #inheritedExternalDeclarers} names. */
+    static List<Effect> frameworkReachCharges(AnalysisContext ctx, MethodScan s, MethodInsnNode min) {
+        if (min.owner.isEmpty() || min.owner.charAt(0) == '[') return List.of();
+        List<Effect> out;
+        String castArm = groovyCastArm(min);
+        if (castArm != null) {
+            out = castArm.isEmpty() ? List.of() : FrameworkReach.charges(
+                    castArm.substring(0, castArm.indexOf('.')), castArm.substring(castArm.indexOf('.') + 1, castArm.indexOf('(')),
+                    castArm.substring(castArm.indexOf('(')));
+        } else if (!ctx.projectClasses.contains(min.owner)) {
+            out = FrameworkReach.charges(min.owner, min.name, min.desc);
+        } else if (ctx.byName.containsKey(min.owner)
+                && !declaresConcrete(ctx.byName.get(min.owner), min.name, min.desc)
+                && nearestConcreteSuper(min.owner, min.name, min.desc) == null
+                && !projectDeclaresMethod(min.owner, min.name, min.desc)) {
+            java.util.EnumSet<Effect> acc = java.util.EnumSet.noneOf(Effect.class);
+            for (String t : inheritedExternalDeclarers(ctx, min.owner, min.name, min.desc))
+                acc.addAll(FrameworkReach.charges(t, min.name, min.desc));
+            out = new ArrayList<>(acc);
+        } else {
+            return List.of();
+        }
+        if (FWREACH_DEBUG && !out.isEmpty())
+            System.err.println("FWREACH\t" + s.id + "\tcall\t" + min.owner + "." + min.name + min.desc + "\t" + out);
+        return out;
+    }
+
+    /** SOUNDNESS R492/R727 — the call-site half of {@link FrameworkReach#hedgeKind}: the external owner, and an
+     *  inherited member reached through a project subclass (resolved exactly as {@link #frameworkReachCharges}). */
+    static void frameworkHedge(AnalysisContext ctx, MethodScan s, MethodInsnNode min, String owner) {
+        if (min.owner.isEmpty() || min.owner.charAt(0) == '[' || groovyCastArm(min) != null) return;
+        if (!ctx.projectClasses.contains(min.owner)) {
+            String hk = FrameworkReach.hedgeKind(min.owner, min.name, min.desc);
+            if (hk != null) discloseFrameworkHedge(ctx, s.id, hk, min.owner, min.name, min.desc, "call");
+        } else if (ctx.byName.containsKey(min.owner)
+                && !declaresConcrete(ctx.byName.get(min.owner), min.name, min.desc)
+                && nearestConcreteSuper(min.owner, min.name, min.desc) == null
+                && !projectDeclaresMethod(min.owner, min.name, min.desc)) {
+            for (String t : inheritedExternalDeclarers(ctx, min.owner, min.name, min.desc)) {
+                String hk = FrameworkReach.hedgeKind(t, min.name, min.desc);
+                if (hk != null) { discloseFrameworkHedge(ctx, s.id, hk, t, min.name, min.desc, "inherited"); break; }
+            }
+        }
+    }
+
+    /** {@code A} is a dispatch the table could not follow; {@code U}/{@code X} are a dependency body this scan
+     *  cannot account for — the registered {@code dep} kind, which projects to {@code unresolved} (SPEC §6.2). */
+    static void discloseFrameworkHedge(AnalysisContext ctx, String id, String kind, String internalOwner, String name,
+            String desc, String spelling) {
+        ctx.direct.get(id).add(Effect.UNKNOWN);
+        ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>()).add(UnknownReason.of(
+                kind.equals("A") ? UnknownReason.Kind.DISPATCH : UnknownReason.Kind.DEP,
+                internalOwner.replace('/', '.') + "." + name));
+        if (FWREACH_DEBUG) System.err.println("FWHEDGE\t" + kind + "\t" + id + "\t" + spelling + "\t"
+                + internalOwner + "." + name + desc);
+    }
+
+    /** Groovy's compiler-emitted cast, {@code ScriptBytecodeAdapter.castToType(Object, Class)} (and the
+     *  {@code DefaultTypeTransformation} body it delegates to), is the largest single source of framework-table
+     *  charges on Groovy-compiled code: its table row is the union over its whole type ladder — {@code asArray ->
+     *  asCollection -> ResourceGroovyMethods.readLines(File)} gives Fs/Log, SAM coercion -> {@code ProxyGenerator}
+     *  -> compilation gives Clock/Net — and groovyc emits it at nearly every typed assignment (measured: ~425 of
+     *  rest-assured's sites cast to {@code String}). The ladder is decided by the CLASS argument, and groovyc
+     *  passes it as an {@code ldc} constant immediately before the call, so for the arms below the body that runs
+     *  is known exactly (javap, groovy-4.0.22 {@code DefaultTypeTransformation.castToType}: after the null /
+     *  {@code Object} / already-an-instance returns, {@code isArray} and {@code isEnum} are false for each of these
+     *  final JDK classes and none is {@code Collection}-assignable, so control reaches the named arm and returns).
+     *  Returns that arm's member ("" for {@code Object}, which returns its argument), or null when the call is not
+     *  such a cast or the class is not a constant one of these — then the member's own row applies. */
+    static String groovyCastArm(MethodInsnNode min) {
+        if (!min.name.equals("castToType") || !min.desc.equals("(Ljava/lang/Object;Ljava/lang/Class;)Ljava/lang/Object;")
+                || !(min.owner.equals("org/codehaus/groovy/runtime/ScriptBytecodeAdapter")
+                     || min.owner.equals("org/codehaus/groovy/runtime/typehandling/DefaultTypeTransformation")))
+            return null;
+        AbstractInsnNode p = min.getPrevious();
+        while (p != null && p.getOpcode() < 0) p = p.getPrevious();       // labels, line numbers, frames
+        if (!(p instanceof LdcInsnNode l) || !(l.cst instanceof Type t) || t.getSort() != Type.OBJECT) return null;
+        switch (t.getInternalName()) {
+            case "java/lang/Object": return "";
+            case "java/lang/String": return "org/codehaus/groovy/runtime/FormatHelper.toString(Ljava/lang/Object;)Ljava/lang/String;";
+            case "java/lang/Character": return "org/codehaus/groovy/runtime/typehandling/ShortTypeHandling.castToChar(Ljava/lang/Object;)Ljava/lang/Character;";
+            case "java/lang/Boolean": return "org/codehaus/groovy/runtime/typehandling/DefaultTypeTransformation.castToBoolean(Ljava/lang/Object;)Z";
+            case "java/lang/Class": return "org/codehaus/groovy/runtime/typehandling/ShortTypeHandling.castToClass(Ljava/lang/Object;)Ljava/lang/Class;";
+            default: return null;
         }
     }
 
@@ -7504,6 +7615,19 @@ public class Candor {
                     Effect eff = Classifier.classify(refOwner, h.getName(), h.getDesc());
                     if (eff != null) dir.add(eff);
                     if (eff != null) markMethodRefLocator(ctx, s, h, eff);
+                    // SOUNDNESS R492/R727 — the reference spelling of a call the framework table charges: one
+                    // operation, two spellings, one verdict (the R923 rule, applied to the generated table).
+                    if (eff == null) {
+                        String hk = FrameworkReach.hedgeKind(h.getOwner(), h.getName(), h.getDesc());
+                        if (hk != null) discloseFrameworkHedge(ctx, id, hk, h.getOwner(), h.getName(), h.getDesc(), "ref");
+                    }
+                    for (Effect fe : FrameworkReach.charges(h.getOwner(), h.getName(), h.getDesc())) {
+                        if (fe == eff) continue;
+                        dir.add(fe);
+                        markMethodRefLocator(ctx, s, h, fe);
+                        if (FWREACH_DEBUG) System.err.println("FWREACH\t" + id + "\tref\t" + h.getOwner() + "."
+                                + h.getName() + h.getDesc() + "\t" + fe);
+                    }
                     // SOUNDNESS R929 — …AND THE κ LEDGER, WHICH THE CALL PATH CONSULTS AND THIS ONE NEVER DID.
                     // `ns.forEach(mc::getDatabase)` read ABSENT where `mc.getDatabase(n)` names
                     // `invisible: [com.mongodb.client]`: a reference to an unclassified member of an uncovered

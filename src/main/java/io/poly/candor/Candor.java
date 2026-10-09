@@ -5040,6 +5040,14 @@ public class Candor {
         // attributes R.run) or an inline lambda (edged at its indy) is already captured; an OPAQUE
         // task — a field, a param, a factory return — has an unknown body, so the handing-off
         // method must read Unknown (parallel to an unpinned `task.run()`), else it is silent-pure.
+        if (isCollectionHandoff(min.owner, min.name, min.desc)) {   // SOUNDNESS R1093
+            ProvValue tasks = provFrames == null ? null : handoffTaskArg(provFrames[mn.instructions.indexOf(min)], min);
+            if (tasks == null || !tasks.nullConst) {
+                dir.add(Effect.UNKNOWN);
+                ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                        .add(UnknownReason.of(UnknownReason.Kind.TASK_HANDOFF, owner + "." + min.name));
+            }
+        }
         if ((isExecutorHandoff(min.owner, min.name, min.desc)
                 || isSyncCallbackInvoker(min.owner, min.name, min.desc)) && provFrames != null) {
             ProvValue task = handoffTaskArg(provFrames[mn.instructions.indexOf(min)], min);
@@ -10459,7 +10467,23 @@ public class Candor {
                     || name.equals("scheduleAtFixedRate") || name.equals("scheduleWithFixedDelay"))) return true;
         if (owner.equals("java/util/concurrent/CompletableFuture") && COMPLETABLE_FUTURE_VERBS.contains(name))
             return true;
+        // SOUNDNESS R1093 — `ForkJoinTask.adapt(task)` / `adaptInterruptible(task)` wrap the task in a ForkJoinTask that
+        // `pool.invoke`/`fork`/`submit` then RUNS: the hand-off happens here, exactly as at `new Thread(task)`, and an
+        // opaque task was silent (EXECUTED: the runnable wrote its file; `deny Fs` and `deny Unknown` exited 0).
+        if (owner.equals("java/util/concurrent/ForkJoinTask") && (name.equals("adapt") || name.equals("adaptInterruptible")))
+            return true;
         return owner.equals("java/util/Timer") && TIMER_VERBS.contains(name);
+    }
+
+    /** SOUNDNESS R1093 — {@code invokeAll}/{@code invokeAny} hand a COLLECTION of tasks to an executor, which runs
+     *  them. {@link #isExecutorHandoff} keys on a task-typed FIRST parameter, so these two verbs were never a
+     *  hand-off at all and an opaque collection of {@code Callable}s read PURE while {@code submit(task)} on the same
+     *  executor disclosed. EXECUTED: each task wrote its file; {@code deny Fs} and {@code deny Unknown} exited 0. The
+     *  elements cannot be resolved from a collection value, so the call discloses whatever the collection is, unless
+     *  it is provably {@code null}; tasks written as lambdas are ALSO edged at their creation site, as before. */
+    static boolean isCollectionHandoff(String owner, String name, String desc) {
+        return desc != null && desc.startsWith("(Ljava/util/Collection;") && EXECUTOR_OWNERS.contains(owner)
+                && (name.equals("invokeAll") || name.equals("invokeAny"));
     }
 
     static boolean isSyncCallbackInvoker(String owner, String name, String desc) {

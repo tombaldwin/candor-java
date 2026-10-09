@@ -9,6 +9,9 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **`invokeAll`/`invokeAny` and `ForkJoinTask.adapt` are task hand-offs (SOUNDNESS R1093).** An opaque collection of
+  tasks handed to an executor, or an opaque task wrapped by `ForkJoinTask.adapt`/`adaptInterruptible`, read pure while
+  `submit(task)` disclosed; each now discloses `task-handoff:` `Unknown`. A provably-null collection does not.
 - ⚠ **JDK 25 callback invokers with an opaque argument now disclose (SOUNDNESS R1092).** `ScopedValue.where(..).call(op)`
   and `StableValue.orElseSet(supplier)` ran the argument while reading pure. The pinned JDK indexes (R1094) carry their
   facts, and an opaque argument to a JDK method the index proves invokes it is now gated by the JDK's own

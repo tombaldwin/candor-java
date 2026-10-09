@@ -11,6 +11,7 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## [0.40.3] — 2026-10-09
 
+- **`jbang-catalog.json` points at the v0.40.3 jar.**
 - ⚠ **The framework table's JDK package list is now a checked-in input, so the table no longer depends on the
   machine that generated it.** `framework-hedge.tsv`'s `J` lines came from the module list of whatever JDK ran
   `derive.sh`, and the scans read the caller's `CANDOR_*` environment. The committed table had been made under a

@@ -55,9 +55,37 @@ direct call to that JDK member is. R814 (`KappaJdkSinks`) is that frontier; this
   over-charge on the other version, never a purity claim. Charges in only one of two surveyed versions
   (61, all struts 1.2.9 vs 1.3.10) are made nowhere.
 
-## Inherited, not introduced
+## Inherited leaf over-charges, and the `P` lines (SOUNDNESS R1052)
 
-Three over-charges ride through the table from LEAF rules that already fire at a direct call on v0.40.1
-(SOUNDNESS R1052): `URL.openStream` is charged `Net` whatever its scheme (class-path config reads); a
-whole-owner rule fires on its owner's own PRIVATE helpers (`RestTemplate.<init>(List)` →
-`validateConverters` → Net); Spring AI's blanket model-SDK rule charges getters `Llm`.
+Three over-charges rode through the table from LEAF rules that fire at a direct call (v0.40.1/0.40.2). Each is
+fixed in the leaf; the table inherits the fix by regeneration.
+
+* **`URL.openStream`/`openConnection` → `Net` whatever the scheme.** A URL provably obtained from the program's
+  OWN class loaders (`X.class.getResource`, `this.getClass()…`, `X.class.getClassLoader().getResource(s)`,
+  `ClassLoader.getSystemResource(s)`, an element of their `getResources`, and the `URLConnection` its no-arg
+  `openConnection()` returns) is read as `Fs` — the `getResourceAsStream` read by another spelling. Provenance
+  is `Interp.ProvValue#urlOrigin`. A loader that arrives as a parameter, a field, from
+  `Thread.getContextClassLoader()` or from `new URLClassLoader(…)` is NOT trusted: a remote loader's
+  `getResource(..).openStream()` was EXECUTED sending `HEAD`+`GET` to its server. So groovy
+  `URLStreams.openUncachedStream(URL)` (a parameter) and JNA `Native.extractFromResourcePath` (a caller's loader
+  or the context loader) keep `Net` — undecidable from the body, charged, not silent.
+* **A whole-owner rule on members that do nothing**, and **Spring AI's model-SDK blanket on getters** — one
+  mechanism, the `P` lines of `framework-hedge.tsv`: a member a NAME rule charges (an owner-blanket classifier rule
+  or the model-SDK blanket) whose surveyed body, and everything it can run, `FrameworkReachGen#computePure`
+  PROVES pure (an allowlist of JDK members, statically-resolved surveyed bodies, no lambdas, no unresolved
+  dispatch). The engine drops the name rule there and nowhere else. It is NOT "any private helper inside the
+  owner": that was built first and measured losing `KafkaTemplate.receive`'s Net through a private helper whose
+  real I/O sits behind an interface (and the java κ lane lost Mongo `deleteAll` the same way). A pure member
+  whose RETURN type carries the I/O to a later call the hedge can only disclose (`MongoTemplate.query(X.class)`
+  → `.all()` on an interface) keeps the rule, which is why derive.sh iterates the P list to a fixed point over
+  the closed effects. And inside a LIBRARY body the drop is honoured only where the table can see the whole
+  closure (`FrameworkReachGen` step 5a): measured, `RabbitMessagingTemplate.receiveAndConvert(Class)` reaches the
+  broker through the abstract `doReceive`, and its only table charge was the blanket on its own (pure)
+  `resolveDestination()` — dropping it removed the row and `RabbitMessageOperations.receiveAndConvert`'s `A`
+  hedge. A body whose closure reaches such an unfollowable dispatch keeps the rule's charge (81 bodies).
+  RestTemplate's three constructors are also carved out of its whole-owner rule by hand (javap: they only
+  allocate); `new RestTemplate()` and `(ClientHttpRequestFactory)` keep `Net` in the table by 5a.
+
+The residual is the table's own: a P line is a claim about the body the JVM resolves in the SURVEYED version, not
+an override shipped in another jar (a PROJECT override is still reached by CHA — pinned in
+`LeafOverChargeR1052Test`).

@@ -37,13 +37,14 @@ while IFS=$'\t' read -r jar coord url sha; do
   if [ "$got" != "$sha" ]; then echo "derive: $jar is $got, sources.tsv pins $sha ($coord) — refusing" >&2; exit 1; fi
 done < "$HERE/sources.tsv"
 
-# 2. the engine's own scan of each jar, table OFF
-export J JAR LIB WORK
-cut -f1 "$HERE/sources.tsv" | sed '/^$/d' | (cd "$WORK" && xargs -P "$JOBS" -n 1 sh -c \
-  '"$J/java" -Xmx4g -Dcandor.frameworkReach=off -jar "$JAR" "$LIB/$0" --json "$WORK/rep/$0.json" >/dev/null 2>"$WORK/rep/$0.err" || { echo "derive: scan of $0 failed" >&2; exit 255; }')
-for jar in $(cut -f1 "$HERE/sources.tsv"); do
-  [ -s "$WORK/rep/$jar.json" ] || { echo "derive: no report for $jar" >&2; exit 1; }
-done
+# 1b. SOUNDNESS R1052 — the P list: members a NAME rule charges whose surveyed body is proven pure. Its first cut is
+# read from the BYTECODE alone (no scan) and handed to the scans below, because with the table off a library body that
+# calls such a member must not pick up the rule's charge either, or the table would re-learn it. Whether a member's
+# RETURN type is inert needs the closed effects, which need the scans — so steps 2-4 iterate until the generator
+# reproduces the list it was given. It only shrinks (a dropped P line restores a charge), so this terminates.
+"$J/javac" -nowarn -cp "$JAR" -d "$WORK/tool" "$HERE/FrameworkReachGen.java"
+PJARS=(); for jar in $(cut -f1 "$HERE/sources.tsv"); do PJARS+=("$LIB/$jar"); done
+"$J/java" -Xmx8g -cp "$WORK/tool:$JAR" io.poly.candor.FrameworkReachGen --pure-only "$WORK/pure.txt" "${PJARS[@]}"
 
 # 3. header: the generator checksum and every source, so a table always says what it was built from
 GSHA="$(cat "$HERE/FrameworkReachGen.java" "$HERE/derive.sh" "$HERE/sources.tsv" | shasum -a 256 | cut -d' ' -f1)"
@@ -59,11 +60,27 @@ GSHA="$(cat "$HERE/FrameworkReachGen.java" "$HERE/derive.sh" "$HERE/sources.tsv"
   while IFS=$'\t' read -r jar coord url sha; do [ -n "$jar" ] && echo "# source $coord $sha"; done < "$HERE/sources.tsv"
 } > "$WORK/header"
 
-# 4. generate
-"$J/javac" -nowarn -cp "$JAR" -d "$WORK/tool" "$HERE/FrameworkReachGen.java"
+export J JAR LIB WORK
 ARGS=()
 for jar in $(cut -f1 "$HERE/sources.tsv"); do ARGS+=("$LIB/$jar" "$WORK/rep/$jar.json"); done
-"$J/java" -Xmx8g -Dframework.hedgeOut="$WORK/hedge.tsv" -cp "$WORK/tool:$JAR" io.poly.candor.FrameworkReachGen "$WORK/table.tsv" "$WORK/witness.tsv" "$WORK/header" "${ARGS[@]}"
+iter=0
+while :; do
+  iter=$((iter + 1))
+  [ "$iter" -le 6 ] || { echo "derive: the P list did not reach a fixed point in 6 rounds" >&2; exit 1; }
+  # 2. the engine's own scan of each jar, table OFF, the current P list ON
+  rm -f "$WORK"/rep/*.json
+  cut -f1 "$HERE/sources.tsv" | sed '/^$/d' | (cd "$WORK" && xargs -P "$JOBS" -n 1 sh -c \
+    '"$J/java" -Xmx4g -Dcandor.frameworkReach=off -Dcandor.frameworkPure="$WORK/pure.txt" -jar "$JAR" "$LIB/$0" --json "$WORK/rep/$0.json" >/dev/null 2>"$WORK/rep/$0.err" || { echo "derive: scan of $0 failed" >&2; exit 255; }')
+  for jar in $(cut -f1 "$HERE/sources.tsv"); do
+    [ -s "$WORK/rep/$jar.json" ] || { echo "derive: no report for $jar" >&2; exit 1; }
+  done
+  # 4. generate (and the next P list)
+  "$J/java" -Xmx8g -Dframework.hedgeOut="$WORK/hedge.tsv" -Dframework.pureIn="$WORK/pure.txt" -Dframework.pureOut="$WORK/pure.next" \
+    -cp "$WORK/tool:$JAR" io.poly.candor.FrameworkReachGen "$WORK/table.tsv" "$WORK/witness.tsv" "$WORK/header" "${ARGS[@]}"
+  if cmp -s "$WORK/pure.txt" "$WORK/pure.next"; then break; fi
+  echo "derive: P list round $iter: $(wc -l < "$WORK/pure.txt") -> $(wc -l < "$WORK/pure.next")" >&2
+  mv "$WORK/pure.next" "$WORK/pure.txt"
+done
 
 TABLE="$ROOT/src/main/resources/candor/framework-reach.tsv"
 HEDGE="$ROOT/src/main/resources/candor/framework-hedge.tsv"

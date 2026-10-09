@@ -14,6 +14,7 @@ import java.security.MessageDigest;
 import java.util.*;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
+import org.objectweb.asm.Type;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Handle;
 import org.objectweb.asm.Opcodes;
@@ -125,59 +126,16 @@ public class FrameworkReachGen {
     static Integer node(int j, String owner, String nameDesc) { return nodeId.get(j + "|" + owner + "." + nameDesc); }
 
     public static void main(String[] a) throws Exception {
+        if (a.length > 0 && a[0].equals("--pure-only")) { pureOnly(a); return; }
         Path out = Path.of(a[0]), witness = Path.of(a[1]);
         hedgeOut = System.getProperty("framework.hedgeOut");
         List<String> header = Files.readAllLines(Path.of(a[2]), StandardCharsets.UTF_8);
         List<String[]> pairs = new ArrayList<>();
         for (int i = 3; i + 1 < a.length; i += 2) pairs.add(new String[] { a[i], a[i + 1] });
         pairs.sort(Comparator.comparing(p -> Path.of(p[0]).getFileName().toString()));
-
-        // 1. load classes
-        for (String[] p : pairs) {
-            int j = jarNames.size();
-            jarNames.add(Path.of(p[0]).getFileName().toString());
-            Map<String, ClassNode> m = new TreeMap<>();
-            try (ZipFile z = new ZipFile(p[0])) {
-                List<? extends ZipEntry> es = Collections.list(z.entries());
-                es.sort(Comparator.comparing(ZipEntry::getName));
-                for (ZipEntry e : es) {
-                    String n = e.getName();
-                    if (!n.endsWith(".class") || n.startsWith("META-INF/") || n.endsWith("module-info.class")
-                            || n.endsWith("package-info.class")) continue;
-                    ClassNode cn = new ClassNode();
-                    try (InputStream in = z.getInputStream(e)) { new ClassReader(in).accept(cn, ClassReader.SKIP_FRAMES); }
-                    catch (RuntimeException ex) { continue; }
-                    m.putIfAbsent(cn.name, cn);
-                }
-            }
-            jarClasses.add(m);
-            for (String c : m.keySet()) classJars.computeIfAbsent(c, k -> new ArrayList<>()).add(j);
-        }
-        // 2. nodes
-        List<String> keys = new ArrayList<>();
-        for (int j = 0; j < jarClasses.size(); j++)
-            for (ClassNode cn : jarClasses.get(j).values())
-                for (MethodNode mn : cn.methods)
-                    if ((mn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE)) == 0)
-                        keys.add(String.format("%04d", j) + "|" + cn.name + "." + mn.name + mn.desc);
-        Collections.sort(keys);
-        Map<String, MethodNode> byKey = new HashMap<>();
-        for (int j = 0; j < jarClasses.size(); j++)
-            for (ClassNode cn : jarClasses.get(j).values())
-                for (MethodNode mn : cn.methods) byKey.put(j + "|" + cn.name + "." + mn.name + mn.desc, mn);
-        for (String k : keys) {
-            int bar = k.indexOf('|');
-            int j = Integer.parseInt(k.substring(0, bar));
-            String rest = k.substring(bar + 1);
-            String owner = rest.substring(0, rest.lastIndexOf('.', rest.indexOf('(')));
-            String id = j + "|" + rest;
-            nodeId.put(id, nodeKey.size());
-            nodeKey.add(rest);
-            nodeMethod.add(byKey.get(id));
-            nodeOwner.add(owner);
-            nodeJar.add(j);
-        }
+        loadUniverse(pairs);
         int N = nodeKey.size();
+        computePure();
         // 3. direct effects from the engine's own scan
         int[] eff = new int[N];
         int[][] ptr = new int[N][];
@@ -238,6 +196,67 @@ public class FrameworkReachGen {
                 if (!inWl[p]) { wl.add(p); inWl[p] = true; }
             }
         }
+        // 5a. SOUNDNESS R1052 — A P LINE IS HONOURED INSIDE A LIBRARY BODY ONLY WHERE THE TABLE CAN SEE THE WHOLE CLOSURE.
+        // The scans dropped the name rule at every call to a P member. Where a body ALSO reaches a dispatch the table
+        // cannot follow (an abstract member with an effectful or unknown implementer, or an unsurveyed owner, that no
+        // rule charges), that dropped charge was the only thing standing in for the hidden one. MEASURED:
+        // RabbitMessagingTemplate.receiveAndConvert(Class) reached the broker through the ABSTRACT doReceive, and its
+        // only table charge was the blanket on its own resolveDestination() — a P member. Dropped, the row vanished,
+        // RabbitMessageOperations.receiveAndConvert lost its `A` hedge, and a consumer's call read silent. So for a body
+        // whose closure is OPAQUE, the rule's charge on every P call it reaches is put back; a FOLLOWABLE closure keeps
+        // the drop, because there the table's own answer is complete.
+        String pin0 = System.getProperty("framework.pureIn");
+        Set<String> pureKeys = new HashSet<>(PURE);
+        if (pin0 != null) pureKeys.retainAll(Files.readAllLines(Path.of(pin0), StandardCharsets.UTF_8));
+        int[] dropC = new int[N];
+        boolean[] opaqueC = new boolean[N];
+        for (int n = 0; n < N; n++) {
+            MethodNode mn = nodeMethod.get(n);
+            if (mn.instructions == null) continue;
+            for (AbstractInsnNode in : mn.instructions) {
+                if (!(in instanceof MethodInsnNode m) || m.owner.startsWith("[")) continue;
+                if (pureKeys.contains(m.owner + "." + m.name + m.desc)) dropC[n] |= ruleMask(m.owner, m.name, m.desc);
+                else if (!jdkOwner(m.owner) && !loggingFrontier(m.owner) && !runtimeOwner(m.owner)
+                        && !ruleCharges(m.owner, m.name, m.desc) && resolve(nodeJar.get(n), m.owner, m.name, m.desc).isEmpty()
+                        && (!classJars.containsKey(m.owner) || implementersUnvouched(m.owner, m.name, m.desc, eff)))
+                    opaqueC[n] = true;
+            }
+        }
+        {   // close both over the same statically-resolved edges, callers inherit from callees
+            ArrayDeque<Integer> q = new ArrayDeque<>();
+            boolean[] inq = new boolean[N];
+            for (int n = 0; n < N; n++) if (dropC[n] != 0 || opaqueC[n]) { q.add(n); inq[n] = true; }
+            while (!q.isEmpty()) {
+                int n = q.poll(); inq[n] = false;
+                for (int p : pred[n]) {
+                    int nd = dropC[p] | dropC[n];
+                    boolean no = opaqueC[p] || opaqueC[n];
+                    if (nd != dropC[p] || no != opaqueC[p]) { dropC[p] = nd; opaqueC[p] = no; if (!inq[p]) { q.add(p); inq[p] = true; } }
+                }
+            }
+        }
+        int reapplied = 0;
+        for (int n = 0; n < N; n++) if (opaqueC[n] && (dropC[n] & ~eff[n]) != 0) { eff[n] |= dropC[n]; reapplied++; }
+        System.err.println("framework-reach: " + reapplied + " bodies keep a P member's rule charge (opaque closure)");
+        // 5b. SOUNDNESS R1052 — the P list for the NEXT iteration: this run's candidates, restricted to the list the
+        // scans were given (-Dframework.pureIn), whose return type is inert under these closed effects. derive.sh
+        // stops when it reproduces its input.
+        EFF = eff;
+        TreeSet<String> pureIn = new TreeSet<>(PURE);
+        String pin = System.getProperty("framework.pureIn");
+        if (pin != null) pureIn.retainAll(Files.readAllLines(Path.of(pin), StandardCharsets.UTF_8));
+        TreeSet<String> pureNext = new TreeSet<>();
+        for (String k : pureIn) {
+            String desc = k.substring(k.indexOf('('));
+            if (returnTypeInert(Type.getReturnType(desc), PURE_JAR.get(k))) pureNext.add(k);
+        }
+        String pout = System.getProperty("framework.pureOut");
+        if (pout != null) {
+            StringBuilder pb = new StringBuilder();
+            for (String k : pureNext) pb.append(k).append('\n');
+            Files.writeString(Path.of(pout), pb.toString(), StandardCharsets.UTF_8);
+        }
+        PURE.clear(); PURE.addAll(pureIn);          // the hedge's P lines are the list the scans used
         // 6. entries: every consumer-callable member of every public class under a covered prefix
         TreeMap<String, TreeMap<Integer, Integer>> perJar = new TreeMap<>();   // key -> jar -> mask
         TreeMap<String, TreeMap<Integer, int[]>> roots = new TreeMap<>();      // key -> jar -> resolved roots
@@ -293,8 +312,10 @@ public class FrameworkReachGen {
                 for (int r : roots.get(key).get(j)) if ((eff[r] & (1 << i)) != 0) { start = r; break; }
                 StringJoiner path = new StringJoiner(" > ");
                 int cur = start, guard = 0;
+                if (start < 0) path.add("(no single body: re-applied rule charge, R1052 5a)");
                 while (cur >= 0 && guard++ < 10_000) {
                     path.add(nodeKey.get(cur));
+                    if (ptr[cur] == null || ptr[cur][i] < 0) { path.add("(R1052 5a: a P member's rule charge kept — opaque closure)"); break; }
                     int nx = ptr[cur][i];
                     if (nx == cur) break;
                     cur = nx;
@@ -310,6 +331,7 @@ public class FrameworkReachGen {
             for (String c : SURVEYED) hl.add("S\t" + c);
             for (Map.Entry<String, String> h : HEDGE.entrySet())
                 if (!charged.contains(h.getKey())) hl.add(h.getValue() + "\t" + h.getKey());
+            for (String pk : PURE) hl.add("P\t" + pk);
             Collections.sort(hl);
             MessageDigest hm = MessageDigest.getInstance("SHA-256");
             for (String r : hl) hm.update((r + "\n").getBytes(StandardCharsets.UTF_8));
@@ -317,6 +339,7 @@ public class FrameworkReachGen {
             for (String h : header) hb.append(h).append('\n');
             hb.append("# hedge: J = a JDK package (runtime), S = a surveyed framework class, A/U = a framework member the\n");
             hb.append("# table cannot vouch for (A: no body — dispatch; U: the scan read it only as Unknown). See FrameworkReach.\n");
+            hb.append("# P = a member a NAME rule charges whose surveyed body is a proven-pure field accessor (R1052).\n");
             hb.append("# entries ").append(hl.size()).append('\n');
             hb.append("# content-sha256 ").append(HexFormat.of().formatHex(hm.digest())).append('\n');
             for (String r : hl) hb.append(r).append('\n');
@@ -337,6 +360,305 @@ public class FrameworkReachGen {
         Files.writeString(witness, wb.toString(), StandardCharsets.UTF_8);
         System.err.println("framework-reach: " + N + " bodies, " + perJar.size() + " callable members, "
                 + rows.size() + " charged rows");
+    }
+
+
+    // ── SOUNDNESS R1052(b,c) — RULE-CHARGED MEMBERS WHOSE BODY IS A PROVEN-PURE ACCESSOR ─────────────────────────
+    /** {@code P} lines: a member a NAME rule charges — the model-SDK blanket ({@link Rules#isModelSdkOwner}) or an
+     *  OWNER-BLANKET classifier rule ({@link Candor#isOwnerBlanketRule}) — whose resolved body, and everything it can
+     *  run, was READ here and does nothing. Such a rule is a summary of a body nobody read; for these members the
+     *  body was read. Measured instances: Spring AI {@code Prompt.getOptions()} ({@code aload_0; getfield; areturn})
+     *  charged {@code Llm,Net} at every call; spring-web {@code RestTemplate.validateConverters} (two
+     *  {@code Assert} checks) charged {@code Net} inside every RestTemplate constructor.
+     *
+     *  <p>PROVEN, NOT ASSUMED — this is a purity claim, so every gap answers "not pure" and keeps the rule. A body is
+     *  pure when every instruction is one of: a field/array/stack/arith/branch/throw op; a call to a surveyed body that
+     *  is itself pure (STATICALLY RESOLVED, as the table's own edges are — never an abstract/interface member, never
+     *  an unsurveyed or logging-frontier owner); or a JDK call on {@link #safeJdk}'s ALLOWLIST (the safe direction for
+     *  a purity claim: a member missing from it keeps the rule). A NEW or static access to a surveyed class also
+     *  needs that class's {@code <clinit>} chain pure; to an unsurveyed non-JDK class it disqualifies. No lambdas or
+     *  method references; string concatenation only over strings and primitives (an object operand calls its
+     *  {@code toString}). The residual is the table's own: the claim is about the body the JVM resolves in the
+     *  SURVEYED version, never an override shipped in another jar. */
+    static final TreeSet<String> PURE = new TreeSet<>();
+    static final Map<String, Integer> PURE_JAR = new HashMap<>();
+    static boolean[] pureNode;
+    /** The closed effect masks of the main run, read by {@link #returnTypeInert}. */
+    static int[] EFF;
+
+    static void pureOnly(String[] a) throws Exception {
+        List<String[]> pairs = new ArrayList<>();
+        for (int i = 2; i < a.length; i++) pairs.add(new String[] { a[i], null });
+        pairs.sort(Comparator.comparing(p -> Path.of(p[0]).getFileName().toString()));
+        loadUniverse(pairs);
+        computePure();
+        StringBuilder sb = new StringBuilder();
+        for (String k : PURE) sb.append(k).append('\n');
+        Files.writeString(Path.of(a[1]), sb.toString(), StandardCharsets.UTF_8);
+        System.err.println("framework-reach: " + PURE.size() + " proven-pure rule-charged members");
+    }
+
+    static Set<String> JDK_PKG_SET;
+
+    static boolean jdkOwner(String internal) {
+        if (JDK_PKG_SET == null) JDK_PKG_SET = new HashSet<>(jdkPackages());
+        int sl = internal.lastIndexOf('/');
+        return sl > 0 && JDK_PKG_SET.contains(internal.substring(0, sl).replace('/', '.'));
+    }
+
+    /** The JDK members a pure body may call: an ALLOWLIST of owners whose members neither perform an effect nor call
+     *  back into code handed to them, further gated on the classifier (and R814's JDK sinks) charging nothing. Members
+     *  taking an {@code Object}/functional parameter are refused unless they cannot invoke it (requireNonNull, list
+     *  ADD — which, unlike a hash-set add or a map put, never calls {@code equals}/{@code hashCode}). */
+    static boolean safeJdk(String owner, String name, String desc) {
+        String dotted = owner.replace('/', '.');
+        if (Classifier.classify(dotted, name, desc) != null) return false;
+        if (KappaJdkSinks.charge(dotted, name, desc) != null || !KappaJdkSinks.alsoCharges(dotted, name, desc).isEmpty()) return false;
+        boolean ownerOk = switch (owner) {
+            case "java/lang/Object" -> name.equals("<init>") || name.equals("getClass");
+            case "java/lang/String", "java/lang/StringBuilder", "java/lang/Integer", "java/lang/Long", "java/lang/Boolean",
+                 "java/lang/Double", "java/lang/Float", "java/lang/Short", "java/lang/Byte", "java/lang/Character",
+                 "java/lang/Math", "java/lang/Number", "java/lang/Enum",
+                 "java/util/Objects", "java/util/Optional", "java/util/Collections", "java/util/Arrays",
+                 "java/util/List", "java/util/ArrayList", "java/util/LinkedList", "java/util/Collection",
+                 "java/util/Iterator", "java/util/ListIterator", "java/util/Set", "java/util/Map",
+                 "java/util/HashMap", "java/util/LinkedHashMap", "java/util/HashSet", "java/util/LinkedHashSet",
+                 "java/util/Map$Entry", "java/util/EnumMap", "java/util/EnumSet", "java/util/concurrent/ConcurrentHashMap",
+                 "java/util/regex/Pattern", "java/util/regex/Matcher" -> true;
+            default -> name.equals("<init>") && (owner.endsWith("Exception") || owner.endsWith("Error"))
+                    && owner.startsWith("java/lang/");
+        };
+        if (!ownerOk) return false;
+        if (owner.equals("java/lang/String") && (name.equals("format") || name.equals("formatted"))) return false;
+        // a call that can run code it was handed, or a contract method (toString/equals/hashCode/compareTo) of an
+        // argument whose type nobody here knows
+        for (Type t : Type.getArgumentTypes(desc)) {
+            if (t.getSort() == Type.ARRAY) t = t.getElementType();
+            if (t.getSort() != Type.OBJECT) continue;
+            String n = t.getInternalName();
+            if (n.equals("java/lang/String") || n.equals("java/lang/Integer") || n.equals("java/lang/Long")
+                    || n.equals("java/lang/Boolean") || n.equals("java/lang/CharSequence")) continue;
+            boolean cannotInvoke = (owner.equals("java/util/Objects") && name.startsWith("requireNonNull") && !desc.contains("Ljava/util/function/"))
+                    || ((name.equals("add") || name.equals("addAll") || name.equals("set") || name.equals("<init>"))
+                        && (owner.equals("java/util/List") || owner.equals("java/util/ArrayList")
+                            || owner.equals("java/util/LinkedList") || owner.equals("java/util/Collection")))
+                    || (owner.equals("java/util/Optional") && (name.equals("of") || name.equals("ofNullable")))
+                    || (owner.equals("java/util/Collections") && name.startsWith("unmodifiable"))
+                    || (owner.equals("java/util/Arrays") && name.equals("asList"))
+                    || (owner.equals("java/util/Collection") && name.equals("toArray"))
+                    || (owner.equals("java/util/List") && name.equals("toArray"));
+            if (!cannotInvoke) return false;
+        }
+        return true;
+    }
+
+    static void computePure() {
+        int N = nodeKey.size();
+        pureNode = new boolean[N];
+        Arrays.fill(pureNode, true);
+        // local pass: instructions that are never pure, whatever they call
+        List<List<Integer>> deps = new ArrayList<>(N);
+        for (int n = 0; n < N; n++) {
+            List<Integer> d = new ArrayList<>();
+            if (!localPure(n, d)) pureNode[n] = false;
+            deps.add(d);
+        }
+        // greatest fixpoint: a body is pure only while every body it can run is
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            for (int n = 0; n < N; n++) {
+                if (!pureNode[n]) continue;
+                for (int t : deps.get(n)) if (t < 0 || !pureNode[t]) { pureNode[n] = false; changed = true; break; }
+            }
+        }
+        for (int j = 0; j < jarClasses.size(); j++) {
+            for (ClassNode cn : jarClasses.get(j).values()) {
+                int sl = cn.name.lastIndexOf('/');
+                if (sl <= 0 || (cn.access & Opcodes.ACC_INTERFACE) != 0) continue;
+                String dotted = cn.name.replace('/', '.');
+                if (!Candor.kappaCovers(cn.name.substring(0, sl).replace('/', '.')) || runtimeOwner(cn.name)) continue;
+                Set<String> sigs = new TreeSet<>(visibleSignatures(j, cn));
+                for (MethodNode mn : cn.methods) if ((mn.access & Opcodes.ACC_PRIVATE) != 0) sigs.add(mn.name + mn.desc);
+                for (String sig : sigs) {
+                    int p = sig.indexOf('(');
+                    String name = sig.substring(0, p), desc = sig.substring(p);
+                    if (name.equals("<clinit>")) continue;
+                    boolean ruled = (Rules.isModelSdkOwner(dotted) && !name.equals("<init>") && !Rules.isSpringAiPureBuilder(dotted, name))
+                            || (Classifier.classify(dotted, name, desc) != null && Candor.isOwnerBlanketRule(dotted, desc));
+                    if (!ruled) continue;
+                    List<Integer> tg = resolve(j, cn.name, name, desc);
+                    if (tg.isEmpty()) continue;
+                    boolean all = true;
+                    for (int t : tg) if (!pureNode[t]) { all = false; break; }
+                    // a static member or a constructor also runs the class initialiser chain (JVMS 5.5) — except a
+                    // PRIVATE static, which only the class itself can call, after its initialiser has run
+                    MethodNode decl = nodeMethod.get(tg.get(0));
+                    boolean privateStatic = (decl.access & (Opcodes.ACC_STATIC | Opcodes.ACC_PRIVATE))
+                            == (Opcodes.ACC_STATIC | Opcodes.ACC_PRIVATE);
+                    if (all && !privateStatic && ((decl.access & Opcodes.ACC_STATIC) != 0 || name.equals("<init>")))
+                        for (int c : clinits(j, cn.name)) if (!pureNode[c]) { all = false; break; }
+                    if (all) { PURE.add(cn.name + "." + sig); PURE_JAR.putIfAbsent(cn.name + "." + sig, j); }
+                }
+            }
+        }
+    }
+
+    static final Map<String, Boolean> INERT = new HashMap<>();
+
+    /** Whether a value of type {@code t} cannot carry I/O to a later call that only the factory's blanket charged: a
+     *  primitive, a JDK VALUE or collection type (java.lang / java.util — not java.util.concurrent or java.util.stream,
+     *  whose futures and streams run deferred work — java.time, java.math, java.net.URI), or a SURVEYED framework type
+     *  none of whose ABSTRACT members a consumer can call is one the hedge discloses as `dispatch:` (an implementer the
+     *  table charges or could read only as Unknown, or none — {@link #implementersUnvouched}, the A-line rule itself).
+     *  Measured reason: MongoTemplate.query(X.class) is pure, and the Db is `.all()` on the ExecutableFind INTERFACE it
+     *  returns, hedged `dispatch:` — so dropping the blanket on query() turned `deny Db` 1 -> 0 behind an Unknown. A
+     *  CONCRETE member is answered at the consumer by the table from its own body, and an abstract member a NAME rule
+     *  charges at the consumer's own call (Spring AI's {@code ChatOptions.copy()} under the model-SDK blanket) keeps
+     *  that charge — neither can lose its label this way. One level deep; anything unsurveyed is not inert. Needs the closed effect masks, which is why derive.sh
+     *  iterates the P list to a fixed point (fewer P lines -> more charges -> fewer inert types, so it only shrinks). */
+    static boolean returnTypeInert(Type t, int j) {
+        if (t.getSort() == Type.ARRAY) t = t.getElementType();
+        if (t.getSort() != Type.OBJECT) return true;
+        String n = t.getInternalName();
+        if (jdkOwner(n)) return (n.startsWith("java/lang/") && !n.startsWith("java/lang/reflect/") && !n.startsWith("java/lang/invoke/")
+                        && !n.equals("java/lang/Thread") && !n.equals("java/lang/Process") && !n.equals("java/lang/ClassLoader")
+                        && !n.equals("java/lang/Runnable") && !n.equals("java/lang/AutoCloseable") && !n.equals("java/lang/Readable")
+                        && !n.equals("java/lang/Appendable"))
+                || (n.startsWith("java/util/") && !n.startsWith("java/util/concurrent/") && !n.startsWith("java/util/stream/")
+                        && !n.startsWith("java/util/function/") && !n.startsWith("java/util/logging/") && !n.startsWith("java/util/jar/")
+                        && !n.startsWith("java/util/zip/") && !n.equals("java/util/Scanner") && !n.equals("java/util/Timer"))
+                || n.startsWith("java/time/") || n.startsWith("java/math/") || n.equals("java/net/URI");
+        Boolean m = INERT.get(n);
+        if (m != null) return m;
+        INERT.put(n, false);                        // a cycle is not a proof
+        int cj = jarOf(j, n);
+        ClassNode c = cls(cj, n);
+        boolean r = c != null && !loggingFrontier(n) && !runtimeOwner(n);
+        if (r) {
+            for (String sig : visibleSignatures(cj, c)) {
+                int p = sig.indexOf('(');
+                String name = sig.substring(0, p), desc = sig.substring(p);
+                if (name.equals("<init>") || name.equals("<clinit>")) continue;
+                List<Integer> tg = resolve(cj, n, name, desc);
+                // A CONCRETE member is answered at the consumer by its own body — the table charges what it reaches —
+                // so it cannot lose its label to this. An ABSTRACT one is where the factory's blanket was the only
+                // concrete charge the chain carried (the consumer otherwise gets a `dispatch:` Unknown), so it must be
+                // pure through every surveyed implementer.
+                if (tg.isEmpty() && implementersUnvouched(n, name, desc, EFF) && !ruleCharges(n, name, desc)) r = false;
+                if (!r) break;
+            }
+        }
+        INERT.put(n, r);
+        return r;
+    }
+
+    /** The effects the NAME rule(s) a P line overrides would charge at a call to {@code owner.name+desc}. */
+    static int ruleMask(String owner, String name, String desc) {
+        String dotted = owner.replace('/', '.');
+        int m = 0;
+        Effect e = Classifier.classify(dotted, name, desc);
+        if (e != null && e != Effect.UNKNOWN) m |= bit(e.specName());
+        if (Rules.isModelSdkOwner(dotted) && !name.equals("<init>") && !Rules.isSpringAiPureBuilder(dotted, name))
+            m |= bit(Effect.LLM.specName()) | bit(Effect.NET.specName());
+        return m;
+    }
+
+    /** Whether a consumer's own call to {@code owner.name+desc} is charged by a NAME rule (classifier or model-SDK
+     *  blanket) — the charge an abstract member keeps regardless of what the factory that produced its receiver got. */
+    static boolean ruleCharges(String owner, String name, String desc) {
+        String dotted = owner.replace('/', '.');
+        return Classifier.classify(dotted, name, desc) != null
+                || (Rules.isModelSdkOwner(dotted) && !name.equals("<init>") && !Rules.isSpringAiPureBuilder(dotted, name));
+    }
+
+    /** The per-instruction half of the purity proof; {@code deps} receives every body this one can run (-1 = one
+     *  that cannot be proven, which fails the fixpoint). */
+    static boolean localPure(int n, List<Integer> deps) {
+        MethodNode mn = nodeMethod.get(n);
+        if (mn.instructions == null || (mn.access & Opcodes.ACC_SYNCHRONIZED) != 0) return false;
+        int j = nodeJar.get(n);
+        for (AbstractInsnNode in : mn.instructions) {
+            int op = in.getOpcode();
+            if (op < 0) continue;
+            if (op == Opcodes.MONITORENTER || op == Opcodes.MONITOREXIT) return false;
+            if (in instanceof InvokeDynamicInsnNode d) {
+                if (d.bsm == null || !d.bsm.getOwner().equals("java/lang/invoke/StringConcatFactory")) return false;
+                for (Type t : Type.getArgumentTypes(d.desc))
+                    if (t.getSort() == Type.OBJECT && !t.getInternalName().equals("java/lang/String")) return false;
+                    else if (t.getSort() == Type.ARRAY) return false;
+                continue;
+            }
+            if (in instanceof org.objectweb.asm.tree.LdcInsnNode l
+                    && (l.cst instanceof Handle || l.cst instanceof org.objectweb.asm.ConstantDynamic)) return false;
+            String touched = null;
+            if (in instanceof org.objectweb.asm.tree.FieldInsnNode f && (op == Opcodes.GETSTATIC || op == Opcodes.PUTSTATIC)) touched = f.owner;
+            if (in instanceof org.objectweb.asm.tree.TypeInsnNode t && op == Opcodes.NEW) touched = t.desc;
+            if (in instanceof MethodInsnNode m) {
+                if (m.owner.startsWith("[")) { if (!m.name.equals("clone")) return false; continue; }
+                if (jdkOwner(m.owner)) { if (!safeJdk(m.owner, m.name, m.desc)) return false; continue; }
+                if (loggingFrontier(m.owner) || runtimeOwner(m.owner)) return false;
+                List<Integer> tg = resolve(j, m.owner, m.name, m.desc);
+                if (tg.isEmpty()) return false;              // abstract, interface, native or unsurveyed: unproven
+                deps.addAll(tg);
+                if (op == Opcodes.INVOKESTATIC) touched = m.owner;
+            }
+            if (touched != null && !touched.equals(nodeOwner.get(n)) && !jdkOwner(touched)) {
+                int cj = jarOf(j, touched);
+                if (cj < 0 || loggingFrontier(touched) || runtimeOwner(touched)) return false;
+                deps.addAll(clinits(cj, touched));
+            } else if (touched != null && jdkOwner(touched) && op != Opcodes.NEW && !touched.startsWith("java/lang/")
+                    && !touched.startsWith("java/util/")) return false;   // a JDK static field outside lang/util
+        }
+        return true;
+    }
+
+    static void loadUniverse(List<String[]> pairs) throws Exception {
+        // 1. load classes
+        for (String[] p : pairs) {
+            int j = jarNames.size();
+            jarNames.add(Path.of(p[0]).getFileName().toString());
+            Map<String, ClassNode> m = new TreeMap<>();
+            try (ZipFile z = new ZipFile(p[0])) {
+                List<? extends ZipEntry> es = Collections.list(z.entries());
+                es.sort(Comparator.comparing(ZipEntry::getName));
+                for (ZipEntry e : es) {
+                    String n = e.getName();
+                    if (!n.endsWith(".class") || n.startsWith("META-INF/") || n.endsWith("module-info.class")
+                            || n.endsWith("package-info.class")) continue;
+                    ClassNode cn = new ClassNode();
+                    try (InputStream in = z.getInputStream(e)) { new ClassReader(in).accept(cn, ClassReader.SKIP_FRAMES); }
+                    catch (RuntimeException ex) { continue; }
+                    m.putIfAbsent(cn.name, cn);
+                }
+            }
+            jarClasses.add(m);
+            for (String c : m.keySet()) classJars.computeIfAbsent(c, k -> new ArrayList<>()).add(j);
+        }
+        // 2. nodes
+        List<String> keys = new ArrayList<>();
+        for (int j = 0; j < jarClasses.size(); j++)
+            for (ClassNode cn : jarClasses.get(j).values())
+                for (MethodNode mn : cn.methods)
+                    if ((mn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE)) == 0)
+                        keys.add(String.format("%04d", j) + "|" + cn.name + "." + mn.name + mn.desc);
+        Collections.sort(keys);
+        Map<String, MethodNode> byKey = new HashMap<>();
+        for (int j = 0; j < jarClasses.size(); j++)
+            for (ClassNode cn : jarClasses.get(j).values())
+                for (MethodNode mn : cn.methods) byKey.put(j + "|" + cn.name + "." + mn.name + mn.desc, mn);
+        for (String k : keys) {
+            int bar = k.indexOf('|');
+            int j = Integer.parseInt(k.substring(0, bar));
+            String rest = k.substring(bar + 1);
+            String owner = rest.substring(0, rest.lastIndexOf('.', rest.indexOf('(')));
+            String id = j + "|" + rest;
+            nodeId.put(id, nodeKey.size());
+            nodeKey.add(rest);
+            nodeMethod.add(byKey.get(id));
+            nodeOwner.add(owner);
+            nodeJar.add(j);
+        }
     }
 
     /** The class {@code owner} as seen from jar {@code j}: its own copy first, else the first surveyed jar that has

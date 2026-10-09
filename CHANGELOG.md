@@ -9,6 +9,42 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **A class-path read through a loader that is not provably the program's own now discloses `Unknown`
+  (SOUNDNESS R1077).** `loader.getResourceAsStream`/`getResource`/`getResources`, `someClass.getResourceAsStream`,
+  `ResourceBundle.getBundle(.., loader)` and `ServiceLoader.load(type)` (the thread context loader) were `Fs` only.
+  Through a remote `URLClassLoader` each was EXECUTED sending `HEAD`/`GET` to its server while `deny Net` exited 0.
+  A loader from a parameter, a field, `Thread.getContextClassLoader()` or `new URLClassLoader` now adds `Unknown`
+  (`dispatch:`); the program's own loaders (a class literal, `this.getClass()`, their `getClassLoader()`, the
+  system loader, and `getBundle`/`load` with no loader argument except `ServiceLoader.load(Class)`) stay `Fs` only.
+  Disclosed rather than charged `Net`, measured both ways over 762 jars against the R1052 build: `Unknown` on 4,846
+  rows that had none (0.18%), nothing removed, only `deny Unknown` moves; charging `Net` instead would have put
+  `Net` on 43,178 rows (1.57%) and flipped 38,000 `deny Net` gates, nearly all on local class-path reads.
+
+- ⚠ **Three leaf rules no longer over-charge, and the generated framework table stops carrying them
+  (SOUNDNESS R1052).** Verdicts can only get GREENER, never on code that performs the effect:
+  - `URL.openStream()`/`openConnection()`/`getContent()` and the URLConnection reads were `Net` whatever the
+    scheme. A URL provably taken from the program's OWN class loaders — `X.class.getResource`,
+    `getClass().getResource`, `X.class.getClassLoader().getResource(s)`, `ClassLoader.getSystemResource(s)`,
+    an element of their `getResources` — is now read as `Fs`, exactly what `getResourceAsStream` (which the JDK
+    implements as `getResource(n).openStream()`) is charged. A URL from a parameter, a field, a branch merge,
+    `new URL(base, spec)`, `Thread.getContextClassLoader()` or any loader the method did not take from a class
+    keeps `Net`: a remote `URLClassLoader`'s `getResource(..).openStream()` was executed sending `HEAD`+`GET`.
+  - An owner-blanket rule (e.g. RestTemplate's whole-owner `Net`) and Spring AI's model-SDK blanket (`Llm`+`Net`
+    on any call) no longer fire on a member whose surveyed body is PROVEN pure — a `P` line in
+    `framework-hedge.tsv`, derived from the bytecode by `soundness/kappa_table/derive.sh` (2,140 members:
+    `Prompt.getOptions()`, `RestTemplate.getMessageConverters()`, Spring AI options builders, …). Not "any
+    helper inside the owner": that rule lost `KafkaTemplate.receive`'s real `Net` and was not shipped. A pure
+    factory whose product does the I/O later (`MongoTemplate.query(X.class)` → `.all()`) keeps its rule, and a
+    library body whose closure reaches a dispatch the table cannot follow keeps the rule's charge in the table.
+  - `new RestTemplate(...)` is no longer `Net` by itself (javap: its constructors only allocate). The table
+    still charges `new RestTemplate()`/`(ClientHttpRequestFactory)` `Net` — their closure reaches a dispatch the
+    table cannot follow, so the over-charge is kept rather than guessed away.
+  Corpus A/B vs published v0.40.2 (`bin/corpus-ab.py`, 762 jars): ADDED 0, REMOVED 629, CHANGED 4,079; no
+  `Unknown`, `invisible` or concrete effect is added anywhere, and no `Unknown`/`invisible` is lost. 3,173 rows
+  lose a concrete effect: 2,494 are `Net` -> `Fs` class-path reads (Fs kept), 679 are proven-pure members (Llm
+  523 in Spring AI, Db 58, Clock 6, Net). An arm with the three switches turned off reproduces v0.40.2 exactly
+  (0/0/0 over the same 762 jars). Framework table 51,766 -> 51,358 rows.
+
 ## [0.40.2] — 2026-10-09
 
 - **`jbang-catalog.json` points at the v0.40.2 jar.**

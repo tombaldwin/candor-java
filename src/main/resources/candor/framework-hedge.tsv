@@ -5,7 +5,7 @@
 # NAMED MISS: the closure stops at the JDK, which is OPAQUE here (no bodies; only the classifier's name rules),
 # while framework bodies are TRANSPARENT. A framework member whose effect happens inside a JDK body the
 # classifier leaves uncharged is missed exactly as a direct call to that JDK member is (R814 is that frontier).
-# generator-sha256 836c007b05baba780e1ed30f442079125d5490bd2a9406a30844eda07061c01c
+# generator-sha256 136d7c4a709bad446bab64d23550bda496f7de435810f481314c162451d1e691
 # source org.jetbrains:annotations:24.1.0 27a770dc7ce50500918bb8c3c0660c98290630ec796b5e3cf6b90f403b3033c6
 # source aopalliance:aopalliance:1.0 0addec670fedcd3f113c5c8091d783280d23f75e3acb841b61a9cdb079376a08
 # source software.amazon.awssdk:auth:2.25.60 0a9a569060d287f069c61eaefcad6e5e423fb048f0f7198d3825b7f3d6823258
@@ -126,8 +126,8 @@
 # hedge: J = a JDK package (runtime), S = a surveyed framework class, A/U = a framework member the
 # table cannot vouch for (A: no body — dispatch; U: the scan read it only as Unknown). See FrameworkReach.
 # P = a member a NAME rule charges whose surveyed body is a proven-pure field accessor (R1052).
-# entries 76370
-# content-sha256 997964bd84f2209e13b8c7360ff5460942d54dbece18bcadc52f875115b60fd4
+# entries 76411
+# content-sha256 81b8a6f1dc686c3bc5bef18e336370690a3b1729fd8475f4d167582dd4899e99
 A	com/fasterxml/jackson/annotation/JacksonInject.useInput()Lcom/fasterxml/jackson/annotation/OptBoolean;
 A	com/fasterxml/jackson/annotation/JacksonInject.value()Ljava/lang/String;
 A	com/fasterxml/jackson/annotation/JsonAlias.value()[Ljava/lang/String;
@@ -18063,6 +18063,7 @@ A	org/springframework/cache/jcache/interceptor/AnnotationJCacheOperationSource.g
 A	org/springframework/cache/jcache/interceptor/JCacheOperationSource.getCacheOperation(Ljava/lang/reflect/Method;Ljava/lang/Class;)Lorg/springframework/cache/jcache/interceptor/JCacheOperation;
 A	org/springframework/cache/jcache/interceptor/JCacheOperationSourcePointcut.getCacheOperationSource()Lorg/springframework/cache/jcache/interceptor/JCacheOperationSource;
 A	org/springframework/cache/support/AbstractValueAdaptingCache.clear()V
+A	org/springframework/cache/support/AbstractValueAdaptingCache.get(Ljava/lang/Object;Ljava/util/concurrent/Callable;)Ljava/lang/Object;
 A	org/springframework/cglib/beans/BeanCopier.copy(Ljava/lang/Object;Ljava/lang/Object;Lorg/springframework/cglib/core/Converter;)V
 A	org/springframework/cglib/beans/BeanMap.get(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;
 A	org/springframework/cglib/beans/BeanMap.getPropertyType(Ljava/lang/String;)Ljava/lang/Class;
@@ -28244,14 +28245,20 @@ J	com.sun.imageio.plugins.tiff
 J	com.sun.imageio.plugins.wbmp
 J	com.sun.imageio.spi
 J	com.sun.imageio.stream
-J	com.sun.jarsigner
+J	com.sun.java.accessibility.internal
 J	com.sun.java.accessibility.util
 J	com.sun.java.accessibility.util.internal
 J	com.sun.java.swing
 J	com.sun.java.swing.action
+J	com.sun.java.swing.plaf.gtk
+J	com.sun.java.swing.plaf.gtk.icons
+J	com.sun.java.swing.plaf.gtk.resources
 J	com.sun.java.swing.plaf.motif
 J	com.sun.java.swing.plaf.motif.icons
 J	com.sun.java.swing.plaf.motif.resources
+J	com.sun.java.swing.plaf.windows
+J	com.sun.java.swing.plaf.windows.icons
+J	com.sun.java.swing.plaf.windows.resources
 J	com.sun.java.swing.ui
 J	com.sun.java_cup.internal.runtime
 J	com.sun.jdi
@@ -28436,14 +28443,6 @@ J	com.sun.tools.jdeps.resources
 J	com.sun.tools.jdi
 J	com.sun.tools.jdi.resources
 J	com.sun.tools.script.shell
-J	com.sun.tools.sjavac
-J	com.sun.tools.sjavac.client
-J	com.sun.tools.sjavac.comp
-J	com.sun.tools.sjavac.comp.dependencies
-J	com.sun.tools.sjavac.options
-J	com.sun.tools.sjavac.pubapi
-J	com.sun.tools.sjavac.server
-J	com.sun.tools.sjavac.server.log
 J	com.sun.xml.internal.stream
 J	com.sun.xml.internal.stream.dtd
 J	com.sun.xml.internal.stream.dtd.nonvalidating
@@ -28472,6 +28471,8 @@ J	java.io
 J	java.lang
 J	java.lang.annotation
 J	java.lang.constant
+J	java.lang.foreign
+J	java.lang.foreign.snippets
 J	java.lang.instrument
 J	java.lang.invoke
 J	java.lang.management
@@ -28632,14 +28633,19 @@ J	jdk.dynalink.linker.support
 J	jdk.dynalink.support
 J	jdk.editpad
 J	jdk.editpad.resources
-J	jdk.incubator.foreign
 J	jdk.incubator.vector
 J	jdk.internal
 J	jdk.internal.access
 J	jdk.internal.access.foreign
 J	jdk.internal.agent
 J	jdk.internal.agent.resources
-J	jdk.internal.agent.spi
+J	jdk.internal.classfile
+J	jdk.internal.classfile.attribute
+J	jdk.internal.classfile.components
+J	jdk.internal.classfile.constantpool
+J	jdk.internal.classfile.impl
+J	jdk.internal.classfile.impl.verifier
+J	jdk.internal.classfile.instruction
 J	jdk.internal.editor.external
 J	jdk.internal.editor.spi
 J	jdk.internal.event
@@ -28648,15 +28654,24 @@ J	jdk.internal.foreign.abi
 J	jdk.internal.foreign.abi.aarch64
 J	jdk.internal.foreign.abi.aarch64.linux
 J	jdk.internal.foreign.abi.aarch64.macos
+J	jdk.internal.foreign.abi.aarch64.windows
+J	jdk.internal.foreign.abi.fallback
+J	jdk.internal.foreign.abi.ppc64
+J	jdk.internal.foreign.abi.ppc64.linux
+J	jdk.internal.foreign.abi.riscv64
+J	jdk.internal.foreign.abi.riscv64.linux
+J	jdk.internal.foreign.abi.s390
+J	jdk.internal.foreign.abi.s390.linux
 J	jdk.internal.foreign.abi.x64
 J	jdk.internal.foreign.abi.x64.sysv
 J	jdk.internal.foreign.abi.x64.windows
+J	jdk.internal.foreign.layout
 J	jdk.internal.icu.impl
-J	jdk.internal.icu.impl.data.icudt67b
+J	jdk.internal.icu.impl.data.icudt72b
 J	jdk.internal.icu.lang
 J	jdk.internal.icu.text
 J	jdk.internal.icu.util
-J	jdk.internal.invoke
+J	jdk.internal.io
 J	jdk.internal.javac
 J	jdk.internal.jimage
 J	jdk.internal.jimage.decompressor
@@ -28678,6 +28693,8 @@ J	jdk.internal.net.http.common
 J	jdk.internal.net.http.frame
 J	jdk.internal.net.http.hpack
 J	jdk.internal.net.http.websocket
+J	jdk.internal.opt
+J	jdk.internal.org.jline
 J	jdk.internal.org.jline.keymap
 J	jdk.internal.org.jline.reader
 J	jdk.internal.org.jline.reader.impl
@@ -28686,6 +28703,10 @@ J	jdk.internal.org.jline.reader.impl.history
 J	jdk.internal.org.jline.terminal
 J	jdk.internal.org.jline.terminal.impl
 J	jdk.internal.org.jline.terminal.impl.exec
+J	jdk.internal.org.jline.terminal.impl.jna
+J	jdk.internal.org.jline.terminal.impl.jna.linux
+J	jdk.internal.org.jline.terminal.impl.jna.osx
+J	jdk.internal.org.jline.terminal.impl.jna.win
 J	jdk.internal.org.jline.terminal.spi
 J	jdk.internal.org.jline.utils
 J	jdk.internal.org.objectweb.asm
@@ -28698,13 +28719,15 @@ J	jdk.internal.org.xml.sax
 J	jdk.internal.org.xml.sax.helpers
 J	jdk.internal.perf
 J	jdk.internal.platform
+J	jdk.internal.platform.cgroupv1
+J	jdk.internal.platform.cgroupv2
 J	jdk.internal.ref
 J	jdk.internal.reflect
 J	jdk.internal.shellsupport.doc
 J	jdk.internal.shellsupport.doc.resources
 J	jdk.internal.util
-J	jdk.internal.util.jar
 J	jdk.internal.util.random
+J	jdk.internal.util.regex
 J	jdk.internal.util.xml
 J	jdk.internal.util.xml.impl
 J	jdk.internal.vm
@@ -28721,8 +28744,8 @@ J	jdk.javadoc.internal.doclets.toolkit.builders
 J	jdk.javadoc.internal.doclets.toolkit.resources
 J	jdk.javadoc.internal.doclets.toolkit.resources.releases
 J	jdk.javadoc.internal.doclets.toolkit.taglets
+J	jdk.javadoc.internal.doclets.toolkit.taglets.snippet
 J	jdk.javadoc.internal.doclets.toolkit.util
-J	jdk.javadoc.internal.doclets.toolkit.util.links
 J	jdk.javadoc.internal.doclint
 J	jdk.javadoc.internal.doclint.resources
 J	jdk.javadoc.internal.tool
@@ -28732,21 +28755,28 @@ J	jdk.jfr.consumer
 J	jdk.jfr.events
 J	jdk.jfr.internal
 J	jdk.jfr.internal.consumer
+J	jdk.jfr.internal.consumer.filter
 J	jdk.jfr.internal.dcmd
-J	jdk.jfr.internal.handlers
+J	jdk.jfr.internal.event
 J	jdk.jfr.internal.instrument
 J	jdk.jfr.internal.jfc
 J	jdk.jfr.internal.jfc.model
 J	jdk.jfr.internal.management
+J	jdk.jfr.internal.periodic
+J	jdk.jfr.internal.query
 J	jdk.jfr.internal.settings
 J	jdk.jfr.internal.test
 J	jdk.jfr.internal.tool
 J	jdk.jfr.internal.types
+J	jdk.jfr.internal.util
+J	jdk.jfr.snippets
+J	jdk.jfr.snippets.consumer
 J	jdk.jpackage.internal
 J	jdk.jpackage.internal.resources
 J	jdk.jpackage.main
 J	jdk.jshell
 J	jdk.jshell.execution
+J	jdk.jshell.execution.impl
 J	jdk.jshell.resources
 J	jdk.jshell.spi
 J	jdk.jshell.tool
@@ -28779,7 +28809,9 @@ J	jdk.vm.ci.common
 J	jdk.vm.ci.hotspot
 J	jdk.vm.ci.hotspot.aarch64
 J	jdk.vm.ci.hotspot.amd64
+J	jdk.vm.ci.hotspot.riscv64
 J	jdk.vm.ci.meta
+J	jdk.vm.ci.riscv64
 J	jdk.vm.ci.runtime
 J	jdk.vm.ci.services
 J	jdk.xml.internal
@@ -28798,6 +28830,7 @@ J	org.xml.sax
 J	org.xml.sax.ext
 J	org.xml.sax.helpers
 J	sun.awt
+J	sun.awt.X11
 J	sun.awt.datatransfer
 J	sun.awt.dnd
 J	sun.awt.event
@@ -28806,8 +28839,10 @@ J	sun.awt.im
 J	sun.awt.image
 J	sun.awt.resources
 J	sun.awt.resources.cursors
+J	sun.awt.screencast
 J	sun.awt.shell
 J	sun.awt.util
+J	sun.awt.windows
 J	sun.awt.www.content
 J	sun.awt.www.content.audio
 J	sun.awt.www.content.image
@@ -28819,10 +28854,12 @@ J	sun.instrument
 J	sun.invoke
 J	sun.invoke.empty
 J	sun.invoke.util
+J	sun.io
 J	sun.java2d
 J	sun.java2d.cmm
 J	sun.java2d.cmm.lcms
 J	sun.java2d.cmm.profiles
+J	sun.java2d.d3d
 J	sun.java2d.loops
 J	sun.java2d.marlin
 J	sun.java2d.marlin.stats
@@ -28830,6 +28867,9 @@ J	sun.java2d.metal
 J	sun.java2d.opengl
 J	sun.java2d.pipe
 J	sun.java2d.pipe.hw
+J	sun.java2d.windows
+J	sun.java2d.x11
+J	sun.java2d.xr
 J	sun.jvm.hotspot
 J	sun.jvm.hotspot.asm
 J	sun.jvm.hotspot.c1
@@ -28856,12 +28896,6 @@ J	sun.jvm.hotspot.debugger.linux.x86
 J	sun.jvm.hotspot.debugger.posix
 J	sun.jvm.hotspot.debugger.posix.elf
 J	sun.jvm.hotspot.debugger.ppc64
-J	sun.jvm.hotspot.debugger.proc
-J	sun.jvm.hotspot.debugger.proc.aarch64
-J	sun.jvm.hotspot.debugger.proc.amd64
-J	sun.jvm.hotspot.debugger.proc.ppc64
-J	sun.jvm.hotspot.debugger.proc.riscv64
-J	sun.jvm.hotspot.debugger.proc.x86
 J	sun.jvm.hotspot.debugger.remote
 J	sun.jvm.hotspot.debugger.remote.aarch64
 J	sun.jvm.hotspot.debugger.remote.amd64
@@ -28883,6 +28917,7 @@ J	sun.jvm.hotspot.gc.parallel
 J	sun.jvm.hotspot.gc.serial
 J	sun.jvm.hotspot.gc.shared
 J	sun.jvm.hotspot.gc.shenandoah
+J	sun.jvm.hotspot.gc.x
 J	sun.jvm.hotspot.gc.z
 J	sun.jvm.hotspot.interpreter
 J	sun.jvm.hotspot.memory
@@ -28950,6 +28985,8 @@ J	sun.net.ext
 J	sun.net.ftp
 J	sun.net.ftp.impl
 J	sun.net.httpserver
+J	sun.net.httpserver.simpleserver
+J	sun.net.httpserver.simpleserver.resources
 J	sun.net.idn
 J	sun.net.sdp
 J	sun.net.smtp
@@ -29014,7 +29051,9 @@ J	sun.security.krb5.internal.crypto
 J	sun.security.krb5.internal.crypto.dk
 J	sun.security.krb5.internal.ktab
 J	sun.security.krb5.internal.rcache
+J	sun.security.krb5.internal.tools
 J	sun.security.krb5.internal.util
+J	sun.security.mscapi
 J	sun.security.pkcs
 J	sun.security.pkcs10
 J	sun.security.pkcs11
@@ -29040,6 +29079,7 @@ J	sun.swing
 J	sun.swing.icon
 J	sun.swing.plaf
 J	sun.swing.plaf.synth
+J	sun.swing.plaf.windows
 J	sun.swing.table
 J	sun.swing.text
 J	sun.swing.text.html
@@ -68769,6 +68809,7 @@ U	org/springframework/cache/annotation/AnnotationCacheOperationSource.findCacheO
 U	org/springframework/cache/annotation/AnnotationCacheOperationSource.findCacheOperations(Ljava/lang/reflect/Method;)Ljava/util/Collection;
 U	org/springframework/cache/annotation/SpringCacheAnnotationParser.parseCacheAnnotations(Ljava/lang/Class;)Ljava/util/Collection;
 U	org/springframework/cache/annotation/SpringCacheAnnotationParser.parseCacheAnnotations(Ljava/lang/reflect/Method;)Ljava/util/Collection;
+U	org/springframework/cache/caffeine/CaffeineCache.get(Ljava/lang/Object;Ljava/util/concurrent/Callable;)Ljava/lang/Object;
 U	org/springframework/cache/caffeine/CaffeineCache.retrieve(Ljava/lang/Object;Ljava/util/function/Supplier;)Ljava/util/concurrent/CompletableFuture;
 U	org/springframework/cache/concurrent/ConcurrentMapCache.retrieve(Ljava/lang/Object;Ljava/util/function/Supplier;)Ljava/util/concurrent/CompletableFuture;
 U	org/springframework/cache/config/CacheNamespaceHandler.decorate(Lorg/w3c/dom/Node;Lorg/springframework/beans/factory/config/BeanDefinitionHolder;Lorg/springframework/beans/factory/xml/ParserContext;)Lorg/springframework/beans/factory/config/BeanDefinitionHolder;

@@ -25,8 +25,8 @@ import org.junit.jupiter.api.Test;
  * SOUNDNESS R492/R727 — the GENERATED framework table ({@link FrameworkReach}).
  *
  * <p>Two halves. The table's own INTEGRITY: it is machine output, so a hand edit (content checksum) or a generator
- * change it was not regenerated for (generator checksum over {@code FrameworkReachGen.java}, {@code derive.sh} and
- * {@code sources.tsv}) fails here, on every push. Whether it is still what its inputs produce against THIS engine is
+ * change it was not regenerated for (generator checksum over {@code FrameworkReachGen.java}, {@code derive.sh},
+ * {@code sources.tsv} and {@code jdk-packages.txt}) fails here, on every push. Whether it is still what its inputs produce against THIS engine is
  * {@code derive.sh --check}, which needs the jars and runs weekly. And the engine's USE of it: each spelling of a
  * call that resolves to a charged member — direct, inherited through a project subclass, method reference — is
  * charged, the charge is a side charge (an unnamed locator leaves the surface incomplete), and a member the table
@@ -71,7 +71,7 @@ class KappaFrameworkReachTest {
     void theTableWasGeneratedByTheCheckedInGeneratorFromTheCheckedInSources() throws Exception {
         Path dir = Path.of("soundness/kappa_table");
         MessageDigest md = MessageDigest.getInstance("SHA-256");
-        for (String f : new String[] { "FrameworkReachGen.java", "derive.sh", "sources.tsv" })
+        for (String f : new String[] { "FrameworkReachGen.java", "derive.sh", "sources.tsv", "jdk-packages.txt" })
             md.update(Files.readAllBytes(dir.resolve(f)));
         List<String> lines = tableLines();
         assertEquals(HexFormat.of().formatHex(md.digest()), header(lines, "generator-sha256"),
@@ -241,6 +241,17 @@ class KappaFrameworkReachTest {
         assertEquals(null, FrameworkReach.hedgeKind("kotlin/collections/CollectionsKt", "listOf",
                 "([Ljava/lang/Object;)Ljava/util/List;"), "a language runtime keeps the grant");
         assertEquals(null, FrameworkReach.hedgeKind("org/slf4j/Logger", "info", "(Ljava/lang/String;)V"), "logging frontier");
+        // The J lines are jdk-packages.txt (the JDK 21 images), not the JDK that ran derive.sh. A JDK 17 run read
+        // java.lang.foreign as an unsurveyed framework (a dep: Unknown on Arena/MemorySegment) and granted
+        // jdk.incubator.foreign, whose CLinker.systemLookup().lookup resolves a native symbol, silently.
+        assertEquals(null, FrameworkReach.hedgeKind("java/lang/foreign/Arena", "ofConfined", "()Ljava/lang/foreign/Arena;"),
+                "a JDK 21 package keeps the grant");
+        assertEquals(null, FrameworkReach.hedgeKind("sun/awt/X11/XToolkit", "getDisplay", "()J"),
+                "a Linux-only JDK package is the JDK's on any OS");
+        assertEquals("X", FrameworkReach.hedgeKind("jdk/incubator/foreign/CLinker", "systemLookup",
+                "()Ljdk/incubator/foreign/SymbolLookup;"), "a JDK 17-only package is outside R814's census: disclosed");
+        assertEquals("X", FrameworkReach.hedgeKind("java/lang/classfile/ClassFile", "of", "()Ljava/lang/classfile/ClassFile;"),
+                "a JDK 22+ package is outside R814's census: disclosed");
         Path app = compileApp(Map.of(
                 "com/fasterxml/jackson/core/JsonParser.java",
                 "package com.fasterxml.jackson.core; public abstract class JsonParser { public abstract JsonToken nextToken(); }",

@@ -17,9 +17,21 @@ A member in neither file was **examined and found pure**: its silence is now a m
     bash soundness/kappa_table/derive.sh --check build/libs/candor-java-*-all.jar  # weekly CI
 
 Inputs are `sources.tsv` (Maven coordinate + SHA-256 per jar; a mismatch is refused), `derive.sh`,
-`FrameworkReachGen.java` and the engine jar (scanning with `-Dcandor.frameworkReach=off`, so the table
-never feeds itself). Same inputs → byte-identical outputs. `KappaFrameworkReachTest` checks the content
-and generator checksums on every push. `witness.tsv` (gitignored) gives every charge's path to its body.
+`FrameworkReachGen.java`, `jdk-packages.txt` and the engine jar (scanning with `-Dcandor.frameworkReach=off`,
+so the table never feeds itself). Same inputs → byte-identical outputs. `KappaFrameworkReachTest` checks the
+content and generator checksums on every push. `witness.tsv` (gitignored) gives every charge's path to its body.
+
+**Nothing else is an input — in particular not the machine.** Until 2026-10-09 two more were, unpinned, and the
+committed table could not be reproduced by CI: the `J` lines came from the module list of whatever JDK ran the
+generator (a JDK 17 `JAVA_HOME` wrote `com.sun.jarsigner`/`com.sun.tools.sjavac*` and omitted
+`java.lang.foreign`; a Linux image adds `sun.awt.X11`, a macOS one `sun.lwawt.macosx`), and the scans read the
+caller's `CANDOR_*` environment (a chained `CANDOR_DEPS` report turns `CaffeineCache.get`'s `Unknown` into
+effects, which deletes its `U` line and the `A` line above it). Now `jdk-packages.txt` is the union of the JDK 21
+images for Linux, macOS and Windows — the release whose 227 exported packages SOUNDNESS R814's census read; a
+JDK 17-only or JDK 22+ package stays `X` (an Unknown, not a silence) — and `derive.sh` unsets every `CANDOR_*`
+and the JVM option variables and pins config discovery to an empty file. Verified: `--check` passes under
+Homebrew JDK 21 (macOS), Amazon Corretto 17 (macOS) with a `CANDOR_DEPS` seeded into the shell, and Temurin 21
+on Linux. Regenerate the package list with `FrameworkReachGen --jdk-packages` (see its header).
 
 ## The named miss — the JDK is OPAQUE, framework bodies are TRANSPARENT
 

@@ -69,7 +69,7 @@ final class FrameworkReach {
      *  as {@code Unknown}.</li>
      *  <li>{@code "X"} — the owner is under a covered framework prefix but in no surveyed jar (e.g.
      *  {@code org.hibernate.criterion}, the {@code javax.*} APIs no jar here ships).</li></ul>
-     *  Never for the JDK ({@code J} lines, generated from the JDK's own module list), the language runtimes
+     *  Never for the JDK ({@code J} lines: soundness/kappa_table/jdk-packages.txt, JDK 21), the language runtimes
      *  (kotlin, scala, groovy) or the logging frameworks: those keep the grant. A member the table EXAMINED and
      *  found pure gets null — that silence is a measurement, and disclosing it would be false. */
     static String hedgeKind(String internalOwner, String name, String desc) {

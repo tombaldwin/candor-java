@@ -5,7 +5,7 @@
 # NAMED MISS: the closure stops at the JDK, which is OPAQUE here (no bodies; only the classifier's name rules),
 # while framework bodies are TRANSPARENT. A framework member whose effect happens inside a JDK body the
 # classifier leaves uncharged is missed exactly as a direct call to that JDK member is (R814 is that frontier).
-# generator-sha256 836c007b05baba780e1ed30f442079125d5490bd2a9406a30844eda07061c01c
+# generator-sha256 136d7c4a709bad446bab64d23550bda496f7de435810f481314c162451d1e691
 # source org.jetbrains:annotations:24.1.0 27a770dc7ce50500918bb8c3c0660c98290630ec796b5e3cf6b90f403b3033c6
 # source aopalliance:aopalliance:1.0 0addec670fedcd3f113c5c8091d783280d23f75e3acb841b61a9cdb079376a08
 # source software.amazon.awssdk:auth:2.25.60 0a9a569060d287f069c61eaefcad6e5e423fb048f0f7198d3825b7f3d6823258

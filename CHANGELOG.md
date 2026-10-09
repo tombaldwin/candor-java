@@ -9,6 +9,24 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **The framework table's JDK package list is now a checked-in input, so the table no longer depends on the
+  machine that generated it.** `framework-hedge.tsv`'s `J` lines came from the module list of whatever JDK ran
+  `derive.sh`, and the scans read the caller's `CANDOR_*` environment. The committed table had been made under a
+  JDK 17 `JAVA_HOME`, so weekly CI (Temurin 21, Linux) could not reproduce it. Now `soundness/kappa_table/jdk-packages.txt`
+  is the union of the JDK 21 images for Linux, macOS and Windows (the release SOUNDNESS R814's census covered), and
+  `derive.sh` clears `CANDOR_*` and the JVM option variables. `--check` passes under JDK 17 and JDK 21, on macOS and Linux.
+  What changes in verdicts (rows in `framework-reach.tsv`: none):
+  - `java.lang.foreign` (JDK 21 FFM) is the JDK's again. Its pure members (`Arena`, `MemorySegment`, layouts) had
+    picked up a `dep:` `Unknown` for an "unsurveyed framework", so `deny Unknown` failed on pure off-heap code. The
+    native boundary keeps its own reasons (`native:SymbolLookup.find`, `reflect:MethodHandle.invokeExact`,
+    `libraryLookup` → `Exec`).
+  - `jdk.incubator.foreign` and `com.sun.jarsigner` exist only in JDK 17, so they are now disclosed (`Unknown`)
+    instead of granted. `CLinker.systemLookup().lookup(..)` resolves a native symbol and read as pure: that silence
+    is now closed.
+  - `CaffeineCache.get(Object, Callable)` (`U`) and `AbstractValueAdaptingCache.get(Object, Callable)` (`A`) are
+    hedged again, as they were in v0.40.2. The scan reads caffeine's `Cache.get` as an unresolved dispatch, and the
+    previous regeneration had lost both hedges.
+
 - ⚠ **A class-path read through a loader that is not provably the program's own now discloses `Unknown`
   (SOUNDNESS R1077).** `loader.getResourceAsStream`/`getResource`/`getResources`, `someClass.getResourceAsStream`,
   `ResourceBundle.getBundle(.., loader)` and `ServiceLoader.load(type)` (the thread context loader) were `Fs` only.

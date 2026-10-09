@@ -73,12 +73,73 @@ public class FrameworkReachGen {
 
     static String hedgeOut;
 
-    /** The JDK's own packages (the runtime this generator runs on — JDK 21 in CI). */
+    /** The JDK's own packages: the checked-in list {@code jdk-packages.txt} (derive.sh passes it as
+     *  {@code -Dframework.jdkPackages}). NOT the module list of the JDK this generator happens to run on: that was
+     *  the original reading, and it made the table a function of the developer's {@code JAVA_HOME} — measured
+     *  2026-10-09, a JDK 17 run wrote {@code J com.sun.jarsigner} and nine {@code com.sun.tools.sjavac*} lines that a
+     *  JDK 21 run (CI's) does not, while omitting {@code java.lang.foreign}, so a JDK 21 program's FFM calls read
+     *  {@code X} (an "unsurveyed framework") and disclosed a false Unknown. And the OS moved it too: a Linux
+     *  image ships {@code sun.awt.X11}, a macOS one {@code sun.lwawt.macosx}, so CI (Linux) could never reproduce a
+     *  Mac-generated table. The list is the JDK 21 images for Linux, macOS and Windows, unioned: their exported
+     *  packages are identical (227) and are exactly the ones SOUNDNESS R814's census of the classifier's JDK
+     *  frontier read, so a {@code J} line keeps the grant only where that census looked. A JDK 17-only package
+     *  ({@code com.sun.jarsigner}, {@code jdk.incubator.foreign}) or a JDK 22+ one ({@code java.lang.classfile},
+     *  {@code javax.sound}) stays {@code X}: an Unknown, not a silence, until the census covers that release.
+     *  Regenerate it with {@code --jdk-packages <out> <java.home>...}. */
     static List<String> jdkPackages() {
+        String f = System.getProperty("framework.jdkPackages");
+        if (f == null) throw new IllegalStateException("framework-reach: -Dframework.jdkPackages=<jdk-packages.txt> is "
+                + "required (the JDK package list is a checked-in input, never the running JDK's)");
         TreeSet<String> s = new TreeSet<>();
-        for (java.lang.module.ModuleReference m : java.lang.module.ModuleFinder.ofSystem().findAll())
-            s.addAll(m.descriptor().packages());
+        try {
+            for (String l : Files.readAllLines(Path.of(f), StandardCharsets.UTF_8))
+                if (!l.isBlank() && !l.startsWith("#")) s.add(l.strip());
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("framework-reach: cannot read " + f, e);
+        }
+        if (s.isEmpty()) throw new IllegalStateException("framework-reach: " + f + " lists no packages");
         return new ArrayList<>(s);
+    }
+
+    /** {@code --jdk-packages <out> <java.home>...}: write the union of the packages each named JDK image ships,
+     *  read from its own modules' descriptors over {@code jrt:/} (so no JDK has to be the one running this) —
+     *  the set {@code ModuleFinder.ofSystem()} gives when that JDK is the runtime. */
+    static void jdkPackagesOut(String[] a) throws Exception {
+        TreeSet<String> s = new TreeSet<>();
+        StringBuilder hdr = new StringBuilder();
+        hdr.append("# The JDK's packages, for soundness/kappa_table (FrameworkReachGen#jdkPackages): the UNION over the\n")
+           .append("# JDK images below, read from each image's module descriptors. A checked-in INPUT of the table, hashed\n")
+           .append("# into its generator-sha256: the table must not depend on the JAVA_HOME or OS it was generated on.\n")
+           .append("# Which images, and why JDK 21 only: FrameworkReachGen#jdkPackages.\n")
+           .append("# Regenerate: java -cp <tool>:<engine-all.jar> io.poly.candor.FrameworkReachGen --jdk-packages \\\n")
+           .append("#   soundness/kappa_table/jdk-packages.txt <java.home>...\n");
+        for (int i = 2; i < a.length; i++) {
+            Path home = Path.of(a[i]);
+            String release = "";
+            for (String l : Files.readAllLines(home.resolve("release"), StandardCharsets.UTF_8))
+                if (l.startsWith("JAVA_VERSION=") || l.startsWith("IMPLEMENTOR=") || l.startsWith("OS_NAME=") || l.startsWith("OS_ARCH="))
+                    release += " " + l;
+            int before = s.size(), n = 0;
+            try (java.nio.file.FileSystem fs = java.nio.file.FileSystems.newFileSystem(java.net.URI.create("jrt:/"),
+                    Map.of("java.home", home.toString()));
+                 java.util.stream.Stream<Path> ms = Files.list(fs.getPath("/modules"))) {
+                for (Path m : (Iterable<Path>) ms::iterator) {
+                    Path mi = m.resolve("module-info.class");
+                    if (!Files.exists(mi)) continue;
+                    // ASM, not ModuleDescriptor.read: a newer image's class-file version is unreadable to an older runtime
+                    ClassNode cn = new ClassNode();
+                    new ClassReader(Files.readAllBytes(mi)).accept(cn, ClassReader.SKIP_CODE);
+                    if (cn.module != null && cn.module.packages != null)
+                        for (String pk : cn.module.packages) { s.add(pk.replace('/', '.')); n++; }
+                }
+            }
+            hdr.append("# image:").append(release).append(" — ").append(n).append(" packages, ")
+               .append(s.size() - before).append(" not in the images above\n");
+        }
+        StringBuilder sb = new StringBuilder(hdr);
+        sb.append("# packages ").append(s.size()).append('\n');
+        for (String p : s) sb.append(p).append('\n');
+        Files.writeString(Path.of(a[1]), sb.toString(), StandardCharsets.UTF_8);
     }
 
     /** A language runtime or the logging frontier: neither is hedged (the JDK is not surveyed at all). */
@@ -127,6 +188,7 @@ public class FrameworkReachGen {
 
     public static void main(String[] a) throws Exception {
         if (a.length > 0 && a[0].equals("--pure-only")) { pureOnly(a); return; }
+        if (a.length > 0 && a[0].equals("--jdk-packages")) { jdkPackagesOut(a); return; }
         Path out = Path.of(a[0]), witness = Path.of(a[1]);
         hedgeOut = System.getProperty("framework.hedgeOut");
         List<String> header = Files.readAllLines(Path.of(a[2]), StandardCharsets.UTF_8);

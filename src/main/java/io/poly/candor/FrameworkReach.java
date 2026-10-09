@@ -87,6 +87,40 @@ final class FrameworkReach {
         return SURVEYED.contains(internalOwner) ? null : "X";
     }
 
+    // ── SOUNDNESS R1052(b,c) — NAME-RULED MEMBERS WHOSE SURVEYED BODY IS A PROVEN-PURE ACCESSOR ────────────────────
+    private static final java.util.Set<String> PURE = new java.util.HashSet<>();
+    /** The generator's input while it scans the framework jars with the table off: the P list it computed from the
+     *  bytecode just before (derive.sh step 1b). Never set by a user-facing option. */
+    static final String PURE_OVERRIDE = System.getProperty("candor.frameworkPure");
+    private static volatile java.util.Set<String> pureOverride;
+
+    /** Whether the call {@code internalOwner.name+desc} resolves, in every surveyed artefact, to a body that does
+     *  nothing but read or store a field (or forward to one that does) — while a NAME rule (the model-SDK blanket, or
+     *  an owner-blanket classifier rule) charges it. FrameworkReachGen#computePure says exactly which shapes count.
+     *  The caller drops that name rule's charge and NOTHING else: the table, the hedge and every other rule still
+     *  apply, and a member with no P line keeps the rule. */
+    static boolean provenPure(String internalOwner, String name, String desc) {
+        String key = internalOwner + "." + name + desc;
+        if (PURE_OVERRIDE != null) {
+            java.util.Set<String> o = pureOverride;
+            if (o == null) o = loadPureOverride();
+            return o.contains(key);
+        }
+        if (DISABLED) return false;
+        if (hedge == null) loadHedge();
+        return PURE.contains(key);
+    }
+
+    private static synchronized java.util.Set<String> loadPureOverride() {
+        if (pureOverride != null) return pureOverride;
+        try {
+            pureOverride = new java.util.HashSet<>(java.nio.file.Files.readAllLines(java.nio.file.Path.of(PURE_OVERRIDE)));
+        } catch (IOException ex) {
+            throw new IllegalStateException("candor: cannot read candor.frameworkPure=" + PURE_OVERRIDE, ex);
+        }
+        return pureOverride;
+    }
+
     static boolean runtimeOrLogging(String internalName) {
         for (String p : new String[] { "kotlin/", "scala/", "groovy/", "org/codehaus/groovy/", "org/slf4j/",
                 "org/apache/commons/logging/", "org/apache/logging/", "ch/qos/logback/" })
@@ -110,6 +144,7 @@ final class FrameworkReach {
                     case "J" -> JDK_PKGS.add(v);
                     case "S" -> SURVEYED.add(v);
                     case "A", "U" -> m.put(v, kind);
+                    case "P" -> PURE.add(v);
                     default -> throw new IllegalStateException("candor: " + HEDGE_RESOURCE + " bad line: " + line);
                 }
             }

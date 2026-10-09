@@ -200,6 +200,27 @@ final class Interp {
         // receiver's own allocated type; collapses to null at a disagreeing join, like every narrowing
         // field here.
         final String allocChain;
+        // SOUNDNESS R1052(a) — WHERE A `URL` CAME FROM, WHEN THAT DECIDES ITS SCHEME. `URL.openStream()` /
+        // `openConnection()` are charged `Net` whatever the scheme, which is the right default — a URL whose
+        // origin this pass cannot see may be `http:` — and an over-charge on the commonest config read there
+        // is: `X.class.getResource("/app.properties").openStream()`, which reads the program's own class path.
+        // This tag is the provenance that decides it, and it is minted ONLY from the program's OWN class
+        // loaders, never from an arbitrary one:
+        //   THIS   — local 0 of an instance method (the receiver), so `getClass()` on it names the program's class;
+        //   CLS    — a class literal (`LDC X.class`) or `this.getClass()`: a class whose DEFINING loader loaded
+        //            the code under scan;
+        //   LDR    — `CLS.getClassLoader()` or `ClassLoader.getSystemClassLoader()`;
+        //   CP     — a resource URL from one of those (`CLS.getResource`, `LDR.getResource`,
+        //            `ClassLoader.getSystemResource`, an element of `LDR.getResources`), or the URLConnection
+        //            `openConnection()` hands back for one;
+        //   CPENUM — the `Enumeration<URL>` `LDR.getResources` / `ClassLoader.getSystemResources` returns.
+        // A loader that arrives as a PARAMETER, a FIELD, from `Thread.getContextClassLoader()` or from a `new
+        // URLClassLoader(...)` is NOT tagged, and that is the point: those can be a remote `URLClassLoader`, and
+        // EXECUTED (fixture URemote/UTccl/ULoaderParam) a remote loader's `getResource(..).openStream()` sends
+        // `HEAD`+`GET` to its server. Their `openStream()` keeps `Net`. A NARROWING field like pathLit — it
+        // collapses to null at a disagreeing join, so `c ? X.class.getResource(r) : new URL(s)` keeps `Net`.
+        final String urlOrigin;
+        static final String UO_THIS = "this", UO_CLS = "cls", UO_LDR = "ldr", UO_CP = "cp", UO_CPENUM = "cpenum";
         ProvValue(BasicValue base, String newType) { this(base, newType, false, declTypeOf(base), null, null); }
         ProvValue(BasicValue base, String newType, boolean fromIndy) { this(base, newType, fromIndy, declTypeOf(base), null, null); }
         ProvValue(BasicValue base, String newType, boolean fromIndy, String declType) { this(base, newType, fromIndy, declType, null, null); }
@@ -229,6 +250,13 @@ final class Interp {
         ProvValue(BasicValue base, String newType, boolean fromIndy, String declType, String lambdaTarget,
                   String fieldOrigin, Set<Effect> originEffects, String samForwarder, boolean nullConst,
                   String pathLit, String allocChain) {
+            this(base, newType, fromIndy, declType, lambdaTarget, fieldOrigin, originEffects, samForwarder,
+                    nullConst, pathLit, allocChain, null);
+        }
+        ProvValue(BasicValue base, String newType, boolean fromIndy, String declType, String lambdaTarget,
+                  String fieldOrigin, Set<Effect> originEffects, String samForwarder, boolean nullConst,
+                  String pathLit, String allocChain, String urlOrigin) {
+            this.urlOrigin = urlOrigin;
             this.base = base; this.newType = newType; this.fromIndy = fromIndy; this.declType = declType;
             this.lambdaTarget = lambdaTarget; this.fieldOrigin = fieldOrigin;
             this.originEffects = (originEffects == null || originEffects.isEmpty()) ? null : originEffects;
@@ -238,7 +266,12 @@ final class Interp {
         /** This value with a determined locator attached — used where the producing insn names one. */
         ProvValue withPathLit(String lit) {
             return lit == null ? this : new ProvValue(base, newType, fromIndy, declType, lambdaTarget,
-                    fieldOrigin, originEffects, samForwarder, nullConst, lit, allocChain);
+                    fieldOrigin, originEffects, samForwarder, nullConst, lit, allocChain, urlOrigin);
+        }
+        /** This value tagged with a URL/class-loader origin (R1052(a)); null leaves it untagged. */
+        ProvValue withUrlOrigin(String uo) {
+            return Objects.equals(uo, urlOrigin) ? this : new ProvValue(base, newType, fromIndy, declType,
+                    lambdaTarget, fieldOrigin, originEffects, samForwarder, nullConst, pathLit, allocChain, uo);
         }
         public int getSize() { return base.getSize(); }
         public boolean equals(Object o) {
@@ -248,7 +281,8 @@ final class Interp {
                     && Objects.equals(fieldOrigin, p.fieldOrigin)
                     && Objects.equals(originEffects, p.originEffects)
                     && Objects.equals(samForwarder, p.samForwarder) && nullConst == p.nullConst
-                    && Objects.equals(pathLit, p.pathLit) && Objects.equals(allocChain, p.allocChain);
+                    && Objects.equals(pathLit, p.pathLit) && Objects.equals(allocChain, p.allocChain)
+                    && Objects.equals(urlOrigin, p.urlOrigin);
         }
         public int hashCode() {
             return (((((((((base.hashCode() * 31 + (newType == null ? 0 : newType.hashCode())) * 31 + (fromIndy ? 1 : 0))
@@ -257,7 +291,8 @@ final class Interp {
                     * 31 + (originEffects == null ? 0 : originEffects.hashCode()))
                     * 31 + (samForwarder == null ? 0 : samForwarder.hashCode())) * 31 + (nullConst ? 1 : 0))
                     * 31 + (pathLit == null ? 0 : pathLit.hashCode())) * 31
-                    + (allocChain == null ? 0 : allocChain.hashCode());
+                    + (allocChain == null ? 0 : allocChain.hashCode())
+                    + 31 * (urlOrigin == null ? 0 : urlOrigin.hashCode());
         }
     }
 
@@ -324,6 +359,12 @@ final class Interp {
             String dt = (type != null) ? declFromDesc(type.getDescriptor()) : null;
             return new ProvValue(b, null, false, dt);
         }
+        /** R1052(a) — local 0 of an instance method is the receiver; `getClass()` on it names the program's class. */
+        @Override
+        public ProvValue newParameterValue(boolean isInstanceMethod, int local, Type type) {
+            ProvValue v = newValue(type);
+            return (isInstanceMethod && local == 0 && v != null) ? v.withUrlOrigin(ProvValue.UO_THIS) : v;
+        }
         public ProvValue newOperation(AbstractInsnNode insn) throws org.objectweb.asm.tree.analysis.AnalyzerException {
             // The NEW opcode (and ONLY it among newOperation's insns) yields an UNINITIALIZED single-typed
             // reference; that type is the provable receiver type. LDC / GETSTATIC / constants / etc. carry
@@ -349,6 +390,11 @@ final class Interp {
             // `String p = "/etc/hosts"; Files.readAllBytes(Path.of(p));` certify, where the per-call literal
             // WINDOW sees only an ALOAD. Nothing but Path.of/Paths.get/a path ctor ever READS this on a String,
             // so it cannot leak into the host/table surfaces.
+            // R1052(a) — a class LITERAL: its defining loader is one that loaded the program.
+            if (insn instanceof LdcInsnNode ldct && ldct.cst instanceof Type lt && lt.getSort() == Type.OBJECT) {
+                ProvValue v = wrap(bi.newOperation(insn), null, null);
+                return v == null ? null : v.withUrlOrigin(ProvValue.UO_CLS);
+            }
             if (insn instanceof LdcInsnNode ldc && ldc.cst instanceof String lit) {
                 BasicValue lb = bi.newOperation(insn);
                 // declType stays null exactly as the pre-R409 `wrap(…, null, null)` left it: declType seeds
@@ -399,8 +445,9 @@ final class Interp {
                 dt = (d != null && d.charAt(0) != '[' && !d.equals("java/lang/Object")) ? d : null;
                 // A CHECKCAST is the SAME value with a narrower static type — the acquisition it came from
                 // is unchanged, so R147's origin must survive it (`(InputStream) obj` after a socket get).
+                // …and so must R1052(a)'s URL origin: `(URL) e.nextElement()`, `(JarURLConnection) u.openConnection()`.
                 return b == null ? null : new ProvValue(b, null, false, dt, null, null, value.originEffects,
-                        value.samForwarder);
+                        value.samForwarder, false, null, null, value.urlOrigin);
             }
             return wrap(b, null, dt);
         }
@@ -438,8 +485,49 @@ final class Interp {
             String sf = indy && insn instanceof InvokeDynamicInsnNode idin2 ? samForwarderTarget(idin2) : null;
             // SOUNDNESS R409 — a path FACTORY hands the locator on to its result.
             // SOUNDNESS R477 — a SELF-RETURNING call on a locally-allocated receiver hands the ALLOCATION on.
-            return new ProvValue(b, null, indy, dt, lt, null, acquisitionEffects(insn), sf, false,
-                    callPathLit(insn, values), callAllocChain(insn, values));
+            String uo = callUrlOrigin(insn, values);
+            return new ProvValue(b, null, indy, dt, lt, null, acquisitionEffects(insn, values), sf, false,
+                    callPathLit(insn, values), callAllocChain(insn, values), uo);
+        }
+
+        /** SOUNDNESS R1052(a) — the URL origin a call's RESULT carries (see {@link ProvValue#urlOrigin}), or null.
+         *  A closed list of transitions; anything else is untagged, which keeps the `Net` default. */
+        static String callUrlOrigin(AbstractInsnNode insn, List<? extends ProvValue> values) {
+            if (!(insn instanceof MethodInsnNode mi)) return null;
+            boolean stat = mi.getOpcode() == Opcodes.INVOKESTATIC;
+            String recv = (!stat && !values.isEmpty() && values.get(0) != null) ? values.get(0).urlOrigin : null;
+            String n = mi.name, d = mi.desc;
+            if (stat) {
+                if (!mi.owner.equals("java/lang/ClassLoader")) return null;
+                if (n.equals("getSystemClassLoader") && d.equals("()Ljava/lang/ClassLoader;")) return ProvValue.UO_LDR;
+                if (n.equals("getSystemResource") && d.equals("(Ljava/lang/String;)Ljava/net/URL;")) return ProvValue.UO_CP;
+                if (n.equals("getSystemResources") && d.equals("(Ljava/lang/String;)Ljava/util/Enumeration;"))
+                    return ProvValue.UO_CPENUM;
+                return null;
+            }
+            if (recv == null) return null;
+            switch (recv) {
+                case ProvValue.UO_THIS:
+                    return n.equals("getClass") && d.equals("()Ljava/lang/Class;") ? ProvValue.UO_CLS : null;
+                case ProvValue.UO_CLS:
+                    if (!mi.owner.equals("java/lang/Class")) return null;
+                    if (n.equals("getClassLoader") && d.equals("()Ljava/lang/ClassLoader;")) return ProvValue.UO_LDR;
+                    if (n.equals("getResource") && d.equals("(Ljava/lang/String;)Ljava/net/URL;")) return ProvValue.UO_CP;
+                    return null;
+                case ProvValue.UO_LDR:
+                    // The receiver is the program's own loader whatever static type the call names.
+                    if (n.equals("getResource") && d.equals("(Ljava/lang/String;)Ljava/net/URL;")) return ProvValue.UO_CP;
+                    if (n.equals("getResources") && d.equals("(Ljava/lang/String;)Ljava/util/Enumeration;"))
+                        return ProvValue.UO_CPENUM;
+                    return null;
+                case ProvValue.UO_CPENUM:
+                    return mi.owner.equals("java/util/Enumeration") && n.equals("nextElement") ? ProvValue.UO_CP : null;
+                case ProvValue.UO_CP:
+                    // only the no-arg `openConnection()`: `openConnection(Proxy)` routes through a proxy.
+                    return mi.owner.equals("java/net/URL") && n.equals("openConnection")
+                            && d.equals("()Ljava/net/URLConnection;") ? ProvValue.UO_CP : null;
+                default: return null;
+            }
         }
 
         /** SOUNDNESS R477 — the allocation IN THIS METHOD a call's RESULT is still derived from, or null.
@@ -560,12 +648,15 @@ final class Interp {
             // R477: a join keeps the allocated-here proof only when BOTH arms bring the SAME allocation —
             // `c ? new ProcessBuilder("git") : callerSupplied` is NOT built here, and must mark.
             String mac = Objects.equals(a.allocChain, b.allocChain) ? a.allocChain : null;
+            // R1052(a): a URL is a class-path URL at a join only when BOTH arms are.
+            String muo = Objects.equals(a.urlOrigin, b.urlOrigin) ? a.urlOrigin : null;
             if (mb.equals(a.base) && Objects.equals(mt, a.newType) && mi == a.fromIndy
                     && Objects.equals(mdt, a.declType) && Objects.equals(mlt, a.lambdaTarget)
                     && Objects.equals(mfo, a.fieldOrigin) && Objects.equals(moe, a.originEffects)
                     && Objects.equals(msf, a.samForwarder) && mnc == a.nullConst
-                    && Objects.equals(mpl, a.pathLit) && Objects.equals(mac, a.allocChain)) return a;
-            return new ProvValue(mb, mt, mi, mdt, mlt, mfo, moe, msf, mnc, mpl, mac);
+                    && Objects.equals(mpl, a.pathLit) && Objects.equals(mac, a.allocChain)
+                    && Objects.equals(muo, a.urlOrigin)) return a;
+            return new ProvValue(mb, mt, mi, mdt, mlt, mfo, moe, msf, mnc, mpl, mac, muo);
         }
     }
 
@@ -583,8 +674,14 @@ final class Interp {
      *  matches only the shape whose effect is otherwise lost — an effectful call that hands back an opaque
      *  handle to be moved through later. A concrete return type (`FileInputStream`) needs nothing, because
      *  the field then carries that type and the classifier fires on the read itself. */
-    static Set<Effect> acquisitionEffects(AbstractInsnNode insn) {
+    static Set<Effect> acquisitionEffects(AbstractInsnNode insn) { return acquisitionEffects(insn, null); }
+
+    /** As above, with the operand values: a stream acquired from a class-path URL (R1052(a)) carries the effect
+     *  {@link #classpathUrlTerminal} gives that read, so a later read through a stored handle agrees with it. */
+    static Set<Effect> acquisitionEffects(AbstractInsnNode insn, List<? extends ProvValue> values) {
         if (!(insn instanceof MethodInsnNode mi)) return null;
+        if (values != null && !values.isEmpty() && mi.getOpcode() != Opcodes.INVOKESTATIC
+                && values.get(0) != null && classpathUrlTerminal(mi, values.get(0))) return EnumSet.of(Effect.FS);
         String ret;
         try {
             Type rt = Type.getReturnType(mi.desc);
@@ -594,6 +691,21 @@ final class Interp {
         if (ret == null || !isAbstractStreamType(ret)) return null;
         Effect e = Classifier.classify(mi.owner.replace('/', '.'), mi.name, mi.desc);
         return e == null ? null : EnumSet.of(e);
+    }
+
+    /** SOUNDNESS R1052(a) — whether {@code mi} is a URL / URLConnection read whose receiver is PROVABLY a class-path
+     *  resource of the program's own loaders ({@link ProvValue#urlOrigin} {@code CP}). Such a read is the same
+     *  operation as {@code getResourceAsStream} — the JDK implements {@code ClassLoader.getResourceAsStream(n)} as
+     *  {@code getResource(n).openStream()} — and is charged what that is charged, {@code Fs}, not {@code Net}.
+     *  The member set is the classifier's own: a {@code java.net.URL} / URLConnection-family call it charges
+     *  {@code Net}. Anything else, or an untagged receiver, answers false and keeps {@code Net}. */
+    static boolean classpathUrlTerminal(MethodInsnNode mi, ProvValue receiver) {
+        if (receiver == null || !ProvValue.UO_CP.equals(receiver.urlOrigin)) return false;
+        String o = mi.owner;
+        boolean urlFamily = o.equals("java/net/URL") || o.equals("java/net/URLConnection")
+                || o.equals("java/net/HttpURLConnection") || o.equals("java/net/JarURLConnection")
+                || o.equals("javax/net/ssl/HttpsURLConnection");
+        return urlFamily && Classifier.classify(o.replace('/', '.'), mi.name, mi.desc) == Effect.NET;
     }
 
     /** The four abstract {@code java.io} stream bases — the declared types a handle whose real source is

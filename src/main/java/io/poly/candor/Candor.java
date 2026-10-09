@@ -4429,6 +4429,35 @@ public class Candor {
         Frame<ProvValue>[] provFrames = s.provFrames;
         String owner = min.owner.replace('/', '.');
         Effect effect = Classifier.classify(owner, min.name, min.desc);
+        // SOUNDNESS R1052(a) — a URL read whose receiver is PROVABLY a class-path resource of the program's own
+        // loaders is the `getResourceAsStream` read by another spelling, and is charged what that is: Fs, not Net.
+        // The provenance and why it is never minted from an arbitrary loader are at Interp.ProvValue#urlOrigin.
+        if (effect == Effect.NET && min.getOpcode() != Opcodes.INVOKESTATIC) {
+            Frame<ProvValue> uf = provFrameAt(s, min);
+            int ri = uf == null ? -1 : receiverValueIndex(uf.getStackSize(), Type.getArgumentTypes(min.desc));
+            if (ri >= 0 && ri < uf.getStackSize() && Interp.classpathUrlTerminal(min, uf.getStack(ri))) {
+                effect = Effect.FS;
+                if (MASK_DEBUG) System.err.println("R1052CP\t" + s.id + "\t" + owner + "." + min.name + min.desc);
+            }
+        }
+        // SOUNDNESS R1052(b) — AN OWNER-BLANKET RULE IS A SUMMARY OF A BODY NOBODY READ. Where the body WAS read and
+        // does nothing, the summary is wrong: a P line of the generated framework hedge (FrameworkReach#provenPure,
+        // FrameworkReachGen#computePure) names a member an owner-blanket rule charges whose surveyed body — and every
+        // body it can run — is proven pure. Measured: spring-web `RestTemplate.<init>(List)` calls its private
+        // `validateConverters` (two Assert checks), owner `RestTemplate`, so the whole-owner Net rule charged the
+        // constructor and the framework table carried it into every member that builds one.
+        //
+        // NOT "any call inside the owner to a body this scan analyses". That rule was built and MEASURED first, and it
+        // lost genuine charges: `KafkaTemplate.receive` reaches the broker through a private helper whose real I/O the
+        // analysis cannot follow (a Kafka `Consumer` behind an interface), so the blanket hit on the helper was the
+        // ONLY charge — and `RoutingKafkaTemplate.receive`, which a consumer reaches through the table alone, went
+        // silent. Same shape as SimpleMongoRepository.deleteAll -> private getReadPreference, the κ lane's loss. A
+        // blanket hit on a helper is dropped only where the helper is PROVEN pure.
+        if (effect != null && isOwnerBlanketRule(owner, min.desc)
+                && FrameworkReach.provenPure(min.owner, min.name, min.desc)) {
+            if (MASK_DEBUG) System.err.println("R1052PURE\t" + s.id + "\t" + owner + "." + min.name + min.desc + "\t" + effect);
+            effect = null;
+        }
         // A project class that SUBCLASSES a classify-modeled external effectful type (extends a
         // Testcontainers GenericContainer, a java.io stream, …) and calls an INHERITED method:
         // classify sees the PROJECT owner (no rule) and the real body lives in the external base
@@ -4659,8 +4688,12 @@ public class Candor {
         //    touches no wire. A DENYLIST (only proven-pure methods carved out) — anything else, including
         //    every real dispatch (call/stream/content/embed/… and any provider method we haven't enumerated)
         //    stays Llm+Net. A forgotten builder over-reports (safe); nothing is ever silently dropped.
+        // SOUNDNESS R1052(c) — and NOT where the body is known to be no dispatch at all: a P line, a member whose
+        // surveyed body is proven pure (`Prompt.getOptions()` is `aload_0; getfield; areturn`, and was charged Llm,Net
+        // at every call). Narrowed by BODY, never by name: a getter-shaped member that dispatches keeps the blanket.
         if (isModelSdkOwner(owner) && !min.name.equals("<init>")
-                && !Rules.isSpringAiPureBuilder(owner, min.name)) {
+                && !Rules.isSpringAiPureBuilder(owner, min.name)
+                && !FrameworkReach.provenPure(min.owner, min.name, min.desc)) {
             dir.add(Effect.LLM);
             dir.add(Effect.NET);
             if (effect == null) effect = Effect.LLM;
@@ -5625,7 +5658,12 @@ public class Candor {
             // the grant as it is, every call site reaches exactly the same branch as before.
             if (!pkg.isEmpty() && effect == null
                     && pkg.startsWith("org.springframework")
-                    && isSpringIoOwner(min.owner) && !isConventionallyPure(min.name)) {
+                    && isSpringIoOwner(min.owner) && !isConventionallyPure(min.name)
+                    // SOUNDNESS R1052(b) — not where the classifier returned null because the member was EXAMINED and
+                    // is pure (a hand carve-out such as RestTemplate's constructors, or a P line: a surveyed body that
+                    // is a plain field accessor). The floor is for members nobody looked at; these were looked at.
+                    && !isPureHandleAccessor(owner, min.name)
+                    && !FrameworkReach.provenPure(min.owner, min.name, min.desc)) {
                 // STRUCTURAL SPRING-FLOOR FIX: org.springframework.* is a κ-covered prefix, so an
                 // UNMODELED Spring sub-library leaf would otherwise be SILENTLY DROPPED (worse than
                 // a disclosed Unknown — the floor exists so pure Spring utils like StringUtils aren't
@@ -11616,6 +11654,17 @@ public class Candor {
 
     static boolean isPureHandleAccessor(String owner, String method) {
         switch (owner) {
+            // SOUNDNESS R1052(b) — Spring's RestTemplate is charged Net WHOLE-OWNER, and that included its three
+            // constructors, so `new RestTemplate(converters)` read Net at a consumer with no request in sight.
+            // javap of spring-web 6.1.10: each constructor only allocates fields — the converter list, a
+            // DefaultResponseErrorHandler, a HeadersExtractor, a DefaultUriBuilderFactory — and calls
+            // setRequestFactory, validateConverters, initUriTemplateHandler and updateErrorHandlerConverters, none
+            // of which opens a connection. EXECUTED: `new RestTemplate(List.of(new StringHttpMessageConverter()))`
+            // against a logging HTTP server made no request, while `getForObject`/`exchange` on the same object
+            // each logged one (fixture RtNewList/RtGet/RtExch) — and those keep Net. What a converter's own
+            // constructor does (Jackson's clock seed) is the generated framework table's, unaffected here.
+            case "org.springframework.web.client.RestTemplate":
+                return method.equals("<init>");
             // java.io.File — a File is just an immutable PATHNAME object; these touch NO filesystem.
             // The inert ctor (`new File(...)`) does ZERO I/O (it stores the path string). The effectful
             // members — delete/exists/isDirectory/mkdir/listFiles/getCanonicalPath/getCanonicalFile

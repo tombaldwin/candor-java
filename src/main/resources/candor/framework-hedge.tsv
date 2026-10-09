@@ -126,8 +126,8 @@
 # hedge: J = a JDK package (runtime), S = a surveyed framework class, A/U = a framework member the
 # table cannot vouch for (A: no body — dispatch; U: the scan read it only as Unknown). See FrameworkReach.
 # P = a member a NAME rule charges whose surveyed body is a proven-pure field accessor (R1052).
-# entries 76411
-# content-sha256 81b8a6f1dc686c3bc5bef18e336370690a3b1729fd8475f4d167582dd4899e99
+# entries 76397
+# content-sha256 555307074621f656c7efb8d5f9b59dd86ac24d2f463b579504c97ea95abc2213
 A	com/fasterxml/jackson/annotation/JacksonInject.useInput()Lcom/fasterxml/jackson/annotation/OptBoolean;
 A	com/fasterxml/jackson/annotation/JacksonInject.value()Ljava/lang/String;
 A	com/fasterxml/jackson/annotation/JsonAlias.value()[Ljava/lang/String;
@@ -64193,16 +64193,12 @@ U	org/hibernate/jpa/internal/util/PersistenceUtilHelper$FieldAttributeAccess.<in
 U	org/hibernate/jpa/internal/util/PersistenceUtilHelper$MethodAttributeAccess.<init>(Ljava/lang/String;Ljava/lang/reflect/Method;)V
 U	org/hibernate/jpa/internal/util/PersistenceUtilHelper$MethodAttributeAccess.extractValue(Ljava/lang/Object;)Ljava/lang/Object;
 U	org/hibernate/jpa/spi/NativeQueryConstructorTransformer.transformTuple([Ljava/lang/Object;[Ljava/lang/String;)Ljava/lang/Object;
-U	org/jdom2/Attribute.clone()Lorg/jdom2/Attribute;
 U	org/jdom2/Attribute.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/Attribute.getNamespacesInherited()Ljava/util/List;
-U	org/jdom2/CDATA.clone()Lorg/jdom2/CDATA;
 U	org/jdom2/CDATA.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/CDATA.getNamespacesInherited()Ljava/util/List;
-U	org/jdom2/Comment.clone()Lorg/jdom2/Comment;
 U	org/jdom2/Comment.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/Comment.getNamespacesInherited()Ljava/util/List;
-U	org/jdom2/Content.clone()Lorg/jdom2/Content;
 U	org/jdom2/Content.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/Content.getNamespacesInherited()Ljava/util/List;
 U	org/jdom2/DefaultJDOMFactory.addNamespaceDeclaration(Lorg/jdom2/Element;Lorg/jdom2/Namespace;)V
@@ -64217,7 +64213,6 @@ U	org/jdom2/DefaultJDOMFactory.element(Ljava/lang/String;Lorg/jdom2/Namespace;)L
 U	org/jdom2/DefaultJDOMFactory.processingInstruction(IILjava/lang/String;Ljava/util/Map;)Lorg/jdom2/ProcessingInstruction;
 U	org/jdom2/DefaultJDOMFactory.processingInstruction(Ljava/lang/String;Ljava/util/Map;)Lorg/jdom2/ProcessingInstruction;
 U	org/jdom2/DefaultJDOMFactory.setAttribute(Lorg/jdom2/Element;Lorg/jdom2/Attribute;)V
-U	org/jdom2/DocType.clone()Lorg/jdom2/DocType;
 U	org/jdom2/DocType.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/DocType.getNamespacesInherited()Ljava/util/List;
 U	org/jdom2/Document.<init>(Ljava/util/List;)V
@@ -64271,11 +64266,9 @@ U	org/jdom2/Element.setAttributes(Ljava/util/Collection;)Lorg/jdom2/Element;
 U	org/jdom2/Element.setContent(ILjava/util/Collection;)Lorg/jdom2/Parent;
 U	org/jdom2/Element.setContent(Ljava/util/Collection;)Lorg/jdom2/Element;
 U	org/jdom2/Element.setNamespace(Lorg/jdom2/Namespace;)Lorg/jdom2/Element;
-U	org/jdom2/EntityRef.clone()Lorg/jdom2/EntityRef;
 U	org/jdom2/EntityRef.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/EntityRef.getNamespacesInherited()Ljava/util/List;
 U	org/jdom2/ProcessingInstruction.<init>(Ljava/lang/String;Ljava/util/Map;)V
-U	org/jdom2/ProcessingInstruction.clone()Lorg/jdom2/ProcessingInstruction;
 U	org/jdom2/ProcessingInstruction.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/ProcessingInstruction.getNamespacesInherited()Ljava/util/List;
 U	org/jdom2/ProcessingInstruction.removePseudoAttribute(Ljava/lang/String;)Z
@@ -64293,7 +64286,6 @@ U	org/jdom2/SlimJDOMFactory.element(Ljava/lang/String;Lorg/jdom2/Namespace;)Lorg
 U	org/jdom2/SlimJDOMFactory.processingInstruction(IILjava/lang/String;Ljava/util/Map;)Lorg/jdom2/ProcessingInstruction;
 U	org/jdom2/SlimJDOMFactory.processingInstruction(Ljava/lang/String;Ljava/util/Map;)Lorg/jdom2/ProcessingInstruction;
 U	org/jdom2/SlimJDOMFactory.setAttribute(Lorg/jdom2/Element;Lorg/jdom2/Attribute;)V
-U	org/jdom2/Text.clone()Lorg/jdom2/Text;
 U	org/jdom2/Text.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/Text.getNamespacesInherited()Ljava/util/List;
 U	org/jdom2/UncheckedJDOMFactory.addNamespaceDeclaration(Lorg/jdom2/Element;Lorg/jdom2/Namespace;)V
@@ -64368,13 +64360,10 @@ U	org/jdom2/input/sax/SAXBuilderEngine.build(Lorg/xml/sax/InputSource;)Lorg/jdom
 U	org/jdom2/input/sax/SAXHandler.startElement(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Lorg/xml/sax/Attributes;)V
 U	org/jdom2/input/sax/SAXHandler.startPrefixMapping(Ljava/lang/String;Ljava/lang/String;)V
 U	org/jdom2/internal/ReflectionConstructor.construct(Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/Object;
-U	org/jdom2/located/LocatedCDATA.clone()Lorg/jdom2/CDATA;
 U	org/jdom2/located/LocatedCDATA.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/located/LocatedCDATA.getNamespacesInherited()Ljava/util/List;
-U	org/jdom2/located/LocatedComment.clone()Lorg/jdom2/Comment;
 U	org/jdom2/located/LocatedComment.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/located/LocatedComment.getNamespacesInherited()Ljava/util/List;
-U	org/jdom2/located/LocatedDocType.clone()Lorg/jdom2/DocType;
 U	org/jdom2/located/LocatedDocType.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/located/LocatedDocType.getNamespacesInherited()Ljava/util/List;
 U	org/jdom2/located/LocatedElement.<init>(Ljava/lang/String;)V
@@ -64416,7 +64405,6 @@ U	org/jdom2/located/LocatedElement.setAttributes(Ljava/util/Collection;)Lorg/jdo
 U	org/jdom2/located/LocatedElement.setContent(ILjava/util/Collection;)Lorg/jdom2/Parent;
 U	org/jdom2/located/LocatedElement.setContent(Ljava/util/Collection;)Lorg/jdom2/Element;
 U	org/jdom2/located/LocatedElement.setNamespace(Lorg/jdom2/Namespace;)Lorg/jdom2/Element;
-U	org/jdom2/located/LocatedEntityRef.clone()Lorg/jdom2/EntityRef;
 U	org/jdom2/located/LocatedEntityRef.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/located/LocatedEntityRef.getNamespacesInherited()Ljava/util/List;
 U	org/jdom2/located/LocatedJDOMFactory.addNamespaceDeclaration(Lorg/jdom2/Element;Lorg/jdom2/Namespace;)V
@@ -64432,13 +64420,11 @@ U	org/jdom2/located/LocatedJDOMFactory.processingInstruction(IILjava/lang/String
 U	org/jdom2/located/LocatedJDOMFactory.processingInstruction(Ljava/lang/String;Ljava/util/Map;)Lorg/jdom2/ProcessingInstruction;
 U	org/jdom2/located/LocatedJDOMFactory.setAttribute(Lorg/jdom2/Element;Lorg/jdom2/Attribute;)V
 U	org/jdom2/located/LocatedProcessingInstruction.<init>(Ljava/lang/String;Ljava/util/Map;)V
-U	org/jdom2/located/LocatedProcessingInstruction.clone()Lorg/jdom2/ProcessingInstruction;
 U	org/jdom2/located/LocatedProcessingInstruction.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/located/LocatedProcessingInstruction.getNamespacesInherited()Ljava/util/List;
 U	org/jdom2/located/LocatedProcessingInstruction.removePseudoAttribute(Ljava/lang/String;)Z
 U	org/jdom2/located/LocatedProcessingInstruction.setData(Ljava/util/Map;)Lorg/jdom2/ProcessingInstruction;
 U	org/jdom2/located/LocatedProcessingInstruction.setPseudoAttribute(Ljava/lang/String;Ljava/lang/String;)Lorg/jdom2/ProcessingInstruction;
-U	org/jdom2/located/LocatedText.clone()Lorg/jdom2/Text;
 U	org/jdom2/located/LocatedText.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/located/LocatedText.getNamespacesInherited()Ljava/util/List;
 U	org/jdom2/output/DOMOutputter.<init>(Ljava/lang/String;)V

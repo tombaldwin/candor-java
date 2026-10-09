@@ -4418,6 +4418,95 @@ public class Candor {
         return provFrames;
     }
 
+    /** SOUNDNESS R1078 — A BRIDGE'S DISPATCH TO THE MEMBER IT IS FOLDED INTO IS NOT THAT MEMBER'S DISPATCH.
+     *
+     *  <p>The method index leaves compiler bridges out ({@link #prepareScan}), so a covariant-return or erased-
+     *  parameter bridge shares its real member's node id and its body is analysed INTO that row. A bridge body is
+     *  one call, {@code invokevirtual this.<real>}, and its CHA fan-out edged every subclass override of the real
+     *  member into the row: {@code Base.m} inherited {@code Sub.m}'s effects, and so did {@code super.m()} in a
+     *  sibling, which runs Base's body alone. EXECUTED in {@code BridgeFoldR1078Test}'s fixture: both pure, both
+     *  charged {@code Fs}, {@code deny Fs} 1 on each.
+     *
+     *  <p>A call through the real descriptor already fans out at the CALLER, and so does a call through the bridge
+     *  descriptor to every subtype that redeclares the bridge (javac always does). What the bridge genuinely adds
+     *  is one thing: a subtype that overrides the real member WITHOUT the bridge descriptor (another compiler, or a
+     *  subclass compiled before the bridge existed) is reached through the bridge descriptor only via THIS bridge,
+     *  because the caller's CHA resolves that descriptor to this row. EXECUTED: such a subclass's {@code Fs} runs
+     *  through {@code Req.getOptions()} and is still edged here — and only those overrides are.
+     *
+     *  <p>ONLY THE DISPATCH. The call's CHARGE (classification, name rules, the framework table, hedges) is the
+     *  ordinary path's, unchanged. Dropping it too was built and measured: it removes an owner-blanket rule's
+     *  charge from the real member (`KafkaTemplate.onApplicationEvent` lost `Net`, and with it every
+     *  `RoutingKafkaTemplate`/`ReplyingKafkaTemplate` consumer's `deny Net`, though that body closes Kafka
+     *  producers behind an interface) — the "any call inside the owner" narrowing R1052 had already refused. A
+     *  name rule's verdict on a member that is NOT proven pure is the engine's answer for that member; where the
+     *  body IS proven pure, R1052's P lines already drop it ({@code Prompt.getOptions}, the row's own witness).
+     *
+     *  <p>AND ONLY THE EDGES. {@link #virtualDispatch} still runs in full and {@link #trimBridgeFanOut} then takes
+     *  back only the edges it added that no caller needs. The second cut replaced the dispatch outright and was
+     *  measured over 762 corpus jars losing 125 rows' {@code dispatch:} {@code Unknown} (the open-hierarchy hedge
+     *  on the member itself, e.g. {@code SsmException$BuilderImpl.cause}), a disclosure that has nothing to do with
+     *  which subclass bodies the row folds in.
+     *
+     *  <p>Narrow by construction: an {@code ACC_BRIDGE} method, a virtual/interface call to its OWN class and
+     *  name with a different descriptor that class declares concretely, landing on the same node id. Anything else
+     *  — a visibility bridge (it calls the SUPERCLASS), an overloaded name (the bridge then has its own id and
+     *  nothing is folded) — takes {@link #virtualDispatch} as before. {@code -Dcandor.r1078=off} restores it. */
+    static boolean bridgeSelfForward(AnalysisContext ctx, MethodScan s, MethodInsnNode min) {
+        MethodNode mn = s.mn;
+        if ((mn.access & Opcodes.ACC_BRIDGE) == 0 || R1078_OFF) return false;
+        if (!min.name.equals(mn.name) || min.desc.equals(mn.desc)) return false;
+        ClassNode cn = ctx.byName.get(min.owner);
+        if (cn == null || !declaresConcrete(cn, min.name, min.desc) || !declaresConcrete(cn, mn.name, mn.desc)) return false;
+        return methodId(min.owner.replace('/', '.'), min.name, min.desc).equals(s.id);
+    }
+
+    /** The edges {@link #virtualDispatch} just added for a bridge's forwarding call, minus every target the JVM can
+     *  reach only through ANOTHER entry: kept are the overrides of subtypes whose bridge descriptor resolves to THIS
+     *  bridge ({@link #bridgeResolvesTo}). An edge that was already present (another instruction added it) is never
+     *  touched, and nothing but edges is: every {@code Unknown} the dispatch disclosed stays. */
+    static void trimBridgeFanOut(AnalysisContext ctx, MethodScan s, MethodInsnNode min, Set<String> before) {
+        MethodNode mn = s.mn;
+        String id = s.id;
+        ClassNode cn = ctx.byName.get(min.owner);
+        Set<String> keep = new HashSet<>();
+        for (String sub : ctx.subtypeIndex.getOrDefault(cn.name, List.of())) {
+            if (sub.equals(cn.name)) continue;
+            ClassNode sc = ctx.byName.get(sub);
+            if (sc == null || !bridgeResolvesTo(sub, mn.name, mn.desc, cn.name)) continue;
+            String t = declaresConcrete(sc, min.name, min.desc)
+                    ? methodId(sub.replace('/', '.'), min.name, min.desc)
+                    : nearestConcreteSuper(sub, min.name, min.desc);
+            if (t != null) keep.add(t);
+        }
+        Set<String> edges = ctx.edges.get(id);
+        List<String> dropped = new ArrayList<>();
+        for (Iterator<String> it = edges.iterator(); it.hasNext(); ) {
+            String t = it.next();
+            if (before.contains(t) || keep.contains(t)) continue;
+            it.remove();
+            dropped.add(t);
+        }
+        if (R1078_DEBUG) System.err.println("R1078BRIDGE\t" + id + "\t" + mn.desc + "\t" + min.desc + "\tkept=" + keep + "\tdropped=" + dropped);
+    }
+
+    /** {@code CANDOR_R1078_DEBUG} prints each folded bridge call taken by {@link #bridgeSelfForward} (the reach
+     *  probe); {@code -Dcandor.r1078=off} restores the ordinary path (the A/B's one-variable arm). */
+    static final boolean R1078_DEBUG = System.getenv("CANDOR_R1078_DEBUG") != null;
+    static final boolean R1078_OFF = "off".equals(System.getProperty("candor.r1078"));
+
+    /** Whether the JVM, invoking {@code (name, bridgeDesc)} on an instance of {@code sub}, selects the bridge
+     *  declared in {@code bridgeOwner}: the first project class in {@code sub}'s resolution order that declares
+     *  it concretely is {@code bridgeOwner}. A class the scan cannot see is passed over, which keeps the edge
+     *  (the over-approximating direction). */
+    static boolean bridgeResolvesTo(String sub, String name, String bridgeDesc, String bridgeOwner) {
+        for (String c : resolutionOrder(sub, false)) {
+            ClassNode n = ctx().byName.get(c);
+            if (n != null && declaresConcrete(n, name, bridgeDesc)) return c.equals(bridgeOwner);
+        }
+        return true;
+    }
+
     /** One MethodInsnNode call site — the engine's core: classification (+ inherited-external-base
      *  re-classification), then the ordered concern units exactly as the original inline block ran
      *  them, then the dispatch edges (static/special exact, virtual/interface via
@@ -4911,7 +5000,12 @@ public class Candor {
         if (op == Opcodes.INVOKESTATIC) clinitEdge(id, min.owner);
         if (op == Opcodes.INVOKEVIRTUAL || op == Opcodes.INVOKEINTERFACE) {
             // mono-receiver resolved locally → the original `continue`: skip cross-dep too.
-            if (virtualDispatch(ctx, s, min, owner, effect, springTyped)) return;
+            // SOUNDNESS R1078 — a bridge's forwarding call keeps everything virtualDispatch does (every disclosure,
+            // the dispatched-member record) except the fan-out edges no caller needs it for; see bridgeSelfForward.
+            Set<String> beforeBridge = bridgeSelfForward(ctx, s, min) ? new HashSet<>(ctx.edges.get(id)) : null;
+            boolean handled = virtualDispatch(ctx, s, min, owner, effect, springTyped);
+            if (beforeBridge != null) trimBridgeFanOut(ctx, s, min, beforeBridge);
+            if (handled) return;
         } else if (ctx.projectClasses.contains(min.owner)) {
             // static / special (super, private, ctor) — the descriptor is known, so an overloaded callee
             // resolves to the right overload. But a SUPER-call (or static call) to an INHERITED method names

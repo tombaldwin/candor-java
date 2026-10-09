@@ -9,6 +9,14 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **A covariant/erased bridge no longer charges its real member with every subclass override (SOUNDNESS R1078).**
+  The bridge shares the real member's report row, and its one call — `this.<real>()` — fanned out over CHA, so
+  `Base.m` carried `Sub.m`'s effects and `super.m()` in a sibling did too (executed: both pure, `deny Fs` was 1). The
+  bridge now edges only the overrides that are reached through it (a subtype without its own bridge descriptor);
+  polymorphic call sites still fan out at the caller. The call's CHARGE is unchanged on purpose (a name rule on a
+  member not proven pure stays its answer, R1052). The framework hedge loses 14 `U` lines (jdom2 `clone()`), whose
+  `Unknown` was inherited through that fan-out.
+
 ## [0.40.3] — 2026-10-09
 
 - **`jbang-catalog.json` points at the v0.40.3 jar.**

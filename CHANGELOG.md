@@ -11,6 +11,7 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## [0.40.2] — 2026-10-09
 
+- **`jbang-catalog.json` points at the v0.40.2 jar.**
 - ⚠ **A GENERATED framework member -> effect table now charges what κ-covered framework members really do
   (SOUNDNESS R492/R727).** The covered-prefix grant certified every unmodelled member of ~51 namespaces pure, so
   e.g. groovy `ResourceGroovyMethods.deleteDir`, commons-csv `CSVParser.parse(File,…)`, Spring

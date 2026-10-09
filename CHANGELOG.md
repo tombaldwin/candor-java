@@ -9,6 +9,17 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **A class-path read through a loader that is not provably the program's own now discloses `Unknown`
+  (SOUNDNESS R1077).** `loader.getResourceAsStream`/`getResource`/`getResources`, `someClass.getResourceAsStream`,
+  `ResourceBundle.getBundle(.., loader)` and `ServiceLoader.load(type)` (the thread context loader) were `Fs` only.
+  Through a remote `URLClassLoader` each was EXECUTED sending `HEAD`/`GET` to its server while `deny Net` exited 0.
+  A loader from a parameter, a field, `Thread.getContextClassLoader()` or `new URLClassLoader` now adds `Unknown`
+  (`dispatch:`); the program's own loaders (a class literal, `this.getClass()`, their `getClassLoader()`, the
+  system loader, and `getBundle`/`load` with no loader argument except `ServiceLoader.load(Class)`) stay `Fs` only.
+  Disclosed rather than charged `Net`, measured both ways over 762 jars against the R1052 build: `Unknown` on 4,846
+  rows that had none (0.18%), nothing removed, only `deny Unknown` moves; charging `Net` instead would have put
+  `Net` on 43,178 rows (1.57%) and flipped 38,000 `deny Net` gates, nearly all on local class-path reads.
+
 - ⚠ **Three leaf rules no longer over-charge, and the generated framework table stops carrying them
   (SOUNDNESS R1052).** Verdicts can only get GREENER, never on code that performs the effect:
   - `URL.openStream()`/`openConnection()`/`getContent()` and the URLConnection reads were `Net` whatever the

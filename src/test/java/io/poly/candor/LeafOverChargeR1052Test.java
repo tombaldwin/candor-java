@@ -70,6 +70,39 @@ class LeafOverChargeR1052Test {
         } finally { rm(app.getParent()); }
     }
 
+    // ── R1077: a loader-mediated read through a loader that is not provably the program's own ───────────────────────
+
+    @Test
+    void loaderReadThroughAnUnprovenLoaderDisclosesTheProgramsOwnLoadersStayFsOnly() throws Exception {
+        Path app = compile(Map.of("app/L.java", String.join("\n",
+                "package app;",
+                "import java.util.*;",
+                "public class L {",
+                // EXECUTED with a remote URLClassLoader: each of these sent HEAD/GET to its server
+                "  public static Object ras(ClassLoader l) { return l.getResourceAsStream(\"a\"); }",
+                "  public static Object res(ClassLoader l) { return l.getResource(\"a\"); }",
+                "  public static Object ctx() { return Thread.currentThread().getContextClassLoader().getResourceAsStream(\"a\"); }",
+                "  public static Object svc() { return ServiceLoader.load(Runnable.class); }",
+                "  public static Object bun(ClassLoader l) { return ResourceBundle.getBundle(\"b\", Locale.ROOT, l); }",
+                "  public static Object cls(Class<?> c) { return c.getResourceAsStream(\"a\"); }",
+                // the program's own loaders: class path, Fs only
+                "  public static Object ownLit() { return L.class.getResourceAsStream(\"/a\"); }",
+                "  public Object ownSelf() { return getClass().getResourceAsStream(\"/a\"); }",
+                "  public static Object ownLdr() { return L.class.getClassLoader().getResourceAsStream(\"a\"); }",
+                "  public static Object ownSys() { return ClassLoader.getSystemResourceAsStream(\"a\"); }",
+                "  public static Object ownSvc() { return ServiceLoader.load(Runnable.class, L.class.getClassLoader()); }",
+                "  public static Object ownBun() { return ResourceBundle.getBundle(\"b\"); }",
+                "}")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(app);
+            for (String m : List.of("ras", "res", "ctx", "svc", "bun", "cls"))
+                assertTrue(eff(r, "app.L." + m).contains(Effect.UNKNOWN), m + ": an unproven loader must disclose, got " + eff(r, "app.L." + m));
+            for (String m : List.of("ownLit", "ownSelf", "ownLdr", "ownSys", "ownSvc", "ownBun"))
+                assertFalse(eff(r, "app.L." + m).contains(Effect.UNKNOWN) || eff(r, "app.L." + m).contains(Effect.NET),
+                        m + ": the program's own loader is class path, got " + eff(r, "app.L." + m));
+        } finally { rm(app.getParent()); }
+    }
+
     // ── (b) an owner-blanket rule on members that do nothing ────────────────────────────────────────────────────────
 
     @Test

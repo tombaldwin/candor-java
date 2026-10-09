@@ -137,6 +137,7 @@ graalvmNative {
             // SOUNDNESS R492/R727 — the GENERATED framework member -> effect table (FrameworkReach). Missing from
             // the image, the native binary would read every member it charges as silently pure again.
             buildArgs.add("-H:IncludeResources=candor/framework-reach\\.tsv")
+            buildArgs.add("-H:IncludeResources=candor/framework-hedge\\.tsv")
         }
     }
 }

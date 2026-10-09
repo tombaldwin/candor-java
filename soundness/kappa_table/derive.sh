@@ -52,6 +52,9 @@ GSHA="$(cat "$HERE/FrameworkReachGen.java" "$HERE/derive.sh" "$HERE/sources.tsv"
   echo "# owner.name+desc <TAB> effects: in every surveyed artefact declaring the owner, the statically-resolved body"
   echo "# reaches a body this engine's scan charged with those effects (direct, concrete only). A member with NO row"
   echo "# is not claimed pure: it keeps the treatment it had without this table."
+  echo "# NAMED MISS: the closure stops at the JDK, which is OPAQUE here (no bodies; only the classifier's name rules),"
+  echo "# while framework bodies are TRANSPARENT. A framework member whose effect happens inside a JDK body the"
+  echo "# classifier leaves uncharged is missed exactly as a direct call to that JDK member is (R814 is that frontier)."
   echo "# generator-sha256 $GSHA"
   while IFS=$'\t' read -r jar coord url sha; do [ -n "$jar" ] && echo "# source $coord $sha"; done < "$HERE/sources.tsv"
 } > "$WORK/header"
@@ -60,15 +63,17 @@ GSHA="$(cat "$HERE/FrameworkReachGen.java" "$HERE/derive.sh" "$HERE/sources.tsv"
 "$J/javac" -nowarn -cp "$JAR" -d "$WORK/tool" "$HERE/FrameworkReachGen.java"
 ARGS=()
 for jar in $(cut -f1 "$HERE/sources.tsv"); do ARGS+=("$LIB/$jar" "$WORK/rep/$jar.json"); done
-"$J/java" -Xmx8g -cp "$WORK/tool:$JAR" io.poly.candor.FrameworkReachGen "$WORK/table.tsv" "$WORK/witness.tsv" "$WORK/header" "${ARGS[@]}"
+"$J/java" -Xmx8g -Dframework.hedgeOut="$WORK/hedge.tsv" -cp "$WORK/tool:$JAR" io.poly.candor.FrameworkReachGen "$WORK/table.tsv" "$WORK/witness.tsv" "$WORK/header" "${ARGS[@]}"
 
 TABLE="$ROOT/src/main/resources/candor/framework-reach.tsv"
+HEDGE="$ROOT/src/main/resources/candor/framework-hedge.tsv"
 WIT="$HERE/witness.tsv"
 if [ "$CHECK" = 1 ]; then
-  if cmp -s "$WORK/table.tsv" "$TABLE"; then echo "derive --check: $TABLE reproduces byte-identically"; exit 0; fi
+  if cmp -s "$WORK/table.tsv" "$TABLE" && cmp -s "$WORK/hedge.tsv" "$HEDGE"; then
+    echo "derive --check: $TABLE and $HEDGE reproduce byte-identically"; exit 0; fi
   echo "derive --check: $TABLE is NOT what its inputs generate (hand-edited, or stale against this engine):" >&2
-  diff "$TABLE" "$WORK/table.tsv" | head -40 >&2
+  diff "$TABLE" "$WORK/table.tsv" | head -20 >&2; diff "$HEDGE" "$WORK/hedge.tsv" | head -20 >&2
   exit 1
 fi
-cp "$WORK/table.tsv" "$TABLE"; cp "$WORK/witness.tsv" "$WIT"
+cp "$WORK/table.tsv" "$TABLE"; cp "$WORK/hedge.tsv" "$HEDGE"; cp "$WORK/witness.tsv" "$WIT"
 echo "derive: wrote $TABLE ($(grep -vc '^#' "$TABLE") rows) and $WIT — read the diff before committing"

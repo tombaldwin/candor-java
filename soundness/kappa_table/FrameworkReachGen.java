@@ -70,6 +70,23 @@ public class FrameworkReachGen {
     static final String[] LOGGING_FRONTIER = { "org/slf4j/", "org/apache/commons/logging/", "org/apache/logging/",
             "ch/qos/logback/" };
 
+    static String hedgeOut;
+
+    /** The JDK's own packages (the runtime this generator runs on — JDK 21 in CI). */
+    static List<String> jdkPackages() {
+        TreeSet<String> s = new TreeSet<>();
+        for (java.lang.module.ModuleReference m : java.lang.module.ModuleFinder.ofSystem().findAll())
+            s.addAll(m.descriptor().packages());
+        return new ArrayList<>(s);
+    }
+
+    /** A language runtime or the logging frontier: neither is hedged (the JDK is not surveyed at all). */
+    static boolean runtimeOwner(String internalName) {
+        for (String p : new String[] { "kotlin/", "scala/", "groovy/", "org/codehaus/groovy/" })
+            if (internalName.startsWith(p)) return true;
+        return loggingFrontier(internalName);
+    }
+
     static boolean loggingFrontier(String internalName) {
         for (String p : LOGGING_FRONTIER) if (internalName.startsWith(p)) return true;
         return false;
@@ -97,11 +114,19 @@ public class FrameworkReachGen {
     static final List<MethodNode> nodeMethod = new ArrayList<>();
     static final List<String> nodeOwner = new ArrayList<>();
     static final List<Integer> nodeJar = new ArrayList<>();
+    /** Bodies the engine's own scan of the jar reported as ONLY {@code Unknown} (its `inferred`). */
+    static final Set<Integer> UNK_ONLY = new HashSet<>();
+    /** Framework members a consumer can call whose body the table cannot vouch for: "A" — resolution reaches no
+     *  body (abstract/interface/native: the implementer is chosen at run time); "U" — every resolved body is one the
+     *  scan could read only as Unknown. Absent here and absent from the table = examined and pure. */
+    static final TreeMap<String, String> HEDGE = new TreeMap<>();
+    static final TreeSet<String> SURVEYED = new TreeSet<>();
 
     static Integer node(int j, String owner, String nameDesc) { return nodeId.get(j + "|" + owner + "." + nameDesc); }
 
     public static void main(String[] a) throws Exception {
         Path out = Path.of(a[0]), witness = Path.of(a[1]);
+        hedgeOut = System.getProperty("framework.hedgeOut");
         List<String> header = Files.readAllLines(Path.of(a[2]), StandardCharsets.UTF_8);
         List<String[]> pairs = new ArrayList<>();
         for (int i = 3; i + 1 < a.length; i += 2) pairs.add(new String[] { a[i], a[i + 1] });
@@ -164,6 +189,13 @@ public class FrameworkReachGen {
             for (JsonElement fe : r.getAsJsonArray("functions")) {
                 JsonObject f = fe.getAsJsonObject();
                 if (!f.has("hash") || !f.has("direct")) continue;
+                if (f.has("inferred")) {
+                    JsonArray inf = f.getAsJsonArray("inferred");
+                    if (inf.size() == 1 && inf.get(0).getAsString().equals("Unknown")) {
+                        Integer uid = nodeId.get(j + "|" + f.get("hash").getAsString());
+                        if (uid != null) UNK_ONLY.add(uid);
+                    }
+                }
                 int mask = 0;
                 for (JsonElement d : f.getAsJsonArray("direct")) mask |= bit(d.getAsString());
                 if (mask == 0) continue;
@@ -214,10 +246,17 @@ public class FrameworkReachGen {
                 if ((cn.access & Opcodes.ACC_PUBLIC) == 0 || (cn.access & Opcodes.ACC_SYNTHETIC) != 0) continue;
                 int sl = cn.name.lastIndexOf('/');
                 if (sl <= 0 || !Candor.kappaCovers(cn.name.substring(0, sl).replace('/', '.')) || loggingFrontier(cn.name)) continue;
+                boolean framework = !runtimeOwner(cn.name);
+                if (framework) SURVEYED.add(cn.name);
                 for (String sig : visibleSignatures(j, cn)) {
                     int p = sig.indexOf('(');
                     String name = sig.substring(0, p), desc = sig.substring(p);
                     List<Integer> tg = resolve(j, cn.name, name, desc);
+                    if (framework && !name.equals("<clinit>")) {
+                        if (tg.isEmpty()) { if (!name.equals("<init>") && implementersUnvouched(cn.name, name, desc, eff))
+                            HEDGE.putIfAbsent(cn.name + "." + sig, "A"); }
+                        else if (UNK_ONLY.containsAll(tg)) HEDGE.putIfAbsent(cn.name + "." + sig, "U");
+                    }
                     if (tg.isEmpty()) continue;
                     MethodNode decl = nodeMethod.get(tg.get(0));
                     boolean callable = (decl.access & (Opcodes.ACC_PUBLIC | Opcodes.ACC_PROTECTED)) != 0;
@@ -262,6 +301,26 @@ public class FrameworkReachGen {
                 }
                 wit.add(key + "\t" + CONC[i].specName() + "\t" + jarNames.get(j) + "\t" + path);
             }
+        }
+        if (hedgeOut != null) {
+            java.util.Set<String> charged = new HashSet<>();
+            for (String r : rows) charged.add(r.substring(0, r.indexOf('\t')));
+            List<String> hl = new ArrayList<>();
+            for (String pk : jdkPackages()) if (Candor.kappaCovers(pk)) hl.add("J\t" + pk);
+            for (String c : SURVEYED) hl.add("S\t" + c);
+            for (Map.Entry<String, String> h : HEDGE.entrySet())
+                if (!charged.contains(h.getKey())) hl.add(h.getValue() + "\t" + h.getKey());
+            Collections.sort(hl);
+            MessageDigest hm = MessageDigest.getInstance("SHA-256");
+            for (String r : hl) hm.update((r + "\n").getBytes(StandardCharsets.UTF_8));
+            StringBuilder hb = new StringBuilder();
+            for (String h : header) hb.append(h).append('\n');
+            hb.append("# hedge: J = a JDK package (runtime), S = a surveyed framework class, A/U = a framework member the\n");
+            hb.append("# table cannot vouch for (A: no body — dispatch; U: the scan read it only as Unknown). See FrameworkReach.\n");
+            hb.append("# entries ").append(hl.size()).append('\n');
+            hb.append("# content-sha256 ").append(HexFormat.of().formatHex(hm.digest())).append('\n');
+            for (String r : hl) hb.append(r).append('\n');
+            Files.writeString(Path.of(hedgeOut), hb.toString(), StandardCharsets.UTF_8);
         }
         Collections.sort(rows);
         Collections.sort(wit);
@@ -345,6 +404,43 @@ public class FrameworkReachGen {
             if (!found) for (String i : in.interfaces) q.add(new String[] { String.valueOf(ij), i });
         }
         return out;
+    }
+
+    static Map<String, List<String>> subs;
+
+    /** An abstract member is hedged unless EVERY surveyed implementation of it was examined and found pure. A
+     *  member with no surveyed implementer at all (an API whose implementations ship elsewhere — a container, a
+     *  driver) is hedged; one whose only implementers are pure bodies the table read (dbunit's
+     *  {@code IDatabaseConnection.getSchema} returns a field in every implementation) is not. Project-side
+     *  implementers are the consumer scan's own business — its CHA sees them. */
+    static boolean implementersUnvouched(String owner, String name, String desc, int[] eff) {
+        if (subs == null) {
+            subs = new HashMap<>();
+            for (Map<String, ClassNode> m : jarClasses)
+                for (ClassNode c : m.values()) {
+                    if (c.superName != null) subs.computeIfAbsent(c.superName, k -> new ArrayList<>()).add(c.name);
+                    for (String i : c.interfaces) subs.computeIfAbsent(i, k -> new ArrayList<>()).add(c.name);
+                }
+        }
+        ArrayDeque<String> q = new ArrayDeque<>(subs.getOrDefault(owner, List.of()));
+        Set<String> seen = new HashSet<>();
+        int bodies = 0;
+        while (!q.isEmpty()) {
+            String c = q.poll();
+            if (!seen.add(c)) continue;
+            q.addAll(subs.getOrDefault(c, List.of()));
+            List<Integer> js = classJars.get(c);
+            if (js == null) continue;
+            for (int j : js) {
+                ClassNode cn = cls(j, c);
+                if (cn == null || (cn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_INTERFACE)) != 0) continue;
+                for (int t : resolve(j, c, name, desc)) {
+                    bodies++;
+                    if (eff[t] != 0 || UNK_ONLY.contains(t)) return true;
+                }
+            }
+        }
+        return bodies == 0;
     }
 
     /** The {@code <clinit>} bodies initialising {@code owner} runs (its own, then its superclasses'). */

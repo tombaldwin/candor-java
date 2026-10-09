@@ -591,11 +591,16 @@ class CoveredPrefixCensusTest {
             // `Fs` at any call site — and logs it at debug. The generated framework table carries both.
             assertEquals(EffectSet.of(Effect.FS, Effect.LOG), eff(r, "com.x.Pure.streamRules"),
                     "ValidatorResources(InputStream) reads its own rules resource: " + r.get("com.x.Pure.streamRules"));
+            // `memRows`: `ITable.getRowCount` is an INTERFACE call — the query-backed implementations do round-trip,
+            // so the residue hedge discloses it (`dispatch:`) rather than the grant certifying it pure. No concrete
+            // effect is claimed.
+            assertEquals(EffectSet.of(Effect.UNKNOWN), eff(r, "com.x.Pure.memRows"),
+                    "an abstract dbunit member is disclosed, never charged: " + r.get("com.x.Pure.memRows"));
             // `copy`: BeanUtilsBean.copyProperties logs at debug through JCL's `Log` (javap) — same reading.
             assertEquals(EffectSet.of(Effect.LOG), eff(r, "com.x.Pure.copy"),
                     "copyProperties logs and opens nothing: " + r.get("com.x.Pure.copy"));
             for (String m : new String[] {"scope", "txId", "route", "env", "chan", "sockBuilder",
-                    "b64", "shaBytes", "shaStream", "memRows", "schema", "cfgMap", "dynaName",
+                    "b64", "shaBytes", "shaStream", "schema", "cfgMap", "dynaName",
                     "emptyRules", "form"})
                 assertTrue(eff(r, "com.x.Pure." + m).isEmpty(),
                     m + " opens nothing and round-trips nowhere — must stay pure, got " + r.get("com.x.Pure." + m));

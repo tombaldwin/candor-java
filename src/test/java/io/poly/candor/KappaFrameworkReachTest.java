@@ -174,4 +174,89 @@ class KappaFrameworkReachTest {
             assertTrue(incomplete("app.G.viaRef").contains("Fs"), "a reference has no operand to judge");
         } finally { rm(app.getParent()); }
     }
+
+    /** Groovy's emitted cast: the CLASS argument decides the ladder arm, and groovyc passes it as an ldc constant.
+     *  To String the arm is FormatHelper.toString (no row); to List the Collection arm (asCollection ->
+     *  ResourceGroovyMethods.readLines(File)) keeps the member's whole row. */
+    @Test
+    void aGroovyCastToAConstantFinalJdkClassTakesOnlyItsArm() throws Exception {
+        Path app = compileApp(Map.of(
+                "org/codehaus/groovy/runtime/ScriptBytecodeAdapter.java",
+                "package org.codehaus.groovy.runtime; public class ScriptBytecodeAdapter {"
+                    + " public static Object castToType(Object o, Class<?> c) { return o; } }"),
+            Map.of("app/C.java", String.join("\n",
+                "package app;",
+                "import org.codehaus.groovy.runtime.ScriptBytecodeAdapter;",
+                "public class C {",
+                "  Object toStr(Object o) { return ScriptBytecodeAdapter.castToType(o, String.class); }",
+                "  Object toObj(Object o) { return ScriptBytecodeAdapter.castToType(o, Object.class); }",
+                "  Object toList(Object o) { return ScriptBytecodeAdapter.castToType(o, java.util.List.class); }",
+                "  Object toDyn(Object o, Class<?> k) { return ScriptBytecodeAdapter.castToType(o, k); }",
+                "}")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(app);
+            assertTrue(FrameworkReach.charges("org/codehaus/groovy/runtime/ScriptBytecodeAdapter", "castToType",
+                    "(Ljava/lang/Object;Ljava/lang/Class;)Ljava/lang/Object;").contains(Effect.FS), "control: the row");
+            assertTrue(eff(r, "app.C.toStr").isEmpty(), "a String cast runs FormatHelper.toString only");
+            assertTrue(eff(r, "app.C.toObj").isEmpty(), "an Object cast returns its argument");
+            assertTrue(eff(r, "app.C.toList").contains(Effect.FS), "a Collection cast keeps the ladder's charge");
+            assertTrue(eff(r, "app.C.toDyn").contains(Effect.FS), "a non-constant class keeps the whole row");
+        } finally { rm(app.getParent()); }
+    }
+
+    @Test
+    void theHedgeListIsGeneratorOutputToo() throws Exception {
+        List<String> lines;
+        try (InputStream in = FrameworkReach.class.getResourceAsStream(FrameworkReach.HEDGE_RESOURCE)) {
+            assertTrue(in != null, "the hedge list must be bundled");
+            lines = new String(in.readAllBytes(), StandardCharsets.UTF_8).lines().toList();
+        }
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+        int rows = 0;
+        for (String l : lines) { if (l.startsWith("#")) continue; md.update((l + "\n").getBytes(StandardCharsets.UTF_8)); rows++; }
+        assertTrue(rows > 1000, "populated");
+        assertEquals(HexFormat.of().formatHex(md.digest()), header(lines, "content-sha256"),
+                "framework-hedge.tsv was edited by hand — regenerate with soundness/kappa_table/derive.sh");
+        assertEquals(header(tableLines(), "generator-sha256"), header(lines, "generator-sha256"),
+                "the table and the hedge list come from the same generator run");
+    }
+
+    /** The residue the table cannot vouch for discloses Unknown; what it examined stays silent; the JDK and the
+     *  language runtimes keep the grant. */
+    @Test
+    void theResidueDisclosesAndTheExaminedPureDoesNot() throws Exception {
+        assertEquals("A", FrameworkReach.hedgeKind("com/fasterxml/jackson/core/JsonParser", "nextToken",
+                "()Lcom/fasterxml/jackson/core/JsonToken;"), "an abstract member: the body is chosen at run time");
+        assertEquals("X", FrameworkReach.hedgeKind("org/hibernate/criterion/Restrictions", "eq",
+                "(Ljava/lang/String;Ljava/lang/Object;)Lorg/hibernate/criterion/SimpleExpression;"), "an unsurveyed framework class");
+        assertEquals(null, FrameworkReach.hedgeKind("org/apache/commons/csv/CSVRecord", "get", "(I)Ljava/lang/String;"),
+                "examined, pure");
+        assertEquals("U", FrameworkReach.hedgeKind("org/apache/commons/csv/CSVParser", "parse",
+                "(Ljava/lang/String;Lorg/apache/commons/csv/CSVFormat;)Lorg/apache/commons/csv/CSVParser;"),
+                "examined, and the scan could read it only as Unknown (the Reader it wraps)");
+        assertEquals(null, FrameworkReach.hedgeKind("org/apache/commons/csv/CSVParser", "parse",
+                "(Ljava/io/File;Ljava/nio/charset/Charset;Lorg/apache/commons/csv/CSVFormat;)Lorg/apache/commons/csv/CSVParser;"), "charged, not hedged");
+        assertEquals(null, FrameworkReach.hedgeKind("java/util/List", "size", "()I"), "the JDK keeps the grant");
+        assertEquals(null, FrameworkReach.hedgeKind("javax/crypto/Cipher", "doFinal", "([B)[B"), "a JDK javax package too");
+        assertEquals(null, FrameworkReach.hedgeKind("kotlin/collections/CollectionsKt", "listOf",
+                "([Ljava/lang/Object;)Ljava/util/List;"), "a language runtime keeps the grant");
+        assertEquals(null, FrameworkReach.hedgeKind("org/slf4j/Logger", "info", "(Ljava/lang/String;)V"), "logging frontier");
+        Path app = compileApp(Map.of(
+                "com/fasterxml/jackson/core/JsonParser.java",
+                "package com.fasterxml.jackson.core; public abstract class JsonParser { public abstract JsonToken nextToken(); }",
+                "com/fasterxml/jackson/core/JsonToken.java", "package com.fasterxml.jackson.core; public enum JsonToken { A }"),
+            Map.of("app/J.java", String.join("\n",
+                "package app;",
+                "public class J {",
+                "  Object next(com.fasterxml.jackson.core.JsonParser p) { return p.nextToken(); }",
+                "  int pure(String s) { return s.length(); }",
+                "}")));
+        try {
+            Map<String, EffectSet> r = Candor.runScan(app);
+            assertTrue(eff(r, "app.J.next").contains(Effect.UNKNOWN), "the abstract call discloses");
+            assertTrue(AnalysisState.ctx().unknownWhy.get("app.J.next").toString().contains("dispatch:com.fasterxml.jackson.core.JsonParser.nextToken"),
+                    "with its reason: " + AnalysisState.ctx().unknownWhy.get("app.J.next"));
+            assertTrue(eff(r, "app.J.pure").isEmpty(), "control");
+        } finally { rm(app.getParent()); }
+    }
 }

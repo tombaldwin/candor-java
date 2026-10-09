@@ -3207,11 +3207,19 @@ def main():
                         f"  (must surface {eff} or Unknown)")
             if fs in ("FLOOR", "SILENT"):
                 floored.append(f"{fs}:{name}")
+    disclosed_pure = []
     for name, body, params in PURE_CASES:
         got = inferred.get("KL." + name, [])
         fs = floor_state(name, params, body)
-        rows.append((name, "(pure)", got or [], fs, "ok(pure)" if not got else "FABRICATION"))
-        if got:
+        # SOUNDNESS R492: an `Unknown`-ONLY result is a DISCLOSURE, not a fabrication — the framework-residue hedge
+        # (FrameworkReach.hedgeKind) puts it on an abstract API member whose implementations ship elsewhere (JMS,
+        # JAX-RS, JSON-B, JAXB, JAX-WS…) or a body the framework scan read only as Unknown. A pure neighbour exists
+        # to catch a FABRICATED concrete effect, which still fails here; the disclosed ones are listed.
+        verdict = "ok(pure)" if not got else ("ok(disclosed)" if got == ["Unknown"] else "FABRICATION")
+        rows.append((name, "(pure)", got or [], fs, verdict))
+        if verdict == "ok(disclosed)":
+            disclosed_pure.append(name)
+        elif got:
             fabs.append(f"  FABRICATION  KL.{name} [{body}] -> {got}  (must stay pure)")
 
     w = max(len(r[0]) for r in rows)
@@ -3233,6 +3241,9 @@ def main():
         for g in gaps + fabs:
             print(g)
         sys.exit(1)
+    if disclosed_pure:
+        print(f"\nkappa-libs: {len(disclosed_pure)} pure neighbour(s) carry a DISCLOSED Unknown (no concrete effect): "
+              + ", ".join(disclosed_pure))
     print(f"\nkappa-libs: OK — {len(EFFECT_CASES)} library effect leaves classified "
           f"(slf4j/log4j/jackson/commons-io/commons-exec/guava/okhttp/httpclient5/spring/poi/"
           f"jpa/mongo/jedis/kafka/jsoup/aws-s3/grpc/webclient/restclient/hibernate/"

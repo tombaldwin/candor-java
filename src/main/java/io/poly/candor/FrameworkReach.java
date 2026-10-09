@@ -55,6 +55,74 @@ final class FrameworkReach {
         return e == null ? List.of() : e;
     }
 
+    // ── THE RESIDUE: framework members the table cannot vouch for (SOUNDNESS R492/R727) ──────────────────────
+    static final String HEDGE_RESOURCE = "/candor/framework-hedge.tsv";
+    private static volatile Map<String, String> hedge;
+    private static final java.util.Set<String> SURVEYED = new java.util.HashSet<>();
+    private static final java.util.Set<String> JDK_PKGS = new java.util.HashSet<>();
+
+    /** Why a call into a κ-covered FRAMEWORK owner the table does not charge must still disclose, or null when the
+     *  grant's silence is earned. The grant used to certify all of these pure; the table now separates them:
+     *  <ul><li>{@code "A"} — the call resolves to NO body in the surveyed jars (an abstract or interface member,
+     *  or native): which implementation runs is decided at run time, by code the table never read.</li>
+     *  <li>{@code "U"} — every body it resolves to is one this engine's own scan of the framework could read only
+     *  as {@code Unknown}.</li>
+     *  <li>{@code "X"} — the owner is under a covered framework prefix but in no surveyed jar (e.g.
+     *  {@code org.hibernate.criterion}, the {@code javax.*} APIs no jar here ships).</li></ul>
+     *  Never for the JDK ({@code J} lines, generated from the JDK's own module list), the language runtimes
+     *  (kotlin, scala, groovy) or the logging frameworks: those keep the grant. A member the table EXAMINED and
+     *  found pure gets null — that silence is a measurement, and disclosing it would be false. */
+    static String hedgeKind(String internalOwner, String name, String desc) {
+        if (DISABLED) return null;
+        int sl = internalOwner.lastIndexOf('/');
+        if (sl <= 0) return null;
+        String pkg = internalOwner.substring(0, sl).replace('/', '.');
+        if (!Candor.kappaCovers(pkg)) return null;
+        Map<String, String> h = hedge == null ? loadHedge() : hedge;
+        if (JDK_PKGS.contains(pkg) || runtimeOrLogging(internalOwner)) return null;
+        String key = internalOwner + "." + name + desc;
+        if (!charges(internalOwner, name, desc).isEmpty()) return null;
+        String k = h.get(key);
+        if (k != null) return k;
+        return SURVEYED.contains(internalOwner) ? null : "X";
+    }
+
+    static boolean runtimeOrLogging(String internalName) {
+        for (String p : new String[] { "kotlin/", "scala/", "groovy/", "org/codehaus/groovy/", "org/slf4j/",
+                "org/apache/commons/logging/", "org/apache/logging/", "ch/qos/logback/" })
+            if (internalName.startsWith(p)) return true;
+        return false;
+    }
+
+    static int hedgeSize() { return hedge == null ? loadHedge().size() : hedge.size(); }
+
+    private static synchronized Map<String, String> loadHedge() {
+        if (hedge != null) return hedge;
+        Map<String, String> m = new HashMap<>(1 << 17);
+        try (InputStream in = FrameworkReach.class.getResourceAsStream(HEDGE_RESOURCE)) {
+            if (in == null) throw new IllegalStateException("candor: bundled resource " + HEDGE_RESOURCE + " is missing");
+            BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
+            for (String line; (line = r.readLine()) != null; ) {
+                if (line.isEmpty() || line.charAt(0) == '#') continue;
+                int tab = line.indexOf('\t');
+                String kind = line.substring(0, tab), v = line.substring(tab + 1);
+                switch (kind) {
+                    case "J" -> JDK_PKGS.add(v);
+                    case "S" -> SURVEYED.add(v);
+                    case "A", "U" -> m.put(v, kind);
+                    default -> throw new IllegalStateException("candor: " + HEDGE_RESOURCE + " bad line: " + line);
+                }
+            }
+        } catch (IOException ex) {
+            throw new IllegalStateException("candor: cannot read " + HEDGE_RESOURCE, ex);
+        }
+        // A stripped or placeholder list would read every JDK package as a FRAMEWORK one and flood Unknown.
+        if (JDK_PKGS.isEmpty() || SURVEYED.isEmpty())
+            throw new IllegalStateException("candor: " + HEDGE_RESOURCE + " carries no J/S lines — regenerate it");
+        hedge = m;
+        return m;
+    }
+
     static int size() { return DISABLED ? 0 : (table == null ? load() : table).size(); }
 
     private static synchronized Map<String, List<Effect>> load() {

@@ -9,6 +9,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+## [0.40.3] — 2026-10-09
+
 - ⚠ **The framework table's JDK package list is now a checked-in input, so the table no longer depends on the
   machine that generated it.** `framework-hedge.tsv`'s `J` lines came from the module list of whatever JDK ran
   `derive.sh`, and the scans read the caller's `CANDOR_*` environment. The committed table had been made under a
@@ -21,8 +23,9 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
     native boundary keeps its own reasons (`native:SymbolLookup.find`, `reflect:MethodHandle.invokeExact`,
     `libraryLookup` → `Exec`).
   - `jdk.incubator.foreign` and `com.sun.jarsigner` exist only in JDK 17, so they are now disclosed (`Unknown`)
-    instead of granted. `CLinker.systemLookup().lookup(..)` resolves a native symbol and read as pure: that silence
-    is now closed.
+    instead of granted. **Published v0.40.2 shipped this silence (SOUNDNESS R1082):** its table was built on JDK 17
+    and granted `jdk.incubator.foreign` as JDK, so `CLinker.systemLookup().lookup(..)`, which resolves a native
+    symbol, read as pure. Fixed here.
   - `CaffeineCache.get(Object, Callable)` (`U`) and `AbstractValueAdaptingCache.get(Object, Callable)` (`A`) are
     hedged again, as they were in v0.40.2. The scan reads caffeine's `Cache.get` as an unresolved dispatch, and the
     previous regeneration had lost both hedges.
@@ -37,6 +40,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   Disclosed rather than charged `Net`, measured both ways over 762 jars against the R1052 build: `Unknown` on 4,846
   rows that had none (0.18%), nothing removed, only `deny Unknown` moves; charging `Net` instead would have put
   `Net` on 43,178 rows (1.57%) and flipped 38,000 `deny Net` gates, nearly all on local class-path reads.
+  **The cost of disclosing: a bare `deny Net` still passes these reads** (exit 0). To fail on them, gate with
+  `deny Net Unknown` or `deny Unknown`.
 
 - ⚠ **Three leaf rules no longer over-charge, and the generated framework table stops carrying them
   (SOUNDNESS R1052).** Verdicts can only get GREENER, never on code that performs the effect:

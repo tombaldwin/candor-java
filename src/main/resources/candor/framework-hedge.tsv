@@ -126,8 +126,8 @@
 # hedge: J = a JDK package (runtime), S = a surveyed framework class, A/U = a framework member the
 # table cannot vouch for (A: no body — dispatch; U: the scan read it only as Unknown). See FrameworkReach.
 # P = a member a NAME rule charges whose surveyed body is a proven-pure field accessor (R1052).
-# entries 76399
-# content-sha256 2908ae767192c8021e740ff419f5f7c2b8f6a5502240928620bad3aefaf6484e
+# entries 76419
+# content-sha256 7d3d7d0d40a80202afcfa2950e1d72ddf2c7549140497d7465ca608d0c59b227
 A	com/fasterxml/jackson/annotation/JacksonInject.useInput()Lcom/fasterxml/jackson/annotation/OptBoolean;
 A	com/fasterxml/jackson/annotation/JacksonInject.value()Ljava/lang/String;
 A	com/fasterxml/jackson/annotation/JsonAlias.value()[Ljava/lang/String;
@@ -20527,6 +20527,7 @@ A	org/springframework/data/elasticsearch/core/cluster/ClusterOperations.health()
 A	org/springframework/data/elasticsearch/core/cluster/ReactiveClusterOperations.health()Lreactor/core/publisher/Mono;
 A	org/springframework/data/elasticsearch/core/convert/AbstractPropertyValueConverter.read(Ljava/lang/Object;)Ljava/lang/Object;
 A	org/springframework/data/elasticsearch/core/convert/AbstractRangePropertyValueConverter.parse(Ljava/lang/String;)Ljava/lang/Object;
+A	org/springframework/data/elasticsearch/core/convert/DateFormatter.parse(Ljava/lang/String;Ljava/lang/Class;)Ljava/time/temporal/TemporalAccessor;
 A	org/springframework/data/elasticsearch/core/convert/DefaultElasticsearchTypeMapper.create(Lorg/springframework/data/mapping/context/MappingContext;)Lorg/springframework/data/elasticsearch/core/convert/ElasticsearchTypeMapper;
 A	org/springframework/data/elasticsearch/core/convert/ElasticsearchConverter.read(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;
 A	org/springframework/data/elasticsearch/core/convert/ElasticsearchConverter.updateQuery(Lorg/springframework/data/elasticsearch/core/query/Query;Ljava/lang/Class;)V
@@ -71258,6 +71259,8 @@ U	org/springframework/data/elasticsearch/core/convert/ElasticsearchCustomConvers
 U	org/springframework/data/elasticsearch/core/convert/ElasticsearchCustomConversions.hasCustomWriteTarget(Ljava/lang/Class;Ljava/lang/Class;)Z
 U	org/springframework/data/elasticsearch/core/convert/ElasticsearchCustomConversions.hasValueConverter(Lorg/springframework/data/mapping/PersistentProperty;)Z
 U	org/springframework/data/elasticsearch/core/convert/ElasticsearchCustomConversions.isSimpleType(Ljava/lang/Class;)Z
+U	org/springframework/data/elasticsearch/core/convert/ElasticsearchDateConverter.parse(Ljava/lang/String;)Ljava/util/Date;
+U	org/springframework/data/elasticsearch/core/convert/ElasticsearchDateConverter.parse(Ljava/lang/String;Ljava/lang/Class;)Ljava/time/temporal/TemporalAccessor;
 U	org/springframework/data/elasticsearch/core/convert/MappingElasticsearchConverter.updateQuery(Lorg/springframework/data/elasticsearch/core/query/Query;Ljava/lang/Class;)V
 U	org/springframework/data/elasticsearch/core/document/Document.getBooleanOrDefault(Ljava/lang/String;Ljava/util/function/BooleanSupplier;)Z
 U	org/springframework/data/elasticsearch/core/document/Document.getBooleanOrDefault(Ljava/lang/String;Z)Z
@@ -76120,19 +76123,23 @@ U	org/threeten/extra/AmPm.adjustInto(Ljava/time/temporal/Temporal;)Ljava/time/te
 U	org/threeten/extra/AmPm.from(Ljava/time/temporal/TemporalAccessor;)Lorg/threeten/extra/AmPm;
 U	org/threeten/extra/AmPm.get(Ljava/time/temporal/TemporalField;)I
 U	org/threeten/extra/AmPm.getLong(Ljava/time/temporal/TemporalField;)J
+U	org/threeten/extra/AmPm.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/AmPm.range(Ljava/time/temporal/TemporalField;)Ljava/time/temporal/ValueRange;
 U	org/threeten/extra/AmountFormats.parseUnitBasedDuration(Ljava/lang/CharSequence;)Ljava/time/Duration;
 U	org/threeten/extra/DayOfMonth.adjustInto(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/DayOfMonth.from(Ljava/time/temporal/TemporalAccessor;)Lorg/threeten/extra/DayOfMonth;
 U	org/threeten/extra/DayOfMonth.getLong(Ljava/time/temporal/TemporalField;)J
+U	org/threeten/extra/DayOfMonth.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/DayOfYear.adjustInto(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/DayOfYear.from(Ljava/time/temporal/TemporalAccessor;)Lorg/threeten/extra/DayOfYear;
 U	org/threeten/extra/DayOfYear.getLong(Ljava/time/temporal/TemporalField;)J
+U	org/threeten/extra/DayOfYear.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/Days.addTo(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Days.subtractFrom(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Half.adjustInto(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Half.from(Ljava/time/temporal/TemporalAccessor;)Lorg/threeten/extra/Half;
 U	org/threeten/extra/Half.getLong(Ljava/time/temporal/TemporalField;)J
+U	org/threeten/extra/Half.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/HourMinute.adjustInto(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/HourMinute.from(Ljava/time/temporal/TemporalAccessor;)Lorg/threeten/extra/HourMinute;
 U	org/threeten/extra/HourMinute.getLong(Ljava/time/temporal/TemporalField;)J
@@ -76146,6 +76153,7 @@ U	org/threeten/extra/HourMinute.plus(JLjava/time/temporal/TemporalUnit;)Ljava/ti
 U	org/threeten/extra/HourMinute.plus(JLjava/time/temporal/TemporalUnit;)Lorg/threeten/extra/HourMinute;
 U	org/threeten/extra/HourMinute.plus(Ljava/time/temporal/TemporalAmount;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/HourMinute.plus(Ljava/time/temporal/TemporalAmount;)Lorg/threeten/extra/HourMinute;
+U	org/threeten/extra/HourMinute.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/HourMinute.until(Ljava/time/temporal/Temporal;Ljava/time/temporal/TemporalUnit;)J
 U	org/threeten/extra/HourMinute.with(Ljava/time/temporal/TemporalAdjuster;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/HourMinute.with(Ljava/time/temporal/TemporalAdjuster;)Lorg/threeten/extra/HourMinute;
@@ -76154,10 +76162,13 @@ U	org/threeten/extra/HourMinute.with(Ljava/time/temporal/TemporalField;J)Lorg/th
 U	org/threeten/extra/Hours.addTo(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Hours.subtractFrom(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/LocalDateRange.stream()Ljava/util/stream/Stream;
+U	org/threeten/extra/LocalDateRange.withEnd(Ljava/time/temporal/TemporalAdjuster;)Lorg/threeten/extra/LocalDateRange;
+U	org/threeten/extra/LocalDateRange.withStart(Ljava/time/temporal/TemporalAdjuster;)Lorg/threeten/extra/LocalDateRange;
 U	org/threeten/extra/Minutes.addTo(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Minutes.subtractFrom(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Months.addTo(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Months.subtractFrom(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
+U	org/threeten/extra/MutableClock.set(Ljava/time/temporal/TemporalAdjuster;)V
 U	org/threeten/extra/OffsetDate.adjustInto(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/OffsetDate.getLong(Ljava/time/temporal/TemporalField;)J
 U	org/threeten/extra/OffsetDate.minus(JLjava/time/temporal/TemporalUnit;)Ljava/time/temporal/Temporal;
@@ -76168,6 +76179,7 @@ U	org/threeten/extra/OffsetDate.plus(JLjava/time/temporal/TemporalUnit;)Ljava/ti
 U	org/threeten/extra/OffsetDate.plus(JLjava/time/temporal/TemporalUnit;)Lorg/threeten/extra/OffsetDate;
 U	org/threeten/extra/OffsetDate.plus(Ljava/time/temporal/TemporalAmount;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/OffsetDate.plus(Ljava/time/temporal/TemporalAmount;)Lorg/threeten/extra/OffsetDate;
+U	org/threeten/extra/OffsetDate.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/OffsetDate.range(Ljava/time/temporal/TemporalField;)Ljava/time/temporal/ValueRange;
 U	org/threeten/extra/OffsetDate.until(Ljava/time/temporal/Temporal;Ljava/time/temporal/TemporalUnit;)J
 U	org/threeten/extra/OffsetDate.with(Ljava/time/temporal/TemporalAdjuster;)Ljava/time/temporal/Temporal;
@@ -76175,12 +76187,15 @@ U	org/threeten/extra/OffsetDate.with(Ljava/time/temporal/TemporalAdjuster;)Lorg/
 U	org/threeten/extra/OffsetDate.with(Ljava/time/temporal/TemporalField;J)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/OffsetDate.with(Ljava/time/temporal/TemporalField;J)Lorg/threeten/extra/OffsetDate;
 U	org/threeten/extra/PeriodDuration.addTo(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
+U	org/threeten/extra/PeriodDuration.between(Ljava/time/temporal/Temporal;Ljava/time/temporal/Temporal;)Lorg/threeten/extra/PeriodDuration;
 U	org/threeten/extra/PeriodDuration.subtractFrom(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Quarter.adjustInto(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Quarter.from(Ljava/time/temporal/TemporalAccessor;)Lorg/threeten/extra/Quarter;
 U	org/threeten/extra/Quarter.getLong(Ljava/time/temporal/TemporalField;)J
+U	org/threeten/extra/Quarter.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/Seconds.addTo(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Seconds.subtractFrom(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
+U	org/threeten/extra/Temporals.parseFirstMatching(Ljava/lang/CharSequence;Ljava/time/temporal/TemporalQuery;[Ljava/time/format/DateTimeFormatter;)Ljava/lang/Object;
 U	org/threeten/extra/Weeks.addTo(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Weeks.subtractFrom(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/YearHalf.adjustInto(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
@@ -76197,6 +76212,7 @@ U	org/threeten/extra/YearHalf.plus(JLjava/time/temporal/TemporalUnit;)Ljava/time
 U	org/threeten/extra/YearHalf.plus(JLjava/time/temporal/TemporalUnit;)Lorg/threeten/extra/YearHalf;
 U	org/threeten/extra/YearHalf.plus(Ljava/time/temporal/TemporalAmount;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/YearHalf.plus(Ljava/time/temporal/TemporalAmount;)Lorg/threeten/extra/YearHalf;
+U	org/threeten/extra/YearHalf.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/YearHalf.until(Ljava/time/temporal/Temporal;Ljava/time/temporal/TemporalUnit;)J
 U	org/threeten/extra/YearHalf.with(Ljava/time/temporal/TemporalAdjuster;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/YearHalf.with(Ljava/time/temporal/TemporalAdjuster;)Lorg/threeten/extra/YearHalf;
@@ -76216,6 +76232,7 @@ U	org/threeten/extra/YearQuarter.plus(JLjava/time/temporal/TemporalUnit;)Lorg/th
 U	org/threeten/extra/YearQuarter.plus(Ljava/time/temporal/TemporalAmount;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/YearQuarter.plus(Ljava/time/temporal/TemporalAmount;)Lorg/threeten/extra/YearQuarter;
 U	org/threeten/extra/YearQuarter.quartersUntil(Lorg/threeten/extra/YearQuarter;)Ljava/util/stream/Stream;
+U	org/threeten/extra/YearQuarter.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/YearQuarter.until(Ljava/time/temporal/Temporal;Ljava/time/temporal/TemporalUnit;)J
 U	org/threeten/extra/YearQuarter.with(Ljava/time/temporal/TemporalAdjuster;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/YearQuarter.with(Ljava/time/temporal/TemporalAdjuster;)Lorg/threeten/extra/YearQuarter;
@@ -76236,6 +76253,7 @@ U	org/threeten/extra/YearWeek.plus(JLjava/time/temporal/TemporalUnit;)Lorg/three
 U	org/threeten/extra/YearWeek.plus(Ljava/time/temporal/TemporalAmount;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/YearWeek.plus(Ljava/time/temporal/TemporalAmount;)Lorg/threeten/extra/YearWeek;
 U	org/threeten/extra/YearWeek.plusWeeks(J)Lorg/threeten/extra/YearWeek;
+U	org/threeten/extra/YearWeek.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/YearWeek.until(Ljava/time/temporal/Temporal;Ljava/time/temporal/TemporalUnit;)J
 U	org/threeten/extra/YearWeek.with(Ljava/time/temporal/TemporalAdjuster;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/YearWeek.with(Ljava/time/temporal/TemporalAdjuster;)Lorg/threeten/extra/YearWeek;
@@ -76243,8 +76261,10 @@ U	org/threeten/extra/YearWeek.with(Ljava/time/temporal/TemporalField;J)Ljava/tim
 U	org/threeten/extra/YearWeek.with(Ljava/time/temporal/TemporalField;J)Lorg/threeten/extra/YearWeek;
 U	org/threeten/extra/Years.addTo(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Years.subtractFrom(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
+U	org/threeten/extra/chrono/AccountingChronology.create(Ljava/time/DayOfWeek;Ljava/time/Month;ZLorg/threeten/extra/chrono/AccountingYearDivision;II)Lorg/threeten/extra/chrono/AccountingChronology;
 U	org/threeten/extra/chrono/AccountingChronology.date(Ljava/time/temporal/TemporalAccessor;)Ljava/time/chrono/ChronoLocalDate;
 U	org/threeten/extra/chrono/AccountingChronology.date(Ljava/time/temporal/TemporalAccessor;)Lorg/threeten/extra/chrono/AccountingDate;
+U	org/threeten/extra/chrono/AccountingChronologyBuilder.toChronology()Lorg/threeten/extra/chrono/AccountingChronology;
 U	org/threeten/extra/chrono/AccountingDate.doUntil(Lorg/threeten/extra/chrono/AbstractDate;)Ljava/time/chrono/ChronoPeriod;
 U	org/threeten/extra/chrono/AccountingDate.from(Lorg/threeten/extra/chrono/AccountingChronology;Ljava/time/temporal/TemporalAccessor;)Lorg/threeten/extra/chrono/AccountingDate;
 U	org/threeten/extra/chrono/AccountingDate.getLong(Ljava/time/temporal/TemporalField;)J

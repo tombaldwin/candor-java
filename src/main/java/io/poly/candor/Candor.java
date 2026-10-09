@@ -5200,7 +5200,17 @@ public class Candor {
                                       Type[] pt, int i, ProvValue a) {
         if (i >= pt.length || pt[i].getSort() != Type.OBJECT) return;
         String iface = pt[i].getInternalName();
-        if (!isFunctionalIface(iface)) return;
+        // SOUNDNESS R1092 — THE HAND LIST OF FUNCTIONAL INTERFACES IS NOT THE GATE WHERE THE JDK ITSELF ANSWERED.
+        // `isFunctionalIface` names java.util.function and seven others, so a JDK invoking HOF whose parameter is any
+        // other functional interface stayed silent even though R237's index had proven it invokes that argument:
+        // `ScopedValue.where(..).call(op)` (JDK 25's `ScopedValue.CallableOp`) with an opaque `op` read PURE while
+        // `.run(runnable)` disclosed. EXECUTED: the op wrote a file; `deny Unknown` exited 0. So the hand list is joined
+        // by a second, derived gate with two conjuncts: the HOF index proves THIS argument is invoked, AND the JDK
+        // declares its type @FunctionalInterface. The second conjunct is not decoration: the index alone admitted
+        // `String.join(.., Iterable)` (Iterable has a SAM; the JDK calls iterator()), which R183 declined as a
+        // fabrication and `JdkHofIndexTest#theInterfaceGateStillBoundsTheIndexsReach` pins — measured red without it.
+        if (!isFunctionalIface(iface)
+                && !(jdkInvokesFunctionalArg(min.name, min.desc, i) && jdkDeclaredFunctional(iface))) return;
         // SOUNDNESS R236 — A PROVABLE `null` HANDS OVER NO CALLBACK. `xs.sort(null)` is the documented
         // natural-ordering spelling, `Collections.sort(xs, null)` and `Arrays.sort(a, null)` likewise, and
         // `AccessController.doPrivileged(null)` throws. Charging `Unknown` there claims candor cannot rule
@@ -8862,6 +8872,32 @@ public class Candor {
         if (idx == null) return false;
         for (int i : idx) if (i == argIndex) return true;
         return false;
+    }
+
+    /** SOUNDNESS R1092 — whether the JDK itself DECLARES {@code internal} a functional interface
+     *  ({@code @FunctionalInterface}, RUNTIME retention), from the pinned images (soundness/jdk_index, R1094). The
+     *  JDK's own word, where {@link #isFunctionalIface} is a hand list: it is what admits {@code ScopedValue.CallableOp}
+     *  (JDK 25) and still refuses {@code Iterable}, which has a SAM but is not a callback type (R183). */
+    static boolean jdkDeclaredFunctional(String internal) {
+        return JdkFunctional.SET.contains(internal);
+    }
+
+    private static final class JdkFunctional {
+        static final Set<String> SET = load();
+        private static Set<String> load() {
+            Set<String> m = new HashSet<>();
+            try (var in = Candor.class.getResourceAsStream("/candor/jdk-functional.idx.gz")) {
+                if (in == null) return Set.of();   // not bundled — the hand list still answers (the pre-R1092 gate)
+                try (var br = new java.io.BufferedReader(new java.io.InputStreamReader(
+                        new java.util.zip.GZIPInputStream(in), java.nio.charset.StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = br.readLine()) != null) if (!line.isBlank()) m.add(line.strip());
+                }
+            } catch (java.io.IOException e) {
+                return Set.of();
+            }
+            return Set.copyOf(m);
+        }
     }
 
     /** Whether the index names ANY invoked functional argument for this (name, descriptor) — the cheap

@@ -9,6 +9,11 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **JDK 25 callback invokers with an opaque argument now disclose (SOUNDNESS R1092).** `ScopedValue.where(..).call(op)`
+  and `StableValue.orElseSet(supplier)` ran the argument while reading pure. The pinned JDK indexes (R1094) carry their
+  facts, and an opaque argument to a JDK method the index proves invokes it is now gated by the JDK's own
+  `@FunctionalInterface` (a new `jdk-functional.idx.gz`) as well as the hand list, so `ScopedValue.CallableOp`,
+  `TemporalQuery` and `TemporalAdjuster` callbacks disclose `callback:` `Unknown` while `Iterable` (R183) still does not.
 - ⚠ **The engine's derived JDK indexes no longer depend on the JDK that ran the build (SOUNDNESS R1094).** The SAM
   index, the invoking-HOF index and the native-image supertype index were generated from the Gradle daemon's own JDK;
   the published v0.40.3 jar carried a Corretto 17 derivation, so JDK 18+ functional interfaces and invoking HOFs read

@@ -57,7 +57,8 @@ import org.objectweb.asm.tree.analysis.SourceValue;
 public final class JdkIndexGen {
     private JdkIndexGen() {}
 
-    static final String SUPERS = "jdk-supertypes.idx", SAMS = "jdk-sams.idx", HOF = "jdk-hof-invokes.idx";
+    static final String SUPERS = "jdk-supertypes.idx", SAMS = "jdk-sams.idx", HOF = "jdk-hof-invokes.idx",
+            FUNCTIONAL = "jdk-functional.idx";
     static final Set<String> OBJECT_METHODS = Set.of("equals(Ljava/lang/Object;)Z", "hashCode()I", "toString()Ljava/lang/String;");
     static final int IDENTITY_BODY_LIMIT = 24;
 
@@ -69,6 +70,7 @@ public final class JdkIndexGen {
             Files.writeString(out.resolve(SUPERS), im.supersText(), StandardCharsets.UTF_8);
             Files.writeString(out.resolve(SAMS), im.samsText(), StandardCharsets.UTF_8);
             Files.writeString(out.resolve(HOF), im.hofText(), StandardCharsets.UTF_8);
+            Files.writeString(out.resolve(FUNCTIONAL), im.functionalText(), StandardCharsets.UTF_8);
             return;
         }
         if (a.length >= 3 && a[0].equals("--union")) {
@@ -80,6 +82,7 @@ public final class JdkIndexGen {
             writeGz(out.resolve(SUPERS + ".gz"), u.supersText());
             writeGz(out.resolve(SAMS + ".gz"), u.samsText());
             writeGz(out.resolve(HOF + ".gz"), u.hofText());
+            writeGz(out.resolve(FUNCTIONAL + ".gz"), u.functionalText());
             System.err.printf("jdk-index: %d images -> %d supertype lines, %d SAMs, %d HOF keys%n",
                     ims.size(), u.supers.size(), u.sams.size(), u.hof.size());
             return;
@@ -98,6 +101,7 @@ public final class JdkIndexGen {
         final TreeMap<String, List<String>> supers = new TreeMap<>();   // class -> [superName, iface...]
         final TreeMap<String, String> sams = new TreeMap<>();           // iface -> sam name
         final TreeMap<String, TreeSet<Integer>> hof = new TreeMap<>();  // "name desc" -> invoked arg indexes
+        final TreeSet<String> functional = new TreeSet<>();             // interfaces annotated @FunctionalInterface
         Image(String home, int feature) { this.home = home; this.feature = feature; }
 
         String supersText() {
@@ -108,6 +112,11 @@ public final class JdkIndexGen {
         String samsText() {
             StringBuilder sb = new StringBuilder();
             for (var e : sams.entrySet()) sb.append(e.getKey()).append(' ').append(e.getValue()).append('\n');
+            return sb.toString();
+        }
+        String functionalText() {
+            StringBuilder sb = new StringBuilder();
+            for (String f : functional) sb.append(f).append('\n');
             return sb.toString();
         }
         /** Byte-compatible with the Gradle task's output: lines joined by '\n' with NO trailing newline. */
@@ -148,6 +157,7 @@ public final class JdkIndexGen {
                             + e.getValue() + " (" + im.home + "; kept)");
             }
             for (var e : im.hof.entrySet()) u.hof.computeIfAbsent(e.getKey(), k -> new TreeSet<>()).addAll(e.getValue());
+            u.functional.addAll(im.functional);
         }
         System.err.println("jdk-index: " + superConflicts + " class(es) whose superclass differs between images (newest kept)");
         return u;
@@ -205,16 +215,23 @@ public final class JdkIndexGen {
 
     static Map<String, List<String>> ifaceSupers;
     static Map<String, List<M>> ifaceMethods;
+    static Set<String> annotatedFunctional;
 
     static void readInterfaces(List<Path> paths) {
         ifaceSupers = new HashMap<>();
         ifaceMethods = new HashMap<>();
+        annotatedFunctional = new TreeSet<>();
         for (Path p : paths) {
             ClassReader cr;
             try { cr = new ClassReader(Files.readAllBytes(p)); } catch (Exception e) { continue; }
             if ((cr.getAccess() & Opcodes.ACC_INTERFACE) == 0) continue;
             List<M> ms = new ArrayList<>();
+            String cname = cr.getClassName();
             cr.accept(new ClassVisitor(Opcodes.ASM9) {
+                @Override public org.objectweb.asm.AnnotationVisitor visitAnnotation(String desc, boolean visible) {
+                    if (desc.equals("Ljava/lang/FunctionalInterface;")) annotatedFunctional.add(cname);
+                    return null;
+                }
                 @Override public MethodVisitor visitMethod(int acc, String n, String d, String sig, String[] ex) {
                     ms.add(new M(n, d, acc)); return null;
                 }
@@ -253,6 +270,11 @@ public final class JdkIndexGen {
             String s = samOf(n);
             if (s != null) im.sams.put(n, s);
         }
+        // SOUNDNESS R1092 — the interfaces the JDK itself DECLARES functional (@FunctionalInterface, RUNTIME
+        // retention, so it is in the class file). Not every one-abstract-method interface is a callback type —
+        // `Iterable` has a SAM and String.join(.., Iterable) calls it, which is not a callback (R183) — and this is
+        // the JDK's own word on which ones are.
+        im.functional.addAll(annotatedFunctional);
     }
 
     static ClassNode readClass(Path p) {

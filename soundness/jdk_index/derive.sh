@@ -72,7 +72,7 @@ GSHA="$(cat "$HERE/JdkIndexGen.java" "$HERE/derive.sh" "$HERE/images.tsv" "$HERE
   echo "# soundness/jdk_index/derive.sh from the images in images.tsv; DO NOT EDIT. content-sha256 is of the"
   echo "# DECOMPRESSED text (gzip bytes depend on the zlib that wrote them); JdkIndexPinTest checks both lines."
   echo "generator-sha256 $GSHA"
-  for f in jdk-supertypes.idx jdk-sams.idx jdk-hof-invokes.idx; do
+  for f in jdk-supertypes.idx jdk-sams.idx jdk-hof-invokes.idx jdk-functional.idx; do
     t="$(gzip -dc "$WORK/out/$f.gz" | shasum -a 256 | cut -d' ' -f1)"
     n="$(gzip -dc "$WORK/out/$f.gz" | awk 'END{print NR}')"
     echo "$f $t $n"
@@ -81,7 +81,7 @@ GSHA="$(cat "$HERE/JdkIndexGen.java" "$HERE/derive.sh" "$HERE/images.tsv" "$HERE
 
 if [ "$CHECK" = 1 ]; then
   bad=0
-  for f in jdk-supertypes.idx jdk-sams.idx jdk-hof-invokes.idx; do
+  for f in jdk-supertypes.idx jdk-sams.idx jdk-hof-invokes.idx jdk-functional.idx; do
     if ! cmp -s <(gzip -dc "$WORK/out/$f.gz") <(gzip -dc "$RES/$f.gz"); then
       echo "jdk-index --check: $RES/$f.gz is NOT what the pinned images generate:" >&2
       diff <(gzip -dc "$RES/$f.gz") <(gzip -dc "$WORK/out/$f.gz") | head -10 >&2; bad=1
@@ -90,9 +90,9 @@ if [ "$CHECK" = 1 ]; then
   if ! cmp -s "$WORK/manifest.txt" "$HERE/manifest.txt"; then
     echo "jdk-index --check: manifest.txt differs:" >&2; diff "$HERE/manifest.txt" "$WORK/manifest.txt" >&2 || true; bad=1
   fi
-  [ "$bad" = 0 ] && echo "jdk-index --check: the three indexes and manifest.txt reproduce from the pinned images"
+  [ "$bad" = 0 ] && echo "jdk-index --check: the indexes and manifest.txt reproduce from the pinned images"
   exit "$bad"
 fi
-for f in jdk-supertypes.idx jdk-sams.idx jdk-hof-invokes.idx; do cp "$WORK/out/$f.gz" "$RES/$f.gz"; done
+for f in jdk-supertypes.idx jdk-sams.idx jdk-hof-invokes.idx jdk-functional.idx; do cp "$WORK/out/$f.gz" "$RES/$f.gz"; done
 cp "$WORK/manifest.txt" "$HERE/manifest.txt"
-echo "jdk-index: wrote $RES/jdk-{supertypes,sams,hof-invokes}.idx.gz and $HERE/manifest.txt — read the diff"
+echo "jdk-index: wrote $RES/jdk-{supertypes,sams,hof-invokes,functional}.idx.gz and $HERE/manifest.txt — read the diff"

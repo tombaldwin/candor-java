@@ -220,7 +220,7 @@ class PrimitiveSamForwarderTest {
     /** THE INDEX IS THE FIX, SO ITS ABSENCE MUST BE LOUD. {@code JdkSams} degrades to an empty map when the
      *  generated resource is not on the classpath, and that degradation is exactly the pre-R191 behaviour —
      *  silent, and indistinguishable from a correct engine over pure code. This row is what stops a build
-     *  that forgot {@code generateJdkSams} (or a native image built without the {@code IncludeResources}
+     *  that lost {@code jdk-sams.idx.gz} (soundness/jdk_index, R1094) (or a native image built without the {@code IncludeResources}
      *  line) from passing as fixed. It also pins the derivation's two edges: an interface with more than
      *  one abstract method has NO sam, and {@code Comparator} — which declares {@code equals(Object)}
      *  abstract beside {@code compare} — still does. */

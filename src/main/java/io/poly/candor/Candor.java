@@ -5105,7 +5105,7 @@ public class Candor {
         // this site SILENT: `Optional.orElseGet(supParam)` and `Objects.requireNonNullElseGet(x, sup)`
         // were both measured ABSENT while `List.removeIf(pParam)` in the same class disclosed — the
         // INTERFACE was covered and the HOF was not. `jdkInvokesFunctionalArg` is the swept answer,
-        // derived from JDK bytecode at build time (see its javadoc and `generateJdkHofInvokes`), and it
+        // derived from pinned JDK images' bytecode (see its javadoc and soundness/jdk_index, R1094), and it
         // is UNIONED with the name list rather than replacing it: an abstract interface method whose
         // implementation defers the callback into a lazy pipeline (`Stream.map`) has no body to read, so
         // dropping the list would be the silent direction. Per-ARGUMENT where the list is per-CALL, which
@@ -8769,7 +8769,7 @@ public class Candor {
      *
      *  <p>{@link #SAM_OF} first (it carries the non-JDK entries and the two abstract CLASSES, which an
      *  interface index cannot), then the build-time JDK functional-interface index. The index is DERIVED
-     *  from the build JDK by {@code generateJdkSams} in build.gradle.kts (§G — ask the authority): for
+     *  from pinned JDK images by soundness/jdk_index/JdkIndexGen (R1094; it was the build JDK's until then) (§G — ask the authority): for
      *  every JDK interface, the one abstract method left after ignoring statics, ignoring the `Object`
      *  public methods JLS 9.8 lets a functional interface redeclare (`Comparator` declares `equals`
      *  abstract), and subtracting every signature a `default` gives a body to. Two or more abstract

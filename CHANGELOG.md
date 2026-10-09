@@ -9,6 +9,13 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **The engine's derived JDK indexes no longer depend on the JDK that ran the build (SOUNDNESS R1094).** The SAM
+  index, the invoking-HOF index and the native-image supertype index were generated from the Gradle daemon's own JDK;
+  the published v0.40.3 jar carried a Corretto 17 derivation, so JDK 18+ functional interfaces and invoking HOFs read
+  as plain calls. They are now checked-in files written by `soundness/jdk_index/derive.sh` from pinned Temurin
+  17/21/25 images (Linux, macOS, Windows, unioned), hashed in `manifest.txt` and checked on every push; a build on
+  JDK 17 and one on JDK 21 now produce identical jars. More opaque callbacks are disclosed as `Unknown`.
+
 - ⚠ **A covariant/erased bridge no longer charges its real member with every subclass override (SOUNDNESS R1078).**
   The bridge shares the real member's report row, and its one call — `this.<real>()` — fanned out over CHA, so
   `Base.m` carried `Sub.m`'s effects and `super.m()` in a sibling did too (executed: both pure, `deny Fs` was 1). The

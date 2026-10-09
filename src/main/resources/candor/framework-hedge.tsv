@@ -126,8 +126,8 @@
 # hedge: J = a JDK package (runtime), S = a surveyed framework class, A/U = a framework member the
 # table cannot vouch for (A: no body — dispatch; U: the scan read it only as Unknown). See FrameworkReach.
 # P = a member a NAME rule charges whose surveyed body is a proven-pure field accessor (R1052).
-# entries 76397
-# content-sha256 555307074621f656c7efb8d5f9b59dd86ac24d2f463b579504c97ea95abc2213
+# entries 76399
+# content-sha256 2908ae767192c8021e740ff419f5f7c2b8f6a5502240928620bad3aefaf6484e
 A	com/fasterxml/jackson/annotation/JacksonInject.useInput()Lcom/fasterxml/jackson/annotation/OptBoolean;
 A	com/fasterxml/jackson/annotation/JacksonInject.value()Ljava/lang/String;
 A	com/fasterxml/jackson/annotation/JsonAlias.value()[Ljava/lang/String;
@@ -62673,6 +62673,7 @@ U	org/apache/commons/lang3/SerializationUtils.deserialize([B)Ljava/lang/Object;
 U	org/apache/commons/lang3/SerializationUtils.roundtrip(Ljava/io/Serializable;)Ljava/io/Serializable;
 U	org/apache/commons/lang3/Streams$FailableStream.allMatch(Lorg/apache/commons/lang3/Functions$FailablePredicate;)Z
 U	org/apache/commons/lang3/Streams$FailableStream.anyMatch(Lorg/apache/commons/lang3/Functions$FailablePredicate;)Z
+U	org/apache/commons/lang3/Streams$FailableStream.collect(Ljava/util/function/Supplier;Ljava/util/function/BiConsumer;Ljava/util/function/BiConsumer;)Ljava/lang/Object;
 U	org/apache/commons/lang3/Streams$FailableStream.filter(Lorg/apache/commons/lang3/Functions$FailablePredicate;)Lorg/apache/commons/lang3/Streams$FailableStream;
 U	org/apache/commons/lang3/Streams$FailableStream.forEach(Lorg/apache/commons/lang3/Functions$FailableConsumer;)V
 U	org/apache/commons/lang3/Streams$FailableStream.map(Lorg/apache/commons/lang3/Functions$FailableFunction;)Lorg/apache/commons/lang3/Streams$FailableStream;
@@ -63016,6 +63017,7 @@ U	org/apache/commons/lang3/stream/LangCollectors.joining(Ljava/lang/CharSequence
 U	org/apache/commons/lang3/stream/LangCollectors.joining(Ljava/lang/CharSequence;Ljava/lang/CharSequence;Ljava/lang/CharSequence;Ljava/util/function/Function;)Ljava/util/stream/Collector;
 U	org/apache/commons/lang3/stream/Streams$FailableStream.allMatch(Lorg/apache/commons/lang3/function/FailablePredicate;)Z
 U	org/apache/commons/lang3/stream/Streams$FailableStream.anyMatch(Lorg/apache/commons/lang3/function/FailablePredicate;)Z
+U	org/apache/commons/lang3/stream/Streams$FailableStream.collect(Ljava/util/function/Supplier;Ljava/util/function/BiConsumer;Ljava/util/function/BiConsumer;)Ljava/lang/Object;
 U	org/apache/commons/lang3/stream/Streams$FailableStream.filter(Lorg/apache/commons/lang3/function/FailablePredicate;)Lorg/apache/commons/lang3/stream/Streams$FailableStream;
 U	org/apache/commons/lang3/stream/Streams$FailableStream.forEach(Lorg/apache/commons/lang3/function/FailableConsumer;)V
 U	org/apache/commons/lang3/stream/Streams$FailableStream.map(Lorg/apache/commons/lang3/function/FailableFunction;)Lorg/apache/commons/lang3/stream/Streams$FailableStream;

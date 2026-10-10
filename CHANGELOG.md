@@ -11,6 +11,7 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## [0.40.4] — 2026-10-10
 
+- **`jbang-catalog.json` points at the v0.40.4 jar.**
 - ⚠ **A call into a surveyed framework member now carries the effects of that framework's own overrides (SOUNDNESS
   R1096).** The κ table charged the body the static owner resolves to, so `AbstractSqlPagingQueryProvider.init(ds)`
   read pure while the `DerbyPagingQueryProvider` it was handed opened a connection. The table now applies the engine's

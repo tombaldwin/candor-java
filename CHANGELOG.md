@@ -9,6 +9,21 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **A call into a surveyed framework member whose override ships in ANOTHER surveyed jar now discloses, or is
+  resolved when that jar is chained (SOUNDNESS R1097).** R1096's override union reads only the declaring jar, so
+  ktor-http's `OutgoingContent.getContentLength()`, handed ktor-server-core's `LocalFileContent`, stats the file
+  (executed: 12345, then 7 after a rewrite, 0 after a delete) while the caller read ABSENT — `deny Fs` and
+  `deny Fs Unknown` both exit 0. The table now records each public, non-final instance member that another
+  surveyed jar overrides with a body that does more than its row (169 members, `O` lines in
+  `framework-hedge.tsv`). At a dispatched call on that owner the engine joins the override's row from a chained
+  report (`CANDOR_DEPS`) when one names the overriding class, and otherwise adds `Unknown`
+  (`dispatch:<owner>.<member>`). A `super.m()` call and a provably exact receiver of another type are left alone.
+  The spring-messaging `receive()` that already disclosed was never this mechanism: it is the Spring `*Template`
+  name floor. Corpus A/B against published v0.40.4 (762 jars): ADDED 942, REMOVED 0, CHANGED 1,726, no concrete
+  effect, edge or `invisible` lost. 1,145 rows newly carry `Unknown` (0.042%), 996 of them through jackson's
+  `JsonProcessingException.getMessage`, whose jackson-databind overrides this engine reads only as `Unknown`
+  (twilio, 923 of the 942 added rows).
+
 ## [0.40.4] — 2026-10-10
 
 - **`jbang-catalog.json` points at the v0.40.4 jar.**

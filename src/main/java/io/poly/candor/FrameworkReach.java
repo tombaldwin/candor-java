@@ -128,6 +128,21 @@ final class FrameworkReach {
         return pureOverride;
     }
 
+    // ── SOUNDNESS R1097 — a public member overridden in ANOTHER surveyed jar ─────────────────────────────────────
+    private static final Map<String, List<String>> XJAR = new HashMap<>();
+
+    /** The classes, each shipped in a surveyed jar OTHER than the one declaring {@code internalOwner}, whose override
+     *  of {@code name+desc} can do more than the table's row (or the member's NAME rule) says — or an empty list.
+     *  The table cannot charge them: whether that other jar is on a consumer's class path is not something it knows
+     *  (FrameworkReachGen#crossJar). The call site decides: an overriding class the consumer's scan or a chained
+     *  report can see is resolved through that body, and one it cannot see is disclosed (Candor#frameworkCrossJar). */
+    static List<String> crossJarOverriders(String internalOwner, String name, String desc) {
+        if (DISABLED) return List.of();
+        if (hedge == null) loadHedge();
+        List<String> l = XJAR.get(internalOwner + "." + name + desc);
+        return l == null ? List.of() : l;
+    }
+
     static boolean runtimeOrLogging(String internalName) {
         for (String p : new String[] { "kotlin/", "scala/", "groovy/", "org/codehaus/groovy/", "org/slf4j/",
                 "org/apache/commons/logging/", "org/apache/logging/", "ch/qos/logback/" })
@@ -152,6 +167,11 @@ final class FrameworkReach {
                     case "S" -> SURVEYED.add(v);
                     case "A", "U" -> m.put(v, kind);
                     case "P" -> PURE.add(v);
+                    case "O" -> {      // SOUNDNESS R1097: key <TAB> overriding classes, comma-separated
+                        int t2 = v.indexOf('\t');
+                        if (t2 <= 0) throw new IllegalStateException("candor: " + HEDGE_RESOURCE + " bad line: " + line);
+                        XJAR.put(v.substring(0, t2), List.of(v.substring(t2 + 1).split(",")));
+                    }
                     default -> throw new IllegalStateException("candor: " + HEDGE_RESOURCE + " bad line: " + line);
                 }
             }

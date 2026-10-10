@@ -320,6 +320,7 @@ public class FrameworkReachGen {
         }
         PURE.clear(); PURE.addAll(pureIn);          // the hedge's P lines are the list the scans used
         // 6. entries: every consumer-callable member of every public class under a covered prefix
+        List<String> wit0 = new ArrayList<>();   // SOUNDNESS R1097 witness lines, appended to the witness below
         TreeMap<String, TreeMap<Integer, Integer>> perJar = new TreeMap<>();   // key -> jar -> mask
         TreeMap<String, TreeMap<Integer, int[]>> roots = new TreeMap<>();      // key -> jar -> resolved roots
         for (int j = 0; j < jarClasses.size(); j++) {
@@ -363,6 +364,8 @@ public class FrameworkReachGen {
                     int mask = 0;
                     for (int r : rs) mask |= eff[r];
                     if (declared == 0 && mask != 0) OVERRIDE_ONLY.add(key);   // charged by an override and nothing else
+                    if (framework && DISPATCH_ROOTS && !BROAD.contains(key))
+                        crossJar(j, cn, name, desc, decl, mask | ruleMask(cn.name, name, desc), eff, wit0);
                     perJar.computeIfAbsent(key, k -> new TreeMap<>()).put(j, mask);
                     roots.computeIfAbsent(key, k -> new TreeMap<>()).put(j, rs.stream().mapToInt(Integer::intValue).toArray());
                 }
@@ -415,6 +418,8 @@ public class FrameworkReachGen {
                 if (!charged.contains(h.getKey()) || (h.getValue().equals("U") && OVERRIDE_ONLY.contains(h.getKey())))
                     hl.add(h.getValue() + "\t" + h.getKey());
             for (String k : BROAD) if (!HEDGE.containsKey(k)) hl.add("A\t" + k);   // SOUNDNESS R1096 broad dispatch (one line per key)
+            for (Map.Entry<String, TreeSet<String>> x : XJAR.entrySet())                  // SOUNDNESS R1097
+                hl.add("O\t" + x.getKey() + "\t" + String.join(",", x.getValue()));
             for (String pk : PURE) hl.add("P\t" + pk);
             Collections.sort(hl);
             MessageDigest hm = MessageDigest.getInstance("SHA-256");
@@ -424,11 +429,14 @@ public class FrameworkReachGen {
             hb.append("# hedge: J = a JDK package (runtime), S = a surveyed framework class, A/U = a framework member the\n");
             hb.append("# table cannot vouch for (A: no body — dispatch; U: the scan read it only as Unknown). See FrameworkReach.\n");
             hb.append("# P = a member a NAME rule charges whose surveyed body is a proven-pure field accessor (R1052).\n");
+            hb.append("# O = a public member overridden in ANOTHER surveyed jar by a body that can do more than the row says;\n");
+            hb.append("#     the overriding classes follow (R1097). See FrameworkReach#crossJarOverriders.\n");
             hb.append("# entries ").append(hl.size()).append('\n');
             hb.append("# content-sha256 ").append(HexFormat.of().formatHex(hm.digest())).append('\n');
             for (String r : hl) hb.append(r).append('\n');
             Files.writeString(Path.of(hedgeOut), hb.toString(), StandardCharsets.UTF_8);
         }
+        wit.addAll(wit0);
         Collections.sort(rows);
         Collections.sort(wit);
         MessageDigest md = MessageDigest.getInstance("SHA-256");
@@ -443,7 +451,8 @@ public class FrameworkReachGen {
         for (String w : wit) wb.append(w).append('\n');
         Files.writeString(witness, wb.toString(), StandardCharsets.UTF_8);
         System.err.println("framework-reach: " + N + " bodies, " + perJar.size() + " callable members, "
-                + rows.size() + " charged rows; " + DISPATCH_ADDED + " override targets added by dispatch (R1096)");
+                + rows.size() + " charged rows; " + DISPATCH_ADDED + " override targets added by dispatch (R1096); "
+                + XJAR.size() + " members overridden across jars beyond their row (R1097)");
     }
 
 
@@ -790,6 +799,89 @@ public class FrameworkReachGen {
         if (closureDispatch(owner, name)) return List.of();
         if (Cha.isChaExemptMethod(owner, name, desc) && out.size() > Rules.CHA_FANOUT_LIMIT) return List.of();
         DISPATCH_ADDED += out.size();
+        return out;
+    }
+
+    /** SOUNDNESS R1097 — the members {@link #overriders} cannot see: R1096's union reads the SAME jar's hierarchy, so a
+     *  public member whose override ships in ANOTHER surveyed jar was charged its declared body alone. MEASURED (spec
+     *  lane, EXECUTED): ktor-http {@code OutgoingContent.getContentLength()} handed ktor-server-core's
+     *  {@code LocalFileContent} returned the file's size, and the consumer's row was ABSENT ({@code deny Fs} and
+     *  {@code deny Fs Unknown} exit 0). The table cannot union those bodies in: whether the other jar is on a consumer's
+     *  class path is not something it knows, and charging every caller of {@code AbstractResource.isFile} with
+     *  spring-web's {@code Fs} would fabricate for every program without spring-web. So it records the fact — an
+     *  {@code O} line naming the overriding classes — and the ENGINE decides at the call: an overriding class its scan
+     *  or a chained report can see is RESOLVED (charged through that body), one it cannot see is DISCLOSED as
+     *  {@code Unknown[dispatch]} (FrameworkReach#crossJarOverriders, Candor#frameworkCrossJar).
+     *
+     *  <p>Only what a CONSUMER can reach: a public, non-final member of a public, non-final class, an instance member
+     *  ({@code <init>} and statics have no overrides), and an override in a jar that does not itself ship the owner (a
+     *  jar shipping the owner is a version of the same artefact, already intersected). A protected member is reached
+     *  from a consumer only on a receiver of the consumer's own subtype, which no other jar's class can be. The
+     *  override must add a concrete effect the row (its declared body, R1096's union and any NAME rule on the member)
+     *  does not carry, or be a body the engine's scan could read only as {@code Unknown}. The same exemptions as R1096:
+     *  the Object protocol and closure-object dispatch. */
+    static void crossJar(int j, ClassNode cn, String name, String desc, MethodNode decl, int mask, int[] eff, List<String> wit0) {
+        if ((cn.access & (Opcodes.ACC_FINAL | Opcodes.ACC_INTERFACE)) == Opcodes.ACC_FINAL) return;
+        if ((decl.access & Opcodes.ACC_PUBLIC) == 0 || (decl.access & (Opcodes.ACC_FINAL | Opcodes.ACC_STATIC)) != 0) return;
+        if (Candor.isObjectProtocolExempt(name, desc) || closureDispatch(cn.name, name)) return;
+        List<int[]> subs = xsubs().get(cn.name);
+        if (subs == null) return;
+        String nd = name + desc, key = cn.name + "." + nd;
+        for (int[] kc : subs) {
+            String sub = XNAMES.get(kc[1]);
+            ClassNode sc = cls(kc[0], sub);
+            if (sc == null) continue;
+            for (MethodNode mn : sc.methods) {
+                if (!mn.name.equals(name) || !mn.desc.equals(desc)
+                        || (mn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE | Opcodes.ACC_STATIC | Opcodes.ACC_PRIVATE)) != 0) continue;
+                Integer id = node(kc[0], sub, nd);
+                if (id == null) continue;
+                int add = eff[id] & ~mask;
+                boolean unk = eff[id] == 0 && UNK_ONLY.contains(id);
+                if (add == 0 && !unk) continue;
+                XJAR.computeIfAbsent(key, k -> new TreeSet<>()).add(sub);
+                wit0.add(key + "\t" + (unk ? "Unknown" : names(add)) + "\tXJAR\t" + jarNames.get(j) + "\t"
+                        + jarNames.get(kc[0]) + " " + sub + "." + nd);
+            }
+        }
+    }
+
+    /** SOUNDNESS R1097 — the members overridden across jars beyond their row: key -> overriding classes. */
+    static final TreeMap<String, TreeSet<String>> XJAR = new TreeMap<>();
+    static Map<String, List<int[]>> XSUBS;
+    static final List<String> XNAMES = new ArrayList<>();
+
+    /** Every (jar k, class c) pair below each ancestor {@code a} that jar k does NOT ship, walking c's supertypes as
+     *  the JVM resolves them from k ({@link #jarOf}: k's own copy first). Deterministic: jars and classes iterate in
+     *  sorted order. */
+    static Map<String, List<int[]>> xsubs() {
+        if (XSUBS != null) return XSUBS;
+        Map<String, List<int[]>> out = new HashMap<>();
+        Map<String, Integer> nameId = new HashMap<>();
+        for (int k = 0; k < jarClasses.size(); k++) {
+            Map<String, ClassNode> m = jarClasses.get(k);
+            for (ClassNode c : m.values()) {
+                if ((c.access & Opcodes.ACC_INTERFACE) != 0) continue;    // an interface's default is not an override here
+                ArrayDeque<String[]> q = new ArrayDeque<>();
+                Set<String> seen = new HashSet<>();
+                if (c.superName != null) q.add(new String[] { String.valueOf(k), c.superName });
+                for (String i : c.interfaces) q.add(new String[] { String.valueOf(k), i });
+                while (!q.isEmpty()) {
+                    String[] x = q.poll();
+                    if (!seen.add(x[1])) continue;
+                    if (!m.containsKey(x[1])) {
+                        Integer id = nameId.computeIfAbsent(c.name, n -> { XNAMES.add(n); return XNAMES.size() - 1; });
+                        out.computeIfAbsent(x[1], a -> new ArrayList<>()).add(new int[] { k, id });
+                    }
+                    int aj = jarOf(Integer.parseInt(x[0]), x[1]);
+                    ClassNode a = cls(aj, x[1]);
+                    if (a == null) continue;
+                    if (a.superName != null) q.add(new String[] { String.valueOf(aj), a.superName });
+                    for (String i : a.interfaces) q.add(new String[] { String.valueOf(aj), i });
+                }
+            }
+        }
+        XSUBS = out;
         return out;
     }
 

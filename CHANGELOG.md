@@ -9,6 +9,35 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **A call into a surveyed framework member now carries the effects of that framework's own overrides (SOUNDNESS
+  R1096).** The κ table charged the body the static owner resolves to, so `AbstractSqlPagingQueryProvider.init(ds)`
+  read pure while the `DerbyPagingQueryProvider` it was handed opened a connection. The table now applies the engine's
+  bounded CHA at every consumer-facing instance member over the same jar: up to 12 overrides are unioned into the row
+  (808 members gain an effect, 453 a non-cross-cutting one, none loses one), a broader fan-out that can add an effect
+  is disclosed as `Unknown` (30 members), and a member whose own body was Unknown-only keeps that disclosure.
+- ⚠ **`invokeAll`/`invokeAny` and `ForkJoinTask.adapt` are task hand-offs (SOUNDNESS R1093).** An opaque collection of
+  tasks handed to an executor, or an opaque task wrapped by `ForkJoinTask.adapt`/`adaptInterruptible`, read pure while
+  `submit(task)` disclosed; each now discloses `task-handoff:` `Unknown`. A provably-null collection does not.
+- ⚠ **JDK 25 callback invokers with an opaque argument now disclose (SOUNDNESS R1092).** `ScopedValue.where(..).call(op)`
+  and `StableValue.orElseSet(supplier)` ran the argument while reading pure. The pinned JDK indexes (R1094) carry their
+  facts, and an opaque argument to a JDK method the index proves invokes it is now gated by the JDK's own
+  `@FunctionalInterface` (a new `jdk-functional.idx.gz`) as well as the hand list, so `ScopedValue.CallableOp`,
+  `TemporalQuery` and `TemporalAdjuster` callbacks disclose `callback:` `Unknown` while `Iterable` (R183) still does not.
+- ⚠ **The engine's derived JDK indexes no longer depend on the JDK that ran the build (SOUNDNESS R1094).** The SAM
+  index, the invoking-HOF index and the native-image supertype index were generated from the Gradle daemon's own JDK;
+  the published v0.40.3 jar carried a Corretto 17 derivation, so JDK 18+ functional interfaces and invoking HOFs read
+  as plain calls. They are now checked-in files written by `soundness/jdk_index/derive.sh` from pinned Temurin
+  17/21/25 images (Linux, macOS, Windows, unioned), hashed in `manifest.txt` and checked on every push; a build on
+  JDK 17 and one on JDK 21 now produce identical jars. More opaque callbacks are disclosed as `Unknown`.
+
+- ⚠ **A covariant/erased bridge no longer charges its real member with every subclass override (SOUNDNESS R1078).**
+  The bridge shares the real member's report row, and its one call — `this.<real>()` — fanned out over CHA, so
+  `Base.m` carried `Sub.m`'s effects and `super.m()` in a sibling did too (executed: both pure, `deny Fs` was 1). The
+  bridge now edges only the overrides that are reached through it (a subtype without its own bridge descriptor);
+  polymorphic call sites still fan out at the caller. The call's CHARGE is unchanged on purpose (a name rule on a
+  member not proven pure stays its answer, R1052). The framework hedge loses 14 `U` lines (jdom2 `clone()`), whose
+  `Unknown` was inherited through that fan-out.
+
 ## [0.40.3] — 2026-10-09
 
 - **`jbang-catalog.json` points at the v0.40.3 jar.**

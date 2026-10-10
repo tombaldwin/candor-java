@@ -223,8 +223,8 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
             // Gate to NATIVE only: on the JVM the only behavior is ClassReader-or-empty (host-independent,
             // and the ~270KB index is never loaded); the index can't make the JVM's output host-dependent.
             //
-            // The index is written as `superName interface…` by the SAME ClassReader (build.gradle.kts
-            // `generateJdkSupertypes`), and `superName` is null only for `java/lang/Object` — whose entry
+            // The index is written as `superName interface…` by the SAME ClassReader (soundness/jdk_index/
+            // JdkIndexGen, from pinned JDK images — R1094), and `superName` is null only for `java/lang/Object` — whose entry
             // is then empty and never written. So a present entry's head IS the superclass, and native
             // splits identically to the JVM rather than degrading to "kind unknown".
             if (IN_NATIVE_IMAGE) {

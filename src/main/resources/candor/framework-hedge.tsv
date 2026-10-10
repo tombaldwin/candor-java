@@ -5,7 +5,7 @@
 # NAMED MISS: the closure stops at the JDK, which is OPAQUE here (no bodies; only the classifier's name rules),
 # while framework bodies are TRANSPARENT. A framework member whose effect happens inside a JDK body the
 # classifier leaves uncharged is missed exactly as a direct call to that JDK member is (R814 is that frontier).
-# generator-sha256 136d7c4a709bad446bab64d23550bda496f7de435810f481314c162451d1e691
+# generator-sha256 8fafaa3f4b399f5126df8d8fc4c5db031a8e6478af4a4f78a4401cabb93387a4
 # source org.jetbrains:annotations:24.1.0 27a770dc7ce50500918bb8c3c0660c98290630ec796b5e3cf6b90f403b3033c6
 # source aopalliance:aopalliance:1.0 0addec670fedcd3f113c5c8091d783280d23f75e3acb841b61a9cdb079376a08
 # source software.amazon.awssdk:auth:2.25.60 0a9a569060d287f069c61eaefcad6e5e423fb048f0f7198d3825b7f3d6823258
@@ -126,8 +126,8 @@
 # hedge: J = a JDK package (runtime), S = a surveyed framework class, A/U = a framework member the
 # table cannot vouch for (A: no body — dispatch; U: the scan read it only as Unknown). See FrameworkReach.
 # P = a member a NAME rule charges whose surveyed body is a proven-pure field accessor (R1052).
-# entries 76411
-# content-sha256 81b8a6f1dc686c3bc5bef18e336370690a3b1729fd8475f4d167582dd4899e99
+# entries 76449
+# content-sha256 c86c8061718584629fb0f113db7d680fb432781441fdb65ad9510d73561382b6
 A	com/fasterxml/jackson/annotation/JacksonInject.useInput()Lcom/fasterxml/jackson/annotation/OptBoolean;
 A	com/fasterxml/jackson/annotation/JacksonInject.value()Ljava/lang/String;
 A	com/fasterxml/jackson/annotation/JsonAlias.value()[Ljava/lang/String;
@@ -598,6 +598,11 @@ A	com/twilio/base/Updater.update(Lcom/twilio/http/TwilioRestClient;)Lcom/twilio/
 A	com/twilio/http/HttpClient.makeRequest(Lcom/twilio/http/Request;)Lcom/twilio/http/Response;
 A	com/twilio/jwt/Jwt.getClaims()Ljava/util/Map;
 A	com/twilio/jwt/client/Scope.getPayload()Ljava/lang/String;
+A	groovy/lang/GroovyObject.getProperty(Ljava/lang/String;)Ljava/lang/Object;
+A	groovy/lang/GroovyObject.invokeMethod(Ljava/lang/String;Ljava/lang/Object;)Ljava/lang/Object;
+A	groovy/lang/GroovyObjectSupport.getProperty(Ljava/lang/String;)Ljava/lang/Object;
+A	groovy/lang/GroovyObjectSupport.invokeMethod(Ljava/lang/String;Ljava/lang/Object;)Ljava/lang/Object;
+A	groovy/lang/MetaMethod.doMethodInvoke(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;
 A	io/jsonwebtoken/Claims.get(Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/Object;
 A	io/jsonwebtoken/Claims.getAudience()Ljava/util/Set;
 A	io/jsonwebtoken/Claims.getExpiration()Ljava/util/Date;
@@ -6465,6 +6470,7 @@ A	org/apache/commons/lang3/time/DatePrinter.format(Ljava/util/Date;)Ljava/lang/S
 A	org/apache/commons/lang3/time/DatePrinter.format(Ljava/util/Date;Ljava/lang/Appendable;)Ljava/lang/Appendable;
 A	org/apache/commons/lang3/time/DatePrinter.format(Ljava/util/Date;Ljava/lang/StringBuffer;)Ljava/lang/StringBuffer;
 A	org/apache/commons/lang3/time/FastDateFormat.parseObject(Ljava/lang/String;)Ljava/lang/Object;
+A	org/apache/struts/action/Action.execute(Lorg/apache/struts/action/ActionMapping;Lorg/apache/struts/action/ActionForm;Ljavax/servlet/http/HttpServletRequest;Ljavax/servlet/http/HttpServletResponse;)Lorg/apache/struts/action/ActionForward;
 A	org/apache/struts/action/PlugIn.destroy()V
 A	org/apache/struts/action/PlugIn.init(Lorg/apache/struts/action/ActionServlet;Lorg/apache/struts/config/ModuleConfig;)V
 A	org/apache/struts/actions/DownloadAction$StreamInfo.getInputStream()Ljava/io/InputStream;
@@ -6607,6 +6613,22 @@ A	org/apache/xml/serialize/Serializer.setOutputFormat(Lorg/apache/xml/serialize/
 A	org/apache/xml/serialize/SerializerFactory.makeSerializer(Ljava/io/OutputStream;Lorg/apache/xml/serialize/OutputFormat;)Lorg/apache/xml/serialize/Serializer;
 A	org/apache/xml/serialize/SerializerFactory.makeSerializer(Ljava/io/Writer;Lorg/apache/xml/serialize/OutputFormat;)Lorg/apache/xml/serialize/Serializer;
 A	org/apache/xml/serialize/SerializerFactory.makeSerializer(Lorg/apache/xml/serialize/OutputFormat;)Lorg/apache/xml/serialize/Serializer;
+A	org/codehaus/groovy/ast/ASTNode.visit(Lorg/codehaus/groovy/ast/GroovyCodeVisitor;)V
+A	org/codehaus/groovy/ast/AnnotatedNode.visit(Lorg/codehaus/groovy/ast/GroovyCodeVisitor;)V
+A	org/codehaus/groovy/ast/ClassCodeExpressionTransformer.transform(Lorg/codehaus/groovy/ast/expr/Expression;)Lorg/codehaus/groovy/ast/expr/Expression;
+A	org/codehaus/groovy/ast/ClassCodeVisitorSupport.visitClass(Lorg/codehaus/groovy/ast/ClassNode;)V
+A	org/codehaus/groovy/ast/ClassCodeVisitorSupport.visitClosureExpression(Lorg/codehaus/groovy/ast/expr/ClosureExpression;)V
+A	org/codehaus/groovy/ast/ClassCodeVisitorSupport.visitConstructorOrMethod(Lorg/codehaus/groovy/ast/MethodNode;Z)V
+A	org/codehaus/groovy/ast/ClassCodeVisitorSupport.visitField(Lorg/codehaus/groovy/ast/FieldNode;)V
+A	org/codehaus/groovy/ast/ClassCodeVisitorSupport.visitMethod(Lorg/codehaus/groovy/ast/MethodNode;)V
+A	org/codehaus/groovy/ast/ClassCodeVisitorSupport.visitProperty(Lorg/codehaus/groovy/ast/PropertyNode;)V
+A	org/codehaus/groovy/ast/CodeVisitorSupport.visitClosureExpression(Lorg/codehaus/groovy/ast/expr/ClosureExpression;)V
+A	org/codehaus/groovy/ast/CodeVisitorSupport.visitConstructorCallExpression(Lorg/codehaus/groovy/ast/expr/ConstructorCallExpression;)V
+A	org/codehaus/groovy/ast/CodeVisitorSupport.visitForLoop(Lorg/codehaus/groovy/ast/stmt/ForStatement;)V
+A	org/codehaus/groovy/ast/CodeVisitorSupport.visitMethodCallExpression(Lorg/codehaus/groovy/ast/expr/MethodCallExpression;)V
+A	org/codehaus/groovy/ast/CodeVisitorSupport.visitVariableExpression(Lorg/codehaus/groovy/ast/expr/VariableExpression;)V
+A	org/codehaus/groovy/ast/expr/Expression.visit(Lorg/codehaus/groovy/ast/GroovyCodeVisitor;)V
+A	org/codehaus/groovy/reflection/GeneratedMetaMethod.doMethodInvoke(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;
 A	org/dbunit/AbstractDatabaseTester.getConnection()Lorg/dbunit/database/IDatabaseConnection;
 A	org/dbunit/DataSourceBasedDBTestCase.getDataSet()Lorg/dbunit/dataset/IDataSet;
 A	org/dbunit/DataSourceBasedDBTestCase.getDataSource()Ljavax/sql/DataSource;
@@ -6739,6 +6761,8 @@ A	org/dbunit/dataset/common/handlers/PipelineComponent.setSuccessor(Lorg/dbunit/
 A	org/dbunit/dataset/csv/CsvParser.parse(Ljava/io/File;)Ljava/util/List;
 A	org/dbunit/dataset/csv/CsvParser.parse(Ljava/lang/String;)Ljava/util/List;
 A	org/dbunit/dataset/csv/CsvParser.parse(Ljava/net/URL;)Ljava/util/List;
+A	org/dbunit/dataset/datatype/AbstractDataType.getSqlValue(ILjava/sql/ResultSet;)Ljava/lang/Object;
+A	org/dbunit/dataset/datatype/AbstractDataType.setSqlValue(Ljava/lang/Object;ILjava/sql/PreparedStatement;)V
 A	org/dbunit/dataset/datatype/AbstractDataType.typeCast(Ljava/lang/Object;)Ljava/lang/Object;
 A	org/dbunit/dataset/datatype/DataType.compare(Ljava/lang/Object;Ljava/lang/Object;)I
 A	org/dbunit/dataset/datatype/DataType.getSqlType()I
@@ -7711,6 +7735,9 @@ A	org/joda/time/convert/PartialConverter.getChronology(Ljava/lang/Object;Lorg/jo
 A	org/joda/time/convert/PartialConverter.getPartialValues(Lorg/joda/time/ReadablePartial;Ljava/lang/Object;Lorg/joda/time/Chronology;)[I
 A	org/joda/time/convert/PartialConverter.getPartialValues(Lorg/joda/time/ReadablePartial;Ljava/lang/Object;Lorg/joda/time/Chronology;Lorg/joda/time/format/DateTimeFormatter;)[I
 A	org/joda/time/convert/PeriodConverter.setInto(Lorg/joda/time/ReadWritablePeriod;Ljava/lang/Object;Lorg/joda/time/Chronology;)V
+A	org/joda/time/field/BaseDateTimeField.add(JI)J
+A	org/joda/time/field/BaseDateTimeField.add(JJ)J
+A	org/joda/time/field/BaseDateTimeField.addWrapField(JI)J
 A	org/joda/time/field/BaseDateTimeField.get(J)I
 A	org/joda/time/field/BaseDateTimeField.getMaximumValue()I
 A	org/joda/time/field/BaseDateTimeField.getMinimumValue()I
@@ -7756,6 +7783,7 @@ A	org/redisson/RedissonMultimap.containsEntryAsync(Ljava/lang/Object;Ljava/lang/
 A	org/redisson/RedissonMultimap.containsKeyAsync(Ljava/lang/Object;)Lorg/redisson/api/RFuture;
 A	org/redisson/RedissonMultimap.containsValueAsync(Ljava/lang/Object;)Lorg/redisson/api/RFuture;
 A	org/redisson/RedissonMultimap.getAllAsync(Ljava/lang/Object;)Lorg/redisson/api/RFuture;
+A	org/redisson/RedissonObject.deleteAsync()Lorg/redisson/api/RFuture;
 A	org/redisson/RedissonTransferQueue$TransferQueueServiceAsync.invoke(Ljava/lang/Object;)Lorg/redisson/api/RFuture;
 A	org/redisson/ScanIterator.scanIterator(Ljava/lang/String;Lorg/redisson/client/RedisClient;Ljava/lang/String;Ljava/lang/String;I)Lorg/redisson/ScanResult;
 A	org/redisson/ScanIterator.scanIteratorAsync(Ljava/lang/String;Lorg/redisson/client/RedisClient;Ljava/lang/String;Ljava/lang/String;I)Lorg/redisson/api/RFuture;
@@ -20527,6 +20555,7 @@ A	org/springframework/data/elasticsearch/core/cluster/ClusterOperations.health()
 A	org/springframework/data/elasticsearch/core/cluster/ReactiveClusterOperations.health()Lreactor/core/publisher/Mono;
 A	org/springframework/data/elasticsearch/core/convert/AbstractPropertyValueConverter.read(Ljava/lang/Object;)Ljava/lang/Object;
 A	org/springframework/data/elasticsearch/core/convert/AbstractRangePropertyValueConverter.parse(Ljava/lang/String;)Ljava/lang/Object;
+A	org/springframework/data/elasticsearch/core/convert/DateFormatter.parse(Ljava/lang/String;Ljava/lang/Class;)Ljava/time/temporal/TemporalAccessor;
 A	org/springframework/data/elasticsearch/core/convert/DefaultElasticsearchTypeMapper.create(Lorg/springframework/data/mapping/context/MappingContext;)Lorg/springframework/data/elasticsearch/core/convert/ElasticsearchTypeMapper;
 A	org/springframework/data/elasticsearch/core/convert/ElasticsearchConverter.read(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;
 A	org/springframework/data/elasticsearch/core/convert/ElasticsearchConverter.updateQuery(Lorg/springframework/data/elasticsearch/core/query/Query;Ljava/lang/Class;)V
@@ -26042,6 +26071,7 @@ A	org/springframework/integration/config/xml/AbstractOutboundChannelAdapterParse
 A	org/springframework/integration/config/xml/AbstractOutboundGatewayParser.getGatewayClassName(Lorg/w3c/dom/Element;)Ljava/lang/String;
 A	org/springframework/integration/config/xml/AbstractPollingInboundChannelAdapterParser.parseSource(Lorg/w3c/dom/Element;Lorg/springframework/beans/factory/xml/ParserContext;)Lorg/springframework/beans/BeanMetadataElement;
 A	org/springframework/integration/config/xml/AbstractTransformerParser.parseTransformer(Lorg/w3c/dom/Element;Lorg/springframework/beans/factory/xml/ParserContext;Lorg/springframework/beans/factory/support/BeanDefinitionBuilder;)V
+A	org/springframework/integration/context/IntegrationObjectSupport.onInit()V
 A	org/springframework/integration/context/OrderlyShutdownCapable.afterShutdown()I
 A	org/springframework/integration/context/OrderlyShutdownCapable.beforeShutdown()I
 A	org/springframework/integration/core/AsyncMessagingOperations.asyncConvertAndSend(Ljava/lang/Object;)Ljava/util/concurrent/Future;
@@ -26067,6 +26097,7 @@ A	org/springframework/integration/dispatcher/AbstractDispatcher.dispatch(Lorg/sp
 A	org/springframework/integration/dispatcher/MessageDispatcher.dispatch(Lorg/springframework/messaging/Message;)Z
 A	org/springframework/integration/dispatcher/MessageHandlingTaskDecorator.decorate(Lorg/springframework/messaging/support/MessageHandlingRunnable;)Ljava/lang/Runnable;
 A	org/springframework/integration/dsl/ComponentsRegistration.getComponentsToRegister()Ljava/util/Map;
+A	org/springframework/integration/dsl/IntegrationComponentSpec.doGet()Ljava/lang/Object;
 A	org/springframework/integration/dsl/IntegrationFlow.configure(Lorg/springframework/integration/dsl/IntegrationFlowDefinition;)V
 A	org/springframework/integration/dsl/IntegrationFlowAdapter.buildFlow()Lorg/springframework/integration/dsl/IntegrationFlowDefinition;
 A	org/springframework/integration/dsl/IntegrationFlowAdapter.from(Ljava/lang/String;)Lorg/springframework/integration/dsl/IntegrationFlowBuilder;
@@ -62673,6 +62704,7 @@ U	org/apache/commons/lang3/SerializationUtils.deserialize([B)Ljava/lang/Object;
 U	org/apache/commons/lang3/SerializationUtils.roundtrip(Ljava/io/Serializable;)Ljava/io/Serializable;
 U	org/apache/commons/lang3/Streams$FailableStream.allMatch(Lorg/apache/commons/lang3/Functions$FailablePredicate;)Z
 U	org/apache/commons/lang3/Streams$FailableStream.anyMatch(Lorg/apache/commons/lang3/Functions$FailablePredicate;)Z
+U	org/apache/commons/lang3/Streams$FailableStream.collect(Ljava/util/function/Supplier;Ljava/util/function/BiConsumer;Ljava/util/function/BiConsumer;)Ljava/lang/Object;
 U	org/apache/commons/lang3/Streams$FailableStream.filter(Lorg/apache/commons/lang3/Functions$FailablePredicate;)Lorg/apache/commons/lang3/Streams$FailableStream;
 U	org/apache/commons/lang3/Streams$FailableStream.forEach(Lorg/apache/commons/lang3/Functions$FailableConsumer;)V
 U	org/apache/commons/lang3/Streams$FailableStream.map(Lorg/apache/commons/lang3/Functions$FailableFunction;)Lorg/apache/commons/lang3/Streams$FailableStream;
@@ -63016,6 +63048,7 @@ U	org/apache/commons/lang3/stream/LangCollectors.joining(Ljava/lang/CharSequence
 U	org/apache/commons/lang3/stream/LangCollectors.joining(Ljava/lang/CharSequence;Ljava/lang/CharSequence;Ljava/lang/CharSequence;Ljava/util/function/Function;)Ljava/util/stream/Collector;
 U	org/apache/commons/lang3/stream/Streams$FailableStream.allMatch(Lorg/apache/commons/lang3/function/FailablePredicate;)Z
 U	org/apache/commons/lang3/stream/Streams$FailableStream.anyMatch(Lorg/apache/commons/lang3/function/FailablePredicate;)Z
+U	org/apache/commons/lang3/stream/Streams$FailableStream.collect(Ljava/util/function/Supplier;Ljava/util/function/BiConsumer;Ljava/util/function/BiConsumer;)Ljava/lang/Object;
 U	org/apache/commons/lang3/stream/Streams$FailableStream.filter(Lorg/apache/commons/lang3/function/FailablePredicate;)Lorg/apache/commons/lang3/stream/Streams$FailableStream;
 U	org/apache/commons/lang3/stream/Streams$FailableStream.forEach(Lorg/apache/commons/lang3/function/FailableConsumer;)V
 U	org/apache/commons/lang3/stream/Streams$FailableStream.map(Lorg/apache/commons/lang3/function/FailableFunction;)Lorg/apache/commons/lang3/stream/Streams$FailableStream;
@@ -64193,16 +64226,12 @@ U	org/hibernate/jpa/internal/util/PersistenceUtilHelper$FieldAttributeAccess.<in
 U	org/hibernate/jpa/internal/util/PersistenceUtilHelper$MethodAttributeAccess.<init>(Ljava/lang/String;Ljava/lang/reflect/Method;)V
 U	org/hibernate/jpa/internal/util/PersistenceUtilHelper$MethodAttributeAccess.extractValue(Ljava/lang/Object;)Ljava/lang/Object;
 U	org/hibernate/jpa/spi/NativeQueryConstructorTransformer.transformTuple([Ljava/lang/Object;[Ljava/lang/String;)Ljava/lang/Object;
-U	org/jdom2/Attribute.clone()Lorg/jdom2/Attribute;
 U	org/jdom2/Attribute.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/Attribute.getNamespacesInherited()Ljava/util/List;
-U	org/jdom2/CDATA.clone()Lorg/jdom2/CDATA;
 U	org/jdom2/CDATA.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/CDATA.getNamespacesInherited()Ljava/util/List;
-U	org/jdom2/Comment.clone()Lorg/jdom2/Comment;
 U	org/jdom2/Comment.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/Comment.getNamespacesInherited()Ljava/util/List;
-U	org/jdom2/Content.clone()Lorg/jdom2/Content;
 U	org/jdom2/Content.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/Content.getNamespacesInherited()Ljava/util/List;
 U	org/jdom2/DefaultJDOMFactory.addNamespaceDeclaration(Lorg/jdom2/Element;Lorg/jdom2/Namespace;)V
@@ -64217,7 +64246,6 @@ U	org/jdom2/DefaultJDOMFactory.element(Ljava/lang/String;Lorg/jdom2/Namespace;)L
 U	org/jdom2/DefaultJDOMFactory.processingInstruction(IILjava/lang/String;Ljava/util/Map;)Lorg/jdom2/ProcessingInstruction;
 U	org/jdom2/DefaultJDOMFactory.processingInstruction(Ljava/lang/String;Ljava/util/Map;)Lorg/jdom2/ProcessingInstruction;
 U	org/jdom2/DefaultJDOMFactory.setAttribute(Lorg/jdom2/Element;Lorg/jdom2/Attribute;)V
-U	org/jdom2/DocType.clone()Lorg/jdom2/DocType;
 U	org/jdom2/DocType.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/DocType.getNamespacesInherited()Ljava/util/List;
 U	org/jdom2/Document.<init>(Ljava/util/List;)V
@@ -64271,11 +64299,9 @@ U	org/jdom2/Element.setAttributes(Ljava/util/Collection;)Lorg/jdom2/Element;
 U	org/jdom2/Element.setContent(ILjava/util/Collection;)Lorg/jdom2/Parent;
 U	org/jdom2/Element.setContent(Ljava/util/Collection;)Lorg/jdom2/Element;
 U	org/jdom2/Element.setNamespace(Lorg/jdom2/Namespace;)Lorg/jdom2/Element;
-U	org/jdom2/EntityRef.clone()Lorg/jdom2/EntityRef;
 U	org/jdom2/EntityRef.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/EntityRef.getNamespacesInherited()Ljava/util/List;
 U	org/jdom2/ProcessingInstruction.<init>(Ljava/lang/String;Ljava/util/Map;)V
-U	org/jdom2/ProcessingInstruction.clone()Lorg/jdom2/ProcessingInstruction;
 U	org/jdom2/ProcessingInstruction.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/ProcessingInstruction.getNamespacesInherited()Ljava/util/List;
 U	org/jdom2/ProcessingInstruction.removePseudoAttribute(Ljava/lang/String;)Z
@@ -64293,7 +64319,6 @@ U	org/jdom2/SlimJDOMFactory.element(Ljava/lang/String;Lorg/jdom2/Namespace;)Lorg
 U	org/jdom2/SlimJDOMFactory.processingInstruction(IILjava/lang/String;Ljava/util/Map;)Lorg/jdom2/ProcessingInstruction;
 U	org/jdom2/SlimJDOMFactory.processingInstruction(Ljava/lang/String;Ljava/util/Map;)Lorg/jdom2/ProcessingInstruction;
 U	org/jdom2/SlimJDOMFactory.setAttribute(Lorg/jdom2/Element;Lorg/jdom2/Attribute;)V
-U	org/jdom2/Text.clone()Lorg/jdom2/Text;
 U	org/jdom2/Text.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/Text.getNamespacesInherited()Ljava/util/List;
 U	org/jdom2/UncheckedJDOMFactory.addNamespaceDeclaration(Lorg/jdom2/Element;Lorg/jdom2/Namespace;)V
@@ -64368,13 +64393,10 @@ U	org/jdom2/input/sax/SAXBuilderEngine.build(Lorg/xml/sax/InputSource;)Lorg/jdom
 U	org/jdom2/input/sax/SAXHandler.startElement(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Lorg/xml/sax/Attributes;)V
 U	org/jdom2/input/sax/SAXHandler.startPrefixMapping(Ljava/lang/String;Ljava/lang/String;)V
 U	org/jdom2/internal/ReflectionConstructor.construct(Ljava/lang/String;Ljava/lang/Class;)Ljava/lang/Object;
-U	org/jdom2/located/LocatedCDATA.clone()Lorg/jdom2/CDATA;
 U	org/jdom2/located/LocatedCDATA.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/located/LocatedCDATA.getNamespacesInherited()Ljava/util/List;
-U	org/jdom2/located/LocatedComment.clone()Lorg/jdom2/Comment;
 U	org/jdom2/located/LocatedComment.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/located/LocatedComment.getNamespacesInherited()Ljava/util/List;
-U	org/jdom2/located/LocatedDocType.clone()Lorg/jdom2/DocType;
 U	org/jdom2/located/LocatedDocType.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/located/LocatedDocType.getNamespacesInherited()Ljava/util/List;
 U	org/jdom2/located/LocatedElement.<init>(Ljava/lang/String;)V
@@ -64416,7 +64438,6 @@ U	org/jdom2/located/LocatedElement.setAttributes(Ljava/util/Collection;)Lorg/jdo
 U	org/jdom2/located/LocatedElement.setContent(ILjava/util/Collection;)Lorg/jdom2/Parent;
 U	org/jdom2/located/LocatedElement.setContent(Ljava/util/Collection;)Lorg/jdom2/Element;
 U	org/jdom2/located/LocatedElement.setNamespace(Lorg/jdom2/Namespace;)Lorg/jdom2/Element;
-U	org/jdom2/located/LocatedEntityRef.clone()Lorg/jdom2/EntityRef;
 U	org/jdom2/located/LocatedEntityRef.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/located/LocatedEntityRef.getNamespacesInherited()Ljava/util/List;
 U	org/jdom2/located/LocatedJDOMFactory.addNamespaceDeclaration(Lorg/jdom2/Element;Lorg/jdom2/Namespace;)V
@@ -64432,13 +64453,11 @@ U	org/jdom2/located/LocatedJDOMFactory.processingInstruction(IILjava/lang/String
 U	org/jdom2/located/LocatedJDOMFactory.processingInstruction(Ljava/lang/String;Ljava/util/Map;)Lorg/jdom2/ProcessingInstruction;
 U	org/jdom2/located/LocatedJDOMFactory.setAttribute(Lorg/jdom2/Element;Lorg/jdom2/Attribute;)V
 U	org/jdom2/located/LocatedProcessingInstruction.<init>(Ljava/lang/String;Ljava/util/Map;)V
-U	org/jdom2/located/LocatedProcessingInstruction.clone()Lorg/jdom2/ProcessingInstruction;
 U	org/jdom2/located/LocatedProcessingInstruction.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/located/LocatedProcessingInstruction.getNamespacesInherited()Ljava/util/List;
 U	org/jdom2/located/LocatedProcessingInstruction.removePseudoAttribute(Ljava/lang/String;)Z
 U	org/jdom2/located/LocatedProcessingInstruction.setData(Ljava/util/Map;)Lorg/jdom2/ProcessingInstruction;
 U	org/jdom2/located/LocatedProcessingInstruction.setPseudoAttribute(Ljava/lang/String;Ljava/lang/String;)Lorg/jdom2/ProcessingInstruction;
-U	org/jdom2/located/LocatedText.clone()Lorg/jdom2/Text;
 U	org/jdom2/located/LocatedText.getNamespacesInScope()Ljava/util/List;
 U	org/jdom2/located/LocatedText.getNamespacesInherited()Ljava/util/List;
 U	org/jdom2/output/DOMOutputter.<init>(Ljava/lang/String;)V
@@ -71270,6 +71289,8 @@ U	org/springframework/data/elasticsearch/core/convert/ElasticsearchCustomConvers
 U	org/springframework/data/elasticsearch/core/convert/ElasticsearchCustomConversions.hasCustomWriteTarget(Ljava/lang/Class;Ljava/lang/Class;)Z
 U	org/springframework/data/elasticsearch/core/convert/ElasticsearchCustomConversions.hasValueConverter(Lorg/springframework/data/mapping/PersistentProperty;)Z
 U	org/springframework/data/elasticsearch/core/convert/ElasticsearchCustomConversions.isSimpleType(Ljava/lang/Class;)Z
+U	org/springframework/data/elasticsearch/core/convert/ElasticsearchDateConverter.parse(Ljava/lang/String;)Ljava/util/Date;
+U	org/springframework/data/elasticsearch/core/convert/ElasticsearchDateConverter.parse(Ljava/lang/String;Ljava/lang/Class;)Ljava/time/temporal/TemporalAccessor;
 U	org/springframework/data/elasticsearch/core/convert/MappingElasticsearchConverter.updateQuery(Lorg/springframework/data/elasticsearch/core/query/Query;Ljava/lang/Class;)V
 U	org/springframework/data/elasticsearch/core/document/Document.getBooleanOrDefault(Ljava/lang/String;Ljava/util/function/BooleanSupplier;)Z
 U	org/springframework/data/elasticsearch/core/document/Document.getBooleanOrDefault(Ljava/lang/String;Z)Z
@@ -76132,19 +76153,23 @@ U	org/threeten/extra/AmPm.adjustInto(Ljava/time/temporal/Temporal;)Ljava/time/te
 U	org/threeten/extra/AmPm.from(Ljava/time/temporal/TemporalAccessor;)Lorg/threeten/extra/AmPm;
 U	org/threeten/extra/AmPm.get(Ljava/time/temporal/TemporalField;)I
 U	org/threeten/extra/AmPm.getLong(Ljava/time/temporal/TemporalField;)J
+U	org/threeten/extra/AmPm.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/AmPm.range(Ljava/time/temporal/TemporalField;)Ljava/time/temporal/ValueRange;
 U	org/threeten/extra/AmountFormats.parseUnitBasedDuration(Ljava/lang/CharSequence;)Ljava/time/Duration;
 U	org/threeten/extra/DayOfMonth.adjustInto(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/DayOfMonth.from(Ljava/time/temporal/TemporalAccessor;)Lorg/threeten/extra/DayOfMonth;
 U	org/threeten/extra/DayOfMonth.getLong(Ljava/time/temporal/TemporalField;)J
+U	org/threeten/extra/DayOfMonth.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/DayOfYear.adjustInto(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/DayOfYear.from(Ljava/time/temporal/TemporalAccessor;)Lorg/threeten/extra/DayOfYear;
 U	org/threeten/extra/DayOfYear.getLong(Ljava/time/temporal/TemporalField;)J
+U	org/threeten/extra/DayOfYear.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/Days.addTo(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Days.subtractFrom(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Half.adjustInto(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Half.from(Ljava/time/temporal/TemporalAccessor;)Lorg/threeten/extra/Half;
 U	org/threeten/extra/Half.getLong(Ljava/time/temporal/TemporalField;)J
+U	org/threeten/extra/Half.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/HourMinute.adjustInto(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/HourMinute.from(Ljava/time/temporal/TemporalAccessor;)Lorg/threeten/extra/HourMinute;
 U	org/threeten/extra/HourMinute.getLong(Ljava/time/temporal/TemporalField;)J
@@ -76158,6 +76183,7 @@ U	org/threeten/extra/HourMinute.plus(JLjava/time/temporal/TemporalUnit;)Ljava/ti
 U	org/threeten/extra/HourMinute.plus(JLjava/time/temporal/TemporalUnit;)Lorg/threeten/extra/HourMinute;
 U	org/threeten/extra/HourMinute.plus(Ljava/time/temporal/TemporalAmount;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/HourMinute.plus(Ljava/time/temporal/TemporalAmount;)Lorg/threeten/extra/HourMinute;
+U	org/threeten/extra/HourMinute.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/HourMinute.until(Ljava/time/temporal/Temporal;Ljava/time/temporal/TemporalUnit;)J
 U	org/threeten/extra/HourMinute.with(Ljava/time/temporal/TemporalAdjuster;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/HourMinute.with(Ljava/time/temporal/TemporalAdjuster;)Lorg/threeten/extra/HourMinute;
@@ -76166,10 +76192,13 @@ U	org/threeten/extra/HourMinute.with(Ljava/time/temporal/TemporalField;J)Lorg/th
 U	org/threeten/extra/Hours.addTo(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Hours.subtractFrom(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/LocalDateRange.stream()Ljava/util/stream/Stream;
+U	org/threeten/extra/LocalDateRange.withEnd(Ljava/time/temporal/TemporalAdjuster;)Lorg/threeten/extra/LocalDateRange;
+U	org/threeten/extra/LocalDateRange.withStart(Ljava/time/temporal/TemporalAdjuster;)Lorg/threeten/extra/LocalDateRange;
 U	org/threeten/extra/Minutes.addTo(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Minutes.subtractFrom(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Months.addTo(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Months.subtractFrom(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
+U	org/threeten/extra/MutableClock.set(Ljava/time/temporal/TemporalAdjuster;)V
 U	org/threeten/extra/OffsetDate.adjustInto(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/OffsetDate.getLong(Ljava/time/temporal/TemporalField;)J
 U	org/threeten/extra/OffsetDate.minus(JLjava/time/temporal/TemporalUnit;)Ljava/time/temporal/Temporal;
@@ -76180,6 +76209,7 @@ U	org/threeten/extra/OffsetDate.plus(JLjava/time/temporal/TemporalUnit;)Ljava/ti
 U	org/threeten/extra/OffsetDate.plus(JLjava/time/temporal/TemporalUnit;)Lorg/threeten/extra/OffsetDate;
 U	org/threeten/extra/OffsetDate.plus(Ljava/time/temporal/TemporalAmount;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/OffsetDate.plus(Ljava/time/temporal/TemporalAmount;)Lorg/threeten/extra/OffsetDate;
+U	org/threeten/extra/OffsetDate.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/OffsetDate.range(Ljava/time/temporal/TemporalField;)Ljava/time/temporal/ValueRange;
 U	org/threeten/extra/OffsetDate.until(Ljava/time/temporal/Temporal;Ljava/time/temporal/TemporalUnit;)J
 U	org/threeten/extra/OffsetDate.with(Ljava/time/temporal/TemporalAdjuster;)Ljava/time/temporal/Temporal;
@@ -76187,12 +76217,15 @@ U	org/threeten/extra/OffsetDate.with(Ljava/time/temporal/TemporalAdjuster;)Lorg/
 U	org/threeten/extra/OffsetDate.with(Ljava/time/temporal/TemporalField;J)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/OffsetDate.with(Ljava/time/temporal/TemporalField;J)Lorg/threeten/extra/OffsetDate;
 U	org/threeten/extra/PeriodDuration.addTo(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
+U	org/threeten/extra/PeriodDuration.between(Ljava/time/temporal/Temporal;Ljava/time/temporal/Temporal;)Lorg/threeten/extra/PeriodDuration;
 U	org/threeten/extra/PeriodDuration.subtractFrom(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Quarter.adjustInto(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Quarter.from(Ljava/time/temporal/TemporalAccessor;)Lorg/threeten/extra/Quarter;
 U	org/threeten/extra/Quarter.getLong(Ljava/time/temporal/TemporalField;)J
+U	org/threeten/extra/Quarter.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/Seconds.addTo(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Seconds.subtractFrom(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
+U	org/threeten/extra/Temporals.parseFirstMatching(Ljava/lang/CharSequence;Ljava/time/temporal/TemporalQuery;[Ljava/time/format/DateTimeFormatter;)Ljava/lang/Object;
 U	org/threeten/extra/Weeks.addTo(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Weeks.subtractFrom(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/YearHalf.adjustInto(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
@@ -76209,6 +76242,7 @@ U	org/threeten/extra/YearHalf.plus(JLjava/time/temporal/TemporalUnit;)Ljava/time
 U	org/threeten/extra/YearHalf.plus(JLjava/time/temporal/TemporalUnit;)Lorg/threeten/extra/YearHalf;
 U	org/threeten/extra/YearHalf.plus(Ljava/time/temporal/TemporalAmount;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/YearHalf.plus(Ljava/time/temporal/TemporalAmount;)Lorg/threeten/extra/YearHalf;
+U	org/threeten/extra/YearHalf.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/YearHalf.until(Ljava/time/temporal/Temporal;Ljava/time/temporal/TemporalUnit;)J
 U	org/threeten/extra/YearHalf.with(Ljava/time/temporal/TemporalAdjuster;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/YearHalf.with(Ljava/time/temporal/TemporalAdjuster;)Lorg/threeten/extra/YearHalf;
@@ -76228,6 +76262,7 @@ U	org/threeten/extra/YearQuarter.plus(JLjava/time/temporal/TemporalUnit;)Lorg/th
 U	org/threeten/extra/YearQuarter.plus(Ljava/time/temporal/TemporalAmount;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/YearQuarter.plus(Ljava/time/temporal/TemporalAmount;)Lorg/threeten/extra/YearQuarter;
 U	org/threeten/extra/YearQuarter.quartersUntil(Lorg/threeten/extra/YearQuarter;)Ljava/util/stream/Stream;
+U	org/threeten/extra/YearQuarter.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/YearQuarter.until(Ljava/time/temporal/Temporal;Ljava/time/temporal/TemporalUnit;)J
 U	org/threeten/extra/YearQuarter.with(Ljava/time/temporal/TemporalAdjuster;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/YearQuarter.with(Ljava/time/temporal/TemporalAdjuster;)Lorg/threeten/extra/YearQuarter;
@@ -76248,6 +76283,7 @@ U	org/threeten/extra/YearWeek.plus(JLjava/time/temporal/TemporalUnit;)Lorg/three
 U	org/threeten/extra/YearWeek.plus(Ljava/time/temporal/TemporalAmount;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/YearWeek.plus(Ljava/time/temporal/TemporalAmount;)Lorg/threeten/extra/YearWeek;
 U	org/threeten/extra/YearWeek.plusWeeks(J)Lorg/threeten/extra/YearWeek;
+U	org/threeten/extra/YearWeek.query(Ljava/time/temporal/TemporalQuery;)Ljava/lang/Object;
 U	org/threeten/extra/YearWeek.until(Ljava/time/temporal/Temporal;Ljava/time/temporal/TemporalUnit;)J
 U	org/threeten/extra/YearWeek.with(Ljava/time/temporal/TemporalAdjuster;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/YearWeek.with(Ljava/time/temporal/TemporalAdjuster;)Lorg/threeten/extra/YearWeek;
@@ -76255,8 +76291,10 @@ U	org/threeten/extra/YearWeek.with(Ljava/time/temporal/TemporalField;J)Ljava/tim
 U	org/threeten/extra/YearWeek.with(Ljava/time/temporal/TemporalField;J)Lorg/threeten/extra/YearWeek;
 U	org/threeten/extra/Years.addTo(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
 U	org/threeten/extra/Years.subtractFrom(Ljava/time/temporal/Temporal;)Ljava/time/temporal/Temporal;
+U	org/threeten/extra/chrono/AccountingChronology.create(Ljava/time/DayOfWeek;Ljava/time/Month;ZLorg/threeten/extra/chrono/AccountingYearDivision;II)Lorg/threeten/extra/chrono/AccountingChronology;
 U	org/threeten/extra/chrono/AccountingChronology.date(Ljava/time/temporal/TemporalAccessor;)Ljava/time/chrono/ChronoLocalDate;
 U	org/threeten/extra/chrono/AccountingChronology.date(Ljava/time/temporal/TemporalAccessor;)Lorg/threeten/extra/chrono/AccountingDate;
+U	org/threeten/extra/chrono/AccountingChronologyBuilder.toChronology()Lorg/threeten/extra/chrono/AccountingChronology;
 U	org/threeten/extra/chrono/AccountingDate.doUntil(Lorg/threeten/extra/chrono/AbstractDate;)Ljava/time/chrono/ChronoPeriod;
 U	org/threeten/extra/chrono/AccountingDate.from(Lorg/threeten/extra/chrono/AccountingChronology;Ljava/time/temporal/TemporalAccessor;)Lorg/threeten/extra/chrono/AccountingDate;
 U	org/threeten/extra/chrono/AccountingDate.getLong(Ljava/time/temporal/TemporalField;)J

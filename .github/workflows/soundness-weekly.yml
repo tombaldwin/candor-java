@@ -63,6 +63,12 @@ jobs:
           ./gradlew --no-daemon -q shadowJar
           bash soundness/kappa_table/derive.sh --check build/libs/candor-java-*-all.jar
 
+      # SOUNDNESS R1094 — the derived JDK indexes (supertypes / SAMs / invoking HOFs) are checked-in inputs written
+      # from the Temurin 17/21/25 images pinned in soundness/jdk_index/images.tsv. Every push checks their hashes
+      # (JdkIndexPinTest); this is the half that needs the images: regenerate and require byte-identical text.
+      - name: JDK indexes reproduce from the pinned images (jdk_index/derive.sh --check)
+        run: bash soundness/jdk_index/derive.sh --check
+
       # Inject each curated known-soundness-bug into the engine, rebuild, and require the paired probe
       # to go red. Exit 1 = a MISSED mutation (a blind spot in our own gates) — fail the workflow.
       - name: Mutation probe (do our gates still have teeth?)

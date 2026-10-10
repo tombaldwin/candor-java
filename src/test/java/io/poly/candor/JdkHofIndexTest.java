@@ -37,7 +37,7 @@ import org.junit.jupiter.api.Test;
  * HOFs that invoke their functional argument, not another one-at-a-time addition — and the swept answer
  * is not a list a person can write, because it depends on bodies: {@code List.sort} does not invoke the
  * comparator, it forwards it to {@code Arrays.sort}, which forwards to {@code TimSort.sort}, which
- * forwards to {@code binarySort}, which invokes it. So {@code generateJdkHofInvokes} in build.gradle.kts
+ * forwards to {@code binarySort}, which invokes it. So {@code soundness/jdk_index/JdkIndexGen} (until R1094 a build.gradle.kts task)
  * asks the JDK (§G): ASM's own {@code SourceInterpreter} over every JDK method that takes a
  * functional-interface parameter, plus a fixpoint through the forwarding edges. 1,623 (name, descriptor)
  * entries, 412 simple names {@code isInvokingHof} never had.

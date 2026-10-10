@@ -33,8 +33,8 @@ way: a first native build diverged from the jar on jsoup/gson — dropping `Cloc
 `DataUtil.readToByteBuffer` — while petclinic, whose effects don't need external-supertype resolution,
 matched.)
 
-**Fix — a bundled JDK supertype index.** A build-time task (`generateJdkSupertypes`) walks the build
-JDK's `jrt:/` modules and records each class's direct super + interfaces into a gzipped resource
+**Fix — a bundled JDK supertype index.** `soundness/jdk_index/derive.sh` walks the `jrt:/` modules of the
+pinned Temurin 17/21/25 images (SOUNDNESS R1094: until then a build task read the Gradle daemon's own JDK) and records each class's direct super + interfaces into a gzipped resource
 (`candor/jdk-supertypes.idx.gz`, ~270KB, ~32k classes). `Cha.externalSupers` consults it **only when
 `ClassReader` can't read the bytes** — so the JVM/jar path is unchanged (ClassReader succeeds there, the
 index is never touched), and the native image resolves the same JDK hierarchies the JVM does. Result:

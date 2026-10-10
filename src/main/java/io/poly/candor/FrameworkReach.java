@@ -81,7 +81,14 @@ final class FrameworkReach {
         Map<String, String> h = hedge == null ? loadHedge() : hedge;
         if (JDK_PKGS.contains(pkg) || runtimeOrLogging(internalOwner)) return null;
         String key = internalOwner + "." + name + desc;
-        if (!charges(internalOwner, name, desc).isEmpty()) return null;
+        // SOUNDNESS R1096 — a U line beside a table charge: the charge is an OVERRIDE's, the declared body is still
+        // Unknown-only, and both are what a call can run. And an A line beside one: the member's overrides were too
+        // many to charge (the engine's bounded CHA) and can do more than its charge says. Before R1096 neither kind
+        // was ever written for a charged member, so this reads only R1096's lines.
+        if (!charges(internalOwner, name, desc).isEmpty()) {
+            String k = h.get(key);
+            return "U".equals(k) || "A".equals(k) ? k : null;   // R1096: also a BROAD override fan-out the table disclosed
+        }
         String k = h.get(key);
         if (k != null) return k;
         return SURVEYED.contains(internalOwner) ? null : "X";

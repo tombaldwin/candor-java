@@ -344,9 +344,25 @@ public class FrameworkReachGen {
                     if (!callable || name.equals("<clinit>")) continue;
                     LinkedHashSet<Integer> rs = new LinkedHashSet<>(tg);
                     if ((decl.access & Opcodes.ACC_STATIC) != 0 || name.equals("<init>")) rs.addAll(clinits(j, cn.name));
+                    int declared = 0;
+                    for (int r : rs) declared |= eff[r];
+                    String key = cn.name + "." + sig;
+                    if ((decl.access & Opcodes.ACC_STATIC) == 0 && !name.equals("<init>") && DISPATCH_ROOTS) {
+                        // SOUNDNESS R1096 — the engine's bounded CHA (Candor#virtualDispatch): a NARROW fan-out is
+                        // charged; a BROAD one (more than Rules.CHA_FANOUT_LIMIT bodies) is not smeared into the row but
+                        // DISCLOSED — an `A` (dispatch) line — and only where an override can do what the declared body
+                        // cannot, since a fan-out that adds nothing changes nothing.
+                        List<Integer> ov = overriders(j, cn.name, name, desc, tg);
+                        if (ov.size() + tg.size() <= Rules.CHA_FANOUT_LIMIT) rs.addAll(ov);
+                        else {
+                            int extra = 0;
+                            for (int r : ov) extra |= eff[r];
+                            if ((extra & ~declared) != 0) BROAD.add(key);
+                        }
+                    }
                     int mask = 0;
                     for (int r : rs) mask |= eff[r];
-                    String key = cn.name + "." + sig;
+                    if (declared == 0 && mask != 0) OVERRIDE_ONLY.add(key);   // charged by an override and nothing else
                     perJar.computeIfAbsent(key, k -> new TreeMap<>()).put(j, mask);
                     roots.computeIfAbsent(key, k -> new TreeMap<>()).put(j, rs.stream().mapToInt(Integer::intValue).toArray());
                 }
@@ -391,8 +407,14 @@ public class FrameworkReachGen {
             List<String> hl = new ArrayList<>();
             for (String pk : jdkPackages()) if (Candor.kappaCovers(pk)) hl.add("J\t" + pk);
             for (String c : SURVEYED) hl.add("S\t" + c);
+            // SOUNDNESS R1096 — a `U` member stays disclosed even when its row is now CHARGED: since the dispatch union,
+            // a charge can come from an OVERRIDE alone (OVERRIDE_ONLY) while the declared body is still one the scan read
+            // only as Unknown. Dropping the U there (the old `charged` exclusion) removed 53 disclosures for a charge on a
+            // different body. The engine applies a U line beside a table charge (FrameworkReach#hedgeKind).
             for (Map.Entry<String, String> h : HEDGE.entrySet())
-                if (!charged.contains(h.getKey())) hl.add(h.getValue() + "\t" + h.getKey());
+                if (!charged.contains(h.getKey()) || (h.getValue().equals("U") && OVERRIDE_ONLY.contains(h.getKey())))
+                    hl.add(h.getValue() + "\t" + h.getKey());
+            for (String k : BROAD) if (!HEDGE.containsKey(k)) hl.add("A\t" + k);   // SOUNDNESS R1096 broad dispatch (one line per key)
             for (String pk : PURE) hl.add("P\t" + pk);
             Collections.sort(hl);
             MessageDigest hm = MessageDigest.getInstance("SHA-256");
@@ -421,7 +443,7 @@ public class FrameworkReachGen {
         for (String w : wit) wb.append(w).append('\n');
         Files.writeString(witness, wb.toString(), StandardCharsets.UTF_8);
         System.err.println("framework-reach: " + N + " bodies, " + perJar.size() + " callable members, "
-                + rows.size() + " charged rows");
+                + rows.size() + " charged rows; " + DISPATCH_ADDED + " override targets added by dispatch (R1096)");
     }
 
 
@@ -733,6 +755,94 @@ public class FrameworkReachGen {
 
     static ClassNode cls(int j, String owner) { return j < 0 ? null : jarClasses.get(j).get(owner); }
 
+    /** SOUNDNESS R1096 — A CALL THE TABLE RESOLVES TO A FRAMEWORK MEMBER RUNS WHICHEVER SURVEYED OVERRIDE THE RECEIVER
+     *  SELECTS. {@link #resolve} answers JVMS method RESOLUTION, which is the declared (or inherited) body for the
+     *  STATIC owner; a consumer's {@code AbstractSqlPagingQueryProvider.init(ds)} then read the base's empty body while
+     *  the {@code DerbyPagingQueryProvider} it was handed opened a connection (EXECUTED: {@code deny Db} exited 0 on the
+     *  base spelling, 1 on the subclass's). This is the CHA the engine applies to project code (Cha#chaTargets),
+     *  applied over the surveyed artefact's own hierarchy: every class in the SAME jar that is a subtype of the static
+     *  owner and DECLARES a concrete {@code (name, desc)} — an inherited body is already some ancestor's, which is
+     *  either {@code resolved} or another declarer here. The same exemptions as the engine's dispatch: the Object
+     *  protocol (Candor#isObjectProtocolExempt) is not fanned out, and a CHA-exempt verb (Cha#isChaExemptMethod) only
+     *  while the fan-out is narrow (≤ Rules.CHA_FANOUT_LIMIT). A static, private, final or constructor target, or one
+     *  in a final class, has no overrides. Abstract members resolve to nothing and keep their A-line rule. */
+    static List<Integer> overriders(int from, String owner, String name, String desc, List<Integer> resolved) {
+        if (resolved.size() != 1 || name.startsWith("<") || loggingFrontier(owner)) return List.of();
+        MethodNode decl = nodeMethod.get(resolved.get(0));
+        if ((decl.access & (Opcodes.ACC_STATIC | Opcodes.ACC_PRIVATE | Opcodes.ACC_FINAL)) != 0) return List.of();
+        if (Candor.isObjectProtocolExempt(name, desc)) return List.of();
+        int j = jarOf(from, owner);
+        if (j < 0) return List.of();
+        ClassNode oc = cls(j, owner);
+        if (oc == null || (oc.access & Opcodes.ACC_FINAL) != 0) return List.of();
+        String nd = name + desc;
+        List<Integer> out = new ArrayList<>();
+        for (String sub : subtypes(j, owner)) {
+            ClassNode sc = cls(j, sub);
+            if (sc == null || loggingFrontier(sub)) continue;
+            for (MethodNode mn : sc.methods)
+                if (mn.name.equals(name) && mn.desc.equals(desc)
+                        && (mn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_NATIVE | Opcodes.ACC_STATIC | Opcodes.ACC_PRIVATE)) == 0) {
+                    Integer id = node(j, sub, nd);
+                    if (id != null && !resolved.contains(id) && !out.contains(id)) out.add(id);
+                }
+        }
+        if (closureDispatch(owner, name)) return List.of();
+        if (Cha.isChaExemptMethod(owner, name, desc) && out.size() > Rules.CHA_FANOUT_LIMIT) return List.of();
+        DISPATCH_ADDED += out.size();
+        return out;
+    }
+
+    /** Closure-object dispatch the engine exempts for the same reason (Cha#isChaExemptMethod: a closure's body is
+     *  attributed where the closure is CREATED, and fanning out over every closure class smears). The engine's list
+     *  names {@code scala/Function*} / {@code scala/PartialFunction} {@code apply}; a Scala pattern-matching closure
+     *  extends {@code scala/runtime/AbstractPartialFunction} and is invoked through {@code applyOrElse}/
+     *  {@code isDefinedAt}, which it did not name. MEASURED without this: {@code AbstractPartialFunction.applyOrElse}
+     *  unioned every anonymous partial function in scala-library, one of which is a {@code scala.sys.process}
+     *  handler the owner rule charges Exec through its bridge (R1078's declined half) — and 8,578 scala-compiler
+     *  rows gained Exec. A size bound does not stop it (scala-library declares only a handful of these closures), so
+     *  a closure-object dispatch is not fanned out at all: the library's own closures reach a consumer only through
+     *  the library API that built them, whose body the table already follows. */
+    static boolean closureDispatch(String owner, String name) {
+        boolean scala = owner.startsWith("scala/Function") || owner.equals("scala/PartialFunction")
+                || owner.startsWith("scala/runtime/AbstractPartialFunction") || owner.startsWith("scala/runtime/AbstractFunction")
+                || owner.startsWith("scala/runtime/java8/JFunction");
+        return scala && (name.equals("apply") || name.equals("applyOrElse") || name.equals("isDefinedAt")
+                || name.startsWith("apply$mc"));
+    }
+
+    static final boolean DISPATCH_ROOTS = !"off".equals(System.getProperty("framework.dispatch"));
+    static final boolean DISPATCH_EDGES = "edges".equals(System.getProperty("framework.dispatch", "roots"));
+    static long DISPATCH_ADDED;
+    /** Keys whose row is charged ONLY through an override (the declared body charges nothing). */
+    static final Set<String> OVERRIDE_ONLY = new HashSet<>();
+    /** Keys whose overrides are too many to charge and can do more than the declared body (disclosed `A`). */
+    static final Set<String> BROAD = new TreeSet<>();
+    static final Map<String, List<String>> SUBTYPES = new HashMap<>();
+
+    /** Every class in jar {@code j} that is a proper subtype of {@code owner} (superclass and interface edges),
+     *  sorted so the table stays byte-reproducible. Memoised per (jar, owner). */
+    static List<String> subtypes(int j, String owner) {
+        String key = j + "|" + owner;
+        List<String> m = SUBTYPES.get(key);
+        if (m != null) return m;
+        Map<String, List<String>> direct = DIRECT_SUBS.computeIfAbsent(j, jj -> {
+            Map<String, List<String>> d = new HashMap<>();
+            for (ClassNode c : jarClasses.get(jj).values()) {
+                if (c.superName != null) d.computeIfAbsent(c.superName, k -> new ArrayList<>()).add(c.name);
+                for (String i : c.interfaces) d.computeIfAbsent(i, k -> new ArrayList<>()).add(c.name);
+            }
+            return d;
+        });
+        TreeSet<String> out = new TreeSet<>();
+        ArrayDeque<String> q = new ArrayDeque<>(direct.getOrDefault(owner, List.of()));
+        while (!q.isEmpty()) { String c = q.poll(); if (out.add(c)) q.addAll(direct.getOrDefault(c, List.of())); }
+        m = new ArrayList<>(out);
+        SUBTYPES.put(key, m);
+        return m;
+    }
+    static final Map<Integer, Map<String, List<String>>> DIRECT_SUBS = new HashMap<>();
+
     /** JVMS 5.4.3.3/5.4.3.4 method resolution against the surveyed bodies only. Returns the resolved body's node, or
      *  every maximally-specific default when the class chain has none; empty when the chain leaves the surveyed
      *  jars (a JDK or unsurveyed body — the engine's own `direct` already classified that call) or resolves to an
@@ -856,7 +966,11 @@ public class FrameworkReachGen {
         for (AbstractInsnNode in : mn.instructions) {
             if (in instanceof MethodInsnNode m) {
                 if (m.owner.startsWith("[")) continue;
-                out.addAll(resolve(j, m.owner, m.name, m.desc));
+                List<Integer> r = resolve(j, m.owner, m.name, m.desc);
+                out.addAll(r);
+                // SOUNDNESS R1096 — a VIRTUAL call runs whichever surveyed override the receiver selects (EDGES mode).
+                if (DISPATCH_EDGES && (m.getOpcode() == Opcodes.INVOKEVIRTUAL || m.getOpcode() == Opcodes.INVOKEINTERFACE))
+                    out.addAll(overriders(j, m.owner, m.name, m.desc, r));
             } else if (in instanceof InvokeDynamicInsnNode d && d.bsm != null
                     && d.bsm.getOwner().equals("java/lang/invoke/LambdaMetafactory") && d.bsmArgs.length > 1
                     && d.bsmArgs[1] instanceof Handle h) {

@@ -67,6 +67,28 @@ direct call to that JDK member is. R814 (`KappaJdkSinks`) is that frontier; this
   over-charge on the other version, never a purity claim. Charges in only one of two surveyed versions
   (61, all struts 1.2.9 vs 1.3.10) are made nowhere.
 
+## Overrides are dispatched, at the call a consumer makes (SOUNDNESS R1096)
+
+A member's row used to be the closure of the body JVMS RESOLUTION picks for the static owner — the declared or
+inherited one. A consumer holding the base type runs whatever the receiver overrides, so
+`AbstractSqlPagingQueryProvider.init(ds)` read pure while the `DerbyPagingQueryProvider` it was handed opened a
+connection (EXECUTED; `deny Db` exited 0). `FrameworkReachGen#overriders` now applies the engine's own bounded CHA
+(Cha#chaTargets, Candor#virtualDispatch) at every consumer-facing instance member, over the same jar's hierarchy: the
+bodies of the subtypes that DECLARE the member are unioned into the row when there are at most
+`Rules.CHA_FANOUT_LIMIT` of them; a BROADER fan-out is not smeared into the row but disclosed (an `A` line), and only
+where an override can do what the declared body cannot. Exempt as in the engine: the Object protocol, a CHA-exempt verb
+past the bound, and closure-object dispatch (Scala `AbstractPartialFunction.applyOrElse` & co. — unioned, it put Exec
+on 8,578 scala-compiler rows through R1078's declined `scala.sys.process` bridge charge). A `U` member charged only
+through an override keeps its `U` line; the engine applies `U` and `A` beside a table charge.
+
+Measured against the previous table: 808 rows gain an effect (453 a non-cross-cutting one), none loses one, 30 `A` lines
+are added, and every gained charge's witness starts at an override body.
+
+NOT done, and why: the same union on the table's INTERNAL edges (a framework body's own virtual calls). Built
+unbounded and measured (`-Dframework.dispatch=edges`): 31,814 rows gain an effect (Exec on 17,001). And a subtype in
+ANOTHER surveyed jar (spring-rabbit's `RabbitMessagingTemplate` over spring-messaging's
+`AbstractMessageReceivingTemplate.receive`) is not unioned: the table cannot know that jar is present.
+
 ## Inherited leaf over-charges, and the `P` lines (SOUNDNESS R1052)
 
 Three over-charges rode through the table from LEAF rules that fire at a direct call (v0.40.1/0.40.2). Each is

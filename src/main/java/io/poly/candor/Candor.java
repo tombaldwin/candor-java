@@ -4418,6 +4418,95 @@ public class Candor {
         return provFrames;
     }
 
+    /** SOUNDNESS R1078 — A BRIDGE'S DISPATCH TO THE MEMBER IT IS FOLDED INTO IS NOT THAT MEMBER'S DISPATCH.
+     *
+     *  <p>The method index leaves compiler bridges out ({@link #prepareScan}), so a covariant-return or erased-
+     *  parameter bridge shares its real member's node id and its body is analysed INTO that row. A bridge body is
+     *  one call, {@code invokevirtual this.<real>}, and its CHA fan-out edged every subclass override of the real
+     *  member into the row: {@code Base.m} inherited {@code Sub.m}'s effects, and so did {@code super.m()} in a
+     *  sibling, which runs Base's body alone. EXECUTED in {@code BridgeFoldR1078Test}'s fixture: both pure, both
+     *  charged {@code Fs}, {@code deny Fs} 1 on each.
+     *
+     *  <p>A call through the real descriptor already fans out at the CALLER, and so does a call through the bridge
+     *  descriptor to every subtype that redeclares the bridge (javac always does). What the bridge genuinely adds
+     *  is one thing: a subtype that overrides the real member WITHOUT the bridge descriptor (another compiler, or a
+     *  subclass compiled before the bridge existed) is reached through the bridge descriptor only via THIS bridge,
+     *  because the caller's CHA resolves that descriptor to this row. EXECUTED: such a subclass's {@code Fs} runs
+     *  through {@code Req.getOptions()} and is still edged here — and only those overrides are.
+     *
+     *  <p>ONLY THE DISPATCH. The call's CHARGE (classification, name rules, the framework table, hedges) is the
+     *  ordinary path's, unchanged. Dropping it too was built and measured: it removes an owner-blanket rule's
+     *  charge from the real member (`KafkaTemplate.onApplicationEvent` lost `Net`, and with it every
+     *  `RoutingKafkaTemplate`/`ReplyingKafkaTemplate` consumer's `deny Net`, though that body closes Kafka
+     *  producers behind an interface) — the "any call inside the owner" narrowing R1052 had already refused. A
+     *  name rule's verdict on a member that is NOT proven pure is the engine's answer for that member; where the
+     *  body IS proven pure, R1052's P lines already drop it ({@code Prompt.getOptions}, the row's own witness).
+     *
+     *  <p>AND ONLY THE EDGES. {@link #virtualDispatch} still runs in full and {@link #trimBridgeFanOut} then takes
+     *  back only the edges it added that no caller needs. The second cut replaced the dispatch outright and was
+     *  measured over 762 corpus jars losing 125 rows' {@code dispatch:} {@code Unknown} (the open-hierarchy hedge
+     *  on the member itself, e.g. {@code SsmException$BuilderImpl.cause}), a disclosure that has nothing to do with
+     *  which subclass bodies the row folds in.
+     *
+     *  <p>Narrow by construction: an {@code ACC_BRIDGE} method, a virtual/interface call to its OWN class and
+     *  name with a different descriptor that class declares concretely, landing on the same node id. Anything else
+     *  — a visibility bridge (it calls the SUPERCLASS), an overloaded name (the bridge then has its own id and
+     *  nothing is folded) — takes {@link #virtualDispatch} as before. {@code -Dcandor.r1078=off} restores it. */
+    static boolean bridgeSelfForward(AnalysisContext ctx, MethodScan s, MethodInsnNode min) {
+        MethodNode mn = s.mn;
+        if ((mn.access & Opcodes.ACC_BRIDGE) == 0 || R1078_OFF) return false;
+        if (!min.name.equals(mn.name) || min.desc.equals(mn.desc)) return false;
+        ClassNode cn = ctx.byName.get(min.owner);
+        if (cn == null || !declaresConcrete(cn, min.name, min.desc) || !declaresConcrete(cn, mn.name, mn.desc)) return false;
+        return methodId(min.owner.replace('/', '.'), min.name, min.desc).equals(s.id);
+    }
+
+    /** The edges {@link #virtualDispatch} just added for a bridge's forwarding call, minus every target the JVM can
+     *  reach only through ANOTHER entry: kept are the overrides of subtypes whose bridge descriptor resolves to THIS
+     *  bridge ({@link #bridgeResolvesTo}). An edge that was already present (another instruction added it) is never
+     *  touched, and nothing but edges is: every {@code Unknown} the dispatch disclosed stays. */
+    static void trimBridgeFanOut(AnalysisContext ctx, MethodScan s, MethodInsnNode min, Set<String> before) {
+        MethodNode mn = s.mn;
+        String id = s.id;
+        ClassNode cn = ctx.byName.get(min.owner);
+        Set<String> keep = new HashSet<>();
+        for (String sub : ctx.subtypeIndex.getOrDefault(cn.name, List.of())) {
+            if (sub.equals(cn.name)) continue;
+            ClassNode sc = ctx.byName.get(sub);
+            if (sc == null || !bridgeResolvesTo(sub, mn.name, mn.desc, cn.name)) continue;
+            String t = declaresConcrete(sc, min.name, min.desc)
+                    ? methodId(sub.replace('/', '.'), min.name, min.desc)
+                    : nearestConcreteSuper(sub, min.name, min.desc);
+            if (t != null) keep.add(t);
+        }
+        Set<String> edges = ctx.edges.get(id);
+        List<String> dropped = new ArrayList<>();
+        for (Iterator<String> it = edges.iterator(); it.hasNext(); ) {
+            String t = it.next();
+            if (before.contains(t) || keep.contains(t)) continue;
+            it.remove();
+            dropped.add(t);
+        }
+        if (R1078_DEBUG) System.err.println("R1078BRIDGE\t" + id + "\t" + mn.desc + "\t" + min.desc + "\tkept=" + keep + "\tdropped=" + dropped);
+    }
+
+    /** {@code CANDOR_R1078_DEBUG} prints each folded bridge call taken by {@link #bridgeSelfForward} (the reach
+     *  probe); {@code -Dcandor.r1078=off} restores the ordinary path (the A/B's one-variable arm). */
+    static final boolean R1078_DEBUG = System.getenv("CANDOR_R1078_DEBUG") != null;
+    static final boolean R1078_OFF = "off".equals(System.getProperty("candor.r1078"));
+
+    /** Whether the JVM, invoking {@code (name, bridgeDesc)} on an instance of {@code sub}, selects the bridge
+     *  declared in {@code bridgeOwner}: the first project class in {@code sub}'s resolution order that declares
+     *  it concretely is {@code bridgeOwner}. A class the scan cannot see is passed over, which keeps the edge
+     *  (the over-approximating direction). */
+    static boolean bridgeResolvesTo(String sub, String name, String bridgeDesc, String bridgeOwner) {
+        for (String c : resolutionOrder(sub, false)) {
+            ClassNode n = ctx().byName.get(c);
+            if (n != null && declaresConcrete(n, name, bridgeDesc)) return c.equals(bridgeOwner);
+        }
+        return true;
+    }
+
     /** One MethodInsnNode call site — the engine's core: classification (+ inherited-external-base
      *  re-classification), then the ordered concern units exactly as the original inline block ran
      *  them, then the dispatch edges (static/special exact, virtual/interface via
@@ -4686,6 +4775,13 @@ public class Candor {
         // concrete answer for the same call and never replaces one.
         if (effect == null && fwCharged.isEmpty() && supEff.isEmpty() && alsoCharged.isEmpty())
             frameworkHedge(ctx, s, min, owner);
+        // SOUNDNESS R1096 — …except a `U` member whose table charge came from an OVERRIDE (the dispatch union), whose
+        // declared body is still Unknown-only, and an `A` member whose overrides were too many to charge: both
+        // disclosures stand beside the charge (FrameworkReach#hedgeKind).
+        else if (effect == null && !fwCharged.isEmpty() && !ctx.projectClasses.contains(min.owner)) {
+            String hk = FrameworkReach.hedgeKind(min.owner, min.name, min.desc);   // "U" or "A" (R1096), else null
+            if (hk != null) discloseFrameworkHedge(ctx, s.id, hk, min.owner, min.name, min.desc, "call");
+        }
         // REACH, so a corpus A/B can tell "inert" from "never reached": `bin/corpus-ab.py --mark R814REACH
         // --mark-env CANDOR_R814_DEBUG=1 --mark-arm post`. `charge` runs LAST in its bucket, so a non-null
         // answer from it that equals `effect` is this rule's (the API-surface diff found no member where an
@@ -4911,7 +5007,12 @@ public class Candor {
         if (op == Opcodes.INVOKESTATIC) clinitEdge(id, min.owner);
         if (op == Opcodes.INVOKEVIRTUAL || op == Opcodes.INVOKEINTERFACE) {
             // mono-receiver resolved locally → the original `continue`: skip cross-dep too.
-            if (virtualDispatch(ctx, s, min, owner, effect, springTyped)) return;
+            // SOUNDNESS R1078 — a bridge's forwarding call keeps everything virtualDispatch does (every disclosure,
+            // the dispatched-member record) except the fan-out edges no caller needs it for; see bridgeSelfForward.
+            Set<String> beforeBridge = bridgeSelfForward(ctx, s, min) ? new HashSet<>(ctx.edges.get(id)) : null;
+            boolean handled = virtualDispatch(ctx, s, min, owner, effect, springTyped);
+            if (beforeBridge != null) trimBridgeFanOut(ctx, s, min, beforeBridge);
+            if (handled) return;
         } else if (ctx.projectClasses.contains(min.owner)) {
             // static / special (super, private, ctor) — the descriptor is known, so an overloaded callee
             // resolves to the right overload. But a SUPER-call (or static call) to an INHERITED method names
@@ -4946,6 +5047,14 @@ public class Candor {
         // attributes R.run) or an inline lambda (edged at its indy) is already captured; an OPAQUE
         // task — a field, a param, a factory return — has an unknown body, so the handing-off
         // method must read Unknown (parallel to an unpinned `task.run()`), else it is silent-pure.
+        if (isCollectionHandoff(min.owner, min.name, min.desc)) {   // SOUNDNESS R1093
+            ProvValue tasks = provFrames == null ? null : handoffTaskArg(provFrames[mn.instructions.indexOf(min)], min);
+            if (tasks == null || !tasks.nullConst) {
+                dir.add(Effect.UNKNOWN);
+                ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                        .add(UnknownReason.of(UnknownReason.Kind.TASK_HANDOFF, owner + "." + min.name));
+            }
+        }
         if ((isExecutorHandoff(min.owner, min.name, min.desc)
                 || isSyncCallbackInvoker(min.owner, min.name, min.desc)) && provFrames != null) {
             ProvValue task = handoffTaskArg(provFrames[mn.instructions.indexOf(min)], min);
@@ -5011,7 +5120,7 @@ public class Candor {
         // this site SILENT: `Optional.orElseGet(supParam)` and `Objects.requireNonNullElseGet(x, sup)`
         // were both measured ABSENT while `List.removeIf(pParam)` in the same class disclosed — the
         // INTERFACE was covered and the HOF was not. `jdkInvokesFunctionalArg` is the swept answer,
-        // derived from JDK bytecode at build time (see its javadoc and `generateJdkHofInvokes`), and it
+        // derived from pinned JDK images' bytecode (see its javadoc and soundness/jdk_index, R1094), and it
         // is UNIONED with the name list rather than replacing it: an abstract interface method whose
         // implementation defers the callback into a lazy pipeline (`Stream.map`) has no body to read, so
         // dropping the list would be the silent direction. Per-ARGUMENT where the list is per-CALL, which
@@ -5106,7 +5215,17 @@ public class Candor {
                                       Type[] pt, int i, ProvValue a) {
         if (i >= pt.length || pt[i].getSort() != Type.OBJECT) return;
         String iface = pt[i].getInternalName();
-        if (!isFunctionalIface(iface)) return;
+        // SOUNDNESS R1092 — THE HAND LIST OF FUNCTIONAL INTERFACES IS NOT THE GATE WHERE THE JDK ITSELF ANSWERED.
+        // `isFunctionalIface` names java.util.function and seven others, so a JDK invoking HOF whose parameter is any
+        // other functional interface stayed silent even though R237's index had proven it invokes that argument:
+        // `ScopedValue.where(..).call(op)` (JDK 25's `ScopedValue.CallableOp`) with an opaque `op` read PURE while
+        // `.run(runnable)` disclosed. EXECUTED: the op wrote a file; `deny Unknown` exited 0. So the hand list is joined
+        // by a second, derived gate with two conjuncts: the HOF index proves THIS argument is invoked, AND the JDK
+        // declares its type @FunctionalInterface. The second conjunct is not decoration: the index alone admitted
+        // `String.join(.., Iterable)` (Iterable has a SAM; the JDK calls iterator()), which R183 declined as a
+        // fabrication and `JdkHofIndexTest#theInterfaceGateStillBoundsTheIndexsReach` pins — measured red without it.
+        if (!isFunctionalIface(iface)
+                && !(jdkInvokesFunctionalArg(min.name, min.desc, i) && jdkDeclaredFunctional(iface))) return;
         // SOUNDNESS R236 — A PROVABLE `null` HANDS OVER NO CALLBACK. `xs.sort(null)` is the documented
         // natural-ordering spelling, `Collections.sort(xs, null)` and `Arrays.sort(a, null)` likewise, and
         // `AccessController.doPrivileged(null)` throws. Charging `Unknown` there claims candor cannot rule
@@ -8675,7 +8794,7 @@ public class Candor {
      *
      *  <p>{@link #SAM_OF} first (it carries the non-JDK entries and the two abstract CLASSES, which an
      *  interface index cannot), then the build-time JDK functional-interface index. The index is DERIVED
-     *  from the build JDK by {@code generateJdkSams} in build.gradle.kts (§G — ask the authority): for
+     *  from pinned JDK images by soundness/jdk_index/JdkIndexGen (R1094; it was the build JDK's until then) (§G — ask the authority): for
      *  every JDK interface, the one abstract method left after ignoring statics, ignoring the `Object`
      *  public methods JLS 9.8 lets a functional interface redeclare (`Comparator` declares `equals`
      *  abstract), and subtracting every signature a `default` gives a body to. Two or more abstract
@@ -8768,6 +8887,32 @@ public class Candor {
         if (idx == null) return false;
         for (int i : idx) if (i == argIndex) return true;
         return false;
+    }
+
+    /** SOUNDNESS R1092 — whether the JDK itself DECLARES {@code internal} a functional interface
+     *  ({@code @FunctionalInterface}, RUNTIME retention), from the pinned images (soundness/jdk_index, R1094). The
+     *  JDK's own word, where {@link #isFunctionalIface} is a hand list: it is what admits {@code ScopedValue.CallableOp}
+     *  (JDK 25) and still refuses {@code Iterable}, which has a SAM but is not a callback type (R183). */
+    static boolean jdkDeclaredFunctional(String internal) {
+        return JdkFunctional.SET.contains(internal);
+    }
+
+    private static final class JdkFunctional {
+        static final Set<String> SET = load();
+        private static Set<String> load() {
+            Set<String> m = new HashSet<>();
+            try (var in = Candor.class.getResourceAsStream("/candor/jdk-functional.idx.gz")) {
+                if (in == null) return Set.of();   // not bundled — the hand list still answers (the pre-R1092 gate)
+                try (var br = new java.io.BufferedReader(new java.io.InputStreamReader(
+                        new java.util.zip.GZIPInputStream(in), java.nio.charset.StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = br.readLine()) != null) if (!line.isBlank()) m.add(line.strip());
+                }
+            } catch (java.io.IOException e) {
+                return Set.of();
+            }
+            return Set.copyOf(m);
+        }
     }
 
     /** Whether the index names ANY invoked functional argument for this (name, descriptor) — the cheap
@@ -10329,7 +10474,23 @@ public class Candor {
                     || name.equals("scheduleAtFixedRate") || name.equals("scheduleWithFixedDelay"))) return true;
         if (owner.equals("java/util/concurrent/CompletableFuture") && COMPLETABLE_FUTURE_VERBS.contains(name))
             return true;
+        // SOUNDNESS R1093 — `ForkJoinTask.adapt(task)` / `adaptInterruptible(task)` wrap the task in a ForkJoinTask that
+        // `pool.invoke`/`fork`/`submit` then RUNS: the hand-off happens here, exactly as at `new Thread(task)`, and an
+        // opaque task was silent (EXECUTED: the runnable wrote its file; `deny Fs` and `deny Unknown` exited 0).
+        if (owner.equals("java/util/concurrent/ForkJoinTask") && (name.equals("adapt") || name.equals("adaptInterruptible")))
+            return true;
         return owner.equals("java/util/Timer") && TIMER_VERBS.contains(name);
+    }
+
+    /** SOUNDNESS R1093 — {@code invokeAll}/{@code invokeAny} hand a COLLECTION of tasks to an executor, which runs
+     *  them. {@link #isExecutorHandoff} keys on a task-typed FIRST parameter, so these two verbs were never a
+     *  hand-off at all and an opaque collection of {@code Callable}s read PURE while {@code submit(task)} on the same
+     *  executor disclosed. EXECUTED: each task wrote its file; {@code deny Fs} and {@code deny Unknown} exited 0. The
+     *  elements cannot be resolved from a collection value, so the call discloses whatever the collection is, unless
+     *  it is provably {@code null}; tasks written as lambdas are ALSO edged at their creation site, as before. */
+    static boolean isCollectionHandoff(String owner, String name, String desc) {
+        return desc != null && desc.startsWith("(Ljava/util/Collection;") && EXECUTOR_OWNERS.contains(owner)
+                && (name.equals("invokeAll") || name.equals("invokeAny"));
     }
 
     static boolean isSyncCallbackInvoker(String owner, String name, String desc) {

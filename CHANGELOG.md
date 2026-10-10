@@ -9,6 +9,12 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **A call into a surveyed framework member now carries the effects of that framework's own overrides (SOUNDNESS
+  R1096).** The κ table charged the body the static owner resolves to, so `AbstractSqlPagingQueryProvider.init(ds)`
+  read pure while the `DerbyPagingQueryProvider` it was handed opened a connection. The table now applies the engine's
+  bounded CHA at every consumer-facing instance member over the same jar: up to 12 overrides are unioned into the row
+  (808 members gain an effect, 453 a non-cross-cutting one, none loses one), a broader fan-out that can add an effect
+  is disclosed as `Unknown` (30 members), and a member whose own body was Unknown-only keeps that disclosure.
 - ⚠ **`invokeAll`/`invokeAny` and `ForkJoinTask.adapt` are task hand-offs (SOUNDNESS R1093).** An opaque collection of
   tasks handed to an executor, or an opaque task wrapped by `ForkJoinTask.adapt`/`adaptInterruptible`, read pure while
   `submit(task)` disclosed; each now discloses `task-handoff:` `Unknown`. A provably-null collection does not.

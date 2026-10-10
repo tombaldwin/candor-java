@@ -4775,6 +4775,13 @@ public class Candor {
         // concrete answer for the same call and never replaces one.
         if (effect == null && fwCharged.isEmpty() && supEff.isEmpty() && alsoCharged.isEmpty())
             frameworkHedge(ctx, s, min, owner);
+        // SOUNDNESS R1096 — …except a `U` member whose table charge came from an OVERRIDE (the dispatch union), whose
+        // declared body is still Unknown-only, and an `A` member whose overrides were too many to charge: both
+        // disclosures stand beside the charge (FrameworkReach#hedgeKind).
+        else if (effect == null && !fwCharged.isEmpty() && !ctx.projectClasses.contains(min.owner)) {
+            String hk = FrameworkReach.hedgeKind(min.owner, min.name, min.desc);   // "U" or "A" (R1096), else null
+            if (hk != null) discloseFrameworkHedge(ctx, s.id, hk, min.owner, min.name, min.desc, "call");
+        }
         // REACH, so a corpus A/B can tell "inert" from "never reached": `bin/corpus-ab.py --mark R814REACH
         // --mark-env CANDOR_R814_DEBUG=1 --mark-arm post`. `charge` runs LAST in its bucket, so a non-null
         // answer from it that equals `effect` is this rule's (the API-surface diff found no member where an

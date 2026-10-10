@@ -4782,6 +4782,8 @@ public class Candor {
             String hk = FrameworkReach.hedgeKind(min.owner, min.name, min.desc);   // "U" or "A" (R1096), else null
             if (hk != null) discloseFrameworkHedge(ctx, s.id, hk, min.owner, min.name, min.desc, "call");
         }
+        // SOUNDNESS R1097 — …and an override in ANOTHER surveyed jar, which the table can name but not charge.
+        frameworkCrossJar(ctx, s, min);
         // REACH, so a corpus A/B can tell "inert" from "never reached": `bin/corpus-ab.py --mark R814REACH
         // --mark-env CANDOR_R814_DEBUG=1 --mark-arm post`. `charge` runs LAST in its bucket, so a non-null
         // answer from it that equals `effect` is this rule's (the API-surface diff found no member where an
@@ -5890,6 +5892,55 @@ public class Candor {
             }
         }
     }
+
+    /** SOUNDNESS R1097 — A CALL INTO A SURVEYED FRAMEWORK MEMBER CAN RUN AN OVERRIDE SHIPPED IN ANOTHER JAR.
+     *
+     *  <p>The defect, EXECUTED by the spec lane: {@code contentLength(OutgoingContent c) { return c.getContentLength(); }}
+     *  handed ktor-server-core's {@code LocalFileContent} returns the file's size from the filesystem, and the row was
+     *  ABSENT — {@code deny Fs} and {@code deny Fs Unknown} exit 0. The κ grant certified the member from its declared
+     *  body; R1096's override union reads only the declaring jar's hierarchy, and {@code LocalFileContent} is in
+     *  another. (The spring-messaging {@code receive()} that DID disclose was never this mechanism: it is the Spring
+     *  {@code *Template} name floor in {@link #kappaLedger}, which fires on the owner's simple name alone.)
+     *
+     *  <p>The table records each such member with its overriding classes (an {@code O} line, FrameworkReachGen#crossJar)
+     *  and this decides, per overriding class, at the call:
+     *  <ul><li>in THIS scan ({@code byName}): the scan's own CHA edges it, nothing to add;</li>
+     *  <li>in a CHAINED report ({@code depIndexed}: a hierarchy sidecar named it, so its jar is one the consumer
+     *  declared): RESOLVED — its published row for the member is joined ({@link #inheritDepFn}); no row means the
+     *  chained body is pure, or not an override in that version, and adds nothing;</li>
+     *  <li>otherwise: whether that jar is present is not decidable here, so the call DISCLOSES
+     *  {@code Unknown[dispatch:owner.member]} — the {@code A} disclosure, since an unseen override is a dispatch the
+     *  table could not follow.</li></ul>
+     *  Only for a dispatched call ({@code invokevirtual}/{@code invokeinterface}) on the external owner itself: a
+     *  {@code super.m()} is exact, and a receiver provably {@code new T} of a type that is not one of the overriding
+     *  classes cannot run them. Additive: it only joins or adds {@code Unknown}. */
+    static void frameworkCrossJar(AnalysisContext ctx, MethodScan s, MethodInsnNode min) {
+        int op = min.getOpcode();
+        if (op != Opcodes.INVOKEVIRTUAL && op != Opcodes.INVOKEINTERFACE) return;
+        if (min.owner.isEmpty() || min.owner.charAt(0) == '[' || ctx.projectClasses.contains(min.owner)) return;
+        List<String> ov = FrameworkReach.crossJarOverriders(min.owner, min.name, min.desc);
+        if (ov.isEmpty()) return;
+        String mono = monomorphicReceiver(s.provFrames == null ? null : s.provFrames[s.mn.instructions.indexOf(min)], min);
+        if (mono != null && !ov.contains(mono)) return;
+        boolean unseen = false;
+        for (String o : ov) {
+            if (ctx.byName.containsKey(o)) continue;
+            if (ctx.depIndexed.contains(o)) {
+                DepFn d = ctx.crossDeps.get(o + "." + min.name + min.desc);
+                if (d != null && !d.walkOnly) inheritDepFn(s.id, d);
+                if (FWREACH_DEBUG) System.err.println("FWXJAR\tJOIN\t" + s.id + "\t" + min.owner + "." + min.name + min.desc
+                        + "\t" + o + "\t" + (d == null ? "-" : d.effects));
+                continue;
+            }
+            unseen = true;
+        }
+        if (unseen) discloseFrameworkHedge(ctx, s.id, "A", min.owner, min.name, min.desc, "xjar");
+        // REACH, so a corpus A/B can tell "inert" from "never reached": `bin/corpus-ab.py --mark R1097XJAR
+        // --mark-env CANDOR_R1097_DEBUG=1 --mark-arm post`.
+        if (R1097_DEBUG) System.err.println("R1097XJAR\t" + (unseen ? "DISCLOSE" : "RESOLVED") + "\t" + s.id + "\t"
+                + min.owner + "." + min.name + min.desc);
+    }
+    static final boolean R1097_DEBUG = System.getenv("CANDOR_R1097_DEBUG") != null;
 
     /** {@code A} is a dispatch the table could not follow; {@code U}/{@code X} are a dependency body this scan
      *  cannot account for — the registered {@code dep} kind, which projects to {@code unresolved} (SPEC §6.2). */

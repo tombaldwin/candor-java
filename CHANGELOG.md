@@ -9,6 +9,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+## [0.40.4] — 2026-10-10
+
 - ⚠ **A call into a surveyed framework member now carries the effects of that framework's own overrides (SOUNDNESS
   R1096).** The κ table charged the body the static owner resolves to, so `AbstractSqlPagingQueryProvider.init(ds)`
   read pure while the `DerbyPagingQueryProvider` it was handed opened a connection. The table now applies the engine's
@@ -28,7 +30,11 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   the published v0.40.3 jar carried a Corretto 17 derivation, so JDK 18+ functional interfaces and invoking HOFs read
   as plain calls. They are now checked-in files written by `soundness/jdk_index/derive.sh` from pinned Temurin
   17/21/25 images (Linux, macOS, Windows, unioned), hashed in `manifest.txt` and checked on every push; a build on
-  JDK 17 and one on JDK 21 now produce identical jars. More opaque callbacks are disclosed as `Unknown`.
+  JDK 17 and one on JDK 21 now produce identical jars. More opaque callbacks are disclosed as `Unknown`: against the
+  published v0.40.3 jar over 762 corpus jars, 23 rows in 10 jars gain `callback:` `Unknown` (ADDED 7, CHANGED 16,
+  REMOVED 0, no effect lost) — disclosures v0.40.3 users were missing because of the JDK that built it. The 0.40.4
+  jar was built with `JAVA_HOME` set to JDK 21, and its four `jdk-*.idx.gz` resources are byte-equal to the
+  checked-in files (`derive.sh --check` and the κ table's `--check` against this jar both pass in a clean `env -i`).
 
 - ⚠ **A covariant/erased bridge no longer charges its real member with every subclass override (SOUNDNESS R1078).**
   The bridge shares the real member's report row, and its one call — `this.<real>()` — fanned out over CHA, so

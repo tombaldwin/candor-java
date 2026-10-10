@@ -9,6 +9,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+## [0.40.5] — 2026-10-11
+
 - ⚠ **A call into a surveyed framework member whose override ships in ANOTHER surveyed jar now discloses, or is
   resolved when that jar is chained (SOUNDNESS R1097).** R1096's override union reads only the declaring jar, so
   ktor-http's `OutgoingContent.getContentLength()`, handed ktor-server-core's `LocalFileContent`, stats the file
@@ -23,6 +25,9 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   effect, edge or `invisible` lost. 1,145 rows newly carry `Unknown` (0.042%), 996 of them through jackson's
   `JsonProcessingException.getMessage`, whose jackson-databind overrides this engine reads only as `Unknown`
   (twilio, 923 of the 942 added rows).
+- **The 0.40.5 jar's build facts.** Built with `JAVA_HOME` set to JDK 21; its four `jdk-*.idx.gz` resources are
+  byte-equal to the checked-in files, and `soundness/jdk_index/derive.sh --check` and the κ table's `--check` against
+  this jar both pass in a clean `env -i`.
 
 ## [0.40.4] — 2026-10-10
 

@@ -11,6 +11,7 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## [0.40.5] — 2026-10-11
 
+- **`jbang-catalog.json` points at the v0.40.5 jar.**
 - ⚠ **A call into a surveyed framework member whose override ships in ANOTHER surveyed jar now discloses, or is
   resolved when that jar is chained (SOUNDNESS R1097).** R1096's override union reads only the declaring jar, so
   ktor-http's `OutgoingContent.getContentLength()`, handed ktor-server-core's `LocalFileContent`, stats the file

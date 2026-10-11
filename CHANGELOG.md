@@ -11,6 +11,7 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## [0.40.6] — 2026-10-11
 
+- **`jbang-catalog.json` points at the v0.40.6 jar.**
 - **Version-only cut to keep the family on one build line — no change to candor-java's analysis since 0.40.5.**
   The engine source is identical to the v0.40.5 tag (`85cf5a5`); since then only `jbang-catalog.json` moved to
   the 0.40.5 jar. candor-rust carries R1098 and the drop-glue per-row fixes, candor-swift R1109, and

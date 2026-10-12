@@ -19,6 +19,17 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 - **The 0.40.7 jar's build facts.** Built with `JAVA_HOME` set to JDK 21; its four `jdk-*.idx.gz` resources
   are byte-equal to the checked-in files, and `soundness/jdk_index/derive.sh --check` and the κ table's
   `--check` against this jar both pass in a clean `env -i`.
+- **Test harness only, no engine change: `soundness/mutation_probe.sh` has teeth again.** (1) The
+  `jackson_file` mutation disabled the two hand-written jackson rules in `Classifier.java` but not the
+  GENERATED framework table (`framework-reach.tsv`, since R492/R727), which also charges
+  `ObjectMapper`/`XmlMapper`/`YAMLMapper`/`CsvMapper` `readValue`/`readTree`/`writeValue` over File/Path/URL —
+  so `kappa_libs_probe` stayed green and the weekly soundness run reported it MISSED. The mutation now also
+  drops the table's `com/fasterxml/jackson/` rows on load (scoped to jackson; not the global
+  `-Dcandor.frameworkReach=off`). (2) The harness read ANY non-zero probe exit as "mutation caught", so a
+  probe that crashed — e.g. `kappa_libs_probe` on JDK 17, "fixture does not compile" — scored as caught. A
+  verdict now needs the probe's own words (a named GAP/FAIL line for red, its OK line for green); anything
+  else is `PROBE-ERROR` and fails the run. Every probe must also be a real green on the UNMUTATED engine
+  before any mutation is scored (exit 2 otherwise). Logs move from fixed `/tmp/mut_*.log` to a per-run dir.
 
 
 ## [0.40.6] — 2026-10-11

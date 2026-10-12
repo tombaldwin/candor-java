@@ -9,6 +9,18 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+## [0.40.7] — 2026-10-12
+
+- **Version-only cut to keep the family on one build line — no change to candor-java's analysis since
+  0.40.6.** The engine source is identical to the v0.40.6 tag (`0121f91`); since then only
+  `jbang-catalog.json` moved to the 0.40.6 jar. candor-rust carries the scan-only drop-glue and comparison fixes
+  (R198, R200/R1121, R201, R209, R323, R1111, R1120, R1122–R1125, R1127, R1129, R1134 and R1128's derive
+  route), and candor-spec carries the register only (`SPEC.md` is unchanged since 0.40.6).
+- **The 0.40.7 jar's build facts.** Built with `JAVA_HOME` set to JDK 21; its four `jdk-*.idx.gz` resources
+  are byte-equal to the checked-in files, and `soundness/jdk_index/derive.sh --check` and the κ table's
+  `--check` against this jar both pass in a clean `env -i`.
+
+
 ## [0.40.6] — 2026-10-11
 
 - **`jbang-catalog.json` points at the v0.40.6 jar.**

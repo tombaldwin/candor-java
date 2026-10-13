@@ -888,6 +888,18 @@ final class Loader {
                                 if (m.has(pair.getKey()) && m.get(pair.getKey()).isJsonArray())
                                     for (JsonElement x : m.getAsJsonArray(pair.getKey()))
                                         pair.getValue().add(x.getAsString());
+                            // SOUNDNESS R1166 — the ARGUMENT-CONTRACT keys (Object protocol, κ interface
+                            // members) are taken OUT of `dispatchesOn` into their own index, before any
+                            // decision below reads that field. A row whose only content is such a key then
+                            // decides admission, hop status and the R919 pure-union marker exactly as it did
+                            // before the producer named it, so no lookup elsewhere starts HITTING it (the R764
+                            // trap: a hit short-circuits the up-walk and the untyped-receiver disclosure).
+                            {
+                                List<String> argKeys = new ArrayList<>();
+                                de.dispatchesOn.removeIf(k -> ArgContract.isArgTypedKey(k) && argKeys.add(k));
+                                if (!argKeys.isEmpty())
+                                    ctx().depArgContract.computeIfAbsent(h, k -> new ArrayList<>()).addAll(argKeys);
+                            }
                             // §2 `calls` + `fn`: the dependency's OWN effect-relevant call graph. A dep
                             // entry whose Unknown was INHERITED carries no `unknownWhy` of its own (the
                             // field is direct-by-contract), so the reason class died one hop past where

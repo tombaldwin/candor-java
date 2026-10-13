@@ -160,6 +160,10 @@ final class ReportWriter {
                     // deliberate exception: absence keeps its meaning, and a dispatching row is no longer
                     // absent, so the claim is one the producer is entitled to make.
                     if (dispatchReach.contains(e.getKey())) return true;
+                    // SOUNDNESS R1166 — …OR ITS PARAMETERS REACH AN ARGUMENT CONTRACT (ArgContract): the row is
+                    // the key a chained consumer joins over the arguments it passes. Emission only — it does not
+                    // seed `dispatchReach`, so no caller is emitted or gains a `calls` entry on its account.
+                    if (ctx().argContractPub.containsKey(e.getKey())) return true;
                     String dc = fnToClass.get(e.getKey());
                     return dc != null && !declaredByClass.getOrDefault(dc, EffectSet.empty()).isEmpty();
                 })
@@ -262,8 +266,7 @@ final class ReportWriter {
                             // ⟨0.39⟩ SPEC §4 obligation 1 — the abstraction members this unit dispatches
                             // on DIRECTLY, spelled as this engine's own entry hashes. The transitive half
                             // is the consumer's walk over `calls` above; see the reach comment.
-                            ctx().dispatchDirect.containsKey(fn)
-                                    ? new ArrayList<>(ctx().dispatchDirect.get(fn)) : List.<String>of()));
+                            dispatchesOnOf(fn)));
                 });
         // ⟨0.23⟩/⟨0.39⟩ the synthetic INTERFACE-UNION entries, LOCAL abstractions and FOREIGN ones alike.
         // Appended last so the ordinary entries above are untouched. NO LONGER GATED: this rode behind
@@ -777,6 +780,17 @@ final class ReportWriter {
     private static String paramsOf(String desc) {
         int close = desc.indexOf(')');
         return close < 0 ? desc : desc.substring(0, close + 1);
+    }
+
+    /** ⟨0.39⟩ obligation 1's DIRECT members, plus R1166's argument-contract keys (ArgContract), sorted.
+     *  Both are entry hashes in the owning namespace, so a consumer reads them through one field; it tells
+     *  them apart by the key alone ({@link ArgContract#isArgTypedKey}). */
+    static List<String> dispatchesOnOf(String fn) {
+        TreeSet<String> d = ctx().dispatchDirect.get(fn), a = ctx().argContractPub.get(fn);
+        if (a == null) return d == null ? List.of() : new ArrayList<>(d);
+        TreeSet<String> all = new TreeSet<>(a);
+        if (d != null) all.addAll(d);
+        return new ArrayList<>(all);
     }
 
     /** ⟨0.39⟩ Every unit that reaches a dispatch site — itself, or through any chain of local callees.

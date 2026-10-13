@@ -77,7 +77,7 @@ final class Refresh {
      *  exactly this case, and SOUNDNESS R151 is the record of what a cache serving a stale dependency fact
      *  costs (a `deny Net` that went exit 1 to exit 0 on the configuration CI uses). Pinned by
      *  {@code RefreshDispatchesOnTest}, which EXECUTES the un-bumped case rather than reasoning about it. */
-    private static final String FORMAT = "candor-refresh-2";
+    private static final String FORMAT = "candor-refresh-3";
 
     private final Path file;                  // null when caching is off
     private final Map<String, JsonObject> loaded = new HashMap<>();   // internal name -> stored entry
@@ -457,6 +457,13 @@ final class Refresh {
         // the answer from before (SOUNDNESS R151/R163).
         sb.append("depdispatch");
         for (var e : new TreeMap<>(c.depDispatchByFn).entrySet()) {
+            sb.append(e.getKey()).append('=').append(new TreeSet<>(e.getValue())).append('\u0001');
+            if (sb.length() > 1 << 16) digest.feed(sb);
+        }
+        // SOUNDNESS R1166: the dependency's argument-contract keys, read during per-class analyze by
+        // ArgContract#depSite and held OUT of `crossDeps`, so nothing above covers them.
+        sb.append("depargcontract");
+        for (var e : new TreeMap<>(c.depArgContract).entrySet()) {
             sb.append(e.getKey()).append('=').append(new TreeSet<>(e.getValue())).append('\u0001');
             if (sb.length() > 1 << 16) digest.feed(sb);
         }

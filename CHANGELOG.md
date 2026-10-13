@@ -9,6 +9,21 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **A generic method runs its caller's override, and the caller is now charged it (SOUNDNESS R1166).**
+  `<T> boolean same(T a, T b) { return a.equals(b); }` erases to `Object.equals`, and `<T> int
+  count(Iterable<T> it)` to `Iterable.iterator`. With the generic in a CHAINED library, a caller passing a
+  type whose `equals`/`hashCode`/`toString`/`compareTo`/`Iterable.iterator`/`Iterator.next` wrote a file was
+  ABSENT (executed, all six); in one tree past twelve overrides the four Object-protocol callers were ABSENT.
+  A method that dispatches such a member (the §4 Object protocol, or an interface member of a `java.*` κ
+  owner) on its own PARAMETER is now a re-entry sink for that parameter, exactly as `String.valueOf(x)`
+  already was: the caller is charged the override of the type it passes — where that type names ONE body
+  (a provable `new T`, or a declared type with a single override below it). A declared type naming several
+  bodies keeps the answer the callee's own dispatch gives (the CHA union was measured as smear). The library
+  names the member in `dispatchesOn` (existing field, existing spelling), on the rows whose parameters reach
+  it; a consumer reads those keys into their own index, so no other join changes. Not followed: a value the
+  library stores and dispatches on later, the iterator an `iterator()` returns, and a default method on an
+  interface (its ⟨0.23⟩ union entry owns that hash).
+
 ## [0.40.9] — 2026-10-13
 
 - **`jbang-catalog.json` points at the v0.40.9 jar.**

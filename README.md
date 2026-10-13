@@ -111,8 +111,17 @@ candidate target and one effectful override would smear across the whole report:
 
 - `toString()` / `hashCode()` / `equals(Object)` / `compareTo(Object)` — the conventionally-pure
   `Object` surface (the same trade the Rust engine makes for `dyn Display`/`Error` formatting).
-  *The documented caveat:* an override of these that performs real I/O is not attributed at the
-  dispatch site (its own method entry still carries the effect).
+  *The documented caveat:* an override of these that performs real I/O is not attributed at a
+  dispatch site whose receiver type is unknown (its own method entry still carries the effect).
+  **Where the receiver is the method's own PARAMETER** — `<T> boolean same(T a, T b) { return
+  a.equals(b); }`, which erasure compiles to `Object.equals` — the CALLER is charged the override of the
+  type it passes (SOUNDNESS R1166), in one tree and across a chain: the library names the member in
+  `dispatchesOn` and the consumer joins it over its call's arguments. The same holds for an interface
+  member of a `java.*` κ owner dispatched on a parameter (`Iterable.iterator`, `Iterator.next`). The
+  argument's type must name ONE body — a provable `new T`, or a declared type with a single override
+  below it; a declared type naming several keeps the caveat above. Not followed: a value the library
+  STORES and dispatches on later, the iterator an `iterator()` returns, and an interface default method
+  (its union entry owns the hash).
 - `kotlin.jvm.functions.FunctionN.invoke`, `scala.FunctionN`/`PartialFunction` `apply`, and
   `groovy.lang.Closure.call` — every Kotlin/Scala/Groovy lambda or closure is a class implementing
   these; the body is instead attributed at its **creation site** (precise-by-construction).
@@ -121,7 +130,11 @@ candidate target and one effectful override would smear across the whole report:
   `task.run()` is not charged with every task in the jar.
 
 All other dispatch — including over external interfaces with a visible implementor somewhere on the
-analyzed classpath (`java.util.Iterator`) — is still CHA-resolved to the union of what's visible.
+analyzed classpath (`java.util.Iterator`) — is still CHA-resolved to the union of what's visible
+**within one scan**. Across a chain, a dependency's dispatch over a JDK (κ-covered) interface reaches the
+consumer's implementor only where the dependency's receiver is its own parameter (R1166, above); a JDK
+interface dispatch on a value the dependency stored or derived (the `Iterator` its `iterator()` returned)
+is a named miss.
 
 **Named miss (candor-spec §7 item 7).** Dispatch over a **foreign** abstraction — declared in a
 dependency rather than the project — that has **no visible implementor anywhere on the classpath**

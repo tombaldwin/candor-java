@@ -396,6 +396,10 @@ public class Candor {
             }
         }
 
+        // SOUNDNESS R1166 — the argument contract: close each method's parameter flow and resolve every call
+        // site's argument types against it. Reads only the per-class accumulators, never a body.
+        ArgContract.resolve();
+
         // SOUNDNESS R825 — where a runtime-loaded query handle goes, followed forward, fail-closed. Whole
         // program, so it runs after the per-class loop (and outside the refresh overlay: it reads every body).
         DbHandleFlow.run(classes);
@@ -4909,6 +4913,7 @@ public class Candor {
         storedStreamAcquisition(ctx, s, min);
         externalStreamUtility(ctx, s, min, owner, effect);
         contractReentry(s, min);
+        ArgContract.site(ctx, s, min);                                  // SOUNDNESS R1166
         deferredForce(ctx, s, min);
         reflectionPair(ctx, s, min, owner);
         kappaLedger(ctx, s, min, owner, effect);
@@ -7458,6 +7463,7 @@ public class Candor {
                 // rung ends up shipped-but-inert in half the places it matters.
                 inheritDepFn(id, inh);
             }
+            ArgContract.depSite(ctx, s, min);                               // SOUNDNESS R1166
             // SOUNDNESS R867 — the dependency's OWN hierarchy, walked DOWN to its subtypes' overrides (and,
             // for a provably-typed receiver, to the one body that type runs). Additive: it only ever calls
             // `inheritDepFn` / adds an `Unknown`, so nothing joined above can be withdrawn by it. See
@@ -8177,6 +8183,10 @@ public class Candor {
         Set<String> followed = seen == null ? new HashSet<>() : seen;
         for (String key : members) {
             if (!followed.add(key)) continue;
+            // SOUNDNESS R1166 — an Object-protocol / κ-interface key is joined over the ARGUMENTS at the call
+            // site (ArgContract#depSite), never unioned over every implementer here: that union over
+            // `Object.equals` is the 87% smear §4's exemption exists to avoid.
+            if (ArgContract.isArgTypedKey(key)) continue;
             // CONTRIBUTOR 1 — every chained entry carrying this key. `crossDeps` has already UNIONED the
             // contributions of every report that published it (DepFn#unionWith), so one lookup is the union.
             DepFn union = c.crossDeps.get(key);

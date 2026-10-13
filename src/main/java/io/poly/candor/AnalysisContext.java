@@ -261,6 +261,30 @@ final class AnalysisContext {
      *  so a field recorded only when the dispatch was indeterminate would be absent in exactly the arm that
      *  needs it. It is NOT an effect and is never charged as one. */
     final Map<String, TreeSet<String>> dispatchDirect = new HashMap<>();
+    /** SOUNDNESS R1166 — the ARGUMENT CONTRACT: a method that dispatches an Object-protocol or κ-interface
+     *  member on its OWN PARAMETER runs whatever override its caller's argument carries. Three per-method
+     *  accumulators, all read only after the analyze loop by {@link ArgContract#resolve}, never during it:
+     *  <ul>
+     *    <li>{@code argContractDirect}: fn -> {@code "p\tkey"} — the body dispatches {@code key} on param p
+     *        (directly, through a JDK re-entry sink, or through a chained dependency that publishes it);</li>
+     *    <li>{@code argContractPass}: fn -> {@code "p\tcallee\tj"} — param p is handed on as arg j of a
+     *        project callee;</li>
+     *    <li>{@code argContractSites}: fn -> {@code "callee\tj\ttype\texact"} — a non-parameter value of a
+     *        known type is passed as arg j of a project callee.</li>
+     *  </ul> */
+    final Map<String, TreeSet<String>> argContractDirect = new HashMap<>();
+    final Map<String, TreeSet<String>> argContractPass = new HashMap<>();
+    final Map<String, TreeSet<String>> argContractSites = new HashMap<>();
+    /** R1166 — fn -> the contract keys its PARAMETERS reach (the parameter-flow closure), published in
+     *  {@code dispatchesOn}. Written once, after the analyze loop, by {@link ArgContract#resolve}. Kept OUT of
+     *  {@link #dispatchDirect} on purpose: that map seeds ⟨0.39⟩'s dispatch REACH (emission and {@code calls}
+     *  of every caller), and a contract key reaching it emitted 58k pure hop rows over the census and made
+     *  consumer lookups HIT rows they used to miss — the R764 trap. */
+    final Map<String, TreeSet<String>> argContractPub = new HashMap<>();
+    /** R1166, consumer side — chained-report entry hash -> its published contract keys. A separate index so a
+     *  row carrying ONLY contract keys never enters {@link #crossDeps}: every reader of that index sees exactly
+     *  what it saw before this mechanism existed. */
+    Map<String, List<String>> depArgContract = new HashMap<>();
     // reflective calls with a LITERAL method name in the same body: a unique project match gets an EDGE
     // alongside the honest Unknown (recall without guessing).
     final List<String[]> reflectPairs = new ArrayList<>();         // [callerId, literalName]
@@ -431,6 +455,7 @@ final class AnalysisContext {
         depCoveredPkgs = master.depCoveredPkgs;             depChainedPkgs = master.depChainedPkgs;
         depCallsByFn = master.depCallsByFn;                 depWhyByFn = master.depWhyByFn;
         depDispatchByFn = master.depDispatchByFn;           depTransDispatchMemo = master.depTransDispatchMemo;
+        depArgContract = master.depArgContract;   // SOUNDNESS R1166: a shared INPUT, filled only by loadCrossDeps
         depSupers = master.depSupers;                       depSplitKnown = master.depSplitKnown;
         depSuperclass = master.depSuperclass;               classHash = master.classHash;
         depIndexed = master.depIndexed;                     depSubtypes = master.depSubtypes;   // R867

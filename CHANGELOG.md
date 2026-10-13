@@ -11,6 +11,7 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## [0.40.8] — 2026-10-13
 
+- **`jbang-catalog.json` points at the v0.40.8 jar.**
 - **The 0.40.8 jar's build facts.** Built clean (`./gradlew clean shadowJar`) with `JAVA_HOME` set to JDK 21; its
   four `jdk-*.idx.gz` resources are byte-equal to the checked-in files, and `soundness/jdk_index/derive.sh --check`
   and the κ table's `--check` against this jar both pass in a clean `env -i`.

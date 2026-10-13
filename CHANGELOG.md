@@ -9,6 +9,20 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+## [0.40.9] — 2026-10-13
+
+- **The 0.40.9 jar's build facts.** Built clean (`./gradlew clean shadowJar`) with `JAVA_HOME` set to JDK 21; its
+  four `jdk-*.idx.gz` resources are byte-equal to the checked-in files, and `soundness/jdk_index/derive.sh --check`
+  and the κ table's `--check` against this jar both pass in a clean `env -i`.
+- **Version-only cut to keep the family on one build line — no change to candor-java's analysis since
+  0.40.8.** The engine source is identical to the v0.40.8 tag (`64bf9d4`); since then only
+  `jbang-catalog.json` moved to the 0.40.8 jar. candor-rust carries scan-only fixes that close silent under-reports (operators reached through a cast,
+  a reference-to-primitive impl or a macro-made impl; glob-imported types; a bin calling its own library;
+  `macro_rules!` names defined twice; `pub` trait default bodies; R1150–R1157, R1159–R1162) and drops the
+  `Rand` charge on `getrandom::Error`'s methods, and candor-spec carries the register only (`SPEC.md` and
+  `conformance/` are unchanged since 0.40.8).
+
+
 ## [0.40.8] — 2026-10-13
 
 - **`jbang-catalog.json` points at the v0.40.8 jar.**

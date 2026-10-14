@@ -18,7 +18,9 @@ import org.objectweb.asm.tree.analysis.SourceValue;
  * SOUNDNESS R1166 — A COLLECTION RUNS ITS ELEMENTS' {@code equals}/{@code hashCode}.
  *
  * <p>`list.hashCode()`, `list.equals(o)`, `new HashSet<>(list)`, `r.removeAll(c)` (which runs {@code c.contains(e)},
- * i.e. {@code e.equals(..)}) and `a.containsAll(b)` run the Object protocol of the ELEMENTS. Until R1166 the only
+ * i.e. {@code e.equals(..)}, and {@code e.hashCode()} when {@code c} is hashed) and `a.containsAll(b)` run the Object
+ * protocol of the ELEMENTS; a set's {@code equals}/{@code removeAll} also hash the ARGUMENT's elements, and a sorted
+ * collection runs neither (each executed on JDK 21). Until R1166 the only
  * thing covering that was a charge at `list.add(x)` for {@code x.equals}/{@code x.hashCode} — which `add` never runs
  * (executed: no file) and which, measured by an independent removal audit, was the sole cover for real effects in
  * exactly these shapes (`aw-lostRealHash/Eq/Set`, `both`, `useBuilt`, `lostRemoveAll`, and junit-platform-console's
@@ -51,7 +53,15 @@ final class ElementFlow {
                 && !o.startsWith("java/util/logging/");
     }
     private static boolean hashed(String o) {
+        // a SORTED set/map compares (compareTo/Comparator), and an identity map uses ==/identityHashCode:
+        // `new TreeSet<>(l)` runs neither equals nor hashCode on l's elements (executed)
+        if (o.contains("Tree") || o.contains("Sorted") || o.contains("Navigable") || o.contains("SkipList")
+                || o.contains("EnumSet") || o.contains("Identity")) return false;
         return o.contains("Set") || o.contains("HashMap") || o.contains("Hashtable") || o.equals("java/util/Map");
+    }
+    /** A receiver statically known to be a list: its bulk operations never hash the ARGUMENT's elements. */
+    private static boolean listOwner(String o) {
+        return o.endsWith("List") || o.equals("java/util/Vector") || o.equals("java/util/Stack");
     }
     private static final Set<String> ADD = Set.of("add", "addFirst", "addLast", "offer", "offerFirst", "offerLast", "push");
     private static final Set<String> WRAP = Set.of("unmodifiableList", "unmodifiableSet", "unmodifiableCollection",
@@ -153,20 +163,31 @@ final class ElementFlow {
             // DISPATCHING operations over the elements
             if (inst && m.desc.equals("()I") && m.name.equals("hashCode"))
                 for (String cell : cells(c, g, cn, mn, sf, recv, self, 0)) g.dispatch.add(new String[] {id, cell, HASH});
-            if (inst && m.name.equals("equals") && m.desc.equals("(Ljava/lang/Object;)Z"))
+            if (inst && m.name.equals("equals") && m.desc.equals("(Ljava/lang/Object;)Z")) {
                 for (String cell : cells(c, g, cn, mn, sf, recv, self, 0)) g.dispatch.add(new String[] {id, cell, EQ});
+                // a SET's equals is containsAll over the argument: the argument's elements are hashed and compared
+                if (!listOwner(m.owner))
+                    for (String cell : cells(c, g, cn, mn, sf, f.getStack(base), self, 0)) {
+                        g.dispatch.add(new String[] {id, cell, HASH}); g.dispatch.add(new String[] {id, cell, EQ});
+                    }
+            }
             if (inst && (m.name.equals("removeAll") || m.name.equals("retainAll")) && n == 1) {
                 for (String cell : cells(c, g, cn, mn, sf, recv, self, 0)) {
                     g.dispatch.add(new String[] {id, cell, EQ}); g.dispatch.add(new String[] {id, cell, HASH});
                 }
-                for (String cell : cells(c, g, cn, mn, sf, f.getStack(base), self, 0)) g.dispatch.add(new String[] {id, cell, EQ});
-            }
-            if (inst && m.name.equals("containsAll") && n == 1) {
+                // a hashed receiver's removeAll may iterate the ARGUMENT and remove(e): its elements are hashed
                 for (String cell : cells(c, g, cn, mn, sf, f.getStack(base), self, 0)) {
-                    g.dispatch.add(new String[] {id, cell, EQ}); g.dispatch.add(new String[] {id, cell, HASH});
+                    g.dispatch.add(new String[] {id, cell, EQ});
+                    if (!listOwner(m.owner)) g.dispatch.add(new String[] {id, cell, HASH});
                 }
-                for (String cell : cells(c, g, cn, mn, sf, recv, self, 0)) g.dispatch.add(new String[] {id, cell, EQ});
             }
+            // containsAll runs this.contains(e) for each ARGUMENT element: e.equals(..), and e.hashCode() when the
+            // receiver is hashed. The receiver's own elements are only the arguments of those calls (executed).
+            if (inst && m.name.equals("containsAll") && n == 1)
+                for (String cell : cells(c, g, cn, mn, sf, f.getStack(base), self, 0)) {
+                    g.dispatch.add(new String[] {id, cell, EQ});
+                    if (!listOwner(m.owner)) g.dispatch.add(new String[] {id, cell, HASH});
+                }
         }
     }
 

@@ -283,6 +283,12 @@ class ArgContractR1166Test {
             + "  public static void dropBuilt() { sink = build().size(); }\n"
             + "  static List<Object> opts() { List<Object> l = new ArrayList<>(); l.add(new Weq()); return Collections.unmodifiableList(l); }\n"
             + "  public static void lostRemoveAll() { List<Object> r = new ArrayList<>(List.of(new Weq())); r.removeAll(opts()); }\n"
+            + "  public static void setRemoveAllArg() { Set<Object> s = new HashSet<>(); List<Object> l = new ArrayList<>(); l.add(new Whash()); s.removeAll(l); }\n"
+            + "  public static void setEqualsArg() { Set<Object> s = new HashSet<>(); List<Object> l = new ArrayList<>(); l.add(new Whash()); sink = s.equals(l); }\n"
+            + "  public static void listRemoveAllRecv() { List<Object> l = new ArrayList<>(); l.add(new Whash()); l.removeAll(new HashSet<>()); }\n"
+            + "  public static void treeInit() { List<Object> l = new ArrayList<>(); l.add(new Whash()); sink = new TreeSet<>(l); }\n"
+            + "  public static void listContainsAllRecv() { List<Object> l = new ArrayList<>(); l.add(new Whash()); sink = l.containsAll(new ArrayList<>()); }\n"
+            + "  public static void listRemoveAllArg() { List<Object> r = new ArrayList<>(); List<Object> l = new ArrayList<>(); l.add(new Whash()); r.removeAll(l); }\n"
             + "  public static void cfgReg() { G.reg(new Cfg(), new Wstr()); }\n"
             + "  public static void boxedNumber() { sink = G.str(num()); }\n"
             + "  public static void asListIt() { sink = G.count(Arrays.asList(\"a\", \"b\")); }\n"
@@ -326,14 +332,15 @@ class ArgContractR1166Test {
         try {
             Map<String, Map<String, Object>> r = byFnAll(t.scanAll());
             for (String fn : List.of("listAdd", "listAddHash", "listContainsHash", "directListAdd", "cfgReg",
-                    "lostFalse", "lostEscape", "dropBuilt",
+                    "lostFalse", "lostEscape", "dropBuilt", "treeInit", "listContainsAllRecv", "listRemoveAllArg",
                     "boxedNumber", "asListIt", "declBaseF", "ctxSmear", "superEq", "passSmear", "refSmear", "ownSmear"))
                 assertTrue(!inf(r, "px.P." + fn).contains("Fs"), fn + " never performs Fs (executed); got " + r.get("px.P." + fn));
             // a list runs its ELEMENTS' contracts later (`l.hashCode()`, `l.equals(..)`, `new HashSet<>(l)`,
             // `r.removeAll(c)`), across a field and a helper's return too — all executed by an independent removal
             // audit, each writing a file. ElementFlow models that path; `add` itself charges nothing.
             for (String fn : List.of("ctxReal", "objEqW", "realMyList", "passReal", "refReal", "ownReal",
-                    "lostRealHash", "lostRealEq", "lostRealSet", "useKept2", "useBuilt", "lostRemoveAll"))
+                    "lostRealHash", "lostRealEq", "lostRealSet", "useKept2", "useBuilt", "lostRemoveAll",
+                    "setRemoveAllArg", "setEqualsArg", "listRemoveAllRecv"))
                 assertTrue(inf(r, "px.P." + fn).contains("Fs"), fn + " performs Fs (executed); got " + r.get("px.P." + fn));
         } finally {
             t.close();

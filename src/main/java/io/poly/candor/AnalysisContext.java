@@ -275,20 +275,10 @@ final class AnalysisContext {
     final Map<String, TreeSet<String>> argContractDirect = new HashMap<>();
     final Map<String, TreeSet<String>> argContractPass = new HashMap<>();
     final Map<String, TreeSet<String>> argContractSites = new HashMap<>();
-    /** R1166 — fn -> {@code "key\ttype\texact"}: a CHAINED dependency's contract key this unit's call resolved
-     *  to project bodies over an argument of that type (ArgContract#depSite). Edged after the loop, so the
-     *  edge can target the receiver-specialised body (ArgContract#spec). */
-    final Map<String, TreeSet<String>> argContractResolved = new HashMap<>();
-    /** R1166 — fn -> the contract keys its PARAMETERS reach (the parameter-flow closure), published in
-     *  {@code dispatchesOn}. Written once, after the analyze loop, by {@link ArgContract#resolve}. Kept OUT of
-     *  {@link #dispatchDirect} on purpose: that map seeds ⟨0.39⟩'s dispatch REACH (emission and {@code calls}
-     *  of every caller), and a contract key reaching it emitted 58k pure hop rows over the census and made
-     *  consumer lookups HIT rows they used to miss — the R764 trap. */
-    final Map<String, TreeSet<String>> argContractPub = new HashMap<>();
-    /** R1166, consumer side — chained-report entry hash -> its published contract keys. A separate index so a
-     *  row carrying ONLY contract keys never enters {@link #crossDeps}: every reader of that index sees exactly
-     *  what it saw before this mechanism existed. */
-    Map<String, List<String>> depArgContract = new HashMap<>();
+    /** R1166 — fn -> {@code "type\texact"}: a value of a PROJECT type handed to a call into a CHAINED
+     *  dependency (ArgContract#chainWitness). Disclosed after the fixpoint where the type carries an effectful
+     *  override of a contract member. */
+    final Map<String, TreeSet<String>> argContractWitness = new HashMap<>();
     // reflective calls with a LITERAL method name in the same body: a unique project match gets an EDGE
     // alongside the honest Unknown (recall without guessing).
     final List<String[]> reflectPairs = new ArrayList<>();         // [callerId, literalName]
@@ -459,7 +449,6 @@ final class AnalysisContext {
         depCoveredPkgs = master.depCoveredPkgs;             depChainedPkgs = master.depChainedPkgs;
         depCallsByFn = master.depCallsByFn;                 depWhyByFn = master.depWhyByFn;
         depDispatchByFn = master.depDispatchByFn;           depTransDispatchMemo = master.depTransDispatchMemo;
-        depArgContract = master.depArgContract;   // SOUNDNESS R1166: a shared INPUT, filled only by loadCrossDeps
         depSupers = master.depSupers;                       depSplitKnown = master.depSplitKnown;
         depSuperclass = master.depSuperclass;               classHash = master.classHash;
         depIndexed = master.depIndexed;                     depSubtypes = master.depSubtypes;   // R867

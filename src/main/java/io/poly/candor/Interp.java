@@ -446,8 +446,12 @@ final class Interp {
                 // A CHECKCAST is the SAME value with a narrower static type — the acquisition it came from
                 // is unchanged, so R147's origin must survive it (`(InputStream) obj` after a socket get).
                 // …and so must R1052(a)'s URL origin: `(URL) e.nextElement()`, `(JarURLConnection) u.openConnection()`.
+                // …and so must R236's null: `(XactId) null` is still the null constant, and SOUNDNESS R1166 read it
+                // as a value of type XactId and resolved `XactId.equals` on it (derby `Xact.<init>`; a dispatch on
+                // null never runs a body). nullConst only ever SUPPRESSES, so keeping it can only withdraw a charge
+                // or hedge made over a value that is provably null.
                 return b == null ? null : new ProvValue(b, null, false, dt, null, null, value.originEffects,
-                        value.samForwarder, false, null, null, value.urlOrigin);
+                        value.samForwarder, value.nullConst, null, null, value.urlOrigin);
             }
             return wrap(b, null, dt);
         }

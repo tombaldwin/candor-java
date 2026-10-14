@@ -110,9 +110,6 @@ class ArgContractR1166Test {
     }
 
     static final List<String> EFFECTFUL = List.of("eqW", "hashW", "strW", "cmpW", "iterW", "nextW", "wrapW", "sinkW", "recurW");
-    /** Chained, the wire names the member but not the parameter: `rec(new Weq(), "s", 3)` passes two
-     *  candidate receivers with different bodies, so it is DISCLOSED rather than resolved (property 3). */
-    static final List<String> EFFECTFUL_CHAINED = List.of("eqW", "hashW", "strW", "cmpW", "iterW", "nextW", "wrapW", "sinkW");
     static final List<String> PURE_OBJECT = List.of("eqP", "hashP", "strP", "cmpP", "jdkArg");
 
     static Map<String, String> app(boolean withFiller) {
@@ -147,8 +144,10 @@ class ArgContractR1166Test {
             for (String fn : PURE_OBJECT) assertPure(r, fn, "a PURE override (or a JDK argument) must add nothing");
             assertPure(r, "heldW", "the library dispatches on a FIELD, not on the parameter the caller supplied,"
                     + " so the caller's type is not the receiver");
-            assertPure(r, "wideDecl", "a DECLARED type naming two bodies is the open dispatch §4 leaves"
-                    + " unresolved; resolving it to the CHA union is the measured smear (9,551 census rows)");
+            // a DECLARED type naming two bodies is not resolved (the CHA union was the measured smear, 9,551 census
+            // rows) — but one of them writes a file, so the caller DISCLOSES rather than staying silent
+            List<String> wd = inferred(r, "wideDecl");
+            assertTrue(wd != null && !wd.contains("Fs") && wd.contains("Unknown"), "wideDecl; got " + wd);
             assertPure(r, "exactJdk", "a provable `new ArrayList` is not its effectful project subclass LoudList");
             assertPure(r, "asymW", "`\"s\".equals(weq)` runs String.equals — the effectful type is the ARGUMENT,"
                     + " not the receiver");
@@ -167,8 +166,12 @@ class ArgContractR1166Test {
         try {
             String lib = t.scan("glib");
             Map<String, Map<String, Object>> r = byFn(t.scanChained("app", lib));
-            for (String fn : List.of("eqP", "hashP", "strP", "cmpP", "iterP", "nextP", "jdkArg", "heldW"))
+            // a project value whose overrides are all PURE discloses nothing; one with an effectful override
+            // (heldW hands a Weq to a method that never calls its equals) is DISCLOSED, never charged
+            for (String fn : List.of("eqP", "hashP", "strP", "cmpP", "iterP", "nextP", "jdkArg"))
                 assertPure(r, fn, "must stay pure chained");
+            List<String> held = inferred(r, "heldW");
+            assertTrue(held != null && !held.contains("Fs") && held.contains("Unknown"), "got " + held);
         } finally {
             t.close();
         }
@@ -196,30 +199,30 @@ class ArgContractR1166Test {
         try {
             String lib = t.scan("glib");
             Map<String, Map<String, Object>> r = byFn(t.scanChained("app", lib));
-            for (String fn : EFFECTFUL_CHAINED) {
+            // DISCLOSED, not charged: the dependency's report has no spelling for a JDK-owned member (SPEC §4,
+            // the deferred stdlib-requirement rung), so `deny Fs Unknown` is the gate that moves (0 -> 1).
+            for (String fn : EFFECTFUL) {
                 List<String> inf = inferred(r, fn);
-                assertTrue(inf != null && inf.contains("Fs"), fn + " chained; got " + inf);
+                assertTrue(inf != null && inf.contains("Unknown") && !inf.contains("Fs"), fn + " chained; got " + inf);
+                @SuppressWarnings("unchecked")
+                List<String> why = (List<String>) r.get("app.Main." + fn).get("unknownWhy");
+                assertTrue(why != null && why.stream().anyMatch(w -> w.startsWith("dispatch:java.")), fn + " why " + why);
             }
-            List<String> rec = inferred(r, "recurW");
-            assertTrue(rec != null && rec.contains("Unknown"), "two candidate receivers, one of them effectful:"
-                    + " disclosed, never silent; got " + rec);
         } finally {
             t.close();
         }
     }
 
     @Test
-    void theLibraryNamesTheMemberOnlyWhereItsParameterIsTheReceiver() throws Exception {
+    void theLibraryPublishesNoJdkOwnedKey() throws Exception {
         Tree t = Tree.of(Map.of("glib/G.java", LIB));
         try {
             Map<String, Map<String, Object>> r = byFn(t.scan("glib"));
-            assertEquals(List.of("java/lang/Object.equals(Ljava/lang/Object;)Z"), r.get("glib.G.same").get("dispatchesOn"));
-            assertEquals(List.of("java/lang/Object.toString()Ljava/lang/String;"), r.get("glib.G.viaSink").get("dispatchesOn"));
-            assertTrue(r.get("glib.G.count") != null
-                    && ((List<?>) r.get("glib.G.count").get("dispatchesOn")).contains("java/lang/Iterable.iterator()Ljava/util/Iterator;"),
-                    "got " + r.get("glib.G.count"));
-            assertNull(r.get("glib.G.notParam"), "a dispatch on a FIELD names nothing; got " + r.get("glib.G.notParam"));
-            assertEquals(List.of(), r.get("glib.G.same").get("inferred"), "a name, never a charge");
+            for (var row : r.values()) {
+                Object d = row.get("dispatchesOn");
+                assertTrue(d == null || ((List<?>) d).stream().noneMatch(k -> k.toString().startsWith("java/")),
+                        "no java.*-owned dispatchesOn key on the wire (SPEC §4 forbids the invented spelling); got " + row);
+            }
         } finally {
             t.close();
         }
@@ -266,6 +269,20 @@ class ArgContractR1166Test {
             + "  public static void listAddHash() { G.keepL(new ArrayList<>(), new Whash()); }\n"
             + "  public static void listContainsHash() { sink = G.hasL(new ArrayList<>(List.of(\"z\")), new Whash()); }\n"
             + "  public static void directListAdd() { new ArrayList<Object>().add(new Weq()); }\n"
+            + "  public static void lostRealHash() { List<Object> l = new ArrayList<>(); l.add(new Whash()); sink = l.hashCode(); }\n"
+            + "  public static void lostRealEq() { List<Object> l = new ArrayList<>(); l.add(new Weq()); sink = l.equals(List.of(1)); }\n"
+            + "  public static void lostRealSet() { List<Object> l = new ArrayList<>(); l.add(new Whash()); sink = new HashSet<>(l); }\n"
+            + "  public static void lostFalse() { List<Object> l = new ArrayList<>(); l.add(new Whash()); sink = l.size(); }\n"
+            + "  static List<Object> kept = new ArrayList<>();\n"
+            + "  public static void lostEscape() { kept.add(new Whash()); }\n"
+            + "  private static final List<Object> kept2 = new ArrayList<>();\n"
+            + "  public static void addKept2() { kept2.add(new Whash()); }\n"
+            + "  public static void useKept2() { sink = kept2.hashCode(); }\n"
+            + "  static List<Object> build() { List<Object> l = new ArrayList<>(); l.add(new Whash()); return l; }\n"
+            + "  public static void useBuilt() { sink = Collections.unmodifiableList(build()).hashCode(); }\n"
+            + "  public static void dropBuilt() { sink = build().size(); }\n"
+            + "  static List<Object> opts() { List<Object> l = new ArrayList<>(); l.add(new Weq()); return Collections.unmodifiableList(l); }\n"
+            + "  public static void lostRemoveAll() { List<Object> r = new ArrayList<>(List.of(new Weq())); r.removeAll(opts()); }\n"
             + "  public static void cfgReg() { G.reg(new Cfg(), new Wstr()); }\n"
             + "  public static void boxedNumber() { sink = G.str(num()); }\n"
             + "  public static void asListIt() { sink = G.count(Arrays.asList(\"a\", \"b\")); }\n"
@@ -309,9 +326,14 @@ class ArgContractR1166Test {
         try {
             Map<String, Map<String, Object>> r = byFnAll(t.scanAll());
             for (String fn : List.of("listAdd", "listAddHash", "listContainsHash", "directListAdd", "cfgReg",
+                    "lostFalse", "lostEscape", "dropBuilt",
                     "boxedNumber", "asListIt", "declBaseF", "ctxSmear", "superEq", "passSmear", "refSmear", "ownSmear"))
                 assertTrue(!inf(r, "px.P." + fn).contains("Fs"), fn + " never performs Fs (executed); got " + r.get("px.P." + fn));
-            for (String fn : List.of("ctxReal", "objEqW", "realMyList", "passReal", "refReal", "ownReal"))
+            // a list runs its ELEMENTS' contracts later (`l.hashCode()`, `l.equals(..)`, `new HashSet<>(l)`,
+            // `r.removeAll(c)`), across a field and a helper's return too — all executed by an independent removal
+            // audit, each writing a file. ElementFlow models that path; `add` itself charges nothing.
+            for (String fn : List.of("ctxReal", "objEqW", "realMyList", "passReal", "refReal", "ownReal",
+                    "lostRealHash", "lostRealEq", "lostRealSet", "useKept2", "useBuilt", "lostRemoveAll"))
                 assertTrue(inf(r, "px.P." + fn).contains("Fs"), fn + " performs Fs (executed); got " + r.get("px.P." + fn));
         } finally {
             t.close();
@@ -341,8 +363,29 @@ class ArgContractR1166Test {
                     + " Phash's: never charge it; got " + r.get("xa.M.crossArg"));
             assertTrue(inf(r, "xa.M.crossArgRight").contains("Unknown"), "the wire does not name the parameter,"
                     + " so a real Whash.hashCode is disclosed, never silent; got " + r.get("xa.M.crossArgRight"));
-            assertTrue(inf(r, "xa.M.chainKeep").isEmpty(), "List.add calls neither equals nor hashCode; got "
+            assertTrue(!inf(r, "xa.M.chainKeep").contains("Fs"), "List.add calls neither equals nor hashCode; got "
                     + r.get("xa.M.chainKeep"));
+        } finally {
+            t.close();
+        }
+    }
+
+    /** The JVM resolves the whole superclass chain before an interface default: `Ctx2 extends LinkedHashMap
+     *  implements CView` runs LinkedHashMap.forEach, never CView's default (executed: no file). */
+    @Test
+    void aJdkSuperclassBodyBeatsAProjectInterfaceDefault() throws Exception {
+        StringBuilder b = new StringBuilder("package pj;\nimport java.util.*; import java.util.function.*;\n"
+                + "final class Sink { static void w() { try { java.nio.file.Files.writeString(java.nio.file.Path.of(\"/nonexistent-r1166/j\"), \"x\"); } catch (Exception e) {} } }\n"
+                + "interface CView { default void forEach(BiConsumer<? super String, ? super String> a) { Sink.w(); } }\n"
+                + "final class Ctx2 extends LinkedHashMap<String, String> implements CView { }\n"
+                + "final class G { static <K, V> void each(Map<K, V> m) { m.forEach((k, v) -> { }); } }\n"
+                + "public class M { public static void jdkWins() { G.each(new Ctx2()); } }\n");
+        for (int i = 0; i < 14; i++)   // past the bound, so the callee's own Map.forEach CHA is dropped
+            b.append("final class F").append(i).append(" extends HashMap<String,String> { public void forEach(BiConsumer<? super String, ? super String> a) { } }\n");
+        Tree t = Tree.of(Map.of("pj/M.java", b.toString()));
+        try {
+            Map<String, Map<String, Object>> r = byFn(t.scanAll());
+            assertTrue(!inf(r, "pj.M.jdkWins").contains("Fs"), "got " + r.get("pj.M.jdkWins"));
         } finally {
             t.close();
         }

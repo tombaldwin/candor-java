@@ -460,13 +460,6 @@ final class Refresh {
             sb.append(e.getKey()).append('=').append(new TreeSet<>(e.getValue())).append('\u0001');
             if (sb.length() > 1 << 16) digest.feed(sb);
         }
-        // SOUNDNESS R1166: the dependency's argument-contract keys, read during per-class analyze by
-        // ArgContract#depSite and held OUT of `crossDeps`, so nothing above covers them.
-        sb.append("depargcontract");
-        for (var e : new TreeMap<>(c.depArgContract).entrySet()) {
-            sb.append(e.getKey()).append('=').append(new TreeSet<>(e.getValue())).append('\u0001');
-            if (sb.length() > 1 << 16) digest.feed(sb);
-        }
         sb.append(new TreeSet<>(c.depCoveredPkgs)).append('\u0001')
           .append(new TreeSet<>(c.depChainedPkgs)).append('\u0001')
           .append(new TreeMap<>(c.depSupers)).append('\u0001')

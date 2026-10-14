@@ -14,21 +14,27 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   count(Iterable<T> it)` to `Iterable.iterator`. With the generic in a CHAINED library, a caller passing a
   type whose `equals`/`hashCode`/`toString`/`compareTo`/`Iterable.iterator`/`Iterator.next` wrote a file was
   ABSENT (executed, all six); in one tree past twelve overrides the four Object-protocol callers were ABSENT.
-  A method that dispatches such a member (the §4 Object protocol, or an interface member of a `java.*` κ
-  owner) on its own PARAMETER is now a re-entry sink for that parameter: the caller is charged the override
-  of the type it passes where that type names ONE body (a provable `new T`, or a project declared type all of
-  whose runtime types resolve to one body). The resolved body is analysed for the receiver the resolution
-  established (a specialised copy), so a `this`-call inside it no longer fans out over sibling subclasses.
-  Across a chain the library names the member in `dispatchesOn` (existing field and spelling) on rows whose
-  parameters reach it; where the consumer passes more than one candidate receiver with different bodies the
-  join is DISCLOSED as `Unknown` (`dispatch:`), never charged to the wrong argument.
-- ⚠ **The equals/hashCode re-entry table now follows the JDK (R1166).** A list `add` no longer charges its
-  argument's `equals`/`hashCode`, and a list lookup (`contains`/`indexOf`/`remove`) charges `equals` only;
-  hashed and unknown sets/maps still charge both. `Objects.equals(a, b)` and `Objects.hashCode(o)` are
-  added. A list `add`/lookup removing these charges REMOVES over-charges 0.40.9 made (every removed edge was
-  attributed to a list call in the caller's bytecode and every lost row reproduced by those edges alone).
-  The parameterized-logging name rule no longer makes a PARAMETER contract for a project's own method
-  (`Cfg.config(Object)`) or a non-logger owner; the call-site re-entry it already made is unchanged.
+  In ONE TREE a method that dispatches such a member (the §4 Object protocol, or an interface member of a
+  `java.*` κ owner) on its own PARAMETER is now a re-entry sink for that parameter: the caller is charged the
+  override of the type it passes where that type names ONE body (a provable `new T`, or a project declared
+  type all of whose runtime types resolve to one body), analysed for that receiver (a specialised copy, so a
+  `this`-call inside it does not fan out over sibling subclasses). Where the type cannot name one body and
+  admits an effectful override, the call is disclosed `Unknown` (`dispatch:<owner>.<member>`). ACROSS A CHAIN
+  nothing new is published (no `dispatchesOn` key for a JDK-owned member): a call into a chained dependency
+  passing a project type whose override of one of these members carries a concrete effect is disclosed
+  `Unknown` with the same reason — the six executed chained callers now fail `deny Fs Unknown`.
+- ⚠ **The equals/hashCode re-entry table now follows the JDK, and a collection runs its elements'
+  contracts (R1166).** A list `add` no longer charges its argument's `equals`/`hashCode`, and a list lookup
+  (`contains`/`indexOf`/`remove`) charges `equals` only; hashed and unknown sets/maps still charge both, and
+  `Objects.equals(a, b)`/`Objects.hashCode(o)` are added. What the `add` charge used to stand in for is now
+  modelled on its real path: a collection's `hashCode`/`equals`, `removeAll`/`retainAll`/`containsAll`, and a
+  hashed collection built from it (`new HashSet<>(l)`, `addAll`) charge the `equals`/`hashCode` of the element
+  types added to it — through a local, a field, a helper's return, a JDK wrapper and a declared element type.
+  The parameterized-logging name rule no longer makes a PARAMETER contract for a project's own method or a
+  non-logger owner; the call-site re-entry it already made is unchanged.
+- **A method resolved on an exact type runs the JVM's body:** a JDK superclass's method is chosen before a
+  project interface's default (`class C extends LinkedHashMap implements View` runs `LinkedHashMap.forEach`).
+- **A `checkcast` keeps a null constant null** (`(T) null` is still null for the argument contract).
 
 ## [0.40.9] — 2026-10-13
 

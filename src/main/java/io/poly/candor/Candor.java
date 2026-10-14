@@ -407,6 +407,9 @@ public class Candor {
         classifySourceScope();
         phase("classify-scope");
         Map<String, EffectSet> fx = fixpoint();
+        // SOUNDNESS R1166 — where the argument contract cannot resolve, it discloses; whether a body carries a
+        // concrete effect is a fixpoint fact, so the disclosure is decided here and propagated by a second pass.
+        if (ArgContract.postFixpoint(fx)) fx = fixpoint();
         // SOUNDNESS R1166 — a receiver-specialised copy (ArgContract#spec) is a node of the propagation, not a
         // unit: its effects are already in its callers', so it leaves the result here and every report reads
         // only real units. `ctx().edges` keeps it, so the per-function surfaces still flow through it.
@@ -5690,8 +5693,12 @@ public class Candor {
             }
             // The KEY/element argument — for Map.* it is the FIRST arg (the key); for the collection verbs
             // it is the lone element arg. Reenter exactly the contracts the JDK call runs on it (R1166).
+            // The KEY/element argument — for Map.* it is the FIRST arg (the key); for the collection verbs it is
+            // the lone element arg. Reenter exactly the contracts the JDK call runs on it (SOUNDNESS R1166). A list
+            // `add` runs neither: what it used to charge here (`w.equals`, `w.hashCode`) was the only cover for the
+            // list LATER running them — `l.hashCode()`, `new HashSet<>(l)`, `r.removeAll(c)` — and ElementFlow now
+            // models that real path instead of the false one.
             List<String> ehc = equalsHashContracts(min.owner, min.name, min.desc);
-            // `Objects.equals/hashCode` are resolved by ArgContract's one-body rule, not here (R1166).
             if (!ehc.isEmpty() && !min.owner.equals("java/util/Objects")) {
                 ProvValue key = callArg(rf, min, 0);
                 for (String c : ehc) reentryEdgeOrDisclose(id, key, c);
@@ -7482,7 +7489,7 @@ public class Candor {
                 // rung ends up shipped-but-inert in half the places it matters.
                 inheritDepFn(id, inh);
             }
-            ArgContract.depSite(ctx, s, min);                               // SOUNDNESS R1166
+            ArgContract.chainWitness(ctx, s, min, inh);                     // SOUNDNESS R1166
             // SOUNDNESS R867 — the dependency's OWN hierarchy, walked DOWN to its subtypes' overrides (and,
             // for a provably-typed receiver, to the one body that type runs). Additive: it only ever calls
             // `inheritDepFn` / adds an `Unknown`, so nothing joined above can be withdrawn by it. See
@@ -8202,10 +8209,6 @@ public class Candor {
         Set<String> followed = seen == null ? new HashSet<>() : seen;
         for (String key : members) {
             if (!followed.add(key)) continue;
-            // SOUNDNESS R1166 — an Object-protocol / κ-interface key is joined over the ARGUMENTS at the call
-            // site (ArgContract#depSite), never unioned over every implementer here: that union over
-            // `Object.equals` is the 87% smear §4's exemption exists to avoid.
-            if (ArgContract.isArgTypedKey(key)) continue;
             // CONTRIBUTOR 1 — every chained entry carrying this key. `crossDeps` has already UNIONED the
             // contributions of every report that published it (DepFn#unionWith), so one lookup is the union.
             DepFn union = c.crossDeps.get(key);
@@ -10321,11 +10324,11 @@ public class Candor {
 
     /** equals/hashCode-reentry sinks: which of {@code equals}/{@code hashCode} a JDK collection call runs on its
      *  KEY/element argument (always argument 0), or empty. SOUNDNESS R1166 — READ FROM THE JDK'S DOCUMENTED
-     *  BEHAVIOUR, NOT BY OWNER FAMILY. This used to be one boolean over a single owner list, so every member it
-     *  named ran BOTH contracts, and `add` was on it for lists: `new ArrayList<>().add(w)` was charged
-     *  `w.equals` and `w.hashCode`, which ArrayList.add never calls, and `list.contains(w)` was charged
-     *  `w.hashCode`, which a list never computes. An independent javap checker attributed ~7,700 fabricated
-     *  edges in the census to `List.add` once R1166 made it a parameter contract. The table now says:
+     *  BEHAVIOUR, NOT BY OWNER FAMILY. The old
+     *  one-boolean table named every member as running both, and `add` on a list — as a parameter CONTRACT that made
+     *  a method that merely stores its parameter "dispatch equals and hashCode on it" (an independent javap checker
+     *  attributed ~7,700 fabricated edges to that), and at a call site it was the only cover for the list LATER
+     *  running them, which {@link ElementFlow} now models. This table:
      *  <ul>
      *    <li>a LIST lookup ({@code contains}/{@code indexOf}/{@code lastIndexOf}/{@code remove(Object)}) runs
      *        {@code equals} only; a list {@code add} runs neither;</li>
@@ -10334,15 +10337,8 @@ public class Candor {
      *    <li>{@code Objects.equals(a, b)} runs {@code a.equals(b)}; {@code Objects.hashCode(o)} runs
      *        {@code o.hashCode()} (the R1166 sibling: both were absent from the table).</li>
      *  </ul> */
-    static final boolean R1166_OLD_LIST_TABLE = System.getenv("CANDOR_R1166_ATTRIB_OLD_LIST_TABLE") != null;
     static List<String> equalsHashContracts(String owner, String name, String desc) {
         boolean objArg0 = desc != null && desc.startsWith("(Ljava/lang/Object;");
-        // ATTRIBUTION INSTRUMENT, not a feature: the pre-R1166 list rows, so a corpus A/B can say which of
-        // its removals this table made (`bin/corpus-ab.py`, the R1166 removal accounting).
-        if (R1166_OLD_LIST_TABLE && (owner.equals("java/util/List") || owner.equals("java/util/ArrayList")
-                || owner.equals("java/util/LinkedList")))
-            return name.equals("contains") || name.equals("add") || name.equals("remove")
-                    || name.equals("indexOf") || name.equals("lastIndexOf") ? List.of(C_EQUALS, C_HASHCODE) : List.of();
         switch (owner) {
             case "java/util/List": case "java/util/ArrayList": case "java/util/LinkedList":
                 return (name.equals("contains") || name.equals("indexOf") || name.equals("lastIndexOf")

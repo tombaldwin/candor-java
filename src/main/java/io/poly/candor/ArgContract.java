@@ -46,14 +46,14 @@ import org.objectweb.asm.tree.analysis.Frame;
  * a union over every consumer implementor of {@code Object.equals} or {@code Iterator.next} is the
  * kotlinx 87%-smear the exemption exists to avoid.
  *
- * <p><b>Across a chain, no new wire.</b> The producer names the member in {@code dispatchesOn}, in the
- * spelling every key there already uses (the owner's entry hash; the Object protocol normalised to its
- * declaring owner), on each row whose PARAMETERS reach it — the parameter-flow closure, so the consumer reads
- * it off the row it joins and walks nothing. These keys are kept out of ⟨0.39⟩'s machinery on both sides:
- * the producer does not let them seed the dispatch reach ({@code ReportWriter}), and the consumer moves them
- * into {@link AnalysisContext#depArgContract} before any admission decision reads {@code dispatchesOn}
- * ({@code Loader}), so a row carrying only these keys is not a {@code crossDeps} HIT — the R764 trap,
- * measured here before it was closed: emitted pure rows deleted 20 chained consumers' charges.
+ * <p><b>Across a chain: a disclosure, not a join.</b> ⟨0.39⟩ {@code dispatchesOn} has no spelling for a
+ * JDK-owned member, and the producer cannot know the consumer's types, so nothing new goes on the wire and
+ * the library publishes no key for these members. The CONSUMER discloses instead: a call into a chained
+ * dependency that passes an argument of a project type whose override of one of these members carries a
+ * concrete effect the caller does not already have is {@code Unknown} with reason
+ * {@code dispatch:<owner>.<member>} ({@link #chainWitness}, {@link #postFixpoint}) — the rust R1165 / swift
+ * R974(a) shape. The same disclosure covers a one-tree call the one-body rule cannot narrow (WIDE): a
+ * {@code java.*} or multi-body declared argument type admitting an effectful override.
  *
  * <p><b>The four properties an independent javap audit of the first cut required</b> (auditagent-r1166):
  * <ol>
@@ -62,18 +62,21 @@ import org.objectweb.asm.tree.analysis.Frame;
  *       {@link Candor#isLoggerOwner};</li>
  *   <li>a declared type names ONE body only when every runtime type it admits is counted, Object's and the
  *       JDK's bodies included; a {@code java.*} declared type never does ({@link #bodiesFor});</li>
- *   <li>a chained join charges only an argument that can be the receiver, and where the wire cannot say
- *       which, DISCLOSES {@code Unknown} rather than charging the wrong one ({@link #depSite});</li>
+ *   <li>across a chain nothing is charged to an argument the wire cannot place; the call is DISCLOSED
+ *       {@code Unknown} where an argument's type has an effectful override ({@link #chainWitness});</li>
  *   <li>the resolved body runs on the receiver the resolution established: the caller is edged to a
  *       specialised copy whose calls on that receiver — directly, through a bound method reference, or
  *       handed to a helper — and whose own resolutions over it are re-resolved for its type ({@link #spec}).</li>
  * </ol>
  *
- * <p><b>Direction.</b> Adds edges and dependency inheritance (a resolution), and one disclosure: the chained
- * ambiguous join. Property 1 REMOVES pre-existing over-charges of the older re-entry table.
+ * <p><b>Direction.</b> One tree: adds edges (a resolution). Across a chain and at WIDE sites: adds
+ * {@code Unknown} (a disclosure). Property 1 REMOVES pre-existing over-charges of the older table — a list
+ * {@code add} no longer charges its element's equals/hashCode — and {@link ElementFlow} restores the REAL
+ * path those charges stood in for: the collection itself running its elements' contracts later
+ * ({@code l.hashCode()}, {@code new HashSet<>(l)}, {@code r.removeAll(c)}).
  *
- * <p><b>Residuals, stated.</b> A value the library STORES and later dispatches on (a field, a container) is
- * not a parameter receiver and is not followed; nor is the iterator an {@code Iterable.iterator} RETURNS
+ * <p><b>Residuals, stated.</b> A value the library STORES and later dispatches on (a field) is not a
+ * parameter receiver and is not followed, except a collection's elements ({@link ElementFlow}); nor is the iterator an {@code Iterable.iterator} RETURNS
  * (its {@code next} runs on a derived value). A virtual project callee with a broad fan-out passes no
  * parameter flow. CHA past the resolved body on a value that is NOT the resolved receiver (a field, another
  * parameter) is the engine's ordinary over-approximation and is not narrowed here.
@@ -103,17 +106,6 @@ final class ArgContract {
         return slash > 0 && Candor.kappaCovers(owner.substring(0, slash).replace('/', '.'));
     }
 
-    /** A {@code dispatchesOn} key this mechanism owns — read by the consumer to route the key here rather than
-     *  into ⟨0.39⟩'s union. The same predicate as {@link #isContractMember}, read off the key. */
-    static boolean isArgTypedKey(String key) {
-        int paren = key.indexOf('(');
-        int dot = paren < 0 ? -1 : key.lastIndexOf('.', paren);
-        if (dot <= 0) return false;
-        String owner = key.substring(0, dot), name = key.substring(dot + 1, paren), desc = key.substring(paren);
-        if (Candor.isObjectProtocolExempt(name, desc)) return true;
-        return isKappaOwner(ctx(), owner);
-    }
-
     /** The key, with the Object protocol normalised to its DECLARING owner so {@code s.equals(x)} on a
      *  {@code List} and on an {@code Object} are one key, not two. */
     static String key(String owner, String name, String desc) {
@@ -139,33 +131,25 @@ final class ArgContract {
         // (1) the body dispatches a contract member on its own parameter
         if (isContractMember(c, op, min.owner, min.name, min.desc)) {
             int p = Candor.paramIndexOf(s.mn, Candor.receiverProv(f, min), f0);
-            if (p >= 0) direct(c, s.id, p, key(min.owner, min.name, min.desc));
+            if (p >= 0) direct(c, s.id, p, key(min.owner, min.name, min.desc), min);
         }
         // (2) …or hands its parameter to a JDK re-entry sink — the same table Candor#contractReentry reads
         if (Candor.isToStringContractSink(min.owner, min.name, min.desc)
                 && !(min.owner.equals("java/lang/String") && min.name.equals("format"))) {
             for (ProvValue a : Candor.callArgs(f, min)) {
                 int p = Candor.paramIndexOf(s.mn, a, f0);
-                if (p >= 0) direct(c, s.id, p, TOSTRING);
+                if (p >= 0) direct(c, s.id, p, TOSTRING, min);
             }
         }
         List<String> ehc = Candor.equalsHashContracts(min.owner, min.name, min.desc);
         if (!ehc.isEmpty()) {
             ProvValue a0 = Candor.callArg(f, min, 0);
             int p = Candor.paramIndexOf(s.mn, a0, f0);
-            if (p >= 0) for (String con : ehc) direct(c, s.id, p, con.equals(Candor.C_EQUALS) ? EQUALS : HASHCODE);
-            else if (min.owner.equals("java/util/Objects") && a0 != null && !a0.nullConst && !a0.fromIndy) {
-                // the R1166 sibling, resolved by THIS mechanism's one-body rule (not by the older re-entry CHA
-                // union, which over a declared Map/Collection charged every project implementer)
-                String t = typeOf(c, a0);
-                if (t != null) for (String con : ehc)
-                    c.argContractResolved.computeIfAbsent(s.id, x -> new TreeSet<>()).add(
-                            (con.equals(Candor.C_EQUALS) ? EQUALS : HASHCODE) + "\t" + t + "\t" + (a0.newType != null ? 1 : 0));
-            }
+            if (p >= 0) for (String con : ehc) direct(c, s.id, p, con.equals(Candor.C_EQUALS) ? EQUALS : HASHCODE, min);
         }
         if (Candor.isCompareToSink(min.owner, min.name) && Candor.comparesArgZero(min.owner, min.name)) {
             int p = Candor.paramIndexOf(s.mn, Candor.callArg(f, min, 0), f0);
-            if (p >= 0) direct(c, s.id, p, COMPARETO);
+            if (p >= 0) direct(c, s.id, p, COMPARETO, min);
         }
         // (3) a PROJECT callee: record where each argument came from, resolved after the loop
         List<String> callees = projectCallees(c, min, f);
@@ -179,6 +163,7 @@ final class ArgContract {
             if (p >= 0) {
                 for (String n : callees)
                     c.argContractPass.computeIfAbsent(s.id, k -> new TreeSet<>()).add(p + "\t" + n + "\t" + j);
+                if (DEBUG_EDGES) for (String n : callees) System.err.println("R1166PASS\t" + s.id + "\t" + p + "\t" + n + "\t" + j);
                 continue;
             }
             String t = typeOf(c, v);
@@ -202,8 +187,9 @@ final class ArgContract {
         return t;
     }
 
-    private static void direct(AnalysisContext c, String id, int p, String key) {
+    private static void direct(AnalysisContext c, String id, int p, String key, MethodInsnNode via) {
         c.argContractDirect.computeIfAbsent(id, k -> new TreeSet<>()).add(p + "\t" + key);
+        if (DEBUG_EDGES) System.err.println("R1166DIRECT\t" + id + "\t" + p + "\t" + key + "\t" + via.owner + "." + via.name + via.desc);
     }
 
     /** The project bodies a call can land on, for parameter flow. A broad virtual fan-out contributes none. */
@@ -227,81 +213,121 @@ final class ArgContract {
         return cha.size() <= Rules.CHA_FANOUT_LIMIT ? cha : List.of();
     }
 
-    /** A call into a CHAINED dependency unit: the contract members its row publishes (already closed over its
-     *  parameter flow by the producer), joined over the arguments passed here. A parameter passed on makes THIS
-     *  unit publish the member in turn. Keyed by the call's own hash, the ordinary join key.
-     *
-     *  <p><b>Only the argument that reaches the dispatch.</b> The wire names the member, not the parameter, so
-     *  for each key every argument is a CANDIDATE receiver. The join resolves only when the candidates agree —
-     *  every argument whose type can run the member resolves to the same bodies — and otherwise resolves
-     *  nothing (the pre-R1166 answer). Measured without this: {@code f(a,b){ a.hashCode(); }} called as
-     *  {@code f(new Phash(), new Whash())} charged {@code Whash.hashCode}, which never runs. */
-    static void depSite(AnalysisContext c, Candor.MethodScan s, MethodInsnNode min) {
-        if (s.provFrames == null || c.depArgContract.isEmpty()) return;
-        List<String> keys = c.depArgContract.get(min.owner + "." + min.name + min.desc);
-        if (keys == null || keys.isEmpty()) return;
-        Frame<ProvValue> f = s.provFrames[s.mn.instructions.indexOf(min)], f0 = s.provFrames[0];
+    /** SOUNDNESS R1166, the CHAINED half — a DISCLOSURE, not a join. A call into a chained dependency that hands
+     *  it a value of a PROJECT type may run that type's override of an Object-protocol or `java.*` κ-interface
+     *  member inside the dependency (`gl.G.same(new Weq(), …)` runs `Weq.equals`; executed). The dependency's
+     *  report cannot say so: ⟨0.39⟩ `dispatchesOn` has no spelling for a JDK-owned member, and inventing one is
+     *  what SPEC §4 forbids (the deferred stdlib-requirement rung). So the caller DISCLOSES
+     *  `Unknown[dispatch:<owner>.<member>]` where the type carries an override with a concrete effect — the shape
+     *  candor-rust R1165 and candor-swift R974(a) take. Recorded here; decided after the fixpoint
+     *  ({@link #postFixpoint}), because "carries a concrete effect" is a fixpoint fact. */
+    static void chainWitness(AnalysisContext c, Candor.MethodScan s, MethodInsnNode min, DepFn inh) {
+        if (s.provFrames == null || min.owner.startsWith("java/") || min.owner.startsWith("javax/")) return;
+        int slash = min.owner.lastIndexOf('/');
+        boolean chained = inh != null && !inh.walkOnly
+                || slash > 0 && c.depChainedPkgs.contains(min.owner.substring(0, slash).replace('/', '.'));
+        if (!chained) return;
+        Frame<ProvValue> f = s.provFrames[s.mn.instructions.indexOf(min)];
         if (f == null) return;
         Type[] at = Type.getArgumentTypes(min.desc);
-        for (String k : keys) {
-            Res agreed = null; String aT = null; boolean aExact = false, ambiguous = false, bodyCandidate = false;
-            for (int j = 0; j < at.length; j++) {
-                if (at[j].getSort() != Type.OBJECT && at[j].getSort() != Type.ARRAY) continue;
-                ProvValue v = Candor.callArg(f, min, j);
-                if (v == null || v.nullConst) continue;
-                int p = Candor.paramIndexOf(s.mn, v, f0);
-                Res r;
-                if (p >= 0) { direct(c, s.id, p, k); r = WIDE; }   // its runtime type is the caller's caller's
-                else r = candidate(c, v, k);
-                if (r == null) continue;                          // cannot be a receiver of this member
-                if (r != WIDE && r != OUTSIDE) bodyCandidate = true;
-                if (r == WIDE) { ambiguous = true; continue; }
-                if (agreed == null) {
-                    agreed = r;
-                    aT = v.newType != null ? v.newType : v.declType;
-                    aExact = v.newType != null;
-                } else if (!agreed.equals(r)) ambiguous = true;
-            }
-            if (ambiguous) {
-                // The member runs on ONE of these arguments and the wire does not say which. Where one of them
-                // would run a body this scan or a chained report can see, that is a dispatch the engine knows
-                // occurs and cannot resolve — SPEC §4's `Unknown`, not silence. Where none would, there is
-                // nothing to disclose that the pre-R1166 answer did not already leave unsaid.
-                if (bodyCandidate) {
-                    s.dir.add(Effect.UNKNOWN);
-                    int paren = k.indexOf('('), dot = k.lastIndexOf('.', paren);
-                    c.unknownWhy.computeIfAbsent(s.id, x -> new TreeSet<>()).add(UnknownReason.of(
-                            UnknownReason.Kind.DISPATCH, k.substring(0, dot).replace('/', '.') + "." + k.substring(dot + 1, paren)));
-                }
-                if (DEBUG) System.err.println("R1166AMBIG\t" + s.id + "\t" + k + "\t" + (bodyCandidate ? "disclosed" : "silent"));
-                continue;
-            }
-            if (agreed == null || agreed == OUTSIDE) continue;
-            if (agreed.dep != null) {
-                Candor.inheritDepFn(s.id, agreed.dep);
-                if (DEBUG) System.err.println("R1166DEP\t" + s.id + "\t" + k + "\t" + agreed.dep.fn);
-            } else {
-                c.argContractResolved.computeIfAbsent(s.id, x -> new TreeSet<>())
-                        .add(k + "\t" + aT + "\t" + (aExact ? 1 : 0));
-            }
+        for (int j = 0; j < at.length; j++) {
+            if (at[j].getSort() != Type.OBJECT) continue;
+            ProvValue v = Candor.callArg(f, min, j);
+            if (v == null || v.nullConst || v.fromIndy) continue;
+            String t = v.newType != null ? v.newType : v.declType;
+            if (t == null || !c.byName.containsKey(t)) continue;
+            c.argContractWitness.computeIfAbsent(s.id, k -> new TreeSet<>()).add(t + "\t" + (v.newType != null ? 1 : 0));
         }
     }
 
-    /** One argument of a chained call, as a CANDIDATE receiver of {@code key}'s member: what it would run,
-     *  {@link #OUTSIDE} for a body outside the scan, {@link #WIDE} when its type does not fix one, or null
-     *  when it cannot be a receiver of the member at all. A JDK-typed value counts: {@code "x".equals(w)}
-     *  runs String's equals, so a String beside a project value makes the join ambiguous. */
-    static Res candidate(AnalysisContext c, ProvValue v, String key) {
-        if (v.fromIndy) return WIDE;
-        String t = v.newType != null ? v.newType : v.declType;
-        if (t == null || t.isEmpty()) return WIDE;
-        int paren = key.indexOf('(');
-        String owner = key.substring(0, key.lastIndexOf('.', paren));
-        boolean objectMember = owner.equals("java/lang/Object");
-        if (t.charAt(0) == '[') return objectMember ? OUTSIDE : null;
-        if (t.equals("java/lang/Object") || t.equals(owner)) return WIDE;
-        if (!objectMember && !isSubtype(c, t, owner)) return null;
-        return bodiesFor(c, key, t, v.newType != null);   // exact JDK -> OUTSIDE, declared JDK/dependency -> WIDE
+    private static final ThreadLocal<List<String[]>> WIDE_SITES = ThreadLocal.withInitial(ArrayList::new);
+    private static final Map<String, List<String[]>> IFACE_MEMBERS = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** The contract members a value of project type {@code t} can run: the Object protocol (compareTo when it is
+     *  Comparable) and the methods of every `java.*` κ-covered interface it implements, as {owner, name, desc}. */
+    static List<String[]> contractMembers(String t) {
+        List<String[]> out = new ArrayList<>();
+        out.add(new String[] {"java/lang/Object", "toString", "()Ljava/lang/String;"});
+        out.add(new String[] {"java/lang/Object", "equals", "(Ljava/lang/Object;)Z"});
+        out.add(new String[] {"java/lang/Object", "hashCode", "()I"});
+        for (String sup : Candor.transSupers(t)) {
+            if (!sup.startsWith("java/")) continue;
+            int slash = sup.lastIndexOf('/');
+            if (!Candor.kappaCovers(sup.substring(0, slash).replace('/', '.'))) continue;
+            out.addAll(IFACE_MEMBERS.computeIfAbsent(sup, ArgContract::jdkInterfaceMembers));
+        }
+        return out;
+    }
+
+    private static List<String[]> jdkInterfaceMembers(String iface) {
+        List<String[]> out = new ArrayList<>();
+        try {
+            Class<?> k = Class.forName(iface.replace('/', '.'), false, ClassLoader.getPlatformClassLoader());
+            if (!k.isInterface()) return out;
+            for (java.lang.reflect.Method m : k.getMethods()) {
+                if (java.lang.reflect.Modifier.isStatic(m.getModifiers()) || m.getDeclaringClass() == Object.class) continue;
+                out.add(new String[] {iface, m.getName(), Type.getMethodDescriptor(m)});
+            }
+        } catch (Throwable e) {
+            // an interface this JVM cannot load names no member here; the disclosure is then not made for it
+        }
+        return out;
+    }
+
+    /** After the fixpoint: the two places a resolution cannot speak — a WIDE argument type in one tree, and a
+     *  project value handed to a chained dependency — DISCLOSE where a body they could run carries a concrete
+     *  effect the caller does not already report. Returns whether any `Unknown` was added (the caller then
+     *  re-runs the fixpoint so it propagates). */
+    static boolean postFixpoint(Map<String, EffectSet> fx) {
+        AnalysisContext c = ctx();
+        boolean added = false;
+        for (String[] w : WIDE_SITES.get()) {
+            String caller = w[0], key = w[1], t = w[2];
+            int paren = key.indexOf('('), dot = key.lastIndexOf('.', paren);
+            String owner = key.substring(0, dot), name = key.substring(dot + 1, paren), desc = key.substring(paren);
+            for (String b : Cha.chaTargets(t, name, desc))
+                if (newConcrete(fx, b, caller)) {
+                    added |= disclose(c, caller, owner, name, "R1166WIDEU", t, b);
+                    break;
+                }
+        }
+        WIDE_SITES.get().clear();
+        for (var e : c.argContractWitness.entrySet()) {
+            String caller = e.getKey();
+            for (String x : e.getValue()) {
+                String t = x.substring(0, x.indexOf('\t'));
+                boolean exact = x.endsWith("\t1");
+                for (String[] m : contractMembers(t)) {
+                    String body = exact ? Cha.monomorphicTarget(t, m[1], m[2]) : null;
+                    List<String> bodies = exact ? (body == null ? List.of() : List.of(body)) : Cha.chaTargets(t, m[1], m[2]);
+                    for (String b : bodies)
+                        if (newConcrete(fx, b, caller)) {
+                            added |= disclose(c, caller, m[0], m[1], "R1166WITNESS", t, b);
+                            break;
+                        }
+                }
+            }
+        }
+        return added;
+    }
+
+    private static boolean newConcrete(Map<String, EffectSet> fx, String body, String caller) {
+        EffectSet be = fx.get(body);
+        if (be == null) return false;
+        EffectSet ce = fx.get(caller);
+        for (var eff : be.effects()) {
+            if (eff == Effect.UNKNOWN) continue;
+            if (ce == null || !ce.contains(eff)) return true;
+        }
+        return false;
+    }
+
+    private static boolean disclose(AnalysisContext c, String caller, String owner, String name, String tag, String t, String b) {
+        UnknownReason r = UnknownReason.of(UnknownReason.Kind.DISPATCH, owner.replace('/', '.') + "." + name);
+        boolean a = c.direct.computeIfAbsent(caller, k -> EffectSet.empty()).add(Effect.UNKNOWN);
+        boolean w = c.unknownWhy.computeIfAbsent(caller, k -> new TreeSet<>()).add(r);
+        if (DEBUG) System.err.println(tag + "\t" + caller + "\t" + owner + "." + name + "\t" + t + "\t" + b);
+        return a || w;
     }
 
     // ---- after the analyze loop: close the parameter flow, then resolve every recorded site -------------
@@ -313,6 +339,7 @@ final class ArgContract {
         PENDING.get().clear();
         BY_CALLER.get().clear();
         try {
+            ElementFlow.run(c);   // a collection's own equals/hashCode/removeAll/... over its elements
             resolveSites(c);
         } finally {
             specialisePending(c);
@@ -321,12 +348,6 @@ final class ArgContract {
     }
 
     private static void resolveSites(AnalysisContext c) {
-        // chained resolutions recorded by depSite, edged now so they can target the specialised body
-        for (var e : c.argContractResolved.entrySet())
-            for (String x : e.getValue()) {
-                String[] a = x.split("\t", 3);   // key, type, exact
-                applyResolved(c, e.getKey(), a[0], a[1], a[2].equals("1"), false);
-            }
         if (c.argContractDirect.isEmpty()) return;
         // fn -> {"p\tkey"}: what each method's parameter p reaches, through any chain of project callees.
         Map<String, Set<String>> reach = new HashMap<>();
@@ -355,20 +376,6 @@ final class ArgContract {
                 }
                 if (grew) work.add(in[0]);
             }
-        }
-        // PUBLISH the closure: each unit names every contract key its parameters reach, so a chained consumer
-        // reads it off the row it joins and needs no walk. NOT for a member of an INTERFACE: ⟨0.23⟩'s ARM 1
-        // publishes a union entry under exactly that hash, and an ordinary row emitted beside it is merged
-        // into it, which withdraws the pure-only marker R919 reads (measured: 154 census rows). Named residual.
-        for (var e : reach.entrySet()) {
-            String owner = ownerOf(c, e.getKey());
-            if (owner == null) continue;
-            ClassNode cn = c.byName.get(owner);
-            if (cn == null || (cn.access & Opcodes.ACC_INTERFACE) != 0) continue;
-            TreeSet<String> keys = new TreeSet<>();
-            for (String pk : e.getValue()) keys.add(pk.substring(pk.indexOf('\t') + 1));
-            c.argContractPub.put(e.getKey(), keys);
-            if (DEBUG) for (String k : keys) System.err.println("R1166PUB\t" + e.getKey() + "\t" + k);
         }
         for (var e : c.argContractSites.entrySet()) {
             String caller = e.getKey();
@@ -425,7 +432,7 @@ final class ArgContract {
         if (exact) {
             // A provable `new T` IS that type: a project T resolves to its one body; an EXTERNAL T
             // (`new ArrayList<>()`) has no project body, and CHA from it would charge every project subclass.
-            String m = c.byName.containsKey(t) ? Cha.monomorphicTarget(t, name, desc) : null;
+            String m = c.byName.containsKey(t) ? jvmTarget(c, t, name, desc) : null;
             if (m != null) return new Res(List.of(m), null);
             DepFn d = Candor.nearestDepOverride(t, name, desc);
             return d == null ? OUTSIDE : new Res(List.of(), d);
@@ -437,13 +444,45 @@ final class ArgContract {
             ClassNode cn = c.byName.get(sub);
             if (cn == null) { outside = true; continue; }
             if ((cn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_INTERFACE)) != 0) continue;
-            String b = Cha.monomorphicTarget(sub, name, desc);
+            String b = jvmTarget(c, sub, name, desc);
             if (b == null) outside = true; else bodies.add(b);
         }
         if (!Cha.samLambdaImplementors(t, name, desc).isEmpty()) outside = true;   // a lambda is a runtime type too
         if (bodies.isEmpty()) return outside ? OUTSIDE : null;
         if (bodies.size() > 1 || outside) return WIDE;
         return new Res(new ArrayList<>(bodies), null);
+    }
+
+    /** The body an instance of exactly {@code t} runs, in the JVM's order: the WHOLE superclass chain before any
+     *  interface default. {@link Cha#monomorphicTarget} walks project classes only, so for a class extending a JDK
+     *  class it answered a project interface's DEFAULT where the JDK superclass declares the method — reactor's
+     *  `ContextN extends LinkedHashMap implements ContextView` resolved `forEach` to `ContextView.forEach`, which
+     *  the JVM never runs (a fabrication the independent checker flagged). Null when the body is outside the scan. */
+    static String jvmTarget(AnalysisContext c, String t, String name, String desc) {
+        String m = Cha.monomorphicTarget(t, name, desc);
+        if (m == null) return null;
+        String h = c.hashOf.get(m);
+        ClassNode owner = h == null ? null : c.byName.get(h.substring(0, h.lastIndexOf('.', h.indexOf('('))));
+        if (owner == null || (owner.access & Opcodes.ACC_INTERFACE) == 0) return m;
+        for (String x = t; x != null; ) {
+            ClassNode cn = c.byName.get(x);
+            if (cn == null) return jdkClassDeclares(x, name, desc) ? null : m;
+            x = cn.superName;
+        }
+        return m;
+    }
+
+    private static boolean jdkClassDeclares(String internal, String name, String desc) {
+        try {
+            for (Class<?> k = Class.forName(internal.replace('/', '.'), false, ClassLoader.getPlatformClassLoader());
+                    k != null && k != Object.class; k = k.getSuperclass())
+                for (java.lang.reflect.Method mm : k.getDeclaredMethods())
+                    if (mm.getName().equals(name) && Type.getMethodDescriptor(mm).equals(desc)
+                            && !java.lang.reflect.Modifier.isAbstract(mm.getModifiers())) return true;
+        } catch (Throwable e) {
+            // a superclass this JVM cannot load: keep the project default (the pre-existing answer)
+        }
+        return false;
     }
 
     /** Edge {@code callerId} to what {@code key} resolves to on {@code t}, through the receiver-specialised
@@ -453,6 +492,7 @@ final class ArgContract {
         if (r == null || r == OUTSIDE) return;
         if (r == WIDE) {
             if (DEBUG) System.err.println("R1166WIDE\t" + callerId + "\t" + key + "\t" + t);
+            WIDE_SITES.get().add(new String[] {callerId, key, t});
             return;
         }
         if (r.dep != null) {

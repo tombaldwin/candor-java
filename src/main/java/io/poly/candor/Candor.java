@@ -5716,6 +5716,8 @@ public class Candor {
                 ProvValue elem = callArg(rf, min, 0);
                 reentryEdge(id, elem, C_COMPARETO, comparesArgZero(min.owner, min.name));
             }
+            // (SOUNDNESS R1179 — a key operation on a container that only MAY be sorted is ElementFlow's: whether
+            // it runs compareTo is a property of the receiver's allocation, which this per-call view cannot see.)
             // WRITER side (R16): constructing a JDK formatting facade over a CUSTOM sink drives
             // the sink's append/write when it formats. `new Formatter(Appendable)` → append;
             // `new PrintWriter(Writer|OutputStream)` / `new PrintStream(OutputStream)` → write.
@@ -10358,6 +10360,49 @@ public class Candor {
                 return List.of();
             default: return List.of();
         }
+    }
+
+    /** SOUNDNESS R1179 — a SORTED container: inserting into it, or looking up in it, runs the argument's
+     *  {@code compareTo} under natural ordering (executed on JDK 21: {@code TreeMap.put} even on an EMPTY map,
+     *  {@code PriorityQueue.add} on a non-empty queue, {@code ConcurrentSkipListSet} copies). */
+    static boolean sortedOwner(String o) {
+        return o.equals("java/util/TreeSet") || o.equals("java/util/TreeMap") || o.equals("java/util/SortedSet")
+                || o.equals("java/util/NavigableSet") || o.equals("java/util/SortedMap") || o.equals("java/util/NavigableMap")
+                || o.equals("java/util/PriorityQueue") || o.equals("java/util/concurrent/PriorityBlockingQueue")
+                || o.equals("java/util/concurrent/ConcurrentSkipListSet") || o.equals("java/util/concurrent/ConcurrentSkipListMap")
+                || o.equals("java/util/concurrent/ConcurrentNavigableMap");
+    }
+    /** A container interface (or abstract base) whose implementation is not known and MAY be sorted — the
+     *  compareTo twin of {@link #equalsHashContracts}'s "a Set/Map/Collection whose implementation is not known
+     *  (it may be hashed)". A {@code Set<T>} parameter handed a {@code new TreeSet<>()} runs its elements'
+     *  {@code compareTo} on {@code add} (executed). */
+    static boolean maySortOwner(String o) {
+        return o.equals("java/util/Set") || o.equals("java/util/Collection") || o.equals("java/util/Map")
+                || o.equals("java/util/Queue") || o.equals("java/util/AbstractSet") || o.equals("java/util/AbstractCollection")
+                || o.equals("java/util/AbstractMap") || o.equals("java/util/AbstractQueue")
+                || o.equals("java/util/concurrent/BlockingQueue") || o.equals("java/util/concurrent/ConcurrentMap");
+    }
+    private static final Set<String> SORTED_KEY_OPS = Set.of("add", "contains", "remove", "put", "putIfAbsent", "get",
+            "containsKey", "getOrDefault", "computeIfAbsent", "computeIfPresent", "compute", "merge", "replace",
+            "ceiling", "floor", "higher", "lower", "ceilingKey", "floorKey", "higherKey", "lowerKey",
+            "ceilingEntry", "floorEntry", "higherEntry", "lowerEntry");
+    private static final Set<String> QUEUE_KEY_OPS = Set.of("add", "offer", "put");
+
+    /** SOUNDNESS R1179 — whether the element/key ARGUMENT 0 of this call may have its {@code compareTo} run by a
+     *  sorted container: a key operation on a sorted owner, or on a container interface whose runtime
+     *  implementation is not provably unsorted. {@code recvNewType} is the receiver's provable {@code new T}
+     *  (null when unknown): a receiver PROVEN to be a {@code HashSet} never compares, whatever its declared type.
+     *  Beyond {@link #isCompareToSink} (which keeps its own path): the declared-interface receiver, the priority
+     *  queues and skip lists, and the remaining key operations of a sorted map. This is only the CANDIDATE test:
+     *  {@link ElementFlow} charges a candidate on an interface owner only where a natural-ordered allocation
+     *  reaches the receiver (positive evidence). */
+    static boolean mayCompareArg0(String owner, String name, String desc, String recvNewType) {
+        if (desc == null || !desc.startsWith("(Ljava/lang/Object;")) return false;
+        String impl = recvNewType != null ? recvNewType : owner;
+        if (recvNewType != null && !sortedOwner(impl)) return false;
+        if (!sortedOwner(impl) && !maySortOwner(impl)) return false;
+        boolean queue = impl.contains("Queue");
+        return queue ? QUEUE_KEY_OPS.contains(name) : SORTED_KEY_OPS.contains(name);
     }
 
     /** compareTo-reentry sinks: an ordering operation that sorts/orders elements by calling compareTo. */

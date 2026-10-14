@@ -118,14 +118,21 @@ candidate target and one effectful override would smear across the whole report:
   type it passes (SOUNDNESS R1166). The same holds for an interface member of a `java.*` κ owner
   dispatched on a parameter (`Iterable.iterator`, `Iterator.next`), and for a collection running its
   ELEMENTS' contracts — `l.hashCode()`, `new HashSet<>(l)`, `r.removeAll(c)` charge the `hashCode`/`equals`
-  of the element types added to them (a list `add` itself charges nothing). The argument's type must name
+  of the element types added to them (a list `add` itself charges nothing). ORDERING is the same
+  (SOUNDNESS R1179): `Collections.sort(l)`, `l.sort(null)`, `Arrays.sort(a)`, `Collections.max/min/binarySearch`,
+  `stream().sorted()`, and a natural-ordered `TreeSet`/`TreeMap`/`PriorityQueue`/skip list built from or filled
+  with a collection, or handed one element, charge the element types' `compareTo` (a map's elements are its
+  keys). A declared `Set`/`Map` counts as sorted only where a natural-ordered allocation reaches it; one built
+  with a `Comparator` runs the comparator instead. A method doing any of this to its own collection parameter
+  charges its CALLER, over the caller's argument. The argument's type must name
   ONE body — a provable `new T`, or a project declared type all of whose runtime types resolve to one body;
   where it cannot (a `java.*` or multi-body declared type admitting an effectful override) the call is
   disclosed `Unknown` (`dispatch:<owner>.<member>`). Across a chain the dependency's report cannot say it
-  runs the caller's override, so a call into a chained dependency passing a project type whose override of
-  one of these members carries a concrete effect is disclosed `Unknown` with the same reason, not charged.
-  Not followed: a value the library stores in a field and dispatches on later, and the iterator an
-  `iterator()` returns.
+  runs the caller's override, so a call into a chained dependency passing a project type — or a collection
+  or array of project types, which the dependency may store and compare, hash or sort later (R1174) — whose
+  override of one of these members carries a concrete effect is disclosed `Unknown` with the same reason, not
+  charged. In one tree, not followed: a scalar value a callee stores in a field and dispatches on later, a map's values,
+  and the iterator an `iterator()` returns.
 - `kotlin.jvm.functions.FunctionN.invoke`, `scala.FunctionN`/`PartialFunction` `apply`, and
   `groovy.lang.Closure.call` — every Kotlin/Scala/Groovy lambda or closure is a class implementing
   these; the body is instead attributed at its **creation site** (precise-by-construction).

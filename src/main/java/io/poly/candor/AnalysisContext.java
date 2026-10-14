@@ -279,6 +279,10 @@ final class AnalysisContext {
      *  dependency (ArgContract#chainWitness). Disclosed after the fixpoint where the type carries an effectful
      *  override of a contract member. */
     final Map<String, TreeSet<String>> argContractWitness = new HashMap<>();
+    /** R1174 — fn -> {@code "insnIndex\tj"}: a non-project-typed value (a collection, an array, an erased
+     *  Object) handed as arg j of a call into a CHAINED dependency. {@link ElementFlow} resolves the argument's
+     *  collection cells after the analyze loop and witnesses their element types ({@code argContractWitness}). */
+    final Map<String, TreeSet<String>> argContractChainArgs = new HashMap<>();
     // reflective calls with a LITERAL method name in the same body: a unique project match gets an EDGE
     // alongside the honest Unknown (recall without guessing).
     final List<String[]> reflectPairs = new ArrayList<>();         // [callerId, literalName]

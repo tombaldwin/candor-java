@@ -9,6 +9,30 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **An ordering over an erased container now charges the elements' `compareTo` (SOUNDNESS R1179).**
+  `Collections.sort(l)`, `l.sort(null)`, `Arrays.sort(a)`, `Collections.max/min/binarySearch`, `stream().sorted()`,
+  and a natural-ordered `TreeSet`/`TreeMap`/`PriorityQueue`/skip list built from, filled with or handed an element
+  run each element's `compareTo` (executed on JDK 21 for every member). 0.40.10 read all of them absent unless the
+  element was the call's own argument. A declared `Set`/`Map` counts as sorted only where a natural-ordered
+  allocation reaches it; a `Comparator`-built container runs the comparator instead. A method doing this to its
+  own collection parameter charges its caller, over the caller's argument; a map's elements are its keys. This is
+  a resolution: gates that change verdict are `deny <E> <fn>` over code that sorts or orders effectful types.
+  Measured against the published 0.40.10 jar over the 762-entry JVM corpus (`bin/corpus-ab.py`): ADDED 55 rows,
+  REMOVED 0, 59 rows gain a concrete effect, 27 gain `Unknown` only, no effect or `Unknown` lost, no call-graph
+  edge dropped. Every new charge was traced to its call site and read: kafka-streams' `TaskId.compareTo`
+  (which logs) through its `TreeMap`/`TreeSet` task registries, unboundid's `DN`/`RDN` sorted sets, ignite's
+  discovery ring, stanford-corenlp's sorted dependency lists, picocli's `LinkedHashSet` copies.
+- ⚠ **A collection or array of project values handed to a chained dependency is disclosed (SOUNDNESS R1174).** The
+  dependency may store it and compare, hash or sort it later (executed); its report cannot say so. The call is now
+  `Unknown` with reason `dispatch:<owner>.<member>` wherever an element type's override carries a concrete effect —
+  the disclosure a project value handed over directly already got (R1166). Priced as a disclosure: with EVERY external
+  owner treated as chained (an upper bound; the generated chained census passes `null` arguments, so it cannot
+  reach this), 335 of 2,748,695 corpus rows newly carry `Unknown` (0.012%, 18 entries, 243 of them in
+  stanford-corenlp), no concrete effect moves. On the real chained census: 305 consumers, no probe changed state.
+- **ElementFlow's walk from a value to its containers is a visited-set union, computed once per value.** It walked
+  every path through a body's locals to depth 12, which is exponential where one local has many stores; once chained
+  calls made most of scala-compiler's bodies relevant, that ran a scan out of a 3 GB heap. Now 14.5 s / 1.37 GB.
+
 ## [0.40.10] — 2026-10-14
 
 - **`jbang-catalog.json` points at the v0.40.10 jar.**

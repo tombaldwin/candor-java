@@ -235,12 +235,32 @@ final class ArgContract {
             ProvValue v = Candor.callArg(f, min, j);
             if (v == null || v.nullConst || v.fromIndy) continue;
             String t = v.newType != null ? v.newType : v.declType;
-            if (t == null || !c.byName.containsKey(t)) continue;
+            // SOUNDNESS R1174 — a COLLECTION (or an array) of project values handed to the dependency: it may
+            // store them and compare, hash or sort them later (executed). Its element types are an ElementFlow
+            // fact, decided after the analyze loop; record where the argument is.
+            if (t != null && !c.byName.containsKey(t)) {
+                // only a value that can BE a JDK container (the parameter is one, or Object/Iterable, or the value
+                // is): ElementFlow's cells are JDK containers, and recording every argument of every chained call
+                // ran a scala-compiler scan out of a 3 GB heap (measured) for nothing it could use
+                String st = at[j].getInternalName();
+                if (st.startsWith("java/util/") || st.equals("java/lang/Object") || st.equals("java/lang/Iterable")
+                        || t.startsWith("java/util/"))
+                    c.argContractChainArgs.computeIfAbsent(s.id, k -> new TreeSet<>())
+                            .add(s.mn.instructions.indexOf(min) + "\t" + j);
+                String comp = t.startsWith("[") ? t.replaceFirst("^\\[+L", "").replaceFirst(";$", "") : null;
+                if (comp != null && c.byName.containsKey(comp))
+                    c.argContractWitness.computeIfAbsent(s.id, k -> new TreeSet<>()).add(comp + "\t0");
+                continue;
+            }
+            if (t == null) continue;
             c.argContractWitness.computeIfAbsent(s.id, k -> new TreeSet<>()).add(t + "\t" + (v.newType != null ? 1 : 0));
         }
     }
 
     private static final ThreadLocal<List<String[]>> WIDE_SITES = ThreadLocal.withInitial(ArrayList::new);
+    /** R1174 — {caller, element type, exact}: ElementFlow's witnesses for a collection handed to a chained
+     *  dependency. Per scan and per thread, like {@link #WIDE_SITES}. */
+    static final ThreadLocal<List<String[]>> CHAIN_ELEMS = ThreadLocal.withInitial(ArrayList::new);
     private static final Map<String, List<String[]>> IFACE_MEMBERS = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** The contract members a value of project type {@code t} can run: the Object protocol (compareTo when it is
@@ -292,7 +312,14 @@ final class ArgContract {
                 }
         }
         WIDE_SITES.get().clear();
-        for (var e : c.argContractWitness.entrySet()) {
+        // SOUNDNESS R1174 — the ELEMENT witnesses ElementFlow found (a collection of project values handed to a
+        // chained dependency), merged per caller with the direct ones. Read here and dropped: they are a
+        // function of this scan's bodies, decided after the analyze loop, so they never enter the accumulator.
+        Map<String, Set<String>> witness = new HashMap<>();
+        for (var e : c.argContractWitness.entrySet()) witness.computeIfAbsent(e.getKey(), k -> new TreeSet<>()).addAll(e.getValue());
+        for (String[] w : CHAIN_ELEMS.get()) witness.computeIfAbsent(w[0], k -> new TreeSet<>()).add(w[1] + "\t" + w[2]);
+        CHAIN_ELEMS.get().clear();
+        for (var e : witness.entrySet()) {
             String caller = e.getKey();
             for (String x : e.getValue()) {
                 String t = x.substring(0, x.indexOf('\t'));
@@ -338,6 +365,7 @@ final class ArgContract {
         THIS_MEMO.get().clear();
         PENDING.get().clear();
         BY_CALLER.get().clear();
+        CHAIN_ELEMS.get().clear();
         try {
             ElementFlow.run(c);   // a collection's own equals/hashCode/removeAll/... over its elements
             resolveSites(c);
@@ -696,7 +724,8 @@ final class ArgContract {
                         String nd = min.name;
                         if (Candor.isToStringSink(min.owner, min.name, min.desc)) otherNames.add("toString");
                         for (String con : Candor.equalsHashContracts(min.owner, min.name, min.desc)) otherNames.add(con);
-                        if (Candor.isCompareToSink(min.owner, min.name)) otherNames.add("compareTo");
+                        if (Candor.isCompareToSink(min.owner, min.name) || ElementFlow.ordersElements(min.owner, min.name, min.desc)
+                                || Candor.mayCompareArg0(min.owner, min.name, min.desc, null)) otherNames.add("compareTo");
                         String fc = Candor.formatterSinkCtor(min.owner, min.name, min.desc);
                         if (fc != null) otherNames.add(fc);
                         if (Candor.ioDriverContract(min.name) != null) otherNames.addAll(List.of("write", "append", "read"));

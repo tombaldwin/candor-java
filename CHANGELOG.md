@@ -9,6 +9,50 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+## [0.40.10] — 2026-10-14
+
+- ⚠ **Gates that change verdict on real code — in BOTH directions.** Measured against the published 0.40.9 jar over
+  the 762-entry JVM corpus (`bin/corpus-ab.py`, clean environment, empty config, no dependencies chained; each jar
+  version counts separately). Each gate is scoped to the method named; sampled gates were re-run on the published
+  0.40.9 jar and on this release's jar and moved as stated.
+
+  These now **pass where 0.40.9 failed**, because a list `add` no longer charges the element's `equals`/`hashCode`
+  (R1166). That charge was false: `ArrayList.add` never calls either. 4,484 rows lose a concrete effect and 1,625
+  lose `Unknown`; an independent audit with its own bytecode reader traced the removal set before this shipped.
+  - `deny Fs` over ant's `Concat.add` and zookeeper's `MultiOperationRecord.add` (sampled), and over liquibase's
+    `ChangeSet.addChange`.
+  - `deny Log` over protobuf-java's `Api$Builder.addMethods(Method)` (sampled; the `Method$Builder` overloads
+    still fail), google-cloud-spanner's `Struct$Builder.add` and kafka-clients' `ImplicitLinkedHashCollection.sort`.
+  - `deny Llm` and `deny Net` over spring-ai-model's
+    `DefaultToolCallingManager.buildConversationHistoryAfterToolExecution` (sampled for `Llm`).
+  - `deny Unknown` over 1,625 rows, among them protobuf-java's generated `add*` builder methods.
+
+  These now **fail where 0.40.9 passed**: 3,308 rows gain a concrete effect and 590 gain `Unknown` (216 of them
+  units the report did not carry before). They come from a caller now charged the `equals`/`hashCode`/`toString`/
+  `compareTo`/iterator override it hands to a generic method, and from the collection operations that really run
+  an element's `equals`/`hashCode` (a collection's own `equals`/`hashCode`, `removeAll`/`retainAll`/`containsAll`,
+  a hashed copy). Where the type cannot name one body, the call is disclosed `Unknown`.
+  - `deny Net` over jedis's `Pipeline.close` (sampled), and `deny Fs`, `deny Net` and `deny Exec` over
+    kafka-clients' `AbstractFetch.closeInternal` (sampled for `Fs`).
+  - `deny Fs` over jetty-server 11's `HttpChannelState.complete`/`asyncError` and `AsyncContextState.complete`, and
+    over liquibase's `ChangeSet.removeAllChanges` (`deny Net` too).
+  - `deny Log` over guava's `AbstractTable.equals`/`hashCode` and `AbstractMultimap$EntrySet.hashCode`, including
+    the copies shaded into curator-client, launchdarkly and couchbase-core-io.
+  - The largest groups by row count are couchbase-core-io and assertj-db, which shade guava and byte-buddy; their
+    rows move in both directions.
+
+  Counts: ADDED 404, REMOVED 670, CHANGED 42,682 rows.
+- ⚠ **The κ framework-hedge table is regenerated against this engine** (`ab85818`; 76,618 → 76,392 entries). It is
+  derived from the engine's own scans, so R1166 moved it. 30 entries are added (spring-core's shaded javapoet, joda-time's
+  interval `equals`, guava's `Predicate.equals`, one spring-core member), so a call into them now reads `Unknown`.
+  256 are removed (240 twilio TwiML builder methods, 11 spring-data-mongodb aggregation/update builders, 3
+  commons-lang3 `addContextValue` methods), so a call into them no longer does. Most are list-building methods
+  (`addChild`, `addText`, `addContextValue`) whose only hedge was the false `List.add` charge above.
+- **The 0.40.10 jar's build facts.** Built clean (`./gradlew clean shadowJar`) with `JAVA_HOME` set to JDK 21; its
+  four `jdk-*.idx.gz` resources and both κ tables are byte-equal to the checked-in files, and
+  `soundness/jdk_index/derive.sh --check` and `soundness/kappa_table/derive.sh --check` against this jar both pass
+  in a clean `env -i`.
+- **`jbang-catalog.json` pointed at the v0.40.9 jar** after that release (`9b5d7c2`).
 - ⚠ **A generic method runs its caller's override, and the caller is now charged it (SOUNDNESS R1166).**
   `<T> boolean same(T a, T b) { return a.equals(b); }` erases to `Object.equals`, and `<T> int
   count(Iterable<T> it)` to `Iterable.iterator`. With the generic in a CHAINED library, a caller passing a

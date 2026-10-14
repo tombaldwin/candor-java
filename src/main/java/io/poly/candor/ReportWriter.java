@@ -194,11 +194,13 @@ final class ReportWriter {
                     // the row the consumer actually joins, which is the shape of the defect this rung
                     // closes. Bounded by the same reach set that decides emission, so `calls` never names a
                     // unit the report omits.
+                    // R1166: a specialised copy is named as the unit it was made from (ArgContract#baseOf).
                     List<String> calls = ctx().edges.getOrDefault(fn, Set.of()).stream()
                             .filter(c -> {
-                                EffectSet ce = inferred.get(c);
+                                EffectSet ce = inferred.get(ArgContract.baseOf(c));
                                 return ce != null && !ce.isEmpty() || dispatchReach.contains(c);
                             })
+                            .map(ArgContract::baseOf).distinct()
                             .sorted().collect(Collectors.toList());
                     // Fs read/write detail (SPEC §2 `fs`): the access kind, when known AND complete.
                     // Empty when unknown, when the fn performs no Fs, or when reached cross-jar (FS_UNKNOWN).
@@ -307,6 +309,7 @@ final class ReportWriter {
         // `functions` array). count lets a bare-envelope consumer compute the pure count (count − |functions|)
         // and tell analyzed-pure from never-seen; digest fingerprints the set for same-engine re-scan agreement.
         java.util.TreeSet<String> analyzedQuals = new java.util.TreeSet<>(ctx().edges.keySet());
+        analyzedQuals.removeIf(ArgContract::isSpecNode);   // R1166: a specialised copy is not a unit
         Report.Analyzed analyzed = new Report.Analyzed(analyzedQuals.size(), fnv1aHex(analyzedQuals));
         List<Report.UnanalyzedUnit> unanalyzed = ctx().unanalyzed.entrySet().stream()
                 .map(e -> new Report.UnanalyzedUnit(e.getKey(), e.getValue())).collect(Collectors.toList());
@@ -1048,7 +1051,7 @@ final class ReportWriter {
         // SPEC §2.2: EVERY analyzed method is a key — a LEAF with no project callees gets an empty
         // list (was skipped, which made an uncalled leaf invisible to whatif/callers and conflated
         // "no callers" with "no such function"; mirrors the same fix in candor-scan + the lint).
-        for (var e : ctx().edges.entrySet()) {
+        for (var e : Candor.unitEdges().entrySet()) {   // R1166: real units only
             cg.put(e.getKey(), new ArrayList<>(new TreeSet<>(e.getValue())));
         }
         String callgraphJson = ReportJson.pretty(cg);

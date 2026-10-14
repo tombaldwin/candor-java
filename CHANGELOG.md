@@ -15,14 +15,20 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   type whose `equals`/`hashCode`/`toString`/`compareTo`/`Iterable.iterator`/`Iterator.next` wrote a file was
   ABSENT (executed, all six); in one tree past twelve overrides the four Object-protocol callers were ABSENT.
   A method that dispatches such a member (the §4 Object protocol, or an interface member of a `java.*` κ
-  owner) on its own PARAMETER is now a re-entry sink for that parameter, exactly as `String.valueOf(x)`
-  already was: the caller is charged the override of the type it passes — where that type names ONE body
-  (a provable `new T`, or a declared type with a single override below it). A declared type naming several
-  bodies keeps the answer the callee's own dispatch gives (the CHA union was measured as smear). The library
-  names the member in `dispatchesOn` (existing field, existing spelling), on the rows whose parameters reach
-  it; a consumer reads those keys into their own index, so no other join changes. Not followed: a value the
-  library stores and dispatches on later, the iterator an `iterator()` returns, and a default method on an
-  interface (its ⟨0.23⟩ union entry owns that hash).
+  owner) on its own PARAMETER is now a re-entry sink for that parameter: the caller is charged the override
+  of the type it passes where that type names ONE body (a provable `new T`, or a project declared type all of
+  whose runtime types resolve to one body). The resolved body is analysed for the receiver the resolution
+  established (a specialised copy), so a `this`-call inside it no longer fans out over sibling subclasses.
+  Across a chain the library names the member in `dispatchesOn` (existing field and spelling) on rows whose
+  parameters reach it; where the consumer passes more than one candidate receiver with different bodies the
+  join is DISCLOSED as `Unknown` (`dispatch:`), never charged to the wrong argument.
+- ⚠ **The equals/hashCode re-entry table now follows the JDK (R1166).** A list `add` no longer charges its
+  argument's `equals`/`hashCode`, and a list lookup (`contains`/`indexOf`/`remove`) charges `equals` only;
+  hashed and unknown sets/maps still charge both. `Objects.equals(a, b)` and `Objects.hashCode(o)` are
+  added. A list `add`/lookup removing these charges REMOVES over-charges 0.40.9 made (every removed edge was
+  attributed to a list call in the caller's bytecode and every lost row reproduced by those edges alone).
+  The parameterized-logging name rule no longer makes a PARAMETER contract for a project's own method
+  (`Cfg.config(Object)`) or a non-logger owner; the call-site re-entry it already made is unchanged.
 
 ## [0.40.9] — 2026-10-13
 

@@ -407,8 +407,25 @@ public class Candor {
         classifySourceScope();
         phase("classify-scope");
         Map<String, EffectSet> fx = fixpoint();
+        // SOUNDNESS R1166 — a receiver-specialised copy (ArgContract#spec) is a node of the propagation, not a
+        // unit: its effects are already in its callers', so it leaves the result here and every report reads
+        // only real units. `ctx().edges` keeps it, so the per-function surfaces still flow through it.
+        fx.keySet().removeIf(ArgContract::isSpecNode);
         phase("fixpoint");
         return fx;
+    }
+
+    /** The call graph as a REPORT may show it: real units only, a specialised copy (R1166) read as the body it
+     *  was made from. For every output that names units — `calls`, the sidecar, the analysed set, the gate. */
+    static Map<String, Set<String>> unitEdges() {
+        Map<String, Set<String>> out = new HashMap<>();
+        for (var e : ctx().edges.entrySet()) {
+            if (ArgContract.isSpecNode(e.getKey())) continue;
+            Set<String> ts = new LinkedHashSet<>();
+            for (String t : e.getValue()) ts.add(ArgContract.baseOf(t));
+            out.put(e.getKey(), ts);
+        }
+        return out;
     }
 
     /** ⟨0.29⟩ WHICH JVM SOURCES UNDER THE SCAN ROOT HAVE NO COMPILED CLASS (candor-spec/FILE-SET-DESIGN.md).
@@ -905,7 +922,7 @@ public class Candor {
             } catch (Throwable e) {
                 return;
             }
-            Map<String, Set<String>> widenedEdges = new HashMap<>(ctx().edges);
+            Map<String, Set<String>> widenedEdges = unitEdges();   // R1166: real units only
             Policy.GateInput widenedGi = Policy.gateInputFromScan(widened);
             // FIRST PASS: which judged (in-scope) quals gained an effect at all, purely from the diff —
             // computed for ALL of them before any attribution decision, so the SECOND pass can tell a
@@ -1086,7 +1103,8 @@ public class Candor {
                 }
             }
         }
-        Set<String> judged = Set.copyOf(ctx().edges.keySet());
+        Set<String> judged = ctx().edges.keySet().stream().filter(k -> !ArgContract.isSpecNode(k))
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
         // ⟨CHA-widening⟩ THIS RUN'S OWN source-file inventory, captured on the CALLING thread before the
         // peek thread's resetState wipes it — {@link #sourcePathFor}'s only way to resolve a `judged`
         // caller's real path for a `dispatch-widened` disclosure.
@@ -2490,7 +2508,7 @@ public class Candor {
             // (the brand voice, not `candor-java:`) and the suggested command is `candor path …` —
             // identical across engines. Only on an interactive (non-gating) run — a machine-parsed gate
             // never wants the prose opener (we are already inside `if (!enforce)`).
-            Surface.emit(inferred, ctx().direct, ctx().edges, ctx().loc, System.err);
+            Surface.emit(inferred, ctx().direct, unitEdges(), ctx().loc, System.err);   // R1166
 
             // Per-method detail only when NOT writing a report file (the file already holds it) — keeps the
             // agent's --json run concise (summary only), while a human's bare scan still gets the full audit.
@@ -2710,7 +2728,7 @@ public class Candor {
         // ⟨0.33⟩ EMPTY, and the empty is the ARGUMENT rather than a stub. On this route the producer and
         // the consumer are the same run over the same policy, so the set the peek was put IS the set the
         // gate holds and the subset test cannot fail. Computing it here would compute `P ⊆ P`.
-        return new GateFacts(ctx().edges.keySet().size(), un, kappaUncovered(), oos, unpeeked,
+        return new GateFacts((int) ctx().edges.keySet().stream().filter(k -> !ArgContract.isSpecNode(k)).count(), un, kappaUncovered(), oos, unpeeked,
                 java.util.List.of());
     }
 
@@ -5670,12 +5688,13 @@ public class Candor {
                     for (ProvValue a : callArgs(rf, min)) reentryEdgeOrDisclose(id, a, C_TOSTRING);
                 }
             }
-            if (isEqualsHashSink(min.owner, min.name)) {
-                // The KEY/element argument — for Map.* it is the FIRST arg (the key); for the
-                // collection verbs it is the lone element arg. Reenter both equals AND hashCode.
+            // The KEY/element argument — for Map.* it is the FIRST arg (the key); for the collection verbs
+            // it is the lone element arg. Reenter exactly the contracts the JDK call runs on it (R1166).
+            List<String> ehc = equalsHashContracts(min.owner, min.name, min.desc);
+            // `Objects.equals/hashCode` are resolved by ArgContract's one-body rule, not here (R1166).
+            if (!ehc.isEmpty() && !min.owner.equals("java/util/Objects")) {
                 ProvValue key = callArg(rf, min, 0);
-                reentryEdgeOrDisclose(id, key, C_EQUALS);
-                reentryEdgeOrDisclose(id, key, C_HASHCODE);
+                for (String c : ehc) reentryEdgeOrDisclose(id, key, c);
             }
             if (isCompareToSink(min.owner, min.name)) {
                 // The element whose compareTo orders the collection. For the COLLECTION-typed sinks
@@ -10269,8 +10288,29 @@ public class Candor {
         // floored by `reentryEdge`, which resolves over the argument's declType and contributes NOTHING when
         // that type has no LOCAL toString override — so a String/boxed/JDK argument (the overwhelming
         // majority of log arguments) edges nowhere, and only a project type with its own toString does.
+        //
         if (LOG_LEVEL_NAMES.contains(name) && desc.contains("Ljava/lang/Object;")) return true;
         return false;
+    }
+
+    /** {@link #isToStringSink}, with the parameterized-logging clause restricted to an owner that IS a logger.
+     *  SOUNDNESS R1166 reads a sink fed a PARAMETER as that parameter's contract, and owner-agnostic, the name
+     *  rule made a project's own `Cfg.config(Object)` (`config` is a JUL level) a toString contract — so its
+     *  callers were charged an argument's `toString` that `config` never calls (executed: no file). A PROJECT
+     *  method's body is analysed, so the contract comes from it; an external owner must be a logger by name.
+     *  The older re-entry charge at the call site keeps the wide rule: narrowing it was measured to withdraw
+     *  ~9,400 edges onto callees that DO stringify their argument (h2's `Trace.error`), which is a removal
+     *  this change has no evidence for. */
+    static boolean isToStringContractSink(String owner, String name, String desc) {
+        if (LOG_LEVEL_NAMES.contains(name) && desc != null && desc.contains("Ljava/lang/Object;"))
+            return isLoggerOwner(owner);
+        return isToStringSink(owner, name, desc);
+    }
+
+    static boolean isLoggerOwner(String owner) {
+        if (ctx().projectClasses.contains(owner)) return false;
+        String simple = owner.substring(owner.lastIndexOf('/') + 1);
+        return simple.contains("Log");
     }
 
     /** Level methods of the parameterized-logging facades (slf4j/log4j/commons-logging/JUL). Matched by name
@@ -10279,20 +10319,48 @@ public class Candor {
     static final Set<String> LOG_LEVEL_NAMES =
             Set.of("trace", "debug", "info", "warn", "warning", "error", "fatal", "log", "severe", "config", "finest", "finer", "fine");
 
-    /** equals/hashCode-reentry sinks: a collection lookup/insert that hashes or compares the KEY/element by
-     *  calling its equals + hashCode. */
-    static boolean isEqualsHashSink(String owner, String name) {
+    /** equals/hashCode-reentry sinks: which of {@code equals}/{@code hashCode} a JDK collection call runs on its
+     *  KEY/element argument (always argument 0), or empty. SOUNDNESS R1166 — READ FROM THE JDK'S DOCUMENTED
+     *  BEHAVIOUR, NOT BY OWNER FAMILY. This used to be one boolean over a single owner list, so every member it
+     *  named ran BOTH contracts, and `add` was on it for lists: `new ArrayList<>().add(w)` was charged
+     *  `w.equals` and `w.hashCode`, which ArrayList.add never calls, and `list.contains(w)` was charged
+     *  `w.hashCode`, which a list never computes. An independent javap checker attributed ~7,700 fabricated
+     *  edges in the census to `List.add` once R1166 made it a parameter contract. The table now says:
+     *  <ul>
+     *    <li>a LIST lookup ({@code contains}/{@code indexOf}/{@code lastIndexOf}/{@code remove(Object)}) runs
+     *        {@code equals} only; a list {@code add} runs neither;</li>
+     *    <li>a HASHED set or map, or a {@code Set}/{@code Map}/{@code Collection} whose implementation is not
+     *        known (it may be hashed), runs both;</li>
+     *    <li>{@code Objects.equals(a, b)} runs {@code a.equals(b)}; {@code Objects.hashCode(o)} runs
+     *        {@code o.hashCode()} (the R1166 sibling: both were absent from the table).</li>
+     *  </ul> */
+    static final boolean R1166_OLD_LIST_TABLE = System.getenv("CANDOR_R1166_ATTRIB_OLD_LIST_TABLE") != null;
+    static List<String> equalsHashContracts(String owner, String name, String desc) {
+        boolean objArg0 = desc != null && desc.startsWith("(Ljava/lang/Object;");
+        // ATTRIBUTION INSTRUMENT, not a feature: the pre-R1166 list rows, so a corpus A/B can say which of
+        // its removals this table made (`bin/corpus-ab.py`, the R1166 removal accounting).
+        if (R1166_OLD_LIST_TABLE && (owner.equals("java/util/List") || owner.equals("java/util/ArrayList")
+                || owner.equals("java/util/LinkedList")))
+            return name.equals("contains") || name.equals("add") || name.equals("remove")
+                    || name.equals("indexOf") || name.equals("lastIndexOf") ? List.of(C_EQUALS, C_HASHCODE) : List.of();
         switch (owner) {
-            case "java/util/Set": case "java/util/HashSet": case "java/util/LinkedHashSet":
             case "java/util/List": case "java/util/ArrayList": case "java/util/LinkedList":
+                return (name.equals("contains") || name.equals("indexOf") || name.equals("lastIndexOf")
+                        || name.equals("remove")) && objArg0 ? List.of(C_EQUALS) : List.of();
+            case "java/util/Set": case "java/util/HashSet": case "java/util/LinkedHashSet":
             case "java/util/Collection":
-                return name.equals("contains") || name.equals("add") || name.equals("remove")
-                        || name.equals("indexOf") || name.equals("lastIndexOf");
+                return (name.equals("contains") || name.equals("add") || name.equals("remove")) && objArg0
+                        ? List.of(C_EQUALS, C_HASHCODE) : List.of();
             case "java/util/Map": case "java/util/HashMap": case "java/util/LinkedHashMap":
             case "java/util/concurrent/ConcurrentHashMap":
-                return name.equals("get") || name.equals("containsKey") || name.equals("put")
-                        || name.equals("remove") || name.equals("getOrDefault") || name.equals("putIfAbsent");
-            default: return false;
+                return (name.equals("get") || name.equals("containsKey") || name.equals("put")
+                        || name.equals("remove") || name.equals("getOrDefault") || name.equals("putIfAbsent"))
+                        && objArg0 ? List.of(C_EQUALS, C_HASHCODE) : List.of();
+            case "java/util/Objects":
+                if (name.equals("equals") && "(Ljava/lang/Object;Ljava/lang/Object;)Z".equals(desc)) return List.of(C_EQUALS);
+                if (name.equals("hashCode") && "(Ljava/lang/Object;)I".equals(desc)) return List.of(C_HASHCODE);
+                return List.of();
+            default: return List.of();
         }
     }
 

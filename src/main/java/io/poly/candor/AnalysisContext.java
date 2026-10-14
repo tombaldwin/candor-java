@@ -275,6 +275,10 @@ final class AnalysisContext {
     final Map<String, TreeSet<String>> argContractDirect = new HashMap<>();
     final Map<String, TreeSet<String>> argContractPass = new HashMap<>();
     final Map<String, TreeSet<String>> argContractSites = new HashMap<>();
+    /** R1166 — fn -> {@code "key\ttype\texact"}: a CHAINED dependency's contract key this unit's call resolved
+     *  to project bodies over an argument of that type (ArgContract#depSite). Edged after the loop, so the
+     *  edge can target the receiver-specialised body (ArgContract#spec). */
+    final Map<String, TreeSet<String>> argContractResolved = new HashMap<>();
     /** R1166 — fn -> the contract keys its PARAMETERS reach (the parameter-flow closure), published in
      *  {@code dispatchesOn}. Written once, after the analyze loop, by {@link ArgContract#resolve}. Kept OUT of
      *  {@link #dispatchDirect} on purpose: that map seeds ⟨0.39⟩'s dispatch REACH (emission and {@code calls}

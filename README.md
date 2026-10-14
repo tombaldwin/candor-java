@@ -118,10 +118,12 @@ candidate target and one effectful override would smear across the whole report:
   type it passes (SOUNDNESS R1166), in one tree and across a chain: the library names the member in
   `dispatchesOn` and the consumer joins it over its call's arguments. The same holds for an interface
   member of a `java.*` κ owner dispatched on a parameter (`Iterable.iterator`, `Iterator.next`). The
-  argument's type must name ONE body — a provable `new T`, or a declared type with a single override
-  below it; a declared type naming several keeps the caveat above. Not followed: a value the library
-  STORES and dispatches on later, the iterator an `iterator()` returns, and an interface default method
-  (its union entry owns the hash).
+  argument's type must name ONE body — a provable `new T`, or a project declared type all of whose
+  runtime types resolve to one body (a `java.*` declared type never does); a declared type naming several
+  keeps the caveat above. Across a chain the report does not say which parameter is the receiver, so a
+  call passing two candidate receivers with different bodies is disclosed `Unknown`, not charged. Not
+  followed: a value the library STORES and dispatches on later, the iterator an `iterator()` returns, and
+  an interface default method (its union entry owns the hash).
 - `kotlin.jvm.functions.FunctionN.invoke`, `scala.FunctionN`/`PartialFunction` `apply`, and
   `groovy.lang.Closure.call` — every Kotlin/Scala/Groovy lambda or closure is a class implementing
   these; the body is instead attributed at its **creation site** (precise-by-construction).

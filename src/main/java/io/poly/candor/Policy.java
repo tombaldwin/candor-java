@@ -589,7 +589,7 @@ final class Policy {
                 literalFixpoint(ctx().pathsDirect),
                 literalFixpoint(ctx().tablesDirect),
                 netIncompleteAcc,
-                ctx().edges,
+                Candor.unitEdges(),   // R1166: real units only — a specialised copy is not gateable
                 Set.of(),   // the scan gates BODIES; synthetic union entries exist only in a written report
                 // ⟨0.32⟩ IDENTITY, both ways: a scan gates ONE analysis world and its keys are already the
                 // names a policy scope is written against. The maps exist for the multi-report route, where

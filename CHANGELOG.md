@@ -11,6 +11,7 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## [0.40.10] — 2026-10-14
 
+- **`jbang-catalog.json` points at the v0.40.10 jar.**
 - ⚠ **Gates that change verdict on real code — in BOTH directions.** Measured against the published 0.40.9 jar over
   the 762-entry JVM corpus (`bin/corpus-ab.py`, clean environment, empty config, no dependencies chained; each jar
   version counts separately). Each gate is scoped to the method named; sampled gates were re-run on the published

@@ -9,6 +9,38 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+## [0.40.11] — 2026-10-15
+
+Sorting or ordering a collection of project values now charges the elements' `compareTo` — 0.40.10 read that call
+absent unless the element was the call's own argument, a **silent under-report** on executed code (R1179). Handing a
+collection of project values to a chained dependency is now disclosed as `Unknown` (R1174), and a scan that ran a
+large Scala jar out of a 3 GB heap now finishes. SOUNDNESS R1174 and R1179 close here.
+
+- ⚠ **Gates that change verdict on real code.** Measured against the published 0.40.10 jar over the 762-entry JVM
+  corpus (`bin/corpus-ab.py`; ADDED 55, REMOVED 0, CHANGED 574). Each gate is scoped to the method named. These now
+  **fail where 0.40.10 passed**:
+  - `deny Log` over kafka-streams 3.7's task registries and assignors — `Tasks.addTask`, `addActiveTasks`,
+    `removeTask`, `replaceActiveWithStandby`, `TaskManager.addTask`, `ClientState`'s constructors and
+    `assignActiveTasks`, `TaskMovement`'s movement methods (32 rows: `TaskId.compareTo` logs, and these keep
+    `TreeMap`/`TreeSet`s of task ids) — and over itext-kernel 8's `GenericNameTree.getKeys`. (Seven interface-union
+    rows, `TasksRegistry`'s and `IPdfNameTreeAccess.getKeys`, carry the same new `Log`.)
+  - `deny Fs` (and `Clock`) over lucene-core 9.11's `Query.visit` implementations (`TermQuery`, `PhraseQuery`,
+    `MultiPhraseQuery`, `SynonymQuery`, `TermInSetQuery`, `AutomatonQuery`, …) and `QueryVisitor.termCollector`;
+    0.40.10 returned exit 2 (incomplete) on the sampled `TermQuery.visit` gate, 0.40.11 returns exit 1.
+  - `deny Fs`, `Log`, `Clock` and `Env` over unboundid-ldapsdk 7's `RDN.getNameValuePairs` and
+    `InMemoryDirectoryServer.createSnapshot`; `deny Fs`, `Log`, `Net` and the rest over ignite-core 2.16's
+    `ClientImpl.allVisibleNodes` and `GridCacheMvccManager.unfinishedLocks`, geode-core 1.15's
+    `FreeListManager.freeHuge` and stanford-corenlp 4.5's `SemanticGraph.yield`.
+  - `deny Unknown` over 48 rows, mostly jetty-http, unboundid-ldapsdk, bc-fips/bcprov, junit-platform-console,
+    testcontainers, lucene-core, ignite-core, geode-core and commons-configuration2's `NodeUpdateData.<init>`.
+
+  **Nothing passes where 0.40.10 failed**: no row is removed and no concrete effect or `Unknown` is lost. R1174's
+  disclosure moves no gate on the real chained census (305 consumers). Five sampled gates were re-run on the
+  published jar and on this release's build, in a clean environment: `deny Log` over kafka-streams'
+  `Tasks.addTask` and itext's `GenericNameTree.getKeys` and `deny Fs` over unboundid's `RDN.getNameValuePairs` pass on
+  0.40.10 and fail now; `deny Fs` over lucene's `TermQuery.visit` goes from exit 2 to exit 1; `deny Net Db` over
+  `Tasks.addTask` passes on both.
+
 - ⚠ **An ordering over an erased container now charges the elements' `compareTo` (SOUNDNESS R1179).**
   `Collections.sort(l)`, `l.sort(null)`, `Arrays.sort(a)`, `Collections.max/min/binarySearch`, `stream().sorted()`,
   and a natural-ordered `TreeSet`/`TreeMap`/`PriorityQueue`/skip list built from, filled with or handed an element

@@ -9,7 +9,7 @@
 # Its DIVERGENT lines are the charges present in one surveyed version of an artefact and not another — charged
 # nowhere.
 #
-# INPUTS, and nothing else: the jars named in sources.tsv (Maven Central coordinate + SHA-256 — a jar whose bytes
+# INPUTS, and nothing else: the checked-in tables themselves (the R1189 FLOOR, below), the jars named in sources.tsv (Maven Central coordinate + SHA-256 — a jar whose bytes
 # differ is REFUSED, never used), this script, FrameworkReachGen.java, jdk-packages.txt (the JDK's packages, a
 # checked-in union over JDK images — NOT the running JDK's module list), and the engine jar given as the argument.
 # Same inputs -> byte-identical table, whatever JAVA_HOME runs it and whatever CANDOR_* the caller's shell exports
@@ -73,6 +73,11 @@ GSHA="$(cat "$HERE/FrameworkReachGen.java" "$HERE/derive.sh" "$HERE/sources.tsv"
 export J JAR LIB WORK
 ARGS=()
 for jar in $(cut -f1 "$HERE/sources.tsv"); do ARGS+=("$LIB/$jar" "$WORK/rep/$jar.json"); done
+# THE FLOOR (SOUNDNESS R1189): the checked-in tables are an input too — a member they have a line for keeps at least a
+# U line while every body it resolves to still carries Unknown (FrameworkReachGen#FLOOR). Copied before anything is
+# written, so --check and a write read the same floor, and a write reproduces itself.
+cp "$ROOT/src/main/resources/candor/framework-reach.tsv" "$WORK/floor-reach.tsv"
+cp "$ROOT/src/main/resources/candor/framework-hedge.tsv" "$WORK/floor-hedge.tsv"
 iter=0
 while :; do
   iter=$((iter + 1))
@@ -85,7 +90,7 @@ while :; do
     [ -s "$WORK/rep/$jar.json" ] || { echo "derive: no report for $jar" >&2; exit 1; }
   done
   # 4. generate (and the next P list)
-  "$J/java" -Xmx8g -Dframework.jdkPackages="$JDKP" -Dframework.hedgeOut="$WORK/hedge.tsv" -Dframework.pureIn="$WORK/pure.txt" -Dframework.pureOut="$WORK/pure.next" \
+  "$J/java" -Xmx8g -Dframework.jdkPackages="$JDKP" -Dframework.hedgeOut="$WORK/hedge.tsv" -Dframework.pureIn="$WORK/pure.txt" -Dframework.pureOut="$WORK/pure.next" -Dframework.floorIn="$WORK/floor-reach.tsv,$WORK/floor-hedge.tsv" \
     -cp "$WORK/tool:$JAR" io.poly.candor.FrameworkReachGen "$WORK/table.tsv" "$WORK/witness.tsv" "$WORK/header" "${ARGS[@]}"
   if cmp -s "$WORK/pure.txt" "$WORK/pure.next"; then break; fi
   echo "derive: P list round $iter: $(wc -l < "$WORK/pure.txt") -> $(wc -l < "$WORK/pure.next")" >&2

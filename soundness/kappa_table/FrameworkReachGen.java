@@ -178,6 +178,18 @@ public class FrameworkReachGen {
     static final List<Integer> nodeJar = new ArrayList<>();
     /** Bodies the engine's own scan of the jar reported as ONLY {@code Unknown} (its `inferred`). */
     static final Set<Integer> UNK_ONLY = new HashSet<>();
+    /** Bodies whose scan `inferred` carries {@code Unknown} at all (alone or beside concrete effects). */
+    static final Set<Integer> UNK_ANY = new HashSet<>();
+    /** SOUNDNESS R1189 — THE FLOOR: every member the PREVIOUS (checked-in) tables had a line for. A regeneration never
+     *  drops such a member to "no line" (which a consumer reads as examined-and-pure) while every body it resolves to
+     *  still carries {@code Unknown} in the scan: it keeps at least a {@code U} line. Measured: the R1188/R1189 engine
+     *  resolved spring-core's {@code OrderComparator.sort} from {@code [Unknown]} to {@code [Fs, Log, Unknown]} through a
+     *  comparator edge this closure cannot follow, and without the floor its U line vanished and a consumer read it pure. */
+    static final Set<String> FLOOR = new HashSet<>();
+    /** Floor candidates; a U line is written for one only where it would otherwise have NO line at all (not charged,
+     *  no hedge, no broad-dispatch A) — the floor never adds a disclosure beside a line the member already has. */
+    static final TreeSet<String> FLOORED = new TreeSet<>();
+    static int floored = 0;
     /** Framework members a consumer can call whose body the table cannot vouch for: "A" — resolution reaches no
      *  body (abstract/interface/native: the implementer is chosen at run time); "U" — every resolved body is one the
      *  scan could read only as Unknown. Absent here and absent from the table = examined and pure. */
@@ -191,6 +203,18 @@ public class FrameworkReachGen {
         if (a.length > 0 && a[0].equals("--jdk-packages")) { jdkPackagesOut(a); return; }
         Path out = Path.of(a[0]), witness = Path.of(a[1]);
         hedgeOut = System.getProperty("framework.hedgeOut");
+        // the floor: the previous tables' members (reach rows; A/U hedge lines)
+        String floorIn = System.getProperty("framework.floorIn");
+        if (floorIn != null)
+            for (String fp : floorIn.split(",")) {
+                if (fp.isEmpty() || !Files.exists(Path.of(fp))) continue;
+                for (String l : Files.readAllLines(Path.of(fp), StandardCharsets.UTF_8)) {
+                    if (l.isEmpty() || l.startsWith("#")) continue;
+                    String[] c = l.split("\t");
+                    if (c.length >= 2 && (c[0].equals("A") || c[0].equals("U"))) FLOOR.add(c[1]);
+                    else if (c.length >= 2 && c[0].length() > 1) FLOOR.add(c[0]);   // a reach row: key <TAB> effects
+                }
+            }
         List<String> header = Files.readAllLines(Path.of(a[2]), StandardCharsets.UTF_8);
         List<String[]> pairs = new ArrayList<>();
         for (int i = 3; i + 1 < a.length; i += 2) pairs.add(new String[] { a[i], a[i + 1] });
@@ -211,6 +235,11 @@ public class FrameworkReachGen {
                 if (!f.has("hash") || !f.has("direct")) continue;
                 if (f.has("inferred")) {
                     JsonArray inf = f.getAsJsonArray("inferred");
+                    for (JsonElement x : inf)
+                        if (x.getAsString().equals("Unknown")) {
+                            Integer aid = nodeId.get(j + "|" + f.get("hash").getAsString());
+                            if (aid != null) UNK_ANY.add(aid);
+                        }
                     if (inf.size() == 1 && inf.get(0).getAsString().equals("Unknown")) {
                         Integer uid = nodeId.get(j + "|" + f.get("hash").getAsString());
                         if (uid != null) UNK_ONLY.add(uid);
@@ -338,6 +367,7 @@ public class FrameworkReachGen {
                         if (tg.isEmpty()) { if (!name.equals("<init>") && implementersUnvouched(cn.name, name, desc, eff))
                             HEDGE.putIfAbsent(cn.name + "." + sig, "A"); }
                         else if (UNK_ONLY.containsAll(tg)) HEDGE.putIfAbsent(cn.name + "." + sig, "U");
+                        else if (FLOOR.contains(cn.name + "." + sig) && UNK_ANY.containsAll(tg)) FLOORED.add(cn.name + "." + sig);
                     }
                     if (tg.isEmpty()) continue;
                     MethodNode decl = nodeMethod.get(tg.get(0));
@@ -418,6 +448,9 @@ public class FrameworkReachGen {
                 if (!charged.contains(h.getKey()) || (h.getValue().equals("U") && OVERRIDE_ONLY.contains(h.getKey())))
                     hl.add(h.getValue() + "\t" + h.getKey());
             for (String k : BROAD) if (!HEDGE.containsKey(k)) hl.add("A\t" + k);   // SOUNDNESS R1096 broad dispatch (one line per key)
+            for (String k : FLOORED)                                                     // SOUNDNESS R1189 the floor
+                if (!HEDGE.containsKey(k) && !BROAD.contains(k) && !charged.contains(k)) { hl.add("U\t" + k); floored++; }
+            System.err.println("framework-reach: " + floored + " members kept at U by the floor (R1189)");
             for (Map.Entry<String, TreeSet<String>> x : XJAR.entrySet())                  // SOUNDNESS R1097
                 hl.add("O\t" + x.getKey() + "\t" + String.join(",", x.getValue()));
             for (String pk : PURE) hl.add("P\t" + pk);
@@ -427,7 +460,8 @@ public class FrameworkReachGen {
             StringBuilder hb = new StringBuilder();
             for (String h : header) hb.append(h).append('\n');
             hb.append("# hedge: J = a JDK package (runtime), S = a surveyed framework class, A/U = a framework member the\n");
-            hb.append("# table cannot vouch for (A: no body — dispatch; U: the scan read it only as Unknown). See FrameworkReach.\n");
+            hb.append("# table cannot vouch for (A: no body — dispatch; U: the scan read it only as Unknown, or the\n");
+            hb.append("# previous table had a line for it and its body still carries Unknown — the R1189 floor). See FrameworkReach.\n");
             hb.append("# P = a member a NAME rule charges whose surveyed body is a proven-pure field accessor (R1052).\n");
             hb.append("# O = a public member overridden in ANOTHER surveyed jar by a body that can do more than the row says;\n");
             hb.append("#     the overriding classes follow (R1097). See FrameworkReach#crossJarOverriders.\n");

@@ -5,7 +5,7 @@
 # NAMED MISS: the closure stops at the JDK, which is OPAQUE here (no bodies; only the classifier's name rules),
 # while framework bodies are TRANSPARENT. A framework member whose effect happens inside a JDK body the
 # classifier leaves uncharged is missed exactly as a direct call to that JDK member is (R814 is that frontier).
-# generator-sha256 8389706bbf45026e084e2cd0a212d18885a4f45bae4ede6b7661eb76445919cf
+# generator-sha256 79893361959e0adbd08ff798deb80a51094da464db627a336dc50cd781bb87cd
 # source org.jetbrains:annotations:24.1.0 27a770dc7ce50500918bb8c3c0660c98290630ec796b5e3cf6b90f403b3033c6
 # source aopalliance:aopalliance:1.0 0addec670fedcd3f113c5c8091d783280d23f75e3acb841b61a9cdb079376a08
 # source software.amazon.awssdk:auth:2.25.60 0a9a569060d287f069c61eaefcad6e5e423fb048f0f7198d3825b7f3d6823258
@@ -124,12 +124,13 @@
 # source com.twilio.sdk:twilio:10.1.5 94a3c0a3e2ea63bd2c84a8e9e5b406ba3482bc902e2092eebe75048e47eb6300
 # source xerces:xercesImpl:2.12.2 6fc991829af1708d15aea50c66f0beadcd2cfeb6968e0b2f55c1b0909883fe16
 # hedge: J = a JDK package (runtime), S = a surveyed framework class, A/U = a framework member the
-# table cannot vouch for (A: no body — dispatch; U: the scan read it only as Unknown). See FrameworkReach.
+# table cannot vouch for (A: no body — dispatch; U: the scan read it only as Unknown, or the
+# previous table had a line for it and its body still carries Unknown — the R1189 floor). See FrameworkReach.
 # P = a member a NAME rule charges whose surveyed body is a proven-pure field accessor (R1052).
 # O = a public member overridden in ANOTHER surveyed jar by a body that can do more than the row says;
 #     the overriding classes follow (R1097). See FrameworkReach#crossJarOverriders.
-# entries 76392
-# content-sha256 6f5f21ead810e3fb6d525fb82e57a8e5a58d6f967344af99c76e526f2fc6e23d
+# entries 76399
+# content-sha256 e8070894ac693fd9fd1f3452a19f3547a77fa17109f42deb72d5ce5e1a8ccca7
 A	com/fasterxml/jackson/annotation/JacksonInject.useInput()Lcom/fasterxml/jackson/annotation/OptBoolean;
 A	com/fasterxml/jackson/annotation/JacksonInject.value()Ljava/lang/String;
 A	com/fasterxml/jackson/annotation/JsonAlias.value()[Ljava/lang/String;
@@ -20864,6 +20865,7 @@ A	org/springframework/data/mapping/model/AnnotationBasedPersistentProperty.creat
 A	org/springframework/data/mapping/model/ClassGeneratingEntityInstantiator$ObjectInstantiator.newInstance([Ljava/lang/Object;)Ljava/lang/Object;
 A	org/springframework/data/mapping/model/EntityInstantiator.createInstance(Lorg/springframework/data/mapping/PersistentEntity;Lorg/springframework/data/mapping/model/ParameterValueProvider;)Ljava/lang/Object;
 A	org/springframework/data/mapping/model/FieldNamingStrategy.getFieldName(Lorg/springframework/data/mapping/PersistentProperty;)Ljava/lang/String;
+A	org/springframework/data/mapping/model/MutablePersistentEntity.addAssociation(Lorg/springframework/data/mapping/Association;)V
 A	org/springframework/data/mapping/model/MutablePersistentEntity.addPersistentProperty(Lorg/springframework/data/mapping/PersistentProperty;)V
 A	org/springframework/data/mapping/model/MutablePersistentEntity.doWithAssociations(Lorg/springframework/data/mapping/AssociationHandler;)V
 A	org/springframework/data/mapping/model/MutablePersistentEntity.doWithAssociations(Lorg/springframework/data/mapping/SimpleAssociationHandler;)V
@@ -21912,6 +21914,7 @@ A	org/springframework/data/mongodb/core/mapping/Field.value()Ljava/lang/String;
 A	org/springframework/data/mongodb/core/mapping/Field.write()Lorg/springframework/data/mongodb/core/mapping/Field$Write;
 A	org/springframework/data/mongodb/core/mapping/MongoId.targetType()Lorg/springframework/data/mongodb/core/mapping/FieldType;
 A	org/springframework/data/mongodb/core/mapping/MongoId.value()Lorg/springframework/data/mongodb/core/mapping/FieldType;
+A	org/springframework/data/mongodb/core/mapping/MongoPersistentEntity.addAssociation(Lorg/springframework/data/mapping/Association;)V
 A	org/springframework/data/mongodb/core/mapping/MongoPersistentEntity.addPersistentProperty(Lorg/springframework/data/mapping/PersistentProperty;)V
 A	org/springframework/data/mongodb/core/mapping/MongoPersistentEntity.doWithAssociations(Lorg/springframework/data/mapping/AssociationHandler;)V
 A	org/springframework/data/mongodb/core/mapping/MongoPersistentEntity.doWithAssociations(Lorg/springframework/data/mapping/SimpleAssociationHandler;)V
@@ -22733,6 +22736,7 @@ A	org/springframework/data/neo4j/core/mapping/GraphPropertyDescription.getActual
 A	org/springframework/data/neo4j/core/mapping/GraphPropertyDescription.isIdProperty()Z
 A	org/springframework/data/neo4j/core/mapping/Neo4jEntityConverter.read(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;
 A	org/springframework/data/neo4j/core/mapping/Neo4jEntityConverter.write(Ljava/lang/Object;Ljava/lang/Object;)V
+A	org/springframework/data/neo4j/core/mapping/Neo4jPersistentEntity.addAssociation(Lorg/springframework/data/mapping/Association;)V
 A	org/springframework/data/neo4j/core/mapping/Neo4jPersistentEntity.addPersistentProperty(Lorg/springframework/data/mapping/PersistentProperty;)V
 A	org/springframework/data/neo4j/core/mapping/Neo4jPersistentEntity.containsPossibleCircles(Ljava/util/function/Predicate;)Z
 A	org/springframework/data/neo4j/core/mapping/Neo4jPersistentEntity.doWithAssociations(Lorg/springframework/data/mapping/AssociationHandler;)V
@@ -70530,6 +70534,7 @@ U	org/springframework/data/couchbase/core/convert/OtherConverters$StringToClass.
 U	org/springframework/data/couchbase/core/convert/TypeAwareTypeInformationMapper.resolveTypeFrom(Lorg/springframework/data/mapping/Alias;)Lorg/springframework/data/util/TypeInformation;
 U	org/springframework/data/couchbase/core/convert/join/N1qlJoinResolver.isLazyJoin(Lorg/springframework/data/couchbase/core/query/N1qlJoin;)Z
 U	org/springframework/data/couchbase/core/mapping/BasicCouchbasePersistentEntity.<init>(Lorg/springframework/data/util/TypeInformation;)V
+U	org/springframework/data/couchbase/core/mapping/BasicCouchbasePersistentEntity.addAssociation(Lorg/springframework/data/mapping/Association;)V
 U	org/springframework/data/couchbase/core/mapping/BasicCouchbasePersistentEntity.addPersistentProperty(Lorg/springframework/data/mapping/PersistentProperty;)V
 U	org/springframework/data/couchbase/core/mapping/BasicCouchbasePersistentEntity.doWithAll(Lorg/springframework/data/mapping/PropertyHandler;)V
 U	org/springframework/data/couchbase/core/mapping/BasicCouchbasePersistentEntity.doWithAssociations(Lorg/springframework/data/mapping/AssociationHandler;)V
@@ -71279,6 +71284,7 @@ U	org/springframework/data/elasticsearch/core/mapping/SimpleElasticsearchMapping
 U	org/springframework/data/elasticsearch/core/mapping/SimpleElasticsearchMappingContext.hasPersistentEntityFor(Ljava/lang/Class;)Z
 U	org/springframework/data/elasticsearch/core/mapping/SimpleElasticsearchMappingContext.shouldCreateProperties(Lorg/springframework/data/util/TypeInformation;)Z
 U	org/springframework/data/elasticsearch/core/mapping/SimpleElasticsearchPersistentEntity.<init>(Lorg/springframework/data/util/TypeInformation;Lorg/springframework/data/elasticsearch/core/mapping/SimpleElasticsearchPersistentEntity$ContextConfiguration;)V
+U	org/springframework/data/elasticsearch/core/mapping/SimpleElasticsearchPersistentEntity.addAssociation(Lorg/springframework/data/mapping/Association;)V
 U	org/springframework/data/elasticsearch/core/mapping/SimpleElasticsearchPersistentEntity.doWithAll(Lorg/springframework/data/mapping/PropertyHandler;)V
 U	org/springframework/data/elasticsearch/core/mapping/SimpleElasticsearchPersistentEntity.doWithAssociations(Lorg/springframework/data/mapping/AssociationHandler;)V
 U	org/springframework/data/elasticsearch/core/mapping/SimpleElasticsearchPersistentEntity.doWithAssociations(Lorg/springframework/data/mapping/SimpleAssociationHandler;)V
@@ -71682,6 +71688,7 @@ U	org/springframework/data/mapping/model/AnnotationBasedPersistentProperty.isVer
 U	org/springframework/data/mapping/model/AnnotationBasedPersistentProperty.isWritable()Z
 U	org/springframework/data/mapping/model/AnnotationBasedPersistentProperty.toString()Ljava/lang/String;
 U	org/springframework/data/mapping/model/AnnotationBasedPersistentProperty.usePropertyAccess()Z
+U	org/springframework/data/mapping/model/BasicPersistentEntity.addAssociation(Lorg/springframework/data/mapping/Association;)V
 U	org/springframework/data/mapping/model/BasicPersistentEntity.addPersistentProperty(Lorg/springframework/data/mapping/PersistentProperty;)V
 U	org/springframework/data/mapping/model/BasicPersistentEntity.doWithAll(Lorg/springframework/data/mapping/PropertyHandler;)V
 U	org/springframework/data/mapping/model/BasicPersistentEntity.doWithAssociations(Lorg/springframework/data/mapping/AssociationHandler;)V
@@ -72426,6 +72433,7 @@ U	org/springframework/data/mongodb/core/index/TextIndexDefinition.getIndexOption
 U	org/springframework/data/mongodb/core/index/WildcardIndex.getIndexOptions()Lorg/bson/Document;
 U	org/springframework/data/mongodb/core/index/WildcardIndex.toString()Ljava/lang/String;
 U	org/springframework/data/mongodb/core/mapping/BasicMongoPersistentEntity.<init>(Lorg/springframework/data/util/TypeInformation;)V
+U	org/springframework/data/mongodb/core/mapping/BasicMongoPersistentEntity.addAssociation(Lorg/springframework/data/mapping/Association;)V
 U	org/springframework/data/mongodb/core/mapping/BasicMongoPersistentEntity.addPersistentProperty(Lorg/springframework/data/mapping/PersistentProperty;)V
 U	org/springframework/data/mongodb/core/mapping/BasicMongoPersistentEntity.doWithAll(Lorg/springframework/data/mapping/PropertyHandler;)V
 U	org/springframework/data/mongodb/core/mapping/BasicMongoPersistentEntity.doWithAssociations(Lorg/springframework/data/mapping/AssociationHandler;)V

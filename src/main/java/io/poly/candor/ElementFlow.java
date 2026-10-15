@@ -496,6 +496,7 @@ final class ElementFlow {
                 for (String d : e.getValue()) {
                     boolean a = g.elems.computeIfAbsent(d, k -> new HashSet<>()).addAll(ex);
                     if (a && DEBUG) System.err.println("R1195BACK\t" + e.getKey() + "\t" + d + "\t" + ex);
+                    if (a && DEBUG && ex.stream().anyMatch(t -> t.endsWith("\t2"))) System.err.println("R1198BACK\t" + e.getKey() + "\t" + d);
                     changed |= a;
                 }
             }
@@ -796,6 +797,9 @@ final class ElementFlow {
                     // a field of the object its caller handed it runs the CALLER's elements' equals/hashCode
                     for (List<String> d : tk) {
                         if (DEBUG) System.err.println("R1195TWIN\t" + p[0] + "\t" + callee + "\t" + a + "\t" + d.get(2));
+                        // R1198 reach: a key other than compareTo, or a field PATH (a field of a field)
+                        if (DEBUG && (!d.get(2).equals(CMP) || a.indexOf('#') != a.lastIndexOf('#')))
+                            System.err.println("R1198TWIN\t" + p[0] + "\t" + callee + "\t" + a + "\t" + d.get(2));
                         g.dispatch(p[0], a, d.get(2), substitute(g, d.get(3), callee, p[4]), d.get(4));
                     }
                     if ((Boolean) ts[4]) { g.alias(a, p[4]); g.pair(a, p[4]); } else if ((Boolean) ts[2]) g.link(a, p[4]);

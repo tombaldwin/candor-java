@@ -9,6 +9,28 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+Sorting, or inserting into a naturally-ordered container, now reaches the elements' `compareTo` in seven shapes
+0.40.11 read as absent, a **silent under-report** on executed code (R1184): a map's VALUES, an erased `T[]` array
+(and `toArray()`), a stream past a `map` stage, `Collectors.toCollection(TreeSet::new)` and
+`toMap/groupingBy(.., TreeMap::new, ..)`, a value a helper adds to the caller's list, a natural-ordering comparator
+(`Comparator.naturalOrder()`/`reverseOrder()`, `Collections.reverseOrder()`, `Eff::compareTo`), and a dependency's
+`SortedSet` return. Two shapes cannot be decided from bytecode and are now **disclosed** as
+`Unknown[dispatch:java.lang.Comparable.compareTo]`, never charged: a dependency's `Set`/`Map`/`Collection` return (its
+allocation is out of sight), and a HashMap-backed key of a type that is `Comparable` of itself (a bucket of 11+
+colliding keys becomes a tree that runs `compareTo`). A `TreeSet`/`TreeMap` built in the same method with a lambda
+comparator no longer charges its elements' `compareTo` (R1183, an over-charge); one built with a comparator OBJECT,
+or reached through a field or parameter, keeps the charge, because its comparator may run `compareTo` itself
+(unboundid's `ReverseComparator` does).
+
+- ⚠ **Gates that change verdict on real code.** Measured against the published 0.40.11 jar over the 762-entry JVM
+  corpus (`bin/corpus-ab.py`; ADDED 21, REMOVED 0, CHANGED 252; no concrete effect and no `Unknown` lost, 0 of
+  8,667,679 call-graph edges dropped). 30 rows gain a concrete effect — e.g. `deny Clock` over JDA's
+  `MemberImpl.getRoles` (`roles.sort(Comparator.reverseOrder())` runs `RoleImpl.compareTo`), `deny Log` over
+  kafka-streams' `Tasks.tasks`, `deny Fs` over liquibase's SQL generators (`new UnparsedSql(.., objects...)` hashes
+  them), ignite's `GridCacheTtlManager.removeTrackedEntry` and byte-buddy's `MethodGraph..Ambiguous.of`; each
+  sampled gate re-run on both jars went 0 -> 1. 86 rows newly carry `Unknown` only (0.0031%), 15 of them the new
+  disclosures (kafka-streams' `TaskId` keys, ignite's cluster nodes, geode, netty's `DefaultChannelGroup`).
+
 ## [0.40.11] — 2026-10-15
 
 - **`jbang-catalog.json` points at the v0.40.11 jar.**

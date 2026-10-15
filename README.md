@@ -122,8 +122,17 @@ candidate target and one effectful override would smear across the whole report:
   (SOUNDNESS R1179): `Collections.sort(l)`, `l.sort(null)`, `Arrays.sort(a)`, `Collections.max/min/binarySearch`,
   `stream().sorted()`, and a natural-ordered `TreeSet`/`TreeMap`/`PriorityQueue`/skip list built from or filled
   with a collection, or handed one element, charge the element types' `compareTo` (a map's elements are its
-  keys). A declared `Set`/`Map` counts as sorted only where a natural-ordered allocation reaches it; one built
-  with a `Comparator` runs the comparator instead. A method doing any of this to its own collection parameter
+  keys, its VALUES a twin that `values()` reads — SOUNDNESS R1184). Also an erased `T[]` and a `toArray()`, a
+  stream past a `map` stage, `Collectors.toCollection(TreeSet::new)` and `toMap/groupingBy(.., TreeMap::new, ..)`,
+  a natural-ordering comparator (`Comparator.naturalOrder()/reverseOrder()`, `Collections.reverseOrder()`), and a
+  value a helper adds to the caller's list or returns in one. A declared `Set`/`Map` counts as sorted only where a
+  natural-ordered allocation (or a sorted static type) reaches it; one built with a `Comparator` runs the
+  comparator instead — and a `TreeSet`/`TreeMap` built in the same method with a lambda comparator is not charged
+  its elements' `compareTo` (R1183; a comparator OBJECT, or one reached through a field or parameter, keeps the
+  charge, since it may call `compareTo` itself). Two cases are DISCLOSED `Unknown[dispatch:java.lang.Comparable.
+  compareTo]`, never charged: a dependency's container returned as `Set`/`Map`/`Collection` (allocation out of
+  sight), and a key of a type `Comparable` of itself hashed into a HashMap-backed structure (11+ colliding keys
+  make a tree bin that runs `compareTo`; executed on JDK 21). A method doing any of this to its own collection parameter
   charges its CALLER, over the caller's argument. The argument's type must name
   ONE body — a provable `new T`, or a project declared type all of whose runtime types resolve to one body;
   where it cannot (a `java.*` or multi-body declared type admitting an effectful override) the call is
@@ -131,8 +140,9 @@ candidate target and one effectful override would smear across the whole report:
   runs the caller's override, so a call into a chained dependency passing a project type — or a collection
   or array of project types, which the dependency may store and compare, hash or sort later (R1174) — whose
   override of one of these members carries a concrete effect is disclosed `Unknown` with the same reason, not
-  charged. In one tree, not followed: a scalar value a callee stores in a field and dispatches on later, a map's values,
-  and the iterator an `iterator()` returns.
+  charged. In one tree, not followed: a scalar value a callee stores in a field and dispatches on later (a field
+  merges every instance), a comparator built by `Comparator.comparing(f)` (it runs the KEY's `compareTo`), a
+  comparator OBJECT's own `compare` reached from the ordering site, and the iterator an `iterator()` returns.
 - `kotlin.jvm.functions.FunctionN.invoke`, `scala.FunctionN`/`PartialFunction` `apply`, and
   `groovy.lang.Closure.call` — every Kotlin/Scala/Groovy lambda or closure is a class implementing
   these; the body is instead attributed at its **creation site** (precise-by-construction).

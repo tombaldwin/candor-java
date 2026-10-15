@@ -18,8 +18,9 @@ import org.junit.jupiter.api.Test;
  *
  * <p>Every member was EXECUTED on JDK 21 (fixture {@code javaagent-v062/fx}): each {@code q*} wrote its file through
  * an effectful {@code compareTo}, each {@code k*} wrote nothing. Against v0.40.11 every {@code q*} below except the
- * natural-tree ones read absent under {@code deny Fs Unknown}, and {@code kCmpSetOps}/{@code kCmpMapOps}/
- * {@code kCmpFieldAdd} were charged. Two directions:
+ * natural-tree ones read absent under {@code deny Fs Unknown}, and {@code kCmpSetOps}/{@code kCmpMapOps} were charged
+ * (R1183). A comparator-built set in a FIELD ({@code kCmpFieldAdd}) or built with a comparator OBJECT
+ * ({@code qNewRevCmp}, whose {@code compare} runs {@code compareTo} — executed) keeps its charge. Two directions:
  * <ul>
  *   <li>RESOLUTIONS (an edge to the element's override): map VALUES, erased {@code T[]} arrays, a stream past a
  *       {@code map} stage, {@code Collectors.toCollection(TreeSet::new)}/{@code toMap(.., TreeMap::new)}, a scalar
@@ -70,6 +71,7 @@ class HBase implements Comparable<HBase> { final int v; HBase(int v) { this.v = 
   @Override public int hashCode() { return 7; } @Override public boolean equals(Object o) { return o instanceof HBase h && h.v == v && o.getClass() == getClass(); }
   public int compareTo(HBase o) { Sink.w("HBase.compareTo." + N.cur); return Integer.compare(v, o.v); } }
 final class HSub extends HBase { HSub(int v) { super(v); } }
+final class RevCmp implements Comparator<Object> { @SuppressWarnings({"unchecked", "rawtypes"}) public int compare(Object a, Object b) { return ((Comparable) b).compareTo(a); } }
 final class Bag { final List<Object> items = new ArrayList<>(); void put(Object o) { items.add(o); }
   @SuppressWarnings({"unchecked", "rawtypes"}) void order() { Collections.sort((List) items); } int size() { return items.size(); } }
 final class G2 {
@@ -186,12 +188,16 @@ public class N {
   private static TreeSet<Eff> afield = new TreeSet<>(Comparator.comparingInt((Eff x) -> x.v));
   @SuppressWarnings("unchecked") static void setAfield(Object[] a) { afield = (TreeSet<Eff>) a[0]; }
   public static void qFieldFromArr() { setAfield(new Object[] { new TreeSet<Eff>() }); afield.add(new Eff(1)); afield.add(new Eff(2)); }
+  public static void qNewRevCmp() { TreeSet<Eff> t = new TreeSet<>(new RevCmp()); t.add(new Eff(1)); t.add(new Eff(2)); }
 }
 """;
 
-    static final List<String> RESOLVED = List.of("qDepSortedAdd", "qDepNatTree", "qValSort", "qValTree", "qValMax", "qValStream", "qValLocal", "qArrGen", "qArrObj", "qArrVar", "qMapSorted", "qMapLambda", "qCollTree", "qCollLam", "qCollPq", "qCollMap", "qPushSort", "qPushTwo", "qTwoSort", "qBagOrder", "qNatSetAdd", "qNatMapPut", "qNatFieldAdd", "qNatTadd", "qSortedCopyAdd", "qRevTreeAdd", "qNatOrdSort", "qRevColSort", "qRefCmpTree", "qStreamMaxNat", "qNullsFirstSort", "qNullCmpParam", "qMixFieldAdd", "qLocalMixAdd", "qFieldFromParam", "qFieldFromArr");
+    static final List<String> RESOLVED = List.of("qDepSortedAdd", "qDepNatTree", "qValSort", "qValTree", "qValMax", "qValStream", "qValLocal", "qArrGen", "qArrObj", "qArrVar", "qMapSorted", "qMapLambda", "qCollTree", "qCollLam", "qCollPq", "qCollMap", "qPushSort", "qPushTwo", "qTwoSort", "qNatSetAdd", "qNatMapPut", "qNatFieldAdd", "qNatTadd", "qSortedCopyAdd", "qRevTreeAdd", "qNatOrdSort", "qRevColSort", "qRefCmpTree", "qStreamMaxNat", "qNullsFirstSort", "qNullCmpParam", "qMixFieldAdd", "qLocalMixAdd", "qFieldFromParam", "qFieldFromArr", "qNewRevCmp");
     static final List<String> DISCLOSED = List.of("qDepTreeAdd", "qDepMapPut", "qDepAddAll", "qBinPut", "qBinSetAdd", "qBinCopy", "qBinBase");
-    static final List<String> NOTHING = List.of("kDepPureAdd", "kDepPlainAdd", "kValKeysPure", "kValNoSort", "kValPure", "kArrGenPure", "kArrGenLen", "kArrObjPure", "kMapPure", "kMapNoSort", "kCollHash", "kCollCmp", "kCollPure", "kCollList", "kPushNoSort", "kPushPure", "kBagSize", "kBinSub", "kBinTable", "kBinPure", "kCmpSetOps", "kCmpMapOps", "kCmpFieldAdd");
+    static final List<String> NOTHING = List.of("kDepPureAdd", "kDepPlainAdd", "kValKeysPure", "kValNoSort", "kValPure", "kArrGenPure", "kArrGenLen", "kArrObjPure", "kMapPure", "kMapNoSort", "kCollHash", "kCollCmp", "kCollPure", "kCollList", "kPushNoSort", "kPushPure", "kBagSize", "kBinSub", "kBinTable", "kBinPure", "kCmpSetOps", "kCmpMapOps");
+    /** A scalar a callee stores into its OWN FIELD's container is not followed (a field merges every instance; the
+     *  generic-container smear it caused was measured on stanford-corenlp): stated residual, executed real. */
+    static final List<String> RESIDUAL = List.of("qBagOrder");
     static final List<String> NEVER_CHARGED = List.of("kDepHashDecl", "kDepHashSet", "kDepHashMap", "kBinFew");
 
     // ---- the over-charge controls, written first -------------------------------------------------------

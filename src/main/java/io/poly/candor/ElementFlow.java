@@ -72,20 +72,23 @@ import org.objectweb.asm.tree.analysis.SourceValue;
  * and an object-array argument takes the same summary a collection does. Past a stream's {@code map} stage the
  * elements are the function's instantiated result type. {@code collect(toCollection(TreeSet::new))} (or a capture-free
  * {@code () -> new TreeSet<>(..)}) and {@code toMap/groupingBy(.., TreeMap::new, ..)} order what they collect. A
- * SCALAR parameter a callee adds to a container — a container parameter, its own field, its return — is the caller's
- * element there, through the summary (a one-element pass, closed backwards only over pass-through callers). A
+ * SCALAR parameter a callee adds to a container — a container parameter or its return (never a field, which merges
+ * every instance) — is the caller's element there, through the summary (a one-element pass, closed backwards only over pass-through callers). A
  * natural-ordering COMPARATOR ({@code Collections.reverseOrder()}, {@code Comparator.naturalOrder()}, a method
  * reference to {@code compareTo}, {@code nullsFirst/Last} over one) is natural ordering. Two members are not
  * decidable here and are DISCLOSED, never charged ({@link ArgContract#discloseCompareTo}): a dependency's container
  * returned as an interface (its allocation out of sight; a sorted static type is evidence and charges), and a
  * HashMap-backed structure's tree bins. Residuals: a comparator built by {@code Comparator.comparing(f)} (it runs
- * the KEY's compareTo); {@code flatMap}; a collection reached through a field the dependency fills; a tree bin over a
+ * the KEY's compareTo); {@code flatMap}; a scalar a callee stores into its own FIELD container (a field merges every
+ * instance, so it is not followed); a collection reached through a field the dependency fills; a tree bin over a
  * chained dependency's key type; a function value that is not a lambda or method reference.
  *
  * <p><b>SOUNDNESS R1183.</b> {@code TreeSet}/{@code TreeMap} key operations are charged by
  * {@link Candor#contractReentry} with the element's compareTo; the charge is applied here, and WITHHELD only where every
- * cell the receiver can be is a local allocation or a private/final field reached only by allocations whose
- * comparator is provably not natural ({@link #CMPX}), every producer traced ({@link #traced}).
+ * cell the receiver can be is an allocation in the same body whose comparator is a lambda or method reference (other
+ * than {@code compareTo}) made in that body ({@link #CMPX}), every producer traced ({@link #traced}). A comparator
+ * OBJECT ({@code new ReverseComparator()}) or one stored in a field keeps the charge: its {@code compare} may run the
+ * elements' {@code compareTo} and nothing edges it from here.
  *
  * <p>After the analyze loop only; reads bodies like DbHandleFlow. A map cell's elements are its KEYS ({@code put},
  * {@code keySet()}, {@code new TreeMap<>(m)}, {@code putAll}). Over-approximations, stated: a list of one element
@@ -272,13 +275,14 @@ final class ElementFlow {
         }
     }
 
-    /** Every cell the receiver can be is a local allocation or a private/final field, each reached ONLY by
-     *  allocations built with a provably non-natural comparator. */
+    /** Every cell the receiver can be is an allocation IN THIS BODY built with a provably non-natural comparator — a
+     *  lambda or method reference made in this body, whose own body is therefore edged to it at creation. Not a field:
+     *  a comparator lambda stored with the container is edged to the INITIALISER, not to this body, so the charge the
+     *  old path made here was the only cover for whatever that comparator runs. */
     private static boolean provenNonNatural(AnalysisContext c, Graph g, String recv) {
         if (recv.isEmpty() || recv.equals("?")) return false;
         for (String r : recv.split(" ")) {
-            if (r.startsWith("F:")) { if (!sealedField(c, r.substring(2))) return false; }
-            else if (!r.startsWith("L:")) return false;
+            if (!r.startsWith("L:")) return false;
             Set<String> k = g.kinds.get(r);
             if (k == null || k.isEmpty()) return false;
             for (String x : k) if (!x.equals(CMPX)) return false;
@@ -310,18 +314,6 @@ final class ElementFlow {
             }
         }
         return true;
-    }
-
-    /** A field every store of which is in this scan: private (nestmates only) or final (initialisers only). */
-    private static boolean sealedField(AnalysisContext c, String ownerDotName) {
-        int dot = ownerDotName.lastIndexOf('.');
-        if (dot < 0) return false;
-        ClassNode oc = c.byName.get(ownerDotName.substring(0, dot));
-        if (oc == null) return false;
-        for (FieldNode fn : oc.fields)
-            if (fn.name.equals(ownerDotName.substring(dot + 1)))
-                return (fn.access & (Opcodes.ACC_PRIVATE | Opcodes.ACC_FINAL)) != 0;
-        return false;
     }
 
     private static void closeOver(Map<String, Set<String>> links, Map<String, Set<String>> vals, boolean twin) {
@@ -389,11 +381,12 @@ final class ElementFlow {
                     Object[] qs = memo.computeIfAbsent(qc, k -> summary(g, byCell, callee, k));
                     @SuppressWarnings("unchecked") List<List<String>> qk = (List<List<String>>) qs[0];
                     for (List<String> d : qk) g.dispatch(p[0], p[1], d.get(2), substitute(g, d.get(3), callee, p[4]), d.get(4));
-                    // …and where the callee ADDS it — to a container parameter, its own field, or the return — the
-                    // caller's value is an element there (`<T> void push(List<T> l, T e) { l.add(e); }`, then the
-                    // caller sorts `l`)
-                    @SuppressWarnings("unchecked") Set<String> qf = (Set<String>) qs[1];
-                    for (String f : qf) g.link(p[1], f);
+                    // …and where the callee ADDS it — to a container parameter or the return, both specific to THIS call
+                    // — the caller's value is an element there (`<T> void push(List<T> l, T e) { l.add(e); }`, then
+                    // the caller sorts `l`). NOT to a field: a field cell merges every instance, and a generic
+                    // container class's `add(E)` then poured every caller's element type into every instance —
+                    // measured on stanford-corenlp, where `ClassicCounter.setCount` made `printSVMLightFormat`, which
+                    // sorts an `Integer[]`, charge `IndexedWord.compareTo` (a fabrication).
                     if ((Boolean) qs[2]) g.link(p[1], p[4]);
                     @SuppressWarnings("unchecked") Set<String> qp = (Set<String>) qs[5];
                     linkParams(g, p[1], qp, -1, p[4]);
@@ -845,7 +838,8 @@ final class ElementFlow {
      *  ordering — {@code null}, {@code Collections.reverseOrder()}, {@code Comparator.naturalOrder()/reverseOrder()},
      *  a {@code nullsFirst/Last} over one of those, a method reference to {@code compareTo} (each runs the elements'
      *  {@code compareTo}, executed on JDK 21). {@link #CMPX}: provably not — a lambda or another method reference, a
-     *  {@code comparingInt/Long/Double}, a {@code new}. Anything else, {@link #BYCMP} (unknown). A union: NAT wins,
+     *  {@code comparingInt/Long/Double} over one. Anything else — a {@code new} comparator object included — is
+     *  {@link #BYCMP} (unknown). A union: NAT wins,
      *  CMPX only when every producer is one. */
     static String comparatorKind(MethodNode mn, Frame<SourceValue>[] sf, SourceValue v, Set<SourceValue> seen) {
         if (v == null || v.insns.isEmpty() || !seen.add(v)) return BYCMP;
@@ -856,7 +850,8 @@ final class ElementFlow {
             Frame<SourceValue> f = idx >= 0 ? sf[idx] : null;
             switch (src.getOpcode()) {
                 case Opcodes.ACONST_NULL -> k = NAT;
-                case Opcodes.NEW -> k = CMPX;
+                // a `new SomeComparator()`: its compare may itself run the elements' compareTo (unboundid's
+                // ReverseComparator does, measured), and nothing edges its body from the container's users — unknown
                 case Opcodes.INVOKEDYNAMIC -> {
                     InvokeDynamicInsnNode d = (InvokeDynamicInsnNode) src;
                     Handle h = d.bsmArgs.length >= 2 && d.bsmArgs[1] instanceof Handle hh ? hh : null;
@@ -869,8 +864,11 @@ final class ElementFlow {
                     if (cmpOwner && (mi.name.equals("naturalOrder") || mi.name.equals("reverseOrder") && mi.desc.startsWith("()")))
                         k = NAT;
                     else if (mi.owner.equals("java/util/Comparator") && (mi.name.equals("comparingInt") || mi.name.equals("comparingLong")
-                            || mi.name.equals("comparingDouble")))
-                        k = CMPX;
+                            || mi.name.equals("comparingDouble")) && f != null) {
+                        // a primitive key: never a compareTo — when the key function is a lambda made HERE (edged here)
+                        String kk = comparatorKind(mn, sf, f.getStack(f.getStackSize() - 1), seen);
+                        k = kk.equals(CMPX) ? CMPX : BYCMP;
+                    }
                     else if (mi.owner.equals("java/util/Comparator") && (mi.name.equals("nullsFirst") || mi.name.equals("nullsLast")) && f != null)
                         k = comparatorKind(mn, sf, f.getStack(f.getStackSize() - 1), seen);
                 }

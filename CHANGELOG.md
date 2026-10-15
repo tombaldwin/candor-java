@@ -9,6 +9,16 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+A framework member the generated framework table could not vouch for no longer reads as pure to a project that calls it
+without scanning the framework (R1193, a **silent under-report**): where the framework's own scan reports `Unknown`
+beside effects the table's closure does not reach (jackson's `ObjectMapper.treeToValue` reads `[Fs, Log, Unknown]`),
+the call is now disclosed as `Unknown` (31,667 members). And a regeneration never drops a member's last line while
+its body still carries `Unknown` (R1189's floor).
+
+- ⚠ **Gates that change verdict on real code.** Measured over the 762-entry corpus: 4,702 rows (0.171%) newly carry
+  `Unknown` — 2,845 of them only `Unknown` — so `deny Unknown` moves on them (sampled 8 of 8, and the whole-scan gate on
+  postmark and sendgrid-java); no concrete effect moves.
+
 A **comparator** is now charged where it runs, closing three **silent under-reports** on executed code. A
 `TreeSet`/`TreeMap`/`PriorityQueue`/skip list built with `Comparator.comparing(f)` charges the KEY's `compareTo` on
 insert and lookup (R1188; at a `sort`/`sorted`/`max` the same comparator was already disclosed as an opaque callback and

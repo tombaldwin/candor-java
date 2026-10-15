@@ -97,6 +97,25 @@ import org.objectweb.asm.tree.analysis.SourceValue;
  * {@code callback:} disclosure stays); a key function that is not a lambda or method reference; a comparator whose
  * value comes from a dependency's return or a field no store in the scan traces.
  *
+ * <p><b>SOUNDNESS R1195 — the residuals R1184/R1188/R1189 named, each executed on JDK 21.</b> A stream with no
+ * collection behind it ({@code Stream.iterate/generate/concat}, a {@code Stream.Builder}, {@code StreamSupport} over a
+ * spliterator) holds its seed's and its functions' result types. A {@code flatMap} stage holds the elements of the
+ * streams its function returns: a lambda's return cell flows to it, and its element parameter is bound to the incoming
+ * elements' OWN elements, a twin cell ({@link #NEST}) that a {@code Collection<Collection<E>>} signature or an
+ * {@code outer.add(inner)} fills. A COMPARATOR's naturalness is a fact of its value ({@link #CNAT}), carried through a
+ * return, a field and a combinator to the container built with it, which then orders naturally (charged); a comparator
+ * out of sight ({@link #CDEP}: a dependency's return or field, a project field nothing in the scan stores) makes the
+ * container's key operations DISCLOSE {@code callback:java.util.Comparator.compare}, as {@code l.sort(depCmp)} already
+ * does, and with a comparator PARAMETER ({@link #CPAR}) the elements' {@code compareTo} is disclosed, never charged. A
+ * container in a FIELD is modelled per RECEIVER — a field twin {@code <cell>#<owner.field>} beside the global field cell
+ * — so {@code b.put(x); b.order();} charges the caller with {@code x}'s compareTo and a second instance of the same class
+ * never sees it (the instance merge is what smeared stanford-corenlp under R1184); a static field is one object and
+ * takes a scalar directly. A callee's own EXACT insertions into a container its caller handed it (or into a field of
+ * one) flow BACK to the caller's argument ({@link Graph#back}); a declared type never does. Residuals: a field of a
+ * field (one twin level; deeper falls back to the merging field cell); {@code equals}/{@code hashCode} through a callee's
+ * field twin (only {@code compareTo} summaries are applied); a callee's non-exact insertion; a comparator a caller
+ * outside the scan hands to a parameter.
+ *
  * <p><b>SOUNDNESS R1183.</b> {@code TreeSet}/{@code TreeMap} key operations are charged by
  * {@link Candor#contractReentry} with the element's compareTo; the charge is applied here, and WITHHELD only where every
  * cell the receiver can be is an allocation in the same body whose comparator is a lambda or method reference (other

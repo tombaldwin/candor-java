@@ -9,6 +9,21 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+The **ordering residuals** of R1179/R1184/R1188/R1189 are closed (R1195, **silent under-reports**, each executed on
+JDK 21 and absent under `deny Fs Unknown` on 0.40.11): a stream with no collection behind it
+(`Stream.iterate/generate/concat`, a builder, `StreamSupport`) and a `flatMap` stage now carry their elements to
+`sorted()`; a natural-ordering comparator reached through a method's return or a field orders the container built with
+it; and a container in a FIELD is followed per receiver, so `b.put(x); b.order();` charges `x`'s `compareTo` while a
+second instance of the same class stays clean (the per-instance merge is what once smeared stanford-corenlp). A
+callee's own `new` elements inserted into a container its caller handed it now reach the caller. A comparator from a
+dependency (a return, a field) or a project field nothing in the scan stores is disclosed where a sorted container runs
+it, as `l.sort(depCmp)` already was.
+
+- ⚠ **Gates that change verdict on real code.** Against main over the 762-entry corpus: 4 rows gain a concrete effect
+  (spring-core's `ReflectionHintsWriter.toAttributes`, whose `Stream.concat(..).sorted()` runs `ExecutableHint.compareTo`),
+  and 83 rows (0.0030%) newly carry only `Unknown` — mostly a `TreeMap` built with kotlin's `CASE_INSENSITIVE_ORDER`
+  (anthropic-java, okhttp), which `deny Unknown` now reports. No row loses an effect or a disclosure.
+
 A framework member the generated framework table could not vouch for no longer reads as pure to a project that calls it
 without scanning the framework (R1193, a **silent under-report**): where the framework's own scan reports `Unknown`
 beside effects the table's closure does not reach (jackson's `ObjectMapper.treeToValue` reads `[Fs, Log, Unknown]`),

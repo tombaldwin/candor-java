@@ -3,6 +3,9 @@ package io.poly.candor;
 import static io.poly.candor.AnalysisState.ctx;
 
 import io.poly.candor.Interp.ProvValue;
+import io.poly.candor.model.Effect;
+import io.poly.candor.model.EffectSet;
+import io.poly.candor.model.UnknownReason;
 import java.util.*;
 import org.objectweb.asm.Handle;
 import org.objectweb.asm.Opcodes;
@@ -133,6 +136,17 @@ final class ElementFlow {
     static final String TB = "TB";
     /** The twin cell holding a map cell's VALUES (R1184): every flow link carries it alongside the keys. */
     static final String VALS = "|v";
+    /** SOUNDNESS R1195 — the twin cell holding the ELEMENTS OF a cell's elements (a {@code List<List<E>>}'s E), read by
+     *  a {@code flatMap} stage; it travels every flow link, as {@link #VALS} does. */
+    static final String NEST = "|e";
+    private static final String[] TWINS = {VALS, NEST};
+    /** SOUNDNESS R1195 — comparator facts ({@link Graph#cmpk}) beyond R1188/R1189's: {@link #CNAT} the comparator is
+     *  natural ordering (it runs the ELEMENTS' {@code compareTo}) however far it travelled — a project method's return,
+     *  a field, a combinator over one; {@link #CDEP} its value is OUT OF SIGHT (a dependency's return or field, or a
+     *  project field no store in the scan writes), so neither what it runs nor whether it is natural is known;
+     *  {@link #CPAR} it is a method's own comparator PARAMETER (a caller outside the scan may pass natural ordering). */
+    static final String CNAT = "N", CDEP = "UD", CPAR = "UP";
+    private static final String CMP_DESC = "Ljava/util/Comparator;";
     static final boolean DEBUG = ArgContract.DEBUG;
 
     private static boolean isCollectionOwner(String o) {
@@ -196,6 +210,16 @@ final class ElementFlow {
             if (src != null && dst != null && !src.equals(dst)) alias.computeIfAbsent(src, k -> new HashSet<>()).add(dst);
         }
         void kind(String cell, String k) { kinds.computeIfAbsent(cell, x -> new HashSet<>()).add(k); }
+        /** R1195 — the twin of {@code base} for the container field {@code fkey}; null past one level (a field of a
+         *  field falls back to the global {@code F:} cell, which merges). */
+        String twin(String base, String fkey) {
+            if (base == null || base.indexOf('#') >= 0 || base.indexOf('|') >= 0) return null;
+            if (base.startsWith("P:")) twins.computeIfAbsent(base, x -> new TreeSet<>()).add("#" + fkey);
+            return base + "#" + fkey;
+        }
+        void back(String src, String dst) {
+            if (src != null && dst != null && !src.equals(dst)) back.computeIfAbsent(src, x -> new HashSet<>()).add(dst);
+        }
         /** SOUNDNESS R1188/R1189 — what a COMPARATOR value runs, per cell: {@code "K:<type>\t<exact>"} (a
          *  {@code Comparator.comparing(f)} family member runs the KEY's {@code compareTo}) and {@code "C:<class>"} (a
          *  comparator OBJECT, whose {@code compare} runs). Kept apart from {@link #kinds}: these never decide whether a
@@ -211,6 +235,20 @@ final class ElementFlow {
         void cmpLink(String src, String dst) {
             if (src != null && dst != null && !src.equals(dst)) cmpl.computeIfAbsent(src, x -> new HashSet<>()).add(dst);
         }
+        /** SOUNDNESS R1195 — FIELD TWINS: {@code <cell>#<owner.field>} is the container held in field {@code field} of
+         *  the OBJECT {@code cell} stands for — per receiver, never merged across instances (a global {@code F:} cell
+         *  does that). Indexed by base cell for a {@code P:} base, the twins a summary carries back to the caller. */
+        final Map<String, Set<String>> twins = new HashMap<>();
+        /** R1195 — BACK-FLOW, callee -> caller: what a callee itself inserted into a container its caller handed it
+         *  (a parameter, or a field of one, or of the receiver). EXACT element types only (a {@code new T} the callee
+         *  made): a callee's declared parameter type and every other caller's values never travel this way. */
+        final Map<String, Set<String>> back = new HashMap<>();
+        /** R1195 — static field cells: one object each, so a scalar a callee stores into one is the field's element. */
+        final Set<String> statics = new HashSet<>();
+        final Map<String, Boolean> fieldClassMemo = new HashMap<>();
+        /** R1195 — project comparator FIELDS read ({@code F:} cell -> declaring owner.name) and written in the scan. */
+        final Map<String, String> cmpFieldReads = new HashMap<>();
+        final Set<String> fieldStores = new HashSet<>();
         /** {caller, arg cells, callee, j}: a comparator handed to a project callee's parameter j. */
         final Set<List<String>> cmpPasses = new LinkedHashSet<>();
         void cmpSite(String caller, List<String> cells) { if (!cells.isEmpty()) cmpSites.add(List.of(caller, String.join(" ", cells))); }
@@ -251,10 +289,12 @@ final class ElementFlow {
             }
         }
         applySummaries(g);
+        comparatorKinds(c, g);
         // ORDERING: along alias links only
         closeOver(g.alias, g.kinds, false);
         // close the one-way flow (a map's VALUES twin travels every link its keys do)
         closeOver(g.flow, g.elems, true);
+        backFlow(g);
         for (List<String> d : g.dispatch) {
             Set<String> es = g.elems.get(d.get(1));
             if (es == null) continue;
@@ -293,9 +333,7 @@ final class ElementFlow {
      *  then {@code add}/{@code addAll}, a {@code PriorityQueue}, a skip list). */
     private static void comparatorSites(AnalysisContext c, Graph g) {
         if (g.cmpSites.isEmpty() || g.cmpk.isEmpty()) return;
-        Map<String, Set<String>> links = new HashMap<>();
-        for (var e : g.alias.entrySet()) links.computeIfAbsent(e.getKey(), k -> new HashSet<>()).addAll(e.getValue());
-        for (var e : g.cmpl.entrySet()) links.computeIfAbsent(e.getKey(), k -> new HashSet<>()).addAll(e.getValue());
+        Map<String, Set<String>> links = comparatorLinks(g);
         closeOver(links, g.cmpk, false);
         // a callee's comparator PARAMETER runs when it reaches one of the callee's own sites, or is handed on to a
         // parameter that runs (to a fixpoint); each call passing a comparator there runs the CALLER's comparator
@@ -326,7 +364,13 @@ final class ElementFlow {
             for (String cell : s.get(1).split(" ")) ks.addAll(g.cmpk.getOrDefault(cell, Set.of()));
             for (String k : ks) {
                 if (DEBUG) System.err.println("R1188SITE\t" + id + "\t" + k);
-                if (k.startsWith("K:")) {
+                if (k.equals(CDEP)) {
+                    // R1195: a comparator OUT OF SIGHT runs here — what its compare does is not known: disclosed as an
+                    // ordering call handed an unresolved comparator already is (`l.sort(depCmp)`)
+                    if (DEBUG) System.err.println("R1195CDEP\t" + id);
+                    c.direct.computeIfAbsent(id, x -> EffectSet.empty()).add(Effect.UNKNOWN);
+                    c.unknownWhy.computeIfAbsent(id, x -> new TreeSet<>()).add(UnknownReason.parse("callback:java.util.Comparator.compare"));
+                } else if (k.startsWith("K:")) {
                     int tab = k.indexOf('\t');
                     String t = k.substring(2, tab);
                     boolean exact = k.endsWith("\t1");
@@ -343,6 +387,102 @@ final class ElementFlow {
                 }
             }
         }
+    }
+
+    /** SOUNDNESS R1195 — what a container's COMPARATOR says about its ordering, wherever the comparator came from. The
+     *  comparator facts are closed along the alias and comparator links first (a project method's return, a field, a
+     *  combinator, the container built with it), then: a container whose comparator may be natural ordering
+     *  ({@link #CNAT}) orders NATURALLY ({@link #NAT}, positive evidence, charged); one whose comparator is out of sight
+     *  or a parameter is treated as a container out of sight ({@link #DEP}: its elements' compareTo DISCLOSED where it is
+     *  effectful, never charged). Executed on JDK 21: a {@code PriorityQueue}/{@code TreeSet}/skip list built with a
+     *  {@code naturalOrder()} returned by a method or read from a field runs the elements' {@code compareTo}. */
+    private static void comparatorKinds(AnalysisContext c, Graph g) {
+        // a project comparator field that no store in this scan writes (injected, reflective) is out of sight
+        for (var e : g.cmpFieldReads.entrySet()) if (!g.fieldStores.contains(e.getValue())) g.cmpk(e.getKey(), CDEP);
+        if (g.cmpk.isEmpty()) return;
+        closeOver(comparatorLinks(g), g.cmpk, false);
+        for (var e : g.cmpk.entrySet()) {
+            Set<String> k = e.getValue();
+            if (k.contains(CNAT)) g.kind(e.getKey(), NAT);
+            if (k.contains(CDEP) || k.contains(CPAR)) g.kind(e.getKey(), DEP);
+            if (DEBUG && (k.contains(CNAT) || k.contains(CDEP) || k.contains(CPAR)) && e.getKey().startsWith("L:"))
+                System.err.println("R1195CKIND\t" + e.getKey() + "\t" + k);
+        }
+    }
+    private static Map<String, Set<String>> comparatorLinks(Graph g) {
+        Map<String, Set<String>> links = new HashMap<>();
+        for (var e : g.alias.entrySet()) links.computeIfAbsent(e.getKey(), k -> new HashSet<>()).addAll(e.getValue());
+        for (var e : g.cmpl.entrySet()) links.computeIfAbsent(e.getKey(), k -> new HashSet<>()).addAll(e.getValue());
+        return links;
+    }
+    /** SOUNDNESS R1195 — close the BACK-FLOW links ({@link Graph#back}) with the forward flow: only EXACT element types
+     *  (a {@code new T}) travel back to the caller, so a callee's declared parameter type (a {@code List<Comparable>})
+     *  is never poured into every caller's container. */
+    private static void backFlow(Graph g) {
+        if (g.back.isEmpty()) return;
+        boolean changed = true; int rounds = 0;
+        while (changed && rounds++ < 16) {
+            changed = false;
+            for (var e : g.back.entrySet()) {
+                Set<String> s = g.elems.get(e.getKey());
+                if (s == null || s.isEmpty()) continue;
+                List<String> ex = new ArrayList<>();
+                for (String t : s) if (t.endsWith("\t1")) ex.add(t);
+                if (ex.isEmpty()) continue;
+                for (String d : e.getValue()) {
+                    boolean a = g.elems.computeIfAbsent(d, k -> new HashSet<>()).addAll(ex);
+                    if (a && DEBUG) System.err.println("R1195BACK\t" + e.getKey() + "\t" + d + "\t" + ex);
+                    changed |= a;
+                }
+            }
+            if (changed) closeOver(g.flow, g.elems, true);
+        }
+    }
+
+    /** R1195 — a container-typed field: the only ones given per-receiver twins. */
+    private static boolean containerField(String desc) { return desc.startsWith("Ljava/util/") || desc.startsWith("[L"); }
+    /** R1195 — whether project class {@code cls} (or a superclass) declares a container field: a receiver pass to one
+     *  of its methods can matter only then. */
+    private static boolean fieldClass(AnalysisContext c, Graph g, String cls) {
+        Boolean m = g.fieldClassMemo.get(cls);
+        if (m != null) return m;
+        boolean r = false;
+        for (String o = cls; o != null && !r; ) {
+            ClassNode cn = c.byName.get(o);
+            if (cn == null) break;
+            for (FieldNode fn : cn.fields) if ((fn.access & Opcodes.ACC_STATIC) == 0 && containerField(fn.desc)) { r = true; break; }
+            o = cn.superName;
+        }
+        g.fieldClassMemo.put(cls, r);
+        return r;
+    }
+    /** R1195 — the cells of an OBJECT reference: {@link #cells}, plus this body's own receiver ({@code P:..:-1}) when
+     *  the reference is {@code this}. Used only for a field access and a project call's receiver. */
+    private static List<String> objCells(AnalysisContext c, Graph g, ClassNode cn, MethodNode mn, Frame<SourceValue>[] sf,
+            SourceValue v, String self) {
+        List<String> out = cells(c, g, cn, mn, sf, v, self, 0);
+        if (v != null && (mn.access & Opcodes.ACC_STATIC) == 0 && !v.insns.isEmpty()) {
+            boolean me = true;
+            for (AbstractInsnNode src : v.insns) {
+                int idx = mn.instructions.indexOf(src);
+                Frame<SourceValue> f = idx >= 0 ? sf[idx] : null;
+                if (!(src instanceof VarInsnNode vi) || vi.getOpcode() != Opcodes.ALOAD || vi.var != 0 || f == null
+                        || !f.getLocal(0).insns.isEmpty()) { me = false; break; }
+            }
+            if (me) out.add("P:" + self + ":-1");
+        }
+        return out;
+    }
+
+    /** R1195 — a field's DECLARING class (a read or store may name a subclass). */
+    private static String declaringField(AnalysisContext c, String owner, String name) {
+        for (String o = owner; o != null; ) {
+            ClassNode cn = c.byName.get(o);
+            if (cn == null) return owner + "." + name;
+            for (FieldNode fn : cn.fields) if (fn.name.equals(name)) return o + "." + name;
+            o = cn.superName;
+        }
+        return owner + "." + name;
     }
 
     /** The cells reachable from {@code start} (itself included) along {@code links}. */
@@ -488,9 +628,11 @@ final class ElementFlow {
                 if (s != null && !s.isEmpty())
                     for (String d : e.getValue()) changed |= vals.computeIfAbsent(d, k -> new HashSet<>()).addAll(s);
                 if (!twin) continue;
-                Set<String> v = vals.get(e.getKey() + VALS);
-                if (v != null && !v.isEmpty())
-                    for (String d : e.getValue()) changed |= vals.computeIfAbsent(d + VALS, k -> new HashSet<>()).addAll(v);
+                for (String sfx : TWINS) {
+                    Set<String> v = vals.get(e.getKey() + sfx);
+                    if (v != null && !v.isEmpty())
+                        for (String d : e.getValue()) changed |= vals.computeIfAbsent(d + sfx, k -> new HashSet<>()).addAll(v);
+                }
             }
         }
     }
@@ -552,9 +694,32 @@ final class ElementFlow {
                     // sorts an `Integer[]`, charge `IndexedWord.compareTo` (a fabrication).
                     if ((Boolean) qs[2]) g.link(p[1], p[4]);
                     @SuppressWarnings("unchecked") Set<String> qp = (Set<String>) qs[5];
-                    linkParams(g, p[1], qp, -1, p[4]);
+                    linkParams(g, p[1], qp, Integer.MIN_VALUE, p[4]);
+                    // R1195: a STATIC field is one object — the scalar is its element (`Reg.add(o) { ALL.add(o); }`)
+                    @SuppressWarnings("unchecked") Set<String> qf = (Set<String>) qs[6];
+                    for (String sf2 : qf) { if (DEBUG) System.err.println("R1195QSTATIC\t" + p[0] + "\t" + sf2); g.link(p[1], sf2); }
                     continue;
                 }
+                // R1195: what the callee does with the containers in the FIELDS of this argument (or receiver), and what
+                // it itself put there or into the argument (back-flow, exact types only)
+                for (String tw : new ArrayList<>(g.twins.getOrDefault(pc, Set.of()))) {
+                    String a = p[1].indexOf('#') >= 0 || p[1].indexOf('|') >= 0 ? null : p[1] + tw;
+                    if (a == null) continue;
+                    if (p[1].startsWith("P:")) g.twins.computeIfAbsent(p[1], x -> new TreeSet<>()).add(tw);
+                    g.back(pc + tw, a);
+                    Object[] ts = memo.computeIfAbsent(pc + tw, k -> summary(g, byCell, callee, k));
+                    @SuppressWarnings("unchecked") List<List<String>> tk = (List<List<String>>) ts[0];
+                    for (List<String> d : tk)
+                        if (d.get(2).equals(CMP)) {
+                            if (DEBUG) System.err.println("R1195TWIN\t" + p[0] + "\t" + callee + "\t" + a);
+                            g.dispatch(p[0], a, CMP, substitute(g, d.get(3), callee, p[4]), d.get(4));
+                        }
+                    if ((Boolean) ts[4]) g.alias(a, p[4]); else if ((Boolean) ts[2]) g.link(a, p[4]);
+                    @SuppressWarnings("unchecked") Set<String> tp = (Set<String>) ts[5];
+                    linkParams(g, a, tp, Integer.MIN_VALUE, p[4]);
+                }
+                if (p[3].equals("-1")) continue;
+                g.back(pc, p[1]);
                 Object[] sum = memo.computeIfAbsent(pc, k -> summary(g, byCell, callee, k));
                 @SuppressWarnings("unchecked") List<List<String>> keys = (List<List<String>>) sum[0];
                 @SuppressWarnings("unchecked") Set<String> fields = (Set<String>) sum[1];
@@ -577,7 +742,7 @@ final class ElementFlow {
                 for (String f : vf) g.link(p[1] + VALS, f);
                 if ((Boolean) vs[2]) g.link(p[1] + VALS, p[4]);
                 @SuppressWarnings("unchecked") Set<String> vp = (Set<String>) vs[5];
-                linkParams(g, p[1] + VALS, vp, -1, p[4]);
+                linkParams(g, p[1] + VALS, vp, Integer.MIN_VALUE, p[4]);
             }
         } while (g.grew && rounds++ < 32);
     }
@@ -587,12 +752,20 @@ final class ElementFlow {
         if (params.isEmpty()) return;
         Map<Integer, List<String>> args = g.siteArgs.getOrDefault(site, Map.of());
         for (String x : params) {
-            String twin = x.endsWith(VALS) ? VALS : "";
+            int cut = 0;
+            while (cut < x.length() && (Character.isDigit(x.charAt(cut)) || cut == 0 && x.charAt(0) == '-')) cut++;
+            String twin = x.substring(cut);
             int k;
-            try { k = Integer.parseInt(twin.isEmpty() ? x : x.substring(0, x.length() - VALS.length())); }
+            try { k = Integer.parseInt(x.substring(0, cut)); }
             catch (NumberFormatException e) { continue; }
             if (k == self && twin.isEmpty()) continue;
-            for (String a : args.getOrDefault(k, List.of())) g.link(src, a + twin);
+            if (!twin.isEmpty() && !twin.equals(VALS) && !twin.startsWith("#")) continue;
+            for (String a : args.getOrDefault(k, List.of())) {
+                if (twin.startsWith("#")) {
+                    String tw = g.twin(a, twin.substring(1));
+                    if (tw != null) g.link(src, tw);
+                } else g.link(src, a + twin);
+            }
         }
     }
 
@@ -606,8 +779,14 @@ final class ElementFlow {
         List<String> out = new ArrayList<>();
         for (String r : recv.split(" ")) {
             if (!r.startsWith(pfx)) { out.add(r); continue; }
-            List<String> a = args.get(Integer.parseInt(r.substring(pfx.length())));
-            if (a == null || a.isEmpty()) out.add("?"); else out.addAll(a);
+            String rest = r.substring(pfx.length());
+            int hash = rest.indexOf('#');
+            List<String> a;
+            try { a = args.get(Integer.parseInt(hash < 0 ? rest : rest.substring(0, hash))); }
+            catch (NumberFormatException e) { out.add("?"); continue; }
+            if (a == null || a.isEmpty()) { out.add("?"); continue; }
+            if (hash < 0) { out.addAll(a); continue; }
+            for (String x : a) { String tw = g.twin(x, rest.substring(hash + 1)); out.add(tw == null ? "?" : tw); }
         }
         return String.join(" ", out);
     }
@@ -628,7 +807,7 @@ final class ElementFlow {
         // elements sat in guava's `ImmutableEnumSet.delegate`, whose runtime elements are enums only.
         String ownField = "F:" + classOf(callee) + ".";
         List<List<String>> keys = new ArrayList<>();
-        Set<String> fields = new HashSet<>();
+        Set<String> fields = new HashSet<>(), staticFields = new HashSet<>();
         boolean returns = false;
         Set<String> params = new TreeSet<>();
         String ownParam = "P:" + own;
@@ -639,7 +818,7 @@ final class ElementFlow {
             if (!seen.add(x)) continue;
             for (List<String> d : byCell.getOrDefault(x, List.of())) if (d.get(0).equals(callee)) keys.add(d);
             for (String y : g.flow.getOrDefault(x, Set.of())) {
-                if (y.startsWith("F:")) { if (y.startsWith(ownField)) fields.add(y); }
+                if (y.startsWith("F:")) { if (y.startsWith(ownField)) fields.add(y); if (g.statics.contains(y)) staticFields.add(y); }
                 else if (y.equals(ret)) returns = true;
                 else if (y.indexOf(own) == 2) {   // L:/S:/P:/A: cells of the callee itself
                     work.add(y);
@@ -661,7 +840,7 @@ final class ElementFlow {
                 else if (y.indexOf(own) == 2) aw.add(y);
             }
         }
-        return new Object[] {keys, fields, returns, aliasFields, aliasRet, params};
+        return new Object[] {keys, fields, returns, aliasFields, aliasRet, params, staticFields};
     }
 
     /** See {@link Graph#qcand}: the bodies with a one-element key operation on a container that may be sorted, closed
@@ -763,6 +942,13 @@ final class ElementFlow {
         for (AbstractInsnNode in : mn.instructions)
             if (in instanceof MethodInsnNode m && c.projectClasses.contains(m.owner)
                     && (m.desc.contains("Ljava/util/") || m.desc.contains("[L") || g.qkeys.contains(m.name))) return true;
+        // R1195: an object whose class holds container fields, handed on or called — its field twins travel
+        for (AbstractInsnNode in : mn.instructions)
+            if (in instanceof MethodInsnNode m && c.projectClasses.contains(m.owner)) {
+                if (m.getOpcode() != Opcodes.INVOKESTATIC && fieldClass(c, g, m.owner)) return true;
+                for (Type t : Type.getArgumentTypes(m.desc))
+                    if (t.getSort() == Type.OBJECT && c.projectClasses.contains(t.getInternalName()) && fieldClass(c, g, t.getInternalName())) return true;
+            }
         return false;
     }
 
@@ -788,8 +974,18 @@ final class ElementFlow {
             if ((op == Opcodes.PUTFIELD || op == Opcodes.PUTSTATIC)
                     && (((FieldInsnNode) in).desc.startsWith("L") || ((FieldInsnNode) in).desc.startsWith("[L"))) {
                 FieldInsnNode fi = (FieldInsnNode) in;
-                for (String cell : cells(c, g, cn, mn, sf, f.getStack(f.getStackSize() - 1), self, 0))
-                    g.alias(cell, "F:" + fi.owner + "." + fi.name);
+                if (fi.desc.equals(CMP_DESC)) g.fieldStores.add(declaringField(c, fi.owner, fi.name));
+                if (op == Opcodes.PUTSTATIC) g.statics.add("F:" + fi.owner + "." + fi.name);
+                List<String> stored = cells(c, g, cn, mn, sf, f.getStack(f.getStackSize() - 1), self, 0);
+                for (String cell : stored) g.alias(cell, "F:" + fi.owner + "." + fi.name);
+                // R1195: …and into the field of THIS object (its twin), per receiver
+                if (op == Opcodes.PUTFIELD && containerField(fi.desc) && f.getStackSize() >= 2) {
+                    String fk = declaringField(c, fi.owner, fi.name);
+                    for (String r : objCells(c, g, cn, mn, sf, f.getStack(f.getStackSize() - 2), self)) {
+                        String tw = g.twin(r, fk);
+                        if (tw != null) for (String cell : stored) g.alias(cell, tw);
+                    }
+                }
                 // R1183: a store of a value not traced to an allocation means this field is never PROVEN anything
                 if (!traced(mn, sf, f.getStack(f.getStackSize() - 1), Collections.newSetFromMap(new IdentityHashMap<>())))
                     g.kind("F:" + fi.owner + "." + fi.name, UNK);
@@ -823,6 +1019,16 @@ final class ElementFlow {
             if (c.projectClasses.contains(m.owner) && p != null) {
                 List<String> callees = null;
                 String site = "S:" + self + ":" + i;
+                // R1195: the RECEIVER of an instance call to a class holding container fields — its field twins are
+                // the caller's, through the callee's summary (per receiver)
+                if (inst && recv != null && fieldClass(c, g, m.owner)) {
+                    callees = ArgContract.projectCallees(c, m, p);
+                    List<String> rc = objCells(c, g, cn, mn, sf, recv, self);
+                    if (!callees.isEmpty() && !rc.isEmpty()) {
+                        g.siteArgs.computeIfAbsent(site, k -> new HashMap<>()).put(-1, rc);
+                        for (String cell : rc) for (String callee : callees) g.passes.add(new String[] {id, cell, callee, "-1", site, ""});
+                    }
+                }
                 for (int j = 0; j < n; j++) {
                     // R1184: an object ARRAY argument is a container too (`<T> void sa(T[] a) { Arrays.sort(a); }`)
                     boolean arr = at[j].getSort() == Type.ARRAY && at[j].getDimensions() == 1 && at[j].getElementType().getSort() == Type.OBJECT;
@@ -991,6 +1197,15 @@ final class ElementFlow {
         if (t != null) for (String cell : dst) g.elem(cell + twin, t, v.newType != null);
         int pi = pf[0] == null ? -1 : Candor.paramIndexOf(mn, v, pf[0]);
         if (pi >= 0) for (String cell : dst) g.link("Q:" + self + ":" + pi, cell + twin);
+        // R1195: a CONTAINER added as one element — its elements are the receiver's elements' elements (NEST)
+        if (t == null || t.startsWith("java/util/")) {
+            int idx = mn.instructions.indexOf(m);
+            Frame<SourceValue> fr = idx >= 0 ? sf[idx] : null;
+            int n = Type.getArgumentTypes(m.desc).length;
+            if (fr != null && fr.getStackSize() >= n)
+                for (String a : cells(c, g, cn, mn, sf, fr.getStack(fr.getStackSize() - n + j), self, 0))
+                    for (String cell : dst) g.link(a, cell + twin + NEST);
+        }
     }
 
     /** How a collection allocation orders: natural ({@link #NAT}), by a comparator ({@link #BYCMP}), unsorted, or
@@ -1232,6 +1447,8 @@ final class ElementFlow {
                             if (e != null) g.elem(cell, e, false);
                             String ve = mn.signature == null ? null : mapValueArg(mn.signature, p);
                             if (ve != null) g.elem(cell + VALS, ve, false);
+                            if (mn.signature != null) nestedElems(g, cell, methodTypeTree(mn.signature, p));
+                            if (Type.getArgumentTypes(mn.desc)[p].getDescriptor().equals(CMP_DESC)) g.cmpk(cell, CPAR);
                             out.add(cell);
                         }
                     } else {
@@ -1252,6 +1469,16 @@ final class ElementFlow {
                     String t = ((TypeInsnNode) src).desc;
                     if (comparatorClass(c, t)) g.cmpk("L:" + self + ":" + idx, "C:" + t);
                 }
+                case Opcodes.INVOKEDYNAMIC -> {
+                    // R1195: `T::compareTo` as a Comparator value — natural ordering, wherever it is stored
+                    InvokeDynamicInsnNode d = (InvokeDynamicInsnNode) src;
+                    if (d.desc.endsWith(")" + CMP_DESC) && d.bsmArgs.length >= 2 && d.bsmArgs[1] instanceof Handle h
+                            && h.getName().equals("compareTo")) {
+                        String cell = "L:" + self + ":" + idx;
+                        g.cmpk(cell, CNAT);
+                        out.add(cell);
+                    }
+                }
                 case Opcodes.ANEWARRAY -> {
                     // R1184: an array allocation is a container cell; its declared component is an element type
                     String cell = "L:" + self + ":" + idx;
@@ -1262,10 +1489,25 @@ final class ElementFlow {
                 case Opcodes.GETSTATIC, Opcodes.GETFIELD -> {
                     FieldInsnNode fi = (FieldInsnNode) src;
                     String cell = "F:" + fi.owner + "." + fi.name;
+                    if (op == Opcodes.GETSTATIC) g.statics.add(cell);
+                    // R1195: the container in the field of THIS object, per receiver (beside the global field cell)
+                    if (op == Opcodes.GETFIELD && containerField(fi.desc) && f != null && f.getStackSize() >= 1) {
+                        String fk = declaringField(c, fi.owner, fi.name);
+                        for (String r : objCells(c, g, cn, mn, sf, f.getStack(f.getStackSize() - 1), self)) {
+                            String tw = g.twin(r, fk);
+                            if (tw != null) out.add(tw);
+                        }
+                    }
                     String e = fieldElem(c, fi);
                     if (e != null) g.elem(cell, e, false);
                     String ve = fieldValueElem(c, fi);
                     if (ve != null) g.elem(cell + VALS, ve, false);
+                    String fs = fieldSig(c, fi);
+                    if (fs != null) nestedElems(g, cell, fieldTypeTree(fs));
+                    if (fi.desc.equals(CMP_DESC) && !jdkOwner(fi.owner)) {
+                        if (c.projectClasses.contains(fi.owner)) g.cmpFieldReads.put(cell, declaringField(c, fi.owner, fi.name));
+                        else g.cmpk(cell, CDEP);   // a dependency's comparator field
+                    }
                     out.add(cell);
                 }
                 case Opcodes.INVOKESTATIC, Opcodes.INVOKEVIRTUAL, Opcodes.INVOKEINTERFACE, Opcodes.INVOKESPECIAL -> {
@@ -1282,12 +1524,15 @@ final class ElementFlow {
                         if (e != null) g.elem(cell, e, false);
                         String ve = tm == null || tm.signature == null ? null : mapValueArg(tm.signature, -1);
                         if (ve != null) g.elem(cell + VALS, ve, false);
+                        if (tm != null && tm.signature != null) nestedElems(g, cell, methodTypeTree(tm.signature, -1));
                     } else if (!jdkOwner(m.owner)) {
                         // R1184: a DEPENDENCY's return — its allocation is out of sight. Its static type is all there is:
                         // a sorted type orders (as a static sorted owner does), a container interface MAY, a concrete
                         // JDK container type does not
                         String k = returnKind(Type.getReturnType(m.desc));
                         if (k != null) g.kind(cell, k.equals(SRT) || k.equals(UNSORTED) ? k : DEP);
+                        // R1195: a dependency's COMPARATOR — out of sight
+                        if (Type.getReturnType(m.desc).getDescriptor().equals(CMP_DESC)) g.cmpk(cell, CDEP);
                     } else if (m.owner.startsWith("java/util/") && f != null) {
                         Type[] at = Type.getArgumentTypes(m.desc);
                         int base = f.getStackSize() - at.length;
@@ -1295,15 +1540,38 @@ final class ElementFlow {
                         // sorted set): evidence of ordering, exactly as a static sorted owner is
                         if ("SRT".equals(returnKind(Type.getReturnType(m.desc)))) g.kind(cell, SRT);
                         // R1188: a comparator made by a `Comparator.comparing` family member
-                        if (m.desc.endsWith(")Ljava/util/Comparator;")) comparatorCall(c, g, cn, mn, sf, f, m, at, base, cell, self, depth);
-                        if (m.name.equals("values") && at.length == 0 && base >= 1 && mapOwner(m.owner)) {
+                        if (m.desc.endsWith(")Ljava/util/Comparator;")) {
+                            comparatorCall(c, g, cn, mn, sf, f, m, at, base, cell, self, depth);
+                            // R1195: natural ordering made here — a fact of the VALUE, so it survives a return or a field
+                            if (op == Opcodes.INVOKESTATIC && m.desc.startsWith("()") && (m.name.equals("naturalOrder") || m.name.equals("reverseOrder"))
+                                    && (m.owner.equals("java/util/Comparator") || m.owner.equals("java/util/Collections")))
+                                g.cmpk(cell, CNAT);
+                        }
+                        if (m.owner.equals("java/util/stream/Stream") && op == Opcodes.INVOKESTATIC
+                                && (m.name.equals("iterate") || m.name.equals("generate") || m.name.equals("concat"))) {
+                            // R1195: a stream with NO collection behind it — `iterate(seed, [hasNext,] next)`, `generate(s)`,
+                            // `concat(a, b)` — holds what its seed and functions make, or its operands' elements
+                            streamSource(c, g, cn, mn, sf, f, m, at, base, cell, self, depth, idx);
+                        } else if (m.owner.equals("java/util/stream/StreamSupport") && m.name.equals("stream") && at.length == 2
+                                && at[0].getSort() == Type.OBJECT && at[0].getInternalName().equals("java/util/Spliterator")) {
+                            // R1195: `StreamSupport.stream(c.spliterator(), par)` streams the spliterator's elements
+                            for (String s : cells(c, g, cn, mn, sf, f.getStack(base), self, depth + 1)) g.link(s, cell);
+                        } else if (m.owner.equals("java/util/stream/Stream$Builder") && base >= 1
+                                && (m.name.equals("add") && at.length == 1 || m.name.equals("build") && at.length == 0)) {
+                            // R1195: `Stream.builder().add(x)…build()` — the builder is the same object along the chain
+                            for (String s : cells(c, g, cn, mn, sf, f.getStack(base - 1), self, depth + 1)) g.link(s, cell);
+                            if (at.length == 1) streamElem(c, g, cn, mn, idx, m, 0, cell);
+                        } else if (m.name.equals("flatMap") && m.owner.equals("java/util/stream/Stream") && at.length == 1 && base >= 1) {
+                            // R1195: past a flatMap stage the elements are those of the streams the FUNCTION returns
+                            flatMapStage(c, g, cn, mn, sf, f.getStack(base), f.getStack(base - 1), cell, self, depth);
+                        } else if (m.name.equals("values") && at.length == 0 && base >= 1 && mapOwner(m.owner)) {
                             // R1184: a map's values() holds its VALUES
                             for (String s : cells(c, g, cn, mn, sf, f.getStack(base - 1), self, depth + 1)) g.link(s + VALS, cell);
                         } else if (m.name.equals("toArray") && base >= 1 && op != Opcodes.INVOKESTATIC) {
                             // R1184: a collection's toArray() holds its elements
                             for (String s : cells(c, g, cn, mn, sf, f.getStack(base - 1), self, depth + 1)) g.link(s, cell);
                         } else if ((m.name.equals("asList") || m.name.equals("stream") || m.name.equals("of")) && op == Opcodes.INVOKESTATIC
-                                && at.length == 1 && at[0].getSort() == Type.ARRAY) {
+                                && (at.length == 1 || at.length == 3 && m.name.equals("stream")) && at[0].getSort() == Type.ARRAY) {
                             // R1184: a list, or a stream, over an array holds the array's elements
                             for (String s : cells(c, g, cn, mn, sf, f.getStack(base), self, depth + 1)) g.link(s, cell);
                         } else if (m.name.equals("collect") && m.owner.equals("java/util/stream/Stream") && at.length == 1 && base >= 1) {
@@ -1328,7 +1596,8 @@ final class ElementFlow {
                         } else if (KEYS.contains(m.name) && at.length == 0 && base >= 1 && mapOwner(m.owner)) {
                             // a map's key set holds its keys
                             for (String s : cells(c, g, cn, mn, sf, f.getStack(base - 1), self, depth + 1)) g.link(s, cell);
-                        } else if ((m.name.equals("stream") || m.name.equals("parallelStream")) && at.length == 0 && base >= 1) {
+                        } else if ((m.name.equals("stream") || m.name.equals("parallelStream") || m.name.equals("spliterator"))
+                                && at.length == 0 && base >= 1) {
                             // R1179: a stream over the collection carries its elements to `sorted()`
                             for (String s : cells(c, g, cn, mn, sf, f.getStack(base - 1), self, depth + 1)) g.link(s, cell);
                         } else if (m.owner.equals("java/util/stream/Stream") && STREAM_KEEP.contains(m.name) && base >= 1) {
@@ -1350,6 +1619,123 @@ final class ElementFlow {
             }
         }
         return out;
+    }
+
+    /** SOUNDNESS R1195 — a stream source with no collection behind it: {@code concat}'s operands' elements; for
+     *  {@code iterate} the seed's type, and for {@code iterate}/{@code generate} the result type of the function that
+     *  makes each next element (a lambda or method reference; nothing is assumed otherwise). Executed on JDK 21:
+     *  {@code iterate(..).sorted()} and {@code generate(..).limit(n).sorted()} run the elements' {@code compareTo}. */
+    private static void streamSource(AnalysisContext c, Graph g, ClassNode cn, MethodNode mn, Frame<SourceValue>[] sf,
+            Frame<SourceValue> f, MethodInsnNode m, Type[] at, int base, String cell, String self, int depth, int idx) {
+        if (m.name.equals("concat")) {
+            for (int k = 0; k < at.length; k++)
+                for (String s : cells(c, g, cn, mn, sf, f.getStack(base + k), self, depth + 1)) g.link(s, cell);
+            return;
+        }
+        if (at.length == 0) return;
+        if (DEBUG) System.err.println("R1195SRC\t" + self + "\t" + m.name);
+        if (m.name.equals("iterate") && at.length >= 2) streamElem(c, g, cn, mn, idx, m, 0, cell);
+        String[] rt = functionResult(c, mn, sf, f.getStack(base + at.length - 1));
+        if (rt != null) g.elem(cell, rt[0], rt[1] != null);
+    }
+
+    /** R1195 — argument {@code j} of call {@code m} (at instruction {@code idx}) is one element of {@code cell}. */
+    private static void streamElem(AnalysisContext c, Graph g, ClassNode cn, MethodNode mn, int idx, MethodInsnNode m, int j, String cell) {
+        Frame<ProvValue>[] pf = Candor.cachedProvFrames(cn, mn);
+        if (pf == null || pf[idx] == null) return;
+        ProvValue v = Candor.callArg(pf[idx], m, j);
+        String t = v == null || v.nullConst || v.fromIndy ? null : ArgContract.typeOf(c, v);
+        if (t != null) g.elem(cell, t, v.newType != null);
+    }
+
+    /** SOUNDNESS R1195 — a {@code flatMap} stage's elements: those of the stream its FUNCTION returns. A lambda or a
+     *  project method reference returns into its own return cell, which flows here; its element parameter (the one
+     *  after the captured values) is bound to the incoming elements' OWN elements ({@link #NEST}), so
+     *  {@code l -> l.stream()} carries a {@code List<List<E>>}'s E. {@code List::stream}/{@code Collection::stream}/
+     *  {@code Arrays::stream} carry the incoming elements' elements directly. Any other function value adds nothing. */
+    private static void flatMapStage(AnalysisContext c, Graph g, ClassNode cn, MethodNode mn, Frame<SourceValue>[] sf,
+            SourceValue fn, SourceValue recvV, String cell, String self, int depth) {
+        List<String> recv = cells(c, g, cn, mn, sf, recvV, self, depth + 1);
+        for (AbstractInsnNode src : producers(mn, sf, fn)) {
+            if (!(src instanceof InvokeDynamicInsnNode d) || d.bsmArgs.length < 2 || !(d.bsmArgs[1] instanceof Handle h)) continue;
+            int ncap = Type.getArgumentTypes(d.desc).length;
+            if (c.projectClasses.contains(h.getOwner())) {
+                String tid = Cha.methodId(h.getOwner().replace('/', '.'), h.getName(), h.getDesc());
+                if (DEBUG) System.err.println("R1195FLAT\t" + self + "\t" + tid);
+                g.link("R:" + tid, cell);
+                // a static body takes the element after its captured values; an instance body (a bound reference, or a
+                // lambda capturing `this`) has its receiver among them; an UNBOUND reference's element is its
+                // receiver, whose own elements are not a parameter here
+                boolean stat = h.getTag() == Opcodes.H_INVOKESTATIC;
+                // only a synthetic lambda body: a NAMED method's parameter is also every direct caller's, and binding
+                // this stream's elements to it would hand them back to those callers
+                if (!stat && ncap == 0 || !h.getName().startsWith("lambda$")) continue;
+                int ep = stat ? ncap : ncap - 1;
+                if (ep >= 0 && ep < Type.getArgumentTypes(h.getDesc()).length)
+                    for (String r : recv) g.link(r + NEST, "P:M:" + tid + ":" + ep);
+            } else if (ncap == 0 && h.getName().equals("stream") && h.getOwner().startsWith("java/util/")) {
+                for (String r : recv) g.link(r + NEST, cell);
+            }
+        }
+    }
+
+    /** R1195 — a declared generic type as a tree (a type variable, a wildcard or an array is null). */
+    private static final class GT {
+        final String name; final List<GT> args = new ArrayList<>();
+        GT(String n) { name = n; }
+    }
+    private static final class TreeBuilder extends SignatureVisitor {
+        final java.util.function.Consumer<GT> sink; GT cur;
+        TreeBuilder(java.util.function.Consumer<GT> sink) { super(Opcodes.ASM9); this.sink = sink; }
+        @Override public void visitClassType(String name) { cur = new GT(name); sink.accept(cur); }
+        @Override public void visitInnerClassType(String name) { if (cur != null) cur.args.clear(); }
+        @Override public void visitTypeVariable(String name) { sink.accept(null); }
+        @Override public SignatureVisitor visitArrayType() { return new TreeBuilder(x -> sink.accept(null)); }
+        @Override public void visitTypeArgument() { if (cur != null) cur.args.add(null); }
+        @Override public SignatureVisitor visitTypeArgument(char w) {
+            GT parent = cur;
+            if (parent == null) return new SignatureVisitor(Opcodes.ASM9) { };
+            if (w == '-') { parent.args.add(null); return new SignatureVisitor(Opcodes.ASM9) { }; }
+            return new TreeBuilder(parent.args::add);
+        }
+    }
+    /** A method signature's parameter {@code p} (the return for p < 0), as a tree; null when it is not a class type. */
+    private static GT methodTypeTree(String sig, int p) {
+        GT[] out = {null};
+        try {
+            new SignatureReader(sig).accept(new SignatureVisitor(Opcodes.ASM9) {
+                int param = -1;
+                @Override public SignatureVisitor visitParameterType() {
+                    param++;
+                    return param == p ? new TreeBuilder(x -> out[0] = x) : new SignatureVisitor(Opcodes.ASM9) { };
+                }
+                @Override public SignatureVisitor visitReturnType() {
+                    return p < 0 ? new TreeBuilder(x -> out[0] = x) : new SignatureVisitor(Opcodes.ASM9) { };
+                }
+                @Override public SignatureVisitor visitClassBound() { return new SignatureVisitor(Opcodes.ASM9) { }; }
+                @Override public SignatureVisitor visitInterfaceBound() { return new SignatureVisitor(Opcodes.ASM9) { }; }
+                @Override public SignatureVisitor visitExceptionType() { return new SignatureVisitor(Opcodes.ASM9) { }; }
+            });
+        } catch (RuntimeException e) { return null; }
+        return out[0];
+    }
+    private static GT fieldTypeTree(String sig) {
+        GT[] out = {null};
+        try { new SignatureReader(sig).acceptType(new TreeBuilder(x -> out[0] = x)); } catch (RuntimeException e) { return null; }
+        return out[0];
+    }
+    private static boolean seqContainer(GT t) {
+        return t != null && t.name.startsWith("java/util/") && isCollectionOwner(t.name) && !mapOwner(t.name);
+    }
+    /** R1195 — a declared {@code Collection<Collection<E>>}'s E onto {@code cell}{@link #NEST}, and a
+     *  {@code Map<K, Collection<E>>}'s E onto {@code cell}{@link #VALS}{@link #NEST}. */
+    private static void nestedElems(Graph g, String cell, GT t) {
+        if (t == null || t.args.isEmpty() || !t.name.startsWith("java/util/")) return;
+        GT inner = mapOwner(t.name) ? (t.args.size() == 2 ? t.args.get(1) : null) : seqContainer(t) ? t.args.get(0) : null;
+        if (!seqContainer(inner) || inner.args.isEmpty() || inner.args.get(0) == null) return;
+        String e = inner.args.get(0).name;
+        if (e.startsWith("java/util/")) return;
+        g.elem(cell + (mapOwner(t.name) ? VALS : "") + NEST, e, false);
     }
 
     /** Not a dependency: the JDK's own packages. */
@@ -1577,6 +1963,12 @@ final class ElementFlow {
             @Override public void visitEnd() { depth--; }
         });
         return out[0];
+    }
+    private static String fieldSig(AnalysisContext c, FieldInsnNode fi) {
+        ClassNode oc = c.byName.get(fi.owner);
+        if (oc == null) return null;
+        for (FieldNode fn : oc.fields) if (fn.name.equals(fi.name)) return fn.signature;
+        return null;
     }
     private static String fieldElem(AnalysisContext c, FieldInsnNode fi) {
         ClassNode oc = c.byName.get(fi.owner);

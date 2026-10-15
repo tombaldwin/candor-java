@@ -116,6 +116,19 @@ import org.objectweb.asm.tree.analysis.SourceValue;
  * field twin (only {@code compareTo} summaries are applied); a callee's non-exact insertion; a comparator a caller
  * outside the scan hands to a parameter.
  *
+ * <p><b>SOUNDNESS R1198 — the residuals R1195 named, each executed on JDK 21.</b> A field twin is a PATH of up to
+ * {@link #MAX_TWIN} fields ({@code <o>#Outer.bag#Bag.items}): an object held in a field keeps its containers per
+ * receiver. No twin is taken on an INSTANCE field's global {@code F:} cell — that cell is every object's field, and a twin
+ * on it charged {@code b.bag.order()} with another instance's elements (R1195's model did, on main only); a static field
+ * keeps its twins. A twin summary applies EVERY key ({@code equals}/{@code hashCode} too). A callee's own inserts flow
+ * back to its caller whatever their precision ({@code "type\t2"}, {@link Graph#elemV}); a declared signature type and a
+ * parameter's declared type never do. Two cells that are the same OBJECT at one site — a getter's result, an argument a
+ * callee stores into another argument's field — share their field twins ({@link #pairTwins}). A comparator CAPTURED by a
+ * {@code toCollection} supplier lambda orders the collected container ({@link #capturedComparatorCollect}). A comparator
+ * PARAMETER whose caller is outside the scan was already disclosed (premise correction). Residuals: an element declared
+ * as a JDK interface ({@code Comparable}) names no body, in either direction; an alias through a callee's return cell or
+ * an instance field's global cell is not paired (both are shared by every caller or instance).
+ *
  * <p><b>SOUNDNESS R1183.</b> {@code TreeSet}/{@code TreeMap} key operations are charged by
  * {@link Candor#contractReentry} with the element's compareTo; the charge is applied here, and WITHHELD only where every
  * cell the receiver can be is an allocation in the same body whose comparator is a lambda or method reference (other

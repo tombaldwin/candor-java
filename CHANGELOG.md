@@ -9,6 +9,15 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+The **ordering residuals of R1195** are closed (R1198, **silent under-reports**, each executed on JDK 21 and absent
+under `deny Fs Unknown` on main): a container in a field of an object held in a field (`o.add(x); o.sort()` through
+`Outer.bag.items`, a getter's result, a `Bag` handed to a constructor), `equals`/`hashCode` a callee runs over the
+container in a field of the object its caller handed it, a callee's inserts that are not a `new` (a factory's return, a
+field, a cast), and `collect(toCollection(() -> new TreeSet<>(cmp)))` with a captured comparator. A twin is no longer
+taken on an instance field's global cell: on main that merged every instance, so `b.bag.order()` was charged with
+another `Outer`'s elements (an over-charge R1195 introduced; 0.40.11 never had it). A comparator parameter whose caller
+is outside the scan was already disclosed.
+
 The **ordering residuals** of R1179/R1184/R1188/R1189 are closed (R1195, **silent under-reports**, each executed on
 JDK 21 and absent under `deny Fs Unknown` on 0.40.11): a stream with no collection behind it
 (`Stream.iterate/generate/concat`, a builder, `StreamSupport`) and a `flatMap` stage now carry their elements to

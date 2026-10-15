@@ -118,6 +118,22 @@ final class ArgContract {
     static final String EQUALS = "java/lang/Object.equals(Ljava/lang/Object;)Z";
     static final String HASHCODE = "java/lang/Object.hashCode()I";
     static final String COMPARETO = "java/lang/Comparable.compareTo(Ljava/lang/Object;)I";
+    /** R1184 — not a member: the parameter is a KEY hashed into a structure that may be a HashMap (its tree bins). */
+    static final String TREEBIN = "java/lang/Comparable.compareTo#treebin";
+
+    /** {@link Candor#equalsHashContracts}'s hashed owners whose implementation treeifies a crowded bucket (HashMap,
+     *  HashSet, LinkedHashMap/Set, ConcurrentHashMap, or an interface that may be one) — not a List. */
+    /** A receiver's provable {@code new T}: null (unknown), a project class, or a JDK class that treeifies. A provable
+     *  {@code new Hashtable()}/{@code new TreeMap()} never runs a tree bin's compareTo (executed: Hashtable). */
+    static boolean treeBinImpl(String newType) {
+        return newType == null || !newType.startsWith("java/") || newType.equals("java/util/HashMap") || newType.equals("java/util/HashSet")
+                || newType.equals("java/util/LinkedHashMap") || newType.equals("java/util/LinkedHashSet")
+                || newType.equals("java/util/concurrent/ConcurrentHashMap");
+    }
+    static boolean treeBinOwner(String o) {
+        return !o.equals("java/util/List") && !o.equals("java/util/ArrayList") && !o.equals("java/util/LinkedList")
+                && !o.equals("java/util/Objects");
+    }
 
     // ---- analyze time: record, per method, from its OWN body only ---------------------------------------
 
@@ -149,7 +165,22 @@ final class ArgContract {
         }
         if (Candor.isCompareToSink(min.owner, min.name) && Candor.comparesArgZero(min.owner, min.name)) {
             int p = Candor.paramIndexOf(s.mn, Candor.callArg(f, min, 0), f0);
-            if (p >= 0) direct(c, s.id, p, COMPARETO, min);
+            // R1183: a TreeSet/TreeMap key operation is decided by its receiver's allocation, after the loop
+            if (p >= 0 && ElementFlow.treeKeyOp(min.owner, min.name))
+                c.treeKeySites.computeIfAbsent(s.id, k -> new TreeSet<>()).add(s.mn.instructions.indexOf(min) + "\tP\t" + p);
+            else if (p >= 0) direct(c, s.id, p, COMPARETO, min);
+        }
+        // R1184: a KEY hashed into a structure that may be a HashMap: its tree bin may run the key's compareTo
+        ProvValue tbRecv = ehc.isEmpty() ? null : Candor.receiverProv(f, min);
+        if (!ehc.isEmpty() && treeBinOwner(min.owner) && (tbRecv == null || treeBinImpl(tbRecv.newType))) {
+            ProvValue a0 = Candor.callArg(f, min, 0);
+            int p = Candor.paramIndexOf(s.mn, a0, f0);
+            if (p >= 0) direct(c, s.id, p, TREEBIN, min);
+            else if (a0 != null && !a0.nullConst && !a0.fromIndy) {
+                String t = typeOf(c, a0);
+                if (t != null && !t.equals("java/lang/Object"))
+                    c.treeBinKeys.computeIfAbsent(s.id, k -> new TreeSet<>()).add(t + "\t" + (a0.newType != null ? 1 : 0));
+            }
         }
         // (3) a PROJECT callee: record where each argument came from, resolved after the loop
         List<String> callees = projectCallees(c, min, f);
@@ -258,6 +289,38 @@ final class ArgContract {
     }
 
     private static final ThreadLocal<List<String[]>> WIDE_SITES = ThreadLocal.withInitial(ArrayList::new);
+    /** R1184 — {caller, element type, exact, "B" (a hashed key: tree bins) or "O" (a container out of sight)}. */
+    private static final ThreadLocal<List<String[]>> CMP_SITES = ThreadLocal.withInitial(ArrayList::new);
+
+    /** SOUNDNESS R1184 — a {@code compareTo} the JDK MAY run on a value of type {@code t} where whether it does is
+     *  not decidable here, so it is DISCLOSED (an {@code Unknown}, reason {@code dispatch:java.lang.Comparable.compareTo})
+     *  after the fixpoint where a body it could run carries a concrete effect the caller does not already report:
+     *  <ul>
+     *    <li>{@code treeBin}: a KEY hashed into a HashMap-backed structure. More than eight colliding keys in one bucket
+     *        (with the table at 64) turn it into a tree that orders by {@code compareTo} — executed on JDK 21 for
+     *        HashMap, HashSet, LinkedHashMap and ConcurrentHashMap, at 11 colliding keys, on {@code put}, {@code get}
+     *        and a missing {@code containsKey}. Only for a runtime class that implements {@code Comparable} OF ITSELF
+     *        ({@code HashMap.comparableClassFor}: a subclass, or {@code Comparable<SomeInterface>}, never compares —
+     *        executed). Whether keys collide is the program's data;</li>
+     *    <li>otherwise: a key operation on a dependency's container whose allocation is out of sight.</li>
+     *  </ul> */
+    static void discloseCompareTo(AnalysisContext c, String caller, String t, boolean exact, boolean treeBin) {
+        if (t == null || !c.byName.containsKey(t)) return;
+        if (DEBUG) System.err.println((treeBin ? "R1184BINSITE\t" : "R1184OOSSITE\t") + caller + "\t" + t + "\t" + exact);
+        CMP_SITES.get().add(new String[] {caller, t, exact ? "1" : "0", treeBin ? "B" : "O"});
+    }
+
+    /** The concrete classes an instance of {@code t} (exactly, or any subtype) can be whose {@code compareTo} a
+     *  HashMap tree bin runs: those that implement {@code Comparable<Self>} DIRECTLY. */
+    private static List<String> selfComparable(AnalysisContext c, String t, boolean exact) {
+        List<String> out = new ArrayList<>();
+        for (String sub : exact ? List.of(t) : c.subtypeIndex.getOrDefault(t, List.of(t))) {
+            ClassNode cn = c.byName.get(sub);
+            if (cn == null || (cn.access & (Opcodes.ACC_ABSTRACT | Opcodes.ACC_INTERFACE)) != 0) continue;
+            if (cn.signature != null && cn.signature.contains("Ljava/lang/Comparable<L" + cn.name + ";>;")) out.add(sub);
+        }
+        return out;
+    }
     /** R1174 — {caller, element type, exact}: ElementFlow's witnesses for a collection handed to a chained
      *  dependency. Per scan and per thread, like {@link #WIDE_SITES}. */
     static final ThreadLocal<List<String[]>> CHAIN_ELEMS = ThreadLocal.withInitial(ArrayList::new);
@@ -312,6 +375,33 @@ final class ArgContract {
                 }
         }
         WIDE_SITES.get().clear();
+        // SOUNDNESS R1184 — compareTo the JDK may run where whether it does is not decidable here (tree bins, a
+        // container out of sight). The tree-bin keys recorded at the analyze-time sites join ElementFlow's here.
+        for (var e : c.treeBinKeys.entrySet())
+            for (String x : e.getValue()) {
+                int tab = x.indexOf('\t');
+                CMP_SITES.get().add(new String[] {e.getKey(), x.substring(0, tab), x.substring(tab + 1), "B"});
+            }
+        for (String[] w : CMP_SITES.get()) {
+            String caller = w[0], t = w[1];
+            boolean exact = w[2].equals("1");
+            List<String> bodies = new ArrayList<>();
+            if (w[3].equals("B")) {
+                for (String k : selfComparable(c, t, exact)) {
+                    String b = jvmTarget(c, k, "compareTo", "(Ljava/lang/Object;)I");
+                    if (b != null) bodies.add(b);
+                }
+            } else if (exact) {
+                String b = jvmTarget(c, t, "compareTo", "(Ljava/lang/Object;)I");
+                if (b != null) bodies.add(b);
+            } else bodies.addAll(Cha.chaTargets(t, "compareTo", "(Ljava/lang/Object;)I"));
+            for (String b : bodies)
+                if (newConcrete(fx, b, caller)) {
+                    added |= disclose(c, caller, "java/lang/Comparable", "compareTo", w[3].equals("B") ? "R1184BINU" : "R1184OOSU", t, b);
+                    break;
+                }
+        }
+        CMP_SITES.get().clear();
         // SOUNDNESS R1174 — the ELEMENT witnesses ElementFlow found (a collection of project values handed to a
         // chained dependency), merged per caller with the direct ones. Read here and dropped: they are a
         // function of this scan's bodies, decided after the analyze loop, so they never enter the accumulator.
@@ -366,6 +456,7 @@ final class ArgContract {
         PENDING.get().clear();
         BY_CALLER.get().clear();
         CHAIN_ELEMS.get().clear();
+        CMP_SITES.get().clear();
         try {
             ElementFlow.run(c);   // a collection's own equals/hashCode/removeAll/... over its elements
             resolveSites(c);
@@ -516,6 +607,7 @@ final class ArgContract {
     /** Edge {@code callerId} to what {@code key} resolves to on {@code t}, through the receiver-specialised
      *  body ({@link #spec}). After the analyze loop only. */
     static void applyResolved(AnalysisContext c, String callerId, String key, String t, boolean exact, boolean isThis) {
+        if (key.equals(TREEBIN)) { discloseCompareTo(c, callerId, t, exact, true); return; }
         Res r = bodiesFor(c, key, t, exact);
         if (r == null || r == OUTSIDE) return;
         if (r == WIDE) {

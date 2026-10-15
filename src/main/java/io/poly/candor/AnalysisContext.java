@@ -283,6 +283,13 @@ final class AnalysisContext {
      *  Object) handed as arg j of a call into a CHAINED dependency. {@link ElementFlow} resolves the argument's
      *  collection cells after the analyze loop and witnesses their element types ({@code argContractWitness}). */
     final Map<String, TreeSet<String>> argContractChainArgs = new HashMap<>();
+    /** R1183 — fn -> {@code "insnIndex\tT\telementType"} or {@code "insnIndex\tP\tparamIndex"}: a TreeSet/TreeMap key
+     *  operation's compareTo charge ({@link Candor#contractReentry}, {@link ArgContract#site}), applied by
+     *  {@link ElementFlow} after the analyze loop unless the receiver is PROVEN built with a non-natural comparator. */
+    final Map<String, TreeSet<String>> treeKeySites = new HashMap<>();
+    /** R1184 — fn -> {@code "type\texact"}: a KEY of a project type hashed into a HashMap-backed structure, whose tree
+     *  bin may run its compareTo. Disclosed after the fixpoint ({@link ArgContract#postFixpoint}). */
+    final Map<String, TreeSet<String>> treeBinKeys = new HashMap<>();
     // reflective calls with a LITERAL method name in the same body: a unique project match gets an EDGE
     // alongside the honest Unknown (recall without guessing).
     final List<String[]> reflectPairs = new ArrayList<>();         // [callerId, literalName]

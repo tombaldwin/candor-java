@@ -5714,7 +5714,14 @@ public class Candor {
                 // container's element override is still attributed at any explicit compareTo call,
                 // and a `new TreeSet().add(localComparable)` IS caught here via the direct arg).
                 ProvValue elem = callArg(rf, min, 0);
-                reentryEdge(id, elem, C_COMPARETO, comparesArgZero(min.owner, min.name));
+                // SOUNDNESS R1183 — a TreeSet/TreeMap key operation runs compareTo only under natural ordering; whether
+                // this receiver was built with a comparator is an allocation fact, so ElementFlow applies the charge
+                // after the analyze loop (and withholds it only where the comparator is PROVEN non-natural)
+                if (ElementFlow.treeKeyOp(min.owner, min.name)) {
+                    if (elem != null && elem.declType != null)
+                        ctx().treeKeySites.computeIfAbsent(id, k -> new TreeSet<>())
+                                .add(mn.instructions.indexOf(min) + "\tT\t" + elem.declType);
+                } else reentryEdge(id, elem, C_COMPARETO, comparesArgZero(min.owner, min.name));
             }
             // (SOUNDNESS R1179 — a key operation on a container that only MAY be sorted is ElementFlow's: whether
             // it runs compareTo is a property of the receiver's allocation, which this per-call view cannot see.)

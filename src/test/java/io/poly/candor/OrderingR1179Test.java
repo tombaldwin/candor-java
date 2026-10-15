@@ -99,6 +99,9 @@ class OrderingR1179Test {
             "kSetDeclHash", "kMapDeclHash", "kGenPure", "kGenCount", "kCmpField", "kSortedDeclCmpAdd", "kFactoryPure",
             "kFactoryNoSort", "kSetParamHash", "kUnmodMap", "kCtorHash", "kOwnSetEq", "kFunnel");
 
+    /** Controls hashing an {@code Eff} key into a HashMap-backed structure (R1184's tree-bin disclosure). */
+    static final List<String> TREE_BIN = List.of("kHashCopy", "kSetDeclHash", "kMapDeclHash", "kSetParamHash", "kUnmodMap", "kCtorHash");
+
     static final String LIB = "package zlib;\nimport java.util.*;\n"
             + "public final class Store { private final List<Object> items;\n"
             + "  public Store(Collection<?> c) { items = new ArrayList<>(c); }\n"
@@ -138,9 +141,21 @@ class OrderingR1179Test {
         Tree t = Tree.of(app(), Map.of("zlib/Store.java", LIB));
         try {
             Map<String, Map<String, Object>> r = byFn(t.scanAll());
-            for (String fn : CONTROLS)
+            for (String fn : CONTROLS) {
+                // R1184: a HashMap-backed structure keyed by a self-Comparable Eff MAY run Eff.compareTo in a tree bin
+                // (11+ colliding keys; executed). These run two keys, so nothing — and the engine, which cannot see
+                // the hash distribution, DISCLOSES it and never charges it.
+                if (TREE_BIN.contains(fn)) {
+                    List<String> inf = inferred(r, "app.Main." + fn);
+                    @SuppressWarnings("unchecked")
+                    List<String> why = (List<String>) r.get("app.Main." + fn).get("unknownWhy");
+                    assertTrue(inf.equals(List.of("Unknown")) && why.equals(List.of("dispatch:java.lang.Comparable.compareTo")),
+                            fn + " is at most the tree-bin disclosure; got " + r.get("app.Main." + fn));
+                    continue;
+                }
                 assertTrue(inferred(r, "app.Main." + fn).isEmpty(), fn + " runs no effectful compareTo (executed); got "
                         + r.get("app.Main." + fn));
+            }
             // the generic callee keeps only what its own signature names: its CALLERS are charged
             assertTrue(!inferred(r, "app.G.srt").contains("Fs"), "got " + r.get("app.G.srt"));
             assertTrue(!inferred(r, "app.G.dup").contains("Fs"), "got " + r.get("app.G.dup"));

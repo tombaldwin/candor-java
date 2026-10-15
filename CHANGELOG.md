@@ -11,6 +11,7 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## [0.40.11] — 2026-10-15
 
+- **`jbang-catalog.json` points at the v0.40.11 jar.**
 Sorting or ordering a collection of project values now charges the elements' `compareTo` — 0.40.10 read that call
 absent unless the element was the call's own argument, a **silent under-report** on executed code (R1179). Handing a
 collection of project values to a chained dependency is now disclosed as `Unknown` (R1174), and a scan that ran a

@@ -78,22 +78,34 @@ import org.objectweb.asm.tree.analysis.SourceValue;
  * reference to {@code compareTo}, {@code nullsFirst/Last} over one) is natural ordering. Two members are not
  * decidable here and are DISCLOSED, never charged ({@link ArgContract#discloseCompareTo}): a dependency's container
  * returned as an interface (its allocation out of sight; a sorted static type is evidence and charges), and a
- * HashMap-backed structure's tree bins. Residuals: a comparator built by {@code Comparator.comparing(f)} (it runs
- * the KEY's compareTo); {@code flatMap}; a scalar a callee stores into its own FIELD container (a field merges every
- * instance, so it is not followed); a collection reached through a field the dependency fills; a tree bin over a
- * chained dependency's key type; a function value that is not a lambda or method reference.
+ * HashMap-backed structure's tree bins (a chained dependency's key type too, R1191, read off its hierarchy sidecar).
+ * Residuals: {@code flatMap}; a scalar a callee stores into its own FIELD container (a field merges every instance, so
+ * it is not followed); a collection reached through a field the dependency fills; a function value that is not a
+ * lambda or method reference.
+ *
+ * <p><b>SOUNDNESS R1188/R1189 — what a COMPARATOR runs.</b> A {@code Comparator.comparing(f)} (and
+ * {@code thenComparing(f)}, {@code comparing(f, naturalOrder())}, {@code reversed()}/{@code nullsFirst} over one) runs the
+ * KEY's {@code compareTo}; a comparator OBJECT ({@code new RevCmp()}) runs its own {@code compare}. Both are facts of
+ * the comparator VALUE ({@link Graph#cmpk}), carried along the alias links (a field, a return), into a sorted container
+ * built with it, through a composing combinator, and to a callee's comparator or container parameter as a per-call
+ * SUMMARY (never merged into the callee). They are charged only where the comparator RUNS — an ordering call handed it,
+ * or a key operation / {@code addAll} on a container that holds it — each executed on JDK 21. A comparator made and never
+ * used charges nothing. Residuals: {@code Map.Entry.comparingByKey/Value()} (the key is the entry's; the sort site's
+ * {@code callback:} disclosure stays); a key function that is not a lambda or method reference; a comparator whose
+ * value comes from a dependency's return or a field no store in the scan traces.
  *
  * <p><b>SOUNDNESS R1183.</b> {@code TreeSet}/{@code TreeMap} key operations are charged by
  * {@link Candor#contractReentry} with the element's compareTo; the charge is applied here, and WITHHELD only where every
  * cell the receiver can be is an allocation in the same body whose comparator is a lambda or method reference (other
  * than {@code compareTo}) made in that body ({@link #CMPX}), every producer traced ({@link #traced}). A comparator
  * OBJECT ({@code new ReverseComparator()}) or one stored in a field keeps the charge: its {@code compare} may run the
- * elements' {@code compareTo} and nothing edges it from here.
+ * elements' {@code compareTo}. (Since R1189 the object's {@code compare} is ALSO edged where it reaches the receiver;
+ * the element charge is not narrowed by that — narrowing it would be a removal, priced on its own.)
  *
  * <p>After the analyze loop only; reads bodies like DbHandleFlow. A map cell's elements are its KEYS ({@code put},
  * {@code keySet()}, {@code new TreeMap<>(m)}, {@code putAll}). Over-approximations, stated: a list of one element
  * sorts without comparing; a {@code TreeSet} copied from a {@code SortedSet} reached through a declared
- * {@code Collection} builds without comparing; {@code sorted().count()} on a sized stream skips the sort (JDK 21); a
+ * {@code Collection} builds without comparing; {@code sorted().count()} on a sized stream skips the sort on JDK 9+ (R1190 — KEPT: it compares on JDK 8, executed); a
  * field merges every instance's container; a comparator-built TreeSet reached through a parameter, a public field, a
  * dependency's return or {@code Collections.reverseOrder(cmp)} keeps its charge; a hashed key of a self-Comparable
  * type is disclosed whatever its hash distribution.
@@ -184,6 +196,24 @@ final class ElementFlow {
             if (src != null && dst != null && !src.equals(dst)) alias.computeIfAbsent(src, k -> new HashSet<>()).add(dst);
         }
         void kind(String cell, String k) { kinds.computeIfAbsent(cell, x -> new HashSet<>()).add(k); }
+        /** SOUNDNESS R1188/R1189 — what a COMPARATOR value runs, per cell: {@code "K:<type>\t<exact>"} (a
+         *  {@code Comparator.comparing(f)} family member runs the KEY's {@code compareTo}) and {@code "C:<class>"} (a
+         *  comparator OBJECT, whose {@code compare} runs). Kept apart from {@link #kinds}: these never decide whether a
+         *  receiver is naturally ordered, they only say which bodies its comparator runs. */
+        final Map<String, Set<String>> cmpk = new HashMap<>();
+        /** src -> dst: dst's comparator includes src's (a container built with a comparator, a composed comparator, a
+         *  comparator argument bound to a callee's parameter). Comparator facts flow here and along {@link #alias}. */
+        final Map<String, Set<String>> cmpl = new HashMap<>();
+        /** {caller, cells}: a site that RUNS the comparator of those cells — an ordering call handed it, or a key
+         *  operation on a container built with it. */
+        final Set<List<String>> cmpSites = new LinkedHashSet<>();
+        void cmpk(String cell, String k) { if (cell != null) cmpk.computeIfAbsent(cell, x -> new HashSet<>()).add(k); }
+        void cmpLink(String src, String dst) {
+            if (src != null && dst != null && !src.equals(dst)) cmpl.computeIfAbsent(src, x -> new HashSet<>()).add(dst);
+        }
+        /** {caller, arg cells, callee, j}: a comparator handed to a project callee's parameter j. */
+        final Set<List<String>> cmpPasses = new LinkedHashSet<>();
+        void cmpSite(String caller, List<String> cells) { if (!cells.isEmpty()) cmpSites.add(List.of(caller, String.join(" ", cells))); }
         void dispatch(String caller, String cell, String key) { dispatch(caller, cell, key, "", ""); }
         void dispatch(String caller, String cell, String key, String recv, String owner) {
             grew |= dispatch.add(List.of(caller, cell, key, recv, owner));
@@ -252,6 +282,139 @@ final class ElementFlow {
             }
         }
         treeSites(c, g);
+        comparatorSites(c, g);
+    }
+
+    /** SOUNDNESS R1188/R1189 — the bodies a comparator runs, charged where it RUNS: an ordering call handed the
+     *  comparator, or a key operation on a container built with it (positive evidence: the comparator fact reached
+     *  that receiver or argument along an alias, a field, a return or a comparator parameter). A
+     *  {@code Comparator.comparing(f)} runs {@code f}'s result's {@code compareTo}, resolved as an element's is; a
+     *  comparator OBJECT runs its own {@code compare} (executed on JDK 21: {@code new TreeSet<>(new RevCmp())}
+     *  then {@code add}/{@code addAll}, a {@code PriorityQueue}, a skip list). */
+    private static void comparatorSites(AnalysisContext c, Graph g) {
+        if (g.cmpSites.isEmpty() || g.cmpk.isEmpty()) return;
+        Map<String, Set<String>> links = new HashMap<>();
+        for (var e : g.alias.entrySet()) links.computeIfAbsent(e.getKey(), k -> new HashSet<>()).addAll(e.getValue());
+        for (var e : g.cmpl.entrySet()) links.computeIfAbsent(e.getKey(), k -> new HashSet<>()).addAll(e.getValue());
+        closeOver(links, g.cmpk, false);
+        // a callee's comparator PARAMETER runs when it reaches one of the callee's own sites, or is handed on to a
+        // parameter that runs (to a fixpoint); each call passing a comparator there runs the CALLER's comparator
+        Map<String, Set<String>> sitesBy = new HashMap<>();
+        for (List<String> s : g.cmpSites) sitesBy.computeIfAbsent(s.get(0), k -> new HashSet<>()).addAll(Arrays.asList(s.get(1).split(" ")));
+        Set<String> runs = new HashSet<>();
+        Map<String, Set<String>> reachMemo = new HashMap<>();
+        boolean grew = true; int rounds = 0;
+        while (grew && rounds++ < 16) {
+            grew = false;
+            for (List<String> p : g.cmpPasses) {
+                String pc = "P:M:" + p.get(2) + ":" + p.get(3);
+                if (runs.contains(pc)) continue;
+                Set<String> reach = reachMemo.computeIfAbsent(pc, k -> reach(links, k));
+                boolean r = false;
+                for (String x : sitesBy.getOrDefault(p.get(2), Set.of())) if (reach.contains(x)) { r = true; break; }
+                if (!r) for (List<String> q : g.cmpPasses)
+                    if (q.get(0).equals(p.get(2)) && runs.contains("P:M:" + q.get(2) + ":" + q.get(3)))
+                        for (String a : q.get(1).split(" ")) if (reach.contains(a)) { r = true; break; }
+                if (r) { runs.add(pc); grew = true; }
+            }
+        }
+        for (List<String> p : g.cmpPasses)
+            if (runs.contains("P:M:" + p.get(2) + ":" + p.get(3))) g.cmpSites.add(List.of(p.get(0), p.get(1)));
+        for (List<String> s : g.cmpSites) {
+            String id = s.get(0);
+            Set<String> ks = new TreeSet<>();
+            for (String cell : s.get(1).split(" ")) ks.addAll(g.cmpk.getOrDefault(cell, Set.of()));
+            for (String k : ks) {
+                if (DEBUG) System.err.println("R1188SITE\t" + id + "\t" + k);
+                if (k.startsWith("K:")) {
+                    int tab = k.indexOf('\t');
+                    String t = k.substring(2, tab);
+                    boolean exact = k.endsWith("\t1");
+                    if (c.byName.containsKey(t)) ArgContract.applyResolved(c, id, CMP, t, exact, false);
+                    else Candor.reentryEdgeByType(id, t, Candor.C_COMPARETO, true);   // a chained dependency's key type
+                } else if (k.startsWith("C:")) {
+                    String cls = k.substring(2);
+                    if (c.byName.containsKey(cls)) {
+                        String b = ArgContract.jvmTarget(c, cls, "compare", "(Ljava/lang/Object;Ljava/lang/Object;)I");
+                        Set<String> out = c.edges.get(id);
+                        if (out == null) continue;
+                        if (b != null) out.add(b); else out.addAll(Candor.functionalSamSurface(cls));
+                    } else for (DepFn d : Candor.depFnsInvokedByHandoff(cls, Set.of("compare"))) Candor.inheritDepFn(id, d);
+                }
+            }
+        }
+    }
+
+    /** The cells reachable from {@code start} (itself included) along {@code links}. */
+    private static Set<String> reach(Map<String, Set<String>> links, String start) {
+        Set<String> seen = new HashSet<>();
+        ArrayDeque<String> work = new ArrayDeque<>(List.of(start));
+        while (!work.isEmpty()) { String x = work.poll(); if (seen.add(x)) work.addAll(links.getOrDefault(x, Set.of())); }
+        return seen;
+    }
+
+    /** R1188 — a {@code Comparator.comparing}-family call's comparator facts, onto its result cell: the key's
+     *  {@code compareTo} where the key comparator is natural (none, {@code naturalOrder()}, ...), the given comparator's
+     *  facts otherwise, and the receiver's for an instance combinator ({@code thenComparing}, {@code reversed}). */
+    private static void comparatorCall(AnalysisContext c, Graph g, ClassNode cn, MethodNode mn, Frame<SourceValue>[] sf,
+            Frame<SourceValue> f, MethodInsnNode m, Type[] at, int base, String cell, String self, int depth) {
+        boolean cmpOwner = m.owner.equals("java/util/Comparator");
+        boolean rev = m.owner.equals("java/util/Collections") && m.name.equals("reverseOrder") && at.length == 1;
+        if (!cmpOwner && !rev) return;
+        if (m.getOpcode() != Opcodes.INVOKESTATIC && base >= 1)
+            for (String r : cells(c, g, cn, mn, sf, f.getStack(base - 1), self, depth + 1)) g.cmpLink(r, cell);
+        int fn = -1, cmp = -1;
+        for (int k = 0; k < at.length; k++) {
+            if (at[k].getSort() != Type.OBJECT) continue;
+            if (at[k].getInternalName().equals("java/util/function/Function")) fn = k;
+            else if (at[k].getInternalName().equals("java/util/Comparator")) cmp = k;
+        }
+        boolean keyed = fn >= 0 && (m.name.equals("comparing") || m.name.equals("thenComparing"));
+        boolean natural = cmp < 0 || NAT.equals(comparatorKind(mn, sf, f.getStack(base + cmp), Collections.newSetFromMap(new IdentityHashMap<>())));
+        if (keyed && natural) {
+            String[] kt = keyResult(c, mn, sf, f.getStack(base + fn));
+            if (kt != null) g.cmpk(cell, "K:" + kt[0] + "\t" + (kt[1] != null ? 1 : 0));
+        }
+        // a comparator argument the result runs: `comparing(f, new RevCmp())`, `thenComparing(other)`, `nullsFirst(c)`,
+        // `reverseOrder(c)` — never a natural one, whose key is the ELEMENT (not known here)
+        if (cmp >= 0 && !(keyed && natural))
+            for (String a : cells(c, g, cn, mn, sf, f.getStack(base + cmp), self, depth + 1)) g.cmpLink(a, cell);
+    }
+
+    /** R1188 — {@link #functionResult}, but for a KEY: a project class or a chained dependency's (never the JDK's,
+     *  whose {@code compareTo} on {@code String}/boxes is pure). */
+    private static String[] keyResult(AnalysisContext c, MethodNode mn, Frame<SourceValue>[] sf, SourceValue v) {
+        String[] res = null;
+        for (AbstractInsnNode src : producers(mn, sf, v)) {
+            if (!(src instanceof InvokeDynamicInsnNode d) || d.bsmArgs.length < 3 || !(d.bsmArgs[2] instanceof Type mt)
+                    || mt.getSort() != Type.METHOD) return null;
+            Type rt = mt.getReturnType();
+            if (rt.getSort() != Type.OBJECT || jdkOwner(rt.getInternalName())) return null;
+            Handle h = d.bsmArgs[1] instanceof Handle hh ? hh : null;
+            boolean exact = h != null && h.getTag() == Opcodes.H_NEWINVOKESPECIAL && h.getOwner().equals(rt.getInternalName());
+            String[] r = {rt.getInternalName(), exact ? "exact" : null};
+            if (res != null && !res[0].equals(r[0])) return null;
+            res = r;
+        }
+        return res;
+    }
+
+    /** R1189 — a class whose instances are comparators: a project class, or a chained dependency's, that implements
+     *  {@code java.util.Comparator}. */
+    private static boolean comparatorClass(AnalysisContext c, String t) {
+        if (jdkOwner(t)) return false;
+        if (c.byName.containsKey(t)) return Candor.transSupers(t).contains("java/util/Comparator");
+        Set<String> seen = new HashSet<>();
+        ArrayDeque<String> work = new ArrayDeque<>(List.of(t));
+        while (!work.isEmpty()) {
+            String x = work.poll();
+            if (!seen.add(x)) continue;
+            for (String s : c.depSupers.getOrDefault(x, List.of())) {
+                if (s.equals("java/util/Comparator")) return true;
+                work.add(s);
+            }
+        }
+        return false;
     }
 
     /** SOUNDNESS R1183 — Candor#contractReentry's TreeSet/TreeMap key operations, decided here because whether the
@@ -671,6 +834,12 @@ final class ElementFlow {
                     for (String cell : argCells)
                         for (String callee : callees) g.passes.add(new String[] {id, cell, callee, String.valueOf(j), site, ""});
                     if (arr) continue;
+                    // R1189: a COMPARATOR the callee runs (`fill(Comparator c) { new TreeSet<>(c).add(..) }`), or a container
+                    // built with one that the callee fills (`put2(TreeSet t) { t.add(..) }`), runs at THIS call with THIS
+                    // caller's comparator — a summary, never a merge of every caller's
+                    String an = at[j].getInternalName();
+                    if ((an.startsWith("java/util/") || an.equals("java/lang/Object") || an.equals("java/lang/Iterable")) && !argCells.isEmpty())
+                        for (String callee : callees) g.cmpPasses.add(List.of(id, String.join(" ", argCells), callee, String.valueOf(j)));
                     // a SCALAR argument the callee may insert into a sorted container: its own type, as ONE element.
                     // Kept apart from the cells above: it answers only the callee's Q (one-element) dispatches — the
                     // value is not a container, and reading it as one charged a project Set's OWN equals as if it
@@ -696,9 +865,11 @@ final class ElementFlow {
             ordering(c, g, cn, mn, sf, f, p, m, at, base, recv, self, id, i);
             if (!isCollectionOwner(m.owner)) continue;
             // R1183: a TreeSet/TreeMap key operation (Candor#contractReentry charges it): its receiver's cells
-            if (inst && treeKeyOp(m.owner, m.name))
+            if (inst && treeKeyOp(m.owner, m.name)) {
                 g.treeRecv.put(id + "\t" + i, traced(mn, sf, recv, Collections.newSetFromMap(new IdentityHashMap<>()))
                         ? recvKey(cells(c, g, cn, mn, sf, recv, self, 0)) : "?");
+                g.cmpSite(id, cells(c, g, cn, mn, sf, recv, self, 0));   // R1189: the receiver's comparator runs
+            }
             // R1179: ONE element inserted into, or looked up in, a container that may be sorted — the declared
             // `Set`/`Map`, a priority queue, a skip list — runs that element's compareTo. Decided here rather than at
             // the call because the receiver's ORDERING is a cell fact: a `new TreeSet<>(cmp)` runs the comparator.
@@ -709,6 +880,7 @@ final class ElementFlow {
                     ProvValue v = Candor.callArg(p, m, 0);
                     int pi = pf[0] == null ? -1 : Candor.paramIndexOf(mn, v, pf[0]);
                     String rk = recvKey(cells(c, g, cn, mn, sf, recv, self, 0));
+                    g.cmpSite(id, cells(c, g, cn, mn, sf, recv, self, 0));   // R1189: the receiver's comparator runs
                     if (pi >= 0) {
                         // the element is this body's own PARAMETER: its caller's argument, through the summary
                         g.dispatch(id, "Q:" + self + ":" + pi, CMP, rk, m.owner);
@@ -726,6 +898,11 @@ final class ElementFlow {
             if (m.name.equals("<init>") && inst) {
                 String k = allocKind(m, p, mn, sf, f, base);
                 if (k != null) for (String cell : cells(c, g, cn, mn, sf, recv, self, 0)) g.kind(cell, k);
+                // R1188/R1189: a sorted container built with a comparator runs THAT comparator on every key operation
+                int ck = cmpArg(at);
+                if (ck >= 0 && Candor.sortedOwner(m.owner))
+                    for (String cc : cells(c, g, cn, mn, sf, f.getStack(base + ck), self, 0))
+                        for (String cell : cells(c, g, cn, mn, sf, recv, self, 0)) g.cmpLink(cc, cell);
             }
             // element ADDED
             if (inst && ADD.contains(m.name) && n >= 1 && at[n - 1].getSort() == Type.OBJECT && p != null)
@@ -751,6 +928,7 @@ final class ElementFlow {
                 if (m.name.equals("<init>") && Candor.sortedOwner(m.owner) && NAT.equals(allocKind(m, p, mn, sf, f, base)))
                     for (String d : dst) g.dispatch(id, d, CMP);
                 if ((m.name.equals("addAll") || m.name.equals("putAll")) && (Candor.sortedOwner(m.owner) || Candor.maySortOwner(m.owner))) {
+                    g.cmpSite(id, dst);   // R1189: the receiver's comparator runs on every incoming element
                     String rc = recvKey(dst);
                     for (String src : cells(c, g, cn, mn, sf, f.getStack(base + n - 1), self, 0)) g.dispatch(id, src, CMP, rc, m.owner);
                 }
@@ -912,8 +1090,12 @@ final class ElementFlow {
         // natural ordering too
         boolean natural = ck < 0 || nullCmp(p, m, ck)
                 || NAT.equals(comparatorKind(mn, sf, f.getStack(base + ck), Collections.newSetFromMap(new IdentityHashMap<>())));
-        if (!natural) return;
         String o = m.owner, name = m.name;
+        // R1188/R1189: an ordering call handed a comparator runs it (a `new` comparator object here is already edged by
+        // Candor#namedFunctionalToHof; one reaching through a field, a parameter or a combinator is not)
+        if (ck >= 0 && !nullCmp(p, m, ck) && sortsWith(o, name))
+            g.cmpSite(id, cells(c, g, cn, mn, sf, f.getStack(base + ck), self, 0));
+        if (!natural) return;
         if (o.equals("java/util/Collections")) {
             boolean first = n >= 1 && at[0].getSort() == Type.OBJECT && at[0].getInternalName().startsWith("java/util/");
             if (first && (name.equals("sort") || name.equals("max") || name.equals("min") || name.equals("binarySearch")))
@@ -956,6 +1138,14 @@ final class ElementFlow {
         // `list.sort(null)`: natural ordering on the receiver's own elements
         if (isCollectionOwner(o) && name.equals("sort") && n == 1 && ck == 0 && recv != null)
             for (String cell : cells(c, g, cn, mn, sf, recv, self, 0)) g.dispatch(id, cell, CMP);
+    }
+
+    /** R1188 — an ordering call that runs the comparator it is handed, synchronously. */
+    private static boolean sortsWith(String o, String name) {
+        if (o.equals("java/util/Collections")) return name.equals("sort") || name.equals("max") || name.equals("min") || name.equals("binarySearch");
+        if (o.equals("java/util/Arrays")) return name.equals("sort") || name.equals("parallelSort") || name.equals("binarySearch");
+        if (o.equals("java/util/stream/Stream")) return name.equals("sorted") || name.equals("max") || name.equals("min");
+        return isCollectionOwner(o) && name.equals("sort");
     }
 
     /** The component types a one-dimensional object array on the stack is declared with, by its producers. */
@@ -1056,7 +1246,12 @@ final class ElementFlow {
                 case Opcodes.DUP, Opcodes.CHECKCAST -> {
                     if (f != null) out.addAll(walk(c, g, cn, mn, sf, f.getStack(f.getStackSize() - 1), self, seen));
                 }
-                case Opcodes.NEW -> out.add("L:" + self + ":" + idx);
+                case Opcodes.NEW -> {
+                    out.add("L:" + self + ":" + idx);
+                    // R1189: a comparator OBJECT runs its own compare wherever the comparator runs
+                    String t = ((TypeInsnNode) src).desc;
+                    if (comparatorClass(c, t)) g.cmpk("L:" + self + ":" + idx, "C:" + t);
+                }
                 case Opcodes.ANEWARRAY -> {
                     // R1184: an array allocation is a container cell; its declared component is an element type
                     String cell = "L:" + self + ":" + idx;
@@ -1099,6 +1294,8 @@ final class ElementFlow {
                         // R1184: a JDK call whose static return type is SORTED (a view, a synchronized wrapper, an empty
                         // sorted set): evidence of ordering, exactly as a static sorted owner is
                         if ("SRT".equals(returnKind(Type.getReturnType(m.desc)))) g.kind(cell, SRT);
+                        // R1188: a comparator made by a `Comparator.comparing` family member
+                        if (m.desc.endsWith(")Ljava/util/Comparator;")) comparatorCall(c, g, cn, mn, sf, f, m, at, base, cell, self, depth);
                         if (m.name.equals("values") && at.length == 0 && base >= 1 && mapOwner(m.owner)) {
                             // R1184: a map's values() holds its VALUES
                             for (String s : cells(c, g, cn, mn, sf, f.getStack(base - 1), self, depth + 1)) g.link(s + VALS, cell);

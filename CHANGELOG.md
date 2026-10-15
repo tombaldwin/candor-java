@@ -9,6 +9,23 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+A **comparator** is now charged where it runs, closing three **silent under-reports** on executed code. A
+`TreeSet`/`TreeMap`/`PriorityQueue`/skip list built with `Comparator.comparing(f)` charges the KEY's `compareTo` on
+insert and lookup (R1188; at a `sort`/`sorted`/`max` the same comparator was already disclosed as an opaque callback and
+is now also resolved), and a comparator OBJECT's own `compare` — `new TreeSet<>(new RevCmp())`, a static `INSTANCE`, a
+field, a factory's return, a comparator or container handed to a helper — is charged at the `add`/`put`/`addAll`/
+`floorKey`/`sort` that runs it (R1189). A HashMap-backed key of a chained dependency's `Comparable` class is now
+disclosed as `Unknown[dispatch:java.lang.Comparable.compareTo]` exactly as a project key already was (R1191).
+`sorted().count()` stays charged: JDK 9+ skips that sort on a sized stream, but JDK 8 runs it (executed; R1190).
+
+- ⚠ **Gates that change verdict on real code.** Against the published 0.40.11 jar over the 762-entry JVM corpus
+  (`bin/corpus-ab.py`): ADDED 35, REMOVED 0, CHANGED 836; bucket 1 134, bucket 2 89, buckets 3/3u 0; 0 of 8,667,679
+  call-graph edges dropped. Against this branch's base the comparator change alone is bucket 1 104, bucket 2 3, every
+  one traced to ~20 comparator `compare` edges each read in bytecode — e.g. `deny Exec` over jgit's
+  `DescribeCommand.getBestMatch`, `deny Clock` over spring-integration's `findLastReleasedSequenceNumber`, `deny Db`
+  over hibernate's `ParameterMetadataImpl.verifyOrdinalParamLabels`, `deny Log` over testng's
+  `PreserveOrderMethodInterceptor.intercept`, each 0 -> 1. The effect sets are those comparators' own `compare` bodies.
+
 Sorting, or inserting into a naturally-ordered container, now reaches the elements' `compareTo` in seven shapes
 0.40.11 read as absent, a **silent under-report** on executed code (R1184): a map's VALUES, an erased `T[]` array
 (and `toArray()`), a stream past a `map` stage, `Collectors.toCollection(TreeSet::new)` and

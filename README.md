@@ -132,7 +132,11 @@ candidate target and one effectful override would smear across the whole report:
   charge, since it may call `compareTo` itself). Two cases are DISCLOSED `Unknown[dispatch:java.lang.Comparable.
   compareTo]`, never charged: a dependency's container returned as `Set`/`Map`/`Collection` (allocation out of
   sight), and a key of a type `Comparable` of itself hashed into a HashMap-backed structure (11+ colliding keys
-  make a tree bin that runs `compareTo`; executed on JDK 21). A method doing any of this to its own collection parameter
+  make a tree bin that runs `compareTo`; executed on JDK 21) — a chained dependency's key type too (R1191, read off its
+  hierarchy sidecar). A COMPARATOR is charged where it runs (R1188/R1189): `Comparator.comparing(f)` and its
+  `thenComparing`/`reversed`/`nullsFirst` compositions run the KEY's `compareTo`, a comparator OBJECT runs its own
+  `compare`, at an ordering call handed it or a key operation on a container built with it — through a field, a
+  return, or a callee's comparator/container parameter (per call). A method doing any of this to its own collection parameter
   charges its CALLER, over the caller's argument. The argument's type must name
   ONE body — a provable `new T`, or a project declared type all of whose runtime types resolve to one body;
   where it cannot (a `java.*` or multi-body declared type admitting an effectful override) the call is
@@ -141,8 +145,9 @@ candidate target and one effectful override would smear across the whole report:
   or array of project types, which the dependency may store and compare, hash or sort later (R1174) — whose
   override of one of these members carries a concrete effect is disclosed `Unknown` with the same reason, not
   charged. In one tree, not followed: a scalar value a callee stores in a field and dispatches on later (a field
-  merges every instance), a comparator built by `Comparator.comparing(f)` (it runs the KEY's `compareTo`), a
-  comparator OBJECT's own `compare` reached from the ordering site, and the iterator an `iterator()` returns.
+  merges every instance), `Map.Entry.comparingByKey/Value()` (disclosed at the sort as an opaque comparator), and the
+  iterator an `iterator()` returns. `sorted().count()` on a sized stream is charged although JDK 9+ skips the sort:
+  JDK 8 runs it (executed, R1190).
 - `kotlin.jvm.functions.FunctionN.invoke`, `scala.FunctionN`/`PartialFunction` `apply`, and
   `groovy.lang.Closure.call` — every Kotlin/Scala/Groovy lambda or closure is a class implementing
   these; the body is instead attributed at its **creation site** (precise-by-construction).

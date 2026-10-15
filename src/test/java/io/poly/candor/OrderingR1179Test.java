@@ -67,7 +67,10 @@ class OrderingR1179Test {
             + "  public static void qBoxOrder() { new Box<Eff>(effs()).order(); }\n"
             + "  public static void qPq() { PriorityQueue<Eff> q = new PriorityQueue<>(); q.add(new Eff(2)); q.add(new Eff(1)); }\n"
             + "  public static void qMax() { Collections.max(effs()); }\n"
-            + "  public static void qStreamSorted() { effs().stream().sorted().count(); }\n"
+            // R1190: NOT `.count()` — on a SIZED stream JDK 9+ skips the sort under count() (executed: no compareTo on 21);
+            // a terminal that consumes the sorted elements compares on every JDK. `sorted().count()` itself is pinned,
+            // and kept, in OrderingR1188Test#sortedCountIsKeptForJdk8.
+            + "  public static void qStreamSorted() { effs().stream().sorted().forEach(x -> { }); }\n"
             + "  public static void qNatField() { NATF.addAll(effs()); }\n"
             + "  public static void qFactoryEff() { List<Eff> d = G.dup(effs()); Collections.sort(d); }\n"
             + "  public static void qCtorTree() { Holder h = new Holder(new TreeSet<>()); h.put(new Eff(1)); }\n"

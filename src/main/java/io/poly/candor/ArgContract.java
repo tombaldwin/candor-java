@@ -305,7 +305,8 @@ final class ArgContract {
      *    <li>otherwise: a key operation on a dependency's container whose allocation is out of sight.</li>
      *  </ul> */
     static void discloseCompareTo(AnalysisContext c, String caller, String t, boolean exact, boolean treeBin) {
-        if (t == null || !c.byName.containsKey(t)) return;
+        // R1191: a chained dependency's key type too (its hierarchy sidecar says whether it is Comparable)
+        if (t == null || !c.byName.containsKey(t) && !(treeBin && depType(c, t))) return;
         if (DEBUG) System.err.println((treeBin ? "R1184BINSITE\t" : "R1184OOSSITE\t") + caller + "\t" + t + "\t" + exact);
         CMP_SITES.get().add(new String[] {caller, t, exact ? "1" : "0", treeBin ? "B" : "O"});
     }
@@ -321,6 +322,38 @@ final class ArgContract {
         }
         return out;
     }
+    /** SOUNDNESS R1191 — a type a chained dependency's hierarchy sidecar names. */
+    static boolean depType(AnalysisContext c, String t) {
+        return !t.startsWith("java/") && (c.depIndexed.contains(t) || c.depSupers.containsKey(t));
+    }
+
+    /** SOUNDNESS R1191 — {@link #selfComparable} for a CHAINED dependency's key class, from its hierarchy sidecar: the
+     *  class itself (exact) or it and its chained subtypes (declared) that implement {@code Comparable} DIRECTLY. The
+     *  sidecar carries no type argument, so a {@code Comparable<Other>} counts too — over-inclusive, and only a
+     *  disclosure. A subclass that inherits Comparable is excluded, as {@code HashMap.comparableClassFor} excludes
+     *  it (executed). */
+    private static List<String> depSelfComparable(AnalysisContext c, String t, boolean exact) {
+        List<String> out = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        ArrayDeque<String> work = new ArrayDeque<>(List.of(t));
+        while (!work.isEmpty()) {
+            String x = work.poll();
+            if (!seen.add(x)) continue;
+            if (c.depSupers.getOrDefault(x, List.of()).contains("java/lang/Comparable")) out.add(x);
+            if (!exact) work.addAll(c.depSubtypes.getOrDefault(x, List.of()));
+        }
+        return out;
+    }
+
+    private static boolean newConcreteDep(Map<String, EffectSet> fx, DepFn d, String caller) {
+        EffectSet ce = fx.get(caller);
+        for (var eff : d.effects.effects()) {
+            if (eff == Effect.UNKNOWN) continue;
+            if (ce == null || !ce.contains(eff)) return true;
+        }
+        return false;
+    }
+
     /** R1174 — {caller, element type, exact}: ElementFlow's witnesses for a collection handed to a chained
      *  dependency. Per scan and per thread, like {@link #WIDE_SITES}. */
     static final ThreadLocal<List<String[]>> CHAIN_ELEMS = ThreadLocal.withInitial(ArrayList::new);
@@ -386,6 +419,16 @@ final class ArgContract {
             String caller = w[0], t = w[1];
             boolean exact = w[2].equals("1");
             List<String> bodies = new ArrayList<>();
+            if (w[3].equals("B") && !c.byName.containsKey(t)) {
+                // SOUNDNESS R1191 — a CHAINED dependency's key class: its compareTo is a row in the dependency's report
+                for (String k : depSelfComparable(c, t, exact))
+                    for (DepFn d : Candor.nearestDepFnsNamed(k, Candor.C_COMPARETO))
+                        if (newConcreteDep(fx, d, caller)) {
+                            added |= disclose(c, caller, "java/lang/Comparable", "compareTo", "R1191BINU", t, d.fn);
+                            break;
+                        }
+                continue;
+            }
             if (w[3].equals("B")) {
                 for (String k : selfComparable(c, t, exact)) {
                     String b = jvmTarget(c, k, "compareTo", "(Ljava/lang/Object;)I");

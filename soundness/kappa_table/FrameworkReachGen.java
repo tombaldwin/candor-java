@@ -186,7 +186,11 @@ public class FrameworkReachGen {
      *  resolved spring-core's {@code OrderComparator.sort} from {@code [Unknown]} to {@code [Fs, Log, Unknown]} through a
      *  comparator edge this closure cannot follow, and without the floor its U line vanished and a consumer read it pure. */
     static final Set<String> FLOOR = new HashSet<>();
-    /** Floor candidates; a U line is written for one only where it would otherwise have NO line at all (not charged,
+    /** SOUNDNESS R1193 — and, beside the floor, every member whose resolved bodies all carry {@code Unknown} in the scan
+     *  while this table's closure reaches no concrete effect from any of them: before R1193 such a member had no line in
+     *  either table, which a consumer reads as examined-and-pure (jackson {@code ObjectMapper.treeToValue}: its own scan
+     *  reads [Fs, Log, Unknown], a consumer read it pure). A disclosure only — never a charge.
+     *  Floor candidates; a U line is written for one only where it would otherwise have NO line at all (not charged,
      *  no hedge, no broad-dispatch A) — the floor never adds a disclosure beside a line the member already has. */
     static final TreeSet<String> FLOORED = new TreeSet<>();
     static int floored = 0;
@@ -367,7 +371,8 @@ public class FrameworkReachGen {
                         if (tg.isEmpty()) { if (!name.equals("<init>") && implementersUnvouched(cn.name, name, desc, eff))
                             HEDGE.putIfAbsent(cn.name + "." + sig, "A"); }
                         else if (UNK_ONLY.containsAll(tg)) HEDGE.putIfAbsent(cn.name + "." + sig, "U");
-                        else if (FLOOR.contains(cn.name + "." + sig) && UNK_ANY.containsAll(tg)) FLOORED.add(cn.name + "." + sig);
+                        else if (UNK_ANY.containsAll(tg) && (FLOOR.contains(cn.name + "." + sig)
+                                || tg.stream().allMatch(t -> eff[t] == 0))) FLOORED.add(cn.name + "." + sig);
                     }
                     if (tg.isEmpty()) continue;
                     MethodNode decl = nodeMethod.get(tg.get(0));
@@ -450,7 +455,7 @@ public class FrameworkReachGen {
             for (String k : BROAD) if (!HEDGE.containsKey(k)) hl.add("A\t" + k);   // SOUNDNESS R1096 broad dispatch (one line per key)
             for (String k : FLOORED)                                                     // SOUNDNESS R1189 the floor
                 if (!HEDGE.containsKey(k) && !BROAD.contains(k) && !charged.contains(k)) { hl.add("U\t" + k); floored++; }
-            System.err.println("framework-reach: " + floored + " members kept at U by the floor (R1189)");
+            System.err.println("framework-reach: " + floored + " members kept at U by the floor (R1189) or hedged by R1193");
             for (Map.Entry<String, TreeSet<String>> x : XJAR.entrySet())                  // SOUNDNESS R1097
                 hl.add("O\t" + x.getKey() + "\t" + String.join(",", x.getValue()));
             for (String pk : PURE) hl.add("P\t" + pk);
@@ -461,7 +466,8 @@ public class FrameworkReachGen {
             for (String h : header) hb.append(h).append('\n');
             hb.append("# hedge: J = a JDK package (runtime), S = a surveyed framework class, A/U = a framework member the\n");
             hb.append("# table cannot vouch for (A: no body — dispatch; U: the scan read it only as Unknown, or the\n");
-            hb.append("# previous table had a line for it and its body still carries Unknown — the R1189 floor). See FrameworkReach.\n");
+            hb.append("# previous table had a line for it and its body still carries Unknown — the R1189 floor — or its bodies carry\n");
+            hb.append("# Unknown and the closure reaches no concrete effect, R1193). See FrameworkReach.\n");
             hb.append("# P = a member a NAME rule charges whose surveyed body is a proven-pure field accessor (R1052).\n");
             hb.append("# O = a public member overridden in ANOTHER surveyed jar by a body that can do more than the row says;\n");
             hb.append("#     the overriding classes follow (R1097). See FrameworkReach#crossJarOverriders.\n");

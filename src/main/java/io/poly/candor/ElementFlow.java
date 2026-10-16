@@ -129,6 +129,22 @@ import org.objectweb.asm.tree.analysis.SourceValue;
  * as a JDK interface ({@code Comparable}) names no body, in either direction; an alias through a callee's return cell or
  * an instance field's global cell is not paired (both are shared by every caller or instance).
  *
+ * <p><b>SOUNDNESS R1199 — A FLOOR, NOT A SEVENTH SPECIAL CASE.</b> R1174 to R1198 built the element set of a sorted cell
+ * positively, by tracing inserts and pairing aliases, and each row's residual was a shape the tracing missed: an empty
+ * or uninformative set read as "nothing runs". The floor: an ordering site a body makes ITSELF whose element set does not
+ * bound what it orders — nothing traced, or a value known only as {@code Object}/{@code Comparable} (a signature's bound,
+ * an insert's static type, a scalar parameter so declared) — is a {@code Comparable.compareTo} dispatch, DISCLOSED after
+ * the fixpoint where some project implementor carries a concrete effect the body does not already report (reason
+ * {@code dispatch:java.lang.Comparable.compareTo}); callers inherit it along the call edge. Field TWIN cells are skipped:
+ * the read that yields a twin yields the field's global cell too, which is the bound. The pairing model stays, as
+ * PRECISION (an exact type is charged, not disclosed); soundness for an untraced set no longer depends on it. Two
+ * resolutions ride beside the floor: a callee that RETURNS its container argument is one object with it at that site, so
+ * the caller's inserts into the result flow back ({@link Graph#siteBack}; never into a shared return cell or an instance
+ * field's global cell); and a generic project method's container return is instantiated by its receiver's static type
+ * ({@code Set<V> getAllVertices()} on a {@code DirectedMultiGraph<SceneGraphNode, ..>} field). Residual: the
+ * {@code equals}/{@code hashCode} twin (an element known only as {@code Object} hashed, or a container aliased through a
+ * callee's return and hashed) is silent and not floored here — its population is every hashed {@code Object}.
+ *
  * <p><b>SOUNDNESS R1183.</b> {@code TreeSet}/{@code TreeMap} key operations are charged by
  * {@link Candor#contractReentry} with the element's compareTo; the charge is applied here, and WITHHELD only where every
  * cell the receiver can be is an allocation in the same body whose comparator is a lambda or method reference (other
@@ -271,6 +287,9 @@ final class ElementFlow {
             if (root.startsWith("P:")) twins.computeIfAbsent(root, x -> new TreeSet<>()).add(path);
             return root + path;
         }
+        /** SOUNDNESS R1199 — a one-element cell ({@code Q:}, a body's own scalar parameter) -> the parameter's erased
+         *  declared type: the only bound on it this body has. */
+        final Map<String, String> qDecl = new HashMap<>();
         /** SOUNDNESS R1198 — cells that are one OBJECT at one site (see {@link #pairTwins}). */
         final Set<List<String>> pairs = new LinkedHashSet<>();
         void pair(String a, String b) {
@@ -279,6 +298,18 @@ final class ElementFlow {
             if (a.startsWith("F:") && !statics.contains(a.indexOf('#') < 0 ? a : a.substring(0, a.indexOf('#')))) return;
             if (b.startsWith("F:") && !statics.contains(b.indexOf('#') < 0 ? b : b.substring(0, b.indexOf('#')))) return;
             pairs.add(List.of(a, b));
+        }
+        /** SOUNDNESS R1199 — the callee RETURNS the argument object itself ({@code List<T> id(List<T> l) { return l; }}):
+         *  at this site the call's result and the caller's argument are ONE container, so what the caller inserts into
+         *  the result is in its argument too. Elements flow back from the site's own result cell only into a cell
+         *  specific to this caller (never a callee's shared return cell, a scalar's, or an instance field's global
+         *  cell, which would hand this site's elements to every other caller or instance). */
+        void siteBack(String site, String arg) {
+            if (site == null || arg == null || site.equals(arg) || arg.indexOf('|') >= 0) return;
+            if (arg.startsWith("R:") || arg.startsWith("Q:") || arg.startsWith("V:") || arg.equals(UNK)) return;
+            if (arg.startsWith("F:") && !statics.contains(arg.indexOf('#') < 0 ? arg : arg.substring(0, arg.indexOf('#')))) return;
+            if (DEBUG) System.err.println("R1199SITEBACK\t" + site + "\t" + arg);
+            link(site, arg);
         }
         void back(String src, String dst) {
             if (src != null && dst != null && !src.equals(dst)) back.computeIfAbsent(src, x -> new HashSet<>()).add(dst);
@@ -351,6 +382,9 @@ final class ElementFlow {
                 try { scan(c, g, cn, mn); } catch (Throwable e) { /* an unreadable body adds nothing */ }
             }
         }
+        // R1199: the ordering sites each body makes ITSELF (a summary's copy at a caller is not one: the callee's own
+        // disclosure reaches its callers along the call edge, as every other effect of the callee does)
+        Set<List<String>> own = new HashSet<>(g.dispatch);
         applySummaries(g);
         pairTwins(g);
         comparatorKinds(c, g);
@@ -361,8 +395,8 @@ final class ElementFlow {
         backFlow(g);
         for (List<String> d : g.dispatch) {
             Set<String> es = g.elems.get(d.get(1));
-            if (es == null) continue;
             String key = d.get(2);
+            if (es == null && !key.equals(CMP)) continue;
             boolean disclose = false;
             if (key.equals(CMP) && !d.get(3).isEmpty() && !maySort(g, d.get(3), d.get(4))) {
                 // R1184: a receiver whose allocation is OUT OF SIGHT (a dependency's `Set`/`Map` return) may be the
@@ -370,6 +404,19 @@ final class ElementFlow {
                 if (!outOfSight(g, d.get(3))) continue;
                 disclose = true;
             }
+            if (key.equals(CMP) && own.contains(d) && d.get(1).indexOf('#') < 0 && untraced(d.get(1).startsWith("Q:") ? qBound(g, d.get(1)) : es)) {
+                // SOUNDNESS R1199 — the elements this site ORDERS name no body: none traced, or only Object/Comparable.
+                // They are Comparable (the sort casts them), so their compareTo is a Comparable dispatch, resolved by
+                // ArgContract's own rule for a java.* declared type: disclosed where some implementor carries a
+                // concrete effect the caller does not already report, never charged and never silent. Only a site the body
+                // makes itself (a caller inherits it along the call edge), and not on a field TWIN: the read that gives a
+                // twin gives the field's global cell too, which holds every insert in the scan and the declared bound of
+                // every parameter stored there, so it is the bound; a twin is a per-receiver summary for callers.
+                if (DEBUG) System.err.println("R1199UNTRACED\t" + d.get(0) + "\t" + d.get(1) + "\t" + (es == null ? "-" : String.join(",", es)));
+                ArgContract.discloseComparable(d.get(0));
+                if (es == null) continue;
+            }
+            if (es == null) continue;
             for (String te : es) {
                 int tab = te.indexOf('\t');
                 String t = te.substring(0, tab);
@@ -741,6 +788,24 @@ final class ElementFlow {
         return false;
     }
 
+    /** SOUNDNESS R1199 — an element set that does not bound what this site orders: empty (nothing traced), or holding a
+     *  value known only as {@code Object} or {@code Comparable} — a signature's bound or an insert's static type, which
+     *  admits ANY Comparable, so an exact type beside it is one member, not the set. {@link ArgContract#bodiesFor}
+     *  answers both with nothing (neither IS a body), which left such a site silent. */
+    private static Set<String> qBound(Graph g, String q) {
+        String t = g.qDecl.get(q);
+        return t == null ? null : Set.of(t + "\t0");
+    }
+    private static boolean untraced(Set<String> es) {
+        if (es == null || es.isEmpty()) return true;
+        for (String te : es) {
+            int tab = te.indexOf('\t');
+            String t = te.substring(0, tab);
+            if ((t.equals("java/lang/Object") || t.equals("java/lang/Comparable")) && !te.endsWith("\t1")) return true;
+        }
+        return false;
+    }
+
     /** R1184 — some cell of the receiver may be a dependency's container whose allocation this scan cannot see. */
     private static boolean outOfSight(Graph g, String recv) {
         for (String r : recv.split(" ")) {
@@ -821,7 +886,7 @@ final class ElementFlow {
                 for (String f : fields) if (aliasFields.contains(f)) g.alias(p[1], f); else g.link(p[1], f);
                 @SuppressWarnings("unchecked") Set<String> sap = (Set<String>) sum[7];
                 pairParams(g, p[1], sap, p[4]);
-                if ((Boolean) sum[4]) { g.alias(p[1], p[4]); g.pair(p[1], p[4]); }
+                if ((Boolean) sum[4]) { g.alias(p[1], p[4]); g.pair(p[1], p[4]); g.siteBack(p[4], p[1]); }
                 else if ((Boolean) sum[2]) g.link(p[1], p[4]);
                 // R1184: a parameter's elements copied into ANOTHER parameter (`copy(a, b) { b.addAll(a); }`)
                 @SuppressWarnings("unchecked") Set<String> ps = (Set<String>) sum[5];
@@ -1248,6 +1313,9 @@ final class ElementFlow {
                     if (pi >= 0) {
                         // the element is this body's own PARAMETER: its caller's argument, through the summary
                         g.dispatch(id, "Q:" + self + ":" + pi, CMP, rk, m.owner);
+                        // R1199: what the parameter is declared as (erased: a type variable is its bound)
+                        Type pt = Type.getArgumentTypes(mn.desc)[pi];
+                        g.qDecl.put("Q:" + self + ":" + pi, pt.getSort() == Type.OBJECT ? pt.getInternalName() : pt.getDescriptor());
                     } else {
                         String t = v == null || v.nullConst ? null : ArgContract.typeOf(c, v);
                         if (t != null) {
@@ -1766,6 +1834,9 @@ final class ElementFlow {
                         if (tid != null) g.alias("R:" + tid, cell);
                         MethodNode tm = Candor.findMethod(c.byName.get(m.owner), m.name, m.desc);
                         String e = tm == null || tm.signature == null ? null : firstTypeArg(tm.signature, -1);
+                        // SOUNDNESS R1199: `Set<V> all()` on a receiver whose static type is `Graph2<Eff>` holds Eff
+                        if (e == null && tm != null && op != Opcodes.INVOKESTATIC && f != null)
+                            e = instantiatedReturnElem(c, mn, f, m, tm);
                         if (e != null) g.elem(cell, e, false);
                         String ve = tm == null || tm.signature == null ? null : mapValueArg(tm.signature, -1);
                         if (ve != null) g.elem(cell + VALS, ve, false);
@@ -2156,6 +2227,103 @@ final class ElementFlow {
             slot += at[p].getSize();
         }
         return -1;
+    }
+
+    /** SOUNDNESS R1199 — the element type a GENERIC project method's container return holds, instantiated by its
+     *  receiver's static type: {@code Set<V> getAllVertices()} on a {@code DirectedMultiGraph<SceneGraphNode, ..>}
+     *  field holds {@code SceneGraphNode} (declared). The receiver's type comes from a field's, a parameter's or a
+     *  local's generic signature; every source of the receiver must agree on the argument, and the class it names must
+     *  be the one declaring the method (a subclass may rename or fix its parameters). Else null. */
+    private static String instantiatedReturnElem(AnalysisContext c, MethodNode mn, Frame<SourceValue> f, MethodInsnNode m, MethodNode tm) {
+        // never let a malformed or absent signature throw: the caller's catch would drop the WHOLE body's scan
+        try {
+            return instantiatedReturnElem0(c, mn, f, m, tm);
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+    private static String instantiatedReturnElem0(AnalysisContext c, MethodNode mn, Frame<SourceValue> f, MethodInsnNode m, MethodNode tm) {
+        if (tm.signature == null) return null;
+        String tv = returnTypeVar(tm.signature);
+        ClassNode oc = c.byName.get(m.owner);
+        if (tv == null || oc == null || oc.signature == null || !oc.methods.contains(tm)) return null;
+        int k = formalIndex(oc.signature, tv);
+        int nargs = Type.getArgumentTypes(m.desc).length;
+        int at = f.getStackSize() - nargs - 1;
+        if (k < 0 || at < 0) return null;
+        String out = null;
+        for (AbstractInsnNode src : f.getStack(at).insns) {
+            String sig = staticSig(c, mn, src);
+            String a = sig == null ? null : typeArgOf(sig, m.owner, k);
+            if (a == null || out != null && !out.equals(a)) return null;
+            out = a;
+        }
+        return out;
+    }
+    /** The generic signature of the value {@code src} pushes: a field's, a parameter's, or a local's (its LVTT entry). */
+    private static String staticSig(AnalysisContext c, MethodNode mn, AbstractInsnNode src) {
+        if (src instanceof FieldInsnNode fi && (src.getOpcode() == Opcodes.GETFIELD || src.getOpcode() == Opcodes.GETSTATIC))
+            return fieldSig(c, fi);
+        if (src instanceof VarInsnNode vi && src.getOpcode() == Opcodes.ALOAD && mn.localVariables != null) {
+            int idx = mn.instructions.indexOf(src);
+            for (LocalVariableNode lv : mn.localVariables)
+                if (lv.index == vi.var && lv.signature != null && mn.instructions.indexOf(lv.start) <= idx && idx < mn.instructions.indexOf(lv.end))
+                    return lv.signature;
+        }
+        return null;
+    }
+    /** The type variable a method signature's return container takes as its FIRST type argument ({@code Set<V>}). */
+    private static String returnTypeVar(String sig) {
+        String[] out = {null};
+        new SignatureReader(sig).accept(new SignatureVisitor(Opcodes.ASM9) {
+            boolean inRet, top; int depth;
+            @Override public SignatureVisitor visitParameterType() { inRet = false; return new SignatureVisitor(Opcodes.ASM9) { }; }
+            @Override public SignatureVisitor visitExceptionType() { inRet = false; return new SignatureVisitor(Opcodes.ASM9) { }; }
+            @Override public SignatureVisitor visitReturnType() { inRet = true; depth = 0; return this; }
+            @Override public void visitClassType(String name) {
+                if (!inRet) return;
+                if (depth == 0) top = name.startsWith("java/util/");
+                depth++;
+            }
+            @Override public void visitTypeVariable(String name) { if (inRet && depth == 1 && top && out[0] == null) out[0] = name; }
+            @Override public SignatureVisitor visitTypeArgument(char w) { return w == '=' || w == '+' ? this : new SignatureVisitor(Opcodes.ASM9) { }; }
+            @Override public void visitEnd() { if (inRet) depth--; }
+        });
+        return out[0];
+    }
+    /** The position of formal type parameter {@code tv} in a class signature, or -1. */
+    private static int formalIndex(String classSig, String tv) {
+        List<String> names = new ArrayList<>();
+        new SignatureReader(classSig).accept(new SignatureVisitor(Opcodes.ASM9) {
+            @Override public void visitFormalTypeParameter(String name) { names.add(name); }
+        });
+        return names.indexOf(tv);
+    }
+    /** The k-th type argument of a type signature whose raw class is {@code owner}, when it is a class (exact match on
+     *  the raw class; a wildcard {@code ? extends T} gives its bound T). Else null. */
+    private static String typeArgOf(String typeSig, String owner, int k) {
+        String[] out = {null};
+        boolean[] ok = {false};
+        try {
+            new SignatureReader(typeSig).acceptType(new SignatureVisitor(Opcodes.ASM9) {
+                int depth, nth;
+                @Override public void visitClassType(String name) {
+                    if (depth == 0) ok[0] = name.equals(owner);
+                    else if (depth == 1 && ok[0] && nth == k + 1 && out[0] == null) out[0] = name;
+                    depth++;
+                }
+                @Override public void visitInnerClassType(String name) { if (depth == 1) ok[0] = false; }
+                @Override public SignatureVisitor visitTypeArgument(char w) {
+                    if (depth == 1) nth++;
+                    return w == '-' ? new SignatureVisitor(Opcodes.ASM9) { } : this;
+                }
+                @Override public void visitTypeArgument() { if (depth == 1) nth++; }
+                @Override public void visitEnd() { depth--; }
+            });
+        } catch (RuntimeException e) {
+            return null;
+        }
+        return out[0];
     }
 
     private static String paramElem(MethodNode mn, int p) {

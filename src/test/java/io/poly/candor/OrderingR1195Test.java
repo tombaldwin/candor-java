@@ -135,7 +135,8 @@ class OrderingR1195Test {
         try {
             Map<String, Map<String, Object>> r = byFn(t.scanAll());
             for (String fn : CONTROLS)
-                assertTrue(inferred(r, "app.Main." + fn).isEmpty(), fn + " runs no effectful compareTo (executed); got "
+                // R1199: a sorter over an untraced field now DISCLOSES; a control may inherit only that
+                assertTrue(OrderingR1199Test.emptyOrInheritsTheOrderingDisclosure(r, "app.Main." + fn), fn + " runs no effectful compareTo (executed); got "
                         + r.get("app.Main." + fn));
             // the generic class's own sort keeps only what its signature names: its CALLERS are charged
             assertTrue(!inferred(r, "app.LCounter.sorted").contains("Fs"), "got " + r.get("app.LCounter.sorted"));

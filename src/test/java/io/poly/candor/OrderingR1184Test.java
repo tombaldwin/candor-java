@@ -206,7 +206,8 @@ public class N {
     void controlsCarryNothing() throws Exception {
         Map<String, Map<String, Object>> r = scan();
         for (String fn : NOTHING)
-            assertTrue(inferred(r, "app.N." + fn).isEmpty(), fn + " runs no effectful compareTo (executed); got " + r.get("app.N." + fn));
+            // R1199: a generic sorter now DISCLOSES what a caller could hand it; a control may inherit only that
+            assertTrue(OrderingR1199Test.emptyOrInheritsTheOrderingDisclosure(r, "app.N." + fn), fn + " runs no effectful compareTo (executed); got " + r.get("app.N." + fn));
         for (String fn : NEVER_CHARGED)
             assertTrue(!inferred(r, "app.N." + fn).contains("Fs"), fn + " is at most disclosed; got " + r.get("app.N." + fn));
     }

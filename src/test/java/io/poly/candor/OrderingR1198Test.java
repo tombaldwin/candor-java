@@ -289,15 +289,15 @@ class OrderingR1198Test {
         }
     }
 
-    /** STATED RESIDUAL, not closed: an element whose declared type is a JDK interface ({@code Comparable}) names no
-     *  body, here or in the forward direction ({@code ni10Fwd}, the same insert made in the sorting body). */
+    /** Was the stated residual; CLOSED by SOUNDNESS R1199 as a DISCLOSURE: an element known only as a JDK interface
+     *  ({@code Comparable}) is a {@code Comparable.compareTo} dispatch, disclosed where an implementor is effectful. */
     @Test
-    void aJdkInterfaceElementStaysTheStatedResidual() throws Exception {
+    void aJdkInterfaceElementIsDisclosedSinceR1199() throws Exception {
         Tree t = Tree.of(app());
         try {
             Map<String, Map<String, Object>> r = byFn(t.scanAll());
-            assertTrue(inferred(r, "app.N.ni10Fwd").isEmpty() && inferred(r, "app.N.ni05Any").isEmpty(),
-                    "if these now charge, close the residual in the row: " + r.get("app.N.ni05Any") + " " + r.get("app.N.ni10Fwd"));
+            for (String fn : List.of("app.N.ni10Fwd", "app.N.ni05Any"))
+                assertTrue(String.valueOf(r.get(fn).get("unknownWhy")).contains("dispatch:java.lang.Comparable.compareTo"), fn + " got " + r.get(fn));
         } finally {
             t.close();
         }

@@ -156,7 +156,8 @@ class OrderingR1179Test {
                             fn + " is at most the tree-bin disclosure; got " + r.get("app.Main." + fn));
                     continue;
                 }
-                assertTrue(inferred(r, "app.Main." + fn).isEmpty(), fn + " runs no effectful compareTo (executed); got "
+                // R1199: a generic sorter now DISCLOSES what a caller could hand it; a control may inherit only that
+                assertTrue(OrderingR1199Test.emptyOrInheritsTheOrderingDisclosure(r, "app.Main." + fn), fn + " runs no effectful compareTo (executed); got "
                         + r.get("app.Main." + fn));
             }
             // the generic callee keeps only what its own signature names: its CALLERS are charged

@@ -311,6 +311,12 @@ final class ArgContract {
         CMP_SITES.get().add(new String[] {caller, t, exact ? "1" : "0", treeBin ? "B" : "O"});
     }
 
+    /** SOUNDNESS R1199 — callers whose ordering site sorts elements that name no compareTo body (none traced, or only
+     *  {@code Object}/{@code Comparable}): their compareTo is a {@code Comparable} dispatch, disclosed after the
+     *  fixpoint where some project implementor's body carries a concrete effect the caller does not already report. */
+    private static final ThreadLocal<Set<String>> UNTRACED_CMP = ThreadLocal.withInitial(LinkedHashSet::new);
+    static void discloseComparable(String caller) { UNTRACED_CMP.get().add(caller); }
+
     /** The concrete classes an instance of {@code t} (exactly, or any subtype) can be whose {@code compareTo} a
      *  HashMap tree bin runs: those that implement {@code Comparable<Self>} DIRECTLY. */
     private static List<String> selfComparable(AnalysisContext c, String t, boolean exact) {
@@ -445,6 +451,16 @@ final class ArgContract {
                 }
         }
         CMP_SITES.get().clear();
+        if (!UNTRACED_CMP.get().isEmpty()) {
+            List<String> impls = Cha.chaTargets("java/lang/Comparable", "compareTo", "(Ljava/lang/Object;)I");
+            for (String caller : UNTRACED_CMP.get())
+                for (String b : impls)
+                    if (newConcrete(fx, b, caller)) {
+                        added |= disclose(c, caller, "java/lang/Comparable", "compareTo", "R1199U", "java/lang/Comparable", b);
+                        break;
+                    }
+        }
+        UNTRACED_CMP.get().clear();
         // SOUNDNESS R1174 — the ELEMENT witnesses ElementFlow found (a collection of project values handed to a
         // chained dependency), merged per caller with the direct ones. Read here and dropped: they are a
         // function of this scan's bodies, decided after the analyze loop, so they never enter the accumulator.
@@ -500,6 +516,7 @@ final class ArgContract {
         BY_CALLER.get().clear();
         CHAIN_ELEMS.get().clear();
         CMP_SITES.get().clear();
+        UNTRACED_CMP.get().clear();
         try {
             ElementFlow.run(c);   // a collection's own equals/hashCode/removeAll/... over its elements
             resolveSites(c);

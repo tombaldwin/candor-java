@@ -9,6 +9,51 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+## [0.40.12] — 2026-10-16
+
+Two changes users will see. First, sorting and ordered containers: a comparator is now charged where a sort or a
+`TreeSet`/`TreeMap`/`PriorityQueue` runs it, and the elements' `compareTo` is reached in many more shapes (a map's
+values, a stream past `map`/`flatMap`, a container held in a field, a callee's inserts) — each a **silent
+under-report** on executed code (R1184, R1188, R1189, R1195, R1198). Second, **the generated framework table now
+discloses 31,667 framework members as `Unknown`** (R1193): where a framework's own scan reports `Unknown` beside
+effects the table cannot vouch for (jackson's `ObjectMapper.treeToValue`, `readValue`, `writeValueAsString`; Spring's
+`AnnotationMetadata.introspect`, `MergedAnnotations.from`, `CodeBlock.of`; JNA's `Pointer.getInt`), a project that
+calls the member without scanning the framework used to read that call as effect-free and now reads `Unknown` with
+reason `dep:<member>`. SOUNDNESS R1183, R1184, R1188, R1189, R1191, R1193, R1195 and R1198 close here; R1190 is
+kept as it was (the charge stands).
+
+- ⚠ **Gates that change verdict on real code.** Measured against the published 0.40.11 jar over the 762-entry JVM
+  corpus (`bin/corpus-ab.py`, clean environment, JDK 21): ADDED 3,265 rows, REMOVED 0, CHANGED 13,326. Each gate is
+  scoped to the method named. These now **fail where 0.40.11 passed**:
+  - a scoped `deny <E>` over 159 rows that gain a concrete effect (139 of them previously carried none), each a
+    comparator's `compare` or an element's `compareTo` the call now reaches: groovy 3/4's
+    `DefaultGroovyMethods.toSorted`/`intersect` and their `dgm$` dispatchers (54 rows; `NumberAwareComparator.compare`
+    runs Groovy's dynamic `compareTo`), JDA's `MemberImpl.getRoles`/`canInteract(RichCustomEmoji)`/`PermissionUtil`
+    (`deny Clock`), liquibase's SQL generators and `UnparsedSql` constructors (`deny Db`, `Fs`, …), spring-core's
+    `ReflectionHintsWriter.write` and `SpringFactoriesLoader.load` (`deny Fs`), couchbase-core-io's shaded netty
+    `HttpPostRequestDecoder.getBodyHttpData` and `IpSubnetFilter.accept`, micronaut-core's `OrderUtil.sort`, geode's
+    `SortedResultMapImpl`, orientdb's `OTransactionIndexChanges.getCeilingKey`/`getFloorKey`, jgit's
+    `DescribeCommand.getBestMatch` (`deny Exec`), testng's `PreserveOrderMethodInterceptor.intercept` (`deny Log`),
+    hibernate's `ParameterMetadataImpl.verifyOrdinalParamLabels` (`deny Db`), spring-integration's
+    `findLastReleasedSequenceNumber` (`deny Clock`), dbunit's `SortedTable`, ant's `EchoProperties.sortProperties`;
+  - `deny Unknown` over 4,912 rows that newly carry `Unknown` (3,013 of them carry nothing else). Most are R1193's
+    framework disclosure (4,702 rows in the R1193 lane's own A/B): jna-platform (912 rows across its two jars), anthropic-java-core, adyen, keycloak-core,
+    messagebird, web3j, postmark (`DataHandler.toJson`/`fromJson`), arangodb, redisson, twilio, consul-client, ktor,
+    and Spring's own modules calling one another without the callee scanned (spring-beans
+    `AutowiredAnnotationBeanPostProcessor.findAutowiredAnnotation`, spring-context, spring-data-*, spring-aop, the
+    AOT `RuntimeHints` registrars). The rest are the ordering disclosures (a comparator from a dependency, a
+    `Comparable` key of a chained dependency's class).
+
+  **Nothing passes where 0.40.11 failed**: no row is removed, and no row loses a concrete effect or `Unknown`
+  (corpus-ab buckets 3 and 3u are 0). Eight sampled gates were re-run on the published jar and on this release's
+  clean build, in a clean environment: `deny Fs DefaultGroovyMethods.toSorted(Iterator)` (groovy 4.0.21), `deny Exec
+  DescribeCommand.getBestMatch` (jgit 6.10), `deny Clock MemberImpl.getRoles` and `deny Clock
+  MemberImpl.canInteract(RichCustomEmoji)` (JDA 5), `deny Log PreserveOrderMethodInterceptor.intercept` (testng
+  7.10.2), `deny Unknown DataHandler.toJson` (postmark 1.10.2) and `deny Unknown
+  AutowiredAnnotationBeanPostProcessor.findAutowiredAnnotation` (spring-beans 6.1.10) each pass on 0.40.11 and fail
+  now; `deny Net Db Exec MemberImpl.canInteract` passes on both. A scope that names a method without its parameter
+  list also covers its other overloads, several of which were charged in 0.40.11 already.
+
 The **ordering residuals of R1195** are closed (R1198, **silent under-reports**, each executed on JDK 21 and absent
 under `deny Fs Unknown` on main): a container in a field of an object held in a field (`o.add(x); o.sort()` through
 `Outer.bag.items`, a getter's result, a `Bag` handed to a constructor), `equals`/`hashCode` a callee runs over the

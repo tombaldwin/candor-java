@@ -130,8 +130,8 @@
 # P = a member a NAME rule charges whose surveyed body is a proven-pure field accessor (R1052).
 # O = a public member overridden in ANOTHER surveyed jar by a body that can do more than the row says;
 #     the overriding classes follow (R1097). See FrameworkReach#crossJarOverriders.
-# entries 108066
-# content-sha256 e411f98ec23f95f2d0a3e681841d7db9ac3cecd185fcdf036496f67fe692830d
+# entries 108068
+# content-sha256 6a1f4ca9e3d35b138b03889145f7e64e60b8f618ffeb088c90c72e5368d59d85
 A	com/fasterxml/jackson/annotation/JacksonInject.useInput()Lcom/fasterxml/jackson/annotation/OptBoolean;
 A	com/fasterxml/jackson/annotation/JacksonInject.value()Ljava/lang/String;
 A	com/fasterxml/jackson/annotation/JsonAlias.value()[Ljava/lang/String;
@@ -73130,6 +73130,8 @@ U	org/dbunit/assertion/comparer/value/IsActualWithinToleranceOfExpectedTimestamp
 U	org/dbunit/assertion/comparer/value/IsActualWithinToleranceOfExpectedTimestampValueComparer.getCastedValue(Ljava/lang/Object;Lorg/dbunit/dataset/datatype/DataType;)Ljava/lang/Object;
 U	org/dbunit/assertion/comparer/value/NeverFailsValueComparer.doCompare(Lorg/dbunit/dataset/ITable;Lorg/dbunit/dataset/ITable;ILjava/lang/String;Lorg/dbunit/dataset/datatype/DataType;Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/String;
 U	org/dbunit/assertion/comparer/value/ValueComparerTemplateBase.doCompare(Lorg/dbunit/dataset/ITable;Lorg/dbunit/dataset/ITable;ILjava/lang/String;Lorg/dbunit/dataset/datatype/DataType;Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/String;
+U	org/dbunit/database/PrimaryKeyFilter$PkTableMap.add(Ljava/lang/String;Ljava/lang/Object;)V
+U	org/dbunit/database/PrimaryKeyFilter$PkTableMap.addAll(Ljava/lang/String;Ljava/util/Set;)V
 U	org/dbunit/dataset/CaseInsensitiveDataSet.getTableNames()[Ljava/lang/String;
 U	org/dbunit/dataset/CaseInsensitiveTable.getRowCount()I
 U	org/dbunit/dataset/FilteredDataSet.getTableMetaData(Ljava/lang/String;)Lorg/dbunit/dataset/ITableMetaData;

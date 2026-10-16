@@ -11,6 +11,7 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## [0.40.12] — 2026-10-16
 
+- **`jbang-catalog.json` points at the v0.40.12 jar.**
 Two changes users will see. First, sorting and ordered containers: a comparator is now charged where a sort or a
 `TreeSet`/`TreeMap`/`PriorityQueue` runs it, and the elements' `compareTo` is reached in many more shapes (a map's
 values, a stream past `map`/`flatMap`, a container held in a field, a callee's inserts) — each a **silent

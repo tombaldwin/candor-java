@@ -290,6 +290,12 @@ final class ElementFlow {
         /** SOUNDNESS R1199 — a one-element cell ({@code Q:}, a body's own scalar parameter) -> the parameter's erased
          *  declared type: the only bound on it this body has. */
         final Map<String, String> qDecl = new HashMap<>();
+        /** SOUNDNESS R1199 — cell -> the element types a STATIC type says it holds (a local's generic signature, an
+         *  array's component), read only by the ordering floor: never an element, so no resolution elsewhere moves. */
+        final Map<String, Set<String>> bounds = new HashMap<>();
+        void bound(String cell, String t) {
+            if (cell != null && t != null && !t.startsWith("[")) bounds.computeIfAbsent(cell, x -> new HashSet<>()).add(t);
+        }
         /** SOUNDNESS R1198 — cells that are one OBJECT at one site (see {@link #pairTwins}). */
         final Set<List<String>> pairs = new LinkedHashSet<>();
         void pair(String a, String b) {
@@ -304,7 +310,9 @@ final class ElementFlow {
          *  the result is in its argument too. Elements flow back from the site's own result cell only into a cell
          *  specific to this caller (never a callee's shared return cell, a scalar's, or an instance field's global
          *  cell, which would hand this site's elements to every other caller or instance). */
+        final Set<String> contSites = new HashSet<>();
         void siteBack(String site, String arg) {
+            if (!contSites.contains(site)) return;
             if (site == null || arg == null || site.equals(arg) || arg.indexOf('|') >= 0) return;
             if (arg.startsWith("R:") || arg.startsWith("Q:") || arg.startsWith("V:") || arg.equals(UNK)) return;
             if (arg.startsWith("F:") && !statics.contains(arg.indexOf('#') < 0 ? arg : arg.substring(0, arg.indexOf('#')))) return;
@@ -412,8 +420,15 @@ final class ElementFlow {
                 // makes itself (a caller inherits it along the call edge), and not on a field TWIN: the read that gives a
                 // twin gives the field's global cell too, which holds every insert in the scan and the declared bound of
                 // every parameter stored there, so it is the bound; a twin is a per-receiver summary for callers.
-                if (DEBUG) System.err.println("R1199UNTRACED\t" + d.get(0) + "\t" + d.get(1) + "\t" + (es == null ? "-" : String.join(",", es)));
-                ArgContract.discloseComparable(d.get(0));
+                Set<String> b = d.get(1).startsWith("Q:") ? null : g.bounds.get(d.get(1));
+                if (b != null && !b.isEmpty() && !untraced(withDeclared(b))) {
+                    // a static type bounds it (`List<String>`, `Path[]`): its compareTo, resolved as a declared element's
+                    if (DEBUG) System.err.println("R1199BOUND\t" + d.get(0) + "\t" + d.get(1) + "\t" + String.join(",", b));
+                    for (String t : b) ArgContract.applyResolved(c, d.get(0), CMP, t, false, false);
+                } else {
+                    if (DEBUG) System.err.println("R1199UNTRACED\t" + d.get(0) + "\t" + d.get(1) + "\t" + (es == null ? "-" : String.join(",", es)));
+                    ArgContract.discloseComparable(d.get(0));
+                }
                 if (es == null) continue;
             }
             if (es == null) continue;
@@ -792,6 +807,31 @@ final class ElementFlow {
      *  value known only as {@code Object} or {@code Comparable} — a signature's bound or an insert's static type, which
      *  admits ANY Comparable, so an exact type beside it is one member, not the set. {@link ArgContract#bodiesFor}
      *  answers both with nothing (neither IS a body), which left such a site silent. */
+    /** R1199 — an object array's component (internal name), or null. */
+    private static String arrayComponent(String desc) {
+        if (desc == null || !desc.startsWith("[L") || !desc.endsWith(";")) return null;
+        return desc.substring(2, desc.length() - 1);
+    }
+    /** R1199 — the element type a local variable's static type names at {@code idx}: an array's component, or a
+     *  {@code java.util} container's first type argument (its LocalVariableTypeTable signature). Null without debug
+     *  information or when the type names neither. */
+    private static String localBound(MethodNode mn, VarInsnNode vi, int idx) {
+        if (mn.localVariables == null) return null;
+        for (LocalVariableNode lv : mn.localVariables) {
+            if (lv.index != vi.var || mn.instructions.indexOf(lv.start) > idx || idx >= mn.instructions.indexOf(lv.end)) continue;
+            String a = arrayComponent(lv.desc);
+            if (a != null) return a;
+            if (lv.signature != null) {
+                try { return firstTypeArgOfType(lv.signature); } catch (RuntimeException e) { return null; }
+            }
+        }
+        return null;
+    }
+    private static Set<String> withDeclared(Set<String> ts) {
+        Set<String> out = new HashSet<>();
+        for (String t : ts) out.add(t + "\t0");
+        return out;
+    }
     private static Set<String> qBound(Graph g, String q) {
         String t = g.qDecl.get(q);
         return t == null ? null : Set.of(t + "\t0");
@@ -1242,6 +1282,11 @@ final class ElementFlow {
             if (c.projectClasses.contains(m.owner) && p != null) {
                 List<String> callees = null;
                 String site = "S:" + self + ":" + i;
+                // R1199: a call whose static return type is a container (or object array) — the only sites whose result
+                // can be the argument CONTAINER handed back
+                Type rt = Type.getReturnType(m.desc);
+                if (rt.getSort() == Type.ARRAY && rt.getDimensions() == 1 && rt.getElementType().getSort() == Type.OBJECT
+                        || rt.getSort() == Type.OBJECT && isCollectionOwner(rt.getInternalName())) g.contSites.add(site);
                 // R1195: the RECEIVER of an instance call to a class holding container fields — its field twins are
                 // the caller's, through the callee's summary (per receiver)
                 if (inst && recv != null && fieldClass(c, g, m.owner)) {
@@ -1762,15 +1807,21 @@ final class ElementFlow {
                             if (ve != null) g.elem(cell + VALS, ve, false);
                             if (mn.signature != null) nestedElems(g, cell, methodTypeTree(mn.signature, p));
                             if (Type.getArgumentTypes(mn.desc)[p].getDescriptor().equals(CMP_DESC)) g.cmpk(cell, CPAR);
+                            g.bound(cell, arrayComponent(Type.getArgumentTypes(mn.desc)[p].getDescriptor()));
                             out.add(cell);
                         }
                     } else {
+                        List<String> got = new ArrayList<>();
                         for (AbstractInsnNode st : lv.insns) {
                             int si = mn.instructions.indexOf(st);
                             if (si < 0 || sf[si] == null) continue;
                             Frame<SourceValue> sfr = sf[si];
-                            out.addAll(walk(c, g, cn, mn, sf, sfr.getStack(sfr.getStackSize() - 1), self, seen));
+                            got.addAll(walk(c, g, cn, mn, sf, sfr.getStack(sfr.getStackSize() - 1), self, seen));
                         }
+                        // R1199: the local's own static type bounds what the object holds (`List<String> l`, `Path[] a`)
+                        String lb = localBound(mn, (VarInsnNode) src, idx);
+                        if (lb != null) for (String cell : got) g.bound(cell, lb);
+                        out.addAll(got);
                     }
                 }
                 case Opcodes.DUP, Opcodes.CHECKCAST -> {
@@ -1797,6 +1848,7 @@ final class ElementFlow {
                     String cell = "L:" + self + ":" + idx;
                     String comp = ((TypeInsnNode) src).desc;
                     if (!comp.startsWith("[") && c.byName.containsKey(comp)) g.elem(cell, comp, false);
+                    g.bound(cell, comp);   // R1199
                     out.add(cell);
                 }
                 case Opcodes.GETSTATIC, Opcodes.GETFIELD -> {
@@ -1813,6 +1865,7 @@ final class ElementFlow {
                     }
                     String e = fieldElem(c, fi);
                     if (e != null) g.elem(cell, e, false);
+                    g.bound(cell, arrayComponent(fi.desc));   // R1199: a `String[]` field holds Strings
                     String ve = fieldValueElem(c, fi);
                     if (ve != null) g.elem(cell + VALS, ve, false);
                     String fs = fieldSig(c, fi);

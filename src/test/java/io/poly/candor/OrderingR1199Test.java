@@ -45,6 +45,7 @@ class OrderingR1199Test {
             + "final class Mk { @SuppressWarnings(\"rawtypes\") static Comparable any(int v) { return new Eff(v); }\n"
             + "  @SuppressWarnings(\"rawtypes\") static Comparable anyPure(int v) { return new Pure(v); }\n"
             + "  static Object obj(int v) { return new Eff(v); }\n"
+            + "  @SuppressWarnings({\"rawtypes\", \"unchecked\"}) static Collection strs() { Collection c = new ArrayList(); c.add(\"b\"); c.add(\"a\"); return c; }\n"
             + "  static Outer outer() { return new Outer(); }\n"
             + "  static Outer id(Outer o) { return o; }\n"
             + "  static List<Object> idList(List<Object> l) { return l; } }\n"
@@ -128,6 +129,8 @@ class OrderingR1199Test {
             + "  public static void kp01Sort(PReg r) { r.sort(); }\n"
             + "  @SuppressWarnings(\"rawtypes\") public static Comparable kxEff(int v) { return new KxEff(v); }\n"
             + "  @SuppressWarnings(\"rawtypes\") public static Comparable kxPure(int v) { return new KxPure(v); }\n"
+            + "  public static void kb01StrArr() { String[] a = { \"b\", \"a\" }; Arrays.sort(a); }\n"
+            + "  public static void kb02StrList() { List<String> l = new ArrayList<>(Mk.strs()); Collections.sort(l); }\n"
             + "  public static Reg reg() { return new Reg(); }\n"
             + "  public static Scene scene() { Scene s = new Scene(); s.add(2); s.add(1); return s; }\n"
             + "  public static ScenePure scenePure() { ScenePure s = new ScenePure(); s.add(2); s.add(1); return s; }\n"
@@ -185,6 +188,9 @@ class OrderingR1199Test {
             for (String fn : CONTROLS)
                 assertTrue(emptyOrInheritsTheOrderingDisclosure(r, "app.N." + fn), fn + " runs no effectful compareTo (executed); got "
                         + r.get("app.N." + fn));
+            // a static type that bounds the elements (a String[] local, a List<String> local's signature) is not "untraced"
+            for (String fn : List.of("kb01StrArr", "kb02StrList"))
+                assertTrue(inferred(r, "app.N." + fn).isEmpty(), fn + " got " + r.get("app.N." + fn));
             // a typed generic container sorted over Pure resolves to Pure: nothing at all
             assertTrue(inferred(r, "app.N.ks02ScenePure").isEmpty(), "ks02ScenePure got " + r.get("app.N.ks02ScenePure"));
         } finally {
@@ -247,7 +253,8 @@ class OrderingR1199Test {
         static Tree of(Map<String, String>... pkgs) throws Exception {
             Map<String, String> all = new LinkedHashMap<>();
             for (Map<String, String> p : pkgs) all.putAll(p);
-            Path cls = TestCompiler.compile(all);
+            // -g: a local's generic signature (LocalVariableTypeTable) is a bound the floor reads (kb02StrList)
+            Path cls = TestCompiler.compile(all, "-g");
             Path base = cls.getParent();
             try (var s = Files.list(cls)) {
                 for (Path top : s.toList()) {

@@ -9,6 +9,18 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **A sort whose elements the engine cannot trace is now DISCLOSED instead of silent** (R1199, **silent
+  under-reports**, each executed on JDK 21 and absent under `deny Fs Unknown` on 0.40.12). Elements known only as
+  `Comparable` or `Object` (a factory returning `Comparable`, a `List<Object>` field, a `<T>` sorter's parameter, an
+  `Object[]`), a container aliased through a callee that returns it, and a container filled and sorted in different
+  methods were all read as "nothing runs". Such a site now reports `Unknown` (`dispatch:java.lang.Comparable.compareTo`)
+  where some `compareTo` in the scan carries an effect the sorting method does not already report, and its callers
+  inherit it. A static type that bounds the elements (`String[]`, a `List<String>` local) is read instead. Two shapes are
+  now CHARGED rather than disclosed: a callee that returns the container it was handed is the same container at that
+  call, and a generic class's `Set<V>` return is read through its receiver's type (`Graph<Node>` gives `Node`). The
+  generated framework table gains 2 `U` rows (dbunit `PrimaryKeyFilter$PkTableMap.add/addAll`). The `equals`/`hashCode`
+  counterpart (an element known only as `Object`, hashed) is unchanged and still silent.
+
 ## [0.40.12] — 2026-10-16
 
 - **`jbang-catalog.json` points at the v0.40.12 jar.**

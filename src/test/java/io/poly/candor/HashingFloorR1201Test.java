@@ -131,11 +131,11 @@ class HashingFloorR1201Test {
     void anObjectHashedIsDisclosedNeverSilent() throws Exception {
         Map<String, Map<String, Object>> r = scan("app", SINK, TYPES, MAIN);
         for (String fn : POSITIVES) {
-            List<String> inf = HashingR1201Test.inferred(r, "app.N." + fn);
+            List<String> inf = HashingR1203Test.inferred(r, "app.N." + fn);
             assertTrue(inf.contains("Fs") || inf.contains("Unknown"), fn + " runs EqEff (executed); got " + r.get("app.N." + fn));
         }
-        for (String fn : CLEAN) assertTrue(HashingR1201Test.inferred(r, "app.N." + fn).isEmpty(), fn + " got " + r.get("app.N." + fn));
-        for (String fn : OVER) assertTrue(HashingR1201Test.inferred(r, "app.N." + fn).equals(List.of("Unknown")), fn + " got " + r.get("app.N." + fn));
+        for (String fn : CLEAN) assertTrue(HashingR1203Test.inferred(r, "app.N." + fn).isEmpty(), fn + " got " + r.get("app.N." + fn));
+        for (String fn : OVER) assertTrue(HashingR1203Test.inferred(r, "app.N." + fn).equals(List.of("Unknown")), fn + " got " + r.get("app.N." + fn));
         // the reason is the true one, on the body that hashes
         assertTrue(String.valueOf(r.get("app.N.h04MapPut").get("unknownWhy")).contains("dispatch:java.lang.Object.hashCode"), "got " + r.get("app.N.h04MapPut"));
         assertTrue(String.valueOf(r.get("app.HBag.hash").get("unknownWhy")).contains("dispatch:java.lang.Object.hashCode"), "got " + r.get("app.HBag.hash"));
@@ -145,14 +145,14 @@ class HashingFloorR1201Test {
     void anObjectHandedToAHashingHelperIsDisclosed() throws Exception {
         Map<String, Map<String, Object>> r = scan("wide", WSINK, WTYPES, WMAIN);
         for (String fn : WIDE_POSITIVES) {
-            List<String> inf = HashingR1201Test.inferred(r, "wide.N." + fn);
+            List<String> inf = HashingR1203Test.inferred(r, "wide.N." + fn);
             assertTrue(inf.contains("Unknown"), fn + " runs EqEff (executed); got " + r.get("wide.N." + fn));
         }
-        assertTrue(HashingR1201Test.inferred(r, "wide.N.d04HelperExact").contains("Fs"), "got " + r.get("wide.N.d04HelperExact"));
-        assertTrue(HashingR1201Test.inferred(r, "wide.N.kd02Str").isEmpty(), "got " + r.get("wide.N.kd02Str"));
-        assertTrue(HashingR1201Test.inferred(r, "wide.N.kd03HelperPure").equals(List.of("Unknown")), "got " + r.get("wide.N.kd03HelperPure"));
+        assertTrue(HashingR1203Test.inferred(r, "wide.N.d04HelperExact").contains("Fs"), "got " + r.get("wide.N.d04HelperExact"));
+        assertTrue(HashingR1203Test.inferred(r, "wide.N.kd02Str").isEmpty(), "got " + r.get("wide.N.kd02Str"));
+        assertTrue(HashingR1203Test.inferred(r, "wide.N.kd03HelperPure").equals(List.of("Unknown")), "got " + r.get("wide.N.kd03HelperPure"));
         for (String fn : S4_OFF)
-            assertTrue(HashingR1201Test.inferred(r, "wide.N." + fn).isEmpty(), "S4 is off by default; if this reports, say so in R1201: " + r.get("wide.N." + fn));
+            assertTrue(HashingR1203Test.inferred(r, "wide.N." + fn).isEmpty(), "S4 is off by default; if this reports, say so in R1205: " + r.get("wide.N." + fn));
     }
 
     static Map<String, Map<String, Object>> scan(String pkg, String sink, String types, String main) throws Exception {
@@ -160,6 +160,6 @@ class HashingFloorR1201Test {
         m.put(pkg + "/Sink.java", sink);
         m.put(pkg + "/T.java", types);
         m.put(pkg + "/N.java", main);
-        return HashingR1201Test.scanSources(m);
+        return HashingR1203Test.scanSources(m);
     }
 }

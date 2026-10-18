@@ -13,13 +13,13 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
- * SOUNDNESS R1201 — THE EQUALITY/HASHING SITE TABLE. Every {@code x*} hands an EXACT {@code new EqEff} (whose
+ * SOUNDNESS R1203 — THE EQUALITY/HASHING SITE TABLE. Every {@code x*} hands an EXACT {@code new EqEff} (whose
  * {@code equals}/{@code hashCode} write a file) to a JDK call that runs it. EXECUTED on JDK 21 (fixture
  * {@code javaagent-v071/f11}, package {@code vx}, driver {@code vx.D}): every {@code x*} wrote the file except
  * {@code x30MapReplace} (a {@code replace} on an EMPTY map never hashes; {@code x37ReplaceNonEmpty} does), and every
  * {@code kx*} wrote nothing. On 0.40.12 the {@link #NEWLY} members were absent under {@code deny Fs Unknown <fn>}.
  */
-class HashingR1201Test {
+class HashingR1203Test {
 
     static final String SINK = "package app;\nfinal class Sink { static void w() { try { java.nio.file.Files.writeString(java.nio.file.Path.of(\"/nonexistent-r1201/x\"), \"x\"); } catch (Exception e) {} } }\n";
 
@@ -116,13 +116,13 @@ class HashingR1201Test {
     }
 
     /** GENUINE-MAY, as R1166's {@code mapGetEmpty}: {@code replace} hashes its key whenever the map has a table, so a
-     *  site cannot tell the empty map from a filled one; charged. STATED RESIDUAL: {@code Map.entry(k, v).hashCode()}
+     *  site cannot tell the empty map from a filled one; charged. STATED RESIDUAL (SOUNDNESS R1204, open): {@code Map.entry(k, v).hashCode()}
      *  (the entry's own hash over its key) is not modelled. */
     @Test
     void theMayAndTheResidualAreStated() throws Exception {
         Map<String, Map<String, Object>> r = scan();
         assertTrue(inferred(r, "app.N.x30MapReplace").contains("Fs"), "got " + r.get("app.N.x30MapReplace"));
-        assertTrue(inferred(r, "app.N.x27MapEntryHash").isEmpty(), "if this now reports, close the residual in its row: " + r.get("app.N.x27MapEntryHash"));
+        assertTrue(inferred(r, "app.N.x27MapEntryHash").isEmpty(), "if this now reports, close the residual in its row (R1204): " + r.get("app.N.x27MapEntryHash"));
     }
 
     static Map<String, Map<String, Object>> scan() throws Exception {

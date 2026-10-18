@@ -118,7 +118,7 @@ candidate target and one effectful override would smear across the whole report:
   untraced sort) — wherever some override in the scan carries an effect the method does not already report. It is
   never silent and never charged; a container's static type (`Map<String, ..>`) closes it, and a project type there
   (`Map<Foo, ..>`) resolves it. A direct `o.equals(..)`/`o.hashCode()` on an `Object` past the twelve-override CHA
-  bound is still not attributed (measured, available as `CANDOR_R1201_FLOOR=all`, off by default).
+  bound is still not attributed (measured, available as `CANDOR_R1201_FLOOR=all`, off by default; SOUNDNESS R1205).
   **Where the receiver is the method's own PARAMETER** — `<T> boolean same(T a, T b) { return
   a.equals(b); }`, which erasure compiles to `Object.equals` — the CALLER is charged the override of the
   type it passes (SOUNDNESS R1166). The same holds for an interface member of a `java.*` κ owner

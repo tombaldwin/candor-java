@@ -1201,7 +1201,7 @@ final class ElementFlow {
             if (in instanceof MethodInsnNode m && (isCollectionOwner(m.owner) || m.owner.equals("java/util/Collections")
                     || m.owner.equals("java/util/Arrays") || m.owner.equals("java/util/stream/Stream")
                     || m.owner.equals("java/util/Objects") && (m.name.equals("hash") || m.name.equals("equals")
-                        || m.name.equals("hashCode")))) return true;   // R1201
+                        || m.name.equals("hashCode")))) return true;   // R1203
         // a method handing a value to a chained dependency (R1174), or a collection-typed parameter to a project
         // callee (a summary): neither needs a java.util call of its own
         String id = Cha.methodId(cn.name.replace('/', '.'), mn.name, mn.desc);
@@ -1356,7 +1356,8 @@ final class ElementFlow {
                 }
                 continue;
             }
-            // SOUNDNESS R1201: HASHING and EQUALITY over the elements of an array, a stream or a set/map factory
+            // SOUNDNESS R1203: HASHING and EQUALITY over the elements of an array, a stream or a set/map factory
+            // (objectKeyFloor is R1201's Object floor, S2/S2r/S2o)
             hashing(c, g, cn, mn, sf, f, pf, p, m, at, base, recv, self, id, i);
             objectKeyFloor(c, mn, sf, pf, p, m, recv, id);
             // R1179: ORDERING over the elements of a container argument or receiver
@@ -1605,7 +1606,7 @@ final class ElementFlow {
         return -1;
     }
 
-    /** SOUNDNESS R1201 — THE ELEMENT-LEVEL HALF OF THE EQUALITY/HASHING SITE TABLE. Each of these runs its elements'
+    /** SOUNDNESS R1203 — THE ELEMENT-LEVEL HALF OF THE EQUALITY/HASHING SITE TABLE. Each of these runs its elements'
      *  {@code hashCode}/{@code equals} (executed on JDK 21 with an exact project element whose members wrote a file) and
      *  each read pure on 0.40.12: {@code Objects.hash(..)} (the varargs pack), {@code Arrays.hashCode/deepHashCode} and
      *  {@code Arrays.equals/deepEquals} (the first array's elements' {@code equals}) over an object array; the immutable
@@ -1792,7 +1793,7 @@ final class ElementFlow {
         }
     }
 
-    /** R1201 — an object array argument's elements: what was STORED in it (its own cells, a varargs pack's AASTOREs),
+    /** R1203 — an object array argument's elements: what was STORED in it (its own cells, a varargs pack's AASTOREs),
      *  and its DECLARED component, as {@link #ordering}'s {@code Arrays} branch reads them. */
     private static void arrayElems(AnalysisContext c, Graph g, ClassNode cn, MethodNode mn, Frame<SourceValue>[] sf,
             Frame<SourceValue> f, int base, String self, String id, int i, String key) throws Exception {
@@ -1805,7 +1806,7 @@ final class ElementFlow {
         for (String ac : cells(c, g, cn, mn, sf, f.getStack(base), self, 0)) g.dispatch(id, ac, key);
     }
 
-    /** R1201 — argument {@code j} of {@code m} as ONE element of {@code cell}: its own type (exact for a provable
+    /** R1203 — argument {@code j} of {@code m} as ONE element of {@code cell}: its own type (exact for a provable
      *  {@code new}). False when nothing about it is known (a null, an Object, a JDK final type). */
     private static boolean scalarElem(AnalysisContext c, Graph g, MethodNode mn, Frame<SourceValue>[] sf, Frame<ProvValue> p, MethodInsnNode m, int j, String cell) {
         if (p == null) return false;
@@ -1821,7 +1822,7 @@ final class ElementFlow {
         return true;
     }
 
-    /** R1201 — a {@code Collector} that builds a HASHED set: {@code toSet()}, {@code toUnmodifiableSet()}, or
+    /** R1203 — a {@code Collector} that builds a HASHED set: {@code toSet()}, {@code toUnmodifiableSet()}, or
      *  {@code toCollection(supplier)} whose supplier is a constructor reference to a hashed set. */
     private static boolean hashedSetCollector(AnalysisContext c, ClassNode cn, MethodNode mn, Frame<SourceValue>[] sf, SourceValue v) {
         List<AbstractInsnNode> ps = producers(mn, sf, v);
@@ -1837,7 +1838,7 @@ final class ElementFlow {
         return true;
     }
 
-    /** R1201 — a supplier value that is a constructor reference to a hashed container ({@code HashSet::new}, …). */
+    /** R1203 — a supplier value that is a constructor reference to a hashed container ({@code HashSet::new}, …). */
     private static boolean hashedSupplier(MethodNode mn, Frame<SourceValue>[] sf, SourceValue v) {
         List<AbstractInsnNode> ps = producers(mn, sf, v);
         if (ps.isEmpty()) return false;
@@ -1848,7 +1849,7 @@ final class ElementFlow {
         return true;
     }
 
-    /** R1201 — {@code Collectors.groupingBy(f[, d])}, {@code toMap(k, v[, merge])}, their concurrent and unmodifiable
+    /** R1203 — {@code Collectors.groupingBy(f[, d])}, {@code toMap(k, v[, merge])}, their concurrent and unmodifiable
      *  spellings, or a 3/4-argument form whose map factory is a constructor reference to a hashed map: the KEY
      *  function's result {@code [type, exact-or-null]} ({@link #functionResult}), or {@code [null, null]} for
      *  {@code Function.identity()} (the elements are the keys). Null when it is none of these or not known. */
@@ -1886,7 +1887,7 @@ final class ElementFlow {
         return true;
     }
 
-    /** SOUNDNESS R1201 — a call {@link #hashing} reads as running its elements' {@code equals}/{@code hashCode}: the
+    /** SOUNDNESS R1203 — a call {@link #hashing} reads as running its elements' {@code equals}/{@code hashCode}: the
      *  specialised-copy narrowing must not withdraw an edge only such a site made. */
     static boolean hashesElements(String o, String name, String desc) {
         if (o.equals("java/util/Objects") && name.equals("hash")) return true;

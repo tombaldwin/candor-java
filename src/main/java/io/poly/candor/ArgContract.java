@@ -131,7 +131,7 @@ final class ArgContract {
                 || newType.equals("java/util/concurrent/ConcurrentHashMap");
     }
     static boolean treeBinOwner(String o) {
-        // R1201: the owners the table now reads by KIND — a Hashtable (and Properties), a WeakHashMap or an identity map
+        // R1203: the owners the table now reads by KIND — a Hashtable (and Properties), a WeakHashMap or an identity map
         // never treeifies, nor does a list, queue or deque (ElementFlow#treeBin's own exclusions)
         if (o.equals("java/util/Hashtable") || o.equals("java/util/Properties") || o.equals("java/util/WeakHashMap")
                 || o.contains("Identity") || o.contains("Enum") || o.contains("CopyOnWrite")
@@ -168,7 +168,7 @@ final class ArgContract {
             int p = Candor.paramIndexOf(s.mn, a0, f0);
             if (p >= 0) for (String con : ehc) direct(c, s.id, p, con.equals(Candor.C_EQUALS) ? EQUALS : HASHCODE, min);
             else if (min.owner.equals("java/util/Objects") && a0 != null && !a0.nullConst && !a0.fromIndy) {
-                // SOUNDNESS R1201 — `Objects.equals(a, b)`/`Objects.hashCode(o)` at a call site: the R1166 sibling,
+                // SOUNDNESS R1203 — `Objects.equals(a, b)`/`Objects.hashCode(o)` at a call site: the R1166 sibling,
                 // resolved by THIS mechanism's one-body rule (Candor#contractReentry leaves Objects to it). e9d4868 added
                 // it, f28b565 dropped it with the chained join it rode on, and both calls read pure over an exact
                 // effectful type on 0.40.12 (executed).
@@ -178,7 +178,7 @@ final class ArgContract {
                             (con.equals(Candor.C_EQUALS) ? EQUALS : HASHCODE) + "\t" + t + "\t" + (a0.newType != null ? 1 : 0));
             }
         }
-        // SOUNDNESS R1201 — `Collections.frequency(c, o)` on this body's own parameter o: its equals is the caller's
+        // SOUNDNESS R1203 — `Collections.frequency(c, o)` on this body's own parameter o: its equals is the caller's
         if (Candor.frequencySink(min.owner, min.name, min.desc)) {
             int p = Candor.paramIndexOf(s.mn, Candor.callArg(f, min, 1), f0);
             if (p >= 0) direct(c, s.id, p, EQUALS, min);
@@ -357,7 +357,7 @@ final class ArgContract {
      *  {@code S2r} the same key RESOLVED by the receiver's static type argument ({@code Map<Foo, ..>}); {@code S2o}
      *  {@code Objects.equals/hashCode} over an {@code Object}; {@code S1d} a container whose DECLARED element is
      *  {@code Object} ({@code List<Object>}) hashed; {@code S3} an {@code Object} argument to a project callee
-     *  whose parameter is hashed; {@code S4} a direct {@code equals}/{@code hashCode} past the CHA fan-out bound. */
+     *  whose parameter is hashed; {@code S4} a direct {@code equals}/{@code hashCode} past the CHA fan-out bound (SOUNDNESS R1205, open). */
     static final Set<String> FLOOR = floorClasses(System.getenv("CANDOR_R1201_FLOOR"));
     static Set<String> floorClasses(String v) {
         if (v == null || v.isBlank()) return Set.of("S1", "S1d", "S2", "S2r", "S2o", "S3");
@@ -603,7 +603,7 @@ final class ArgContract {
     }
 
     private static void resolveSites(AnalysisContext c) {
-        // SOUNDNESS R1201 — `Objects.equals/hashCode` over a non-parameter value at a call site (ArgContract#site)
+        // SOUNDNESS R1203 — `Objects.equals/hashCode` over a non-parameter value at a call site (ArgContract#site)
         for (var e : c.argContractCalls.entrySet())
             for (String x : e.getValue()) {
                 String[] a = x.split("\t", 3);   // key, type, exact

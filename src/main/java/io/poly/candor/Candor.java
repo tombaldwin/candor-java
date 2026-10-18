@@ -5704,7 +5704,7 @@ public class Candor {
                 if (ArgContract.DEBUG && !legacyEqualsHash(min.owner, min.name)) System.err.println("R1201TAB\t" + id + "\t" + min.owner + "." + min.name);
                 for (String c : ehc) reentryEdgeOrDisclose(id, key, c);
             }
-            // SOUNDNESS R1201 — `Collections.frequency(c, o)` runs `o.equals(e)` for each element (its SECOND argument)
+            // SOUNDNESS R1203 — `Collections.frequency(c, o)` runs `o.equals(e)` for each element (its SECOND argument)
             if (frequencySink(min.owner, min.name, min.desc)) {
                 if (ArgContract.DEBUG) System.err.println("R1201TAB\t" + id + "\tjava/util/Collections.frequency");
                 reentryEdgeOrDisclose(id, callArg(rf, min, 1), C_EQUALS);
@@ -7338,7 +7338,7 @@ public class Candor {
             // higher-order site reporting Unknown is the SOUND over-approximation (the dispatcher
             // invokes an unresolvable function), not a bug; the precise effects are still captured
             // at each lambda's own rooted invoke() entry (the kotlin/Function RUNTIME_OVERRIDES row).
-            // SOUNDNESS R1201 (floor S4): the Object-protocol fan-out dropped here, recorded for the post-fixpoint floor
+            // SOUNDNESS R1201 (floor S4; open as R1205): the Object-protocol fan-out dropped here, recorded for the post-fixpoint floor
             // A receiver that is this body's own PARAMETER is not floored: its callers are resolved by the argument they
             // pass (R1166's parameter contract), and a chained caller discloses through its witness.
             if (broad && ArgContract.floor("S4") && effect == null && !cha.isEmpty()
@@ -10362,7 +10362,7 @@ public class Candor {
      *        {@code o.hashCode()} (the R1166 sibling: both were absent from the table).</li>
      *  </ul>
      *
-     *  <p><b>SOUNDNESS R1201 — THE TABLE WAS AN ALLOWLIST OF SPELLINGS, NOT OF SEMANTICS.</b> Executed on JDK 21
+     *  <p><b>SOUNDNESS R1203 — THE TABLE WAS AN ALLOWLIST OF SPELLINGS, NOT OF SEMANTICS.</b> Executed on JDK 21
      *  with an EXACT project key whose {@code hashCode}/{@code equals} wrote a file, every one of these was absent
      *  under {@code deny Fs Unknown} on 0.40.12: {@code Map.computeIfAbsent/computeIfPresent/compute/merge}, a
      *  {@code Hashtable}/{@code WeakHashMap}/{@code ConcurrentMap}-typed {@code put}, {@code ConcurrentHashMap
@@ -10402,7 +10402,7 @@ public class Candor {
         }
     }
 
-    /** R1201 reach marker only: whether 0.40.12's table already named this owner and member. */
+    /** R1203 reach marker only: whether 0.40.12's table already named this owner and member. */
     private static boolean legacyEqualsHash(String owner, String name) {
         switch (owner) {
             case "java/util/List": case "java/util/ArrayList": case "java/util/LinkedList":
@@ -10416,13 +10416,13 @@ public class Candor {
         }
     }
 
-    /** SOUNDNESS R1201 — {@code Collections.frequency(Collection, Object)}: the second argument's {@code equals}. */
+    /** SOUNDNESS R1203 — {@code Collections.frequency(Collection, Object)}: the second argument's {@code equals}. */
     static boolean frequencySink(String owner, String name, String desc) {
         return owner.equals("java/util/Collections") && name.equals("frequency")
                 && "(Ljava/util/Collection;Ljava/lang/Object;)I".equals(desc);
     }
 
-    /** R1201 — a hashed map's KEY operations (each hashes the key, then compares it with {@code equals}), and
+    /** R1203 — a hashed map's KEY operations (each hashes the key, then compares it with {@code equals}), and
      *  {@code containsValue} (Hashtable's legacy {@code contains}), which runs the argument's {@code equals} only. */
     private static List<String> hashedMapContracts(String name, boolean objArg0) {
         if (!objArg0) return List.of();
@@ -10439,7 +10439,7 @@ public class Candor {
 
     static final int KIND_NONE = 0, KIND_HASH_MAP = 1, KIND_MAP = 2, KIND_HASH_SET = 3, KIND_LIST = 4;
     private static final Map<String, Integer> JDK_CONTAINER_KIND = new java.util.concurrent.ConcurrentHashMap<>();
-    /** SOUNDNESS R1201 — what a {@code java.util} owner's lookups run, asked of the JDK class itself (§G: the authority,
+    /** SOUNDNESS R1203 — what a {@code java.util} owner's lookups run, asked of the JDK class itself (§G: the authority,
      *  not a name pattern). {@link #KIND_HASH_MAP}: a map that hashes its keys (not sorted, not identity, not an
      *  {@code EnumMap}); {@link #KIND_MAP}: any other map ({@code containsValue} still runs the value's {@code equals});
      *  {@link #KIND_HASH_SET}: a set that hashes, or a collection interface whose implementation may be one;

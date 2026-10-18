@@ -227,15 +227,16 @@ class OrderingR1199Test {
         }
     }
 
-    /** STATED RESIDUAL, not closed: the equals/hashCode twin (a hashed element known only as Object, or a container
-     *  aliased through a callee's return and then hashed). Executed: h01-h03 each run EqEff.hashCode. */
+    /** The equals/hashCode twin (a hashed element known only as Object, or a container aliased through a callee's
+     *  return and then hashed), R1199's stated residual, is SOUNDNESS R1201 and is disclosed now (HashingFloorR1201Test).
+     *  Executed: h01-h03 each run EqEff.hashCode. */
     @Test
-    void theEqualsHashCodeTwinStaysTheStatedResidual() throws Exception {
+    void theEqualsHashCodeTwinIsDisclosed() throws Exception {
         Tree t = Tree.of(app());
         try {
             Map<String, Map<String, Object>> r = byFn(t.scanAll());
             for (String fn : List.of("h01IdHash", "h02ObjHash", "h03SetObj"))
-                assertTrue(inferred(r, "app.N." + fn).isEmpty(), "if this now reports, close the residual in its row: " + r.get("app.N." + fn));
+                assertTrue(inferred(r, "app.N." + fn).contains("Unknown"), "R1201 discloses it: " + r.get("app.N." + fn));
         } finally {
             t.close();
         }

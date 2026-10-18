@@ -275,6 +275,12 @@ final class AnalysisContext {
     final Map<String, TreeSet<String>> argContractDirect = new HashMap<>();
     final Map<String, TreeSet<String>> argContractPass = new HashMap<>();
     final Map<String, TreeSet<String>> argContractSites = new HashMap<>();
+    /** SOUNDNESS R1201 — fn -> {@code "key\ttype\texact"}: {@code Objects.equals/hashCode} over a non-parameter value
+     *  of a known type at a call site, resolved after the loop by the one-body rule ({@link ArgContract#resolve}). */
+    final Map<String, TreeSet<String>> argContractCalls = new HashMap<>();
+    /** SOUNDNESS R1201 (floor S4) — fn -> {@code "key\towner\tS4"}: a direct equals/hashCode dispatch past the CHA
+     *  fan-out bound, dropped as §4 permits; disclosed after the fixpoint where an override in reach is effectful. */
+    final Map<String, TreeSet<String>> argContractFloor = new HashMap<>();
     /** R1166 — fn -> {@code "type\texact"}: a value of a PROJECT type handed to a call into a CHAINED
      *  dependency (ArgContract#chainWitness). Disclosed after the fixpoint where the type carries an effectful
      *  override of a contract member. */

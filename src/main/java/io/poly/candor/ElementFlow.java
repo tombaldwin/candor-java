@@ -179,6 +179,10 @@ final class ElementFlow {
     /** A field cell some store into which is a value this walk cannot trace to an allocation (a parameter, a call's
      *  result, an array read): it can never be PROVEN comparator-built. Ignored by every positive test. */
     static final String UNK = "?";
+    /** SOUNDNESS R1201 (floor S1) — not a type: an element inserted that is known only as {@code Object} (an erased
+     *  value whose container's static type does not bound it). Read only by the equals/hashCode floor; every other
+     *  reader skips it, and R1199's ordering floor reads a set holding nothing else as the empty set it was. */
+    static final String MARK = "?O";
     /** Not a member: the elements are KEYS of a hashed container, whose tree bins (more than eight colliding keys)
      *  run {@code compareTo} on a key class that implements {@code Comparable} of itself (R1184, disclosed). */
     static final String TB = "TB";
@@ -432,9 +436,17 @@ final class ElementFlow {
                 if (es == null) continue;
             }
             if (es == null) continue;
+            if ((key.equals(EQ) || key.equals(HASH)) && d.get(1).indexOf('#') < 0 && es.contains(MARK + "\t0") && ArgContract.floor("S1"))
+                ArgContract.floorObject(d.get(0), key, "java/lang/Object", "S1");   // SOUNDNESS R1201 (floor S1)
             for (String te : es) {
                 int tab = te.indexOf('\t');
                 String t = te.substring(0, tab);
+                if (t.equals(MARK)) continue;
+                if (t.equals("java/lang/Object") && !te.endsWith("1") && (key.equals(EQ) || key.equals(HASH))) {
+                    // R1201 (floor S1d): an element DECLARED Object (`List<Object>`, `Map<Object, ..>`)
+                    if (d.get(1).indexOf('#') < 0 && ArgContract.floor("S1d")) ArgContract.floorObject(d.get(0), key, "java/lang/Object", "S1d");
+                    continue;
+                }
                 boolean exact = te.endsWith("1");
                 if (DEBUG) System.err.println((key.equals(TB) ? "R1184BIN\t" : disclose ? "R1184OOS\t" : key.equals(CMP) ? "R1179ELEM\t"
                         : key.equals(WITNESS) ? "R1174CHAIN\t" : "R1166ELEM\t") + d.get(0) + "\t" + key + "\t" + t + "\t" + d.get(1));
@@ -838,6 +850,7 @@ final class ElementFlow {
     }
     private static boolean untraced(Set<String> es) {
         if (es == null || es.isEmpty()) return true;
+        if (es.size() == 1 && es.contains(MARK + "\t0")) return true;   // R1201: the marker alone is the empty set it was
         for (String te : es) {
             int tab = te.indexOf('\t');
             String t = te.substring(0, tab);
@@ -1186,7 +1199,9 @@ final class ElementFlow {
     private static boolean relevant(AnalysisContext c, Graph g, ClassNode cn, MethodNode mn) {
         for (AbstractInsnNode in : mn.instructions)
             if (in instanceof MethodInsnNode m && (isCollectionOwner(m.owner) || m.owner.equals("java/util/Collections")
-                    || m.owner.equals("java/util/Arrays") || m.owner.equals("java/util/stream/Stream"))) return true;
+                    || m.owner.equals("java/util/Arrays") || m.owner.equals("java/util/stream/Stream")
+                    || m.owner.equals("java/util/Objects") && (m.name.equals("hash") || m.name.equals("equals")
+                        || m.name.equals("hashCode")))) return true;   // R1201
         // a method handing a value to a chained dependency (R1174), or a collection-typed parameter to a project
         // callee (a summary): neither needs a java.util call of its own
         String id = Cha.methodId(cn.name.replace('/', '.'), mn.name, mn.desc);
@@ -1264,6 +1279,12 @@ final class ElementFlow {
                     boolean par = pf[0] != null && Candor.paramIndexOf(mn, v, pf[0]) >= 0;
                     for (String cell : cells(c, g, cn, mn, sf, f.getStack(f.getStackSize() - 3), self, 0))
                         if (par) g.elem(cell, t, false); else g.elemV(cell, t, v.newType != null);
+                } else if (t == null && v != null && !v.nullConst && !v.fromIndy && v.declType == null && v.newType == null
+                        && ArgContract.floor("S1") && (pf[0] == null || Candor.paramIndexOf(mn, v, pf[0]) < 0)
+                        && objectTyped(mn, sf, f.getStack(f.getStackSize() - 1))) {
+                    // R1201 (floor S1): an Object stored into an array (a varargs pack `Objects.hash(obj)`)
+                    for (String cell : cells(c, g, cn, mn, sf, f.getStack(f.getStackSize() - 3), self, 0))
+                        if (cell.indexOf('#') < 0) g.elem(cell, MARK, false);
                 }
                 continue;
             }
@@ -1335,6 +1356,9 @@ final class ElementFlow {
                 }
                 continue;
             }
+            // SOUNDNESS R1201: HASHING and EQUALITY over the elements of an array, a stream or a set/map factory
+            hashing(c, g, cn, mn, sf, f, pf, p, m, at, base, recv, self, id, i);
+            objectKeyFloor(c, mn, sf, pf, p, m, recv, id);
             // R1179: ORDERING over the elements of a container argument or receiver
             ordering(c, g, cn, mn, sf, f, p, m, at, base, recv, self, id, i);
             if (!isCollectionOwner(m.owner)) continue;
@@ -1470,6 +1494,18 @@ final class ElementFlow {
         // PARAMETER's declared type is not — its caller's own value reaches through the Q link below, exactly
         if (t != null) for (String cell : dst) { if (pi >= 0) g.elem(cell + twin, t, v.newType != null); else g.elemV(cell + twin, t, v.newType != null); }
         if (pi >= 0) for (String cell : dst) g.link("Q:" + self + ":" + pi, cell + twin);
+        // SOUNDNESS R1201 (floor S1): a value known only as Object (an erased read, a factory returning Object). The
+        // receiver's static element type bounds it: a JDK type closes it, a project type is its declared element (a
+        // resolution); otherwise it is the marker the equals/hashCode floor reads.
+        if (t == null && pi < 0 && !v.fromIndy && v.declType == null && v.newType == null && ArgContract.floor("S1")
+                && objectTyped(mn, sf, argSource(mn, sf, m, j))) {
+            String kb = twin.isEmpty() ? recvBound(c, mn, sf, recv) : null;
+            if (kb == null || !closedJdk(c, kb))
+                for (String cell : dst) {
+                    if (cell.indexOf('#') >= 0) continue;
+                    if (kb != null && c.byName.containsKey(kb)) g.elem(cell + twin, kb, false); else g.elem(cell + twin, MARK, false);
+                }
+        }
         // R1195: a CONTAINER added as one element — its elements are the receiver's elements' elements (NEST)
         if (t == null || t.startsWith("java/util/")) {
             int idx = mn.instructions.indexOf(m);
@@ -1567,6 +1603,298 @@ final class ElementFlow {
     private static int cmpArg(Type[] at) {
         for (int k = 0; k < at.length; k++) if (at[k].getSort() == Type.OBJECT && at[k].getInternalName().equals("java/util/Comparator")) return k;
         return -1;
+    }
+
+    /** SOUNDNESS R1201 — THE ELEMENT-LEVEL HALF OF THE EQUALITY/HASHING SITE TABLE. Each of these runs its elements'
+     *  {@code hashCode}/{@code equals} (executed on JDK 21 with an exact project element whose members wrote a file) and
+     *  each read pure on 0.40.12: {@code Objects.hash(..)} (the varargs pack), {@code Arrays.hashCode/deepHashCode} and
+     *  {@code Arrays.equals/deepEquals} (the first array's elements' {@code equals}) over an object array; the immutable
+     *  factories {@code Set.of(..)} (two elements compare, three or more hash too), {@code Set.copyOf(c)},
+     *  {@code Map.of(k1, v1, k2, v2, ..)} (the keys) and {@code Map.copyOf(m)}; a stream's {@code distinct()}, a
+     *  {@code toSet()}/{@code toUnmodifiableSet()}/{@code toCollection(HashSet::new)} collect, and a
+     *  {@code groupingBy}/{@code toMap} collect into a hashed map (the KEY its function makes, or the elements
+     *  themselves under {@code Function.identity()}). Recorded as the existing dispatches are, so a declared or
+     *  WIDE element is resolved or disclosed by {@link ArgContract}'s one rule. {@link #hashesElements} names these
+     *  sites for the specialised-copy narrowing ({@link ArgContract#thisInfo}). */
+    private static void hashing(AnalysisContext c, Graph g, ClassNode cn, MethodNode mn, Frame<SourceValue>[] sf,
+            Frame<SourceValue> f, Frame<ProvValue>[] pf, Frame<ProvValue> p, MethodInsnNode m, Type[] at, int base,
+            SourceValue recv, String self, String id, int i) throws Exception {
+        String o = m.owner, name = m.name, d = m.desc;
+        int n = at.length;
+        boolean objArr0 = d.startsWith("([Ljava/lang/Object;");
+        if (DEBUG && hashesElements(o, name, d) && !Candor.frequencySink(o, name, d)) System.err.println("R1201SITE\t" + id + "\t" + o + "." + name);
+        if (o.equals("java/util/Objects") && name.equals("hash") && objArr0
+                || o.equals("java/util/Arrays") && (name.equals("hashCode") || name.equals("deepHashCode")) && objArr0 && n == 1) {
+            arrayElems(c, g, cn, mn, sf, f, base, self, id, i, HASH);
+            return;
+        }
+        if (o.equals("java/util/Arrays") && (name.equals("equals") || name.equals("deepEquals"))
+                && d.equals("([Ljava/lang/Object;[Ljava/lang/Object;)Z")) {
+            arrayElems(c, g, cn, mn, sf, f, base, self, id, i, EQ);
+            return;
+        }
+        if ((o.equals("java/util/Set") || o.equals("java/util/Map")) && m.getOpcode() == Opcodes.INVOKESTATIC) {
+            if (name.equals("copyOf") && n == 1) {
+                for (String cell : cells(c, g, cn, mn, sf, f.getStack(base), self, 0)) { g.dispatch(id, cell, HASH); g.dispatch(id, cell, EQ); }
+                return;
+            }
+            if (!name.equals("of")) return;
+            if (n == 1 && objArr0 && o.equals("java/util/Set")) {
+                for (String cell : cells(c, g, cn, mn, sf, f.getStack(base), self, 0)) { g.dispatch(id, cell, HASH); g.dispatch(id, cell, EQ); }
+                return;
+            }
+            // fixed arity: Set.of(e1, e2) compares, three or more also hash; Map.of with two or more pairs hashes its keys
+            boolean set = o.equals("java/util/Set");
+            int elems = set ? n : n / 2;
+            if (elems < 2) return;
+            String cell = "V:" + self + ":" + i + ":h";
+            boolean any = false;
+            for (int j = 0; j < n; j += set ? 1 : 2) any |= scalarElem(c, g, mn, sf, p, m, j, cell);
+            if (!any) return;
+            g.dispatch(id, cell, EQ);
+            if (!set || elems >= 3) g.dispatch(id, cell, HASH);
+            return;
+        }
+        if (!o.equals("java/util/stream/Stream") || recv == null) return;
+        if (name.equals("distinct") && n == 0) {
+            for (String cell : cells(c, g, cn, mn, sf, recv, self, 0)) { g.dispatch(id, cell, HASH); g.dispatch(id, cell, EQ); }
+            return;
+        }
+        if (!name.equals("collect") || n != 1) return;
+        SourceValue coll = f.getStack(base);
+        if (hashedSetCollector(c, cn, mn, sf, coll)) {
+            for (String cell : cells(c, g, cn, mn, sf, recv, self, 0)) { g.dispatch(id, cell, HASH); g.dispatch(id, cell, EQ); }
+            return;
+        }
+        String[] key = hashedMapCollectorKey(c, cn, mn, sf, coll);
+        if (key == null) return;
+        if (key[0] == null) {
+            // Function.identity(): the keys are the stream's own elements
+            for (String cell : cells(c, g, cn, mn, sf, recv, self, 0)) { g.dispatch(id, cell, HASH); g.dispatch(id, cell, EQ); }
+            return;
+        }
+        String cell = "V:" + self + ":" + i + ":h";
+        g.elem(cell, key[0], key[1] != null);
+        g.dispatch(id, cell, HASH);
+        g.dispatch(id, cell, EQ);
+    }
+
+    /** SOUNDNESS R1201 (floors S2, S2r, S2o) — a KEY known only as {@code Object} handed to a JDK equality/hashing sink
+     *  ({@link Candor#equalsHashContracts}, {@code Collections.frequency}): {@link Candor#contractReentry} resolves over
+     *  the key's declared type and an {@code Object} names none, so the site read pure. The receiver's static key type
+     *  bounds it — a JDK type closes it, a project type resolves it ({@code S2r}) — and otherwise it is the floor. A
+     *  parameter is not floored here: its caller's argument is resolved through the parameter contract (R1166). */
+    private static void objectKeyFloor(AnalysisContext c, MethodNode mn, Frame<SourceValue>[] sf, Frame<ProvValue>[] pf,
+            Frame<ProvValue> p, MethodInsnNode m, SourceValue recv, String id) {
+        if (p == null || !(ArgContract.floor("S2") || ArgContract.floor("S2r") || ArgContract.floor("S2o"))) return;
+        List<String> ehc = Candor.equalsHashContracts(m.owner, m.name, m.desc);
+        int j = 0;
+        boolean freq = Candor.frequencySink(m.owner, m.name, m.desc);
+        if (freq) { ehc = List.of(Candor.C_EQUALS); j = 1; }
+        if (ehc.isEmpty()) return;
+        ProvValue v = Candor.callArg(p, m, j);
+        if (v == null || v.nullConst || v.fromIndy || v.declType != null || v.newType != null) return;
+        if (pf[0] != null && Candor.paramIndexOf(mn, v, pf[0]) >= 0) return;
+        if (!objectTyped(mn, sf, argSource(mn, sf, m, j))) return;
+        boolean objs = m.owner.equals("java/util/Objects");
+        String kb = objs || freq || m.name.equals("containsValue") || m.name.equals("contains") && Candor.jdkContainerKind(m.owner) == Candor.KIND_HASH_MAP
+                ? null : recvBound(c, mn, sf, recv);
+        if (kb != null && closedJdk(c, kb)) return;
+        for (String con : ehc) {
+            String key = con.equals(Candor.C_EQUALS) ? EQ : HASH;
+            if (kb != null && c.byName.containsKey(kb)) {
+                if (ArgContract.floor("S2r")) {
+                    if (DEBUG) System.err.println("R1201FS2r\t" + id + "\t" + key + "\t" + kb);
+                    ArgContract.applyResolved(c, id, key, kb, false, false);
+                }
+            } else if (ArgContract.floor(objs ? "S2o" : "S2")) ArgContract.floorObject(id, key, "java/lang/Object", objs ? "S2o" : "S2");
+        }
+    }
+
+    /** R1201 — the SOURCE value of argument {@code j} at call {@code m}, or null. */
+    private static SourceValue argSource(MethodNode mn, Frame<SourceValue>[] sf, MethodInsnNode m, int j) {
+        int idx = mn.instructions.indexOf(m);
+        Frame<SourceValue> fr = idx >= 0 ? sf[idx] : null;
+        int n = Type.getArgumentTypes(m.desc).length;
+        return fr == null || fr.getStackSize() < n ? null : fr.getStack(fr.getStackSize() - n + j);
+    }
+
+    /** R1201 — whether a value is known only as {@code Object} on some path: a producer that is a call returning
+     *  {@code Object} (an erased generic read, a factory declared {@code Object}), a field declared {@code Object}, or an
+     *  array element. A constant ({@code ldc}), a cast, a {@code new}, a call or field with a narrower declared type is
+     *  not — the provenance interpreter's null declared type alone cannot tell an {@code ldc "a"} from an erased read. */
+    private static boolean objectTyped(MethodNode mn, Frame<SourceValue>[] sf, SourceValue v) {
+        if (v == null) return false;
+        Set<SourceValue> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        ArrayDeque<SourceValue> work = new ArrayDeque<>(List.of(v));
+        int budget = 32;
+        while (!work.isEmpty() && budget-- > 0) {
+            SourceValue x = work.poll();
+            if (!seen.add(x)) continue;
+            for (AbstractInsnNode src : x.insns) {
+                int idx = mn.instructions.indexOf(src);
+                Frame<SourceValue> f = idx >= 0 ? sf[idx] : null;
+                switch (src.getOpcode()) {
+                    case Opcodes.DUP -> { if (f != null) work.add(f.getStack(f.getStackSize() - 1)); }
+                    case Opcodes.ALOAD -> {
+                        if (f == null) break;
+                        SourceValue lv = f.getLocal(((VarInsnNode) src).var);
+                        for (AbstractInsnNode st : lv.insns) {
+                            int si = mn.instructions.indexOf(st);
+                            if (si >= 0 && sf[si] != null) work.add(sf[si].getStack(sf[si].getStackSize() - 1));
+                        }
+                    }
+                    case Opcodes.INVOKEVIRTUAL, Opcodes.INVOKEINTERFACE, Opcodes.INVOKESTATIC, Opcodes.INVOKESPECIAL -> {
+                        if (Type.getReturnType(((MethodInsnNode) src).desc).getDescriptor().equals("Ljava/lang/Object;")) return true;
+                    }
+                    case Opcodes.GETFIELD, Opcodes.GETSTATIC -> { if (((FieldInsnNode) src).desc.equals("Ljava/lang/Object;")) return true; }
+                    case Opcodes.AALOAD -> { return true; }
+                    default -> { }
+                }
+            }
+        }
+        return false;
+    }
+
+    /** R1201 — a JDK type no project class extends ({@code String}, {@code Integer}, a JDK enum): its
+     *  {@code equals}/{@code hashCode} run no project body. Never a {@code java.util} container (it runs its elements'),
+     *  never {@code Object}. */
+    private static boolean closedJdk(AnalysisContext c, String t) {
+        return t.startsWith("java/") && !t.startsWith("java/util/") && !t.equals("java/lang/Object") && !c.subtypeIndex.containsKey(t);
+    }
+
+    /** R1201 — the FIRST type argument of a container receiver's static type, where every producer of the receiver
+     *  names one: a field's or a local's generic signature ({@link #staticSig}), or a project method's return signature.
+     *  Null when any producer has none (a JDK call's result, a raw type) or names a type variable. */
+    private static String recvBound(AnalysisContext c, MethodNode mn, Frame<SourceValue>[] sf, SourceValue recv) {
+        if (recv == null) return null;
+        try {
+            List<AbstractInsnNode> ps = producers(mn, sf, recv);
+            if (ps.isEmpty()) return null;
+            String out = null;
+            for (AbstractInsnNode src : ps) {
+                String sig = staticSig(c, mn, src);
+                if (sig == null && src instanceof MethodInsnNode mi && c.byName.containsKey(mi.owner)) {
+                    MethodNode tm = Candor.findMethod(c.byName.get(mi.owner), mi.name, mi.desc);
+                    if (tm != null && tm.signature != null) {
+                        String r = tm.signature.substring(tm.signature.lastIndexOf(')') + 1);
+                        int caret = r.indexOf('^');
+                        sig = caret < 0 ? r : r.substring(0, caret);
+                    }
+                }
+                String a = sig == null ? null : firstTypeArgOfType(sig);
+                if (a == null || out != null && !out.equals(a)) return null;
+                out = a;
+            }
+            return out;
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** R1201 — an object array argument's elements: what was STORED in it (its own cells, a varargs pack's AASTOREs),
+     *  and its DECLARED component, as {@link #ordering}'s {@code Arrays} branch reads them. */
+    private static void arrayElems(AnalysisContext c, Graph g, ClassNode cn, MethodNode mn, Frame<SourceValue>[] sf,
+            Frame<SourceValue> f, int base, String self, String id, int i, String key) throws Exception {
+        Set<String> comps = new HashSet<>();
+        arrayComponents(mn, sf, f.getStack(base), comps, 0);
+        String cell = "A:" + self + ":" + i + ":h";
+        boolean any = false;
+        for (String comp : comps) if (!comp.equals("java/lang/Object")) { g.elem(cell, comp, false); any = true; }
+        if (any) g.dispatch(id, cell, key);
+        for (String ac : cells(c, g, cn, mn, sf, f.getStack(base), self, 0)) g.dispatch(id, ac, key);
+    }
+
+    /** R1201 — argument {@code j} of {@code m} as ONE element of {@code cell}: its own type (exact for a provable
+     *  {@code new}). False when nothing about it is known (a null, an Object, a JDK final type). */
+    private static boolean scalarElem(AnalysisContext c, Graph g, MethodNode mn, Frame<SourceValue>[] sf, Frame<ProvValue> p, MethodInsnNode m, int j, String cell) {
+        if (p == null) return false;
+        ProvValue v = Candor.callArg(p, m, j);
+        if (v == null || v.nullConst || v.fromIndy) return false;
+        String t = ArgContract.typeOf(c, v);
+        if (t == null) {
+            if (v.declType != null || v.newType != null || !ArgContract.floor("S1") || !objectTyped(mn, sf, argSource(mn, sf, m, j))) return false;
+            g.elem(cell, MARK, false);   // R1201 (floor S1)
+            return true;
+        }
+        g.elem(cell, t, v.newType != null);
+        return true;
+    }
+
+    /** R1201 — a {@code Collector} that builds a HASHED set: {@code toSet()}, {@code toUnmodifiableSet()}, or
+     *  {@code toCollection(supplier)} whose supplier is a constructor reference to a hashed set. */
+    private static boolean hashedSetCollector(AnalysisContext c, ClassNode cn, MethodNode mn, Frame<SourceValue>[] sf, SourceValue v) {
+        List<AbstractInsnNode> ps = producers(mn, sf, v);
+        if (ps.isEmpty()) return false;
+        for (AbstractInsnNode src : ps) {
+            if (!(src instanceof MethodInsnNode m) || !m.owner.equals("java/util/stream/Collectors")) return false;
+            if (m.name.equals("toSet") || m.name.equals("toUnmodifiableSet")) continue;
+            if (!m.name.equals("toCollection")) return false;
+            int idx = mn.instructions.indexOf(m);
+            Frame<SourceValue> f = idx >= 0 ? sf[idx] : null;
+            if (f == null || !hashedSupplier(mn, sf, f.getStack(f.getStackSize() - 1))) return false;
+        }
+        return true;
+    }
+
+    /** R1201 — a supplier value that is a constructor reference to a hashed container ({@code HashSet::new}, …). */
+    private static boolean hashedSupplier(MethodNode mn, Frame<SourceValue>[] sf, SourceValue v) {
+        List<AbstractInsnNode> ps = producers(mn, sf, v);
+        if (ps.isEmpty()) return false;
+        for (AbstractInsnNode src : ps) {
+            if (!(src instanceof InvokeDynamicInsnNode d) || d.bsmArgs.length < 2 || !(d.bsmArgs[1] instanceof Handle h)) return false;
+            if (h.getTag() != Opcodes.H_NEWINVOKESPECIAL || !hashed(h.getOwner())) return false;
+        }
+        return true;
+    }
+
+    /** R1201 — {@code Collectors.groupingBy(f[, d])}, {@code toMap(k, v[, merge])}, their concurrent and unmodifiable
+     *  spellings, or a 3/4-argument form whose map factory is a constructor reference to a hashed map: the KEY
+     *  function's result {@code [type, exact-or-null]} ({@link #functionResult}), or {@code [null, null]} for
+     *  {@code Function.identity()} (the elements are the keys). Null when it is none of these or not known. */
+    private static String[] hashedMapCollectorKey(AnalysisContext c, ClassNode cn, MethodNode mn, Frame<SourceValue>[] sf, SourceValue v) {
+        String[] key = null;
+        List<AbstractInsnNode> ps = producers(mn, sf, v);
+        if (ps.isEmpty()) return null;
+        for (AbstractInsnNode src : ps) {
+            if (!(src instanceof MethodInsnNode m) || !m.owner.equals("java/util/stream/Collectors")) return null;
+            Type[] at = Type.getArgumentTypes(m.desc);
+            int sup = -1;
+            boolean group = m.name.equals("groupingBy") || m.name.equals("groupingByConcurrent");
+            boolean tomap = m.name.equals("toMap") || m.name.equals("toConcurrentMap") || m.name.equals("toUnmodifiableMap");
+            if (group && at.length == 3) sup = 1;
+            else if (tomap && at.length == 4) sup = 3;
+            else if (!(group && at.length <= 2 || tomap && at.length <= 3)) return null;
+            int idx = mn.instructions.indexOf(m);
+            Frame<SourceValue> f = idx >= 0 ? sf[idx] : null;
+            if (f == null) return null;
+            int fbase = f.getStackSize() - at.length;
+            if (sup >= 0 && !hashedSupplier(mn, sf, f.getStack(fbase + sup))) return null;
+            String[] r = identityFunction(mn, sf, f.getStack(fbase)) ? new String[] {null, null} : functionResult(c, mn, sf, f.getStack(fbase));
+            if (r == null) return null;
+            if (key != null && !Objects.equals(key[0], r[0])) return null;
+            key = r;
+        }
+        return key;
+    }
+
+    private static boolean identityFunction(MethodNode mn, Frame<SourceValue>[] sf, SourceValue v) {
+        List<AbstractInsnNode> ps = producers(mn, sf, v);
+        if (ps.isEmpty()) return false;
+        for (AbstractInsnNode src : ps)
+            if (!(src instanceof MethodInsnNode m) || !m.owner.equals("java/util/function/Function") || !m.name.equals("identity")) return false;
+        return true;
+    }
+
+    /** SOUNDNESS R1201 — a call {@link #hashing} reads as running its elements' {@code equals}/{@code hashCode}: the
+     *  specialised-copy narrowing must not withdraw an edge only such a site made. */
+    static boolean hashesElements(String o, String name, String desc) {
+        if (o.equals("java/util/Objects") && name.equals("hash")) return true;
+        if (o.equals("java/util/Arrays") && (name.equals("hashCode") || name.equals("deepHashCode") || name.equals("equals")
+                || name.equals("deepEquals")) && desc.startsWith("([Ljava/lang/Object;")) return true;
+        if ((o.equals("java/util/Set") || o.equals("java/util/Map")) && (name.equals("of") || name.equals("copyOf"))) return true;
+        if (Candor.frequencySink(o, name, desc)) return true;
+        return o.equals("java/util/stream/Stream") && (name.equals("distinct") || name.equals("collect"));
     }
 
     /** SOUNDNESS R1179 — the ordering operations over a container's or an array's elements. */

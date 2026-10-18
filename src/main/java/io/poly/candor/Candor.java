@@ -5701,7 +5701,13 @@ public class Candor {
             List<String> ehc = equalsHashContracts(min.owner, min.name, min.desc);
             if (!ehc.isEmpty() && !min.owner.equals("java/util/Objects")) {
                 ProvValue key = callArg(rf, min, 0);
+                if (ArgContract.DEBUG && !legacyEqualsHash(min.owner, min.name)) System.err.println("R1201TAB\t" + id + "\t" + min.owner + "." + min.name);
                 for (String c : ehc) reentryEdgeOrDisclose(id, key, c);
+            }
+            // SOUNDNESS R1201 — `Collections.frequency(c, o)` runs `o.equals(e)` for each element (its SECOND argument)
+            if (frequencySink(min.owner, min.name, min.desc)) {
+                if (ArgContract.DEBUG) System.err.println("R1201TAB\t" + id + "\tjava/util/Collections.frequency");
+                reentryEdgeOrDisclose(id, callArg(rf, min, 1), C_EQUALS);
             }
             if (isCompareToSink(min.owner, min.name)) {
                 // The element whose compareTo orders the collection. For the COLLECTION-typed sinks
@@ -7332,6 +7338,15 @@ public class Candor {
             // higher-order site reporting Unknown is the SOUND over-approximation (the dispatcher
             // invokes an unresolvable function), not a bug; the precise effects are still captured
             // at each lambda's own rooted invoke() entry (the kotlin/Function RUNTIME_OVERRIDES row).
+            // SOUNDNESS R1201 (floor S4): the Object-protocol fan-out dropped here, recorded for the post-fixpoint floor
+            // A receiver that is this body's own PARAMETER is not floored: its callers are resolved by the argument they
+            // pass (R1166's parameter contract), and a chained caller discloses through its witness.
+            if (broad && ArgContract.floor("S4") && effect == null && !cha.isEmpty()
+                    && (min.name.equals("hashCode") && min.desc.equals("()I") || min.name.equals("equals") && min.desc.equals("(Ljava/lang/Object;)Z"))
+                    && !(provFrames != null && provFrames[0] != null && provFrames[mn.instructions.indexOf(min)] != null
+                         && paramIndexOf(mn, receiverProv(provFrames[mn.instructions.indexOf(min)], min), provFrames[0]) >= 0))
+                ctx.argContractFloor.computeIfAbsent(id, k -> new TreeSet<>()).add(
+                        (min.name.equals("hashCode") ? ArgContract.HASHCODE : ArgContract.EQUALS) + "\t" + min.owner + "\tS4");
             if (broad && !isObjectProtocolExempt(min.name, min.desc) && effect == null && !springTyped
                     && (isProjectIfaceOrAbstract(min.owner) || !cha.isEmpty())) {
                 dir.add(Effect.UNKNOWN);
@@ -10345,28 +10360,113 @@ public class Candor {
      *        known (it may be hashed), runs both;</li>
      *    <li>{@code Objects.equals(a, b)} runs {@code a.equals(b)}; {@code Objects.hashCode(o)} runs
      *        {@code o.hashCode()} (the R1166 sibling: both were absent from the table).</li>
-     *  </ul> */
+     *  </ul>
+     *
+     *  <p><b>SOUNDNESS R1201 — THE TABLE WAS AN ALLOWLIST OF SPELLINGS, NOT OF SEMANTICS.</b> Executed on JDK 21
+     *  with an EXACT project key whose {@code hashCode}/{@code equals} wrote a file, every one of these was absent
+     *  under {@code deny Fs Unknown} on 0.40.12: {@code Map.computeIfAbsent/computeIfPresent/compute/merge}, a
+     *  {@code Hashtable}/{@code WeakHashMap}/{@code ConcurrentMap}-typed {@code put}, {@code ConcurrentHashMap
+     *  .computeIfAbsent}, {@code containsValue} (the ARGUMENT's {@code equals}), and a {@code Vector}/{@code ArrayDeque}
+     *  {@code contains}. Beyond the named owners the owner's KIND is now asked of the JDK itself ({@link
+     *  #jdkContainerKind}): a hashed map's key operations run both members on the key, any map's
+     *  {@code containsValue} runs the value's {@code equals}, a hashed set's {@code add}/{@code contains}/{@code
+     *  remove} run both, and a list, queue or deque lookup runs {@code equals}. A sorted map or set (compareTo, its own
+     *  path), an identity map and an {@code EnumSet} run neither. */
     static List<String> equalsHashContracts(String owner, String name, String desc) {
         boolean objArg0 = desc != null && desc.startsWith("(Ljava/lang/Object;");
         switch (owner) {
             case "java/util/List": case "java/util/ArrayList": case "java/util/LinkedList":
-                return (name.equals("contains") || name.equals("indexOf") || name.equals("lastIndexOf")
-                        || name.equals("remove")) && objArg0 ? List.of(C_EQUALS) : List.of();
+                return LIST_LOOKUPS.contains(name) && objArg0 ? List.of(C_EQUALS) : List.of();
             case "java/util/Set": case "java/util/HashSet": case "java/util/LinkedHashSet":
             case "java/util/Collection":
                 return (name.equals("contains") || name.equals("add") || name.equals("remove")) && objArg0
                         ? List.of(C_EQUALS, C_HASHCODE) : List.of();
             case "java/util/Map": case "java/util/HashMap": case "java/util/LinkedHashMap":
             case "java/util/concurrent/ConcurrentHashMap":
-                return (name.equals("get") || name.equals("containsKey") || name.equals("put")
-                        || name.equals("remove") || name.equals("getOrDefault") || name.equals("putIfAbsent"))
-                        && objArg0 ? List.of(C_EQUALS, C_HASHCODE) : List.of();
+                return hashedMapContracts(name, objArg0);
             case "java/util/Objects":
                 if (name.equals("equals") && "(Ljava/lang/Object;Ljava/lang/Object;)Z".equals(desc)) return List.of(C_EQUALS);
                 if (name.equals("hashCode") && "(Ljava/lang/Object;)I".equals(desc)) return List.of(C_HASHCODE);
                 return List.of();
-            default: return List.of();
+            default:
+                if (!objArg0) return List.of();
+                switch (jdkContainerKind(owner)) {
+                    case KIND_HASH_MAP: return hashedMapContracts(name, true);
+                    case KIND_MAP: return name.equals("containsValue") ? List.of(C_EQUALS) : List.of();
+                    case KIND_HASH_SET:
+                        return name.equals("contains") || name.equals("add") || name.equals("remove")
+                                ? List.of(C_EQUALS, C_HASHCODE) : List.of();
+                    case KIND_LIST: return LIST_LOOKUPS.contains(name) ? List.of(C_EQUALS) : List.of();
+                    default: return List.of();
+                }
         }
+    }
+
+    /** R1201 reach marker only: whether 0.40.12's table already named this owner and member. */
+    private static boolean legacyEqualsHash(String owner, String name) {
+        switch (owner) {
+            case "java/util/List": case "java/util/ArrayList": case "java/util/LinkedList":
+                return name.equals("contains") || name.equals("indexOf") || name.equals("lastIndexOf") || name.equals("remove");
+            case "java/util/Set": case "java/util/HashSet": case "java/util/LinkedHashSet": case "java/util/Collection":
+                return name.equals("contains") || name.equals("add") || name.equals("remove");
+            case "java/util/Map": case "java/util/HashMap": case "java/util/LinkedHashMap": case "java/util/concurrent/ConcurrentHashMap":
+                return name.equals("get") || name.equals("containsKey") || name.equals("put") || name.equals("remove")
+                        || name.equals("getOrDefault") || name.equals("putIfAbsent");
+            default: return false;
+        }
+    }
+
+    /** SOUNDNESS R1201 — {@code Collections.frequency(Collection, Object)}: the second argument's {@code equals}. */
+    static boolean frequencySink(String owner, String name, String desc) {
+        return owner.equals("java/util/Collections") && name.equals("frequency")
+                && "(Ljava/util/Collection;Ljava/lang/Object;)I".equals(desc);
+    }
+
+    /** R1201 — a hashed map's KEY operations (each hashes the key, then compares it with {@code equals}), and
+     *  {@code containsValue} (Hashtable's legacy {@code contains}), which runs the argument's {@code equals} only. */
+    private static List<String> hashedMapContracts(String name, boolean objArg0) {
+        if (!objArg0) return List.of();
+        if (HASHED_KEY_OPS.contains(name)) return List.of(C_EQUALS, C_HASHCODE);
+        // `containsValue`, and the legacy `contains(Object)` of Hashtable/ConcurrentHashMap, which is containsValue
+        if (name.equals("containsValue") || name.equals("contains")) return List.of(C_EQUALS);
+        return List.of();
+    }
+    private static final Set<String> HASHED_KEY_OPS = Set.of("get", "containsKey", "put", "remove", "getOrDefault",
+            "putIfAbsent", "computeIfAbsent", "computeIfPresent", "compute", "merge", "replace");
+    /** A list, queue or deque lookup runs the argument's {@code equals} against each element (never {@code hashCode}). */
+    private static final Set<String> LIST_LOOKUPS = Set.of("contains", "indexOf", "lastIndexOf", "remove",
+            "removeFirstOccurrence", "removeLastOccurrence", "removeElement", "search");
+
+    static final int KIND_NONE = 0, KIND_HASH_MAP = 1, KIND_MAP = 2, KIND_HASH_SET = 3, KIND_LIST = 4;
+    private static final Map<String, Integer> JDK_CONTAINER_KIND = new java.util.concurrent.ConcurrentHashMap<>();
+    /** SOUNDNESS R1201 — what a {@code java.util} owner's lookups run, asked of the JDK class itself (§G: the authority,
+     *  not a name pattern). {@link #KIND_HASH_MAP}: a map that hashes its keys (not sorted, not identity, not an
+     *  {@code EnumMap}); {@link #KIND_MAP}: any other map ({@code containsValue} still runs the value's {@code equals});
+     *  {@link #KIND_HASH_SET}: a set that hashes, or a collection interface whose implementation may be one;
+     *  {@link #KIND_LIST}: a list, queue or deque, or {@code CopyOnWriteArraySet} (a list underneath: {@code equals}
+     *  only). A sorted set, an {@code EnumSet}, a class the JDK does not have: {@link #KIND_NONE}. */
+    static int jdkContainerKind(String owner) {
+        if (owner == null || !owner.startsWith("java/util/")) return KIND_NONE;
+        return JDK_CONTAINER_KIND.computeIfAbsent(owner, o -> {
+            try {
+                Class<?> k = Class.forName(o.replace('/', '.'), false, ClassLoader.getPlatformClassLoader());
+                if (java.util.Map.class.isAssignableFrom(k)) {
+                    if (java.util.SortedMap.class.isAssignableFrom(k) || java.util.IdentityHashMap.class.isAssignableFrom(k)
+                            || java.util.EnumMap.class.isAssignableFrom(k)) return KIND_MAP;
+                    return KIND_HASH_MAP;
+                }
+                if (!java.util.Collection.class.isAssignableFrom(k)) return KIND_NONE;
+                if (java.util.concurrent.CopyOnWriteArraySet.class.isAssignableFrom(k)) return KIND_LIST;
+                if (java.util.Set.class.isAssignableFrom(k)) {
+                    if (java.util.SortedSet.class.isAssignableFrom(k) || java.util.EnumSet.class.isAssignableFrom(k)) return KIND_NONE;
+                    return KIND_HASH_SET;
+                }
+                if (java.util.List.class.isAssignableFrom(k) || java.util.Queue.class.isAssignableFrom(k)) return KIND_LIST;
+                return KIND_HASH_SET;   // a Collection whose implementation is not known: it may be hashed
+            } catch (Throwable e) {
+                return KIND_NONE;
+            }
+        });
     }
 
     /** SOUNDNESS R1179 — a SORTED container: inserting into it, or looking up in it, runs the argument's

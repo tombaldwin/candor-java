@@ -19,7 +19,25 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   now CHARGED rather than disclosed: a callee that returns the container it was handed is the same container at that
   call, and a generic class's `Set<V>` return is read through its receiver's type (`Graph<Node>` gives `Node`). The
   generated framework table gains 2 `U` rows (dbunit `PrimaryKeyFilter$PkTableMap.add/addAll`). The `equals`/`hashCode`
-  counterpart (an element known only as `Object`, hashed) is unchanged and still silent.
+  counterpart (an element known only as `Object`, hashed) is closed by R1201, below.
+- ⚠ **Twenty-two JDK equality/hashing calls now charge the project `equals`/`hashCode` they run** (R1201, **silent
+  under-reports**, each executed on JDK 21 with an exact project key whose members wrote a file, and absent under
+  `deny Fs Unknown` on 0.40.12): `Objects.hash(..)`, `Objects.equals`, `Objects.hashCode`, `Map.computeIfAbsent/
+  computeIfPresent/compute/merge/replace`, `containsValue`, a `Hashtable`/`WeakHashMap`/`ConcurrentMap` key operation,
+  `Vector`/`ArrayDeque` lookups, `Collections.frequency`, `Arrays.hashCode/equals` over objects, `Set.of`/`Map.of`/
+  `Set.copyOf`, and a stream's `distinct()`, `toSet()`, `groupingBy`/`toMap` keys. The owner's kind is asked of the JDK
+  class, not matched by name. Against 0.40.12's R1199 line over the 762-entry corpus: ADDED 576, REMOVED 0, CHANGED
+  3,616; 83 rows gain a concrete effect (all 86 gaining rows traced to such a call or a callee that is one, by an
+  independent javap check), 1,128 newly `Unknown` (0.031% of analysed units). Residual: `Map.entry(k, v).hashCode()`.
+- ⚠ **A value known only as `Object` that the JDK hashes or compares is now DISCLOSED instead of silent** (R1201): an
+  element from a factory declared `Object` put in a list then hashed, a key read through erasure handed to `put`/
+  `contains`/`get`, `Objects.equals` over an `Object` field, and an `Object` argument to a helper that hashes it — each
+  executed on JDK 21, each absent under `deny Fs Unknown` on 0.40.12. Such a site reports `Unknown` (`dispatch:java.lang.Object.hashCode|equals`) where some
+  override in the scan carries an effect it does not already report. A container's static key type closes it
+  (`Map<String, ..>`) or resolves it (`Map<Term, ..>` charges `Term.hashCode`: 49 rows). Over the 762-entry corpus:
+  3,812 rows newly `Unknown` (0.11% of 3,588,929 analysed units), 0 lost. Still not attributed: a direct
+  `o.equals(..)`/`o.hashCode()` on an `Object` past the twelve-override CHA bound (measured at 14,338 more rows with
+  `CANDOR_R1201_FLOOR=all`; off by default).
 
 ## [0.40.12] — 2026-10-16
 

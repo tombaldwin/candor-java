@@ -131,6 +131,11 @@ final class ArgContract {
                 || newType.equals("java/util/concurrent/ConcurrentHashMap");
     }
     static boolean treeBinOwner(String o) {
+        // R1201: the owners the table now reads by KIND — a Hashtable (and Properties), a WeakHashMap or an identity map
+        // never treeifies, nor does a list, queue or deque (ElementFlow#treeBin's own exclusions)
+        if (o.equals("java/util/Hashtable") || o.equals("java/util/Properties") || o.equals("java/util/WeakHashMap")
+                || o.contains("Identity") || o.contains("Enum") || o.contains("CopyOnWrite")
+                || Candor.jdkContainerKind(o) == Candor.KIND_LIST) return false;
         return !o.equals("java/util/List") && !o.equals("java/util/ArrayList") && !o.equals("java/util/LinkedList")
                 && !o.equals("java/util/Objects");
     }
@@ -162,6 +167,21 @@ final class ArgContract {
             ProvValue a0 = Candor.callArg(f, min, 0);
             int p = Candor.paramIndexOf(s.mn, a0, f0);
             if (p >= 0) for (String con : ehc) direct(c, s.id, p, con.equals(Candor.C_EQUALS) ? EQUALS : HASHCODE, min);
+            else if (min.owner.equals("java/util/Objects") && a0 != null && !a0.nullConst && !a0.fromIndy) {
+                // SOUNDNESS R1201 — `Objects.equals(a, b)`/`Objects.hashCode(o)` at a call site: the R1166 sibling,
+                // resolved by THIS mechanism's one-body rule (Candor#contractReentry leaves Objects to it). e9d4868 added
+                // it, f28b565 dropped it with the chained join it rode on, and both calls read pure over an exact
+                // effectful type on 0.40.12 (executed).
+                String t = typeOf(c, a0);
+                if (t != null) for (String con : ehc)
+                    c.argContractCalls.computeIfAbsent(s.id, x -> new TreeSet<>()).add(
+                            (con.equals(Candor.C_EQUALS) ? EQUALS : HASHCODE) + "\t" + t + "\t" + (a0.newType != null ? 1 : 0));
+            }
+        }
+        // SOUNDNESS R1201 — `Collections.frequency(c, o)` on this body's own parameter o: its equals is the caller's
+        if (Candor.frequencySink(min.owner, min.name, min.desc)) {
+            int p = Candor.paramIndexOf(s.mn, Candor.callArg(f, min, 1), f0);
+            if (p >= 0) direct(c, s.id, p, EQUALS, min);
         }
         if (Candor.isCompareToSink(min.owner, min.name) && Candor.comparesArgZero(min.owner, min.name)) {
             int p = Candor.paramIndexOf(s.mn, Candor.callArg(f, min, 0), f0);
@@ -171,8 +191,10 @@ final class ArgContract {
             else if (p >= 0) direct(c, s.id, p, COMPARETO, min);
         }
         // R1184: a KEY hashed into a structure that may be a HashMap: its tree bin may run the key's compareTo
-        ProvValue tbRecv = ehc.isEmpty() ? null : Candor.receiverProv(f, min);
-        if (!ehc.isEmpty() && treeBinOwner(min.owner) && (tbRecv == null || treeBinImpl(tbRecv.newType))) {
+        // (only where the key is HASHED: `containsValue` runs the value's equals, and is no tree-bin key)
+        boolean hashes = ehc.contains(Candor.C_HASHCODE);
+        ProvValue tbRecv = hashes ? Candor.receiverProv(f, min) : null;
+        if (hashes && treeBinOwner(min.owner) && (tbRecv == null || treeBinImpl(tbRecv.newType))) {
             ProvValue a0 = Candor.callArg(f, min, 0);
             int p = Candor.paramIndexOf(s.mn, a0, f0);
             if (p >= 0) direct(c, s.id, p, TREEBIN, min);
@@ -198,6 +220,14 @@ final class ArgContract {
                 continue;
             }
             String t = typeOf(c, v);
+            // (an `ldc` String or class literal carries a null declared type too: it is not an Object)
+            if (t == null && floor("S3") && v.declType == null && v.newType == null && v.pathLit == null
+                    && !ProvValue.UO_CLS.equals(v.urlOrigin) && at[j].getInternalName().equals("java/lang/Object")) {
+                // SOUNDNESS R1201 (floor S3): an argument known only as Object, into an Object parameter
+                for (String n : callees)
+                    c.argContractSites.computeIfAbsent(s.id, k -> new TreeSet<>()).add(n + "\t" + j + "\tjava/lang/Object\t0");
+                continue;
+            }
             if (t == null) continue;
             // `T`: the argument is this body's own receiver, so a specialised copy of this body (spec) can
             // re-resolve it for its narrower receiver type
@@ -316,6 +346,32 @@ final class ArgContract {
      *  fixpoint where some project implementor's body carries a concrete effect the caller does not already report. */
     private static final ThreadLocal<Set<String>> UNTRACED_CMP = ThreadLocal.withInitial(LinkedHashSet::new);
     static void discloseComparable(String caller) { UNTRACED_CMP.get().add(caller); }
+
+    /** SOUNDNESS R1201 — THE OBJECT FLOOR (equals/hashCode), by class. S1 to S3 are on; {@code S4} is OFF by default:
+     *  it is the direct dispatch R1166 kept §4-pure on purpose (its pinned control {@code heldW}: a static {@code Object}
+     *  field whose only store is {@code new Object()}), and it is a decision, not a residual of this row's shapes.
+     *  {@code CANDOR_R1201_FLOOR} selects classes for measurement (a comma list, {@code all} or {@code none}). Measured
+     *  over the 762-entry corpus against the floor off: S1-S3 disclose 3,812 rows newly (0.11% of 3,588,929 analysed
+     *  units) and charge 49 (S2r); S4 would add 14,338 more (0.40%). The classes: {@code S1} a container's elements hashed where an insert is known only as {@code Object};
+     *  {@code S2} a key known only as {@code Object} handed to a hashing/equality sink (receiver bound unknown);
+     *  {@code S2r} the same key RESOLVED by the receiver's static type argument ({@code Map<Foo, ..>}); {@code S2o}
+     *  {@code Objects.equals/hashCode} over an {@code Object}; {@code S1d} a container whose DECLARED element is
+     *  {@code Object} ({@code List<Object>}) hashed; {@code S3} an {@code Object} argument to a project callee
+     *  whose parameter is hashed; {@code S4} a direct {@code equals}/{@code hashCode} past the CHA fan-out bound. */
+    static final Set<String> FLOOR = floorClasses(System.getenv("CANDOR_R1201_FLOOR"));
+    static Set<String> floorClasses(String v) {
+        if (v == null || v.isBlank()) return Set.of("S1", "S1d", "S2", "S2r", "S2o", "S3");
+        if (v.trim().equals("all")) return Set.of("S1", "S1d", "S2", "S2r", "S2o", "S3", "S4");
+        if (v.trim().equals("none")) return Set.of();
+        return Set.of(v.trim().split("\\s*,\\s*"));
+    }
+    static boolean floor(String cls) { return FLOOR.contains(cls); }
+    /** {caller, key, owner, class}: an equals/hashCode dispatch whose receiver is known only as {@code owner}. */
+    private static final ThreadLocal<Set<List<String>>> OBJ_FLOOR = ThreadLocal.withInitial(LinkedHashSet::new);
+    static void floorObject(String caller, String key, String owner, String cls) {
+        if (DEBUG) System.err.println("R1201F" + cls + "\t" + caller + "\t" + key + "\t" + owner);
+        OBJ_FLOOR.get().add(List.of(caller, key, owner, cls));
+    }
 
     /** The concrete classes an instance of {@code t} (exactly, or any subtype) can be whose {@code compareTo} a
      *  HashMap tree bin runs: those that implement {@code Comparable<Self>} DIRECTLY. */
@@ -461,6 +517,25 @@ final class ArgContract {
                     }
         }
         UNTRACED_CMP.get().clear();
+        // SOUNDNESS R1201 — the Object floor: an equals/hashCode dispatch on a value known only as Object (or, S4, past
+        // the fan-out bound) DISCLOSED where some override it could run carries a concrete effect the caller lacks
+        Set<List<String>> objFloor = new LinkedHashSet<>(OBJ_FLOOR.get());
+        for (var e : c.argContractFloor.entrySet())
+            for (String x : e.getValue()) {
+                String[] a = x.split("\t", 3);
+                objFloor.add(List.of(e.getKey(), a[0], a[1], a[2]));
+            }
+        for (List<String> w : objFloor) {
+            String caller = w.get(0), key = w.get(1), owner = w.get(2);
+            int paren = key.indexOf('('), dot = key.lastIndexOf('.', paren);
+            String name = key.substring(dot + 1, paren), desc = key.substring(paren);
+            for (String b : Cha.chaTargets(owner, name, desc))
+                if (newConcrete(fx, b, caller)) {
+                    added |= disclose(c, caller, w.get(3).equals("S4") ? owner : "java/lang/Object", name, "R1201U" + w.get(3), owner, b);
+                    break;
+                }
+        }
+        OBJ_FLOOR.get().clear();
         // SOUNDNESS R1174 — the ELEMENT witnesses ElementFlow found (a collection of project values handed to a
         // chained dependency), merged per caller with the direct ones. Read here and dropped: they are a
         // function of this scan's bodies, decided after the analyze loop, so they never enter the accumulator.
@@ -517,6 +592,7 @@ final class ArgContract {
         CHAIN_ELEMS.get().clear();
         CMP_SITES.get().clear();
         UNTRACED_CMP.get().clear();
+        OBJ_FLOOR.get().clear();
         try {
             ElementFlow.run(c);   // a collection's own equals/hashCode/removeAll/... over its elements
             resolveSites(c);
@@ -527,6 +603,13 @@ final class ArgContract {
     }
 
     private static void resolveSites(AnalysisContext c) {
+        // SOUNDNESS R1201 — `Objects.equals/hashCode` over a non-parameter value at a call site (ArgContract#site)
+        for (var e : c.argContractCalls.entrySet())
+            for (String x : e.getValue()) {
+                String[] a = x.split("\t", 3);   // key, type, exact
+                if (DEBUG) System.err.println("R1201OBJECTS\t" + e.getKey() + "\t" + a[0] + "\t" + a[1]);
+                applyResolved(c, e.getKey(), a[0], a[1], a[2].equals("1"), false);
+            }
         if (c.argContractDirect.isEmpty()) return;
         // fn -> {"p\tkey"}: what each method's parameter p reaches, through any chain of project callees.
         Map<String, Set<String>> reach = new HashMap<>();
@@ -567,7 +650,13 @@ final class ArgContract {
                     if (!pk.substring(0, tab).equals(a[1])) continue;
                     if (DEBUG) System.err.println("R1166SITE\t" + caller + "\t" + a[0] + "\t" + a[1] + "\t" + a[2]
                             + "\t" + pk.substring(tab + 1));
-                    applyResolved(c, caller, pk.substring(tab + 1), a[2], a[3].equals("1"), a[3].equals("T"));
+                    String key = pk.substring(tab + 1);
+                    if (a[2].equals("java/lang/Object")) {
+                        // R1201 (floor S3): only floor S3 records an Object argument here
+                        if (key.equals(EQUALS) || key.equals(HASHCODE)) floorObject(caller, key, "java/lang/Object", "S3");
+                        continue;
+                    }
+                    applyResolved(c, caller, key, a[2], a[3].equals("1"), a[3].equals("T"));
                 }
             }
         }
@@ -668,6 +757,7 @@ final class ArgContract {
      *  body ({@link #spec}). After the analyze loop only. */
     static void applyResolved(AnalysisContext c, String callerId, String key, String t, boolean exact, boolean isThis) {
         if (key.equals(TREEBIN)) { discloseCompareTo(c, callerId, t, exact, true); return; }
+
         Res r = bodiesFor(c, key, t, exact);
         if (r == null || r == OUTSIDE) return;
         if (r == WIDE) {
@@ -876,6 +966,7 @@ final class ArgContract {
                         String nd = min.name;
                         if (Candor.isToStringSink(min.owner, min.name, min.desc)) otherNames.add("toString");
                         for (String con : Candor.equalsHashContracts(min.owner, min.name, min.desc)) otherNames.add(con);
+                        if (ElementFlow.hashesElements(min.owner, min.name, min.desc)) otherNames.addAll(List.of("equals", "hashCode"));
                         if (Candor.isCompareToSink(min.owner, min.name) || ElementFlow.ordersElements(min.owner, min.name, min.desc)
                                 || Candor.mayCompareArg0(min.owner, min.name, min.desc, null)) otherNames.add("compareTo");
                         String fc = Candor.formatterSinkCtor(min.owner, min.name, min.desc);

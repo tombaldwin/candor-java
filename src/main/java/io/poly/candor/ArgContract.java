@@ -373,21 +373,28 @@ final class ArgContract {
     private static final ThreadLocal<Set<String>> UNTRACED_CMP = ThreadLocal.withInitial(LinkedHashSet::new);
     static void discloseComparable(String caller) { UNTRACED_CMP.get().add(caller); }
 
-    /** SOUNDNESS R1201 — THE OBJECT FLOOR (equals/hashCode), by class. S1 to S3 are on; {@code S4} is OFF by default:
-     *  it is the direct dispatch R1166 kept §4-pure on purpose (its pinned control {@code heldW}: a static {@code Object}
-     *  field whose only store is {@code new Object()}), and it is a decision, not a residual of this row's shapes.
-     *  {@code CANDOR_R1201_FLOOR} selects classes for measurement (a comma list, {@code all} or {@code none}). Measured
-     *  over the 762-entry corpus against the floor off: S1-S3 disclose 3,812 rows newly (0.11% of 3,588,929 analysed
-     *  units) and charge 49 (S2r); S4 would add 14,338 more (0.40%). The classes: {@code S1} a container's elements hashed where an insert is known only as {@code Object};
+    /** SOUNDNESS R1201 — THE OBJECT FLOOR (equals/hashCode, and since R1205/R1217 toString/compareTo), by class. ALL ON by
+     *  default. S4 was off while it was the only answer to a direct dispatch past the CHA bound (R1166 kept that §4-pure
+     *  on purpose for its control {@code heldW}); since R1205 such a site is first RESOLVED from the receiver's producers
+     *  ({@link ExactTypes}: {@code heldW} is pure because its one store is {@code new Object()}, filler or not), so S4 and
+     *  S5 now disclose only the receivers whose producers cannot be named. {@code CANDOR_R1201_FLOOR} selects classes for
+     *  measurement (a comma list, {@code all} or {@code none}). Measured over the 762-entry corpus against the floor off:
+     *  S1-S3 disclose 3,812 rows newly (0.11% of 3,588,929 analysed units) and charge 49 (S2r); S4+S5 on top of the R1205
+     *  resolution add {@code Unknown} to 28,587 rows (0.80%; 3,629 toString, 3,253 equals, 3,102 hashCode, 62 compareTo
+     *  by the new reason, 18,578 transitive), charge none, and move no entry-wide gate. The classes: {@code S1} a
+     *  container's elements hashed where an insert is known only as {@code Object};
      *  {@code S2} a key known only as {@code Object} handed to a hashing/equality sink (receiver bound unknown);
      *  {@code S2r} the same key RESOLVED by the receiver's static type argument ({@code Map<Foo, ..>}); {@code S2o}
      *  {@code Objects.equals/hashCode} over an {@code Object}; {@code S1d} a container whose DECLARED element is
      *  {@code Object} ({@code List<Object>}) hashed; {@code S3} an {@code Object} argument to a project callee
-     *  whose parameter is hashed; {@code S4} a direct {@code equals}/{@code hashCode} past the CHA fan-out bound (SOUNDNESS R1205, open). */
+     *  whose parameter is hashed; {@code S4} a direct {@code equals}/{@code hashCode}/{@code toString}/{@code compareTo}
+     *  past the CHA fan-out bound whose receiver's producers are not all known (R1205); {@code S5} a JDK string sink's
+     *  {@code Object} operand ({@code "" + o}, {@code String.valueOf(o)}, …) whose producers are not all known, in or past
+     *  the bound, and the same operand handed to a project parameter that is stringified or compared (R1217). */
     // not final: a test widens it in-process (ObjectProtocolProducersR1205Test#withFloors), the env being read-only there
     static volatile Set<String> FLOOR = floorClasses(System.getenv("CANDOR_R1201_FLOOR"));
     static Set<String> floorClasses(String v) {
-        if (v == null || v.isBlank()) return Set.of("S1", "S1d", "S2", "S2r", "S2o", "S3");
+        if (v == null || v.isBlank()) return Set.of("S1", "S1d", "S2", "S2r", "S2o", "S3", "S4", "S5");
         if (v.trim().equals("all")) return Set.of("S1", "S1d", "S2", "S2r", "S2o", "S3", "S4", "S5");
         if (v.trim().equals("none")) return Set.of();
         return Set.of(v.trim().split("\\s*,\\s*"));

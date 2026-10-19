@@ -179,6 +179,28 @@ class ObjectProtocolProducersR1205Test {
         assertTrue(String.valueOf(r.get(fn("c12SinkArray")).get("unknownWhy")).contains("dispatch:java.lang.Object.toString"), "got " + r.get(fn("c12SinkArray")));
     }
 
+    /** THE DEFAULT, with no floor selected: what the producers cannot name is DISCLOSED, never silent. Past the bound a
+     *  direct dispatch (S4), and in either tree a JDK string sink's operand (S5): each executed and writes the file
+     *  (javaagent-recover/f75), and each read {@code deny Fs Unknown} 0 with the classes off. The pure controls of the same
+     *  shapes are disclosed too (the producers are unknown either way) and never charged. */
+    @Test
+    void theFloorIsOnByDefault() throws Exception {
+        for (boolean wide : new boolean[] {false, true}) {
+            Map<String, Map<String, Object>> r = scan(sources(wide), Map.of());
+            String tree = wide ? "WIDE" : "NARROW";
+            List<String> disclosed = wide ? List.of("e08FinalInst", "e11Array", "e12Virtual", "c12SinkArray", "c13ParamTop")
+                    : List.of("c12SinkArray", "c13ParamTop");
+            for (String f : disclosed) {
+                List<String> inf = HashingR1203Test.inferred(r, fn(f));
+                assertTrue(inf.contains("Unknown") && !inf.contains("Fs"), tree + " " + f + ": runs EqEff (executed), disclosed by default; got " + r.get(fn(f)));
+            }
+            List<String> k = HashingR1203Test.inferred(r, fn("kc14SinkArrayPure"));
+            assertTrue(!k.contains("Fs"), tree + " kc14SinkArrayPure runs P0 (executed): never charged; got " + r.get(fn("kc14SinkArrayPure")));
+            for (String f : RESOLVED_PURE)
+                assertTrue(HashingR1203Test.inferred(r, fn(f)).isEmpty(), tree + " " + f + " got " + r.get(fn(f)));
+        }
+    }
+
     /** R1166's control {@code heldW} — {@code static Object held = new Object(); held.equals("k")} — is pure because its
      *  one store is {@code new Object()}, with or without the thirteen filler overrides that used to decide it. */
     @Test

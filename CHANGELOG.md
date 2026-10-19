@@ -9,6 +9,15 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **What the producers cannot name is now DISCLOSED by default, not silent** (R1205, R1217; floor classes S4 and S5
+  switched on). A direct `equals`/`hashCode`/`toString`/`compareTo` past the twelve-override CHA bound, and a JDK string
+  sink's `Object` operand in or past it, whose receiver is an array element, a value a non-final virtual returned, or a
+  final field set from a constructor argument, read `deny Fs Unknown` exit 0 over code that wrote a file (executed on
+  JDK 21, seven shapes); each now reports `Unknown` wherever some override in the scan carries an effect the method
+  does not already report. Never charged. Measured over the 762-entry corpus: 29,290 rows newly carry `Unknown`
+  (0.82% of 3,588,929 analysed units; by the new reason 3,629 `toString`, 3,253 `equals`, 3,102 `hashCode`, 62
+  `compareTo`, the rest their callers), no concrete effect added or lost, no entry-wide `deny Unknown` verdict moved.
+  The generated framework table gains 1,766 rows (1,662 `U`) for the same members as reached from consumer code.
 - ⚠ **An `equals`/`hashCode`/`toString`/`compareTo` dispatch is now decided by what PRODUCED the receiver, not by how
   many overrides the scan holds** (R1205, R1217, R1204; each executed on JDK 21). Before, at twelve overrides or fewer
   every override was edged whatever the receiver could be (`static Object HO = new Object(); HO.equals(k)` was charged

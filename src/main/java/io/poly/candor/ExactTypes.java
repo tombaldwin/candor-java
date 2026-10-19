@@ -33,7 +33,9 @@ import org.objectweb.asm.tree.analysis.SourceValue;
  *
  * <p><b>Where the producers are not all known</b> ({@code ?} in the set): the site keeps exactly what it did before —
  * the bounded CHA in bound — and past the bound it is recorded for the Object floor's S4 class, which discloses
- * {@code Unknown} after the fixpoint only where some override it could run carries an effect the caller lacks.
+ * {@code Unknown} after the fixpoint only where some override it could run carries an effect the caller lacks. A JDK
+ * sink's operand whose producers are not all known goes to the S5 class, in or past the bound. Both are on by default
+ * ({@link ArgContract#floorClasses}).
  *
  * <p><b>Refresh.</b> The answer reads OTHER classes' bodies (a field's writers, a factory's returns), so it cannot be
  * computed during the per-class analyze (its delta would go stale when a writer changes — the R163 shape). The site
@@ -198,7 +200,8 @@ final class ExactTypes {
     }
 
     /** The Object floor's S4/S5 classes (ArgContract#postFixpoint): disclosed only where an override it could run
-     *  carries a concrete effect the caller lacks, and only when the class is switched on. */
+     *  carries a concrete effect the caller lacks, and only when the class is on (the default; {@code CANDOR_R1201_FLOOR}
+     *  can switch it off for measurement). */
     private void floor(String caller, String owner, String name, String desc, String cls) {
         if (!ArgContract.floor(cls)) return;
         if (DEBUG) System.err.println("R1205FLOOR\t" + cls + "\t" + caller + "\t" + owner + "." + name);

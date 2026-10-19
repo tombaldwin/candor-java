@@ -121,9 +121,10 @@ candidate target and one effectful override would smear across the whole report:
   bound is decided by what PRODUCED the receiver (SOUNDNESS R1205): a `new`, a constant, a final-typed value, a field
   whose every write the scan holds, a statically bound factory's returns — the exact class's own body is charged, and a
   receiver proven pure (`static Object HO = new Object()`) is pure. Where some producer cannot be named, the site keeps
-  its in-bound CHA edges; past the bound it is disclosed only with `CANDOR_R1201_FLOOR=all` (S4). A JDK string sink
-  over an `Object` operand (`"" + o`, `String.valueOf(o)`, …) is decided the same way (R1217; floor class S5), and so are
-  the key and value of `Map.entry(k, v)` (R1204).
+  its in-bound CHA edges and past the bound it is DISCLOSED (`Unknown`, `dispatch:java.lang.Object.<member>`, floor
+  class S4). A JDK string sink over an `Object` operand (`"" + o`, `String.valueOf(o)`, …) is decided the same way, and
+  an operand whose producers cannot be named is disclosed in or past the bound (R1217; floor class S5), and so are the
+  key and value of `Map.entry(k, v)` (R1204). `CANDOR_R1201_FLOOR` selects floor classes for measurement only.
   **Where the receiver is the method's own PARAMETER** — `<T> boolean same(T a, T b) { return
   a.equals(b); }`, which erasure compiles to `Object.equals` — the CALLER is charged the override of the
   type it passes (SOUNDNESS R1166). The same holds for an interface member of a `java.*` κ owner

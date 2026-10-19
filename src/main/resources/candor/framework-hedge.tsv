@@ -130,8 +130,8 @@
 # P = a member a NAME rule charges whose surveyed body is a proven-pure field accessor (R1052).
 # O = a public member overridden in ANOTHER surveyed jar by a body that can do more than the row says;
 #     the overriding classes follow (R1097). See FrameworkReach#crossJarOverriders.
-# entries 108297
-# content-sha256 de8439036cd67966d247b23654d0cfe2ec6997d91d072b07f2c7eebbfd9bfb50
+# entries 108260
+# content-sha256 36e4aba34d3cc90a658ffcb0a43258e679b3c6d0f12f4c64f5175ae6e76d313c
 A	com/fasterxml/jackson/annotation/JacksonInject.useInput()Lcom/fasterxml/jackson/annotation/OptBoolean;
 A	com/fasterxml/jackson/annotation/JacksonInject.value()Ljava/lang/String;
 A	com/fasterxml/jackson/annotation/JsonAlias.value()[Ljava/lang/String;
@@ -61161,9 +61161,7 @@ U	com/sun/jna/Function.write(J[III)V
 U	com/sun/jna/Function.write(J[JII)V
 U	com/sun/jna/Function.write(J[Lcom/sun/jna/Pointer;II)V
 U	com/sun/jna/Function.write(J[SII)V
-U	com/sun/jna/IntegerType.equals(Ljava/lang/Object;)Z
 U	com/sun/jna/IntegerType.fromNative(Ljava/lang/Object;Lcom/sun/jna/FromNativeContext;)Ljava/lang/Object;
-U	com/sun/jna/IntegerType.hashCode()I
 U	com/sun/jna/LastErrorException.<init>(I)V
 U	com/sun/jna/LastErrorException.<init>(Ljava/lang/String;)V
 U	com/sun/jna/Memory.<init>(J)V
@@ -61257,9 +61255,7 @@ U	com/sun/jna/NativeLibrary.mapSharedLibraryName(Ljava/lang/String;)Ljava/lang/S
 U	com/sun/jna/NativeLong.<init>()V
 U	com/sun/jna/NativeLong.<init>(J)V
 U	com/sun/jna/NativeLong.<init>(JZ)V
-U	com/sun/jna/NativeLong.equals(Ljava/lang/Object;)Z
 U	com/sun/jna/NativeLong.fromNative(Ljava/lang/Object;Lcom/sun/jna/FromNativeContext;)Ljava/lang/Object;
-U	com/sun/jna/NativeLong.hashCode()I
 U	com/sun/jna/NativeMappedConverter.<init>(Ljava/lang/Class;)V
 U	com/sun/jna/NativeMappedConverter.defaultValue()Lcom/sun/jna/NativeMapped;
 U	com/sun/jna/NativeMappedConverter.fromNative(Ljava/lang/Object;Lcom/sun/jna/FromNativeContext;)Ljava/lang/Object;
@@ -61395,16 +61391,11 @@ U	com/sun/jna/StringArray.write(J[Lcom/sun/jna/Pointer;II)V
 U	com/sun/jna/StringArray.write(J[SII)V
 U	com/sun/jna/Structure$FFIType$size_t.<init>()V
 U	com/sun/jna/Structure$FFIType$size_t.<init>(J)V
-U	com/sun/jna/Structure$FFIType$size_t.equals(Ljava/lang/Object;)Z
 U	com/sun/jna/Structure$FFIType$size_t.fromNative(Ljava/lang/Object;Lcom/sun/jna/FromNativeContext;)Ljava/lang/Object;
-U	com/sun/jna/Structure$FFIType$size_t.hashCode()I
 U	com/sun/jna/Structure.autoAllocate(I)Lcom/sun/jna/Memory;
-U	com/sun/jna/Structure.getFieldList()Ljava/util/List;
 U	com/sun/jna/Structure.getFieldOrder()Ljava/util/List;
 U	com/sun/jna/Structure.getFields(Z)Ljava/util/List;
 U	com/sun/jna/Union.autoAllocate(I)Lcom/sun/jna/Memory;
-U	com/sun/jna/Union.getFieldList()Ljava/util/List;
-U	com/sun/jna/Union.getFieldOrder()Ljava/util/List;
 U	com/sun/jna/Union.getFields(Z)Ljava/util/List;
 U	com/sun/jna/internal/Cleaner.getCleaner()Lcom/sun/jna/internal/Cleaner;
 U	com/sun/jna/ptr/ByReference.<init>(I)V
@@ -71163,8 +71154,6 @@ U	org/apache/commons/beanutils/DynaBeanPropertyMapDecorator.put(Ljava/lang/Objec
 U	org/apache/commons/beanutils/DynaBeanPropertyMapDecorator.putAll(Ljava/util/Map;)V
 U	org/apache/commons/beanutils/DynaBeanPropertyMapDecorator.size()I
 U	org/apache/commons/beanutils/DynaBeanPropertyMapDecorator.values()Ljava/util/Collection;
-U	org/apache/commons/beanutils/DynaProperty.equals(Ljava/lang/Object;)Z
-U	org/apache/commons/beanutils/DynaProperty.hashCode()I
 U	org/apache/commons/beanutils/LazyDynaBean.<init>()V
 U	org/apache/commons/beanutils/LazyDynaBean.<init>(Ljava/lang/String;)V
 U	org/apache/commons/beanutils/LazyDynaBean.<init>(Lorg/apache/commons/beanutils/DynaClass;)V
@@ -71210,10 +71199,7 @@ U	org/apache/commons/beanutils/MappedPropertyDescriptor.getMappedWriteMethod()Lj
 U	org/apache/commons/beanutils/MappedPropertyDescriptor.setMappedReadMethod(Ljava/lang/reflect/Method;)V
 U	org/apache/commons/beanutils/MappedPropertyDescriptor.setMappedWriteMethod(Ljava/lang/reflect/Method;)V
 U	org/apache/commons/beanutils/MethodUtils.clearCache()I
-U	org/apache/commons/beanutils/MethodUtils.getPrimitiveWrapper(Ljava/lang/Class;)Ljava/lang/Class;
-U	org/apache/commons/beanutils/MethodUtils.isAssignmentCompatible(Ljava/lang/Class;Ljava/lang/Class;)Z
 U	org/apache/commons/beanutils/MethodUtils.setCacheMethods(Z)V
-U	org/apache/commons/beanutils/MethodUtils.toNonPrimitiveClass(Ljava/lang/Class;)Ljava/lang/Class;
 U	org/apache/commons/beanutils/PropertyUtils.addBeanIntrospector(Lorg/apache/commons/beanutils/BeanIntrospector;)V
 U	org/apache/commons/beanutils/PropertyUtils.clearDescriptors()V
 U	org/apache/commons/beanutils/PropertyUtils.getMappedPropertyDescriptors(Ljava/lang/Class;)Lorg/apache/commons/collections/FastHashMap;
@@ -71248,65 +71234,37 @@ U	org/apache/commons/beanutils/WrapDynaClass.clear()V
 U	org/apache/commons/beanutils/WrapDynaClass.getDynaProperty(Ljava/lang/String;)Lorg/apache/commons/beanutils/DynaProperty;
 U	org/apache/commons/beanutils/WrapDynaClass.getPropertyDescriptor(Ljava/lang/String;)Ljava/beans/PropertyDescriptor;
 U	org/apache/commons/beanutils/converters/AbstractConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/AbstractConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/ArrayConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/BigDecimalConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/BigDecimalConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/BigIntegerConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/BigIntegerConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/BooleanConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/BooleanConverter.convertToType(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/BooleanConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/ByteArrayConverter.convert(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/ByteConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/ByteConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/CalendarConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/CalendarConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/CharacterArrayConverter.convert(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/CharacterConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/CharacterConverter.convertToType(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/CharacterConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/ClassConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/ClassConverter.convertToType(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/ClassConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/ConverterFacade.convert(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/DateConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/DateConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/DateTimeConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/DateTimeConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/DoubleArrayConverter.convert(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/DoubleConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/DoubleConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/FileConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/FileConverter.convertToType(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/FileConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/FloatArrayConverter.convert(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/FloatConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/FloatConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/IntegerArrayConverter.convert(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/IntegerConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/IntegerConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/LongArrayConverter.convert(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/LongConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/LongConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/NumberConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/NumberConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/ShortArrayConverter.convert(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/ShortConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/ShortConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/SqlDateConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/SqlDateConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/SqlTimeConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/SqlTimeConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/SqlTimestampConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/SqlTimestampConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/StringArrayConverter.convert(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/StringConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/StringConverter.convertToType(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/StringConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/converters/URLConverter.convertArray(Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/URLConverter.convertToType(Ljava/lang/Class;Ljava/lang/Object;)Ljava/lang/Object;
-U	org/apache/commons/beanutils/converters/URLConverter.getDefault(Ljava/lang/Class;)Ljava/lang/Object;
 U	org/apache/commons/beanutils/locale/LocaleBeanUtils.getApplyLocalized()Z
 U	org/apache/commons/beanutils/locale/LocaleBeanUtils.getDefaultLocale()Ljava/util/Locale;
 U	org/apache/commons/beanutils/locale/LocaleBeanUtils.initCause(Ljava/lang/Throwable;Ljava/lang/Throwable;)Z
@@ -74252,7 +74210,9 @@ U	org/ehcache/impl/serialization/PlainJavaSerializer.equals(Ljava/lang/Object;Lj
 U	org/ehcache/impl/serialization/PlainJavaSerializer.read(Ljava/nio/ByteBuffer;)Ljava/lang/Object;
 U	org/ehcache/impl/serialization/TransientStateHolder.<init>()V
 U	org/ehcache/impl/serialization/TransientStateHolder.entrySet()Ljava/util/Set;
+U	org/ehcache/impl/serialization/TransientStateHolder.equals(Ljava/lang/Object;)Z
 U	org/ehcache/impl/serialization/TransientStateHolder.get(Ljava/lang/Object;)Ljava/lang/Object;
+U	org/ehcache/impl/serialization/TransientStateHolder.hashCode()I
 U	org/ehcache/impl/serialization/TransientStateHolder.putIfAbsent(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;
 U	org/ehcache/impl/serialization/TransientStateRepository.<init>()V
 U	org/ehcache/impl/serialization/TransientStateRepository.getPersistentStateHolder(Ljava/lang/String;Ljava/lang/Class;Ljava/lang/Class;)Lorg/ehcache/spi/persistence/StateHolder;
@@ -97900,7 +97860,6 @@ U	org/springframework/data/couchbase/core/convert/JsonValueConverter.read(Ljava/
 U	org/springframework/data/couchbase/core/convert/JsonValueConverter.readNull(Lorg/springframework/data/convert/ValueConversionContext;)Ljava/lang/Object;
 U	org/springframework/data/couchbase/core/convert/JsonValueConverter.write(Ljava/lang/Object;Lorg/springframework/data/convert/ValueConversionContext;)Ljava/lang/Object;
 U	org/springframework/data/couchbase/core/convert/JsonValueConverter.writeNull(Lorg/springframework/data/convert/ValueConversionContext;)Ljava/lang/Object;
-U	org/springframework/data/couchbase/core/convert/MappingCouchbaseConverter.addCustomTypeKeyIfNecessary(Lorg/springframework/data/util/TypeInformation;Ljava/lang/Object;Lorg/springframework/data/couchbase/core/mapping/CouchbaseDocument;)V
 U	org/springframework/data/couchbase/core/convert/MappingCouchbaseConverter.convertForWriteIfNeeded(Lorg/springframework/data/couchbase/core/mapping/CouchbasePersistentProperty;Lorg/springframework/data/mapping/model/ConvertingPropertyAccessor;Z)Ljava/lang/Object;
 U	org/springframework/data/couchbase/core/convert/MappingCouchbaseConverter.copyCouchbaseDocument(Lorg/springframework/data/couchbase/core/mapping/CouchbaseDocument;Lorg/springframework/data/couchbase/core/mapping/CouchbaseDocument;)V
 U	org/springframework/data/couchbase/core/convert/MappingCouchbaseConverter.getPotentiallyConvertedSimpleWrite(Lorg/springframework/data/couchbase/core/mapping/CouchbasePersistentProperty;Lorg/springframework/data/mapping/model/ConvertingPropertyAccessor;)Ljava/lang/Object;
@@ -102304,6 +102263,7 @@ U	org/springframework/data/util/TypeUtils$TypeOps.isPartOf([Lorg/springframework
 U	org/springframework/data/web/HateoasPageableHandlerMethodArgumentResolver.enhance(Lorg/springframework/web/util/UriComponentsBuilder;Lorg/springframework/core/MethodParameter;Ljava/lang/Object;)V
 U	org/springframework/data/web/HateoasPageableHandlerMethodArgumentResolver.getPageable(Lorg/springframework/core/MethodParameter;Ljava/lang/String;Ljava/lang/String;)Lorg/springframework/data/domain/Pageable;
 U	org/springframework/data/web/HateoasPageableHandlerMethodArgumentResolver.getPaginationTemplateVariables(Lorg/springframework/core/MethodParameter;Lorg/springframework/web/util/UriComponents;)Lorg/springframework/hateoas/TemplateVariables;
+U	org/springframework/data/web/HateoasPageableHandlerMethodArgumentResolver.isFallbackPageable(Lorg/springframework/data/domain/Pageable;)Z
 U	org/springframework/data/web/HateoasPageableHandlerMethodArgumentResolver.resolveArgument(Lorg/springframework/core/MethodParameter;Lorg/springframework/web/method/support/ModelAndViewContainer;Lorg/springframework/web/context/request/NativeWebRequest;Lorg/springframework/web/bind/support/WebDataBinderFactory;)Lorg/springframework/data/domain/Pageable;
 U	org/springframework/data/web/HateoasSortHandlerMethodArgumentResolver.enhance(Lorg/springframework/web/util/UriComponentsBuilder;Lorg/springframework/core/MethodParameter;Ljava/lang/Object;)V
 U	org/springframework/data/web/HateoasSortHandlerMethodArgumentResolver.foldIntoExpressions(Lorg/springframework/data/domain/Sort;)Ljava/util/List;
@@ -102312,8 +102272,10 @@ U	org/springframework/data/web/HateoasSortHandlerMethodArgumentResolver.legacyFo
 U	org/springframework/data/web/HateoasSortHandlerMethodArgumentResolver.parseParameterIntoSort(Ljava/util/List;Ljava/lang/String;)Lorg/springframework/data/domain/Sort;
 U	org/springframework/data/web/HateoasSortHandlerMethodArgumentResolver.resolveArgument(Lorg/springframework/core/MethodParameter;Lorg/springframework/web/method/support/ModelAndViewContainer;Lorg/springframework/web/context/request/NativeWebRequest;Lorg/springframework/web/bind/support/WebDataBinderFactory;)Lorg/springframework/data/domain/Sort;
 U	org/springframework/data/web/PageableHandlerMethodArgumentResolver.getPageable(Lorg/springframework/core/MethodParameter;Ljava/lang/String;Ljava/lang/String;)Lorg/springframework/data/domain/Pageable;
+U	org/springframework/data/web/PageableHandlerMethodArgumentResolver.isFallbackPageable(Lorg/springframework/data/domain/Pageable;)Z
 U	org/springframework/data/web/PageableHandlerMethodArgumentResolver.resolveArgument(Lorg/springframework/core/MethodParameter;Lorg/springframework/web/method/support/ModelAndViewContainer;Lorg/springframework/web/context/request/NativeWebRequest;Lorg/springframework/web/bind/support/WebDataBinderFactory;)Lorg/springframework/data/domain/Pageable;
 U	org/springframework/data/web/PageableHandlerMethodArgumentResolverSupport.getPageable(Lorg/springframework/core/MethodParameter;Ljava/lang/String;Ljava/lang/String;)Lorg/springframework/data/domain/Pageable;
+U	org/springframework/data/web/PageableHandlerMethodArgumentResolverSupport.isFallbackPageable(Lorg/springframework/data/domain/Pageable;)Z
 U	org/springframework/data/web/PagedResourcesAssembler.toEmptyModel(Lorg/springframework/data/domain/Page;Ljava/lang/Class;)Lorg/springframework/hateoas/PagedModel;
 U	org/springframework/data/web/PagedResourcesAssembler.toEmptyModel(Lorg/springframework/data/domain/Page;Ljava/lang/Class;Lorg/springframework/hateoas/Link;)Lorg/springframework/hateoas/PagedModel;
 U	org/springframework/data/web/PagedResourcesAssembler.toModel(Ljava/lang/Object;)Lorg/springframework/hateoas/RepresentationModel;
@@ -102333,6 +102295,7 @@ U	org/springframework/data/web/ProjectingJackson2HttpMessageConverter.writeInter
 U	org/springframework/data/web/ProxyingHandlerMethodArgumentResolver.handleReturnValue(Ljava/lang/Object;Lorg/springframework/core/MethodParameter;Lorg/springframework/web/method/support/ModelAndViewContainer;Lorg/springframework/web/context/request/NativeWebRequest;)V
 U	org/springframework/data/web/ReactiveOffsetScrollPositionHandlerMethodArgumentResolver.resolveArgument(Lorg/springframework/core/MethodParameter;Lorg/springframework/web/reactive/BindingContext;Lorg/springframework/web/server/ServerWebExchange;)Lreactor/core/publisher/Mono;
 U	org/springframework/data/web/ReactivePageableHandlerMethodArgumentResolver.getPageable(Lorg/springframework/core/MethodParameter;Ljava/lang/String;Ljava/lang/String;)Lorg/springframework/data/domain/Pageable;
+U	org/springframework/data/web/ReactivePageableHandlerMethodArgumentResolver.isFallbackPageable(Lorg/springframework/data/domain/Pageable;)Z
 U	org/springframework/data/web/ReactivePageableHandlerMethodArgumentResolver.resolveArgument(Lorg/springframework/core/MethodParameter;Lorg/springframework/web/reactive/BindingContext;Lorg/springframework/web/server/ServerWebExchange;)Lreactor/core/publisher/Mono;
 U	org/springframework/data/web/ReactivePageableHandlerMethodArgumentResolver.resolveArgumentValue(Lorg/springframework/core/MethodParameter;Lorg/springframework/web/reactive/BindingContext;Lorg/springframework/web/server/ServerWebExchange;)Lorg/springframework/data/domain/Pageable;
 U	org/springframework/data/web/ReactiveSortHandlerMethodArgumentResolver.foldIntoExpressions(Lorg/springframework/data/domain/Sort;)Ljava/util/List;

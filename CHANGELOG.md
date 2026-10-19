@@ -9,6 +9,24 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **An `equals`/`hashCode`/`toString`/`compareTo` dispatch is now decided by what PRODUCED the receiver, not by how
+  many overrides the scan holds** (R1205, R1217, R1204; each executed on JDK 21). Before, at twelve overrides or fewer
+  every override was edged whatever the receiver could be (`static Object HO = new Object(); HO.equals(k)` was charged
+  the one effectful `equals` in the tree — a **false `deny Fs` failure**), and past the bound none was, with no
+  disclosure (`Object o = factory(); o.hashCode()` over a factory returning an effectful type read pure — a **silent
+  under-report**). A JDK string sink over an `Object` operand (`"" + o`, `String.valueOf(o)`, `sb.append(o)`,
+  `Objects.toString(o)`, `String.format("%s", o)`) never reached the operand's `toString` at all, in bound or past it
+  (R1217, silent), and `Map.entry(k, v)` / `new AbstractMap.SimpleEntry(k, v)` never ran the key's and value's members
+  (R1204, silent). The receiver's exact classes are now followed through a `new`, a constant, a lambda, an array, a
+  final-typed value, a field whose every write the scan holds, and the return of a statically bound project method;
+  each class's own body is edged. Where every producer is known the site is a RESOLUTION (charged, or proven pure);
+  where some producer cannot be named the in-bound site keeps its CHA edges as before. Measured over the 762-entry
+  corpus against 0.40.12: 225 rows lose a concrete effect and 232 an `Unknown`, every one traced to a dispatch whose
+  receiver the bytecode proves cannot run the dropped body (an independent `javap` checker plus a hand read of each
+  case it could not decide; 0 violations); 232 rows gain a concrete effect, each through a new edge read by hand as
+  genuine. The generated framework table loses 45 `U` rows and gains 8 (e.g. jna `IntegerType.equals`, whose `number`
+  field only ever holds a boxed JDK value). R1216's `kj02DirectPure` over-charge is gone; its two field-cell shapes
+  (`ks01`, `ks03`) are not this mechanism and remain.
 - ⚠ **A sort whose elements the engine cannot trace is now DISCLOSED instead of silent** (R1199, **silent
   under-reports**, each executed on JDK 21 and absent under `deny Fs Unknown` on 0.40.12). Elements known only as
   `Comparable` or `Object` (a factory returning `Comparable`, a `List<Object>` field, a `<T>` sorter's parameter, an

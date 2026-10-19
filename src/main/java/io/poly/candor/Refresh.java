@@ -77,7 +77,7 @@ final class Refresh {
      *  exactly this case, and SOUNDNESS R151 is the record of what a cache serving a stale dependency fact
      *  costs (a `deny Net` that went exit 1 to exit 0 on the configuration CI uses). Pinned by
      *  {@code RefreshDispatchesOnTest}, which EXECUTES the un-bumped case rather than reasoning about it. */
-    private static final String FORMAT = "candor-refresh-3";
+    static final String FORMAT = "candor-refresh-4";
 
     private final Path file;                  // null when caching is off
     private final Map<String, JsonObject> loaded = new HashMap<>();   // internal name -> stored entry

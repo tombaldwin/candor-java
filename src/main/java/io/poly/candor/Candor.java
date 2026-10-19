@@ -398,6 +398,9 @@ public class Candor {
 
         // SOUNDNESS R1166 — the argument contract: close each method's parameter flow and resolve every call
         // site's argument types against it. Reads only the per-class accumulators, never a body.
+        // SOUNDNESS R1205/R1217/R1204 — Object-protocol sites, decided from the receiver's producers (before the
+        // argument contract, whose receiver-specialised copies read these edges)
+        ExactTypes.resolveSites();
         ArgContract.resolve();
 
         // SOUNDNESS R825 — where a runtime-loaded query handle goes, followed forward, fail-closed. Whole
@@ -5689,6 +5692,7 @@ public class Candor {
                 } else {
                     // valueOf/Objects.toString/append(Object)/print(Object): the lone Object arg.
                     for (ProvValue a : callArgs(rf, min)) reentryEdgeOrDisclose(id, a, C_TOSTRING);
+                    objectOperands(s, min, Type.getArgumentTypes(min.desc));   // SOUNDNESS R1217
                 }
             }
             // The KEY/element argument — for Map.* it is the FIRST arg (the key); for the collection verbs
@@ -5752,6 +5756,29 @@ public class Candor {
                 ProvValue recv = receiverProv(rf, min);
                 if (recv != null && isJavaIoStreamType(recv.declType)) reentryEdge(id, recv, recvContract);
             }
+        }
+    }
+
+    /** SOUNDNESS R1217 — A JDK STRING SINK RUNS ITS {@code Object} OPERAND'S {@code toString}, AND THE OPERAND'S TYPE IS
+     *  NOT THE DECLARED ONE. {@code "" + o}, {@code String.valueOf(o)}, {@code sb.append(o)}, {@code Objects.toString(o)},
+     *  a logger's {@code (String, Object)} — the re-entry above resolves over the operand's DECLARED type, and an operand
+     *  declared {@code Object} named nothing, so an effectful {@code toString} read absent even in bound (executed:
+     *  {@code javaagent-v074/f74} c01-c05). Each such operand is recorded for {@link ExactTypes}, which decides it from
+     *  its producers after the loop, exactly as an explicit {@code o.toString()} is decided. */
+    static void objectOperands(MethodScan s, AbstractInsnNode insn, Type[] at) {
+        if (s.provFrames == null) return;
+        int i = s.mn.instructions.indexOf(insn);
+        Frame<ProvValue> f = i < 0 ? null : s.provFrames[i];
+        if (f == null) return;
+        for (int j = 0; j < at.length; j++) {
+            if (!at[j].getDescriptor().equals("Ljava/lang/Object;")) continue;
+            int idx = argValueIndex(f.getStackSize(), at, j);
+            if (idx < 0) continue;
+            ProvValue v = f.getStack(idx);
+            if (v != null && v.declType != null) continue;   // a declared type: the re-entry above resolved it
+            // on this body's own parameter the CALLER's argument decides it (ArgContract), so no floor here
+            boolean onParam = s.provFrames[0] != null && paramIndexOf(s.mn, v, s.provFrames[0]) >= 0;
+            ExactTypes.record(s.id, s.mn, insn, idx, "java/lang/Object", C_TOSTRING, "()Ljava/lang/String;", onParam ? "Q" : "S");
         }
     }
 
@@ -7146,6 +7173,12 @@ public class Candor {
             // smears LoudList's effect onto every plain `new ArrayList().add()`. Skip CHA for it
             // — but DON'T `continue`: fall through to the cross-jar inheritance block below, since
             // the call is into an external/dependency method that may carry recorded effects.
+            // SOUNDNESS R1204 — a provable `new AbstractMap.SimpleEntry(k, v)`: its equals/hashCode/toString run the key's
+            // and the value's, decided after the loop like any other Object-protocol site (ExactTypes#ctorEntry).
+            if (monoRecv != null && ExactTypes.isEntryAlloc(monoRecv) && ExactTypes.covers(min.name, min.desc)
+                    && effect == null && provFrames != null && provFrames[mn.instructions.indexOf(min)] != null)
+                ExactTypes.record(id, mn, min, provFrames[mn.instructions.indexOf(min)].getStackSize()
+                        - Type.getArgumentTypes(min.desc).length - 1, min.owner, min.name, min.desc, "D");
             if (monoRecv == null) {
             // ⟨0.35⟩ SPEC §4 "A NON-EMPTY CANDIDATE SET IS NOT A COMPLETE ONE": a receiver read straight
             // off a field this scan proved is written ONLY by project lambdas/method-refs (never an
@@ -7256,7 +7289,18 @@ public class Candor {
             // catches it. The jts Rand "smear" the skip avoided is sound over-approximation, not
             // a reason to drop a real reachable effect; a broad fan-out still drops to Unknown.
             List<String> targets = broad ? List.of() : cha;
-            ctx.edges.get(id).addAll(targets);
+            // SOUNDNESS R1205 — an Object-protocol member is decided by what PRODUCED the receiver, after the loop
+            // (ExactTypes): its exact classes' bodies where every producer is known, else exactly the edges below.
+            int recvAt = provFrames == null ? -1 : mn.instructions.indexOf(min);
+            if (ExactTypes.covers(min.name, min.desc) && effect == null && !springTyped && recvAt >= 0
+                    && provFrames[recvAt] != null) {
+                Frame<ProvValue> rf0 = provFrames[recvAt];
+                boolean onParam = provFrames[0] != null && paramIndexOf(mn, receiverProv(rf0, min), provFrames[0]) >= 0;
+                ExactTypes.record(id, mn, min, rf0.getStackSize() - Type.getArgumentTypes(min.desc).length - 1,
+                        min.owner, min.name, min.desc, onParam ? "P" : "D");
+            } else {
+                ctx.edges.get(id).addAll(targets);
+            }
             // SOUNDNESS R530b — THE CANDIDATE SET IS INCOMPLETE WHENEVER A LAMBDA IMPLEMENTS THE SAM.
             //
             // `cha` is built from loaded ClassNodes, and a Java lambda has none: its body is a synthetic
@@ -7338,15 +7382,8 @@ public class Candor {
             // higher-order site reporting Unknown is the SOUND over-approximation (the dispatcher
             // invokes an unresolvable function), not a bug; the precise effects are still captured
             // at each lambda's own rooted invoke() entry (the kotlin/Function RUNTIME_OVERRIDES row).
-            // SOUNDNESS R1201 (floor S4; open as R1205): the Object-protocol fan-out dropped here, recorded for the post-fixpoint floor
-            // A receiver that is this body's own PARAMETER is not floored: its callers are resolved by the argument they
-            // pass (R1166's parameter contract), and a chained caller discloses through its witness.
-            if (broad && ArgContract.floor("S4") && effect == null && !cha.isEmpty()
-                    && (min.name.equals("hashCode") && min.desc.equals("()I") || min.name.equals("equals") && min.desc.equals("(Ljava/lang/Object;)Z"))
-                    && !(provFrames != null && provFrames[0] != null && provFrames[mn.instructions.indexOf(min)] != null
-                         && paramIndexOf(mn, receiverProv(provFrames[mn.instructions.indexOf(min)], min), provFrames[0]) >= 0))
-                ctx.argContractFloor.computeIfAbsent(id, k -> new TreeSet<>()).add(
-                        (min.name.equals("hashCode") ? ArgContract.HASHCODE : ArgContract.EQUALS) + "\t" + min.owner + "\tS4");
+            // SOUNDNESS R1201 floor S4 (R1205): a broad Object-protocol fan-out is recorded for the floor by ExactTypes, after
+            // the loop, only for the part of the receiver whose producers are not all known.
             if (broad && !isObjectProtocolExempt(min.name, min.desc) && effect == null && !springTyped
                     && (isProjectIfaceOrAbstract(min.owner) || !cha.isEmpty())) {
                 dir.add(Effect.UNKNOWN);
@@ -7768,6 +7805,8 @@ public class Candor {
                 && idin.bsm.getOwner().equals("java/lang/invoke/StringConcatFactory")) {
             Frame<ProvValue> cf = provFrames[mn.instructions.indexOf(idin)];
             for (ProvValue a : indyArgs(cf, idin)) reentryEdge(id, a, C_TOSTRING);
+            objectOperands(s, idin, Type.getArgumentTypes(idin.desc));   // SOUNDNESS R1217
+            ArgContract.concatParams(ctx, s, idin);                       // …and on this body's own parameter
         }
         // RECORD ObjectMethods REENTRY: a record's compiler-generated equals/hashCode/toString is a
         // near-empty body whose ONE instruction is this indy — the per-component comparison/combine/
@@ -10729,6 +10768,10 @@ public class Candor {
                 if (f != null && f.getStackSize() >= 1) {
                     ProvValue v = f.getStack(f.getStackSize() - 1); // the value being stored (top of stack)
                     reentryEdge(callerId, v, C_TOSTRING);
+                    // SOUNDNESS R1217 — an element known only as Object: decided by its producers, after the loop
+                    if (v != null && v.declType == null && v.base != null && v.base.isReference())
+                        ExactTypes.record(callerId, mn, n, f.getStackSize() - 1, "java/lang/Object", C_TOSTRING,
+                                "()Ljava/lang/String;", "S");
                 }
             }
         }

@@ -247,11 +247,16 @@ patch_for() {
     # de-indenting it one level, and `ctx()` (the ThreadLocal singleton call) became the plain `ctx`
     # parameter handleMethodInsn now threads through — both textual, not behavioural, changes, but
     # they moved the anchor off the source, so this mutation silently stopped applying.
+    # ⟨2026-10-19⟩ re-anchored (R1205): the Object-protocol members now take their CHA edges after the loop
+    # (ExactTypes#decide); every other dispatch keeps this line, now the `else` of that split. The mutant still
+    # removes the CHA edges the fuzzer's chains need.
     apply_patch \
-'            List<String> targets = broad ? List.of() : cha;
-            ctx.edges.get(id).addAll(targets);' \
-'            List<String> targets = broad ? List.of() : cha;
-            // MUTANT: ctx.edges.get(id).addAll(targets);' ;;
+'            } else {
+                ctx.edges.get(id).addAll(targets);
+            }' \
+'            } else {
+                // MUTANT: ctx.edges.get(id).addAll(targets);
+            }' ;;
   cb_unknown)
     # ⟨2026-08-29⟩ re-anchored: same P7 de-indentation (16/32-space continuation → 12/20).
     apply_patch \

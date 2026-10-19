@@ -74,7 +74,7 @@ class RefreshDispatchesOnTest {
             // which is exactly the shape a build without this accumulator writes.
             Path old = base.resolve("cache-old");
             Files.createDirectories(old);
-            int stripped = stripDispatchDirect(cache.resolve("candor-refresh-3.json"),
+            int stripped = stripDispatchDirect(cache.resolve(Refresh.FORMAT + ".json"),
                     old.resolve("candor-refresh-2.json"));
             assertTrue(stripped > 0, "no stored delta carried `dispatchDirect`, so stripping it proves"
                     + " nothing — the fixture is not exercising the accumulator this test is about");
@@ -88,8 +88,8 @@ class RefreshDispatchesOnTest {
             // Without this the arm above passes on any build that merely looks at the file name.
             Path unbumped = base.resolve("cache-unbumped");
             Files.createDirectories(unbumped);
-            stripDispatchDirect(cache.resolve("candor-refresh-3.json"),
-                    unbumped.resolve("candor-refresh-3.json"));
+            stripDispatchDirect(cache.resolve(Refresh.FORMAT + ".json"),
+                    unbumped.resolve(Refresh.FORMAT + ".json"));
             String replayed = scan(cls, unbumped);
             assertNotEquals(cold, replayed, "THE CONTROL DID NOT DISCRIMINATE: replaying a pre-rung delta"
                     + " under the current name produced the post-rung report, so the FORMAT bump is not"

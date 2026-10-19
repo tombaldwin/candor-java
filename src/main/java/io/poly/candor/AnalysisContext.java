@@ -281,6 +281,15 @@ final class AnalysisContext {
     /** SOUNDNESS R1201 (floor S4; open as R1205) — fn -> {@code "key\towner\tS4"}: a direct equals/hashCode dispatch past the CHA
      *  fan-out bound, dropped as §4 permits; disclosed after the fixpoint where an override in reach is effectful. */
     final Map<String, TreeSet<String>> argContractFloor = new HashMap<>();
+    /** SOUNDNESS R1205/R1217/R1204 — fn -> {@code "mname\tmdesc\tinsn\tstackIdx\towner\tname\tdesc\tkind"}: an
+     *  Object-protocol dispatch (kind D, or P on the method's own parameter) or a JDK string sink's toString over an
+     *  {@code Object} operand (kind S), decided after the analyze loop by {@link ExactTypes#resolveSites} from the
+     *  receiver's producers, which may live in other classes (so not here: a per-class delta would go stale). */
+    final Map<String, TreeSet<String>> objProtoSites = new HashMap<>();
+    /** SOUNDNESS R1205 — fn -> {@code "mname\tmdesc\tinsn\tstackIdx\tj\tcallees"}: an argument declared {@code Object}
+     *  into a project callee's {@code Object} parameter, whose exact classes {@link ExactTypes#resolveArgs} reads off its
+     *  producers after the loop and hands to the argument contract ({@code argContractSites}). */
+    final Map<String, TreeSet<String>> argExactSites = new HashMap<>();
     /** R1166 — fn -> {@code "type\texact"}: a value of a PROJECT type handed to a call into a CHAINED
      *  dependency (ArgContract#chainWitness). Disclosed after the fixpoint where the type carries an effectful
      *  override of a contract member. */

@@ -220,6 +220,12 @@ final class ArgContract {
                 continue;
             }
             String t = typeOf(c, v);
+            // SOUNDNESS R1205 — an argument whose static type names no body: its PRODUCERS may (a factory, a field), and
+            // those live in other classes, so it is recorded here and decided after the loop (ExactTypes#resolveArgs)
+            if (t == null && v.declType == null && v.newType == null && at[j].getInternalName().equals("java/lang/Object"))
+                c.argExactSites.computeIfAbsent(s.id, k -> new TreeSet<>()).add(s.mn.name + "\t" + s.mn.desc + "\t"
+                        + s.mn.instructions.indexOf(min) + "\t" + Candor.argValueIndex(f.getStackSize(), at, j) + "\t" + j
+                        + "\t" + String.join("\u001f", callees));
             // (an `ldc` String or class literal carries a null declared type too: it is not an Object)
             if (t == null && floor("S3") && v.declType == null && v.newType == null && v.pathLit == null
                     && !ProvValue.UO_CLS.equals(v.urlOrigin) && at[j].getInternalName().equals("java/lang/Object")) {
@@ -246,6 +252,26 @@ final class ArgContract {
         if (t == null || t.isEmpty() || t.charAt(0) == '[') return null;
         if (t.startsWith("java/") && !t.equals("java/lang/Object") && !c.subtypeIndex.containsKey(t)) return null;
         return t;
+    }
+
+    /** SOUNDNESS R1217 — {@code "" + p} (a StringConcatFactory indy) runs the parameter's {@code toString}, exactly as
+     *  {@code String.valueOf(p)} does in (2) above: an {@code Object}-typed operand that is this body's own parameter is a
+     *  re-entry sink for the caller's argument. Reads only this body's frames. */
+    static void concatParams(AnalysisContext c, Candor.MethodScan s, InvokeDynamicInsnNode idin) {
+        Frame<ProvValue>[] pf = s.provFrames;
+        if (pf == null) return;
+        Frame<ProvValue> f = pf[s.mn.instructions.indexOf(idin)], f0 = pf[0];
+        if (f == null || f0 == null) return;
+        Type[] at = Type.getArgumentTypes(idin.desc);
+        for (int j = 0; j < at.length; j++) {
+            if (at[j].getSort() != Type.OBJECT || at[j].getInternalName().equals("java/lang/String")) continue;
+            int idx = Candor.argValueIndex(f.getStackSize(), at, j);
+            int p = idx < 0 ? -1 : Candor.paramIndexOf(s.mn, f.getStack(idx), f0);
+            if (p >= 0) {
+                c.argContractDirect.computeIfAbsent(s.id, k -> new TreeSet<>()).add(p + "\t" + TOSTRING);
+                if (DEBUG_EDGES) System.err.println("R1166DIRECT\t" + s.id + "\t" + p + "\t" + TOSTRING + "\tindy-concat");
+            }
+        }
     }
 
     private static void direct(AnalysisContext c, String id, int p, String key, MethodInsnNode via) {
@@ -358,10 +384,11 @@ final class ArgContract {
      *  {@code Objects.equals/hashCode} over an {@code Object}; {@code S1d} a container whose DECLARED element is
      *  {@code Object} ({@code List<Object>}) hashed; {@code S3} an {@code Object} argument to a project callee
      *  whose parameter is hashed; {@code S4} a direct {@code equals}/{@code hashCode} past the CHA fan-out bound (SOUNDNESS R1205, open). */
-    static final Set<String> FLOOR = floorClasses(System.getenv("CANDOR_R1201_FLOOR"));
+    // not final: a test widens it in-process (ObjectProtocolProducersR1205Test#withFloors), the env being read-only there
+    static volatile Set<String> FLOOR = floorClasses(System.getenv("CANDOR_R1201_FLOOR"));
     static Set<String> floorClasses(String v) {
         if (v == null || v.isBlank()) return Set.of("S1", "S1d", "S2", "S2r", "S2o", "S3");
-        if (v.trim().equals("all")) return Set.of("S1", "S1d", "S2", "S2r", "S2o", "S3", "S4");
+        if (v.trim().equals("all")) return Set.of("S1", "S1d", "S2", "S2r", "S2o", "S3", "S4", "S5");
         if (v.trim().equals("none")) return Set.of();
         return Set.of(v.trim().split("\\s*,\\s*"));
     }
@@ -531,7 +558,8 @@ final class ArgContract {
             String name = key.substring(dot + 1, paren), desc = key.substring(paren);
             for (String b : Cha.chaTargets(owner, name, desc))
                 if (newConcrete(fx, b, caller)) {
-                    added |= disclose(c, caller, w.get(3).equals("S4") ? owner : "java/lang/Object", name, "R1201U" + w.get(3), owner, b);
+                    added |= disclose(c, caller, w.get(3).equals("S4") || w.get(3).equals("S5") ? owner : "java/lang/Object", name,
+                            "R1201U" + w.get(3), owner, b);
                     break;
                 }
         }
@@ -654,6 +682,10 @@ final class ArgContract {
                     if (a[2].equals("java/lang/Object")) {
                         // R1201 (floor S3): only floor S3 records an Object argument here
                         if (key.equals(EQUALS) || key.equals(HASHCODE)) floorObject(caller, key, "java/lang/Object", "S3");
+                        // SOUNDNESS R1217 (floor S5): the same Object argument into a parameter the callee stringifies
+                        // or compares
+                        else if (floor("S5") && key.equals(TOSTRING)) floorObject(caller, key, "java/lang/Object", "S5");
+                        else if (floor("S5") && key.equals(COMPARETO)) floorObject(caller, key, "java/lang/Comparable", "S5");
                         continue;
                     }
                     applyResolved(c, caller, key, a[2], a[3].equals("1"), a[3].equals("T"));

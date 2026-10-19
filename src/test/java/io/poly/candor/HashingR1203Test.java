@@ -122,7 +122,8 @@ class HashingR1203Test {
     void theMayAndTheResidualAreStated() throws Exception {
         Map<String, Map<String, Object>> r = scan();
         assertTrue(inferred(r, "app.N.x30MapReplace").contains("Fs"), "got " + r.get("app.N.x30MapReplace"));
-        assertTrue(inferred(r, "app.N.x27MapEntryHash").isEmpty(), "if this now reports, close the residual in its row (R1204): " + r.get("app.N.x27MapEntryHash"));
+        // R1204, closed: an entry's own hashCode runs its key's (ExactTypes follows `Map.entry(k, v)` to k and v)
+        assertTrue(inferred(r, "app.N.x27MapEntryHash").contains("Fs"), "R1204: " + r.get("app.N.x27MapEntryHash"));
     }
 
     static Map<String, Map<String, Object>> scan() throws Exception {

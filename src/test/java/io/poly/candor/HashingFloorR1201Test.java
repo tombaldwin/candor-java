@@ -118,10 +118,12 @@ class HashingFloorR1201Test {
             + "}\n";
 
     static final List<String> POSITIVES = List.of("h01IdHash", "h02ObjHash", "h03SetObj", "h04MapPut", "h05SetAdd", "h06ObjectsHash", "h07ObjectsEquals", "h08Contains", "h09IndexOf", "h11MapGet", "h12ArraysHash", "h13ListEquals", "h16Field", "h17Generic", "h19Remove", "h21SetOfObj", "h22Distinct");
-    static final List<String> WIDE_POSITIVES = List.of("d03Helper", "d05HkObj");
-    /** STATED, OFF BY DEFAULT (floor S4): a direct {@code o.equals/hashCode} on an {@code Object} past the CHA bound,
-     *  which R1166 keeps §4-pure on purpose. Executed: both write the file. */
-    static final List<String> S4_OFF = List.of("d01Direct", "d02DirectEq", "kd01DirectStr");
+    /** RESOLVED since R1205 (ExactTypes): the {@code Object} a factory returns IS an {@code EqEff}, so the helper's
+     *  hashing (d03, d05) and the direct dispatch (d01, d02) are CHARGED, past the bound as well as in it. Executed: each
+     *  writes the file. */
+    static final List<String> WIDE_RESOLVED = List.of("d01Direct", "d02DirectEq", "d03Helper", "d05HkObj");
+    /** …and the same producers name a PURE class: a String, a {@code P0}. Executed clean; nothing is charged or hedged. */
+    static final List<String> WIDE_PURE = List.of("kd01DirectStr", "kd03HelperPure");
     /** Executed clean, and bounded: a String constant, an exact pure element, a list never hashed, a String receiver. */
     static final List<String> CLEAN = List.of("kh03StrList", "kh04ExactPure", "kh05NoHash");
     /** Executed clean, but the value is known only as Object: disclosed, never charged. */
@@ -144,15 +146,14 @@ class HashingFloorR1201Test {
     @Test
     void anObjectHandedToAHashingHelperIsDisclosed() throws Exception {
         Map<String, Map<String, Object>> r = scan("wide", WSINK, WTYPES, WMAIN);
-        for (String fn : WIDE_POSITIVES) {
+        for (String fn : WIDE_RESOLVED) {
             List<String> inf = HashingR1203Test.inferred(r, "wide.N." + fn);
-            assertTrue(inf.contains("Unknown"), fn + " runs EqEff (executed); got " + r.get("wide.N." + fn));
+            assertTrue(inf.contains("Fs"), fn + " runs EqEff (executed), and its producer says so; got " + r.get("wide.N." + fn));
         }
         assertTrue(HashingR1203Test.inferred(r, "wide.N.d04HelperExact").contains("Fs"), "got " + r.get("wide.N.d04HelperExact"));
         assertTrue(HashingR1203Test.inferred(r, "wide.N.kd02Str").isEmpty(), "got " + r.get("wide.N.kd02Str"));
-        assertTrue(HashingR1203Test.inferred(r, "wide.N.kd03HelperPure").equals(List.of("Unknown")), "got " + r.get("wide.N.kd03HelperPure"));
-        for (String fn : S4_OFF)
-            assertTrue(HashingR1203Test.inferred(r, "wide.N." + fn).isEmpty(), "S4 is off by default; if this reports, say so in R1205: " + r.get("wide.N." + fn));
+        for (String fn : WIDE_PURE)
+            assertTrue(HashingR1203Test.inferred(r, "wide.N." + fn).isEmpty(), fn + ": its producer is a pure class; got " + r.get("wide.N." + fn));
     }
 
     static Map<String, Map<String, Object>> scan(String pkg, String sink, String types, String main) throws Exception {

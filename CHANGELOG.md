@@ -11,6 +11,7 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## [0.40.13] — 2026-10-19
 
+- **`jbang-catalog.json` points at the v0.40.13 jar.**
 - ⚠ **What the producers cannot name is now DISCLOSED by default, not silent** (R1205, R1217; floor classes S4 and S5
   switched on). A direct `equals`/`hashCode`/`toString`/`compareTo` past the twelve-override CHA bound, and a JDK string
   sink's `Object` operand in or past it, whose receiver is an array element, a value a non-final virtual returned, or a

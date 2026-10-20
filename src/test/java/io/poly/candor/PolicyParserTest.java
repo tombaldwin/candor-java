@@ -44,6 +44,28 @@ class PolicyParserTest {
         return p.toString();
     }
 
+    /** ⟨0.40⟩ SOUNDNESS R1224 — a U+FEFF at BYTE OFFSET 0 is an encoding mark and is stripped before the split,
+     *  so the FIRST rule is parsed (SPEC §6.2). Before: `\uFEFFdeny` was an unknown rule kind, the rule was
+     *  ignored, and a one-rule file had zero rules. Anywhere else the mark stays a token character: a second
+     *  U+FEFF at the start of the file, and one at the start of a later line, each leave their line ignored. */
+    @Test
+    void aByteOrderMarkAtByteZeroIsStrippedAndNowhereElse() throws Exception {
+        parse("\uFEFFdeny Fs\ndeny Net\n");
+        assertEquals(2, ctx().denyRules.size(), "the BOM'd first rule must be parsed");
+        assertTrue(ctx().denyRules.get(0).effects().contains(Effect.FS));
+        Candor.resetState();
+        parse("\uFEFFdeny Fs\r\ndeny Net\r\n");
+        assertEquals(2, ctx().denyRules.size(), "BOM + CRLF");
+        Candor.resetState();
+        parse("deny Net\n\uFEFFdeny Fs\n");
+        assertEquals(1, ctx().denyRules.size(), "a mark at the start of a LATER line stays a token character");
+        assertTrue(ctx().denyRules.get(0).effects().contains(Effect.NET));
+        Candor.resetState();
+        parse("\uFEFF\uFEFFdeny Fs\ndeny Net\n");
+        assertEquals(1, ctx().denyRules.size(), "only ONE mark is stripped: the second stays in the token");
+        assertTrue(ctx().denyRules.get(0).effects().contains(Effect.NET));
+    }
+
     /** An inline `#` comment is stripped to end-of-line — its tokens must NOT survive as the scope (a bare
      *  startsWith("#") check once left `deny Exec # x` with scope="#", neutering the deny). */
     @Test

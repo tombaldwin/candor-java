@@ -453,7 +453,7 @@ final class Policy {
             if (e.fatal()) fatalBy.putIfAbsent(e.rule(), e.message());
         List<String> lines;
         try {
-            lines = Files.readAllLines(Path.of(path));
+            lines = readPolicyLines(path);
         } catch (IOException | RuntimeException e) {
             return out;   // it parsed a moment ago; if it has since vanished, `reason` still carries the refusal
         }
@@ -1712,6 +1712,26 @@ final class Policy {
                 : "policy file " + path + " could not be read — REFUSING, the policy is NOT evaluated";
     }
 
+    /**
+     * ⟨0.40⟩ SOUNDNESS R1224 — THE POLICY FILE'S LINES, with a U+FEFF at BYTE OFFSET 0 removed before the split
+     * (SPEC §6.2, the owner's ruling of 2026-10-20). That one character is an encoding mark written by an
+     * editor (PowerShell 5.1's {@code Out-File -Encoding utf8}, older Notepad), not part of the first token.
+     * Kept, it made the first line {@code \uFEFFdeny Net}: an unknown rule KIND, ignored with a warning — so a
+     * one-rule policy refused at exit 2 under the zero-rules clause and a multi-rule one ran with its first rule
+     * silently dropped (exit 0 where that rule fires). Only the FIRST character of the FILE: a U+FEFF anywhere
+     * else, including a second one right after it, stays an ordinary token character and its line is ignored as
+     * before. The policy file only — a report, baseline or {@code .candor/config} is not covered (R1250).
+     *
+     * <p>THE ONE READER for the policy text: {@link #parsePolicy} and {@link #unhonouredRules} both go through it,
+     * so the {@code unevaluated} rows quote the same line the parser judged.
+     */
+    static List<String> readPolicyLines(String path) throws IOException {
+        List<String> lines = new ArrayList<>(Files.readAllLines(Path.of(path)));
+        if (!lines.isEmpty() && !lines.get(0).isEmpty() && lines.get(0).charAt(0) == '\uFEFF')
+            lines.set(0, lines.get(0).substring(1));
+        return lines;
+    }
+
     /** Parse a CANDOR_POLICY file into deny/forbid rules. One rule per line; `#` comments + blanks
      *  ignored. Returns false if the file can't be read ({@link #policyUnreadable}), or (⟨0.24⟩) if a rule
      *  names a class token this engine does not recognise ({@link #policyErrors}). A GATE caller prints
@@ -1726,7 +1746,7 @@ final class Policy {
             forbidBefore = ctx().forbidRules.size(), onlyBefore = ctx().onlyRules.size();
         List<String> lines;
         try {
-            lines = Files.readAllLines(Path.of(path));
+            lines = readPolicyLines(path);
         } catch (IOException e) {
             policyUnreadable = true;
             return false;

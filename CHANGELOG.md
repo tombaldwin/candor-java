@@ -9,6 +9,13 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **`new RuntimeException(cause)` charges the cause's `toString`** (R1305). `Throwable(Throwable)` sets
+  `detailMessage = cause.toString()`, which for a project exception runs its `getMessage` (R1235), but nothing in the
+  caller's bytecode names `toString`, so a wrap over an exception whose `getMessage` wrote a file read absent. The JDK
+  constructors that stringify an argument are now a toString sink at exactly that argument — 82 of them, DERIVED from
+  the pinned Temurin 17/21/25 images (including `AssertionError(Object)`, i.e. `assert c : detail`); the
+  `(String, Throwable)` forms do not stringify and stay pure. Executed: five shapes (a parameter, a local allocation, a
+  project `super(cause)`, `UncheckedIOException`, a caught exception) `deny Fs` 0 → 1.
 - ⚠ **The Object floor carries an override's `Unknown`, not only its concrete effects** (R1303). Past the CHA bound an
   `equals`/`hashCode`/`toString` dispatch is decided by the Object floor, which disclosed only where some override it
   could run carried a CONCRETE effect the caller lacked — so an override that is itself `Unknown` (a reflective call, an

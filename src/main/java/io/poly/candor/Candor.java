@@ -5706,6 +5706,13 @@ public class Candor {
                     objectOperands(s, min, Type.getArgumentTypes(min.desc));   // SOUNDNESS R1217
                 }
             }
+            // SOUNDNESS R1305 — a JDK Throwable constructor that stringifies its cause (`new RuntimeException(e)` runs
+            // `e.toString()`): the same re-entry as a string sink, at exactly the argument the derived table names
+            int[] cs = throwableCtorStringified(min);
+            if (cs.length > 0) {
+                for (int j : cs) reentryEdgeOrDisclose(id, callArg(rf, min, j), C_TOSTRING);
+                stringifiedOperands(s, min, cs);
+            }
             // The KEY/element argument — for Map.* it is the FIRST arg (the key); for the collection verbs
             // it is the lone element arg. Reenter exactly the contracts the JDK call runs on it (R1166).
             // The KEY/element argument — for Map.* it is the FIRST arg (the key); for the collection verbs it is
@@ -5788,6 +5795,34 @@ public class Candor {
             ProvValue v = f.getStack(idx);
             if (v != null && v.declType != null) continue;   // a declared type: the re-entry above resolved it
             // on this body's own parameter the CALLER's argument decides it (ArgContract), so no floor here
+            boolean onParam = s.provFrames[0] != null && paramIndexOf(s.mn, v, s.provFrames[0]) >= 0;
+            ExactTypes.record(s.id, s.mn, insn, idx, "java/lang/Object", C_TOSTRING, "()Ljava/lang/String;", onParam ? "Q" : "S");
+        }
+    }
+
+    /** SOUNDNESS R1305 — the arguments a JDK {@code Throwable} constructor runs {@code toString()} on
+     *  ({@link Rules#THROWABLE_CTOR_TOSTRING}); empty for any other instruction. */
+    static int[] throwableCtorStringified(MethodInsnNode min) {
+        if (min.getOpcode() != Opcodes.INVOKESPECIAL || !min.name.equals("<init>") || !min.owner.startsWith("java/"))
+            return NO_ARGS;
+        int[] r = Rules.THROWABLE_CTOR_TOSTRING.get(min.owner + "." + min.desc);
+        return r == null ? NO_ARGS : r;
+    }
+    private static final int[] NO_ARGS = new int[0];
+
+    /** {@link #objectOperands} for the R1305 constructor arguments: an operand whose declared type the provenance lost
+     *  (a merge) is decided by {@link ExactTypes} from its producers, as an {@code Object} operand of a string sink is. */
+    static void stringifiedOperands(MethodScan s, MethodInsnNode insn, int[] which) {
+        if (s.provFrames == null) return;
+        int i = s.mn.instructions.indexOf(insn);
+        Frame<ProvValue> f = i < 0 ? null : s.provFrames[i];
+        if (f == null) return;
+        Type[] at = Type.getArgumentTypes(insn.desc);
+        for (int j : which) {
+            int idx = argValueIndex(f.getStackSize(), at, j);
+            if (idx < 0) continue;
+            ProvValue v = f.getStack(idx);
+            if (v != null && v.declType != null) continue;   // a declared type: the re-entry above resolved it
             boolean onParam = s.provFrames[0] != null && paramIndexOf(s.mn, v, s.provFrames[0]) >= 0;
             ExactTypes.record(s.id, s.mn, insn, idx, "java/lang/Object", C_TOSTRING, "()Ljava/lang/String;", onParam ? "Q" : "S");
         }

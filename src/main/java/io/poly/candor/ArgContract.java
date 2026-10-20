@@ -162,6 +162,11 @@ final class ArgContract {
                 if (p >= 0) direct(c, s.id, p, TOSTRING, min);
             }
         }
+        // SOUNDNESS R1305 — …or to a JDK Throwable constructor that stringifies it (`new RuntimeException(cause)`)
+        for (int j : Candor.throwableCtorStringified(min)) {
+            int p = Candor.paramIndexOf(s.mn, Candor.callArg(f, min, j), f0);
+            if (p >= 0) direct(c, s.id, p, TOSTRING, min);
+        }
         List<String> ehc = Candor.equalsHashContracts(min.owner, min.name, min.desc);
         if (!ehc.isEmpty()) {
             ProvValue a0 = Candor.callArg(f, min, 0);
@@ -1054,7 +1059,8 @@ final class ArgContract {
                         }
                         if (!(in instanceof MethodInsnNode min)) continue;
                         String nd = min.name;
-                        if (Candor.isToStringSink(min.owner, min.name, min.desc)) otherNames.add("toString");
+                        if (Candor.isToStringSink(min.owner, min.name, min.desc)
+                                || Candor.throwableCtorStringified(min).length > 0) otherNames.add("toString");
                         for (String con : Candor.equalsHashContracts(min.owner, min.name, min.desc)) otherNames.add(con);
                         if (ElementFlow.hashesElements(min.owner, min.name, min.desc)) otherNames.addAll(List.of("equals", "hashCode"));
                         if (Candor.isCompareToSink(min.owner, min.name) || ElementFlow.ordersElements(min.owner, min.name, min.desc)

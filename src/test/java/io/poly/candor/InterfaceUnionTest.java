@@ -562,6 +562,44 @@ class InterfaceUnionTest {
                 "the chained consumer inherits the classes, not `unresolved` — got " + go.get("unknownWhy"));
     }
 
+    /** ⟨0.40⟩ SOUNDNESS R1326 — the union entries of an OVERLOADED member share one {@code fn} ({@code lib.Sink.put}),
+     *  and the consumer's reason memo was keyed by {@code fn} but seeded with whichever entry was asked first, so
+     *  every other overload's union got THAT entry's reasons instead of its own. All three callers are in ONE
+     *  scan, so whichever order the memo filled in, the old code fails at least one assertion: a caller of both
+     *  overloads loses a class (assertj-core {@code C_EnumerableAssert.dispatch}, {@code deny Unknown[reflect]}
+     *  1 → 0), and a caller of one overload is charged the other's class, which it never reaches. Executed in
+     *  {@code ~/candor-handoff/javaagent-d/fx}: {@code put(Object)} prints $HOME through Method.invoke. */
+    @Test
+    void overloadUnionsSharingAQualEachCarryTheirOwnReasonsToTheConsumer() throws Exception {
+        Map<String, String> lib = new java.util.HashMap<>();
+        lib.put("lib/Sink.java", "package lib;\npublic interface Sink { String put(Iterable<?> x); String put(Object x); }\n");
+        lib.put("lib/RSink.java", "package lib;\npublic class RSink implements Sink {\n"
+                + "  static native String raw();\n"
+                + "  public String put(Iterable<?> x) { return raw(); }\n"
+                + "  public String put(Object x) { try { Class<?> c = Class.forName(\"java.lang.Sys\" + \"tem\");\n"
+                + "    return (String) c.getMethod(\"getenv\", String.class).invoke(null, \"HOME\"); }\n"
+                + "    catch (Exception e) { return null; } }\n}\n");
+        Map<String, Map<String, Object>> dep = depReport(lib, true);
+        Map<String, Object> ui = dep.get("lib/Sink.put(Ljava/lang/Iterable;)Ljava/lang/String;");
+        Map<String, Object> uo = dep.get("lib/Sink.put(Ljava/lang/Object;)Ljava/lang/String;");
+        assertNotNull(ui); assertNotNull(uo);
+        assertEquals(ui.get("fn"), uo.get("fn"), "precondition: the two union entries share one qual");
+        assertEquals(java.util.Set.of("native"), classesOf(ui.get("unknownWhy")));
+        assertEquals(java.util.Set.of("reflect"), classesOf(uo.get("unknownWhy")));
+
+        Map<String, String> app = Map.of("app/Go.java", "package app;\npublic class Go {\n"
+                + "  public String both(lib.Sink s) { return s.put((Iterable<?>) null) + s.put((Object) null); }\n"
+                + "  public String onlyObj(lib.Sink s) { return s.put((Object) null); }\n"
+                + "  public String onlyIter(lib.Sink s) { return s.put((Iterable<?>) null); }\n}\n");
+        Map<String, Map<String, Object>> fns = chainedApp(lib, app, true);
+        assertEquals(java.util.Set.of("native", "reflect"), classesOf(fns.get("app.Go.both").get("unknownWhy")),
+                "a caller of both overloads carries both unions' classes — got " + fns.get("app.Go.both").get("unknownWhy"));
+        assertEquals(java.util.Set.of("reflect"), classesOf(fns.get("app.Go.onlyObj").get("unknownWhy")),
+                "put(Object) only: its own class, not its sibling's — got " + fns.get("app.Go.onlyObj").get("unknownWhy"));
+        assertEquals(java.util.Set.of("native"), classesOf(fns.get("app.Go.onlyIter").get("unknownWhy")),
+                "put(Iterable) only: its own class, not its sibling's — got " + fns.get("app.Go.onlyIter").get("unknownWhy"));
+    }
+
     /** …and a union whose implementers carry NO {@code Unknown} carries no reason. */
     @Test
     void aUnionWithoutUnknownCarriesNoReason() throws Exception {

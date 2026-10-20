@@ -9,6 +9,14 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **A chained consumer joining two overloads of one member carries each union entry's own reasons** (R1326,
+  SPEC §3.1/§6.2). The union entries of an overloaded member share one `fn`, and the consumer's reason memo was
+  keyed by `fn` but seeded with whichever entry it was asked about first, so every sibling got THAT entry's
+  reasons in place of its own. Since R1239 gave union entries their contributors' classes, assertj-core's
+  `EnumerableAssert.hasSameSizeAs(Iterable)` then `(Object)` kept only the first union's `dispatch` and dropped the
+  second's `reflect`/`callback`: `deny Unknown[reflect,unresolved]` read 1 against v0.40.13 and 0 here. The same
+  memo charged a caller of ONE overload with its sibling's class. An entry's own reasons are now added on every
+  join; only the closure over `calls`, a function of `fn` alone, is memoised.
 - ⚠ **A `toString`/`hashCode`/`equals` call on a receiver typed by the package's own abstraction is named in
   `dispatchesOn`** (R1304, SPEC §4 ⟨0.40⟩). This resolves an ambiguity AGAINST the reading this engine shipped: the
   README documented the Object protocol as a pure-exempt dispatch set and `dispatchesOn` never named it, so a

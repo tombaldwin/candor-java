@@ -8447,18 +8447,46 @@ public class Candor {
      *  {@code calls} names quals, so that is a report-FORMAT question for candor-spec rather than one this
      *  engine can settle alone.
      *
+     *  <p><b>…AND THE "LOUD" HALF WAS ONLY HALF TRUE: THE MEMO REPLACED AN ENTRY'S OWN TAGS (SOUNDNESS
+     *  R1326).</b> The memo was keyed by qual but SEEDED with the queried entry's direct {@code unknownWhy},
+     *  so the first entry asked about under a qual fixed the answer for every other entry under it — a
+     *  sibling's own direct tags were not unioned in, they were dropped. Ordinary overloads now carry
+     *  distinct quals ({@code pl.U.m(Object)}), but the union entries for an overloaded member do not
+     *  ({@code lib.Sink.put} twice), and R1239 gave union entries their contributors' reasons, so this is
+     *  where it bit. MEASURED on 593c7d8: assertj-core's {@code C_EnumerableAssert.dispatch} joins
+     *  {@code hasSameSizeAs(Iterable)} then {@code hasSameSizeAs(Object)}, took the second union's
+     *  {@code Fs, Log, Unknown} and kept only the first union's {@code dispatch} reason, dropping
+     *  {@code reflect}/{@code callback} — {@code deny Unknown[reflect,unresolved]} read 1 → 0 against
+     *  v0.40.13 on both routes. And a consumer joining ONLY {@code put(Object)} was charged the
+     *  {@code put(Iterable)} union's {@code native}, a class it never reaches, because the load-time pass
+     *  ({@link Loader#synthesizeReasonlessDepReasons}) had memoised the sibling first. So the entry's own
+     *  tags are added on EVERY call and never memoised; the memo holds only the closure over {@code calls},
+     *  which is a function of the qual alone — the contract {@link AnalysisContext}'s MEMOS list states.
+     *  The over-attribution through shared CALLEE quals described above is unchanged.
+     *
      *  <p>A report that omits {@code fn} or {@code calls} (an older or foreign producer) simply yields the
-     *  direct tags, i.e. today's behaviour, never less. Memoised per qual; {@code seen} bounds a cyclic
-     *  call graph. */
+     *  direct tags, i.e. today's behaviour, never less. The callee closure is memoised per qual;
+     *  {@code seen} bounds a cyclic call graph. */
     static List<String> depTransitiveWhy(DepFn d) {
         if (d.fn == null) return d.unknownWhy;              // no qual → no handle on `calls` → direct only
+        List<String> closure = depCalleeWhy(d.fn);
+        if (d.unknownWhy.isEmpty()) return closure;
+        TreeSet<String> out = new TreeSet<>(d.unknownWhy);  // R1326 — the ENTRY's own tags, never memoised
+        out.addAll(closure);
+        return List.copyOf(out);
+    }
+
+    /** SOUNDNESS R1326 — every reason tag reachable from qual {@code fn} through the dependency's published
+     *  {@code calls}, NOT including {@code fn}'s own direct tags (those belong to the entry being joined;
+     *  see {@link #depTransitiveWhy}). A pure function of {@code fn}, which is why it alone is memoised. */
+    private static List<String> depCalleeWhy(String fn) {
         AnalysisContext c = ctx();
-        List<String> memo = c.depTransWhyMemo.get(d.fn);
+        List<String> memo = c.depTransWhyMemo.get(fn);
         if (memo != null) return memo;
-        TreeSet<String> out = new TreeSet<>(d.unknownWhy);
+        TreeSet<String> out = new TreeSet<>();
         Set<String> seen = new HashSet<>();
-        ArrayDeque<String> q = new ArrayDeque<>(c.depCallsByFn.getOrDefault(d.fn, List.of()));
-        seen.add(d.fn);
+        ArrayDeque<String> q = new ArrayDeque<>(c.depCallsByFn.getOrDefault(fn, List.of()));
+        seen.add(fn);
         while (!q.isEmpty()) {
             String n = q.poll();
             if (!seen.add(n)) continue;
@@ -8466,7 +8494,7 @@ public class Candor {
             q.addAll(c.depCallsByFn.getOrDefault(n, List.of()));
         }
         List<String> result = List.copyOf(out);
-        c.depTransWhyMemo.put(d.fn, result);
+        c.depTransWhyMemo.put(fn, result);
         return result;
     }
 

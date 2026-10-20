@@ -9,6 +9,14 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **An `interfaceUnion` entry carrying `Unknown` now carries its contributors' reasons** (R1239, SPEC §3.1 ⟨0.40⟩).
+  A union entry published a reason only on a BROAD hedge (`dispatch:`), so a chained consumer read every other union's
+  `Unknown` as `dep:` → `unresolved`. It now carries one raw reason per class of its contributors' TRANSITIVE class sets,
+  as this engine's own gate resolves them, plus its own hedge; R869 bridge rows (also `interfaceUnion`) carry their
+  contributor's the same way. Executed: a consumer whose `go(lib.Sink s)` reaches an implementer that reads the
+  environment by reflection went `deny Unknown[reflect] app.Main.go` 0 → **1** and `deny Unknown[unresolved]` 1 → 0,
+  on both routes. Spot check (gson, commons-compress, jackson-databind): union rows carrying `Unknown` with a reason
+  53 of 286 → 286 of 286; no unit row and no union `inferred` changed.
 - ⚠ **`gate --report`: an `interfaceUnion` entry is never a unit of the verdict, and always a contributor to the join**
   (R1223, R1234, SPEC §3.1 ⟨0.40⟩). Three changes, one clause. (1) A union entry is no longer the subject of the
   narrowed-filter answerability test: a reasonless union refused `deny Unknown[native]` at exit 2 where no unit could

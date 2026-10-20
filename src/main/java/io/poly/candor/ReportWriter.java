@@ -506,6 +506,14 @@ final class ReportWriter {
         Set<String> published = new HashSet<>();            // one entry per hash, whatever ALL contains
         List<Effector> unions = new ArrayList<>();
         int merged = 0;
+        // R1239 — the gate's own transitive class sets, computed by the gate's own code (Policy#scanReasonClassAcc).
+        // Lazy: a scan whose unions carry no Unknown never pays for the fixpoint.
+        Map<String, TreeSet<String>> reasonClasses = new java.util.AbstractMap<>() {
+            Map<String, TreeSet<String>> acc;
+            private Map<String, TreeSet<String>> acc() { if (acc == null) acc = Policy.scanReasonClassAcc(); return acc; }
+            @Override public TreeSet<String> get(Object k) { return acc().get(k); }
+            @Override public Set<Map.Entry<String, TreeSet<String>>> entrySet() { return acc().entrySet(); }
+        };
         for (String[] k : unionCandidates()) {
             String owner = k[0], name = k[1], desc = k[2];
             String hash = owner + "." + name + desc;          // the exact key crossDepJoin forms
@@ -564,13 +572,18 @@ final class ReportWriter {
             // half of the same defect: a dep report omits its pure functions, so an absent entry IS a
             // purity claim (§2 rule 3), and twelve pure implementers do not make the thirteenth pure.
             // Unknown is what is true of candor's state, and it is what the in-scan site reports.
-            // The reason travels ON THE WIRE (`unknownWhy`), for a report reader and --gate-json. It
-            // does NOT reach a chained consumer's gate: {@link DepFn} carries effects and surfaces but
-            // no reasons, so an inherited Unknown classifies as `unresolved` there and only a bare
-            // `deny Unknown` bites, not `deny Unknown[dispatch]`. Measured, not assumed, and pinned as
-            // a residual in InterfaceUnionTest — it is a pre-existing gap in the cross-dep join (it
-            // costs EVERY dep Unknown its class, reflect included), not something this rung introduced.
+            // The reason travels ON THE WIRE (`unknownWhy`), and it DOES reach a chained consumer's gate:
+            // {@link DepFn#unknownWhy} carries it and {@link Candor#inheritDepFn} applies it
+            // (InterfaceUnionTest#aChainedConsumerInheritsTheUnknownAndItsReasonClass). A note that stood
+            // here until ⟨0.40⟩ said the opposite — the residual it described was closed in ⟨0.19⟩, and the
+            // stale sentence was then read as the mechanism of R1239 (SOUNDNESS R1276, refuted by execution:
+            // the consumer carried every reason the union published; the union published none).
             List<UnknownReason> why = List.of();
+            // ⟨0.40⟩ SOUNDNESS R1239 — THE CONTRIBUTORS' TRANSITIVE REASONS (SPEC §3.1): a union entry carrying
+            // `Unknown` MUST carry `unknownWhy` projecting to EXACTLY the union of its contributors' transitive
+            // reason classes, as this producer's own gate resolves them, plus its own hedge. Gathered below,
+            // per contributor that carries `Unknown`; see #contributorReasons.
+            TreeSet<UnknownReason> contributed = new TreeSet<>();
             if (broad || lamBroad) {   // R530b: `lamBroad` ADDS the hedge and keeps the union below
                 inf.add(Effect.UNKNOWN);
                 why = List.of(UnknownReason.of(UnknownReason.Kind.DISPATCH,
@@ -581,6 +594,11 @@ final class ReportWriter {
                 if (ie != null) {
                     inf.addAll(ie);
                     if (real == null || !impl.equals(real.fn())) fromOthers.addAll(ie);
+                    if (real == null && ie.hasUnknown()) {
+                        contributorReasons(impl, reasonClasses, contributed);
+                        if (R1239_DEBUG)   // §E1 reach probe: which contributor gave which classes
+                            System.err.println("CANDOR_R1239\t" + hash + "\t" + impl + "\t" + reasonClasses.get(impl));
+                    }
                 }
                 inv.addAll(blindAcc.getOrDefault(impl, new TreeSet<>()).stream()
                         .filter(globalBlind::contains).collect(Collectors.toList()));
@@ -670,10 +688,20 @@ final class ReportWriter {
                 if (wide != real) { effectors.set(at, wide); merged++; }
                 continue;
             }
+            // R1239: the hedge's own reason (if any) plus every contributor's; non-empty whenever `inf` carries
+            // Unknown, because each source of it above adds one. The fallback is the fail-closed catch-all — a
+            // `dep:` reason projects to `unresolved` — never a guessed class (a superset nobody reaches).
+            List<UnknownReason> unionWhy = List.of();
+            if (inf.hasUnknown()) {
+                TreeSet<UnknownReason> all = new TreeSet<>(why);
+                all.addAll(contributed);
+                if (all.isEmpty()) all.add(UnknownReason.of(UnknownReason.Kind.DEP, hash));
+                unionWhy = new ArrayList<>(all);
+            }
             unions.add(new Effector(
                     owner.replace('/', '.') + "." + name, "", inf, new ArrayList<>(inv),
                     EffectSet.empty(), EffectSet.empty(), EffectSet.empty(), EffectSet.empty(),
-                    false, inf.hasUnknown(), EffectorKind.FUNCTION, why, hash, List.of(),
+                    false, inf.hasUnknown(), EffectorKind.FUNCTION, unionWhy, hash, List.of(),
                     List.of(),
                     inf.contains(Effect.NET) ? new ArrayList<>(hosts) : List.of(),
                     inf.contains(Effect.EXEC) ? new ArrayList<>(cmds) : List.of(),
@@ -697,6 +725,46 @@ final class ReportWriter {
         System.err.println("candor-java: emitted " + unions.size()
                 + " interface-CHA union entries, merged " + merged + " into a claimed hash"
                 + " (⟨0.23⟩ local abstractions and ⟨0.39⟩ foreign ones)");
+    }
+
+    /**
+     * ⟨0.40⟩ SOUNDNESS R1239 — ONE RAW REASON PER CLASS OF A CONTRIBUTOR'S TRANSITIVE REASON-CLASS SET, added to
+     * {@code out}. SPEC §3.1: a union entry has no body, so its {@code unknownWhy} is not direct-only — it is what
+     * its dispatch reaches, and it MUST project to exactly its contributors' transitive classes. Before this, a
+     * union carried a reason only on a BROAD hedge, so a chained consumer read every other union's {@code Unknown}
+     * as {@code dep:} → {@code unresolved}: executed (javaagent-b fx/app), a consumer whose {@code go(lib.Sink s)}
+     * reaches an implementer that reads the environment through reflection passed {@code deny Unknown[reflect]
+     * app.Main.go} at exit 0.
+     *
+     * <p>The class set is {@code classAcc} — the gate's own fixpoint over {@code ctx().edges}. For each class the
+     * raw reason is found by walking those same edges from the contributor, only through units whose set holds
+     * that class, to a unit whose OWN {@code unknownWhy} names it — so the reason carried is one a reached body
+     * really emitted, verbatim. A contributor that carries {@code Unknown} with NO class (nothing accounts for
+     * it), or a class no walk can source, contributes {@code dep:<its hash>}, which projects to
+     * {@code unresolved}: the catch-all, never a guessed class.
+     */
+    static final boolean R1239_DEBUG = System.getenv("CANDOR_R1239_DEBUG") != null;
+
+    static void contributorReasons(String impl, Map<String, TreeSet<String>> classAcc, TreeSet<UnknownReason> out) {
+        TreeSet<String> classes = classAcc.get(impl);
+        UnknownReason catchAll = UnknownReason.of(UnknownReason.Kind.DEP, ctx().hashOf.getOrDefault(impl, impl));
+        if (classes == null || classes.isEmpty()) { out.add(catchAll); return; }
+        for (String c : classes) {
+            UnknownReason found = null;
+            ArrayDeque<String> q = new ArrayDeque<>(List.of(impl));
+            Set<String> seen = new HashSet<>();
+            while (!q.isEmpty() && found == null) {
+                String u = q.poll();
+                if (!seen.add(u)) continue;
+                for (UnknownReason ur : ctx().unknownWhy.getOrDefault(u, new TreeSet<>()))
+                    if (ReasonClass.classify(ur.format()).token().equals(c)) { found = ur; break; }
+                for (String v : ctx().edges.getOrDefault(u, Set.of())) {
+                    TreeSet<String> vc = classAcc.get(v);
+                    if (vc != null && vc.contains(c) && !seen.contains(v)) q.add(v);
+                }
+            }
+            out.add(found != null ? found : catchAll);
+        }
     }
 
     /**
@@ -745,6 +813,7 @@ final class ReportWriter {
             if (!e.interfaceUnion()) byFn.putIfAbsent(e.fn(), e);
         }
         TreeMap<String, Effector> rows = new TreeMap<>();
+        Map<String, TreeSet<String>> classAcc = null;   // R1239 — computed only if a bridge row carries Unknown
         for (ClassNode cn : ctx().ALL) {
             String dc = cn.name.replace('/', '.');
             for (MethodNode mn : cn.methods) {
@@ -762,10 +831,23 @@ final class ReportWriter {
                 String realHash = real.hash();
                 int rp = realHash.indexOf('(');
                 if (rp < 0 || paramsOf(realHash.substring(rp)).equals(paramsOf(mn.desc))) continue;
+                // ⟨0.40⟩ SOUNDNESS R1239 — a bridge row is an `interfaceUnion` entry too, so when it carries
+                // `Unknown` its `unknownWhy` must project to its contributor's TRANSITIVE classes (SPEC §3.1). The
+                // real entry's own field is direct-only, so a bridge over a body whose Unknown is inherited
+                // published none (46 of 46 reasonless union rows left on gson/commons-compress/jackson-databind
+                // after the union fix were bridge rows). A consumer that walks `calls` recovered them; one that
+                // reads the entry's own reasons did not.
+                List<UnknownReason> bridgeWhy = real.unknownWhy();
+                if (real.inferred().hasUnknown()) {
+                    if (classAcc == null) classAcc = Policy.scanReasonClassAcc();
+                    TreeSet<UnknownReason> w = new TreeSet<>(real.unknownWhy());
+                    contributorReasons(id, classAcc, w);
+                    bridgeWhy = new ArrayList<>(w);
+                }
                 rows.put(hash, new Effector(
                         id + "(" + paramTypeListFq(mn.desc) + ")", real.loc(), real.inferred(), real.invisible(),
                         EffectSet.empty(), EffectSet.empty(), EffectSet.empty(), EffectSet.empty(),
-                        false, real.unresolved(), real.kind(), real.unknownWhy(), hash, List.of(real.fn()),
+                        false, real.unresolved(), real.kind(), bridgeWhy, hash, List.of(real.fn()),
                         List.of(), real.hosts(), real.cmds(), real.paths(), real.tables(), real.netClass(),
                         real.incomplete(), true, real.dispatchesOn()));
             }

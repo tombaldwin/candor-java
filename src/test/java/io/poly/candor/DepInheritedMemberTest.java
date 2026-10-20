@@ -361,6 +361,26 @@ class DepInheritedMemberTest {
         assertEquals(set("ENV", "FS"), eff(c.app(), "app.App.viaG"), "executed with a SubG: the environment is read");
     }
 
+    /** ⟨0.40⟩ SOUNDNESS R1239 — a bridge row is an `interfaceUnion` entry, so when it carries `Unknown` its
+     *  `unknownWhy` projects to its contributor's TRANSITIVE classes (SPEC §3.1). Here the override reaches
+     *  reflection through a helper, so the real entry's own (direct-only) field is empty and the bridge used to
+     *  publish none. */
+    @Test
+    void aBridgeRowCarryingUnknownCarriesItsContributorsTransitiveReason() throws Exception {
+        Map<String, String> l = lib("dep/BaseG.java", BASE_G,
+                "dep/SubG.java", "package dep;\npublic class SubG extends BaseG<String> { @Override public void m(String s) { h(); }\n"
+                        + "  static void h() { try { Class.forName(s()); } catch (Exception e) { } }\n"
+                        + "  static String s() { return String.valueOf(System.nanoTime()); } }\n");
+        Scan c = chained(l, app("  public static void viaG(BaseG<String> g) { g.m(\"x\"); }\n"));
+        JsonObject real = c.dep().get("dep/SubG.m(Ljava/lang/String;)V");
+        JsonObject bridge = c.dep().get("dep/SubG.m(Ljava/lang/Object;)V");
+        assertTrue(real != null && bridge != null, "both descriptors must be keyed: " + c.dep().keySet());
+        assertTrue(bridge.get("inferred").toString().contains("Unknown"), "the bridge carries the inherited Unknown");
+        assertFalse(real.has("unknownWhy"), "precondition: the real entry's Unknown is INHERITED (direct-only field empty)");
+        assertTrue(bridge.has("unknownWhy") && bridge.get("unknownWhy").toString().contains("reflect:"),
+                "the bridge row names its contributor's transitive reflect reason: " + bridge);
+    }
+
     @Test
     void boundedAndMultiLevelGenericOverridesAreReached() throws Exception {
         Map<String, String> l = lib(

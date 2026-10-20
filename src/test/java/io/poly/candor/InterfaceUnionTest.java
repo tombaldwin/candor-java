@@ -514,6 +514,66 @@ class InterfaceUnionTest {
                 + "join so `deny Unknown[dispatch]` can bite on the consumer; got " + why);
     }
 
+    /** {@code Sink.put()} with implementers whose {@code Unknown} has different TRANSITIVE classes: {@code RSink}
+     *  reaches reflection through a helper (its own {@code unknownWhy} is empty — the inherited case a direct-only
+     *  copy misses), {@code NSink} calls a {@code native} method, {@code FSink} is Fs only. */
+    private static Map<String, String> reasonLib() {
+        Map<String, String> m = new java.util.HashMap<>();
+        m.put("lib/Sink.java", "package lib;\npublic interface Sink { String put(); }\n");
+        m.put("lib/RSink.java", "package lib;\npublic class RSink implements Sink {\n"
+                + "  public String put() { return helper(); }\n"
+                + "  static String helper() { try { Class<?> c = Class.forName(\"java.lang.Sys\" + \"tem\");\n"
+                + "    return (String) c.getMethod(\"getenv\", String.class).invoke(null, \"HOME\"); }\n"
+                + "    catch (Exception e) { return null; } }\n}\n");
+        m.put("lib/NSink.java", "package lib;\npublic class NSink implements Sink {\n"
+                + "  static native String raw();\n  public String put() { return raw(); }\n}\n");
+        m.put("lib/FSink.java", "package lib;\npublic class FSink implements Sink {\n"
+                + "  public String put() { try { return new String(java.nio.file.Files.readAllBytes("
+                + "java.nio.file.Path.of(\"/etc/hosts\"))); } catch (Exception e) { return null; } }\n}\n");
+        return m;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static java.util.Set<String> classesOf(Object why) {
+        java.util.Set<String> out = new java.util.TreeSet<>();
+        if (why != null)
+            for (String w : (List<String>) why) out.add(io.poly.candor.model.ReasonClass.classify(w).token());
+        return out;
+    }
+
+    /** ⟨0.40⟩ SOUNDNESS R1239 — a union entry carrying {@code Unknown} carries reasons projecting to EXACTLY its
+     *  contributors' transitive classes (SPEC §3.1): {reflect, native} here, nothing the {@code Fs}-only
+     *  implementer could add, and no {@code unresolved}. Before, it carried NONE (the reason rode only a broad
+     *  hedge), so the chained consumer below read {@code dep:} → {@code unresolved} and a narrowed
+     *  {@code deny Unknown[reflect]} passed over it (executed in javaagent-b fx/app: the program prints $HOME). */
+    @Test
+    void aUnionCarryingUnknownCarriesItsContributorsTransitiveReasons() throws Exception {
+        Map<String, Object> u = depReport(reasonLib(), true).get("lib/Sink.put()Ljava/lang/String;");
+        assertNotNull(u, "the union entry must be published");
+        assertEquals(Boolean.TRUE, u.get("interfaceUnion"));
+        assertEquals(java.util.Set.of("reflect", "native"), classesOf(u.get("unknownWhy")),
+                "exactly the contributors' transitive classes — got " + u.get("unknownWhy"));
+
+        Map<String, String> app = Map.of("app/Go.java",
+                "package app;\npublic class Go { public String go(lib.Sink s) { return s.put(); } }\n");
+        Map<String, Object> go = chainedApp(reasonLib(), app, true).get("app.Go.go");
+        assertNotNull(go);
+        assertEquals(java.util.Set.of("reflect", "native"), classesOf(go.get("unknownWhy")),
+                "the chained consumer inherits the classes, not `unresolved` — got " + go.get("unknownWhy"));
+    }
+
+    /** …and a union whose implementers carry NO {@code Unknown} carries no reason. */
+    @Test
+    void aUnionWithoutUnknownCarriesNoReason() throws Exception {
+        Map<String, String> lib = new java.util.HashMap<>(reasonLib());
+        lib.remove("lib/RSink.java");
+        lib.remove("lib/NSink.java");
+        Map<String, Object> u = depReport(lib, true).get("lib/Sink.put()Ljava/lang/String;");
+        assertNotNull(u);
+        assertEquals(List.of("Fs"), u.get("inferred"));
+        assertNull(u.get("unknownWhy"), "no Unknown, no reason");
+    }
+
     // ---- THE Net DESTINATION CLASS: fail-closed across the union ---------------------------------------
 
     /** {@code Fetch.go()} with a telemetry-host implementer and, optionally, one whose host is computed at

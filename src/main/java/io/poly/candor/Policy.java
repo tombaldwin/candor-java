@@ -578,16 +578,11 @@ final class Policy {
         }
     }
 
-    /** The scan route into the gate: accumulate the classifier's direct maps over the live call graph.
-     *  Byte-for-byte the fixpoints {@code checkPolicy} used to run inline. */
-    static GateInput gateInputFromScan(Map<String, EffectSet> inferred) {
-        // Reason-scoped Unknown needs the reason CLASS to travel the same call graph the Unknown EFFECT does:
-        // a fn that inherits Unknown from a reflect-caused callee is a reflect-class Unknown even though the
-        // `reflect:*` reason was emitted DIRECTLY on the callee (unknownWhy is deliberately direct-only, for the
-        // human "Unknown sources (direct)" summary). Without this a `deny E Unknown[reflect]` at the CALLER would
-        // see no reason, default to `unresolved`, and NOT fire — a reflection-caused Unknown slipping the gate
-        // (under-gating = a false all-clear). Propagate the class TOKENS transitively (the paper's `(S,D)` join:
-        // D is componentwise-unioned over callees), mirroring literalFixpoint. Report output is unchanged.
+    /** THE SCAN ROUTE'S TRANSITIVE REASON-CLASS SETS — the gate's `D`, one definition. Extracted (⟨0.40⟩,
+     *  SOUNDNESS R1239) so {@link ReportWriter}'s interface-union builder resolves a contributor's classes
+     *  exactly as this producer's own gate resolves them (SPEC §3.1: "each resolved as the producer's own gate
+     *  resolves it"), rather than through a second copy that could drift. */
+    static Map<String, TreeSet<String>> scanReasonClassAcc() {
         Map<String, TreeSet<String>> reasonClassDirect = new HashMap<>();
         for (var e : ctx().unknownWhy.entrySet()) {
             TreeSet<String> classes = new TreeSet<>();
@@ -602,7 +597,20 @@ final class Policy {
             for (UnknownReason ur : e.getValue()) classes.add(ReasonClass.classify(ur.format()).token());
             if (!classes.isEmpty()) reasonClassDirect.put(e.getKey(), classes);
         }
-        Map<String, TreeSet<String>> reasonClassAcc = literalFixpoint(reasonClassDirect);
+        return literalFixpoint(reasonClassDirect);
+    }
+
+    /** The scan route into the gate: accumulate the classifier's direct maps over the live call graph.
+     *  Byte-for-byte the fixpoints {@code checkPolicy} used to run inline. */
+    static GateInput gateInputFromScan(Map<String, EffectSet> inferred) {
+        // Reason-scoped Unknown needs the reason CLASS to travel the same call graph the Unknown EFFECT does:
+        // a fn that inherits Unknown from a reflect-caused callee is a reflect-class Unknown even though the
+        // `reflect:*` reason was emitted DIRECTLY on the callee (unknownWhy is deliberately direct-only, for the
+        // human "Unknown sources (direct)" summary). Without this a `deny E Unknown[reflect]` at the CALLER would
+        // see no reason, default to `unresolved`, and NOT fire — a reflection-caused Unknown slipping the gate
+        // (under-gating = a false all-clear). Propagate the class TOKENS transitively (the paper's `(S,D)` join:
+        // D is componentwise-unioned over callees), mirroring literalFixpoint. Report output is unchanged.
+        Map<String, TreeSet<String>> reasonClassAcc = scanReasonClassAcc();
         // ⟨0.20⟩ Net destination-class filter (NET-DESTINATION-CLASS-DESIGN.md) needs the fn's (transitive)
         // destination classes — derived exactly like the report's `netClass` field (host fixpoint + the fail-
         // closed masked-surface rule), so the gate and the report agree on what an fn's Net reaches.

@@ -9,6 +9,10 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **The self-gate's `forbid io.poly.candor.model -> io.poly.candor.Policy` rule is green again** (R1307). R1239's lazy
+  reason-class accumulator was an anonymous `AbstractMap` whose `get` ran `Policy.scanReasonClassAcc()`; the engine's
+  CHA over `Map.get` reached it from `model.Effect.fromSpecName` (whose receiver is a private static final `HashMap`), a
+  crossing no execution performs. The accumulator is now a private holder that is not a `Map`. No report changes.
 - ⚠ **`new RuntimeException(cause)` charges the cause's `toString`** (R1305). `Throwable(Throwable)` sets
   `detailMessage = cause.toString()`, which for a project exception runs its `getMessage` (R1235), but nothing in the
   caller's bytecode names `toString`, so a wrap over an exception whose `getMessage` wrote a file read absent. The JDK

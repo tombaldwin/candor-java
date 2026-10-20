@@ -508,12 +508,7 @@ final class ReportWriter {
         int merged = 0;
         // R1239 — the gate's own transitive class sets, computed by the gate's own code (Policy#scanReasonClassAcc).
         // Lazy: a scan whose unions carry no Unknown never pays for the fixpoint.
-        Map<String, TreeSet<String>> reasonClasses = new java.util.AbstractMap<>() {
-            Map<String, TreeSet<String>> acc;
-            private Map<String, TreeSet<String>> acc() { if (acc == null) acc = Policy.scanReasonClassAcc(); return acc; }
-            @Override public TreeSet<String> get(Object k) { return acc().get(k); }
-            @Override public Set<Map.Entry<String, TreeSet<String>>> entrySet() { return acc().entrySet(); }
-        };
+        LazyReasonClasses reasonClasses = new LazyReasonClasses();
         for (String[] k : unionCandidates()) {
             String owner = k[0], name = k[1], desc = k[2];
             String hash = owner + "." + name + desc;          // the exact key crossDepJoin forms
@@ -595,9 +590,9 @@ final class ReportWriter {
                     inf.addAll(ie);
                     if (real == null || !impl.equals(real.fn())) fromOthers.addAll(ie);
                     if (real == null && ie.hasUnknown()) {
-                        contributorReasons(impl, reasonClasses, contributed);
+                        contributorReasons(impl, reasonClasses.get(), contributed);
                         if (R1239_DEBUG)   // §E1 reach probe: which contributor gave which classes
-                            System.err.println("CANDOR_R1239\t" + hash + "\t" + impl + "\t" + reasonClasses.get(impl));
+                            System.err.println("CANDOR_R1239\t" + hash + "\t" + impl + "\t" + reasonClasses.get().get(impl));
                     }
                 }
                 inv.addAll(blindAcc.getOrDefault(impl, new TreeSet<>()).stream()
@@ -744,6 +739,18 @@ final class ReportWriter {
      * {@code unresolved}: the catch-all, never a guessed class.
      */
     static final boolean R1239_DEBUG = System.getenv("CANDOR_R1239_DEBUG") != null;
+
+    /** SOUNDNESS R1307 — R1239's lazy accumulator, deliberately NOT a {@code java.util.Map}. It was an anonymous
+     *  {@code AbstractMap} whose {@code get} ran {@code Policy.scanReasonClassAcc()}, which made it a PROJECT implementer
+     *  of {@code Map.get}; the engine's CHA over a JDK interface reaches project implementers even where the receiver is
+     *  provably a {@code HashMap} (model {@code Effect.BY_NAME}, a private static final written once by
+     *  {@code new HashMap<>()}), so the self-gate read {@code model.Effect.fromSpecName -> ReportWriter$1.get ->
+     *  Policy.<clinit>} — a crossing no execution performs — and its {@code forbid io.poly.candor.model ->
+     *  io.poly.candor.Policy} rule went red three times. The engine-side over-approximation is filed separately. */
+    private static final class LazyReasonClasses {
+        private Map<String, TreeSet<String>> acc;
+        Map<String, TreeSet<String>> get() { if (acc == null) acc = Policy.scanReasonClassAcc(); return acc; }
+    }
 
     static void contributorReasons(String impl, Map<String, TreeSet<String>> classAcc, TreeSet<UnknownReason> out) {
         TreeSet<String> classes = classAcc.get(impl);

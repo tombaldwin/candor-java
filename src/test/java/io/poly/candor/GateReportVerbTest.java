@@ -1702,4 +1702,84 @@ class GateReportVerbTest {
         assertEquals(1, gate(rep, policy("deny Unknown[dynamic] app::util\n")),
                 "…and the `dynamic` alias still covers it");
     }
+
+    // ── ⟨0.40⟩ SOUNDNESS R1223 / R1234 — an `interfaceUnion` entry is never a UNIT, always a JOIN contributor ──
+
+    private static Map<String, Object> ex(Object... kv) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        for (int i = 0; i < kv.length; i += 2) m.put((String) kv[i], kv[i + 1]);
+        return m;
+    }
+
+    /** A union entry as producers write it: no body, so `direct` is empty. */
+    private static Map<String, Object> union(String fn, String hash, List<String> inferred, List<String> why) {
+        return entry(fn, inferred, why, ex("hash", hash, "direct", List.of(), "interfaceUnion", true));
+    }
+
+    /** SPEC §3.1 ⟨0.40⟩: no answerability test, no zeroMatch match, no violation row for a union entry — and
+     *  the JOIN still carries its reasons to a REAL caller, so a caller whose inherited class IS the filtered
+     *  one still fires, and a caller whose only source is a reasonless union is still refused. Written before
+     *  the fix; the PRE column is what 2c5647d did over the same bytes. */
+    @Test
+    void anInterfaceUnionEntryIsNeverAUnitButStillReachesItsCallers() throws Exception {
+        Map<String, Object> save = entry("app.io.save", List.of("Fs"), List.of(), ex("hash", "app#io.save"));
+        Map<String, Object> go = entry("app.svc.go", List.of("Net", "Unknown"), List.of(),
+                ex("hash", "app#svc.go", "direct", List.of(), "calls", List.of("api.Sink.put")));
+        Path reasoned = report("a.json", List.of(save,
+                union("api.Sink.put", "app#api.Sink.put", List.of("Net", "Unknown"), List.of("native:put")), go));
+        Path reasonless = report("b.json", List.of(save,
+                union("api.Sink.put", "app#api.Sink.put", List.of("Net", "Unknown"), List.of()), go));
+
+        // THE JOIN — the contributor's class reaches the caller and fires (PRE 1, POST 1).
+        assertEquals(1, gate(reasoned, policy("deny Unknown[native] app.svc.go\n")),
+                "a union whose contributors' reason IS the filtered class must still fire at its caller");
+        Candor.resetState();
+        assertEquals(0, gate(reasoned, policy("deny Unknown[reflect] app.svc.go\n")), "…and only that class");
+        Candor.resetState();
+        // A REAL caller whose only reason source is a reasonless union stays REFUSED (PRE 2, POST 2).
+        assertEquals(2, gate(reasonless, policy("deny Unknown[native] app.svc.go\n")),
+                "the caller is a unit with no reachable reason: refused, never answered");
+        Candor.resetState();
+        assertEquals(2, gate(reasonless, policy("deny Unknown[native]\n")), "unscoped: the caller still refuses");
+        Candor.resetState();
+        // THE UNIT TABLE — the union's own row is no subject (PRE 2, POST 0) and binds nothing (zeroMatch).
+        assertEquals(0, gate(reasonless, policy("deny Unknown[native] api\n")),
+                "R1223: a reasonless union entry must not refuse a rule no unit could fail");
+        assertEquals(List.of("deny Unknown[native] api"), Candor.gateZeroMatch, "R1234: and the rule bound nothing");
+        Candor.resetState();
+        assertEquals(0, gate(reasoned, policy("deny Net api\n")));
+        assertEquals(List.of("deny Net api"), Candor.gateZeroMatch,
+                "R1234: a rule matching only union entries rides zeroMatch (PRE: suppressed)");
+    }
+
+    /** SPEC §3.1 ⟨0.40⟩: a union published BESIDE a real entry under the same hash is not merged into that
+     *  unit (PART 99 `i-beside-env`), and the two entries' reasons no longer overwrite each other — the real
+     *  `app.B.m` carries `reflect:`, the union beside it `native:`. PRE (2c5647d): `deny Env app.B` 1 (the
+     *  union's Env charged to a body with none), `deny Unknown[reflect] app.B` 0 and `deny Unknown[reflect]
+     *  app.C` 0 (the union's reasons, read last, REPLACED the unit's). Both entry orders. */
+    @Test
+    void aUnionBesideARealEntryIsNotMergedIntoTheUnitButReachesItsCallers() throws Exception {
+        for (boolean unionFirst : List.of(false, true)) {
+            Map<String, Object> real = entry("app.B.m", List.of("Fs", "Unknown"), List.of("reflect:y"),
+                    ex("hash", "app#B.m"));
+            Map<String, Object> u = union("app.B.m", "app#B.m", List.of("Env", "Unknown"), List.of("native:x"));
+            Map<String, Object> caller = entry("app.C.k", List.of("Env", "Fs", "Unknown"), List.of(),
+                    ex("hash", "app#C.k", "direct", List.of(), "calls", List.of("app.B.m")));
+            Path rep = report("beside" + unionFirst + ".json",
+                    unionFirst ? List.of(u, real, caller) : List.of(real, u, caller));
+            String o = " (unionFirst=" + unionFirst + ")";
+            Candor.resetState();
+            assertEquals(0, gate(rep, policy("deny Env app.B\n")), "the unit performs no Env" + o);
+            Candor.resetState();
+            assertEquals(1, gate(rep, policy("deny Fs app.B\n")), "control: its own Fs" + o);
+            Candor.resetState();
+            assertEquals(1, gate(rep, policy("deny Unknown[reflect] app.B\n")), "its OWN reason survives" + o);
+            Candor.resetState();
+            assertEquals(0, gate(rep, policy("deny Unknown[native] app.B\n")), "the union's is not the unit's" + o);
+            Candor.resetState();
+            assertEquals(1, gate(rep, policy("deny Unknown[native] app.C\n")), "the JOIN carries the union's" + o);
+            Candor.resetState();
+            assertEquals(1, gate(rep, policy("deny Unknown[reflect] app.C\n")), "…and the unit's" + o);
+        }
+    }
 }

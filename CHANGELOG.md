@@ -9,6 +9,24 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **`gate --report`: an `interfaceUnion` entry is never a unit of the verdict, and always a contributor to the join**
+  (R1223, R1234, SPEC §3.1 ⟨0.40⟩). Three changes, one clause. (1) A union entry is no longer the subject of the
+  narrowed-filter answerability test: a reasonless union refused `deny Unknown[native]` at exit 2 where no unit could
+  fail it (now exit 0); a REAL caller whose only reason source is that union is still refused. (2) A rule whose only
+  matching entries are union entries now rides `zeroMatch` (it was neither evaluated nor disclosed). (3) A union
+  published BESIDE a real entry under the same hash (a candor-swift/ts-shaped report) is no longer merged into that
+  unit: `deny Env app.B` over a body with no Env goes 1 → 0, while every caller of the key still inherits the union's
+  reason classes. The same change stops the two entries' `unknownWhy` overwriting each other (last-wins): a real
+  `app.B.m` carrying `reflect:` beside a union carrying `native:` read `deny Unknown[reflect] app.B` and `… app.C`
+  (its caller) exit 0; both now exit 1.
+- ⚠ **A policy file that starts with a UTF-8 byte-order mark has its first rule enforced** (R1224, SPEC §6.2 ⟨0.40⟩,
+  the owner's ruling). A U+FEFF at byte offset 0 is now stripped before the file is split into lines; it used to stay
+  in the first token, so `\uFEFFdeny Fs` was an unknown rule kind and was ignored. A one-rule BOM'd policy went from
+  exit 2 (zero rules) to its real verdict; a multi-rule one now enforces its first rule (exit 0 → 1 where it fires).
+  A mark anywhere else — a later line, or a second one after the first — stays a token character, as before.
+- **Reason-prefix matching is ASCII case-insensitive under every default locale** (R1263). Under a Turkish default
+  locale `NATIVE:`/`DISPATCH:` folded to dotless `ı` and fell to `unresolved`, so `deny Unknown[native]` passed over
+  them. Java's own reasons are lowercase; this affected off-case foreign tokens only.
 - ⚠ **A JDK body that dispatches back into project code now charges the body it runs** (R1235). Executed on JDK 21,
   each of these wrote a file and read absent (`deny Fs` exit 0): `Object.toString()` runs `this.hashCode()`, so a class
   overriding an effectful `hashCode` but not `toString` was pure under `h.toString()`, `"" + h`, `String.valueOf(h)`,

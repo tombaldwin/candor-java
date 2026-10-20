@@ -3611,6 +3611,15 @@ public final class Query {
         for (PolicyRule.Deny r : AnalysisState.ctx().denyRules) {
             List<String> netless = new ArrayList<>(), reasonless = new ArrayList<>();
             for (String key : gi.inDisplayOrder(gi.inferred().keySet())) {
+                // ⟨0.40⟩ SOUNDNESS R1223 — AN `interfaceUnion` ENTRY IS NEVER THE SUBJECT OF AN ANSWERABILITY TEST
+                // (SPEC §3.1): it is not a unit, the violation loop already skips it, and its missing reasons
+                // must not refuse a rule. This loop walked every key, so a reasonless union entry (every
+                // producer's shape before the ⟨0.40⟩ reason clause) refused a narrowed `Unknown[…]` filter at
+                // exit 2 that no unit could have failed — PART 99 `i-scoped-unknown-native`,
+                // `i-unscoped-unknown-native`. A REAL caller of that union still inherits its (missing)
+                // reasons through `calls`, and is still refused here when nothing else accounts for its
+                // `Unknown`: only the union's own row stops being a subject.
+                if (gi.synthetic().contains(key)) continue;
                 // ⟨0.32⟩ the TRIPLES are keyed by the unit KEY (the gate looks them up that way), while the
                 // scope test and every string that reaches a document use the NAME — SPEC §3.2 requires
                 // these rows to NAME the function the gate could not judge, and a unit key is not a name.
@@ -4004,7 +4013,16 @@ public final class Query {
                 String key = o.has("hash") && o.get("hash").isJsonPrimitive()
                         && !o.get("hash").getAsString().isEmpty()
                         ? o.get("hash").getAsString() : o.get("fn").getAsString();
-                if (!ws.isEmpty()) raw.put(key, ws);
+                // ⟨0.40⟩ SOUNDNESS R1223 — a union entry's reasons are filed under their OWN key
+                // (Policy#unionKey), and two entries under one key are UNIONED, never last-wins. Both used
+                // to `put` under the bare key, so a union published beside a real entry OVERWROTE that unit's
+                // reasons (or was overwritten): measured on a hand-written report, a real `app.B.m` carrying
+                // `reflect:` beside a union carrying `native:` read `deny Unknown[reflect] app.B` exit 0 — its
+                // own reflect class gone. The marker test is the strict one parseEntries applies.
+                JsonElement iu = o.get("interfaceUnion");
+                if (iu != null && iu.isJsonPrimitive() && iu.getAsJsonPrimitive().isBoolean() && iu.getAsBoolean())
+                    key = Policy.unionKey(key);
+                if (!ws.isEmpty()) raw.computeIfAbsent(key, k -> new ArrayList<>()).addAll(ws);
             }
         // ⟨0.32⟩ the exclusion classes the PRODUCING scan did not read. Read from the document, so
         // `gate --report` reaches the same verdict as `scan --policy` without needing a target to

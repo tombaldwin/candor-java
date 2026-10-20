@@ -1115,6 +1115,12 @@ final class Policy {
         if (matches.isEmpty()) return;
         Set<String> keys = new TreeSet<>(gi.inferred().keySet());
         keys.addAll(gi.edges().keySet());
+        // ⟨0.40⟩ SOUNDNESS R1234 — AN `interfaceUnion` ENTRY NEVER COUNTS AS A MATCH (SPEC §3.1): it is not a unit,
+        // so a rule whose only matching entries are union entries bound no function and rides `zeroMatch`. This
+        // loop walked every key while the violation loop above skips union entries, so the rule was neither
+        // evaluated against a unit nor disclosed as binding nothing (PART 99 `i-scoped-net`). Empty on the scan
+        // route, which has no union entries.
+        keys.removeAll(gi.synthetic());
         for (String key : keys) {
             String fn = gi.disp(key);   // ⟨0.32⟩ a rule binds a NAME; a key would make every scope zero-match
             for (PolicyRule.Deny r : ctx().denyRules) {
@@ -1243,8 +1249,23 @@ final class Policy {
         // declared by a report that comes later in the set.
         Map<String, TreeSet<String>> keysByName = new HashMap<>();
         for (Effector e : fns) keysByName.computeIfAbsent(e.fn(), k -> new TreeSet<>()).add(entryKey(e));
+        // ⟨0.40⟩ SOUNDNESS R1223 — a union entry PUBLISHED BESIDE a real entry under the same key (the
+        // subclass-override union a candor-swift- or candor-ts-shaped report carries) gets a node of its OWN,
+        // `unionKey(key)`, rather than being merged into the unit. SPEC §3.1: a union entry is never a unit, and
+        // a consumer MUST NOT merge a separately published union entry into a real entry sharing its key — the
+        // merge charged the union's effects to a body that performs none (PART 99 `i-beside-env`: `deny Env
+        // app.B` exited 1 over a real `app.B.m` with no Env). It is still a JOIN contributor: every edge that
+        // resolves to the key also reaches the union's node (below), so a caller inherits its reason classes
+        // exactly as before. A union entry whose key NO real entry claims keeps the key itself, as before.
+        Set<String> realKeys = new HashSet<>();
+        for (Effector e : fns) if (!e.interfaceUnion()) realKeys.add(entryKey(e));
+        Map<String, String> besideUnion = new HashMap<>();   // the real key -> the union's own node
         for (Effector e : fns) {
             String fn = entryKey(e);
+            if (e.interfaceUnion() && realKeys.contains(fn)) {
+                besideUnion.put(fn, unionKey(fn));
+                fn = unionKey(fn);
+            }
             display.put(fn, e.fn());
             // ⟨0.23⟩ An `interfaceUnion: true` entry is not a UNIT — it is a CHA union published under a
             // bodiless declaration's hash so a CHAINED CONSUMER's dispatch resolves across the scan
@@ -1266,7 +1287,10 @@ final class Policy {
             if (!e.netClass().isEmpty())
                 netClasses.computeIfAbsent(fn, k -> new ArrayList<>()).addAll(e.netClass());
             // `incomplete` stays empty — see the class note above. Every `allow` rule is refused upstream.
-            List<String> raw = rawUnknownWhy.get(fn);   // ⟨0.32⟩ keyed by the same unit key — see Query#readEnvelope
+            // ⟨0.32⟩ keyed by the same unit key — see Query#readEnvelope. ⟨0.40⟩ a union entry's raw reasons are
+            // read under `unionKey(entryKey)` whatever node it landed on: readEnvelope keys them there so a union
+            // and a real entry sharing a hash cannot overwrite each other's reasons (R1223).
+            List<String> raw = rawUnknownWhy.get(e.interfaceUnion() ? unionKey(entryKey(e)) : fn);
             if (raw == null || raw.isEmpty())
                 raw = e.unknownWhy().stream().map(UnknownReason::format).collect(Collectors.toList());
             // Classify via the STRING path, identical to the scan route (which deliberately uses
@@ -1310,6 +1334,17 @@ final class Policy {
             }
         }
         synthetic.removeAll(real);   // a key a REAL entry also claims is a real unit — see the note above
+        // ⟨0.40⟩ R1223 — THE JOIN STILL INCLUDES A UNION PUBLISHED BESIDE A REAL ENTRY (SPEC §3.1, "the join
+        // includes it, unchanged"; SOUNDNESS R867): an edge that resolves to the key reaches both entries under
+        // it, so the reason fixpoint below carries the union's classes to every caller of the key. Only the
+        // UNIT is separated, never the reach. (Effects need no edge: `inferred` is already transitive on the
+        // wire, which is why only the reason fixpoint walks these.)
+        if (!besideUnion.isEmpty())
+            for (Set<String> to : edges.values()) {
+                List<String> add = new ArrayList<>();
+                for (String t : to) { String u = besideUnion.get(t); if (u != null) add.add(u); }
+                to.addAll(add);
+            }
         // ⟨0.32⟩ NAME -> key, for the consumers that hold a name (see GateInput#keyOf). A name TWO units
         // declare is omitted deliberately: there is no single unit to answer for it.
         Map<String, String> keyOf = new HashMap<>();
@@ -1345,6 +1380,13 @@ final class Policy {
      */
     static String entryKey(Effector e) {
         return e.hash().isEmpty() ? e.fn() : e.hash();
+    }
+
+    /** ⟨0.40⟩ SOUNDNESS R1223 — the node a union entry takes when a REAL entry claims its key (see
+     *  {@link #gateInputFromReport}), and the key {@code Query#readEnvelope} files a union entry's raw reasons
+     *  under. The NUL cannot occur in a hash or a name, so the node can never collide with a unit. */
+    static String unionKey(String unitKey) {
+        return unitKey + "\0interfaceUnion";
     }
 
     /** ⟨0.32⟩ One entry's resolved call EDGES, and whether any callee name was AMBIGUOUS. */

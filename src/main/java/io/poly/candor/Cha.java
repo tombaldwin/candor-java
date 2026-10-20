@@ -799,8 +799,7 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
                 // SOUNDNESS R1299 — never for an ABSTRACT class: no instance of it exists, so the JDK body never runs
                 // on it; each concrete subtype is walked in its own turn and re-enters for itself. Spring's abstract
                 // `MethodOverride` (both concrete subclasses declare toString) was charged its own hashCode's Unknown.
-                else if ((cn.access & Opcodes.ACC_ABSTRACT) == 0
-                        && (impl = jdkReentryTarget(cn.name, name, desc)) != null) reentry.add(impl);
+                else if ((cn.access & Opcodes.ACC_ABSTRACT) == 0) reentry.addAll(jdkReentryTargets(cn.name, name, desc));
             }
         }
         // R1235: the re-entered bodies JOIN the answer, but never turn a narrow one broad. Every caller prices the
@@ -891,6 +890,53 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
      * member (an {@code Object.hashCode}, a {@code Throwable.getMessage}) is pure, and stays null.
      */
     static String jdkReentryTarget(String internal, String name, String desc) {
+        List<String> all = jdkReentryTargets(internal, name, desc);
+        return all.isEmpty() ? null : all.get(0);
+    }
+
+    /** SOUNDNESS R1300 — the THROWABLE members whose JDK body prints the receiver. {@code printStackTrace()} and its
+     *  {@code PrintStream}/{@code PrintWriter} forms run {@code s.println(this)} — {@code String.valueOf(this)}, i.e.
+     *  {@code this.toString()} — and then the VIRTUAL {@code this.getCause()} (JDK 21 {@code Throwable#printStackTrace
+     *  (PrintStreamOrWriter)}; {@code dejaVu} is an identity set, so no {@code hashCode}). R1235's table named only
+     *  {@code toString} and {@code getLocalizedMessage} as driving members, so {@code e.printStackTrace()} on an
+     *  exception whose {@code getMessage} wrote a file read ABSENT (executed, javaab-a fx/x2). */
+    static boolean isPrintStackTrace(String name, String desc) {
+        return name.equals("printStackTrace") && (desc.equals("()V") || desc.equals("(Ljava/io/PrintStream;)V")
+                || desc.equals("(Ljava/io/PrintWriter;)V"));
+    }
+
+    /** {@link #jdkReentryTarget}, with every body the JDK body re-enters (one for the {@code Object}/{@code Throwable}
+     *  string members, two for {@link #isPrintStackTrace}). */
+    static List<String> jdkReentryTargets(String internal, String name, String desc) {
+        boolean pst = isPrintStackTrace(name, desc);
+        if (pst) {
+            if (!throwableJdkBody(internal)) return List.of();
+            List<String> out = new ArrayList<>();
+            String t = monomorphicTarget(internal, "toString", "()Ljava/lang/String;");
+            if (t != null) out.add(t);
+            String g = monomorphicTarget(internal, "getCause", "()Ljava/lang/Throwable;");
+            if (g != null && !out.contains(g)) out.add(g);
+            if (R1235_DEBUG && !out.isEmpty()) System.err.println("R1300\t" + internal + "." + name + desc + "\t" + out);
+            return out;
+        }
+        String one = jdkReentryTarget0(internal, name, desc);
+        return one == null ? List.of() : List.of(one);
+    }
+
+    /** The first class past {@code internal}'s project chain is a {@code java.*} Throwable — so the body that runs for
+     *  a member no project class declares is the JDK's own (the rule {@link #jdkReentryTarget0} applies). */
+    private static boolean throwableJdkBody(String internal) {
+        AnalysisContext c = ctx();
+        String x = internal;
+        for (ClassNode cn; (cn = c.byName.get(x)) != null; x = cn.superName) {
+            if ((cn.access & Opcodes.ACC_INTERFACE) != 0 || cn.superName == null) return false;
+        }
+        if (x.equals(internal)) return false;
+        return x.startsWith("java/") && (x.equals("java/lang/Throwable")
+                || Candor.transSupers(x).contains("java/lang/Throwable"));
+    }
+
+    private static String jdkReentryTarget0(String internal, String name, String desc) {
         boolean toStr = name.equals("toString") && desc.equals("()Ljava/lang/String;");
         boolean locMsg = name.equals("getLocalizedMessage") && desc.equals("()Ljava/lang/String;");
         if (!toStr && !locMsg) return null;

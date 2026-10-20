@@ -9,6 +9,10 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **`e.printStackTrace()` charges the exception's own `toString`/`getMessage` and `getCause`** (R1300). The JDK body
+  prints the receiver (`println(this)` → `toString` → `getLocalizedMessage` → `getMessage`) and calls the virtual
+  `getCause()`; R1235's table named only `toString`/`getLocalizedMessage`. Executed: four shapes (no-arg, `PrintStream`,
+  `PrintWriter`, an overridden `getCause`) wrote a file and read absent; `deny Fs` 0 → 1. A pure `toString` keeps it pure.
 - ⚠ **An `Object`-owned call (`x.toString()` where x's type does not declare it) is bounded by x's declared project
   type** (R1299). javac names `java/lang/Object` as the owner in that case, so the dispatch fanned to every project
   class, and since R1235 to every unrelated class's `hashCode`: commons-beanutils `ConverterFacade.toString` /

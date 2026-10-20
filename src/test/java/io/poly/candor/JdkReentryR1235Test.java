@@ -148,4 +148,39 @@ class JdkReentryR1235Test {
             TestCompiler.rm(cls.getParent());
         }
     }
+
+    // ---- SOUNDNESS R1300: printStackTrace prints the receiver -----------------------------------------------------
+
+    static final String SRC_R1300 = ""
+            + "package rp;\n"
+            + "class MsgEx extends RuntimeException { @Override public String getMessage() { rq.W.w(); return \"m\"; } }\n"
+            + "class CauseEx extends RuntimeException { @Override public String toString() { return \"c\"; } @Override public synchronized Throwable getCause() { rq.W.w(); return null; } }\n"
+            + "class PureEx extends RuntimeException { @Override public String getMessage() { rq.W.w(); return \"m\"; } @Override public String toString() { return \"p\"; } }\n"
+            + "class SubMsg extends MsgEx { }\n"
+            + "public class P {\n"
+            + "  public static void pst(MsgEx e) { e.printStackTrace(); }\n"
+            + "  public static void pstStream(MsgEx e) { e.printStackTrace(System.out); }\n"
+            + "  public static void pstWriter(SubMsg e) { e.printStackTrace(new java.io.PrintWriter(new java.io.StringWriter())); }\n"
+            + "  public static void pstCause(CauseEx e) { e.printStackTrace(); }\n"
+            + "  public static void kPstPure(PureEx e) { e.printStackTrace(); }\n"
+            + "}\n";
+
+    /** Executed (javaagent-b r1300/fx, JDK 21): the four {@code pst*} wrote their file (getMessage through
+     *  toString -> getLocalizedMessage, or the overridden getCause); {@code kPstPure} wrote nothing (toString is pure,
+     *  so its effectful getMessage never runs). All four read ABSENT before R1300. */
+    @Test
+    void printStackTraceRunsTheReceiversToStringAndGetCause() throws Exception {
+        Path cls = TestCompiler.compile(Map.of("rq/W.java", SRC_W, "rp/P.java", SRC_R1300));
+        try {
+            Map<String, EffectSet> inf = Candor.runScan(cls);
+            for (String m : List.of("pst", "pstStream", "pstWriter", "pstCause")) {
+                EffectSet e = inf.getOrDefault("rp.P." + m, EffectSet.empty());
+                assertTrue(e.contains(Effect.FS), "R1300: rp.P." + m + " prints a receiver whose override writes — got " + e);
+            }
+            EffectSet k = inf.getOrDefault("rp.P.kPstPure", EffectSet.empty());
+            assertFalse(k.contains(Effect.FS), "control: a pure toString never reaches getMessage — got " + k);
+        } finally {
+            TestCompiler.rm(cls.getParent());
+        }
+    }
 }

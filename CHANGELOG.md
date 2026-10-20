@@ -9,6 +9,16 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **The AS-EFF-005 baseline guard judges the written report row, the same subject the baseline is** (R1232). The
+  baseline is a report, and the writer widens some rows past the classifier's map — an interface/abstract union merged
+  into the real entry claiming its hash (a `default` method, a kept bodiless member). The guard compared that report
+  against the un-widened map, so a row that gained an effect only through the merge passed: `interface I { default
+  void m(){…} }` plus an existing `class C { void m(){ writes a file } }`, then adding `implements I`, moved the
+  written `p.I.m` from `[Clock]` to `[Clock, Fs]` — `deny Fs p.I` exited 1 on that run, `CANDOR_BASELINE` exited 0
+  (executed: a call through `I.m` wrote the file). Now exit 1 with `` `p.I.m` gained effect { Fs } ``. Only adds
+  firings, and only on a row that really gained an effect against the baseline it is compared with; the policy gate
+  has read these entries since R682.
+
 ## [0.40.13] — 2026-10-19
 
 - **`jbang-catalog.json` points at the v0.40.13 jar.**

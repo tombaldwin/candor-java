@@ -2542,8 +2542,12 @@ public class Candor {
                 : checkConformance(inferred, strict);     // gate-only: scope-filtered declared
         if (noAmbient != null) violations += checkNoAmbient(inferred, noAmbient);
         Policy.runReportPath = jsonOut;   // ⟨0.40⟩ the AS-EFF-005 remedy names THIS run's report for `candor diff`
-        if (baseline != null) violations += checkBaseline(inferred, baseline,
-                config.fromFile("baseline", Mode.BASELINE.envVar()));
+        // SOUNDNESS R1232 — the guard compares REPORT ROWS (the baseline is one), so it reads the same entries
+        // the report and the policy gate do; built here when neither --json nor a policy built them.
+        if (baseline != null) violations += Policy.checkBaseline(inferred,
+                reportEntries != null ? reportEntries
+                        : buildEntries(inferred, ccFull != null ? ccFull : classConformance(inferred)),
+                baseline, config.fromFile("baseline", Mode.BASELINE.envVar()));
         // ⟨0.24⟩ PRECEDENCE BINDS THE VERDICT, NOT THE POLICY GATE (SPEC §3.1). The three producers above
         // record into THIS verdict and run BEFORE the policy by design, so a policy the engine cannot
         // honour must not delete what they already established: the refusal is REPORTED back here

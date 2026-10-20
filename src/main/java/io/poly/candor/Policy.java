@@ -83,6 +83,38 @@ final class Policy {
      *        every engine printing a note and exiting 0, on the second-likeliest first-commit mistake.
      */
     static int checkBaseline(Map<String, EffectSet> inferred, String path, boolean declaredInConfig) {
+        return checkBaseline(inferred, null, path, declaredInConfig);
+    }
+
+    /**
+     * SOUNDNESS R1232 — THE BASELINE GUARD JUDGES THE REPORT ROW, THE SAME SUBJECT THE BASELINE IS. The prior
+     * side of AS-EFF-005 is a REPORT ({@link #loadBaseline} reads each entry's written {@code inferred}), and
+     * the writer WIDENS some entries past the classifier's map: {@link ReportWriter#mergeUnionInto} merges an
+     * interface/abstract union into the real entry claiming its hash (a {@code default} method, a kept bodiless
+     * member). The current side used to be the classifier's un-widened map, so a row that GAINED an effect
+     * through that merge was compared on a set that never contained it. Executed: {@code interface I {default
+     * void m(){Clock}}} and an existing {@code class C { void m(){Fs} }}; adding {@code implements I} moves the
+     * written {@code p.I.m} from {Clock} to {Clock, Fs}, a call through {@code I.m} writes a file, {@code deny
+     * Fs p.I} exits 1 on that run — and the baseline guard, over a baseline recorded without the clause, exited
+     * 0. R682 made the POLICY gate read these entries for exactly this reason; the guard was the other reader.
+     *
+     * <p>So both sides are now the written row: each real entry's {@code inferred} is joined into the current
+     * map — the SAME entry objects the report is serialised from, never a recomputation of the merge, and
+     * skipping synthetic {@code interfaceUnion} entries exactly as {@link #withReportEntries} does. Only ADDS:
+     * an entry the writer did not widen IS the classifier's value, so every gain the old subject found is still
+     * found, and the new ones are gains of the row a consumer reads. {@code entries} null = the caller built
+     * none (a unit-test seam over a synthetic map), and the map is judged as given.
+     */
+    static int checkBaseline(Map<String, EffectSet> inferred, List<Effector> entries, String path,
+            boolean declaredInConfig) {
+        if (entries != null && !entries.isEmpty()) {
+            Map<String, EffectSet> widened = new HashMap<>(inferred);
+            for (Effector e : entries) {
+                if (e.interfaceUnion() || e.fn() == null || e.fn().isEmpty()) continue;
+                widened.merge(e.fn(), e.inferred(), EffectSet::join);
+            }
+            inferred = widened;
+        }
         Map<String, EffectSet> base = loadBaseline(path);
         if (base == null) {
             // Distinguish ABSENT (ratchet not adopted — a note, exit 0) from PRESENT-BUT-UNLOADABLE

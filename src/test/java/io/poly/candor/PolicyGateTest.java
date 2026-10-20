@@ -112,6 +112,44 @@ class PolicyGateTest {
             "both the widened function and the new effectful one fire; the new pure one does not");
     }
 
+    /** SOUNDNESS R1232 — the guard judges the WRITTEN row, the same subject the baseline is. {@code C.m}
+     *  writes a file in both arms; the ONE variable is {@code implements I}, which makes the writer merge
+     *  {@code C.m}'s {@code Fs} into {@code I.m}'s real (default-method) entry. No analysed body changed, so
+     *  the classifier's map gains nothing — and the pre-fix guard, which compared that map, passed a row
+     *  that went {Clock} → {Clock, Fs}. MUTATION CONTROL: the same run judged without entries (the pre-fix
+     *  subject) must read 0, so the test is shown able to see the difference it pins; and the baseline arm
+     *  re-judged against itself must read 0, so the fix does not fire on an unchanged row. */
+    @Test
+    void aGainMergedIntoTheWrittenRowIsABaselineGain() throws Exception {
+        String i = "package p;\npublic interface I { default void m() { System.currentTimeMillis(); } }\n";
+        String c = "package p;\npublic class C%s { public void m() { try { java.nio.file.Files.writeString("
+                + "java.nio.file.Path.of(\"/tmp/r1232\"), \"x\"); } catch (java.io.IOException e) {} } }\n";
+        Path v1 = TestCompiler.compile(Map.of("p/I.java", i, "p/C.java", String.format(c, "")));
+        Path v2 = TestCompiler.compile(Map.of("p/I.java", i, "p/C.java", String.format(c, " implements I")));
+        try {
+            Path base = tmp.resolve("r1232.json");
+            Candor.resetState();
+            Map<String, EffectSet> inf1 = Candor.runScan(v1);
+            var e1 = ReportWriter.buildEntries(inf1, Candor.classConformance(inf1));
+            ReportWriter.writeReport(base.toString(), e1);
+            assertEquals(0, Policy.checkBaseline(inf1, e1, base.toString(), false),
+                "control: a run judged against its own baseline gains nothing");
+
+            Candor.resetState();
+            Map<String, EffectSet> inf2 = Candor.runScan(v2);
+            var e2 = ReportWriter.buildEntries(inf2, Candor.classConformance(inf2));
+            assertTrue(e2.stream().anyMatch(e -> e.fn().equals("p.I.m") && e.inferred().contains(Effect.FS)),
+                "fixture: the written I.m row carries the merged Fs");
+            assertEquals(1, Policy.checkBaseline(inf2, e2, base.toString(), false),
+                "R1232: I.m's written row gained Fs vs the baseline — AS-EFF-005 must fire");
+            assertEquals(0, Policy.checkBaseline(inf2, null, base.toString(), false),
+                "mutation control: the classifier's map alone (the pre-fix subject) does NOT fire");
+        } finally {
+            TestCompiler.rm(v1.getParent());
+            TestCompiler.rm(v2.getParent());
+        }
+    }
+
     /** ⟨0.16⟩ Write a callgraph sidecar next to a baseline report path (strip a trailing `.json`,
      *  append `.callgraph.json` — the {@link Query#loadCallgraphSignalled} pairing). `body` is the raw
      *  sidecar JSON, so a test can also write a CORRUPT one. */

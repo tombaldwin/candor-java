@@ -412,7 +412,14 @@ public class Candor {
         Map<String, EffectSet> fx = fixpoint();
         // SOUNDNESS R1166 — where the argument contract cannot resolve, it discloses; whether a body carries a
         // concrete effect is a fixpoint fact, so the disclosure is decided here and propagated by a second pass.
-        if (ArgContract.postFixpoint(fx)) fx = fixpoint();
+        if (ArgContract.postFixpoint(fx)) {
+            fx = fixpoint();
+            // SOUNDNESS R1303 — the Object floor discloses an override's Unknown, so one floor's disclosure can feed
+            // another's; re-decide until nothing new is disclosed (monotone, so this ends)
+            int rounds = 0;
+            while (ArgContract.floorAgain(fx)) { fx = fixpoint(); rounds++; }
+            if (ArgContract.DEBUG) System.err.println("R1303ROUNDS\t" + rounds);
+        }
         // SOUNDNESS R1166 — a receiver-specialised copy (ArgContract#spec) is a node of the propagation, not a
         // unit: its effects are already in its callers', so it leaves the result here and every report reads
         // only real units. `ctx().edges` keeps it, so the per-function surfaces still flow through it.

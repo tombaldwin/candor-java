@@ -557,24 +557,17 @@ final class ArgContract {
         }
         UNTRACED_CMP.get().clear();
         // SOUNDNESS R1201 — the Object floor: an equals/hashCode dispatch on a value known only as Object (or, S4, past
-        // the fan-out bound) DISCLOSED where some override it could run carries a concrete effect the caller lacks
+        // the fan-out bound) DISCLOSED where some override it could run carries an effect the caller lacks (R1303: a
+        // concrete one, or Unknown — see objectFloor)
         Set<List<String>> objFloor = new LinkedHashSet<>(OBJ_FLOOR.get());
         for (var e : c.argContractFloor.entrySet())
             for (String x : e.getValue()) {
                 String[] a = x.split("\t", 3);
                 objFloor.add(List.of(e.getKey(), a[0], a[1], a[2]));
             }
-        for (List<String> w : objFloor) {
-            String caller = w.get(0), key = w.get(1), owner = w.get(2);
-            int paren = key.indexOf('('), dot = key.lastIndexOf('.', paren);
-            String name = key.substring(dot + 1, paren), desc = key.substring(paren);
-            for (String b : Cha.chaTargets(owner, name, desc))
-                if (newConcrete(fx, b, caller)) {
-                    added |= disclose(c, caller, w.get(3).equals("S4") || w.get(3).equals("S5") ? owner : "java/lang/Object", name,
-                            "R1201U" + w.get(3), owner, b);
-                    break;
-                }
-        }
+        FLOOR_SITES.get().clear();
+        FLOOR_SITES.get().addAll(objFloor);
+        added |= objectFloor(c, fx);
         OBJ_FLOOR.get().clear();
         // SOUNDNESS R1174 — the ELEMENT witnesses ElementFlow found (a collection of project values handed to a
         // chained dependency), merged per caller with the direct ones. Read here and dropped: they are a
@@ -600,6 +593,58 @@ final class ArgContract {
             }
         }
         return added;
+    }
+
+    /** The Object floor's sites, kept after {@link #postFixpoint} so {@link #floorAgain} can re-decide them. */
+    private static final ThreadLocal<List<List<String>>> FLOOR_SITES = ThreadLocal.withInitial(ArrayList::new);
+
+    /** SOUNDNESS R1201/R1303 — decide every Object-floor site against {@code fx}: disclose where some override it could
+     *  run carries an effect the caller lacks — a concrete one, or (R1303) an {@code Unknown}.
+     *
+     *  <p>R1303: this floor counted only CONCRETE effects, so an override whose own body is an {@code Unknown}
+     *  ({@code DoubleCPInfo.toString}'s Object-typed concat; a reflective call) never disclosed. That was invisible
+     *  while R1205's S4 site CHA'd over {@code java/lang/Object}, because SOME unrelated project class nearly always
+     *  carried a concrete effect — a disclosure for the wrong reason. R1299 bounded the site by the receiver's declared
+     *  type, the unrelated classes left the candidate set, and 15 units (ant {@code MethodHandleCPInfo.toString},
+     *  commons-io {@code NotFileFilter.toString}, scala-reflect ×10 …) read PURE over a dispatch whose candidates still
+     *  carry {@code Unknown}. An edge in bound propagates that {@code Unknown}; past the bound the floor stands in for the
+     *  edges, so it must say what they would have said. Executed: javaagent-c fx/r1303 ({@code H.toString} over an
+     *  {@code E} whose one reflective subclass wrote the file). */
+    private static boolean objectFloor(AnalysisContext c, Map<String, EffectSet> fx) {
+        boolean added = false;
+        for (List<String> w : FLOOR_SITES.get()) {
+            String caller = w.get(0), key = w.get(1), owner = w.get(2);
+            int paren = key.indexOf('('), dot = key.lastIndexOf('.', paren);
+            String name = key.substring(dot + 1, paren), desc = key.substring(paren);
+            for (String b : Cha.chaTargets(owner, name, desc))
+                if (newConcrete(fx, b, caller) || (R1303_UNKNOWN && newUnknown(fx, b, caller))) {
+                    added |= disclose(c, caller, w.get(3).equals("S4") || w.get(3).equals("S5") ? owner : "java/lang/Object", name,
+                            "R1201U" + w.get(3), owner, b);
+                    break;
+                }
+        }
+        return added;
+    }
+
+    /** SOUNDNESS R1303 — re-decide the Object floor after a fixpoint that {@link #postFixpoint}'s disclosures fed: a
+     *  disclosure on one floor caller can make it (or its callers) an override that ANOTHER floor site may run, and the
+     *  second site is only decidable once the first has propagated. Monotone (a disclosure is never withdrawn), so the
+     *  driver's loop ends. False once nothing new is disclosed; the sites are dropped then. */
+    static boolean floorAgain(Map<String, EffectSet> fx) {
+        boolean added = R1303_UNKNOWN && objectFloor(ctx(), fx);
+        if (!added) FLOOR_SITES.get().clear();
+        return added;
+    }
+
+    /** {@code CANDOR_R1303_UNKNOWN=0} restores the concrete-only floor — a measurement arm, not a setting. */
+    static final boolean R1303_UNKNOWN = !"0".equals(System.getenv("CANDOR_R1303_UNKNOWN"));
+
+    /** The override carries {@code Unknown} and the caller does not. */
+    private static boolean newUnknown(Map<String, EffectSet> fx, String body, String caller) {
+        EffectSet be = fx.get(body);
+        if (be == null || !be.contains(Effect.UNKNOWN)) return false;
+        EffectSet ce = fx.get(caller);
+        return ce == null || !ce.contains(Effect.UNKNOWN);
     }
 
     private static boolean newConcrete(Map<String, EffectSet> fx, String body, String caller) {
@@ -633,6 +678,7 @@ final class ArgContract {
         CMP_SITES.get().clear();
         UNTRACED_CMP.get().clear();
         OBJ_FLOOR.get().clear();
+        FLOOR_SITES.get().clear();
         try {
             ElementFlow.run(c);   // a collection's own equals/hashCode/removeAll/... over its elements
             resolveSites(c);

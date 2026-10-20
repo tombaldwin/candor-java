@@ -9,6 +9,14 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **The Object floor carries an override's `Unknown`, not only its concrete effects** (R1303). Past the CHA bound an
+  `equals`/`hashCode`/`toString` dispatch is decided by the Object floor, which disclosed only where some override it
+  could run carried a CONCRETE effect the caller lacked — so an override that is itself `Unknown` (a reflective call, an
+  Object-typed concat) never reached the caller. Hidden while the site CHA'd over `java/lang/Object`, where some
+  unrelated class nearly always carried a concrete effect; R1299 bounded it by the receiver's declared type and 15 units
+  read pure over candidates that still carry `Unknown` (ant `MethodHandleCPInfo.toString`, commons-io
+  `NotFileFilter.toString`, guice, assertj-db, scala-reflect ×10). The floor is re-decided until nothing new is
+  disclosed. Executed: `deny Fs Unknown p.H.toString` 0 → 1 over a field whose reflective subclass wrote a file.
 - ⚠ **`e.printStackTrace()` charges the exception's own `toString`/`getMessage` and `getCause`** (R1300). The JDK body
   prints the receiver (`println(this)` → `toString` → `getLocalizedMessage` → `getMessage`) and calls the virtual
   `getCause()`; R1235's table named only `toString`/`getLocalizedMessage`. Executed: four shapes (no-arg, `PrintStream`,

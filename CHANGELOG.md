@@ -9,6 +9,12 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **`printStackTrace` charges its cause chain's `toString`, and a JDK re-entry held back at the CHA bound is
+  disclosed instead of dropped** (R1306). `printStackTrace` prints every throwable in the cause and suppressed chain;
+  the chain's contents are unknown, so the call is a `Throwable.toString` dispatch over an unknown throwable. And where
+  more than twelve project classes inherit the JDK `toString` (fifteen exceptions overriding only `getMessage`), the
+  re-entry bodies were held out of the CHA answer and `"x" + t`, `t.toString()` and `t.printStackTrace()` read pure;
+  the Object floor now weighs them. Executed: `deny Fs Unknown` 0 → 1 for both shapes; pure controls stay 0.
 - **The self-gate's `forbid io.poly.candor.model -> io.poly.candor.Policy` rule is green again** (R1307). R1239's lazy
   reason-class accumulator was an anonymous `AbstractMap` whose `get` ran `Policy.scanReasonClassAcc()`; the engine's
   CHA over `Map.get` reached it from `model.Effect.fromSpecName` (whose receiver is a private static final `HashMap`), a

@@ -155,6 +155,10 @@ final class ExactTypes {
         for (String top : o.topOwners) {
             List<String> cha = Cha.chaTargets(top, name, desc);
             boolean broad = cha.size() > Rules.CHA_FANOUT_LIMIT && !Cha.isClosedHierarchy(top);
+            // SOUNDNESS R1306 — re-entry bodies chaTargets held back (Cha#heldReentry) are weighed by the floor, which
+            // discloses only where one carries an effect the caller lacks
+            if (Candor.R1306 && (kind.equals("D") || kind.equals("S")) && !Cha.heldReentry(top, name, desc).isEmpty())
+                floor(caller, top, name, desc, kind.equals("D") ? "S4" : "S5");
             if (!sink) {
                 // an explicit dispatch: in bound, the edges it has always had; past it, the S4 floor (not on this body's
                 // own parameter, whose callers are resolved by the argument they pass — ArgContract)

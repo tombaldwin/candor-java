@@ -621,7 +621,10 @@ final class ArgContract {
             String caller = w.get(0), key = w.get(1), owner = w.get(2);
             int paren = key.indexOf('('), dot = key.lastIndexOf('.', paren);
             String name = key.substring(dot + 1, paren), desc = key.substring(paren);
-            for (String b : Cha.chaTargets(owner, name, desc))
+            List<String> cands = Cha.chaTargets(owner, name, desc);
+            List<String> held = Candor.R1306 ? Cha.heldReentry(owner, name, desc) : List.of();
+            if (!held.isEmpty()) { cands = new ArrayList<>(cands); cands.addAll(held); }   // SOUNDNESS R1306
+            for (String b : cands)
                 if (newConcrete(fx, b, caller) || (R1303_UNKNOWN && newUnknown(fx, b, caller))) {
                     added |= disclose(c, caller, w.get(3).equals("S4") || w.get(3).equals("S5") ? owner : "java/lang/Object", name,
                             "R1201U" + w.get(3), owner, b);

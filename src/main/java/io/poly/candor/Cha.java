@@ -827,6 +827,39 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         return result;
     }
 
+    /** SOUNDNESS R1306 — the JDK re-entry bodies {@link #chaTargets} HELD BACK for {@code owner.name}: where adding them
+     *  would carry a narrow answer past the bound, chaTargets keeps the declared overrides' edges and drops the
+     *  substitutes (so a narrow answer is never traded for a broad one). Dropped was silent: with NO declared override
+     *  — fifteen project exceptions that inherit {@code Throwable.toString} and override {@code getMessage} — the answer
+     *  was empty and {@code "x" + t}, {@code t.toString()} and {@code t.printStackTrace()} read pure over a
+     *  {@code getMessage} that wrote a file (executed: javaagent-c fx/r1306/pastbound). The held bodies are what the
+     *  Object floor must weigh in their place ({@link ArgContract} objectFloor); empty where nothing was held. */
+    static List<String> heldReentry(String owner, String name, String desc) {
+        if (!((name.equals("toString") || name.equals("getLocalizedMessage")) && desc.equals("()Ljava/lang/String;")))
+            return List.of();
+        AnalysisContext c = ctx();
+        String key = owner + '\t' + name + desc;
+        Map<String, List<String>> memo = HELD.computeIfAbsent(c, k -> new java.util.concurrent.ConcurrentHashMap<>());
+        List<String> m = memo.get(key);
+        if (m != null) return m;
+        Set<String> out = new LinkedHashSet<>(), reentry = new LinkedHashSet<>();
+        for (String cName : c.subtypeIndex.getOrDefault(owner, List.of())) {
+            ClassNode cn = c.byName.get(cName);
+            if (declaresConcrete(cn, name, desc)) { out.add(methodId(cn.name.replace('/', '.'), name, desc)); continue; }
+            String impl = nearestConcreteSuperNoReentry(cn.name, name, desc);
+            if (impl != null) out.add(impl);
+            else if ((cn.access & Opcodes.ACC_ABSTRACT) == 0) reentry.addAll(jdkReentryTargets(cn.name, name, desc));
+        }
+        reentry.removeAll(out);
+        boolean held = !reentry.isEmpty() && out.size() <= Rules.CHA_FANOUT_LIMIT
+                && out.size() + reentry.size() > Rules.CHA_FANOUT_LIMIT && !isClosedHierarchy(owner);
+        List<String> r = held ? List.copyOf(reentry) : List.of();
+        memo.put(key, r);
+        return r;
+    }
+    private static final Map<AnalysisContext, Map<String, List<String>>> HELD =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
     /** The single method a dispatch on a PROVABLY-`new recv` receiver actually invokes: `recv` itself if it
      *  declares a concrete `(name,desc)`, else `recv`'s nearest concrete superclass that does — exactly how
      *  the JVM resolves virtual dispatch on a known concrete type. Used to NARROW an invokevirtual on a

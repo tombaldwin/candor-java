@@ -5708,6 +5708,17 @@ public class Candor {
             }
             // SOUNDNESS R1305 — a JDK Throwable constructor that stringifies its cause (`new RuntimeException(e)` runs
             // `e.toString()`): the same re-entry as a string sink, at exactly the argument the derived table names
+            // SOUNDNESS R1306 — printStackTrace prints every throwable in the receiver's CAUSE and SUPPRESSED chain
+            // (printEnclosedStackTrace: `s.println(prefix + caption + this)`), i.e. runs each one's toString. What that
+            // chain holds is a JDK field written wherever the exception was built, so no producer is known: the site is
+            // a Throwable.toString dispatch over an unknown Throwable. DISCLOSED, never edged: the Object floor says
+            // Unknown where some project throwable's toString/getMessage carries an effect the caller lacks. An edge would
+            // charge that effect as if it ran — and for a receiver with no cause at all it does not (the R1300 control
+            // kPstPure: a pure toString, no cause, nothing written)
+            if (R1306 && ArgContract.floor("S4") && min.getOpcode() != Opcodes.INVOKESTATIC && Cha.isPrintStackTrace(min.name, min.desc)
+                    && (min.owner.equals("java/lang/Throwable") || transSupers(min.owner).contains("java/lang/Throwable")))
+                ctx().argContractFloor.computeIfAbsent(id, k -> new TreeSet<>())
+                        .add("java/lang/Throwable.toString()Ljava/lang/String;\tjava/lang/Throwable\tS4");
             int[] cs = throwableCtorStringified(min);
             if (cs.length > 0) {
                 for (int j : cs) reentryEdgeOrDisclose(id, callArg(rf, min, j), C_TOSTRING);
@@ -5802,6 +5813,8 @@ public class Candor {
 
     /** SOUNDNESS R1305 — the arguments a JDK {@code Throwable} constructor runs {@code toString()} on
      *  ({@link Rules#THROWABLE_CTOR_TOSTRING}); empty for any other instruction. */
+    static final boolean R1306 = !"0".equals(System.getenv("CANDOR_R1306"));
+
     static int[] throwableCtorStringified(MethodInsnNode min) {
         if (min.getOpcode() != Opcodes.INVOKESPECIAL || !min.name.equals("<init>") || !min.owner.startsWith("java/"))
             return NO_ARGS;
@@ -10752,6 +10765,11 @@ public class Candor {
             ctx().edges.get(callerId).add(t);
             resolved = true;
         }
+        // SOUNDNESS R1306 — the re-entry bodies chaTargets held back (Cha#heldReentry) were dropped here without a word;
+        // decided after the loop by the floor (an ExactTypes site with no frame: its producers are unknown by design)
+        if (R1306 && contract.equals(C_TOSTRING) && !Cha.heldReentry(declType, C_TOSTRING, "()Ljava/lang/String;").isEmpty())
+            ctx().objProtoSites.computeIfAbsent(callerId, k -> new TreeSet<>()).add(
+                    "\t\t-1\t-1\t" + declType + "\t" + C_TOSTRING + "\t()Ljava/lang/String;\tS");
         // ACROSS THE SCAN BOUNDARY. `reentryTargets` ends in `chaTargets`, which scans PROJECT classes only
         // — so when the argument's declared type belongs to a chained DEPENDENCY it returns empty and the
         // site emitted nothing at all. `"x" + entry` on a dep type whose `toString()` reads the environment,

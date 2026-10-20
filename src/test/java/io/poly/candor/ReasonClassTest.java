@@ -16,6 +16,24 @@ class ReasonClassTest {
         assertEquals(expected, ReasonClass.classify(raw), "raw reason `" + raw + "` must classify as " + expected.token());
     }
 
+    /** SOUNDNESS R1263 — prefix matching is ASCII case-insensitive (SPEC §6.2 ⟨0.40⟩) WHATEVER THE DEFAULT
+     *  LOCALE. Under a Turkish default `toLowerCase()` folds `I` to dotless `ı`, so an off-case `NATIVE:` or
+     *  `DISPATCH:` fell to `unresolved` and a narrowed `deny Unknown[native]` passed over it. The locale is
+     *  restored in `finally`: the JVM default is process-global and other tests read it. */
+    @Test void offCasePrefixesClassifyTheSameUnderATurkishDefaultLocale() {
+        java.util.Locale saved = java.util.Locale.getDefault();
+        try {
+            java.util.Locale.setDefault(java.util.Locale.forLanguageTag("tr-TR"));
+            maps("NATIVE:strlen", ReasonClass.NATIVE);
+            maps("DISPATCH:a.B.m", ReasonClass.DISPATCH);
+            maps("INDY:x", ReasonClass.DISPATCH);
+            maps("DynamicMemberLookup:Root.p", ReasonClass.REFLECT);
+            maps("Closure:k", ReasonClass.INDIRECT);
+        } finally {
+            java.util.Locale.setDefault(saved);
+        }
+    }
+
     @Test void auditedVocabularyClassifiesToTheRightClass() {
         // reflect (ts + swift emit these; rust/java to follow — finding 2)
         maps("reflect:eval", ReasonClass.REFLECT);

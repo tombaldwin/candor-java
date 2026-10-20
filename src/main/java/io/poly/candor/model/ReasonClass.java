@@ -72,7 +72,11 @@ public enum ReasonClass {
      */
     public static ReasonClass classify(String why) {
         if (why == null) return UNRESOLVED;
-        String w = why.trim().toLowerCase();
+        // SOUNDNESS R1263 — ASCII case folding, never the DEFAULT LOCALE's. SPEC §6.2 ⟨0.40⟩ pins prefix matching
+        // as ASCII case-insensitive; `toLowerCase()` under a Turkish default locale maps `I` to dotless `ı`, so
+        // `NATIVE:strlen` read `natıve:…`, fell to the catch-all, and `deny Unknown[native]` exited 0 over it
+        // (executed with -Duser.language=tr: exit 1 -> 0, and `[unresolved]` 0 -> 1). Locale.ROOT folds ASCII only.
+        String w = why.trim().toLowerCase(java.util.Locale.ROOT);
         // reflection family (ts reflect:* / reflect_apply / reflect-metadata; swift reflecting / dynamicMemberLookup)
         // `startsWith`, NOT `equals`. candor-swift emits this token in the normative `kind:detail` form —
         // `dynamicMemberLookup:<root>.<prop>` (CallCollector.swift), never bare — so an equality test can

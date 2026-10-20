@@ -125,6 +125,12 @@ candidate target and one effectful override would smear across the whole report:
   class S4). A JDK string sink over an `Object` operand (`"" + o`, `String.valueOf(o)`, …) is decided the same way, and
   an operand whose producers cannot be named is disclosed in or past the bound (R1217; floor class S5), and so are the
   key and value of `Map.entry(k, v)` (R1204). `CANDOR_R1201_FLOOR` selects floor classes for measurement only.
+  **Not exempt from NAMING (SPEC §4 ⟨0.40⟩, SOUNDNESS R1304):** `toString`/`hashCode`/`equals` called on a receiver
+  whose declared type is this package's own public, non-final interface or class (`elem.toString()`, `"" + elem`,
+  `map.put(elem, v)` with `elem` typed `Converter`) is a dispatch through that abstraction, and the report names it
+  in `dispatchesOn` under the abstraction (`convlib/Converter.toString()Ljava/lang/String;`), never under
+  `java/lang/Object`, so a chained consumer joins its own implementor. The exemption above waives a HEDGE, not the
+  name. `compareTo` is not named (ordering is outside §4's formatting/equality/hashing set).
   **Where the receiver is the method's own PARAMETER** — `<T> boolean same(T a, T b) { return
   a.equals(b); }`, which erasure compiles to `Object.equals` — the CALLER is charged the override of the
   type it passes (SOUNDNESS R1166). The same holds for an interface member of a `java.*` κ owner

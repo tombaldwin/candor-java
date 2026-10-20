@@ -7340,6 +7340,16 @@ public class Candor {
             // only on the indeterminate branch would be absent in precisely the arm that needs it. See
             // {@link #recordDispatchedMember} for the key, the two qualifying owners and the bound.
             recordDispatchedMember(ctx, id, min);
+            // SOUNDNESS R1304 — …and a formatting/equality/hashing member, under the RECEIVER's declared abstraction
+            // (SPEC §4 ⟨0.40⟩). javac spells `elem.toString()` on an interface-typed `elem` as `invokevirtual
+            // java/lang/Object.toString` (--release ≤17) or `invokeinterface Converter.toString` (≥18), so the type
+            // comes from the receiver's provenance first and the owner second.
+            if (isObjectProtocolExempt(min.name, min.desc)) {
+                Frame<ProvValue> rfx = provFrames == null ? null : provFrames[mn.instructions.indexOf(min)];
+                ProvValue rvx = rfx == null ? null : receiverProv(rfx, min);
+                recordObjectProtocolMember(ctx, id, rvx != null && rvx.declType != null ? rvx.declType : min.owner,
+                        min.name, min.desc);
+            }
             // BOUNDED CHA (SPEC §4): a dispatch over a local abstraction resolves to its
             // implementors only when the fan-out is NARROW (≤ CHA_FANOUT_LIMIT); a broad
             // fan-out is honest indeterminacy. Previously only EXEMPT methods (the pure
@@ -10765,6 +10775,11 @@ public class Candor {
             ctx().edges.get(callerId).add(t);
             resolved = true;
         }
+        // SOUNDNESS R1304 — a JDK sink formatting/hashing/comparing-for-equality a value typed by this package's own
+        // abstraction (`"AC[" + elem + "]"`, `map.put(elem, v)`) dispatches through it, as `elem.toString()` does
+        if (contract.equals(C_TOSTRING)) recordObjectProtocolMember(ctx(), callerId, declType, "toString", "()Ljava/lang/String;");
+        else if (contract.equals(C_HASHCODE)) recordObjectProtocolMember(ctx(), callerId, declType, "hashCode", "()I");
+        else if (contract.equals(C_EQUALS)) recordObjectProtocolMember(ctx(), callerId, declType, "equals", "(Ljava/lang/Object;)Z");
         // SOUNDNESS R1306 — the re-entry bodies chaTargets held back (Cha#heldReentry) were dropped here without a word;
         // decided after the loop by the floor (an ExactTypes site with no frame: its producers are unknown by design)
         if (R1306 && contract.equals(C_TOSTRING) && !Cha.heldReentry(declType, C_TOSTRING, "()Ljava/lang/String;").isEmpty())
@@ -12050,6 +12065,52 @@ public class Candor {
         if (named && R939_DEBUG) System.err.println("R939REF\t" + callerId + "\t" + h.getOwner() + "." + h.getName() + h.getDesc());
     }
     static final boolean R939_DEBUG = System.getenv("CANDOR_R939_DEBUG") != null;
+
+    /** SOUNDNESS R1304 — SPEC §4 ⟨0.40⟩: a FORMATTING, EQUALITY OR HASHING member called on a receiver typed by this
+     *  package's own abstraction is a dispatch through that abstraction, and obligation 1 names it, under the
+     *  abstraction ({@code convlib/Converter.toString()Ljava/lang/String;}), never under {@code java/lang/Object}.
+     *
+     *  <p>{@link #recordDispatchedMember} exempts the whole Object protocol, which was the reading this engine
+     *  shipped: §4's MAY to treat these members as resolved-pure. ⟨0.40⟩ resolves that ambiguity AGAINST it — the
+     *  MAY waives a HEDGE where no implementor is visible, never the name — because the consumer that supplies
+     *  the implementor CAN see it: `new ArrayConverter(String[].class, myConv).toString()` wrote a file, and with
+     *  beanutils chained every build read `deny Fs` 0 while the same code scanned as one tree read 1 (executed,
+     *  javaagent-c r5). The consumer's join ({@link #inheritDepFn}) is unchanged: it already unions its own
+     *  implementors of a named key, and {@code chaTargets} over the abstraction includes every body a JVM
+     *  `toString` can run on it (a declared override, or Object's, which re-enters {@code hashCode}).
+     *
+     *  <p>The abstraction is a PUBLIC project interface or class that is not FINAL — a consumer can implement or
+     *  subclass it and override the member (SPEC §4's SUBCLASS paragraph: the visible overrides of a class
+     *  receiver's member are implementors). That includes a CONCRETE class, which is wider than
+     *  {@link #recordDispatchedMember}'s project arm (interface or abstract class): two of the 76 rows R1304 left
+     *  unnamed format a public concrete scala-reflect {@code Path}, and the measured cost of the concrete arm on
+     *  the scoped set is +59 rows / +0.27% bytes over the abstract-only arm. A bare {@code Object} receiver, a JDK
+     *  or dependency type, a final or non-public class: not named (a bare root type is under the MAY; a final or
+     *  package-private type has no implementor a consumer could supply). {@code compareTo} is NOT here:
+     *  ordering is outside §4's formatting/equality/hashing/cloning set, so it keeps the ordinary exemption. JVM
+     *  cloning ({@code Object.clone} is protected, so a call on an interface-typed receiver cannot compile) has no
+     *  site to name. */
+    static boolean recordObjectProtocolMember(AnalysisContext ctx, String callerId, String declType, String name,
+            String desc) {
+        if (!R1304 || declType == null || !isFormatEqHash(name, desc)) return false;
+        ClassNode cn = ctx.byName.get(declType);
+        if (cn == null || (cn.access & Opcodes.ACC_PUBLIC) == 0
+                || (cn.access & (Opcodes.ACC_INTERFACE | Opcodes.ACC_ABSTRACT)) == 0
+                   && !(R1304_CONCRETE && (cn.access & Opcodes.ACC_FINAL) == 0)) return false;
+        ctx.dispatchDirect.computeIfAbsent(callerId, k -> new TreeSet<>()).add(declType + "." + name + desc);
+        if (R1304_DEBUG) System.err.println("R1304NAME\t" + callerId + "\t" + declType + "." + name + desc);
+        return true;
+    }
+    /** {@code toString()}, {@code equals(Object)}, {@code hashCode()} — §4's formatting/equality/hashing members on
+     *  the JVM. {@link #isObjectProtocolExempt} minus {@code compareTo}. */
+    static boolean isFormatEqHash(String name, String desc) {
+        return isObjectProtocolExempt(name, desc) && !name.equals("compareTo");
+    }
+    static final boolean R1304 = !"0".equals(System.getenv("CANDOR_R1304"));
+    /** A public NON-FINAL CONCRETE class is an abstraction for this member too (a consumer subclass overrides it);
+     *  {@code CANDOR_R1304_CONCRETE=0} narrows to interfaces and abstract classes, as a measurement arm. */
+    static final boolean R1304_CONCRETE = !"0".equals(System.getenv("CANDOR_R1304_CONCRETE"));
+    static final boolean R1304_DEBUG = System.getenv("CANDOR_R1304_DEBUG") != null;
 
     static boolean recordDispatchedMember(AnalysisContext ctx, String callerId, MethodInsnNode min) {
         if (!isObjectProtocolExempt(min.name, min.desc)

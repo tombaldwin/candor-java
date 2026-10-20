@@ -9,6 +9,15 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **A `toString`/`hashCode`/`equals` call on a receiver typed by the package's own abstraction is named in
+  `dispatchesOn`** (R1304, SPEC §4 ⟨0.40⟩). This resolves an ambiguity AGAINST the reading this engine shipped: the
+  README documented the Object protocol as a pure-exempt dispatch set and `dispatchesOn` never named it, so a
+  library formatting a `Converter` field ran the consumer's `Converter` and a chained consumer read pure — `deny Fs`
+  0 chained while the same code scanned as one tree read 1. The member is now named under the receiver's declared
+  public, non-final project interface or class (both javac spellings: `invokevirtual Object.toString` from javac ≤17,
+  `invokeinterface Converter.toString` from 18+), and through a JDK string or hashing sink over such a value. A
+  producer report grows (scoped measurement: +0.20% rows, +1.0% bytes); a chained consumer gains its own
+  implementors' effects. `compareTo` is unchanged.
 - ⚠ **`printStackTrace` charges its cause chain's `toString`, and a JDK re-entry held back at the CHA bound is
   disclosed instead of dropped** (R1306). `printStackTrace` prints every throwable in the cause and suppressed chain;
   the chain's contents are unknown, so the call is a `Throwable.toString` dispatch over an unknown throwable. And where

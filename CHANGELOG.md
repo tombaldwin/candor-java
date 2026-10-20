@@ -9,6 +9,12 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **An `Object`-owned call (`x.toString()` where x's type does not declare it) is bounded by x's declared project
+  type** (R1299). javac names `java/lang/Object` as the owner in that case, so the dispatch fanned to every project
+  class, and since R1235 to every unrelated class's `hashCode`: commons-beanutils `ConverterFacade.toString` /
+  `ArrayConverter.toString` were charged Clock/Db/Log/Unknown from classes that are not `Converter`s. An ABSTRACT class
+  is also no longer a re-entry target of its own (spring `MethodOverrideCallbackFilter.accept` lost a false Unknown).
+  Where the declared type has no candidate at all, the old Object-wide answer and its hedge are kept.
 - ⚠ **An `interfaceUnion` entry carrying `Unknown` now carries its contributors' reasons** (R1239, SPEC §3.1 ⟨0.40⟩).
   A union entry published a reason only on a BROAD hedge (`dispatch:`), so a chained consumer read every other union's
   `Unknown` as `dep:` → `unresolved`. It now carries one raw reason per class of its contributors' TRANSITIVE class sets,

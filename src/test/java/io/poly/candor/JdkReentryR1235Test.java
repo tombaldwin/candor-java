@@ -102,4 +102,50 @@ class JdkReentryR1235Test {
             TestCompiler.rm(cls.getParent());
         }
     }
+
+    // ---- SOUNDNESS R1299: the receiver's declared type, not `java/lang/Object`, bounds the dispatch ----------------
+
+    static final String SRC_R1299 = ""
+            + "package rz;\n"
+            + "interface Cv { Object convert(Object o); }\n"
+            + "class H implements Cv { public Object convert(Object o) { return o; } @Override public int hashCode() { rq.W.w(); return 1; } }\n"
+            + "class K implements Cv { public Object convert(Object o) { return o; } @Override public String toString() { return \"K\" + System.currentTimeMillis(); } }\n"
+            + "class Un { @Override public int hashCode() { return String.valueOf(System.getenv(\"HOME\")).length(); } }\n"
+            + "abstract class MO { @Override public int hashCode() { return String.valueOf(System.getenv(\"HOME\")).length(); } }\n"
+            + "class R1 extends MO { @Override public String toString() { return \"R1\"; } }\n"
+            + "class R2 extends MO { @Override public String toString() { return \"R2\"; } }\n"
+            + "abstract class MA { @Override public int hashCode() { rq.W.w(); return 2; } }\n"
+            + "class MB extends MA { }\n"
+            + "public class Z {\n"
+            + "  Cv f;\n"
+            + "  public String viaObjectOwner() { return ((Object) f).toString(); }\n"   // invokevirtual Object.toString, GETFIELD Cv
+            + "  public static String anyObject(Object o) { return o.toString(); }\n"
+            + "  public static String mo(MO m) { return m.toString(); }\n"                // javac: invokevirtual Object.toString
+            + "  public static String ma(MA m) { return m.toString(); }\n"
+            + "}\n";
+
+    /** Executed (javaagent-b r1299/fx, JDK 21): {@code viaObjectOwner} over an {@code H} wrote the file, over a {@code K}
+     *  read the clock; {@code ma(new MB())} wrote the file; {@code mo(new R1())}/{@code mo(new R2())} ran the pure
+     *  overrides. On 2c5647d {@code viaObjectOwner} and {@code mo} were charged {@code Env} from {@code Un}/{@code MO} —
+     *  types the receiver can never hold (commons-beanutils {@code ConverterFacade.toString}, spring
+     *  {@code MethodOverrideCallbackFilter.accept}). The must-still-charge rows are asserted first. */
+    @Test
+    void anObjectOwnedDispatchIsBoundedByTheReceiversDeclaredType() throws Exception {
+        Path cls = TestCompiler.compile(Map.of("rq/W.java", SRC_W, "rz/Z.java", SRC_R1299));
+        try {
+            Map<String, EffectSet> inf = Candor.runScan(cls);
+            EffectSet via = inf.getOrDefault("rz.Z.viaObjectOwner", EffectSet.empty());
+            assertTrue(via.contains(Effect.FS) && via.contains(Effect.CLOCK), "both Cv bodies still charge — got " + via);
+            assertTrue(inf.getOrDefault("rz.Z.ma", EffectSet.empty()).contains(Effect.FS),
+                    "an abstract class's hashCode still runs through its concrete subclass MB");
+            EffectSet any = inf.getOrDefault("rz.Z.anyObject", EffectSet.empty());
+            assertTrue(any.contains(Effect.ENV) && any.contains(Effect.FS), "an Object-typed receiver may be anything — got " + any);
+            assertFalse(via.contains(Effect.ENV), "R1299: Un and MO are not Cv — got " + via);
+            EffectSet mo = inf.getOrDefault("rz.Z.mo", EffectSet.empty());
+            assertFalse(mo.contains(Effect.ENV) || mo.contains(Effect.CLOCK) || mo.contains(Effect.UNKNOWN),
+                    "R1299: every concrete MO declares a pure toString; abstract MO never runs Object.toString — got " + mo);
+        } finally {
+            TestCompiler.rm(cls.getParent());
+        }
+    }
 }

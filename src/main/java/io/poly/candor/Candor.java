@@ -7252,7 +7252,32 @@ public class Candor {
                             + "\t" + min.owner + "." + min.name + min.desc);
                 return true;
             }
-            List<String> cha = chaTargets(min.owner, min.name, min.desc);
+            // SOUNDNESS R1299 — AN `Object`-OWNED INSTRUCTION IS CHA'D OVER THE RECEIVER'S DECLARED TYPE. javac names
+            // `java/lang/Object` as the owner of `x.toString()` whenever x's static type does not itself declare the
+            // member (an abstract `MethodOverride`, a pre-1.5 interface-typed field), so CHA over the OWNER fanned to
+            // every project class: `m.toString()` on an abstract `MO` whose subclasses all declare a pure toString
+            // was charged another hierarchy's Clock, and since R1235 every unrelated class's hashCode too
+            // (commons-beanutils `ConverterFacade.toString` over a `Converter` field: +Clock/Db/Log from
+            // `DynaBeanMapDecorator$MapEntry.hashCode`). The value's runtime class is a subtype of its declared type
+            // (a field descriptor, a parameter, a CHECKCAST, a call's return — Interp.ProvValue#declType, which
+            // collapses to null where two types merge), so that type's CHA is the whole candidate set. Where no
+            // narrower type is known (an Object-typed value, a merge), the owner is used as before.
+            String chaOwner = min.owner;
+            if (min.owner.equals("java/lang/Object") && provFrames != null) {
+                Frame<ProvValue> rf0 = provFrames[mn.instructions.indexOf(min)];
+                ProvValue rv = rf0 == null ? null : receiverProv(rf0, min);
+                // PROJECT types only: a JDK or dependency declared type is resolved elsewhere by its OWNER (κ, the
+                // chained join), and none of that keys on a receiver's declType — narrowing there could trade the
+                // Object-wide answer (often a broad Unknown) for an empty project CHA, i.e. a hedge for silence.
+                // …and only where that type HAS a candidate: an empty narrowed set (a project interface implemented
+                // only by lambdas or by consumers, e.g. guava's `ClosingCallable`) keeps the Object-wide answer and its
+                // `dispatch:` hedge. Whether an Object-protocol call on a zero-implementer open type should hedge is
+                // not this row's question — the `invokeinterface I.toString` spelling of the same source reads pure
+                // today — and a narrowing must not settle it by deleting the only disclosure.
+                if (rv != null && rv.declType != null && ctx.byName.containsKey(rv.declType)
+                        && !chaTargets(rv.declType, min.name, min.desc).isEmpty()) chaOwner = rv.declType;
+            }
+            List<String> cha = chaTargets(chaOwner, min.name, min.desc);
             // ⟨0.39⟩ SPEC §4 obligation 1 — RECORD THE DISPATCHED MEMBER, whatever the CHA answers.
             // REGARDLESS OF `broad`, of `targets`, and of whether this site ends up disclosing an Unknown:
             // the toggle R475 names runs between ZERO implementers (a disclosed Unknown, which the branches
@@ -7300,8 +7325,10 @@ public class Candor {
                     && provFrames[recvAt] != null) {
                 Frame<ProvValue> rf0 = provFrames[recvAt];
                 boolean onParam = provFrames[0] != null && paramIndexOf(mn, receiverProv(rf0, min), provFrames[0]) >= 0;
+                // R1299: the receiver's declared PROJECT type, not `java/lang/Object`, is what an unresolved producer
+                // falls back to (ExactTypes#decide CHAs over this owner) — see `chaOwner` above.
                 ExactTypes.record(id, mn, min, rf0.getStackSize() - Type.getArgumentTypes(min.desc).length - 1,
-                        min.owner, min.name, min.desc, onParam ? "P" : "D");
+                        chaOwner, min.name, min.desc, onParam ? "P" : "D");
             } else {
                 ctx.edges.get(id).addAll(targets);
             }

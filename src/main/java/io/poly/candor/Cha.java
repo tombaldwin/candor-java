@@ -796,7 +796,11 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
                 // Unknowns inside byte-buddy's own jar — pure methods, so precision, not soundness.)
                 String impl = nearestConcreteSuperNoReentry(cn.name, name, desc);
                 if (impl != null) out.add(impl);
-                else if ((impl = jdkReentryTarget(cn.name, name, desc)) != null) reentry.add(impl);
+                // SOUNDNESS R1299 — never for an ABSTRACT class: no instance of it exists, so the JDK body never runs
+                // on it; each concrete subtype is walked in its own turn and re-enters for itself. Spring's abstract
+                // `MethodOverride` (both concrete subclasses declare toString) was charged its own hashCode's Unknown.
+                else if ((cn.access & Opcodes.ACC_ABSTRACT) == 0
+                        && (impl = jdkReentryTarget(cn.name, name, desc)) != null) reentry.add(impl);
             }
         }
         // R1235: the re-entered bodies JOIN the answer, but never turn a narrow one broad. Every caller prices the

@@ -28,7 +28,11 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   units): 0 rows gain a concrete effect, 0 lose one, 19 newly carry `Unknown` (the overrides reached are themselves
   `Unknown`, e.g. commons-lang3's `ContextedException.getMessage`), and one interface-union row widens. Not covered:
   the JDK collection SKELETONS (`AbstractList.contains` → `get`, `AbstractCollection` → `iterator`, `AbstractMap` →
-  `entrySet`), which run project overrides the same way and still read absent.
+  `entrySet`), which run project overrides the same way and still read absent. **Known over-charges in this
+  release (SOUNDNESS R1299):** where the bytecode names `java/lang/Object` as the owner of a call on a receiver
+  typed by a project abstraction, the edge reaches unrelated classes' `hashCode`/`toString`. On the corpus that is
+  7 fabricated charges, e.g. commons-beanutils `ArrayConverter.toString` gaining Clock/Db/Log. These are
+  over-reports, not silences, and their fix is held for 0.40.15.
 
 - ⚠ **The AS-EFF-005 baseline guard judges the written report row, the same subject the baseline is** (R1232). The
   baseline is a report, and the writer widens some rows past the classifier's map — an interface/abstract union merged

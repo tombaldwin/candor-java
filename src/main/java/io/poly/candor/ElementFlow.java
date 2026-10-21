@@ -164,7 +164,8 @@ import org.objectweb.asm.tree.analysis.SourceValue;
 final class ElementFlow {
     private ElementFlow() {}
 
-    static final String EQ = ArgContract.EQUALS, HASH = ArgContract.HASHCODE, CMP = ArgContract.COMPARETO;
+    static final String EQ = ArgContract.EQUALS, HASH = ArgContract.HASHCODE, CMP = ArgContract.COMPARETO,
+            STR = ArgContract.TOSTRING;
     /** Not a member: the cell's elements are handed to a chained dependency (R1174). */
     static final String WITNESS = "W";
     static final String NAT = "NAT", BYCMP = "CMP", UNSORTED = "UNS";
@@ -1227,6 +1228,30 @@ final class ElementFlow {
         return false;
     }
 
+    /** R1235: a value statically a JDK {@code Collection} or {@code Map} — whose toString is the element-wise
+     *  AbstractCollection/AbstractMap one. Never an array (an array's toString is Object's identity string), never a
+     *  project class (its own toString decides), never a value known only as {@code Object}. */
+    private static boolean jdkContainer(ProvValue v) {
+        if (v == null || v.nullConst) return false;
+        return jdkContainerType(v.newType != null ? v.newType : v.declType);
+    }
+
+    private static boolean jdkContainerType(String t) {
+        if (t == null || !t.startsWith("java/util/")) return false;
+        if (t.equals("java/util/Collection") || t.equals("java/util/Map")) return true;
+        Set<String> sup = Candor.transSupers(t);
+        return sup.contains("java/util/Collection") || sup.contains("java/util/Map");
+    }
+
+    /** SOUNDNESS R1235 — {@code v}'s toString runs: if it is a container, its elements' (and a map's values') toString. */
+    private static void stringified(AnalysisContext c, Graph g, ClassNode cn, MethodNode mn, Frame<SourceValue>[] sf,
+            SourceValue v, String self, String id) {
+        for (String cell : cells(c, g, cn, mn, sf, v, self, 0)) {
+            g.dispatch(id, cell, STR);
+            g.dispatch(id, cell + VALS, STR);
+        }
+    }
+
     private static void scan(AnalysisContext c, Graph g, ClassNode cn, MethodNode mn) throws Exception {
         String id = Cha.methodId(cn.name.replace('/', '.'), mn.name, mn.desc);
         if (!c.edges.containsKey(id)) return;
@@ -1288,9 +1313,27 @@ final class ElementFlow {
                 }
                 continue;
             }
+            // SOUNDNESS R1235 — a container STRINGIFIED by a concat (`"l=" + list`) runs its toString, i.e. every element's
+            if (in instanceof InvokeDynamicInsnNode idn && idn.bsm != null
+                    && idn.bsm.getOwner().equals("java/lang/invoke/StringConcatFactory")) {
+                Type[] ia = Type.getArgumentTypes(idn.desc);
+                int ib = f.getStackSize() - ia.length;
+                Frame<ProvValue> ip = pf == null ? null : pf[i];
+                for (int j = 0; j < ia.length; j++)
+                    if (ia[j].getSort() == Type.OBJECT && ib + j >= 0 && ip != null && ib + j < ip.getStackSize()
+                            && jdkContainer(ip.getStack(ib + j)))
+                        stringified(c, g, cn, mn, sf, f.getStack(ib + j), self, id);
+                continue;
+            }
             if (!(in instanceof MethodInsnNode m)) continue;
             Type[] at = Type.getArgumentTypes(m.desc);
             int n = at.length, base = f.getStackSize() - n;
+            // SOUNDNESS R1235 — …and so does a container handed to a JDK string sink (String.valueOf, append(Object),
+            // Objects.toString, print(Object), a logger's Object argument): the same table Candor#contractReentry reads
+            if (Candor.isToStringSink(m.owner, m.name, m.desc) && pf != null && pf[i] != null)
+                for (int j = 0; j < n; j++)
+                    if (at[j].getSort() == Type.OBJECT && base + j >= 0 && jdkContainer(Candor.callArg(pf[i], m, j)))
+                        stringified(c, g, cn, mn, sf, f.getStack(base + j), self, id);
             boolean inst = op != Opcodes.INVOKESTATIC;
             SourceValue recv = inst && base - 1 >= 0 ? f.getStack(base - 1) : null;
             Frame<ProvValue> p = pf == null ? null : pf[i];
@@ -1438,6 +1481,14 @@ final class ElementFlow {
             // DISPATCHING operations over the elements
             if (inst && m.desc.equals("()I") && m.name.equals("hashCode"))
                 for (String cell : cells(c, g, cn, mn, sf, recv, self, 0)) g.dispatch(id, cell, HASH);
+            // SOUNDNESS R1235 — a JDK container's toString runs String.valueOf over every element (AbstractCollection),
+            // and over every key AND value (AbstractMap, Hashtable): `new ArrayList<>(List.of(s)).toString()` wrote the
+            // file s.toString() writes and read ABSENT (executed, JDK 21), while the same list's hashCode() was charged
+            if (inst && m.desc.equals("()Ljava/lang/String;") && m.name.equals("toString") && jdkContainerType(m.owner))
+                for (String cell : cells(c, g, cn, mn, sf, recv, self, 0)) {
+                    g.dispatch(id, cell, STR);
+                    if (mapOwner(m.owner)) g.dispatch(id, cell + VALS, STR);
+                }
             if (inst && m.name.equals("equals") && m.desc.equals("(Ljava/lang/Object;)Z")) {
                 for (String cell : cells(c, g, cn, mn, sf, recv, self, 0)) g.dispatch(id, cell, EQ);
                 // a SET's equals is containsAll over the argument: the argument's elements are hashed and compared

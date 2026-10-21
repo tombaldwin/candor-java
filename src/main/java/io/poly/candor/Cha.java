@@ -776,6 +776,7 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         List<String> memo = c.chaTargetsCache.get(key);
         if (memo != null) return memo;
         Set<String> out = new LinkedHashSet<>();
+        Set<String> reentry = new LinkedHashSet<>();   // SOUNDNESS R1235 — bodies a JDK body dispatches back to
         // O(subtypes-of-owner) via the precomputed reverse index instead of scanning ALL classes. The
         // candidate set + its order are identical to the old `for (ClassNode c : ALL) if (c.name==owner
         // || transSupers(c.name).contains(owner))` filter (see buildSubtypeIndex), so `out` — and thus
@@ -793,9 +794,20 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
                 // owner to c then UP c's chain. Resolve it so the dispatch isn't a false Unknown. (Found
                 // by the gradle-cache sweep: byte-buddy `MethodList.filter`/`getOnly` were 600+ false
                 // Unknowns inside byte-buddy's own jar — pure methods, so precision, not soundness.)
-                String impl = nearestConcreteSuper(cn.name, name, desc);
+                String impl = nearestConcreteSuperNoReentry(cn.name, name, desc);
                 if (impl != null) out.add(impl);
+                else if ((impl = jdkReentryTarget(cn.name, name, desc)) != null) reentry.add(impl);
             }
+        }
+        // R1235: the re-entered bodies JOIN the answer, but never turn a narrow one broad. Every caller prices the
+        // CHA bound on this list's size, and past it an Object-protocol dispatch keeps NO edge — so a substitute that
+        // carried the count over would delete every effect the declared overrides contribute today, trading a
+        // resolution for a loss. Where it would, the substitutes are left out (the answer this site gave before).
+        reentry.removeAll(out);
+        if (!reentry.isEmpty()) {
+            boolean wasNarrow = out.size() <= Rules.CHA_FANOUT_LIMIT;
+            if (!wasNarrow || out.size() + reentry.size() <= Rules.CHA_FANOUT_LIMIT || isClosedHierarchy(owner)) out.addAll(reentry);
+            else if (R1235_DEBUG) System.err.println("R1235FLIPHELD\t" + owner + "." + name + "\t" + out.size() + "+" + reentry.size());
         }
         // owner itself inherits a concrete from a SUPER (a default on a super-interface) with no subtype
         // contributing — the original single-receiver inherited-concrete case.
@@ -835,6 +847,12 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
      *  `Root.go()` and `Trace.go()` are concrete resolved to {@code Trace.go} and `h.go()` read PURE,
      *  though the JVM runs {@code Root.go}. {@link #resolutionOrder} is the fix and the shared walk. */
     static String nearestConcreteSuper(String internal, String name, String desc) {
+        String m = nearestConcreteSuperNoReentry(internal, name, desc);
+        return m != null ? m : jdkReentryTarget(internal, name, desc);
+    }
+
+    /** {@link #nearestConcreteSuper} without the R1235 re-entry: the project declaration alone. */
+    static String nearestConcreteSuperNoReentry(String internal, String name, String desc) {
         AnalysisContext cx = ctx();   // hoist the ThreadLocal lookup out of the per-super loop
         List<String> order = resolutionOrder(internal, false);
         for (int i = 1; i < order.size(); i++) {          // index 0 is `internal` itself
@@ -844,6 +862,52 @@ public final class Cha { // public only so the verify -javaagent can reuse the o
         }
         return null;
     }
+
+    /**
+     * SOUNDNESS R1235 — A JDK BODY THAT DISPATCHES BACK ON ITS OWN RECEIVER. When no project class in
+     * {@code internal}'s chain declares the member, the body that runs is a JDK one, and the walk above has
+     * always answered "nothing to edge" — true of the JDK body's own instructions, false of what it CALLS.
+     * {@code Object.toString()} is {@code getClass().getName() + "@" + Integer.toHexString(hashCode())}: a
+     * VIRTUAL {@code this.hashCode()}. So {@code class H { int hashCode(){ writes a file } }} with no
+     * {@code toString} wrote the file on {@code h.toString()}, {@code "" + h}, {@code String.valueOf(h)},
+     * {@code sb.append(h)} and {@code Objects.toString(h)} — and every one read ABSENT, {@code deny Fs} exit 0
+     * (executed, JDK 21). {@code Throwable.toString()} is the same shape one level up: it calls
+     * {@code this.getLocalizedMessage()}, whose own body calls {@code this.getMessage()}.
+     *
+     * <p>The answer is the body the JDK one dispatches to, resolved on the SAME receiver class — a resolution,
+     * not a hedge: that body's effects are exactly what the call adds, because the rest of each JDK body here
+     * is pure string building. Returned in place of {@code null}, so every resolver that already asks this
+     * question (CHA's per-subtype walk, {@link #monomorphicTarget}, the JDK re-entry sinks via
+     * {@code reentryTargets}, the argument contracts' {@code jvmTarget}) gets it without a second copy.
+     *
+     * <p>Decided only where the JDK body is KNOWN: the first class past the project chain is {@code Object}
+     * itself (so the body is {@code Object.toString}), or a {@code java.*} {@code Throwable} for the two
+     * Throwable members. A project class extending any other JDK or library class keeps the old answer — that
+     * class may override the member with a body this table does not describe. No project body for the driven
+     * member (an {@code Object.hashCode}, a {@code Throwable.getMessage}) is pure, and stays null.
+     */
+    static String jdkReentryTarget(String internal, String name, String desc) {
+        boolean toStr = name.equals("toString") && desc.equals("()Ljava/lang/String;");
+        boolean locMsg = name.equals("getLocalizedMessage") && desc.equals("()Ljava/lang/String;");
+        if (!toStr && !locMsg) return null;
+        AnalysisContext c = ctx();
+        String x = internal;
+        for (ClassNode cn; (cn = c.byName.get(x)) != null; x = cn.superName) {
+            if ((cn.access & Opcodes.ACC_INTERFACE) != 0 || cn.superName == null) return null;
+        }
+        if (x.equals(internal)) return null;                     // not a project class: nothing of ours runs
+        String[] driven = null;
+        if (toStr && x.equals("java/lang/Object")) driven = new String[] {"hashCode", "()I"};
+        else if (x.startsWith("java/") && (x.equals("java/lang/Throwable")
+                || Candor.transSupers(x).contains("java/lang/Throwable")))
+            driven = toStr ? new String[] {"getLocalizedMessage", "()Ljava/lang/String;"}
+                           : new String[] {"getMessage", "()Ljava/lang/String;"};
+        if (driven == null) return null;
+        if (R1235_DEBUG) System.err.println("R1235\t" + internal + "." + name + "\t" + x + "\t" + driven[0]);
+        return monomorphicTarget(internal, driven[0], driven[1]);
+    }
+
+    static final boolean R1235_DEBUG = System.getenv("CANDOR_R1235_DEBUG") != null;
 
     /** The node/edge id for a project method. UNIQUE name in its class → bare `class.method` (so every
      *  non-overloaded method, including every conformance fixture matched by leaf name, is unchanged).

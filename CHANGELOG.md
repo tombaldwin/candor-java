@@ -9,6 +9,23 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **A JDK body that dispatches back into project code now charges the body it runs** (R1235). Executed on JDK 21,
+  each of these wrote a file and read absent (`deny Fs` exit 0): `Object.toString()` runs `this.hashCode()`, so a class
+  overriding an effectful `hashCode` but not `toString` was pure under `h.toString()`, `"" + h`, `String.valueOf(h)`,
+  `append(h)` and `Objects.toString(h)`; `Throwable.toString()` runs `getLocalizedMessage()` → `getMessage()`;
+  `Objects.hashCode(p)`/`Objects.equals(p, q)` on a parameter charged only the callers; and a JDK collection or map
+  stringified (explicitly, by concat, or through a string sink) runs every element's and value's `toString`. Each is
+  now a resolution — the override's own effects, never an `Unknown` — and its controls stay pure (a pure `toString`
+  over an effectful `hashCode`, an array stringified). Measured on commons-lang3, joda-time and gson (9,964 analysed
+  units): 0 rows gain a concrete effect, 0 lose one, 19 newly carry `Unknown` (the overrides reached are themselves
+  `Unknown`, e.g. commons-lang3's `ContextedException.getMessage`), and one interface-union row widens. Not covered:
+  the JDK collection SKELETONS (`AbstractList.contains` → `get`, `AbstractCollection` → `iterator`, `AbstractMap` →
+  `entrySet`), which run project overrides the same way and still read absent. **Known over-charges in this
+  release (SOUNDNESS R1299):** where the bytecode names `java/lang/Object` as the owner of a call on a receiver
+  typed by a project abstraction, the edge reaches unrelated classes' `hashCode`/`toString`. On the corpus that is
+  7 fabricated charges, e.g. commons-beanutils `ArrayConverter.toString` gaining Clock/Db/Log. These are
+  over-reports, not silences, and their fix is held for 0.40.15.
+
 ## [0.40.14] — 2026-10-21
 
 - **`jbang-catalog.json` points at the v0.40.14 jar.**

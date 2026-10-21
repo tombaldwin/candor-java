@@ -9,6 +9,15 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **A chained call through an interface member whose dependency row is a merged DEFAULT method carries the
+  overrides' reasons** (R1327, SPEC §6.2). The producer merges an interface's implementers into its default
+  method's row, so the row carries the overrides' effects, but its `unknownWhy` and `calls` are the default
+  body's own. A consumer dispatching on that member took the effects and only the default body's reason classes:
+  scala-compiler's `TypeClassConstraint.toString` gave its chained callers `dispatch` where an override reads by
+  reflection, and `deny Unknown[reflect,unresolved]` read 1 against v0.40.13 and 0 here. The consumer now walks
+  down to the overrides' own rows for that shape, as it already did for `invokevirtual`. The row itself is left
+  unchanged: adding the reasons there gave an exact `Shape.super.name()` caller the overrides' class on the
+  producer's report route only.
 - **A chained consumer joining two overloads of one member carries each union entry's own reasons** (R1326,
   SPEC §3.1/§6.2). The union entries of an overloaded member share one `fn`, and the consumer's reason memo was
   keyed by `fn` but seeded with whichever entry it was asked about first, so every sibling got THAT entry's

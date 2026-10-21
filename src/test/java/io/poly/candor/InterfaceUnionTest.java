@@ -600,6 +600,39 @@ class InterfaceUnionTest {
                 "put(Iterable) only: its own class, not its sibling's — got " + fns.get("app.Go.onlyIter").get("unknownWhy"));
     }
 
+    /** ⟨0.40⟩ SOUNDNESS R1327 — a DEFAULT method the producer merged its implementers' union into (a claimed hash):
+     *  the row takes the override's {@code Fs} but its reasons are the default body's own ({@code native}). A
+     *  consumer DISPATCHING on the interface member must carry the override's {@code reflect} too (scala-compiler
+     *  {@code TypeClassConstraint.toString}); a consumer reaching the default body through an EXACT
+     *  {@code Shape.super.name()} must not (that is what putting the reasons on the row got wrong). Executed in
+     *  {@code ~/candor-handoff/javaagent-d/fx2}: {@code go(new RShape())} prints $HOME through Method.invoke. */
+    @Test
+    void aDispatchOnAMergedDefaultMethodCarriesTheOverridesReasonsAndAnExactCallDoesNot() throws Exception {
+        Map<String, String> lib = new java.util.HashMap<>();
+        lib.put("lib/H.java", "package lib;\npublic class H { static native int nat(); }\n");
+        lib.put("lib/Shape.java", "package lib;\npublic interface Shape { default String name() { return \"n\" + H.nat(); } }\n");
+        lib.put("lib/RShape.java", "package lib;\npublic class RShape implements Shape {\n"
+                + "  public String name() { try { java.nio.file.Files.readAllBytes(java.nio.file.Path.of(\"/etc/hosts\"));\n"
+                + "    Class<?> c = Class.forName(\"java.lang.Sys\" + \"tem\");\n"
+                + "    return (String) c.getMethod(\"getenv\", String.class).invoke(null, \"HOME\"); }\n"
+                + "    catch (Exception e) { return null; } }\n}\n");
+        lib.put("lib/PShape.java", "package lib;\npublic class PShape implements Shape {\n"
+                + "  public String plain() { return Shape.super.name(); }\n}\n");
+        Map<String, Object> merged = depReport(lib, true).get("lib/Shape.name()Ljava/lang/String;");
+        assertNotNull(merged);
+        assertNull(merged.get("interfaceUnion"), "precondition: a REAL row the union was merged into");
+        assertTrue(((List<?>) merged.get("inferred")).contains("Fs"), "precondition: the merge carried the override's Fs");
+
+        Map<String, String> app = Map.of("app/Go.java", "package app;\npublic class Go {\n"
+                + "  public String viaIface(lib.Shape s) { return s.name(); }\n"
+                + "  public String viaExact(lib.PShape p) { return p.plain(); }\n}\n");
+        Map<String, Map<String, Object>> fns = chainedApp(lib, app, true);
+        assertEquals(java.util.Set.of("native", "reflect"), classesOf(fns.get("app.Go.viaIface").get("unknownWhy")),
+                "a dispatch on the merged member reaches the override's class — got " + fns.get("app.Go.viaIface").get("unknownWhy"));
+        assertEquals(java.util.Set.of("native"), classesOf(fns.get("app.Go.viaExact").get("unknownWhy")),
+                "an exact call to the default body does not — got " + fns.get("app.Go.viaExact").get("unknownWhy"));
+    }
+
     /** …and a union whose implementers carry NO {@code Unknown} carries no reason. */
     @Test
     void aUnionWithoutUnknownCarriesNoReason() throws Exception {

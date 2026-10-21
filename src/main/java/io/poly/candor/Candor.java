@@ -7656,6 +7656,26 @@ public class Candor {
                 recv = monoRecv != null ? monoRecv : monomorphicReceiver(provFrames == null ? null
                         : provFrames[mn.instructions.indexOf(min)], min);
                 depHierarchyJoin(ctx, id, min, inh, recv);
+            } else if (xop == Opcodes.INVOKEINTERFACE && inh != null && !inh.syntheticOnly && !inh.walkOnly) {
+                // SOUNDNESS R1327 — AN INTERFACE MEMBER THAT HITS A *REAL* ROW IS A DEFAULT METHOD, and the
+                // producer MERGED its implementers' union into that row (ReportWriter#mergeUnionInto): the
+                // overrides' EFFECTS arrive, their REASONS do not — the real row's `unknownWhy` is the default
+                // body's own, and `calls` names the default body's callees, not the overrides. Measured:
+                // scala-compiler `TypeClassConstraint.toString` carried {Clock,Env,Fs,Log,Net,Unknown} from
+                // `KnownTypeClassConstraint.toString` & co. ({dispatch,indirect,reflect}) and a chained
+                // `deny Unknown[reflect,unresolved]` read 1 -> 0 against v0.40.13 (R1326's scala units).
+                // So the DOWN walk the INVOKEVIRTUAL path already takes is taken here for this one shape:
+                // joining each override's own row brings its reasons (and effects the merge already carried).
+                // NOT FIXED BY PUTTING THEM ON THE ROW: measured, that made an EXACT `I.super.m()` caller read
+                // the overrides' class on the producer's report route only (scan 0, report 1) and at a chained
+                // consumer of that caller — `calls` cannot tell a dispatch from an invokespecial. The walk only
+                // runs where THIS call site dispatches. A union hit (`syntheticOnly`) already carries its
+                // contributors' reasons (R1239) and is left alone, as is a walk-only hop.
+                String irecv = monoRecv != null ? monoRecv : monomorphicReceiver(provFrames == null ? null
+                        : provFrames[mn.instructions.indexOf(min)], min);
+                if (R867_DEBUG) System.err.println("R1327\tIFACE\t" + id + "\t" + min.owner + "." + min.name
+                        + min.desc + "\t" + (irecv != null ? "exact" : "down"));   // reach probe
+                depHierarchyJoin(ctx, id, min, inh, irecv);
             }
             // SOUNDNESS R868 — …and UP, to the declaration the static owner INHERITS. Additive, like the walk
             // above: it only calls `inheritDepFn` or adds an `Unknown`. A receiver PROVABLY of a stricter
@@ -8815,7 +8835,9 @@ public class Candor {
      * ({@code depIndexed}): {@code java/io/InputStream.read()} must not pick up one library's override, the
      * κ-frontier fabrication {@code ReportWriter.unionCandidates} refuses. INVOKEINTERFACE is untouched —
      * the producer's ⟨0.23⟩/⟨0.39⟩ union already answers an interface member, and a second union here
-     * would re-price its fan-out bound. A FINAL member has no override to find; a PRIVATE base member is
+     * would re-price its fan-out bound — EXCEPT where the key is a REAL row (a default method the producer
+     * merged its union into), whose overrides' reasons the row does not carry (SOUNDNESS R1327, at the
+     * call site in #crossDepJoin). A FINAL member has no override to find; a PRIVATE base member is
      * never the consumer's call target. A project subtype is the in-scan CHA's business, never this one's.
      *
      * <p><b>THE OVER-APPROXIMATIONS IT ACCEPTS, named so they can be measured rather than assumed away.</b>

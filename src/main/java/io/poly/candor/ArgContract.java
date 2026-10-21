@@ -167,12 +167,7 @@ final class ArgContract {
             ProvValue a0 = Candor.callArg(f, min, 0);
             int p = Candor.paramIndexOf(s.mn, a0, f0);
             if (p >= 0) for (String con : ehc) direct(c, s.id, p, con.equals(Candor.C_EQUALS) ? EQUALS : HASHCODE, min);
-            // SOUNDNESS R1235 — …and over a PARAMETER too, by its declared type. The parameter contract above charges
-            // the CALLERS by the argument they pass; the body itself was charged nothing, so `int f(H h) { return
-            // Objects.hashCode(h); }` read ABSENT under a scoped `deny Fs` while `h.hashCode()` and `map.put(h, 1)` in
-            // the same body read Fs (executed: H's hashCode writes a file). The declared type's one-body rule
-            // (bodiesFor) is what `map.put(h, 1)` already gets through Candor#contractReentry, which leaves Objects here.
-            if (min.owner.equals("java/util/Objects") && a0 != null && !a0.nullConst && !a0.fromIndy) {
+            else if (min.owner.equals("java/util/Objects") && a0 != null && !a0.nullConst && !a0.fromIndy) {
                 // SOUNDNESS R1203 — `Objects.equals(a, b)`/`Objects.hashCode(o)` at a call site: the R1166 sibling,
                 // resolved by THIS mechanism's one-body rule (Candor#contractReentry leaves Objects to it). e9d4868 added
                 // it, f28b565 dropped it with the chained join it rode on, and both calls read pure over an exact

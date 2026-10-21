@@ -251,10 +251,6 @@ final class ExactTypes {
         while (cur != null) {
             ClassNode cn = c.byName.get(cur);
             if (cn == null) {
-                // SOUNDNESS R1235 — the JDK body that runs may dispatch back on this receiver: Object.toString runs
-                // this.hashCode(), Throwable.toString this.getLocalizedMessage() (Cha#jdkReentryTarget)
-                String re = Cha.jdkReentryTarget(t, name, desc);
-                if (re != null) return re;
                 if (!cur.equals("java/lang/Object") && !cur.equals("java/lang/Enum")) return null;
                 if (!name.equals("compareTo")) return "";
                 if (cur.equals("java/lang/Enum")) return "";

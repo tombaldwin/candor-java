@@ -733,6 +733,28 @@ final class ArgContract {
                 if (grew) work.add(in[0]);
             }
         }
+        // SOUNDNESS R1337 — a body that hands its own PROJECT-typed parameter on to a stringifying contract is decided by
+        // that declared type, by the one-body rule — the rule R1235 gave a parameter handed straight to Objects.hashCode.
+        // Needed since a cause declared by an open JDK type is no longer CHA'd at the JDK constructor
+        // (Candor#openParamOperand): `viaProject(MsgEx e) { return new CliEx(e); }` read Fs only through that CHA edge.
+        if (Candor.R1337)
+            for (var e : reach.entrySet()) {
+                String h = c.hashOf.get(e.getKey());
+                int paren = h == null ? -1 : h.indexOf('(');
+                if (paren < 0) continue;
+                Type[] at;
+                try { at = Type.getArgumentTypes(h.substring(paren)); } catch (RuntimeException x) { continue; }
+                for (String pk : e.getValue()) {
+                    int tab = pk.indexOf('\t');
+                    if (!pk.substring(tab + 1).equals(TOSTRING)) continue;
+                    int p = Integer.parseInt(pk.substring(0, tab));
+                    if (p >= at.length || at[p].getSort() != Type.OBJECT) continue;
+                    String t = at[p].getInternalName();
+                    if (!c.byName.containsKey(t)) continue;   // a project type: an open JDK type is the floor's question
+                    if (DEBUG) System.err.println("R1337PARAM\t" + e.getKey() + "\t" + p + "\t" + t);
+                    applyResolved(c, e.getKey(), TOSTRING, t, false, false);
+                }
+            }
         for (var e : c.argContractSites.entrySet()) {
             String caller = e.getKey();
             for (String x : e.getValue()) {

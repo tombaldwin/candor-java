@@ -5721,7 +5721,15 @@ public class Candor {
                         .add("java/lang/Throwable.toString()Ljava/lang/String;\tjava/lang/Throwable\tS4");
             int[] cs = throwableCtorStringified(min);
             if (cs.length > 0) {
-                for (int j : cs) reentryEdgeOrDisclose(id, callArg(rf, min, j), C_TOSTRING);
+                for (int j : cs) {
+                    ProvValue cause = callArg(rf, min, j);
+                    // SOUNDNESS R1337 — see #openParamOperand: a cause that is this body's own parameter, declared by an open
+                    // JDK type, is decided per CALLER (ArgContract#site records it) and only disclosed here
+                    if (openParamOperand(s, cause))
+                        ctx().argContractCalls.computeIfAbsent(id, k -> new TreeSet<>())
+                                .add(ArgContract.TOSTRING + "\t" + cause.declType + "\t0");
+                    else reentryEdgeOrDisclose(id, cause, C_TOSTRING);
+                }
                 stringifiedOperands(s, min, cs);
             }
             // The KEY/element argument — for Map.* it is the FIRST arg (the key); for the collection verbs
@@ -5814,6 +5822,27 @@ public class Candor {
     /** SOUNDNESS R1305 — the arguments a JDK {@code Throwable} constructor runs {@code toString()} on
      *  ({@link Rules#THROWABLE_CTOR_TOSTRING}); empty for any other instruction. */
     static final boolean R1306 = !"0".equals(System.getenv("CANDOR_R1306"));
+
+    /** SOUNDNESS R1337 — A STRINGIFIED CAUSE THAT IS THIS BODY'S OWN PARAMETER, DECLARED BY AN OPEN JDK TYPE, IS NOT
+     *  CHA'D OVER THAT TYPE HERE. {@code CliException(Throwable c) { super(c); }} was edged to the {@code toString} (and,
+     *  through Throwable's re-entry, the {@code getMessage}) of EVERY project throwable, and the fixpoint handed those
+     *  charges to every caller whatever it passed: zookeeper's {@code new CliParseException(parseEx)} — a commons-cli
+     *  cause no project override can run on — charged 20 {@code CliCommand.parse} overrides {@code Fs, Log, Net}
+     *  (executed fixture fx1337: a JDK {@code java.text.ParseException} cause wrote nothing, and read {@code Fs}).
+     *
+     *  <p>The CALLER knows the argument: {@link ArgContract#site} already records this parameter as a {@code toString}
+     *  contract, so each caller is resolved by the type it passes (one body charged, a WIDE type disclosed, a foreign
+     *  type nothing). This body is decided by the rule R1235 gave {@code Objects.hashCode(p)} over a parameter
+     *  ({@link ArgContract#bodiesFor}): a {@code java.*} declared type never names one body, so it is DISCLOSED
+     *  ({@code Unknown[dispatch:java.lang.Object.toString]}) where some override carries an effect it lacks, never
+     *  charged as if every one ran. A PROJECT declared type keeps the CHA edge (a closed, enumerable set).
+     *  {@code CANDOR_R1337=0} restores the edge, as a measurement arm. */
+    static boolean openParamOperand(MethodScan s, ProvValue v) {
+        if (!R1337 || v == null || v.declType == null || !v.declType.startsWith("java/") || s.provFrames == null
+                || s.provFrames[0] == null) return false;
+        return paramIndexOf(s.mn, v, s.provFrames[0]) >= 0;
+    }
+    static final boolean R1337 = !"0".equals(System.getenv("CANDOR_R1337"));
 
     static int[] throwableCtorStringified(MethodInsnNode min) {
         if (min.getOpcode() != Opcodes.INVOKESPECIAL || !min.name.equals("<init>") || !min.owner.startsWith("java/"))

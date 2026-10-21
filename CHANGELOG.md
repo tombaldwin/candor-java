@@ -9,6 +9,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+## [0.40.14] — 2026-10-21
+
 - ⚠ **A policy file that starts with a UTF-8 byte-order mark has its first rule enforced** (R1224, SPEC §6.2 ⟨0.40⟩,
   the owner's ruling). A U+FEFF at byte offset 0 is now stripped before the file is split into lines; it used to stay
   in the first token, so `\uFEFFdeny Fs` was an unknown rule kind and was ignored. A one-rule BOM'd policy went from

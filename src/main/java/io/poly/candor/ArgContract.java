@@ -507,13 +507,15 @@ final class ArgContract {
             String caller = w[0], key = w[1], t = w[2];
             int paren = key.indexOf('('), dot = key.lastIndexOf('.', paren);
             String owner = key.substring(0, dot), name = key.substring(dot + 1, paren), desc = key.substring(paren);
+            boolean unknownToo = R1303_UNKNOWN && R1337_WIDE.get().contains(caller + "\t" + key + "\t" + t);
             for (String b : Cha.chaTargets(t, name, desc))
-                if (newConcrete(fx, b, caller)) {
+                if (newConcrete(fx, b, caller) || (unknownToo && newUnknown(fx, b, caller))) {
                     added |= disclose(c, caller, owner, name, "R1166WIDEU", t, b);
                     break;
                 }
         }
         WIDE_SITES.get().clear();
+        R1337_WIDE.get().clear();
         // SOUNDNESS R1184 — compareTo the JDK may run where whether it does is not decidable here (tree bins, a
         // container out of sight). The tree-bin keys recorded at the analyze-time sites join ElementFlow's here.
         for (var e : c.treeBinKeys.entrySet())
@@ -600,6 +602,9 @@ final class ArgContract {
         return added;
     }
 
+    /** SOUNDNESS R1337 — the WIDE sites recorded for a JDK-typed parameter cause ({@link Candor#openParamOperand}). */
+    private static final ThreadLocal<Set<String>> R1337_WIDE = ThreadLocal.withInitial(HashSet::new);
+
     /** The Object floor's sites, kept after {@link #postFixpoint} so {@link #floorAgain} can re-decide them. */
     private static final ThreadLocal<List<List<String>>> FLOOR_SITES = ThreadLocal.withInitial(ArrayList::new);
 
@@ -679,6 +684,7 @@ final class ArgContract {
     static void resolve() {
         AnalysisContext c = ctx();
         SPEC_MEMO.get().clear();
+        R1337_WIDE.get().clear();
         THIS_MEMO.get().clear();
         PENDING.get().clear();
         BY_CALLER.get().clear();
@@ -700,8 +706,11 @@ final class ArgContract {
         // SOUNDNESS R1203 — `Objects.equals/hashCode` over a non-parameter value at a call site (ArgContract#site)
         for (var e : c.argContractCalls.entrySet())
             for (String x : e.getValue()) {
-                String[] a = x.split("\t", 3);   // key, type, exact
+                String[] a = x.split("\t", 4);   // key, type, exact[, R1337]
                 if (DEBUG) System.err.println("R1201OBJECTS\t" + e.getKey() + "\t" + a[0] + "\t" + a[1]);
+                // SOUNDNESS R1337 — a JDK-typed parameter cause is decided like the Object floor (R1303): a WIDE answer
+                // discloses where some candidate carries an Unknown the body lacks, not only a concrete effect
+                if (a.length > 3 && a[3].equals("R1337")) R1337_WIDE.get().add(e.getKey() + "\t" + a[0] + "\t" + a[1]);
                 applyResolved(c, e.getKey(), a[0], a[1], a[2].equals("1"), false);
             }
         if (c.argContractDirect.isEmpty()) return;

@@ -57,4 +57,22 @@ class CauseParamR1337Test {
             TestCompiler.rm(cls.getParent());
         }
     }
+
+    /** The body itself stays disclosed (R1303's rule): its only project throwable's getMessage is an Unknown. */
+    static final String SRC_U = ""
+            + "package q;\n"
+            + "class RefEx extends RuntimeException { @Override public String getMessage() { try { Class.forName(System.getProperty(\"r1337\", \"java.lang.String\")); } catch (Exception e) {} return \"m\"; } }\n"
+            + "public class CliEx extends Exception { public CliEx(Throwable c) { super(c); } }\n";
+
+    @Test
+    void aJdkTypedCauseParameterIsDisclosedWhereAnOverrideIsUnknown() throws Exception {
+        Path cls = TestCompiler.compile(Map.of("q/CliEx.java", SRC_U));
+        try {
+            Map<String, EffectSet> inf = Candor.runScan(cls);
+            assertTrue(inf.getOrDefault("q.CliEx.<init>", EffectSet.empty()).contains(Effect.UNKNOWN),
+                    "R1337: the WIDE cause must disclose an override's Unknown — got " + inf.get("q.CliEx.<init>"));
+        } finally {
+            TestCompiler.rm(cls.getParent());
+        }
+    }
 }

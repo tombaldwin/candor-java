@@ -5727,7 +5727,7 @@ public class Candor {
                     // JDK type, is decided per CALLER (ArgContract#site records it) and only disclosed here
                     if (openParamOperand(s, cause))
                         ctx().argContractCalls.computeIfAbsent(id, k -> new TreeSet<>())
-                                .add(ArgContract.TOSTRING + "\t" + cause.declType + "\t0");
+                                .add(ArgContract.TOSTRING + "\t" + cause.declType + "\t0\tR1337");
                     else reentryEdgeOrDisclose(id, cause, C_TOSTRING);
                 }
                 stringifiedOperands(s, min, cs);

@@ -8908,7 +8908,9 @@ public class Candor {
         // SOUNDNESS R1336 — the dependency subtypes that DECLARE the member, pure or not: what the bound counts.
         int declaring = 0;
         int undecided = 0;   // R1336/P6: subtypes whose declaration no paired, complete sidecar can decide
-        boolean bareAmbiguous = depNameOverloaded(ctx, min.owner, name);
+        // ONE RULE for every question this walk asks about the member's other declarations (R1336/P6; Fable
+        // REVIEW2–4: ovl1 → ovl2 → ovl3 each landed one shape past a separately-computed rule). See #depLineState.
+        int lineState = depLineState(ctx, min.owner, name, desc);
         ArrayDeque<String> q = new ArrayDeque<>(ctx.depSubtypes.getOrDefault(min.owner, List.of()));
         while (!q.isEmpty()) {
             String t = q.poll();
@@ -8918,7 +8920,7 @@ public class Candor {
             DepFn d = depOverrideAt(t, name, desc);
             if (d != null) declaring++;
             else {
-                int a = depDeclares(ctx, t, name, desc, bareAmbiguous);
+                int a = depDeclares(ctx, t, min.owner, name, desc, lineState);
                 if (a > 0) declaring++;
                 else if (a < 0) undecided++;
             }
@@ -8995,8 +8997,7 @@ public class Candor {
             // ancestor the sibling it dispatches to). So the own-key hedge is trusted only where a paired, complete
             // sidecar covers the owner and EVERY dependency ancestor and shows no overload on any of them; with no
             // sidecar it is never trusted (rows unioned beside a hedge instead — wider, never narrower).
-            boolean overloaded = bareAmbiguous || (inh != null && inh.fn != null && inh.fn.indexOf('(') >= 0)
-                    || !depLineCovered(ctx, min.owner);
+            boolean overloaded = lineState != LINE_CLEAN || (inh != null && inh.fn != null && inh.fn.indexOf('(') >= 0);
             if (inh != null && (inh.syntheticOnly || (!overloaded
                     && inh.unknownWhy.contains("dispatch:" + min.owner.replace('/', '.') + "." + name)))) {
                 if (R867_DEBUG) System.err.println("R867\tUNANSWERED-UNION\t" + id + "\t" + min.owner + "." + name + desc);
@@ -9086,51 +9087,158 @@ public class Candor {
         }
     }
 
-    /** SOUNDNESS R1336 — whether a PAIRED, COMPLETE call-graph sidecar says {@code t} declares {@code (name,desc)}:
-     *  1 yes, 0 no, -1 unanswerable. Yes under either disambiguated spelling ({@link Cha#methodId}) or the BARE qual
-     *  ({@code t} declares exactly one non-bridge method of that name). Unanswerable when {@code t}'s report has no
-     *  paired complete sidecar ({@code depCgCoveredTypes}), or when the qual is bare and the owner has overloads: the
-     *  bare qual carries no descriptor, so it cannot say which overload it overrides (log4j's
-     *  {@code LogEventPatternConverter.format(Object,StringBuilder)} vs {@code (LogEvent,StringBuilder)}, which a
-     *  first cut over-counted into a hedge the one-tree scan does not make). */
-    static int depDeclares(AnalysisContext ctx, String t, String name, String desc, boolean bareAmbiguous) {
+    /** SOUNDNESS R1336/P6 — whether {@code t} declares {@code (name,desc)}: 1 yes, 0 no, -1 undecided.
+     *  Yes under either disambiguated qual ({@link Cha#methodId}). The BARE qual says only "t declares exactly one
+     *  method named {@code name}", with no descriptor, so it is decided as this member only where
+     *  {@link #depLineState} proves the owner's line CLEAN and no type between {@code t} and the owner declares the name
+     *  either; otherwise undecided. Undecided also when {@code t}'s own report has no paired, complete sidecar. */
+    static int depDeclares(AnalysisContext ctx, String t, String owner, String name, String desc, int lineState) {
         if (!ctx.depCgCoveredTypes.contains(t)) return -1;
         Set<String> m = ctx.depDeclaredMembers.getOrDefault(t, Set.of());
         if (m.contains(name + "(" + Cha.paramTypeList(desc) + ")")
                 || m.contains(name + "(" + Cha.paramTypeListFq(desc) + ")")) return 1;
-        if (m.contains(name)) return bareAmbiguous ? -1 : 1;
-        return 0;
+        if (!m.contains(name)) {
+            for (String k : m) if (k.startsWith(name + "(")) return 0;   // only OTHER overloads: not this member
+            return 0;
+        }
+        if (lineState != LINE_CLEAN) return -1;
+        // the types strictly between t and the owner must not declare the name at all (any of them could hold the
+        // overload t's bare qual overrides)
+        ArrayDeque<String> q = new ArrayDeque<>(ctx.depSupers.getOrDefault(t, List.of()));
+        Set<String> seen = new HashSet<>();
+        while (!q.isEmpty()) {
+            String u = q.poll();
+            if (!seen.add(u) || u.equals(owner) || isAncestorOrSelf(ctx, owner, u)) continue;
+            int st = declState(ctx, u, name, desc);
+            if (st != DECL_NONE) return -1;
+            q.addAll(ctx.depSupers.getOrDefault(u, List.of()));
+        }
+        return 1;
     }
 
-    /** SOUNDNESS R1336/P6 — whether a paired, complete call-graph sidecar covers {@code owner} and every chained
-     *  dependency ancestor of it (depSupers' closure, dependency-declared types only). */
-    static boolean depLineCovered(AnalysisContext ctx, String owner) {
+    private static boolean isAncestorOrSelf(AnalysisContext ctx, String owner, String u) {
+        return lineOf(ctx, owner).contains(u);
+    }
+
+    static final int LINE_CLEAN = 0, LINE_AMBIGUOUS = 1, LINE_UNKNOWN = 2;
+    static final int DECL_NONE = 0, DECL_EXACT = 1, DECL_BARE_UNKNOWN = 2, DECL_OTHER = 3, DECL_UNCOVERED = 4;
+
+    /** The owner and every ancestor, nearest first: chained types through their hierarchy sidecars, project types
+     *  through their ClassNodes, anything else through the classpath (the JDK). An ancestor none of these can read
+     *  still appears — it is what makes a line UNKNOWN. */
+    static List<String> lineOf(AnalysisContext ctx, String owner) {
+        List<String> out = new ArrayList<>();
         ArrayDeque<String> q = new ArrayDeque<>(List.of(owner));
         Set<String> seen = new HashSet<>();
         while (!q.isEmpty()) {
             String t = q.poll();
             if (!seen.add(t)) continue;
-            if (ctx.depIndexed.contains(t) && !ctx.depCgCoveredTypes.contains(t)) return false;
-            q.addAll(ctx.depSupers.getOrDefault(t, List.of()));
+            out.add(t);
+            List<String> sup = ctx.depSupers.get(t);
+            if (sup == null) {
+                ClassNode cn = ctx.byName.get(t);
+                if (cn != null) {
+                    sup = new ArrayList<>();
+                    if (cn.superName != null) sup.add(cn.superName);
+                    if (cn.interfaces != null) sup.addAll(cn.interfaces);
+                } else sup = Cha.externalSupers(t);
+            }
+            q.addAll(sup);
         }
-        return true;
+        return out;
     }
 
-    /** SOUNDNESS R1336 — whether {@code owner} or a chained ancestor of it declares {@code name} under a
-     *  DISAMBIGUATED qual, i.e. as one of several overloads; see {@link #depDeclares}. */
-    static boolean depNameOverloaded(AnalysisContext ctx, String owner, String name) {
-        if (ctx.depDeclaredMembers.isEmpty()) return false;
-        String pre = name + "(";
-        ArrayDeque<String> q = new ArrayDeque<>(List.of(owner));
-        Set<String> seen = new HashSet<>();
-        while (!q.isEmpty()) {
-            String t = q.poll();
-            if (!seen.add(t)) continue;
-            for (String k : ctx.depDeclaredMembers.getOrDefault(t, Set.of()))
-                if (k.startsWith(pre)) return true;
-            q.addAll(ctx.depSupers.getOrDefault(t, List.of()));
+    /** What {@code t} declares under {@code name}, as far as anything this scan holds can say. */
+    static int declState(AnalysisContext ctx, String t, String name, String desc) {
+        ClassNode cn = ctx.byName.get(t);
+        Set<String> descs = null;
+        if (cn != null) {
+            descs = new HashSet<>();
+            for (MethodNode mn : cn.methods)
+                if (mn.name.equals(name) && (mn.access & (Opcodes.ACC_BRIDGE | Opcodes.ACC_SYNTHETIC)) == 0) descs.add(mn.desc);
+        } else if (ctx.depCgCoveredTypes.contains(t)) {
+            Set<String> m = ctx.depDeclaredMembers.getOrDefault(t, Set.of());
+            for (String k : m) if (k.startsWith(name + "(")) return DECL_OTHER;   // overloaded here
+            if (!m.contains(name)) return DECL_NONE;
+            // Only a REAL row is evidence of what t declares. A synthetic union entry is keyed under the ABSTRACTION,
+            // and a producer publishes one under a foreign type for a member that type never declared (§4 ⟨0.39⟩
+            // obligation 2): measured in the family fixture, P's report keyed `A.format(Object,…)` under an A that
+            // declares only `format(String,…)`, which read A as this member's declarer and the line as CLEAN.
+            String pre = t + "." + name + "(";
+            for (var e : ctx.crossDeps.entrySet())
+                if (e.getKey().startsWith(pre) && !e.getKey().equals(t + "." + name + desc)
+                        && !e.getValue().syntheticOnly) return DECL_OTHER;
+            DepFn exact = ctx.crossDeps.get(t + "." + name + desc);
+            if (exact != null && !exact.syntheticOnly) return DECL_EXACT;
+            return DECL_BARE_UNKNOWN;
+        } else if (ctx.depIndexed.contains(t) || ctx.depSupers.containsKey(t) || !isLoadableExternal(t)) {
+            return DECL_UNCOVERED;   // a dependency type with no paired, complete sidecar — or nothing can read it
+        } else {
+            descs = externalDescs(t, name);
         }
-        return false;
+        if (descs.isEmpty()) return DECL_NONE;
+        return descs.size() == 1 && descs.contains(desc) ? DECL_EXACT : DECL_OTHER;
+    }
+
+    /** SOUNDNESS R1336/P6 — THE ONE RULE: whether every declaration of {@code name} on the owner's line is known to be
+     *  this member. CLEAN: every type in the line was read, none declares {@code name} under another descriptor, and
+     *  at most one declaration's descriptor is unknown (a covered dependency type's bare qual with no row) — read as
+     *  this member; a residual if it is really a lone unrelated overload (SOUNDNESS R1372). AMBIGUOUS: an overload.
+     *  UNKNOWN: some ancestor could not be read (its report, hierarchy or call-graph sidecar missing, unpaired or
+     *  incomplete, or nothing chained it), or two declarations' descriptors are unknown. Only CLEAN lets a bare qual
+     *  count, and only CLEAN lets the owner's own-key `dispatch:` hedge stand in for the union. */
+    static int depLineState(AnalysisContext ctx, String owner, String name, String desc) {
+        int exactDep = 0, bareUnknown = 0;
+        boolean unknown = false;
+        for (String t : lineOf(ctx, owner)) {
+            switch (declState(ctx, t, name, desc)) {
+                case DECL_OTHER -> { return LINE_AMBIGUOUS; }
+                case DECL_UNCOVERED -> unknown = true;
+                case DECL_EXACT -> { if (!isLoadableExternalOnly(ctx, t)) exactDep++; }
+                case DECL_BARE_UNKNOWN -> bareUnknown++;
+                default -> { }
+            }
+        }
+        if (unknown) return LINE_UNKNOWN;
+        // One declaration of unknown descriptor is read as this member when nothing else in the DEPENDENCY declares the
+        // name: the call resolves somewhere in the line, and the usual shape is a pure override of a platform member
+        // (`Node.toString` over `Object.toString`). Beside another dependency declaration it is not: the two can be the
+        // halves of an overload split across classes (A.format(String) bare and pure, P.format(Object)) — measured in
+        // the family fixture, where reading it as this member over-counted W's site past the bound and dropped its Fs.
+        return bareUnknown == 0 || (bareUnknown == 1 && exactDep == 0) ? LINE_CLEAN : LINE_UNKNOWN;
+    }
+
+    /** A type read off the classpath (the JDK), not a project or chained-dependency type. */
+    private static boolean isLoadableExternalOnly(AnalysisContext ctx, String t) {
+        return !ctx.byName.containsKey(t) && !ctx.depCgCoveredTypes.contains(t) && !ctx.depIndexed.contains(t)
+                && isLoadableExternal(t);
+    }
+
+    private static boolean isLoadableExternal(String t) {
+        return !externalDescsAll(t).equals(UNLOADABLE);
+    }
+    private static final Set<String> UNLOADABLE = Set.of("\u0000unloadable");
+    private static final java.util.concurrent.ConcurrentHashMap<String, Set<String>> EXT_NONBRIDGE =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static Set<String> externalDescsAll(String t) {
+        return EXT_NONBRIDGE.computeIfAbsent(t, k -> {
+            Set<String> out = new HashSet<>();
+            try {
+                new ClassReader(k).accept(new org.objectweb.asm.ClassVisitor(Opcodes.ASM9) {
+                    @Override public org.objectweb.asm.MethodVisitor visitMethod(int acc, String n, String d,
+                            String sig, String[] ex) {
+                        if ((acc & (Opcodes.ACC_BRIDGE | Opcodes.ACC_SYNTHETIC)) == 0) out.add(n + d);
+                        return null;
+                    }
+                }, ClassReader.SKIP_CODE | ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+            } catch (Throwable ex) { return UNLOADABLE; }
+            return out;
+        });
+    }
+    private static Set<String> externalDescs(String t, String name) {
+        Set<String> out = new HashSet<>();
+        for (String nd : externalDescsAll(t)) if (nd.startsWith(name + "(")) out.add(nd.substring(name.length()));
+        return out;
     }
 
     /** {@link #nearestDepFn} with {@link #depOverrideAt}'s bridge match at each level: the body a receiver of

@@ -45,7 +45,22 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   fixtures `ovl2`, `x12-0`, `x12-1`: present = deleted = keys-dropped = pure-dropped = unparseable = unpaired =
   one-tree in every one. A report with ⟨0.21⟩ `unanalyzed` units grants no sidecar coverage (its unanalysed types
   cannot show their declarations; SOUNDNESS R1371, census reach 0). `CANDOR_R1336=0` is the UNANSWERABLE arm, not
-  v0.40.15's row count.
+  v0.40.15's row count. **The three overload/coverage decisions are now ONE rule** (`depLineState`: every type on the
+  owner's line — chained, project or JDK — must be read, none may declare the name under another descriptor, and at
+  most one dependency declaration's descriptor may be unknown, then only with no other dependency declaration beside
+  it). It decides both whether a subtype's bare qual counts and whether an own-key hedge stands in for the union. It
+  closes Fable REVIEW4 F3 (the ancestor in its own report, its hierarchy or call-graph sidecar deleted: `deny Fs` 1 →
+  0) and two shapes the family fixture found beyond it: an overload SPLIT across classes (`A.format(String)` a pure
+  body, `P.format(Object)`), and a producer's foreign union entry keyed under an ancestor for a member that ancestor
+  never declared (only real rows count as evidence). Executed family fixture: overload on the owner / the ancestor /
+  split / nowhere × ancestor in the same or its own report × each call-graph sidecar deleted or unpaired and the
+  ancestor's whole report deleted — present equals one-tree in all 8 layouts, every degraded arm charges everything
+  present does. NOT closed, pre-existing on v0.40.15 identically: deleting the OWNER's hierarchy sidecar leaves no walk
+  at all (`[Unknown]` where present reads `[Fs, Unknown]`; an absent row where present hedges). **SOUNDNESS R1372**
+  (boundary residuals, present = degraded, reasoned): a pure concrete owner body whose nearest published entry is an
+  ancestor's synthetic union counts no owner body, and a pure-only default method with a body likewise — each
+  under-counts by one at exactly 12; and a lone dependency declaration of unknown descriptor beside a platform
+  declaration is read as this member (`Node.toString` over `Object.toString`).
 
 - ⚠ **A chained `toString`/`hashCode`/`equals`/`compareTo` on a dependency's own class is bounded like every other
   member** (SOUNDNESS R1360, SPEC §4 ⟨0.40⟩). The consumer's walk down a dependency class's subclasses returned

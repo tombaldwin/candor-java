@@ -633,6 +633,106 @@ class DepInheritedMemberTest {
         }
     }
 
+    /** SOUNDNESS R1336/P6 — THE WHOLE OVERLOAD FAMILY, one fixture (Fable REVIEW2–4: ovl1 → ovl2 → ovl3 each landed one
+     *  shape past a separately-computed rule, so the rules are now ONE, Candor#depLineState, and the family is pinned
+     *  together). Ancestor A, owner P, W (overrides `format(Object,StringBuilder)` and writes the file), S0..S12. The
+     *  consumer calls `p.format(o, sb)`. The overload `format(String,StringBuilder)` sits on the owner, on the ancestor,
+     *  split across them (A.format(String) a pure body, P.format(Object)), or nowhere (all overrides `format(Object)`).
+     *  A is in P's report or in its own report chained under P's. Each of the call-graph sidecars and A's whole report
+     *  is degraded in turn. Present must read the one-tree answer; every degraded arm must charge everything present
+     *  charges. The OWNER's HIERARCHY sidecar is not in the arm list: without it no walk can see W at all, on this
+     *  build and on v0.40.15 alike — a separate, pre-existing route (reported, not closed here). */
+    @Test
+    void theOverloadFamilyNeverResolvesMoreWhenASidecarDegrades() throws Exception {
+        String wbody = "try { java.nio.file.Files.writeString(java.nio.file.Path.of(String.valueOf(o)), \"x\"); } catch (Exception e) { }";
+        for (String ovl : List.of("owner", "ancestor", "split", "neither")) {
+            String a, pp;
+            switch (ovl) {
+                case "ancestor" -> { a = "public abstract class A { public void format(Object o, StringBuilder b) { b.append(\"a\"); } public abstract void format(String s, StringBuilder b); }";
+                                     pp = "public abstract class P extends A { public void format(Object o, StringBuilder b) { format(String.valueOf(o), b); } }"; }
+                case "owner" -> { a = "public abstract class A { public void hello() { } }";
+                                  pp = "public abstract class P extends A { public void format(Object o, StringBuilder b) { format(String.valueOf(o), b); } public abstract void format(String s, StringBuilder b); }"; }
+                case "split" -> { a = "public abstract class A { public void format(String s, StringBuilder b) { b.append(s); } }";
+                                  pp = "public abstract class P extends A { public void format(Object o, StringBuilder b) { format(String.valueOf(o), b); } }"; }
+                default -> { a = "public abstract class A { public void hello() { } }";
+                             pp = "public abstract class P extends A { public void format(Object o, StringBuilder b) { b.append(o); } }"; }
+            }
+            Map<String, String> l = new LinkedHashMap<>();
+            l.put("dep/A.java", "package dep;\n" + a + "\n");
+            l.put("dep/P.java", "package dep;\n" + pp + "\n");
+            boolean nei = ovl.equals("neither");
+            l.put("dep/W.java", "package dep;\npublic class W extends P { public void format(Object o, StringBuilder b) { " + wbody + " }"
+                    + (nei ? "" : " public void format(String s, StringBuilder b) { b.append(s); }") + " }\n");
+            for (int i = 0; i < 13; i++)
+                l.put("dep/S" + i + ".java", "package dep;\npublic class S" + i + " extends P {"
+                        + (nei ? " public void format(Object o, StringBuilder b) { b.append(\"s\"); } }\n"
+                               : " public void format(String s, StringBuilder b) { b.append(s); } }\n"));
+            Map<String, String> app = app("  public static void go(P p, Object o) { p.format(o, new StringBuilder()); }\n");
+            TreeSet<String> one = eff(whole(l, app), "app.App.go");
+            for (boolean sep : new boolean[] { false, true }) {
+                TreeSet<String> present = null;
+                for (String arm : sep ? List.of("present", "Pcg", "Pcgunp", "Ahier", "Acg", "Acgunp", "Arep")
+                                      : List.of("present", "Pcg", "Pcgunp")) {
+                    TreeSet<String> got = eff(twoReports(l, app, sep, arm), "app.App.go");
+                    String tag = ovl + (sep ? "/sep/" : "/same/") + arm + ": ";
+                    if (arm.equals("present")) {
+                        present = got;
+                        assertEquals(one, got, tag + "present must read the one-tree answer");
+                    } else {
+                        assertTrue(got.containsAll(present), tag + "must charge all present charges — got " + got + ", present " + present);
+                    }
+                }
+            }
+        }
+    }
+
+    /** The family harness: {@code lib} compiled once; scanned as ONE report, or as A's report and the rest's report
+     *  chained under it; the consumer chains the DIRECTORY holding them, after {@code arm} degrades one file. */
+    private static Map<String, EffectSet> twoReports(Map<String, String> lib, Map<String, String> app, boolean sep,
+            String arm) throws Exception {
+        Path appDir = compileApp(lib, app);
+        Path base = appDir.getParent(), all = base.resolve("lib"), deps = base.resolve("deps");
+        Files.createDirectories(deps);
+        Config saved = Candor.config;
+        try {
+            Candor.config = Config.empty();
+            if (!sep) {
+                ReportWriter.writeReport(Candor.runScan(all), deps.resolve("P.json").toString(), null);
+            } else {
+                Path la = base.resolve("la/dep"), lp = base.resolve("lp/dep");
+                Files.createDirectories(la); Files.createDirectories(lp);
+                try (Stream<Path> st = Files.list(all.resolve("dep"))) {
+                    for (Path c : st.toList())
+                        Files.copy(c, (c.getFileName().toString().startsWith("A") ? la : lp).resolve(c.getFileName()));
+                }
+                ReportWriter.writeReport(Candor.runScan(la.getParent()), deps.resolve("A.json").toString(), null);
+                Files.createDirectories(base.resolve("lp/.candor"));
+                Files.writeString(base.resolve("lp/.candor/config"), "deps " + deps.resolve("A.json") + "\n");
+                Candor.config = Config.forTarget(lp.getParent());
+                ReportWriter.writeReport(Candor.runScan(lp.getParent()), deps.resolve("P.json").toString(), null);
+                Candor.config = Config.empty();
+            }
+            switch (arm) {
+                case "present" -> { }
+                case "Pcg" -> Files.delete(deps.resolve("P.callgraph.json"));
+                case "Pcgunp" -> Files.move(deps.resolve("P.callgraph.json"), deps.resolve("Px.callgraph.json"));
+                case "Ahier" -> Files.delete(deps.resolve("A.hierarchy.json"));
+                case "Acg" -> Files.delete(deps.resolve("A.callgraph.json"));
+                case "Acgunp" -> Files.move(deps.resolve("A.callgraph.json"), deps.resolve("Ax.callgraph.json"));
+                case "Arep" -> { for (String f : List.of("A.json", "A.hierarchy.json", "A.callgraph.json"))
+                                     Files.delete(deps.resolve(f)); }
+                default -> throw new IllegalArgumentException(arm);
+            }
+            Files.createDirectories(base.resolve(".candor"));
+            Files.writeString(base.resolve(".candor/config"), "deps " + deps + "\n");
+            Candor.config = Config.forTarget(appDir);
+            return Candor.runScan(appDir);
+        } finally {
+            Candor.config = saved;
+            rm(base);
+        }
+    }
+
     /** BRIDGE ROWS ANSWER EXACT KEYS ONLY. untypedDepReceiver's conjunct 5 asks whether the dependency declares
      *  the call's signature on ANOTHER type, and a generic implementor's bridge row has exactly the interface's
      *  erased signature. Indexing bridge rows there turned a pure interface call into a fresh

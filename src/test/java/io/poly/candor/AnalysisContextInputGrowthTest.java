@@ -57,7 +57,7 @@ class AnalysisContextInputGrowthTest {
             "subtypeIndex", "fieldLambdaBindings", "samLambdaImpls", "overloadDescs", "classesWithClinit", "taintEnabled", "unknownRatchet",
             "closedWorld", "peekVersioned", "depCoveredPkgs", "depChainedPkgs", "depReportsRead",
             "depCallsByFn", "depWhyByFn", "depDispatchByFn", "depSupers", "depSplitKnown", "depSuperclass",
-            "depIndexed", "depPureUnionKeys", "depSubtypes", "depMembersByName", "depDeclaredMembers", "classHash",
+            "depIndexed", "depPureUnionKeys", "depSubtypes", "depMembersByName", "depDeclaredMembers", "depCgCoveredTypes", "classHash",
             "denyRules", "allowRules", "forbidRules", "onlyRules");
 
     @Test

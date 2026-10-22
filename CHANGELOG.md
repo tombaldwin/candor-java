@@ -9,6 +9,23 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- **R1336's count only resolves a site when it can be answered; where it cannot, the dependency's own union entry
+  decides** (SPEC PART 30 P6: degrading a sidecar may only widen a disclosure). The first cut fell back to the override
+  ROWS when the paired call-graph sidecar was missing, unpaired, unreadable or incomplete, so a broad site unioned
+  instead of hedging: deleting an optional file made the chained verdict MORE resolved. Now the sidecar counts only
+  when it is the report's stem sibling and its key set reproduces the report's ⟨0.21⟩ `analyzed` manifest (count and
+  digest — true of all 304 corpus dependencies); the count is an interval (decided subtypes .. plus undecided ones,
+  the hierarchy bounding it), and only an interval straddling the bound is unanswerable. There the verdict is the
+  owner's union entry when it has one (a broad union's hedge, a narrow union's effects, a pure narrow union stays
+  pure — PART 92 c3_pure_only), and otherwise the rows unioned beside a `dispatch:` hedge. An overloaded owner's bare
+  qual is undecided, not "declares nothing". An unreadable sidecar no longer fails the run; it is unanswerable, with
+  a note. Executed fixture (fxP6; `Sub0.parse` writes the file it is handed), cells `deny Fs` / `deny Unknown` /
+  `deny Fs Unknown`, sidecar present / deleted / half its keys dropped / unparseable / unpaired: concrete owner, 13
+  subtypes, 1 charged — 8cb94c8–aa5c880 `011 / 101 / 101 / exit 2 / 011`, this build `011 / 111 / 111 / 111 / 111`;
+  abstract owner, 13 subtypes — `011` in every arm (the union entry's hedge); concrete owner, 13 pure — `011` in
+  every arm (8cb94c8: `000` degraded); narrow pure union (abstract, 3 pure) — `000` in every arm; 6 subtypes —
+  `101` in every arm.
+
 - ⚠ **A chained `toString`/`hashCode`/`equals`/`compareTo` on a dependency's own class is bounded like every other
   member** (SOUNDNESS R1360, SPEC §4 ⟨0.40⟩). The consumer's walk down a dependency class's subclasses returned
   NOTHING past the 12-implementor bound for the §4 Object protocol, so `go(dep.Node n) { return n.toString(); }`
@@ -87,13 +104,10 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   {dispatch}), and the dropped overrides' surfaces — `incomplete` 9 values, `netClass` 5 (`unknown-host`), `paths`
   2 (curator shaded `Ordering`, groovy `MetaProperty` ×2, lettuce `CommandOutput` ×2, jgit `RevFilter`, scala
   `Function0`). This supersedes R869's rule that kept the row-priced union beside the hedge (jackson
-  `StdScalarSerializer.serialize`), in every arm. A subtype whose qual is bare where the owner has overloads is
-  counted only through its row (the sidecar cannot say which overload it overrides), so for overloaded owners the
-  bound is still row-priced (a residual: precision-dependent, both answers disclosed). Without a sidecar the count
-  is the rows found — including bridge rows, which R869 had left out — and past the bound the site hedges with no
-  union beside it; that is not v0.40.15's behaviour. The bound still adds one for the owner's own body, so an
-  ABSTRACT owner member hedges at 12 declaring subtypes where in-scan unions (pre-existing). Kill switch:
-  `CANDOR_R1336=0`.
+  `StdScalarSerializer.serialize`), in every arm. Where the count cannot be answered, see the next entry. The bound
+  still adds one for the owner's own body, so an ABSTRACT owner member hedges at 12 declaring subtypes where in-scan
+  unions (pre-existing). `CANDOR_R1336=0` reads no sidecar, which is the unanswerable state below — it cannot make a
+  verdict more resolved than the sidecar does.
 
 ## [0.40.15] — 2026-10-22
 

@@ -8907,6 +8907,7 @@ public class Candor {
         Set<String> seen = new HashSet<>();
         // SOUNDNESS R1336 — the dependency subtypes that DECLARE the member, pure or not: what the bound counts.
         int declaring = 0;
+        int undecided = 0;   // R1336/P6: subtypes whose declaration no paired, complete sidecar can decide
         boolean bareAmbiguous = depNameOverloaded(ctx, min.owner, name);
         ArrayDeque<String> q = new ArrayDeque<>(ctx.depSubtypes.getOrDefault(min.owner, List.of()));
         while (!q.isEmpty()) {
@@ -8915,12 +8916,23 @@ public class Candor {
             q.addAll(ctx.depSubtypes.getOrDefault(t, List.of()));
             if (ctx.byName.containsKey(t)) continue;         // a project subtype: in-scan CHA already edged it
             DepFn d = depOverrideAt(t, name, desc);
-            if (d != null || depDeclares(ctx, t, name, desc, bareAmbiguous)) declaring++;
+            if (d != null) declaring++;
+            else {
+                int a = depDeclares(ctx, t, name, desc, bareAmbiguous);
+                if (a > 0) declaring++;
+                else if (a < 0) undecided++;
+            }
             if (d != null && d != inh && !overrides.contains(d)) overrides.add(d);
         }
         if (R867_DEBUG && !seen.isEmpty())
             System.err.println("R867REACH\t" + id + "\t" + min.owner + "." + name + desc + "\tsubs=" + seen.size()
-                    + "\toverrides=" + overrides.size() + "\tdeclaring=" + declaring);
+                    + "\toverrides=" + overrides.size() + "\tdeclaring=" + declaring
+                    + (undecided > 0 ? "\tundecided=" + undecided : ""));
+        // The count is an INTERVAL [declaring, declaring + undecided]: the hierarchy sidecar every walk already needs
+        // bounds it from above. It is unanswerable only where the interval straddles the bound; either end inside it
+        // decides the site exactly as an answered count would.
+        boolean unanswerable = undecided > 0 && declaring + 1 <= CHA_FANOUT_LIMIT
+                && declaring + undecided + 1 > CHA_FANOUT_LIMIT;
         // SOUNDNESS R1336 — THE BOUND COUNTS OVERRIDING SUBTYPES, NOT OVERRIDE ROWS. The bound is the in-scan
         // bounded-CHA bound (SPEC §4: "at most 12 implementors … MUST otherwise read Unknown"), and in-scan it
         // counts every declaring subtype, pure or not (Cha#chaTargets). A pure override publishes no row (§2 rule
@@ -8947,7 +8959,46 @@ public class Candor {
         // world — is untouched: such a call's owner is `java/lang/Object`, never `depIndexed`, and never walks.
         // Kill switch: CANDOR_R1360=0 restores the row-counted, hedge-free branch.
         boolean protocolOff = isObjectProtocolExempt(name, desc) && !R1360;
-        int bound = Loader.R1336 && !protocolOff ? Math.max(declaring, overrides.size()) : -1;
+        // R1336 / SPEC PART 30 P6 — WHERE THE COUNT IS UNANSWERABLE, THE PRODUCER'S UNION ENTRY DECIDES. The count
+        // needs a PAIRED, COMPLETE call-graph sidecar for every subtype walked (Loader#pairDepCallgraphs); a missing,
+        // unpaired or incomplete sidecar, an overloaded owner's bare qual, or CANDOR_R1336=0 leaves it unanswerable.
+        // The first cut fell back to the ROWS there, and on a broad site rows union — so deleting an optional file
+        // made the chained verdict MORE resolved than with it, which P6 forbids ("degrading a sidecar may only WIDEN
+        // a disclosure"). The fallback now never resolves more than the dependency's own union entry for the member:
+        //   - the owner's entry IS a union (synthetic, or carrying the producer's own-key `dispatch:` hedge, i.e. the
+        //     producer already applied the bound in-scan with every subtype in view): that entry, joined above, is
+        //     the verdict — no second pricing from less information;
+        //   - the member's union entry is published PURE and narrow (R919): pure — a hedge there would be PART 92's
+        //     c3_pure_only fabrication;
+        //   - no union entry (a concrete owner, whose producer publishes none): the rows are unioned and the site is
+        //     hedged beside them — never less disclosed than either answerable verdict (an answered count past the
+        //     bound hedges even over pure overrides, as in-scan does). For the Object protocol the answered verdict
+        //     past the bound hedges only where an override is charged (R1360), so the fallback hedges only there.
+        // The interval keeps this off every site whose subtypes the hierarchy proves are within the bound.
+        if (unanswerable && !protocolOff) {
+            if (inh != null && (inh.syntheticOnly
+                    || inh.unknownWhy.contains("dispatch:" + min.owner.replace('/', '.') + "." + name))) {
+                if (R867_DEBUG) System.err.println("R867\tUNANSWERED-UNION\t" + id + "\t" + min.owner + "." + name + desc);
+                return;
+            }
+            if (ctx.depPureUnionKeys.contains(min.owner + "." + name + desc)) return;
+            boolean charged = false;
+            for (DepFn d : overrides) {
+                inheritDepFn(id, d);
+                if (!d.effects.isEmpty()) charged = true;
+            }
+            if (charged || !isObjectProtocolExempt(name, desc)) {
+                ctx.viaCross.computeIfAbsent(id, k -> EffectSet.empty()).add(Effect.UNKNOWN);
+                ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                        .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, min.owner.replace('/', '.') + "." + name));
+            }
+            if (R867_DEBUG) System.err.println("R867\tUNANSWERED\t" + id + "\t" + min.owner + "." + name + desc
+                    + "\t" + overrides.size() + (charged ? "\thedged" : ""));
+            return;
+        }
+        // Answered: the interval's end that decides (all-in-bound → the upper end, past-bound → the lower).
+        int bound = !protocolOff ? Math.max(declaring + (declaring + 1 > CHA_FANOUT_LIMIT ? 0 : undecided),
+                overrides.size()) : -1;
         if (bound >= 0) {
             if (bound == 0) return;
             if (bound + 1 > CHA_FANOUT_LIMIT) {
@@ -9014,25 +9065,20 @@ public class Candor {
         }
     }
 
-    /** SOUNDNESS R1336 — whether the chained dependency's call-graph sidecar names {@code t}'s own declaration of
-     *  {@code (name,desc)}: under either disambiguated spelling ({@link Cha#methodId}), or under the BARE qual —
-     *  {@code t} declares exactly one non-bridge method of that name — unless {@code bareAmbiguous}.
-     *
-     *  <p>The bare qual carries no descriptor, so it says "t declares SOME {@code name}", which is an override of
-     *  this member only when the member is the one {@code name} its owner has. Where the owner (or an ancestor)
-     *  declares several overloads, a subtype's bare {@code name} overrides one of them and the sidecar cannot say
-     *  which: log4j's {@code LogEventPatternConverter} declares {@code format(Object,StringBuilder)} and
-     *  {@code format(LogEvent,StringBuilder)}, its converters override only the second, and counting their bare
-     *  {@code format} against the FIRST (47 "declarers") pushed a 2-row site past the bound — a hedge where the one-tree scan
-     *  unions, 7 concrete effects lost on the first measured cut. So an ambiguous bare qual is NOT counted; that
-     *  subtype counts only through its row, which is the pre-R1336 rule for exactly the case the sidecar cannot
-     *  decide. */
-    static boolean depDeclares(AnalysisContext ctx, String t, String name, String desc, boolean bareAmbiguous) {
-        Set<String> m = ctx.depDeclaredMembers.get(t);
-        if (m == null || m.isEmpty()) return false;
-        if (!bareAmbiguous && m.contains(name)) return true;
-        return m.contains(name + "(" + Cha.paramTypeList(desc) + ")")
-                || m.contains(name + "(" + Cha.paramTypeListFq(desc) + ")");
+    /** SOUNDNESS R1336 — whether a PAIRED, COMPLETE call-graph sidecar says {@code t} declares {@code (name,desc)}:
+     *  1 yes, 0 no, -1 unanswerable. Yes under either disambiguated spelling ({@link Cha#methodId}) or the BARE qual
+     *  ({@code t} declares exactly one non-bridge method of that name). Unanswerable when {@code t}'s report has no
+     *  paired complete sidecar ({@code depCgCoveredTypes}), or when the qual is bare and the owner has overloads: the
+     *  bare qual carries no descriptor, so it cannot say which overload it overrides (log4j's
+     *  {@code LogEventPatternConverter.format(Object,StringBuilder)} vs {@code (LogEvent,StringBuilder)}, which a
+     *  first cut over-counted into a hedge the one-tree scan does not make). */
+    static int depDeclares(AnalysisContext ctx, String t, String name, String desc, boolean bareAmbiguous) {
+        if (!ctx.depCgCoveredTypes.contains(t)) return -1;
+        Set<String> m = ctx.depDeclaredMembers.getOrDefault(t, Set.of());
+        if (m.contains(name + "(" + Cha.paramTypeList(desc) + ")")
+                || m.contains(name + "(" + Cha.paramTypeListFq(desc) + ")")) return 1;
+        if (m.contains(name)) return bareAmbiguous ? -1 : 1;
+        return 0;
     }
 
     /** SOUNDNESS R1336 — whether {@code owner} or a chained ancestor of it declares {@code name} under a

@@ -417,42 +417,6 @@ final class Loader {
     /** SOUNDNESS R1336 — the kill switch ({@code CANDOR_R1336=0} restores the row-counted bound). */
     static final boolean R1336 = !"0".equals(System.getenv("CANDOR_R1336"));
 
-    /**
-     * SOUNDNESS R1336 — read a chained dependency's §2.2 CALL-GRAPH SIDECAR for its KEY SET only: which members
-     * each of its types declares, pure ones included. {@link Candor#depHierarchyJoin}'s bound is the in-scan
-     * bounded-CHA bound (SPEC §4: "at most 12 implementors"), and in-scan that counts every declaring subtype,
-     * pure or not ({@link Cha#chaTargets}). The report cannot say a subtype declares a PURE override — §2 rule 3
-     * omits it — so the walk counted override ROWS, and a row is a fact about the producer's PRECISION, not about
-     * the hierarchy: zookeeper's `CliCommand.parse` has 22 overriding subtypes, v0.40.14 published 1 row with an
-     * effect (union) and v0.40.15 published 21 (hedge), for one unchanged jar. The sidecar keys every analysed
-     * unit, so the count it gives does not move when a body's classification does.
-     *
-     * <p>Structural and not version-gated, for the reason {@link #loadDepHierarchy} gives: it carries no effect
-     * claim, and the only thing it can do is make the bound count MORE declarers, which moves a site toward the
-     * disclosed hedge. Streamed (names only, values skipped): a corpus sidecar runs to tens of MB. A sidecar that
-     * is present and unreadable fails the run, exactly as an unreadable hierarchy sidecar does.
-     */
-    static void loadDepCallgraphMembers(Path f) {
-        try (var r = new com.google.gson.stream.JsonReader(Files.newBufferedReader(f))) {
-            if (r.peek() != com.google.gson.stream.JsonToken.BEGIN_OBJECT) return;
-            r.beginObject();
-            while (r.hasNext()) {
-                String q = r.nextName();
-                r.skipValue();
-                int paren = q.indexOf('(');
-                String head = paren < 0 ? q : q.substring(0, paren);
-                int dot = head.lastIndexOf('.');
-                if (dot <= 0 || dot == head.length() - 1) continue;
-                ctx().depDeclaredMembers.computeIfAbsent(head.substring(0, dot).replace('.', '/'),
-                        k -> new HashSet<>()).add(q.substring(dot + 1));
-            }
-        } catch (Exception e) {
-            System.err.println("candor: CANDOR_DEPS call-graph sidecar " + f + " is unreadable ("
-                    + e.getMessage() + ") — failing (exit 2), a configured dep must not silently read pure");
-            System.exit(2);
-        }
-    }
-
     static Path hierarchySidecarOf(Path f) {
         String n = f.getFileName().toString();
         if (!n.endsWith(".json") || n.endsWith(".hierarchy.json")) return null;
@@ -758,9 +722,6 @@ final class Loader {
                     // explicitly; absent is the ordinary case and simply leaves the hierarchy empty.
                     Path sib = hierarchySidecarOf(p);
                     if (sib != null && Files.isRegularFile(sib)) files.add(sib);
-                    // SOUNDNESS R1336 — and the call-graph sidecar beside it, for the same reason.
-                    Path cg = callgraphSidecarOf(p);
-                    if (cg != null && Files.isRegularFile(cg)) files.add(cg);
                 } else {
                     System.err.println("candor: CANDOR_DEPS names " + p + " but it is not a readable file or"
                             + " directory — failing (exit 2), a configured dep must not silently read pure");
@@ -777,10 +738,8 @@ final class Loader {
                     loadDepHierarchy(f);
                     continue;                      // a hierarchy sidecar carries no `functions` and no effects
                 }
-                if (fname.endsWith(".callgraph.json")) {
-                    if (R1336) loadDepCallgraphMembers(f);
-                    continue;                      // R1336: only its KEY SET is read — see the method
-                }
+                if (fname.endsWith(".callgraph.json"))
+                    continue;   // R1336: read only as a REPORT's paired sibling, after the loop (pairDepCallgraphs)
                 // ⟨0.24⟩ …and neither does any OTHER reserved sidecar segment (§2.2). A directory-form
                 // CANDOR_DEPS walks every `.json` beside the report, so another engine's `.locs.json` /
                 // `.gate.json` reached the report parser. Today they fall out of it harmlessly (no
@@ -905,6 +864,16 @@ final class Loader {
                     // another jar's class in a shared package is still foreign.
                     Set<String> ownPkgs = new HashSet<>(reportPackages(obj));
                     Set<String> ownTypes = ownSidecarTypes(f);
+                    {   // R1336 / P6: the ⟨0.21⟩ manifest the paired call-graph sidecar's key set must reproduce
+                        String digest = null; long count = -1;
+                        JsonElement an = obj == null ? null : obj.get("analyzed");
+                        if (an != null && an.isJsonObject()) {
+                            JsonElement dg = an.getAsJsonObject().get("digest"), ct = an.getAsJsonObject().get("count");
+                            if (dg != null && dg.isJsonPrimitive()) digest = dg.getAsString();
+                            if (ct != null && ct.isJsonPrimitive() && ct.getAsJsonPrimitive().isNumber()) count = ct.getAsLong();
+                        }
+                        pendingPairs.add(new PendingPair(f, digest, count, ownTypes));
+                    }
                     for (JsonElement el : fns) {
                         if (!el.isJsonObject()) continue;                 // a non-object entry → skip (not pure-able)
                         JsonObject m = el.getAsJsonObject();
@@ -1107,8 +1076,75 @@ final class Loader {
                 }
             }
         }
+        pairDepCallgraphs();
         synthesizeReasonlessDepReasons();
         indexDepOverrides();
+    }
+
+    /** R1336 / P6 — a report read by loadCrossDeps, what its paired call-graph sidecar must key, and its own types. */
+    private record PendingPair(Path report, String digest, long count, Set<String> ownTypes) {}
+    private static final List<PendingPair> pendingPairs = new ArrayList<>();
+
+    /**
+     * SOUNDNESS R1336 / SPEC PART 30 P6 — PAIR each chained report with ITS call-graph sidecar, and grant the count only
+     * where the pairing is complete. The sidecar carries no provenance of its own (§2.2: "read together with its
+     * report"), so it is read only as the report's stem sibling — a directory-form CANDOR_DEPS no longer lends one
+     * report's sidecar to another — and it is PAIRED AND COMPLETE only if its key set reproduces the report's ⟨0.21⟩
+     * {@code analyzed} manifest (count and digest; §2.2 makes every analysed unit a key). Only then are
+     * its members recorded and the report's own hierarchy types marked answerable ({@code depCgCoveredTypes}); any
+     * other state leaves them unanswerable, which Candor#depHierarchyJoin resolves no further than the producer's own
+     * union entry. CANDOR_R1336=0 reads no sidecar, so it is that same unanswerable state — a kill switch that
+     * cannot make a verdict MORE resolved. An unreadable sidecar is the same state again, with a note.
+     */
+    private static void pairDepCallgraphs() {
+        List<PendingPair> todo = new ArrayList<>(pendingPairs);
+        pendingPairs.clear();
+        if (!R1336) return;
+        for (PendingPair pp : todo) {
+            Path cg = callgraphSidecarOf(pp.report());
+            if (cg == null || !Files.isRegularFile(cg) || pp.ownTypes() == null) continue;
+            Map<String, Set<String>> members = new HashMap<>();
+            Set<String> keys = new HashSet<>();
+            try (var r = new com.google.gson.stream.JsonReader(Files.newBufferedReader(cg))) {
+                if (r.peek() != com.google.gson.stream.JsonToken.BEGIN_OBJECT) continue;
+                r.beginObject();
+                while (r.hasNext()) {
+                    String q = r.nextName();
+                    r.skipValue();
+                    keys.add(q);
+                    int paren = q.indexOf('(');
+                    String head = paren < 0 ? q : q.substring(0, paren);
+                    int dot = head.lastIndexOf('.');
+                    if (dot <= 0 || dot == head.length() - 1) continue;
+                    members.computeIfAbsent(head.substring(0, dot).replace('.', '/'), k -> new HashSet<>())
+                            .add(q.substring(dot + 1));
+                }
+                r.endObject();
+            } catch (Exception e) {
+                // UNANSWERABLE, not fatal: unlike an unreadable hierarchy sidecar, losing this one cannot make anything
+                // read pure — the counts fall back to the dependency's own union entries (Candor#depHierarchyJoin) —
+                // and it is an OPTIONAL file (§2.2) that v0.40.15 never read; failing the run over it would be a new
+                // way for a working chain to break.
+                System.err.println("candor: CANDOR_DEPS call-graph sidecar " + cg + " is unreadable ("
+                        + e.getMessage() + ") — the dependency's override counts are left to its own union entries"
+                        + " (SOUNDNESS R1336)");
+                continue;
+            }
+            // PAIRED AND COMPLETE iff the key set IS the report's ⟨0.21⟩ analysed set: same count, same digest (the
+            // writer fingerprints exactly the analysed quals, ReportWriter#fnv1aHex; measured equal on all 304 corpus
+            // dependencies). A rows-only manifest test cannot see a dropped key for a PURE unit, which has no row —
+            // and that is exactly the key whose absence turns a counted declarer into "declares nothing".
+            if (pp.digest() == null || pp.count() != keys.size()
+                    || !pp.digest().equals(ReportWriter.fnv1aHex(new TreeSet<>(keys)))) {
+                System.err.println("candor: CANDOR_DEPS call-graph sidecar " + cg + " is not the analysed set of "
+                        + pp.report().getFileName() + " (count/digest differ) — not its pair, or incomplete; the"
+                        + " dependency's override counts are left to its own union entries (SOUNDNESS R1336)");
+                continue;
+            }
+            for (var e : members.entrySet())
+                ctx().depDeclaredMembers.computeIfAbsent(e.getKey(), k -> new HashSet<>()).addAll(e.getValue());
+            ctx().depCgCoveredTypes.addAll(pp.ownTypes());
+        }
     }
 
     /** SOUNDNESS R867 — the two indexes the dependency OVERRIDE walk reads ({@link Candor#depHierarchyJoin}),

@@ -64,6 +64,14 @@ class DepInheritedMemberTest {
      *  input SOUNDNESS R1336's declaring-subtype count reads — so a test can show that input is what decides. */
     private static Scan chained(Map<String, String> lib, Map<String, String> app, boolean keepCallgraph)
             throws Exception {
+        return chained(lib, app, keepCallgraph ? "present" : "deleted");
+    }
+
+    /** The call-graph sidecar's state for SPEC PART 30 P6: {@code present}, {@code deleted}, {@code keysdropped}
+     *  (valid JSON, half the keys gone — incomplete), {@code garbage} (unparseable), {@code unpaired} (renamed so it is
+     *  no report's stem sibling). */
+    private static Scan chained(Map<String, String> lib, Map<String, String> app, String sidecar)
+            throws Exception {
         Path appDir = compileApp(lib, app);
         Path base = appDir.getParent();
         Config saved = Candor.config;
@@ -72,9 +80,21 @@ class DepInheritedMemberTest {
             Candor.config = Config.empty();
             ReportWriter.writeReport(Candor.runScan(base.resolve("lib")), depReport.toString(), null);
             Map<String, JsonObject> depRows = rowsByHash(depReport);
-            if (!keepCallgraph)
-                assertTrue(Files.deleteIfExists(base.resolve("dep.callgraph.json")),
-                        "the call-graph sidecar this arm removes must have existed");
+            Path cg = base.resolve("dep.callgraph.json");
+            assertTrue(Files.isRegularFile(cg), "the call-graph sidecar this arm degrades must have existed");
+            switch (sidecar) {
+                case "present" -> { }
+                case "deleted" -> Files.delete(cg);
+                case "keysdropped" -> {
+                    JsonObject o = JsonParser.parseString(Files.readString(cg)).getAsJsonObject();
+                    List<String> ks = new ArrayList<>(o.keySet());
+                    for (int i = 0; i < ks.size(); i += 2) o.remove(ks.get(i));
+                    Files.writeString(cg, o.toString());
+                }
+                case "garbage" -> Files.writeString(cg, "{\"truncated\": [");
+                case "unpaired" -> Files.move(cg, base.resolve("other.callgraph.json"));
+                default -> throw new IllegalArgumentException(sidecar);
+            }
             Files.createDirectories(base.resolve(".candor"));
             Files.writeString(base.resolve(".candor/config"), "deps " + depReport + "\n");
             Candor.config = Config.forTarget(appDir);
@@ -475,7 +495,8 @@ class DepInheritedMemberTest {
                 assertTrue(c.why().get("app.App.go").contains("dispatch:dep.Cmd.parse"), "" + c.why().get("app.App.go"));
                 assertEquals(one, got, "and it is the one-tree answer");
                 TreeSet<String> noCg = eff(chained(l, a, false).app(), "app.App.go");
-                assertEquals(set("FS"), noCg, "control: without the sidecar only the ROW is countable — got " + noCg);
+                assertEquals(set("FS", "UNKNOWN"), noCg, "control: without the sidecar the count is unanswerable, and"
+                        + " the row is unioned BESIDE the hedge (P6: never more resolved than with it) — got " + noCg);
             } else {
                 assertEquals(set("FS"), got, n + " overriding subtypes: under the bound, the union — got " + got);
                 assertEquals(one, got, "and it is the one-tree answer");
@@ -520,6 +541,42 @@ class DepInheritedMemberTest {
                 assertEquals(set("ENV"), got, tag + "under the bound the union survives, unhedged: " + got);
             } else {
                 assertTrue(got.isEmpty(), tag + "all-pure stays pure: " + got);
+            }
+        }
+    }
+
+    /** SPEC PART 30 P6 for R1336 — DEGRADING THE CALL-GRAPH SIDECAR MAY ONLY WIDEN A DISCLOSURE. Each shape is scanned
+     *  with the sidecar present, deleted, half its keys dropped, unparseable, and renamed out of its pair; every
+     *  degraded arm must carry {@code Unknown} wherever the present arm does (8cb94c8 unioned the rows instead on the
+     *  concrete 13-subtype shape: {@code [FS]}, no hedge). And the narrow pure union (the abstract member whose three
+     *  implementors are pure — PART 92's c3_pure_only) must read pure in EVERY arm: a missing file is not a reason to
+     *  invent indeterminacy. Executed in {@code javaagent-0416/fxP6}. */
+    @Test
+    void degradingTheCallGraphSidecarOnlyWidensTheOverrideVerdict() throws Exception {
+        String[][] shapes = { { "concrete", "13", "1" }, { "abstract", "13", "1" }, { "concrete", "13", "0" },
+                { "concrete", "6", "1" }, { "abstract", "3", "0" } };
+        for (String[] sh : shapes) {
+            boolean abs = sh[0].equals("abstract");
+            int n = Integer.parseInt(sh[1]), k = Integer.parseInt(sh[2]);
+            Map<String, String> l = new LinkedHashMap<>();
+            l.put("dep/Cmd.java", abs ? "package dep;\npublic abstract class Cmd { public abstract void parse(String a); }\n"
+                    : "package dep;\npublic class Cmd { public void parse(String a) { } }\n");
+            for (int i = 0; i < n; i++)
+                l.put("dep/Sub" + i + ".java", "package dep;\npublic class Sub" + i + " extends Cmd { public String last;"
+                        + " public void parse(String a) { " + (i < k
+                        ? "try { java.nio.file.Files.writeString(java.nio.file.Path.of(a), \"x\"); } catch (Exception e) { }"
+                        : "last = a.trim();") + " } }\n");
+            Map<String, String> a = app("  public static void go(Cmd c, String a) { c.parse(a); }\n");
+            String tag = String.join("/", sh) + ": ";
+            TreeSet<String> present = eff(chained(l, a, "present").app(), "app.App.go");
+            for (String mode : List.of("deleted", "keysdropped", "garbage", "unpaired")) {
+                TreeSet<String> got = eff(chained(l, a, mode).app(), "app.App.go");
+                if (present.contains("UNKNOWN"))
+                    assertTrue(got.contains("UNKNOWN"), tag + mode + " must not resolve the hedge away — got " + got
+                            + ", present " + present);
+                assertTrue(got.containsAll(present), tag + mode + " must not drop what present charges — got " + got);
+                if (abs && k == 0)
+                    assertTrue(got.isEmpty(), tag + mode + ": the narrow pure union stays pure — got " + got);
             }
         }
     }

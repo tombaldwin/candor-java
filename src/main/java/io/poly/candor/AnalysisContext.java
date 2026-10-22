@@ -406,6 +406,9 @@ final class AnalysisContext {
     // than the effectful ROWS, which move with producer precision. Structural, like depSupers: it carries no
     // effect claim and can only make the bound count more. Shared INPUT, filled only by Loader#loadCrossDeps.
     Map<String, Set<String>> depDeclaredMembers = new HashMap<>();
+    // R1336 / P6 — the dependency types whose report's call-graph sidecar is PAIRED (its stem's sibling) and COMPLETE
+    // (keys every row the report publishes). Only these types' declarations are answerable; see Candor#depDeclares.
+    Set<String> depCgCoveredTypes = new HashSet<>();
     // The SHA-256 of each class's bytes AS READ, keyed by internal name — the refresh cache's per-class
     // key. Filled by the loader at the one point where bytes exist, because after ASM has parsed them
     // the bytes are gone and only a re-read could recover them. CONTENT, never mtime: a wrong hit here
@@ -489,6 +492,7 @@ final class AnalysisContext {
         depPureUnionKeys = master.depPureUnionKeys;   // R919: a shared INPUT, filled only by loadCrossDeps
         depMembersByName = master.depMembersByName;
         depDeclaredMembers = master.depDeclaredMembers;   // R1336: a shared INPUT, filled only by loadCrossDeps
+        depCgCoveredTypes = master.depCgCoveredTypes;     // R1336/P6: likewise
         literalFixpointMemo = master.literalFixpointMemo;
         denyRules = master.denyRules;
         allowRules = master.allowRules;                     forbidRules = master.forbidRules;

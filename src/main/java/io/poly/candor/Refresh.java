@@ -477,6 +477,7 @@ final class Refresh {
           // override must miss a cache primed before it.
           .append(new TreeMap<>(c.depDeclaredMembers.entrySet().stream().collect(java.util.stream.Collectors.toMap(
                   java.util.Map.Entry::getKey, e -> new TreeSet<>(e.getValue()))))).append('\u0001')
+          .append(new TreeSet<>(c.depCgCoveredTypes)).append('\u0001')
           .append(c.depReportsRead).append('\u0001');
         sb.append("flags");
         sb.append(c.taintEnabled).append(c.closedWorld).append(c.unknownRatchet).append(c.peekVersioned)

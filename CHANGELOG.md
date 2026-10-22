@@ -26,6 +26,9 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   ≤12 effectful override rows over more than 12 overriding subtypes; each row keeps `Unknown` with the hedge on the
   lost site, and every lost cell is absent from both one-tree scans. Plus 11 class cells (`indirect` 5, `reflect` 4,
   `native` 2) on those rows and on guava/curator-shaded `CharMatcher.toString`. Standalone: byte-identical reports.
+  **Shipping knowingly (pre-existing on v0.40.15):** an override whose row is `[]` with only `invisible` reads as pure
+  — past the bound because the in-scan floor does the same (SOUNDNESS R1361), and under it because a chained consumer
+  does not inherit a dependency row's `invisible` (SOUNDNESS R1362).
 
 - ⚠ **PROVISIONAL — rides on a SPEC §3.1 clause under revision (a write-time merged union entry's `unknownWhy` is not
   direct-only; the code implements its rules 1–2: contributors' classes on the merged row, scan route seeded before

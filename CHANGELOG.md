@@ -25,6 +25,17 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   byte-equal on both routes (v0.40.15: 6 of 7 policies differed on that producer). The cost, the same on both
   routes: an exact caller of a merged default that already carries `Unknown` gains the merge's CLASS (never its
   effect) — `PShape.plain` reads `reflect`, `Ex.call` reads `dispatch`. Kill switch: `CANDOR_D1=0`.
+  **Measured against v0.40.15 (JDK 21).** Standalone, 452 jars: `inferred` CHANGED 0, ADDED 0, REMOVED 0; 6,837
+  merged rows in 165 jars change `unknownWhy` only, no field loses a value. Producer gate over the 161 jars that
+  merge, one policy of five narrowed `deny Unknown[…]` rules: `scan --policy` and `gate --report` differed on 152
+  jars, now on 2 (guava and curator's shaded guava — 211 units, the same 211 on v0.40.15, a separate pre-existing
+  mechanism); `gate --report` refused 760 rule evaluations over reasonless merged rows, now 0; of 2,713 merged units
+  the scan route read as implicitly `unresolved`, 2,238 now carry their contributors' classes and 475 keep
+  `unresolved` (a contributor with no account of its own). The cost, scan route: 238 non-merged units in 9 jars
+  (0.014% of 1,669,927 analysed) gain a class through an exact edge into a merged row — `reflect` 232,
+  `indirect` 88, `unresolved` 24 cells; scala-library ×2 is 184 of them. Chained, 304 entries: 2,038 consumer cells
+  lose `unresolved` (a `dep:` catch-all that the merged row now accounts for — stripping the merged reasons from
+  the report brings it back), 0 effects move from D1.
 
 - ⚠ **A chained call on a dependency class member hedges by the number of overriding SUBTYPES, not override ROWS**
   (SOUNDNESS R1336, SPEC §4 bounded CHA). The consumer's walk down a dependency's subclasses unions their overrides

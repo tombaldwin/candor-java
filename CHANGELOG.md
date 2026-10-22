@@ -24,7 +24,17 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   subtypes, 1 charged — 8cb94c8–aa5c880 `011 / 101 / 101 / exit 2 / 011`, this build `011 / 111 / 111 / 111 / 111`;
   abstract owner, 13 subtypes — `011` in every arm (the union entry's hedge); concrete owner, 13 pure — `011` in
   every arm (8cb94c8: `000` degraded); narrow pure union (abstract, 3 pure) — `000` in every arm; 6 subtypes —
-  `101` in every arm.
+  `101` in every arm. A sixth arm drops ONLY pure units' keys (the case a dependency-row test cannot see): this build
+  `111` / `011` on the two 13-subtype concrete shapes, aa5c880 `101` / `000`. An owner's own-key `dispatch:` hedge is
+  taken as the producer's verdict only when the owner has one member of that name (from the sidecar, or from the
+  row's own disambiguated qual): `dispatch:` carries no descriptor, and log4j's real `LogEventPatternConverter
+  .format(Object, StringBuilder)` body hedges its call to the other overload. **Corpus (v0.40.15 → this build,
+  chained 304 entries, every sidecar paired):** the change is visible only through overloaded owners — 2,401 walked
+  sites have undecided subtypes, 218 are unanswerable (184 rows unioned beside a hedge, 34 decided by a synthetic union
+  entry). Against aa5c880: 18 rows change, 16 in reasons only; 2 lose concrete effects (commons-math3
+  `AbstractUnivariateStatistic.evaluate` `Rand`; h2-mvstore `BasicDataType.write` `Clock, Fs, Rand`), each following
+  the dependency's own union entry for that descriptor, each keeping `Unknown`, each absent from the published
+  one-tree scan. Standalone: byte-identical.
 
 - ⚠ **A chained `toString`/`hashCode`/`equals`/`compareTo` on a dependency's own class is bounded like every other
   member** (SOUNDNESS R1360, SPEC §4 ⟨0.40⟩). The consumer's walk down a dependency class's subclasses returned

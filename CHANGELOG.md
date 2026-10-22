@@ -9,6 +9,38 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **A JDK `Throwable` constructor's cause that is the body's own JDK-typed parameter is decided by what each caller
+  passes** (R1337). `CliException(Throwable c) { super(c); }` was charged the `toString`/`getMessage` of EVERY project
+  throwable (CHA over `java/lang/Throwable` at the R1305 site), and every caller inherited those charges whatever it
+  passed: zookeeper's `new CliParseException(parseEx)`, whose commons-cli cause no project override can run on,
+  charged 20 `CliCommand.parse` overrides `Fs, Log, Net`. Executed: a `java.text.ParseException` cause wrote nothing
+  and read `Fs`. Each caller is now resolved by its own argument (one project body charged; a WIDE type disclosed; a
+  foreign type nothing). The body itself is disclosed `Unknown[dispatch:java.lang.Object.toString]` where some
+  override carries an effect or an `Unknown` it lacks. A project-typed cause keeps its precise charge, through every
+  hop. Measured against v0.40.14 on the 452-jar census: the lost (unit, effect) set is unchanged (414, the same
+  pairs). Against the held stack: 517 concrete charges in 209 rows of 18 jars become `Unknown`, and none of those
+  charges existed in v0.40.14. Chained (304 entries): 5 consumer rows lose a concrete effect only the stack had, and
+  each keeps `Unknown`.
+- **Shipping knowingly in this release — named so a pin bump reads them first:**
+  - **A resolution traded for a hedge, chained** (SOUNDNESS R1331/R1336): zookeeper `C_CliCommand.dispatch`.
+    `deny Fs|Log|Net` on that unit goes 1 → 0 against v0.40.14; `deny Net Unknown` holds 1. 3 cells.
+    `CliCommand.parse` now has 21 overrides that are not pure, over the 12-target bound, so the consumer hedges
+    (`dispatch:…CliCommand.parse`). v0.40.14 counted only the ONE override row that had an effect, and unioned it.
+    The consumer's bound counts override ROWS rather than overriding subtypes (R1336), so it flips with producer
+    precision. R1337 removes the fabricated concrete charges but not the count: the overrides keep `Unknown`.
+  - **A resolution traded for a hedge, standalone**: 14 netty-common rows (`*ObjectHashMap$KeySet.retainAll` ×5,
+    `DefaultPromise.toStringBuilder`, `SingleThreadEventExecutor.removeTask`, `DefaultPriorityQueue`/
+    `PriorityQueue` `priorityChanged`/`remove`/`removeTyped` ×7) lose `Env`/`Fs` (and `Log` on `retainAll`) while
+    keeping `Unknown` with a dispatch reason.
+  - **A false reason class, chained** (R1330): 38 consumer cells gain `unresolved`, so `deny Unknown[unresolved]`
+    goes 0 → 1, where the consumer reaches a merged default-method row whose `Unknown` came only from the merge. An
+    over-report.
+  - **A route inequality, present in v0.40.14 too** (R1338): an exact `I.super.m()` caller of a BROAD-merged default
+    method reads `dispatch` on `gate --report` and not on `scan --policy`. Fixture: `deny Unknown[dispatch]
+    p.Ex.call`, scan 0 / report 1 on both jars. An over-report on the report route.
+  - **R1337's residue**: a caller handing a foreign cause through a JDK-typed parameter now reads `Unknown`, the
+    helper's disclosure, where it is really pure (e.g. zookeeper `LsCommand.parse`). An over-report, in place of the
+    fabricated concrete charge.
 - **A chained call through an interface member whose dependency row is a merged DEFAULT method carries the
   overrides' reasons** (R1327, SPEC §6.2). The producer merges an interface's implementers into its default
   method's row, so the row carries the overrides' effects, but its `unknownWhy` and `calls` are the default
@@ -103,7 +135,7 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   release (SOUNDNESS R1299):** where the bytecode names `java/lang/Object` as the owner of a call on a receiver
   typed by a project abstraction, the edge reaches unrelated classes' `hashCode`/`toString`. On the corpus that is
   7 fabricated charges, e.g. commons-beanutils `ArrayConverter.toString` gaining Clock/Db/Log. These are
-  over-reports, not silences, and their fix is held for 0.40.15.
+  over-reports, not silences, and are fixed in this release (R1299, below).
 
 ## [0.40.14] — 2026-10-21
 

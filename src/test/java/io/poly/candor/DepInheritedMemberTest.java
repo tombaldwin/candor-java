@@ -581,6 +581,35 @@ class DepInheritedMemberTest {
         }
     }
 
+    /** R1336/P6 — AN OVERLOADED OWNER'S OWN-KEY HEDGE IS NOT THE UNION'S VERDICT. log4j's shape: {@code P.format(Object,
+     *  StringBuilder)} is a REAL body that dispatches {@code format(String,StringBuilder)} over 13 overriding subtypes
+     *  (past the bound, so the body carries {@code dispatch:dep.P.format}); one subtype ALSO overrides
+     *  {@code format(Object,StringBuilder)} and writes a file. The subtypes' bare {@code format} quals are undecided
+     *  (the owner is overloaded), so the consumer's count is unanswerable — and the fallback once read the body's
+     *  descriptor-less {@code dispatch:dep.P.format} as the producer's union verdict and dropped the overriding row:
+     *  {@code Fs} lost where the one-tree scan charges it (measured on log4j, 7 effects). */
+    @Test
+    void anOverloadedOwnersOwnKeyHedgeDoesNotStandInForItsUnion() throws Exception {
+        Map<String, String> l = new LinkedHashMap<>();
+        l.put("dep/P.java", "package dep;\npublic abstract class P {\n"
+                + "  public void format(Object o, StringBuilder b) { format(String.valueOf(o), b); }\n"
+                + "  public abstract void format(String s, StringBuilder b);\n}\n");
+        l.put("dep/W.java", "package dep;\npublic class W extends P {\n"
+                + "  public void format(Object o, StringBuilder b) { try { java.nio.file.Files.writeString("
+                + "java.nio.file.Path.of(String.valueOf(o)), \"x\"); } catch (Exception e) { } }\n"
+                + "  public void format(String s, StringBuilder b) { b.append(s); }\n}\n");
+        for (int i = 0; i < 13; i++)
+            l.put("dep/S" + i + ".java", "package dep;\npublic class S" + i + " extends P {"
+                    + " public void format(String s, StringBuilder b) { b.append(s); } }\n");
+        Map<String, String> a = app("  public static void go(P p, Object o) { p.format(o, new StringBuilder()); }\n");
+        TreeSet<String> one = eff(whole(l, a), "app.App.go");
+        assertTrue(one.contains("FS"), "precondition: the one-tree scan charges W's override — " + one);
+        for (String mode : List.of("present", "deleted")) {
+            TreeSet<String> got = eff(chained(l, a, mode).app(), "app.App.go");
+            assertTrue(got.contains("FS"), mode + ": the overriding row survives — got " + got);
+        }
+    }
+
     /** BRIDGE ROWS ANSWER EXACT KEYS ONLY. untypedDepReceiver's conjunct 5 asks whether the dependency declares
      *  the call's signature on ANOTHER type, and a generic implementor's bridge row has exactly the interface's
      *  erased signature. Indexing bridge rows there turned a pure interface call into a fresh

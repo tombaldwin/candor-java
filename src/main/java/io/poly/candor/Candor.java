@@ -8981,7 +8981,10 @@ public class Candor {
             // sibling overload. Measured on the first corpus cut: log4j's real `LogEventPatternConverter.format(Object,
             // StringBuilder)` body hedges its call to `format(LogEvent,StringBuilder)`, was taken for the union's
             // verdict, and the consumer lost 7 effects the one-tree scan keeps.
-            if (inh != null && (inh.syntheticOnly || (!bareAmbiguous
+            // Overloaded is read from the sidecar where there is one and from the row's own qual where there is not:
+            // the writer disambiguates a qual exactly when the class declares two non-bridge overloads (Cha#methodId).
+            boolean overloaded = bareAmbiguous || (inh != null && inh.fn != null && inh.fn.indexOf('(') >= 0);
+            if (inh != null && (inh.syntheticOnly || (!overloaded
                     && inh.unknownWhy.contains("dispatch:" + min.owner.replace('/', '.') + "." + name)))) {
                 if (R867_DEBUG) System.err.println("R867\tUNANSWERED-UNION\t" + id + "\t" + min.owner + "." + name + desc);
                 return;

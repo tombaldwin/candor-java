@@ -9,6 +9,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+## [0.40.15] — 2026-10-22
+
 - ⚠ **A JDK `Throwable` constructor's cause that is the body's own JDK-typed parameter is decided by what each caller
   passes** (R1337). `CliException(Throwable c) { super(c); }` was charged the `toString`/`getMessage` of EVERY project
   throwable (CHA over `java/lang/Throwable` at the R1305 site), and every caller inherited those charges whatever it

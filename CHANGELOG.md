@@ -34,7 +34,18 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   entry). Against aa5c880: 18 rows change, 16 in reasons only; 2 lose concrete effects (commons-math3
   `AbstractUnivariateStatistic.evaluate` `Rand`; h2-mvstore `BasicDataType.write` `Clock, Fs, Rand`), each following
   the dependency's own union entry for that descriptor, each keeping `Unknown`, each absent from the published
-  one-tree scan. Standalone: byte-identical.
+  one-tree scan; h2-mvstore `BasicDataType` also loses 2 `incomplete` values with them. Standalone: byte-identical.
+  Two boundary shapes found in review (Fable REVIEW3) are closed: (F1) an own-key `dispatch:` hedge stands in for
+  the union only where a paired, complete sidecar covers the owner and every dependency ancestor and shows no overload
+  on any of them — an overload declared on an ANCESTOR left the owner's qual bare, and with the sidecar deleted W's
+  `Fs` was dropped (`deny Fs` 0 against 1 present, 1 one-tree); (F2) the bound counts the owner's own body only when it
+  has one (in-scan `declaresConcrete`), read from the producer's synthetic union entry or pure-union key — an
+  abstract member with exactly 12 declaring subtypes hedged with the sidecar present where the one-tree scan and the
+  producer's NARROW union do not (tomcat-embed-el `ELResolver.getCommonPropertyType`, a pure union, hedged). Executed
+  fixtures `ovl2`, `x12-0`, `x12-1`: present = deleted = keys-dropped = pure-dropped = unparseable = unpaired =
+  one-tree in every one. A report with ⟨0.21⟩ `unanalyzed` units grants no sidecar coverage (its unanalysed types
+  cannot show their declarations; SOUNDNESS R1371, census reach 0). `CANDOR_R1336=0` is the UNANSWERABLE arm, not
+  v0.40.15's row count.
 
 - ⚠ **A chained `toString`/`hashCode`/`equals`/`compareTo` on a dependency's own class is bounded like every other
   member** (SOUNDNESS R1360, SPEC §4 ⟨0.40⟩). The consumer's walk down a dependency class's subclasses returned
@@ -52,7 +63,10 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   ×4 (bc-fips, bc-fips-debug, bcprov, debugger-app) and jgit `TreeFilter.toString` — each where v0.40.15 unioned
   ≤12 effectful override rows over more than 12 overriding subtypes; each row keeps `Unknown` with the hedge on the
   lost site, and every lost cell is absent from both one-tree scans. Plus 11 class cells (`indirect` 5, `reflect` 4,
-  `native` 2) on those rows and on guava/curator-shaded `CharMatcher.toString`. Standalone: byte-identical reports.
+  `native` 2) on those rows and on guava/curator-shaded `CharMatcher.toString`, and the dropped overrides' surfaces:
+  `incomplete` 10 values (bouncycastle `ASN1Primitive` ×3 jars, 3 each; jgit `TreeFilter` 1), `netClass` 3
+  (`ASN1Primitive` ×3) and `paths` 1 (debugger-app `ASN1Primitive`), each unit keeping `Unknown` on the lost site.
+  Standalone: byte-identical reports.
   **Shipping knowingly (pre-existing on v0.40.15):** an override whose row is `[]` with only `invisible` reads as pure
   — past the bound because the in-scan floor does the same (SOUNDNESS R1361), and under it because a chained consumer
   does not inherit a dependency row's `invisible` (SOUNDNESS R1362).

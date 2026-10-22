@@ -414,7 +414,9 @@ final class Loader {
         return f.resolveSibling(n.substring(0, n.length() - 5) + ".callgraph.json");
     }
 
-    /** SOUNDNESS R1336 — the kill switch ({@code CANDOR_R1336=0} restores the row-counted bound). */
+    /** SOUNDNESS R1336 — {@code CANDOR_R1336=0} reads no call-graph sidecar. That is NOT v0.40.15's row count: it is the
+     *  UNANSWERABLE state (Loader#pairDepCallgraphs, Candor#depHierarchyJoin), which resolves a site no further than the
+     *  dependency's own union entry — so the switch cannot make a verdict more resolved (SPEC PART 30 P6). */
     static final boolean R1336 = !"0".equals(System.getenv("CANDOR_R1336"));
 
     static Path hierarchySidecarOf(Path f) {
@@ -872,7 +874,13 @@ final class Loader {
                             if (dg != null && dg.isJsonPrimitive()) digest = dg.getAsString();
                             if (ct != null && ct.isJsonPrimitive() && ct.getAsJsonPrimitive().isNumber()) count = ct.getAsLong();
                         }
-                        pendingPairs.add(new PendingPair(f, digest, count, ownTypes));
+                        // R1371: a report with ⟨0.21⟩ `unanalyzed` units has hierarchy types whose declarations the
+                        // sidecar cannot show (only ANALYSED units are keys), so none of its types is answerable.
+                        JsonElement un = obj == null ? null : obj.get("unanalyzed");
+                        boolean hasUnanalyzed = un != null && !un.isJsonNull()
+                                && !(un.isJsonArray() && un.getAsJsonArray().isEmpty())
+                                && !(un.isJsonObject() && un.getAsJsonObject().size() == 0);
+                        if (!hasUnanalyzed) pendingPairs.add(new PendingPair(f, digest, count, ownTypes));
                     }
                     for (JsonElement el : fns) {
                         if (!el.isJsonObject()) continue;                 // a non-object entry → skip (not pure-able)

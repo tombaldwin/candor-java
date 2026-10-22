@@ -554,7 +554,10 @@ class DepInheritedMemberTest {
     @Test
     void degradingTheCallGraphSidecarOnlyWidensTheOverrideVerdict() throws Exception {
         String[][] shapes = { { "concrete", "13", "1" }, { "abstract", "13", "1" }, { "concrete", "13", "0" },
-                { "concrete", "6", "1" }, { "abstract", "3", "0" } };
+                { "concrete", "6", "1" }, { "abstract", "3", "0" },
+                // x12 (Fable REVIEW3 F2): an abstract member with EXACTLY 12 declaring subtypes is within the bound
+                // in-scan (no owner body to count); present must not hedge where the producer's union is narrow.
+                { "abstract", "12", "0" }, { "abstract", "12", "1" } };
         for (String[] sh : shapes) {
             boolean abs = sh[0].equals("abstract");
             int n = Integer.parseInt(sh[1]), k = Integer.parseInt(sh[2]);
@@ -569,6 +572,8 @@ class DepInheritedMemberTest {
             Map<String, String> a = app("  public static void go(Cmd c, String a) { c.parse(a); }\n");
             String tag = String.join("/", sh) + ": ";
             TreeSet<String> present = eff(chained(l, a, "present").app(), "app.App.go");
+            if (abs && n == 12)
+                assertEquals(eff(whole(l, a), "app.App.go"), present, tag + "present must read the one-tree answer");
             for (String mode : List.of("deleted", "keysdropped", "garbage", "unpaired")) {
                 TreeSet<String> got = eff(chained(l, a, mode).app(), "app.App.go");
                 if (present.contains("UNKNOWN"))
@@ -607,6 +612,24 @@ class DepInheritedMemberTest {
         for (String mode : List.of("present", "deleted")) {
             TreeSet<String> got = eff(chained(l, a, mode).app(), "app.App.go");
             assertTrue(got.contains("FS"), mode + ": the overriding row survives — got " + got);
+        }
+        // ovl2 (Fable REVIEW3 F1): the sibling overload is declared on an ANCESTOR. The owner P has one `format`, so its
+        // qual is bare and nothing on P's row says "overloaded"; deleted, P's own-key hedge (the body's dispatch to the
+        // inherited abstract sibling) was taken for the union's verdict and W's Fs dropped: deny Fs 0 against 1 present.
+        Map<String, String> l2 = new LinkedHashMap<>();
+        l2.put("dep/A.java", "package dep;\npublic abstract class A { public void format(Object o, StringBuilder b) {"
+                + " b.append(\"a\"); } public abstract void format(String s, StringBuilder b); }\n");
+        l2.put("dep/P.java", "package dep;\npublic abstract class P extends A { public void format(Object o,"
+                + " StringBuilder b) { format(String.valueOf(o), b); } }\n");
+        l2.put("dep/W.java", l.get("dep/W.java"));
+        for (int i = 0; i < 13; i++)
+            l2.put("dep/S" + i + ".java", "package dep;\npublic class S" + i + " extends P {"
+                    + " public void format(String s, StringBuilder b) { b.append(s); } }\n");
+        TreeSet<String> one2 = eff(whole(l2, a), "app.App.go");
+        assertTrue(one2.contains("FS"), "ovl2 precondition: the one-tree scan charges W — " + one2);
+        for (String mode : List.of("present", "deleted", "unpaired")) {
+            TreeSet<String> got = eff(chained(l2, a, mode).app(), "app.App.go");
+            assertTrue(got.contains("FS"), "ovl2 " + mode + ": the overriding row survives — got " + got);
         }
     }
 

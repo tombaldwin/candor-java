@@ -8931,8 +8931,16 @@ public class Candor {
         // The count is an INTERVAL [declaring, declaring + undecided]: the hierarchy sidecar every walk already needs
         // bounds it from above. It is unanswerable only where the interval straddles the bound; either end inside it
         // decides the site exactly as an answered count would.
-        boolean unanswerable = undecided > 0 && declaring + 1 <= CHA_FANOUT_LIMIT
-                && declaring + undecided + 1 > CHA_FANOUT_LIMIT;
+        // THE OWNER'S OWN BODY COUNTS ONLY IF IT HAS ONE — in-scan chaTargets adds the owner only when it
+        // `declaresConcrete`. An abstract member is published as a synthetic union entry, or (all implementors pure)
+        // as an R919 pure-only union key; either says there is no owner body. Counting one anyway hedged an abstract
+        // member with exactly 12 declaring subtypes where the one-tree scan and the producer's own NARROW union do not
+        // (tomcat-embed-el `ELResolver.getCommonPropertyType`: a pure union, hedged — c3_pure_only's shape), and made
+        // the sidecar-present arm MORE disclosed than the deleted one at that boundary.
+        int ob = (inh != null && inh.syntheticOnly) || ctx.depPureUnionKeys.contains(min.owner + "." + name + desc)
+                ? 0 : 1;
+        boolean unanswerable = undecided > 0 && declaring + ob <= CHA_FANOUT_LIMIT
+                && declaring + undecided + ob > CHA_FANOUT_LIMIT;
         // SOUNDNESS R1336 — THE BOUND COUNTS OVERRIDING SUBTYPES, NOT OVERRIDE ROWS. The bound is the in-scan
         // bounded-CHA bound (SPEC §4: "at most 12 implementors … MUST otherwise read Unknown"), and in-scan it
         // counts every declaring subtype, pure or not (Cha#chaTargets). A pure override publishes no row (§2 rule
@@ -8983,7 +8991,12 @@ public class Candor {
             // verdict, and the consumer lost 7 effects the one-tree scan keeps.
             // Overloaded is read from the sidecar where there is one and from the row's own qual where there is not:
             // the writer disambiguates a qual exactly when the class declares two non-bridge overloads (Cha#methodId).
-            boolean overloaded = bareAmbiguous || (inh != null && inh.fn != null && inh.fn.indexOf('(') >= 0);
+            // …and the overload may be declared on an ANCESTOR (the owner then has one `format` and a bare qual, the
+            // ancestor the sibling it dispatches to). So the own-key hedge is trusted only where a paired, complete
+            // sidecar covers the owner and EVERY dependency ancestor and shows no overload on any of them; with no
+            // sidecar it is never trusted (rows unioned beside a hedge instead — wider, never narrower).
+            boolean overloaded = bareAmbiguous || (inh != null && inh.fn != null && inh.fn.indexOf('(') >= 0)
+                    || !depLineCovered(ctx, min.owner);
             if (inh != null && (inh.syntheticOnly || (!overloaded
                     && inh.unknownWhy.contains("dispatch:" + min.owner.replace('/', '.') + "." + name)))) {
                 if (R867_DEBUG) System.err.println("R867\tUNANSWERED-UNION\t" + id + "\t" + min.owner + "." + name + desc);
@@ -9005,11 +9018,11 @@ public class Candor {
             return;
         }
         // Answered: the interval's end that decides (all-in-bound → the upper end, past-bound → the lower).
-        int bound = !protocolOff ? Math.max(declaring + (declaring + 1 > CHA_FANOUT_LIMIT ? 0 : undecided),
+        int bound = !protocolOff ? Math.max(declaring + (declaring + ob > CHA_FANOUT_LIMIT ? 0 : undecided),
                 overrides.size()) : -1;
         if (bound >= 0) {
             if (bound == 0) return;
-            if (bound + 1 > CHA_FANOUT_LIMIT) {
+            if (bound + ob > CHA_FANOUT_LIMIT) {
                 // R1360: past the bound the Object protocol is decided as in-scan's S4 floor decides it (ExactTypes →
                 // R1303's rule): DISCLOSED only where some override carries an effect or an Unknown. Thirteen pure
                 // toString bodies read pure in the one-tree scan, and must here too — hedging them would be a fresh
@@ -9087,6 +9100,20 @@ public class Candor {
                 || m.contains(name + "(" + Cha.paramTypeListFq(desc) + ")")) return 1;
         if (m.contains(name)) return bareAmbiguous ? -1 : 1;
         return 0;
+    }
+
+    /** SOUNDNESS R1336/P6 — whether a paired, complete call-graph sidecar covers {@code owner} and every chained
+     *  dependency ancestor of it (depSupers' closure, dependency-declared types only). */
+    static boolean depLineCovered(AnalysisContext ctx, String owner) {
+        ArrayDeque<String> q = new ArrayDeque<>(List.of(owner));
+        Set<String> seen = new HashSet<>();
+        while (!q.isEmpty()) {
+            String t = q.poll();
+            if (!seen.add(t)) continue;
+            if (ctx.depIndexed.contains(t) && !ctx.depCgCoveredTypes.contains(t)) return false;
+            q.addAll(ctx.depSupers.getOrDefault(t, List.of()));
+        }
+        return true;
     }
 
     /** SOUNDNESS R1336 — whether {@code owner} or a chained ancestor of it declares {@code name} under a

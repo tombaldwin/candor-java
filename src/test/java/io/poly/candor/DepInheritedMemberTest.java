@@ -57,6 +57,13 @@ class DepInheritedMemberTest {
     private record Scan(Map<String, EffectSet> app, Map<String, JsonObject> dep, Map<String, List<String>> why) {}
 
     private static Scan chained(Map<String, String> lib, Map<String, String> app) throws Exception {
+        return chained(lib, app, true);
+    }
+
+    /** {@code keepCallgraph=false} deletes the dependency's call-graph sidecar before the consumer scan — the
+     *  input SOUNDNESS R1336's declaring-subtype count reads — so a test can show that input is what decides. */
+    private static Scan chained(Map<String, String> lib, Map<String, String> app, boolean keepCallgraph)
+            throws Exception {
         Path appDir = compileApp(lib, app);
         Path base = appDir.getParent();
         Config saved = Candor.config;
@@ -65,6 +72,9 @@ class DepInheritedMemberTest {
             Candor.config = Config.empty();
             ReportWriter.writeReport(Candor.runScan(base.resolve("lib")), depReport.toString(), null);
             Map<String, JsonObject> depRows = rowsByHash(depReport);
+            if (!keepCallgraph)
+                assertTrue(Files.deleteIfExists(base.resolve("dep.callgraph.json")),
+                        "the call-graph sidecar this arm removes must have existed");
             Files.createDirectories(base.resolve(".candor"));
             Files.writeString(base.resolve(".candor/config"), "deps " + depReport + "\n");
             Candor.config = Config.forTarget(appDir);
@@ -396,28 +406,81 @@ class DepInheritedMemberTest {
         assertEquals(set("CLOCK", "ENV", "FS"), eff(c.app(), "app.App.viaG2"), "LeafG2 overrides two levels below the bridge");
     }
 
-    /** THE WIDENING MUST NOT DELETE WHAT IT WIDENS. R867's DOWN walk unions a base member's overrides up to
-     *  CHA_FANOUT_LIMIT and past it discloses a bare Unknown instead. Bridge rows make generic overrides
-     *  findable, so a site whose ordinary overrides used to UNION (here: under the bound, one of them Env) could
-     *  be pushed past the bound by the newly-found bridged ones and lose that Env — measured on jackson-databind
-     *  (`StdScalarSerializer.serialize`, `Clock` lost). The bound is priced on the non-bridge matches; the
-     *  bridged ones that would cross it are replaced by an ADDED Unknown. */
+    /** WHAT R869 PRICED, R1336 NOW COUNTS. R867's DOWN walk unions a base member's overrides up to CHA_FANOUT_LIMIT
+     *  and past it discloses {@code Unknown[dispatch]} instead. When bridge rows (R869) made generic overrides
+     *  findable, a site whose ordinary overrides used to UNION could be pushed past the bound by them — measured on
+     *  jackson-databind ({@code StdScalarSerializer.serialize}, {@code Clock}) — and R869 kept the union priced on
+     *  the non-bridge ROWS, adding an {@code Unknown} beside it. That pricing was the R1336 defect in one of its
+     *  forms: the verdict followed what the producer happened to publish, not the hierarchy. The bound now counts
+     *  overriding SUBTYPES from the call-graph sidecar (14 here, past it), bridged or not, pure or not — the
+     *  quantity the in-scan bound counts — so this site hedges exactly as the one-tree scan of the same code does,
+     *  and the overrides' {@code Env}/{@code Rand}/{@code Clock} are not unioned. Measured cost of that trade
+     *  against v0.40.15 on the 304-entry chained census: 39 concrete cells in 20 consumer units, every one
+     *  absent from the published one-tree scan of the same code, and every unit keeping {@code Unknown}. */
     @Test
-    void bridgeRowsCannotPushAnOverrideUnionPastTheBound() throws Exception {
+    void anOverrideSitePastTheBoundHedgesAsTheOneTreeScanDoes() throws Exception {
         Map<String, String> l = new LinkedHashMap<>();
         l.put("dep/BaseG.java", BASE_G);
-        int plain = Rules.CHA_FANOUT_LIMIT - 2;              // priced: plain + base = LIMIT - 1, under the bound
+        int plain = Rules.CHA_FANOUT_LIMIT - 2;              // ROWS: plain + base = LIMIT - 1, under the bound
         for (int i = 0; i < plain; i++)
             l.put("dep/P" + i + ".java", "package dep;\npublic class P" + i + " extends BaseG<Object> {"
                     + " @Override public void m(Object o) { " + (i == 0 ? ENV : RAND) + " } }\n");
-        for (int i = 0; i < 4; i++)                          // bridged: they carry the total past it
+        for (int i = 0; i < 4; i++)                          // bridged: the SUBTYPES carry the count past it
             l.put("dep/G" + i + ".java", "package dep;\npublic class G" + i + " extends BaseG<String> {"
                     + " @Override public void m(String s) { " + CLOCK + " } }\n");
-        Scan c = chained(l, app("  public static void viaG(BaseG<String> g) { g.m(\"x\"); }\n"));
+        Map<String, String> a = app("  public static void viaG(BaseG<String> g) { g.m(\"x\"); }\n");
+        Scan c = chained(l, a);
         TreeSet<String> got = eff(c.app(), "app.App.viaG");
-        assertTrue(got.containsAll(set("ENV", "FS", "RAND")), "the priced union must survive: " + got);
-        assertTrue(got.contains("UNKNOWN"), "the bridged overrides past the bound are disclosed: " + got);
-        assertFalse(got.contains("CLOCK"), "and not unioned past the bound: " + got);
+        assertTrue(got.contains("UNKNOWN"), "past the bound, disclosed: " + got);
+        assertTrue(c.why().get("app.App.viaG").contains("dispatch:dep.BaseG.m"), "" + c.why().get("app.App.viaG"));
+        for (String e : List.of("ENV", "RAND", "CLOCK"))
+            assertFalse(got.contains(e), "no override is unioned past the bound (" + e + "): " + got);
+        TreeSet<String> one = eff(whole(l, a), "app.App.viaG");
+        for (String e : List.of("ENV", "RAND", "CLOCK"))
+            assertFalse(one.contains(e), "…which is the one-tree answer too (" + e + "): " + one);
+    }
+
+    /** SOUNDNESS R1336 — THE BOUND COUNTS OVERRIDING SUBTYPES, NOT OVERRIDE ROWS. {@code dep.Cmd.parse} has
+     *  {@code n} overriding subtypes: {@code Sub0} writes the file it is handed, the rest are PURE and publish no row
+     *  (§2 rule 3). The consumer's {@code go(Cmd c)} dispatches {@code parse}. Executed in
+     *  {@code javaagent-0416/fx1336} (pick 0 writes the file, pick 1 and the base write nothing). In-scan, the one-tree
+     *  scan counts all {@code n} + the base as CHA targets; the chained walk counted ROWS, i.e. one, so past the bound
+     *  it unioned {@code Fs} and dropped the hedge one-tree reads — and when the producer published rows for the pure
+     *  overrides too (R1304's named rows, {@code CANDOR_R1304}) it hedged instead: one jar, one hierarchy, two
+     *  verdicts. The count now comes from the dependency's call-graph sidecar, which keys every analysed unit.
+     *  <ul>
+     *    <li>13 subtypes (past the bound): {@code Unknown[dispatch:dep.Cmd.parse]}, no {@code Fs} — the one-tree
+     *        answer. CONTROL: with the call-graph sidecar deleted the walk can see only the one row, and the old
+     *        union comes back, so the sidecar is shown to be what decides.</li>
+     *    <li>6 subtypes (under it): the union is kept, {@code Fs} and no {@code Unknown} — the resolution.</li>
+     *  </ul> */
+    @Test
+    void pureOverridingSubtypesCountTowardTheOverrideBound() throws Exception {
+        for (int n : new int[] { 13, 6 }) {
+            Map<String, String> l = new LinkedHashMap<>();
+            l.put("dep/Cmd.java", "package dep;\npublic class Cmd { public void parse(String a) { } }\n");
+            l.put("dep/Sub0.java", "package dep;\npublic class Sub0 extends Cmd { public void parse(String a) {"
+                    + " try { java.nio.file.Files.writeString(java.nio.file.Path.of(a), \"x\"); } catch (Exception e) { } } }\n");
+            for (int i = 1; i < n; i++)
+                l.put("dep/Sub" + i + ".java", "package dep;\npublic class Sub" + i + " extends Cmd {"
+                        + " public String last; public void parse(String a) { last = a.trim(); } }\n");
+            Map<String, String> a = app("  public static void go(Cmd c, String a) { c.parse(a); }\n");
+            Scan c = chained(l, a);
+            long rows = c.dep().keySet().stream().filter(h -> h.contains(".parse(")).count();
+            assertEquals(1, rows, "precondition: only the effectful override publishes a row");
+            TreeSet<String> got = eff(c.app(), "app.App.go");
+            TreeSet<String> one = eff(whole(l, a), "app.App.go");
+            if (n + 1 > Rules.CHA_FANOUT_LIMIT) {
+                assertEquals(set("UNKNOWN"), got, n + " overriding subtypes: past the bound, the hedge — got " + got);
+                assertTrue(c.why().get("app.App.go").contains("dispatch:dep.Cmd.parse"), "" + c.why().get("app.App.go"));
+                assertEquals(one, got, "and it is the one-tree answer");
+                TreeSet<String> noCg = eff(chained(l, a, false).app(), "app.App.go");
+                assertEquals(set("FS"), noCg, "control: without the sidecar only the ROW is countable — got " + noCg);
+            } else {
+                assertEquals(set("FS"), got, n + " overriding subtypes: under the bound, the union — got " + got);
+                assertEquals(one, got, "and it is the one-tree answer");
+            }
+        }
     }
 
     /** BRIDGE ROWS ANSWER EXACT KEYS ONLY. untypedDepReceiver's conjunct 5 asks whether the dependency declares

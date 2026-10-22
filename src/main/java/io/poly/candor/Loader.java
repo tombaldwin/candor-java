@@ -406,6 +406,53 @@ final class Loader {
         }
     }
 
+    /** SOUNDNESS R1336 — the `<report>.callgraph.json` sidecar path for a report file, by the same naming rule
+     *  {@link ReportWriter#writeCallgraph} writes it with. */
+    static Path callgraphSidecarOf(Path f) {
+        String n = f.getFileName().toString();
+        if (!n.endsWith(".json") || isSidecarName(n)) return null;
+        return f.resolveSibling(n.substring(0, n.length() - 5) + ".callgraph.json");
+    }
+
+    /** SOUNDNESS R1336 — the kill switch ({@code CANDOR_R1336=0} restores the row-counted bound). */
+    static final boolean R1336 = !"0".equals(System.getenv("CANDOR_R1336"));
+
+    /**
+     * SOUNDNESS R1336 — read a chained dependency's §2.2 CALL-GRAPH SIDECAR for its KEY SET only: which members
+     * each of its types declares, pure ones included. {@link Candor#depHierarchyJoin}'s bound is the in-scan
+     * bounded-CHA bound (SPEC §4: "at most 12 implementors"), and in-scan that counts every declaring subtype,
+     * pure or not ({@link Cha#chaTargets}). The report cannot say a subtype declares a PURE override — §2 rule 3
+     * omits it — so the walk counted override ROWS, and a row is a fact about the producer's PRECISION, not about
+     * the hierarchy: zookeeper's `CliCommand.parse` has 22 overriding subtypes, v0.40.14 published 1 row with an
+     * effect (union) and v0.40.15 published 21 (hedge), for one unchanged jar. The sidecar keys every analysed
+     * unit, so the count it gives does not move when a body's classification does.
+     *
+     * <p>Structural and not version-gated, for the reason {@link #loadDepHierarchy} gives: it carries no effect
+     * claim, and the only thing it can do is make the bound count MORE declarers, which moves a site toward the
+     * disclosed hedge. Streamed (names only, values skipped): a corpus sidecar runs to tens of MB. A sidecar that
+     * is present and unreadable fails the run, exactly as an unreadable hierarchy sidecar does.
+     */
+    static void loadDepCallgraphMembers(Path f) {
+        try (var r = new com.google.gson.stream.JsonReader(Files.newBufferedReader(f))) {
+            if (r.peek() != com.google.gson.stream.JsonToken.BEGIN_OBJECT) return;
+            r.beginObject();
+            while (r.hasNext()) {
+                String q = r.nextName();
+                r.skipValue();
+                int paren = q.indexOf('(');
+                String head = paren < 0 ? q : q.substring(0, paren);
+                int dot = head.lastIndexOf('.');
+                if (dot <= 0 || dot == head.length() - 1) continue;
+                ctx().depDeclaredMembers.computeIfAbsent(head.substring(0, dot).replace('.', '/'),
+                        k -> new HashSet<>()).add(q.substring(dot + 1));
+            }
+        } catch (Exception e) {
+            System.err.println("candor: CANDOR_DEPS call-graph sidecar " + f + " is unreadable ("
+                    + e.getMessage() + ") — failing (exit 2), a configured dep must not silently read pure");
+            System.exit(2);
+        }
+    }
+
     static Path hierarchySidecarOf(Path f) {
         String n = f.getFileName().toString();
         if (!n.endsWith(".json") || n.endsWith(".hierarchy.json")) return null;
@@ -711,6 +758,9 @@ final class Loader {
                     // explicitly; absent is the ordinary case and simply leaves the hierarchy empty.
                     Path sib = hierarchySidecarOf(p);
                     if (sib != null && Files.isRegularFile(sib)) files.add(sib);
+                    // SOUNDNESS R1336 — and the call-graph sidecar beside it, for the same reason.
+                    Path cg = callgraphSidecarOf(p);
+                    if (cg != null && Files.isRegularFile(cg)) files.add(cg);
                 } else {
                     System.err.println("candor: CANDOR_DEPS names " + p + " but it is not a readable file or"
                             + " directory — failing (exit 2), a configured dep must not silently read pure");
@@ -726,6 +776,10 @@ final class Loader {
                 if (fname.endsWith(".hierarchy.json")) {
                     loadDepHierarchy(f);
                     continue;                      // a hierarchy sidecar carries no `functions` and no effects
+                }
+                if (fname.endsWith(".callgraph.json")) {
+                    if (R1336) loadDepCallgraphMembers(f);
+                    continue;                      // R1336: only its KEY SET is read — see the method
                 }
                 // ⟨0.24⟩ …and neither does any OTHER reserved sidecar segment (§2.2). A directory-form
                 // CANDOR_DEPS walks every `.json` beside the report, so another engine's `.locs.json` /

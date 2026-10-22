@@ -8846,8 +8846,9 @@ public class Candor {
      *       targets (counting the owner's own body, as in-scan {@code chaTargets} does) an open hierarchy
      *       is disclosed as {@code Unknown[dispatch]} rather than unioned, so the chained answer agrees with
      *       the one-package answer instead of out-guessing it; for the §4 Object protocol a broad fan-out
-     *       adds nothing, as in-scan. A subtype whose override is PURE publishes no row and adds nothing,
-     *       which is exact.</li>
+     *       adds nothing, as in-scan. A subtype whose override is PURE publishes no row and adds no EFFECT,
+     *       which is exact — but it is still a target, and it counts toward the bound (SOUNDNESS R1336:
+     *       the declaring subtypes come from the dependency's call-graph sidecar).</li>
      *   <li><b>EXACT</b>, for a receiver that IS one {@code new T} of a dependency type: the body T resolves
      *       to, nearest-first. {@code BaseO b = new SubO(); b.m()} keyed {@code BaseO.m} and never looked at
      *       {@code SubO}.</li>
@@ -8901,6 +8902,9 @@ public class Candor {
         if (ctx.depSubtypes.isEmpty()) return;
         List<DepFn> overrides = new ArrayList<>();
         Set<String> seen = new HashSet<>();
+        // SOUNDNESS R1336 — the dependency subtypes that DECLARE the member, pure or not: what the bound counts.
+        int declaring = 0;
+        boolean bareAmbiguous = depNameOverloaded(ctx, min.owner, name);
         ArrayDeque<String> q = new ArrayDeque<>(ctx.depSubtypes.getOrDefault(min.owner, List.of()));
         while (!q.isEmpty()) {
             String t = q.poll();
@@ -8908,11 +8912,45 @@ public class Candor {
             q.addAll(ctx.depSubtypes.getOrDefault(t, List.of()));
             if (ctx.byName.containsKey(t)) continue;         // a project subtype: in-scan CHA already edged it
             DepFn d = depOverrideAt(t, name, desc);
+            if (d != null || depDeclares(ctx, t, name, desc, bareAmbiguous)) declaring++;
             if (d != null && d != inh && !overrides.contains(d)) overrides.add(d);
         }
         if (R867_DEBUG && !seen.isEmpty())
             System.err.println("R867REACH\t" + id + "\t" + min.owner + "." + name + desc + "\tsubs=" + seen.size()
-                    + "\toverrides=" + overrides.size());
+                    + "\toverrides=" + overrides.size() + "\tdeclaring=" + declaring);
+        // SOUNDNESS R1336 — THE BOUND COUNTS OVERRIDING SUBTYPES, NOT OVERRIDE ROWS. The bound is the in-scan
+        // bounded-CHA bound (SPEC §4: "at most 12 implementors … MUST otherwise read Unknown"), and in-scan it
+        // counts every declaring subtype, pure or not (Cha#chaTargets). A pure override publishes no row (§2 rule
+        // 3), so counting rows priced the bound on the PRODUCER'S PRECISION: zookeeper's `CliCommand.parse` has 22
+        // overriding subtypes, v0.40.14 published one effectful row and the consumer unioned it (`Fs, Log, Net`),
+        // v0.40.15 published 21 and the consumer hedged — one jar, one hierarchy, two verdicts. The one-tree scan
+        // of the same code reads the hedge in both. The declaring set comes from the dependency's call-graph
+        // sidecar (Loader#loadDepCallgraphMembers), which keys every analysed unit; a subtype with a row counts
+        // whether or not the sidecar is there, so with no sidecar this is the old row count exactly.
+        //
+        // §4's Object protocol keeps the ROW count. Its broad branch below adds NOTHING — no union and no hedge —
+        // so counting pure declarers into it would delete a visible override's effect with no disclosure in its
+        // place, a silence this fix must not buy. The exemption's own reach on a dependency-typed receiver is a
+        // separate question (SPEC §4 ⟨0.40⟩) and is not decided here.
+        int bound = Loader.R1336 && !isObjectProtocolExempt(name, desc)
+                ? Math.max(declaring, overrides.size()) : -1;
+        if (bound >= 0) {
+            if (bound == 0) return;
+            if (bound + 1 > CHA_FANOUT_LIMIT) {
+                ctx.viaCross.computeIfAbsent(id, k -> EffectSet.empty()).add(Effect.UNKNOWN);
+                ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
+                        .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, min.owner.replace('/', '.') + "." + name));
+                if (R867_DEBUG) System.err.println("R867\tBROAD\t" + id + "\t" + min.owner + "." + name + desc
+                        + "\t" + overrides.size() + "/" + declaring);
+                return;
+            }
+            for (DepFn d : overrides) {
+                if (R867_DEBUG) System.err.println("R867\tDOWN\t" + id + "\t" + min.owner + "." + name + desc
+                        + "\t" + d.fn + "\t" + d.effects);
+                inheritDepFn(id, d);
+            }
+            return;
+        }
         if (overrides.isEmpty()) return;
         // SOUNDNESS R869 — THE BOUND IS PRICED ON WHAT IT PRICED BEFORE BRIDGE ROWS EXISTED. Bridge rows made more
         // overrides findable, and counting them into the bound turned sites that used to UNION their overrides
@@ -8951,6 +8989,44 @@ public class Candor {
                     + "\t" + d.fn + "\t" + d.effects);
             inheritDepFn(id, d);
         }
+    }
+
+    /** SOUNDNESS R1336 — whether the chained dependency's call-graph sidecar names {@code t}'s own declaration of
+     *  {@code (name,desc)}: under either disambiguated spelling ({@link Cha#methodId}), or under the BARE qual —
+     *  {@code t} declares exactly one non-bridge method of that name — unless {@code bareAmbiguous}.
+     *
+     *  <p>The bare qual carries no descriptor, so it says "t declares SOME {@code name}", which is an override of
+     *  this member only when the member is the one {@code name} its owner has. Where the owner (or an ancestor)
+     *  declares several overloads, a subtype's bare {@code name} overrides one of them and the sidecar cannot say
+     *  which: log4j's {@code LogEventPatternConverter} declares {@code format(Object,StringBuilder)} and
+     *  {@code format(LogEvent,StringBuilder)}, its converters override only the second, and counting their bare
+     *  {@code format} against the FIRST (47 "declarers") pushed a 2-row site past the bound — a hedge where the one-tree scan
+     *  unions, 7 concrete effects lost on the first measured cut. So an ambiguous bare qual is NOT counted; that
+     *  subtype counts only through its row, which is the pre-R1336 rule for exactly the case the sidecar cannot
+     *  decide. */
+    static boolean depDeclares(AnalysisContext ctx, String t, String name, String desc, boolean bareAmbiguous) {
+        Set<String> m = ctx.depDeclaredMembers.get(t);
+        if (m == null || m.isEmpty()) return false;
+        if (!bareAmbiguous && m.contains(name)) return true;
+        return m.contains(name + "(" + Cha.paramTypeList(desc) + ")")
+                || m.contains(name + "(" + Cha.paramTypeListFq(desc) + ")");
+    }
+
+    /** SOUNDNESS R1336 — whether {@code owner} or a chained ancestor of it declares {@code name} under a
+     *  DISAMBIGUATED qual, i.e. as one of several overloads; see {@link #depDeclares}. */
+    static boolean depNameOverloaded(AnalysisContext ctx, String owner, String name) {
+        if (ctx.depDeclaredMembers.isEmpty()) return false;
+        String pre = name + "(";
+        ArrayDeque<String> q = new ArrayDeque<>(List.of(owner));
+        Set<String> seen = new HashSet<>();
+        while (!q.isEmpty()) {
+            String t = q.poll();
+            if (!seen.add(t)) continue;
+            for (String k : ctx.depDeclaredMembers.getOrDefault(t, Set.of()))
+                if (k.startsWith(pre)) return true;
+            q.addAll(ctx.depSupers.getOrDefault(t, List.of()));
+        }
+        return false;
     }
 
     /** {@link #nearestDepFn} with {@link #depOverrideAt}'s bridge match at each level: the body a receiver of

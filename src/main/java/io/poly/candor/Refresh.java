@@ -472,6 +472,11 @@ final class Refresh {
           // SOUNDNESS R919: a dependency gaining (or losing) a pure-only union entry moves R533's disclosure
           // at the consumer, so a cache primed before it must miss.
           .append(new TreeSet<>(c.depPureUnionKeys)).append('\u0001')
+          // SOUNDNESS R1336: the call-graph sidecar's member keys. NOT derivable from crossDeps (a pure override
+          // has no row), and they decide depHierarchyJoin's bound, so a dependency gaining or losing a pure
+          // override must miss a cache primed before it.
+          .append(new TreeMap<>(c.depDeclaredMembers.entrySet().stream().collect(java.util.stream.Collectors.toMap(
+                  java.util.Map.Entry::getKey, e -> new TreeSet<>(e.getValue()))))).append('\u0001')
           .append(c.depReportsRead).append('\u0001');
         sb.append("flags");
         sb.append(c.taintEnabled).append(c.closedWorld).append(c.unknownRatchet).append(c.peekVersioned)

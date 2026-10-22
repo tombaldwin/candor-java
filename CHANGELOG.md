@@ -9,6 +9,27 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **A chained call on a dependency class member hedges by the number of overriding SUBTYPES, not override ROWS**
+  (SOUNDNESS R1336, SPEC §4 bounded CHA). The consumer's walk down a dependency's subclasses unions their overrides
+  up to the 12-implementor bound and past it reads `Unknown[dispatch:…]`. It counted the overrides that published
+  a ROW, and a pure override publishes none (§2 rule 3), so the verdict followed the producer's precision rather
+  than the hierarchy: zookeeper's `CliCommand.parse` has 23 overriding subtypes; v0.40.14 published 1 effectful
+  row (the consumer unioned `Fs, Log, Net`) and v0.40.15 published 21 (it hedged), for one unchanged jar. The
+  count now comes from the dependency's call-graph sidecar, which keys every analysed unit, pure ones included;
+  that is what the in-scan bound counts, and the chained answer now matches the one-tree scan of the same code.
+  Executed fixture: 13 overriding subtypes, one writes the file — v0.40.15 reads `deny Fs` 1 or 0 depending on
+  whether the producer names its pure overrides (`CANDOR_R1304`); this build reads 0 with `deny Fs Unknown` 1 in
+  both. Under the bound (6 subtypes) the union is kept in every arm. zookeeper `C_CliCommand`: `Unknown`
+  {dispatch} whether chained on the v0.40.14 or v0.40.15 report, so the trade v0.40.15 named is now the rule,
+  not a side effect. **Cost, chained census, against v0.40.15:** 39 concrete `deny <E> <unit>` cells go 1 → 0 in
+  20 consumer units of 19 jars (groovy `MetaProperty` ×2, jackson `JsonSerializer` ×2, lettuce `CommandOutput`
+  ×2, log4j `Filter`/`AbstractFilter`, bouncycastle `ECFieldElement` ×4, …); every unit keeps `Unknown`
+  {dispatch}, and every lost cell is absent from the published one-tree scan of the same code. This supersedes
+  R869's rule that kept the row-priced union beside the hedge (jackson `StdScalarSerializer.serialize`). A
+  subtype whose qual is bare where the owner has overloads is counted only through its row (the sidecar cannot
+  say which overload it overrides). The §4 Object protocol keeps the row count. Without a sidecar the count is
+  the row count, as before. Kill switch: `CANDOR_R1336=0`.
+
 ## [0.40.15] — 2026-10-22
 
 - **`jbang-catalog.json` points at the v0.40.15 jar.**

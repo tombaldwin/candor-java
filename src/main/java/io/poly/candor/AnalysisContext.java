@@ -398,6 +398,14 @@ final class AnalysisContext {
     Set<String> depPureUnionKeys = new HashSet<>();
     Map<String, List<String>> depSubtypes = new HashMap<>();
     Map<String, Map<String, DepFn>> depMembersByName = new HashMap<>();
+    // SOUNDNESS R1336 — every member a chained dependency's §2.2 CALL-GRAPH SIDECAR names, by internal type ->
+    // member key (`name`, or `name(params)` for an overload, exactly as the qual spells it). The sidecar keys EVERY
+    // analysed unit, pure ones included, which the report does not (§2 rule 3), so it is the one input that says a
+    // dependency subtype DECLARES a member whose body is pure. Candor#depHierarchyJoin counts declaring subtypes
+    // from it, so its bound prices the same quantity the in-scan bound prices (chaTargets: pure or not) rather
+    // than the effectful ROWS, which move with producer precision. Structural, like depSupers: it carries no
+    // effect claim and can only make the bound count more. Shared INPUT, filled only by Loader#loadCrossDeps.
+    Map<String, Set<String>> depDeclaredMembers = new HashMap<>();
     // The SHA-256 of each class's bytes AS READ, keyed by internal name — the refresh cache's per-class
     // key. Filled by the loader at the one point where bytes exist, because after ASM has parsed them
     // the bytes are gone and only a re-read could recover them. CONTENT, never mtime: a wrong hit here
@@ -480,6 +488,7 @@ final class AnalysisContext {
         depIndexed = master.depIndexed;                     depSubtypes = master.depSubtypes;   // R867
         depPureUnionKeys = master.depPureUnionKeys;   // R919: a shared INPUT, filled only by loadCrossDeps
         depMembersByName = master.depMembersByName;
+        depDeclaredMembers = master.depDeclaredMembers;   // R1336: a shared INPUT, filled only by loadCrossDeps
         literalFixpointMemo = master.literalFixpointMemo;
         denyRules = master.denyRules;
         allowRules = master.allowRules;                     forbidRules = master.forbidRules;

@@ -508,6 +508,7 @@ final class ArgContract {
             int paren = key.indexOf('('), dot = key.lastIndexOf('.', paren);
             String owner = key.substring(0, dot), name = key.substring(dot + 1, paren), desc = key.substring(paren);
             boolean unknownToo = R1303_UNKNOWN && R1337_WIDE.get().contains(caller + "\t" + key + "\t" + t);
+            if (unknownToo) R1337_AGAIN.get().add(w);   // re-decided by floorAgain, as the Object floor is
             for (String b : Cha.chaTargets(t, name, desc))
                 if (newConcrete(fx, b, caller) || (unknownToo && newUnknown(fx, b, caller))) {
                     added |= disclose(c, caller, owner, name, "R1166WIDEU", t, b);
@@ -645,9 +646,23 @@ final class ArgContract {
      *  driver's loop ends. False once nothing new is disclosed; the sites are dropped then. */
     static boolean floorAgain(Map<String, EffectSet> fx) {
         boolean added = R1303_UNKNOWN && objectFloor(ctx(), fx);
-        if (!added) FLOOR_SITES.get().clear();
+        // SOUNDNESS R1337 — a JDK-typed parameter cause's WIDE site, re-decided on the same terms: a candidate whose
+        // Unknown came from a floor disclosure (MapField.toString's, reached through kafka QuotaViolationException
+        // .toString) is only visible after the fixpoint that disclosure fed
+        for (String[] w : R1337_AGAIN.get()) {
+            String caller = w[0], key = w[1], t = w[2];
+            int paren = key.indexOf('('), dot = key.lastIndexOf('.', paren);
+            String owner = key.substring(0, dot), name = key.substring(dot + 1, paren), desc = key.substring(paren);
+            for (String b : Cha.chaTargets(t, name, desc))
+                if (newConcrete(fx, b, caller) || newUnknown(fx, b, caller)) {
+                    added |= disclose(ctx(), caller, owner, name, "R1337WIDEU", t, b);
+                    break;
+                }
+        }
+        if (!added) { FLOOR_SITES.get().clear(); R1337_AGAIN.get().clear(); }
         return added;
     }
+    private static final ThreadLocal<List<String[]>> R1337_AGAIN = ThreadLocal.withInitial(ArrayList::new);
 
     /** {@code CANDOR_R1303_UNKNOWN=0} restores the concrete-only floor — a measurement arm, not a setting. */
     static final boolean R1303_UNKNOWN = !"0".equals(System.getenv("CANDOR_R1303_UNKNOWN"));
@@ -685,6 +700,7 @@ final class ArgContract {
         AnalysisContext c = ctx();
         SPEC_MEMO.get().clear();
         R1337_WIDE.get().clear();
+        R1337_AGAIN.get().clear();
         THIS_MEMO.get().clear();
         PENDING.get().clear();
         BY_CALLER.get().clear();

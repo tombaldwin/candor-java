@@ -18,9 +18,18 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   class the dependency declares. Now: under the bound the overrides are unioned as before; past it the site reads
   `Unknown[dispatch:<owner>.<member>]` where some override is charged, and stays pure where every override is
   (the in-scan floor's rule). The count is R1336's (overriding subtypes). Kill switch: `CANDOR_R1360=0`.
+  **Measured against v0.40.15, chained census (304 entries):** the protocol hedges at 48 sites in 36 consumer units
+  of 20 jars; the absent-row shape itself does not occur in the census (every reached unit already carried
+  `Unknown`), so no `deny Unknown` cell moves. It changes 23 rows: every new `dispatch:` reason is on a site the walk
+  hedged (23/23). The trade: 23 concrete `deny E` cells go 1 → 0 in 5 rows — bouncycastle `ASN1Primitive.hashCode`
+  ×4 (bc-fips, bc-fips-debug, bcprov, debugger-app) and jgit `TreeFilter.toString` — each where v0.40.15 unioned
+  ≤12 effectful override rows over more than 12 overriding subtypes; each row keeps `Unknown` with the hedge on the
+  lost site, and every lost cell is absent from both one-tree scans. Plus 11 class cells (`indirect` 5, `reflect` 4,
+  `native` 2) on those rows and on guava/curator-shaded `CharMatcher.toString`. Standalone: byte-identical reports.
 
-- ⚠ **PROVISIONAL — rides on a SPEC §3.1 clause under review (a write-time merged union entry's `unknownWhy` is not
-  direct-only).** **A write-time merged union entry carries its contributors' reasons, and both gate routes read
+- ⚠ **PROVISIONAL — rides on a SPEC §3.1 clause under revision (a write-time merged union entry's `unknownWhy` is not
+  direct-only; the code implements its rules 1–2: contributors' classes on the merged row, scan route seeded before
+  propagation).** **A write-time merged union entry carries its contributors' reasons, and both gate routes read
   them** (D1; SOUNDNESS R1330, R1338). The producer merges an interface's implementers into a real row claiming the
   same hash (a default method, a kept abstract member). The merge carried the implementers' EFFECTS, `Unknown`
   included, but only a BROAD merge's own `dispatch:` hedge as a reason; a narrow merge's `Unknown` arrived with no
@@ -41,11 +50,16 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   jars, now on 2 (guava and curator's shaded guava — 211 units, the same 211 on v0.40.15, a separate pre-existing
   mechanism); `gate --report` refused 760 rule evaluations over reasonless merged rows, now 0; of 2,713 merged units
   the scan route read as implicitly `unresolved`, 2,238 now carry their contributors' classes and 475 keep
-  `unresolved` (a contributor with no account of its own). The cost, scan route: 238 non-merged units in 9 jars
+  `unresolved` (a contributor's framework `dep:` hedge — see below). The cost, scan route: 238 non-merged units in 9 jars
   (0.014% of 1,669,927 analysed) gain a class through an exact edge into a merged row — `reflect` 232,
   `indirect` 88, `unresolved` 24 cells; scala-library ×2 is 184 of them. Chained, 304 entries: 2,038 consumer cells
-  lose `unresolved` (a `dep:` catch-all that the merged row now accounts for — stripping the merged reasons from
-  the report brings it back), 0 effects move from D1.
+  lose `unresolved` — the REMOVING direction for a reason class, accounted for removal by removal: the `dep:`
+  catch-all the consumer synthesised for a merged row's unaccounted `Unknown` is gone because the row now carries
+  its contributors' classes (stripping them from the report brings it back); no consumer violation is left
+  classless (16,170 of 16,170 carry a class in both arms); ~2,020 of the units gain nothing because the true classes
+  were already there. 0 effects move from D1. The 475 merged units that keep `unresolved` keep it TRULY: their
+  contributors' own reason is a framework `dep:` hedge on an off-jar call (e.g. amqp-client `AMQChannel`'s
+  `dep:com.fasterxml.jackson.databind.ObjectMapper.readValue`), for which `unresolved` is the right class.
 
 - ⚠ **A chained call on a dependency class member hedges by the number of overriding SUBTYPES, not override ROWS**
   (SOUNDNESS R1336, SPEC §4 bounded CHA). The consumer's walk down a dependency's subclasses unions their overrides
@@ -62,11 +76,21 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   not a side effect. **Cost, chained census, against v0.40.15:** 39 concrete `deny <E> <unit>` cells go 1 → 0 in
   20 consumer units of 19 jars (groovy `MetaProperty` ×2, jackson `JsonSerializer` ×2, lettuce `CommandOutput`
   ×2, log4j `Filter`/`AbstractFilter`, bouncycastle `ECFieldElement` ×4, …); every unit keeps `Unknown`
-  {dispatch}, and every lost cell is absent from the published one-tree scan of the same code. This supersedes
-  R869's rule that kept the row-priced union beside the hedge (jackson `StdScalarSerializer.serialize`). A
-  subtype whose qual is bare where the owner has overloads is counted only through its row (the sidecar cannot
-  say which overload it overrides). The §4 Object protocol keeps the row count. Without a sidecar the count is
-  the row count, as before. Kill switch: `CANDOR_R1336=0`.
+  {dispatch}. **The licence is the per-row site match**: every lost effect came from a v0.40.15 union at a site
+  that this build hedges, and the row's `dispatch:` reason names exactly that owner and member (20/20 rows). That
+  every lost cell is also absent from the published one-tree scan is a convergence control (the published engine
+  already hedges this shape in-scan), not the licence. The same trade also moves, on the same rows: 26 reason-class
+  cells (`reflect` 14, `indirect` 11, `native` 1 — the dropped overrides' classes; each unit keeps `Unknown`
+  {dispatch}), and the dropped overrides' surfaces — `incomplete` 9 values, `netClass` 5 (`unknown-host`), `paths`
+  2 (curator shaded `Ordering`, groovy `MetaProperty` ×2, lettuce `CommandOutput` ×2, jgit `RevFilter`, scala
+  `Function0`). This supersedes R869's rule that kept the row-priced union beside the hedge (jackson
+  `StdScalarSerializer.serialize`), in every arm. A subtype whose qual is bare where the owner has overloads is
+  counted only through its row (the sidecar cannot say which overload it overrides), so for overloaded owners the
+  bound is still row-priced (a residual: precision-dependent, both answers disclosed). Without a sidecar the count
+  is the rows found — including bridge rows, which R869 had left out — and past the bound the site hedges with no
+  union beside it; that is not v0.40.15's behaviour. The bound still adds one for the owner's own body, so an
+  ABSTRACT owner member hedges at 12 declaring subtypes where in-scan unions (pre-existing). Kill switch:
+  `CANDOR_R1336=0`.
 
 ## [0.40.15] — 2026-10-22
 

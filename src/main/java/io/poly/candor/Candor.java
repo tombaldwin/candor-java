@@ -2370,6 +2370,7 @@ public class Candor {
         java.util.List<io.poly.candor.model.Effector> reportEntries =
                 (jsonOut != null || policyPath != null)
                         ? buildEntries(inferred, ccFull != null ? ccFull : classConformance(inferred)) : null;
+        if (reportEntries != null && Policy.D1_DEBUG) Policy.d1Reach(inferred, reportEntries);
         if (jsonOut != null) {
             try {
                 writeReport(jsonOut, reportEntries);

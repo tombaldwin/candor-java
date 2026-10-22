@@ -589,7 +589,9 @@ final class ReportWriter {
                 if (ie != null) {
                     inf.addAll(ie);
                     if (real == null || !impl.equals(real.fn())) fromOthers.addAll(ie);
-                    if (real == null && ie.hasUnknown()) {
+                    // D1 (SOUNDNESS R1330/R1338) — …and for a MERGE, every contributor but the claiming body itself,
+                    // whose own reasons are already the row's direct ones. See the merge call below.
+                    if ((real == null || (D1 && !impl.equals(real.fn()))) && ie.hasUnknown()) {
                         contributorReasons(impl, reasonClasses.get(), contributed);
                         if (R1239_DEBUG)   // §E1 reach probe: which contributor gave which classes
                             System.err.println("CANDOR_R1239\t" + hash + "\t" + impl + "\t" + reasonClasses.get().get(impl));
@@ -675,11 +677,29 @@ final class ReportWriter {
                 netClass = new ArrayList<>(classes);
             }
             if (real != null) {
+                // D1 (SOUNDNESS R1330 / R1338; SPEC §3.1 ⟨0.40⟩, the merged-entry clause) — A WRITE-TIME MERGE IS
+                // A UNION ENTRY TOO, AND CARRIES ITS CONTRIBUTORS' REASONS. The merge writes the other
+                // implementers' EFFECTS into the real row claiming this hash, `Unknown` among them, and until
+                // here only a BROAD merge's own hedge went with it: a narrow merge's `Unknown` arrived with no
+                // account at all. Its `calls` are the claiming body's own callees, so nothing on the wire could
+                // say where that `Unknown` came from, and every reader made one up: a chained consumer's
+                // `dep:` catch-all read it as `unresolved` (R1330, 38 cells on v0.40.15), and this producer's
+                // own gate read the merged unit the same way. So the merge carries R1239's projection for the
+                // part it added — each contributor's transitive classes, as this producer's own gate resolves
+                // them — exactly as a union entry does. The claiming body's own reasons stay what they were,
+                // direct. Policy#gateInputFromScan seeds the scan route's class fixpoint with what is written
+                // here, so the two routes walk the same seeds (R1338). Kill switch: CANDOR_D1=0.
+                List<UnknownReason> mergeWhy = why;
+                if (D1 && !contributed.isEmpty() && inf.hasUnknown()) {
+                    TreeSet<UnknownReason> all = new TreeSet<>(why);
+                    all.addAll(contributed);
+                    mergeWhy = new ArrayList<>(all);
+                }
                 Effector wide = mergeUnionInto(real, inf, fromOthers, inv, hosts, cmds, paths, tables,
                         // R530b: `lamBroad` is the same declaration of unresolvability as `broad`, so
                         // the `unknown-host` fail-closed rule inside must see it too — a benign literal
                         // host cannot certify a dispatch we have just said we cannot enumerate.
-                        netClass, why, broad || lamBroad, incUnion);
+                        netClass, mergeWhy, broad || lamBroad, incUnion);
                 if (wide != real) { effectors.set(at, wide); merged++; }
                 continue;
             }
@@ -739,6 +759,9 @@ final class ReportWriter {
      * {@code unresolved}: the catch-all, never a guessed class.
      */
     static final boolean R1239_DEBUG = System.getenv("CANDOR_R1239_DEBUG") != null;
+    /** D1 (SOUNDNESS R1330/R1338) — a write-time merge carries its contributors' reasons, and the scan route seeds
+     *  them. {@code CANDOR_D1=0} restores v0.40.15's merge (effects only, plus a broad merge's own hedge). */
+    static final boolean D1 = !"0".equals(System.getenv("CANDOR_D1"));
 
     /** SOUNDNESS R1307 — R1239's lazy accumulator, deliberately NOT a {@code java.util.Map}. It was an anonymous
      *  {@code AbstractMap} whose {@code get} ran {@code Policy.scanReasonClassAcc()}, which made it a PROJECT implementer

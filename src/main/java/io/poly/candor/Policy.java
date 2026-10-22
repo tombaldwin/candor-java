@@ -363,7 +363,7 @@ final class Policy {
         if (policyYieldedNoRules()) {
             return new PolicyOutcome(0, zeroRulePolicyFailure(path), zeroRuleUnevaluated(path));
         }
-        return new PolicyOutcome(gate(withReportEntries(gateInputFromScan(inferred), entries)), null, List.of());
+        return new PolicyOutcome(gate(withReportEntries(gateInputFromScan(inferred, entries), entries)), null, List.of());
     }
 
     /**
@@ -583,6 +583,52 @@ final class Policy {
      *  exactly as this producer's own gate resolves them (SPEC §3.1: "each resolved as the producer's own gate
      *  resolves it"), rather than through a second copy that could drift. */
     static Map<String, TreeSet<String>> scanReasonClassAcc() {
+        return scanReasonClassAcc(null);
+    }
+
+    /** As above, with {@code entries}' written reasons SEEDED into the direct map BEFORE the fixpoint (D1, SOUNDNESS
+     *  R1338). The report route reads a caller's classes as its own direct reasons plus every reason its `calls`
+     *  closure reaches on the WIRE — so a reason a write-time merge put on a row reaches that row's callers there.
+     *  {@link #withReportEntries} adds the same reasons to the merged unit only, AFTER propagation, so on this route
+     *  they stopped at the row: an exact `I.super.m()` caller of a broad-merged default method read `dispatch` on
+     *  {@code gate --report} and not on {@code scan --policy} (fixture fx3-broad-merge-route, scan 0 / report 1 on
+     *  v0.40.14 and v0.40.15). Seeding the entry's reasons as the unit's direct ones makes this route walk the
+     *  same seeds the report route walks. For an entry nothing widened the seed is the unit's own direct reasons,
+     *  a no-op. {@code entries} null, or {@code CANDOR_D1=0}: no seed. */
+    /** MEASUREMENT ARM ONLY ({@code CANDOR_D1_SEED=0}): the merge carries the reasons but the scan route is not
+     *  seeded — the shape the R1327 lane measured unequal (PShape.plain scan 0 / report 1). Kept so the route-
+     *  equality guard can be shown to FIRE on the fixture that guards D1. */
+    static final boolean D1_NOSEED = "0".equals(System.getenv("CANDOR_D1_SEED"));
+
+    static final boolean D1_DEBUG = System.getenv("CANDOR_D1_DEBUG") != null;
+
+    /** D1 REACH PROBE ({@code CANDOR_D1_DEBUG}): every unit carrying {@code Unknown} whose scan-route class set the
+     *  seed WIDENS, with the classes it gains — {@code MERGED} for the merged row itself (what D1 is for),
+     *  {@code CALLER} for any other unit (D1's cost: an exact caller inheriting the merge's classes). */
+    static void d1Reach(Map<String, EffectSet> inferred, List<Effector> entries) {
+        Map<String, TreeSet<String>> a = scanReasonClassAcc(null), b = scanReasonClassAcc(entries);
+        Set<String> mergedFns = new HashSet<>();
+        Map<String, EffectSet> eff = new HashMap<>(inferred);
+        for (Effector e : entries) {
+            if (e.interfaceUnion() || e.fn() == null) continue;
+            eff.merge(e.fn(), e.inferred(), EffectSet::join);
+            TreeSet<String> own = new TreeSet<>();
+            for (UnknownReason ur : ctx().unknownWhy.getOrDefault(e.fn(), new TreeSet<>()))
+                own.add(ReasonClass.classify(ur.format()).token());
+            for (UnknownReason ur : e.unknownWhy())
+                if (!own.contains(ReasonClass.classify(ur.format()).token())) { mergedFns.add(e.fn()); break; }
+        }
+        for (var en : b.entrySet()) {
+            String fn = en.getKey();
+            if (!eff.getOrDefault(fn, EffectSet.empty()).hasUnknown()) continue;
+            TreeSet<String> gain = new TreeSet<>(en.getValue());
+            gain.removeAll(a.getOrDefault(fn, new TreeSet<>()));
+            if (gain.isEmpty()) continue;
+            System.err.println("D1REACH\t" + (mergedFns.contains(fn) ? "MERGED" : "CALLER") + "\t" + fn + "\t" + gain);
+        }
+    }
+
+    static Map<String, TreeSet<String>> scanReasonClassAcc(List<Effector> entries) {
         Map<String, TreeSet<String>> reasonClassDirect = new HashMap<>();
         for (var e : ctx().unknownWhy.entrySet()) {
             TreeSet<String> classes = new TreeSet<>();
@@ -597,12 +643,31 @@ final class Policy {
             for (UnknownReason ur : e.getValue()) classes.add(ReasonClass.classify(ur.format()).token());
             if (!classes.isEmpty()) reasonClassDirect.put(e.getKey(), classes);
         }
+        if (entries != null && ReportWriter.D1 && !D1_NOSEED) {
+            for (Effector en : entries) {
+                if (en.interfaceUnion() || en.fn() == null || en.fn().isEmpty() || en.unknownWhy().isEmpty()) continue;
+                TreeSet<String> classes = null;
+                for (UnknownReason ur : en.unknownWhy()) {
+                    String tok = ReasonClass.classify(ur.format()).token();
+                    TreeSet<String> have = reasonClassDirect.get(en.fn());
+                    if (have != null && have.contains(tok)) continue;
+                    if (classes == null) classes = reasonClassDirect.computeIfAbsent(en.fn(), k -> new TreeSet<>());
+                    classes.add(tok);
+                }
+            }
+        }
         return literalFixpoint(reasonClassDirect);
     }
 
     /** The scan route into the gate: accumulate the classifier's direct maps over the live call graph.
      *  Byte-for-byte the fixpoints {@code checkPolicy} used to run inline. */
     static GateInput gateInputFromScan(Map<String, EffectSet> inferred) {
+        return gateInputFromScan(inferred, null);
+    }
+
+    /** As above, seeding the class fixpoint with the report entries' written reasons — see
+     *  {@link #scanReasonClassAcc(List)}. */
+    static GateInput gateInputFromScan(Map<String, EffectSet> inferred, List<Effector> entries) {
         // Reason-scoped Unknown needs the reason CLASS to travel the same call graph the Unknown EFFECT does:
         // a fn that inherits Unknown from a reflect-caused callee is a reflect-class Unknown even though the
         // `reflect:*` reason was emitted DIRECTLY on the callee (unknownWhy is deliberately direct-only, for the
@@ -610,7 +675,7 @@ final class Policy {
         // see no reason, default to `unresolved`, and NOT fire — a reflection-caused Unknown slipping the gate
         // (under-gating = a false all-clear). Propagate the class TOKENS transitively (the paper's `(S,D)` join:
         // D is componentwise-unioned over callees), mirroring literalFixpoint. Report output is unchanged.
-        Map<String, TreeSet<String>> reasonClassAcc = scanReasonClassAcc();
+        Map<String, TreeSet<String>> reasonClassAcc = scanReasonClassAcc(entries);
         // ⟨0.20⟩ Net destination-class filter (NET-DESTINATION-CLASS-DESIGN.md) needs the fn's (transitive)
         // destination classes — derived exactly like the report's `netClass` field (host fixpoint + the fail-
         // closed masked-surface rule), so the gate and the report agree on what an fn's Net reaches.

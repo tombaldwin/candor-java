@@ -601,13 +601,21 @@ class InterfaceUnionTest {
     }
 
     /** ⟨0.40⟩ SOUNDNESS R1327 — a DEFAULT method the producer merged its implementers' union into (a claimed hash):
-     *  the row takes the override's {@code Fs} but its reasons are the default body's own ({@code native}). A
-     *  consumer DISPATCHING on the interface member must carry the override's {@code reflect} too (scala-compiler
-     *  {@code TypeClassConstraint.toString}); a consumer reaching the default body through an EXACT
-     *  {@code Shape.super.name()} must not (that is what putting the reasons on the row got wrong). Executed in
-     *  {@code ~/candor-handoff/javaagent-d/fx2}: {@code go(new RShape())} prints $HOME through Method.invoke. */
+     *  the row takes the override's {@code Fs}, and a consumer DISPATCHING on the interface member must carry the
+     *  override's {@code reflect} too (scala-compiler {@code TypeClassConstraint.toString}). Executed in
+     *  {@code ~/candor-handoff/javaagent-d/fx2}: {@code go(new RShape())} prints $HOME through Method.invoke.
+     *
+     *  <p>D1 (SOUNDNESS R1330/R1338) CHANGED THE EXACT ARM, deliberately. This test used to require that a
+     *  consumer reaching the default body through an EXACT {@code Shape.super.name()} NOT carry {@code reflect},
+     *  because putting the merge's reasons on the row did that on the producer's report route ONLY (scan 0 /
+     *  report 1). D1 puts them on the row AND seeds the scan route with them, so both routes agree
+     *  ({@code GateReportVerbTest#aWriteTimeMergesReasonsAreJudgedAlikeByBothRoutes}), and the exact caller now
+     *  carries the class on every route: an over-reported reason CLASS on a unit that already carries
+     *  {@code Unknown} (the default body's native), never an effect — the row's {@code inferred} on the wire is
+     *  the body's own and is not re-closed. That is the cost D1 names, and it is the same bytes the chained
+     *  consumer already over-inherits as EFFECTS through the merged row. */
     @Test
-    void aDispatchOnAMergedDefaultMethodCarriesTheOverridesReasonsAndAnExactCallDoesNot() throws Exception {
+    void aDispatchOnAMergedDefaultMethodCarriesTheOverridesReasonsAndAnExactCallTheirClassNotTheirEffect() throws Exception {
         Map<String, String> lib = new java.util.HashMap<>();
         lib.put("lib/H.java", "package lib;\npublic class H { static native int nat(); }\n");
         lib.put("lib/Shape.java", "package lib;\npublic interface Shape { default String name() { return \"n\" + H.nat(); } }\n");
@@ -629,8 +637,41 @@ class InterfaceUnionTest {
         Map<String, Map<String, Object>> fns = chainedApp(lib, app, true);
         assertEquals(java.util.Set.of("native", "reflect"), classesOf(fns.get("app.Go.viaIface").get("unknownWhy")),
                 "a dispatch on the merged member reaches the override's class — got " + fns.get("app.Go.viaIface").get("unknownWhy"));
-        assertEquals(java.util.Set.of("native"), classesOf(fns.get("app.Go.viaExact").get("unknownWhy")),
-                "an exact call to the default body does not — got " + fns.get("app.Go.viaExact").get("unknownWhy"));
+        assertEquals(java.util.Set.of("native", "reflect"), classesOf(fns.get("app.Go.viaExact").get("unknownWhy")),
+                "D1: an exact call to the default body carries the merge's class on every route — got "
+                        + fns.get("app.Go.viaExact").get("unknownWhy"));
+        assertFalse(((List<?>) fns.get("app.Go.viaExact").get("inferred")).contains("Fs"),
+                "…but never the merge's EFFECT: the exact path's row is the default body's own");
+    }
+
+    /** D1 (SOUNDNESS R1330) — a merged DEFAULT method whose {@code Unknown} came ONLY from the merge. The default
+     *  {@code Plug.init} writes a file (Fs, no Unknown); its override {@code RPlug.init} reads the environment by
+     *  reflection. v0.40.15 wrote {@code Plug.init: [Fs, Unknown]} with NO {@code unknownWhy}, so the chained
+     *  consumer's {@code dep:} catch-all gave every caller {@code unresolved} beside the true {@code reflect} (mysql
+     *  {@code AuthenticationPlugin.init}; 38 cells), and the producer's own scan route read the merged unit as
+     *  {@code unresolved} while {@code gate --report} refused the narrowed rule. Executed
+     *  ({@code fxD1/r1330}): {@code viaIface(new RPlug())} prints $HOME through Method.invoke; {@code DPlug} writes
+     *  the file. */
+    @Test
+    void aMergedDefaultWhoseUnknownCameOnlyFromTheMergeCarriesItsContributorsClass() throws Exception {
+        Map<String, String> lib = new java.util.HashMap<>();
+        lib.put("lib/Plug.java", "package lib;\npublic interface Plug { default void init(String f) {"
+                + " try { java.nio.file.Files.writeString(java.nio.file.Path.of(f), \"d\"); } catch (Exception e) { } } }\n");
+        lib.put("lib/RPlug.java", "package lib;\npublic class RPlug implements Plug {\n"
+                + "  public void init(String f) { try { Class<?> c = Class.forName(\"java.lang.Sys\" + \"tem\");\n"
+                + "    c.getMethod(\"getenv\", String.class).invoke(null, \"HOME\"); } catch (Exception e) { } }\n}\n");
+        lib.put("lib/DPlug.java", "package lib;\npublic class DPlug implements Plug { }\n");
+        Map<String, Object> merged = depReport(lib, true).get("lib/Plug.init(Ljava/lang/String;)V");
+        assertNotNull(merged);
+        assertNull(merged.get("interfaceUnion"), "precondition: a REAL row the union was merged into");
+        assertEquals(List.of("Fs", "Unknown"), merged.get("inferred"), "precondition: the Unknown is the merge's");
+        assertEquals(java.util.Set.of("reflect"), classesOf(merged.get("unknownWhy")),
+                "the merge carries its contributor's class — got " + merged.get("unknownWhy"));
+        Map<String, String> app = Map.of("app/Go.java", "package app;\npublic class Go {\n"
+                + "  public static void viaIface(lib.Plug p, String f) { p.init(f); }\n}\n");
+        Map<String, Map<String, Object>> fns = chainedApp(lib, app, true);
+        assertEquals(java.util.Set.of("reflect"), classesOf(fns.get("app.Go.viaIface").get("unknownWhy")),
+                "no `dep:` catch-all, so no false `unresolved` — got " + fns.get("app.Go.viaIface").get("unknownWhy"));
     }
 
     /** …and a union whose implementers carry NO {@code Unknown} carries no reason. */

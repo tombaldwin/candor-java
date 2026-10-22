@@ -9,6 +9,23 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **PROVISIONAL — rides on a SPEC §3.1 clause under review (a write-time merged union entry's `unknownWhy` is not
+  direct-only).** **A write-time merged union entry carries its contributors' reasons, and both gate routes read
+  them** (D1; SOUNDNESS R1330, R1338). The producer merges an interface's implementers into a real row claiming the
+  same hash (a default method, a kept abstract member). The merge carried the implementers' EFFECTS, `Unknown`
+  included, but only a BROAD merge's own `dispatch:` hedge as a reason; a narrow merge's `Unknown` arrived with no
+  account. Every reader then made one up: a chained consumer's `dep:` catch-all read it as `unresolved` (R1330 — 38
+  consumer cells on v0.40.15), and the producer's own scan route read the merged unit as `unresolved` while
+  `gate --report` refused the narrowed rule. Separately, the broad hedge the row did carry reached an exact
+  `I.super.m()` caller on `gate --report` only (R1338: `deny Unknown[dispatch] p.Ex.call` scan 0 / report 1). The
+  merge now carries each contributor's transitive classes (R1239's projection, as for a union entry), and the scan
+  route's class fixpoint is seeded with the written reasons before propagation. Executed fixture (`r1330`:
+  `RPlug.init` reads $HOME by reflection, the default writes the file): the merged row now reads `reflect`, the
+  chained consumer reads `{reflect}` where v0.40.15 read `{reflect, unresolved}`, and every narrowed policy is
+  byte-equal on both routes (v0.40.15: 6 of 7 policies differed on that producer). The cost, the same on both
+  routes: an exact caller of a merged default that already carries `Unknown` gains the merge's CLASS (never its
+  effect) — `PShape.plain` reads `reflect`, `Ex.call` reads `dispatch`. Kill switch: `CANDOR_D1=0`.
+
 - ⚠ **A chained call on a dependency class member hedges by the number of overriding SUBTYPES, not override ROWS**
   (SOUNDNESS R1336, SPEC §4 bounded CHA). The consumer's walk down a dependency's subclasses unions their overrides
   up to the 12-implementor bound and past it reads `Unknown[dispatch:…]`. It counted the overrides that published

@@ -372,6 +372,89 @@ class GateReportVerbTest {
         }
     }
 
+    /** D1 (SOUNDNESS R1338, R1330) — A WRITE-TIME MERGE'S REASONS ARE JUDGED ALIKE BY BOTH ROUTES. Two shapes, each
+     *  with an EXACT caller of a merged default method that carries {@code Unknown} for a reason of its own:
+     *  <ul>
+     *    <li>BROAD (fx3-broad-merge-route): 13 implementers past the bound, so the merge writes its
+     *        {@code dispatch:} hedge into {@code I.m}'s row; {@code Ex.call} runs {@code I.super.m()} plus
+     *        {@code Class.forName}. v0.40.14 and v0.40.15: {@code deny Unknown[dispatch]} scan 0 / report 1.</li>
+     *    <li>NARROW (the R1327 fixture): {@code RShape.name} reads by reflection, so the merge now carries its
+     *        {@code reflect}; {@code PShape.plain} runs {@code Shape.super.name()} (native). With the reasons on
+     *        the row and the scan route NOT seeded — the R1327 lane's attempt — {@code deny Unknown[reflect]} read
+     *        scan 0 / report 1.</li>
+     *  </ul>
+     *  Each policy is gated on the scan route and on {@code gate --report} over the report the same scan wrote,
+     *  and the two {@code --gate-json} documents must be byte-identical. The MUTATION CONTROL is the scan route
+     *  without the seed, over the SAME entries: it must DIFFER for at least one policy per shape, so the
+     *  comparison is shown able to find the inequality it pins. The cost D1 accepts is visible here and is the
+     *  same on both routes: the exact caller carries the merge's class ({@code Ex.call} dispatch,
+     *  {@code PShape.plain} reflect). */
+    @Test
+    void aWriteTimeMergesReasonsAreJudgedAlikeByBothRoutes() throws Exception {
+        Map<String, String> broad = new LinkedHashMap<>();
+        broad.put("p/I.java", "package p;\npublic interface I { default String m() { return System.getenv(\"X\"); } }\n");
+        for (int i = 1; i <= 13; i++)
+            broad.put("p/K" + i + ".java", "package p;\npublic class K" + i + " implements I { public String m() {"
+                    + " try { java.nio.file.Files.readString(java.nio.file.Path.of(\"/tmp/k" + i + "\")); } catch (Exception e) {}"
+                    + " return \"k\"; } }\n");
+        broad.put("p/Ex.java", "package p;\npublic class Ex implements I {\n  public String m() { return \"ex\"; }\n"
+                + "  public String call() throws Exception { Class.forName(System.getProperty(\"cn\", \"java.lang.String\"));"
+                + " return I.super.m(); }\n}\n");
+        Map<String, String> narrow = new LinkedHashMap<>();
+        narrow.put("p/H.java", "package p;\npublic class H { static native int nat(); }\n");
+        narrow.put("p/Shape.java", "package p;\npublic interface Shape { default String name() { return \"n\" + H.nat(); } }\n");
+        narrow.put("p/RShape.java", "package p;\npublic class RShape implements Shape {\n"
+                + "  public String name() { try { Class<?> c = Class.forName(\"java.lang.Sys\" + \"tem\");\n"
+                + "    return (String) c.getMethod(\"getenv\", String.class).invoke(null, \"HOME\"); }\n"
+                + "    catch (Exception e) { return null; } }\n}\n");
+        narrow.put("p/PShape.java", "package p;\npublic class PShape implements Shape {\n"
+                + "  public String plain() { return Shape.super.name(); }\n}\n");
+        Map<String, Map<String, String>> shapes = new LinkedHashMap<>();
+        shapes.put("broad", broad);
+        shapes.put("narrow", narrow);
+        Map<String, String> exactCaller = Map.of("broad", "p.Ex.call", "narrow", "p.PShape.plain");
+        Map<String, String> mergeClass = Map.of("broad", "dispatch", "narrow", "reflect");
+        for (var shape : shapes.entrySet()) {
+            Path cls = compile(shape.getValue());
+            int controlDiffers = 0;
+            try {
+                for (String c : List.of("dispatch", "reflect", "native", "unresolved")) {
+                    String body = "deny Unknown[" + c + "]\n";
+                    String tag = "d1" + shape.getKey() + c;
+                    Path rep = tmp.resolve(tag + ".json"), pol = policy(body);
+                    Path a = tmp.resolve(tag + ".scan.json"), b = tmp.resolve(tag + ".gate.json"),
+                            old = tmp.resolve(tag + ".old.json");
+                    Candor.resetState();
+                    Map<String, EffectSet> inferred = Candor.runScan(cls);
+                    List<io.poly.candor.model.Effector> entries =
+                            ReportWriter.buildEntries(inferred, Candor.classConformance(inferred));
+                    ReportWriter.writeReport(rep.toString(), entries);
+                    Candor.gateCapture = true;
+                    Candor.gateViolations.clear();
+                    int scanV = Policy.checkPolicyOutcome(inferred, pol.toString(), entries).violations();
+                    Candor.writeGateJson(a.toString(), scanV);
+                    Candor.gateViolations.clear();
+                    int oldV = Policy.gate(Policy.withReportEntries(Policy.gateInputFromScan(inferred), entries));
+                    Candor.writeGateJson(old.toString(), oldV);
+                    Candor.resetState();
+                    Candor.gateViolations.clear();
+                    gate(rep, pol, "--gate-json", b.toString());
+                    assertEquals(Files.readString(b), Files.readString(a),
+                            "§3.1 byte-equality, " + shape.getKey() + " merge, `" + body.trim() + "`");
+                    if (!Files.readString(b).equals(Files.readString(old))) controlDiffers++;
+                    if (c.equals(mergeClass.get(shape.getKey())))
+                        assertTrue(Files.readString(a).contains("\"" + exactCaller.get(shape.getKey()) + "\""),
+                                "the cost, on both routes: the exact caller carries the merge's `" + c + "`");
+                }
+            } finally {
+                Candor.gateCapture = false;
+                TestCompiler.rm(cls.getParent());
+            }
+            assertTrue(controlDiffers > 0, "control: the unseeded scan route must DIFFER somewhere on the "
+                    + shape.getKey() + " shape, or this comparison cannot see the inequality it pins");
+        }
+    }
+
     @Test
     void theEquivalenceCorpusContainsBothVerdicts() throws Exception {
         Path cls = compile(Map.of("app/Svc.java", String.join("\n",

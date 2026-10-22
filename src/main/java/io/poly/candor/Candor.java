@@ -8818,6 +8818,8 @@ public class Candor {
     }
 
     static final boolean R867_DEBUG = System.getenv("CANDOR_R867_DEBUG") != null;
+    /** SOUNDNESS R1360 — see depHierarchyJoin; {@code CANDOR_R1360=0} restores the Object-protocol exemption there. */
+    static final boolean R1360 = !"0".equals(System.getenv("CANDOR_R1360"));
 
     /**
      * SOUNDNESS R867 — A CALL ON A CHAINED DEPENDENCY'S CLASS RUNS THAT DEPENDENCY'S OWN OVERRIDES TOO.
@@ -8922,22 +8924,42 @@ public class Candor {
         // SOUNDNESS R1336 — THE BOUND COUNTS OVERRIDING SUBTYPES, NOT OVERRIDE ROWS. The bound is the in-scan
         // bounded-CHA bound (SPEC §4: "at most 12 implementors … MUST otherwise read Unknown"), and in-scan it
         // counts every declaring subtype, pure or not (Cha#chaTargets). A pure override publishes no row (§2 rule
-        // 3), so counting rows priced the bound on the PRODUCER'S PRECISION: zookeeper's `CliCommand.parse` has 22
+        // 3), so counting rows priced the bound on the PRODUCER'S PRECISION: zookeeper's `CliCommand.parse` has 23
         // overriding subtypes, v0.40.14 published one effectful row and the consumer unioned it (`Fs, Log, Net`),
         // v0.40.15 published 21 and the consumer hedged — one jar, one hierarchy, two verdicts. The one-tree scan
         // of the same code reads the hedge in both. The declaring set comes from the dependency's call-graph
         // sidecar (Loader#loadDepCallgraphMembers), which keys every analysed unit; a subtype with a row counts
         // whether or not the sidecar is there, so with no sidecar this is the old row count exactly.
         //
-        // §4's Object protocol keeps the ROW count. Its broad branch below adds NOTHING — no union and no hedge —
-        // so counting pure declarers into it would delete a visible override's effect with no disclosure in its
-        // place, a silence this fix must not buy. The exemption's own reach on a dependency-typed receiver is a
-        // separate question (SPEC §4 ⟨0.40⟩) and is not decided here.
-        int bound = Loader.R1336 && !isObjectProtocolExempt(name, desc)
-                ? Math.max(declaring, overrides.size()) : -1;
+        // SOUNDNESS R1360 — …AND THE §4 OBJECT PROTOCOL IS NOT EXEMPT HERE. The branch below this block used to
+        // return NOTHING for a broad toString/hashCode/equals/compareTo fan-out ("§4: pure even when overridden, as
+        // in-scan"). That sentence went stale: §4's MAY to treat formatting, equality, hashing and ordering as
+        // resolved-pure covers a receiver whose declared type IS the root or standard-library type (a bare
+        // `Object`), and this walk only ever runs for an owner a chained dependency DECLARED (`depIndexed`, checked
+        // on entry) — a receiver typed by the dependency's OWN class, which SPEC §4 ⟨0.40⟩ says the MAY does not
+        // cover. In-scan the same call is decided by ExactTypes (R1205/R1299): past the bound it hedges
+        // `dispatch:`. So a chained `go(dep.Node n) { n.toString(); }` over 13 overrides that read the environment
+        // read ABSENT — `deny Env`, `deny Unknown` and `deny Env Unknown` all exit 0 — where the one-tree scan reads
+        // `Unknown` (v0.40.14, v0.40.15; executed). The protocol now takes the same bound as every other member:
+        // under it the overrides are unioned (what the row-count path already did), past it the site is hedged
+        // where some override is charged (the in-scan S4 floor's rule; all-pure stays pure, as one-tree).
+        // The exemption's reason — a bare-`Object` receiver must not be charged every formatting body in the
+        // world — is untouched: such a call's owner is `java/lang/Object`, never `depIndexed`, and never walks.
+        // Kill switch: CANDOR_R1360=0 restores the row-counted, hedge-free branch.
+        boolean protocolOff = isObjectProtocolExempt(name, desc) && !R1360;
+        int bound = Loader.R1336 && !protocolOff ? Math.max(declaring, overrides.size()) : -1;
         if (bound >= 0) {
             if (bound == 0) return;
             if (bound + 1 > CHA_FANOUT_LIMIT) {
+                // R1360: past the bound the Object protocol is decided as in-scan's S4 floor decides it (ExactTypes →
+                // R1303's rule): DISCLOSED only where some override carries an effect or an Unknown. Thirteen pure
+                // toString bodies read pure in the one-tree scan, and must here too — hedging them would be a fresh
+                // Unknown on every formatting call over a wide pure hierarchy.
+                if (isObjectProtocolExempt(name, desc)) {
+                    boolean anyCharged = false;
+                    for (DepFn d : overrides) if (!d.effects.isEmpty()) { anyCharged = true; break; }
+                    if (!anyCharged) return;
+                }
                 ctx.viaCross.computeIfAbsent(id, k -> EffectSet.empty()).add(Effect.UNKNOWN);
                 ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                         .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, min.owner.replace('/', '.') + "." + name));

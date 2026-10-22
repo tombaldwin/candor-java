@@ -483,6 +483,47 @@ class DepInheritedMemberTest {
         }
     }
 
+    /** SOUNDNESS R1360 — THE §4 OBJECT PROTOCOL ON A DEPENDENCY-TYPED RECEIVER TAKES THE OVERRIDE BOUND. A chained
+     *  {@code go(dep.Node n) { return n.toString(); }} over {@code n} subclasses overriding {@code toString}, the first
+     *  {@code k} reading the environment. The walk used to return NOTHING past the bound for this protocol, so 13
+     *  environment readers read ABSENT chained — {@code deny Env}, {@code deny Unknown}, {@code deny Env Unknown} all
+     *  exit 0 — where the one-tree scan hedges (executed in {@code javaagent-0416/fx1360}: {@code go(new N0())} prints
+     *  $HOME). Every arm is compared with the one-tree scan of the same code:
+     *  <ul>
+     *    <li>13 / 13 — the silence: now {@code Unknown[dispatch:dep.Node.toString]}.</li>
+     *    <li>13 / 1 — the disclosure the fix TRADES: v0.40.15 unioned the one row ({@code Env}); past the bound the
+     *        one-tree scan hedges, and so does this.</li>
+     *    <li>4 / 1 — under the bound the union is kept and no hedge is added: the effect the fix must not delete.</li>
+     *    <li>13 / 0 — past the bound with every override pure: pure, as the in-scan S4 floor leaves it.</li>
+     *  </ul> */
+    @Test
+    void anObjectProtocolDispatchOnADependencyClassTakesTheOverrideBound() throws Exception {
+        int[][] shapes = { { 13, 13 }, { 13, 1 }, { 4, 1 }, { 13, 0 } };
+        for (int[] sh : shapes) {
+            int n = sh[0], k = sh[1];
+            Map<String, String> l = new LinkedHashMap<>();
+            l.put("dep/Node.java", "package dep;\npublic class Node { public String toString() { return \"n\"; } }\n");
+            for (int i = 0; i < n; i++)
+                l.put("dep/N" + i + ".java", "package dep;\npublic class N" + i + " extends Node {"
+                        + " public String toString() { return " + (i < k ? "System.getenv(\"HOME\")" : "\"n" + i + "\"")
+                        + "; } }\n");
+            Map<String, String> a = app("  public static String go(Node n) { return n.toString(); }\n");
+            Scan c = chained(l, a);
+            TreeSet<String> got = eff(c.app(), "app.App.go");
+            TreeSet<String> one = eff(whole(l, a), "app.App.go");
+            String tag = n + " subtypes / " + k + " effectful: ";
+            assertEquals(one, got, tag + "chained must read what the one-tree scan reads — got " + got + ", one-tree " + one);
+            if (n + 1 > Rules.CHA_FANOUT_LIMIT && k > 0) {
+                assertEquals(set("UNKNOWN"), got, tag + got);
+                assertTrue(c.why().get("app.App.go").contains("dispatch:dep.Node.toString"), tag + c.why().get("app.App.go"));
+            } else if (k > 0) {
+                assertEquals(set("ENV"), got, tag + "under the bound the union survives, unhedged: " + got);
+            } else {
+                assertTrue(got.isEmpty(), tag + "all-pure stays pure: " + got);
+            }
+        }
+    }
+
     /** BRIDGE ROWS ANSWER EXACT KEYS ONLY. untypedDepReceiver's conjunct 5 asks whether the dependency declares
      *  the call's signature on ANOTHER type, and a generic implementor's bridge row has exactly the interface's
      *  erased signature. Indexing bridge rows there turned a pure interface call into a fresh

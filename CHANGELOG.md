@@ -9,6 +9,16 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **A chained `toString`/`hashCode`/`equals`/`compareTo` on a dependency's own class is bounded like every other
+  member** (SOUNDNESS R1360, SPEC §4 ⟨0.40⟩). The consumer's walk down a dependency class's subclasses returned
+  NOTHING past the 12-implementor bound for the §4 Object protocol, so `go(dep.Node n) { return n.toString(); }`
+  over 13 overrides that read the environment read ABSENT: `deny Env`, `deny Unknown` and `deny Env Unknown` all
+  exited 0 (v0.40.14 and v0.40.15), where the one-tree scan of the same code hedges. Executed: `go(new N0())` prints
+  $HOME. §4's MAY covers a receiver typed by the root type itself; this walk only runs for a receiver typed by a
+  class the dependency declares. Now: under the bound the overrides are unioned as before; past it the site reads
+  `Unknown[dispatch:<owner>.<member>]` where some override is charged, and stays pure where every override is
+  (the in-scan floor's rule). The count is R1336's (overriding subtypes). Kill switch: `CANDOR_R1360=0`.
+
 - ⚠ **PROVISIONAL — rides on a SPEC §3.1 clause under review (a write-time merged union entry's `unknownWhy` is not
   direct-only).** **A write-time merged union entry carries its contributors' reasons, and both gate routes read
   them** (D1; SOUNDNESS R1330, R1338). The producer merges an interface's implementers into a real row claiming the

@@ -9,6 +9,15 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **A chained `toString`/`hashCode`/`equals`/`compareTo` on a dependency class that INHERITS the member takes the
+  override walk too** (SOUNDNESS R1378). A dependency class that does not declare `toString` inherits Object's, so
+  javac spells `p.toString()` as `invokevirtual java/lang/Object.toString`, and R1360's walk — which runs for an owner a
+  dependency declares — never saw the site: `go(dep.P p) { return p.toString(); }` over thirteen overrides, one
+  reading the environment, read ABSENT, `deny Env Unknown` 0 where the one-tree scan reads 1 (v0.40.14, v0.40.15;
+  executed). The receiver's DECLARED type is the dependency's class, which §4's MAY does not cover, so the walk now
+  runs from it, under R1360's bound and rule: `[Unknown]{dispatch:dep.P.toString}` = one-tree. Kill switch:
+  `CANDOR_R1378=0`.
+
 - **R1336's count only resolves a site when it can be answered; where it cannot, the dependency's own union entry
   decides** (SPEC PART 30 P6: degrading a sidecar may only widen a disclosure). The first cut fell back to the override
   ROWS when the paired call-graph sidecar was missing, unpaired, unreadable or incomplete, so a broad site unioned
@@ -56,11 +65,17 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
   split / nowhere × ancestor in the same or its own report × each call-graph sidecar deleted or unpaired and the
   ancestor's whole report deleted — present equals one-tree in all 8 layouts, every degraded arm charges everything
   present does. NOT closed, pre-existing on v0.40.15 identically: deleting the OWNER's hierarchy sidecar leaves no walk
-  at all (`[Unknown]` where present reads `[Fs, Unknown]`; an absent row where present hedges). **SOUNDNESS R1372**
-  (boundary residuals, present = degraded, reasoned): a pure concrete owner body whose nearest published entry is an
-  ancestor's synthetic union counts no owner body, and a pure-only default method with a body likewise — each
-  under-counts by one at exactly 12; and a lone dependency declaration of unknown descriptor beside a platform
-  declaration is read as this member (`Node.toString` over `Object.toString`).
+  at all (`[Unknown]` where present reads `[Fs, Unknown]`; an absent row where present hedges) — **shipping knowingly as
+  SOUNDNESS R1377**: the state is detectable (a report with rows for types no hierarchy sidecar lists), the union-entry
+  fallback cannot close it for a pure concrete owner (nothing is published under the key), and the INCOMPLETE /
+  `invisible: [pkg]` path is the mechanism to evaluate. A bare qual is now undecided beside ANY other declaration of
+  the name on the line, a PLATFORM one included (Fable REVIEW5 CARVE-A, the family's 9th layout: `P extends Thread {
+  run(int) }`, thirteen `run(int)` subtypes and W's `run()` writing a file — the bare `run` read as `run()`, every
+  subtype counted, and W's `Fs` was dropped with the sidecar PRESENT, against one-tree and v0.40.15; now `[Fs,
+  Unknown]`, wider than one-tree, never narrower). A wrongly CLEAN line counts EVERY bare subtype, not one, which is
+  why the case is closed rather than carried. **SOUNDNESS R1372** (boundary residuals, present = degraded, reasoned):
+  a pure concrete owner body whose nearest published entry is an ancestor's synthetic union counts no owner body, and
+  a pure-only default method with a body likewise — each under-counts by one at exactly 12.
 
 - ⚠ **A chained `toString`/`hashCode`/`equals`/`compareTo` on a dependency's own class is bounded like every other
   member** (SOUNDNESS R1360, SPEC §4 ⟨0.40⟩). The consumer's walk down a dependency class's subclasses returned

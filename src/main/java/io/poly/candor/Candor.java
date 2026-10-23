@@ -7686,6 +7686,26 @@ public class Candor {
                 recv = monoRecv != null ? monoRecv : monomorphicReceiver(provFrames == null ? null
                         : provFrames[mn.instructions.indexOf(min)], min);
                 depHierarchyJoin(ctx, id, min, inh, recv);
+                // SOUNDNESS R1378 — AN INHERITED PROTOCOL MEMBER. A dependency class that does not declare `toString`
+                // inherits Object's, so javac spells `p.toString()` as `invokevirtual java/lang/Object.toString` and
+                // the walk above (which runs only for an owner a dependency DECLARED) never saw the site: thirteen
+                // overriding subtypes, one reading the environment, and the chained caller read ABSENT — `deny Env
+                // Unknown` 0 where the one-tree scan hedges (v0.40.14, v0.40.15; executed). The receiver's DECLARED
+                // type is the dependency's class, which is not the root type the §4 MAY covers, so the walk runs from
+                // it: R1360's bound and rule, exactly as for an owner that declares the member.
+                if (R1378 && min.owner.equals("java/lang/Object") && isObjectProtocolExempt(min.name, min.desc)
+                        && provFrames != null) {
+                    Frame<ProvValue> rf = provFrames[mn.instructions.indexOf(min)];
+                    ProvValue rv = rf == null ? null : receiverProv(rf, min);
+                    String dt = rv == null ? null : rv.declType;
+                    if (dt != null && !dt.equals(min.owner) && ctx.depIndexed.contains(dt) && !ctx.byName.containsKey(dt)) {
+                        MethodInsnNode rt = new MethodInsnNode(Opcodes.INVOKEVIRTUAL, dt, min.name, min.desc, false);
+                        DepFn inh2 = ctx.crossDeps.get(dt + "." + min.name + min.desc);
+                        if (inh2 != null && !inh2.walkOnly) inheritDepFn(id, inh2);
+                        if (R867_DEBUG) System.err.println("R1378\tRETARGET\t" + id + "\t" + dt + "." + min.name + min.desc);
+                        depHierarchyJoin(ctx, id, rt, inh2, recv != null && !recv.equals(min.owner) ? recv : null);
+                    }
+                }
             } else if (xop == Opcodes.INVOKEINTERFACE && inh != null && !inh.syntheticOnly && !inh.walkOnly) {
                 // SOUNDNESS R1327 — AN INTERFACE MEMBER THAT HITS A *REAL* ROW IS A DEFAULT METHOD, and the
                 // producer MERGED its implementers' union into that row (ReportWriter#mergeUnionInto): the
@@ -8820,6 +8840,8 @@ public class Candor {
     static final boolean R867_DEBUG = System.getenv("CANDOR_R867_DEBUG") != null;
     /** SOUNDNESS R1360 — see depHierarchyJoin; {@code CANDOR_R1360=0} restores the Object-protocol exemption there. */
     static final boolean R1360 = !"0".equals(System.getenv("CANDOR_R1360"));
+    /** SOUNDNESS R1378 — see the INVOKEVIRTUAL join; {@code CANDOR_R1378=0} restores the root-type reading. */
+    static final boolean R1378 = !"0".equals(System.getenv("CANDOR_R1378"));
 
     /**
      * SOUNDNESS R867 — A CALL ON A CHAINED DEPENDENCY'S CLASS RUNS THAT DEPENDENCY'S OWN OVERRIDES TOO.
@@ -9188,24 +9210,26 @@ public class Candor {
      *  incomplete, or nothing chained it), or two declarations' descriptors are unknown. Only CLEAN lets a bare qual
      *  count, and only CLEAN lets the owner's own-key `dispatch:` hedge stand in for the union. */
     static int depLineState(AnalysisContext ctx, String owner, String name, String desc) {
-        int exactDep = 0, bareUnknown = 0;
+        int exactDep = 0, exactAny = 0, bareUnknown = 0;
         boolean unknown = false;
         for (String t : lineOf(ctx, owner)) {
             switch (declState(ctx, t, name, desc)) {
                 case DECL_OTHER -> { return LINE_AMBIGUOUS; }
                 case DECL_UNCOVERED -> unknown = true;
-                case DECL_EXACT -> { if (!isLoadableExternalOnly(ctx, t)) exactDep++; }
+                case DECL_EXACT -> { exactAny++; if (!isLoadableExternalOnly(ctx, t)) exactDep++; }
                 case DECL_BARE_UNKNOWN -> bareUnknown++;
                 default -> { }
             }
         }
         if (unknown) return LINE_UNKNOWN;
-        // One declaration of unknown descriptor is read as this member when nothing else in the DEPENDENCY declares the
-        // name: the call resolves somewhere in the line, and the usual shape is a pure override of a platform member
-        // (`Node.toString` over `Object.toString`). Beside another dependency declaration it is not: the two can be the
-        // halves of an overload split across classes (A.format(String) bare and pure, P.format(Object)) — measured in
-        // the family fixture, where reading it as this member over-counted W's site past the bound and dropped its Fs.
-        return bareUnknown == 0 || (bareUnknown == 1 && exactDep == 0) ? LINE_CLEAN : LINE_UNKNOWN;
+        // One declaration of unknown descriptor is read as this member ONLY when it is the only declaration of the name
+        // anywhere on the line: the call resolves somewhere in the line, so a lone declarer IS the target. Beside ANY
+        // other declaration it is not — a dependency one (an overload split across classes: A.format(String) bare and
+        // pure, P.format(Object)) or a PLATFORM one (Fable REVIEW5 CARVE-A: `P extends Thread { run(int) }`, whose bare
+        // `run` read as `run()` and let thirteen `run(int)` subtypes count, dropping W's Fs where one-tree charges it).
+        // The cost is named: a pure dependency `toString` over `Object.toString` is now undecided too, so R1360's
+        // past-bound protocol site reads the rows beside the hedge (wider than one-tree), never narrower.
+        return bareUnknown == 0 || (bareUnknown == 1 && exactAny == 0) ? LINE_CLEAN : LINE_UNKNOWN;
     }
 
     /** A type read off the classpath (the JDK), not a project or chained-dependency type. */

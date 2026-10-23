@@ -686,6 +686,57 @@ class DepInheritedMemberTest {
         }
     }
 
+    /** The family's 9th layout (Fable REVIEW5 CARVE-A): the only sibling overload is a DEPENDENCY's, of a PLATFORM
+     *  member. {@code P extends Thread { run(int) }}, S0..S12 {@code run(int)}, W overrides {@code run()} and writes;
+     *  the consumer calls {@code p.run()}. P's bare {@code run} beside {@code Thread.run()} once read as {@code run()},
+     *  every bare {@code run(int)} subtype counted, the site went past the bound and W's Fs was dropped with the
+     *  sidecar PRESENT, against the one-tree scan and v0.40.15. A bare qual beside any other declaration is now
+     *  undecided: present carries W's Fs (beside a hedge — wider than the one-tree scan, never narrower), and every
+     *  degraded arm carries what present does. */
+    @Test
+    void aDependencyOverloadOfAPlatformMemberDoesNotCountItsBareSubtypes() throws Exception {
+        Map<String, String> l = new LinkedHashMap<>();
+        l.put("dep/P.java", "package dep;\npublic class P extends Thread { public void run(int x) { } }\n");
+        l.put("dep/W.java", "package dep;\npublic class W extends P { public void run() { try { java.nio.file.Files.writeString("
+                + "java.nio.file.Path.of(\"/dev/null\"), \"x\"); } catch (Exception e) { } } }\n");
+        for (int i = 0; i < 13; i++)
+            l.put("dep/S" + i + ".java", "package dep;\npublic class S" + i + " extends P { public void run(int x) { } }\n");
+        Map<String, String> a = app("  public static void go(P p) { p.run(); }\n");
+        TreeSet<String> one = eff(whole(l, a), "app.App.go");
+        assertTrue(one.contains("FS"), "precondition: the one-tree scan charges W — " + one);
+        TreeSet<String> present = null;
+        for (String mode : List.of("present", "deleted", "keysdropped", "unpaired")) {
+            TreeSet<String> got = eff(chained(l, a, mode).app(), "app.App.go");
+            assertTrue(got.containsAll(one), mode + ": never narrower than the one-tree scan — got " + got);
+            if (mode.equals("present")) present = got;
+            else assertTrue(got.containsAll(present), mode + ": ⊇ present — got " + got + ", present " + present);
+        }
+    }
+
+    /** SOUNDNESS R1378 — AN INHERITED PROTOCOL MEMBER. {@code dep.P} declares no {@code toString}; 13 subtypes override
+     *  it and W reads the environment. javac spells {@code p.toString()} as {@code invokevirtual
+     *  java/lang/Object.toString}, so the walk (which runs only for an owner a dependency declared) never saw the
+     *  site and the chained caller read ABSENT — {@code deny Env Unknown} 0 where the one-tree scan reads 1 (v0.40.14,
+     *  v0.40.15; executed in fable-java0416/ctl-inherit, copied to javaagent-0416/fxR6). The receiver's declared
+     *  type is the dependency class, which the §4 MAY does not cover; the walk now runs from it. CONTROL: P DECLARES
+     *  toString — the R1360 path, unchanged. */
+    @Test
+    void anInheritedProtocolMemberOnADependencyClassTakesTheWalk() throws Exception {
+        for (boolean declares : new boolean[] { false, true }) {
+            Map<String, String> l = new LinkedHashMap<>();
+            l.put("dep/P.java", declares ? "package dep;\npublic class P { public String toString() { return \"p\"; } }\n"
+                    : "package dep;\npublic class P { public int unrelated() { return 1; } }\n");
+            l.put("dep/W.java", "package dep;\npublic class W extends P { public String toString() { return System.getenv(\"HOME\"); } }\n");
+            for (int i = 0; i < 13; i++)
+                l.put("dep/S" + i + ".java", "package dep;\npublic class S" + i + " extends P { public String toString() { return \"s\"; } }\n");
+            Map<String, String> a = app("  public static String go(P p) { return p.toString(); }\n");
+            TreeSet<String> one = eff(whole(l, a), "app.App.go");
+            assertTrue(one.contains("UNKNOWN"), "precondition: the one-tree scan hedges — " + one);
+            TreeSet<String> got = eff(chained(l, a).app(), "app.App.go");
+            assertEquals(one, got, (declares ? "declares" : "inherits") + ": chained reads the one-tree answer — got " + got);
+        }
+    }
+
     /** The family harness: {@code lib} compiled once; scanned as ONE report, or as A's report and the rest's report
      *  chained under it; the consumer chains the DIRECTORY holding them, after {@code arm} degrades one file. */
     private static Map<String, EffectSet> twoReports(Map<String, String> lib, Map<String, String> app, boolean sep,

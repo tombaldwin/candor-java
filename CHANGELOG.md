@@ -9,6 +9,8 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+## [0.40.16] — 2026-10-24
+
 - ⚠ **A chained `toString`/`hashCode`/`equals`/`compareTo` on a dependency class that INHERITS the member takes the
   override walk too** (SOUNDNESS R1378). A dependency class that does not declare `toString` inherits Object's, so
   javac spells `p.toString()` as `invokevirtual java/lang/Object.toString`, and R1360's walk — which runs for an owner a

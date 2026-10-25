@@ -9,6 +9,21 @@ routinely does change gate verdicts — read every ⚠ entry before bumping a pi
 
 ## Unreleased
 
+- ⚠ **One call-target entry point for dependency-typed receivers (call-target round 1; SOUNDNESS R1412, R1413,
+  R1379, R1377, R1333).** "Which bodies can run here?" for a receiver declared as a dependency type was answered by
+  separate walks, and the implicit sinks (string concatenation, `valueOf`, `append`, `format`, `println`, a cause
+  constructor, collection key operations, sort) walked only UP the dependency's hierarchy. They now ask one class,
+  `CallTargets`, which also walks DOWN into the dependency's subtypes and joins the consumer's own overriders of an
+  inherited `Object` member. Newly charged or disclosed, all executed in the call-target matrix: an implicit sink on a
+  dependency-typed value whose override is a dependency subclass (64 cells, one-tree charged, chained silent on
+  0.40.16); a consumer subclass overriding an `Object` member it inherits from a dependency class; an `Object` member
+  on a dependency interface receiver; the past-bound reading for a parameter receiver. The R1378 retarget walk and the
+  sink's up-only `nearestDepFn` branch are deleted. A chained report read without its hierarchy sidecar now adds
+  `invisible: [pkg]` to a caller whose walk starts from one of its types, instead of reading pure (P6). Corpus
+  (304 chained dependencies, against 0.40.16): 0 rows removed, 0 concrete charges added, 2 rows gain `Unknown`
+  (xz `SeekableInputStream`, a pre-existing R32 site-table imprecision, R1441). The call-target matrix is committed as
+  `soundness/calltarget/` (one command, not in CI), with a LOC ratchet in `ci/loc-ratchet.py`.
+
 ## [0.40.16] — 2026-10-24
 
 - **`jbang-catalog.json` points at the v0.40.16 jar.**

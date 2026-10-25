@@ -391,6 +391,10 @@ final class AnalysisContext {
     // covariant-return bridge match in Candor#depOverrideAt. All three are built ONCE, by Loader#loadCrossDeps, and
     // never grow during analyze: shared INPUTS, hence non-final and assigned in the overlay constructor.
     Set<String> depIndexed = new HashSet<>();
+    // CALL-TARGETS P6 (SOUNDNESS R1377/R1333) — the packages of chained reports read WITHOUT their hierarchy sidecar
+    // (dotted). Their types cannot be walked UP, DOWN or EXACT, so they are not counted as covered and a walk from one
+    // discloses `invisible` (CallTargets#discloseUncovered). A shared INPUT, filled only by Loader#loadCrossDeps.
+    Set<String> depHierUncoveredPkgs = new HashSet<>();
     // SOUNDNESS R919/R533 — the keys of TRUSTED chained `interfaceUnion` entries whose implementers are ALL
     // PURE (`inferred: []`). Kept out of `crossDeps` on purpose: a pure entry there would be a join HIT, and a
     // hit short-circuits disclosures a miss falls through to (R764). Its only reader is
@@ -489,6 +493,7 @@ final class AnalysisContext {
         depSupers = master.depSupers;                       depSplitKnown = master.depSplitKnown;
         depSuperclass = master.depSuperclass;               classHash = master.classHash;
         depIndexed = master.depIndexed;                     depSubtypes = master.depSubtypes;   // R867
+        depHierUncoveredPkgs = master.depHierUncoveredPkgs;   // CallTargets P6: a shared INPUT
         depPureUnionKeys = master.depPureUnionKeys;   // R919: a shared INPUT, filled only by loadCrossDeps
         depMembersByName = master.depMembersByName;
         depDeclaredMembers = master.depDeclaredMembers;   // R1336: a shared INPUT, filled only by loadCrossDeps

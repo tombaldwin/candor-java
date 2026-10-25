@@ -2697,8 +2697,11 @@ public class Candor {
         // it keeps the list a superset of every package a function's `invisible` can name.
         Map<String, Integer> all = new TreeMap<>(ctx().kappaSeen);
         for (String p : ctx().kappaBlindPkgs) all.putIfAbsent(p, 0);
+        // CallTargets P6: a package a walk could not be answered over is uncovered for that walk, covered or not
+        Set<String> p6 = CallTargets.p6Packages(ctx());
+        for (String p : p6) all.putIfAbsent(p, 0);
         return all.entrySet().stream()
-                .filter(e -> !ctx().depCoveredPkgs.contains(e.getKey()))
+                .filter(e -> !ctx().depCoveredPkgs.contains(e.getKey()) || p6.contains(e.getKey()))
                 .sorted(Map.Entry.<String, Integer>comparingByValue().reversed()
                         .thenComparing(Map.Entry.comparingByKey()))
                 .collect(Collectors.toList());
@@ -7685,7 +7688,13 @@ public class Candor {
             if (xop == Opcodes.INVOKEVIRTUAL) {
                 recv = monoRecv != null ? monoRecv : monomorphicReceiver(provFrames == null ? null
                         : provFrames[mn.instructions.indexOf(min)], min);
-                depHierarchyJoin(ctx, id, min, inh, recv);
+                // CALL-TARGETS — an Object-protocol member on a dependency (or hierarchy-less) owner asks the ONE entry
+                // point, which adds the consumer's own overriders (the declared half of U2: past the bound they read
+                // pure, the floor ran only for a receiver the caller produced) and the P6 disclosure.
+                if (CallTargets.ON && isObjectProtocolExempt(min.name, min.desc) && CallTargets.outsideScan(ctx, min.owner))
+                    CallTargets.resolve(ctx, id, min.owner, min.name, min.desc, recv != null && !recv.equals(min.owner) ? recv : null,
+                            CallTargets.Spelling.EXPLICIT, ctSite(mn, provFrames, min));
+                else depHierarchyJoin(ctx, id, min, inh, recv);
                 // SOUNDNESS R1378 — AN INHERITED PROTOCOL MEMBER. A dependency class that does not declare `toString`
                 // inherits Object's, so javac spells `p.toString()` as `invokevirtual java/lang/Object.toString` and
                 // the walk above (which runs only for an owner a dependency DECLARED) never saw the site: thirteen
@@ -7698,7 +7707,14 @@ public class Candor {
                     Frame<ProvValue> rf = provFrames[mn.instructions.indexOf(min)];
                     ProvValue rv = rf == null ? null : receiverProv(rf, min);
                     String dt = rv == null ? null : rv.declType;
-                    if (dt != null && !dt.equals(min.owner) && ctx.depIndexed.contains(dt) && !ctx.byName.containsKey(dt)) {
+                    // CALL-TARGETS — ROUTED: the consumer's own overriders (U2, SOUNDNESS R1413) join the dependency's
+                    String cdt = CallTargets.ON ? CallTargets.declTypeOf(ctx, rv, min) : null;
+                    if (cdt != null) {
+                        if (R867_DEBUG) System.err.println("R1378\tRETARGET\t" + id + "\t" + cdt + "." + min.name + min.desc);
+                        CallTargets.resolve(ctx, id, cdt, min.name, min.desc, recv != null && !recv.equals(min.owner) ? recv : null,
+                                CallTargets.Spelling.RETARGET, ctSite(mn, provFrames, min));
+                    } else if (!CallTargets.ON && dt != null && !dt.equals(min.owner) && ctx.depIndexed.contains(dt)
+                            && !ctx.byName.containsKey(dt)) {
                         MethodInsnNode rt = new MethodInsnNode(Opcodes.INVOKEVIRTUAL, dt, min.name, min.desc, false);
                         DepFn inh2 = ctx.crossDeps.get(dt + "." + min.name + min.desc);
                         if (inh2 != null && !inh2.walkOnly) inheritDepFn(id, inh2);
@@ -7706,6 +7722,13 @@ public class Candor {
                         depHierarchyJoin(ctx, id, rt, inh2, recv != null && !recv.equals(min.owner) ? recv : null);
                     }
                 }
+            } else if (CallTargets.ON && xop == Opcodes.INVOKEINTERFACE && isObjectProtocolExempt(min.name, min.desc)
+                    && CallTargets.outsideScan(ctx, min.owner)) {
+                // CALL-TARGETS — ROUTED: an Object member through a dependency INTERFACE (SOUNDNESS R1379) is not the
+                // root type either, so it reaches the same bound and rule as the class spelling above
+                CallTargets.resolve(ctx, id, min.owner, min.name, min.desc,
+                        monoRecv != null && !monoRecv.equals(min.owner) && !ctx.byName.containsKey(monoRecv) ? monoRecv : null,
+                        CallTargets.Spelling.EXPLICIT, ctSite(mn, provFrames, min));
             } else if (xop == Opcodes.INVOKEINTERFACE && inh != null && !inh.syntheticOnly && !inh.walkOnly) {
                 // SOUNDNESS R1327 — AN INTERFACE MEMBER THAT HITS A *REAL* ROW IS A DEFAULT METHOD, and the
                 // producer MERGED its implementers' union into that row (ReportWriter#mergeUnionInto): the
@@ -7830,6 +7853,16 @@ public class Candor {
      * widened match." A collision costs one conservative Unknown on a site candor genuinely cannot
      * resolve; it can never fabricate an effect.
      */
+    /** CALL-TARGETS — the explicit call site handed to {@link CallTargets#resolve}: the receiver's stack slot and
+     *  whether it is this body's own parameter (ExactTypes' P) or a value it produced (D), as virtualDispatch reads it. */
+    static CallTargets.Site ctSite(MethodNode mn, Frame<ProvValue>[] provFrames, MethodInsnNode min) {
+        int at = provFrames == null ? -1 : mn.instructions.indexOf(min);
+        Frame<ProvValue> rf = at < 0 ? null : provFrames[at];
+        if (rf == null) return null;
+        boolean onParam = provFrames[0] != null && paramIndexOf(mn, receiverProv(rf, min), provFrames[0]) >= 0;
+        return new CallTargets.Site(mn, min, CallTargets.receiverIndex(rf, min), onParam ? "P" : "D");
+    }
+
     static void untypedDepReceiver(AnalysisContext ctx, MethodScan s, MethodInsnNode min,
             int xop, String monoRecv) {
         if (xop != Opcodes.INVOKEINTERFACE) return;                        // conjunct 1
@@ -8822,6 +8855,13 @@ public class Candor {
         // DECLARES and charge or hedge its super-interfaces. The interface hole is untypedDepReceiver's
         // (R533), which already discloses `j.d()` on an inherited default; this walk adds nothing there.
         if (min.getOpcode() == Opcodes.INVOKEINTERFACE) return;
+        // P6 (SOUNDNESS R1377/R1333): no hierarchy sidecar for the owner's report — an absent key may be inherited, and
+        // the walk that would say so cannot run (CallTargets#discloseUncovered). A DISPATCH only: an inherited static or
+        // a super call through a sidecar-less report is left as it was (the report's silence under the key it formed)
+        if (!min.name.startsWith("<") && min.getOpcode() == Opcodes.INVOKEVIRTUAL) {
+            DepFn at = ctx.crossDeps.get(min.owner + "." + min.name + min.desc);
+            if (at == null || !at.ownerDeclared) CallTargets.discloseUncovered(ctx, id, min.owner);
+        }
         DepUpWalk w = depUpWalk(ctx, min.owner, min.name, min.desc);
         for (DepFn d : w.joins()) {
             if (R868_DEBUG) System.err.println("R868\tUP\t" + id + "\t" + min.owner + "." + min.name + min.desc
@@ -8906,10 +8946,18 @@ public class Candor {
      * for an override 51 times in 192; it is narrowed to covariant returns, and the generic-parameter override
      * is reached through the bridge row the producer now publishes (SOUNDNESS R869) — see
      * {@link #bridgeCompatible}.)
+     *
+     * <p>Returns the dependency subtypes counted as declaring the member (0 where no DOWN walk ran), so
+     * {@link CallTargets#resolve} can price the ONE bound over consumer + dependency overriders. The union decided
+     * here is still priced on the dependency's count alone: combining it could only turn a union into a hedge, which
+     * is the removal direction; the combined count instead ADDS the past-bound reading beside it.
      */
-    static void depHierarchyJoin(AnalysisContext ctx, String id, MethodInsnNode min, DepFn inh, String recv) {
-        if (ctx.depIndexed.isEmpty() || !ctx.depIndexed.contains(min.owner)) return;
-        if (min.name.startsWith("<")) return;
+    static int depHierarchyJoin(AnalysisContext ctx, String id, MethodInsnNode min, DepFn inh, String recv) {
+        // P6 (SOUNDNESS R1377/R1333): an owner from a chained report with NO hierarchy sidecar — the walk below cannot
+        // run, so the caller is told so (invisible) rather than read pure; see CallTargets#discloseUncovered
+        if (!min.name.startsWith("<") && CallTargets.discloseUncovered(ctx, id, min.owner)) return 0;
+        if (ctx.depIndexed.isEmpty() || !ctx.depIndexed.contains(min.owner)) return 0;
+        if (min.name.startsWith("<")) return 0;
         String name = min.name, desc = min.desc;
         // EXACT — a provably-monomorphic dependency receiver resolves to one body.
         if (recv != null) {
@@ -8921,37 +8969,25 @@ public class Candor {
                     inheritDepFn(id, exact);
                 }
             }
-            return;          // exact type: no sibling, no subtype can run (a project `new T` traced locally)
+            return 0;        // exact type: no sibling, no subtype can run (a project `new T` traced locally)
         }
         // DOWN — every chained subtype's override.
-        if (ctx.depSubtypes.isEmpty()) return;
-        List<DepFn> overrides = new ArrayList<>();
-        Set<String> seen = new HashSet<>();
-        // SOUNDNESS R1336 — the dependency subtypes that DECLARE the member, pure or not: what the bound counts.
-        int declaring = 0;
-        int undecided = 0;   // R1336/P6: subtypes whose declaration no paired, complete sidecar can decide
+        if (ctx.depSubtypes.isEmpty()) return 0;
         // ONE RULE for every question this walk asks about the member's other declarations (R1336/P6; Fable
         // REVIEW2–4: ovl1 → ovl2 → ovl3 each landed one shape past a separately-computed rule). See #depLineState.
         int lineState = depLineState(ctx, min.owner, name, desc);
-        ArrayDeque<String> q = new ArrayDeque<>(ctx.depSubtypes.getOrDefault(min.owner, List.of()));
-        while (!q.isEmpty()) {
-            String t = q.poll();
-            if (!seen.add(t)) continue;
-            q.addAll(ctx.depSubtypes.getOrDefault(t, List.of()));
-            if (ctx.byName.containsKey(t)) continue;         // a project subtype: in-scan CHA already edged it
-            DepFn d = depOverrideAt(t, name, desc);
-            if (d != null) declaring++;
-            else {
-                int a = depDeclares(ctx, t, min.owner, name, desc, lineState);
-                if (a > 0) declaring++;
-                else if (a < 0) undecided++;
-            }
-            if (d != null && d != inh && !overrides.contains(d)) overrides.add(d);
-        }
+        // The walk itself is CallTargets' (one DOWN walk for every reader — formerly this loop alone).
+        CallTargets.DepDown dw = CallTargets.depDown(ctx, min.owner, name, desc, inh, lineState);
+        List<DepFn> overrides = dw.overrides();
+        Set<String> seen = dw.seen();
+        // SOUNDNESS R1336 — the dependency subtypes that DECLARE the member, pure or not: what the bound counts.
+        int declaring = dw.declaring();
+        int undecided = dw.undecided();   // R1336/P6: subtypes whose declaration no paired, complete sidecar can decide
         if (R867_DEBUG && !seen.isEmpty())
             System.err.println("R867REACH\t" + id + "\t" + min.owner + "." + name + desc + "\tsubs=" + seen.size()
                     + "\toverrides=" + overrides.size() + "\tdeclaring=" + declaring
                     + (undecided > 0 ? "\tundecided=" + undecided : ""));
+        int depOnly = declaring;   // returned: CallTargets#resolve adds the consumer's overriders to this count
         // The count is an INTERVAL [declaring, declaring + undecided]: the hierarchy sidecar every walk already needs
         // bounds it from above. It is unanswerable only where the interval straddles the bound; either end inside it
         // decides the site exactly as an answered count would.
@@ -9023,9 +9059,9 @@ public class Candor {
             if (inh != null && (inh.syntheticOnly || (!overloaded
                     && inh.unknownWhy.contains("dispatch:" + min.owner.replace('/', '.') + "." + name)))) {
                 if (R867_DEBUG) System.err.println("R867\tUNANSWERED-UNION\t" + id + "\t" + min.owner + "." + name + desc);
-                return;
+                return depOnly;
             }
-            if (ctx.depPureUnionKeys.contains(min.owner + "." + name + desc)) return;
+            if (ctx.depPureUnionKeys.contains(min.owner + "." + name + desc)) return depOnly;
             boolean charged = false;
             for (DepFn d : overrides) {
                 inheritDepFn(id, d);
@@ -9038,13 +9074,13 @@ public class Candor {
             }
             if (R867_DEBUG) System.err.println("R867\tUNANSWERED\t" + id + "\t" + min.owner + "." + name + desc
                     + "\t" + overrides.size() + (charged ? "\thedged" : ""));
-            return;
+            return depOnly;
         }
         // Answered: the interval's end that decides (all-in-bound → the upper end, past-bound → the lower).
         int bound = !protocolOff ? Math.max(declaring + (declaring + ob > CHA_FANOUT_LIMIT ? 0 : undecided),
                 overrides.size()) : -1;
         if (bound >= 0) {
-            if (bound == 0) return;
+            if (bound == 0) return depOnly;
             if (bound + ob > CHA_FANOUT_LIMIT) {
                 // R1360: past the bound the Object protocol is decided as in-scan's S4 floor decides it (ExactTypes →
                 // R1303's rule): DISCLOSED only where some override carries an effect or an Unknown. Thirteen pure
@@ -9053,23 +9089,23 @@ public class Candor {
                 if (isObjectProtocolExempt(name, desc)) {
                     boolean anyCharged = false;
                     for (DepFn d : overrides) if (!d.effects.isEmpty()) { anyCharged = true; break; }
-                    if (!anyCharged) return;
+                    if (!anyCharged) return depOnly;
                 }
                 ctx.viaCross.computeIfAbsent(id, k -> EffectSet.empty()).add(Effect.UNKNOWN);
                 ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                         .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, min.owner.replace('/', '.') + "." + name));
                 if (R867_DEBUG) System.err.println("R867\tBROAD\t" + id + "\t" + min.owner + "." + name + desc
                         + "\t" + overrides.size() + "/" + declaring);
-                return;
+                return depOnly;
             }
             for (DepFn d : overrides) {
                 if (R867_DEBUG) System.err.println("R867\tDOWN\t" + id + "\t" + min.owner + "." + name + desc
                         + "\t" + d.fn + "\t" + d.effects);
                 inheritDepFn(id, d);
             }
-            return;
+            return depOnly;
         }
-        if (overrides.isEmpty()) return;
+        if (overrides.isEmpty()) return depOnly;
         // SOUNDNESS R869 — THE BOUND IS PRICED ON WHAT IT PRICED BEFORE BRIDGE ROWS EXISTED. Bridge rows made more
         // overrides findable, and counting them into the bound turned sites that used to UNION their overrides
         // into a bare `Unknown` — a widening deleting what it widened (jackson-databind's
@@ -9085,28 +9121,29 @@ public class Candor {
                         + "\t" + d.fn + "\t" + d.effects);
                 inheritDepFn(id, d);
             }
-            if (isObjectProtocolExempt(name, desc)) return;
+            if (isObjectProtocolExempt(name, desc)) return depOnly;
             ctx.viaCross.computeIfAbsent(id, k -> EffectSet.empty()).add(Effect.UNKNOWN);
             ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                     .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, min.owner.replace('/', '.') + "." + name));
             if (R867_DEBUG) System.err.println("R867\tBROADSYN\t" + id + "\t" + min.owner + "." + name + desc
                     + "\t" + priced.size() + "+" + synthetic.size());
-            return;
+            return depOnly;
         }
         if (priced.size() + 1 > CHA_FANOUT_LIMIT) {
-            if (isObjectProtocolExempt(name, desc)) return;   // §4: pure even when overridden, as in-scan
+            if (isObjectProtocolExempt(name, desc)) return depOnly;   // §4: pure even when overridden, as in-scan
             ctx.viaCross.computeIfAbsent(id, k -> EffectSet.empty()).add(Effect.UNKNOWN);
             ctx.unknownWhy.computeIfAbsent(id, k -> new TreeSet<>())
                     .add(UnknownReason.of(UnknownReason.Kind.DISPATCH, min.owner.replace('/', '.') + "." + name));
             if (R867_DEBUG) System.err.println("R867\tBROAD\t" + id + "\t" + min.owner + "." + name + desc
                     + "\t" + overrides.size());
-            return;
+            return depOnly;
         }
         for (DepFn d : overrides) {
             if (R867_DEBUG) System.err.println("R867\tDOWN\t" + id + "\t" + min.owner + "." + name + desc
                     + "\t" + d.fn + "\t" + d.effects);
             inheritDepFn(id, d);
         }
+        return depOnly;
     }
 
     /** SOUNDNESS R1336/P6 — whether {@code t} declares {@code (name,desc)}: 1 yes, 0 no, -1 undecided.
@@ -11194,6 +11231,16 @@ public class Candor {
         String depDesc = contract.equals(C_TOSTRING) ? "()Ljava/lang/String;"
                 : contract.equals(C_HASHCODE) ? "()I"
                 : contract.equals(C_EQUALS) ? "(Ljava/lang/Object;)Z" : null;
+        // CALL-TARGETS — ROUTED (U1, SOUNDNESS R1412): the sink asks the ONE entry point, which walks UP (what
+        // nearestDepFn / nearestDepFnsNamed did here) AND DOWN the dependency's subtypes, so a dependency subtype's
+        // override joins as it does for the explicit `t.toString()` (R867/R1378). The consumer's own overriders are
+        // the in-scan half above (reentryTargets), unbounded as in-scan. A type outside every walk keeps the old reads.
+        if (CallTargets.ON) {
+            resolved |= depDesc != null
+                    ? CallTargets.resolve(ctx(), callerId, declType, contract, depDesc, null, CallTargets.Spelling.SINK, null)
+                    : CallTargets.resolveNamed(ctx(), callerId, declType, contract);
+            return resolved;
+        }
         if (depDesc != null) {
             DepFn d = nearestDepFn(declType, contract, depDesc);
             inheritDepFn(callerId, d);

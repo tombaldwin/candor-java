@@ -91,7 +91,7 @@ final class ReportWriter {
         // line, the envelope `coverage` field below, and the --gate-json advisory — same names everywhere.
         List<Map.Entry<String, Integer>> uncovered = Candor.kappaUncovered();
         Set<String> globalBlind = uncovered.stream().map(Map.Entry::getKey).collect(Collectors.toSet());
-        Map<String, TreeSet<String>> blindAcc = literalFixpoint(ctx().blindDirect);
+        Map<String, TreeSet<String>> blindAcc = CallTargets.reportBlind(ctx(), literalFixpoint(ctx().blindDirect), globalBlind);
         // ⟨0.20⟩ Net destination-class: transitive masked-surface markers, so a fn whose Net surface is
         // structurally incomplete (AS-EFF-008) fails closed to `unknown-host` even if its VISIBLE hosts are
         // all telemetry/partner — a benign visible host must not certify a fn that also reaches an invisible one.

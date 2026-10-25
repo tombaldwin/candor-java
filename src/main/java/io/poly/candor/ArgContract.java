@@ -509,11 +509,24 @@ final class ArgContract {
             String owner = key.substring(0, dot), name = key.substring(dot + 1, paren), desc = key.substring(paren);
             boolean unknownToo = R1303_UNKNOWN && R1337_WIDE.get().contains(caller + "\t" + key + "\t" + t);
             if (unknownToo) R1337_AGAIN.get().add(w);   // re-decided by floorAgain, as the Object floor is
+            boolean hit = false;
             for (String b : Cha.chaTargets(t, name, desc))
                 if (newConcrete(fx, b, caller) || (unknownToo && newUnknown(fx, b, caller))) {
                     added |= disclose(c, caller, owner, name, "R1166WIDEU", t, b);
+                    hit = true;
                     break;
                 }
+            // CALL-TARGETS — ROUTED: a dependency-declared type's candidates are its dependency bodies too (UP and its
+            // subtypes' overrides), the set CallTargets#resolve joins at the explicit spelling (h_sort: `sort(l)` over a
+            // `List<dep.T>` whose dependency subtype's compareTo writes a file read pure chained, disclosed one-tree)
+            if (!hit && CallTargets.ON && CallTargets.outsideScan(c, t)) {
+                CallTargets.discloseUncovered(c, caller, t);
+                for (DepFn d : CallTargets.dependencyBodies(c, t, name, desc))
+                    if (newConcreteDep(fx, d, caller) || (unknownToo && d.effects.contains(Effect.UNKNOWN))) {
+                        added |= disclose(c, caller, owner, name, "R1166WIDEDEP", t, d.fn);
+                        break;
+                    }
+            }
         }
         WIDE_SITES.get().clear();
         R1337_WIDE.get().clear();
@@ -841,7 +854,10 @@ final class ArgContract {
         String owner = key.substring(0, dot), name = key.substring(dot + 1, paren), desc = key.substring(paren);
         if (t.equals(owner) || t.equals("java/lang/Object")) return null;
         // …and a type that IS one: an argument that merely declares a same-named method is not a receiver.
-        if (!owner.equals("java/lang/Object") && !isSubtype(c, t, owner)) return null;
+        // CALL-TARGETS P6: a dependency type whose report came without its hierarchy sidecar cannot be shown NOT to be
+        // one — undecided, so WIDE (the disclosure path), never null (the purity claim)
+        if (!owner.equals("java/lang/Object") && !isSubtype(c, t, owner))
+            return CallTargets.hierarchyUncovered(c, t) ? WIDE : null;
         if (exact) {
             // A provable `new T` IS that type: a project T resolves to its one body; an EXTERNAL T
             // (`new ArrayList<>()`) has no project body, and CHA from it would charge every project subclass.

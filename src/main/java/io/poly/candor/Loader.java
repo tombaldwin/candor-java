@@ -858,6 +858,24 @@ final class Loader {
                     // all-pure dependency (rule 3's claim, which must survive) and one that analyzed no
                     // units at all; ⟨0.21⟩'s `analyzed.count` is the only thing on the wire that tells them
                     // apart. See {@link #claimsToHaveJudgedNothing}.
+                    // CALL-TARGETS P6 (SOUNDNESS R1377/R1333) — A REPORT WITH ROWS READ WITHOUT ITS HIERARCHY SIDECAR. Every
+                    // walk over the dependency's types (R867 DOWN, R868 UP, the EXACT receiver, CallTargets) needs it; with
+                    // it absent, a walk that would have run is disclosed at its site (CallTargets#discloseUncovered). The
+                    // report's COVERAGE is untouched: a key it does not answer is still its purity claim where no walk is
+                    // asked (SPEC §2 rule 3 — and a foreign-engine or hand-written report legitimately has no sidecar).
+                    Path hierSib = hierarchySidecarOf(f);
+                    // Which reports: one with rows (a type a walk could be asked from), or one this engine wrote (a jdk
+                    // toolchain) — which always writes the sidecar, so an absent one is degraded input even for a report of
+                    // pure types (its packages' types are the declared types of the walks; fixture `third`, nohier arm).
+                    JsonElement tc = obj != null && obj.has("candor") && obj.get("candor").isJsonObject()
+                            ? obj.getAsJsonObject("candor").get("toolchain") : null;
+                    boolean jvmProduced = tc != null && tc.isJsonPrimitive() && tc.getAsString().startsWith("jdk");
+                    boolean hierAbsent = CallTargets.ON && (fns.size() > 0 || jvmProduced)
+                            && (hierSib == null || !Files.isRegularFile(hierSib));
+                    if (hierAbsent) {
+                        hierUncoveredReports.add(f);
+                        ctx().depHierUncoveredPkgs.addAll(reportPackages(obj));
+                    }
                     if (!stale && !incomplete && !judgedNothing)
                         ctx().depCoveredPkgs.addAll(reportPackages(obj));
                     // R868 — what THIS report declares, read once (see DepFn#ownerDeclared): the types its own
@@ -1072,6 +1090,7 @@ final class Loader {
                         String pkg = entryPackage(h);
                         if (pkg == null) continue;
                         ctx().depChainedPkgs.add(pkg);
+                        if (hierAbsent) ctx().depHierUncoveredPkgs.add(pkg);
                         if (!stale && !incomplete && !judgedNothing) ctx().depCoveredPkgs.add(pkg);
                     }
                 } catch (Exception ex) {
@@ -1084,6 +1103,11 @@ final class Loader {
                 }
             }
         }
+        for (Path f : hierUncoveredReports)
+            System.err.println("candor: CANDOR_DEPS report " + f + " has no hierarchy sidecar beside it — a dispatch over"
+                    + " its types that needs the hierarchy is disclosed `invisible` rather than read pure (SPEC PART 30"
+                    + " P6). Keep the dependency's `.hierarchy.json` next to its report.");
+        hierUncoveredReports.clear();
         pairDepCallgraphs();
         synthesizeReasonlessDepReasons();
         indexDepOverrides();
@@ -1092,6 +1116,8 @@ final class Loader {
     /** R1336 / P6 — a report read by loadCrossDeps, what its paired call-graph sidecar must key, and its own types. */
     private record PendingPair(Path report, String digest, long count, Set<String> ownTypes) {}
     private static final List<PendingPair> pendingPairs = new ArrayList<>();
+    /** CallTargets P6 — the reports read without a hierarchy sidecar, named once on stderr after the load. */
+    private static final List<Path> hierUncoveredReports = new ArrayList<>();
 
     /**
      * SOUNDNESS R1336 / SPEC PART 30 P6 — PAIR each chained report with ITS call-graph sidecar, and grant the count only

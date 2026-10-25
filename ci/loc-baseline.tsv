@@ -1,8 +1,9 @@
 # file	lines	decisions  (ci/loc-ratchet.py --update)
-src/main/java/io/poly/candor/AnalysisContext.java	673	43
+src/main/java/io/poly/candor/AnalysisContext.java	678	43
 src/main/java/io/poly/candor/AnalysisState.java	47	0
-src/main/java/io/poly/candor/ArgContract.java	1227	469
-src/main/java/io/poly/candor/Candor.java	12899	3060
+src/main/java/io/poly/candor/ArgContract.java	1243	477
+src/main/java/io/poly/candor/CallTargets.java	309	84
+src/main/java/io/poly/candor/Candor.java	12946	3084
 src/main/java/io/poly/candor/Cha.java	1110	208
 src/main/java/io/poly/candor/Classifier.java	4063	2495
 src/main/java/io/poly/candor/Config.java	541	79
@@ -15,10 +16,10 @@ src/main/java/io/poly/candor/FrameworkReach.java	214	51
 src/main/java/io/poly/candor/Interp.java	752	214
 src/main/java/io/poly/candor/KappaJdkSinks.java	372	252
 src/main/java/io/poly/candor/Literals.java	928	346
-src/main/java/io/poly/candor/Loader.java	1235	267
+src/main/java/io/poly/candor/Loader.java	1261	279
 src/main/java/io/poly/candor/Policy.java	2454	348
 src/main/java/io/poly/candor/Query.java	6115	1075
-src/main/java/io/poly/candor/Refresh.java	790	143
+src/main/java/io/poly/candor/Refresh.java	791	143
 src/main/java/io/poly/candor/ReportWriter.java	1359	206
 src/main/java/io/poly/candor/Rules.java	826	39
 src/main/java/io/poly/candor/Surface.java	372	73

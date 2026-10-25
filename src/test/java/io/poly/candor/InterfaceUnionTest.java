@@ -966,9 +966,16 @@ class InterfaceUnionTest {
         // counted in ⟨0.21⟩ `analyzed`. That is the cardinal sin, and INVOKEVIRTUAL is why half 1 misses it.
         // The pre-rung state needs BOTH mechanisms off: the producer's union (the flag) AND the consumer's
         // R867 override walk, which reads the hierarchy sidecar and would close this row on its own.
+        // CALL-TARGETS P6 (SOUNDNESS R1377): with the sidecar deleted the walk cannot run, and since round 1 the
+        // consumer SAYS so (`invisible: [lib]`) where it used to read pure. The control still shows no effect is
+        // resolved without either mechanism; what it no longer shows is silence, which is the point of P6.
         Map<String, Map<String, Object>> before = chainedApp(absLib(), app, false, false);
-        assertNull(before.get("app.S.viaFactory"), "the control must reproduce the silent-pure row");
-        assertNull(before.get("app.S.viaParam"), "the control must reproduce the silent-pure row");
+        for (String fn : List.of("app.S.viaFactory", "app.S.viaParam")) {
+            Map<String, Object> r = before.get(fn);
+            assertTrue(r != null && ((List<?>) r.get("inferred")).isEmpty()
+                            && r.get("invisible") instanceof List<?> inv && inv.contains("lib"),
+                    "the no-mechanism control resolves nothing and (P6) discloses the unwalked hierarchy; got " + r);
+        }
         // …and each mechanism ALONE closes it, which is the redundancy worth pinning: the consumer walk with
         // no union entry published (an older or foreign producer that wrote the sidecar but not the union).
         Map<String, Map<String, Object>> walkOnly = chainedApp(absLib(), app, false, true);

@@ -469,6 +469,7 @@ final class Refresh {
           // hierarchy fact `depSupers` drops (R860). `depSubtypes`/`depMembersByName` are derived from
           // `depSupers` and `crossDeps`, both digested above, so they need no line of their own.
           .append(new TreeSet<>(c.depIndexed)).append('\u0001')
+          .append(new TreeSet<>(c.depHierUncoveredPkgs)).append('\u0001')   // CallTargets P6
           // SOUNDNESS R919: a dependency gaining (or losing) a pure-only union entry moves R533's disclosure
           // at the consumer, so a cache primed before it must miss.
           .append(new TreeSet<>(c.depPureUnionKeys)).append('\u0001')
